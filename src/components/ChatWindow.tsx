@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { supabase } from "@/integrations/supabase/client";
@@ -41,13 +42,14 @@ function parseHttpStatusFromError(err: unknown): number | null {
 function describeTransportError(err: unknown): string {
   const msg = String((err as any)?.message ?? err ?? "").toLowerCase();
   const status = parseHttpStatusFromError(err);
-  if (status === 401 || status === 403) return "Auth/session error while calling scan backend. Re-login and retry.";
-  if (status === 404) return "Scan backend route not found (function not deployed or wrong URL).";
-  if (status === 429) return "Scan backend rate-limited. Wait ~30s and retry.";
-  if (status === 502 || status === 503 || status === 504) return "Scan backend temporarily unavailable (upstream provider/dependency outage).";
-  if (status && status >= 500) return `Scan backend error (HTTP ${status}).`;
-  if (/failed to fetch|networkerror|network request failed|load failed|dns/i.test(msg)) return "Network/transport failure reaching scan backend.";
-  return "Scan request failed before stream started.";
+  if (status === 401) return "Session expired — your login has timed out. Sign in again to continue.";
+  if (status === 403) return "Access denied — this thread doesn't belong to your account. Open your own thread or create a new one.";
+  if (status === 404) return "Edge function not deployed — the OSINT agent backend wasn't found. Deploy the Supabase function and retry.";
+  if (status === 429) return "Rate limited by the scan backend — too many requests. Wait ~30 seconds and try again.";
+  if (status === 502 || status === 503 || status === 504) return "Scan backend temporarily unavailable — upstream provider or dependency is down. Retry in a minute.";
+  if (status && status >= 500) return `Backend error (HTTP ${status}) — the OSINT agent encountered a server fault. Check Supabase function logs for details.`;
+  if (/failed to fetch|networkerror|network request failed|load failed|dns/i.test(msg)) return "Network failure — cannot reach the scan backend. Verify your Supabase project is running and the function URL is correct.";
+  return "Scan request failed before the stream started — check the browser console for transport details.";
 }
 
 async function fetchWithRetry(url: RequestInfo | URL, init?: RequestInit): Promise<Response> {
@@ -756,12 +758,14 @@ function ChatWindowInner({
   initialCreatedAtMap: Record<string, string>;
 }) {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [createdAtMap, setCreatedAtMap] = useState<Record<string, string>>(initialCreatedAtMap);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const [input, setInput] = useState("");
   const failSavedRef = useRef(false);
   const unmountedRef = useRef(false);
+  const readyProbedOnceRef = useRef(false);
   const [rerunBusy, setRerunBusy] = useState(false);
   const { items: artifacts } = useThreadArtifacts(threadId);
   const [seedValue, setSeedValue] = useState<string | null>(null);
@@ -820,6 +824,12 @@ function ChatWindowInner({
       failSavedRef.current = true;
       const reason = (e?.message ?? "stream failed").slice(0, 500);
       const friendly = describeTransportError(e);
+      // 401 → session expired — route to auth immediately
+      if (parseHttpStatusFromError(e) === 401) {
+        toast.error(friendly);
+        navigate("/auth");
+        return;
+      }
       // Persist a failed assistant marker so reload shows the failed card
       await supabase.from("messages").insert({
         thread_id: threadId,
@@ -877,6 +887,24 @@ function ChatWindowInner({
     if (!FUNCTIONS_URL) {
       toast.error("Supabase function URL is not configured. Set VITE_SUPABASE_URL (or VITE_SUPABASE_PROJECT_ID) in .env.");
       return;
+    }
+    // ── Pre-flight readiness probe (once per session) ──
+    if (!readyProbedOnceRef.current) {
+      readyProbedOnceRef.current = true;
+      try {
+        const probeRes = await fetch(`${FUNCTIONS_URL}?health=1`, { method: "HEAD", signal: AbortSignal.timeout(5000) });
+        if (probeRes.status === 404) {
+          toast.error("Edge function not deployed. Run: supabase functions deploy osint-agent");
+          return;
+        }
+      } catch (probeErr) {
+        if ((probeErr as Error)?.name === "TimeoutError") {
+          toast.error("Scan backend timed out — Supabase function may be cold-starting. Retry in a few seconds.");
+          readyProbedOnceRef.current = false; // allow retry
+          return;
+        }
+        // Network error — let it through; the real sendMessage will surface it
+      }
     }
     setInput("");
     setAttachments([]);

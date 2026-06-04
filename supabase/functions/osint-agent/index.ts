@@ -1437,7 +1437,7 @@ Deno.serve(async (req) => {
 
   try {
     const authHeader = req.headers.get("Authorization");
-    if (!authHeader) return new Response("Unauthorized", { status: 401, headers: corsHeaders });
+    if (!authHeader) return new Response(JSON.stringify({ error: "Unauthorized", code: "MISSING_AUTH", detail: "No Authorization header provided. Sign in to continue." }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
     const supabase = createClient(SUPABASE_URL, SERVICE_KEY, {
       global: { headers: { Authorization: authHeader } },
@@ -1447,12 +1447,12 @@ Deno.serve(async (req) => {
     // inherits the user JWT and inserts fail with "row-level security policy".
     const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_KEY);
     const { data: userData, error: userError } = await supabase.auth.getUser();
-    if (userError || !userData.user) return new Response("Unauthorized", { status: 401, headers: corsHeaders });
+    if (userError || !userData.user) return new Response(JSON.stringify({ error: "Unauthorized", code: "INVALID_SESSION", detail: "Session is invalid or expired. Sign in again." }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     const userId = userData.user.id;
 
     const { messages, threadId } = (await req.json()) as { messages: UIMessage[]; threadId: string };
     if (!threadId || !Array.isArray(messages)) {
-      return new Response("Bad request", { status: 400, headers: corsHeaders });
+      return new Response(JSON.stringify({ error: "Bad Request", code: "MISSING_PARAMS", detail: "Request must include threadId and messages array." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
     // Verify thread ownership
@@ -1462,7 +1462,7 @@ Deno.serve(async (req) => {
       .eq("id", threadId)
       .maybeSingle();
     if (!thread || thread.user_id !== userId) {
-      return new Response("Forbidden", { status: 403, headers: corsHeaders });
+      return new Response(JSON.stringify({ error: "Forbidden", code: "THREAD_ACCESS_DENIED", detail: "This thread does not exist or does not belong to your account." }), { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
     const archiveEnabled: boolean = !!(thread as { archive_attachments?: boolean }).archive_attachments;
     const detectedSeedType: string = String(
@@ -5381,7 +5381,8 @@ Deno.serve(async (req) => {
     });
   } catch (e) {
     console.error("osint-agent error", e);
-    return new Response(JSON.stringify({ error: String(e) }), {
+    const message = e instanceof Error ? e.message : String(e);
+    return new Response(JSON.stringify({ error: "Internal Server Error", code: "ORCHESTRATOR_FAULT", detail: message }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
