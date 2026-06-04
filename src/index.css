@@ -1,0 +1,869 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    /* Swarmbot design tokens — calm, investigative, restrained accent.
+       Each token has one meaning; do not alias across roles. */
+    /* Tiered near-black system — base / panel / card / interactive */
+    --background: 225 22% 3%;        /* #050609 — app base */
+    --foreground: 210 22% 96%;
+
+    --card: 222 14% 12%;             /* #181B22 — card surface */
+    --card-foreground: 210 22% 96%;
+
+    --popover: 222 14% 8%;            /* #111318 — panel surface */
+    --popover-foreground: 210 22% 96%;
+
+    /* Brand — instrument cyan (#3AD6FF). Primary CTAs, active tab underline,
+       focus ring. Restrained — never used as fill behind body copy. */
+    --primary: 191 100% 62%;
+    --primary-foreground: 222 30% 6%;
+    --primary-glow: 191 100% 72%;
+
+    --secondary: 230 12% 6%;
+    --secondary-foreground: 210 20% 96%;
+
+    --muted: 230 12% 5%;
+    --muted-foreground: 218 9% 64%;
+
+    --accent: 191 100% 62%;
+    --accent-foreground: 222 30% 6%;
+
+    --destructive: 350 100% 68%;       /* #FF5C7A */
+    --destructive-foreground: 0 0% 100%;
+
+    /* Semantic tokens — un-aliased. One meaning per token.
+       Saturation pulled down ~10pts vs neon defaults for enterprise feel. */
+    --info: 212 78% 58%;             /* system / agent state — cool blue */
+    --success: 147 56% 56%;          /* #4CD28A — instrument green */
+    --warning: 33 86% 67%;           /* #F3B763 — amber, desaturated */
+    --danger: 350 100% 68%;          /* #FF5C7A — coral-red */
+    --evidence: 182 32% 64%;         /* immutable / custody marker */
+
+    /* Muted semantic backgrounds — for soft chips, row tints, alerts */
+    --info-muted: 212 40% 14%;
+    --success-muted: 152 30% 12%;
+    --warning-muted: 36 40% 12%;
+    --danger-muted: 0 36% 12%;
+
+    /* Confidence — calibrated, distinct from brand iris */
+    --confidence-high: 147 56% 56%;
+    --confidence-high-glow: 147 70% 66%;
+    --confidence-mid: 33 86% 67%;
+    --confidence-low: 350 100% 68%;
+    --highconf: 147 56% 56%;
+
+    /* Layered surfaces — tiered control-room scale (Palantir/Gotham) */
+    --surface-0: 225 22% 3%;          /* #050609 */
+    --surface-1: 222 14% 8%;          /* #111318 */
+    --surface-2: 222 14% 12%;         /* #181B22 */
+    --surface-3: 222 21% 16%;         /* #1F2430 — selected / hover */
+    --surface-4: 222 18% 22%;
+
+    --border: 224 14% 18%;           /* #262A35 — base card inner border */
+    --border-subtle: 222 14% 10%;
+    --border-strong: 222 18% 28%;
+    --input: 222 14% 9%;
+    --ring: 191 100% 62%;
+
+    /* Intel tokens — info-blue (system) and brand iris (selection) */
+    --intel-blue: 220 90% 62%;
+    --intel-violet: 268 80% 66%;
+
+    /* Brain (Global Brain tab) palette — fixed spec tokens. */
+    --brain-surface-base: 222 14% 8%;   /* #111318 */
+    --brain-card:         222 22% 13%;  /* #1A1F29 */
+    --brain-border:       220 22% 19%;  /* #252C3A */
+    --brain-text:         217 35% 94%;  /* #E8EDF5 */
+    --brain-muted:        215 13% 58%;  /* #8692A3 */
+    --brain-cyan:         192 100% 61%; /* #39D6FF */
+    --brain-status-ok:    143 60% 57%;  /* #4ED68C */
+    --brain-status-warn:   33 85% 67%;  /* #F2B766 */
+    --brain-status-bad:   350 100% 70%; /* #FF667E */
+
+    --radius: 0.75rem;
+
+    --sidebar-background: 225 20% 4%;
+    --sidebar-foreground: 218 12% 72%;
+    --sidebar-primary: 191 100% 62%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 222 14% 10%;
+    --sidebar-accent-foreground: 210 20% 96%;
+    --sidebar-border: 222 14% 11%;
+    --sidebar-ring: 191 100% 62%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply text-foreground font-sans antialiased;
+    font-feature-settings: "ss01", "cv11", "tnum";
+    font-variant-numeric: tabular-nums;
+    background-color: hsl(var(--background));
+    position: relative;
+  }
+
+  /* Control-room ambient — subtle radial wash anchored top-left, vignette bottom-right.
+     Sits below content, above background. Pure CSS, no extra DOM. */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background:
+      radial-gradient(80% 60% at 0% 0%, hsl(248 60% 18% / 0.18) 0%, transparent 55%),
+      radial-gradient(60% 50% at 100% 0%, hsl(212 70% 22% / 0.10) 0%, transparent 60%),
+      radial-gradient(90% 70% at 100% 100%, hsl(225 30% 2% / 0.85) 0%, transparent 60%);
+  }
+
+  /* App-wide film grain — barely-there */
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9999;
+    opacity: 0.035;
+    mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+    background-size: 220px 220px;
+  }
+
+  /* Display serif (Cinzel) is reserved for hero titles only — big case names,
+     "Agent Brain", "Chain of Custody". UI sub-headings stay in IBM Plex Sans
+     so dashboard density remains legible. */
+  h1, h2 {
+    @apply font-display;
+    letter-spacing: 0.02em;
+    font-feature-settings: "ss01";
+  }
+  h3, h4, h5, h6 {
+    @apply font-sans;
+    letter-spacing: -0.012em;
+    font-weight: 600;
+  }
+
+  /* Section labels — eyebrows / micro-headings used across panels */
+  .label-eyebrow {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: hsl(var(--muted-foreground));
+    font-weight: 500;
+  }
+
+  code, pre, kbd, samp, .font-mono {
+    font-feature-settings: "calt", "ss02", "tnum";
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer utilities {
+  .text-glow {
+    text-shadow: 0 0 16px hsl(var(--primary) / 0.3);
+  }
+  /* Single glass treatment — every panel surface uses this.
+     Legacy class names (.glass, .glass-strong, .glass-interactive, .glass-hover-shine)
+     alias to the same look to keep existing markup working. */
+  .glass,
+  .glass-strong,
+  .glass-card,
+  .glass-interactive,
+  .glass-hover-shine {
+    background:
+      linear-gradient(180deg, hsl(230 12% 7% / 0.85) 0%, hsl(230 14% 5% / 0.85) 100%);
+    backdrop-filter: blur(18px) saturate(160%);
+    -webkit-backdrop-filter: blur(18px) saturate(160%);
+    border: 1px solid hsl(0 0% 100% / 0.05);
+    border-top-color: hsl(0 0% 100% / 0.07);
+    box-shadow:
+      0 1px 0 hsl(0 0% 100% / 0.04) inset,
+      0 8px 28px -16px hsl(0 0% 0% / 0.55);
+  }
+  .glass-interactive {
+    transition: background-color 160ms ease, border-color 160ms ease;
+    cursor: pointer;
+  }
+  .glass-interactive:hover {
+    background: linear-gradient(180deg, hsl(230 12% 9% / 0.9), hsl(230 14% 6% / 0.9));
+    border-color: hsl(0 0% 100% / 0.09);
+  }
+
+  /* Decorative ambient utilities — neutralized. Kept as class names so
+     existing markup doesn't need to be ripped through. */
+  .ambient-glow,
+  .ambient-dots,
+  .composer-halo,
+  .glass-hover-shine { position: relative; }
+
+  .ring-glow {
+    box-shadow: 0 0 0 1px hsl(var(--info) / 0.4), 0 0 18px -6px hsl(var(--info) / 0.35);
+  }
+  .gradient-text {
+    background: linear-gradient(90deg, hsl(var(--foreground)), hsl(var(--foreground) / 0.65));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .confidence-pop {
+    box-shadow:
+      0 0 0 1px hsl(var(--confidence-high) / 0.55),
+      0 0 18px -2px hsl(var(--confidence-high-glow) / 0.55);
+  }
+  .text-confidence-glow {
+    color: hsl(var(--confidence-high));
+    text-shadow: 0 0 12px hsl(var(--confidence-high-glow) / 0.55);
+  }
+  .bg-grid {
+    background-image:
+      linear-gradient(hsl(var(--border) / 0.4) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--border) / 0.4) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+
+  /* Cyber / terminal aesthetics */
+  .terminal-glow {
+    text-shadow: 0 0 10px hsl(var(--primary) / 0.8), 0 0 30px hsl(var(--primary) / 0.4);
+  }
+  .neon-border {
+    border: 1px solid hsl(var(--primary) / 0.25);
+    box-shadow: 0 0 8px -2px hsl(var(--primary) / 0.3), inset 0 0 12px -6px hsl(var(--primary) / 0.1);
+  }
+  .hex-grid {
+    background-image:
+      linear-gradient(30deg, hsl(var(--border) / 0.15) 12%, transparent 12.5%, transparent 87%, hsl(var(--border) / 0.15) 87.5%, hsl(var(--border) / 0.15)),
+      linear-gradient(150deg, hsl(var(--border) / 0.15) 12%, transparent 12.5%, transparent 87%, hsl(var(--border) / 0.15) 87.5%, hsl(var(--border) / 0.15)),
+      linear-gradient(30deg, hsl(var(--border) / 0.15) 12%, transparent 12.5%, transparent 87%, hsl(var(--border) / 0.15) 87.5%, hsl(var(--border) / 0.15)),
+      linear-gradient(150deg, hsl(var(--border) / 0.15) 12%, transparent 12.5%, transparent 87%, hsl(var(--border) / 0.15) 87.5%, hsl(var(--border) / 0.15)),
+      linear-gradient(60deg, hsl(var(--border) / 0.08) 25%, transparent 25.5%, transparent 75%, hsl(var(--border) / 0.08) 75%, hsl(var(--border) / 0.08)),
+      linear-gradient(60deg, hsl(var(--border) / 0.08) 25%, transparent 25.5%, transparent 75%, hsl(var(--border) / 0.08) 75%, hsl(var(--border) / 0.08));
+    background-size: 40px 70px;
+    background-position: 0 0, 0 0, 20px 35px, 20px 35px, 0 0, 20px 35px;
+  }
+
+  @keyframes pivot-in {
+    0% { opacity: 0; transform: translateY(6px) scale(0.98); }
+    100% { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  @keyframes pulse-ring {
+    0% { box-shadow: 0 0 0 0 hsl(var(--primary) / 0.55); }
+    70% { box-shadow: 0 0 0 8px hsl(var(--primary) / 0); }
+    100% { box-shadow: 0 0 0 0 hsl(var(--primary) / 0); }
+  }
+  @keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+  @keyframes float-slow {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-4px); }
+  }
+  @keyframes gradient-shift {
+    0%, 100% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+  }
+  @keyframes scan-line { 0%, 100% { opacity: 0; } }
+  @keyframes crt-flicker { 0%, 100% { opacity: 1; } }
+  @keyframes blink-cursor {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+  @keyframes brain-grow {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.08); }
+  }
+  @keyframes memory-float {
+    0%   { opacity: 0; transform: translateY(2px); }
+    20%  { opacity: 1; }
+    100% { opacity: 0; transform: translateY(-10px); }
+  }
+  @keyframes memory-ring {
+    0%, 100% { box-shadow: 0 0 0 0 hsl(var(--info) / 0); }
+    50%      { box-shadow: 0 0 0 4px hsl(var(--info) / 0.18); }
+  }
+
+  /* === Intelligence workstation motion === */
+  @keyframes fade-up {
+    0%   { opacity: 0; transform: translateY(8px); }
+    100% { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes glow-soft-pulse {
+    0%, 100% { box-shadow: 0 0 0 1px hsl(var(--intel-blue) / 0.18), 0 0 22px -8px hsl(var(--intel-blue) / 0.35); }
+    50%      { box-shadow: 0 0 0 1px hsl(var(--intel-blue) / 0.30), 0 0 30px -6px hsl(var(--intel-blue) / 0.55); }
+  }
+  @keyframes red-edge-breathe {
+    0%, 100% { box-shadow: 0 0 0 1px hsl(var(--danger) / 0.35), 0 0 24px -10px hsl(var(--danger) / 0.45); }
+    50%      { box-shadow: 0 0 0 1px hsl(var(--danger) / 0.55), 0 0 36px -6px hsl(var(--danger) / 0.65); }
+  }
+  @keyframes warning-pulse {
+    0%, 100% { transform: scale(1);    filter: drop-shadow(0 0 0 hsl(var(--danger) / 0)); }
+    50%      { transform: scale(1.08); filter: drop-shadow(0 0 8px hsl(var(--danger) / 0.7)); }
+  }
+
+  .animate-pivot-in { animation: pivot-in 0.35s ease-out both; }
+  .animate-pulse-ring { animation: pulse-ring 2s ease-out infinite; }
+  .animate-float-slow { animation: float-slow 4s ease-in-out infinite; }
+  .animate-gradient-shift {
+    background-size: 200% 200%;
+    animation: gradient-shift 8s ease infinite;
+  }
+  .animate-scan-line { animation: scan-line 3s ease-in-out infinite; }
+  .animate-crt-flicker { animation: crt-flicker 0.15s infinite; }
+  .animate-blink-cursor { animation: blink-cursor 1s step-end infinite; }
+  .animate-shimmer {
+    background: linear-gradient(90deg,
+      hsl(var(--primary) / 0) 0%,
+      hsl(var(--primary) / 0.25) 50%,
+      hsl(var(--primary) / 0) 100%);
+    background-size: 200% 100%;
+    animation: shimmer 2.5s linear infinite;
+  }
+  .animate-brain-grow  { animation: brain-grow 1.6s ease-out both; }
+  .animate-memory-float { animation: memory-float 2.2s ease-out forwards; }
+  .animate-memory-ring  { animation: memory-ring 1.6s ease-out both; }
+
+  .animate-fade-up { animation: fade-up 320ms cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+  .animate-glow-soft { animation: glow-soft-pulse 3.6s ease-in-out infinite; }
+  .animate-red-edge { animation: red-edge-breathe 2.4s ease-in-out infinite; }
+  .animate-warning-pulse { animation: warning-pulse 1.8s ease-in-out infinite; }
+
+  /* Intelligence node card — premium tool result surface */
+  .intel-node {
+    background:
+      linear-gradient(180deg, hsl(230 12% 7% / 0.85) 0%, hsl(230 14% 5% / 0.85) 100%);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid hsl(0 0% 100% / 0.06);
+    border-radius: 18px;
+    box-shadow:
+      0 1px 0 hsl(0 0% 100% / 0.04) inset,
+      0 18px 48px -28px hsl(0 0% 0% / 0.7);
+    transition: border-color 240ms ease, transform 240ms ease, box-shadow 240ms ease;
+  }
+  .intel-node:hover {
+    border-color: hsl(var(--intel-blue) / 0.35);
+    transform: translateY(-1px);
+    box-shadow:
+      0 1px 0 hsl(0 0% 100% / 0.06) inset,
+      0 24px 56px -28px hsl(0 0% 0% / 0.8),
+      0 0 32px -12px hsl(var(--intel-blue) / 0.35);
+  }
+  .intel-node--failed {
+    border-color: hsl(var(--danger) / 0.35);
+    background:
+      linear-gradient(180deg, hsl(0 30% 8% / 0.45) 0%, hsl(230 14% 5% / 0.85) 100%);
+  }
+  .intel-node--failed:hover {
+    border-color: hsl(var(--danger) / 0.55);
+    box-shadow:
+      0 1px 0 hsl(0 0% 100% / 0.04) inset,
+      0 24px 56px -28px hsl(0 0% 0% / 0.8),
+      0 0 32px -12px hsl(var(--danger) / 0.4);
+  }
+
+  /* Premium red alert panel */
+  .alert-panel-danger {
+    position: relative;
+    background:
+      radial-gradient(60% 80% at 20% 0%, hsl(var(--danger) / 0.18), transparent 60%),
+      linear-gradient(180deg, hsl(0 40% 8% / 0.55), hsl(230 14% 5% / 0.85));
+    backdrop-filter: blur(28px) saturate(180%);
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+    border: 1px solid hsl(var(--danger) / 0.35);
+    border-radius: 20px;
+    box-shadow:
+      0 1px 0 hsl(0 0% 100% / 0.04) inset,
+      0 24px 64px -24px hsl(var(--danger) / 0.35);
+  }
+
+  /* Action chip — Next steps pills */
+  .action-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.55rem 0.95rem;
+    border-radius: 999px;
+    background: linear-gradient(180deg, hsl(0 0% 100% / 0.05), hsl(0 0% 100% / 0.02));
+    border: 1px solid hsl(0 0% 100% / 0.08);
+    color: hsl(var(--foreground) / 0.85);
+    font-size: 0.78rem;
+    transition: all 220ms ease;
+    backdrop-filter: blur(12px);
+  }
+  .action-chip:hover {
+    transform: translateY(-1px);
+    border-color: hsl(var(--intel-blue) / 0.45);
+    background: linear-gradient(180deg, hsl(var(--intel-blue) / 0.12), hsl(var(--intel-violet) / 0.08));
+    color: hsl(var(--foreground));
+    box-shadow: 0 8px 24px -10px hsl(var(--intel-blue) / 0.45);
+  }
+
+  /* === 8px grid density presets ===
+     Apply to a list/card container to lock vertical rhythm. */
+  .density-compact   > * + * { margin-top: 4px; }
+  .density-standard  > * + * { margin-top: 8px; }
+  .density-spacious  > * + * { margin-top: 16px; }
+
+  /* === Evidence tile — premium card treatment ===
+     Adds inner hairline + soft material depth without heavy drop shadow.
+     Use on artifact / custody / pattern cards in place of bare borders. */
+  .evidence-tile {
+    position: relative;
+    background:
+      linear-gradient(180deg, hsl(222 14% 13% / 0.92) 0%, hsl(222 16% 9% / 0.92) 100%);
+    border: 1px solid hsl(var(--border));
+    border-radius: 12px;
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.045),
+      inset 0 0 0 1px hsl(0 0% 0% / 0.25),
+      0 6px 18px -10px hsl(0 0% 0% / 0.55);
+    transition: border-color 200ms ease, box-shadow 200ms ease, transform 200ms ease;
+  }
+  .evidence-tile:hover {
+    border-color: hsl(var(--border-strong));
+    transform: translateY(-1px);
+  }
+  .evidence-tile--active {
+    border-color: hsl(var(--info) / 0.55);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.06),
+      inset 0 0 0 1px hsl(var(--info) / 0.18),
+      0 8px 24px -12px hsl(var(--info) / 0.4);
+  }
+  .evidence-tile--highconf {
+    border-color: hsl(var(--confidence-high) / 0.45);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.06),
+      inset 0 0 0 1px hsl(var(--confidence-high) / 0.18),
+      0 8px 24px -12px hsl(var(--confidence-high) / 0.35);
+  }
+  .evidence-tile--danger {
+    border-color: hsl(var(--danger) / 0.45);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.05),
+      inset 0 0 0 1px hsl(var(--danger) / 0.18),
+      0 8px 24px -12px hsl(var(--danger) / 0.35);
+  }
+
+  /* === Forensic chip — replaces default pill filter look ===
+     Use on Matrix/Investigations filter bars. */
+  .forensic-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    padding: 0 10px;
+    border-radius: 4px;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: hsl(var(--muted-foreground));
+    background: hsl(var(--surface-1));
+    border: 1px solid hsl(var(--border-subtle));
+    border-left: 2px solid hsl(var(--border));
+    transition: all 160ms ease;
+  }
+  .forensic-chip:hover {
+    color: hsl(var(--foreground));
+    border-left-color: hsl(var(--info) / 0.6);
+    background: hsl(var(--surface-2));
+  }
+  .forensic-chip[data-active="true"],
+  .forensic-chip.is-active {
+    color: hsl(var(--foreground));
+    background: hsl(var(--info-muted));
+    border-color: hsl(var(--info) / 0.35);
+    border-left: 2px solid hsl(var(--info));
+  }
+
+  /* Group separator label for chip rows / filter bars */
+  .chip-group-label {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: hsl(var(--muted-foreground) / 0.7);
+    padding-right: 8px;
+    margin-right: 4px;
+    border-right: 1px solid hsl(var(--border-subtle));
+  }
+
+  /* === Code panel — forensic JSON / trace block ===
+     Heavier than a generic <pre>; reads as evidence, not debug. */
+  .code-panel {
+    position: relative;
+    border-radius: 8px;
+    border: 1px solid hsl(var(--border));
+    background:
+      linear-gradient(180deg, hsl(222 18% 6%) 0%, hsl(225 22% 4%) 100%);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.04),
+      inset 0 0 0 1px hsl(0 0% 0% / 0.4);
+    overflow: hidden;
+  }
+  .code-panel__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 10px;
+    background:
+      linear-gradient(180deg, hsl(222 18% 9%) 0%, hsl(222 18% 7%) 100%);
+    border-bottom: 1px solid hsl(var(--border-subtle));
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: hsl(var(--muted-foreground));
+  }
+  .code-panel__head-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .code-panel__head-label::before {
+    content: "";
+    width: 6px; height: 6px; border-radius: 1px;
+    background: hsl(var(--info));
+    box-shadow: 0 0 8px hsl(var(--info) / 0.7);
+  }
+  .code-panel__head--output .code-panel__head-label::before {
+    background: hsl(var(--confidence-high));
+    box-shadow: 0 0 8px hsl(var(--confidence-high) / 0.7);
+  }
+  .code-panel__body {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    max-height: 22rem;
+    overflow: auto;
+    scrollbar-width: thin;
+  }
+  .code-panel__gutter {
+    user-select: none;
+    text-align: right;
+    padding: 10px 8px 10px 10px;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 10.5px;
+    line-height: 1.55;
+    color: hsl(var(--muted-foreground) / 0.5);
+    background: hsl(225 22% 3% / 0.6);
+    border-right: 1px solid hsl(var(--border-subtle));
+    white-space: pre;
+  }
+  .code-panel__code {
+    margin: 0;
+    padding: 10px 12px;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: hsl(var(--foreground) / 0.92);
+    white-space: pre;
+    overflow-x: auto;
+  }
+  .code-panel--error {
+    border-color: hsl(var(--danger) / 0.45);
+  }
+  .code-panel--error .code-panel__head {
+    background: hsl(var(--danger-muted));
+    color: hsl(var(--danger));
+    border-bottom-color: hsl(var(--danger) / 0.3);
+  }
+  .code-panel--error .code-panel__head-label::before {
+    background: hsl(var(--danger));
+    box-shadow: 0 0 8px hsl(var(--danger) / 0.7);
+  }
+
+  /* === Coverage grid cells — Done / Partial / Missing heatmap === */
+  .coverage-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 8px;
+    background-image:
+      linear-gradient(hsl(var(--border-subtle) / 0.4) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--border-subtle) / 0.4) 1px, transparent 1px);
+    background-size: 24px 24px;
+    background-position: -1px -1px;
+    padding: 4px;
+    border-radius: 8px;
+  }
+  .coverage-cell {
+    position: relative;
+    border-radius: 6px;
+    padding: 8px 10px;
+    border: 1px solid hsl(var(--border-subtle));
+    background: hsl(var(--surface-1) / 0.7);
+    transition: border-color 160ms ease, background 160ms ease;
+  }
+  .coverage-cell[data-status="done"] {
+    border-color: hsl(var(--confidence-high) / 0.35);
+    background: hsl(var(--success-muted) / 0.6);
+  }
+  .coverage-cell[data-status="partial"] {
+    border-color: hsl(var(--confidence-mid) / 0.4);
+    background: hsl(var(--warning-muted) / 0.6);
+  }
+  .coverage-cell[data-status="missing"] {
+    border-color: hsl(var(--danger) / 0.4);
+    background: hsl(var(--danger-muted) / 0.55);
+  }
+  .coverage-cell__dot {
+    width: 6px; height: 6px; border-radius: 999px;
+    display: inline-block; margin-right: 6px;
+    box-shadow: 0 0 8px currentColor;
+  }
+
+  /* === Pattern chip — Agent Brain filter row === */
+  .pattern-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 24px;
+    padding: 0 10px;
+    border-radius: 999px;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: hsl(var(--muted-foreground));
+    background: hsl(var(--surface-1));
+    border: 1px solid hsl(var(--border-subtle));
+    transition: all 160ms ease;
+    cursor: pointer;
+  }
+  .pattern-chip:hover {
+    color: hsl(var(--foreground));
+    border-color: hsl(var(--border-strong));
+  }
+  .pattern-chip[data-active="true"] {
+    color: hsl(var(--primary-foreground));
+    background: hsl(var(--primary) / 0.18);
+    border-color: hsl(var(--primary) / 0.5);
+    box-shadow: 0 0 14px -4px hsl(var(--primary) / 0.6);
+  }
+
+  /* Neural-connection motif for pattern cards — subtle dotted edge. */
+  .neuron-frame {
+    position: relative;
+  }
+  .neuron-frame::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background-image: radial-gradient(hsl(var(--primary) / 0.18) 1px, transparent 1px);
+    background-size: 14px 14px;
+    background-position: 0 0;
+    mask-image: linear-gradient(180deg, hsl(0 0% 0% / 0.5) 0%, transparent 35%, transparent 65%, hsl(0 0% 0% / 0.5) 100%);
+    opacity: 0.55;
+  }
+}
+
+/* Print: when body has .printing-report, hide everything except the case report. */
+@media print {
+  body.printing-report * { visibility: hidden !important; }
+  body.printing-report #case-report-print-root,
+  body.printing-report #case-report-print-root * { visibility: visible !important; }
+  body.printing-report #case-report-print-root {
+    position: absolute !important;
+    inset: 0 !important;
+    padding: 24px !important;
+    background: white !important;
+    color: black !important;
+    font-size: 11pt !important;
+  }
+  body.printing-report #case-report-print-root table,
+  body.printing-report #case-report-print-root th,
+  body.printing-report #case-report-print-root td {
+    border-color: #ccc !important;
+    color: black !important;
+  }
+  body.printing-report #case-report-print-root .text-muted-foreground { color: #555 !important; }
+  .no-print { display: none !important; }
+}
+
+/* ============================================================
+   Cyber-tactical map (Leaflet) — neon glow, scanline overlay
+   ============================================================ */
+.cyber-map .leaflet-tile-pane {
+  filter: hue-rotate(190deg) saturate(1.4) contrast(1.1) brightness(0.85);
+}
+.cyber-map .leaflet-container { background: hsl(220 40% 4%); outline: none; }
+.cyber-map .leaflet-control-attribution { display: none; }
+.cyber-pin {
+  filter: drop-shadow(0 0 6px currentColor);
+  animation: cyber-pulse 2.6s ease-in-out infinite;
+}
+@keyframes cyber-pulse {
+  0%, 100% { opacity: 0.9; }
+  50% { opacity: 0.55; }
+}
+.cyber-map-overlay {
+  background:
+    repeating-linear-gradient(0deg, hsl(170 90% 55% / 0.04) 0px, transparent 1px, transparent 32px),
+    repeating-linear-gradient(90deg, hsl(170 90% 55% / 0.04) 0px, transparent 1px, transparent 32px),
+    repeating-linear-gradient(0deg, hsl(170 90% 55% / 0.05) 0px, hsl(170 90% 55% / 0.05) 1px, transparent 1px, transparent 3px);
+  mix-blend-mode: screen;
+}
+.leaflet-tooltip.cyber-tip {
+  background: hsl(230 14% 4% / 0.95);
+  border: 1px solid hsl(var(--primary) / 0.55);
+  color: hsl(var(--foreground));
+  box-shadow: 0 0 14px -2px hsl(var(--primary) / 0.6);
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.leaflet-tooltip.cyber-tip::before { display: none; }
+.leaflet-popup.cyber-popup .leaflet-popup-content-wrapper {
+  background: hsl(230 14% 4% / 0.96);
+  color: hsl(var(--foreground));
+  border: 1px solid hsl(var(--primary) / 0.55);
+  border-radius: 6px;
+  box-shadow: 0 0 18px -2px hsl(var(--primary) / 0.55);
+}
+.leaflet-popup.cyber-popup .leaflet-popup-tip { background: hsl(var(--primary) / 0.6); }
+
+/* ---------- Section 3 polish: card material + confidence + scan line ---------- */
+
+/* Base card material — 1px inner border, soft outer shadow.
+   Apply to top-level panels that should read as physical surfaces. */
+.card-material {
+  background: hsl(var(--surface-2));
+  border: 1px solid hsl(var(--border));        /* #262A35 inner */
+  box-shadow:
+    inset 0 1px 0 hsl(0 0% 100% / 0.02),
+    0 10px 30px -8px hsl(0 0% 0% / 0.45);
+  border-radius: var(--radius);
+  transition: border-color 180ms ease, box-shadow 220ms ease, transform 180ms ease;
+}
+.card-material--focus,
+.card-material:focus-within {
+  border-color: hsl(var(--primary) / 0.55);
+  box-shadow:
+    inset 0 0 0 1px hsl(var(--primary) / 0.22),
+    0 14px 38px -10px hsl(0 0% 0% / 0.55),
+    0 0 0 1px hsl(var(--primary) / 0.18);
+  transform: scale(1.005);
+}
+
+/* Confidence bar — 2px thin track, solid fill, no gradient.
+   Color applied via inline style from component based on tier:
+   ≥ 70% → brain-cyan, 50-69% → confidence-mid (amber), < 50% → confidence-low (coral) */
+@keyframes confidence-grow {
+  from { transform: scaleX(0); }
+  to   { transform: scaleX(1); }
+}
+.confidence-track {
+  position: relative;
+  height: 2px;
+  border-radius: 2px;
+  background: hsl(var(--surface-3));
+  overflow: hidden;
+}
+.confidence-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 2px;
+  transform-origin: left center;
+  animation: confidence-grow 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  transition: width 180ms ease, background-color 220ms ease;
+}
+
+/* Scanning line — thin progressing bar at top of a container while a run is live */
+@keyframes scan-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+.scan-line {
+  position: relative;
+  height: 2px;
+  overflow: hidden;
+  background: hsl(var(--surface-2));
+}
+.scan-line::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    hsl(var(--primary) / 0.8),
+    hsl(var(--primary-glow, var(--primary)) / 0.4),
+    transparent
+  );
+  animation: scan-sweep 1.4s linear infinite;
+}
+
+/* Tab underline glide — used by segmented tab strips with an .tab-underline child */
+.tab-underline {
+  position: absolute;
+  bottom: 0;
+  height: 2px;
+  background: hsl(var(--primary));
+  box-shadow: 0 0 10px -1px hsl(var(--primary) / 0.7);
+  border-radius: 2px;
+  transition: left 180ms cubic-bezier(0.22, 1, 0.36, 1),
+              width 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.leaflet-popup.cyber-popup .leaflet-popup-close-button { color: hsl(var(--muted-foreground)); }
+
+/* ---------- Density system (compact / standard / roomy) ----------
+   Per-user preference applied to <html data-density="…">.
+   Scoped via data-density-row / data-density-card so it never bleeds
+   into chat, dialogs, or marketing surfaces. */
+:root {
+  --density-row-py: 0.5rem;     /* 8px — standard */
+  --density-row-px: 0.75rem;    /* 12px */
+  --density-row-gap: 0.5rem;
+  --density-card-py: 0.625rem;
+  --density-card-px: 0.75rem;
+  --density-stack: 0.5rem;
+  --density-font: 0.75rem;      /* 12px */
+  --density-line: 1.45;
+}
+:root[data-density="compact"] {
+  --density-row-py: 0.3125rem;  /* 5px */
+  --density-row-px: 0.5rem;     /* 8px */
+  --density-row-gap: 0.3125rem;
+  --density-card-py: 0.375rem;
+  --density-card-px: 0.5rem;
+  --density-stack: 0.3125rem;
+  --density-font: 0.6875rem;    /* 11px */
+  --density-line: 1.35;
+}
+:root[data-density="roomy"] {
+  --density-row-py: 0.75rem;    /* 12px */
+  --density-row-px: 1rem;       /* 16px */
+  --density-row-gap: 0.75rem;
+  --density-card-py: 0.875rem;
+  --density-card-px: 1rem;
+  --density-stack: 0.75rem;
+  --density-font: 0.8125rem;    /* 13px */
+  --density-line: 1.6;
+}
+[data-density-row] {
+  padding: var(--density-row-py) var(--density-row-px) !important;
+  gap: var(--density-row-gap);
+  font-size: var(--density-font);
+  line-height: var(--density-line);
+}
+[data-density-card] {
+  padding: var(--density-card-py) var(--density-card-px) !important;
+}
+[data-density-stack] > * + * {
+  margin-top: var(--density-stack);
+}
