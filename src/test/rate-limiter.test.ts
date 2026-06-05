@@ -25,7 +25,7 @@ function checkUserRateLimit(
   return { ok: true };
 }
 
-describe("checkUserRateLimit", () => {
+describe("checkUserRateLimit (in-memory fallback)", () => {
   it("allows the first request for a new user", () => {
     const store = new Map<string, number[]>();
     const r = checkUserRateLimit("u1", store, 1_000_000);
@@ -94,5 +94,52 @@ describe("checkUserRateLimit", () => {
     }
     const r = checkUserRateLimit("u1", store, now);
     expect(r).toEqual({ ok: false, retryAfterSec: 60 });
+  });
+});
+
+// ── Distributed (Upstash) rate limiter — pure decision logic ──────────
+// The HTTP transport isn't testable from vitest without a Deno bridge,
+// but the decision function is. Re-implementing from ratelimit.ts.
+const MAX_PER_MIN = 30;
+const MAX_PER_HOUR = 300;
+
+type Decision = { ok: true } | { ok: false; retryAfterSec: number; reason: "per_min" | "per_hour" };
+
+function decide(minCount: number, hourCount: number): Decision {
+  if (minCount > MAX_PER_MIN) return { ok: false, retryAfterSec: 60, reason: "per_min" };
+  if (hourCount > MAX_PER_HOUR) return { ok: false, retryAfterSec: 3600, reason: "per_hour" };
+  return { ok: true };
+}
+
+describe("decide (distributed rate-limit decision function)", () => {
+  it("allows when both counters are zero", () => {
+    expect(decide(0, 0)).toEqual({ ok: true });
+  });
+
+  it("allows at exactly the cap (boundary: 30/min, 300/hour)", () => {
+    expect(decide(MAX_PER_MIN, MAX_PER_HOUR)).toEqual({ ok: true });
+  });
+
+  it("blocks at one over the per-minute cap and reports per_min reason", () => {
+    const r = decide(MAX_PER_MIN + 1, MAX_PER_HOUR);
+    expect(r).toEqual({ ok: false, retryAfterSec: 60, reason: "per_min" });
+  });
+
+  it("blocks at one over the per-hour cap and reports per_hour reason", () => {
+    const r = decide(0, MAX_PER_HOUR + 1);
+    expect(r).toEqual({ ok: false, retryAfterSec: 3600, reason: "per_hour" });
+  });
+
+  it("reports per_min when both caps are exceeded (precedence rule)", () => {
+    // Per-minute check fires first by design — it has the shorter cooldown
+    // and is the more pressing signal of abuse.
+    const r = decide(MAX_PER_MIN + 5, MAX_PER_HOUR + 5);
+    expect(r).toEqual({ ok: false, retryAfterSec: 60, reason: "per_min" });
+  });
+
+  it("handles negative counts defensively (corrupt Redis data) by allowing", () => {
+    // If Upstash ever returned -1 (it shouldn't, but defensive), we don't
+    // want to lock the user out. -1 is < every cap so we allow.
+    expect(decide(-1, -1).ok).toBe(true);
   });
 });

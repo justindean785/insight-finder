@@ -7,6 +7,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import type { UIMessage } from "npm:ai@6";
 import { corsHeaders, SUPABASE_URL, SERVICE_KEY } from "./env.ts";
+import { checkRateLimit as checkRateLimitDistributed, MAX_REQS_PER_MIN, MAX_REQS_PER_HOUR } from "./ratelimit.ts";
 
 export interface SetupContext {
   supabase: ReturnType<typeof createClient>;
@@ -17,30 +18,6 @@ export interface SetupContext {
   archiveEnabled: boolean;
   detectedSeedType: string;
   messages: UIMessage[];
-}
-
-// ---- Per-user in-memory rate limiter (audit finding F-A3) --------------
-// Supabase edge function instances are short-lived; this is best-effort
-// protection against a single user bursting fan-outs from one instance.
-// For cross-instance limits use Upstash/Redis. Limits:
-//   - MAX_REQS_PER_MIN = 30  (one long investigation fan-out fits comfortably)
-//   - MAX_REQS_PER_HOUR = 300 (prevents silent credit drain on paid tools)
-const MAX_REQS_PER_MIN = 30;
-const MAX_REQS_PER_HOUR = 300;
-const _userHits = new Map<string, number[]>();
-function checkUserRateLimit(userId: string): { ok: true } | { ok: false; retryAfterSec: number } {
-  const now = Date.now();
-  const hits = (_userHits.get(userId) ?? []).filter((t) => t > now - 60 * 60 * 1000);
-  hits.push(now);
-  _userHits.set(userId, hits);
-  const lastMin = hits.filter((t) => t > now - 60 * 1000).length;
-  if (lastMin > MAX_REQS_PER_MIN) {
-    return { ok: false, retryAfterSec: 60 };
-  }
-  if (hits.length > MAX_REQS_PER_HOUR) {
-    return { ok: false, retryAfterSec: 3600 };
-  }
-  return { ok: true };
 }
 
 /**
@@ -90,8 +67,9 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
   }
   const userId = userData.user.id;
 
-  // ---- Per-user rate limit (best-effort, in-memory) ---------------------
-  const rl = checkUserRateLimit(userId);
+  // ---- Per-user rate limit (distributed via Upstash, falls back to
+  //      in-memory if Upstash is unset/unreachable — see ratelimit.ts)
+  const rl = await checkRateLimitDistributed(userId);
   if (rl.ok === false) {
     throw new Response(
       JSON.stringify({

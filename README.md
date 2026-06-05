@@ -72,6 +72,7 @@ npm run dev
 | `LOVABLE_API_KEY` | At least one required | Fallback orchestrator (Lovable gateway) |
 | `OATHNET_API_KEY` | Optional | Breach database + stealer log lookups |
 | `SERUS_API_KEY` | Optional | Serus darkweb exposure scan (email/phone/username/domain/keyword/origin/password) — 0.25 credits/scan, optional `reveal` scope for unmasked breach fields |
+| `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` | Optional | Distributed per-user rate limiter (30/min, 300/hour). Without these, falls back to a per-instance in-memory cap. Free tier 10k req/day. |
 | `EXA_API_KEY` | Optional | Semantic web search |
 | `HUNTER_API_KEY` | Optional | Email verification |
 | `SOCIALFETCH_API_KEY` | Optional | Social media presence checks |
