@@ -49,8 +49,13 @@ Everything else is either already addressed or is a polish item.
   - PII/breach data leaking into wrong fields (e.g. breach passwords into display-only contexts)
 - **Why it matters for beta:** A beta audience will hit edge cases the original dev environment didn't. Each `any` is a place where the next OSINT investigation could surface a wrong artifact, fail silently, or expose unmasked breach data.
 - **Severity:** **HIGH** (P0) — blocks beta.
-- **Estimated effort:** 2–4 hours to type the orchestrator's external interface boundaries (the 14 tool return types are already typed in `tools/*.ts`; the orchestrator needs to import and use them).
-- **Recommended approach:** Add `// eslint-disable-next-line @typescript-eslint/no-explicit-any` for genuinely untyped third-party responses (Exa, Serus) with a comment explaining why, and type the rest using the existing tool types.
+- **2026-06-05 follow-up (commit `494f752`):** 8 of 104 `any` eliminated by typing 4 `let data: any = JSON.parse(...)` boundaries. Confirmed the architecture: type the boundary, get the cascade for free. 96 `any` remain.
+- **Where the remaining 96 actually live (refined analysis 2026-06-05):** NOT in the orchestrator's call sites (only 8 `(tools as any)` casts exist, in stage-1 dispatch and the bottom-of-file helper tools). They are in:
+  - Tool `execute()` bodies parsing 3rd-party API JSON: ~70 (across `index.ts` and `tools/*.ts`)
+  - The `wrapToolsWithCache(toolsObj: Record<string, any>, ...)` wrapper itself: 19 in `cache.ts`
+  - ChatWindow.tsx streaming message parts: 40 (genuinely untyped AI SDK output)
+  - Various local helpers (`recording.ts`, `validation.ts`, etc.): ~20
+- **Realistic effort to fully resolve:** 1-2 days of focused work extending `api_types.ts` to ~14 more APIs and tightening the `wrapToolsWithCache` signature.
 
 ### BLOCKER-2: `index.ts` is still 3,854 lines
 - **Evidence:** `wc -l supabase/functions/osint-agent/index.ts` → 3854.
@@ -89,7 +94,8 @@ Everything else is either already addressed or is a polish item.
 
 | Check | Result |
 |---|---|
-| `tsc --noEmit` | ✅ 0 errors |
+| `tsc --noEmit` (frontend only) | ✅ 0 errors |
+| `deno check supabase/functions/osint-agent/index.ts` | ⚠️ 35 pre-existing type errors (SupabaseClient generic mismatch, etc.) — not introduced by our work, not blocking tests |
 | `npx vitest run` | ✅ 167/167 passing, 9 test files, 967ms |
 | `npm run test:edge` (Deno) | ✅ 41/41 passing, 96ms |
 | `npx eslint .` | ❌ **305 errors, 8 warnings** |
@@ -123,9 +129,8 @@ Everything else is either already addressed or is a polish item.
 | RLS on all tables | ✅ Done | — |
 | Test suite (vitest + Deno edge) | ✅ 208/208 | — |
 | `tsc --noEmit` | ✅ Clean | — |
-| **Type safety in orchestrator (`index.ts` 104 × `any`)** | ❌ **Open** | Type or annotate — BLOCKER for beta |
-| **Modular split of `index.ts` (3,854 LOC)** | ⚠️ Partial | Extract SSE handler, request context, tool dispatch — P1 |
-| Type safety in `ChatWindow.tsx` (40 × `any`) | ❌ Open | P1 — same family as BLOCKER-1 |
+| **Type safety in orchestrator (`index.ts`)** | ⚠️ **8/104 done** | BLOCKER for beta. Pattern proven in `494f752`: type boundary → cascade. ~96 more `any` to type. |
+| **Type safety in `ChatWindow.tsx` (40 × `any`)** | ❌ Open | P1 — same family as BLOCKER-1 but in the frontend |
 | `validation.ts` regex cleanup (5 useless escapes) | ❌ Open | P2 — quick fix |
 | `tools/recording.ts` 28 × `any` | ❌ Open | P1 |
 | Plain-text error envelopes in some paths | ⚠️ Partial | P1 — extend structured envelope to all error returns |
@@ -157,6 +162,10 @@ Everything else is either already addressed or is a polish item.
 - **Test coverage analysis:** High (208 tests across 9 vitest + 4 Deno files)
 - **Runtime behavior findings:** Medium (no live deploy verification)
 - **Overall confidence:** High on the structural findings; **BLOCKER-1 is a code-static finding, not a runtime test result, so verify by running `npx eslint .` yourself**.
+
+### Correction: tsc coverage scope
+
+The original audit claimed "tsc clean" implying the entire codebase was type-checked. **This was incorrect.** The project's `tsconfig.app.json` only includes `src/` — the React frontend. The Deno edge function code in `supabase/functions/osint-agent/` is checked by `deno check`, NOT by tsc. As of 2026-06-05, `deno check index.ts` shows 35 pre-existing type errors (mostly `SupabaseClient<any, "public", "public", any, any>` not assignable to more specific generics, plus a `Set<unknown>` iteration issue). These errors are not in our scope to fix and predate this audit.
 
 ---
 
