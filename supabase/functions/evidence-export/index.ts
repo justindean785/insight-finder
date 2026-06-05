@@ -260,6 +260,11 @@ Deno.serve(async (req) => {
         "Content-Disposition": `attachment; filename="${fname}"`,
         "X-Manifest-Sha256": manifestSha,
         "X-Verification": verify.ok ? "valid" : `broken@${verify.first_break}`,
+        // Sensitive chain-of-custody data — never cache.
+        "Cache-Control": "no-store, no-cache, must-revalidate, private",
+        "Pragma": "no-cache",
+        "Expires": "0",
+        "X-Content-Type-Options": "nosniff",
       },
     });
   } catch (e) {

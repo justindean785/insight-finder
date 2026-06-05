@@ -4,6 +4,7 @@ import { describe, it, expect } from "vitest";
 // Re-implementing the helpers from supabase/functions/osint-agent/tools/serus.ts
 // (parseInitiateResponse, isTerminalStatus, shapeTerminalResult) so the
 // test stays self-contained and doesn't cross the Deno runtime boundary.
+// (Rate-limit tests live in src/test/rate-limiter.test.ts.)
 
 type InitiateResponse = { id?: string; status?: string; identifierType?: string };
 type PollResponse = {
@@ -60,6 +61,7 @@ function shapeTerminalResult(
     completedAt: last.checkedAt ?? null,
     reveal,
     creditsUsed: 0.25,
+    classification: reveal ? "sensitive_unmasked" : "masked",
   };
 }
 
@@ -166,6 +168,16 @@ describe("shapeTerminalResult", () => {
   it("preserves the reveal flag on the result so the LLM knows unmasked data is included", () => {
     const r = shapeTerminalResult({ status: "success" }, "scan3", initiatedAt, true);
     expect(r.reveal).toBe(true);
+  });
+
+  it("tags sensitive_unmasked classification when reveal=true (F-B3)", () => {
+    const r = shapeTerminalResult({ status: "success" }, "scan3", initiatedAt, true);
+    expect(r.classification).toBe("sensitive_unmasked");
+  });
+
+  it("tags masked classification when reveal=false (F-B3 default)", () => {
+    const r = shapeTerminalResult({ status: "success" }, "scan1", initiatedAt, false);
+    expect(r.classification).toBe("masked");
   });
 
   it("handles a zero-hit success (breached=false, zero arrays)", () => {

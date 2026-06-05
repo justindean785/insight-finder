@@ -19,6 +19,30 @@ export interface SetupContext {
   messages: UIMessage[];
 }
 
+// ---- Per-user in-memory rate limiter (audit finding F-A3) --------------
+// Supabase edge function instances are short-lived; this is best-effort
+// protection against a single user bursting fan-outs from one instance.
+// For cross-instance limits use Upstash/Redis. Limits:
+//   - MAX_REQS_PER_MIN = 30  (one long investigation fan-out fits comfortably)
+//   - MAX_REQS_PER_HOUR = 300 (prevents silent credit drain on paid tools)
+const MAX_REQS_PER_MIN = 30;
+const MAX_REQS_PER_HOUR = 300;
+const _userHits = new Map<string, number[]>();
+function checkUserRateLimit(userId: string): { ok: true } | { ok: false; retryAfterSec: number } {
+  const now = Date.now();
+  const hits = (_userHits.get(userId) ?? []).filter((t) => t > now - 60 * 60 * 1000);
+  hits.push(now);
+  _userHits.set(userId, hits);
+  const lastMin = hits.filter((t) => t > now - 60 * 1000).length;
+  if (lastMin > MAX_REQS_PER_MIN) {
+    return { ok: false, retryAfterSec: 60 };
+  }
+  if (hits.length > MAX_REQS_PER_HOUR) {
+    return { ok: false, retryAfterSec: 3600 };
+  }
+  return { ok: true };
+}
+
 /**
  * Handle CORS preflight, authenticate the user, verify thread ownership,
  * persist the user's last message, and generate/refresh thread title.
@@ -65,6 +89,26 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
     );
   }
   const userId = userData.user.id;
+
+  // ---- Per-user rate limit (best-effort, in-memory) ---------------------
+  const rl = checkUserRateLimit(userId);
+  if (rl.ok === false) {
+    throw new Response(
+      JSON.stringify({
+        error: "Too Many Requests",
+        code: "RATE_LIMITED",
+        detail: `Slow down — exceeded per-user rate limit (max ${MAX_REQS_PER_MIN}/min, ${MAX_REQS_PER_HOUR}/hour). Retry in ${rl.retryAfterSec}s.`,
+      }),
+      {
+        status: 429,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/json",
+          "Retry-After": String(rl.retryAfterSec),
+        },
+      },
+    );
+  }
 
   // ---- Parse request body ----------------------------------------------------
   let body: { messages: UIMessage[]; threadId: string };

@@ -1,6 +1,18 @@
 /**
  * env.ts — Environment bindings, degraded-tools state, and fetch helpers.
  * Extracted from index.ts (lines 17–132).
+ *
+ * ── LOGGING POLICY (audit F-B1) ─────────────────────────────────────
+ * console.log/warn in Deno edge functions ends up in Supabase function
+ * logs (retained 30 days by default). For an investigation platform this
+ * is a PII / chain-of-custody risk.
+ *
+ *   DO log:  tool names, statuses, error codes, scan IDs, durations,
+ *            circuit-breaker state transitions, cost counters.
+ *   DON'T log: user-supplied seeds, raw request bodies, full API
+ *              responses, breach contents, extracted PII, JWTs, keys.
+ *   Mask when in doubt: `seed.slice(0,3) + "***" + seed.slice(-2)`.
+ * ────────────────────────────────────────────────────────────────────
  */
 
 import { createOpenAICompatible } from "npm:@ai-sdk/openai-compatible@1";

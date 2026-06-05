@@ -125,6 +125,9 @@ export function shapeTerminalResult(
     completedAt: last.checkedAt ?? null,
     reveal,
     creditsUsed: 0.25,
+    // F-B3: classification marker so the recording layer + UI can flag
+    // sensitive unmasked data and surface it appropriately.
+    classification: reveal ? "sensitive_unmasked" : "masked",
   };
 }
 

@@ -31,3 +31,6 @@ dist-ssr
 # Supabase local config
 supabase/.env
 supabase/.temp/
+# Edge function backups / refactor scratch
+**/*.ts.bak
+**/*.bak
