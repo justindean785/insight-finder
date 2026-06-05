@@ -30,7 +30,7 @@ import {
   OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
   CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED,
   HIBP_API_KEY, GITHUB_API_TOKEN, FIRECRAWL_API_KEY, EXA_API_KEY, JINA_API_KEY,
-  GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY,
+  GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY,
   firecrawlCreditsLow, markFirecrawlCreditsLow, resetFirecrawlCreditsLow, degradedTools,
   markToolDegraded, isDegraded, fetchRetry,
 } from "./env.ts";
@@ -3324,6 +3324,7 @@ Deno.serve(async (req) => {
     // ---------------------------------------------------------------------
     const availableToolsForAudit = new Set<string>([
       ...(OATHNET_API_KEY ? ["oathnet_lookup"] : []),
+      ...(SERUS_API_KEY ? ["serus_darkweb_scan"] : []),
       ...(OSINTNOVA_API_KEY ? ["osintnova_lookup", "osintnova_email_lookup", "osintnova_phone_lookup"] : []),
       ...(SOCIALFETCH_API_KEY ? ["socialfetch_lookup"] : []),
       ...(SYNAPSINT_API_KEY ? ["synapsint_lookup"] : []),

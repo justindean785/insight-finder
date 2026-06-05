@@ -58,6 +58,10 @@ export const GITHUB_API_TOKEN = Deno.env.get("GITHUB_API_TOKEN") ?? Deno.env.get
 export const FIRECRAWL_API_KEY = Deno.env.get("FIRECRAWL_API_KEY");
 export const EXA_API_KEY = Deno.env.get("EXA_API_KEY");
 export const JINA_API_KEY = Deno.env.get("JINA_API_KEY"); // optional — r.jina.ai works unauth too
+// Serus darkweb scan API. Bearer auth, 0.25 credits/scan, 3 req/s write budget.
+// Optional `reveal=true` query param unlocks unmasked breach fields
+// (passwords, tokens) when the key has the `darkweb:reveal` scope.
+export const SERUS_API_KEY = Deno.env.get("SERUS_API_KEY");
 
 // ---- Degraded state ----------------------------------------------------------
 // Sticky flag — once Firecrawl returns 402 (insufficient credits) we stop

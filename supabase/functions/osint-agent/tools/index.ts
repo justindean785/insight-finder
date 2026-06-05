@@ -17,6 +17,9 @@ import { intelbase_email_lookup } from "./intelbase.ts";
 // OSINT Navigator + OathNet + Synapsint
 import { osint_navigator_query, osint_navigator_search, oathnet_lookup, synapsint_lookup } from "./osint_navigator.ts";
 
+// Serus darkweb scan
+import { serus_darkweb_scan } from "./serus.ts";
+
 // Social
 import { socialfetch_lookup, cordcat_discord_lookup, username_sweep, username_search,
   github_user, github_code_search, reddit_user, hackernews_user,
@@ -65,6 +68,8 @@ export const ALL_STATIC_TOOLS = {
   intelbase_email_lookup,
   // Navigator + OathNet + Synapsint
   osint_navigator_query, osint_navigator_search, oathnet_lookup, synapsint_lookup,
+  // Serus
+  serus_darkweb_scan,
   // Social
   socialfetch_lookup, cordcat_discord_lookup, username_sweep, username_search,
   github_user, github_code_search, reddit_user, hackernews_user,
