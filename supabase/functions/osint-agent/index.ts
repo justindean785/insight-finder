@@ -40,6 +40,12 @@ import {
   detectSeedServer, validateArtifact, TTL_24H_MS, TOOL_TTL_MS, NO_CACHE_TOOLS,
 } from "./validation.ts";
 
+// api_types.ts — Loose TypeScript interfaces for third-party API responses.
+// Used at the JSON.parse boundaries in this file to replace `let data: any`
+// with a typed shape so the downstream .map((t: any) => ...) cascades
+// narrow automatically. See ./api_types.ts for scope discipline notes.
+import type { NavigatorQueryResponse, NavigatorSearchResponse, NavigatorTool, StolenTaxResponse, GitHubCodeSearchResponse } from "./api_types.ts";
+
 // safety.ts — Artifact scrubbing, sanitization, SSRF guard, part-size capping
 import {
   scrubArtifactRow, scrubArtifactRows, hashInput, normalizeForHash,
@@ -665,7 +671,7 @@ Deno.serve(async (req) => {
               body: JSON.stringify({ query, skip_cache }),
             }, { retries: 1 });
             const text = await r.text();
-            let data: any;
+            let data: NavigatorQueryResponse;
             try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 4000) }; }
             if (!r.ok) {
               console.warn(`[osint_navigator_query] HTTP ${r.status} snippet=${text.slice(0, 300)}`);
@@ -673,7 +679,7 @@ Deno.serve(async (req) => {
             }
             // Trim verbose tool records to essentials so context stays small.
             const tools = Array.isArray(data?.tools)
-              ? data.tools.slice(0, 12).map((t: any) => ({
+              ? data.tools.slice(0, 12).map((t) => ({
                   id: t?.tool_id ?? t?.id,
                   name: t?.tool_name ?? t?.name ?? t?.title,
                   url: t?.tool_url ?? t?.url ?? t?.homepage ?? t?.link,
@@ -708,14 +714,14 @@ Deno.serve(async (req) => {
               body: JSON.stringify(body),
             }, { retries: 1 });
             const text = await r.text();
-            let data: any;
+            let data: NavigatorSearchResponse | NavigatorTool[];
             try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 4000) }; }
             if (!r.ok) {
               console.warn(`[osint_navigator_search] HTTP ${r.status} snippet=${text.slice(0, 300)}`);
               return { error: `osint_navigator ${r.status}`, status: r.status, snippet: text.slice(0, 300) };
             }
             const list = Array.isArray(data) ? data : (data?.tools ?? data?.results ?? []);
-            const tools = (Array.isArray(list) ? list : []).slice(0, limit ?? 10).map((t: any) => ({
+            const tools = (Array.isArray(list) ? list : []).slice(0, limit ?? 10).map((t) => ({
               id: t?.tool_id ?? t?.id,
               name: t?.tool_name ?? t?.name ?? t?.title,
               url: t?.tool_url ?? t?.url ?? t?.homepage ?? t?.link,
@@ -1069,11 +1075,11 @@ Deno.serve(async (req) => {
               },
             );
             const text = await r.text();
-            let parsed: any;
+            let parsed: StolenTaxResponse;
             try { parsed = JSON.parse(text); } catch { parsed = { raw: text.slice(0, 4000) }; }
             const d = parsed?.data ?? {};
             const taken = Array.isArray(d?.results)
-              ? d.results.filter((x: any) => x?.taken === true).map((x: any) => ({ domain: x.domain, extra: x.ExtraData ?? null }))
+              ? d.results.filter((x) => x?.taken === true).map((x) => ({ domain: x.domain, extra: x.ExtraData ?? null }))
               : [];
             return {
               ok: r.ok,
@@ -2627,7 +2633,7 @@ Deno.serve(async (req) => {
             if (GITHUB_API_TOKEN) headers.Authorization = `Bearer ${GITHUB_API_TOKEN}`;
             const r = await fetch(`https://api.github.com/search/code?q=${encodeURIComponent(query)}&per_page=20`, { headers });
             const text = await r.text();
-            let data: any = {};
+            let data: GitHubCodeSearchResponse = {};
             try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 500) }; }
             if (!r.ok) {
               const remaining = r.headers.get("x-ratelimit-remaining");
