@@ -1042,9 +1042,20 @@ Deno.serve(async (req) => {
             if (snusHits === 0 && typeof snusRoot.size === "number") snusHits = snusRoot.size;
 
             const brRoot: StolenData = (breachLegacy.parsed as StolenParsed)?.data ?? {};
-            const brHits =
-              (Array.isArray(brRoot.breach_data) && brRoot.breach_data.length) ||
-              (typeof brRoot.results_count === "number" ? brRoot.results_count : 0);
+            let brHits = 0;
+            const breachData = brRoot.breach_data;
+            if (Array.isArray(breachData)) {
+              brHits = breachData.length;
+            } else if (breachData && typeof breachData === "object") {
+              // Some osintcat breach responses key results by source (an object
+              // map) rather than a flat array. Sum the per-source array lengths
+              // so those hits are counted instead of silently dropped to 0 — same
+              // shape handling already applied to snusbase above.
+              for (const rows of Object.values(breachData)) {
+                if (Array.isArray(rows)) brHits += rows.length;
+              }
+            }
+            if (brHits === 0 && typeof brRoot.results_count === "number") brHits = brRoot.results_count;
 
             const totalHits = dbHits + snusHits + brHits;
             const anyOk = dbSearch.ok || snus.ok || breachLegacy.ok;
@@ -1525,8 +1536,14 @@ Deno.serve(async (req) => {
           if (kind === "file") {
             path = `files/${encodeURIComponent(v)}`;
           } else if (kind === "url") {
-            // VT requires base64url-encoded URL ID (no padding).
-            const b64 = btoa(v).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+            // VT requires base64url-encoded URL ID (no padding). Encode UTF-8
+            // first — bare btoa() throws InvalidCharacterError on any non-ASCII
+            // code point (IDN/Unicode URLs are common in phishing cases), which
+            // would silently surface as a generic VT failure.
+            const bytes = new TextEncoder().encode(v);
+            let bin = "";
+            for (const byte of bytes) bin += String.fromCharCode(byte);
+            const b64 = btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
             path = `urls/${b64}`;
           } else if (kind === "domain") {
             path = `domains/${encodeURIComponent(v)}`;
@@ -1588,7 +1605,21 @@ Deno.serve(async (req) => {
             const r = await fetch(
               `http://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,country,regionName,city,zip,lat,lon,timezone,isp,org,as,mobile,proxy,hosting,query`,
             );
-            const data = await r.json();
+            const data = await r.json().catch(() => ({ status: "fail", message: "non-JSON response from ip-api" })) as {
+              status?: string;
+              message?: string;
+              isp?: string;
+              org?: string;
+              as?: string;
+              [k: string]: unknown;
+            };
+            // ip-api.com returns HTTP 200 even on failure; the real outcome is in
+            // `status`. Treat anything other than "success" (reserved/invalid IP,
+            // rate-limit) as a failed lookup so empty geo can't masquerade as a
+            // valid "origin" result and poison the CDN / agreement logic downstream.
+            if (!r.ok || data.status !== "success") {
+              return { ok: false, status: r.status, error: data.message ?? "ip-api lookup failed", query: ip };
+            }
             // Reframe results when the IP belongs to a major CDN/edge network —
             // geolocation reflects the edge POP, NOT the actual origin host.
             const blob = `${data?.isp ?? ""} ${data?.org ?? ""} ${data?.as ?? ""}`.toLowerCase();
@@ -2682,10 +2713,36 @@ Deno.serve(async (req) => {
           try {
             const h = { "User-Agent": "Proximity-OSINT/1.0" };
             const u = encodeURIComponent(username);
-            const [about, posts] = await Promise.all([
-              fetch(`https://www.reddit.com/user/${u}/about.json`, { headers: h }).then((r) => r.json()).catch(() => ({})),
-              fetch(`https://www.reddit.com/user/${u}.json?limit=15`, { headers: h }).then((r) => r.json()).catch(() => ({})),
+            const fetchJson = async (url: string): Promise<{ status: number; body: unknown }> => {
+              try {
+                const rr = await fetch(url, { headers: h });
+                return { status: rr.status, body: await rr.json().catch(() => null) };
+              } catch {
+                return { status: 0, body: null };
+              }
+            };
+            const [aboutRes, postsRes] = await Promise.all([
+              fetchJson(`https://www.reddit.com/user/${u}/about.json`),
+              fetchJson(`https://www.reddit.com/user/${u}.json?limit=15`),
             ]);
+            // Reddit serves 429 (rate-limit) / 403 (blocked datacenter IP) / 404
+            // (suspended or nonexistent user) with a JSON error body that has no
+            // .data.children. Without a status check those would be returned as
+            // "user exists but has no activity" — a false negative. Surface the
+            // failure when neither endpoint returned a 2xx.
+            if (aboutRes.status >= 400 && postsRes.status >= 400) {
+              const status = postsRes.status || aboutRes.status;
+              return {
+                ok: false,
+                status,
+                error: status === 429 ? "reddit rate-limited (429)"
+                  : status === 404 ? "reddit user not found (404)"
+                  : `reddit request failed (${status})`,
+                username,
+              };
+            }
+            const about = aboutRes.body;
+            const posts = postsRes.body;
             interface RedditChild {
               kind?: unknown;
               data?: {
@@ -2707,7 +2764,7 @@ Deno.serve(async (req) => {
               body: c.data?.body?.slice?.(0, 300), url: c.data?.permalink ? `https://reddit.com${c.data.permalink}` : undefined,
               created: c.data?.created_utc,
             }));
-            return { about: (about as RedditListing)?.data, recent: items };
+            return { ok: true, about: (about as RedditListing)?.data, recent: items };
           } catch (e) { return { error: String(e) }; }
         },
       }),
