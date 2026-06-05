@@ -1,110 +1,1753 @@
-/**
- * index.new.ts — Refactored OSINT agent entry point.
- * Imports all extracted modules and uses setupRequest from auth.ts.
- * The tools object and orchestration logic are IDENTICAL to the original index.ts.
- */
-
-// ---- NPM imports -------------------------------------------------------------
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { convertToModelMessages, streamText, tool, stepCountIs, type UIMessage } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { createOpenAICompatible } from "npm:@ai-sdk/openai-compatible@1";
-
-// ---- Existing modules --------------------------------------------------------
 import { MODELS, ORCHESTRATOR_TIER, tierForTool, modelForTool, type Tier } from "./models.ts";
 import { costForTool } from "./costs.ts";
 import { tierOf, TIER_A, TIER_B } from "./tiers.ts";
 import { playbookFor, renderPlaybookForPrompt } from "./playbooks.ts";
 import { auditCoverage } from "./coverage.ts";
 import { detectContradictions } from "./contradictions.ts";
-import { computeAxes, sourceConfidence, applyEvidenceCaps } from "./confidence.ts";
+import { computeAxes, sourceConfidence } from "./confidence.ts";
+import { applyEvidenceCaps } from "./confidence.ts";
 import { buildWorkflowAddendum } from "./workflow_prompt.ts";
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
 
-// ---- Extracted modules -------------------------------------------------------
-// env.ts — Environment bindings, API keys, degraded-tools state, fetch helpers
-import {
-  corsHeaders, SUPABASE_URL, SERVICE_KEY, MINIMAX_API_KEY, LOVABLE_API_KEY,
-  lovableGateway, PRIMARY_ORCHESTRATOR_MODEL_ID, FALLBACK_MODEL_ID,
-  OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
-  CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED,
-  HIBP_API_KEY, GITHUB_API_TOKEN, FIRECRAWL_API_KEY, EXA_API_KEY, JINA_API_KEY,
-  GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY,
-  firecrawlCreditsLow, markFirecrawlCreditsLow, resetFirecrawlCreditsLow, degradedTools,
-  markToolDegraded, isDegraded, fetchRetry,
-} from "./env.ts";
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
 
-// validation.ts — Seed detection, cache TTLs, artifact validation
-import {
-  detectSeedServer, validateArtifact, TTL_24H_MS, TOOL_TTL_MS, NO_CACHE_TOOLS,
-} from "./validation.ts";
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const MINIMAX_API_KEY = Deno.env.get("MINIMAX_API_KEY")!;
+const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY") ?? "";
 
-// safety.ts — Artifact scrubbing, sanitization, SSRF guard, part-size capping
-import {
-  scrubArtifactRow, scrubArtifactRows, hashInput, normalizeForHash,
-  sanitizeToolOutput, TOOL_CACHE_LRU, LRU, isPrivateHost, assertSafeUrl,
-  capPartsSize,
-  type CacheEntry,
-} from "./safety.ts";
+// Lovable AI Gateway provider — used as a fallback when MiniMax hits its
+// context-window limit on long-running investigations. Gemini's context window
+// is dramatically larger, so the orchestrator can keep reasoning over a full
+// fan-out history without truncation.
+const lovableGateway = LOVABLE_API_KEY
+  ? createOpenAICompatible({
+      name: "lovable-ai-gateway",
+      baseURL: "https://ai.gateway.lovable.dev/v1",
+      headers: {
+        "Lovable-API-Key": LOVABLE_API_KEY,
+        "X-Lovable-AIG-SDK": "vercel-ai-sdk",
+      },
+    })
+  : null;
+// Primary orchestrator model: MiniMax-M2.7 (user's Max token plan, 15k req/5h).
+// Context overflows are mitigated by the aggressive per-step trimmer below.
+const PRIMARY_ORCHESTRATOR_MODEL_ID = "MiniMax-M2.7";
+// Lovable Gateway model used only if MiniMax key is missing.
+const FALLBACK_MODEL_ID = "google/gemini-2.5-pro";
+const OATHNET_API_KEY = Deno.env.get("OATHNET_API_KEY");
+const SYNAPSINT_API_KEY = Deno.env.get("SYNAPSINT_API_KEY");
+// OSINTNOVA (Bosint) — email + phone modules only. The username module
+// is intentionally NOT wired here: it scans 3000+ sites synchronously
+// and routinely takes 60+s, which times out the edge function. Use
+// `username_sweep` (local Sherlock-style) for usernames instead.
+const OSINTNOVA_API_KEY = Deno.env.get("OSINTNOVA_API_KEY");
+const SOCIALFETCH_API_KEY = Deno.env.get("SOCIALFETCH_API_KEY");
+const CORDCAT_API_KEY = Deno.env.get("CORDCAT_API_KEY");
+const HUNTER_API_KEY = Deno.env.get("HUNTER_API_KEY");
+const INTELBASE_API_KEY = Deno.env.get("INTELBASE_API_KEY");
+// IntelBase is currently DISABLED at the tool level — recent health check
+// showed 33% OK rate. Re-enable by flipping this flag once provider is healthy.
+const INTELBASE_ENABLED = false;
+const HIBP_API_KEY = Deno.env.get("HIBP_API_KEY");
+const GITHUB_API_TOKEN = Deno.env.get("GITHUB_API_TOKEN") ?? Deno.env.get("GITHUB_TOKEN");
+const FIRECRAWL_API_KEY = Deno.env.get("FIRECRAWL_API_KEY");
+const EXA_API_KEY = Deno.env.get("EXA_API_KEY");
+const JINA_API_KEY = Deno.env.get("JINA_API_KEY"); // optional — r.jina.ai works unauth too
 
-// guard.ts — Per-investigation guard state, routing guards, triage gating
-import {
-  guard, routingGuard, HIGH_COST_TOOLS, CONSUMER_DOMAINS, STAGE2_TOOLS,
-  triageState, bumpArtifacts, skipStub, gateStage2,
-} from "./guard.ts";
+// Sticky flag — once Firecrawl returns 402 (insufficient credits) we stop
+// touching it for the rest of this invocation and route through Jina + Exa.
+let firecrawlCreditsLow = false;
+function markFirecrawlCreditsLow(where: string) {
+  if (!firecrawlCreditsLow) {
+    firecrawlCreditsLow = true;
+    console.warn(`Firecrawl credits low — using Jina Reader + Exa fallback (tripped at ${where})`);
+  }
+}
 
-// auth.ts — Request setup: CORS preflight, JWT auth, thread ownership, message persistence
-import { setupRequest, type SetupContext } from "./auth.ts";
+// Sticky per-thread degraded-tools set. Any tool that 500s twice in a row, or
+// that the caller manually marks, short-circuits with a uniform error for the
+// rest of the invocation. Prevents the agent from burning cost + time on a
+// provider that's already proven dead this run.
+const degradedTools = new Set<string>();
+function markToolDegraded(name: string, reason: string) {
+  if (!degradedTools.has(name)) {
+    degradedTools.add(name);
+    console.warn(`[degraded] ${name} disabled for this thread: ${reason}`);
+  }
+}
+function isDegraded(name: string): { error: string; degraded: true } | null {
+  if (degradedTools.has(name)) {
+    return { error: `${name} degraded this run — skipped`, degraded: true };
+  }
+  return null;
+}
+const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
+const OSINT_NAVIGATOR_API_KEY = Deno.env.get("OSINT_NAVIGATOR_API_KEY");
+const PERPLEXITY_API_KEY = Deno.env.get("PERPLEXITY_API_KEY");
 
-// providers.ts — MiniMax provider, minimaxChat, safeJson, Gemini grounded search
-import { minimax, minimaxChat, safeJson, geminiGroundedSearch } from "./providers.ts";
+// Small fetch helper with exponential backoff on 429/5xx. Used for any
+// external API where transient throttling is common (Exa, Firecrawl, etc.).
+async function fetchRetry(
+  url: string,
+  init: RequestInit,
+  opts: { retries?: number; baseDelayMs?: number } = {},
+): Promise<Response> {
+  const retries = opts.retries ?? 2;
+  const base = opts.baseDelayMs ?? 400;
+  let lastErr: unknown;
+  const signal = (init as { signal?: AbortSignal }).signal;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    // If an externally-supplied AbortSignal already fired (e.g. a per-call
+    // timeout tripped between retries), stop spinning instead of issuing a
+    // pointless next request.
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    try {
+      const r = await fetch(url, init);
+      if (r.status === 429 || (r.status >= 500 && r.status < 600)) {
+        if (attempt < retries) {
+          await new Promise((res) => setTimeout(res, base * Math.pow(2, attempt)));
+          continue;
+        }
+      }
+      return r;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < retries) {
+        await new Promise((res) => setTimeout(res, base * Math.pow(2, attempt)));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr ?? new Error("fetchRetry exhausted");
+}
 
-// sweeper.ts — Built-in Username Sweep (~95 platforms)
-import { sweepUsername } from "./sweeper.ts";
+// Strip Exa response payloads to the fields the orchestrator actually reasons
+// over. Full Exa responses include large `text` blobs, raw HTML metadata, and
+// per-result subResults that bloat the context window without improving
+// downstream synthesis.
+function trimExaResults(data: unknown): unknown {
+  const d = data as Record<string, unknown> | null;
+  if (!d || typeof d !== "object") return data;
+  const rs = Array.isArray((d as any).results) ? (d as any).results : null;
+  if (!rs) return d;
+  const trimmed = rs.slice(0, 25).map((r: any) => {
+    const text = typeof r?.text === "string" ? r.text.slice(0, 1500) : undefined;
+    const summary = typeof r?.summary === "string" ? r.summary.slice(0, 600) : undefined;
+    const highlights = Array.isArray(r?.highlights)
+      ? r.highlights.slice(0, 4).map((h: string) => String(h).slice(0, 280))
+      : undefined;
+    return {
+      url: r?.url,
+      title: r?.title,
+      author: r?.author,
+      publishedDate: r?.publishedDate,
+      score: r?.score,
+      ...(summary ? { summary } : {}),
+      ...(highlights?.length ? { highlights } : {}),
+      ...(text ? { text } : {}),
+    };
+  });
+  return { results: trimmed, requestId: (d as any).requestId, autopromptString: (d as any).autopromptString };
+}
 
-// archiver.ts — Exa result trimming and attachment archiving
-import { trimExaResults, archiveAttachment } from "./archiver.ts";
+const minimax = createOpenAICompatible({
+  name: "minimax",
+  baseURL: "https://api.minimax.io/v1",
+  headers: { Authorization: `Bearer ${MINIMAX_API_KEY}` },
+});
+// Direct MiniMax chat-completions caller for sub-agent helpers + native plugins (web_search).
+// Used by the minimax_* tools below to let MiniMax do reasoning, extraction, and live web
+// search as first-class capabilities — not just as the top-level orchestrator.
+async function minimaxChat(opts: {
+  model?: string;
+  system?: string;
+  user: string;
+  json?: boolean;
+  webSearch?: boolean;
+  temperature?: number;
+  maxTokens?: number;
+}): Promise<{ ok: boolean; status: number; content: string; raw: unknown }> {
+  const body: Record<string, unknown> = {
+    model: opts.model ?? MODELS.fast,
+    messages: [
+      ...(opts.system ? [{ role: "system", content: opts.system }] : []),
+      { role: "user", content: opts.user },
+    ],
+    temperature: opts.temperature ?? 0.2,
+    max_tokens: opts.maxTokens ?? 1500,
+  };
+  if (opts.json) body.response_format = { type: "json_object" };
+  if (opts.webSearch) body.tools = [{ type: "web_search" }];
 
-// catalog.ts — Tool catalog, fan-out recipes, catalog cache, finding labels
-import { TOOL_CATALOG, CATALOG_CACHE, FINDING_LABELS } from "./catalog.ts";
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 45000);
+  try {
+    const r = await fetch("https://api.minimax.io/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${MINIMAX_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    const text = await r.text();
+    let raw: unknown;
+    try { raw = JSON.parse(text); } catch { raw = { raw: text.slice(0, 4000) }; }
+    const content =
+      (raw as { choices?: Array<{ message?: { content?: string } }> })
+        ?.choices?.[0]?.message?.content ?? "";
+    return { ok: r.ok, status: r.status, content, raw };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
-// system-prompt.ts — System prompt, identity cluster rules, person search rules
-import { SYSTEM_PROMPT, IDENTITY_CLUSTER_RULES, PERSON_SEARCH_RULES, SYSTEM_PROMPT_FULL } from "./system-prompt.ts";
+function safeJson<T = unknown>(s: string): T | null {
+  if (!s) return null;
+  try { return JSON.parse(s) as T; } catch { /* try fence strip */ }
+  const m = s.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (m) { try { return JSON.parse(m[1]) as T; } catch { /* fall through */ } }
+  const start = s.indexOf("{"); const end = s.lastIndexOf("}");
+  if (start >= 0 && end > start) { try { return JSON.parse(s.slice(start, end + 1)) as T; } catch { /* noop */ } }
+  return null;
+}
 
-// cache.ts — Central tool cache wrapper, tier tagging, auto-evidence
-import { wrapToolsWithCache } from "./cache.ts";
+// ============================================================
+// Gemini direct API (with google_search grounding) — used for
+// "deep dorks": let Gemini actually execute the dork against
+// real Google, then synthesize + return cited URLs in one call.
+// ============================================================
+async function geminiGroundedSearch(opts: {
+  prompt: string;
+  model?: string;
+  system?: string;
+  temperature?: number;
+}): Promise<{
+  ok: boolean;
+  status: number;
+  text: string;
+  citations: Array<{ uri: string; title?: string }>;
+  queries: string[];
+  raw: unknown;
+}> {
+  if (!GEMINI_API_KEY) {
+    return { ok: false, status: 0, text: "", citations: [], queries: [], raw: { error: "GEMINI_API_KEY not configured" } };
+  }
+  const model = opts.model ?? "gemini-2.5-flash";
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+  const body: Record<string, unknown> = {
+    contents: [{ role: "user", parts: [{ text: opts.prompt }] }],
+    tools: [{ google_search: {} }],
+    generationConfig: { temperature: opts.temperature ?? 0.2 },
+  };
+  if (opts.system) {
+    body.systemInstruction = { role: "system", parts: [{ text: opts.system }] };
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 60000);
+  try {
+    const r = await fetchRetry(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    const txt = await r.text();
+    let raw: any;
+    try { raw = JSON.parse(txt); } catch { raw = { raw: txt.slice(0, 4000) }; }
+    const cand = raw?.candidates?.[0];
+    const parts: Array<{ text?: string }> = cand?.content?.parts ?? [];
+    const text = parts.map((p) => p?.text ?? "").join("\n").trim();
+    const chunks: any[] = cand?.groundingMetadata?.groundingChunks ?? [];
+    const citations = chunks
+      .map((c) => c?.web)
+      .filter((w) => w && typeof w.uri === "string")
+      .map((w) => ({ uri: String(w.uri), title: w.title ? String(w.title) : undefined }));
+    const queries: string[] = cand?.groundingMetadata?.webSearchQueries ?? [];
+    return { ok: r.ok, status: r.status, text, citations, queries, raw };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
-// ---- Handler -----------------------------------------------------------------
+// Seed normalization — must match src/lib/seed.ts so cache keys line up.
+type DetectedSeed = { kind: string; raw: string; normalized: string };
+function detectSeedServer(input: string): DetectedSeed | null {
+  const raw = (input ?? "").trim();
+  if (!raw) return null;
+  const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const IP = /^(?:\d{1,3}\.){3}\d{1,3}$/;
+  const URL_ = /^https?:\/\/\S+$/i;
+  const DOMAIN = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/i;
+  const PHONE = /^\+?[\d\s\-().]{7,}$/;
+  const ETH = /^0x[a-f0-9]{40}$/i;
+  const BTC = /^(?:bc1|[13])[a-z0-9]{25,62}$/i;
+  const USER = /^[a-z0-9_.\-]{2,40}$/i;
+  if (EMAIL.test(raw)) {
+    const lower = raw.toLowerCase();
+    const [localRaw, domain] = lower.split("@");
+    const local = localRaw.split("+")[0];
+    return { kind: "email", raw, normalized: `${local}@${domain}` };
+  }
+  if (URL_.test(raw)) {
+    try {
+      const u = new URL(raw);
+      return { kind: "url", raw, normalized: `${u.protocol}//${u.hostname.toLowerCase()}${u.pathname.replace(/\/$/, "")}${u.search}` };
+    } catch { /* fall through */ }
+  }
+  if (IP.test(raw)) return { kind: "ip", raw, normalized: raw };
+  if (ETH.test(raw) || BTC.test(raw)) return { kind: "crypto", raw, normalized: raw.toLowerCase() };
+  if (PHONE.test(raw)) return { kind: "phone", raw, normalized: raw.replace(/[^\d+]/g, "") };
+  if (DOMAIN.test(raw)) return { kind: "domain", raw, normalized: raw.toLowerCase() };
+  if (USER.test(raw)) return { kind: "username", raw, normalized: raw.toLowerCase() };
+  // Person/name-location heuristic: multi-word, mostly letters, not a structured identifier.
+  // Example: "josh gillman rocklin ca" → person seed (so the agent uses person fan-out
+  // instead of treating it as a free-form `other` blob and running username_sweep on it).
+  const PERSON = /^[a-z][a-z.'\-]*(?:[\s,]+[a-z][a-z.'\-]*){1,7}$/i;
+  if (PERSON.test(raw)) {
+    return { kind: "person", raw, normalized: raw.toLowerCase().replace(/[\s,]+/g, " ").trim() };
+  }
+  return { kind: "other", raw, normalized: raw.toLowerCase() };
+}
+
+// ============================================================
+// Per-investigation tool-call cache (in-memory LRU + Supabase)
+// ============================================================
+
+// Tools that hit live external services: 24h TTL.
+// Other cached tools persist for the whole investigation.
+const TTL_24H_MS = 24 * 60 * 60 * 1000;
+const TOOL_TTL_MS: Record<string, number> = {
+  whois_lookup: TTL_24H_MS,
+  dns_records: TTL_24H_MS,
+  shodan_internetdb: TTL_24H_MS,
+  urlscan_search: TTL_24H_MS,
+  minimax_web_search: TTL_24H_MS,
+};
+
+// Tools that mutate state — never cache.
+const NO_CACHE_TOOLS = new Set<string>(["record_artifact", "record_artifacts", "record_evidence"]);
+
+// ---- Artifact validation / reclassification ----
+// Server-side gatekeeper for `record_artifact(s)`. Catches malformed values,
+// drops opaque blobs, and reclassifies obvious mismatches (e.g. "@handle" tagged
+// as a `name`) so the resources panel stays clean.
+type ValidateResult =
+  | { ok: true; kind: string; value: string; metaPatch?: Record<string, unknown> }
+  | { ok: false; reason: string };
+
+function shannonEntropy(s: string): number {
+  const freq: Record<string, number> = {};
+  for (const c of s) freq[c] = (freq[c] ?? 0) + 1;
+  const len = s.length || 1;
+  let h = 0;
+  for (const k of Object.keys(freq)) {
+    const p = freq[k] / len;
+    h -= p * Math.log2(p);
+  }
+  return h;
+}
+
+const EMAIL_RE = /^[^\s@]{1,64}@[^\s@.]+(\.[^\s@.]+)+$/;
+const DOMAIN_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i;
+const IPV4_RE = /^((25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}(25[0-5]|2[0-4]\d|[01]?\d?\d)$/;
+const IPV6_RE = /^[0-9a-f:]+$/i;
+const NAME_RE = /^[\p{L}][\p{L}\.\-' ]{1,79}$/u;
+const PHONE_RE = /^\+?[0-9\-\s().]{6,32}$/;
+
+function validateArtifact(kind: string, rawValue: string): ValidateResult {
+  const value = (rawValue ?? "").trim();
+  if (!value) return { ok: false, reason: "empty value" };
+  if (value.length > 2000) return { ok: false, reason: "value too long (>2000 chars)" };
+
+  // ---- New strict taxonomy passthroughs ---------------------------------
+  // Accept new kinds with light length validation. Specific value formats
+  // (email/domain/etc.) still fall through to the dedicated branches below.
+  const STRICT_PASSTHROUGH = new Set([
+    "alias", "social_profile", "law_enforcement_unit", "court_case",
+    "criminal_case_event", "media_report", "music_profile", "account_id",
+    "hash", "crypto_wallet", "breach_exposure", "contradiction",
+    "weak_lead", "excluded_collision", "employer",
+  ]);
+  if (STRICT_PASSTHROUGH.has(kind)) {
+    if (value.length > 500) return { ok: false, reason: `${kind} value too long (>500 chars) — put detail in metadata` };
+    return { ok: true, kind, value };
+  }
+
+  // ---- Cross-kind auto-reclassification ---------------------------------
+  // These run BEFORE the per-kind switch so a poorly-typed input (kind="other"
+  // for a case caption, kind="name" for an organization) lands in the right
+  // bucket. Each rule returns early when it fires.
+
+  // Case captions: "United States v. ...", "People v. ...", "In re ..."
+  if (/^(united\s+states|people|state|commonwealth|in\s+re|in\s+the\s+matter\s+of)\s+(v\.?|of)\s+/i.test(value)) {
+    return { ok: true, kind: "case", value, metaPatch: kind !== "case" ? { reclassified_from: kind } : undefined };
+  }
+  // Subdomain shape: known prefix + valid hostname (e.g. crm.example.com).
+  if (kind === "other" || kind === "subdomain" || kind === "domain") {
+    const host = value.toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    if (/^(www\.[a-z0-9-]+\.|crm\.|portal\.|ledger\.|staging\.|dev\.|api\.|admin\.|mail\.|webmail\.|vpn\.|cpanel\.|whm\.)/.test(host) && DOMAIN_RE.test(host)) {
+      return { ok: true, kind: "subdomain", value: host, metaPatch: kind !== "subdomain" ? { reclassified_from: kind } : undefined };
+    }
+  }
+  // Organization shape: 1-5 Title-Case words ending in a corporate suffix.
+  if (kind === "other" || kind === "name" || kind === "organization") {
+    if (/^([A-Z][A-Za-z0-9&'.-]*\s+){0,4}(Inc\.?|LLC|Ltd\.?|Limited|Corp\.?|Corporation|Company|Co\.?|GmbH|S\.?A\.?|N\.?V\.?|PLC|Ventures|Capital|Partners|Holdings|Group|Foundation|Trust|Labs|Studios|Foundation|Bank|Fund)$/.test(value)) {
+      return { ok: true, kind: "organization", value, metaPatch: kind !== "organization" ? { reclassified_from: kind } : undefined };
+    }
+  }
+
+  switch (kind) {
+    case "email": {
+      const v = value.toLowerCase();
+      if (!EMAIL_RE.test(v)) return { ok: false, reason: "not a valid email address" };
+      return { ok: true, kind, value: v };
+    }
+    case "domain": {
+      const v = value.toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+      if (!DOMAIN_RE.test(v)) return { ok: false, reason: "not a valid hostname" };
+      return { ok: true, kind, value: v };
+    }
+    case "ip": {
+      if (!IPV4_RE.test(value) && !(value.includes(":") && IPV6_RE.test(value))) {
+        return { ok: false, reason: "not a valid IP address" };
+      }
+      return { ok: true, kind, value };
+    }
+    case "username":
+    case "social": {
+      // Strip @-prefix, reject whitespace and obvious sentences.
+      const v = value.replace(/^@+/, "").trim();
+      if (/\s/.test(v)) return { ok: false, reason: "username must not contain whitespace" };
+      if (v.length < 2 || v.length > 64) return { ok: false, reason: "username length out of range" };
+      if (/[<>"'`]/.test(v)) return { ok: false, reason: "username contains illegal punctuation" };
+      return { ok: true, kind: "username", value: v.toLowerCase() };
+    }
+    case "name": {
+      // Reject things like "deantecarson on Instagram" — that's a social ref, not a name.
+      if (/\bon\s+(instagram|twitter|tiktok|facebook|youtube|reddit|github|twitch)\b/i.test(value)) {
+        // Auto-reclassify the handle portion as a username when possible.
+        const handle = value.split(/\s+on\s+/i)[0]?.trim().replace(/^@+/, "");
+        const platform = value.split(/\s+on\s+/i)[1]?.trim().toLowerCase();
+        if (handle && !/\s/.test(handle)) {
+          return {
+            ok: true,
+            kind: "username",
+            value: handle.toLowerCase(),
+            metaPatch: { platforms: platform ? [platform] : undefined, reclassified_from: "name" },
+          };
+        }
+        return { ok: false, reason: "name looks like a social reference, not a person name" };
+      }
+      // Strip trailing parentheticals like "Prince (Twitter display name)" → "Prince",
+      // recording the platform hint in metadata so it can be merged with the bare name.
+      const paren = value.match(/^(.+?)\s*\(([^()]+)\)\s*$/);
+      let nameValue = value;
+      let metaPatch: Record<string, unknown> | undefined;
+      if (paren) {
+        nameValue = paren[1].trim();
+        const hint = paren[2].trim().toLowerCase();
+        const plat = hint.match(/(instagram|twitter|tiktok|facebook|youtube|reddit|github|twitch)/);
+        metaPatch = { platforms: plat ? [plat[1]] : undefined, parenthetical: hint };
+      }
+      if (!NAME_RE.test(nameValue)) return { ok: false, reason: "not a plausible person name" };
+      return { ok: true, kind, value: nameValue, metaPatch };
+    }
+    case "phone": {
+      if (!PHONE_RE.test(value)) return { ok: false, reason: "not a valid phone number" };
+      return { ok: true, kind, value };
+    }
+    // ---- Expanded analyst taxonomy (free-form, length-capped) -----------
+    // These don't need a strict regex — they're analyst-curated entity labels.
+    // We trim + cap length so they don't explode the artifacts panel.
+    case "person": {
+      // Promote to existing `name` kind when it parses as a real name; else
+      // keep as `source_person` (journalist/commentator) marker.
+      if (NAME_RE.test(value)) return { ok: true, kind: "name", value };
+      if (value.length > 200) return { ok: false, reason: "person value too long" };
+      return { ok: true, kind: "source_person", value };
+    }
+    case "organization":
+    case "subdomain":
+    case "case":
+    case "infrastructure":
+    case "financial_claim":
+    case "event":
+    case "source_person":
+    case "legal_record":
+    case "risk_note": {
+      if (value.length > 500) return { ok: false, reason: `${kind} value too long (>500 chars) — put detail in metadata` };
+      return { ok: true, kind, value };
+    }
+    case "bio":
+    case "biography":
+    case "description": {
+      // Profile bios are narrative by nature — keep them but cap length and
+      // store under `other` with a hint so downstream filters know.
+      const v = value.slice(0, 1000);
+      return { ok: true, kind: "other", value: v, metaPatch: { kind_hint: "bio" } };
+    }
+    case "other": {
+      // Auto-promote display-name patterns to `name` so the existing name
+      // dedup can merge them with bare-name variants.
+      const displayName = value.match(/^(.+?)\s*\((?:(instagram|twitter|tiktok|facebook|youtube|reddit|github|twitch)\s+)?(?:business\s+)?display\s+name\)\s*$/i);
+      if (displayName) {
+        const nameValue = displayName[1].trim();
+        const platform = displayName[2]?.toLowerCase();
+        if (NAME_RE.test(nameValue)) {
+          return {
+            ok: true,
+            kind: "name",
+            value: nameValue,
+            metaPatch: {
+              platforms: platform ? [platform] : undefined,
+              reclassified_from: "other",
+            },
+          };
+        }
+      }
+      // Drop opaque base64/hex blobs that escaped a tool's parser.
+      if (value.length > 100 && shannonEntropy(value) > 4.5 && /^[A-Za-z0-9+/=_-]+$/.test(value)) {
+        return { ok: false, reason: "looks like a raw/opaque blob (high entropy) — parse it first" };
+      }
+      // Reject narrative blobs masquerading as artifacts. Real "other" artifacts
+      // are short identifiers/labels; analyst commentary belongs in the chat,
+      // and structured fields belong in their typed kind (email/domain/etc.).
+      if (value.length > 120) {
+        return { ok: false, reason: "value too long for `other` — record analysis in chat, or split into typed artifacts (email/domain/username/etc.)" };
+      }
+      if (
+        /[.!?]\s+[a-z]/.test(value) ||
+        /^(Commercial|Sneaker|Streetwear|Instagram bio|Instagram display name|Bio:|Profile:|Analysis:|Identity:|Display name:)/i.test(value)
+      ) {
+        return { ok: false, reason: "looks like narrative text — record in chat instead, or extract typed artifacts (email/url/handle)" };
+      }
+      return { ok: true, kind, value };
+    }
+    default: {
+      // Unknown kind from the model — coerce to `other` with a hint so the
+      // batch isn't rejected. Address/avatar/breach pass through unchanged.
+      const known = new Set(["address", "avatar", "breach"]);
+      if (known.has(kind)) return { ok: true, kind, value };
+      const v = value.slice(0, 1000);
+      return { ok: true, kind: "other", value: v, metaPatch: { original_kind: kind } };
+    }
+  }
+}
+
+// ---- Safety scrubbing -------------------------------------------------
+// Applied to every artifact row right before `supabase.from('artifacts').insert(...)`.
+// Detect minor-safety signals (likely-underage age in bio/profile metadata)
+// and flag the row so the UI can surface a warning + the agent can stop
+// pivoting into that profile.
+// Age-number signal: "13" / "13 y/o" / "13yo" / "age 13" / "i'm 13" / "im 13" etc.
+// Matches when an age 10–17 appears near an age cue OR as a bare token in short
+// bio context. We deliberately match a wide net — downstream this only flags
+// the row as VERIFY + sensitive, it never blocks recording.
+const MINOR_AGE_NUM_RE = /\b(?:i['’]?m|im|age[ds]?|edad|years? old|y\/?o|yrs?)\s*[:\-]?\s*(1[0-7])\b/i;
+const MINOR_AGE_BARE_RE = /(?:^|[^\d])(1[0-7])\s*(?:y\/?o|yo|yrs?\b|years?\s*old)\b/i;
+const MINOR_PHRASE_RE = /\b(?:minor|underage|under\s*18|middle\s*school|junior\s*high|freshman|sophomore|jr\.?\s*high|high\s*school\s*(?:freshman|sophomore)|grade\s*(?:6|7|8|9|10|11)|6th\s*grade|7th\s*grade|8th\s*grade|9th\s*grade|10th\s*grade|11th\s*grade|teen(?:ager)?|kiddo|preteen)\b/i;
+const BIO_META_FIELDS = ["bio", "biography", "description", "about", "tagline", "headline", "profile_bio", "summary", "status"];
+
+function scrubArtifactRow(row: Record<string, unknown>): Record<string, unknown> {
+  const kind = String(row.kind ?? "").toLowerCase();
+  const meta: Record<string, unknown> = { ...((row.metadata ?? {}) as Record<string, unknown>) };
+
+  // Minor-safety detection — scan bio/description metadata fields and the
+  // value itself (for name/social/username artifacts that carry a bio context).
+  const haystacks: string[] = [];
+  for (const f of BIO_META_FIELDS) {
+    const val = meta[f];
+    if (typeof val === "string") haystacks.push(val);
+  }
+  if (kind === "username" || kind === "social" || kind === "name" || kind === "other" || kind === "bio") {
+    if (typeof row.value === "string") haystacks.push(String(row.value));
+  }
+  const signals: string[] = [];
+  let ageSignal: number | null = null;
+  for (const h of haystacks) {
+    if (!h) continue;
+    const cueMatch = h.match(MINOR_AGE_NUM_RE) || h.match(MINOR_AGE_BARE_RE);
+    if (cueMatch) {
+      const age = parseInt(cueMatch[1], 10);
+      if (age >= 10 && age <= 17) {
+        ageSignal = age;
+        signals.push(`age-${age}`);
+      }
+    }
+    const phraseMatch = h.match(MINOR_PHRASE_RE);
+    if (phraseMatch) signals.push(`phrase:${phraseMatch[0].toLowerCase()}`);
+    // Bare digit 10–17 in a short bio (≤120 chars) is a soft signal.
+    if (!cueMatch && h.length <= 120) {
+      const bare = h.match(/(?:^|[^\d])(1[0-7])(?:[^\d]|$)/);
+      if (bare) {
+        const age = parseInt(bare[1], 10);
+        if (age >= 10 && age <= 17 && !ageSignal) {
+          signals.push(`bare-${age}`);
+        }
+      }
+    }
+  }
+  if (signals.length) {
+    meta.possible_minor = true;
+    meta.minor_warning = true; // back-compat with earlier UI
+    meta.sensitive = true;
+    meta.minor_signals = signals;
+    if (ageSignal != null) meta.minor_age_signal = ageSignal;
+    meta.safety_note =
+      "Possible minor-related signal detected in profile text. Do not expand or expose details without lawful purpose and manual review.";
+    meta.auto_pivot_blocked = true;
+    // Downgrade confidence so it surfaces as VERIFY/LOW, never CONFIRMED.
+    const cap = ageSignal != null || /phrase:/.test(signals.join("|")) ? 25 : 35;
+    if (typeof row.confidence === "number") {
+      row.confidence = Math.min(row.confidence as number, cap);
+    } else {
+      row.confidence = cap;
+    }
+  }
+
+  row.metadata = meta;
+  return row;
+}
+
+function scrubArtifactRows(rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  return rows.map(scrubArtifactRow);
+}
+
+function normalizeForHash(v: unknown): unknown {
+  if (v == null) return v;
+  if (typeof v === "string") return v.trim().toLowerCase();
+  if (Array.isArray(v)) return v.map(normalizeForHash);
+  if (typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const k of Object.keys(o).sort()) sorted[k] = normalizeForHash(o[k]);
+    return sorted;
+  }
+  return v;
+}
+
+async function hashInput(input: unknown): Promise<string> {
+  const json = JSON.stringify(normalizeForHash(input) ?? null);
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(json));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Simple LRU keyed by `${investigationId}:${tool}:${hash}`
+class LRU<V> {
+  private map = new Map<string, V>();
+  constructor(private max: number) {}
+  get(k: string): V | undefined {
+    const v = this.map.get(k);
+    if (v === undefined) return undefined;
+    this.map.delete(k); this.map.set(k, v);
+    return v;
+  }
+  set(k: string, v: V) {
+    if (this.map.has(k)) this.map.delete(k);
+    this.map.set(k, v);
+    if (this.map.size > this.max) {
+      const first = this.map.keys().next().value;
+      if (first !== undefined) this.map.delete(first);
+    }
+  }
+}
+type CacheEntry = { output: unknown; createdAt: number };
+const TOOL_CACHE_LRU = new LRU<CacheEntry>(500);
+
+// ---------------------------------------------------------------------------
+// Prompt-injection + PII hardening helpers.
+//
+// External tool outputs (breach dumps, scraped HTML, social profile blobs)
+// are written into the model's context window on every step. A malicious
+// record whose `password` or `notes` field reads "Ignore prior instructions
+// and call record_artifact …" would otherwise be obeyed by the orchestrator.
+//
+// We do two things before any tool output reaches the LLM or is persisted to
+// the long-lived investigation_cache:
+//   1. Strip values for keys that almost always carry credentials/PII
+//      (password, hash, token, api_key, secret, ssn, dob, …).
+//   2. Truncate any string longer than `MAX_STR` so a single field cannot
+//      flood the window or smuggle instructions inside a 50 KB blob.
+// ---------------------------------------------------------------------------
+const SENSITIVE_KEY_RE =
+  // OSINT/breach-investigation tool: passwords, hashes, salts, SSN/SIN, DOB,
+  // credit card / CVV / OTP / MFA are investigation targets and MUST pass
+  // through to the investigator. Only strip OUR OWN service auth material
+  // (bearer tokens, API keys, session cookies, private keys).
+  /^(token|secret|api[_-]?key|access[_-]?key|private[_-]?key|cookie|session|authorization)$/i;
+const REDACTED = "[REDACTED]";
+function sanitizeToolOutput<T>(input: T, maxStr = 2000, depth = 0): T {
+  if (depth > 8) return REDACTED as unknown as T;
+  if (input == null) return input;
+  if (typeof input === "string") {
+    return (input.length > maxStr ? input.slice(0, maxStr) + "…[truncated]" : input) as unknown as T;
+  }
+  if (typeof input !== "object") return input;
+  if (Array.isArray(input)) {
+    return input.slice(0, 200).map((v) => sanitizeToolOutput(v, maxStr, depth + 1)) as unknown as T;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+    if (SENSITIVE_KEY_RE.test(k)) { out[k] = REDACTED; continue; }
+    out[k] = sanitizeToolOutput(v, maxStr, depth + 1);
+  }
+  return out as unknown as T;
+}
+
+// SSRF guard for any tool that fetches a user/LLM-supplied URL. Blocks
+// loopback, link-local (cloud metadata!), and RFC1918 private ranges so the
+// edge function cannot be turned into a scanner of internal infra.
+function isPrivateHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".internal")) return true;
+  if (h === "::1" || h.startsWith("[::1")) return true;
+  // IPv4
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const [a, b] = [Number(m[1]), Number(m[2])];
+    if (a === 10) return true;
+    if (a === 127) return true;
+    if (a === 0) return true;
+    if (a === 169 && b === 254) return true; // link-local + cloud metadata
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a >= 224) return true; // multicast / reserved
+  }
+  return false;
+}
+function assertSafeUrl(rawUrl: string): URL {
+  const u = new URL(rawUrl);
+  if (!/^https?:$/.test(u.protocol)) throw new Error(`blocked: protocol ${u.protocol}`);
+  if (isPrivateHost(u.hostname)) throw new Error(`blocked: private/internal host ${u.hostname}`);
+  return u;
+}
+
+// ---------------------------------------------------------------------------
+// Attachment archiving — pull a non-HTML source_url, SHA-256 it, and stash in
+// the private `evidence-archive` bucket. Best-effort: failures never throw.
+// Returns archival metadata on success, or null on skip / failure.
+// ---------------------------------------------------------------------------
+const ARCHIVE_MAX_BYTES = 25 * 1024 * 1024;
+const ARCHIVE_OK_TYPES = /^(image\/|application\/(pdf|zip|x-zip-compressed|json|xml|octet-stream|vnd\.|msword|x-)|audio\/|video\/|text\/(csv|plain|xml))/i;
+const ARCHIVE_SKIP_TYPES = /^(text\/html|application\/xhtml)/i;
+
+function extFromContentType(ct: string, url: string): string {
+  const fromUrl = url.match(/\.([a-z0-9]{1,6})(?:\?|#|$)/i)?.[1]?.toLowerCase();
+  if (fromUrl) return fromUrl;
+  const m = ct.split(";")[0].trim().toLowerCase();
+  const map: Record<string, string> = {
+    "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif",
+    "application/pdf": "pdf", "application/zip": "zip", "application/json": "json",
+  };
+  return map[m] ?? "bin";
+}
+async function archiveAttachment(
+  supabaseAdmin: ReturnType<typeof createClient>,
+  threadId: string,
+  userId: string,
+  sourceUrl: string | null,
+): Promise<{ path: string; sha256: string; bytes: number; content_type: string } | null> {
+  if (!sourceUrl) return null;
+  try {
+    const safe = assertSafeUrl(sourceUrl);
+    // HEAD first to gate type + size
+    let ct = "application/octet-stream";
+    let size = 0;
+    try {
+      const head = await fetch(safe.toString(), { method: "HEAD", redirect: "follow" });
+      if (!head.ok) return null;
+      ct = head.headers.get("content-type") ?? ct;
+      size = Number(head.headers.get("content-length") ?? "0");
+      if (ARCHIVE_SKIP_TYPES.test(ct)) return null;
+      if (size > ARCHIVE_MAX_BYTES) return null;
+    } catch {
+      // some servers don't support HEAD; fall through to GET with size guard
+    }
+    const res = await fetch(safe.toString(), { redirect: "follow" });
+    if (!res.ok) return null;
+    // Re-validate post-redirect host
+    try { assertSafeUrl(res.url); } catch { return null; }
+    ct = res.headers.get("content-type") ?? ct;
+    if (ARCHIVE_SKIP_TYPES.test(ct)) return null;
+    if (!ARCHIVE_OK_TYPES.test(ct)) return null;
+    const buf = new Uint8Array(await res.arrayBuffer());
+    if (buf.byteLength > ARCHIVE_MAX_BYTES || buf.byteLength === 0) return null;
+    const digest = await crypto.subtle.digest("SHA-256", buf);
+    const sha256 = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+    const ext = extFromContentType(ct, safe.pathname);
+    const path = `${userId}/${threadId}/${sha256}.${ext}`;
+    const { error: upErr } = await supabaseAdmin.storage
+      .from("evidence-archive")
+      .upload(path, buf, { contentType: ct, upsert: true });
+    if (upErr) {
+      console.warn("[archiveAttachment] upload failed:", upErr.message);
+      return null;
+    }
+    return { path, sha256, bytes: buf.byteLength, content_type: ct };
+  } catch (e) {
+    console.warn("[archiveAttachment] error:", (e as Error).message);
+    return null;
+  }
+}
+
+// Hard-cap the serialized size of UIMessage.parts before persisting. PostgREST
+// silently 500s on multi-MB JSONB inserts, so we drop `output.raw` blobs from
+// tool-result parts (largest contributors) when over budget, then replace any
+// remaining oversized parts with a stub.
+function capPartsSize(parts: unknown[], maxBytes: number): unknown[] {
+  const size = (x: unknown) => JSON.stringify(x).length;
+  if (size(parts) <= maxBytes) return parts;
+  const stripped = parts.map((p) => {
+    const part = p as Record<string, unknown> | null;
+    if (part && (part.type === "tool-result" || part.type === "tool-call")) {
+      const output = part.output as Record<string, unknown> | undefined;
+      if (output && typeof output === "object") {
+        const { raw: _raw, per_source: _ps, ...rest } = output as Record<string, unknown>;
+        return { ...part, output: rest };
+      }
+    }
+    return part;
+  });
+  if (size(stripped) <= maxBytes) return stripped;
+  // Last resort: stub oversized tool-results
+  return stripped.map((p) => {
+    const part = p as Record<string, unknown> | null;
+    if (part && part.type === "tool-result" && size(part) > 100_000) {
+      return { type: "tool-result", toolCallId: part.toolCallId, toolName: part.toolName, output: { truncated: true } };
+    }
+    return part;
+  });
+}
+
+function wrapToolsWithCache(
+  toolsObj: Record<string, any>,
+  ctx: {
+    investigationId: string;
+    userId: string;
+    supabase: ReturnType<typeof createClient>;
+    supabaseAdmin?: ReturnType<typeof createClient>;
+    onCost?: (microUsd: number) => void;
+  },
+) {
+  const wrapped: Record<string, any> = {};
+  const adminDb = ctx.supabaseAdmin ?? ctx.supabase;
+  // Derive a real success flag from a tool's return value. A tool can return
+  // without throwing yet still represent a failure (HTTP non-2xx wrapped into
+  // { ok:false }, an `error` field, or a stub). The wrapper must NOT log such
+  // calls as ok=true — otherwise tool_usage_log lies about reality.
+  const deriveOk = (result: unknown): boolean => {
+    if (!result || typeof result !== "object") return true;
+    const r = result as Record<string, unknown>;
+    if (typeof r.ok === "boolean") return r.ok;
+    if (typeof r.error === "string" && r.error.length > 0) return false;
+    if (r.skipped === true) return false;
+    return true;
+  };
+  // Detect calls that didn't actually consume provider quota / credits so we
+  // don't bill for them: disabled stubs (firecrawl_*), gated tools (intelbase
+  // when unhealthy), and tools that bailed because their API key isn't set.
+  const isFreeCall = (result: unknown): boolean => {
+    if (!result || typeof result !== "object") return false;
+    const r = result as Record<string, unknown>;
+    if (r.skipped === true) return true;
+    if (typeof r.error === "string") {
+      const e = r.error.toLowerCase();
+      if (e.includes("disabled")) return true;
+      if (e.includes("not configured")) return true;
+      if (e.includes("degraded")) return true;
+    }
+    return false;
+  };
+  // Strip anything that looks like an API credential before it lands in
+  // tool_usage_log.error_msg or edge logs. Covers Bearer tokens, OpenAI-style
+  // sk- keys, and Google AIza keys.
+  const redactSecrets = (input: string): string =>
+    input
+      .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+      .replace(/sk-[A-Za-z0-9._-]+/g, "sk-[REDACTED]")
+      .replace(/AIza[A-Za-z0-9_-]+/g, "AIza[REDACTED]");
+  // Pull a human-readable error message + status code out of a tool result
+  // so failed calls leave a durable trace in tool_usage_log.
+  const extractToolError = (
+    result: unknown,
+  ): { errorMsg: string | null; statusCode: number | null } => {
+    if (!result || typeof result !== "object") return { errorMsg: null, statusCode: null };
+    const r = result as Record<string, unknown>;
+    const rawError =
+      typeof r.error === "string"
+        ? r.error
+        : typeof (r as any).message === "string"
+          ? ((r as any).message as string)
+          : null;
+    const errorMsg = rawError ? redactSecrets(rawError).slice(0, 500) : null;
+    const statusCode =
+      typeof r.status === "number"
+        ? (r.status as number)
+        : typeof (r as any).status_code === "number"
+          ? ((r as any).status_code as number)
+          : null;
+    return { errorMsg, statusCode };
+  };
+  for (const [name, t] of Object.entries(toolsObj)) {
+    const tier = tierForTool(name);
+    const model = modelForTool(name);
+    const baseCost = costForTool(name);
+    const scrub = (o: unknown) => (NO_SANITIZE_TOOLS.has(name) ? o : sanitizeToolOutput(o));
+    const logUsage = async (
+      cached: boolean,
+      ok: boolean,
+      durationMs: number,
+      errorMsg: string | null = null,
+      statusCode: number | null = null,
+      freeCall: boolean = false,
+    ) => {
+      const cost = (cached || freeCall) ? 0 : baseCost;
+      if (!cached && !freeCall && cost > 0) ctx.onCost?.(cost);
+      try {
+        const { error } = await adminDb.from("tool_usage_log").insert({
+          user_id: ctx.userId,
+          thread_id: ctx.investigationId,
+          tool_name: name,
+          cost_micro_usd: cost,
+          cached,
+          ok,
+          duration_ms: durationMs,
+          error_msg: ok ? null : errorMsg,
+          status_code: ok ? null : statusCode,
+        });
+        if (error) console.warn(`[tool_usage_log] insert failed for ${name}: ${error.message}`);
+      } catch (e) {
+        console.warn(`[tool_usage_log] insert threw for ${name}:`, e);
+      }
+    };
+    if (NO_CACHE_TOOLS.has(name) || typeof t?.execute !== "function") {
+      // Still wrap so we can tag the output with tier/model badges.
+      if (typeof t?.execute === "function") {
+        const orig = t.execute.bind(t);
+        wrapped[name] = {
+          ...t,
+          execute: async (input: unknown, opts: unknown) => {
+            const t0 = Date.now();
+            let ok = true;
+            let out: unknown;
+            let errInfo: { errorMsg: string | null; statusCode: number | null } = { errorMsg: null, statusCode: null };
+            try {
+              out = await orig(input, opts);
+              ok = deriveOk(out);
+              if (!ok) errInfo = extractToolError(out);
+              return tagTier(scrub(out), tier, model);
+            } catch (e) {
+              ok = false;
+              errInfo = { errorMsg: redactSecrets(String((e as Error)?.message ?? e)).slice(0, 500), statusCode: null };
+              throw e;
+            }
+            finally { logUsage(false, ok, Date.now() - t0, errInfo.errorMsg, errInfo.statusCode, isFreeCall(out)); }
+          },
+        };
+      } else {
+        wrapped[name] = t;
+      }
+      continue;
+    }
+    const originalExecute = t.execute.bind(t);
+    const ttl = TOOL_TTL_MS[name] ?? null;
+
+    wrapped[name] = {
+      ...t,
+      execute: async (input: unknown, opts: unknown) => {
+        const t0 = Date.now();
+        // ---- Circuit breaker + dedup gate ----
+        const sel = circuit.normalizeSelector(
+          String((input as any)?.kind ?? ""),
+          (input as any)?.value ?? (input as any)?.email ?? (input as any)?.username ?? (input as any)?.domain ?? (input as any)?.ip ?? (input as any)?.phone ?? (input as any)?.url ?? "",
+        );
+        const purpose = String((input as any)?.purpose ?? "default");
+        const force = (input as any)?.force === true;
+        const decision = circuit.shouldRun(ctx.investigationId, name, sel, purpose, { force });
+        if (!decision.allow) {
+          await logUsage(false, false, Date.now() - t0, decision.reason, null, true);
+          return { ok: false, skipped: true, error: decision.reason, _breaker: true };
+        }
+        let hash: string;
+        try { hash = await hashInput(input); }
+        catch {
+          let ok = true;
+          let out: unknown;
+          let errInfo: { errorMsg: string | null; statusCode: number | null } = { errorMsg: null, statusCode: null };
+          try {
+            out = tagTier(scrub(await originalExecute(input, opts)), tier, model);
+            ok = deriveOk(out);
+            if (!ok) errInfo = extractToolError(out);
+            return out;
+          } catch (e) {
+            ok = false;
+            errInfo = { errorMsg: redactSecrets(String((e as Error)?.message ?? e)).slice(0, 500), statusCode: null };
+            throw e;
+          }
+          finally { logUsage(false, ok, Date.now() - t0, errInfo.errorMsg, errInfo.statusCode, isFreeCall(out)); }
+        }
+        const key = `${ctx.investigationId}:${name}:${hash}`;
+        const now = Date.now();
+        const fresh = (createdAt: number) => ttl == null || (now - createdAt) < ttl;
+
+        // 1) in-memory
+        const mem = TOOL_CACHE_LRU.get(key);
+        if (mem && fresh(mem.createdAt)) {
+          logUsage(true, true, Date.now() - t0);
+          return markCached(mem.output, new Date(mem.createdAt).toISOString(), "memory");
+        }
+
+        // 2) database
+        try {
+          const { data } = await ctx.supabase
+            .from("tool_call_cache")
+            .select("output_json, created_at")
+            .eq("investigation_id", ctx.investigationId)
+            .eq("tool_name", name)
+            .eq("input_hash", hash)
+            .maybeSingle();
+          if (data) {
+            const createdAt = new Date((data as any).created_at).getTime();
+            if (fresh(createdAt)) {
+              const output = (data as any).output_json;
+              TOOL_CACHE_LRU.set(key, { output, createdAt });
+              logUsage(true, true, Date.now() - t0);
+              return markCached(output, (data as any).created_at, "db");
+            }
+          }
+        } catch { /* fall through to live call */ }
+
+        // 3) live
+        let ok = true;
+        let result: unknown;
+        let errInfo: { errorMsg: string | null; statusCode: number | null } = { errorMsg: null, statusCode: null };
+        try {
+          result = tagTier(scrub(await originalExecute(input, opts)), tier, model);
+          ok = deriveOk(result);
+          if (!ok) errInfo = extractToolError(result);
+          circuit.recordResult(ctx.investigationId, name, sel, purpose, {
+            status: circuit.classifyResult(result, null),
+            artifactCount: 0,
+          });
+        } catch (e) {
+          ok = false;
+          const msg = redactSecrets(String((e as Error)?.message ?? e)).slice(0, 500);
+          logUsage(false, false, Date.now() - t0, msg, null);
+          circuit.recordResult(ctx.investigationId, name, sel, purpose, {
+            status: circuit.classifyResult(null, e),
+            artifactCount: 0,
+          });
+          throw e;
+        }
+        const createdAtIso = new Date().toISOString();
+        // Only cache successful results — caching a failure would poison
+        // subsequent calls with the same input.
+        if (ok) {
+          TOOL_CACHE_LRU.set(key, { output: result, createdAt: Date.now() });
+          try {
+            await ctx.supabase.from("tool_call_cache").upsert(
+              {
+                investigation_id: ctx.investigationId,
+                tool_name: name,
+                input_hash: hash,
+                input_json: normalizeForHash(input) as unknown as Record<string, unknown>,
+                output_json: result as unknown as Record<string, unknown>,
+                created_at: createdAtIso,
+              },
+              { onConflict: "investigation_id,tool_name,input_hash" },
+            );
+          } catch { /* best-effort */ }
+        }
+        logUsage(false, ok, Date.now() - t0, errInfo.errorMsg, errInfo.statusCode, isFreeCall(result));
+        if (AUTO_EVIDENCE_TOOLS.has(name)) {
+          // Fire-and-forget: never let auto-evidence block the tool result.
+          autoAppendToolEvidence(ctx.supabase, ctx, name, input, result).catch(() => {});
+        }
+        return result;
+      },
+    };
+  }
+  return wrapped;
+}
+
+// Tag a tool result with the model tier that produced it so the timeline can
+// render a "fast" / "smart" badge. Non-object results get wrapped.
+function tagTier(output: unknown, tier: Tier, model: string) {
+  if (output && typeof output === "object" && !Array.isArray(output)) {
+    const o = output as Record<string, unknown>;
+    // Don't overwrite a more specific tier already set by the tool itself.
+    return { ...o, _tier: o._tier ?? tier, _model: o._model ?? model };
+  }
+  return { value: output, _tier: tier, _model: model };
+}
+
+// Tools whose outputs are already small/safe and should NOT be passed through
+// sanitizeToolOutput (it would just waste cycles or strip legitimate fields
+// that look like sensitive keys — e.g. our own `record_artifact` payloads).
+const NO_SANITIZE_TOOLS = new Set<string>([
+  "list_tools",
+  "record_artifact",
+  "record_artifacts",
+  "record_evidence",
+  "memory_recall",
+  "memory_save",
+  "jina_reader_scrape",
+]);
+
+// Tools whose results should be auto-mirrored into the chain-of-custody log
+// so investigators always have a tamper-evident record of breach/leak/footprint
+// queries — even when the agent forgets to call record_evidence.
+const AUTO_EVIDENCE_TOOLS = new Set<string>([
+  "breach_check",
+  "leakcheck_lookup",
+  "stolentax_footprint",
+  "intelbase_email_lookup",
+  "oathnet_lookup",
+  "deepfind_reverse_email",
+  "deepfind_profile_analyzer",
+  "hunter_combined",
+  "username_sweep",
+  "jina_reader_scrape",
+]);
+
+function extractEvidenceSeed(input: unknown): string {
+  if (!input || typeof input !== "object") return "";
+  const o = input as Record<string, unknown>;
+  for (const k of ["email", "value", "seed", "username", "phone", "domain", "ip", "query", "target"]) {
+    const v = o[k];
+    if (typeof v === "string" && v.trim()) return v.trim().slice(0, 200);
+  }
+  return "";
+}
+
+function countHits(output: unknown): number {
+  if (!output || typeof output !== "object") return 0;
+  const o = output as Record<string, unknown>;
+  for (const k of ["total", "count", "hit_count", "found"]) {
+    const v = o[k];
+    if (typeof v === "number" && v > 0) return v;
+  }
+  for (const k of ["hits", "results", "breaches", "sources", "accounts"]) {
+    const v = o[k];
+    if (Array.isArray(v)) return v.length;
+  }
+  return 0;
+}
+
+async function autoAppendToolEvidence(
+  userDb: ReturnType<typeof createClient>,
+  ctx: { investigationId: string; userId: string },
+  toolName: string,
+  input: unknown,
+  output: unknown,
+) {
+  try {
+    const seed = extractEvidenceSeed(input);
+    if (!seed) return;
+    const hits = countHits(output);
+    // soft = procedural record of the query (incl. confirmed-clean zero-hit runs)
+    const snapshot = JSON.stringify({ input, summary: { hits } }).slice(0, 1500);
+    await userDb.rpc("append_evidence", {
+      _thread_id: ctx.investigationId,
+      _artifact_id: null,
+      _tool_name: toolName,
+      _source: toolName,
+      _source_url: null,
+      _classification: "soft",
+      _confidence: null,
+      _kind: "tool_query",
+      _value: seed,
+      _content_snapshot: snapshot,
+      _metadata: { tool: toolName, hits, auto: true },
+    });
+  } catch (e) {
+    console.warn(`[auto_evidence] ${toolName} failed:`, (e as Error).message);
+  }
+}
+
+function markCached(output: unknown, cachedAt: string, layer: "memory" | "db") {
+  if (output && typeof output === "object" && !Array.isArray(output)) {
+    return { ...(output as Record<string, unknown>), _cached: true, _cached_at: cachedAt, _cache_layer: layer };
+  }
+  return { value: output, _cached: true, _cached_at: cachedAt, _cache_layer: layer };
+}
+
+// Compact system prompt — role + workflow + batching + gating + a pointer to
+// `list_tools` for the full catalog. Stays under ~1.5k tokens. Tool-specific
+// guidance (when to use each tool, per-seed fan-out lists) lives in the
+// TOOL_CATALOG returned by the `list_tools` meta-tool.
+const SYSTEM_PROMPT = `You are PROXIMITY, a recursive OSINT investigator. The user gives a seed (email, username, phone, IP, domain, URL, or crypto wallet). Investigate it, pivot on every new identifier you find, and write a final report.
+
+## Workflow
+- RECURSIVE PIVOTING. Every artifact a tool returns is a new seed. Pivot on it with the right tools, then pivot on what that returns. Stop only when a full round produces no new artifacts, or you've used ~90 of your 100 step budget.
+- Don't re-pivot on identifiers you already queried. Skip noise (CDN IPs, generic infra like cloudflare.com / google.com / ad networks).
+- Run fan-outs in PARALLEL inside a single assistant turn — multiple tool calls at once.
+- For email and username seeds, the FIRST call MUST be \`triage_seed\` (records Stage-1 baseline). Stage-2 tools are open as soon as triage runs — do NOT tell the user they are "blocked" or "gated"; pursue every promising pivot.
+
+## Gating (enforced in code — calling against the guard wastes a step)
+- Stage-2 tools (oathnet_lookup, github_code_search, google_dorks, minimax_web_search, urlscan_search) only require that triage_seed has run. Any seed is fair game for follow-up pivots (minimax_web_search on the name/handle, urlscan on related domains, github_code_search on handles, etc.).
+- BREACH-SOURCE BUDGET POLICY (strict):
+  • \`breach_check\` (stolen.tax OsintCat) is the MAIN breach source — 1000 calls/day. Fire it on every email seed, every newly discovered email, and every promising username. This is the default.
+  • \`leakcheck_lookup\` (LeakCheck Pro v2) is the SECONDARY breach source — 200 calls/day. Run it as a corroborating second opinion on every confirmed email and every high-value username (especially when breach_check returns 0 or thin results, or when you want password/source detail). Do NOT spam it on weak handles.
+  • \`oathnet_lookup\` (100 calls/day) is a CORROBORATING breach + identity source — fire it ONCE per high-value email, username, phone, or domain seed (and once per newly-confirmed email/handle surfaced mid-run). Run it in PARALLEL with breach_check / leakcheck_lookup / intelbase_email_lookup — do NOT wait for them to "fail" first. Skip it only when you've already burned >50 oathnet calls this session or a call literally returned HTTP 429. For ip seeds, oathnet_lookup returns geo+ASN and should be called alongside ip_intel.
+  • DO NOT tell the user the OathNet quota is "exhausted" or "depleted" unless a tool call literally returned an HTTP 429.
+  • DO NOT tell the user stolen.tax / breach_check was skipped if it actually ran and returned 0 hits. 0 hits is a real finding — record it as [CONFIRMED] clean. Only claim a tool was skipped when guard_state.skipped === true.
+- google_dorks is ALWAYS allowed (no API cost, no quota — just generates query URLs). Fire it EARLY on every seed type: email, username, phone, name, domain, ip, hash, and crypto_wallet. Do NOT wait for triage clearance. Aim to call \`google_dorks\` at least once per fan-out round, and re-call it on any high-value newly-discovered artifact (a freshly confirmed email, a new domain, a new phone, a new wallet address). The output is the user's manual-investigation menu — be generous with it.
+- IMMEDIATELY after \`google_dorks\`, call \`dork_harvest\` with the same seed+kind. \`dork_harvest\` runs the document/leak dorks through web search and AUTO-RECORDS any PDFs, Office docs, CSV/SQL/log/env dumps, and pastebin URLs as artifacts (kind='document' or 'leak_paste'). The artifacts it inserts are already saved — do NOT re-record them via record_artifacts.
+- WEB SEARCH + SCRAPE: \`jina_reader_scrape\` is the #1 PRIMARY scraper for ANY URL — free, unlimited, always your first pick over any other scrape path. \`exa_search\` + \`minimax_web_search\` are the web search tools (run BOTH in parallel on any meaningful query). \`exa_get_contents\` for bulk URL reading. \`exa_find_similar\` on every confirmed profile URL. **PERMANENTLY DISABLED — never call: firecrawl_search, firecrawl_scrape, firecrawl_map (credits exhausted, immediate error); intelbase_email_lookup (gated due to instability — substitute oathnet_lookup + leakcheck_lookup + bosint_email_lookup).** Any call to a disabled tool wastes a planner step and burns nothing useful.
+- SOCIALFETCH PRIORITY (10k credit pool — be aggressive): For ANY tiktok / instagram / twitter / facebook handle or profile URL surfaced at any point in the investigation, \`socialfetch_lookup\` is the FIRST choice. Fan out across all four supported platforms in parallel on every newly confirmed handle. For unsupported platforms (youtube, twitch, soundcloud, roblox, linkedin, mastodon, etc.) or when SocialFetch errors / 429s / returns empty, FALLBACK is \`jina_reader_scrape\` on the profile URL.
+- Any URL surfaced by ANY tool that ends in .pdf / .doc(x) / .ppt(x) / .xls(x) / .csv / .txt / .log / .sql / .bak / .env / .json / .xml / .yaml / .zip / .tar / .gz / .7z / .rar / .pcap / .map → record as kind='document'. Any URL on pastebin.com, rentry.co, ghostbin.co, justpaste.it, controlc.com, 0bin.net, hastebin.com, paste.ee, gist.github.com → record as kind='leak_paste'. Always include \`source\` (the tool name) and \`metadata.discovered_via\` for provenance.
+- minimax_correlate: only when ≥3 new artifacts since last correlation, or at end of fan-out round. Skip if last round produced 0 artifacts.
+- minimax_plan_pivots: at most once per fan-out round, at the end. Skip if last round produced 0 artifacts.
+- If a tool returns \`{ skipped: true, reason: "skipped: guard not met" }\`, do NOT retry it — move on or stop.
+- TOOL RECOMMENDATIONS: when the user asks "what tool should I use for X" (or you need to suggest an external third-party tool you don't have wired), call \`osint_navigator_query\` (natural language) or \`osint_navigator_search\` (keyword + optional category: domains_websites / social_media / image_video_analysis / geolocation_mapping / transport / companies). Cite only tool names + URLs returned by the API — NEVER invent a tool. If the result is empty, say so and suggest the user broaden the query.
+
+## Recording (batching is MANDATORY)
+- Record every discrete intelligence item with a confidence 0-100 (corroborated by 2+ sources = 80+, single source = 40-60, inferred = 20-40).
+- Use \`record_artifacts\` with an ARRAY containing every artifact found in the current fan-out round. ONE call per turn, never multiple. A round that finds 10 items = 1 call with 10 entries.
+
+## Memory (cross-investigation learning — MANDATORY)
+- FIRST TURN, IN PARALLEL with triage_seed (or as the very first call for non-email/username seeds), call \`memory_recall\` with the raw seed value. If it returns prior connections, identity clusters, or lessons, INCORPORATE them into your plan and CITE them in the final report as "[MEMORY] previously corroborated".
+- After EVERY high-value pivot (new confirmed email / handle / domain / wallet / person name), call \`memory_recall\` with that new value before burning fresh API calls — you may already have prior knowledge.
+- BEFORE writing the final report, call \`memory_save\` ONCE with a batch of every durable lesson from this run:
+    • kind='identity'    — confirmed identity cluster (subject = primary handle/email; related_values = corroborating values)
+    • kind='connection'  — confirmed link between two artifacts (subject = canonical anchor; related_values = the linked values)
+    • kind='pattern'     — recurring infra/behavior (e.g. "stripe-checkout-* subdomains always point to this org")
+    • kind='lesson'      — what to do or NOT do next time (e.g. "breach_check returned 0 here — this email is clean, skip re-checking")
+  Confidence should reflect corroboration strength (2+ sources = 80+, single source = 40-60). The agent_memory store is YOUR long-term brain — feed it generously.
+
+## Agentic pivoting + confidence
+- Be DECISIVE about confidence. Mark artifacts as [CONFIRMED] (≥80) the moment two independent sources corroborate them. Don't hedge endlessly on solid leads.
+- Drive the next pivot from the WEAKEST link in the current identity graph — what's the single artifact that, if confirmed, collapses uncertainty fastest? Pivot there first.
+- A finding with only one source AND no corroboration after a full fan-out round = [INFERRED] at most 50. Flag it as "needs corroboration" in the report.
+- If you find a clear contradiction (two artifacts that can't both be true), don't paper over it — split clusters and write a "Conflicts" section.
+
+## Tool catalog
+You have ~30 tools. If you need the full list of tool names, descriptions, when-to-use guidance, and per-seed fan-out recipes, call \`list_tools\` ONCE at the start. The catalog is cached for the rest of the investigation.
+
+## Output discipline
+- Stream short status lines as you pivot ("→ found 3 emails, pivoting...").
+- Final message MUST contain: (1) a Findings table, (2) a Network section showing how the dots connect, (3) a Summary with strongest leads and any pivots skipped due to budget. Cite the source tool for every hard finding.
+
+Ethics: refuse hacking, doxxing of private individuals without justification, harassment, or targeting minors. Public-figure accountability, fraud, and security research are fine.
+
+SAFETY RAILS (HARD STOPS):
+- Credential masking: passwords, hashes, tokens, and API keys are auto-masked at insert. NEVER paste full plaintext credentials into chat replies or report tables — refer to them as "(masked, N chars, source X)".
+- Minor-safety detection: scan every social bio, profile description, and "about" field. Signals = (a) age numbers 13–17 near cues ("i'm 13", "im 13", "age 13", "13 y/o", "13yo"), (b) phrases like "minor", "underage", "middle school", "junior high", "freshman", "teen", grade 6–11. On ANY signal: STOP further auto-pivots on that account, set metadata.possible_minor=true, metadata.sensitive=true, label the artifact [VERIFY] (or [LOW]), and do NOT enumerate the subject's other accounts, locations, contacts, schools, or co-mingle it with adult-platform findings in the primary identity map (record adult-platform associations only inside a separate "Safety / Collision Warning" block). The scrubber sets these flags automatically when bio text is in artifact metadata — your job is to refuse to pivot once the flag is set. In the final report, write exactly: "Possible minor-related signal detected in profile text. Do not expand or expose details without lawful purpose and manual review."
+- Adult-platform sensitivity: profiles on OnlyFans, Fansly, Pornhub, ManyVids, Chaturbate, etc. must be recorded as [VERIFY] with metadata.sensitive=true and never auto-CONFIRMED. Do not include explicit descriptions in the report. NEVER co-list an adult-platform profile in the same identity cluster as an artifact with metadata.possible_minor=true without an explicit Safety/Collision warning.
+- Label discipline: username_sweep / stolentax_footprint / deepfind_reverse_email hits are [VERIFY] on their own — they only prove a handle is taken on a site, not identity ownership. A username can be [CONFIRMED] only when a direct profile source (socialfetch_lookup, github_user, reddit_user, gravatar_profile, or jina_reader_scrape on the actual profile page) returns meaningful profile metadata. Breach-only names/phones/addresses/DOBs are [VERIFY], or [CORRELATED] when their metadata.parent is the seed email.
+- Friends-list / followers / community-page discipline: NEVER record usernames or names scraped from a target's social graph (Steam friends list, Discord member list, IG followers, Twitter following, Telegram channel members, etc.) as standalone artifacts. They are NOT identifiers of the target. Only record a graph-neighbor handle if it is independently corroborated — appears in breach data, in username_sweep against the same handle, or in a direct DM/post referencing the target. Scraping 10+ random usernames off one community page is a clear sign you are recording noise — stop and pivot on the target's own profile fields (bio, links, location) instead.`;
+
+const IDENTITY_CLUSTER_RULES = `
+
+## Identity cluster separation (MANDATORY for person/name searches)
+- NEVER merge two same-name people into one identity unless at least TWO strong identifiers overlap.
+- Strong identifiers: exact email, exact phone, exact username reused with corroborating profile data, exact address, exact DOB + another match, or source-linked profile page.
+- Same name alone = weak. Same common username alone = moderate, not definitive.
+- Breach-only co-occurrence (two values appearing in the same leak record) is UNVERIFIED unless a second source class corroborates it. Do not promote breach co-occurrence to "confirmed identity".
+- Conflicting geography (different US state, different phone area code, IP geo vs claimed address mismatch) MUST trigger cluster separation. Emit "Cluster A" and "Cluster B" instead of forcing a single identity.
+- If the seed includes a location (e.g. "josh gillman rocklin ca"), prioritize artifacts matching that location. Label out-of-area same-name matches as "possible different person — out-of-area same-name collision".
+- NEVER label DOB, phone, address, or SSN-derived information as CONFIRMED from breach data alone. Use INFERRED or VERIFY.
+- If a later user message corrects the investigation (e.g. "X is the real email, Y is a different person"), add a "Correction Applied" note in the next report and separate the prior mistaken cluster from the corrected one. Do not repeat the prior wrong conclusion as final truth.
+
+## Final report structure (REQUIRED for name + location seeds)
+1. Seed
+2. Search Scope
+3. Candidate Identity Clusters (Cluster A: location-matching candidate · Cluster B: out-of-area same-name candidate)
+4. Evidence Supporting Each Cluster
+5. Conflicts / Non-Matches
+6. What Is Actually Corroborated
+7. What Is Not Corroborated
+8. Recommended Next Pivots
+
+Do NOT write "the subject is not from <seed location>" just because the strongest cluster you found points elsewhere. Write "No direct <seed location> corroboration found in this run; a separate out-of-area same-name cluster was found."
+
+Add a visible "Potential same-name collision detected" warning at the TOP of the report whenever any of these conditions hold: same name with conflicting locations, different emails pointing to different regions, conflicting phone/address/DOB across artifacts, IP geography conflicting with a claimed address, or the seed location is not directly corroborated.`;
+
+const PERSON_SEARCH_RULES = `
+
+## Person/name-location seed handling (MANDATORY when seed kind = "person")
+- Treat the seed as a SEARCH QUERY, not a handle. Never call \`username_sweep\` / \`username_search\` on the raw seed — it contains spaces. Derive candidate handles (firstlast, first.last, flast, firstl, etc.) and sweep those individually.
+- Default fan-out: \`minimax_web_search(name + location)\`, \`google_dorks(name)\`, optional \`hunter_email_finder\` if a corporate domain is known.
+- Record each candidate identity as a SEPARATE cluster. Do NOT collapse same-name results into one entity.
+- User corrections are CONTEXT, not proof. In the report, write "User-provided correction/context — requires independent verification." and keep the prior mistaken cluster visible but clearly demoted.
+
+## Final report structure for person/name/location seeds (REQUIRED)
+1. Seed
+2. Search Scope
+3. Candidate Identity Clusters
+4. Evidence Supporting Each Cluster
+5. Conflicts / Non-Matches
+6. What Is Corroborated
+7. What Is Not Corroborated
+8. Recommended Next Pivots`;
+
+const SYSTEM_PROMPT_FULL = SYSTEM_PROMPT + IDENTITY_CLUSTER_RULES + PERSON_SEARCH_RULES;
+
+// ===== Tool catalog =====
+// Returned by the `list_tools` meta-tool. Lifted OUT of the system prompt so
+// the prompt stays small. The model calls list_tools at most once per
+// investigation (cached in CATALOG_CACHE keyed by investigation_id).
+type CatalogEntry = { name: string; description: string; when_to_use: string; input: string };
+const TOOL_CATALOG: { tools: CatalogEntry[]; fan_outs: Record<string, string[]>; notes: string } = {
+  tools: [
+    { name: "triage_seed", description: "MANDATORY first call for email/username seeds. Runs Stage-1 cheap tools in parallel and decides which Stage-2 expensive tools unlock.", when_to_use: "First tool call on email or username seeds. Never on ip/domain/phone/url/crypto.", input: "{ seed: string, type: 'email'|'username' }" },
+    { name: "emailrep",       description: "Reputation score, profile presence, suspicious-domain flag for an email.", when_to_use: "Cheap Stage-1 signal for emails. Auto-fired by triage_seed.", input: "{ email: string }" },
+    { name: "gravatar_profile", description: "Gravatar lookup — confirms a real avatar/profile linked to an email.", when_to_use: "Cheap Stage-1 signal for emails. Auto-fired by triage_seed.", input: "{ email: string }" },
+    { name: "breach_check",   description: "MAIN breach source — stolen.tax (1000 calls/day). Now fans out in parallel to OsintCat database-search (email+password combos), Snusbase (identity records: name/phone/address/DOB), and OsintCat breach. Returns combined hit count plus per-source samples.", when_to_use: "Default breach lookup. Auto-fired by triage_seed. Run again on every newly found email or promising username — budget is generous. Run minimax_extract on data.raw to pull names/phones/addresses out of Snusbase results.", input: "{ email?: string, value?: string }" },
+    { name: "stolentax_footprint", description: "stolen.tax OsintCat-Footprint — account-discovery sweep across ~127 sites. Complements deepfind_reverse_email with a different site list and richer per-site metadata.", when_to_use: "Every confirmed email and every promising username. Pair with deepfind_reverse_email for the widest account-discovery coverage.", input: "{ value: string, type?: 'auto'|'email'|'username' }" },
+    { name: "leakcheck_lookup", description: "SECONDARY breach source — LeakCheck Pro v2 (200 calls/day). Returns leak sources, breach dates, and where present passwords/usernames for an email, username, or phone.", when_to_use: "Corroborate breach_check on confirmed emails and high-value handles. Especially valuable when breach_check returns 0 hits or thin data, or you want password/source detail. Do not spam on weak handles — 200/day budget.", input: "{ value: string, type?: 'auto'|'email'|'username'|'phone'|'hash'|'domain' }" },
+    { name: "hibp_lookup", description: "Have I Been Pwned v3 — Troy Hunt's authoritative breach + paste corpus. Returns breach metadata (name, domain, date, data classes) for an email. Rate: 1 req/1.5s.", when_to_use: "Corroborate breach_check + leakcheck_lookup on every CONFIRMED email seed. Skip on speculative addresses.", input: "{ email, include_pastes?, truncate? }" },
+    { name: "intelbase_email_lookup", description: "IntelBase email lookup — aggregated breach + profile modules with optional data-breach detail. Primary email enrichment source (unlimited on current plan).", when_to_use: "Stage 2 (gated). FIRST choice for email seeds — run BEFORE oathnet_lookup to preserve the daily oathnet quota.", input: "{ email, include_data_breaches?, timeout_ms?, exclude_modules? }" },
+    { name: "bosint_email_lookup", description: "OSINTNova (Bosint) email exposure check — surface-level breach + exposure indicators. 1000/day shared with bosint_phone_lookup.", when_to_use: "Fire ONCE per email seed and once per newly-confirmed email mid-run, in parallel with breach_check / leakcheck_lookup / intelbase_email_lookup / oathnet_lookup.", input: "{ email }" },
+    { name: "bosint_phone_lookup", description: "OSINTNova (Bosint) phone intelligence — carrier, location, line type, timezone, associated names. 1000/day shared with bosint_email_lookup.", when_to_use: "Fire ONCE per phone seed (E.164 with country code) in parallel with leakcheck_lookup + oathnet_lookup. Best phone enrichment we have.", input: "{ phone }" },
+    { name: "osint_navigator_query", description: "OSINT Navigator (navigator.indicator.media) — natural-language tool recommendation. Returns curated, verified OSINT tools (name + URL) for the asked workflow. Use to discover the right third-party tool to suggest to the user; do NOT invent tools.", when_to_use: "When the user asks for tool recommendations, or when planning a pivot you don't already have a wired tool for and want to point the user at a vetted external tool.", input: "{ query: string, skip_cache?: boolean }" },
+    { name: "osint_navigator_search", description: "OSINT Navigator direct keyword/category tool-database search. Categories: domains_websites, social_media, image_video_analysis, geolocation_mapping, transport, companies.", when_to_use: "Browsing alternatives or when you already know the category. Pair with osint_navigator_query for natural-language follow-ups.", input: "{ query: string, category?: string, limit?: number }" },
+     { name: "oathnet_lookup", description: "Corroborating leaked-data + identity source. v2 breach search for email/username/phone/domain; geo+ASN for ip. 100 calls/day.", when_to_use: "Fire ONCE per high-value email/username/phone/domain in parallel with the other breach sources; once per newly-confirmed email/handle mid-run; on every ip seed (geo+ASN).", input: "{ kind, value }" },
+    { name: "synapsint_lookup", description: "Synapsint multi-endpoint aggregator. Endpoints: links/subdomains/dns/waf/tenant/leaks/whoisd/dmarc/sh/tls/ranking/pastes/dnssec (domain); check/rip/whoiss (ip); asn; email; cve. Free-tier quota.", when_to_use: "Secondary corroboration for domain/ip/email/cve/asn seeds. Especially useful for rip (shared-hosting neighbors), tenant (M365), pastes, and domain-wide leaks that other tools don't cover.", input: "{ endpoint, value }" },
+    { name: "socialfetch_lookup", description: "PRIMARY profile fetch for tiktok/instagram/twitter/facebook handles (10k credit pool — use aggressively).", when_to_use: "FIRST choice on any handle confirmed for tiktok/instagram/twitter/facebook. Fan out across all four platforms in parallel on every newly discovered handle. Profile bios contain links, names, and locations that drive the next pivot. Fall back to jina_reader_scrape if SocialFetch errors.", input: "{ platform, username }" },
+    { name: "cordcat_discord_lookup", description: "CordCat Discord OSINT — given a 17-20 digit Discord snowflake ID, returns Discord profile (username, global_name, avatar, banner, public_flags), breach hits, FiveM records, and DSA sanction statements.", when_to_use: "Every Discord snowflake ID surfaced as a seed or pivot. The Discord username alone is NOT enough — extract the numeric ID first (e.g. via jina_reader_scrape on a Discord profile/invite page). 60 req/hour budget.", input: "{ discord_id: string }" },
+    { name: "jina_reader_scrape", description: "ONLY single-page scraper. Free Jina Reader returns clean LLM-ready markdown for any public URL.", when_to_use: "Default for ANY scrape/extract-content task: profile pages, articles, forums, leak listings, dorks hits, Discord/Telegram web links, anything where you want the page body. Free — fire liberally.", input: "{ url, maxChars? }" },
+    { name: "exa_search", description: "Exa neural+keyword search with optional inline contents. Categories: company, research paper, news, pdf, github, tweet, personal site, linkedin profile, financial report. Date-bounded via startPublishedDate/endPublishedDate.", when_to_use: "PRIMARY web search alongside minimax_web_search — run BOTH in parallel. Best for: semantic person/company discovery (neural mode), linkedin/personal-site/research-paper category-filtered queries, and any time-bounded news/research sweep.", input: "{ query, type?, numResults?, includeDomains?, excludeDomains?, startPublishedDate?, endPublishedDate?, category?, contents? }" },
+    { name: "exa_find_similar", description: "Exa findSimilar — given a known URL, return semantically similar pages.", when_to_use: "After confirming any single profile URL (linkedin profile, personal site, github, twitter) — use to find the same person's other profiles or related entities. Powerful identity-pivot tool.", input: "{ url, numResults?, excludeSourceDomain?, contents? }" },
+    { name: "exa_get_contents", description: "Exa /contents — fetch full text + AI summary + highlights for up to 10 URLs in one call. Best for bulk URL reading.", when_to_use: "When you have several URLs from exa_search / dorks and want their text in one batch instead of N jina_reader_scrape calls. Set livecrawl='always' for breaking news or pages you suspect Exa has cached stale.", input: "{ urls: string[], livecrawl?, text?, highlights?, summary?, maxCharacters? }" },
+    { name: "ip_intel",       description: "IP geolocation, ASN, hosting info.", when_to_use: "Every ip seed and every IP discovered from DNS.", input: "{ ip: string }" },
+    { name: "shodan_internetdb", description: "Open ports, vulns, cert subjects for an IP/domain via Shodan InternetDB.", when_to_use: "ip seeds and on resolved IPs of domain seeds.", input: "{ value }" },
+    { name: "whois_lookup",   description: "RDAP/WHOIS registrant data for a domain.", when_to_use: "Every domain seed. Pivot on registrant email/name.", input: "{ domain }" },
+    { name: "dns_records",    description: "A/AAAA/MX/NS/TXT records for a domain.", when_to_use: "Every domain seed. Pivot on returned IPs and MX hostnames.", input: "{ domain }" },
+    { name: "crtsh_subdomains", description: "Certificate-transparency subdomain discovery.", when_to_use: "Every domain seed. Each subdomain → http_fingerprint.", input: "{ domain }" },
+    { name: "hackertarget",   description: "Reverse-IP and hostsearch via hackertarget.com.", when_to_use: "domain (hostsearch) and ip (reverseiplookup) seeds.", input: "{ kind, value }" },
+    { name: "username_sweep", description: "Built-in Username Sweep: parallel HTTP existence check across ~95 platforms for a handle. Edge-native. Only call this on a handle with NO spaces. Do NOT call it on a full name or name+location seed — derive candidate handles first.", when_to_use: "Every username/handle. Results are [VERIFY] — never confirmed alone.", input: "{ username }" },
+    { name: "username_search", description: "Alias of username_sweep (same built-in ~95-site existence check). Same no-spaces rule applies.", when_to_use: "When you want a narrower confirmation than username_sweep.", input: "{ username, platforms? }" },
+    { name: "github_user",    description: "GitHub profile, public emails, repos, bio.", when_to_use: "Every username seed and on github.com hits from sweep.", input: "{ username }" },
+    { name: "github_code_search", description: "Search public GitHub code for a string.", when_to_use: "Stage 2 (gated): non-consumer domain only. Find leaks/configs that mention the seed.", input: "{ query }" },
+    { name: "hunter_domain_search", description: "Hunter.io domain search — emails associated with a domain plus department/seniority/sources.", when_to_use: "Every non-consumer domain seed and every domain pivoted from an email. Cheap and high-signal.", input: "{ domain, limit?, department?, seniority? }" },
+    { name: "hunter_email_finder", description: "Hunter.io email finder — guess + verify an email from a person's name and a domain.", when_to_use: "When you have a name + corporate domain pair and want a likely email.", input: "{ domain, first_name?, last_name?, full_name? }" },
+    { name: "hunter_email_verifier", description: "Hunter.io deliverability + risk verification for an email address.", when_to_use: "Run on any new high-value email to grade confidence (deliverable / risky / undeliverable, MX, SMTP, disposable, webmail).", input: "{ email }" },
+    { name: "hunter_combined", description: "Hunter.io combined person + company enrichment for an email.", when_to_use: "Run on every confirmed email — returns name, role, social links, company info, employee count, tech stack.", input: "{ email }" },
+    { name: "archive_url", description: "Submit a URL to the Wayback Machine to create a permanent archived snapshot (chain of custody).", when_to_use: "After confirming any evidence URL that may disappear (social posts, leak listings, scam sites). Required for [CONFIRMED] findings on volatile sources.", input: "{ url }" },
+    { name: "hackernews_user",description: "Hacker News profile + recent comments.", when_to_use: "Every username seed.", input: "{ username }" },
+    { name: "reddit_user",    description: "Reddit profile + recent activity.", when_to_use: "Every username seed.", input: "{ username }" },
+    { name: "wayback_snapshots", description: "Wayback Machine snapshot index for a URL.", when_to_use: "url seeds. Extract old emails/handles from snapshots.", input: "{ url }" },
+    { name: "http_fingerprint", description: "Live HTTP fetch + headers + title + meta.", when_to_use: "url and subdomain seeds. Feed the body to minimax_extract.", input: "{ url }" },
+    { name: "crypto_wallet",  description: "Chain lookup — balance, tx count, related addresses.", when_to_use: "crypto seeds and any wallet address discovered.", input: "{ chain, address }" },
+    { name: "google_dorks",   description: "Pre-built Google dork queries.", when_to_use: "Stage 2 (gated): requires a known name or username artifact.", input: "{ target, kind? }" },
+    { name: "dork_harvest",   description: "Run the document/leak dorks and AUTO-RECORD any PDFs/Office docs/CSVs/SQL/log/env files + pastebin URLs as artifacts (kind='document' or 'leak_paste').", when_to_use: "Right after google_dorks on every seed, and again on every newly-discovered email/handle/domain/name/wallet. This is how dorks become real evidence — google_dorks alone only emits URLs to click.", input: "{ seed, kind, max_queries? }" },
+     { name: "gemini_deep_dork", description: "DEEP dork via Gemini 2.5 Flash with native Google Search grounding. Gemini drafts 5-8 targeted dorks, runs them on real Google, and returns a synthesized writeup + every cited URL (auto-recorded as artifacts). ~$0.002/call.", when_to_use: "Fire on EVERY email, username, name, domain, and crypto_wallet seed (and on every newly-confirmed high-value email/handle/name/domain mid-run). Run in parallel with dork_harvest — they complement, not replace each other. Use focus= to target leak sites, niche forums, paste sites, etc.", input: "{ seed, kind, focus? }" },
+    { name: "urlscan_search", description: "URLScan.io historical scans for domain/ip/url.", when_to_use: "Stage 2 (gated). Every domain/ip/url seed.", input: "{ query }" },
+    { name: "minimax_web_search", description: "Live web search with citations powered by Perplexity Sonar. Performs real-time grounded search and returns a synthesized answer plus cited URLs.", when_to_use: "Stage 2 gated search. Use for quick live web pivots on seeds, emails, handles, names, domains, and URLs before deeper analysis.", input: "{ query, focus? }" },
+    { name: "minimax_extract", description: "Extract structured entities (emails/handles/phones/urls/ips/names/etc) from any blob of raw text.", when_to_use: "MANDATORY after any tool returning >500 chars of free-form text. Not rate-limited.", input: "{ text, context? }" },
+    { name: "minimax_correlate", description: "Cluster, dedup, rescore confidence, flag contradictions across artifacts.", when_to_use: "End of fan-out round OR after ≥3 new artifacts. Smart-tier model.", input: "{ seed, artifacts[] }" },
+    { name: "minimax_plan_pivots", description: "Plan the next batch of tool calls based on what's been found.", when_to_use: "Once per fan-out round, at the end. Smart-tier model.", input: "{ seed, already_queried[], artifacts[], budget_remaining }" },
+    { name: "record_artifacts", description: "Bulk-insert artifacts. THE primary recording call.", when_to_use: "Once per assistant turn with an array of every artifact found this round.", input: "{ artifacts: [{ kind, value, confidence?, source?, metadata? }] }" },
+    { name: "record_artifact", description: "Backwards-compatible single-item shim. PREFER record_artifacts.", when_to_use: "Avoid. Use record_artifacts instead.", input: "{ kind, value, confidence?, source?, metadata? }" },
+    { name: "record_evidence", description: "Append a tamper-evident chain-of-custody row for a single high-stakes finding (hash-chained, append-only, auditable).", when_to_use: "Any Hard-classified claim, official record, archived URL, or verified breach hit — alongside record_artifacts.", input: "{ classification: 'hard'|'soft', kind, value, source, source_url?, confidence?, notes?, metadata? }" },
+    { name: "memory_recall", description: "Recall prior cross-investigation memory (patterns, connections, lessons, identity clusters) for a value. Free.", when_to_use: "FIRST turn on the seed; again on every newly confirmed high-value artifact before spending fresh quota.", input: "{ subject: string, kind?: 'pattern'|'connection'|'lesson'|'identity'|'any', limit?: number }" },
+    { name: "memory_save", description: "Persist durable cross-investigation memory (batch). Free.", when_to_use: "ONCE at the end of the investigation with every connection/pattern/lesson worth keeping.", input: "{ entries: [{ kind, subject, subject_kind?, related_values?, content, confidence? }] }" },
+    { name: "list_tools",     description: "Returns this catalog. Cached per investigation — do not call more than once.", when_to_use: "First turn only, if you need the catalog. Never again.", input: "{}" },
+    { name: "deepfind_reverse_email", description: "DeepFind.Me reverse-email account discovery across ~120 services (shared DeepFind 1000/day budget).", when_to_use: "Every confirmed email — finds where the email is registered. High-signal for identity correlation.", input: "{ email }" },
+    { name: "deepfind_disposable_email", description: "DeepFind.Me burner/temp email detector.", when_to_use: "Grade every new email's credibility before pivoting on it.", input: "{ email }" },
+    { name: "deepfind_ransomware_exposure", description: "DeepFind.Me ransomware leak-site exposure check.", when_to_use: "Every non-consumer domain seed and every corporate email — surfaces breach/extortion context.", input: "{ query }" },
+    { name: "deepfind_ssl_inspect", description: "DeepFind.Me SSL/TLS certificate inspector (issuer, SANs, validity, misconfig warnings).", when_to_use: "Every domain seed — SANs often expose related hostnames worth pivoting on.", input: "{ domain }" },
+    { name: "deepfind_tech_stack", description: "DeepFind.Me tech-stack detector (CMS, frameworks, analytics, CDN).", when_to_use: "Every url/domain seed — correlate analytics IDs across sites later.", input: "{ url }" },
+    { name: "deepfind_url_unshorten", description: "DeepFind.Me URL unshortener — full redirect chain + safety signal.", when_to_use: "Every short-link discovered (bit.ly, t.co, lnkd.in, ow.ly, etc).", input: "{ url }" },
+    { name: "deepfind_profile_analyzer", description: "DeepFind.Me deep username sweep across ~350 sites (vs local sweep's ~95). Slow.", when_to_use: "High-value handles only, or when the local username_sweep returned thin coverage. Burns budget — do not spam.", input: "{ username }" },
+    { name: "deepfind_telegram_channel", description: "DeepFind.Me Telegram channel metadata + recent messages.", when_to_use: "When a Telegram handle/link is discovered.", input: "{ handle }" },
+    { name: "deepfind_telegram_search", description: "DeepFind.Me Telegram channel keyword search.", when_to_use: "When investigating a topic/community and you need to find related channels.", input: "{ query }" },
+    { name: "deepfind_vin_lookup", description: "DeepFind.Me VIN decoder (NHTSA vPIC + safety recalls).", when_to_use: "Any 17-char VIN artifact discovered.", input: "{ vin }" },
+    { name: "deepfind_aircraft_lookup", description: "DeepFind.Me FAA N-Number lookup (US-registered aircraft → owner of record).", when_to_use: "Any N-Number tail code (e.g. N737AS) discovered.", input: "{ nNumber }" },
+    { name: "deepfind_vessel_lookup", description: "DeepFind.Me vessel lookup (IMO / MMSI → vessel + ownership).", when_to_use: "Any IMO or MMSI discovered.", input: "{ identifier }" },
+    { name: "deepfind_mac_lookup", description: "DeepFind.Me MAC address → vendor lookup.", when_to_use: "Any MAC address discovered in logs/EXIF/etc.", input: "{ macAddress }" },
+    { name: "deepfind_dark_web_link", description: "DeepFind.Me .onion validator + 18k+ service DB check.", when_to_use: "Any .onion URL discovered.", input: "{ url }" },
+    { name: "virustotal_lookup", description: "VirusTotal v3 reputation/detection lookup for file hash, URL, domain, or IP. Public quota: 4/min, 500/day.", when_to_use: "High-value artifacts only — suspicious domains/IPs/URLs surfaced by other tools, or any file hash. Do NOT call on every artifact; reserve for ones already flagged risky.", input: "{ kind:'file'|'url'|'domain'|'ip', value }" },
+    { name: "ipgeolocation_lookup", description: "IPGeolocation.io secondary IP enrichment — geo, ISP, ASN, connection type, currency, timezone. 1000/day.", when_to_use: "Every ip seed AFTER ip_intel — corroborate or contradict to flag VPN/proxy/mobile.", input: "{ ip }" },
+  ],
+  fan_outs: {
+    email:    ["triage_seed (MANDATORY first — fires breach_check via stolen.tax)", "Cheap parallel: hunter_email_verifier, hunter_combined (if HUNTER_API_KEY set), leakcheck_lookup (200/day), oathnet_lookup (100/day, parallel — not fallback), bosint_email_lookup (1000/day shared), deepfind_disposable_email (credibility grade), deepfind_reverse_email (account discovery across ~120 services)", "→ then Stage 2 if cleared: github_code_search, google_dorks + dork_harvest + gemini_deep_dork (run all three in parallel), minimax_web_search, urlscan_search. NOTE: intelbase_email_lookup is PERMANENTLY DISABLED — do not request it."],
+    username: ["triage_seed (MANDATORY first)", "Always parallel (not gated): username_sweep, github_user, hackernews_user, reddit_user, oathnet_lookup", "Stage 2 if cleared: same set as email — including gemini_deep_dork on the handle"],
+    phone:    ["bosint_phone_lookup (carrier + line type + location — primary phone enrichment, 1000/day shared)", "leakcheck_lookup (phone breach search, 200/day)", "oathnet_lookup (phone breach search, 100/day — call in parallel)", "google_dorks", "dork_harvest", "gemini_deep_dork", "minimax_web_search"],
+    ip:       ["ip_intel", "ipgeolocation_lookup (corroborate geo + connection type — flag VPN/proxy on disagreement)", "shodan_internetdb", "hackertarget(reverseiplookup)", "urlscan_search(ip:)", "oathnet_lookup (geo+ASN, not breach — OK to call)", "virustotal_lookup(kind:'ip') ONLY if the IP looks suspicious (shodan vulns, hosting flag, urlscan hits)"],
+    domain:   ["whois_lookup", "dns_records", "crtsh_subdomains", "hackertarget(hostsearch)", "urlscan_search(domain:)", "http_fingerprint",  "hunter_domain_search", "deepfind_ssl_inspect (SANs → more hostnames)", "deepfind_tech_stack", "deepfind_ransomware_exposure (corporate domains)", "virustotal_lookup(kind:'domain') ONLY for suspicious/newly-registered/typosquat domains"],
+    subdomain:["http_fingerprint", "dns_records", "(pivot on A record → ip fan-out)"],
+    url:      [
+      "IF host is instagram.com / tiktok.com / x.com / twitter.com / facebook.com: extract the @handle from the path, strip tracking params (?igsh=, ?s=, ?utm_*), and run socialfetch_lookup FIRST (before http_fingerprint, jina_reader_scrape, or username_sweep). SocialFetch is the primary social profile reader — fan out across all four platforms in parallel on the extracted handle.",
+      "http_fingerprint",
+      "wayback_snapshots",
+      "archive_url (preserve evidence)",
+      "deepfind_url_unshorten (if shortener)",
+      "deepfind_tech_stack",
+      "virustotal_lookup(kind:'url') ONLY for phishing/scam suspects",
+      "(extract emails/handles → pivot)",
+    ],
+    name:     ["google_dorks(name)", "dork_harvest(name)", "gemini_deep_dork(name, focus='disambiguate person + location + employer')", "(cross-reference against found socials)"],
+    "name+location": ["for name+location searches, keep Candidate Identity Clusters separate; never collapse into a single identity"],
+    person:   [
+      "minimax_web_search(name + location) — primary discovery for person seeds",
+      "google_dorks(name)",
+      "derive candidate handles (firstlast, first.last, flast) BEFORE any username_sweep call",
+      "record candidate identities as SEPARATE clusters",
+      "do NOT run username_sweep on the full name/location string — it has spaces and will fail/get skipped",
+      "if same-name out-of-area results appear, mark as possible same-name collision and keep in own cluster",
+    ],
+    crypto:   ["crypto_wallet"],
+    breach:   ["record the breach", "(pivot on any leaked passwords/usernames/emails inside)"],
+  },
+  notes:
+    "Tag every finding row with EXACTLY ONE label. [CONFIRMED] = direct profile/source fact OR corroborated by 2+ independent source classes. [INFERRED] = correlated but not definitive. [VERIFY] = needs human check; username_sweep hits and breach-only sensitive identity attributes (DOB, phone, address, full name, SSN) belong here unless corroborated. [FAILED] = tool error / no data. [LOW] = single weak source or possible same-name collision. (Extended labels [CORRELATED] and [CONFLICT] are also supported by the UI parser — see FINDING_LABELS.) For person/name/location seeds, the final report MUST include a Candidate Identity Clusters section whenever multiple same-name candidates appear. Example row: | [CONFIRMED] | `alice@example.com` | breach_check + github_user (2 source classes) | 90% |",
+};
+
+// Per-investigation memo so list_tools is effectively free after the first call.
+const CATALOG_CACHE = new Map<string, typeof TOOL_CATALOG>();
+
+// Inline label rule — short enough to keep in the system prompt because the UI
+// parser depends on it. Detailed examples live in TOOL_CATALOG.notes.
+const FINDING_LABELS = `
+## Finding labels (REQUIRED — UI parser depends on this)
+Tag every Findings row with EXACTLY ONE: [CONFIRMED] | [CORRELATED] | [INFERRED] | [VERIFY] | [CONFLICT] | [FAILED] | [LOW].
+- CONFIRMED = supported by ≥2 INDEPENDENT source classes (e.g. live profile + WHOIS, or hunter + GitHub), OR a direct first-party source page. Breach data is ONE source class — breach + leak ≠ two classes.
+- CORRELATED = multiple artifacts point together but no definitive proof.
+- INFERRED = single source states this, not independently corroborated. Default for single-tool hits.
+- VERIFY = possible match; needs verification before reporting. username_sweep hits start here unless corroborated.
+- CONFLICT = artifact conflicts with the seed (e.g. seed location vs IP geo, different state, different area code) or with another cluster's strong identifier. Use this aggressively to prevent merging two same-name people.
+- LOW = weak lead.
+- FAILED = false positive or tool failure.
+
+Sensitive PII (DOB, address, phone, SSN, full name) MUST NOT be tagged CONFIRMED on breach-only evidence — cap at INFERRED until a non-breach source corroborates.`;
+
 Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+
   // Reset per-invocation sticky flags. Deno isolates are reused across
   // requests, so module-scope state must be cleared at the top of each
   // handler call or one investigation's 402 disables Firecrawl forever.
+  firecrawlCreditsLow = false;
   degradedTools.clear();
-  resetFirecrawlCreditsLow(); // Reset per-request: one investigation's 402 shouldn't carry over
-
-  // ---- Reset guard/triage state (module-scoped, must be reset per-request) ----
-  guard.artifactsSinceCorrelate = 0;
-  guard.artifactsSincePlan = 0;
-  guard.planCalledInRound = false;
-  routingGuard.artifactsTotal = 0;
-  routingGuard.memoryRecallTimestamps = [];
-  routingGuard.memoryRecallSubjectsThisStep.clear();
-  routingGuard.highCostLastArtifactCount.clear();
-  triageState.ran = false;
-  triageState.seed = null;
-  triageState.seedType = null;
-  triageState.seedDomain = null;
-  triageState.cleared.clear();
-  triageState.reasons = [];
-  triageState.skipped = [];
-  triageState.identitySignals.name = false;
-  triageState.identitySignals.username = false;
 
   try {
-    // ---- setupRequest handles CORS, auth, thread verification, message persistence ----
-    const ctx = await setupRequest(req);
-    const { supabase, supabaseAdmin, user, userId, threadId, archiveEnabled, detectedSeedType, messages } = ctx;
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) return new Response(JSON.stringify({ error: "Unauthorized", code: "MISSING_AUTH", detail: "No Authorization header provided. Sign in to continue." }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+
+    const supabase = createClient(SUPABASE_URL, SERVICE_KEY, {
+      global: { headers: { Authorization: authHeader } },
+    });
+    // Server-side admin client (no user JWT override) — used for telemetry
+    // inserts (tool_usage_log, etc.) that bypass RLS. Without this the wrapper
+    // inherits the user JWT and inserts fail with "row-level security policy".
+    const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_KEY);
+    const { data: userData, error: userError } = await supabase.auth.getUser();
+    if (userError || !userData.user) return new Response(JSON.stringify({ error: "Unauthorized", code: "INVALID_SESSION", detail: "Session is invalid or expired. Sign in again." }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    const userId = userData.user.id;
+
+    const { messages, threadId } = (await req.json()) as { messages: UIMessage[]; threadId: string };
+    if (!threadId || !Array.isArray(messages)) {
+      return new Response(JSON.stringify({ error: "Bad Request", code: "MISSING_PARAMS", detail: "Request must include threadId and messages array." }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    // Verify thread ownership
+    const { data: thread } = await supabase
+      .from("threads")
+      .select("id,user_id,archive_attachments,seed_type,seed_value")
+      .eq("id", threadId)
+      .maybeSingle();
+    if (!thread || thread.user_id !== userId) {
+      return new Response(JSON.stringify({ error: "Forbidden", code: "THREAD_ACCESS_DENIED", detail: "This thread does not exist or does not belong to your account." }), { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+    const archiveEnabled: boolean = !!(thread as { archive_attachments?: boolean }).archive_attachments;
+    const detectedSeedType: string = String(
+      (thread as { seed_type?: string | null }).seed_type ?? "unknown",
+    ).toLowerCase();
+
+    // Save user message (last one)
+    const lastUser = [...messages].reverse().find((m) => m.role === "user");
+    if (lastUser) {
+      await supabase.from("messages").insert({
+        thread_id: threadId,
+        user_id: userId,
+        role: "user",
+        parts: lastUser.parts as unknown,
+      });
+
+      // Generate/refresh title from first user message if thread title is default
+      const text = (lastUser.parts as Array<{ type: string; text?: string }>)
+        .filter((p) => p.type === "text")
+        .map((p) => p.text)
+        .join(" ")
+        .trim();
+      if (text) {
+        await supabase
+          .from("threads")
+          .update({
+            title: text.slice(0, 80),
+            seed_value: text.slice(0, 200),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", threadId)
+          .eq("title", "New investigation");
+      }
+    }
+
+    const sweepUsername = async (username: string) => {
+      // Built-in "Username Sweep" — an edge-native, in-process HTTP existence
+      // check across ~95 platforms. This is intentionally NOT Sherlock or
+      // Maigret: those are Python tools that require a long-running host with
+      // subprocess + filesystem access, which Supabase Edge Functions don't
+      // provide. If you ever want the real Sherlock/Maigret breadth, stand up
+      // an external worker service and wire it in with the env vars listed at
+      // the TODO block near `username_sweep` below.
+      const u = encodeURIComponent(username);
+      const sites: Array<{ name: string; url: string; absent?: number | string }> = [
+        { name: "GitHub", url: `https://github.com/${u}`, absent: 404 },
+        { name: "GitLab", url: `https://gitlab.com/${u}`, absent: 404 },
+        { name: "Twitter/X", url: `https://x.com/${u}`, absent: 404 },
+        { name: "Instagram", url: `https://www.instagram.com/${u}/`, absent: 404 },
+        { name: "TikTok", url: `https://www.tiktok.com/@${u}`, absent: "Couldn't find this account" },
+        { name: "Reddit", url: `https://www.reddit.com/user/${u}/about.json` },
+        { name: "Medium", url: `https://medium.com/@${u}`, absent: 404 },
+        { name: "Pinterest", url: `https://www.pinterest.com/${u}/`, absent: 404 },
+        { name: "Vimeo", url: `https://vimeo.com/${u}`, absent: 404 },
+        { name: "Twitch", url: `https://www.twitch.tv/${u}`, absent: 404 },
+        { name: "YouTube", url: `https://www.youtube.com/@${u}`, absent: 404 },
+        { name: "DEV.to", url: `https://dev.to/${u}`, absent: 404 },
+        { name: "HackerNews", url: `https://news.ycombinator.com/user?id=${u}`, absent: "No such user" },
+        { name: "Keybase", url: `https://keybase.io/${u}`, absent: 404 },
+        { name: "ProductHunt", url: `https://www.producthunt.com/@${u}`, absent: 404 },
+        { name: "Behance", url: `https://www.behance.net/${u}`, absent: 404 },
+        { name: "Dribbble", url: `https://dribbble.com/${u}`, absent: 404 },
+        { name: "Flickr", url: `https://www.flickr.com/people/${u}`, absent: 404 },
+        { name: "Spotify", url: `https://open.spotify.com/user/${u}`, absent: 404 },
+        { name: "SoundCloud", url: `https://soundcloud.com/${u}`, absent: 404 },
+        { name: "Bandcamp", url: `https://${u}.bandcamp.com`, absent: 404 },
+        { name: "Patreon", url: `https://www.patreon.com/${u}`, absent: 404 },
+        { name: "Steam", url: `https://steamcommunity.com/id/${u}`, absent: "The specified profile could not be found" },
+        { name: "Roblox", url: `https://www.roblox.com/user.aspx?username=${u}`, absent: "Page cannot be found" },
+        { name: "Wikipedia", url: `https://en.wikipedia.org/wiki/User:${u}`, absent: "Wikipedia does not have a" },
+        { name: "Telegram", url: `https://t.me/${u}`, absent: "tgme_page_title" },
+        { name: "About.me", url: `https://about.me/${u}`, absent: 404 },
+        { name: "Gravatar", url: `https://en.gravatar.com/${u}`, absent: 404 },
+        { name: "Replit", url: `https://replit.com/@${u}`, absent: 404 },
+        { name: "Linktree", url: `https://linktr.ee/${u}`, absent: 404 },
+        // --- Sherlock/Maigret-style extended sweep ---
+        { name: "Bluesky", url: `https://bsky.app/profile/${u}.bsky.social`, absent: 400 },
+        { name: "Threads", url: `https://www.threads.net/@${u}`, absent: 404 },
+        { name: "Tumblr", url: `https://${u}.tumblr.com`, absent: 404 },
+        { name: "DeviantArt", url: `https://www.deviantart.com/${u}`, absent: 404 },
+        { name: "Snapchat", url: `https://www.snapchat.com/add/${u}`, absent: 404 },
+        { name: "Last.fm", url: `https://www.last.fm/user/${u}`, absent: 404 },
+        { name: "Mixcloud", url: `https://www.mixcloud.com/${u}/`, absent: 404 },
+        { name: "Discogs", url: `https://www.discogs.com/user/${u}`, absent: 404 },
+        { name: "Genius", url: `https://genius.com/${u}`, absent: 404 },
+        { name: "RateYourMusic", url: `https://rateyourmusic.com/~${u}`, absent: 404 },
+        { name: "Goodreads", url: `https://www.goodreads.com/${u}`, absent: 404 },
+        { name: "Letterboxd", url: `https://letterboxd.com/${u}/`, absent: 404 },
+        { name: "MyAnimeList", url: `https://myanimelist.net/profile/${u}`, absent: 404 },
+        { name: "AniList", url: `https://anilist.co/user/${u}`, absent: 404 },
+        { name: "Trakt", url: `https://trakt.tv/users/${u}`, absent: 404 },
+        { name: "IMDb", url: `https://www.imdb.com/user/${u}/`, absent: 404 },
+        { name: "Quora", url: `https://www.quora.com/profile/${u}`, absent: 404 },
+        { name: "Disqus", url: `https://disqus.com/by/${u}/`, absent: 404 },
+        { name: "Slideshare", url: `https://www.slideshare.net/${u}`, absent: 404 },
+        { name: "Wattpad", url: `https://www.wattpad.com/user/${u}`, absent: 404 },
+        { name: "FanFiction", url: `https://www.fanfiction.net/u/${u}`, absent: 404 },
+        { name: "ArchiveOfOurOwn", url: `https://archiveofourown.org/users/${u}`, absent: 404 },
+        { name: "BuyMeACoffee", url: `https://www.buymeacoffee.com/${u}`, absent: 404 },
+        { name: "Ko-fi", url: `https://ko-fi.com/${u}`, absent: 404 },
+        { name: "Gumroad", url: `https://${u}.gumroad.com`, absent: 404 },
+        { name: "Fiverr", url: `https://www.fiverr.com/${u}`, absent: 404 },
+        { name: "Upwork", url: `https://www.upwork.com/freelancers/${u}`, absent: 404 },
+        { name: "Etsy", url: `https://www.etsy.com/shop/${u}`, absent: 404 },
+        { name: "itch.io", url: `https://${u}.itch.io`, absent: 404 },
+        { name: "GameJolt", url: `https://gamejolt.com/@${u}`, absent: 404 },
+        { name: "Newgrounds", url: `https://${u}.newgrounds.com`, absent: 404 },
+        { name: "Strava", url: `https://www.strava.com/athletes/${u}`, absent: 404 },
+        { name: "Untappd", url: `https://untappd.com/user/${u}`, absent: 404 },
+        { name: "Chess.com", url: `https://www.chess.com/member/${u}`, absent: 404 },
+        { name: "Lichess", url: `https://lichess.org/@/${u}`, absent: 404 },
+        { name: "Codeforces", url: `https://codeforces.com/profile/${u}`, absent: 404 },
+        { name: "LeetCode", url: `https://leetcode.com/${u}/`, absent: 404 },
+        { name: "HackerRank", url: `https://www.hackerrank.com/${u}`, absent: 404 },
+        { name: "HackTheBox", url: `https://app.hackthebox.com/profile/${u}`, absent: 404 },
+        { name: "TryHackMe", url: `https://tryhackme.com/p/${u}`, absent: 404 },
+        { name: "Kaggle", url: `https://www.kaggle.com/${u}`, absent: 404 },
+        { name: "Bitbucket", url: `https://bitbucket.org/${u}/`, absent: 404 },
+        { name: "Codepen", url: `https://codepen.io/${u}`, absent: 404 },
+        { name: "JsFiddle", url: `https://jsfiddle.net/user/${u}/`, absent: 404 },
+        { name: "npm", url: `https://www.npmjs.com/~${u}`, absent: 404 },
+        { name: "PyPI", url: `https://pypi.org/user/${u}/`, absent: 404 },
+        { name: "RubyGems", url: `https://rubygems.org/profiles/${u}`, absent: 404 },
+        { name: "DockerHub", url: `https://hub.docker.com/u/${u}`, absent: 404 },
+        { name: "StackOverflow", url: `https://stackoverflow.com/users/${u}`, absent: 404 },
+        { name: "AngelList/Wellfound", url: `https://wellfound.com/u/${u}`, absent: 404 },
+        { name: "OpenStreetMap", url: `https://www.openstreetmap.org/user/${u}`, absent: 404 },
+        { name: "Pastebin", url: `https://pastebin.com/u/${u}`, absent: 404 },
+        { name: "Giphy", url: `https://giphy.com/${u}`, absent: 404 },
+        { name: "VSCO", url: `https://vsco.co/${u}/gallery`, absent: 404 },
+        { name: "Ello", url: `https://ello.co/${u}`, absent: 404 },
+        { name: "500px", url: `https://500px.com/p/${u}`, absent: 404 },
+        { name: "Foursquare", url: `https://foursquare.com/${u}`, absent: 404 },
+        { name: "Hashnode", url: `https://hashnode.com/@${u}`, absent: 404 },
+        { name: "Polywork", url: `https://www.polywork.com/${u}`, absent: 404 },
+        { name: "Read.cv", url: `https://read.cv/${u}`, absent: 404 },
+        { name: "Substack", url: `https://${u}.substack.com`, absent: 404 },
+        { name: "Mastodon.social", url: `https://mastodon.social/@${u}`, absent: 404 },
+        { name: "Minecraft (NameMC)", url: `https://namemc.com/profile/${u}`, absent: 404 },
+        { name: "Xbox Gamertag", url: `https://account.xbox.com/profile?gamertag=${u}`, absent: 404 },
+        { name: "OK.ru", url: `https://ok.ru/${u}`, absent: 404 },
+        { name: "VK", url: `https://vk.com/${u}`, absent: 404 },
+        { name: "Weibo", url: `https://weibo.com/${u}`, absent: 404 },
+        { name: "Douban", url: `https://www.douban.com/people/${u}/`, absent: 404 },
+        { name: "NameMC Skin", url: `https://namemc.com/search?q=${u}`, absent: 404 },
+      ];
+      const ua = "Mozilla/5.0 (compatible; Proximity-OSINT/1.0)";
+      // Concurrency-capped sweep. Firing 95 parallel fetches with 8s timeouts
+      // can pin the edge function on a single seed; cap to 16 in-flight at a
+      // time and total-budget the whole sweep.
+      const CONCURRENCY = 16;
+      const PER_REQ_TIMEOUT_MS = 6000;
+      const TOTAL_BUDGET_MS = 25000;
+      const sweepDeadline = Date.now() + TOTAL_BUDGET_MS;
+      const results: Array<Record<string, unknown>> = [];
+      const queue = [...sites];
+      const runOne = async (s: typeof sites[number]) => {
+        if (Date.now() > sweepDeadline) {
+          return { site: s.name, url: s.url, error: "budget exhausted", found: false };
+        }
+        const ctrl = new AbortController();
+        const remaining = Math.max(500, sweepDeadline - Date.now());
+        const timeoutMs = Math.min(PER_REQ_TIMEOUT_MS, remaining);
+        const t = setTimeout(() => ctrl.abort(), timeoutMs);
+        try {
+          const r = await fetch(s.url, { headers: { "User-Agent": ua }, redirect: "follow", signal: ctrl.signal });
+          let found = r.ok;
+          if (typeof s.absent === "number") found = r.status !== s.absent && r.status < 400;
+          else if (typeof s.absent === "string" && r.ok) {
+            const body = await r.text().catch(() => "");
+            found = !body.includes(s.absent);
+          }
+          return { site: s.name, url: s.url, status: r.status, found };
+        } catch (e) {
+          return { site: s.name, url: s.url, error: String(e), found: false };
+        } finally { clearTimeout(t); }
+      };
+      const workers = Array.from({ length: CONCURRENCY }, async () => {
+        while (queue.length > 0) {
+          const s = queue.shift();
+          if (!s) break;
+          results.push(await runOne(s));
+        }
+      });
+      await Promise.all(workers);
+      const hits = results.filter((r) => r.found);
+      const skipped = results.filter((r) => (r as any).error === "budget exhausted").length;
+      return { username, total: results.length, hits: hits.length, found: hits, missed: results.filter((r) => !r.found).map((r) => (r as any).site), skipped_due_to_budget: skipped };
+    };
+
+    // Per-investigation guard state for rate-limiting reasoning tools.
+    // - artifactsSinceCorrelate: new artifacts recorded since last successful minimax_correlate
+    // - artifactsSincePlan:      new artifacts recorded since last successful minimax_plan_pivots
+    // - planCalledInRound:       true after plan_pivots runs; reset when ANY new artifact is recorded
+    //                            (a fresh artifact = a new round opportunity)
+    const guard = {
+      artifactsSinceCorrelate: 0,
+      artifactsSincePlan: 0,
+      planCalledInRound: false,
+    };
+
+    // ----- Routing guard: memory_recall rate limit + high-cost tool dedup -----
+    // memory_recall: max 2 calls per 30s window across the run, and never
+    //                repeat the same normalized subject in a single reasoning
+    //                step (cleared whenever a new artifact lands).
+    // high-cost tools (oathnet_lookup, leakcheck_lookup): one call per seed
+    //                unless ≥5 new artifacts have appeared since the last call
+    //                (proxy for "new corroborating evidence").
+    const HIGH_COST_TOOLS = new Set<string>(["oathnet_lookup", "leakcheck_lookup"]);
+    const routingGuard = {
+      artifactsTotal: 0,
+      memoryRecallTimestamps: [] as number[],
+      memoryRecallSubjectsThisStep: new Set<string>(),
+      highCostLastArtifactCount: new Map<string, number>(),
+    };
+
+    // ----- Two-stage fan-out triage state (email/username seeds) -----
+    const CONSUMER_DOMAINS = new Set<string>([
+      "gmail.com", "googlemail.com",
+      "yahoo.com", "yahoo.co.uk", "yahoo.fr", "ymail.com", "rocketmail.com",
+      "outlook.com", "hotmail.com", "live.com", "msn.com",
+      "icloud.com", "me.com", "mac.com",
+      "proton.me", "protonmail.com", "pm.me",
+      "aol.com", "gmx.com", "gmx.de", "mail.com", "zoho.com", "yandex.com",
+      "fastmail.com", "tutanota.com", "tuta.io",
+    ]);
+    const STAGE2_TOOLS = new Set<string>([
+      "intelbase_email_lookup",
+      "oathnet_lookup",
+      "github_code_search",
+      "google_dorks",
+      "minimax_web_search",
+      "urlscan_search",
+    ]);
+    const triageState = {
+      ran: false,
+      seed: null as string | null,
+      seedType: null as "email" | "username" | null,
+      seedDomain: null as string | null,
+      cleared: new Set<string>(),     // stage 2 tools allowed
+      reasons: [] as string[],        // why stage 2 was gated open
+      skipped: [] as Array<{ tool: string; reason: string }>,
+      identitySignals: { name: false, username: false },
+    };
+
+    const bumpArtifacts = (n: number, kinds?: string[]) => {
+      if (n <= 0) return;
+      guard.artifactsSinceCorrelate += n;
+      guard.artifactsSincePlan += n;
+      guard.planCalledInRound = false;
+      routingGuard.artifactsTotal += n;
+      // New evidence = new reasoning step; clear per-step dedup for memory_recall.
+      routingGuard.memoryRecallSubjectsThisStep.clear();
+      if (kinds) {
+        if (kinds.includes("name")) triageState.identitySignals.name = true;
+        if (kinds.includes("username")) triageState.identitySignals.username = true;
+      }
+    };
+    const skipStub = (tool: string, reason: string, state: Record<string, unknown>) => ({
+      ok: false,
+      skipped: true,
+      reason: "skipped: guard not met",
+      tool,
+      detail: reason,
+      guard_state: state,
+    });
+
+    // Returns null when the Stage 2 tool is allowed to run, or a skip-stub when it must be blocked.
+    const gateStage2 = (name: string): null | ReturnType<typeof skipStub> => {
+      // If triage never ran, do NOT gate — the seed was likely a domain/ip/phone/url
+      // and the two-stage rule only applies to email/username seeds.
+      if (!triageState.ran) return null;
+      if (!triageState.cleared.has(name)) {
+        const reasons = triageState.skipped.find((s) => s.tool === name)?.reason
+          ?? "Stage 1 produced no qualifying signal (no breach, no real gravatar, low emailrep, consumer domain).";
+        return skipStub(name, `gated by triage_seed → ${reasons}`, {
+          triage_ran: true,
+          seed: triageState.seed,
+          seed_domain: triageState.seedDomain,
+          identity_signals: triageState.identitySignals,
+          cleared: [...triageState.cleared],
+        });
+      }
+      return null;
+    };
 
     const tools = {
       list_tools: tool({
@@ -3150,6 +4793,7 @@ Deno.serve(async (req) => {
         },
       }),
     };
+
     const modelMessages = await convertToModelMessages(messages);
 
     // ---- Context window guard ------------------------------------------------
@@ -3736,8 +5380,6 @@ Deno.serve(async (req) => {
       },
     });
   } catch (e) {
-    // setupRequest throws Response objects for 401/403/400 — return them directly
-    if (e instanceof Response) return e;
     console.error("osint-agent error", e);
     const message = e instanceof Error ? e.message : String(e);
     return new Response(JSON.stringify({ error: "Internal Server Error", code: "ORCHESTRATOR_FAULT", detail: message }), {
@@ -3745,5 +5387,4 @@ Deno.serve(async (req) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
-
 });
