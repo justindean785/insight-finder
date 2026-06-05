@@ -344,8 +344,8 @@ Deno.serve(async (req) => {
           const blockedReasonGlobal = "";
 
           for (const t of STAGE2_TOOLS) {
-            let allow = stage2Open;
-            let blockedReason = blockedReasonGlobal;
+            const allow = stage2Open;
+            const blockedReason = blockedReasonGlobal;
             // github_code_search used to require a non-consumer domain;
             // we now allow it on all seeds (the agent can still skip noisy
             // consumer-email queries on its own).

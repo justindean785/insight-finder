@@ -17,7 +17,7 @@ export function detectSeedServer(input: string): DetectedSeed | null {
   const PHONE = /^\+?[\d\s\-().]{7,}$/;
   const ETH = /^0x[a-f0-9]{40}$/i;
   const BTC = /^(?:bc1|[13])[a-z0-9]{25,62}$/i;
-  const USER = /^[a-z0-9_.\-]{2,40}$/i;
+  const USER = /^[a-z0-9_.-]{2,40}$/i;
   if (EMAIL.test(raw)) {
     const lower = raw.toLowerCase();
     const [localRaw, domain] = lower.split("@");
@@ -38,7 +38,7 @@ export function detectSeedServer(input: string): DetectedSeed | null {
   // Person/name-location heuristic: multi-word, mostly letters, not a structured identifier.
   // Example: "josh gillman rocklin ca" → person seed (so the agent uses person fan-out
   // instead of treating it as a free-form `other` blob and running username_sweep on it).
-  const PERSON = /^[a-z][a-z.'\-]*(?:[\s,]+[a-z][a-z.'\-]*){1,7}$/i;
+  const PERSON = /^[a-z][a-z.'-]*(?:[\s,]+[a-z][a-z.'-]*){1,7}$/i;
   if (PERSON.test(raw)) {
     return { kind: "person", raw, normalized: raw.toLowerCase().replace(/[\s,]+/g, " ").trim() };
   }
@@ -85,7 +85,7 @@ export const EMAIL_RE = /^[^\s@]{1,64}@[^\s@.]+(\.[^\s@.]+)+$/;
 export const DOMAIN_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i;
 export const IPV4_RE = /^((25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}(25[0-5]|2[0-4]\d|[01]?\d?\d)$/;
 export const IPV6_RE = /^[0-9a-f:]+$/i;
-export const NAME_RE = /^[\p{L}][\p{L}\.\-' ]{1,79}$/u;
+export const NAME_RE = /^[\p{L}][\p{L}.\-' ]{1,79}$/u;
 export const PHONE_RE = /^\+?[0-9\-\s().]{6,32}$/;
 
 export function validateArtifact(kind: string, rawValue: string): ValidateResult {
