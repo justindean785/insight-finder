@@ -18,7 +18,7 @@ const DOMAIN_RE = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/i;
 const PHONE_RE = /^\+?[\d\s\-().]{7,}$/;
 const ETH_RE = /^0x[a-f0-9]{40}$/i;
 const BTC_RE = /^(?:bc1|[13])[a-z0-9]{25,62}$/i;
-const USERNAME_RE = /^[a-z0-9_.\-]{2,40}$/i;
+const USERNAME_RE = /^[a-z0-9_.-]{2,40}$/i;
 
 export function detectSeed(input: string): DetectedSeed | null {
   const raw = input.trim();

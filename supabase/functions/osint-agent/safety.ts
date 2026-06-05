@@ -12,7 +12,7 @@
 // Matches when an age 10–17 appears near an age cue OR as a bare token in short
 // bio context. We deliberately match a wide net — downstream this only flags
 // the row as VERIFY + sensitive, it never blocks recording.
-const MINOR_AGE_NUM_RE = /\b(?:i['’]?m|im|age[ds]?|edad|years? old|y\/?o|yrs?)\s*[:\-]?\s*(1[0-7])\b/i;
+const MINOR_AGE_NUM_RE = /\b(?:i['’]?m|im|age[ds]?|edad|years? old|y\/?o|yrs?)\s*[:-]?\s*(1[0-7])\b/i;
 const MINOR_AGE_BARE_RE = /(?:^|[^\d])(1[0-7])\s*(?:y\/?o|yo|yrs?\b|years?\s*old)\b/i;
 const MINOR_PHRASE_RE = /\b(?:minor|underage|under\s*18|middle\s*school|junior\s*high|freshman|sophomore|jr\.?\s*high|high\s*school\s*(?:freshman|sophomore)|grade\s*(?:6|7|8|9|10|11)|6th\s*grade|7th\s*grade|8th\s*grade|9th\s*grade|10th\s*grade|11th\s*grade|teen(?:ager)?|kiddo|preteen)\b/i;
 const BIO_META_FIELDS = ["bio", "biography", "description", "about", "tagline", "headline", "profile_bio", "summary", "status"];

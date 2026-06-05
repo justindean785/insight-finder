@@ -6,7 +6,7 @@
 
 // ---- NPM imports -------------------------------------------------------------
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { convertToModelMessages, streamText, tool, stepCountIs, type UIMessage } from "npm:ai@6";
+import { convertToModelMessages, streamText, tool, stepCountIs, type UIMessage, type ModelMessage } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { createOpenAICompatible } from "npm:@ai-sdk/openai-compatible@1";
 
@@ -44,7 +44,7 @@ import {
 // Used at the JSON.parse boundaries in this file to replace `let data: any`
 // with a typed shape so the downstream .map((t: any) => ...) cascades
 // narrow automatically. See ./api_types.ts for scope discipline notes.
-import type { NavigatorQueryResponse, NavigatorSearchResponse, NavigatorTool, StolenTaxResponse, GitHubCodeSearchResponse } from "./api_types.ts";
+import type { NavigatorQueryResponse, NavigatorSearchResponse, NavigatorTool, StolenTaxResponse, GitHubCodeSearchResponse, GitHubCodeMatch } from "./api_types.ts";
 
 // safety.ts — Artifact scrubbing, sanitization, SSRF guard, part-size capping
 import {
@@ -80,6 +80,20 @@ import { SYSTEM_PROMPT, IDENTITY_CLUSTER_RULES, PERSON_SEARCH_RULES, SYSTEM_PROM
 
 // cache.ts — Central tool cache wrapper, tier tagging, auto-evidence
 import { wrapToolsWithCache } from "./cache.ts";
+
+// ---- Local type aliases for the tool registry -------------------------------
+// The `tools` object is one large literal that self-references inside its own
+// initializer (e.g. `(tools as ToolRegistry).emailrep.execute(...)`) and also
+// receives late-injected tools appended after construction (memory_recall,
+// coverage_audit, …). We type the registry as `Record<string, unknown>` so
+// both the self-references and the late-injection assignments type-check, and
+// narrow individual tools to `ExecutableTool` at the call sites that invoke
+// their `execute()` function. This replaces the prior `(tools as any)` casts
+// without changing any runtime behavior.
+type ToolRegistry = Record<string, unknown>;
+type ExecutableTool = {
+  execute: (input: Record<string, unknown>, options: unknown) => Promise<unknown>;
+};
 
 // ---- Health/readiness probe -------------------------------------------------
 // `GET /osint-agent?health=1` (and HEAD) returns a JSON readiness summary so
@@ -287,9 +301,9 @@ Deno.serve(async (req) => {
           const stage1: Record<string, unknown> = {};
           if (type === "email") {
             const [emailrepRes, gravatarRes, breachRes] = await Promise.all([
-              (tools as any).emailrep.execute({ email: normalized }, {}).catch((e: unknown) => ({ error: String(e) })),
-              (tools as any).gravatar_profile.execute({ email: normalized }, {}).catch((e: unknown) => ({ error: String(e) })),
-              (tools as any).breach_check.execute({ email: normalized }, {}).catch((e: unknown) => ({ error: String(e) })),
+              ((tools as ToolRegistry).emailrep as ExecutableTool).execute({ email: normalized }, {}).catch((e: unknown) => ({ error: String(e) })),
+              ((tools as ToolRegistry).gravatar_profile as ExecutableTool).execute({ email: normalized }, {}).catch((e: unknown) => ({ error: String(e) })),
+              ((tools as ToolRegistry).breach_check as ExecutableTool).execute({ email: normalized }, {}).catch((e: unknown) => ({ error: String(e) })),
             ]);
             stage1.emailrep = emailrepRes;
             stage1.gravatar = gravatarRes;
@@ -297,9 +311,18 @@ Deno.serve(async (req) => {
           }
 
           // ---- Evaluate gate signals ----
-          const erData = (stage1.emailrep as any)?.data ?? {};
-          const gvData = (stage1.gravatar as any)?.data ?? {};
-          const brData = (stage1.breach as any)?.data ?? {};
+          // Stage-1 tool results carry an optional `data` payload (and the
+          // gravatar result an HTTP `status`). We read a handful of fields off
+          // each `data` blob; everything else stays `unknown` and is narrowed
+          // at the use site via typeof / Array.isArray guards below.
+          interface Stage1Result {
+            data?: Record<string, unknown>;
+            status?: number;
+            [k: string]: unknown;
+          }
+          const erData = (stage1.emailrep as Stage1Result | undefined)?.data ?? {} as Record<string, unknown>;
+          const gvData = (stage1.gravatar as Stage1Result | undefined)?.data ?? {} as Record<string, unknown>;
+          const brData = (stage1.breach as Stage1Result | undefined)?.data ?? {} as Record<string, unknown>;
 
           const REP_SCORE: Record<string, number> = { high: 90, medium: 60, low: 20, none: 0 };
           const numericRep = typeof erData.reputation === "number" ? erData.reputation : null;
@@ -315,7 +338,7 @@ Deno.serve(async (req) => {
           const breachHit = breachCount > 0 || brData.success === true;
 
           const gravatarFound =
-            (stage1.gravatar as any)?.status === 200 &&
+            (stage1.gravatar as Stage1Result | undefined)?.status === 200 &&
             (typeof gvData.display_name === "string" ||
              typeof gvData.hash === "string" ||
              (Array.isArray(gvData.accounts) && gvData.accounts.length > 0));
@@ -988,10 +1011,23 @@ Deno.serve(async (req) => {
             ]);
 
             // ---- Parse each source into a hit count ----
-            const dbResults = (dbSearch.parsed as any)?.data?.results;
+            // Only the fields we count off each source are typed; everything
+            // else stays `unknown` behind the index signature.
+            interface StolenData {
+              results?: unknown;
+              size?: number;
+              breach_data?: unknown;
+              results_count?: number;
+              [k: string]: unknown;
+            }
+            interface StolenParsed {
+              data?: StolenData;
+              [k: string]: unknown;
+            }
+            const dbResults = (dbSearch.parsed as StolenParsed)?.data?.results;
             const dbHits = Array.isArray(dbResults) ? dbResults.length : 0;
 
-            const snusRoot = (snus.parsed as any)?.data ?? {};
+            const snusRoot: StolenData = (snus.parsed as StolenParsed)?.data ?? {};
             const snusResultsObj = snusRoot.results ?? {};
             let snusHits = 0;
             const snusSources: string[] = [];
@@ -1005,7 +1041,7 @@ Deno.serve(async (req) => {
             }
             if (snusHits === 0 && typeof snusRoot.size === "number") snusHits = snusRoot.size;
 
-            const brRoot = (breachLegacy.parsed as any)?.data ?? {};
+            const brRoot: StolenData = (breachLegacy.parsed as StolenParsed)?.data ?? {};
             const brHits =
               (Array.isArray(brRoot.breach_data) && brRoot.breach_data.length) ||
               (typeof brRoot.results_count === "number" ? brRoot.results_count : 0);
@@ -1122,13 +1158,24 @@ Deno.serve(async (req) => {
             const url = `https://leakcheck.io/api/v2/query/${encodeURIComponent(q)}?type=${encodeURIComponent(type ?? "auto")}`;
             const r = await fetch(url, { headers: { "X-API-Key": LEAKCHECK_API_KEY, "Accept": "application/json" } });
             const text = await r.text();
+            interface LeakCheckResult {
+              source?: { name?: string; [k: string]: unknown };
+              [k: string]: unknown;
+            }
+            interface LeakCheckResponse {
+              found?: number;
+              quota?: number;
+              success?: boolean;
+              result?: LeakCheckResult[];
+              [k: string]: unknown;
+            }
             let data: unknown;
             try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 4000) }; }
-            const d = data as any;
+            const d = data as LeakCheckResponse;
             const found = (typeof d?.found === "number" ? d.found : Array.isArray(d?.result) ? d.result.length : 0);
             const quota = typeof d?.quota === "number" ? d.quota : undefined;
             const sources = Array.isArray(d?.result)
-              ? Array.from(new Set(d.result.map((x: any) => x?.source?.name).filter(Boolean))).slice(0, 50)
+              ? Array.from(new Set(d.result.map((x: LeakCheckResult) => x?.source?.name).filter(Boolean))).slice(0, 50)
               : [];
             return { ok: r.ok, status: r.status, source: "leakcheck.v2", data: { success: !!d?.success, found, quota, sources, raw: data } };
           } catch (e) {
@@ -1294,15 +1341,29 @@ Deno.serve(async (req) => {
             const r = await fetch(`https://deepfind.me/api/analyzer/${encodeURIComponent(username)}`, {
               headers: { "X-DFME-API-KEY": KEY, "Accept": "application/json" },
             });
+            interface DeepFindSite {
+              status?: string;
+              site?: string;
+              name?: string;
+              url?: string;
+              profile_url?: string;
+              username?: string;
+              [k: string]: unknown;
+            }
+            interface DeepFindAnalyzerResponse {
+              sites?: DeepFindSite[];
+              summary?: unknown;
+              [k: string]: unknown;
+            }
             const data = await r.json().catch(() => ({}));
-            const d = data as any;
+            const d = data as DeepFindAnalyzerResponse;
             // Drop the long tail of "not found" sites (most of the ~350) — they
             // burn tokens without adding signal. Keep only confirmed hits.
-            const allSites = Array.isArray(d?.sites) ? d.sites : [];
+            const allSites: DeepFindSite[] = Array.isArray(d?.sites) ? d.sites : [];
             const foundSites = allSites
-              .filter((s: any) => s?.status === "found")
+              .filter((s: DeepFindSite) => s?.status === "found")
               .slice(0, 120)
-              .map((s: any) => ({
+              .map((s: DeepFindSite) => ({
                 site: s?.site ?? s?.name,
                 url: s?.url ?? s?.profile_url,
                 username: s?.username,
@@ -1312,7 +1373,7 @@ Deno.serve(async (req) => {
               status: r.status,
               source: "deepfind.analyzer",
               data: {
-                hits: allSites.filter((s: any) => s?.status === "found").length,
+                hits: allSites.filter((s: DeepFindSite) => s?.status === "found").length,
                 scanned: allSites.length,
                 summary: d?.summary,
                 sites: foundSites,
@@ -1476,8 +1537,12 @@ Deno.serve(async (req) => {
             const r = await fetch(`https://www.virustotal.com/api/v3/${path}`, {
               headers: { "x-apikey": KEY, "Accept": "application/json" },
             });
+            interface VirusTotalResponse {
+              data?: { attributes?: Record<string, unknown>; [k: string]: unknown };
+              [k: string]: unknown;
+            }
             const data = await r.json().catch(() => ({}));
-            const attrs = (data as any)?.data?.attributes ?? {};
+            const attrs: Record<string, unknown> = (data as VirusTotalResponse)?.data?.attributes ?? {};
             return {
               ok: r.ok,
               status: r.status,
@@ -2113,10 +2178,15 @@ Deno.serve(async (req) => {
                 },
                 body: JSON.stringify({ query: q, type: "keyword", numResults: 10, contents: false }),
               });
+              interface ExaSearchResp {
+                results?: Array<{ url?: unknown; [k: string]: unknown }>;
+                [k: string]: unknown;
+              }
               const data = await r.json().catch(() => ({}));
-              const urls = Array.isArray((data as any)?.results)
-                ? (data as any).results
-                    .map((x: any) => (typeof x?.url === "string" ? x.url : ""))
+              const exaResults = (data as ExaSearchResp)?.results;
+              const urls = Array.isArray(exaResults)
+                ? exaResults
+                    .map((x) => (typeof x?.url === "string" ? x.url : ""))
                     .filter((u: string) => !!u)
                 : [];
               return { ok: r.ok, status: r.status, urls };
@@ -2255,7 +2325,7 @@ Deno.serve(async (req) => {
             (focus ? `Focus: ${focus}\n` : "") +
             `Goal: deep-dork this seed across Google. Surface breach/leak exposure, document/file leaks (PDFs, CVs, dumps), pastebin/rentry/ghostbin pastes, forum mentions, social/profile traces, and any public-records or news hits. Prefer recent + high-signal results.`;
           const res = await geminiGroundedSearch({ prompt: user, system });
-          if (!res.ok) return { ok: false, status: res.status, error: "gemini_grounded_search_failed", detail: String((res.raw as any)?.error?.message ?? "").slice(0, 400) };
+          if (!res.ok) return { ok: false, status: res.status, error: "gemini_grounded_search_failed", detail: String((res.raw as { error?: { message?: unknown } })?.error?.message ?? "").slice(0, 400) };
 
           // Classify + dedupe citations, then auto-record.
           const seen = new Set<string>();
@@ -2574,11 +2644,18 @@ Deno.serve(async (req) => {
           if (gated) return gated;
           try {
             const r = await fetch(`https://urlscan.io/api/v1/search/?q=${encodeURIComponent(query)}&size=20`);
+            interface UrlscanResult {
+              page?: { url?: unknown; domain?: unknown; ip?: unknown; asn?: unknown; country?: unknown; [k: string]: unknown };
+              screenshot?: unknown;
+              task?: { time?: unknown; [k: string]: unknown };
+              result?: unknown;
+              [k: string]: unknown;
+            }
             const data = await r.json().catch(() => ({}));
-            const results = (data as { results?: Array<Record<string, unknown>> }).results ?? [];
+            const results = (data as { results?: UrlscanResult[] }).results ?? [];
             return {
               ok: r.ok, total: (data as { total?: number }).total,
-              results: results.map((x: any) => ({
+              results: results.map((x: UrlscanResult) => ({
                 url: x?.page?.url, domain: x?.page?.domain, ip: x?.page?.ip,
                 asn: x?.page?.asn, country: x?.page?.country,
                 screenshot: x?.screenshot, scanned: x?.task?.time, result: x?.result,
@@ -2609,12 +2686,28 @@ Deno.serve(async (req) => {
               fetch(`https://www.reddit.com/user/${u}/about.json`, { headers: h }).then((r) => r.json()).catch(() => ({})),
               fetch(`https://www.reddit.com/user/${u}.json?limit=15`, { headers: h }).then((r) => r.json()).catch(() => ({})),
             ]);
-            const items = ((posts as any)?.data?.children ?? []).map((c: any) => ({
+            interface RedditChild {
+              kind?: unknown;
+              data?: {
+                subreddit?: unknown;
+                title?: unknown;
+                body?: string;
+                permalink?: string;
+                created_utc?: unknown;
+                [k: string]: unknown;
+              };
+              [k: string]: unknown;
+            }
+            interface RedditListing {
+              data?: { children?: RedditChild[]; [k: string]: unknown };
+              [k: string]: unknown;
+            }
+            const items = ((posts as RedditListing)?.data?.children ?? []).map((c: RedditChild) => ({
               kind: c.kind, subreddit: c.data?.subreddit, title: c.data?.title,
               body: c.data?.body?.slice?.(0, 300), url: c.data?.permalink ? `https://reddit.com${c.data.permalink}` : undefined,
               created: c.data?.created_utc,
             }));
-            return { about: (about as any)?.data, recent: items };
+            return { about: (about as RedditListing)?.data, recent: items };
           } catch (e) { return { error: String(e) }; }
         },
       }),
@@ -2641,11 +2734,14 @@ Deno.serve(async (req) => {
               console.warn(`[github_code_search] HTTP ${r.status} authed=${!!GITHUB_API_TOKEN} remaining=${remaining} reset=${reset} msg=${(data?.message ?? "").slice(0, 200)}`);
               return { error: `github ${r.status}`, status: r.status, authenticated: !!GITHUB_API_TOKEN, rate_remaining: remaining, message: data?.message, snippet: text.slice(0, 300) };
             }
-            const items = ((data as any)?.items ?? []).map((i: any) => ({
-              repo: i.repository?.full_name, path: i.path, url: i.html_url,
-              matches: (i.text_matches ?? []).map((m: any) => m.fragment).slice(0, 3),
-            }));
-            return { ok: true, authenticated: !!GITHUB_API_TOKEN, total: (data as any)?.total_count, items };
+            const items = (data?.items ?? []).map((i: GitHubCodeMatch) => {
+              const textMatches = Array.isArray(i.text_matches) ? (i.text_matches as Array<{ fragment?: unknown }>) : [];
+              return {
+                repo: i.repository?.full_name, path: i.path, url: i.html_url,
+                matches: textMatches.map((m) => m.fragment).slice(0, 3),
+              };
+            });
+            return { ok: true, authenticated: !!GITHUB_API_TOKEN, total: data?.total_count, items };
           } catch (e) { return { error: String(e) }; }
         },
       }),
@@ -2667,9 +2763,33 @@ Deno.serve(async (req) => {
             if (department) params.set("department", department);
             if (seniority) params.set("seniority", seniority);
             if (type) params.set("type", type);
+            interface HunterDomainEmail {
+              value?: unknown;
+              first_name?: unknown;
+              last_name?: unknown;
+              position?: unknown;
+              department?: unknown;
+              seniority?: unknown;
+              linkedin?: unknown;
+              twitter?: unknown;
+              phone_number?: unknown;
+              confidence?: unknown;
+              sources?: Array<{ uri?: unknown; [k: string]: unknown }>;
+              [k: string]: unknown;
+            }
+            interface HunterDomainData {
+              organization?: unknown;
+              country?: unknown;
+              pattern?: unknown;
+              webmail?: unknown;
+              disposable?: unknown;
+              meta?: { results?: number; [k: string]: unknown };
+              emails?: HunterDomainEmail[];
+              [k: string]: unknown;
+            }
             const r = await fetch(`https://api.hunter.io/v2/domain-search?${params}`);
             const data = await r.json().catch(() => ({}));
-            const d: any = (data as any)?.data ?? {};
+            const d: HunterDomainData = (data as { data?: HunterDomainData })?.data ?? {};
             return {
               ok: r.ok,
               status: r.status,
@@ -2679,7 +2799,7 @@ Deno.serve(async (req) => {
               webmail: d.webmail,
               disposable: d.disposable,
               total: d.meta?.results ?? (d.emails?.length ?? 0),
-              emails: (d.emails ?? []).map((e: any) => ({
+              emails: (d.emails ?? []).map((e: HunterDomainEmail) => ({
                 value: e.value,
                 first_name: e.first_name,
                 last_name: e.last_name,
@@ -2693,7 +2813,7 @@ Deno.serve(async (req) => {
                 sources_count: (e.sources ?? []).length,
                 sample_source: e.sources?.[0]?.uri,
               })),
-              errors: (data as any)?.errors,
+              errors: (data as { errors?: unknown })?.errors,
             };
           } catch (e) { return { error: String(e) }; }
         },
@@ -2715,9 +2835,20 @@ Deno.serve(async (req) => {
             if (first_name) params.set("first_name", first_name);
             if (last_name) params.set("last_name", last_name);
             if (full_name) params.set("full_name", full_name);
+            interface HunterFinderData {
+              email?: unknown;
+              score?: unknown;
+              first_name?: unknown;
+              last_name?: unknown;
+              position?: unknown;
+              linkedin_url?: unknown;
+              verification?: unknown;
+              sources?: unknown[];
+              [k: string]: unknown;
+            }
             const r = await fetch(`https://api.hunter.io/v2/email-finder?${params}`);
             const data = await r.json().catch(() => ({}));
-            const d: any = (data as any)?.data ?? {};
+            const d: HunterFinderData = (data as { data?: HunterFinderData })?.data ?? {};
             return {
               ok: r.ok && !!d.email,
               status: r.status,
@@ -2729,7 +2860,7 @@ Deno.serve(async (req) => {
               linkedin: d.linkedin_url,
               verification: d.verification,
               sources_count: (d.sources ?? []).length,
-              errors: (data as any)?.errors,
+              errors: (data as { errors?: unknown })?.errors,
             };
           } catch (e) { return { error: String(e) }; }
         },
@@ -2741,9 +2872,26 @@ Deno.serve(async (req) => {
         execute: async ({ email }) => {
           if (!HUNTER_API_KEY) return { error: "HUNTER_API_KEY not configured" };
           try {
+            interface HunterVerifierData {
+              email?: unknown;
+              result?: unknown;
+              status?: unknown;
+              score?: unknown;
+              regexp?: unknown;
+              gibberish?: unknown;
+              disposable?: unknown;
+              webmail?: unknown;
+              mx_records?: unknown;
+              smtp_server?: unknown;
+              smtp_check?: unknown;
+              accept_all?: unknown;
+              block?: unknown;
+              sources?: unknown[];
+              [k: string]: unknown;
+            }
             const r = await fetch(`https://api.hunter.io/v2/email-verifier?email=${encodeURIComponent(email)}&api_key=${HUNTER_API_KEY}`);
             const data = await r.json().catch(() => ({}));
-            const d: any = (data as any)?.data ?? {};
+            const d: HunterVerifierData = (data as { data?: HunterVerifierData })?.data ?? {};
             return {
               ok: r.ok,
               status: r.status,
@@ -2761,7 +2909,7 @@ Deno.serve(async (req) => {
               accept_all: d.accept_all,
               block: d.block,
               sources_count: (d.sources ?? []).length,
-              errors: (data as any)?.errors,
+              errors: (data as { errors?: unknown })?.errors,
             };
           } catch (e) { return { error: String(e) }; }
         },
@@ -2773,6 +2921,40 @@ Deno.serve(async (req) => {
         execute: async ({ email }) => {
           if (!HUNTER_API_KEY) return { error: "HUNTER_API_KEY not configured" };
           try {
+            interface HunterHandle { handle?: unknown; [k: string]: unknown }
+            // city/country are interpolated into a template string below, so
+            // they are typed string-coercible rather than `unknown`.
+            interface HunterGeo { city?: string; country?: string; [k: string]: unknown }
+            interface HunterPerson {
+              name?: { fullName?: unknown; givenName?: unknown; familyName?: unknown; [k: string]: unknown };
+              geo?: HunterGeo;
+              bio?: unknown;
+              site?: unknown;
+              avatar?: unknown;
+              employment?: unknown;
+              github?: HunterHandle;
+              twitter?: HunterHandle;
+              linkedin?: HunterHandle;
+              aboutme?: HunterHandle;
+              [k: string]: unknown;
+            }
+            // city/country are interpolated into a template string below, so
+            // they are typed string-coercible rather than `unknown`.
+            interface HunterCompany {
+              name?: unknown;
+              legalName?: unknown;
+              domain?: unknown;
+              description?: unknown;
+              category?: { industry?: unknown; subIndustry?: unknown; [k: string]: unknown };
+              metrics?: { employees?: unknown; employeesRange?: unknown; annualRevenue?: unknown; [k: string]: unknown };
+              foundedYear?: unknown;
+              tech?: unknown[];
+              geo?: HunterGeo;
+              linkedin?: HunterHandle;
+              twitter?: HunterHandle;
+              facebook?: HunterHandle;
+              [k: string]: unknown;
+            }
             const r = await fetch(`https://api.hunter.io/v2/combined/find?email=${encodeURIComponent(email)}&api_key=${HUNTER_API_KEY}`);
             const data = await r.json().catch(() => ({}));
             // Hunter's Combined endpoint requires a paid plan; on 400/403 the
@@ -2784,8 +2966,8 @@ Deno.serve(async (req) => {
                 fetch(`https://api.hunter.io/v2/people/find?email=${encodeURIComponent(email)}&api_key=${HUNTER_API_KEY}`).then(x => x.json()).catch(() => ({})),
                 domain ? fetch(`https://api.hunter.io/v2/companies/find?domain=${encodeURIComponent(domain)}&api_key=${HUNTER_API_KEY}`).then(x => x.json()).catch(() => ({})) : Promise.resolve({}),
               ]);
-              const pp: any = (pr as any)?.data ?? {};
-              const cc: any = (cr as any)?.data ?? {};
+              const pp: HunterPerson = (pr as { data?: HunterPerson })?.data ?? {};
+              const cc: HunterCompany = (cr as { data?: HunterCompany })?.data ?? {};
               const hasAny = Object.keys(pp).length > 0 || Object.keys(cc).length > 0;
               if (hasAny) {
                 return {
@@ -2811,9 +2993,10 @@ Deno.serve(async (req) => {
               }
               return { ok: false, status: r.status, error: `hunter_combined ${r.status} (plan-gated; people/companies also empty)` };
             }
-            const d: any = (data as any)?.data ?? {};
-            const p = d.person ?? {};
-            const c = d.company ?? {};
+            const d: { person?: HunterPerson; company?: HunterCompany; [k: string]: unknown } =
+              (data as { data?: { person?: HunterPerson; company?: HunterCompany; [k: string]: unknown } })?.data ?? {};
+            const p: HunterPerson = d.person ?? {};
+            const c: HunterCompany = d.company ?? {};
             return {
               ok: r.ok,
               status: r.status,
@@ -2848,7 +3031,7 @@ Deno.serve(async (req) => {
                 twitter: c.twitter?.handle,
                 facebook: c.facebook?.handle,
               },
-              errors: (data as any)?.errors,
+              errors: (data as { errors?: unknown })?.errors,
             };
           } catch (e) { return { error: String(e) }; }
         },
@@ -2895,7 +3078,7 @@ Deno.serve(async (req) => {
               if (a >= 0 && b > a) { try { return JSON.parse(s.slice(a, b + 1)); } catch { /* noop */ } }
               return v;
             };
-            let v: any = parseMaybe(raw);
+            let v: unknown = parseMaybe(raw);
             if (v && !Array.isArray(v) && typeof v === "object") v = [v];
             return v;
           }, z.array(
@@ -2926,7 +3109,7 @@ Deno.serve(async (req) => {
             // Apply conservative confidence caps based on source class.
             const cap = applyEvidenceCaps({
               rawConfidence: a.confidence ?? 50,
-              sources: [a.source ?? "", ...((a.metadata as any)?.sources ?? [])].filter(Boolean) as string[],
+              sources: [a.source ?? "", ...((a.metadata?.sources ?? []) as Iterable<unknown>)].filter(Boolean) as string[],
             });
             // Required-fields envelope — fill conservative defaults when the
             // agent didn't supply them.
@@ -2935,12 +3118,12 @@ Deno.serve(async (req) => {
               ...(v.metaPatch ?? {}),
               ...(inferred.reclassified_from ? { reclassified_from: inferred.reclassified_from } : {}),
               source_category: cap.source_classes,
-              status: (a.metadata as any)?.status ?? "new",
-              cluster_id: (a.metadata as any)?.cluster_id ?? null,
+              status: a.metadata?.status ?? "new",
+              cluster_id: a.metadata?.cluster_id ?? null,
               reason_for_confidence: cap.reason_for_confidence,
-              reason_not_confirmed: (a.metadata as any)?.reason_not_confirmed ?? cap.reason_not_confirmed ?? null,
-              contradictions: (a.metadata as any)?.contradictions ?? [],
-              next_verification_step: (a.metadata as any)?.next_verification_step ?? null,
+              reason_not_confirmed: a.metadata?.reason_not_confirmed ?? cap.reason_not_confirmed ?? null,
+              contradictions: a.metadata?.contradictions ?? [],
+              next_verification_step: a.metadata?.next_verification_step ?? null,
               confidence_cap_applied: cap.cap,
             };
             rows.push({
@@ -2980,7 +3163,7 @@ Deno.serve(async (req) => {
             insertedRows = surviving;
           }
           const safeRowsForFollowup = insertedRows;
-          const flagged = safeRows.filter((r) => (r.metadata as any)?.minor_warning).length;
+          const flagged = safeRows.filter((r) => (r.metadata as { minor_warning?: unknown } | undefined)?.minor_warning).length;
           bumpArtifacts(safeRowsForFollowup.length, safeRowsForFollowup.map((r) => String(r.kind)));
           // Collision detection: for any phone/email/address just inserted,
           // check if the same normalized value is already linked to a
@@ -2998,7 +3181,8 @@ Deno.serve(async (req) => {
                 .eq("value", String(r.value));
               const sources = new Set<string>();
               const clusters = new Set<string>();
-              for (const p of (peers ?? []) as any[]) {
+              type PeerRow = { source?: unknown; metadata?: Record<string, unknown> | null };
+              for (const p of (peers ?? []) as PeerRow[]) {
                 if (p.source) sources.add(String(p.source));
                 const cid = (p.metadata ?? {}).cluster_id;
                 if (cid) clusters.add(String(cid));
@@ -3051,7 +3235,7 @@ Deno.serve(async (req) => {
                 }),
               );
               memory_hits = recalled.filter((r) => r.count > 0);
-              const allIds = memory_hits.flatMap((h) => (h.memories as any[]).map((m) => m.id));
+              const allIds = memory_hits.flatMap((h) => (h.memories as Array<{ id?: unknown }>).map((m) => m.id));
               if (allIds.length > 0) {
                 supabase.rpc("bump_memory_hits", { _ids: allIds }).then(() => {}, () => {});
               }
@@ -3069,7 +3253,7 @@ Deno.serve(async (req) => {
             try {
               const meta = (r.metadata as Record<string, unknown> | null) ?? {};
               const conf = typeof r.confidence === "number" ? (r.confidence as number) : null;
-              const declared = String((meta as any).classification ?? "").toLowerCase();
+              const declared = String(meta.classification ?? "").toLowerCase();
               const classification =
                 declared === "hard" || declared === "soft"
                   ? declared
@@ -3077,10 +3261,10 @@ Deno.serve(async (req) => {
                   ? "hard"
                   : "soft";
               const sourceUrl =
-                (meta as any).source_url ||
-                (meta as any).url ||
-                (meta as any).profile_url ||
-                (meta as any).archived_url ||
+                meta.source_url ||
+                meta.url ||
+                meta.profile_url ||
+                meta.archived_url ||
                 null;
               const snapshot = JSON.stringify(meta).slice(0, 1500);
               const { error: evErr } = await supabase.rpc("append_evidence", {
@@ -3154,19 +3338,19 @@ Deno.serve(async (req) => {
           if (!v.ok) return { ok: false, rejected: true, reason: v.reason };
           const cap = applyEvidenceCaps({
             rawConfidence: confidence ?? 50,
-            sources: [source ?? "", ...((metadata as any)?.sources ?? [])].filter(Boolean) as string[],
+            sources: [source ?? "", ...((metadata?.sources ?? []) as Iterable<unknown>)].filter(Boolean) as string[],
           });
           const enrichedMeta = {
             ...(metadata ?? {}),
             ...(v.metaPatch ?? {}),
             ...(inferred.reclassified_from ? { reclassified_from: inferred.reclassified_from } : {}),
             source_category: cap.source_classes,
-            status: (metadata as any)?.status ?? "new",
-            cluster_id: (metadata as any)?.cluster_id ?? null,
+            status: metadata?.status ?? "new",
+            cluster_id: metadata?.cluster_id ?? null,
             reason_for_confidence: cap.reason_for_confidence,
-            reason_not_confirmed: (metadata as any)?.reason_not_confirmed ?? cap.reason_not_confirmed ?? null,
-            contradictions: (metadata as any)?.contradictions ?? [],
-            next_verification_step: (metadata as any)?.next_verification_step ?? null,
+            reason_not_confirmed: metadata?.reason_not_confirmed ?? cap.reason_not_confirmed ?? null,
+            contradictions: metadata?.contradictions ?? [],
+            next_verification_step: metadata?.next_verification_step ?? null,
             confidence_cap_applied: cap.cap,
           };
           const row = scrubArtifactRow({
@@ -3181,11 +3365,11 @@ Deno.serve(async (req) => {
           const { error } = await supabase.from("artifacts").insert([row]);
           if (error) return { ok: false, error: error.message };
           bumpArtifacts(1, [String(row.kind)]);
-          const minor = (row.metadata as any)?.minor_warning === true;
+          const minor = (row.metadata as { minor_warning?: unknown } | null)?.minor_warning === true;
           // Chain-of-custody append
           const meta = (row.metadata as Record<string, unknown> | null) ?? {};
           const conf = typeof row.confidence === "number" ? (row.confidence as number) : null;
-          const declared = String((meta as any).classification ?? "").toLowerCase();
+          const declared = String(meta.classification ?? "").toLowerCase();
           const classification =
             declared === "hard" || declared === "soft"
               ? declared
@@ -3193,7 +3377,7 @@ Deno.serve(async (req) => {
               ? "hard"
               : "soft";
           const sourceUrl =
-            (meta as any).source_url || (meta as any).url || (meta as any).profile_url || (meta as any).archived_url || null;
+            meta.source_url || meta.url || meta.profile_url || meta.archived_url || null;
           await supabase.rpc("append_evidence", {
             _thread_id: threadId,
             _artifact_id: null,
@@ -3288,16 +3472,24 @@ Deno.serve(async (req) => {
       }
       return val;
     };
-    const trimmedMessages = modelMessages.map((m: any, idx: number) => {
+    // Message content part shape we read while trimming. Only the fields we
+    // touch are modeled; everything else rides along untouched via the spread.
+    interface TrimPart {
+      type?: string;
+      output?: unknown;
+      text?: unknown;
+      [k: string]: unknown;
+    }
+    const trimmedMessages: ModelMessage[] = modelMessages.map((m: ModelMessage, idx: number) => {
       const isRecent = idx >= modelMessages.length - RECENT_WINDOW;
       const max = isRecent ? MAX_TOOL_RESULT_CHARS_RECENT : MAX_TOOL_RESULT_CHARS_OLD;
       if (m.role !== "tool" && m.role !== "assistant") return m;
       if (!Array.isArray(m.content)) return m;
-      const content = m.content.map((part: any) => {
+      const content = (m.content as TrimPart[]).map((part: TrimPart) => {
         if (part?.type === "tool-result" && part.output != null) {
           // AI SDK v6 tool-result output shapes: { type: 'json', value } | { type: 'text', value } | raw
           if (part.output && typeof part.output === "object" && "value" in part.output) {
-            return { ...part, output: { ...part.output, value: truncateValue(part.output.value, max) } };
+            return { ...part, output: { ...part.output, value: truncateValue((part.output as { value: unknown }).value, max) } };
           }
           return { ...part, output: truncateValue(part.output, max) };
         }
@@ -3306,11 +3498,16 @@ Deno.serve(async (req) => {
         }
         return part;
       });
-      return { ...m, content };
+      return { ...m, content } as ModelMessage;
     });
 
     // Inject memory tools (cross-investigation learning) into the registry.
-    (tools as any).memory_recall = tool({
+    //
+    // Late-injected registry tools, written as `(tools as ToolRegistry).X =
+    // tool(...)`. The catalog↔runtime contract test
+    // (src/test/tool-catalog-contract.test.ts) discovers these by grepping this
+    // file for that assignment pattern, so keep the notation consistent.
+    (tools as ToolRegistry).memory_recall = tool({
       description:
         "Recall prior agent memory for this user (lessons learned, identity links, recurring patterns, known false positives). Call EARLY in any investigation with the seed value AND with each newly confirmed high-value artifact (email, username, domain, wallet). Returns up to 20 most-relevant memory entries.",
       inputSchema: z.object({
@@ -3358,7 +3555,7 @@ Deno.serve(async (req) => {
         // Best-effort: mark surfaced memories as recently used so they
         // bubble up next time and so stale unused ones can be pruned.
         if (memories.length > 0) {
-          const ids = memories.map((m: any) => m.id);
+          const ids = memories.map((m: { id: unknown }) => m.id);
           // Atomic hit_count + last_used_at bump (no read-modify-write race).
           supabase.rpc("bump_memory_hits", { _ids: ids }).then(() => {}, () => {});
         }
@@ -3366,7 +3563,7 @@ Deno.serve(async (req) => {
       },
     });
 
-    (tools as any).memory_save = tool({
+    (tools as ToolRegistry).memory_save = tool({
       description:
         "Persist a durable cross-investigation memory: a learned pattern, a confirmed connection between artifacts, an analyst lesson, or an identity cluster. Call AT THE END of an investigation with the strongest connections + any lessons (e.g. \"this domain is always parked\", \"this handle resolves to person X\", \"breach DB Y has stale phones\"). Idempotent: calling with the same kind+subject+content updates the existing entry.",
       inputSchema: z.object({
@@ -3383,15 +3580,15 @@ Deno.serve(async (req) => {
             if (oa >= 0 && ob > oa) { try { return JSON.parse(s.slice(oa, ob + 1)); } catch { /* noop */ } }
             return v;
           };
-          let v: any = parseMaybe(raw);
+          let v: unknown = parseMaybe(raw);
           if (v && !Array.isArray(v) && typeof v === "object") v = [v];
           if (Array.isArray(v)) {
             v = v
               .map(parseMaybe)
-              .filter((x: any) => x && typeof x === "object")
+              .filter((x: unknown): x is Record<string, unknown> => !!x && typeof x === "object")
               // Drop entries with missing/blank subject — the LLM occasionally
               // emits one. Better to save the rest than reject the whole batch.
-              .filter((x: any) => typeof x.subject === "string" && x.subject.trim().length > 0);
+              .filter((x) => typeof x.subject === "string" && x.subject.trim().length > 0);
           }
           return v;
         }, z.array(z.object({
@@ -3460,10 +3657,10 @@ Deno.serve(async (req) => {
         .select("tool_name")
         .eq("thread_id", threadId)
         .eq("ok", true);
-      return [...new Set((data ?? []).map((r: any) => r.tool_name))];
+      return [...new Set((data ?? []).map((r: { tool_name: string }) => r.tool_name))];
     }
 
-    (tools as any).coverage_audit = tool({
+    (tools as ToolRegistry).coverage_audit = tool({
       description:
         "MANDATORY before record_finding. Audits the 12 investigative coverage categories (identity/email/username/phone/domain/infrastructure/social/breach/location/employment/relationships/timeline) against the playbook for this seed type. Returns {complete, categories, missingOpportunities}. If complete=false you MUST either run the missing tools or mark the case 'incomplete' in the final report.",
       inputSchema: z.object({}).strict(),
@@ -3474,7 +3671,7 @@ Deno.serve(async (req) => {
       },
     });
 
-    (tools as any).detect_contradictions = tool({
+    (tools as ToolRegistry).detect_contradictions = tool({
       description:
         "MANDATORY before record_finding. Examines the artifacts already recorded for this investigation and surfaces conflicts (location mismatch, employer mismatch, common-handle collision, CDN/shared-infra false-link, stale breach data, thin same-name). Each contradiction reduces relevant confidence axes.",
       inputSchema: z.object({
@@ -3486,12 +3683,12 @@ Deno.serve(async (req) => {
         if (cluster_artifact_kinds?.length) q = q.in("kind", cluster_artifact_kinds);
         const { data, error } = await q;
         if (error) return { ok: false, error: error.message };
-        const findings = detectContradictions((data ?? []) as any);
+        const findings = detectContradictions((data ?? []) as Parameters<typeof detectContradictions>[0]);
         return { ok: true, count: findings.length, contradictions: findings };
       },
     });
 
-    (tools as any).tool_audit = tool({
+    (tools as ToolRegistry).tool_audit = tool({
       description:
         "MANDATORY before record_finding. Returns tool health + API utilization for this investigation: which Tier-A APIs were configured, which were called, which were skipped without justification (a 'missed_opportunity'), failure counts per tool, and artifact yield per tool.",
       inputSchema: z.object({}).strict(),
@@ -3504,7 +3701,8 @@ Deno.serve(async (req) => {
         const failures: Record<string, number> = {};
         const counts: Record<string, number> = {};
         let totalMicro = 0;
-        for (const r of (rows ?? []) as any[]) {
+        type UsageLogRow = { tool_name: string; ok?: boolean; cost_micro_usd?: number };
+        for (const r of (rows ?? []) as UsageLogRow[]) {
           used.add(r.tool_name);
           counts[r.tool_name] = (counts[r.tool_name] ?? 0) + 1;
           totalMicro += r.cost_micro_usd ?? 0;
@@ -3530,7 +3728,7 @@ Deno.serve(async (req) => {
       },
     });
 
-    (tools as any).record_finding = tool({
+    (tools as ToolRegistry).record_finding = tool({
       description:
         "Persist an analyst-grade FINDING (distinct from a raw artifact). Use ONLY after coverage_audit + detect_contradictions + tool_audit have run. Each finding must cite supporting artifacts, name drivers and reducers, and acknowledge contradictions. Confidence is computed server-side from sources + corroboration + contradictions; your `confidence` value is treated as a target, not a guarantee. Tier-C-only evidence is hard-capped at 50.",
       inputSchema: z.object({
@@ -3553,7 +3751,7 @@ Deno.serve(async (req) => {
           .from("artifacts")
           .select("kind,value,source,metadata,created_at")
           .eq("thread_id", threadId);
-        const contras = detectContradictions((contraRows ?? []) as any);
+        const contras = detectContradictions((contraRows ?? []) as Parameters<typeof detectContradictions>[0]);
         const axes = computeAxes({
           sources: i.supporting_sources,
           corroborationCount: i.corroboration_count,
@@ -3664,15 +3862,15 @@ Deno.serve(async (req) => {
         // previously-queried subject for the rest of the investigation.
         routingGuard.memoryRecallSubjectsThisStep.clear();
         if (!Array.isArray(stepMessages) || stepMessages.length === 0) return {};
-        const trimmed = stepMessages.map((m: any, idx: number) => {
+        const trimmed: ModelMessage[] = stepMessages.map((m: ModelMessage, idx: number) => {
           const isRecent = idx >= stepMessages.length - STEP_RECENT_WINDOW;
           const max = isRecent ? STEP_RECENT_CHARS : STEP_OLDER_CHARS;
           if (m.role !== "tool" && m.role !== "assistant") return m;
           if (!Array.isArray(m.content)) return m;
-          const content = m.content.map((part: any) => {
+          const content = (m.content as TrimPart[]).map((part: TrimPart) => {
             if (part?.type === "tool-result" && part.output != null) {
               if (part.output && typeof part.output === "object" && "value" in part.output) {
-                return { ...part, output: { ...part.output, value: truncateValue(part.output.value, max) } };
+                return { ...part, output: { ...part.output, value: truncateValue((part.output as { value: unknown }).value, max) } };
               }
               return { ...part, output: truncateValue(part.output, max) };
             }
@@ -3681,7 +3879,7 @@ Deno.serve(async (req) => {
             }
             return part;
           });
-          return { ...m, content };
+          return { ...m, content } as ModelMessage;
         });
         return { messages: trimmed };
       };
@@ -3703,8 +3901,9 @@ Deno.serve(async (req) => {
       //   Gemini 2.5 Pro:  in $1.25/M  out $10.00/M → 1.25, 10.00
       onStepFinish: ({ usage }) => {
         try {
-          const inTok = Number((usage as any)?.inputTokens ?? (usage as any)?.promptTokens ?? 0);
-          const outTok = Number((usage as any)?.outputTokens ?? (usage as any)?.completionTokens ?? 0);
+          const u = usage as { inputTokens?: number; promptTokens?: number; outputTokens?: number; completionTokens?: number } | undefined;
+          const inTok = Number(u?.inputTokens ?? u?.promptTokens ?? 0);
+          const outTok = Number(u?.outputTokens ?? u?.completionTokens ?? 0);
           if (!inTok && !outTok) return;
           const [inRate, outRate] = useFallback ? [1.25, 10] : [0.3, 1.2];
           const micro = Math.round(inTok * inRate + outTok * outRate);
@@ -3755,7 +3954,7 @@ Deno.serve(async (req) => {
       // `EdgeRuntime.waitUntil` is the Supabase-Deno equivalent of the
       // Cloudflare/Vercel `ctx.waitUntil` — schedules background work that
       // outlives the response.
-      const ert = (globalThis as any).EdgeRuntime;
+      const ert = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
       if (ert && typeof ert.waitUntil === "function") {
         ert.waitUntil(result.consumeStream());
       } else {

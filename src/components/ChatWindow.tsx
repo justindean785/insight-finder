@@ -1011,7 +1011,7 @@ function ChatWindowInner({
       await Promise.all(
         accepted.map(async (file) => {
           const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-          const safeName = file.name.replace(/[^\w.\-]+/g, "_");
+          const safeName = file.name.replace(/[^\w.-]+/g, "_");
           const path = `${user.id}/${threadId}/${id}-${safeName}`;
           setAttachments((prev) => [
             ...prev,

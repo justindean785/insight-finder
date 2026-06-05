@@ -9,7 +9,7 @@ import * as path from "path";
  * The catalog (`supabase/functions/osint-agent/catalog.ts`) is what the
  * LLM sees via `list_tools`. The runtime comes from two sources:
  *   1. Static exports: `export const foo = tool({...})` in tools/*.ts
- *   2. Late-injected:   `(tools as any).foo = tool({...})` in index.ts
+ *   2. Late-injected:   `(tools as ToolRegistry).foo = tool({...})` in index.ts
  *
  * This test enforces: every tool the LLM can read about actually
  * exists at runtime, and every runtime tool is documented for the LLM.
@@ -37,7 +37,7 @@ function staticToolNames(): Set<string> {
 
 function lateInjectedNames(): Set<string> {
   const out = bash(
-    `grep -oE '\\(tools as any\\)\\.([a-z_]+) *= *tool' "${ROOT}/index.ts" | ` +
+    `grep -oE '\\(tools as (any|ToolRegistry)\\)\\.([a-z_]+) *= *tool' "${ROOT}/index.ts" | ` +
       `sed -E 's/.+\\.([a-z_]+) *= *tool/\\1/'`,
   );
   return new Set(out.split("\n").map((s) => s.trim()).filter(Boolean));

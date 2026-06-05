@@ -107,7 +107,7 @@ export default function BrainGlobalPage() {
   const toggleSuppress = (id: string) => {
     setSuppressed((prev) => {
       const n = new Set(prev);
-      n.has(id) ? n.delete(id) : n.add(id);
+      if (n.has(id)) n.delete(id); else n.add(id);
       saveSet(BRAIN_SUPPRESSED_KEY, n);
       return n;
     });
@@ -120,7 +120,7 @@ export default function BrainGlobalPage() {
   const togglePromote = (id: string) => {
     setPromoted((prev) => {
       const n = new Set(prev);
-      n.has(id) ? n.delete(id) : n.add(id);
+      if (n.has(id)) n.delete(id); else n.add(id);
       saveSet(BRAIN_PROMOTED_KEY, n);
       return n;
     });
