@@ -416,18 +416,18 @@ export type TimelineItem = {
 
 /**
  * Build a timeline strictly from artifact rows. Triage / cache / failed
- * events are detected from metadata flags.
- *
- * TODO: enrich with message-level events (user seed submission timestamp,
- * tool-call start/end, report-generated marker) once messages are passed
- * into this panel.
+ * events are detected from metadata flags. When `messages` is provided,
+ * user queries, tool invocations, and report-generated markers are
+ * interleaved with the artifact stream.
  */
 export function buildTimelineItems(
   artifacts: Artifact[],
   seed: { value: string | null; type: string | null; createdAt?: string | null } | null,
+  messages?: Array<{ id: string; role: string; created_at: string; summary: string; toolCalls: Array<{ toolName: string; resultSummary?: string }> }>,
 ): TimelineItem[] {
   const items: TimelineItem[] = [];
 
+  // ---- Seed event ----
   if (seed?.value && seed.createdAt) {
     items.push({
       id: "seed",
@@ -440,6 +440,55 @@ export function buildTimelineItems(
       explanation: "Investigation seed submitted.",
     });
   }
+
+  // ---- Message-level events ----
+  if (messages) {
+    for (const msg of messages) {
+      // User follow-up queries
+      if (msg.role === "user" && msg.summary && msg.summary.length > 0) {
+        items.push({
+          id: `msg-${msg.id}`,
+          time: msg.created_at,
+          type: "seed",
+          title: msg.summary,
+          source: null,
+          confidence: null,
+          kind: "query",
+          explanation: "Follow-up query submitted.",
+        });
+      }
+      // Tool calls
+      for (const tc of msg.toolCalls) {
+        items.push({
+          id: `tc-${msg.id}-${tc.toolName}`,
+          time: msg.created_at,
+          type: "tool_result",
+          title: tc.toolName,
+          source: tc.toolName,
+          confidence: null,
+          kind: "tool_call",
+          explanation: tc.resultSummary
+            ? `Tool ${tc.resultSummary}.`
+            : "Tool invoked.",
+        });
+      }
+      // Report generation markers
+      if (msg.role === "assistant" && /report/i.test(msg.summary)) {
+        items.push({
+          id: `report-${msg.id}`,
+          time: msg.created_at,
+          type: "report",
+          title: "Report generated",
+          source: null,
+          confidence: null,
+          kind: "report",
+          explanation: "Final investigation report completed.",
+        });
+      }
+    }
+  }
+
+  // ---- Artifact events ----
 
   for (const a of artifacts) {
     const meta = (a.metadata ?? {}) as Record<string, unknown>;
@@ -737,10 +786,17 @@ export type ReportInput = {
   seedValue: string | null;
   seedType: string | null;
   artifacts: Artifact[];
+  messages?: Array<{
+    id: string;
+    role: "user" | "assistant";
+    created_at: string;
+    summary: string;
+    toolCalls: Array<{ toolName: string; resultSummary?: string }>;
+  }>;
 };
 
 export function buildReportMarkdown(input: ReportInput): string {
-  const { seedValue, seedType, artifacts } = input;
+  const { seedValue, seedType, artifacts, messages } = input;
   const total = artifacts.length;
 
   const confirmed = artifacts.filter((a) => labelForArtifact(a) === "CONFIRMED");
@@ -794,11 +850,52 @@ export function buildReportMarkdown(input: ReportInput): string {
   })();
 
   const timeline = (() => {
-    const items = buildTimelineItems(artifacts, seedValue ? { value: seedValue, type: seedType, createdAt: null } : null);
+    const items = buildTimelineItems(
+      artifacts,
+      seedValue ? { value: seedValue, type: seedType, createdAt: null } : null,
+      messages,
+    );
     if (items.length === 0) return "_No events recorded._";
     return items.slice(-15).map((t) =>
       `- \`${new Date(t.time).toISOString()}\` — **${t.type}** — ${t.title}${t.source ? ` _(via ${t.source})_` : ""}`,
     ).join("\n");
+  })();
+
+  const activityLog = (() => {
+    if (!messages || messages.length === 0) return "_No message activity recorded._";
+    const userQueries = messages.filter((m) => m.role === "user");
+    const toolCalls = messages.flatMap((m) => m.toolCalls.map((t) => ({ ...t, at: m.created_at })));
+    const reportMarkers = messages.filter((m) => m.role === "assistant" && /report/i.test(m.summary));
+    const parts: string[] = [];
+    parts.push(`- **User queries:** ${userQueries.length}`);
+    parts.push(`- **Tool invocations:** ${toolCalls.length}`);
+    if (reportMarkers.length) parts.push(`- **Report markers:** ${reportMarkers.length}`);
+    const toolCounts = new Map<string, number>();
+    for (const tc of toolCalls) {
+      toolCounts.set(tc.toolName, (toolCounts.get(tc.toolName) ?? 0) + 1);
+    }
+    if (toolCounts.size) {
+      const breakdown = Array.from(toolCounts.entries())
+        .sort((a, b) => b[1] - a[1])
+        .map(([name, n]) => `\`${name}\`×${n}`)
+        .join(", ");
+      parts.push(`- **Tool breakdown:** ${breakdown}`);
+    }
+    const recent = messages
+      .filter((m) => m.role === "user" || m.toolCalls.length > 0 || /report/i.test(m.summary))
+      .slice(-10);
+    if (recent.length) {
+      const lines = recent.map((m) => {
+        const ts = new Date(m.created_at).toISOString();
+        if (m.role === "user") return `- \`${ts}\` — **query** — ${m.summary}`;
+        if (m.toolCalls.length) {
+          return `- \`${ts}\` — **tools** — ${m.toolCalls.map((t) => `\`${t.toolName}\`${t.resultSummary ? `(${t.resultSummary})` : ""}`).join(", ")}`;
+        }
+        return `- \`${ts}\` — **report** — ${m.summary}`;
+      });
+      parts.push("", "**Recent activity:**", ...lines);
+    }
+    return parts.join("\n");
   })();
 
   const toolCoverage = audit.tools.length === 0
@@ -876,6 +973,9 @@ export function buildReportMarkdown(input: ReportInput): string {
       : []),
     `## Timeline Summary`,
     timeline,
+    "",
+    `## Activity Log`,
+    activityLog,
     "",
     `## Tool Coverage Summary`,
     toolCoverage,

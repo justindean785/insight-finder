@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { buildTimelineItems, type TimelineEventType } from "@/lib/intel";
+import { useThreadMessages } from "@/hooks/useThreadMessages";
 import { Database, ShieldQuestion, Wrench, XCircle, RotateCcw, FileCheck, Flag, Clock } from "lucide-react";
 import { EmptyState } from "./EmptyState";
 
@@ -40,9 +41,12 @@ export function TimelineTab({ threadId, artifacts }: { threadId: string; artifac
       });
   }, [threadId]);
 
-  // TODO: enrich with message-level tool call events and report-generated
-  // markers once message data is available to this panel.
-  const items = useMemo(() => buildTimelineItems(artifacts, seed), [artifacts, seed]);
+  const messages = useThreadMessages(threadId);
+
+  const items = useMemo(
+    () => buildTimelineItems(artifacts, seed, messages),
+    [artifacts, seed, messages],
+  );
 
   if (items.length === 0) {
     return <EmptyState icon={Clock} title="Timeline is empty" hint="Tool calls, artifacts, and report milestones will stream in here." />;

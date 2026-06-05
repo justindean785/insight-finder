@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { buildReportMarkdown, buildEvidenceMatrixMarkdown } from "@/lib/intel";
+import { useThreadMessages } from "@/hooks/useThreadMessages";
 import { Button } from "@/components/ui/button";
 import { Copy, FileText, Table, Braces, ScrollText, Download, Printer } from "lucide-react";
 import { toast } from "sonner";
@@ -23,11 +24,11 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
       });
   }, [threadId]);
 
-  // TODO: enrich report with message-level events (tool calls, report-generated markers)
-  // once messages are passed into this panel.
+  const messages = useThreadMessages(threadId);
+
   const markdown = useMemo(
-    () => buildReportMarkdown({ seedValue: seed.value, seedType: seed.type, artifacts }),
-    [seed, artifacts],
+    () => buildReportMarkdown({ seedValue: seed.value, seedType: seed.type, artifacts, messages }),
+    [seed, artifacts, messages],
   );
   const matrixMd = useMemo(() => buildEvidenceMatrixMarkdown(artifacts), [artifacts]);
 
