@@ -91,8 +91,13 @@ type Store = {
   channel: ReturnType<typeof supabase.channel> | null;
   loading: Promise<void> | null;
   refCount: number;
+  // Throttle: coalesce bursts of realtime events into at most one full
+  // reload per THROTTLE_MS. Protects against event storms (e.g. a single
+  // scan inserting 50+ rows in <100ms) hammering the DB.
+  pendingReload: ReturnType<typeof setTimeout> | null;
 };
 const stores = new Map<string, Store>();
+const THROTTLE_MS = 500;
 
 async function loadStore(threadId: string, store: Store) {
   const { data } = await supabase
@@ -104,10 +109,62 @@ async function loadStore(threadId: string, store: Store) {
   for (const fn of store.subscribers) fn(store.items);
 }
 
+/**
+ * Apply a single realtime event to the in-memory store. Supabase's
+ * postgres_changes payload includes `eventType`, `new` (for INSERT/UPDATE),
+ * and `old` (for UPDATE/DELETE) so we can mutate `store.items` in-place
+ * without re-fetching. Falls through to loadStore() if the payload is
+ * missing fields we need (defensive — Supabase can drop columns in
+ * row-level filters).
+ */
+function applyDelta(
+  store: Store,
+  eventType: "INSERT" | "UPDATE" | "DELETE",
+  newRow: Partial<Artifact> | null,
+  oldRow: Partial<Artifact> | null,
+): boolean {
+  if (eventType === "INSERT" && newRow && newRow.id) {
+    const exists = store.items.some((a) => a.id === newRow.id);
+    if (!exists) {
+      store.items = dedupeArtifacts([...store.items, newRow as Artifact]);
+    }
+    return true;
+  }
+  if (eventType === "UPDATE" && newRow && newRow.id) {
+    const next = store.items.map((a) => (a.id === newRow.id ? (newRow as Artifact) : a));
+    store.items = dedupeArtifacts(next);
+    return true;
+  }
+  if (eventType === "DELETE" && oldRow && oldRow.id) {
+    const next = store.items.filter((a) => a.id !== oldRow.id);
+    if (next.length !== store.items.length) {
+      store.items = next;
+      return true;
+    }
+  }
+  return false;
+}
+
+function scheduleReload(threadId: string, store: Store) {
+  // Coalesce: if a reload is already pending, do nothing.
+  if (store.pendingReload !== null) return;
+  store.pendingReload = setTimeout(() => {
+    store.pendingReload = null;
+    void loadStore(threadId, store);
+  }, THROTTLE_MS);
+}
+
 function acquireStore(threadId: string, listener: (items: Artifact[]) => void): Store {
   let store = stores.get(threadId);
   if (!store) {
-    store = { items: [], subscribers: new Set(), channel: null, loading: null, refCount: 0 };
+    store = {
+      items: [],
+      subscribers: new Set(),
+      channel: null,
+      loading: null,
+      refCount: 0,
+      pendingReload: null,
+    };
     stores.set(threadId, store);
     store.loading = loadStore(threadId, store);
     store.channel = supabase
@@ -115,7 +172,24 @@ function acquireStore(threadId: string, listener: (items: Artifact[]) => void): 
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "artifacts", filter: `thread_id=eq.${threadId}` },
-        () => { void loadStore(threadId, store!); },
+        (payload) => {
+          // Type guard: Supabase's typed payload for our table only includes
+          // the columns we selected, but we accept any partial row and let
+          // applyDelta() decide if it has what it needs.
+          const ev = (payload as { eventType?: string }).eventType as
+            | "INSERT" | "UPDATE" | "DELETE" | undefined;
+          const newRow = (payload as { new?: Artifact | null }).new ?? null;
+          const oldRow = (payload as { old?: Partial<Artifact> | null }).old ?? null;
+          if (!ev) return;
+          const merged = applyDelta(store!, ev, newRow, oldRow);
+          if (merged) {
+            // Local merge succeeded — notify subscribers without a DB round-trip.
+            for (const fn of store!.subscribers) fn(store!.items);
+          } else {
+            // Payload was missing fields; fall back to a (throttled) full reload.
+            scheduleReload(threadId, store!);
+          }
+        },
       )
       .subscribe();
   }
@@ -131,6 +205,7 @@ function releaseStore(threadId: string, listener: (items: Artifact[]) => void) {
   store.refCount -= 1;
   if (store.refCount <= 0) {
     if (store.channel) supabase.removeChannel(store.channel);
+    if (store.pendingReload !== null) clearTimeout(store.pendingReload);
     stores.delete(threadId);
   }
 }

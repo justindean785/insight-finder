@@ -61,7 +61,8 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
   const toggleSelect = (p: Pivot) => {
     const k = pivotKey(p);
     const next = new Set(selected);
-    next.has(k) ? next.delete(k) : next.add(k);
+    if (next.has(k)) next.delete(k);
+    else next.add(k);
     setSelected(next);
   };
   const allSelected = visible.length > 0 && visible.every((p) => selected.has(pivotKey(p)));

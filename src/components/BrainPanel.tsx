@@ -366,7 +366,8 @@ function PatternsView({ memories }: { memories: Memory[] }) {
               data-active={active}
               onClick={() => {
                 const next = new Set(filters);
-                next.has(id) ? next.delete(id) : next.add(id);
+                if (next.has(id)) next.delete(id);
+                else next.add(id);
                 setFilters(next);
               }}
             >
