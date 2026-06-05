@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 // ── Security header / hardening tests (audit F-A4 + F-B5) ────────────
 // These cover the contract of the security headers and CSP — not the
@@ -29,12 +31,8 @@ describe("evidence-export: response hardening (F-A4)", () => {
 
 describe("frontend index.html: CSP + hardening (F-B5)", () => {
   // Read the file once at test-time so changes are caught immediately.
-  const fs = require("fs") as typeof import("fs");
-  const path = require("path") as typeof import("path");
-  const indexHtml = fs.readFileSync(
-    path.resolve(process.cwd(), "index.html"),
-    "utf-8",
-  );
+  // ESM import (no CommonJS require) — required for @typescript-eslint/no-require-imports.
+  const indexHtml = readFileSync(resolve(process.cwd(), "index.html"), "utf-8");
 
   it("declares a Content-Security-Policy meta tag", () => {
     expect(indexHtml).toMatch(/http-equiv="Content-Security-Policy"/);
@@ -68,12 +66,7 @@ describe("frontend index.html: CSP + hardening (F-B5)", () => {
 });
 
 describe(".env.example: onboarding schema (F-A1)", () => {
-  const fs = require("fs") as typeof import("fs");
-  const path = require("path") as typeof import("path");
-  const envExample = fs.readFileSync(
-    path.resolve(process.cwd(), ".env.example"),
-    "utf-8",
-  );
+  const envExample = readFileSync(resolve(process.cwd(), ".env.example"), "utf-8");
 
   const expectedVars = [
     "VITE_SUPABASE_URL",
@@ -100,9 +93,7 @@ describe(".env.example: onboarding schema (F-A1)", () => {
 });
 
 describe(".gitignore: prevents re-introduction of backup files (F-C3)", () => {
-  const fs = require("fs") as typeof import("fs");
-  const path = require("path") as typeof import("path");
-  const gi = fs.readFileSync(path.resolve(process.cwd(), ".gitignore"), "utf-8");
+  const gi = readFileSync(resolve(process.cwd(), ".gitignore"), "utf-8");
 
   it("ignores *.ts.bak", () => {
     expect(gi).toMatch(/\*\*\/\*\.ts\.bak|\*\.ts\.bak/);

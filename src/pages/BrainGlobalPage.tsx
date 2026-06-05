@@ -63,11 +63,17 @@ function matchesFilter(m: Memory, f: MemoryFilter): boolean {
   return hay.includes(f);
 }
 
+// Guard localStorage access for SSR + jsdom-without-storage (Vitest) safety.
+// Without this, rendering BrainGlobalPage under SSR or unit tests that
+// don't bootstrap window.localStorage throws ReferenceError and the page
+// can't be pre-rendered or covered by tests.
 function loadSet(key: string): Set<string> {
-  try { return new Set(JSON.parse(localStorage.getItem(key) ?? "[]")); } catch { return new Set(); }
+  if (typeof window === "undefined" || !window.localStorage) return new Set();
+  try { return new Set(JSON.parse(window.localStorage.getItem(key) ?? "[]")); } catch { return new Set(); }
 }
 function saveSet(key: string, s: Set<string>) {
-  localStorage.setItem(key, JSON.stringify(Array.from(s)));
+  if (typeof window === "undefined" || !window.localStorage) return;
+  try { window.localStorage.setItem(key, JSON.stringify(Array.from(s))); } catch { /* quota or private mode — ignore */ }
 }
 
 function timeAgo(iso: string | null): string {

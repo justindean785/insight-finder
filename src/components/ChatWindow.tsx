@@ -31,6 +31,21 @@ const FAIL_PREFIX = "__STATUS__:failed:";
 const CACHE_BANNER_TYPE = "data-investigation-cache";
 const RETRYABLE_HTTP_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
+// Cross-browser timeout helper. AbortSignal.timeout() is missing on
+// Safari ≤ 17.3, Firefox ESR, and Node 18 (used by Vitest), where the
+// very first probe would throw TypeError: AbortSignal.timeout is not
+// a function and prevent scans from starting. Manual AbortController
+// works everywhere.
+function signalWithTimeout(ms: number): { signal: AbortSignal; cancel: () => void } {
+  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+    // Native fast path.
+    return { signal: AbortSignal.timeout(ms), cancel: () => {} };
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new DOMException("TimeoutError", "TimeoutError")), ms);
+  return { signal: controller.signal, cancel: () => clearTimeout(timer) };
+}
+
 function parseHttpStatusFromError(err: unknown): number | null {
   const msg = String((err as any)?.message ?? err ?? "");
   const m = msg.match(/\bHTTP\s*([45]\d{2})\b/i) ?? msg.match(/\bstatus\s*[:=]\s*([45]\d{2})\b/i) ?? msg.match(/\b([45]\d{2})\b/);
@@ -895,8 +910,9 @@ function ChatWindowInner({
     //   200 + ok:false → deployed but a required dep is missing (e.g. orchestrator key)
     if (!readyProbedOnceRef.current) {
       readyProbedOnceRef.current = true;
+      const { signal, cancel } = signalWithTimeout(5000);
       try {
-        const probeRes = await fetch(`${FUNCTIONS_URL}?health=1`, { method: "GET", signal: AbortSignal.timeout(5000) });
+        const probeRes = await fetch(`${FUNCTIONS_URL}?health=1`, { method: "GET", signal });
         if (probeRes.status === 404) {
           toast.error("Edge function not deployed. Run: supabase functions deploy osint-agent");
           return;
@@ -920,12 +936,14 @@ function ChatWindowInner({
           }
         }
       } catch (probeErr) {
-        if ((probeErr as Error)?.name === "TimeoutError") {
+        if ((probeErr as Error)?.name === "TimeoutError" || (probeErr as Error)?.name === "AbortError") {
           toast.error("Scan backend timed out — Supabase function may be cold-starting. Retry in a few seconds.");
           readyProbedOnceRef.current = false; // allow retry
           return;
         }
         // Network error — let it through; the real sendMessage will surface it
+      } finally {
+        cancel(); // always clear the manual timer so we don't leak it
       }
     }
     setInput("");
