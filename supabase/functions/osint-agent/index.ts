@@ -75,8 +75,112 @@ import { SYSTEM_PROMPT, IDENTITY_CLUSTER_RULES, PERSON_SEARCH_RULES, SYSTEM_PROM
 // cache.ts — Central tool cache wrapper, tier tagging, auto-evidence
 import { wrapToolsWithCache } from "./cache.ts";
 
+// ---- Health/readiness probe -------------------------------------------------
+// `GET /osint-agent?health=1` (and HEAD) returns a JSON readiness summary so
+// the frontend preflight + ops smoke tests can tell the difference between:
+//   - 404 from the gateway  → function is not deployed
+//   - 200 with ok:true     → function is deployed AND all required keys/DB are healthy
+//   - 200 with ok:false    → function is deployed but a required dep is missing
+//     (e.g. orchestrator key unset). Caller should surface this to the user
+//     instead of letting the run fail mid-stream with an opaque 500.
+// Always cheap: no LLM calls, no rate-limit check, no DB writes.
+function deriveReadiness(env: {
+  MINIMAX_API_KEY?: string | null;
+  LOVABLE_API_KEY?: string | null;
+  SUPABASE_URL?: string | null;
+  SUPABASE_SERVICE_ROLE_KEY?: string | null;
+  OATHNET_API_KEY?: string | null;
+  SYNAPSINT_API_KEY?: string | null;
+  OSINTNOVA_API_KEY?: string | null;
+  SOCIALFETCH_API_KEY?: string | null;
+  CORDCAT_API_KEY?: string | null;
+  HUNTER_API_KEY?: string | null;
+  INTELBASE_API_KEY?: string | null;
+  HIBP_API_KEY?: string | null;
+  EXA_API_KEY?: string | null;
+  FIRECRAWL_API_KEY?: string | null;
+  SERUS_API_KEY?: string | null;
+  GITHUB_API_TOKEN?: string | null;
+  PERPLEXITY_API_KEY?: string | null;
+}): { ok: boolean; checks: Record<string, { ok: boolean; detail?: string }> } {
+  const has = (v: string | null | undefined) => !!(v && v.length > 0);
+  const orchestratorOk = has(env.MINIMAX_API_KEY) || has(env.LOVABLE_API_KEY);
+  const coreOk = has(env.SUPABASE_URL) && has(env.SUPABASE_SERVICE_ROLE_KEY);
+  const tools = {
+    oathnet: has(env.OATHNET_API_KEY),
+    synapsint: has(env.SYNAPSINT_API_KEY),
+    osintnova: has(env.OSINTNOVA_API_KEY),
+    socialfetch: has(env.SOCIALFETCH_API_KEY),
+    cordcat: has(env.CORDCAT_API_KEY),
+    hunter: has(env.HUNTER_API_KEY),
+    intelbase: has(env.INTELBASE_API_KEY), // note: gated by INTELBASE_ENABLED at runtime
+    hibp: has(env.HIBP_API_KEY),
+    exa: has(env.EXA_API_KEY),
+    firecrawl: has(env.FIRECRAWL_API_KEY),
+    serus: has(env.SERUS_API_KEY),
+    github: has(env.GITHUB_API_TOKEN),
+    perplexity: has(env.PERPLEXITY_API_KEY),
+  };
+  const enabledOptional = Object.values(tools).filter(Boolean).length;
+  const checks: Record<string, { ok: boolean; detail?: string }> = {
+    orchestrator: orchestratorOk
+      ? { ok: true }
+      : { ok: false, detail: "Set MINIMAX_API_KEY or LOVABLE_API_KEY in Supabase secrets" },
+    core: coreOk
+      ? { ok: true }
+      : { ok: false, detail: "SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY missing" },
+    tools: {
+      ok: true, // optional tools are never required
+      detail: `${enabledOptional}/${Object.keys(tools).length} optional tool APIs configured`,
+    },
+  };
+  return { ok: orchestratorOk && coreOk, checks };
+}
+
+function isHealthProbe(req: Request): boolean {
+  if (req.method !== "GET" && req.method !== "HEAD") return false;
+  try {
+    const u = new URL(req.url);
+    return u.searchParams.get("health") === "1";
+  } catch {
+    return false;
+  }
+}
+
 // ---- Handler -----------------------------------------------------------------
 Deno.serve(async (req) => {
+  // ── /health short-circuit: cheapest possible path, runs before any
+  //    per-request state reset so the probe is side-effect-free.
+  if (isHealthProbe(req)) {
+    const r = deriveReadiness({
+      MINIMAX_API_KEY, LOVABLE_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY,
+      OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
+      CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, HIBP_API_KEY, EXA_API_KEY,
+      FIRECRAWL_API_KEY, SERUS_API_KEY, GITHUB_API_TOKEN, PERPLEXITY_API_KEY,
+    });
+    const body = {
+      ok: r.ok,
+      service: "osint-agent",
+      version: "1.0.0",
+      checks: r.checks,
+      intelbase_enabled: INTELBASE_ENABLED,
+    };
+    // HEAD: send headers only (Supabase gateway strips the body anyway, but be
+    // explicit). GET: full JSON. Either way status 200 distinguishes "deployed"
+    // from "404 = not deployed" at the gateway layer.
+    return new Response(
+      req.method === "HEAD" ? null : JSON.stringify(body),
+      {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+        },
+      },
+    );
+  }
+
   // Reset per-invocation sticky flags. Deno isolates are reused across
   // requests, so module-scope state must be cleared at the top of each
   // handler call or one investigation's 402 disables Firecrawl forever.

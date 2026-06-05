@@ -147,6 +147,30 @@ After setup, verify the platform works:
 6. **Pivots:** Pivot targets appear in the Analysis → Pivots tab.
 7. **Agent Brain:** Click the Brain icon. Cross-investigation memories accumulate.
 
+### Health/readiness probe
+
+The `osint-agent` edge function exposes a lightweight readiness endpoint used by the frontend preflight (before every scan) and by ops smoke tests. It does **not** invoke the LLM, the rate limiter, or the database — it only checks which secrets are configured.
+
+| Trigger | Status | Body |
+| --- | --- | --- |
+| `GET /functions/v1/osint-agent?health=1` | `200` | `{ ok, service, version, checks: { orchestrator, core, tools }, intelbase_enabled }` |
+| `HEAD /functions/v1/osint-agent?health=1` | `200` | (no body) |
+| (no `?health=1` query) | normal flow | auth + scan handler |
+
+Interpretation:
+
+- **404** — function is not deployed. Run `npx supabase functions deploy osint-agent`.
+- **200 + `ok:true`** — ready to scan.
+- **200 + `ok:false`** — function is deployed but a required dep is missing. Inspect `checks.orchestrator.detail` / `checks.core.detail` for the exact missing secret(s). The frontend will block the scan and surface the detail in a toast.
+- `checks.tools.detail` reports `configured/13 optional tool APIs` — informational only, never blocks a run.
+
+Quick CLI check after deploy:
+
+```sh
+curl -sS "$VITE_SUPABASE_URL/functions/v1/osint-agent?health=1" \
+  -H "apikey: $VITE_SUPABASE_PUBLISHABLE_KEY" | jq .
+```
+
 ---
 
 ## Troubleshooting
@@ -156,7 +180,8 @@ After setup, verify the platform works:
 | "Session expired" toast | Auth token expired | Sign out and sign in again |
 | "Access denied" toast | Wrong thread ID | Create a new thread |
 | "Edge function not deployed" toast | Function not pushed | `npx supabase functions deploy osint-agent` |
-| "Edged function not deployed" pre-scan | 404 from HEAD probe | Deploy the function |
+| "Edge function not deployed" pre-scan | 404 from `/health` probe | Deploy the function |
+| "Scan backend is not ready: …" toast | 200 + `ok:false` from `/health` | Set the missing secret named in the toast (usually `MINIMAX_API_KEY` or `LOVABLE_API_KEY`) |
 | "Scan backend timed out" | Cold start | Retry; first invocation after deploy takes ~5-10s |
 | Agents run but no output | Missing orchestrator key | Set `MINIMAX_API_KEY` or `LOVABLE_API_KEY` in Supabase secrets |
 | Specific tool returns no data | Missing optional API key | Set the corresponding key in Supabase secrets |
