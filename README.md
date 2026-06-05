@@ -71,6 +71,7 @@ npm run dev
 | `MINIMAX_API_KEY` | At least one required | Primary orchestrator (MiniMax-M2.7) |
 | `LOVABLE_API_KEY` | At least one required | Fallback orchestrator (Lovable gateway) |
 | `OATHNET_API_KEY` | Optional | Breach database + stealer log lookups |
+| `SERUS_API_KEY` | Optional | Serus darkweb exposure scan (email/phone/username/domain/keyword/origin/password) — 0.25 credits/scan, optional `reveal` scope for unmasked breach fields |
 | `EXA_API_KEY` | Optional | Semantic web search |
 | `HUNTER_API_KEY` | Optional | Email verification |
 | `SOCIALFETCH_API_KEY` | Optional | Social media presence checks |
