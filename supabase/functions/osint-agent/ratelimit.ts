@@ -27,7 +27,7 @@
  * strictly opt-in for new deployments.
  */
 
-import { fetchRetry } from "./env.ts";
+import { fetchRetry } from "./fetch_retry.ts";
 
 // ---- Tunables (exported so tests can mutate them) ---------------------
 export const MAX_REQS_PER_MIN = 30;

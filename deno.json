@@ -1,0 +1,17 @@
+{
+  "nodeModulesDir": "auto",
+  "tasks": {
+    "test": "deno test --allow-net supabase/functions/osint-agent/**/*_test.ts"
+  },
+  "imports": {
+    "npm:@supabase/supabase-js@2": "./node_modules/@supabase/supabase-js",
+    "npm:zod@3": "./node_modules/zod",
+    "npm:ai@6": "./node_modules/ai"
+  },
+  "exclude": [
+    "node_modules",
+    "dist",
+    ".git",
+    "src"
+  ]
+}

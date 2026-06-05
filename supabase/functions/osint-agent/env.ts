@@ -110,40 +110,9 @@ export const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
 export const OSINT_NAVIGATOR_API_KEY = Deno.env.get("OSINT_NAVIGATOR_API_KEY");
 export const PERPLEXITY_API_KEY = Deno.env.get("PERPLEXITY_API_KEY");
 
-// ---- fetchRetry --------------------------------------------------------------
-// Small fetch helper with exponential backoff on 429/5xx. Used for any
-// external API where transient throttling is common (Exa, Firecrawl, etc.).
-export async function fetchRetry(
-  url: string,
-  init: RequestInit,
-  opts: { retries?: number; baseDelayMs?: number } = {},
-): Promise<Response> {
-  const retries = opts.retries ?? 2;
-  const base = opts.baseDelayMs ?? 400;
-  let lastErr: unknown;
-  const signal = (init as { signal?: AbortSignal }).signal;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    // If an externally-supplied AbortSignal already fired (e.g. a per-call
-    // timeout tripped between retries), stop spinning instead of issuing a
-    // pointless next request.
-    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-    try {
-      const r = await fetch(url, init);
-      if (r.status === 429 || (r.status >= 500 && r.status < 600)) {
-        if (attempt < retries) {
-          await new Promise((res) => setTimeout(res, base * Math.pow(2, attempt)));
-          continue;
-        }
-      }
-      return r;
-    } catch (e) {
-      lastErr = e;
-      if (attempt < retries) {
-        await new Promise((res) => setTimeout(res, base * Math.pow(2, attempt)));
-        continue;
-      }
-      throw e;
-    }
-  }
-  throw lastErr ?? new Error("fetchRetry exhausted");
-}
+// ---- fetchRetry (re-exported from fetch_retry.ts) ---------------------------
+// Kept as a re-export so existing `import { fetchRetry } from "./env.ts"`
+// call sites (7 tool files) continue to work without a sweeping rename.
+// New code should import from "./fetch_retry.ts" directly to avoid pulling
+// in this file's `npm:@ai-sdk/openai-compatible@1` import.
+export { fetchRetry } from "./fetch_retry.ts";

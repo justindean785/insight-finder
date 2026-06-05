@@ -88,6 +88,11 @@ type PollResponse = {
   };
 };
 
+/** A terminal poll response (success or failed). Used by shapeTerminalResult. */
+type TerminalPollResponse = Omit<PollResponse, "status"> & {
+  status: "success" | "failed";
+};
+
 // ---- Pure helpers (exported for unit tests) ----------------------------
 
 /** Returns the scanId from an initiate response, or null if the response is malformed. */
@@ -105,7 +110,7 @@ export function isTerminalStatus(data: PollResponse | null): boolean {
 
 /** Map a terminal poll response to the orchestrator-facing result shape. */
 export function shapeTerminalResult(
-  last: PollResponse,
+  last: TerminalPollResponse,
   scanId: string,
   initiatedAt: string,
   reveal: boolean,
@@ -114,7 +119,7 @@ export function shapeTerminalResult(
     ok: last.status === "success",
     status: last.status,
     scanId,
-    identifierType: last.identifierType ?? null,
+    identifierType: last.identifierType ?? undefined,
     isBreached: !!last.isBreached,
     totalBreaches: last.breaches?.length ?? 0,
     totalPastes: last.pastes?.length ?? 0,
@@ -122,12 +127,12 @@ export function shapeTerminalResult(
     pastes: last.pastes,
     extractedData: last.extractedData,
     initiatedAt,
-    completedAt: last.checkedAt ?? null,
+    completedAt: last.checkedAt ?? undefined,
     reveal,
     creditsUsed: 0.25,
     // F-B3: classification marker so the recording layer + UI can flag
     // sensitive unmasked data and surface it appropriately.
-    classification: reveal ? "sensitive_unmasked" : "masked",
+    classification: (reveal ? "sensitive_unmasked" : "masked") as "masked" | "sensitive_unmasked",
   };
 }
 
@@ -157,6 +162,8 @@ export async function runSerusScan(
   completedAt?: string;
   reveal?: boolean;
   creditsUsed?: number;
+  // F-B3: present on the success/failed path, set by shapeTerminalResult.
+  classification?: "masked" | "sensitive_unmasked";
   error?: ReturnType<typeof serusErrorPayload>;
 }> {
   const reveal = !!options.reveal;
@@ -233,22 +240,21 @@ export async function runSerusScan(
     };
   }
 
-  return {
-    ok: last.status === "success",
-    status: last.status,
+  // F-B3: classification is set by shapeTerminalResult so the recording
+  // layer + UI can flag sensitive unmasked data. Using a single shaper
+  // function keeps the contract identical to the one tested in
+  // serus-poller.test.ts (vitest) and serus_test.ts (Deno).
+  //
+  // The runtime guard above guarantees `last.status` is "success" or
+  // "failed" before we reach this return, but TypeScript can't carry
+  // that narrowing across the `if (!last || ...)` branch. The cast
+  // lifts `last` to the terminal type for the shaper call.
+  return shapeTerminalResult(
+    last as TerminalPollResponse,
     scanId,
-    identifierType: last.identifierType ?? identifierType,
-    isBreached: !!last.isBreached,
-    totalBreaches: last.breaches?.length ?? 0,
-    totalPastes: last.pastes?.length ?? 0,
-    breaches: last.breaches,
-    pastes: last.pastes,
-    extractedData: last.extractedData,
     initiatedAt,
-    completedAt: last.checkedAt ?? new Date().toISOString(),
     reveal,
-    creditsUsed: 0.25,
-  };
+  );
 }
 
 export const serus_darkweb_scan = tool({
