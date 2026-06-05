@@ -3,8 +3,8 @@
 **Audience:** me (next session) or any collaborator picking this up cold.
 **Repo:** `~/Downloads/Archives/Insight Finder`
 **Remote:** `git@github.com:justindean785/insight-finder.git` (branch `main`)
-**Last commit:** `65b2212` (pushed to origin)
-**Date:** 2026-06-05, late session
+**Last commit:** `0304031` (Phase 1+2 typing — see bottom section; not yet pushed at time of writing)
+**Date:** 2026-06-05, late session (updated after Phase 1+2 execution)
 
 ---
 
@@ -171,3 +171,61 @@ If you have 2 hours: extract `sse_stream.ts` from `index.ts`. Finish BLOCKER-2.
 If you have 4+ hours: ship a 12-tool `api_types.ts` expansion. Aim for 50+ fewer `any` overall; bring BLOCKER-1 to ~50 remaining.
 
 If you're returning to deploy: the operator action (`supabase secrets set SUPABASE_ANON_KEY=***`) is the only thing blocking production traffic. Then `npx supabase functions deploy osint-agent` to ship the new build.
+
+---
+---
+
+# ▶▶ Phase 1+2 execution update (2026-06-05, later session)
+
+Everything in the sections above up to here is the *earlier* state. This section supersedes it where they conflict.
+
+## TL;DR (new)
+
+**BLOCKER-1 is cleared and the entire codebase is now `@typescript-eslint/no-explicit-any`-free.** ESLint went **288 errors → 0** (8 `react-refresh` *warnings* remain, P2). The structured error envelope was found already complete. The platform is **limited-beta-ready**. The only remaining Phase-2 item is the modular split, which is **bigger and riskier than the original estimate** and is deferred with a re-scoped plan (audit §10).
+
+## Commits added this session (on `main`, local)
+
+| SHA | Title |
+|---|---|
+| `5945c78` | lint: clear validation.ts regex escapes + prefer-const autofix |
+| `dc85d74` | types: eliminate ~190 explicit-any across frontend + backend tools |
+| `0304031` | types: eliminate all explicit-any in orchestrator index.ts (96 → 0) |
+
+> ⚠️ **Not yet pushed to origin** as of this writing. `git push origin main` when ready.
+
+## Current state (supersedes the table above)
+
+| Check | Result |
+|---|---|
+| `npx eslint .` | ✅ **0 errors**, 8 warnings (`react-refresh/only-export-components` on `src/components/ui/*` — P2, dev-velocity only) |
+| `npx tsc --noEmit` (frontend) | ✅ Clean |
+| `deno check index.ts` (cold) | ⚠️ **153** pre-existing (144 × `TS7031` from ai@6 zod→`tool()` arg inference + a few `TS7006`). **The "35" in the old table was a stale deno-cache reading.** Not in the CI gate; out of scope. |
+| `npx vitest run` | ✅ 167/167 |
+| `npm run test:edge` | ✅ 41/41 |
+| `npm run build` | ✅ ~2s |
+
+## What was done (per cluster)
+
+- **validation.ts** (input-security boundary): 4 `no-useless-escape` fixed (behavior-preserving char-class normalizations) + 2 `prefer-const` autofixes.
+- **Frontend `src/` (66 `any` → 0):** ChatWindow SSE/streaming parts typed via `UIMessage` part shapes; dead `(supabase as any)` casts removed; metadata reads → `Record<string,unknown>`; react-markdown `components` via `satisfies Components`. Also: BrainGlobalPage ternary-statements → `if/else`; `command.tsx`/`textarea.tsx` empty interfaces → type aliases.
+- **Backend `tools/*` + `cache.ts` + `recording.ts` (100 `any` → 0):** co-located API-response interfaces (fields read + `[k]:unknown`); `wrapToolsWithCache(toolsObj: Record<string, Tool>)`.
+- **Backend misc (`archiver`/`circuit`/`contradictions`/`providers`/`sweeper`, 13 → 0).**
+- **`index.ts` orchestrator (96 `any` → 0):** `ToolRegistry`/`ExecutableTool` aliases for the self-referential + late-injected tool registry; interfaces for every third-party JSON parse boundary; `ModelMessage` for message-trimming; typed Supabase row shapes. **Types-only, no behavior change.**
+- **`tool-catalog-contract.test.ts`:** updated `lateInjectedNames()` grep to match the new `(tools as ToolRegistry).X = tool` notation (was matching `(tools as any)`). Removed a brittle comment-block workaround a sub-agent had added.
+- **Error envelope:** verified — every error path in `auth.ts` (401/403/400/429/500) and `index.ts` (500) already returns `{error, code, detail}`. No work needed.
+
+## Process notes / gotchas discovered
+
+- **`deno` CLI is sandbox-blocked for sub-agents.** A delegated agent could not run `deno check`/`deno info` directly — only the pre-approved `npm run test:edge` wrapper runs deno (with `--no-check`). Verify deno-check deltas yourself from the orchestrating session.
+- **Concurrent typing agents inflate each other's `deno check`.** Three agents editing disjoint files in parallel transiently raised `deno check index.ts` (it pulls in the whole import graph). Re-measure after all agents finish; confirm against a `git stash` baseline. Final delta here was **zero** (153 → 153).
+- The audit's deno baseline "35" was wrong (cache artifact). Real cold baseline = **153**.
+
+## The one remaining item — modular split (NOT done, see audit §10)
+
+The original split plan doesn't match where the lines are. `index.ts` is 4,059 LOC and **lines 233–~3,880 are one inline `tools` literal** (~3,650 LOC) whose `execute()` bodies close over request context. The real reduction = converting tool groups into `make<Group>Tools(ctx)` factories — invasive (~3,650 lines), thin test net (41 edge tests). Re-scoped step-by-step plan is in **`BETA_READINESS_AUDIT.md` §10**. Now *safer* to attempt because the seams are typed. **Not required for limited beta.**
+
+## Next-session first actions
+
+1. `git push origin main` (3 commits pending).
+2. Operator: `supabase secrets set SUPABASE_ANON_KEY=***` + rotate the exposed Serus key, then `npx supabase functions deploy osint-agent`.
+3. If pursuing the split: follow audit §10, one tool-group factory at a time, `npm run test:edge` + a live smoke scan after each.

@@ -9,7 +9,15 @@
 
 ## 1) Executive verdict
 
-**Overall status:** `NOT BETA-READY — BLOCKERS PRESENT`
+**Overall status (original):** `NOT BETA-READY — BLOCKERS PRESENT`
+**Overall status (2026-06-05, after Phase 1+2 execution):** `LIMITED-BETA-READY` — BLOCKER-1 cleared, all explicit-`any` eliminated codebase-wide, error envelope confirmed complete. One non-blocking item remains (modular split, see §10).
+
+> **▶ 2026-06-05 Phase 1+2 execution update (commits `5945c78`, `dc85d74`, `0304031`):**
+> - **BLOCKER-1 (orchestrator type safety) — CLEARED.** All 96 `any` in `index.ts` typed (ToolRegistry/ExecutableTool aliases for the self-referential + late-injected tool registry; co-located interfaces for every third-party JSON parse boundary; `ModelMessage` for message-trimming; typed Supabase row shapes). Types-only, no behavior change.
+> - **HIGH-2 / MEDIUM-1 / HIGH-1 — CLEARED.** ChatWindow.tsx (38), recording.ts (27), cache.ts (19), all `tools/*.ts`, and validation.ts regexes done. **ESLint: 288 errors → 0** (8 `react-refresh/only-export-components` *warnings* remain — MEDIUM-2, P2, dev-velocity only).
+> - **P1-2 (structured error envelope) — VERIFIED COMPLETE.** Every error path in `auth.ts` (401/403/400/429/500) and `index.ts` (ORCHESTRATOR_FAULT 500) already returns `{error, code, detail}`. The earlier "partial" assessment was stale.
+> - **tsc** clean; **deno check index.ts** unchanged at its pre-existing **153** (the audit's "35" was a stale-deno-cache artifact; a cold check is 153, 144 of which are `TS7031` from ai@6's zod→`tool()` arg inference — out of scope, not in the CI gate). **Tests: 167 vitest + 41 Deno edge, build OK** at every commit.
+> - **BLOCKER-2 (modular split) — DEFERRED, re-scoped.** See §10. The real bloat is the ~3,650-line inline `tools` literal (closure-captured), not the thin shell the original recommendation targeted. Now safe to do later thanks to the typed seams.
 
 The platform is **functionally solid** — 208/208 tests passing, tsc clean, the audit-driven `/health` probe is shipped, and most user-facing transport errors (401/403/404) are now mapped to explicit toasts in `ChatWindow.tsx`. However, **two structural issues block beta release**:
 
@@ -189,3 +197,21 @@ Type the orchestrator boundary. The 14 tool return types already exist in `tools
 This is the **highest-leverage** change in the codebase: each typed call site either compiles (and is now safer) or fails to compile (and surfaces a latent bug).
 
 After that, the modular split becomes much easier because the typed boundaries make the module seams obvious.
+
+---
+
+## 10) Modular split — re-scoped (2026-06-05)
+
+The original BLOCKER-2 recommendation (`sse_stream.ts` ~200, `request_context.ts` ~150, `tool_dispatch.ts` ~300, `index.ts` → ~100) does **not** account for where the lines actually are. Measured reality:
+
+- `index.ts` is **4,059 LOC**. The `Deno.serve` handler starts at line 171; `setupRequest` is **already extracted** to `auth.ts`.
+- **Lines 233–~3,880 are a single inline `tools` object literal** (~3,650 LOC) defined *inside* the request handler. Each tool's `execute()` closes over request-scoped state: `supabase`, `supabaseAdmin`, `userId`, `threadId`, `archiveEnabled`, `triageState`, `routingGuard`, `onCost`, etc.
+- The thin shell the original split targeted (SSE setup + `streamText` + envelope, lines ~3,887–4,053) is only ~200 LOC. Extracting just that yields little.
+
+**The real reduction requires converting the tool literal into context-factory modules** — e.g. `tools/email.factory.ts` exporting `makeEmailTools(ctx)`, called from `index.ts` as `...makeEmailTools(ctx)`. This threads every closure-captured variable through a single `ctx` object. It is mechanical but invasive (~3,650 lines moved, every capture re-routed), and the only safety net is the 41 Deno edge tests — none of which exercise most tool `execute()` bodies end-to-end.
+
+**Recommendation:** Do this as its own dedicated, well-tested pass, now that the typed seams (this session's work) make the factory signatures explicit. It is **not** required for a limited beta (the audit already rated modularization MEDIUM/P1, "not strictly required for limited beta"). Suggested sequence:
+1. Define a `RequestContext` interface (the closure-captured set) in a new `request_context.ts`.
+2. Move tool groups out one file at a time (`email` → `social` → `breach` → …), each as `make<Group>Tools(ctx)`, running `npm run test:edge` + a live smoke scan after each.
+3. Extract the SSE/`streamText` block last into `sse_stream.ts`.
+4. Target end state: `index.ts` = handler shell that assembles `ctx`, spreads the factory outputs, and streams (~300–400 LOC).
