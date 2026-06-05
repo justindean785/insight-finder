@@ -6,7 +6,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import type { UIMessage } from "npm:ai@6";
-import { corsHeaders, SUPABASE_URL, SERVICE_KEY } from "./env.ts";
+import { corsHeaders, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY } from "./env.ts";
 import { checkRateLimit as checkRateLimitDistributed, MAX_REQS_PER_MIN, MAX_REQS_PER_HOUR } from "./ratelimit.ts";
 
 export interface SetupContext {
@@ -46,12 +46,42 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
     );
   }
 
-  const supabase = createClient(SUPABASE_URL, SERVICE_KEY, {
+  // SECURITY: build the *user-scoped* client with the ANON key + the user's
+  // Authorization header so that RLS policies (auth.uid() = user_id) are
+  // actually enforced on every .from('threads'|'messages'|'artifacts')
+  // call. Previously this client was built with the SERVICE_KEY, which has
+  // the Postgres service_role and bypasses RLS — meaning a single missed
+  // user_id filter on any of the ~21 .insert() call sites below would
+  // leak or mutate another tenant's data.
+  //
+  // The separate `supabaseAdmin` client (below) keeps the service key
+  // for the *narrow* set of writes that intentionally bypass RLS:
+  //   - tool_usage_log (telemetry — no user_id column)
+  //   - agent_memory (user-scoped via app-layer filter, but uses admin
+  //     for write-amplification reasons)
+  // If SUPABASE_ANON_KEY is not configured, fail closed: throw a 500 so
+  // the orchestrator can be fixed rather than silently running without
+  // RLS.
+  if (!SUPABASE_ANON_KEY) {
+    throw new Response(
+      JSON.stringify({
+        error: "Service Misconfigured",
+        code: "ANON_KEY_MISSING",
+        detail:
+          "SUPABASE_ANON_KEY is not set in the edge function secrets. " +
+          "Set it via `supabase secrets set SUPABASE_ANON_KEY=*** --env production`. " +
+          "Using the service key here would bypass RLS and is rejected on purpose.",
+      }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     global: { headers: { Authorization: authHeader } },
   });
-  // Server-side admin client (no user JWT override) — used for telemetry
-  // inserts (tool_usage_log, etc.) that bypass RLS. Without this the wrapper
-  // inherits the user JWT and inserts fail with "row-level security policy".
+  // Server-side admin client (service role, no user JWT) — used for
+  // telemetry inserts (tool_usage_log) that intentionally bypass RLS.
+  // Without this the wrapper would inherit the user JWT and inserts would
+  // fail with "row-level security policy" errors.
   const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_KEY);
 
   const { data: userData, error: userError } = await supabase.auth.getUser();

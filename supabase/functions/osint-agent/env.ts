@@ -26,6 +26,21 @@ export const corsHeaders = {
 // ---- Supabase / core secrets ------------------------------------------------
 export const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 export const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+
+/**
+ * Anon (publishable) key — used to build the *user-scoped* Supabase client
+ * in auth.ts so that RLS policies (`auth.uid() = user_id`) are actually
+ * enforced. Service-role key bypasses RLS entirely, so we must NOT use it
+ * for normal user work. Set via:
+ *   supabase secrets set SUPABASE_ANON_KEY=*** --env production
+ *
+ * The anon key is the same one shipped to the frontend
+ * (`VITE_SUPABASE_PUBLISHABLE_KEY`). It is safe to use server-side as long
+ * as the edge function itself verifies the user's JWT and passes it in
+ * the Authorization header (which `createClient` does when you pass the
+ * user's session token in `global.headers.Authorization`).
+ */
+export const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 export const MINIMAX_API_KEY = Deno.env.get("MINIMAX_API_KEY")!;
 export const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY") ?? "";
 
