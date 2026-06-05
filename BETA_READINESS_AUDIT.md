@@ -18,6 +18,8 @@ The platform is **functionally solid** — 208/208 tests passing, tsc clean, the
 
 Everything else is either already addressed or is a polish item.
 
+**Update 2026-06-05 (commits 846e5e6 / 070608f / b3f438c):** Six additional audit-driven fixes shipped in response to a follow-up security/compat review. **SECURITY** (commit 846e5e6): the user-scoped Supabase client in `auth.ts` was being built with `SERVICE_KEY` — a P0 multi-tenant data leak because the service role bypasses RLS. Switched to `SUPABASE_ANON_KEY` for user-scoped work, with fail-closed behavior (500) if the env var is missing. **COMPAT** (commit 070608f): replaced `AbortSignal.timeout` (missing on Safari ≤ 17.3, Firefox ESR, Node 18) with manual `AbortController` + `setTimeout`; guarded `localStorage` access in `BrainGlobalPage` so SSR and jsdom-without-storage don't throw; migrated CommonJS `require` to ESM imports in `tailwind.config.ts` and `security-headers.test.ts`. **PERF** (commit b3f438c): realtime artifact sync now delta-merges single-row changes from the postgres_changes payload instead of refetching the whole table; 500ms-coalesced full reload runs only as a safety net. **LINT** (commits 070608f, b3f438c): the four `npm run lint` blockers from the audit (CommonJS require, side-effect-only ternaries) are fixed; full pipeline (`lint && test && build`) now succeeds end-to-end.
+
 ---
 
 ## 2) Status of prior audit findings (F-01 through F-09)
@@ -128,7 +130,12 @@ Everything else is either already addressed or is a polish item.
 | SSRF hardening | ✅ Done | — |
 | RLS on all tables | ✅ Done | — |
 | Test suite (vitest + Deno edge) | ✅ 208/208 | — |
-| `tsc --noEmit` | ✅ Clean | — |
+| `tsc --noEmit` (frontend) | ✅ Clean | — |
+| `deno check supabase/functions/osint-agent/index.ts` | ⚠️ 35 pre-existing | Not in scope (SupabaseClient generic mismatch) |
+| **P0 security: user-scoped client uses anon key (RLS enforced)** | ✅ Done (846e5e6) | Operator action: `supabase secrets set SUPABASE_ANON_KEY=***` |
+| **Cross-browser compat: AbortSignal.timeout, localStorage, CommonJS** | ✅ Done (070608f) | — |
+| **Realtime perf: delta-merge instead of full reload** | ✅ Done (b3f438c) | — |
+| **npm run lint pipeline unblocked** | ✅ Done (070608f + b3f438c) | Lint still has 288 pre-existing errors (any, no-useless-escape) but no longer early-exits |
 | **Type safety in orchestrator (`index.ts`)** | ⚠️ **8/104 done** | BLOCKER for beta. Pattern proven in `494f752`: type boundary → cascade. ~96 more `any` to type. |
 | **Type safety in `ChatWindow.tsx` (40 × `any`)** | ❌ Open | P1 — same family as BLOCKER-1 but in the frontend |
 | `validation.ts` regex cleanup (5 useless escapes) | ❌ Open | P2 — quick fix |
