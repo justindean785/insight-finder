@@ -15,6 +15,15 @@ type Thread = {
   updated_at: string;
 };
 
+/** Subset of an AI SDK message part — only the fields read for tool stats. */
+interface MessagePartLike {
+  type?: string;
+  state?: string;
+  errorText?: unknown;
+  text?: unknown;
+  [k: string]: unknown;
+}
+
 function detectSeedType(v: string | null | undefined): string {
   if (!v) return "—";
   return detectSeed(v)?.kind ?? "—";
@@ -39,8 +48,8 @@ export function ThreadHeader({
 
   const loadIntegrity = useCallback(async () => {
     const [{ count }, { data: v }] = await Promise.all([
-      (supabase as any).from("evidence_log").select("id", { count: "exact", head: true }).eq("thread_id", threadId),
-      (supabase as any).rpc("verify_evidence_chain", { _thread_id: threadId }),
+      supabase.from("evidence_log").select("id", { count: "exact", head: true }).eq("thread_id", threadId),
+      supabase.rpc("verify_evidence_chain", { _thread_id: threadId }),
     ]);
     const row = Array.isArray(v) ? v[0] : v;
     const total = Number(row?.total ?? count ?? 0);
@@ -72,7 +81,7 @@ export function ThreadHeader({
   let isFailed = false;
   for (const m of messages) {
     if (m.role !== "assistant") continue;
-    for (const p of m.parts as any[]) {
+    for (const p of m.parts as MessagePartLike[]) {
       if (typeof p?.type === "string" && p.type.startsWith("tool-")) {
         toolsRun++;
         if (p.state === "output-error" || p.errorText) toolsFailed++;

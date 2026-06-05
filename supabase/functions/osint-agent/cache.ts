@@ -5,6 +5,7 @@
  */
 
 import { createClient } from "npm:@supabase/supabase-js@2";
+import type { Tool } from "npm:ai@6";
 import { hashInput, normalizeForHash, sanitizeToolOutput, TOOL_CACHE_LRU } from "./safety.ts";
 import { tierForTool, modelForTool, type Tier } from "./models.ts";
 import { costForTool } from "./costs.ts";
@@ -16,7 +17,7 @@ import * as circuit from "./circuit.ts";
 // telemetry logging, and optional auto-evidence mirroring. All 77 tools flow
 // through this function.
 export function wrapToolsWithCache(
-  toolsObj: Record<string, any>,
+  toolsObj: Record<string, Tool>,
   ctx: {
     investigationId: string;
     userId: string;
@@ -25,7 +26,7 @@ export function wrapToolsWithCache(
     onCost?: (microUsd: number) => void;
   },
 ) {
-  const wrapped: Record<string, any> = {};
+  const wrapped: Record<string, Tool> = {};
   const adminDb = ctx.supabaseAdmin ?? ctx.supabase;
   // Derive a real success flag from a tool's return value. A tool can return
   // without throwing yet still represent a failure (HTTP non-2xx wrapped into
@@ -72,15 +73,15 @@ export function wrapToolsWithCache(
     const rawError =
       typeof r.error === "string"
         ? r.error
-        : typeof (r as any).message === "string"
-          ? ((r as any).message as string)
+        : typeof r.message === "string"
+          ? (r.message as string)
           : null;
     const errorMsg = rawError ? redactSecrets(rawError).slice(0, 500) : null;
     const statusCode =
       typeof r.status === "number"
         ? (r.status as number)
-        : typeof (r as any).status_code === "number"
-          ? ((r as any).status_code as number)
+        : typeof r.status_code === "number"
+          ? (r.status_code as number)
           : null;
     return { errorMsg, statusCode };
   };
@@ -153,12 +154,13 @@ export function wrapToolsWithCache(
       execute: async (input: unknown, opts: unknown) => {
         const t0 = Date.now();
         // ---- Circuit breaker + dedup gate ----
+        const inp = (input ?? {}) as Record<string, unknown>;
         const sel = circuit.normalizeSelector(
-          String((input as any)?.kind ?? ""),
-          (input as any)?.value ?? (input as any)?.email ?? (input as any)?.username ?? (input as any)?.domain ?? (input as any)?.ip ?? (input as any)?.phone ?? (input as any)?.url ?? "",
+          String(inp.kind ?? ""),
+          inp.value ?? inp.email ?? inp.username ?? inp.domain ?? inp.ip ?? inp.phone ?? inp.url ?? "",
         );
-        const purpose = String((input as any)?.purpose ?? "default");
-        const force = (input as any)?.force === true;
+        const purpose = String(inp.purpose ?? "default");
+        const force = inp.force === true;
         const decision = circuit.shouldRun(ctx.investigationId, name, sel, purpose, { force });
         if (!decision.allow) {
           await logUsage(false, false, Date.now() - t0, decision.reason, null, true);
@@ -203,12 +205,13 @@ export function wrapToolsWithCache(
             .eq("input_hash", hash)
             .maybeSingle();
           if (data) {
-            const createdAt = new Date((data as any).created_at).getTime();
+            const row = data as { created_at: string; output_json: unknown };
+            const createdAt = new Date(row.created_at).getTime();
             if (fresh(createdAt)) {
-              const output = (data as any).output_json;
+              const output = row.output_json;
               TOOL_CACHE_LRU.set(key, { output, createdAt });
               logUsage(true, true, Date.now() - t0);
-              return markCached(output, (data as any).created_at, "db");
+              return markCached(output, row.created_at, "db");
             }
           }
         } catch { /* fall through to live call */ }

@@ -46,13 +46,13 @@ export function CustodyTab({ threadId }: { threadId: string }) {
   const load = useCallback(async () => {
     setLoading(true);
     const [{ data }, { data: t }] = await Promise.all([
-      (supabase as any)
+      supabase
         .from("evidence_log")
         .select("id,seq,classification,kind,value,source,source_url,tool_name,confidence,chain_hash,prev_hash,collected_at,metadata,archive_storage_path,archive_sha256,archive_bytes")
         .eq("thread_id", threadId)
         .order("seq", { ascending: false })
         .limit(500),
-      (supabase as any).from("threads").select("archive_attachments").eq("id", threadId).maybeSingle(),
+      supabase.from("threads").select("archive_attachments").eq("id", threadId).maybeSingle(),
     ]);
     setRows((data as EvidenceRow[]) ?? []);
     setArchiveEnabled(!!(t as { archive_attachments?: boolean } | null)?.archive_attachments);
@@ -64,7 +64,7 @@ export function CustodyTab({ threadId }: { threadId: string }) {
   const verify = useCallback(async () => {
     setVerifying(true);
     setVerification(null);
-    const { data, error } = await (supabase as any).rpc("verify_evidence_chain", { _thread_id: threadId });
+    const { data, error } = await supabase.rpc("verify_evidence_chain", { _thread_id: threadId });
     setVerifying(false);
     if (error) {
       setVerification({ ok: false, total: 0, first_break: null });
@@ -88,7 +88,7 @@ export function CustodyTab({ threadId }: { threadId: string }) {
 
   const toggleArchive = async (next: boolean) => {
     setArchiveEnabled(next);
-    const { error } = await (supabase as any).from("threads").update({ archive_attachments: next }).eq("id", threadId);
+    const { error } = await supabase.from("threads").update({ archive_attachments: next }).eq("id", threadId);
     if (error) {
       setArchiveEnabled(!next);
       toast.error("Failed to update setting");

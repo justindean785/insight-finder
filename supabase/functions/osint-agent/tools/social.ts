@@ -4,6 +4,45 @@
 import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import type { GitHubCodeSearchResponse, GitHubCodeMatch } from "../api_types.ts";
+
+/** One child node in a Reddit listing (about.json / user.json). */
+interface RedditChild {
+  kind?: string;
+  data?: {
+    subreddit?: string;
+    title?: string;
+    body?: string;
+    permalink?: string;
+    created_utc?: number;
+    [k: string]: unknown;
+  };
+  [k: string]: unknown;
+}
+
+/** Loose shape for the Reddit user.json / about.json responses. */
+interface RedditResponse {
+  data?: { children?: RedditChild[]; [k: string]: unknown };
+  [k: string]: unknown;
+}
+
+/** One site entry in the DeepFind.Me profile-analyzer response. */
+interface DeepFindSite {
+  status?: string;
+  site?: string;
+  name?: string;
+  url?: string;
+  profile_url?: string;
+  username?: string;
+  [k: string]: unknown;
+}
+
+/** Loose shape for the DeepFind.Me analyzer response (only fields we read). */
+interface DeepFindAnalyzerResponse {
+  sites?: DeepFindSite[];
+  summary?: unknown;
+  [k: string]: unknown;
+}
 
 export const socialfetch_lookup = tool({
   description:
@@ -144,7 +183,7 @@ export const github_code_search = tool({
       if (GITHUB_API_TOKEN) headers.Authorization = `Bearer ${GITHUB_API_TOKEN}`;
       const r = await fetch(`https://api.github.com/search/code?q=${encodeURIComponent(query)}&per_page=20`, { headers });
       const text = await r.text();
-      let data: any = {};
+      let data: GitHubCodeSearchResponse = {};
       try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 500) }; }
       if (!r.ok) {
         const remaining = r.headers.get("x-ratelimit-remaining");
@@ -152,11 +191,11 @@ export const github_code_search = tool({
         console.warn(`[github_code_search] HTTP ${r.status} authed=${!!GITHUB_API_TOKEN} remaining=${remaining} reset=${reset} msg=${(data?.message ?? "").slice(0, 200)}`);
         return { error: `github ${r.status}`, status: r.status, authenticated: !!GITHUB_API_TOKEN, rate_remaining: remaining, message: data?.message, snippet: text.slice(0, 300) };
       }
-      const items = ((data as any)?.items ?? []).map((i: any) => ({
+      const items = (data?.items ?? []).map((i: GitHubCodeMatch) => ({
         repo: i.repository?.full_name, path: i.path, url: i.html_url,
-        matches: (i.text_matches ?? []).map((m: any) => m.fragment).slice(0, 3),
+        matches: ((i.text_matches as Array<{ fragment?: string }> | undefined) ?? []).map((m) => m.fragment).slice(0, 3),
       }));
-      return { ok: true, authenticated: !!GITHUB_API_TOKEN, total: (data as any)?.total_count, items };
+      return { ok: true, authenticated: !!GITHUB_API_TOKEN, total: data?.total_count, items };
     } catch (e) { return { error: String(e) }; }
   },
 }),
@@ -172,12 +211,12 @@ export const reddit_user = tool({
         fetch(`https://www.reddit.com/user/${u}/about.json`, { headers: h }).then((r) => r.json()).catch(() => ({})),
         fetch(`https://www.reddit.com/user/${u}.json?limit=15`, { headers: h }).then((r) => r.json()).catch(() => ({})),
       ]);
-      const items = ((posts as any)?.data?.children ?? []).map((c: any) => ({
+      const items = ((posts as RedditResponse)?.data?.children ?? []).map((c: RedditChild) => ({
         kind: c.kind, subreddit: c.data?.subreddit, title: c.data?.title,
         body: c.data?.body?.slice?.(0, 300), url: c.data?.permalink ? `https://reddit.com${c.data.permalink}` : undefined,
         created: c.data?.created_utc,
       }));
-      return { about: (about as any)?.data, recent: items };
+      return { about: (about as RedditResponse)?.data, recent: items };
     } catch (e) { return { error: String(e) }; }
   },
 }),
@@ -206,14 +245,14 @@ export const deepfind_profile_analyzer = tool({
         headers: { "X-DFME-API-KEY": KEY, "Accept": "application/json" },
       });
       const data = await r.json().catch(() => ({}));
-      const d = data as any;
+      const d = data as DeepFindAnalyzerResponse;
       // Drop the long tail of "not found" sites (most of the ~350) — they
       // burn tokens without adding signal. Keep only confirmed hits.
-      const allSites = Array.isArray(d?.sites) ? d.sites : [];
+      const allSites: DeepFindSite[] = Array.isArray(d?.sites) ? d.sites : [];
       const foundSites = allSites
-        .filter((s: any) => s?.status === "found")
+        .filter((s) => s?.status === "found")
         .slice(0, 120)
-        .map((s: any) => ({
+        .map((s) => ({
           site: s?.site ?? s?.name,
           url: s?.url ?? s?.profile_url,
           username: s?.username,
@@ -223,7 +262,7 @@ export const deepfind_profile_analyzer = tool({
         status: r.status,
         source: "deepfind.analyzer",
         data: {
-          hits: allSites.filter((s: any) => s?.status === "found").length,
+          hits: allSites.filter((s) => s?.status === "found").length,
           scanned: allSites.length,
           summary: d?.summary,
           sites: foundSites,

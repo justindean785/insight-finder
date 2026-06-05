@@ -24,7 +24,7 @@ export const record_artifacts = tool({
         if (a >= 0 && b > a) { try { return JSON.parse(s.slice(a, b + 1)); } catch { /* noop */ } }
         return v;
       };
-      let v: any = parseMaybe(raw);
+      let v: unknown = parseMaybe(raw);
       if (v && !Array.isArray(v) && typeof v === "object") v = [v];
       return v;
     }, z.array(
@@ -53,9 +53,10 @@ export const record_artifacts = tool({
         return;
       }
       // Apply conservative confidence caps based on source class.
+      const aMeta = (a.metadata ?? {}) as Record<string, unknown>;
       const cap = applyEvidenceCaps({
         rawConfidence: a.confidence ?? 50,
-        sources: [a.source ?? "", ...((a.metadata as any)?.sources ?? [])].filter(Boolean) as string[],
+        sources: [a.source ?? "", ...((aMeta.sources as unknown[]) ?? [])].filter(Boolean) as string[],
       });
       // Required-fields envelope — fill conservative defaults when the
       // agent didn't supply them.
@@ -64,12 +65,12 @@ export const record_artifacts = tool({
         ...(v.metaPatch ?? {}),
         ...(inferred.reclassified_from ? { reclassified_from: inferred.reclassified_from } : {}),
         source_category: cap.source_classes,
-        status: (a.metadata as any)?.status ?? "new",
-        cluster_id: (a.metadata as any)?.cluster_id ?? null,
+        status: aMeta.status ?? "new",
+        cluster_id: aMeta.cluster_id ?? null,
         reason_for_confidence: cap.reason_for_confidence,
-        reason_not_confirmed: (a.metadata as any)?.reason_not_confirmed ?? cap.reason_not_confirmed ?? null,
-        contradictions: (a.metadata as any)?.contradictions ?? [],
-        next_verification_step: (a.metadata as any)?.next_verification_step ?? null,
+        reason_not_confirmed: aMeta.reason_not_confirmed ?? cap.reason_not_confirmed ?? null,
+        contradictions: aMeta.contradictions ?? [],
+        next_verification_step: aMeta.next_verification_step ?? null,
         confidence_cap_applied: cap.cap,
       };
       rows.push({
@@ -109,7 +110,7 @@ export const record_artifacts = tool({
       insertedRows = surviving;
     }
     const safeRowsForFollowup = insertedRows;
-    const flagged = safeRows.filter((r) => (r.metadata as any)?.minor_warning).length;
+    const flagged = safeRows.filter((r) => (r.metadata as Record<string, unknown> | null)?.minor_warning).length;
     bumpArtifacts(safeRowsForFollowup.length, safeRowsForFollowup.map((r) => String(r.kind)));
     // Collision detection: for any phone/email/address just inserted,
     // check if the same normalized value is already linked to a
@@ -127,7 +128,7 @@ export const record_artifacts = tool({
           .eq("value", String(r.value));
         const sources = new Set<string>();
         const clusters = new Set<string>();
-        for (const p of (peers ?? []) as any[]) {
+        for (const p of (peers ?? []) as Array<{ source?: unknown; metadata?: Record<string, unknown> | null }>) {
           if (p.source) sources.add(String(p.source));
           const cid = (p.metadata ?? {}).cluster_id;
           if (cid) clusters.add(String(cid));
@@ -180,7 +181,7 @@ export const record_artifacts = tool({
           }),
         );
         memory_hits = recalled.filter((r) => r.count > 0);
-        const allIds = memory_hits.flatMap((h) => (h.memories as any[]).map((m) => m.id));
+        const allIds = memory_hits.flatMap((h) => (h.memories as Array<{ id?: unknown }>).map((m) => m.id));
         if (allIds.length > 0) {
           supabase.rpc("bump_memory_hits", { _ids: allIds }).then(() => {}, () => {});
         }
@@ -198,7 +199,7 @@ export const record_artifacts = tool({
       try {
         const meta = (r.metadata as Record<string, unknown> | null) ?? {};
         const conf = typeof r.confidence === "number" ? (r.confidence as number) : null;
-        const declared = String((meta as any).classification ?? "").toLowerCase();
+        const declared = String(meta.classification ?? "").toLowerCase();
         const classification =
           declared === "hard" || declared === "soft"
             ? declared
@@ -206,10 +207,10 @@ export const record_artifacts = tool({
             ? "hard"
             : "soft";
         const sourceUrl =
-          (meta as any).source_url ||
-          (meta as any).url ||
-          (meta as any).profile_url ||
-          (meta as any).archived_url ||
+          meta.source_url ||
+          meta.url ||
+          meta.profile_url ||
+          meta.archived_url ||
           null;
         const snapshot = JSON.stringify(meta).slice(0, 1500);
         const { error: evErr } = await supabase.rpc("append_evidence", {
@@ -282,21 +283,22 @@ export const record_artifact = tool({
     const inferred = inferKind(kind, value);
     const v = validateArtifact(inferred.kind, value);
     if (!v.ok) return { ok: false, rejected: true, reason: v.reason };
+    const inMeta = (metadata ?? {}) as Record<string, unknown>;
     const cap = applyEvidenceCaps({
       rawConfidence: confidence ?? 50,
-      sources: [source ?? "", ...((metadata as any)?.sources ?? [])].filter(Boolean) as string[],
+      sources: [source ?? "", ...((inMeta.sources as unknown[]) ?? [])].filter(Boolean) as string[],
     });
     const enrichedMeta = {
       ...(metadata ?? {}),
       ...(v.metaPatch ?? {}),
       ...(inferred.reclassified_from ? { reclassified_from: inferred.reclassified_from } : {}),
       source_category: cap.source_classes,
-      status: (metadata as any)?.status ?? "new",
-      cluster_id: (metadata as any)?.cluster_id ?? null,
+      status: inMeta.status ?? "new",
+      cluster_id: inMeta.cluster_id ?? null,
       reason_for_confidence: cap.reason_for_confidence,
-      reason_not_confirmed: (metadata as any)?.reason_not_confirmed ?? cap.reason_not_confirmed ?? null,
-      contradictions: (metadata as any)?.contradictions ?? [],
-      next_verification_step: (metadata as any)?.next_verification_step ?? null,
+      reason_not_confirmed: inMeta.reason_not_confirmed ?? cap.reason_not_confirmed ?? null,
+      contradictions: inMeta.contradictions ?? [],
+      next_verification_step: inMeta.next_verification_step ?? null,
       confidence_cap_applied: cap.cap,
     };
     const row = scrubArtifactRow({
@@ -311,11 +313,11 @@ export const record_artifact = tool({
     const { error } = await supabase.from("artifacts").insert([row]);
     if (error) return { ok: false, error: error.message };
     bumpArtifacts(1, [String(row.kind)]);
-    const minor = (row.metadata as any)?.minor_warning === true;
+    const minor = (row.metadata as Record<string, unknown> | null)?.minor_warning === true;
     // Chain-of-custody append
     const meta = (row.metadata as Record<string, unknown> | null) ?? {};
     const conf = typeof row.confidence === "number" ? (row.confidence as number) : null;
-    const declared = String((meta as any).classification ?? "").toLowerCase();
+    const declared = String(meta.classification ?? "").toLowerCase();
     const classification =
       declared === "hard" || declared === "soft"
         ? declared
@@ -323,7 +325,7 @@ export const record_artifact = tool({
         ? "hard"
         : "soft";
     const sourceUrl =
-      (meta as any).source_url || (meta as any).url || (meta as any).profile_url || (meta as any).archived_url || null;
+      meta.source_url || meta.url || meta.profile_url || meta.archived_url || null;
     await supabase.rpc("append_evidence", {
       _thread_id: threadId,
       _artifact_id: null,

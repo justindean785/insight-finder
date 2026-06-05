@@ -174,8 +174,9 @@ export async function runSerusScan(
   let headers: HeadersInit;
   try {
     headers = serusHeaders();
-  } catch (e: any) {
-    return { ok: false, status: "error", error: { error: "config", code: e?.code ?? "serus_key_missing", status: 0, message: e?.message, hint: "Set SERUS_API_KEY in the Supabase edge function secrets." } };
+  } catch (e) {
+    const err = e as { code?: string; message?: string };
+    return { ok: false, status: "error", error: { error: "config", code: err?.code ?? "serus_key_missing", status: 0, message: err?.message ?? "", hint: "Set SERUS_API_KEY in the Supabase edge function secrets." } };
   }
 
   // 1. Initiate

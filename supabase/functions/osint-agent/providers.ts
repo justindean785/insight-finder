@@ -114,17 +114,30 @@ export async function geminiGroundedSearch(opts: {
       signal: ctrl.signal,
     });
     const txt = await r.text();
-    let raw: any;
+    let raw: unknown;
     try { raw = JSON.parse(txt); } catch { raw = { raw: txt.slice(0, 4000) }; }
-    const cand = raw?.candidates?.[0];
-    const parts: Array<{ text?: string }> = cand?.content?.parts ?? [];
-    const text = parts.map((p) => p?.text ?? "").join("\n").trim();
-    const chunks: any[] = cand?.groundingMetadata?.groundingChunks ?? [];
+
+    interface GeminiWebChunk { uri?: unknown; title?: unknown }
+    interface GeminiCandidate {
+      content?: { parts?: Array<{ text?: unknown }> };
+      groundingMetadata?: {
+        groundingChunks?: Array<{ web?: GeminiWebChunk }>;
+        webSearchQueries?: unknown;
+      };
+    }
+    const rawObj = raw as { candidates?: GeminiCandidate[] } | null;
+    const cand = rawObj?.candidates?.[0];
+    const parts = cand?.content?.parts ?? [];
+    const text = parts.map((p) => (typeof p?.text === "string" ? p.text : "")).join("\n").trim();
+    const chunks = cand?.groundingMetadata?.groundingChunks ?? [];
     const citations = chunks
       .map((c) => c?.web)
-      .filter((w) => w && typeof w.uri === "string")
-      .map((w) => ({ uri: String(w.uri), title: w.title ? String(w.title) : undefined }));
-    const queries: string[] = cand?.groundingMetadata?.webSearchQueries ?? [];
+      .filter((w): w is GeminiWebChunk & { uri: string } => !!w && typeof w.uri === "string")
+      .map((w) => ({ uri: String(w.uri), title: typeof w.title === "string" ? w.title : undefined }));
+    const rawQueries = cand?.groundingMetadata?.webSearchQueries;
+    const queries: string[] = Array.isArray(rawQueries)
+      ? rawQueries.filter((q): q is string => typeof q === "string")
+      : [];
     return { ok: r.ok, status: r.status, text, citations, queries, raw };
   } finally {
     clearTimeout(timer);

@@ -259,7 +259,7 @@ function buildHunterNotes(artifacts: Artifact[], seedValue: string | null): Hunt
   }
 
   const FIN = /(robinhood|coinbase|gatehub|kraken|gemini|binance|paypal|venmo|cashapp|wise|fidelity|schwab|chase|wells.?fargo|amex|amextax)/i;
-  const financial = artifacts.filter((a) => FIN.test(a.value) || FIN.test(String((a.metadata as any)?.site ?? "")));
+  const financial = artifacts.filter((a) => FIN.test(a.value) || FIN.test(String(a.metadata?.site ?? "")));
   if (financial.length >= 2) {
     notes.push({
       text: `Multiple financial accounts tied to the same identity — credential-stuffing risk against either is high. Owner should be assumed at material financial risk.`,
@@ -316,8 +316,8 @@ function computeRisk(artifacts: Artifact[]): { level: RiskLevel; risks: string[]
   const FIN = /(robinhood|coinbase|gatehub|kraken|gemini|binance|paypal|venmo|cashapp|fidelity|schwab|chase|wells.?fargo|amex)/i;
   const ADULT = /(meetmindful|passionsnetwork|adultfriendfinder|ashleymadison|onlyfans|fansly)/i;
 
-  const financial = artifacts.filter((a) => FIN.test(a.value) || FIN.test(String((a.metadata as any)?.site ?? ""))).length;
-  const adult = artifacts.filter((a) => ADULT.test(a.value) || ADULT.test(String((a.metadata as any)?.site ?? ""))).length;
+  const financial = artifacts.filter((a) => FIN.test(a.value) || FIN.test(String(a.metadata?.site ?? ""))).length;
+  const adult = artifacts.filter((a) => ADULT.test(a.value) || ADULT.test(String(a.metadata?.site ?? ""))).length;
 
   if (breaches >= 1) score += 1;
   if (breaches >= 3) score += 1;

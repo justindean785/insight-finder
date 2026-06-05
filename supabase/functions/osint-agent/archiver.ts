@@ -11,12 +11,31 @@ import { assertSafeUrl } from "./safety.ts";
 // over. Full Exa responses include large `text` blobs, raw HTML metadata, and
 // per-result subResults that bloat the context window without improving
 // downstream synthesis.
+interface ExaResultLike {
+  url?: unknown;
+  title?: unknown;
+  author?: unknown;
+  publishedDate?: unknown;
+  score?: unknown;
+  text?: unknown;
+  summary?: unknown;
+  highlights?: unknown;
+  [k: string]: unknown;
+}
+
+interface ExaResponseLike {
+  results?: unknown;
+  requestId?: unknown;
+  autopromptString?: unknown;
+  [k: string]: unknown;
+}
+
 export function trimExaResults(data: unknown): unknown {
-  const d = data as Record<string, unknown> | null;
+  const d = data as ExaResponseLike | null;
   if (!d || typeof d !== "object") return data;
-  const rs = Array.isArray((d as any).results) ? (d as any).results : null;
+  const rs: ExaResultLike[] | null = Array.isArray(d.results) ? d.results : null;
   if (!rs) return d;
-  const trimmed = rs.slice(0, 25).map((r: any) => {
+  const trimmed = rs.slice(0, 25).map((r: ExaResultLike) => {
     const text = typeof r?.text === "string" ? r.text.slice(0, 1500) : undefined;
     const summary = typeof r?.summary === "string" ? r.summary.slice(0, 600) : undefined;
     const highlights = Array.isArray(r?.highlights)
@@ -33,7 +52,7 @@ export function trimExaResults(data: unknown): unknown {
       ...(text ? { text } : {}),
     };
   });
-  return { results: trimmed, requestId: (d as any).requestId, autopromptString: (d as any).autopromptString };
+  return { results: trimmed, requestId: d.requestId, autopromptString: d.autopromptString };
 }
 
 // ---- Attachment archiving ------------------------------------------------------

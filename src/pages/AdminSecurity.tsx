@@ -52,7 +52,7 @@ export default function AdminSecurity() {
     if (loading) return;
     if (!user) { nav("/auth"); return; }
     (async () => {
-      const { data } = await (supabase as any).rpc("has_role", { _user_id: user.id, _role: "admin" });
+      const { data } = await supabase.rpc("has_role", { _user_id: user.id, _role: "admin" });
       setIsAdmin(!!data);
     })();
   }, [user, loading, nav]);

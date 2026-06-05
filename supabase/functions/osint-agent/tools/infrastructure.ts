@@ -5,6 +5,15 @@ import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+/** One result from the urlscan.io public search API (only fields we read). */
+interface UrlscanResult {
+  page?: { url?: string; domain?: string; ip?: string; asn?: string; country?: string };
+  task?: { time?: string };
+  screenshot?: string;
+  result?: string;
+  [k: string]: unknown;
+}
+
 export const whois_lookup = tool({
   description: "RDAP/WHOIS lookup for a domain.",
   inputSchema: z.object({ domain: z.string() }),
@@ -162,7 +171,7 @@ export const virustotal_lookup = tool({
         headers: { "x-apikey": KEY, "Accept": "application/json" },
       });
       const data = await r.json().catch(() => ({}));
-      const attrs = (data as any)?.data?.attributes ?? {};
+      const attrs = (data as { data?: { attributes?: Record<string, unknown> } })?.data?.attributes ?? {};
       return {
         ok: r.ok,
         status: r.status,
@@ -213,10 +222,10 @@ export const urlscan_search = tool({
     try {
       const r = await fetch(`https://urlscan.io/api/v1/search/?q=${encodeURIComponent(query)}&size=20`);
       const data = await r.json().catch(() => ({}));
-      const results = (data as { results?: Array<Record<string, unknown>> }).results ?? [];
+      const results = (data as { results?: UrlscanResult[] }).results ?? [];
       return {
         ok: r.ok, total: (data as { total?: number }).total,
-        results: results.map((x: any) => ({
+        results: results.map((x) => ({
           url: x?.page?.url, domain: x?.page?.domain, ip: x?.page?.ip,
           asn: x?.page?.asn, country: x?.page?.country,
           screenshot: x?.screenshot, scanned: x?.task?.time, result: x?.result,

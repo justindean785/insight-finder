@@ -15,6 +15,19 @@ import {
 } from "../guard.ts";
 import { TOOL_CATALOG, CATALOG_CACHE } from "../catalog.ts";
 
+/** Loose shape for a stolen.tax v2 parsed response (only fields we read). */
+interface StolenTaxParsed {
+  data?: { results?: unknown; [k: string]: unknown };
+  [k: string]: unknown;
+}
+
+/** Loose shape for a Stage-1 tool result ({ ok, status, data } or { error }). */
+interface Stage1Result {
+  status?: number;
+  data?: Record<string, unknown>;
+  [k: string]: unknown;
+}
+
 // ---- list_tools -------------------------------------------------------------
 
 export const list_tools = tool({
@@ -134,9 +147,9 @@ async function callBreachCheck(query: string) {
     callStolen("snusbase", { query }),
     callStolen("osintcat", { query, osintcat_mode: "breach" }),
   ]);
-  const dbResults = (dbSearch.parsed as any)?.data?.results;
+  const dbResults = (dbSearch.parsed as StolenTaxParsed)?.data?.results;
   const dbHits = Array.isArray(dbResults) ? dbResults.length : 0;
-  const snusRoot = (snus.parsed as any)?.data ?? {};
+  const snusRoot = (snus.parsed as StolenTaxParsed)?.data ?? {};
   const snusResultsObj = snusRoot.results ?? {};
   let snusHits = 0;
   if (snusResultsObj && typeof snusResultsObj === "object") {
@@ -195,9 +208,9 @@ export const triage_seed = tool({
     }
 
     // ---- Evaluate gate signals ----
-    const erData = (stage1.emailrep as any)?.data ?? {};
-    const gvData = (stage1.gravatar as any)?.data ?? {};
-    const brData = (stage1.breach as any)?.data ?? {};
+    const erData = (stage1.emailrep as Stage1Result)?.data ?? {};
+    const gvData = (stage1.gravatar as Stage1Result)?.data ?? {};
+    const brData = (stage1.breach as Stage1Result)?.data ?? {};
 
     const REP_SCORE: Record<string, number> = { high: 90, medium: 60, low: 20, none: 0 };
     const numericRep = typeof erData.reputation === "number" ? erData.reputation : null;
@@ -213,7 +226,7 @@ export const triage_seed = tool({
     const breachHit = breachCount > 0 || brData.success === true;
 
     const gravatarFound =
-      (stage1.gravatar as any)?.status === 200 &&
+      (stage1.gravatar as Stage1Result)?.status === 200 &&
       (typeof gvData.display_name === "string" ||
        typeof gvData.hash === "string" ||
        (Array.isArray(gvData.accounts) && gvData.accounts.length > 0));

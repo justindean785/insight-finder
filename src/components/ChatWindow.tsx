@@ -4,7 +4,7 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -47,7 +47,7 @@ function signalWithTimeout(ms: number): { signal: AbortSignal; cancel: () => voi
 }
 
 function parseHttpStatusFromError(err: unknown): number | null {
-  const msg = String((err as any)?.message ?? err ?? "");
+  const msg = String((err as { message?: unknown })?.message ?? err ?? "");
   const m = msg.match(/\bHTTP\s*([45]\d{2})\b/i) ?? msg.match(/\bstatus\s*[:=]\s*([45]\d{2})\b/i) ?? msg.match(/\b([45]\d{2})\b/);
   if (!m) return null;
   const n = Number(m[1]);
@@ -55,7 +55,7 @@ function parseHttpStatusFromError(err: unknown): number | null {
 }
 
 function describeTransportError(err: unknown): string {
-  const msg = String((err as any)?.message ?? err ?? "").toLowerCase();
+  const msg = String((err as { message?: unknown })?.message ?? err ?? "").toLowerCase();
   const status = parseHttpStatusFromError(err);
   if (status === 401) return "Session expired — your login has timed out. Sign in again to continue.";
   if (status === 403) return "Access denied — this thread doesn't belong to your account. Open your own thread or create a new one.";
@@ -101,6 +101,34 @@ type ToolPartShape = {
   errorText?: string | null;
   input?: unknown;
   output?: unknown;
+};
+
+/**
+ * Loose view of an AI SDK message part — covers the text, tool-* and custom
+ * data-part fields this component reads. Only models what's accessed here;
+ * unknown fields stay reachable via the index signature.
+ */
+type MessagePartShape = {
+  type?: string;
+  text?: string;
+  data?: unknown;
+  [k: string]: unknown;
+};
+
+/** One artifact stored in an investigation_cache.result_json blob. */
+type CachedArtifact = {
+  kind: string;
+  value: string;
+  confidence: number | null;
+  source: string | null;
+  metadata: Record<string, unknown> | null;
+};
+
+/** Shape of investigation_cache.result_json (only the fields we replay). */
+type CachedInvestigation = {
+  assistant_parts?: unknown[];
+  artifacts?: CachedArtifact[];
+  [k: string]: unknown;
 };
 
 function safeStringify(v: unknown): string {
@@ -229,15 +257,17 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
   }, [failed]);
 
   // Cache-hit detection: the edge function marks cached outputs with `_cached: true`.
-  const cached = !!(part.output && typeof part.output === "object" && (part.output as any)._cached);
+  const outputObj: Record<string, unknown> | null =
+    part.output && typeof part.output === "object" ? (part.output as Record<string, unknown>) : null;
+  const cached = !!outputObj?._cached;
 
   // Model tier — tagged by wrapToolsWithCache from the model registry.
   const tier: "fast" | "smart" | null = (() => {
-    const t = part.output && typeof part.output === "object" ? (part.output as any)._tier : null;
+    const t = outputObj ? outputObj._tier : null;
     return t === "fast" || t === "smart" ? t : null;
   })();
-  const tierModel: string | null = part.output && typeof part.output === "object"
-    ? ((part.output as any)._model ?? null) : null;
+  const tierModel: string | null =
+    outputObj && typeof outputObj._model === "string" ? outputObj._model : null;
 
   // Heuristic credit cost: 1 per real tool call, 0 for cache hits.
   const credits = cached ? 0 : (done || failed ? 1 : 0);
@@ -246,10 +276,11 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
   const artifactPreview = (() => {
     const out = part.output;
     if (!out || typeof out !== "object") return null;
-    if (Array.isArray((out as any).found)) return `${(out as any).hits ?? (out as any).found.length} hits`;
-    if (Array.isArray((out as any).subdomains)) return `${(out as any).subdomains.length} subdomains`;
-    if ((out as any).data && typeof (out as any).data === "object") {
-      const k = Object.keys((out as any).data).length;
+    const o = out as Record<string, unknown>;
+    if (Array.isArray(o.found)) return `${o.hits ?? o.found.length} hits`;
+    if (Array.isArray(o.subdomains)) return `${o.subdomains.length} subdomains`;
+    if (o.data && typeof o.data === "object") {
+      const k = Object.keys(o.data).length;
       if (k > 0) return `${k} fields`;
     }
     return null;
@@ -565,7 +596,7 @@ function formatAge(ms: number): string {
 
 function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean }) {
   if (m.role === "user") {
-    const text = m.parts.filter((p: any) => p.type === "text").map((p: any) => p.text).join("");
+    const text = (m.parts as MessagePartShape[]).filter((p) => p.type === "text").map((p) => p.text).join("");
     return (
       <div className="flex justify-end">
         <div
@@ -592,18 +623,19 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
       </div>
     );
   }
+  const parts = m.parts as MessagePartShape[];
   // Detect cached-investigation marker
-  const cacheMeta = (m.parts as any[]).find((p) => p?.type === CACHE_BANNER_TYPE)?.data as
+  const cacheMeta = parts.find((p) => p?.type === CACHE_BANNER_TYPE)?.data as
     | { cachedAt: string }
     | undefined;
   // Detect failed run sentinel
-  const firstText = m.parts.find((p: any) => p.type === "text") as any;
+  const firstText = parts.find((p) => p.type === "text");
   if (firstText?.text?.startsWith?.(FAIL_PREFIX)) {
     const reason = firstText.text.slice(FAIL_PREFIX.length);
     return (
       <div className="space-y-2">
-        {m.parts.map((p: any, i: number) => {
-          if (typeof p.type === "string" && p.type.startsWith("tool-")) return <ToolPart key={i} part={p} createdAt={createdAt} />;
+        {parts.map((p, i) => {
+          if (typeof p.type === "string" && p.type.startsWith("tool-")) return <ToolPart key={i} part={p as ToolPartShape} createdAt={createdAt} />;
           return null;
         })}
         {onRetry && <FailedRunCard reason={reason} onRetry={onRetry} />}
@@ -615,7 +647,7 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
       {cacheMeta && onRerun && (
         <CacheBanner cachedAt={cacheMeta.cachedAt} onRerun={onRerun} busy={!!rerunBusy} />
       )}
-      {m.parts.map((p: any, i: number) => {
+      {parts.map((p, i) => {
         if (p.type === CACHE_BANNER_TYPE) return null;
         if (p.type === "text") {
           const cleaned = stripThinkTags(p.text ?? "");
@@ -631,7 +663,7 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
                   // Replace plain text nodes containing [LABEL] tokens with badges
                   p: ({ node, children, ...rest }) => <p {...rest}>{wrapChildren(children)}</p>,
                   li: ({ node, children, ...rest }) => <li {...rest}>{wrapChildren(children)}</li>,
-                  pre: ({ node, children, ...rest }: any) => (
+                  pre: ({ node, children, ...rest }) => (
                     <div className="my-2 -mx-1 sm:mx-0 rounded-lg border border-border-subtle bg-secondary/40 overflow-hidden">
                       <pre
                         {...rest}
@@ -641,30 +673,30 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
                       </pre>
                     </div>
                   ),
-                  table: ({ node, children, ...rest }: any) => (
+                  table: ({ node, children, ...rest }) => (
                     <div className="my-2 -mx-1 sm:mx-0 rounded-lg border border-border-subtle bg-secondary/30 overflow-x-auto [scrollbar-width:thin]">
                       <table {...rest} className="w-full text-[11.5px] border-collapse">
                         {children}
                       </table>
                     </div>
                   ),
-                  th: ({ node, children, ...rest }: any) => (
+                  th: ({ node, children, ...rest }) => (
                     <th {...rest} className="text-left font-semibold text-foreground px-2.5 py-1.5 border-b border-border-subtle bg-secondary/40 whitespace-nowrap">
                       {children}
                     </th>
                   ),
-                  td: ({ node, children, ...rest }: any) => (
+                  td: ({ node, children, ...rest }) => (
                     <td {...rest} className="align-top px-2.5 py-1.5 border-b border-border-subtle/60 text-foreground/90">
                       {wrapChildren(children)}
                     </td>
                   ),
-                }}
+                } satisfies Components}
               >{cleaned}</ReactMarkdown>
             </div>
           );
         }
         if (typeof p.type === "string" && p.type.startsWith("tool-")) {
-          return <ToolPart key={i} part={p} createdAt={createdAt} />;
+          return <ToolPart key={i} part={p as ToolPartShape} createdAt={createdAt} />;
         }
         return null;
       })}
@@ -724,12 +756,12 @@ export function ChatWindow({ threadId }: { threadId: string }) {
         .order("created_at");
       if (!alive) return;
       const rows = data ?? [];
-      const initial: UIMessage[] = rows.map((r: any) => ({
+      const initial: UIMessage[] = rows.map((r) => ({
         id: r.id,
         role: r.role as "user" | "assistant",
-        parts: r.parts,
+        parts: r.parts as UIMessage["parts"],
       }));
-      const createdAtMap = Object.fromEntries(rows.map((r: any) => [r.id, r.created_at]));
+      const createdAtMap = Object.fromEntries(rows.map((r) => [r.id, r.created_at]));
       setState({ kind: "ready", initial, createdAtMap });
     })();
     return () => { alive = false; };
@@ -814,7 +846,7 @@ function ChatWindowInner({
   const [transport] = useState(() => new DefaultChatTransport({
     api: FUNCTIONS_URL,
     body: { threadId },
-    fetch: async (url: any, init: any) => {
+    fetch: async (url: RequestInfo | URL, init?: RequestInit) => {
       const { data } = await supabase.auth.getSession();
       const headers = new Headers(init?.headers);
       if (data.session) headers.set("Authorization", `Bearer ${data.session.access_token}`);
@@ -833,7 +865,7 @@ function ChatWindowInner({
       const msg = String(e?.message ?? "");
       const isAbort =
         unmountedRef.current ||
-        (e as any)?.name === "AbortError" ||
+        (e as { name?: unknown })?.name === "AbortError" ||
         /abort|aborted|cancel|user aborted|the operation was aborted/i.test(msg);
       if (isAbort) return;
       failSavedRef.current = true;
@@ -892,7 +924,10 @@ function ChatWindowInner({
           .gt("expires_at", new Date().toISOString())
           .maybeSingle();
         if (hit) {
-          await renderCachedResult(text, hit);
+          await renderCachedResult(text, {
+            ...hit,
+            result_json: hit.result_json as CachedInvestigation | null,
+          });
           setInput("");
           setAttachments([]);
           return;
@@ -1040,12 +1075,12 @@ function ChatWindowInner({
   // assistant msg (with cache banner sentinel part) into the DB, then reload state.
   const renderCachedResult = async (
     userText: string,
-    hit: { id: string; result_json: any; created_at: string; expires_at: string },
+    hit: { id: string; result_json: CachedInvestigation | null; created_at: string; expires_at: string },
   ) => {
     if (!user) return;
-    const cached = hit.result_json ?? {};
+    const cached: CachedInvestigation = hit.result_json ?? {};
     const assistantParts = Array.isArray(cached.assistant_parts) ? cached.assistant_parts : [];
-    const cachedArtifacts: Array<{ kind: string; value: string; confidence: number | null; source: string | null; metadata: any }> =
+    const cachedArtifacts: CachedArtifact[] =
       Array.isArray(cached.artifacts) ? cached.artifacts : [];
 
     // Track inserts so we can roll back if any later step fails — otherwise
@@ -1126,8 +1161,8 @@ function ChatWindowInner({
       // 5) push into local chat state
       setMessages((prev) => [
         ...prev,
-        { id: userRow.id, role: "user", parts: userParts as any },
-        { id: asstRow.id, role: "assistant", parts: synthParts as any },
+        { id: userRow.id, role: "user", parts: userParts as UIMessage["parts"] },
+        { id: asstRow.id, role: "assistant", parts: synthParts as UIMessage["parts"] },
       ]);
       setCreatedAtMap((prev) => ({
         ...prev,
@@ -1152,7 +1187,7 @@ function ChatWindowInner({
     }
     const firstUser = messages.find((m) => m.role === "user") as UIMessage | undefined;
     if (!firstUser) return;
-    const text = (firstUser.parts as any[]).filter((p) => p.type === "text").map((p) => p.text).join("").trim();
+    const text = (firstUser.parts as MessagePartShape[]).filter((p) => p.type === "text").map((p) => p.text).join("").trim();
     if (!text) return;
     const seed = detectSeed(text);
     if (!seed) return;
@@ -1175,12 +1210,12 @@ function ChatWindowInner({
         .eq("thread_id", threadId)
         .eq("metadata->>from_cache", "true");
       const synthIds = messages
-        .filter((m) => m.role === "assistant" && (m.parts as any[]).some((p) => p?.type === CACHE_BANNER_TYPE))
+        .filter((m) => m.role === "assistant" && (m.parts as MessagePartShape[]).some((p) => p?.type === CACHE_BANNER_TYPE))
         .map((m) => m.id);
       if (synthIds.length > 0) {
         await supabase.from("messages").delete().in("id", synthIds);
       }
-      setMessages((prev) => prev.filter((m) => !(m.role === "assistant" && (m.parts as any[]).some((p) => p?.type === CACHE_BANNER_TYPE))));
+      setMessages((prev) => prev.filter((m) => !(m.role === "assistant" && (m.parts as MessagePartShape[]).some((p) => p?.type === CACHE_BANNER_TYPE))));
       await sendMessage({ text });
     } finally {
       setRerunBusy(false);
@@ -1190,15 +1225,15 @@ function ChatWindowInner({
   const retryLastUser = async () => {
     const lastUser = [...messages].reverse().find((m) => m.role === "user") as UIMessage | undefined;
     if (!lastUser) return toast.error("No previous message to retry");
-    const text = (lastUser.parts as any[]).filter((p) => p.type === "text").map((p) => p.text).join("");
+    const text = (lastUser.parts as MessagePartShape[]).filter((p) => p.type === "text").map((p) => p.text).join("");
     if (!text) return toast.error("Last message was empty");
     // Optimistically remove the trailing failed assistant message from view
     setMessages((prev) => {
       const out = [...prev];
       for (let i = out.length - 1; i >= 0; i--) {
-        const m = out[i] as any;
+        const m = out[i];
         if (m.role === "assistant") {
-          const t = m.parts?.find?.((p: any) => p.type === "text");
+          const t = (m.parts as MessagePartShape[])?.find?.((p) => p.type === "text");
           if (t?.text?.startsWith?.(FAIL_PREFIX)) { out.splice(i, 1); break; }
         }
       }
@@ -1330,7 +1365,7 @@ function ChatWindowInner({
           )}
           {messages.map((m, idx) => {
             const isLastAssistant = m.role === "assistant" && idx === messages.length - 1;
-            const hasCacheBanner = m.role === "assistant" && (m.parts as any[]).some((p) => p?.type === CACHE_BANNER_TYPE);
+            const hasCacheBanner = m.role === "assistant" && (m.parts as MessagePartShape[]).some((p) => p?.type === CACHE_BANNER_TYPE);
             return (
               <MessageView
                 key={m.id}

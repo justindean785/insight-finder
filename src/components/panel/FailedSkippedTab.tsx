@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { extractFailedAndSkipped, type FailedToolEntry } from "@/lib/intel";
+import { extractFailedAndSkipped, type FailedToolEntry, type RawMessage } from "@/lib/intel";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, ShieldQuestion, Copy, ArrowDownToLine } from "lucide-react";
 import { toast } from "sonner";
@@ -18,7 +18,7 @@ export function FailedSkippedTab({ threadId }: { threadId: string }) {
         .eq("thread_id", threadId)
         .order("created_at");
       if (!alive) return;
-      setEntries(extractFailedAndSkipped((data ?? []) as any));
+      setEntries(extractFailedAndSkipped((data ?? []) as RawMessage[]));
       setLoading(false);
     };
     load();

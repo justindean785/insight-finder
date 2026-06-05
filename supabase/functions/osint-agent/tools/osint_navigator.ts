@@ -14,6 +14,11 @@ import {
   markToolDegraded,
 } from "../env.ts";
 import { gateStage2, routingGuard } from "../guard.ts";
+import type {
+  NavigatorQueryResponse,
+  NavigatorSearchResponse,
+  NavigatorTool,
+} from "../api_types.ts";
 
 export const osint_navigator_query = tool({
   description:
@@ -34,14 +39,14 @@ export const osint_navigator_query = tool({
         body: JSON.stringify({ query, skip_cache }),
       }, { retries: 1 });
       const text = await r.text();
-      let data: any;
+      let data: NavigatorQueryResponse;
       try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 4000) }; }
       if (!r.ok) {
         console.warn(`[osint_navigator_query] HTTP ${r.status} snippet=${text.slice(0, 300)}`);
         return { error: `osint_navigator ${r.status}`, status: r.status, snippet: text.slice(0, 300) };
       }
       const tools = Array.isArray(data?.tools)
-        ? data.tools.slice(0, 12).map((t: any) => ({
+        ? data.tools.slice(0, 12).map((t: NavigatorTool) => ({
             id: t?.tool_id ?? t?.id,
             name: t?.tool_name ?? t?.name ?? t?.title,
             url: t?.tool_url ?? t?.url ?? t?.homepage ?? t?.link,
@@ -161,14 +166,14 @@ export const osint_navigator_search = tool({
         body: JSON.stringify(body),
       }, { retries: 1 });
       const text = await r.text();
-      let data: any;
+      let data: NavigatorSearchResponse | NavigatorTool[];
       try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 4000) }; }
       if (!r.ok) {
         console.warn(`[osint_navigator_search] HTTP ${r.status} snippet=${text.slice(0, 300)}`);
         return { error: `osint_navigator ${r.status}`, status: r.status, snippet: text.slice(0, 300) };
       }
       const list = Array.isArray(data) ? data : (data?.tools ?? data?.results ?? []);
-      const tools = (Array.isArray(list) ? list : []).slice(0, limit ?? 10).map((t: any) => ({
+      const tools = (Array.isArray(list) ? list : []).slice(0, limit ?? 10).map((t: NavigatorTool) => ({
         id: t?.tool_id ?? t?.id,
         name: t?.tool_name ?? t?.name ?? t?.title,
         url: t?.tool_url ?? t?.url ?? t?.homepage ?? t?.link,

@@ -63,8 +63,8 @@ function dedupeArtifacts(rows: Artifact[]): Artifact[] {
       ...(prev.source ? [prev.source] : []),
       ...(a.source ? [a.source] : []),
     ]);
-    const prevReviewed = (prevMd as any)?.reviewed === true;
-    const nextReviewed = (a.metadata as any)?.reviewed === true;
+    const prevReviewed = prevMd.reviewed === true;
+    const nextReviewed = a.metadata?.reviewed === true;
     seen.set(key, {
       ...prev,
       confidence: Math.max(prev.confidence ?? 0, a.confidence ?? 0) || prev.confidence,

@@ -16,6 +16,26 @@ export type MessageSummary = {
   }>;
 };
 
+/** Subset of an AI SDK message part — only the fields read below. */
+interface MessagePart {
+  type?: string;
+  text?: unknown;
+  toolInvocation?: { toolName?: string; args?: unknown; toolCallId?: unknown };
+  toolName?: string;
+  args?: unknown;
+  toolCallId?: unknown;
+  output?: unknown;
+  [k: string]: unknown;
+}
+
+/** Row shape from the `messages` table SELECT below. */
+interface RawMessageRow {
+  id: string;
+  role: string;
+  parts: unknown;
+  created_at: string;
+}
+
 /**
  * Fetch message summaries for a thread. Returns lightweight summaries
  * suitable for timeline enrichment — not the full AI SDK message parts.
@@ -34,8 +54,8 @@ export function useThreadMessages(threadId: string): MessageSummary[] {
       .order("created_at", { ascending: true })
       .then(({ data }) => {
         if (cancelled || !data) return;
-        const summaries: MessageSummary[] = data.map((msg: any) => {
-          const parts = Array.isArray(msg.parts) ? msg.parts : [];
+        const summaries: MessageSummary[] = (data as RawMessageRow[]).map((msg) => {
+          const parts: MessagePart[] = Array.isArray(msg.parts) ? msg.parts : [];
           const toolCalls: MessageSummary["toolCalls"] = [];
 
           let textSummary = "";
@@ -48,18 +68,18 @@ export function useThreadMessages(threadId: string): MessageSummary[] {
             if (part?.type === "tool-invocation") {
               const inv = part.toolInvocation ?? part;
               const resultPart = parts.find(
-                (p: any) =>
+                (p) =>
                   p?.type === "tool-result" &&
                   p?.toolCallId === inv?.toolCallId
               );
               const resultOk =
                 resultPart?.output &&
                 typeof resultPart.output === "object" &&
-                (resultPart.output as any)?.ok === true;
+                (resultPart.output as Record<string, unknown>)?.ok === true;
               const resultError =
                 resultPart?.output &&
                 typeof resultPart.output === "object" &&
-                "error" in (resultPart.output as any);
+                "error" in (resultPart.output as Record<string, unknown>);
 
               toolCalls.push({
                 toolName: inv?.toolName ?? "unknown",
@@ -76,7 +96,7 @@ export function useThreadMessages(threadId: string): MessageSummary[] {
             }
             // Extract tool results
             if (part?.type === "tool-result" && typeof part.output === "object") {
-              const out = part.output as any;
+              const out = part.output as { data?: { report_markdown?: unknown; final_report?: unknown } } | null;
               if (out?.data?.report_markdown || out?.data?.final_report) {
                 textSummary = "Report generated";
               }
@@ -86,8 +106,8 @@ export function useThreadMessages(threadId: string): MessageSummary[] {
           // For user messages, use the text content
           if (msg.role === "user" && !textSummary) {
             textSummary = parts
-              .filter((p: any) => p?.type === "text")
-              .map((p: any) => p.text)
+              .filter((p) => p?.type === "text")
+              .map((p) => p.text)
               .join(" ")
               .slice(0, 120);
           }

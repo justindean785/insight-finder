@@ -191,7 +191,7 @@ export function classifyResult(result: unknown, threw: unknown): FailureKind {
   const r = result as Record<string, unknown>;
   if (r.ok === false || typeof r.error === "string") {
     const status = typeof r.status === "number" ? r.status
-      : typeof (r as any).status_code === "number" ? (r as any).status_code as number
+      : typeof r.status_code === "number" ? r.status_code
       : 0;
     if (status === 400) return "http_400";
     if (status === 401) return "http_401";

@@ -25,7 +25,7 @@ const COMMON_HANDLES = new Set([
 const CDN_NETS = ["cloudflare", "akamai", "fastly", "amazonaws", "googleuser", "azureedge", "cloudfront"];
 
 function metaStr(a: ArtifactLike, key: string): string | null {
-  const v = (a.metadata as any)?.[key];
+  const v = a.metadata?.[key];
   return typeof v === "string" ? v.toLowerCase() : null;
 }
 
@@ -100,7 +100,8 @@ export function detectContradictions(artifacts: ArtifactLike[]): ContradictionFi
   // Stale breach data (>5y) being treated as live identity signal
   const fiveYearsAgoMs = Date.now() - 5 * 365 * 24 * 3600 * 1000;
   for (const a of artifacts) {
-    const breachDate = (a.metadata as any)?.breach_date as string | undefined;
+    const rawBreachDate = a.metadata?.breach_date;
+    const breachDate = typeof rawBreachDate === "string" ? rawBreachDate : undefined;
     if (breachDate) {
       const t = Date.parse(breachDate);
       if (!Number.isNaN(t) && t < fiveYearsAgoMs) {

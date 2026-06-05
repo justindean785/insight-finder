@@ -5,6 +5,40 @@ import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+/**
+ * Loose shapes for the stolen.tax v2 endpoints (osintcat database-search,
+ * snusbase, osintcat breach). Only the fields we read are typed; everything
+ * else stays accessible via the index signature.
+ */
+interface StolenTaxParsed {
+  data?: {
+    results?: unknown;
+    size?: number;
+    breach_data?: unknown;
+    results_count?: number;
+    stats?: unknown;
+    [k: string]: unknown;
+  };
+  [k: string]: unknown;
+}
+
+/** One taken-account row from the osintcat-footprint response. */
+interface FootprintResult {
+  domain?: string;
+  taken?: boolean;
+  ExtraData?: unknown;
+  [k: string]: unknown;
+}
+
+/** Loose shape for the LeakCheck v2 query response (only fields we read). */
+interface LeakCheckResponse {
+  success?: boolean;
+  found?: number;
+  quota?: number;
+  result?: Array<{ source?: { name?: string }; [k: string]: unknown }>;
+  [k: string]: unknown;
+}
+
 export const breach_check = tool({
   description:
     "Check whether an email or username appears in public breach datasets. Primary source: stolen.tax — fans out in parallel to (a) OsintCat `database-search` (returns site+password combos), (b) Snusbase (returns identity records: name/phone/address/DOB), and (c) OsintCat plain `breach` mode. Returns combined hit count + per-source raw data. Falls back to the leakcheck public endpoint if stolen.tax is unavailable. Pass `email` for email seeds or `value` for usernames/other identifiers.",
@@ -51,10 +85,10 @@ export const breach_check = tool({
       ]);
 
       // ---- Parse each source into a hit count ----
-      const dbResults = (dbSearch.parsed as any)?.data?.results;
+      const dbResults = (dbSearch.parsed as StolenTaxParsed)?.data?.results;
       const dbHits = Array.isArray(dbResults) ? dbResults.length : 0;
 
-      const snusRoot = (snus.parsed as any)?.data ?? {};
+      const snusRoot = (snus.parsed as StolenTaxParsed)?.data ?? {};
       const snusResultsObj = snusRoot.results ?? {};
       let snusHits = 0;
       const snusSources: string[] = [];
@@ -68,7 +102,7 @@ export const breach_check = tool({
       }
       if (snusHits === 0 && typeof snusRoot.size === "number") snusHits = snusRoot.size;
 
-      const brRoot = (breachLegacy.parsed as any)?.data ?? {};
+      const brRoot = (breachLegacy.parsed as StolenTaxParsed)?.data ?? {};
       const brHits =
         (Array.isArray(brRoot.breach_data) && brRoot.breach_data.length) ||
         (typeof brRoot.results_count === "number" ? brRoot.results_count : 0);
@@ -139,11 +173,11 @@ export const stolentax_footprint = tool({
         },
       );
       const text = await r.text();
-      let parsed: any;
+      let parsed: StolenTaxParsed;
       try { parsed = JSON.parse(text); } catch { parsed = { raw: text.slice(0, 4000) }; }
       const d = parsed?.data ?? {};
       const taken = Array.isArray(d?.results)
-        ? d.results.filter((x: any) => x?.taken === true).map((x: any) => ({ domain: x.domain, extra: x.ExtraData ?? null }))
+        ? (d.results as FootprintResult[]).filter((x) => x?.taken === true).map((x) => ({ domain: x.domain, extra: x.ExtraData ?? null }))
         : [];
       return {
         ok: r.ok,
@@ -189,11 +223,11 @@ export const leakcheck_lookup = tool({
       const text = await r.text();
       let data: unknown;
       try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 4000) }; }
-      const d = data as any;
+      const d = data as LeakCheckResponse;
       const found = (typeof d?.found === "number" ? d.found : Array.isArray(d?.result) ? d.result.length : 0);
       const quota = typeof d?.quota === "number" ? d.quota : undefined;
       const sources = Array.isArray(d?.result)
-        ? Array.from(new Set(d.result.map((x: any) => x?.source?.name).filter(Boolean))).slice(0, 50)
+        ? Array.from(new Set(d.result.map((x) => x?.source?.name).filter(Boolean))).slice(0, 50)
         : [];
       return { ok: r.ok, status: r.status, source: "leakcheck.v2", data: { success: !!d?.success, found, quota, sources, raw: data } };
     } catch (e) {

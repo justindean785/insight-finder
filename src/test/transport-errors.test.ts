@@ -9,7 +9,7 @@ import { describe, it, expect } from "vitest";
  */
 
 function parseHttpStatusFromError(err: unknown): number | null {
-  const msg = String((err as any)?.message ?? err ?? "");
+  const msg = String((err as { message?: unknown })?.message ?? err ?? "");
   const m = msg.match(/\bHTTP\s*([45]\d{2})\b/i) ?? msg.match(/\bstatus\s*[:=]\s*([45]\d{2})\b/i) ?? msg.match(/\b([45]\d{2})\b/);
   if (!m) return null;
   const n = Number(m[1]);
@@ -17,7 +17,7 @@ function parseHttpStatusFromError(err: unknown): number | null {
 }
 
 function describeTransportError(err: unknown): string {
-  const msg = String((err as any)?.message ?? err ?? "").toLowerCase();
+  const msg = String((err as { message?: unknown })?.message ?? err ?? "").toLowerCase();
   const status = parseHttpStatusFromError(err);
   if (status === 401) return "Session expired — your login has timed out. Sign in again to continue.";
   if (status === 403) return "Access denied — this thread doesn't belong to your account. Open your own thread or create a new one.";

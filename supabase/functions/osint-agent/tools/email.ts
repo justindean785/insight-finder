@@ -5,6 +5,88 @@ import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+/**
+ * Loose shapes for the Hunter.io v2 endpoints. Only the fields we read are
+ * typed; everything else stays reachable via the index signatures. The
+ * top-level `{ data, errors }` envelope wraps each endpoint's payload.
+ */
+interface HunterEnvelope<T> {
+  data?: T;
+  errors?: unknown;
+  [k: string]: unknown;
+}
+
+/** One email record in the Hunter domain-search response. */
+interface HunterDomainEmail {
+  value?: string;
+  first_name?: string;
+  last_name?: string;
+  position?: string;
+  department?: string;
+  seniority?: string;
+  linkedin?: string;
+  twitter?: string;
+  phone_number?: string;
+  confidence?: number;
+  sources?: Array<{ uri?: string; [k: string]: unknown }>;
+  [k: string]: unknown;
+}
+
+interface HunterDomainData {
+  organization?: string;
+  country?: string;
+  pattern?: string;
+  webmail?: boolean;
+  disposable?: boolean;
+  meta?: { results?: number; [k: string]: unknown };
+  emails?: HunterDomainEmail[];
+  [k: string]: unknown;
+}
+
+/** Generic record used for the shallow Hunter finder/verifier payloads. */
+type HunterRecord = Record<string, unknown>;
+
+type HunterHandle = { handle?: string };
+
+/** Deeply-nested person payload from Hunter combined / people-find. */
+interface HunterPerson {
+  name?: { fullName?: string; givenName?: string; familyName?: string };
+  geo?: { city?: string; country?: string };
+  bio?: string;
+  site?: string;
+  avatar?: string;
+  employment?: unknown;
+  github?: HunterHandle;
+  twitter?: HunterHandle;
+  linkedin?: HunterHandle;
+  aboutme?: HunterHandle;
+  [k: string]: unknown;
+}
+
+/** Deeply-nested company payload from Hunter combined / companies-find. */
+interface HunterCompany {
+  name?: string;
+  legalName?: string;
+  domain?: string;
+  description?: string;
+  category?: { industry?: string; subIndustry?: string };
+  metrics?: { employees?: number; employeesRange?: string; annualRevenue?: number };
+  foundedYear?: number;
+  tech?: unknown[];
+  geo?: { city?: string; country?: string };
+  linkedin?: HunterHandle;
+  twitter?: HunterHandle;
+  facebook?: HunterHandle;
+  [k: string]: unknown;
+}
+
+/** The combined endpoint nests person + company under `data`. */
+interface HunterCombinedData {
+  person?: HunterPerson;
+  company?: HunterCompany;
+  [k: string]: unknown;
+}
+
 export const emailrep = tool({
   description:
     "Free EmailRep.io reputation lookup. Returns reputation (high/medium/low/none), suspicious flag, deliverability, breach count, domain age, and which sites the email is registered on. Great corroboration for any email seed.",
@@ -57,8 +139,8 @@ export const hunter_domain_search = tool({
       if (seniority) params.set("seniority", seniority);
       if (type) params.set("type", type);
       const r = await fetch(`https://api.hunter.io/v2/domain-search?${params}`);
-      const data = await r.json().catch(() => ({}));
-      const d: any = (data as any)?.data ?? {};
+      const data = await r.json().catch(() => ({})) as HunterEnvelope<HunterDomainData>;
+      const d: HunterDomainData = data?.data ?? {};
       return {
         ok: r.ok,
         status: r.status,
@@ -68,7 +150,7 @@ export const hunter_domain_search = tool({
         webmail: d.webmail,
         disposable: d.disposable,
         total: d.meta?.results ?? (d.emails?.length ?? 0),
-        emails: (d.emails ?? []).map((e: any) => ({
+        emails: (d.emails ?? []).map((e) => ({
           value: e.value,
           first_name: e.first_name,
           last_name: e.last_name,
@@ -82,7 +164,7 @@ export const hunter_domain_search = tool({
           sources_count: (e.sources ?? []).length,
           sample_source: e.sources?.[0]?.uri,
         })),
-        errors: (data as any)?.errors,
+        errors: data?.errors,
       };
     } catch (e) { return { error: String(e) }; }
   },
@@ -106,8 +188,8 @@ export const hunter_email_finder = tool({
       if (last_name) params.set("last_name", last_name);
       if (full_name) params.set("full_name", full_name);
       const r = await fetch(`https://api.hunter.io/v2/email-finder?${params}`);
-      const data = await r.json().catch(() => ({}));
-      const d: any = (data as any)?.data ?? {};
+      const data = await r.json().catch(() => ({})) as HunterEnvelope<HunterRecord>;
+      const d: HunterRecord = data?.data ?? {};
       return {
         ok: r.ok && !!d.email,
         status: r.status,
@@ -118,8 +200,8 @@ export const hunter_email_finder = tool({
         position: d.position,
         linkedin: d.linkedin_url,
         verification: d.verification,
-        sources_count: (d.sources ?? []).length,
-        errors: (data as any)?.errors,
+        sources_count: ((d.sources as unknown[]) ?? []).length,
+        errors: data?.errors,
       };
     } catch (e) { return { error: String(e) }; }
   },
@@ -133,8 +215,8 @@ export const hunter_email_verifier = tool({
     if (!HUNTER_API_KEY) return { error: "HUNTER_API_KEY not configured" };
     try {
       const r = await fetch(`https://api.hunter.io/v2/email-verifier?email=${encodeURIComponent(email)}&api_key=${HUNTER_API_KEY}`);
-      const data = await r.json().catch(() => ({}));
-      const d: any = (data as any)?.data ?? {};
+      const data = await r.json().catch(() => ({})) as HunterEnvelope<HunterRecord>;
+      const d: HunterRecord = data?.data ?? {};
       return {
         ok: r.ok,
         status: r.status,
@@ -151,8 +233,8 @@ export const hunter_email_verifier = tool({
         smtp_check: d.smtp_check,
         accept_all: d.accept_all,
         block: d.block,
-        sources_count: (d.sources ?? []).length,
-        errors: (data as any)?.errors,
+        sources_count: ((d.sources as unknown[]) ?? []).length,
+        errors: data?.errors,
       };
     } catch (e) { return { error: String(e) }; }
   },
@@ -166,7 +248,7 @@ export const hunter_combined = tool({
     if (!HUNTER_API_KEY) return { error: "HUNTER_API_KEY not configured" };
     try {
       const r = await fetch(`https://api.hunter.io/v2/combined/find?email=${encodeURIComponent(email)}&api_key=${HUNTER_API_KEY}`);
-      const data = await r.json().catch(() => ({}));
+      const data = await r.json().catch(() => ({})) as HunterEnvelope<HunterCombinedData>;
       // Hunter's Combined endpoint requires a paid plan; on 400/403 the
       // free plan falls through. Try person + company enrichment in
       // parallel as a graceful fallback so the email still gets enriched.
@@ -176,8 +258,8 @@ export const hunter_combined = tool({
           fetch(`https://api.hunter.io/v2/people/find?email=${encodeURIComponent(email)}&api_key=${HUNTER_API_KEY}`).then(x => x.json()).catch(() => ({})),
           domain ? fetch(`https://api.hunter.io/v2/companies/find?domain=${encodeURIComponent(domain)}&api_key=${HUNTER_API_KEY}`).then(x => x.json()).catch(() => ({})) : Promise.resolve({}),
         ]);
-        const pp: any = (pr as any)?.data ?? {};
-        const cc: any = (cr as any)?.data ?? {};
+        const pp: HunterPerson = (pr as HunterEnvelope<HunterPerson>)?.data ?? {};
+        const cc: HunterCompany = (cr as HunterEnvelope<HunterCompany>)?.data ?? {};
         const hasAny = Object.keys(pp).length > 0 || Object.keys(cc).length > 0;
         if (hasAny) {
           return {
@@ -203,9 +285,9 @@ export const hunter_combined = tool({
         }
         return { ok: false, status: r.status, error: `hunter_combined ${r.status} (plan-gated; people/companies also empty)` };
       }
-      const d: any = (data as any)?.data ?? {};
-      const p = d.person ?? {};
-      const c = d.company ?? {};
+      const d: HunterCombinedData = data?.data ?? {};
+      const p: HunterPerson = d.person ?? {};
+      const c: HunterCompany = d.company ?? {};
       return {
         ok: r.ok,
         status: r.status,
@@ -240,7 +322,7 @@ export const hunter_combined = tool({
           twitter: c.twitter?.handle,
           facebook: c.facebook?.handle,
         },
-        errors: (data as any)?.errors,
+        errors: data?.errors,
       };
     } catch (e) { return { error: String(e) }; }
   },

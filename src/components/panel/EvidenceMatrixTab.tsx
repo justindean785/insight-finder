@@ -162,7 +162,7 @@ export function EvidenceMatrixTab({
           <ul className="space-y-2">
             {rows.map(({ a, label, review: rState, score }) => {
               const meta = (a.metadata ?? {}) as Record<string, unknown>;
-              const preview = Object.keys(meta).slice(0, 3).map((k) => `${k}=${shorten(String((meta as any)[k]))}`).join(" · ");
+              const preview = Object.keys(meta).slice(0, 3).map((k) => `${k}=${shorten(String(meta[k]))}`).join(" · ");
               const delta = REVIEW_CONFIDENCE_DELTA[rState] ?? 0;
               const base = a.confidence ?? 0;
               // Score bar: base score (neutral) + review delta (green/amber overlay)

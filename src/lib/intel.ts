@@ -660,18 +660,30 @@ function suggestFix(name: string, err: string): string | null {
   return null;
 }
 
-type RawMessage = {
+export type RawMessage = {
   id: string;
   role: string;
   parts: unknown;
   created_at: string;
 };
 
+/** Subset of an AI SDK tool message part — only the fields read below. */
+interface ToolMessagePart {
+  type?: string;
+  state?: string;
+  errorText?: unknown;
+  error?: unknown;
+  input?: unknown;
+  output?: unknown;
+  toolCallId?: unknown;
+  [k: string]: unknown;
+}
+
 export function extractFailedAndSkipped(messages: RawMessage[]): FailedToolEntry[] {
   const out: FailedToolEntry[] = [];
   for (const m of messages) {
     if (m.role !== "assistant") continue;
-    const parts = Array.isArray(m.parts) ? (m.parts as any[]) : [];
+    const parts = Array.isArray(m.parts) ? (m.parts as ToolMessagePart[]) : [];
     for (let i = 0; i < parts.length; i++) {
       const p = parts[i];
       if (!p || typeof p.type !== "string") continue;
@@ -696,7 +708,7 @@ export function extractFailedAndSkipped(messages: RawMessage[]): FailedToolEntry
       }
       // list_tools may surface disabled_tools after triage
       if (name === "list_tools" && p.output && typeof p.output === "object") {
-        const disabled = (p.output as any).disabled_tools;
+        const disabled = (p.output as Record<string, unknown>).disabled_tools;
         if (Array.isArray(disabled)) {
           for (const d of disabled) {
             const tn = String(d?.name ?? "unknown");

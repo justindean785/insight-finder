@@ -430,9 +430,10 @@ export const dork_harvest = tool({
           body: JSON.stringify({ query: q, type: "keyword", numResults: 10, contents: false }),
         });
         const data = await r.json().catch(() => ({}));
-        const urls = Array.isArray((data as any)?.results)
-          ? (data as any).results
-              .map((x: any) => (typeof x?.url === "string" ? x.url : ""))
+        const exaResults = (data as { results?: Array<{ url?: unknown }> })?.results;
+        const urls = Array.isArray(exaResults)
+          ? exaResults
+              .map((x) => (typeof x?.url === "string" ? x.url : ""))
               .filter((u: string) => !!u)
           : [];
         return { ok: r.ok, status: r.status, urls };
@@ -572,7 +573,7 @@ export const gemini_deep_dork = tool({
       (focus ? `Focus: ${focus}\n` : "") +
       `Goal: deep-dork this seed across Google. Surface breach/leak exposure, document/file leaks (PDFs, CVs, dumps), pastebin/rentry/ghostbin pastes, forum mentions, social/profile traces, and any public-records or news hits. Prefer recent + high-signal results.`;
     const res = await geminiGroundedSearch({ prompt: user, system });
-    if (!res.ok) return { ok: false, status: res.status, error: "gemini_grounded_search_failed", detail: String((res.raw as any)?.error?.message ?? "").slice(0, 400) };
+    if (!res.ok) return { ok: false, status: res.status, error: "gemini_grounded_search_failed", detail: String((res.raw as { error?: { message?: unknown } })?.error?.message ?? "").slice(0, 400) };
 
     // Classify + dedupe citations, then auto-record.
     const seen = new Set<string>();

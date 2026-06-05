@@ -16,11 +16,19 @@ interface SweepSite {
   absent?: number | string;
 }
 
+interface SweepSiteResult {
+  site: string;
+  url: string;
+  found: boolean;
+  status?: number;
+  error?: string;
+}
+
 interface SweepResult {
   username: string;
   total: number;
   hits: number;
-  found: Array<Record<string, unknown>>;
+  found: SweepSiteResult[];
   missed: string[];
   skipped_due_to_budget: number;
 }
@@ -143,10 +151,10 @@ export async function sweepUsername(username: string): Promise<SweepResult> {
   const TOTAL_BUDGET_MS = 25000;
   const sweepDeadline = Date.now() + TOTAL_BUDGET_MS;
 
-  const results: Array<Record<string, unknown>> = [];
+  const results: SweepSiteResult[] = [];
   const queue = [...sites];
 
-  const runOne = async (s: SweepSite) => {
+  const runOne = async (s: SweepSite): Promise<SweepSiteResult> => {
     if (Date.now() > sweepDeadline) {
       return { site: s.name, url: s.url, error: "budget exhausted", found: false };
     }
@@ -185,14 +193,14 @@ export async function sweepUsername(username: string): Promise<SweepResult> {
   await Promise.all(workers);
 
   const hits = results.filter((r) => r.found);
-  const skipped = results.filter((r) => (r as any).error === "budget exhausted").length;
+  const skipped = results.filter((r) => r.error === "budget exhausted").length;
 
   return {
     username,
     total: results.length,
     hits: hits.length,
     found: hits,
-    missed: results.filter((r) => !r.found).map((r) => (r as any).site),
+    missed: results.filter((r) => !r.found).map((r) => r.site),
     skipped_due_to_budget: skipped,
   };
 }
