@@ -61,6 +61,12 @@ export function trimExaResults(data: unknown): unknown {
 // Returns archival metadata on success, or null on skip / failure.
 
 export const ARCHIVE_MAX_BYTES = 25 * 1024 * 1024;
+// Time bounds so a slow/hostile attachment host can't hang the request. The GET
+// budget must cover the full body download (up to ARCHIVE_MAX_BYTES), not just
+// time-to-headers — fetchT only bounds the latter, so we use a bespoke
+// AbortController that stays armed through res.arrayBuffer().
+const ARCHIVE_HEAD_TIMEOUT_MS = 8_000;
+const ARCHIVE_GET_TIMEOUT_MS = 25_000;
 export const ARCHIVE_OK_TYPES = /^(image\/|application\/(pdf|zip|x-zip-compressed|json|xml|octet-stream|vnd\.|msword|x-)|audio\/|video\/|text\/(csv|plain|xml))/i;
 export const ARCHIVE_SKIP_TYPES = /^(text\/html|application\/xhtml)/i;
 
@@ -87,37 +93,50 @@ export async function archiveAttachment(
     // HEAD first to gate type + size
     let ct = "application/octet-stream";
     let size = 0;
+    const headCtrl = new AbortController();
+    const headTimer = setTimeout(() => headCtrl.abort(), ARCHIVE_HEAD_TIMEOUT_MS);
     try {
-      const head = await fetch(safe.toString(), { method: "HEAD", redirect: "follow" });
+      const head = await fetch(safe.toString(), { method: "HEAD", redirect: "follow", signal: headCtrl.signal });
       if (!head.ok) return null;
       ct = head.headers.get("content-type") ?? ct;
       size = Number(head.headers.get("content-length") ?? "0");
       if (ARCHIVE_SKIP_TYPES.test(ct)) return null;
       if (size > ARCHIVE_MAX_BYTES) return null;
     } catch {
-      // some servers don't support HEAD; fall through to GET with size guard
+      // some servers don't support HEAD (or it timed out); fall through to GET
+      // with the size guard.
+    } finally {
+      clearTimeout(headTimer);
     }
-    const res = await fetch(safe.toString(), { redirect: "follow" });
-    if (!res.ok) return null;
-    // Re-validate post-redirect host
-    try { assertSafeUrl(res.url); } catch { return null; }
-    ct = res.headers.get("content-type") ?? ct;
-    if (ARCHIVE_SKIP_TYPES.test(ct)) return null;
-    if (!ARCHIVE_OK_TYPES.test(ct)) return null;
-    const buf = new Uint8Array(await res.arrayBuffer());
-    if (buf.byteLength > ARCHIVE_MAX_BYTES || buf.byteLength === 0) return null;
-    const digest = await crypto.subtle.digest("SHA-256", buf);
-    const sha256 = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
-    const ext = extFromContentType(ct, safe.pathname);
-    const path = `${userId}/${threadId}/${sha256}.${ext}`;
-    const { error: upErr } = await supabaseAdmin.storage
-      .from("evidence-archive")
-      .upload(path, buf, { contentType: ct, upsert: true });
-    if (upErr) {
-      console.warn("[archiveAttachment] upload failed:", upErr.message);
-      return null;
+    // GET with a body-spanning timeout: the controller stays armed through
+    // arrayBuffer() so a slow-drip response can't stall past the budget.
+    const getCtrl = new AbortController();
+    const getTimer = setTimeout(() => getCtrl.abort(), ARCHIVE_GET_TIMEOUT_MS);
+    try {
+      const res = await fetch(safe.toString(), { redirect: "follow", signal: getCtrl.signal });
+      if (!res.ok) return null;
+      // Re-validate post-redirect host
+      try { assertSafeUrl(res.url); } catch { return null; }
+      ct = res.headers.get("content-type") ?? ct;
+      if (ARCHIVE_SKIP_TYPES.test(ct)) return null;
+      if (!ARCHIVE_OK_TYPES.test(ct)) return null;
+      const buf = new Uint8Array(await res.arrayBuffer());
+      if (buf.byteLength > ARCHIVE_MAX_BYTES || buf.byteLength === 0) return null;
+      const digest = await crypto.subtle.digest("SHA-256", buf);
+      const sha256 = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+      const ext = extFromContentType(ct, safe.pathname);
+      const path = `${userId}/${threadId}/${sha256}.${ext}`;
+      const { error: upErr } = await supabaseAdmin.storage
+        .from("evidence-archive")
+        .upload(path, buf, { contentType: ct, upsert: true });
+      if (upErr) {
+        console.warn("[archiveAttachment] upload failed:", upErr.message);
+        return null;
+      }
+      return { path, sha256, bytes: buf.byteLength, content_type: ct };
+    } finally {
+      clearTimeout(getTimer);
     }
-    return { path, sha256, bytes: buf.byteLength, content_type: ct };
   } catch (e) {
     console.warn("[archiveAttachment] error:", (e as Error).message);
     return null;
