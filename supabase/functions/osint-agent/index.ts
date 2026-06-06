@@ -1793,18 +1793,42 @@ Deno.serve(async (req) => {
             try { assertSafeUrl(url); }
             catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
             const ctrl = new AbortController();
+            // Timer stays armed through the body read (cleared in finally), so a
+            // slow-drip response can't outlast the budget the way it would if we
+            // cleared it right after headers arrived.
             const t = setTimeout(() => ctrl.abort(), 10000);
-            const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (Proximity-OSINT)" }, redirect: "follow", signal: ctrl.signal });
-            clearTimeout(t);
-            // Block followed redirects that land on an internal host.
-            try { assertSafeUrl(r.url); }
-            catch (e) { return { error: `redirect blocked: ${String(e instanceof Error ? e.message : e)}` }; }
-            const headers: Record<string, string> = {};
-            r.headers.forEach((v, k) => { headers[k] = v; });
-            const body = await r.text().catch(() => "");
-            const title = body.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]?.trim();
-            const text = body.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 1200);
-            return { status: r.status, finalUrl: r.url, title, headers, excerpt: text };
+            try {
+              const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (Proximity-OSINT)" }, redirect: "follow", signal: ctrl.signal });
+              // Block followed redirects that land on an internal host.
+              try { assertSafeUrl(r.url); }
+              catch (e) { return { error: `redirect blocked: ${String(e instanceof Error ? e.message : e)}` }; }
+              const headers: Record<string, string> = {};
+              r.headers.forEach((v, k) => { headers[k] = v; });
+              // Bounded read — we only need <title> + a short excerpt, so cap the
+              // body at 512 KB. Prevents a huge response from OOMing the function
+              // and stops draining the stream once we have enough.
+              const CAP = 512 * 1024;
+              const reader = r.body?.getReader();
+              const decoder = new TextDecoder();
+              let body = "";
+              let received = 0;
+              if (reader) {
+                try {
+                  while (received < CAP) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    if (value) { received += value.byteLength; body += decoder.decode(value, { stream: true }); }
+                  }
+                } finally {
+                  await reader.cancel().catch(() => {});
+                }
+              }
+              const title = body.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]?.trim();
+              const text = body.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 1200);
+              return { status: r.status, finalUrl: r.url, title, headers, excerpt: text };
+            } finally {
+              clearTimeout(t);
+            }
           } catch (e) { return { error: String(e) }; }
         },
       }),
