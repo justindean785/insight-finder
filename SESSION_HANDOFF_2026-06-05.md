@@ -229,3 +229,65 @@ The original split plan doesn't match where the lines are. `index.ts` is 4,059 L
 1. `git push origin main` (3 commits pending).
 2. Operator: `supabase secrets set SUPABASE_ANON_KEY=***` + rotate the exposed Serus key, then `npx supabase functions deploy osint-agent`.
 3. If pursuing the split: follow audit §10, one tool-group factory at a time, `npm run test:edge` + a live smoke scan after each.
+
+---
+---
+
+# ▶▶ Session update (2026-06-06, net-hardening continued)
+
+This section supersedes earlier ones where they conflict. **All work below is pushed to `origin/main`.**
+
+## TL;DR (new)
+
+Continued the SSE-stream hang-hardening line of work and **finished it**: **every external `fetch()` in every *live* edge-function module is now time-bounded.** `f63150c` covered the 36 remaining tool-API fetches in `index.ts`; `3fd312b` closed the last live gap in `archiver.ts`. Inside `index.ts`, only **2 raw untimed `fetch()` remain by design** — both have bespoke self-timeouts (osintnova phone 25s+retry @ ~line 917; http_fingerprint 10s+SSRF-redirect-recheck @ ~line 1797). The `tools/*` directory still has many untimed fetches but is **dead code** (never imported live — confirmed by grep). All gates green.
+
+**Live-module fetch coverage (audited this session):** `index.ts` → fetchT/fetchRetry; `sweeper.ts` → bespoke 6s/req + 25s budget; `providers.ts` → bespoke 45s; `archiver.ts` → bespoke 8s HEAD + 25s GET (body-spanning). No other live module makes external fetches.
+
+## Commits added since the 2026-06-05 typing work (all on `origin/main`)
+
+| SHA | Title |
+|---|---|
+| `173e520` | fix(tools): 4 verified API-integration accuracy bugs |
+| `ff7a886` | fix(tools): 12 more failure-masquerade bugs in live inline tools |
+| `5ba5bc4` | test(tools): test seam for live inline tools + 25 interpreter tests |
+| `305feb5` | fix(net): per-call timeouts + partial-failure hardening (infra endpoints) |
+| **`f63150c`** | **fix(net): route remaining 36 tool-API fetches through fetchT (close hang-vuln)** |
+| **`3fd312b`** | **fix(net): bound archiveAttachment HEAD/GET (last live untimed-fetch gap)** |
+
+## What `f63150c` did (this session)
+
+`305feb5` timed only the infra endpoints (crt.sh, DoH, archive.org, blockstream, shodan, …) and left ~36 third-party tool fetches untimed. This session routed all 36 through the existing `fetchT(url, init?, timeoutMs=12_000)` helper:
+
+- **12s default:** deepfind.me (×14), virustotal, ipgeolocation, ip-api, rdap, emailrep, gravatar, hackernews, github code-search, socialfetch, hunter.io (×6 incl. the people/companies fan-out), leakcheck public fallback.
+- **Tuned headroom** for genuinely slow upstreams: oathnet 20s, stolen.tax breach fan-out 20s, leakcheck v2 20s, stolen.tax 127-site footprint sweep 25s.
+- **intelbase:** client cap = `(caller timeout_ms ?? 30_000) + 5_000` — honors the caller-supplied upstream timeout (also sent in the body, max 60s) so the fetch never aborts a still-pending server-side lookup.
+
+## Net-helper reference (`fetch_retry.ts`)
+
+- `fetchRetry(url, init, {retries=2, baseDelayMs=400, timeoutMs=30_000})` — retries 429/5xx + network errors, per-attempt timeout, composes with caller signal, cancels discarded retry bodies. Used for the important/retriable endpoints (13 sites).
+- `fetchT(url, init?, timeoutMs=12_000)` — one-shot hard timeout, no retry. The hang-guard for flaky/slow upstreams (48 sites). Drop-in replacement for `fetch(url, init)`.
+
+## Current state (supersedes the tables above)
+
+| Check | Result |
+|---|---|
+| `npm run test:edge` (Deno) | ✅ 73/73 |
+| `npx vitest run` | ✅ 167/167 |
+| `npx eslint .` | ✅ 0 errors (8 react-refresh warnings, P2) |
+| `npx tsc --noEmit` (frontend) | ✅ Clean |
+| `npm run build` | ✅ ~2s |
+| `deno check index.ts` (warm) | ⚠️ 39 pre-existing (ai@6 zod→`tool()` inference) — delta 0, out of scope |
+
+## Still open (priority order, unchanged)
+
+1. **Operator action (blocks deploy):** `supabase secrets set SUPABASE_ANON_KEY=***`, rotate the exposed Serus key (`ak_39cf4c5…`, compromised 2026-06-04), then `npx supabase functions deploy osint-agent`. Requires operator — not doable from this session.
+2. **BLOCKER-2 modular split** (audit §10) — deferred, big, not required for limited beta. Now safer (seams typed + time-bounded).
+3. P1/P2 polish from the earlier sections (frontend `any` already cleared; react-refresh warnings remain).
+
+## Watch-outs (still current)
+
+- `deno check` warm baseline is **39** this session (was 153 cold last session — cache-dependent). Always re-measure delta against `git stash`, don't trust the absolute number.
+- Sub-agents can't run `deno` (sandbox-blocked); only the orchestrating session can. The `npm run test:edge` wrapper runs deno with `--no-check`.
+- `fetchT`/`fetchRetry` are imported into `index.ts` from `./env.ts` (which re-exports from `./fetch_retry.ts`).
+- **`fetchT`/`fetchRetry` only bound time-to-headers, not body download.** They `clearTimeout` in `finally` the moment `fetch()` resolves (headers received). For a call that then does `res.arrayBuffer()`/`res.text()` on a large or slow-drip body, the body read is *not* covered — use a bespoke `AbortController` whose timer stays armed through the body read (see `archiver.ts` GET, `sweeper.ts`). For the JSON tool-API calls this doesn't matter (small bodies), which is why `fetchT` is correct there.
+- **Deno typed-arrays gotcha:** annotating `let buf: Uint8Array` widens to `Uint8Array<ArrayBufferLike>` and breaks `crypto.subtle.digest` (`SharedArrayBuffer` not assignable to `BufferSource`). Keep `const buf = new Uint8Array(await res.arrayBuffer())` so the narrow `Uint8Array<ArrayBuffer>` is inferred.
