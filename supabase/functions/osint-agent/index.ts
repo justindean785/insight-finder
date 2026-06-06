@@ -33,6 +33,7 @@ import {
   GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY,
   firecrawlCreditsLow, markFirecrawlCreditsLow, resetFirecrawlCreditsLow, degradedTools,
   markToolDegraded, isDegraded, fetchRetry, fetchT,
+  deadHosts, markHostDead, isHostDead,
 } from "./env.ts";
 
 // validation.ts — Seed detection, cache TTLs, artifact validation
@@ -206,6 +207,7 @@ Deno.serve(async (req) => {
   // requests, so module-scope state must be cleared at the top of each
   // handler call or one investigation's 402 disables Firecrawl forever.
   degradedTools.clear();
+  deadHosts.clear();
   resetFirecrawlCreditsLow(); // Reset per-request: one investigation's 402 shouldn't carry over
 
   // ---- Reset guard/triage state (module-scoped, must be reset per-request) ----
@@ -251,6 +253,15 @@ Deno.serve(async (req) => {
             disabled.push({
               name: "intelbase_email_lookup",
               reason: "IntelBase gated — provider instability (feature flag off). Use breach_check / leakcheck_lookup / oathnet_lookup / bosint_email_lookup instead.",
+            });
+          }
+          // HIBP needs a paid key; hide it entirely when unset so the agent
+          // doesn't burn a fan-out slot on a tool that can only return
+          // "not configured" on every email seed.
+          if (!HIBP_API_KEY) {
+            disabled.push({
+              name: "hibp_lookup",
+              reason: "HIBP_API_KEY not configured — use breach_check / leakcheck_lookup / oathnet_lookup for breach corroboration.",
             });
           }
           if (triageState.ran) {
@@ -602,8 +613,20 @@ Deno.serve(async (req) => {
               "firecrawl_search","firecrawl_scrape","firecrawl_map",
               "intelbase_email_lookup",
             ]);
+            // Tools the circuit breaker has disabled this investigation (e.g.
+            // synapsint after 3 consecutive HTTP 500s). Without this the planner
+            // re-proposes a known-dead tool every round — observed firing
+            // synapsint 7x for zero value. degradedTools covers the parallel
+            // self-degrade path (markToolDegraded on 5xx).
+            const brokenTools = new Set<string>(
+              circuit.snapshot(threadId).filter((s) => s.disabledReason).map((s) => s.tool),
+            );
             const toolList = baseToolList.filter((name) => {
               if (PERMANENT_BLOCK.has(name)) return false;
+              // HIBP can only fail without a key — keep it off the planner menu.
+              if (name === "hibp_lookup" && !HIBP_API_KEY) return false;
+              // Dead/degraded tools — stop re-proposing them this investigation.
+              if (brokenTools.has(name) || isDegraded(name)) return false;
               if (!HIGH_COST_TOOLS.has(name)) return true;
               const last = routingGuard.highCostLastArtifactCount.get(name);
               if (last === undefined) return true;
@@ -905,14 +928,17 @@ Deno.serve(async (req) => {
       }),
       bosint_phone_lookup: tool({
         description:
-          "OSINTNova (Bosint) phone intelligence. Carrier, location, line type, timezone, and associated names when available. Pass full E.164 number with country code (e.g. '+12025551234'). Shared 1000 calls/day quota across Bosint endpoints, 120/min. Fire ONCE per phone seed in parallel with leakcheck_lookup + oathnet_lookup. SLOW upstream — capped at 25s + 1 retry; will return a timeout marker if it hangs.",
+          "OSINTNova (Bosint) phone intelligence. Carrier, location, line type, timezone, and associated names when available. Pass full E.164 number with country code (e.g. '+12025551234'). Shared 1000 calls/day quota across Bosint endpoints, 120/min. Fire ONCE per phone seed in parallel with leakcheck_lookup + oathnet_lookup. SLOW upstream — capped at a single 25s attempt; returns a timeout marker if it hangs.",
         inputSchema: z.object({ phone: z.string().describe("Phone number in E.164 format, e.g. +12025551234") }),
         execute: async ({ phone }) => {
           if (!OSINTNOVA_API_KEY) return { error: "OSINTNOVA_API_KEY not configured" };
           const cleaned = phone.trim();
           const url = `https://app.osintnova.com/bosintapi/${OSINTNOVA_API_KEY}/phone/${encodeURIComponent(cleaned)}`;
-          // Strict 25s per attempt, max 2 attempts with a 10s backoff, hard
-          // ceiling at 60s so a hung upstream can never stall the stream.
+          // Single strict 25s attempt — no retry. The old 25s + 10s backoff +
+          // 25s retry pushed the worst case to 60s and stalled interactive
+          // scans for a full minute (observed in prod). The phone is already
+          // covered by leakcheck_lookup + oathnet_lookup, so a hung OSINTNova
+          // isn't worth the wait.
           const attemptOnce = async (signal: AbortSignal) => {
             const r = await fetch(url, { headers: { accept: "application/json" }, signal });
             const text = await r.text();
@@ -927,22 +953,11 @@ Deno.serve(async (req) => {
             try { return await attemptOnce(ctrl.signal); }
             finally { clearTimeout(tid); }
           };
-          const started = Date.now();
           try {
             return await runWithTimeout(25_000);
-          } catch (e1) {
-            const elapsed = Date.now() - started;
-            if (elapsed > 30_000) {
-              console.warn("bosint_phone_lookup timed out — using fallback sources only");
-              return { error: "bosint_phone_timeout", skipped: true, hint: "leakcheck_lookup + oathnet_lookup cover this phone." };
-            }
-            // brief backoff then a single retry
-            await new Promise((r) => setTimeout(r, 10_000));
-            try { return await runWithTimeout(25_000); }
-            catch (e2) {
-              console.warn("bosint_phone_lookup timed out — using fallback sources only");
-              return { error: "bosint_phone_timeout", skipped: true, hint: "leakcheck_lookup + oathnet_lookup cover this phone." };
-            }
+          } catch {
+            console.warn("bosint_phone_lookup timed out — using fallback sources only");
+            return { error: "bosint_phone_timeout", skipped: true, hint: "leakcheck_lookup + oathnet_lookup cover this phone." };
           }
         },
       }),
@@ -1308,6 +1323,7 @@ Deno.serve(async (req) => {
         execute: async ({ domain }) => {
           const KEY = Deno.env.get("DEEPFIND_API_KEY");
           if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
+          if (isHostDead(domain)) return { skipped: true, reason: "host does not resolve (NXDOMAIN) — skipped" };
           try {
             const r = await fetchT(`https://deepfind.me/api/ssl-certificate`, {
               method: "POST",
@@ -1327,6 +1343,7 @@ Deno.serve(async (req) => {
           const KEY = Deno.env.get("DEEPFIND_API_KEY");
           if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
           const deg = isDegraded("deepfind_tech_stack"); if (deg) return deg;
+          if (isHostDead(url)) return { skipped: true, reason: "host does not resolve (NXDOMAIN) — skipped" };
           try {
             const r = await fetchT(`https://deepfind.me/api/tech-stack/detect`, {
               method: "POST",
@@ -1723,10 +1740,12 @@ Deno.serve(async (req) => {
           try {
             const out: Record<string, unknown> = {};
             const errs: Record<string, string> = {};
+            const statuses: number[] = [];
             await Promise.all(types.map(async (t) => {
               try {
                 const r = await fetchT(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=${t}`, { headers: { Accept: "application/dns-json" } }, 8_000);
                 const j = await r.json().catch(() => ({})) as { Status?: number; Answer?: Array<{ data: string }> };
+                if (typeof j.Status === "number") statuses.push(j.Status);
                 out[t] = j.Answer?.map((a) => a.data) ?? [];
                 // Distinguish a genuine empty result (NOERROR/NXDOMAIN) from a lookup
                 // failure (HTTP error or SERVFAIL) so [] can't read as "no records".
@@ -1739,6 +1758,12 @@ Deno.serve(async (req) => {
                 errs[t] = String(e instanceof Error ? e.message : e);
               }
             }));
+            // NXDOMAIN (Status 3) on any query means the domain doesn't exist —
+            // flag the host so the live-host tools skip it instead of each
+            // re-discovering the same DNS failure.
+            if (statuses.some((s) => s === 3)) {
+              markHostDead(host, "NXDOMAIN — domain does not resolve");
+            }
             const hasErr = Object.keys(errs).length > 0;
             return { ok: !hasErr, host, records: out, ...(hasErr ? { errors: errs } : {}) };
           } catch (e) { return { error: String(e) }; }
@@ -1789,6 +1814,9 @@ Deno.serve(async (req) => {
         inputSchema: z.object({ url: z.string().url() }),
         execute: async ({ url }) => {
           try {
+            // Skip a host already proven dead (NXDOMAIN) this investigation
+            // instead of re-incurring the same DNS failure.
+            if (isHostDead(url)) return { skipped: true, reason: "host does not resolve (NXDOMAIN) — skipped" };
             // SSRF guard — reject loopback, link-local (cloud metadata!), RFC1918.
             try { assertSafeUrl(url); }
             catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
@@ -1829,7 +1857,15 @@ Deno.serve(async (req) => {
             } finally {
               clearTimeout(t);
             }
-          } catch (e) { return { error: String(e) }; }
+          } catch (e) {
+            const msg = String(e instanceof Error ? e.message : e);
+            // A DNS-resolution failure is a definitive "host doesn't exist" —
+            // flag it so siblings (jina, deepfind_ssl/tech) skip the same host.
+            if (/dns error|failed to lookup address|name or service not known|getaddrinfo|ENOTFOUND/i.test(msg)) {
+              markHostDead(url, "DNS lookup failed");
+            }
+            return { error: msg };
+          }
         },
       }),
       crypto_wallet: tool({
@@ -2564,6 +2600,8 @@ Deno.serve(async (req) => {
             return { error: "non_http_url", skipped: true, url: raw };
           }
           parsed.hash = ""; // r.jina.ai 422s on fragments
+          // Skip a host already proven dead (NXDOMAIN) this investigation.
+          if (isHostDead(parsed.hostname)) return { skipped: true, reason: "host does not resolve (NXDOMAIN) — skipped", url: raw };
           // Rebuild a clean URL; r.jina.ai expects the raw URL appended.
           const clean = parsed.toString();
           try {
