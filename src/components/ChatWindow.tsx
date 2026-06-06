@@ -702,19 +702,19 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
                     </div>
                   ),
                   table: ({ node, children, ...rest }) => (
-                    <div className="my-2 -mx-1 sm:mx-0 rounded-lg border border-border-subtle bg-secondary/30 overflow-x-auto [scrollbar-width:thin]">
-                      <table {...rest} className="w-full text-[11.5px] border-collapse">
+                    <div className="my-2.5 -mx-1 sm:mx-0 rounded-lg border border-border-subtle bg-[hsl(230_18%_5%)] overflow-x-auto [scrollbar-width:thin]">
+                      <table {...rest} className="w-full text-[11px] border-collapse">
                         {children}
                       </table>
                     </div>
                   ),
                   th: ({ node, children, ...rest }) => (
-                    <th {...rest} className="text-left font-semibold text-foreground px-2.5 py-1.5 border-b border-border-subtle bg-secondary/40 whitespace-nowrap">
+                    <th {...rest} className="text-left font-mono text-[9.5px] font-semibold uppercase tracking-[0.13em] text-muted-foreground/70 px-2.5 py-2 border-b border-border-subtle bg-white/[0.02] whitespace-nowrap">
                       {children}
                     </th>
                   ),
                   td: ({ node, children, ...rest }) => (
-                    <td {...rest} className="align-top px-2.5 py-1.5 border-b border-border-subtle/60 text-foreground/90">
+                    <td {...rest} className="align-top px-2.5 py-1.5 border-b border-border-subtle/35 text-foreground/90 font-mono">
                       {wrapChildren(children)}
                     </td>
                   ),
