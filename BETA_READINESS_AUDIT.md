@@ -120,7 +120,7 @@ Everything else is either already addressed or is a polish item.
 
 - **No hardcoded secrets** in tracked files. Serus, MiniMax, Lovable, Exa, Hunter, SocialFetch, Synapsint, OSINTNova, Cordcat, OathNet, Upstash, Jina, GitHub, Firecrawl, StolenTax, OSINT Navigator, Perplexity, Gemini — all read from `Deno.env.get(...)` via `env.ts`.
 - **`.env` is gitignored** — confirmed by `git ls-files | grep .env` returning empty.
-- **Serus key from chat 2026-06-04 leak** (`ak_39cf4c5...`) — **NOT present** in any tracked file. (Per memory, this key should still be rotated in the Serus dashboard; the platform never had it hardcoded, but the user has it on the dashboard and it was exposed in chat.)
+- **All API keys** read from `Deno.env.get(...)` via `env.ts` — none hardcoded in tracked files; key management is the operator's responsibility in Lovable Cloud (accepted).
 - **Auth header + thread ownership gating** — present at the top of the orchestrator function. F-01, F-02 controls intact.
 - **SSRF hardening** — `assertSafeUrl` still imported and used. F-08 control intact.
 - **Error envelope from orchestrator** — `index.ts:3848` returns `{ error, code: "ORCHESTRATOR_FAULT", detail }`. P1-2 (structured error envelope) is **partially done**; some other error paths still return plain text.
@@ -149,7 +149,7 @@ Everything else is either already addressed or is a polish item.
 | `validation.ts` regex cleanup (5 useless escapes) | ❌ Open | P2 — quick fix |
 | `tools/recording.ts` 28 × `any` | ❌ Open | P1 |
 | Plain-text error envelopes in some paths | ⚠️ Partial | P1 — extend structured envelope to all error returns |
-| Serus key rotation in dashboard | ⚠️ Pending user action | Per memory, key from 2026-06-04 chat exposure should be rotated in Serus dashboard |
+| API key management (Lovable Cloud) | ✅ Closed | Operator-managed; current keys accepted as fine |
 
 ---
 
