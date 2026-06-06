@@ -132,7 +132,10 @@ export function normalizeHost(input: string): string {
   let host: string;
   try { host = new URL(raw.includes("://") ? raw : `http://${raw}`).hostname; }
   catch { host = raw.replace(/^https?:\/\//, "").split("/")[0] ?? ""; }
-  return host.replace(/^www\./, "");
+  // Exact host match only — do NOT fold www.host into host. They can resolve
+  // independently (apex-only / www-only sites), so conflating them would let a
+  // dead www. wrongly gate live-host tools on the live apex (and vice versa).
+  return host;
 }
 export function markHostDead(input: string, reason: string) {
   const host = normalizeHost(input);
