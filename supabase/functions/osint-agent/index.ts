@@ -253,6 +253,15 @@ Deno.serve(async (req) => {
               reason: "IntelBase gated — provider instability (feature flag off). Use breach_check / leakcheck_lookup / oathnet_lookup / bosint_email_lookup instead.",
             });
           }
+          // HIBP needs a paid key; hide it entirely when unset so the agent
+          // doesn't burn a fan-out slot on a tool that can only return
+          // "not configured" on every email seed.
+          if (!HIBP_API_KEY) {
+            disabled.push({
+              name: "hibp_lookup",
+              reason: "HIBP_API_KEY not configured — use breach_check / leakcheck_lookup / oathnet_lookup for breach corroboration.",
+            });
+          }
           if (triageState.ran) {
             for (const name of stage2) {
               if (!triageState.cleared.has(name)) {
@@ -604,6 +613,8 @@ Deno.serve(async (req) => {
             ]);
             const toolList = baseToolList.filter((name) => {
               if (PERMANENT_BLOCK.has(name)) return false;
+              // HIBP can only fail without a key — keep it off the planner menu.
+              if (name === "hibp_lookup" && !HIBP_API_KEY) return false;
               if (!HIGH_COST_TOOLS.has(name)) return true;
               const last = routingGuard.highCostLastArtifactCount.get(name);
               if (last === undefined) return true;
@@ -905,14 +916,17 @@ Deno.serve(async (req) => {
       }),
       bosint_phone_lookup: tool({
         description:
-          "OSINTNova (Bosint) phone intelligence. Carrier, location, line type, timezone, and associated names when available. Pass full E.164 number with country code (e.g. '+12025551234'). Shared 1000 calls/day quota across Bosint endpoints, 120/min. Fire ONCE per phone seed in parallel with leakcheck_lookup + oathnet_lookup. SLOW upstream — capped at 25s + 1 retry; will return a timeout marker if it hangs.",
+          "OSINTNova (Bosint) phone intelligence. Carrier, location, line type, timezone, and associated names when available. Pass full E.164 number with country code (e.g. '+12025551234'). Shared 1000 calls/day quota across Bosint endpoints, 120/min. Fire ONCE per phone seed in parallel with leakcheck_lookup + oathnet_lookup. SLOW upstream — capped at a single 25s attempt; returns a timeout marker if it hangs.",
         inputSchema: z.object({ phone: z.string().describe("Phone number in E.164 format, e.g. +12025551234") }),
         execute: async ({ phone }) => {
           if (!OSINTNOVA_API_KEY) return { error: "OSINTNOVA_API_KEY not configured" };
           const cleaned = phone.trim();
           const url = `https://app.osintnova.com/bosintapi/${OSINTNOVA_API_KEY}/phone/${encodeURIComponent(cleaned)}`;
-          // Strict 25s per attempt, max 2 attempts with a 10s backoff, hard
-          // ceiling at 60s so a hung upstream can never stall the stream.
+          // Single strict 25s attempt — no retry. The old 25s + 10s backoff +
+          // 25s retry pushed the worst case to 60s and stalled interactive
+          // scans for a full minute (observed in prod). The phone is already
+          // covered by leakcheck_lookup + oathnet_lookup, so a hung OSINTNova
+          // isn't worth the wait.
           const attemptOnce = async (signal: AbortSignal) => {
             const r = await fetch(url, { headers: { accept: "application/json" }, signal });
             const text = await r.text();
@@ -927,22 +941,11 @@ Deno.serve(async (req) => {
             try { return await attemptOnce(ctrl.signal); }
             finally { clearTimeout(tid); }
           };
-          const started = Date.now();
           try {
             return await runWithTimeout(25_000);
-          } catch (e1) {
-            const elapsed = Date.now() - started;
-            if (elapsed > 30_000) {
-              console.warn("bosint_phone_lookup timed out — using fallback sources only");
-              return { error: "bosint_phone_timeout", skipped: true, hint: "leakcheck_lookup + oathnet_lookup cover this phone." };
-            }
-            // brief backoff then a single retry
-            await new Promise((r) => setTimeout(r, 10_000));
-            try { return await runWithTimeout(25_000); }
-            catch (e2) {
-              console.warn("bosint_phone_lookup timed out — using fallback sources only");
-              return { error: "bosint_phone_timeout", skipped: true, hint: "leakcheck_lookup + oathnet_lookup cover this phone." };
-            }
+          } catch {
+            console.warn("bosint_phone_lookup timed out — using fallback sources only");
+            return { error: "bosint_phone_timeout", skipped: true, hint: "leakcheck_lookup + oathnet_lookup cover this phone." };
           }
         },
       }),

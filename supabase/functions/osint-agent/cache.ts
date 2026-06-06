@@ -76,7 +76,18 @@ export function wrapToolsWithCache(
         : typeof r.message === "string"
           ? (r.message as string)
           : null;
-    const errorMsg = rawError ? redactSecrets(rawError).slice(0, 500) : null;
+    // extractToolError is only called for non-ok results, so a missing error
+    // string is a SILENT failure — it shows up in the timeline as a reasonless
+    // red "failed". Derive a concrete fallback so every failure is explained.
+    const fallback = ((): string | null => {
+      if (rawError) return null;
+      if (typeof r.reason === "string" && r.reason) return r.reason;
+      if (r.skipped === true) return "skipped — no usable result";
+      if (typeof r.status === "number") return `upstream returned HTTP ${r.status}`;
+      if (typeof r.status_code === "number") return `upstream returned HTTP ${r.status_code}`;
+      return "tool returned no usable result";
+    })();
+    const errorMsg = rawError ? redactSecrets(rawError).slice(0, 500) : fallback;
     const statusCode =
       typeof r.status === "number"
         ? (r.status as number)
