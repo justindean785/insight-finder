@@ -655,14 +655,17 @@ Deno.serve(async (req) => {
             const body: Record<string, unknown> = { email, include_data_breaches };
             if (typeof timeout_ms === "number") body.timeout_ms = timeout_ms;
             if (exclude_modules && exclude_modules.length) body.exclude_modules = exclude_modules;
-            const r = await fetch("https://api.intelbase.is/lookup/email", {
+            // Client-side cap honors the caller's requested upstream timeout_ms
+            // (also sent in the body) plus a network buffer, so the fetch never
+            // aborts a still-pending server-side lookup.
+            const r = await fetchT("https://api.intelbase.is/lookup/email", {
               method: "POST",
               headers: {
                 "x-api-key": INTELBASE_API_KEY,
                 "content-type": "application/json",
               },
               body: JSON.stringify(body),
-            });
+            }, (typeof timeout_ms === "number" ? timeout_ms : 30_000) + 5_000);
             const text = await r.text();
             let data: unknown;
             try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 8000) }; }
@@ -789,9 +792,9 @@ Deno.serve(async (req) => {
               params.set("limit", "50");
               url = `https://oathnet.org/api/service/v2/breach/search?${params.toString()}`;
             }
-            const r = await fetch(url, {
+            const r = await fetchT(url, {
               headers: { "x-api-key": OATHNET_API_KEY },
-            });
+            }, 20_000);
             const text = await r.text();
             let data: unknown;
             try {
@@ -868,7 +871,7 @@ Deno.serve(async (req) => {
             } else {
               url = `https://api.socialfetch.dev/v1/${p}/profiles/${encodeURIComponent(handle)}`;
             }
-            const r = await fetch(url, { headers: { "x-api-key": SOCIALFETCH_API_KEY } });
+            const r = await fetchT(url, { headers: { "x-api-key": SOCIALFETCH_API_KEY } });
             const text = await r.text();
             let data: unknown;
             try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 4000) }; }
@@ -989,7 +992,7 @@ Deno.serve(async (req) => {
           if (STOLENTAX_API_KEY) {
             const callStolen = async (path: string, body: Record<string, unknown>) => {
               try {
-                const r = await fetch(
+                const r = await fetchT(
                   `https://stolen.tax/api/v2/index.php?path=${encodeURIComponent(path)}`,
                   {
                     method: "POST",
@@ -1000,6 +1003,7 @@ Deno.serve(async (req) => {
                     },
                     body: JSON.stringify(body),
                   },
+                  20_000,
                 );
                 const text = await r.text();
                 let parsed: unknown;
@@ -1093,7 +1097,7 @@ Deno.serve(async (req) => {
           }
           // Fallback: legacy leakcheck public endpoint.
           try {
-            const r = await fetch(
+            const r = await fetchT(
               `https://leakcheck.io/api/public?check=${encodeURIComponent(query)}`,
             );
             const data = await r.json().catch(() => ({}));
@@ -1119,7 +1123,8 @@ Deno.serve(async (req) => {
           // Auto-detect: contains '@' -> email, else username.
           const ft = type === "auto" ? (q.includes("@") ? "email" : "username") : type;
           try {
-            const r = await fetch(
+            // 127-site account-discovery sweep — legitimately slow upstream.
+            const r = await fetchT(
               "https://stolen.tax/api/v2/index.php?path=osintcat-footprint",
               {
                 method: "POST",
@@ -1130,6 +1135,7 @@ Deno.serve(async (req) => {
                 },
                 body: JSON.stringify({ query: q, footprint_type: ft }),
               },
+              25_000,
             );
             const text = await r.text();
             let parsed: StolenTaxResponse;
@@ -1177,7 +1183,7 @@ Deno.serve(async (req) => {
           }
           try {
             const url = `https://leakcheck.io/api/v2/query/${encodeURIComponent(q)}?type=${encodeURIComponent(type ?? "auto")}`;
-            const r = await fetch(url, { headers: { "X-API-Key": LEAKCHECK_API_KEY, "Accept": "application/json" } });
+            const r = await fetchT(url, { headers: { "X-API-Key": LEAKCHECK_API_KEY, "Accept": "application/json" } }, 20_000);
             const text = await r.text();
             interface LeakCheckResult {
               source?: { name?: string; [k: string]: unknown };
@@ -1253,7 +1259,7 @@ Deno.serve(async (req) => {
           const KEY = Deno.env.get("DEEPFIND_API_KEY");
           if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
           try {
-            const r = await fetch(`https://deepfind.me/api/tools/reverse-email-check?email=${encodeURIComponent(email)}`, {
+            const r = await fetchT(`https://deepfind.me/api/tools/reverse-email-check?email=${encodeURIComponent(email)}`, {
               headers: { "X-DFME-API-KEY": KEY, "Accept": "application/json" },
             });
             const data = await r.json().catch(() => ({}));
@@ -1269,7 +1275,7 @@ Deno.serve(async (req) => {
           const KEY = Deno.env.get("DEEPFIND_API_KEY");
           if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
           try {
-            const r = await fetch(`https://deepfind.me/api/disposable-email/check/${encodeURIComponent(email)}`, {
+            const r = await fetchT(`https://deepfind.me/api/disposable-email/check/${encodeURIComponent(email)}`, {
               headers: { "X-DFME-API-KEY": KEY, "Accept": "application/json" },
             });
             const data = await r.json().catch(() => ({}));
@@ -1285,7 +1291,7 @@ Deno.serve(async (req) => {
           const KEY = Deno.env.get("DEEPFIND_API_KEY");
           if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
           try {
-            const r = await fetch(`https://deepfind.me/api/ransomware-exposure`, {
+            const r = await fetchT(`https://deepfind.me/api/ransomware-exposure`, {
               method: "POST",
               headers: { "X-DFME-API-KEY": KEY, "Content-Type": "application/json", "Accept": "application/json" },
               body: JSON.stringify({ query }),
@@ -1303,7 +1309,7 @@ Deno.serve(async (req) => {
           const KEY = Deno.env.get("DEEPFIND_API_KEY");
           if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
           try {
-            const r = await fetch(`https://deepfind.me/api/ssl-certificate`, {
+            const r = await fetchT(`https://deepfind.me/api/ssl-certificate`, {
               method: "POST",
               headers: { "X-DFME-API-KEY": KEY, "Content-Type": "application/json", "Accept": "application/json" },
               body: JSON.stringify({ domain }),
@@ -1322,7 +1328,7 @@ Deno.serve(async (req) => {
           if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
           const deg = isDegraded("deepfind_tech_stack"); if (deg) return deg;
           try {
-            const r = await fetch(`https://deepfind.me/api/tech-stack/detect`, {
+            const r = await fetchT(`https://deepfind.me/api/tech-stack/detect`, {
               method: "POST",
               headers: { "X-DFME-API-KEY": KEY, "Content-Type": "application/json", "Accept": "application/json" },
               body: JSON.stringify({ url }),
@@ -1341,7 +1347,7 @@ Deno.serve(async (req) => {
           const KEY = Deno.env.get("DEEPFIND_API_KEY");
           if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
           try {
-            const r = await fetch(`https://deepfind.me/api/url-unshortener/expand`, {
+            const r = await fetchT(`https://deepfind.me/api/url-unshortener/expand`, {
               method: "POST",
               headers: { "X-DFME-API-KEY": KEY, "Content-Type": "application/json", "Accept": "application/json" },
               body: JSON.stringify({ url }),
@@ -1359,7 +1365,7 @@ Deno.serve(async (req) => {
           const KEY = Deno.env.get("DEEPFIND_API_KEY");
           if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
           try {
-            const r = await fetch(`https://deepfind.me/api/analyzer/${encodeURIComponent(username)}`, {
+            const r = await fetchT(`https://deepfind.me/api/analyzer/${encodeURIComponent(username)}`, {
               headers: { "X-DFME-API-KEY": KEY, "Accept": "application/json" },
             });
             interface DeepFindSite {
@@ -1413,7 +1419,7 @@ Deno.serve(async (req) => {
           if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
           const clean = handle.replace(/^@/, "").replace(/^https?:\/\/t\.me\//i, "").replace(/^s\//, "");
           try {
-            const r = await fetch(`https://deepfind.me/api/telegram-osint/channel`, {
+            const r = await fetchT(`https://deepfind.me/api/telegram-osint/channel`, {
               method: "POST",
               headers: { "X-DFME-API-KEY": KEY, "Content-Type": "application/json", "Accept": "application/json" },
               body: JSON.stringify({ handle: clean }),
@@ -1431,7 +1437,7 @@ Deno.serve(async (req) => {
           const KEY = Deno.env.get("DEEPFIND_API_KEY");
           if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
           try {
-            const r = await fetch(`https://deepfind.me/api/telegram-osint/search`, {
+            const r = await fetchT(`https://deepfind.me/api/telegram-osint/search`, {
               method: "POST",
               headers: { "X-DFME-API-KEY": KEY, "Content-Type": "application/json", "Accept": "application/json" },
               body: JSON.stringify({ query }),
@@ -1449,7 +1455,7 @@ Deno.serve(async (req) => {
           const KEY = Deno.env.get("DEEPFIND_API_KEY");
           if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
           try {
-            const r = await fetch(`https://deepfind.me/api/vin-lookup`, {
+            const r = await fetchT(`https://deepfind.me/api/vin-lookup`, {
               method: "POST",
               headers: { "X-DFME-API-KEY": KEY, "Content-Type": "application/json", "Accept": "application/json" },
               body: JSON.stringify({ vin }),
@@ -1467,7 +1473,7 @@ Deno.serve(async (req) => {
           const KEY = Deno.env.get("DEEPFIND_API_KEY");
           if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
           try {
-            const r = await fetch(`https://deepfind.me/api/us-aircraft-lookup`, {
+            const r = await fetchT(`https://deepfind.me/api/us-aircraft-lookup`, {
               method: "POST",
               headers: { "X-DFME-API-KEY": KEY, "Content-Type": "application/json", "Accept": "application/json" },
               body: JSON.stringify({ nNumber }),
@@ -1485,7 +1491,7 @@ Deno.serve(async (req) => {
           const KEY = Deno.env.get("DEEPFIND_API_KEY");
           if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
           try {
-            const r = await fetch(`https://deepfind.me/api/vessel-lookup`, {
+            const r = await fetchT(`https://deepfind.me/api/vessel-lookup`, {
               method: "POST",
               headers: { "X-DFME-API-KEY": KEY, "Content-Type": "application/json", "Accept": "application/json" },
               body: JSON.stringify({ identifier }),
@@ -1503,7 +1509,7 @@ Deno.serve(async (req) => {
           const KEY = Deno.env.get("DEEPFIND_API_KEY");
           if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
           try {
-            const r = await fetch(`https://deepfind.me/api/mac-lookup`, {
+            const r = await fetchT(`https://deepfind.me/api/mac-lookup`, {
               method: "POST",
               headers: { "X-DFME-API-KEY": KEY, "Content-Type": "application/json", "Accept": "application/json" },
               body: JSON.stringify({ macAddress }),
@@ -1521,7 +1527,7 @@ Deno.serve(async (req) => {
           const KEY = Deno.env.get("DEEPFIND_API_KEY");
           if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
           try {
-            const r = await fetch(`https://deepfind.me/api/dark-web-link`, {
+            const r = await fetchT(`https://deepfind.me/api/dark-web-link`, {
               method: "POST",
               headers: { "X-DFME-API-KEY": KEY, "Content-Type": "application/json", "Accept": "application/json" },
               body: JSON.stringify({ url }),
@@ -1561,7 +1567,7 @@ Deno.serve(async (req) => {
             path = `ip_addresses/${encodeURIComponent(v)}`;
           }
           try {
-            const r = await fetch(`https://www.virustotal.com/api/v3/${path}`, {
+            const r = await fetchT(`https://www.virustotal.com/api/v3/${path}`, {
               headers: { "x-apikey": KEY, "Accept": "application/json" },
             });
             interface VirusTotalResponse {
@@ -1599,7 +1605,7 @@ Deno.serve(async (req) => {
           const KEY = Deno.env.get("IPGEOLOCATION_API_KEY");
           if (!KEY) return { error: "IPGEOLOCATION_API_KEY not configured" };
           try {
-            const r = await fetch(`https://api.ipgeolocation.io/ipgeo?apiKey=${encodeURIComponent(KEY)}&ip=${encodeURIComponent(ip)}`, {
+            const r = await fetchT(`https://api.ipgeolocation.io/ipgeo?apiKey=${encodeURIComponent(KEY)}&ip=${encodeURIComponent(ip)}`, {
               headers: { "Accept": "application/json" },
             });
             const data = await r.json().catch(() => ({}));
@@ -1612,7 +1618,7 @@ Deno.serve(async (req) => {
         inputSchema: z.object({ ip: z.string() }),
         execute: async ({ ip }) => {
           try {
-            const r = await fetch(
+            const r = await fetchT(
               `http://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,country,regionName,city,zip,lat,lon,timezone,isp,org,as,mobile,proxy,hosting,query`,
             );
             const data = await r.json().catch(() => ({ status: "fail", message: "non-JSON response from ip-api" })) as {
@@ -1654,7 +1660,7 @@ Deno.serve(async (req) => {
         inputSchema: z.object({ domain: z.string() }),
         execute: async ({ domain }) => {
           try {
-            const r = await fetch(`https://rdap.org/domain/${encodeURIComponent(domain)}`);
+            const r = await fetchT(`https://rdap.org/domain/${encodeURIComponent(domain)}`);
             const data = await r.json().catch(() => ({}));
             return { ok: r.ok, data };
           } catch (e) {
@@ -2660,7 +2666,7 @@ Deno.serve(async (req) => {
         inputSchema: z.object({ email: z.string().email() }),
         execute: async ({ email }) => {
           try {
-            const r = await fetch(`https://emailrep.io/${encodeURIComponent(email)}`, {
+            const r = await fetchT(`https://emailrep.io/${encodeURIComponent(email)}`, {
               headers: { "User-Agent": "Proximity-OSINT", Accept: "application/json" },
             });
             const data = await r.json().catch(() => ({}));
@@ -2677,7 +2683,7 @@ Deno.serve(async (req) => {
             const enc = new TextEncoder().encode(email.trim().toLowerCase());
             const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", enc)))
               .map((b) => b.toString(16).padStart(2, "0")).join("");
-            const r = await fetch(`https://api.gravatar.com/v3/profiles/${hash}`, {
+            const r = await fetchT(`https://api.gravatar.com/v3/profiles/${hash}`, {
               headers: { Accept: "application/json", "User-Agent": "Proximity-OSINT" },
             });
             const data = await r.json().catch(() => ({}));
@@ -2741,7 +2747,7 @@ Deno.serve(async (req) => {
         inputSchema: z.object({ username: z.string() }),
         execute: async ({ username }) => {
           try {
-            const r = await fetch(`https://hacker-news.firebaseio.com/v0/user/${encodeURIComponent(username)}.json`);
+            const r = await fetchT(`https://hacker-news.firebaseio.com/v0/user/${encodeURIComponent(username)}.json`);
             const data = await r.json().catch(() => null);
             return { ok: r.ok && data != null, data };
           } catch (e) { return { error: String(e) }; }
@@ -2756,7 +2762,7 @@ Deno.serve(async (req) => {
             const u = encodeURIComponent(username);
             const fetchJson = async (url: string): Promise<{ status: number; body: unknown }> => {
               try {
-                const rr = await fetch(url, { headers: h });
+                const rr = await fetchT(url, { headers: h });
                 return { status: rr.status, body: await rr.json().catch(() => null) };
               } catch {
                 return { status: 0, body: null };
@@ -2822,7 +2828,7 @@ Deno.serve(async (req) => {
               Accept: "application/vnd.github.v3.text-match+json",
             };
             if (GITHUB_API_TOKEN) headers.Authorization = `Bearer ${GITHUB_API_TOKEN}`;
-            const r = await fetch(`https://api.github.com/search/code?q=${encodeURIComponent(query)}&per_page=20`, { headers });
+            const r = await fetchT(`https://api.github.com/search/code?q=${encodeURIComponent(query)}&per_page=20`, { headers });
             const text = await r.text();
             let data: GitHubCodeSearchResponse = {};
             try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 500) }; }
@@ -2885,7 +2891,7 @@ Deno.serve(async (req) => {
               emails?: HunterDomainEmail[];
               [k: string]: unknown;
             }
-            const r = await fetch(`https://api.hunter.io/v2/domain-search?${params}`);
+            const r = await fetchT(`https://api.hunter.io/v2/domain-search?${params}`);
             const data = await r.json().catch(() => ({}));
             // On a non-200 (bad/expired key, plan limit, 429) Hunter omits `data`; without
             // this guard the payload reads as a legitimate "0 emails for this domain".
@@ -2947,7 +2953,7 @@ Deno.serve(async (req) => {
               sources?: unknown[];
               [k: string]: unknown;
             }
-            const r = await fetch(`https://api.hunter.io/v2/email-finder?${params}`);
+            const r = await fetchT(`https://api.hunter.io/v2/email-finder?${params}`);
             const data = await r.json().catch(() => ({}));
             const d: HunterFinderData = (data as { data?: HunterFinderData })?.data ?? {};
             return {
@@ -2990,7 +2996,7 @@ Deno.serve(async (req) => {
               sources?: unknown[];
               [k: string]: unknown;
             }
-            const r = await fetch(`https://api.hunter.io/v2/email-verifier?email=${encodeURIComponent(email)}&api_key=${HUNTER_API_KEY}`);
+            const r = await fetchT(`https://api.hunter.io/v2/email-verifier?email=${encodeURIComponent(email)}&api_key=${HUNTER_API_KEY}`);
             const data = await r.json().catch(() => ({}));
             // On a non-200 Hunter omits `data`; without this guard the blank result reads
             // like a genuine "unknown" deliverability verdict instead of an API failure.
@@ -3059,7 +3065,7 @@ Deno.serve(async (req) => {
               facebook?: HunterHandle;
               [k: string]: unknown;
             }
-            const r = await fetch(`https://api.hunter.io/v2/combined/find?email=${encodeURIComponent(email)}&api_key=${HUNTER_API_KEY}`);
+            const r = await fetchT(`https://api.hunter.io/v2/combined/find?email=${encodeURIComponent(email)}&api_key=${HUNTER_API_KEY}`);
             const data = await r.json().catch(() => ({}));
             // Hunter's Combined endpoint requires a paid plan; on 400/403 the
             // free plan falls through. Try person + company enrichment in
@@ -3067,8 +3073,8 @@ Deno.serve(async (req) => {
             if (!r.ok && (r.status === 400 || r.status === 403)) {
               const domain = email.split("@")[1] ?? "";
               const [pr, cr] = await Promise.all([
-                fetch(`https://api.hunter.io/v2/people/find?email=${encodeURIComponent(email)}&api_key=${HUNTER_API_KEY}`).then(x => x.json()).catch(() => ({})),
-                domain ? fetch(`https://api.hunter.io/v2/companies/find?domain=${encodeURIComponent(domain)}&api_key=${HUNTER_API_KEY}`).then(x => x.json()).catch(() => ({})) : Promise.resolve({}),
+                fetchT(`https://api.hunter.io/v2/people/find?email=${encodeURIComponent(email)}&api_key=${HUNTER_API_KEY}`).then(x => x.json()).catch(() => ({})),
+                domain ? fetchT(`https://api.hunter.io/v2/companies/find?domain=${encodeURIComponent(domain)}&api_key=${HUNTER_API_KEY}`).then(x => x.json()).catch(() => ({})) : Promise.resolve({}),
               ]);
               const pp: HunterPerson = (pr as { data?: HunterPerson })?.data ?? {};
               const cc: HunterCompany = (cr as { data?: HunterCompany })?.data ?? {};
