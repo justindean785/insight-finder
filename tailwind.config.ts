@@ -15,9 +15,9 @@ export default {
     },
     extend: {
       fontFamily: {
-        sans: ['"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', '-apple-system', 'Inter', 'sans-serif'],
-        condensed: ['"IBM Plex Sans Condensed"', '"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-        display: ['Cinzel', '"Cormorant Garamond"', 'ui-serif', 'Georgia', 'serif'],
+        sans: ['Sora', '"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', '-apple-system', 'sans-serif'],
+        condensed: ['Sora', '"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        display: ['Sora', '"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
         serif: ['"Cormorant Garamond"', 'ui-serif', 'Georgia', 'serif'],
         mono: ['"JetBrains Mono"', '"IBM Plex Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
       },

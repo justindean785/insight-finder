@@ -22,9 +22,9 @@ All colors MUST be HSL.
 
     /* Brand — instrument cyan (#3AD6FF). Primary CTAs, active tab underline,
        focus ring. Restrained — never used as fill behind body copy. */
-    --primary: 190 64% 52%;
+    --primary: 258 89% 67%;
     --primary-foreground: 222 30% 6%;
-    --primary-glow: 190 52% 58%;
+    --primary-glow: 258 90% 76%;
 
     --secondary: 230 12% 6%;
     --secondary-foreground: 210 20% 96%;
@@ -32,7 +32,7 @@ All colors MUST be HSL.
     --muted: 230 12% 5%;
     --muted-foreground: 218 10% 69%;  /* +5pt L — clears WCAG-AA on opacity-blended labels */
 
-    --accent: 190 64% 52%;
+    --accent: 258 89% 67%;
     --accent-foreground: 222 30% 6%;
 
     --destructive: 350 100% 68%;       /* #FF5C7A */
@@ -70,7 +70,7 @@ All colors MUST be HSL.
     --border-subtle: 220 11% 15%;    /* now actually visible as a divider */
     --border-strong: 220 12% 32%;
     --input: 222 14% 9%;
-    --ring: 190 64% 52%;
+    --ring: 258 89% 67%;
 
     /* Intel tokens — info-blue (system) and brand iris (selection) */
     --intel-blue: 220 90% 62%;
@@ -82,7 +82,7 @@ All colors MUST be HSL.
     --brain-border:       220 22% 19%;  /* #252C3A */
     --brain-text:         217 35% 94%;  /* #E8EDF5 */
     --brain-muted:        215 13% 58%;  /* #8692A3 */
-    --brain-cyan:         190 64% 54%;  /* restrained instrument cyan */
+    --brain-cyan:         258 84% 70%;  /* brand violet (legacy token name) */
     --brain-status-ok:    143 60% 57%;  /* #4ED68C */
     --brain-status-warn:   33 85% 67%;  /* #F2B766 */
     --brain-status-bad:   350 100% 70%; /* #FF667E */
@@ -91,12 +91,12 @@ All colors MUST be HSL.
 
     --sidebar-background: 225 20% 4%;
     --sidebar-foreground: 218 12% 72%;
-    --sidebar-primary: 190 64% 52%;
+    --sidebar-primary: 258 89% 67%;
     --sidebar-primary-foreground: 0 0% 100%;
     --sidebar-accent: 222 14% 10%;
     --sidebar-accent-foreground: 210 20% 96%;
     --sidebar-border: 222 14% 11%;
-    --sidebar-ring: 190 64% 52%;
+    --sidebar-ring: 258 89% 67%;
   }
 }
 
@@ -122,9 +122,9 @@ All colors MUST be HSL.
     pointer-events: none;
     z-index: 0;
     background:
-      radial-gradient(80% 60% at 0% 0%, hsl(248 60% 18% / 0.18) 0%, transparent 55%),
-      radial-gradient(60% 50% at 100% 0%, hsl(212 70% 22% / 0.10) 0%, transparent 60%),
-      radial-gradient(90% 70% at 100% 100%, hsl(225 30% 2% / 0.85) 0%, transparent 60%);
+      radial-gradient(75% 55% at 0% 0%, hsl(258 72% 24% / 0.22) 0%, transparent 55%),
+      radial-gradient(55% 45% at 100% 0%, hsl(270 66% 26% / 0.13) 0%, transparent 60%),
+      radial-gradient(90% 70% at 100% 100%, hsl(255 30% 2% / 0.85) 0%, transparent 60%);
   }
 
   /* App-wide film grain — barely-there */
@@ -140,13 +140,12 @@ All colors MUST be HSL.
     background-size: 220px 220px;
   }
 
-  /* Display serif (Cinzel) is reserved for hero titles only — big case names,
-     "Agent Brain", "Chain of Custody". UI sub-headings stay in IBM Plex Sans
-     so dashboard density remains legible. */
+  /* Display = Sora (geometric). Tight tracking + heavy weight reads as a
+     premium, modern investigation product rather than an ornate serif. */
   h1, h2 {
     @apply font-display;
-    letter-spacing: 0.02em;
-    font-feature-settings: "ss01";
+    letter-spacing: -0.018em;
+    font-weight: 700;
   }
   h3, h4, h5, h6 {
     @apply font-sans;
@@ -183,14 +182,14 @@ All colors MUST be HSL.
   .glass-interactive,
   .glass-hover-shine {
     background:
-      linear-gradient(180deg, hsl(230 12% 7% / 0.85) 0%, hsl(230 14% 5% / 0.85) 100%);
-    backdrop-filter: blur(18px) saturate(160%);
-    -webkit-backdrop-filter: blur(18px) saturate(160%);
-    border: 1px solid hsl(0 0% 100% / 0.05);
-    border-top-color: hsl(0 0% 100% / 0.07);
+      linear-gradient(180deg, hsl(232 16% 9% / 0.55) 0%, hsl(234 20% 6% / 0.62) 100%);
+    backdrop-filter: blur(24px) saturate(150%);
+    -webkit-backdrop-filter: blur(24px) saturate(150%);
+    border: 1px solid hsl(255 50% 82% / 0.08);
+    border-top-color: hsl(258 60% 88% / 0.13);
     box-shadow:
-      0 1px 0 hsl(0 0% 100% / 0.04) inset,
-      0 8px 28px -16px hsl(0 0% 0% / 0.55);
+      0 1px 0 hsl(0 0% 100% / 0.05) inset,
+      0 10px 36px -18px hsl(258 50% 3% / 0.7);
   }
   .glass-interactive {
     transition: background-color 160ms ease, border-color 160ms ease;
