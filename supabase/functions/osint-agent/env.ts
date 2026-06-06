@@ -120,6 +120,32 @@ export function isDegraded(name: string): { error: string; degraded: true } | nu
   return null;
 }
 
+// ---- Dead-host tracking ------------------------------------------------------
+// Hosts proven not to resolve (NXDOMAIN / DNS failure) this run. Live-host
+// tools (http_fingerprint, jina_reader_scrape, deepfind_ssl_inspect,
+// deepfind_tech_stack) skip a known-dead host instead of re-collecting the
+// same DNS failure every fan-out round (observed on a seized doxbin.net seed).
+export const deadHosts = new Set<string>();
+export function normalizeHost(input: string): string {
+  const raw = (input ?? "").trim().toLowerCase();
+  if (!raw) return "";
+  let host: string;
+  try { host = new URL(raw.includes("://") ? raw : `http://${raw}`).hostname; }
+  catch { host = raw.replace(/^https?:\/\//, "").split("/")[0] ?? ""; }
+  return host.replace(/^www\./, "");
+}
+export function markHostDead(input: string, reason: string) {
+  const host = normalizeHost(input);
+  if (host && !deadHosts.has(host)) {
+    deadHosts.add(host);
+    console.warn(`[dead-host] ${host} unresolvable this thread: ${reason}`);
+  }
+}
+export function isHostDead(input: string): boolean {
+  const host = normalizeHost(input);
+  return !!host && deadHosts.has(host);
+}
+
 // ---- Additional API keys -----------------------------------------------------
 export const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
 export const OSINT_NAVIGATOR_API_KEY = Deno.env.get("OSINT_NAVIGATOR_API_KEY");

@@ -33,6 +33,7 @@ import {
   GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY,
   firecrawlCreditsLow, markFirecrawlCreditsLow, resetFirecrawlCreditsLow, degradedTools,
   markToolDegraded, isDegraded, fetchRetry, fetchT,
+  deadHosts, markHostDead, isHostDead,
 } from "./env.ts";
 
 // validation.ts — Seed detection, cache TTLs, artifact validation
@@ -206,6 +207,7 @@ Deno.serve(async (req) => {
   // requests, so module-scope state must be cleared at the top of each
   // handler call or one investigation's 402 disables Firecrawl forever.
   degradedTools.clear();
+  deadHosts.clear();
   resetFirecrawlCreditsLow(); // Reset per-request: one investigation's 402 shouldn't carry over
 
   // ---- Reset guard/triage state (module-scoped, must be reset per-request) ----
@@ -1321,6 +1323,7 @@ Deno.serve(async (req) => {
         execute: async ({ domain }) => {
           const KEY = Deno.env.get("DEEPFIND_API_KEY");
           if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
+          if (isHostDead(domain)) return { skipped: true, reason: "host does not resolve (NXDOMAIN) — skipped" };
           try {
             const r = await fetchT(`https://deepfind.me/api/ssl-certificate`, {
               method: "POST",
@@ -1340,6 +1343,7 @@ Deno.serve(async (req) => {
           const KEY = Deno.env.get("DEEPFIND_API_KEY");
           if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
           const deg = isDegraded("deepfind_tech_stack"); if (deg) return deg;
+          if (isHostDead(url)) return { skipped: true, reason: "host does not resolve (NXDOMAIN) — skipped" };
           try {
             const r = await fetchT(`https://deepfind.me/api/tech-stack/detect`, {
               method: "POST",
@@ -1736,10 +1740,12 @@ Deno.serve(async (req) => {
           try {
             const out: Record<string, unknown> = {};
             const errs: Record<string, string> = {};
+            const statuses: number[] = [];
             await Promise.all(types.map(async (t) => {
               try {
                 const r = await fetchT(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=${t}`, { headers: { Accept: "application/dns-json" } }, 8_000);
                 const j = await r.json().catch(() => ({})) as { Status?: number; Answer?: Array<{ data: string }> };
+                if (typeof j.Status === "number") statuses.push(j.Status);
                 out[t] = j.Answer?.map((a) => a.data) ?? [];
                 // Distinguish a genuine empty result (NOERROR/NXDOMAIN) from a lookup
                 // failure (HTTP error or SERVFAIL) so [] can't read as "no records".
@@ -1752,6 +1758,12 @@ Deno.serve(async (req) => {
                 errs[t] = String(e instanceof Error ? e.message : e);
               }
             }));
+            // NXDOMAIN (Status 3) on any query means the domain doesn't exist —
+            // flag the host so the live-host tools skip it instead of each
+            // re-discovering the same DNS failure.
+            if (statuses.some((s) => s === 3)) {
+              markHostDead(host, "NXDOMAIN — domain does not resolve");
+            }
             const hasErr = Object.keys(errs).length > 0;
             return { ok: !hasErr, host, records: out, ...(hasErr ? { errors: errs } : {}) };
           } catch (e) { return { error: String(e) }; }
@@ -1802,6 +1814,9 @@ Deno.serve(async (req) => {
         inputSchema: z.object({ url: z.string().url() }),
         execute: async ({ url }) => {
           try {
+            // Skip a host already proven dead (NXDOMAIN) this investigation
+            // instead of re-incurring the same DNS failure.
+            if (isHostDead(url)) return { skipped: true, reason: "host does not resolve (NXDOMAIN) — skipped" };
             // SSRF guard — reject loopback, link-local (cloud metadata!), RFC1918.
             try { assertSafeUrl(url); }
             catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
@@ -1842,7 +1857,15 @@ Deno.serve(async (req) => {
             } finally {
               clearTimeout(t);
             }
-          } catch (e) { return { error: String(e) }; }
+          } catch (e) {
+            const msg = String(e instanceof Error ? e.message : e);
+            // A DNS-resolution failure is a definitive "host doesn't exist" —
+            // flag it so siblings (jina, deepfind_ssl/tech) skip the same host.
+            if (/dns error|failed to lookup address|name or service not known|getaddrinfo|ENOTFOUND/i.test(msg)) {
+              markHostDead(url, "DNS lookup failed");
+            }
+            return { error: msg };
+          }
         },
       }),
       crypto_wallet: tool({
@@ -2577,6 +2600,8 @@ Deno.serve(async (req) => {
             return { error: "non_http_url", skipped: true, url: raw };
           }
           parsed.hash = ""; // r.jina.ai 422s on fragments
+          // Skip a host already proven dead (NXDOMAIN) this investigation.
+          if (isHostDead(parsed.hostname)) return { skipped: true, reason: "host does not resolve (NXDOMAIN) — skipped", url: raw };
           // Rebuild a clean URL; r.jina.ai expects the raw URL appended.
           const clean = parsed.toString();
           try {
