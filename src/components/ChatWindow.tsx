@@ -664,10 +664,18 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
                   p: ({ node, children, ...rest }) => <p {...rest}>{wrapChildren(children)}</p>,
                   li: ({ node, children, ...rest }) => <li {...rest}>{wrapChildren(children)}</li>,
                   pre: ({ node, children, ...rest }) => (
-                    <div className="my-2 -mx-1 sm:mx-0 rounded-lg border border-border-subtle bg-secondary/40 overflow-hidden">
+                    <div className="group/code my-2.5 -mx-1 sm:mx-0 rounded-lg border border-border-subtle bg-[hsl(230_18%_4%)] overflow-hidden shadow-[inset_0_1px_0_hsl(0_0%_100%/0.03)]">
+                      {/* terminal-style data panel header — reads as a real OSINT console */}
+                      <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-border-subtle/70 bg-white/[0.015]">
+                        <span className="h-2 w-2 rounded-full bg-foreground/15" />
+                        <span className="h-2 w-2 rounded-full bg-foreground/15" />
+                        <span className="h-2 w-2 rounded-full bg-foreground/15" />
+                        <span className="ml-1.5 text-[9.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70">output</span>
+                      </div>
+                      {/* pre-wrap (not pre) so long intel-report lines wrap instead of clipping at the panel edge */}
                       <pre
                         {...rest}
-                        className="overflow-x-auto whitespace-pre p-3 text-[10.5px] sm:text-[11.5px] leading-[1.55] font-mono text-foreground/90 [scrollbar-width:thin]"
+                        className="overflow-x-auto whitespace-pre-wrap break-words px-3.5 py-3 text-[11px] sm:text-[12px] leading-[1.6] font-mono text-foreground/95 [scrollbar-width:thin]"
                       >
                         {children}
                       </pre>
