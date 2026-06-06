@@ -397,8 +397,8 @@ function ArtifactsList({
               />
             </div>
 
-            <div className="p-1 space-y-px text-[11px]">
-              {list.map((a) => {
+            <div className="text-[11px] rounded-md border border-border-subtle/60 overflow-hidden">
+              {list.map((a, ri) => {
                 const meta = (a.metadata ?? {}) as Record<string, unknown>;
                 const fp = meta.false_positive === true;
                 const KIcon = KIND_ICON[a.kind.toLowerCase()] ?? Tag;
@@ -414,26 +414,35 @@ function ArtifactsList({
                 return (
                   <HoverCard key={a.id} openDelay={250} closeDelay={80}>
                     <HoverCardTrigger asChild>
-                      <button
+                      {/* role=button (not <button>) so the inline ConfidenceExplain
+                          popover trigger isn't an invalid nested <button>. */}
+                      <div
+                        role="button"
+                        tabIndex={0}
                         onClick={() => onSelect(a)}
+                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(a); } }}
                         data-density-row
                         className={cn(
-                          "w-full grid grid-cols-[1fr_auto] items-center gap-3 rounded-md font-mono text-left transition-colors",
+                          "w-full grid grid-cols-[1fr_auto] items-center gap-3 px-2 py-1.5 font-mono text-left cursor-pointer transition-colors border-b border-border/50 last:border-b-0 focus:outline-none focus-visible:ring-1 focus-visible:ring-primary/50 focus-visible:ring-inset hover:bg-primary/[0.04]",
                           fp
-                            ? "bg-danger-muted/40 hover:bg-danger-muted/60 line-through opacity-70"
+                            ? "bg-danger-muted/30 hover:bg-danger-muted/50 line-through opacity-70"
                             : dismissed
-                            ? "opacity-50 hover:bg-surface-2"
-                            : "hover:bg-surface-2",
+                            ? "opacity-50"
+                            : ri % 2 === 1 && "bg-white/[0.018]",
                         )}
                       >
-                        <span className="truncate flex items-center gap-1.5 min-w-0">
-                          <KIcon className="w-3 h-3 text-muted-foreground shrink-0" />
+                        <span className="truncate flex items-center gap-2 min-w-0">
+                          {/* typed KIND column — bordered chip, reads as a forensic data table */}
+                          <span className="shrink-0 inline-flex items-center gap-1 w-[78px] rounded-[3px] border border-border/60 bg-white/[0.02] px-1.5 py-0.5">
+                            <KIcon className="w-3 h-3 text-primary/70 shrink-0" />
+                            <span className="text-[9px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/90 truncate">{a.kind}</span>
+                          </span>
                           {rState === "confirmed" && <CheckCircle2 className="w-3 h-3 text-[hsl(var(--confidence-high))] shrink-0" />}
                           {rState === "key" && <Star className="w-3 h-3 text-primary shrink-0" />}
                           {rState === "recheck" && <ShieldQuestion className="w-3 h-3 text-[hsl(var(--confidence-mid))] shrink-0" />}
                           {rState === "dismissed" && <EyeOff className="w-3 h-3 text-muted-foreground shrink-0" />}
                           {fp && <XCircle className="w-3 h-3 text-destructive shrink-0" />}
-                          <span className="truncate">{a.value}</span>
+                          <span className="truncate text-foreground/90">{a.value}</span>
                         </span>
                         {a.confidence != null && (
                           <span className="flex items-center gap-2 shrink-0">
@@ -452,7 +461,7 @@ function ArtifactsList({
                             <ConfidenceExplain artifact={a} review={rState} />
                           </span>
                         )}
-                      </button>
+                      </div>
                     </HoverCardTrigger>
                     <HoverCardContent side="left" align="start" className="w-72 p-0 overflow-hidden border-border-subtle">
                       <ArtifactPeek artifact={a} confColor={confColor} />

@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
   ArrowUp, Loader2, ChevronDown, ChevronRight, Wrench, RotateCcw, AlertTriangle,
-  StickyNote, CheckCircle2, XCircle, Clock,
+  StickyNote, CheckCircle2, XCircle, Clock, CircleSlash,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -272,6 +272,16 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
   // Heuristic credit cost: 1 per real tool call, 0 for cache hits.
   const credits = cached ? 0 : (done || failed ? 1 : 0);
 
+  // Skipped ≠ failed. The engine sets `skipped:true` on intentional non-runs
+  // (NXDOMAIN host, not-configured key, circuit-breaker, dedup, timeout marker).
+  // These read as neutral, not alarming — only a genuine error is red.
+  const isSkipped = !failed && !!outputObj?.skipped;
+  const skipReason = isSkipped
+    ? String(outputObj?.reason ?? (typeof outputObj?.error === "string" ? outputObj.error : "") ?? "").trim()
+    : "";
+  const tone: "error" | "skip" | "ok" | "pending" =
+    failed ? "error" : isSkipped ? "skip" : done ? "ok" : "pending";
+
   // Extract small artifact preview when output is array-like
   const artifactPreview = (() => {
     const out = part.output;
@@ -296,14 +306,13 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
         flash && "ring-2 ring-destructive/60",
       )}
     >
-      {/* status rail */}
+      {/* status rail — restrained, no neon glow (Gotham) */}
       <span
         className={cn(
           "absolute left-0 top-0 bottom-0 w-[2px]",
-          failed
-            ? "bg-destructive shadow-[0_0_12px_hsl(var(--danger)/0.7)]"
-            : done
-            ? "bg-primary shadow-[0_0_12px_hsl(var(--intel-blue)/0.6)]"
+          tone === "error" ? "bg-destructive/70"
+            : tone === "skip" ? "bg-muted-foreground/25"
+            : tone === "ok" ? "bg-primary/70"
             : "bg-muted-foreground/40",
         )}
       />
@@ -313,28 +322,39 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
       >
         <span
           className={cn(
-            "inline-flex items-center justify-center w-2 h-2 rounded-full shrink-0",
-            failed
-              ? "bg-destructive shadow-[0_0_10px_hsl(var(--danger)/0.8)]"
-              : done
-              ? "bg-primary shadow-[0_0_10px_hsl(var(--intel-blue)/0.7)]"
-              : "bg-muted-foreground/60 animate-pulse",
+            "inline-flex items-center justify-center w-1.5 h-1.5 rounded-full shrink-0",
+            tone === "error" ? "bg-destructive/70"
+              : tone === "skip" ? "bg-muted-foreground/40"
+              : tone === "ok" ? "bg-primary/70"
+              : "bg-muted-foreground/50 animate-pulse",
           )}
         />
         <span
           className={cn(
             "font-mono text-[11px] font-semibold tracking-[0.14em] uppercase truncate",
-            failed ? "text-destructive" : "text-foreground/85",
+            tone === "error" ? "text-destructive/80"
+              : tone === "skip" ? "text-muted-foreground/65"
+              : "text-foreground/85",
           )}
         >
           {name}
         </span>
-        {failed ? (
-          <XCircle className="w-3.5 h-3.5 text-destructive shrink-0" />
-        ) : done ? (
-          <CheckCircle2 className="w-3.5 h-3.5 text-primary shrink-0" />
+        {tone === "error" ? (
+          <XCircle className="w-3.5 h-3.5 text-destructive/75 shrink-0" />
+        ) : tone === "skip" ? (
+          <CircleSlash className="w-3.5 h-3.5 text-muted-foreground/55 shrink-0" />
+        ) : tone === "ok" ? (
+          <CheckCircle2 className="w-3.5 h-3.5 text-primary/75 shrink-0" />
         ) : (
           <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground shrink-0" />
+        )}
+        {tone === "skip" && skipReason && (
+          <span
+            className="hidden sm:inline rounded-[3px] border border-border-subtle/60 bg-white/[0.02] px-1.5 py-px text-[10px] font-medium tracking-wide text-muted-foreground/70 truncate max-w-[46%]"
+            title={skipReason}
+          >
+            {skipReason}
+          </span>
         )}
         {artifactPreview && (
           <span className="text-[11px] text-muted-foreground font-mono shrink-0">
@@ -664,29 +684,37 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
                   p: ({ node, children, ...rest }) => <p {...rest}>{wrapChildren(children)}</p>,
                   li: ({ node, children, ...rest }) => <li {...rest}>{wrapChildren(children)}</li>,
                   pre: ({ node, children, ...rest }) => (
-                    <div className="my-2 -mx-1 sm:mx-0 rounded-lg border border-border-subtle bg-secondary/40 overflow-hidden">
+                    <div className="group/code my-2.5 -mx-1 sm:mx-0 rounded-lg border border-border-subtle bg-[hsl(230_18%_4%)] overflow-hidden shadow-[inset_0_1px_0_hsl(0_0%_100%/0.03)]">
+                      {/* terminal-style data panel header — reads as a real OSINT console */}
+                      <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-border-subtle/70 bg-white/[0.015]">
+                        <span className="h-2 w-2 rounded-full bg-foreground/15" />
+                        <span className="h-2 w-2 rounded-full bg-foreground/15" />
+                        <span className="h-2 w-2 rounded-full bg-foreground/15" />
+                        <span className="ml-1.5 text-[9.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70">output</span>
+                      </div>
+                      {/* pre-wrap (not pre) so long intel-report lines wrap instead of clipping at the panel edge */}
                       <pre
                         {...rest}
-                        className="overflow-x-auto whitespace-pre p-3 text-[10.5px] sm:text-[11.5px] leading-[1.55] font-mono text-foreground/90 [scrollbar-width:thin]"
+                        className="overflow-x-auto whitespace-pre-wrap break-words px-3.5 py-3 text-[11px] sm:text-[12px] leading-[1.6] font-mono text-foreground/95 [scrollbar-width:thin]"
                       >
                         {children}
                       </pre>
                     </div>
                   ),
                   table: ({ node, children, ...rest }) => (
-                    <div className="my-2 -mx-1 sm:mx-0 rounded-lg border border-border-subtle bg-secondary/30 overflow-x-auto [scrollbar-width:thin]">
-                      <table {...rest} className="w-full text-[11.5px] border-collapse">
+                    <div className="my-2.5 -mx-1 sm:mx-0 rounded-lg border border-border-subtle bg-[hsl(230_18%_5%)] overflow-x-auto [scrollbar-width:thin]">
+                      <table {...rest} className="w-full text-[11px] border-collapse">
                         {children}
                       </table>
                     </div>
                   ),
                   th: ({ node, children, ...rest }) => (
-                    <th {...rest} className="text-left font-semibold text-foreground px-2.5 py-1.5 border-b border-border-subtle bg-secondary/40 whitespace-nowrap">
+                    <th {...rest} className="text-left font-mono text-[9.5px] font-semibold uppercase tracking-[0.13em] text-muted-foreground/70 px-2.5 py-2 border-b border-border-subtle bg-white/[0.02] whitespace-nowrap">
                       {children}
                     </th>
                   ),
                   td: ({ node, children, ...rest }) => (
-                    <td {...rest} className="align-top px-2.5 py-1.5 border-b border-border-subtle/60 text-foreground/90">
+                    <td {...rest} className="align-top px-2.5 py-1.5 border-b border-border-subtle/35 text-foreground/90 font-mono">
                       {wrapChildren(children)}
                     </td>
                   ),
