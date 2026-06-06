@@ -397,7 +397,7 @@ function ArtifactsList({
               />
             </div>
 
-            <div className="p-1 space-y-px text-[11px]">
+            <div className="px-1 py-0.5 text-[11px]">
               {list.map((a) => {
                 const meta = (a.metadata ?? {}) as Record<string, unknown>;
                 const fp = meta.false_positive === true;
@@ -418,22 +418,24 @@ function ArtifactsList({
                         onClick={() => onSelect(a)}
                         data-density-row
                         className={cn(
-                          "w-full grid grid-cols-[1fr_auto] items-center gap-3 rounded-md font-mono text-left transition-colors",
+                          "w-full grid grid-cols-[1fr_auto] items-center gap-3 px-1.5 py-1 font-mono text-left transition-colors border-b border-border-subtle/25 last:border-b-0",
                           fp
-                            ? "bg-danger-muted/40 hover:bg-danger-muted/60 line-through opacity-70"
+                            ? "bg-danger-muted/30 hover:bg-danger-muted/50 line-through opacity-70"
                             : dismissed
-                            ? "opacity-50 hover:bg-surface-2"
-                            : "hover:bg-surface-2",
+                            ? "opacity-50 hover:bg-white/[0.025]"
+                            : "hover:bg-white/[0.03]",
                         )}
                       >
                         <span className="truncate flex items-center gap-1.5 min-w-0">
-                          <KIcon className="w-3 h-3 text-muted-foreground shrink-0" />
+                          <KIcon className="w-3 h-3 text-muted-foreground/70 shrink-0" />
+                          {/* typed kind column — reads as a forensic data table */}
+                          <span className="shrink-0 w-[52px] text-[8.5px] uppercase tracking-[0.12em] text-muted-foreground/45 truncate">{a.kind}</span>
                           {rState === "confirmed" && <CheckCircle2 className="w-3 h-3 text-[hsl(var(--confidence-high))] shrink-0" />}
                           {rState === "key" && <Star className="w-3 h-3 text-primary shrink-0" />}
                           {rState === "recheck" && <ShieldQuestion className="w-3 h-3 text-[hsl(var(--confidence-mid))] shrink-0" />}
                           {rState === "dismissed" && <EyeOff className="w-3 h-3 text-muted-foreground shrink-0" />}
                           {fp && <XCircle className="w-3 h-3 text-destructive shrink-0" />}
-                          <span className="truncate">{a.value}</span>
+                          <span className="truncate text-foreground/90">{a.value}</span>
                         </span>
                         {a.confidence != null && (
                           <span className="flex items-center gap-2 shrink-0">
