@@ -11,7 +11,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:edge": "cd supabase/functions/osint-agent && deno test --no-check --allow-net --allow-env --allow-sys --allow-read ratelimit_test.ts serus_test.ts tool_response_test.ts"
+    "test:edge": "cd supabase/functions/osint-agent && deno test --no-check --allow-net --allow-env --allow-sys --allow-read fetch_retry_test.ts ratelimit_test.ts serus_test.ts tool_response_test.ts"
   },
   "dependencies": {
     "@ai-sdk/google": "^3.0.79",

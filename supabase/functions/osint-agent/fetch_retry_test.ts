@@ -10,7 +10,7 @@
 import { assertEquals, assertRejects } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { fetchRetry } from "./fetch_retry.ts";
 
-type ScriptedStep = number | "THROW" | "ABORT";
+type ScriptedStep = number;
 
 /** Local server that returns the next status from a per-path script. */
 async function startScriptedServer(scripts: Record<string, ScriptedStep[]>): Promise<{ url: string; shutdown: () => Promise<void> }> {
@@ -25,12 +25,7 @@ async function startScriptedServer(scripts: Record<string, ScriptedStep[]>): Pro
     requests.push({ path, count: i });
     const script = scripts[path] ?? [200];
     const step = script[i] ?? script[script.length - 1];
-    if (step === "THROW") {
-      // Closing the connection without a response triggers a network error
-      // on the client side.
-      return new Promise<Response>(() => {});
-    }
-    return new Response("body", { status: typeof step === "number" ? step : 200 });
+    return new Response("body", { status: step });
   });
 
   const addr = server.addr;
@@ -43,6 +38,7 @@ Deno.test("fetchRetry: returns first response if not 429/5xx", async () => {
   try {
     const r = await fetchRetry(`${s.url}/x`, {}, { baseDelayMs: 1 });
     assertEquals(r.status, 200);
+    await r.body?.cancel();
   } finally {
     await s.shutdown();
   }
@@ -53,6 +49,7 @@ Deno.test("fetchRetry: retries on 500 then succeeds", async () => {
   try {
     const r = await fetchRetry(`${s.url}/retry-5xx`, {}, { baseDelayMs: 1 });
     assertEquals(r.status, 200);
+    await r.body?.cancel();
   } finally {
     await s.shutdown();
   }
@@ -63,6 +60,7 @@ Deno.test("fetchRetry: retries on 429 (rate limited)", async () => {
   try {
     const r = await fetchRetry(`${s.url}/retry-429`, {}, { baseDelayMs: 1 });
     assertEquals(r.status, 200);
+    await r.body?.cancel();
   } finally {
     await s.shutdown();
   }
@@ -75,34 +73,23 @@ Deno.test("fetchRetry: returns last 5xx when retries exhausted (does not throw)"
   try {
     const r = await fetchRetry(`${s.url}/all-500`, {}, { baseDelayMs: 1, retries: 2 });
     assertEquals(r.status, 500);
+    await r.body?.cancel();
   } finally {
     await s.shutdown();
   }
 });
 
 Deno.test("fetchRetry: throws when network error on every attempt", async () => {
-  // The server "hangs" (never responds) for THROW steps. We give it a
-  // short timeout via AbortSignal so each attempt fails fast.
-  const s = await startScriptedServer({ "/net-err": ["THROW", "THROW", "THROW"] });
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 50);
-    try {
-      await assertRejects(
-        () =>
-          fetchRetry(
-            `${s.url}/net-err`,
-            { signal: ctrl.signal },
-            { baseDelayMs: 1, retries: 2 },
-          ),
-        Error,
-      );
-    } finally {
-      clearTimeout(timer);
-    }
-  } finally {
-    await s.shutdown();
-  }
+  // Bind a port then immediately release it so every connection is refused —
+  // each attempt hits a real network error, exercising retry-then-throw. This
+  // avoids a hung server handler, which would block server.shutdown() forever.
+  const probe = Deno.listen({ port: 0, hostname: "127.0.0.1" });
+  const port = (probe.addr as Deno.NetAddr).port;
+  probe.close();
+  await assertRejects(
+    () => fetchRetry(`http://127.0.0.1:${port}/net-err`, {}, { baseDelayMs: 1, retries: 2 }),
+    Error,
+  );
 });
 
 Deno.test("fetchRetry: honors pre-aborted AbortSignal by throwing AbortError", async () => {
@@ -127,6 +114,7 @@ Deno.test("fetchRetry: does not retry on 4xx other than 429", async () => {
   try {
     const r = await fetchRetry(`${s.url}/404`, {}, { baseDelayMs: 1, retries: 3 });
     assertEquals(r.status, 404);
+    await r.body?.cancel();
   } finally {
     await s.shutdown();
   }

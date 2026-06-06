@@ -130,4 +130,4 @@ export const PERPLEXITY_API_KEY = Deno.env.get("PERPLEXITY_API_KEY");
 // call sites (7 tool files) continue to work without a sweeping rename.
 // New code should import from "./fetch_retry.ts" directly to avoid pulling
 // in this file's `npm:@ai-sdk/openai-compatible@1` import.
-export { fetchRetry } from "./fetch_retry.ts";
+export { fetchRetry, fetchT } from "./fetch_retry.ts";

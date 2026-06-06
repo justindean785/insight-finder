@@ -32,7 +32,7 @@ import {
   HIBP_API_KEY, GITHUB_API_TOKEN, FIRECRAWL_API_KEY, EXA_API_KEY, JINA_API_KEY,
   GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY,
   firecrawlCreditsLow, markFirecrawlCreditsLow, resetFirecrawlCreditsLow, degradedTools,
-  markToolDegraded, isDegraded, fetchRetry,
+  markToolDegraded, isDegraded, fetchRetry, fetchT,
 } from "./env.ts";
 
 // validation.ts — Seed detection, cache TTLs, artifact validation
@@ -1082,6 +1082,9 @@ Deno.serve(async (req) => {
                   raw: {
                     osintcat_database_search: dbSearch.parsed,
                     snusbase: snus.parsed,
+                    // Retain breach-mode payload too — otherwise breach-only hits
+                    // keep a count but lose their actual records downstream.
+                    osintcat_breach: breachLegacy.parsed,
                   },
                 },
               };
@@ -1696,7 +1699,7 @@ Deno.serve(async (req) => {
         inputSchema: z.object({ domain: z.string() }),
         execute: async ({ domain }) => {
           try {
-            const r = await fetch(`https://crt.sh/?q=%25.${encodeURIComponent(domain)}&output=json`);
+            const r = await fetchT(`https://crt.sh/?q=%25.${encodeURIComponent(domain)}&output=json`, {}, 12_000);
             const data = (await r.json().catch(() => null)) as Array<{ name_value?: string }> | null;
             if (!isCrtshOk(r.ok, data)) return { ok: false, status: r.status, error: r.ok ? "crt.sh returned non-JSON (likely an error/overload page)" : `crt.sh ${r.status}`, domain };
             const arr = data as Array<{ name_value?: string }>;
@@ -1715,13 +1718,20 @@ Deno.serve(async (req) => {
             const out: Record<string, unknown> = {};
             const errs: Record<string, string> = {};
             await Promise.all(types.map(async (t) => {
-              const r = await fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=${t}`, { headers: { Accept: "application/dns-json" } });
-              const j = await r.json().catch(() => ({})) as { Status?: number; Answer?: Array<{ data: string }> };
-              out[t] = j.Answer?.map((a) => a.data) ?? [];
-              // Distinguish a genuine empty result (NOERROR/NXDOMAIN) from a lookup
-              // failure (HTTP error or SERVFAIL) so [] can't read as "no records".
-              const dErr = dohTypeError(r.ok, r.status, j.Status);
-              if (dErr) errs[t] = dErr;
+              try {
+                const r = await fetchT(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=${t}`, { headers: { Accept: "application/dns-json" } }, 8_000);
+                const j = await r.json().catch(() => ({})) as { Status?: number; Answer?: Array<{ data: string }> };
+                out[t] = j.Answer?.map((a) => a.data) ?? [];
+                // Distinguish a genuine empty result (NOERROR/NXDOMAIN) from a lookup
+                // failure (HTTP error or SERVFAIL) so [] can't read as "no records".
+                const dErr = dohTypeError(r.ok, r.status, j.Status);
+                if (dErr) errs[t] = dErr;
+              } catch (e) {
+                // One record-type's network failure/timeout must not collapse the
+                // whole DNS lookup (Promise.all would reject and lose the rest).
+                out[t] = [];
+                errs[t] = String(e instanceof Error ? e.message : e);
+              }
             }));
             const hasErr = Object.keys(errs).length > 0;
             return { ok: !hasErr, host, records: out, ...(hasErr ? { errors: errs } : {}) };
@@ -1734,19 +1744,21 @@ Deno.serve(async (req) => {
         execute: async ({ username }) => {
           try {
             const h = { "User-Agent": "Proximity-OSINT", Accept: "application/vnd.github+json" };
+            // Per-branch .catch so a network rejection on one call can't discard
+            // the other's result (Promise.all rejects on the first rejection).
             const [uRes, rRes] = await Promise.all([
-              fetch(`https://api.github.com/users/${encodeURIComponent(username)}`, { headers: h }),
-              fetch(`https://api.github.com/users/${encodeURIComponent(username)}/repos?sort=updated&per_page=10`, { headers: h }),
+              fetchT(`https://api.github.com/users/${encodeURIComponent(username)}`, { headers: h }, 12_000).catch(() => null),
+              fetchT(`https://api.github.com/users/${encodeURIComponent(username)}/repos?sort=updated&per_page=10`, { headers: h }, 12_000).catch(() => null),
             ]);
-            const user = await uRes.json().catch(() => ({}));
-            const repos = (await rRes.json().catch(() => [])) as Array<{ name: string; html_url: string; description: string; stargazers_count: number; language: string; updated_at: string }>;
+            const user = uRes ? await uRes.json().catch(() => ({})) : {};
+            const repos = (rRes && rRes.ok ? await rRes.json().catch(() => []) : []) as Array<{ name: string; html_url: string; description: string; stargazers_count: number; language: string; updated_at: string }>;
             return {
-              ok: uRes.ok,
+              ok: !!uRes?.ok,
               user,
               repos: Array.isArray(repos) ? repos.map((r) => ({ name: r.name, url: r.html_url, stars: r.stargazers_count, lang: r.language, updated: r.updated_at, desc: r.description })) : [],
               // The repos call has its own status (rate-limit 403/429 returns a non-array
               // error object); surface it so ok:true can't hide a failed repos fetch.
-              ...(rRes.ok ? {} : { repos_error: `github repos ${rRes.status} (rate limit or error)` }),
+              ...(rRes?.ok ? {} : { repos_error: `github repos ${rRes?.status ?? "network error"} (rate limit or error)` }),
             };
           } catch (e) { return { error: String(e) }; }
         },
@@ -1757,8 +1769,8 @@ Deno.serve(async (req) => {
         execute: async ({ url }) => {
           try {
             const [closest, cdx] = await Promise.all([
-              fetch(`https://archive.org/wayback/available?url=${encodeURIComponent(url)}`).then((r) => r.ok ? r.json() : { error: `available ${r.status}` }).catch((e) => ({ error: String(e) })),
-              fetch(`https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(url)}&output=json&limit=10&from=20000101`).then((r) => r.ok ? r.json() : { error: `cdx ${r.status}` }).catch((e) => ({ error: String(e) })),
+              fetchT(`https://archive.org/wayback/available?url=${encodeURIComponent(url)}`, {}, 12_000).then((r) => r.ok ? r.json() : { error: `available ${r.status}` }).catch((e) => ({ error: String(e) })),
+              fetchT(`https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(url)}&output=json&limit=10&from=20000101`, {}, 12_000).then((r) => r.ok ? r.json() : { error: `cdx ${r.status}` }).catch((e) => ({ error: String(e) })),
             ]);
             // archive.org is reliably flaky; a 5xx/timeout must not read as "no snapshots".
             const cdxOk = Array.isArray(cdx);
@@ -1796,12 +1808,12 @@ Deno.serve(async (req) => {
         execute: async ({ chain, address }) => {
           try {
             if (chain === "btc") {
-              const r = await fetch(`https://blockstream.info/api/address/${encodeURIComponent(address)}`);
+              const r = await fetchT(`https://blockstream.info/api/address/${encodeURIComponent(address)}`, {}, 12_000);
               if (!r.ok) return { ok: false, chain, address, status: r.status, error: `blockstream ${r.status} (invalid address or upstream error)` };
               const data = await r.json().catch(() => ({}));
               return { ok: true, chain, address, data };
             }
-            const r = await fetch(`https://api.blockchair.com/ethereum/dashboards/address/${encodeURIComponent(address)}?limit=10`);
+            const r = await fetchT(`https://api.blockchair.com/ethereum/dashboards/address/${encodeURIComponent(address)}?limit=10`, {}, 12_000);
             if (!r.ok) return { ok: false, chain, address, status: r.status, error: `blockchair ${r.status}` };
             const data = await r.json().catch(() => ({}));
             const bcErr = blockchairError(data);
@@ -2450,7 +2462,7 @@ Deno.serve(async (req) => {
         inputSchema: z.object({ ip: z.string() }),
         execute: async ({ ip }) => {
           try {
-            const r = await fetch(`https://internetdb.shodan.io/${encodeURIComponent(ip)}`);
+            const r = await fetchT(`https://internetdb.shodan.io/${encodeURIComponent(ip)}`, {}, 12_000);
             const data = await r.json().catch(() => ({}));
             return { ok: r.ok, status: r.status, data };
           } catch (e) { return { error: String(e) }; }
@@ -2683,7 +2695,7 @@ Deno.serve(async (req) => {
         execute: async ({ mode, query }) => {
           const slug = mode === "reversedns" ? "reversedns" : mode;
           try {
-            const r = await fetch(`https://api.hackertarget.com/${slug}/?q=${encodeURIComponent(query)}`);
+            const r = await fetchT(`https://api.hackertarget.com/${slug}/?q=${encodeURIComponent(query)}`, {}, 12_000);
             const text = await r.text();
             const trimmed = text.trim();
             // HackerTarget returns HTTP 200 with a plain-text error/quota body, e.g.
@@ -2703,7 +2715,7 @@ Deno.serve(async (req) => {
           const gated = gateStage2("urlscan_search");
           if (gated) return gated;
           try {
-            const r = await fetch(`https://urlscan.io/api/v1/search/?q=${encodeURIComponent(query)}&size=20`);
+            const r = await fetchT(`https://urlscan.io/api/v1/search/?q=${encodeURIComponent(query)}&size=20`, {}, 12_000);
             interface UrlscanResult {
               page?: { url?: unknown; domain?: unknown; ip?: unknown; asn?: unknown; country?: unknown; [k: string]: unknown };
               screenshot?: unknown;
@@ -3134,11 +3146,11 @@ Deno.serve(async (req) => {
         inputSchema: z.object({ url: z.string().url() }),
         execute: async ({ url }) => {
           try {
-            const r = await fetch(`https://web.archive.org/save/${url}`, {
+            const r = await fetchT(`https://web.archive.org/save/${url}`, {
               method: "GET",
               headers: { "User-Agent": "Proximity-OSINT/1.0" },
               redirect: "manual",
-            });
+            }, 15_000);
             const location = r.headers.get("content-location") || r.headers.get("location");
             const archived = location ? `https://web.archive.org${location.startsWith("/") ? location : "/" + location}` : undefined;
             return {
