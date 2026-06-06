@@ -871,7 +871,11 @@ Deno.serve(async (req) => {
             const text = await r.text();
             let data: unknown;
             try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 4000) }; }
-            return { ok: r.ok, status: r.status, data };
+            // SocialFetch returns {error:{code,message}} with a 4xx/5xx on failure (r.ok
+            // catches those); a 200 may still carry a "not found"/"private" outcome inside
+            // data — a legitimate negative — so only the explicit error envelope flips ok.
+            const err = (data as { error?: { code?: string; message?: string } })?.error;
+            return { ok: r.ok && !err, status: r.status, ...(err ? { error_code: err.code } : {}), data };
           } catch (e) {
             return { error: String(e) };
           }
@@ -889,7 +893,11 @@ Deno.serve(async (req) => {
             const text = await r.text();
             let data: unknown;
             try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 4000) }; }
-            return { ok: r.ok, status: r.status, data };
+            // OSINTNova returns its {success:false} envelope at HTTP 200 on quota/error;
+            // fold it into ok so a failed lookup isn't recorded as a clean result (and the
+            // shared daily quota isn't burned by a non-circuit-breaking false success).
+            const success = (data as { success?: boolean })?.success;
+            return { ok: r.ok && success !== false, status: r.status, data };
           } catch (e) {
             return { error: String(e) };
           }
@@ -910,7 +918,9 @@ Deno.serve(async (req) => {
             const text = await r.text();
             let data: unknown;
             try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 4000) }; }
-            return { ok: r.ok, status: r.status, data };
+            // Same OSINTNova {success:false}-at-200 contract as the email endpoint.
+            const success = (data as { success?: boolean })?.success;
+            return { ok: r.ok && success !== false, status: r.status, data };
           };
           const runWithTimeout = async (ms: number) => {
             const ctrl = new AbortController();
@@ -1088,7 +1098,10 @@ Deno.serve(async (req) => {
               `https://leakcheck.io/api/public?check=${encodeURIComponent(query)}`,
             );
             const data = await r.json().catch(() => ({}));
-            return { ok: r.ok, source: "leakcheck.public", data };
+            // leakcheck public signals failure via {success:false} at HTTP 200 — fold it
+            // into ok so a throttled/error response isn't reported as "clean, 0 hits".
+            const success = (data as { success?: boolean })?.success;
+            return { ok: r.ok && success !== false, source: "leakcheck.public", data };
           } catch (e) {
             return { error: String(e) };
           }
@@ -1690,9 +1703,11 @@ Deno.serve(async (req) => {
         execute: async ({ domain }) => {
           try {
             const r = await fetch(`https://crt.sh/?q=%25.${encodeURIComponent(domain)}&output=json`);
-            const data = (await r.json().catch(() => [])) as Array<{ name_value?: string }>;
+            if (!r.ok) return { ok: false, status: r.status, error: `crt.sh ${r.status}`, domain };
+            const data = (await r.json().catch(() => null)) as Array<{ name_value?: string }> | null;
+            if (!Array.isArray(data)) return { ok: false, error: "crt.sh returned non-JSON (likely an error/overload page)", domain };
             const subs = Array.from(new Set(data.flatMap((d) => (d.name_value ?? "").split("\n")).map((s) => s.trim().toLowerCase()).filter(Boolean))).slice(0, 200);
-            return { domain, count: subs.length, subdomains: subs };
+            return { ok: true, domain, count: subs.length, subdomains: subs };
           } catch (e) {
             return { error: String(e) };
           }
@@ -1704,12 +1719,19 @@ Deno.serve(async (req) => {
         execute: async ({ host, types }) => {
           try {
             const out: Record<string, unknown> = {};
+            const errs: Record<string, string> = {};
             await Promise.all(types.map(async (t) => {
               const r = await fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=${t}`, { headers: { Accept: "application/dns-json" } });
-              const j = await r.json().catch(() => ({}));
-              out[t] = (j as { Answer?: Array<{ data: string }> }).Answer?.map((a) => a.data) ?? [];
+              const j = await r.json().catch(() => ({})) as { Status?: number; Answer?: Array<{ data: string }> };
+              out[t] = j.Answer?.map((a) => a.data) ?? [];
+              // Distinguish a genuine empty result (NOERROR=0 / NXDOMAIN=3) from a
+              // lookup failure (HTTP error, or DNS rcode like SERVFAIL=2) so an
+              // empty array can't masquerade as an authoritative "no records".
+              if (!r.ok) errs[t] = `doh http ${r.status}`;
+              else if (typeof j.Status === "number" && j.Status !== 0 && j.Status !== 3) errs[t] = `dns rcode ${j.Status}`;
             }));
-            return { host, records: out };
+            const hasErr = Object.keys(errs).length > 0;
+            return { ok: !hasErr, host, records: out, ...(hasErr ? { errors: errs } : {}) };
           } catch (e) { return { error: String(e) }; }
         },
       }),
@@ -1728,7 +1750,10 @@ Deno.serve(async (req) => {
             return {
               ok: uRes.ok,
               user,
-              repos: Array.isArray(repos) ? repos.map((r) => ({ name: r.name, url: r.html_url, stars: r.stargazers_count, lang: r.language, updated: r.updated_at, desc: r.description })) : repos,
+              repos: Array.isArray(repos) ? repos.map((r) => ({ name: r.name, url: r.html_url, stars: r.stargazers_count, lang: r.language, updated: r.updated_at, desc: r.description })) : [],
+              // The repos call has its own status (rate-limit 403/429 returns a non-array
+              // error object); surface it so ok:true can't hide a failed repos fetch.
+              ...(rRes.ok ? {} : { repos_error: `github repos ${rRes.status} (rate limit or error)` }),
             };
           } catch (e) { return { error: String(e) }; }
         },
@@ -1739,10 +1764,12 @@ Deno.serve(async (req) => {
         execute: async ({ url }) => {
           try {
             const [closest, cdx] = await Promise.all([
-              fetch(`https://archive.org/wayback/available?url=${encodeURIComponent(url)}`).then((r) => r.json()).catch(() => ({})),
-              fetch(`https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(url)}&output=json&limit=10&from=20000101`).then((r) => r.json()).catch(() => []),
+              fetch(`https://archive.org/wayback/available?url=${encodeURIComponent(url)}`).then((r) => r.ok ? r.json() : { error: `available ${r.status}` }).catch((e) => ({ error: String(e) })),
+              fetch(`https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(url)}&output=json&limit=10&from=20000101`).then((r) => r.ok ? r.json() : { error: `cdx ${r.status}` }).catch((e) => ({ error: String(e) })),
             ]);
-            return { closest, recent: cdx };
+            // archive.org is reliably flaky; a 5xx/timeout must not read as "no snapshots".
+            const cdxOk = Array.isArray(cdx);
+            return { ok: cdxOk, closest, recent: cdxOk ? cdx : [], ...(cdxOk ? {} : { error: (cdx as { error?: unknown })?.error ?? "wayback cdx failed" }) };
           } catch (e) { return { error: String(e) }; }
         },
       }),
@@ -1777,12 +1804,15 @@ Deno.serve(async (req) => {
           try {
             if (chain === "btc") {
               const r = await fetch(`https://blockstream.info/api/address/${encodeURIComponent(address)}`);
+              if (!r.ok) return { ok: false, chain, address, status: r.status, error: `blockstream ${r.status} (invalid address or upstream error)` };
               const data = await r.json().catch(() => ({}));
-              return { chain, address, data };
+              return { ok: true, chain, address, data };
             }
             const r = await fetch(`https://api.blockchair.com/ethereum/dashboards/address/${encodeURIComponent(address)}?limit=10`);
-            const data = await r.json().catch(() => ({}));
-            return { chain, address, data };
+            if (!r.ok) return { ok: false, chain, address, status: r.status, error: `blockchair ${r.status}` };
+            const data = await r.json().catch(() => ({})) as { data?: unknown; context?: { error?: unknown } };
+            if (data?.context?.error || data?.data == null) return { ok: false, chain, address, error: String(data?.context?.error ?? "blockchair returned no address data") };
+            return { ok: true, chain, address, data };
           } catch (e) { return { error: String(e) }; }
         },
       }),
@@ -2661,8 +2691,16 @@ Deno.serve(async (req) => {
           try {
             const r = await fetch(`https://api.hackertarget.com/${slug}/?q=${encodeURIComponent(query)}`);
             const text = await r.text();
-            const lines = text.trim().split("\n").filter(Boolean).slice(0, 500);
-            return { ok: r.ok, status: r.status, mode, query, lines };
+            const trimmed = text.trim();
+            // HackerTarget returns HTTP 200 with a plain-text error/quota body, e.g.
+            // "error invalid host", "API count exceeded - ...", "No DNS Records found".
+            // Without this check those strings get returned as legitimate recon "lines".
+            const apiError = /^error/i.test(trimmed)
+              || trimmed.startsWith("API count exceeded")
+              || trimmed.startsWith("No DNS Records")
+              || trimmed === "No records found";
+            const lines = trimmed.split("\n").filter(Boolean).slice(0, 500);
+            return { ok: r.ok && !apiError, status: r.status, mode, query, ...(apiError ? { error: trimmed.slice(0, 200) } : {}), lines };
           } catch (e) { return { error: String(e) }; }
         },
       }),
@@ -2846,6 +2884,9 @@ Deno.serve(async (req) => {
             }
             const r = await fetch(`https://api.hunter.io/v2/domain-search?${params}`);
             const data = await r.json().catch(() => ({}));
+            // On a non-200 (bad/expired key, plan limit, 429) Hunter omits `data`; without
+            // this guard the payload reads as a legitimate "0 emails for this domain".
+            if (!r.ok) return { ok: false, status: r.status, error: `hunter ${r.status}`, errors: (data as { errors?: unknown })?.errors };
             const d: HunterDomainData = (data as { data?: HunterDomainData })?.data ?? {};
             return {
               ok: r.ok,
@@ -2948,6 +2989,9 @@ Deno.serve(async (req) => {
             }
             const r = await fetch(`https://api.hunter.io/v2/email-verifier?email=${encodeURIComponent(email)}&api_key=${HUNTER_API_KEY}`);
             const data = await r.json().catch(() => ({}));
+            // On a non-200 Hunter omits `data`; without this guard the blank result reads
+            // like a genuine "unknown" deliverability verdict instead of an API failure.
+            if (!r.ok) return { ok: false, status: r.status, error: `hunter ${r.status}`, errors: (data as { errors?: unknown })?.errors };
             const d: HunterVerifierData = (data as { data?: HunterVerifierData })?.data ?? {};
             return {
               ok: r.ok,
