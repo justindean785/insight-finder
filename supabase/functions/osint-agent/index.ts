@@ -611,10 +611,20 @@ Deno.serve(async (req) => {
               "firecrawl_search","firecrawl_scrape","firecrawl_map",
               "intelbase_email_lookup",
             ]);
+            // Tools the circuit breaker has disabled this investigation (e.g.
+            // synapsint after 3 consecutive HTTP 500s). Without this the planner
+            // re-proposes a known-dead tool every round — observed firing
+            // synapsint 7x for zero value. degradedTools covers the parallel
+            // self-degrade path (markToolDegraded on 5xx).
+            const brokenTools = new Set<string>(
+              circuit.snapshot(threadId).filter((s) => s.disabledReason).map((s) => s.tool),
+            );
             const toolList = baseToolList.filter((name) => {
               if (PERMANENT_BLOCK.has(name)) return false;
               // HIBP can only fail without a key — keep it off the planner menu.
               if (name === "hibp_lookup" && !HIBP_API_KEY) return false;
+              // Dead/degraded tools — stop re-proposing them this investigation.
+              if (brokenTools.has(name) || isDegraded(name)) return false;
               if (!HIGH_COST_TOOLS.has(name)) return true;
               const last = routingGuard.highCostLastArtifactCount.get(name);
               if (last === undefined) return true;
