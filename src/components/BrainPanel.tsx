@@ -4,6 +4,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Brain, Sparkles, Activity, ThumbsUp, ThumbsDown, Lightbulb, Network, Star, TrendingUp, CheckCircle2, XCircle, Zap, Gauge, Phone, AtSign, Mail, MapPin, ShieldAlert, Globe, Wrench } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { timeAgo } from "@/lib/time";
 
 type Memory = {
   id: string;
@@ -55,15 +56,6 @@ const KIND_META: Record<string, { label: string; icon: typeof Lightbulb; color: 
   connection: { label: "Connections", icon: Network, color: "text-accent" },
 };
 
-function timeAgo(iso: string | null): string {
-  if (!iso) return "never";
-  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (diff < 60) return "just now";
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
-  return new Date(iso).toLocaleDateString();
-}
 
 export function BrainPanel({
   open, onOpenChange,

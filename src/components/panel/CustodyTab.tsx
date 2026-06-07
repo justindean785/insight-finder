@@ -27,6 +27,9 @@ type EvidenceRow = {
   archive_bytes?: number | null;
 };
 
+// Deliberately NOT the shared @/lib/time helper: chain-of-custody entries need a
+// precise absolute timestamp (date + time via toLocaleString) once older than a
+// day, so this keeps its own provenance-grade formatter.
 function timeAgo(iso: string): string {
   const diff = (Date.now() - new Date(iso).getTime()) / 1000;
   if (diff < 60) return "just now";

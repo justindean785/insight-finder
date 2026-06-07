@@ -2,7 +2,7 @@
 
 An AI-native open-source intelligence workstation. Orchestrates 14 specialized OSINT agents through a Supabase Edge Function, streams findings into a real-time React dashboard, and maintains cross-investigation memory via an Agent Brain.
 
-**Stack:** React 19 + TypeScript + Tailwind CSS + shadcn/ui | Supabase (Auth, DB, Storage, Edge Functions) | AI SDK
+**Stack:** React 18 + TypeScript + Tailwind CSS + shadcn/ui | Supabase (Auth, DB, Storage, Edge Functions) | AI SDK
 
 **URL:** https://github.com/justindean785/insight-finder
 
