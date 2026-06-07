@@ -139,8 +139,15 @@ export function computeEffectiveSourceCount(sources: Source[]): number {
   for (const s of sources) {
     if (s.origin) {
       buckets.add(`origin:${s.origin.toLowerCase()}`);
-    } else if (isMirror(s.url) || isAggregator(s.url)) {
-      buckets.add("mirror-pool"); // collapse anon mirrors/aggregators into one
+    } else if (isMirror(s.url)) {
+      // Anonymous re-host mirrors (scribd/pastebin/anonfiles) can't be told apart
+      // without an origin — pool them so N mirrors of one dump don't read as N.
+      buckets.add("mirror-pool");
+    } else if (isAggregator(s.url)) {
+      // Aggregators index MANY breaches — two DIFFERENT aggregators are not
+      // automatically the same leak. Collapse only repeat hits from the SAME
+      // aggregator host; keep distinct aggregators distinct.
+      buckets.add(`aggregator:${hostOf(s.url)}`);
     } else {
       buckets.add(`id:${s.id}`);
     }

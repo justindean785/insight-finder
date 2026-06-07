@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
 import type { ConfidenceTier } from "@/lib/audit/confidence-linter";
+import { tierOf } from "@/lib/audit/confidence-linter";
 
 /**
  * Forensic report primitives, built on the project's real design tokens.
@@ -87,7 +88,7 @@ export function ConfidenceMeter({
 
   return (
     <div className="inline-flex items-center gap-2">
-      <div className="flex gap-[2px]" style={{ width }} aria-label={`Confidence ${value} of 100`}>
+      <div className="flex gap-[2px]" style={{ width }} aria-label={`Confidence ${value} of 100 — ${value >= 1 ? tierOf(value) : "Unverified"} tier`}>
         {Array.from({ length: segments }).map((_, i) => (
           <div
             key={i}

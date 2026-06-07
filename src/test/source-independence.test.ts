@@ -22,13 +22,32 @@ describe("computeEffectiveSourceCount", () => {
     expect(computeEffectiveSourceCount(sources)).toBe(2);
   });
 
-  it("collapses anonymous mirrors/aggregators into one pool", () => {
+  it("pools anonymous re-host mirrors into one source", () => {
+    // scribd/pastebin/anonfiles with no origin can't be told apart — treat as one dump.
     const sources = [
-      src({ id: "S1", url: "https://leakcheck.io/x" }),
-      src({ id: "S2", url: "https://scribd.com/doc/y" }),
-      src({ id: "S3", url: "https://dehashed.com/z" }),
+      src({ id: "S1", url: "https://scribd.com/doc/y" }),
+      src({ id: "S2", url: "https://pastebin.com/x" }),
+      src({ id: "S3", url: "https://anonfiles.com/z" }),
     ];
     expect(computeEffectiveSourceCount(sources)).toBe(1);
+  });
+
+  it("keeps distinct aggregators distinct, collapses repeats of the same one (H2)", () => {
+    // Two DIFFERENT aggregators are not automatically the same leak — they index
+    // many breaches, so LeakCheck + Dehashed should count as 2, not fuse to 1.
+    expect(
+      computeEffectiveSourceCount([
+        src({ id: "S1", url: "https://leakcheck.io/x" }),
+        src({ id: "S2", url: "https://dehashed.com/y" }),
+      ]),
+    ).toBe(2);
+    // …but two hits from the SAME aggregator host collapse to one.
+    expect(
+      computeEffectiveSourceCount([
+        src({ id: "S1", url: "https://leakcheck.io/x" }),
+        src({ id: "S2", url: "https://leakcheck.io/y" }),
+      ]),
+    ).toBe(1);
   });
 
   it("keeps genuinely distinct sources separate", () => {
