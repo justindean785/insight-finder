@@ -1,4 +1,5 @@
 import { lazy, Suspense } from "react";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -17,6 +18,7 @@ import { hasSupabaseEnv, supabaseConfigError } from "./integrations/supabase/cli
 const queryClient = new QueryClient();
 
 const App = () => (
+  <ErrorBoundary>
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       <Toaster />
@@ -48,6 +50,7 @@ const App = () => (
       )}
     </TooltipProvider>
   </QueryClientProvider>
+  </ErrorBoundary>
 );
 
 function MissingConfigScreen() {

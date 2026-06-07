@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
+import { addBreadcrumb, captureError } from "@/lib/telemetry";
 
 export default function IndexRedirect() {
   const { user, loading } = useAuth();
@@ -19,6 +20,7 @@ export default function IndexRedirect() {
       return;
     }
     setError(null);
+    addBreadcrumb("route", "index bootstrap start");
     (async () => {
       try {
         const { data: existing, error: selErr } = await supabase
@@ -41,6 +43,7 @@ export default function IndexRedirect() {
         if (alive && created) navigate(`/chat/${created.id}`, { replace: true });
       } catch (e) {
         if (!alive) return;
+        captureError(e, "route.indexBootstrap");
         const msg = e instanceof Error ? e.message : "Could not load your cases.";
         setError(msg);
         toast.error("Couldn't open your workspace", { description: msg });
