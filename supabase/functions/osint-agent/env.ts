@@ -65,6 +65,45 @@ export const PRIMARY_ORCHESTRATOR_MODEL_ID = "MiniMax-M2.7";
 // Lovable Gateway model used only if MiniMax key is missing.
 export const FALLBACK_MODEL_ID = "google/gemini-2.5-pro";
 
+// ---- Additional OpenAI-compatible orchestrator providers --------------------
+// Both are optional and env-gated: absent unless their key is set, so the
+// orchestrator's default behavior (MiniMax → Gemini fallback) is unchanged
+// until you opt in. Selection logic lives in ./orchestrator_select.ts.
+
+// OpenAdapter (https://openadapter.dev) — one key, many open-source models +
+// bundled web search/scraping, OpenAI-compatible. The base URL is configurable
+// because it must match your dashboard's endpoint; verify it there before use.
+export const OPENADAPTER_API_KEY = Deno.env.get("OPENADAPTER_API_KEY") ?? "";
+export const OPENADAPTER_BASE_URL =
+  Deno.env.get("OPENADAPTER_BASE_URL") ?? "https://api.openadapter.dev/v1";
+// Model OpenAdapter should run for the top-level orchestrator turn.
+export const OPENADAPTER_ORCHESTRATOR_MODEL =
+  Deno.env.get("OPENADAPTER_ORCHESTRATOR_MODEL") ?? "MiniMax-M2.7";
+export const openAdapter = OPENADAPTER_API_KEY
+  ? createOpenAICompatible({
+      name: "openadapter",
+      baseURL: OPENADAPTER_BASE_URL,
+      headers: { Authorization: `Bearer ${OPENADAPTER_API_KEY}` },
+    })
+  : null;
+
+// xAI Grok — OpenAI-compatible at https://api.x.ai/v1. Accepts either
+// XAI_API_KEY or GROK_API_KEY for convenience.
+export const XAI_API_KEY = Deno.env.get("XAI_API_KEY") ?? Deno.env.get("GROK_API_KEY") ?? "";
+export const GROK_ORCHESTRATOR_MODEL = Deno.env.get("GROK_ORCHESTRATOR_MODEL") ?? "grok-4.3";
+export const grok = XAI_API_KEY
+  ? createOpenAICompatible({
+      name: "xai-grok",
+      baseURL: "https://api.x.ai/v1",
+      headers: { Authorization: `Bearer ${XAI_API_KEY}` },
+    })
+  : null;
+
+// Operator-pinned orchestrator provider, e.g. ORCHESTRATOR_PROVIDER=openadapter
+// forces every orchestrator turn through OpenAdapter (when its key is present).
+// Leave unset to keep MiniMax primary with the others as fallbacks.
+export const ORCHESTRATOR_PROVIDER = (Deno.env.get("ORCHESTRATOR_PROVIDER") ?? "").toLowerCase();
+
 // ---- External API keys -------------------------------------------------------
 export const OATHNET_API_KEY = Deno.env.get("OATHNET_API_KEY");
 export const SYNAPSINT_API_KEY = Deno.env.get("SYNAPSINT_API_KEY");

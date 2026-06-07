@@ -21,12 +21,16 @@ import { computeAxes, sourceConfidence, applyEvidenceCaps } from "./confidence.t
 import { buildWorkflowAddendum } from "./workflow_prompt.ts";
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
+import {
+  selectOrchestrator, defaultProfiles, type ProviderId,
+} from "./orchestrator_select.ts";
 
 // ---- Extracted modules -------------------------------------------------------
 // env.ts — Environment bindings, API keys, degraded-tools state, fetch helpers
 import {
   corsHeaders, SUPABASE_URL, SERVICE_KEY, MINIMAX_API_KEY, LOVABLE_API_KEY,
   lovableGateway, PRIMARY_ORCHESTRATOR_MODEL_ID, FALLBACK_MODEL_ID,
+  openAdapter, grok, OPENADAPTER_ORCHESTRATOR_MODEL, GROK_ORCHESTRATOR_MODEL, ORCHESTRATOR_PROVIDER,
   OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
   CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED,
   HIBP_API_KEY, GITHUB_API_TOKEN, FIRECRAWL_API_KEY, EXA_API_KEY, JINA_API_KEY,
@@ -4001,21 +4005,42 @@ Deno.serve(async (req) => {
     // ~600k chars ≈ 150k tokens, leaving headroom for streamed completions.
     const MINIMAX_CHAR_BUDGET = 600_000;
     const MINIMAX_MSG_BUDGET = 150;
-    const minimaxAvailable = !!MINIMAX_API_KEY;
     const wouldOverflow =
       approxPromptChars > MINIMAX_CHAR_BUDGET ||
       trimmedMessages.length > MINIMAX_MSG_BUDGET;
-    const useFallback = !minimaxAvailable || wouldOverflow;
-    if (useFallback && !lovableGateway) {
-      throw new Error(
-        "Neither MINIMAX_API_KEY nor LOVABLE_API_KEY is configured for the orchestrator.",
-      );
+
+    // Ordered, env-gated provider chain (see ./orchestrator_select.ts). MiniMax
+    // stays primary; OpenAdapter / Grok / Lovable participate only when their
+    // keys are set, so default behavior is unchanged until you opt in.
+    const providerInstances: Record<ProviderId, { chatModel(id: string): ReturnType<typeof minimax.chatModel> } | null> = {
+      minimax: MINIMAX_API_KEY ? minimax : null,
+      openadapter: openAdapter,
+      grok,
+      lovable: lovableGateway,
+    };
+    const choice = selectOrchestrator({
+      available: {
+        minimax: !!providerInstances.minimax,
+        openadapter: !!providerInstances.openadapter,
+        grok: !!providerInstances.grok,
+        lovable: !!providerInstances.lovable,
+      },
+      profiles: defaultProfiles({
+        minimax: { model: PRIMARY_ORCHESTRATOR_MODEL_ID },
+        lovable: { model: FALLBACK_MODEL_ID },
+        openadapter: { model: OPENADAPTER_ORCHESTRATOR_MODEL },
+        grok: { model: GROK_ORCHESTRATOR_MODEL },
+      }),
+      overflow: wouldOverflow,
+      preferred: (ORCHESTRATOR_PROVIDER || null) as ProviderId | null,
+    });
+    const chosenProvider = providerInstances[choice.providerId];
+    if (!chosenProvider) {
+      throw new Error(`Orchestrator provider '${choice.providerId}' was selected but is not configured.`);
     }
-    const orchestratorModel = useFallback
-      ? lovableGateway!.chatModel(FALLBACK_MODEL_ID)
-      : minimax.chatModel(PRIMARY_ORCHESTRATOR_MODEL_ID);
+    const orchestratorModel = chosenProvider.chatModel(choice.model);
     console.log(
-      `[orchestrator] running on ${useFallback ? FALLBACK_MODEL_ID + " (Lovable Gateway fallback)" : PRIMARY_ORCHESTRATOR_MODEL_ID + " (MiniMax direct)"} ` +
+      `[orchestrator] running on ${choice.label} ` +
         `(approx prompt chars=${approxPromptChars}, messages=${trimmedMessages.length})`,
     );
 
@@ -4067,17 +4092,16 @@ Deno.serve(async (req) => {
       stopWhen: stepCountIs(100),
       prepareStep,
       // Meter orchestrator LLM token spend per step so threads.cost_micro_usd
-      // reflects the actual model cost, not just tool fan-out cost.
-      // Rates (micro-USD per token):
-      //   MiniMax-M2.7:    in $0.30/M  out $1.20/M  → 0.30, 1.20
-      //   Gemini 2.5 Pro:  in $1.25/M  out $10.00/M → 1.25, 10.00
+      // reflects the actual model cost, not just tool fan-out cost. Rates are
+      // per-provider (micro-USD per token) and come from the selected choice;
+      // see ./orchestrator_select.ts (defaultProfiles) to tune per plan.
       onStepFinish: ({ usage }) => {
         try {
           const u = usage as { inputTokens?: number; promptTokens?: number; outputTokens?: number; completionTokens?: number } | undefined;
           const inTok = Number(u?.inputTokens ?? u?.promptTokens ?? 0);
           const outTok = Number(u?.outputTokens ?? u?.completionTokens ?? 0);
           if (!inTok && !outTok) return;
-          const [inRate, outRate] = useFallback ? [1.25, 10] : [0.3, 1.2];
+          const [inRate, outRate] = [choice.inRate, choice.outRate];
           const micro = Math.round(inTok * inRate + outTok * outRate);
           if (micro > 0) onCost(micro);
         } catch (e) {
@@ -4096,8 +4120,8 @@ Deno.serve(async (req) => {
           "[orchestrator] stream error:",
           JSON.stringify({
             thread_id: threadId,
-            provider: useFallback ? "lovable-gateway" : "minimax",
-            model: useFallback ? FALLBACK_MODEL_ID : MODELS[ORCHESTRATOR_TIER],
+            provider: choice.providerId,
+            model: choice.model,
             approx_prompt_chars: approxPromptChars,
             context_overflow: isCtxOverflow,
             message: msg.slice(0, 600),
