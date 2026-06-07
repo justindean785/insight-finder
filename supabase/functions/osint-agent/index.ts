@@ -21,6 +21,7 @@ import { computeAxes, sourceConfidence, applyEvidenceCaps } from "./confidence.t
 import { buildWorkflowAddendum } from "./workflow_prompt.ts";
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
+import { DNS_TYPES, VIRTUAL_TYPE_MAP, isVirtualType, resolveVirtualHost, filterTxtByPrefix } from "./tools/dns-virtual.ts";
 
 // ---- Extracted modules -------------------------------------------------------
 // env.ts — Environment bindings, API keys, degraded-tools state, fetch helpers
@@ -1734,19 +1735,30 @@ Deno.serve(async (req) => {
         },
       }),
       dns_records: tool({
-        description: "Resolve DNS records (A, AAAA, MX, NS, TXT, CNAME) for a hostname via Cloudflare DoH.",
-        inputSchema: z.object({ host: z.string(), types: z.array(z.enum(["A","AAAA","MX","NS","TXT","CNAME","SOA"])).default(["A","MX","NS","TXT"]) }),
-        execute: async ({ host, types }) => {
+        description: "Resolve DNS records for a hostname via Cloudflare DoH. Real types: A, AAAA, MX, NS, TXT, CNAME, SOA, CAA. Virtual types are auto-translated to TXT queries: SPF (TXT @ host, filtered v=spf1), DMARC (TXT @ _dmarc.host, v=DMARC1), DKIM (TXT @ <dkimSelector>._domainkey.host — requires dkimSelector), BIMI (TXT @ default._bimi.host, v=BIMI1). SPF/DKIM/DMARC/BIMI are NOT real record types — never query them as-is; pass them here and they resolve correctly.",
+        inputSchema: z.object({ host: z.string(), types: z.array(z.enum(DNS_TYPES)).default(["A","MX","NS","TXT"]), dkimSelector: z.string().optional() }),
+        execute: async ({ host, types, dkimSelector }) => {
           try {
             const out: Record<string, unknown> = {};
             const errs: Record<string, string> = {};
             const statuses: number[] = [];
             await Promise.all(types.map(async (t) => {
               try {
-                const r = await fetchT(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=${t}`, { headers: { Accept: "application/dns-json" } }, 8_000);
+                // Virtual types (SPF/DMARC/DKIM/BIMI) resolve to a TXT query at a
+                // (possibly mutated) host, then filter answers by a content prefix.
+                let queryHost = host;
+                let queryType: string = t;
+                let txtPrefix: string | null = null;
+                if (isVirtualType(t)) {
+                  queryHost = resolveVirtualHost(t, host, dkimSelector); // throws for DKIM w/o selector
+                  queryType = "TXT";
+                  txtPrefix = VIRTUAL_TYPE_MAP[t].txtPrefix;
+                }
+                const r = await fetchT(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(queryHost)}&type=${queryType}`, { headers: { Accept: "application/dns-json" } }, 8_000);
                 const j = await r.json().catch(() => ({})) as { Status?: number; Answer?: Array<{ data: string }> };
                 if (typeof j.Status === "number") statuses.push(j.Status);
-                out[t] = j.Answer?.map((a) => a.data) ?? [];
+                const answers = j.Answer?.map((a) => a.data) ?? [];
+                out[t] = txtPrefix !== null ? filterTxtByPrefix(answers, txtPrefix) : answers;
                 // Distinguish a genuine empty result (NOERROR/NXDOMAIN) from a lookup
                 // failure (HTTP error or SERVFAIL) so [] can't read as "no records".
                 const dErr = dohTypeError(r.ok, r.status, j.Status);
@@ -1754,6 +1766,7 @@ Deno.serve(async (req) => {
               } catch (e) {
                 // One record-type's network failure/timeout must not collapse the
                 // whole DNS lookup (Promise.all would reject and lose the rest).
+                // resolveVirtualHost throwing (DKIM without selector) is captured here too.
                 out[t] = [];
                 errs[t] = String(e instanceof Error ? e.message : e);
               }
