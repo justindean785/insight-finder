@@ -10,6 +10,7 @@ import { hashInput, normalizeForHash, sanitizeToolOutput, TOOL_CACHE_LRU } from 
 import { tierForTool, modelForTool, type Tier } from "./models.ts";
 import { costForTool } from "./costs.ts";
 import { NO_CACHE_TOOLS, TOOL_TTL_MS } from "./validation.ts";
+import { creditsCharged } from "./billing.ts";
 import * as circuit from "./circuit.ts";
 
 // ---- Central tool cache wrapper ------------------------------------------------
@@ -109,8 +110,12 @@ export function wrapToolsWithCache(
       statusCode: number | null = null,
       freeCall: boolean = false,
     ) => {
+      // Attributed (list) price of this call — logged for every paid, non-cached
+      // call so the export can separate charged vs avoided. The actual credit
+      // charge is success-only: failed/timed-out/dup-key calls bill nothing.
       const cost = (cached || freeCall) ? 0 : baseCost;
-      if (!cached && !freeCall && cost > 0) ctx.onCost?.(cost);
+      const charged = creditsCharged({ ok, cached, free: freeCall, baseCost });
+      if (charged > 0) ctx.onCost?.(charged);
       try {
         const { error } = await adminDb.from("tool_usage_log").insert({
           user_id: ctx.userId,

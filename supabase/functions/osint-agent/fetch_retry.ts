@@ -9,7 +9,7 @@
  * Behavior:
  *   - Retries on HTTP 429 and 5xx (max 2 retries by default)
  *   - Retries on thrown network errors
- *   - Per-attempt timeout (default 30s) so a stalled upstream connection can
+ *   - Per-attempt timeout (default 15s) so a stalled upstream connection can
  *     never hang the orchestrator stream forever — combines with any
  *     caller-supplied AbortSignal
  *   - Honors a pre-set AbortSignal — does not issue more requests after abort
@@ -23,7 +23,7 @@ export async function fetchRetry(
 ): Promise<Response> {
   const retries = opts.retries ?? 2;
   const base = opts.baseDelayMs ?? 400;
-  const timeoutMs = opts.timeoutMs ?? 30_000;
+  const timeoutMs = opts.timeoutMs ?? 15_000;
   let lastErr: unknown;
   const external = (init as { signal?: AbortSignal }).signal;
   for (let attempt = 0; attempt <= retries; attempt++) {

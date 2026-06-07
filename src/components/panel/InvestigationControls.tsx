@@ -3,6 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { buildEvidenceMatrixMarkdown, buildInvestigationSummary, buildReportMarkdown } from "@/lib/intel";
 import { useReviewStates } from "@/lib/review";
+import { summarizeRunCosts } from "@/lib/runCost";
 import { Button } from "@/components/ui/button";
 import { Copy, FileText, Table, Braces, RotateCcw, CheckCheck, Undo2, Download, Activity, Lock, AlertTriangle } from "lucide-react";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
@@ -57,13 +58,10 @@ export function InvestigationControls({
     return {
       exported_at: new Date().toISOString(),
       thread: thread ?? { id: threadId },
-      summary: {
-        calls: usage?.length ?? 0,
-        ok: (usage ?? []).filter((u) => u.ok).length,
-        failed: (usage ?? []).filter((u) => !u.ok).length,
-        cached: (usage ?? []).filter((u) => u.cached).length,
-        cost_micro_usd: (usage ?? []).reduce((s, u) => s + (u.cost_micro_usd ?? 0), 0),
-      },
+      // Charged cost (successful calls) is reported separately from the cost
+      // avoided by not billing failed/timed-out calls. cost_micro_usd is the
+      // amount actually charged.
+      summary: summarizeRunCosts(usage ?? []),
       tool_calls: usage ?? [],
       artifacts,
     };
