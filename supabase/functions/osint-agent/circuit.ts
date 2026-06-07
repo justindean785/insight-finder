@@ -12,6 +12,8 @@ export type FailureKind =
   | "http_404"
   | "http_429"
   | "http_500"
+  | "http_502"
+  | "http_504"
   | "timeout"
   | "other";
 
@@ -167,6 +169,15 @@ export function recordResult(
       b.disabledReason = `429 backoff ${Math.round(backoff / 1000)}s`;
       break;
     }
+    case "http_502":
+    case "http_504":
+      // Gateway error — the upstream provider is down/unreachable. Fail fast:
+      // disable it for the rest of the run on the FIRST occurrence so the agent
+      // doesn't spam retries (each can hang for the full fetch timeout) or burn
+      // credits re-hitting a dead provider.
+      b.disabledReason = `${outcome.status === "http_504" ? "504 gateway timeout" : "502 bad gateway"} — disabled for thread`;
+      if (selector) b.deadSelectors.add(selector);
+      break;
     case "timeout":
     case "http_500":
       if (b.consecutive >= 2 && selector) b.deadSelectors.add(selector);
@@ -199,6 +210,8 @@ export function classifyResult(result: unknown, threw: unknown): FailureKind {
     if (status === 403) return "http_403";
     if (status === 404) return "http_404";
     if (status === 429) return "http_429";
+    if (status === 502) return "http_502";
+    if (status === 504) return "http_504";
     if (status >= 500) return "http_500";
     const err = String(r.error ?? "").toLowerCase();
     if (err.includes("timeout")) return "timeout";
