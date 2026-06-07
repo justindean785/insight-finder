@@ -13,15 +13,20 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
   const [seed, setSeed] = useState<{ value: string | null; type: string | null }>({ value: null, type: null });
 
   useEffect(() => {
+    // Guard against a late response from a previous thread overwriting the
+    // current thread's seed when the user switches threads quickly.
+    let alive = true;
     supabase
       .from("threads")
       .select("seed_value,seed_type")
       .eq("id", threadId)
       .maybeSingle()
       .then(({ data }) => {
+        if (!alive) return;
         const d = data as { seed_value: string | null; seed_type: string | null } | null;
         setSeed({ value: d?.seed_value ?? null, type: d?.seed_type ?? null });
       });
+    return () => { alive = false; };
   }, [threadId]);
 
   const messages = useThreadMessages(threadId);

@@ -60,6 +60,7 @@ function focusChat() {
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [threads, setThreads] = useState<Thread[]>([]);
+  const [loadError, setLoadError] = useState(false);
   const navigate = useNavigate();
 
   // Cmd/Ctrl+K toggle, ESC handled by Dialog.
@@ -74,17 +75,24 @@ export function CommandPalette() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Lazy-load recent threads when the palette opens.
+  // Lazy-load recent threads when the palette opens. Surface load failures so a
+  // query error is distinguishable from a genuinely empty case list.
   useEffect(() => {
     if (!open) return;
     let alive = true;
+    setLoadError(false);
     (async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("threads")
         .select("id,title,seed_value,updated_at")
         .order("updated_at", { ascending: false })
         .limit(12);
-      if (alive && data) setThreads(data as Thread[]);
+      if (!alive) return;
+      if (error) {
+        setLoadError(true);
+        return;
+      }
+      if (data) setThreads(data as Thread[]);
     })();
     return () => { alive = false; };
   }, [open]);
@@ -100,6 +108,12 @@ export function CommandPalette() {
       <CommandInput placeholder="Search cases, jump to a tab, run an action…" />
       <CommandList className="max-h-[440px]">
         <CommandEmpty>No matches.</CommandEmpty>
+
+        {loadError && (
+          <div className="px-3 py-2 text-[11px] text-destructive">
+            Couldn't load recent cases. Close and reopen to retry.
+          </div>
+        )}
 
         <CommandGroup heading="Quick actions">
           <PaletteItem
