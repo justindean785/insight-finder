@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Mail, Phone, Globe, User as UserIcon, Network, ShieldAlert, MapPin, Image as ImgIcon, Tag,
@@ -112,40 +112,45 @@ export function ResourcesPanel({
     ] },
   ];
 
-  const groupedCounts = GROUP_ORDER.reduce<Record<Group, number>>((acc, group) => {
-    acc[group] = items.filter((item) => groupForKind(item.kind) === group).length;
-    return acc;
-  }, {} as Record<Group, number>);
-  const groupCount = GROUP_ORDER.filter((group) => groupedCounts[group] > 0).length;
-  const reviewStates = items.map((item) => review.get(item.id));
-  const reviewedCount = reviewStates.filter((state) => state !== "new").length;
-  const keyCount = reviewStates.filter((state) => state === "key" || state === "confirmed").length;
-  const issueCount = items.filter((item, index) => {
-    const state = reviewStates[index];
-    const meta = (item.metadata ?? {}) as Record<string, unknown>;
-    return state === "recheck" || state === "dismissed" || state === "wrong" || meta.false_positive === true;
-  }).length;
-  const densityCount = items.filter((item) => item.confidence != null && item.confidence >= 70).length;
-  const SECTION_COUNTS: Record<(typeof SECTIONS)[number]["key"], number | undefined> = {
-    evidence: items.length,
-    analysis: groupCount,
-    provenance: issueCount,
-    output: keyCount,
-  };
-  const TAB_COUNTS: Record<string, number | undefined> = {
-    overview: reviewedCount,
-    artifacts: items.length,
-    clusters: groupCount,
-    matrix: items.length,
-    pivots: densityCount,
-    timeline: items.length,
-    map: items.filter((item) => ["address", "ip"].includes(item.kind.toLowerCase())).length,
-    custody: seed?.value ? 1 : undefined,
-    audit: reviewedCount,
-    issues: issueCount,
-    notes: keyCount,
-    report: keyCount,
-  };
+  // Derived counts re-run on every render otherwise; memoize the whole pass over
+  // `items` so tab switches and review changes don't re-scan the evidence set.
+  const { groupCount, reviewedCount, keyCount, issueCount, SECTION_COUNTS, TAB_COUNTS } = useMemo(() => {
+    const groupedCounts = GROUP_ORDER.reduce<Record<Group, number>>((acc, group) => {
+      acc[group] = items.filter((item) => groupForKind(item.kind) === group).length;
+      return acc;
+    }, {} as Record<Group, number>);
+    const groupCount = GROUP_ORDER.filter((group) => groupedCounts[group] > 0).length;
+    const reviewStates = items.map((item) => review.get(item.id));
+    const reviewedCount = reviewStates.filter((state) => state !== "new").length;
+    const keyCount = reviewStates.filter((state) => state === "key" || state === "confirmed").length;
+    const issueCount = items.filter((item, index) => {
+      const state = reviewStates[index];
+      const meta = (item.metadata ?? {}) as Record<string, unknown>;
+      return state === "recheck" || state === "dismissed" || state === "wrong" || meta.false_positive === true;
+    }).length;
+    const densityCount = items.filter((item) => item.confidence != null && item.confidence >= 70).length;
+    const SECTION_COUNTS: Record<(typeof SECTIONS)[number]["key"], number | undefined> = {
+      evidence: items.length,
+      analysis: groupCount,
+      provenance: issueCount,
+      output: keyCount,
+    };
+    const TAB_COUNTS: Record<string, number | undefined> = {
+      overview: reviewedCount,
+      artifacts: items.length,
+      clusters: groupCount,
+      matrix: items.length,
+      pivots: densityCount,
+      timeline: items.length,
+      map: items.filter((item) => ["address", "ip"].includes(item.kind.toLowerCase())).length,
+      custody: seed?.value ? 1 : undefined,
+      audit: reviewedCount,
+      issues: issueCount,
+      notes: keyCount,
+      report: keyCount,
+    };
+    return { groupCount, reviewedCount, keyCount, issueCount, SECTION_COUNTS, TAB_COUNTS };
+  }, [items, review, seed]);
 
   const activeSection = SECTIONS.find((s) => s.key === section)!;
 

@@ -12,15 +12,7 @@ import { toast } from "sonner";
 import { BrainPanel } from "./BrainPanel";
 import { CostMeter } from "@/components/ui/cost-meter";
 import { SwarmMark } from "@/components/ui/swarm-mark";
-
-function timeAgo(iso: string): string {
-  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (diff < 60) return "just now";
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
-  return new Date(iso).toLocaleDateString();
-}
+import { timeAgo } from "@/lib/time";
 
 type Thread = {
   id: string;
@@ -128,15 +120,25 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
       }
     };
     load();
+    // A single scan emits a burst of artifact INSERTs; firing a full reload on
+    // each one thrashes the UI and backend. Coalesce realtime events into one
+    // reload per quiet window. (A scoped thread-summary RPC is the longer-term
+    // fix — see the scalability roadmap.)
+    let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+    const scheduleLoad = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(load, 400);
+    };
     const ch = supabase
       .channel("threads-sidebar")
-      .on("postgres_changes", { event: "*", schema: "public", table: "threads" }, load)
-      .on("postgres_changes", { event: "*", schema: "public", table: "agent_memory" }, load)
-      .on("postgres_changes", { event: "*", schema: "public", table: "artifacts" }, load)
+      .on("postgres_changes", { event: "*", schema: "public", table: "threads" }, scheduleLoad)
+      .on("postgres_changes", { event: "*", schema: "public", table: "agent_memory" }, scheduleLoad)
+      .on("postgres_changes", { event: "*", schema: "public", table: "artifacts" }, scheduleLoad)
       .subscribe();
-    const onVisit = () => load();
+    const onVisit = () => scheduleLoad();
     window.addEventListener("proximity:brain-visited", onVisit);
     return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
       supabase.removeChannel(ch);
       window.removeEventListener("proximity:brain-visited", onVisit);
     };

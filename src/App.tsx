@@ -1,14 +1,17 @@
+import { lazy, Suspense } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+// Entry/auth routes stay eager — they're tiny and on the first-paint path.
 import IndexRedirect from "./pages/IndexRedirect";
 import Auth from "./pages/Auth";
-import ChatPage from "./pages/ChatPage";
 import NotFound from "./pages/NotFound";
-import AdminSecurity from "./pages/AdminSecurity";
-import BrainGlobalPage from "./pages/BrainGlobalPage";
+// Heavy routes are code-split out of the main bundle.
+const ChatPage = lazy(() => import("./pages/ChatPage"));
+const AdminSecurity = lazy(() => import("./pages/AdminSecurity"));
+const BrainGlobalPage = lazy(() => import("./pages/BrainGlobalPage"));
 import { hasSupabaseEnv, supabaseConfigError } from "./integrations/supabase/client";
 
 const queryClient = new QueryClient();
@@ -27,14 +30,20 @@ const App = () => (
           v7_relativeSplatPath: true,
         }}
       >
-        <Routes>
-          <Route path="/" element={<IndexRedirect />} />
-          <Route path="/auth" element={<Auth />} />
-          <Route path="/chat/:threadId" element={<ChatPage />} />
-          <Route path="/brain" element={<BrainGlobalPage />} />
-          <Route path="/admin/security" element={<AdminSecurity />} />
-          <Route path="*" element={<NotFound />} />
-        </Routes>
+        <Suspense
+          fallback={
+            <div className="min-h-screen flex items-center justify-center text-muted-foreground">Loading…</div>
+          }
+        >
+          <Routes>
+            <Route path="/" element={<IndexRedirect />} />
+            <Route path="/auth" element={<Auth />} />
+            <Route path="/chat/:threadId" element={<ChatPage />} />
+            <Route path="/brain" element={<BrainGlobalPage />} />
+            <Route path="/admin/security" element={<AdminSecurity />} />
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </Suspense>
       </BrowserRouter>
       )}
     </TooltipProvider>
