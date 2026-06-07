@@ -1,284 +1,201 @@
 import { describe, it, expect } from "vitest";
+import {
+  groupForKind,
+  GROUP_LABEL,
+  GROUP_ORDER,
+  adjustedConfidence,
+  labelForArtifact,
+  isBreachSource,
+  isUsernameSweepSource,
+  isDirectProfileSource,
+  isSensitiveKind,
+} from "@/lib/intel";
+import type { Artifact } from "@/hooks/useThreadArtifacts";
 
-// ── Core intel / confidence logic extracted from src/lib/intel.ts ──
+// Rewritten to import the REAL src/lib/intel exports. The previous version of
+// this file re-implemented the logic inline and had silently diverged from
+// production (e.g. it claimed groupForKind("username") === "contact" and
+// groupForKind("github") === "social"; the real mapping returns "social" and
+// "other" respectively).
 
-const GROUP_ORDER = ["identity", "contact", "social", "infrastructure", "breach", "web", "crypto", "other"] as const;
-type Group = typeof GROUP_ORDER[number];
-
-const GROUP_LABEL: Record<Group, string> = {
-  identity: "IDENTITY",
-  contact: "CONTACT",
-  social: "SOCIAL",
-  infrastructure: "INFRASTRUCTURE",
-  breach: "BREACH",
-  web: "WEB",
-  crypto: "CRYPTO",
-  other: "OTHER",
-};
-
-function groupForKind(kind: string): Group {
-  const k = kind.toLowerCase();
-  if (["email", "name", "username", "avatar", "phone", "person"].includes(k)) return "contact";
-  if (["ip", "domain", "url", "subdomain", "host"].includes(k)) return "infrastructure";
-  if (["social", "twitter", "instagram", "linkedin", "github", "tiktok", "telegram"].includes(k)) return "social";
-  if (["breach", "leak", "credential", "password"].includes(k)) return "breach";
-  if (["wallet", "crypto", "bitcoin", "ethereum"].includes(k)) return "crypto";
-  if (["website", "webpage", "html", "screenshot"].includes(k)) return "web";
-  if (["name", "full_name", "person", "identity"].includes(k)) return "identity";
-  return "other";
-}
-
-const REVIEW_CLASS: Record<string, string> = {
-  confirmed: "bg-[hsl(var(--confidence-high))]/15 text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/40",
-  key: "bg-primary/15 text-primary border-primary/40",
-  dismissed: "bg-muted/30 text-muted-foreground border-muted-foreground/30",
-  recheck: "bg-warning/15 text-warning border-warning/40",
-};
-
-type ReviewState = "confirmed" | "key" | "dismissed" | "recheck" | null;
-
-// Confidence tier classification
-type ConfTier = "high" | "mid" | "low";
-function classifyConfidence(conf: number): ConfTier {
-  if (conf >= 70) return "high";
-  if (conf >= 50) return "mid";
-  return "low";
-}
-
-function confColor(tier: ConfTier): string {
-  if (tier === "high") return "hsl(var(--brain-cyan))";
-  if (tier === "mid") return "hsl(var(--confidence-mid))";
-  return "hsl(var(--confidence-low))";
-}
-
-// ── Tests: groupForKind ──────────────────────────────────────────
+const art = (over: Partial<Artifact> = {}): Artifact => ({
+  id: "1",
+  kind: "email",
+  value: "a@b.com",
+  confidence: 60,
+  source: "whois",
+  created_at: new Date().toISOString(),
+  metadata: null,
+  ...over,
+});
 
 describe("groupForKind", () => {
-  it("classifies email as contact", () => {
+  it("maps identity kinds", () => {
+    expect(groupForKind("name")).toBe("identity");
+    expect(groupForKind("person")).toBe("identity");
+    expect(groupForKind("avatar")).toBe("identity");
+  });
+
+  it("maps contact kinds", () => {
     expect(groupForKind("email")).toBe("contact");
-  });
-
-  it("classifies phone as contact", () => {
     expect(groupForKind("phone")).toBe("contact");
+    expect(groupForKind("address")).toBe("contact");
   });
 
-  it("classifies username as contact", () => {
-    expect(groupForKind("username")).toBe("contact");
+  it("maps social kinds (username is social, not contact)", () => {
+    expect(groupForKind("username")).toBe("social");
+    expect(groupForKind("handle")).toBe("social");
+    expect(groupForKind("social")).toBe("social");
   });
 
-  it("classifies ip as infrastructure", () => {
+  it("maps infrastructure kinds", () => {
     expect(groupForKind("ip")).toBe("infrastructure");
-  });
-
-  it("classifies domain as infrastructure", () => {
     expect(groupForKind("domain")).toBe("infrastructure");
+    expect(groupForKind("subdomain")).toBe("infrastructure");
   });
 
-  it("classifies url as infrastructure", () => {
-    expect(groupForKind("url")).toBe("infrastructure");
-  });
-
-  it("classifies breach as breach", () => {
+  it("maps breach / web / crypto kinds", () => {
     expect(groupForKind("breach")).toBe("breach");
-    expect(groupForKind("leak")).toBe("breach");
-    expect(groupForKind("credential")).toBe("breach");
-  });
-
-  it("classifies social platforms as social", () => {
-    expect(groupForKind("twitter")).toBe("social");
-    expect(groupForKind("instagram")).toBe("social");
-    expect(groupForKind("github")).toBe("social");
-    expect(groupForKind("tiktok")).toBe("social");
-  });
-
-  it("classifies wallet/crypto as crypto", () => {
+    expect(groupForKind("password")).toBe("breach");
+    expect(groupForKind("url")).toBe("web");
     expect(groupForKind("wallet")).toBe("crypto");
-    expect(groupForKind("bitcoin")).toBe("crypto");
-    expect(groupForKind("ethereum")).toBe("crypto");
-  });
-
-  it("classifies web artifacts as web", () => {
-    expect(groupForKind("website")).toBe("web");
-    expect(groupForKind("screenshot")).toBe("web");
-    expect(groupForKind("webpage")).toBe("web");
+    expect(groupForKind("crypto")).toBe("crypto");
   });
 
   it("is case-insensitive", () => {
     expect(groupForKind("EMAIL")).toBe("contact");
     expect(groupForKind("Domain")).toBe("infrastructure");
-    expect(groupForKind("BREACH")).toBe("breach");
   });
 
-  it("returns other for unknown kinds", () => {
+  it("returns other for unmapped kinds (incl. platform names)", () => {
+    expect(groupForKind("github")).toBe("other");
+    expect(groupForKind("twitter")).toBe("other");
     expect(groupForKind("unknown_thing")).toBe("other");
     expect(groupForKind("")).toBe("other");
   });
 
-  it("all groups have labels", () => {
+  it("every group in GROUP_ORDER has a non-empty label", () => {
+    expect(GROUP_ORDER).toHaveLength(8);
     for (const g of GROUP_ORDER) {
-      expect(GROUP_LABEL[g]).toBeTruthy();
-    }
-  });
-
-  it("all group labels are uppercase", () => {
-    for (const label of Object.values(GROUP_LABEL)) {
-      expect(label).toBe(label.toUpperCase());
+      expect(typeof GROUP_LABEL[g]).toBe("string");
+      expect(GROUP_LABEL[g].length).toBeGreaterThan(0);
     }
   });
 });
 
-// ── Tests: confidence classification ─────────────────────────────
-
-describe("confidence classification", () => {
-  it("classifies 70+ as high", () => {
-    expect(classifyConfidence(70)).toBe("high");
-    expect(classifyConfidence(85)).toBe("high");
-    expect(classifyConfidence(100)).toBe("high");
+describe("source classifiers", () => {
+  it("identifies breach-only sources", () => {
+    expect(isBreachSource("breach_check")).toBe(true);
+    expect(isBreachSource("leakcheck_lookup")).toBe(true);
+    expect(isBreachSource("whois")).toBe(false);
+    expect(isBreachSource(null)).toBe(false);
   });
 
-  it("classifies 50-69 as mid", () => {
-    expect(classifyConfidence(50)).toBe("mid");
-    expect(classifyConfidence(60)).toBe("mid");
-    expect(classifyConfidence(69)).toBe("mid");
+  it("identifies username-sweep sources", () => {
+    expect(isUsernameSweepSource("username_sweep")).toBe(true);
+    expect(isUsernameSweepSource("github_user")).toBe(false);
   });
 
-  it("classifies < 50 as low", () => {
-    expect(classifyConfidence(0)).toBe("low");
-    expect(classifyConfidence(25)).toBe("low");
-    expect(classifyConfidence(49)).toBe("low");
+  it("identifies direct-profile sources", () => {
+    expect(isDirectProfileSource("github_user")).toBe(true);
+    expect(isDirectProfileSource("socialfetch_lookup")).toBe(true);
+    expect(isDirectProfileSource("whois")).toBe(false);
   });
 
-  it("handles edge values correctly", () => {
-    expect(classifyConfidence(69.9)).toBe("mid");
-    expect(classifyConfidence(70)).toBe("high");
-  });
-
-  it("maps tiers to correct colors", () => {
-    expect(confColor("high")).toBe("hsl(var(--brain-cyan))");
-    expect(confColor("mid")).toBe("hsl(var(--confidence-mid))");
-    expect(confColor("low")).toBe("hsl(var(--confidence-low))");
+  it("identifies sensitive kinds and metadata flags", () => {
+    expect(isSensitiveKind("name")).toBe(true);
+    expect(isSensitiveKind("phone")).toBe(true);
+    expect(isSensitiveKind("domain")).toBe(false);
+    expect(isSensitiveKind("domain", { pii: true })).toBe(true);
   });
 });
 
-// ── Tests: review state classification ───────────────────────────
-
-describe("review state classification", () => {
-  it("all review states have CSS classes", () => {
-    expect(REVIEW_CLASS.confirmed).toBeTruthy();
-    expect(REVIEW_CLASS.key).toBeTruthy();
-    expect(REVIEW_CLASS.dismissed).toBeTruthy();
-    expect(REVIEW_CLASS.recheck).toBeTruthy();
+describe("adjustedConfidence", () => {
+  it("passes through the base confidence with a single source", () => {
+    expect(adjustedConfidence(art({ source: "whois", confidence: 50 }))).toBe(50);
   });
 
-  it("confirmed state uses confidence-high color", () => {
-    expect(REVIEW_CLASS.confirmed).toContain("confidence-high");
+  it("adds a corroboration bonus for ≥2 distinct source classes", () => {
+    expect(
+      adjustedConfidence(art({ source: "whois", confidence: 50, metadata: { sources: ["whois", "virustotal"] } })),
+    ).toBe(55);
   });
 
-  it("key state uses primary color", () => {
-    expect(REVIEW_CLASS.key).toContain("primary");
+  it("rewards a direct-profile observation", () => {
+    expect(adjustedConfidence(art({ kind: "username", source: "github_user", confidence: 60 }))).toBe(65);
   });
 
-  it("dismissed state uses muted color", () => {
-    expect(REVIEW_CLASS.dismissed).toContain("muted");
+  it("penalizes breach-only and sweep-only signals", () => {
+    expect(adjustedConfidence(art({ source: "breach_check", confidence: 60 }))).toBe(55);
+    expect(adjustedConfidence(art({ source: "username_sweep", confidence: 60 }))).toBe(50);
   });
 
-  it("recheck state uses warning color", () => {
-    expect(REVIEW_CLASS.recheck).toContain("warning");
-  });
-});
-
-// ── Tests: severity classification for evidence groups ───────────
-
-type Severity = "high" | "mid" | "low" | "failed";
-
-function classifyEvidenceSeverity(
-  artifacts: { confidence: number | null; false_positive?: boolean }[],
-): { high: number; mid: number; low: number; failed: number; overall: Severity } {
-  let high = 0, mid = 0, low = 0, failed = 0;
-  for (const a of artifacts) {
-    if (a.false_positive) { failed++; continue; }
-    const c = a.confidence ?? 0;
-    if (c >= 70) high++;
-    else if (c >= 50) mid++;
-    else low++;
-  }
-  const overall: Severity =
-    failed > 0 ? "failed" :
-    low > 0 ? "low" :
-    mid > 0 ? "mid" : "high";
-  return { high, mid, low, failed, overall };
-}
-
-describe("evidence severity classification", () => {
-  it("all high-confidence → overall high", () => {
-    const result = classifyEvidenceSeverity([
-      { confidence: 90 }, { confidence: 85 }, { confidence: 95 },
-    ]);
-    expect(result.overall).toBe("high");
-    expect(result.high).toBe(3);
+  it("applies analyst review deltas", () => {
+    expect(adjustedConfidence(art({ source: "whois", confidence: 50 }), "confirmed")).toBe(70);
+    expect(adjustedConfidence(art({ source: "whois", confidence: 50 }), "wrong")).toBe(10);
   });
 
-  it("mixed confidence → overall reflects lowest", () => {
-    const result = classifyEvidenceSeverity([
-      { confidence: 95 }, { confidence: 45 }, { confidence: 80 },
-    ]);
-    expect(result.overall).toBe("low"); // low is lowest non-failed
-    expect(result.high).toBe(2);
-    expect(result.low).toBe(1);
+  it("subtracts for explicit conflict metadata", () => {
+    expect(adjustedConfidence(art({ source: "whois", confidence: 80, metadata: { conflict: true } }))).toBe(65);
   });
 
-  it("false positive overrides all", () => {
-    const result = classifyEvidenceSeverity([
-      { confidence: 99, false_positive: true }, { confidence: 95 },
-    ]);
-    expect(result.overall).toBe("failed");
-    expect(result.failed).toBe(1);
-    expect(result.high).toBe(1);
-  });
-
-  it("handles null confidence as 0 (low)", () => {
-    const result = classifyEvidenceSeverity([
-      { confidence: null }, { confidence: 80 }, { confidence: 55 },
-    ]);
-    expect(result.overall).toBe("low");
-    expect(result.low).toBe(1);
-  });
-
-  it("mid confidence only → overall mid", () => {
-    const result = classifyEvidenceSeverity([
-      { confidence: 55 }, { confidence: 65 }, { confidence: 50 },
-    ]);
-    expect(result.overall).toBe("mid");
-    expect(result.mid).toBe(3);
-  });
-
-  it("empty list → overall high (no issues)", () => {
-    const result = classifyEvidenceSeverity([]);
-    expect(result.overall).toBe("high");
-    expect(result.high).toBe(0);
+  it("caps possible-minor artifacts at 55", () => {
+    expect(adjustedConfidence(art({ source: "whois", confidence: 90, metadata: { possible_minor: true } }))).toBe(55);
   });
 });
 
-// ── Tests: REVIEW_SHORT abbreviations ────────────────────────────
-
-const REVIEW_SHORT: Record<string, string> = {
-  confirmed: "CONF",
-  key: "KEY",
-  dismissed: "DISM",
-  recheck: "RECHK",
-};
-
-describe("REVIEW_SHORT", () => {
-  it("all review states have short labels", () => {
-    expect(REVIEW_SHORT.confirmed).toBe("CONF");
-    expect(REVIEW_SHORT.key).toBe("KEY");
-    expect(REVIEW_SHORT.dismissed).toBe("DISM");
-    expect(REVIEW_SHORT.recheck).toBe("RECHK");
+describe("labelForArtifact", () => {
+  it("forces FAILED for dismissed/wrong/false_positive", () => {
+    expect(labelForArtifact(art(), "dismissed")).toBe("FAILED");
+    expect(labelForArtifact(art({ metadata: { false_positive: true } }))).toBe("FAILED");
   });
 
-  it("short labels are ≤ 5 characters", () => {
-    for (const short of Object.values(REVIEW_SHORT)) {
-      expect(short.length).toBeLessThanOrEqual(5);
-    }
+  it("returns CONFLICT for conflict/collision metadata", () => {
+    expect(labelForArtifact(art({ metadata: { conflict: true } }))).toBe("CONFLICT");
+  });
+
+  it("short-circuits analyst attestations to CONFIRMED", () => {
+    expect(labelForArtifact(art(), "confirmed")).toBe("CONFIRMED");
+    expect(labelForArtifact(art({ metadata: { reviewed: true } }))).toBe("CONFIRMED");
+  });
+
+  it("caps sweep-only handles at VERIFY", () => {
+    expect(labelForArtifact(art({ kind: "username", source: "username_sweep", confidence: 95 }))).toBe("VERIFY");
+  });
+
+  it("keeps breach-only sensitive PII at VERIFY unless seed-linked", () => {
+    expect(labelForArtifact(art({ kind: "name", source: "breach_check", confidence: 90 }))).toBe("VERIFY");
+    expect(
+      labelForArtifact(art({ kind: "name", source: "breach_check", confidence: 90, metadata: { parent: "seed@x.com" } })),
+    ).toBe("CORRELATED");
+  });
+
+  it("lifts a breach-corroborated email to CORRELATED", () => {
+    expect(
+      labelForArtifact(
+        art({ kind: "email", source: "breach_check", confidence: 80, metadata: { sources: ["breach_check", "leakcheck"] } }),
+      ),
+    ).toBe("CORRELATED");
+  });
+
+  it("rates identity handles without a direct profile by confidence", () => {
+    expect(labelForArtifact(art({ kind: "username", source: "exa", confidence: 60 }))).toBe("INFERRED");
+    expect(labelForArtifact(art({ kind: "username", source: "exa", confidence: 30 }))).toBe("VERIFY");
+  });
+
+  it("promotes multi-source-class corroboration", () => {
+    expect(
+      labelForArtifact(
+        art({ kind: "username", source: "github_user", confidence: 85, metadata: { sources: ["github_user", "whois"] } }),
+      ),
+    ).toBe("CONFIRMED");
+    expect(
+      labelForArtifact(art({ kind: "email", source: "whois", confidence: 75, metadata: { sources: ["whois", "virustotal"] } })),
+    ).toBe("CORRELATED");
+  });
+
+  it("falls back to INFERRED / LOW for single-source non-identity", () => {
+    expect(labelForArtifact(art({ kind: "email", source: "whois", confidence: 90 }))).toBe("INFERRED");
+    expect(labelForArtifact(art({ kind: "email", source: "whois", confidence: 30 }))).toBe("LOW");
   });
 });
