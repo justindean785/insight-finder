@@ -34,3 +34,6 @@ supabase/.temp/
 # Edge function backups / refactor scratch
 **/*.ts.bak
 **/*.bak
+
+# test coverage
+coverage
