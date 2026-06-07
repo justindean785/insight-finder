@@ -38,8 +38,10 @@ describe("frontend index.html: CSP + hardening (F-B5)", () => {
     expect(indexHtml).toMatch(/http-equiv="Content-Security-Policy"/);
   });
 
-  it("CSP locks frame-ancestors to none (clickjacking protection)", () => {
-    expect(indexHtml).toMatch(/frame-ancestors 'none'/);
+  it("CSP keeps browser-enforced directives in valid meta-compatible form", () => {
+    expect(indexHtml).not.toMatch(/frame-ancestors 'none'/);
+    expect(indexHtml).toMatch(/base-uri 'self'/);
+    expect(indexHtml).toMatch(/form-action 'self'/);
   });
 
   it("CSP restricts script-src to self + supabase", () => {
@@ -73,7 +75,6 @@ describe(".env.example: onboarding schema (F-A1)", () => {
     "VITE_SUPABASE_PUBLISHABLE_KEY",
     "VITE_SUPABASE_PROJECT_ID",
     "MINIMAX_API_KEY",
-    "LOVABLE_API_KEY",
     "OATHNET_API_KEY",
     "SERUS_API_KEY",
     "HIBP_API_KEY",

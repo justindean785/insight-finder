@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
-import { lovable } from "@/integrations/lovable";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -46,10 +45,15 @@ export default function Auth() {
   };
 
   const google = async () => {
-    const r = await lovable.auth.signInWithOAuth("google", {
-      redirect_uri: window.location.origin,
+    setLoading(true);
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: `${window.location.origin}/`,
+      },
     });
-    if (r.error) toast.error(String(r.error));
+    setLoading(false);
+    if (error) toast.error(error.message);
   };
 
   return (
@@ -154,9 +158,11 @@ export default function Auth() {
           </div>
 
           <Button
+            type="button"
             variant="outline"
             className="w-full h-10 bg-transparent border-white/[0.08] hover:bg-white/[0.04] hover:border-white/[0.14] text-foreground/90"
             onClick={google}
+            disabled={loading}
           >
             <svg viewBox="0 0 24 24" className="w-4 h-4 mr-2" aria-hidden>
               <path fill="#EA4335" d="M12 10.2v3.9h5.5c-.24 1.4-1.65 4.1-5.5 4.1-3.32 0-6-2.74-6-6.1S8.68 6 12 6c1.88 0 3.15.8 3.87 1.5l2.64-2.55C16.78 3.4 14.6 2.4 12 2.4 6.7 2.4 2.4 6.7 2.4 12s4.3 9.6 9.6 9.6c5.55 0 9.22-3.9 9.22-9.4 0-.63-.07-1.1-.16-1.6H12z" />

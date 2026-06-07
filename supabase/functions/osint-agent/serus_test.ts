@@ -9,7 +9,7 @@
  *   - Initiate error → serusErrorPayload mapping
  *   - Poll loop: terminal on success/failed
  *   - Poll loop: timeout after maxRetries
- *   - Poll loop: ?reveal=true parameter is appended for reveal mode
+ *   - Reveal mode waits for terminal success, then does one reveal fetch
  *   - Auth header on every fetch (Bearer + JSON)
  *   - Missing key → no network call, returns config error
  */
@@ -17,18 +17,16 @@ import {
   assertEquals,
   assertExists,
   assertStringIncludes,
-  assertNotEquals,
   assertFalse,
 } from "jsr:@std/assert@^1";
 import { stub } from "jsr:@std/testing@^1/mock";
 
 import {
   runSerusScan,
-  serus_darkweb_scan,
   parseInitiateResponse,
   isTerminalStatus,
   shapeTerminalResult,
-} from "./tools/serus.ts";
+} from "./tools/serus_core.ts";
 import { SERUS_API_KEY } from "./env.ts";
 
 // ---- Pure parsers (imported from real module, not re-implemented) --------
@@ -351,7 +349,7 @@ Deno.test("runSerusScan: initiate 200 but no id → error, no poll calls", async
   }
 });
 
-Deno.test("runSerusScan: reveal=true adds ?reveal=true to poll URL", async () => {
+Deno.test("runSerusScan: reveal=true polls masked until success, then fetches reveal once", async () => {
   if (!SERUS_API_KEY) {
     console.log("SKIP: SERUS_API_KEY is unset");
     return;
@@ -360,6 +358,7 @@ Deno.test("runSerusScan: reveal=true adds ?reveal=true to poll URL", async () =>
   const responses = [
     okJson({ id: "scan-R", status: "processing" }),
     okJson({ status: "processing" }),
+    okJson({ status: "success", isBreached: false, breaches: [], pastes: [] }),
     okJson({ status: "success", isBreached: false, breaches: [], pastes: [] }),
   ];
   const fetchStub = stub(
@@ -372,17 +371,48 @@ Deno.test("runSerusScan: reveal=true adds ?reveal=true to poll URL", async () =>
     },
   );
   try {
-    await runSerusScan("email", "x@y.com", {
+    const r = await runSerusScan("email", "x@y.com", {
       reveal: true,
       maxRetries: 3,
       intervalMs: 0,
     });
+    assertEquals(r.ok, true);
     // First call is initiate (no query string).
     assertFalse(capturedUrls[0].includes("reveal"), "initiate should not have reveal param");
     assertFalse(capturedUrls[0].includes("?"), "initiate should not have query string");
-    // Poll calls should include ?reveal=true.
-    assertStringIncludes(capturedUrls[1], "?reveal=true");
-    assertStringIncludes(capturedUrls[2], "?reveal=true");
+    // Poll calls stay masked to avoid spending reveal credits repeatedly.
+    assertFalse(capturedUrls[1].includes("reveal"), "poll should stay masked while processing");
+    assertFalse(capturedUrls[2].includes("reveal"), "terminal poll should stay masked");
+    // Only the final reveal fetch carries the query string.
+    assertStringIncludes(capturedUrls[3], "?reveal=true");
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+Deno.test("runSerusScan: reveal fetch failure keeps masked success result", async () => {
+  if (!SERUS_API_KEY) {
+    console.log("SKIP: SERUS_API_KEY is unset");
+    return;
+  }
+  const responses = [
+    okJson({ id: "scan-RF", status: "processing" }),
+    okJson({ status: "success", identifierType: "email", isBreached: true, breaches: [], pastes: [] }),
+    okJson({ error: { code: "forbidden", message: "Reveal scope missing" } }, 403),
+  ];
+  const fetchStub = stub(globalThis, "fetch", fakeFetchSequence(responses));
+  try {
+    const r = await runSerusScan("email", "x@y.com", {
+      reveal: true,
+      maxRetries: 2,
+      intervalMs: 0,
+    });
+    assertEquals(r.ok, true);
+    assertEquals(r.status, "success");
+    assertEquals(r.reveal, false);
+    assertEquals(r.revealRequested, true);
+    assertExists(r.revealError);
+    assertEquals(r.revealError?.code, "forbidden");
   } finally {
     fetchStub.restore();
   }
@@ -523,13 +553,4 @@ Deno.test("runSerusScan: poll network error mid-loop → returns timeout with sc
   } finally {
     fetchStub.restore();
   }
-});
-
-Deno.test("serus_darkweb_scan: tool.execute is wired to runSerusScan", async () => {
-  // This test verifies the tool definition is callable, but we don't have a
-  // way to pass an identifierType enum via the tool-calling protocol in a
-  // test. Instead we just verify the tool object exists with the right shape.
-  assertExists(serus_darkweb_scan);
-  assertNotEquals(serus_darkweb_scan.description, undefined);
-  assertStringIncludes(serus_darkweb_scan.description, "Serus");
 });

@@ -1,33 +1,5 @@
 import { describe, it, expect } from "vitest";
-
-// ── Re-exported pure functions from ChatWindow for testing ──
-// These are extracted inline below so tests don't depend on the full module
-// (the module requires Supabase, react-router, etc.)
-
-/*
- * Extracted from src/components/ChatWindow.tsx
- */
-
-function parseHttpStatusFromError(err: unknown): number | null {
-  const msg = String((err as { message?: unknown })?.message ?? err ?? "");
-  const m = msg.match(/\bHTTP\s*([45]\d{2})\b/i) ?? msg.match(/\bstatus\s*[:=]\s*([45]\d{2})\b/i) ?? msg.match(/\b([45]\d{2})\b/);
-  if (!m) return null;
-  const n = Number(m[1]);
-  return Number.isFinite(n) ? n : null;
-}
-
-function describeTransportError(err: unknown): string {
-  const msg = String((err as { message?: unknown })?.message ?? err ?? "").toLowerCase();
-  const status = parseHttpStatusFromError(err);
-  if (status === 401) return "Session expired — your login has timed out. Sign in again to continue.";
-  if (status === 403) return "Access denied — this thread doesn't belong to your account. Open your own thread or create a new one.";
-  if (status === 404) return "Edge function not deployed — the OSINT agent backend wasn't found. Deploy the Supabase function and retry.";
-  if (status === 429) return "Rate limited by the scan backend — too many requests. Wait ~30 seconds and try again.";
-  if (status === 502 || status === 503 || status === 504) return "Scan backend temporarily unavailable — upstream provider or dependency is down. Retry in a minute.";
-  if (status && status >= 500) return `Backend error (HTTP ${status}) — the OSINT agent encountered a server fault. Check Supabase function logs for details.`;
-  if (/failed to fetch|networkerror|network request failed|load failed|dns/i.test(msg)) return "Network failure — cannot reach the scan backend. Verify your Supabase project is running and the function URL is correct.";
-  return "Scan request failed before the stream started — check the browser console for transport details.";
-}
+import { describeTransportError, parseHttpStatusFromError } from "@/lib/tool-run";
 
 // ── Tests: parseHttpStatusFromError ────────────────────────────
 

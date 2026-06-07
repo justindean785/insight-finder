@@ -2,16 +2,39 @@
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from './types';
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.trim();
+const SUPABASE_PUBLISHABLE_KEY = (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined)?.trim();
+
+export const hasSupabaseEnv = Boolean(SUPABASE_URL && SUPABASE_PUBLISHABLE_KEY);
+export const supabaseConfigError = hasSupabaseEnv
+  ? null
+  : 'Missing VITE_SUPABASE_URL and/or VITE_SUPABASE_PUBLISHABLE_KEY. Copy .env.example to .env and set your Supabase frontend values.';
+
+function createMissingSupabaseProxy(path: string[] = []): unknown {
+  const fail = () => {
+    throw new Error(`${supabaseConfigError} (attempted supabase.${path.join('.') || '<root>'})`);
+  };
+
+  return new Proxy(fail, {
+    get(_target, prop) {
+      if (prop === 'then') return undefined;
+      return createMissingSupabaseProxy([...path, String(prop)]);
+    },
+    apply() {
+      fail();
+    },
+  });
+}
 
 // Import the supabase client like this:
 // import { supabase } from "@/integrations/supabase/client";
 
-export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
-  auth: {
-    storage: localStorage,
-    persistSession: true,
-    autoRefreshToken: true,
-  }
-});
+export const supabase = hasSupabaseEnv
+  ? createClient<Database>(SUPABASE_URL!, SUPABASE_PUBLISHABLE_KEY!, {
+      auth: {
+        storage: localStorage,
+        persistSession: true,
+        autoRefreshToken: true,
+      }
+    })
+  : createMissingSupabaseProxy() as ReturnType<typeof createClient<Database>>;

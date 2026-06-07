@@ -112,9 +112,39 @@ export function ResourcesPanel({
     ] },
   ];
 
+  const groupedCounts = GROUP_ORDER.reduce<Record<Group, number>>((acc, group) => {
+    acc[group] = items.filter((item) => groupForKind(item.kind) === group).length;
+    return acc;
+  }, {} as Record<Group, number>);
+  const groupCount = GROUP_ORDER.filter((group) => groupedCounts[group] > 0).length;
+  const reviewStates = items.map((item) => review.get(item.id));
+  const reviewedCount = reviewStates.filter((state) => state !== "new").length;
+  const keyCount = reviewStates.filter((state) => state === "key" || state === "confirmed").length;
+  const issueCount = items.filter((item, index) => {
+    const state = reviewStates[index];
+    const meta = (item.metadata ?? {}) as Record<string, unknown>;
+    return state === "recheck" || state === "dismissed" || state === "wrong" || meta.false_positive === true;
+  }).length;
+  const densityCount = items.filter((item) => item.confidence != null && item.confidence >= 70).length;
+  const SECTION_COUNTS: Record<(typeof SECTIONS)[number]["key"], number | undefined> = {
+    evidence: items.length,
+    analysis: groupCount,
+    provenance: issueCount,
+    output: keyCount,
+  };
   const TAB_COUNTS: Record<string, number | undefined> = {
+    overview: reviewedCount,
     artifacts: items.length,
+    clusters: groupCount,
     matrix: items.length,
+    pivots: densityCount,
+    timeline: items.length,
+    map: items.filter((item) => ["address", "ip"].includes(item.kind.toLowerCase())).length,
+    custody: seed?.value ? 1 : undefined,
+    audit: reviewedCount,
+    issues: issueCount,
+    notes: keyCount,
+    report: keyCount,
   };
 
   const activeSection = SECTIONS.find((s) => s.key === section)!;
@@ -157,18 +187,24 @@ export function ResourcesPanel({
 
   if (collapsed) {
     return (
-      <div className="w-14 h-full flex flex-col items-center py-3 gap-3">
+      <div className="w-14 h-full flex flex-col items-center py-3 gap-3 bg-[radial-gradient(circle_at_top,rgba(72,157,255,0.12),transparent_38%)]">
+        <div className="w-10 h-10 rounded-xl border border-border-subtle/80 bg-white/[0.03] grid place-items-center shadow-[0_0_18px_-8px_hsl(var(--brain-cyan)/0.7)]">
+          <Database className="w-4 h-4 text-[hsl(var(--brain-cyan))]" />
+        </div>
         <button
           onClick={onToggleCollapse}
-          className="w-8 h-8 rounded-md glass-interactive grid place-items-center"
+          className="w-9 h-9 rounded-xl border border-border-subtle/80 bg-white/[0.03] grid place-items-center text-muted-foreground transition-colors hover:border-primary/35 hover:text-foreground"
           title="Expand panel"
         >
-          <PanelRightOpen className="w-4 h-4 text-muted-foreground" />
+          <PanelRightOpen className="w-4 h-4" />
         </button>
 
         <div className="w-8 h-px bg-border-subtle" />
 
-        <div className="text-[10px] text-muted-foreground font-mono">{items.length}</div>
+        <div className="w-10 rounded-xl border border-border-subtle/80 bg-white/[0.03] px-1 py-1.5 text-center">
+          <div className="text-[8px] uppercase tracking-[0.18em] text-muted-foreground/70">EV</div>
+          <div className="mt-1 font-mono text-[12px] text-foreground">{items.length}</div>
+        </div>
 
         <div className="flex-1 overflow-y-auto w-full flex flex-col items-center gap-2 px-1">
           {GROUP_ORDER.filter((g) => items.some((a) => groupForKind(a.kind) === g)).map((g) => {
@@ -178,7 +214,7 @@ export function ResourcesPanel({
               <button
                 key={g}
                 onClick={onToggleCollapse}
-                className="w-8 h-8 rounded-md flex items-center justify-center glass-interactive relative"
+                className="w-9 h-9 rounded-xl flex items-center justify-center border border-border-subtle/80 bg-white/[0.03] relative transition-colors hover:border-primary/30 hover:bg-white/[0.05]"
                 title={`${GROUP_LABEL[g]} (${count})`}
               >
                 <Icon className="w-3.5 h-3.5 text-muted-foreground" />
@@ -194,45 +230,67 @@ export function ResourcesPanel({
   }
 
   return (
-    <div className="w-full md:w-[430px] h-full flex flex-col">
+    <div className="w-full md:w-[430px] h-full flex flex-col bg-[radial-gradient(circle_at_top,rgba(72,157,255,0.12),transparent_38%)]">
       <Tabs value={tab} onValueChange={setTab} className="flex-1 flex flex-col min-h-0">
-        {/* Header strip — calm, single-row */}
-        <div className="sticky top-0 z-10 glass-card border-b border-border-subtle">
-          <div className="px-4 h-14 flex items-center gap-3">
-            <div className="text-[10px] font-semibold tracking-[0.12em] text-muted-foreground shrink-0 uppercase">Case</div>
-            <button
-              onClick={() => {
-                if (!seed?.value) return;
-                navigator.clipboard.writeText(seed.value).then(
-                  () => toast.success("Copied"),
-                  () => toast.error("Copy failed"),
-                );
-              }}
-              className="flex-1 min-w-0 group flex items-center gap-1.5 text-left"
-              title={seed?.value ?? ""}
-            >
-              <span className="font-mono text-[13px] tabular-nums text-foreground truncate">
-                {compactSeed(seed?.value).display}
-              </span>
-              {seed?.value && (
-                <Copy className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
-              )}
-            </button>
-            <span className="px-2 py-0.5 rounded-full border border-border-subtle bg-surface-2 text-[10px] font-mono text-muted-foreground tabular-nums shrink-0">
-              {items.length}
-            </span>
-            <StreakIndicator artifacts={items} />
-            <DensityToggle className="hidden md:inline-flex" />
-            <button
-              onClick={onToggleCollapse}
-              className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
-              title="Collapse panel"
-            >
-              <PanelRightClose className="w-4 h-4" />
-            </button>
+        <div className="sticky top-0 z-10 border-b border-border-subtle/80 bg-[linear-gradient(180deg,rgba(8,13,23,0.96),rgba(8,13,23,0.86))] backdrop-blur-xl">
+          <div className="px-4 pt-4 pb-3 space-y-3">
+            <div className="flex items-start gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2 text-[10px] font-semibold tracking-[0.16em] text-muted-foreground uppercase">
+                  <span>Case desk</span>
+                  <span className="h-1 w-1 rounded-full bg-[hsl(var(--brain-cyan))]" />
+                  <span>{seed?.type ?? "untyped"}</span>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <div className="text-sm font-semibold tracking-tight text-foreground">Evidence & analysis</div>
+                  <span className="rounded-full border border-border-subtle/80 bg-white/[0.03] px-2 py-0.5 text-[10px] font-mono text-muted-foreground">
+                    {items.length} entities
+                  </span>
+                </div>
+                <button
+                  onClick={() => {
+                    if (!seed?.value) return;
+                    navigator.clipboard.writeText(seed.value).then(
+                      () => toast.success("Copied"),
+                      () => toast.error("Copy failed"),
+                    );
+                  }}
+                  className="mt-3 w-full rounded-2xl border border-border-subtle/80 bg-white/[0.03] px-3 py-3 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition-colors hover:border-primary/30"
+                  title={seed?.value ?? ""}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-[9px] uppercase tracking-[0.18em] text-muted-foreground/70">Primary seed</div>
+                      <div className="mt-1 truncate font-mono text-[13px] text-foreground">{compactSeed(seed?.value).display}</div>
+                    </div>
+                    {seed?.value && <Copy className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />}
+                  </div>
+                </button>
+              </div>
+
+              <div className="flex flex-col items-end gap-2">
+                <StreakIndicator artifacts={items} />
+                <DensityToggle className="hidden md:inline-flex" />
+                <button
+                  onClick={onToggleCollapse}
+                  className="h-9 w-9 rounded-xl border border-border-subtle/80 bg-white/[0.03] grid place-items-center text-muted-foreground transition-colors hover:border-primary/35 hover:text-foreground"
+                  title="Collapse panel"
+                >
+                  <PanelRightClose className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-4 gap-2">
+              <PanelMetric label="Groups" value={groupCount} />
+              <PanelMetric label="Reviewed" value={reviewedCount} />
+              <PanelMetric label="Priority" value={keyCount} tone={keyCount > 0 ? "ok" : undefined} />
+              <PanelMetric label="Issues" value={issueCount} tone={issueCount > 0 ? "warn" : undefined} />
+            </div>
           </div>
-          {/* Section nav — 4 groups */}
-          <div className="px-3 pt-2 pb-1.5 flex items-center gap-1 border-t border-border-subtle">
+
+          <div className="px-3 pb-3">
+            <div className="grid grid-cols-4 gap-2">
             {SECTIONS.map((s) => {
               const Icon = s.icon;
               const active = section === s.key;
@@ -241,39 +299,53 @@ export function ResourcesPanel({
                   key={s.key}
                   onClick={() => onSectionChange(s.key)}
                   className={cn(
-                    "flex-1 flex items-center justify-center gap-1.5 h-7 rounded-md text-[10px] font-medium uppercase tracking-[0.1em] transition-colors",
+                    "flex flex-col items-center justify-center gap-1 rounded-xl border px-2 py-2 text-[10px] font-medium uppercase tracking-[0.14em] transition-colors",
                     active
-                      ? "bg-[hsl(var(--brain-cyan))/10] text-[hsl(var(--brain-cyan))] border border-[hsl(var(--brain-cyan))/25]"
-                      : "text-muted-foreground hover:text-foreground hover:bg-surface-2 border border-transparent",
+                      ? "bg-[hsl(var(--brain-cyan))/10] text-[hsl(var(--brain-cyan))] border-[hsl(var(--brain-cyan))/25] shadow-[0_0_20px_-12px_hsl(var(--brain-cyan)/0.8)]"
+                      : "border-border-subtle/80 bg-white/[0.02] text-muted-foreground hover:text-foreground hover:bg-white/[0.05]",
                   )}
                 >
-                  <Icon className="w-3 h-3" />
-                  {s.label}
+                  <div className="flex items-center gap-1.5">
+                    <Icon className="w-3 h-3" />
+                    <span>{s.label}</span>
+                  </div>
+                  {SECTION_COUNTS[s.key] != null && (
+                    <span className="font-mono text-[10px] tabular-nums opacity-80">
+                      {SECTION_COUNTS[s.key]}
+                    </span>
+                  )}
                 </button>
               );
             })}
+            </div>
           </div>
-          {/* Tabs for active section */}
-          <div className="px-3 pb-3 pt-1">
-            <TabsList className="w-full h-8 bg-transparent rounded-md p-0 gap-1 justify-start">
+
+          <div className="border-t border-border-subtle/70 px-3 py-2">
+            <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.18em] text-muted-foreground/70">
+              <span>{activeSection.label} views</span>
+              <span>{activeSection.tabs.length} tabs</span>
+            </div>
+            <div className="mt-2 overflow-x-auto scrollbar-none">
+              <TabsList className="inline-flex min-w-full h-auto bg-transparent rounded-none p-0 gap-1 justify-start">
               {activeSection.tabs.map((t) => {
                 const count = TAB_COUNTS[t.v];
                 return (
                   <TabsTrigger
                     key={t.v}
                     value={t.v}
-                    className="relative h-8 px-2.5 rounded-md bg-transparent text-[12px] font-medium text-muted-foreground border border-transparent data-[state=active]:bg-surface-3 data-[state=active]:text-foreground data-[state=active]:border-border-subtle data-[state=active]:shadow-none transition-colors"
+                    className="relative h-auto min-h-[42px] px-3 py-2 rounded-xl border border-border-subtle/80 bg-white/[0.02] text-[12px] font-medium text-muted-foreground data-[state=active]:bg-white/[0.08] data-[state=active]:text-foreground data-[state=active]:border-primary/25 data-[state=active]:shadow-none transition-colors"
                   >
-                    <span>{t.l}</span>
+                    <span className="uppercase tracking-[0.08em] text-[11px]">{t.l}</span>
                     {count != null && count > 0 && (
-                      <span className="ml-1.5 font-mono text-[10px] tabular-nums text-muted-foreground/70">
+                      <span className="ml-2 font-mono text-[10px] tabular-nums text-muted-foreground/70">
                         {count}
                       </span>
                     )}
                   </TabsTrigger>
                 );
               })}
-            </TabsList>
+              </TabsList>
+            </div>
           </div>
         </div>
 
@@ -324,6 +396,25 @@ export function ResourcesPanel({
         reviewSet={review.set}
         threadId={threadId}
       />
+    </div>
+  );
+}
+
+function PanelMetric({ label, value, tone }: {
+  label: string;
+  value: number;
+  tone?: "ok" | "warn";
+}) {
+  return (
+    <div className="rounded-xl border border-border-subtle/80 bg-black/10 px-2.5 py-2">
+      <div className="text-[9px] uppercase tracking-[0.18em] text-muted-foreground/70">{label}</div>
+      <div className={cn(
+        "mt-1 font-mono text-[15px] leading-none text-foreground",
+        tone === "ok" && "text-[hsl(var(--confidence-high))]",
+        tone === "warn" && "text-[hsl(var(--danger))]",
+      )}>
+        {value}
+      </div>
     </div>
   );
 }

@@ -8,95 +8,98 @@ All colors MUST be HSL.
 
 @layer base {
   :root {
-    /* Swarmbot design tokens — calm, investigative, restrained accent.
-       Each token has one meaning; do not alias across roles. */
-    /* Tiered near-black system — base / panel / card / interactive */
-    --background: 222 14% 4%;        /* #050609 — app base */
-    --foreground: 210 22% 96%;
+    /* Swarmbot design tokens — dark glass, structured chrome, restrained accent.
+       Primary stays violet; secondary shifts cooler so sections differentiate without neon. */
+    --background: 222 22% 5%;
+    --foreground: 210 24% 96%;
 
-    --card: 222 14% 12%;             /* #181B22 — card surface */
-    --card-foreground: 210 22% 96%;
+    --card: 222 20% 11%;
+    --card-foreground: 210 24% 96%;
 
-    --popover: 222 14% 8%;            /* #111318 — panel surface */
-    --popover-foreground: 210 22% 96%;
+    --popover: 223 22% 8%;
+    --popover-foreground: 210 24% 96%;
 
-    /* Brand — instrument cyan (#3AD6FF). Primary CTAs, active tab underline,
-       focus ring. Restrained — never used as fill behind body copy. */
-    --primary: 258 89% 67%;
-    --primary-foreground: 222 30% 6%;
-    --primary-glow: 258 90% 76%;
+    --primary: 258 82% 72%;
+    --primary-foreground: 228 35% 8%;
+    --primary-glow: 258 90% 80%;
 
-    --secondary: 230 12% 6%;
-    --secondary-foreground: 210 20% 96%;
+    --secondary: 215 24% 14%;
+    --secondary-foreground: 210 24% 94%;
 
-    --muted: 230 12% 5%;
-    --muted-foreground: 218 10% 69%;  /* +5pt L — clears WCAG-AA on opacity-blended labels */
+    --muted: 220 18% 8%;
+    --muted-foreground: 217 12% 70%;
 
-    --accent: 258 89% 67%;
-    --accent-foreground: 222 30% 6%;
+    --accent: 198 58% 64%;
+    --accent-foreground: 220 30% 10%;
 
-    --destructive: 350 100% 68%;       /* #FF5C7A */
+    --destructive: 350 92% 69%;
     --destructive-foreground: 0 0% 100%;
 
-    /* Semantic tokens — un-aliased. One meaning per token.
-       Saturation pulled down ~10pts vs neon defaults for enterprise feel. */
-    --info: 212 78% 58%;             /* system / agent state — cool blue */
-    --success: 147 56% 56%;          /* #4CD28A — instrument green */
-    --warning: 33 86% 67%;           /* #F3B763 — amber, desaturated */
-    --danger: 350 100% 68%;          /* #FF5C7A — coral-red */
-    --evidence: 182 32% 64%;         /* immutable / custody marker */
+    --info: 206 76% 62%;
+    --success: 148 48% 58%;
+    --warning: 34 78% 67%;
+    --danger: 350 92% 69%;
+    --evidence: 188 24% 66%;
 
-    /* Muted semantic backgrounds — for soft chips, row tints, alerts */
-    --info-muted: 212 40% 14%;
-    --success-muted: 152 30% 12%;
-    --warning-muted: 36 40% 12%;
-    --danger-muted: 0 36% 12%;
+    --info-muted: 208 42% 14%;
+    --success-muted: 148 28% 12%;
+    --warning-muted: 34 36% 13%;
+    --danger-muted: 352 36% 12%;
 
-    /* Confidence — calibrated, distinct from brand iris */
-    --confidence-high: 147 56% 56%;
-    --confidence-high-glow: 147 70% 66%;
-    --confidence-mid: 33 86% 67%;
-    --confidence-low: 350 100% 68%;
-    --highconf: 147 56% 56%;
+    --confidence-high: 148 48% 58%;
+    --confidence-high-glow: 148 56% 68%;
+    --confidence-mid: 34 78% 67%;
+    --confidence-low: 350 92% 69%;
+    --highconf: 148 48% 58%;
 
-    /* Layered surfaces — tiered control-room scale (Palantir/Gotham) */
-    --surface-0: 222 14% 4%;          /* #050609 */
-    --surface-1: 222 14% 8%;          /* #111318 */
-    --surface-2: 222 14% 12%;         /* #181B22 */
-    --surface-3: 222 21% 16%;         /* #1F2430 — selected / hover */
-    --surface-4: 222 18% 22%;
+    --surface-0: 222 22% 5%;
+    --surface-1: 223 21% 8%;
+    --surface-2: 223 19% 11%;
+    --surface-3: 223 18% 15%;
+    --surface-4: 223 17% 21%;
 
-    --border: 220 11% 22%;           /* crisper hairline structure */
-    --border-subtle: 220 11% 15%;    /* now actually visible as a divider */
-    --border-strong: 220 12% 32%;
-    --input: 222 14% 9%;
-    --ring: 258 89% 67%;
+    --border: 221 18% 24%;
+    --border-subtle: 221 17% 15%;
+    --border-strong: 219 24% 34%;
+    --input: 223 19% 10%;
+    --ring: 258 82% 72%;
 
-    /* Intel tokens — info-blue (system) and brand iris (selection) */
-    --intel-blue: 220 90% 62%;
-    --intel-violet: 268 80% 66%;
+    --intel-blue: 210 84% 64%;
+    --intel-violet: 262 70% 72%;
+    --surface-overlay: 224 28% 7%;
+    --surface-raised: 223 23% 13%;
+    --surface-highlight: 214 36% 18%;
+    --glass-border: 212 26% 74%;
+    --glass-border-strong: 198 52% 70%;
+    --glass-shadow: 222 48% 2%;
+    --accent-soft: 198 48% 22%;
+    --accent-secondary: 34 54% 56%;
+    --section-evidence: 198 48% 62%;
+    --section-analysis: 258 78% 72%;
+    --section-provenance: 148 36% 58%;
+    --section-output: 34 72% 66%;
 
     /* Brain (Global Brain tab) palette — fixed spec tokens. */
-    --brain-surface-base: 222 14% 8%;   /* #111318 */
-    --brain-card:         222 22% 13%;  /* #1A1F29 */
-    --brain-border:       220 22% 19%;  /* #252C3A */
-    --brain-text:         217 35% 94%;  /* #E8EDF5 */
-    --brain-muted:        215 13% 58%;  /* #8692A3 */
-    --brain-cyan:         258 84% 70%;  /* brand violet (legacy token name) */
-    --brain-status-ok:    143 60% 57%;  /* #4ED68C */
-    --brain-status-warn:   33 85% 67%;  /* #F2B766 */
-    --brain-status-bad:   350 100% 70%; /* #FF667E */
+    --brain-surface-base: 223 21% 8%;
+    --brain-card:         223 22% 13%;
+    --brain-border:       220 22% 20%;
+    --brain-text:         217 35% 94%;
+    --brain-muted:        215 13% 61%;
+    --brain-cyan:         258 78% 72%;
+    --brain-status-ok:    148 48% 58%;
+    --brain-status-warn:   34 78% 67%;
+    --brain-status-bad:   350 92% 69%;
 
-    --radius: 0.3rem;   /* instrument-grade — sharper than the old 0.75rem */
+    --radius: 0.3rem;
 
-    --sidebar-background: 225 20% 4%;
-    --sidebar-foreground: 218 12% 72%;
-    --sidebar-primary: 258 89% 67%;
+    --sidebar-background: 224 26% 4%;
+    --sidebar-foreground: 218 14% 74%;
+    --sidebar-primary: 258 82% 72%;
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 222 14% 10%;
-    --sidebar-accent-foreground: 210 20% 96%;
-    --sidebar-border: 222 14% 11%;
-    --sidebar-ring: 258 89% 67%;
+    --sidebar-accent: 223 19% 11%;
+    --sidebar-accent-foreground: 210 24% 96%;
+    --sidebar-border: 223 18% 12%;
+    --sidebar-ring: 258 82% 72%;
   }
 }
 
@@ -105,12 +108,26 @@ All colors MUST be HSL.
     @apply border-border;
   }
 
+  html {
+    background-color: hsl(var(--surface-0));
+  }
+
   body {
     @apply text-foreground font-sans antialiased;
     font-feature-settings: "ss01", "cv11", "tnum";
     font-variant-numeric: tabular-nums;
+    min-height: 100vh;
     background-color: hsl(var(--background));
+    background-image: linear-gradient(180deg, hsl(var(--surface-overlay)) 0%, hsl(var(--background)) 38%, hsl(224 28% 3%) 100%);
+    color-scheme: dark;
     position: relative;
+  }
+
+  #root {
+    min-height: 100vh;
+    position: relative;
+    z-index: 1;
+    isolation: isolate;
   }
 
   /* Control-room ambient — subtle radial wash anchored top-left, vignette bottom-right.
@@ -122,9 +139,10 @@ All colors MUST be HSL.
     pointer-events: none;
     z-index: 0;
     background:
-      radial-gradient(75% 55% at 0% 0%, hsl(258 72% 24% / 0.22) 0%, transparent 55%),
-      radial-gradient(55% 45% at 100% 0%, hsl(270 66% 26% / 0.13) 0%, transparent 60%),
-      radial-gradient(90% 70% at 100% 100%, hsl(255 30% 2% / 0.85) 0%, transparent 60%);
+      radial-gradient(78% 60% at 0% 0%, hsl(var(--primary) / 0.2) 0%, transparent 54%),
+      radial-gradient(60% 52% at 100% 0%, hsl(var(--accent) / 0.16) 0%, transparent 58%),
+      radial-gradient(85% 70% at 50% 100%, hsl(222 45% 3% / 0.92) 10%, transparent 72%),
+      linear-gradient(135deg, hsl(var(--accent) / 0.04) 0%, transparent 36%, transparent 64%, hsl(var(--primary) / 0.05) 100%);
   }
 
   /* App-wide film grain — barely-there */
@@ -134,7 +152,7 @@ All colors MUST be HSL.
     inset: 0;
     pointer-events: none;
     z-index: 9999;
-    opacity: 0.035;
+    opacity: 0.026;
     mix-blend-mode: overlay;
     background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
     background-size: 220px 220px;
@@ -157,10 +175,11 @@ All colors MUST be HSL.
   .label-eyebrow {
     font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 10.5px;
-    letter-spacing: 0.14em;
+    letter-spacing: 0.16em;
     text-transform: uppercase;
-    color: hsl(var(--muted-foreground));
+    color: hsl(var(--muted-foreground) / 0.92);
     font-weight: 500;
+    text-shadow: 0 0 14px hsl(var(--accent) / 0.08);
   }
 
   code, pre, kbd, samp, .font-mono {
@@ -177,41 +196,142 @@ All colors MUST be HSL.
      Legacy class names (.glass, .glass-strong, .glass-interactive, .glass-hover-shine)
      alias to the same look to keep existing markup working. */
   .glass,
-  .glass-strong,
   .glass-card,
-  .glass-interactive,
   .glass-hover-shine {
     background:
-      linear-gradient(180deg, hsl(232 16% 9% / 0.55) 0%, hsl(234 20% 6% / 0.62) 100%);
-    backdrop-filter: blur(24px) saturate(150%);
-    -webkit-backdrop-filter: blur(24px) saturate(150%);
-    border: 1px solid hsl(255 50% 82% / 0.08);
-    border-top-color: hsl(258 60% 88% / 0.13);
+      linear-gradient(180deg, hsl(var(--surface-raised) / 0.84) 0%, hsl(var(--surface-overlay) / 0.82) 100%);
+    backdrop-filter: blur(28px) saturate(145%);
+    -webkit-backdrop-filter: blur(28px) saturate(145%);
+    border: 1px solid hsl(var(--glass-border) / 0.11);
+    border-top-color: hsl(var(--glass-border) / 0.18);
     box-shadow:
-      0 1px 0 hsl(0 0% 100% / 0.05) inset,
-      0 10px 36px -18px hsl(258 50% 3% / 0.7);
+      inset 0 1px 0 hsl(0 0% 100% / 0.055),
+      inset 0 0 0 1px hsl(var(--accent) / 0.035),
+      0 22px 48px -30px hsl(var(--glass-shadow) / 0.92),
+      0 0 0 1px hsl(0 0% 100% / 0.02);
+  }
+  .glass-card,
+  .glass-strong {
+    background:
+      linear-gradient(180deg, hsl(var(--surface-raised) / 0.92) 0%, hsl(var(--surface-overlay) / 0.9) 100%);
+    border-color: hsl(var(--glass-border) / 0.13);
+    border-top-color: hsl(var(--glass-border) / 0.22);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.06),
+      inset 0 0 0 1px hsl(var(--primary) / 0.04),
+      0 28px 68px -40px hsl(var(--glass-shadow) / 0.96),
+      0 0 32px -26px hsl(var(--primary) / 0.22);
   }
   .glass-interactive {
-    transition: background-color 160ms ease, border-color 160ms ease;
+    background:
+      linear-gradient(180deg, hsl(var(--surface-2) / 0.84) 0%, hsl(var(--surface-overlay) / 0.8) 100%);
+    backdrop-filter: blur(22px) saturate(150%);
+    -webkit-backdrop-filter: blur(22px) saturate(150%);
+    border: 1px solid hsl(var(--glass-border) / 0.11);
+    border-top-color: hsl(var(--glass-border) / 0.18);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.05),
+      inset 0 0 0 1px hsl(var(--accent) / 0.03),
+      0 16px 40px -28px hsl(var(--glass-shadow) / 0.92);
+    transition: transform 180ms ease, background-color 180ms ease, border-color 180ms ease, box-shadow 220ms ease;
     cursor: pointer;
   }
   .glass-interactive:hover {
-    background: linear-gradient(180deg, hsl(230 12% 9% / 0.9), hsl(230 14% 6% / 0.9));
-    border-color: hsl(0 0% 100% / 0.09);
+    background:
+      linear-gradient(180deg, hsl(var(--surface-highlight) / 0.95) 0%, hsl(var(--surface-overlay) / 0.92) 100%);
+    border-color: hsl(var(--glass-border-strong) / 0.26);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.07),
+      inset 0 0 0 1px hsl(var(--accent) / 0.05),
+      0 24px 52px -30px hsl(var(--glass-shadow) / 0.96),
+      0 0 24px -18px hsl(var(--accent) / 0.34);
+    transform: translateY(-1px);
+  }
+  .glass-interactive:focus-visible {
+    outline: none;
+    border-color: hsl(var(--ring) / 0.48);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.07),
+      0 0 0 1px hsl(var(--ring) / 0.22),
+      0 0 0 4px hsl(var(--ring) / 0.08),
+      0 24px 48px -30px hsl(var(--glass-shadow) / 0.96);
   }
 
-  /* Decorative ambient utilities — neutralized. Kept as class names so
-     existing markup doesn't need to be ripped through. */
+  .ops-surface,
+  .ops-surface-strong,
+  .ops-chip,
   .ambient-glow,
   .ambient-dots,
   .composer-halo,
-  .glass-hover-shine { position: relative; }
+  .glass-hover-shine {
+    position: relative;
+    isolation: isolate;
+  }
+  .ops-surface {
+    background: linear-gradient(180deg, hsl(var(--surface-2) / 0.92), hsl(var(--surface-overlay) / 0.9));
+    border: 1px solid hsl(var(--border));
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.04),
+      0 18px 38px -28px hsl(var(--glass-shadow) / 0.9);
+  }
+  .ops-surface-strong {
+    background: linear-gradient(180deg, hsl(var(--surface-raised) / 0.94), hsl(var(--surface-overlay) / 0.94));
+    border: 1px solid hsl(var(--glass-border) / 0.14);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.06),
+      inset 0 0 0 1px hsl(var(--accent) / 0.04),
+      0 26px 60px -38px hsl(var(--glass-shadow) / 0.98);
+  }
+  .ops-chip {
+    border-radius: 999px;
+    background: linear-gradient(180deg, hsl(var(--secondary) / 0.9), hsl(var(--surface-1) / 0.9));
+    border: 1px solid hsl(var(--glass-border) / 0.12);
+    box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.04);
+  }
+
+  .glass-hover-shine::after,
+  .composer-halo::before,
+  .composer-halo::after {
+    content: "";
+    position: absolute;
+    pointer-events: none;
+    border-radius: inherit;
+  }
+  .glass-hover-shine::after {
+    inset: 0;
+    background: linear-gradient(115deg, transparent 24%, hsl(0 0% 100% / 0.08) 48%, transparent 72%);
+    opacity: 0;
+    transform: translateX(-18%);
+    transition: opacity 240ms ease, transform 360ms ease;
+  }
+  .glass-hover-shine:hover::after {
+    opacity: 0.55;
+    transform: translateX(18%);
+  }
+  .composer-halo::before {
+    inset: -1px;
+    background:
+      radial-gradient(70% 70% at 15% 0%, hsl(var(--accent) / 0.2), transparent 65%),
+      radial-gradient(55% 55% at 100% 100%, hsl(var(--primary) / 0.18), transparent 72%);
+    filter: blur(18px);
+    opacity: 0.72;
+  }
+  .composer-halo::after {
+    inset: 0;
+    border: 1px solid hsl(var(--glass-border) / 0.14);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.05),
+      0 18px 36px -24px hsl(var(--primary) / 0.38);
+  }
 
   .ring-glow {
-    box-shadow: 0 0 0 1px hsl(var(--info) / 0.4), 0 0 18px -6px hsl(var(--info) / 0.35);
+    box-shadow:
+      0 0 0 1px hsl(var(--accent) / 0.32),
+      0 0 0 4px hsl(var(--accent) / 0.08),
+      0 16px 30px -18px hsl(var(--accent) / 0.4);
   }
   .gradient-text {
-    background: linear-gradient(90deg, hsl(var(--foreground)), hsl(var(--foreground) / 0.65));
+    background: linear-gradient(90deg, hsl(var(--foreground)) 0%, hsl(var(--foreground) / 0.88) 55%, hsl(var(--accent) / 0.86) 100%);
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
@@ -394,19 +514,25 @@ All colors MUST be HSL.
     gap: 0.5rem;
     padding: 0.55rem 0.95rem;
     border-radius: 999px;
-    background: linear-gradient(180deg, hsl(0 0% 100% / 0.05), hsl(0 0% 100% / 0.02));
-    border: 1px solid hsl(0 0% 100% / 0.08);
-    color: hsl(var(--foreground) / 0.85);
+    background: linear-gradient(180deg, hsl(var(--surface-2) / 0.92), hsl(var(--surface-1) / 0.88));
+    border: 1px solid hsl(var(--glass-border) / 0.1);
+    color: hsl(var(--foreground) / 0.86);
     font-size: 0.78rem;
     transition: all 220ms ease;
     backdrop-filter: blur(12px);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.04),
+      0 12px 28px -20px hsl(var(--glass-shadow) / 0.88);
   }
   .action-chip:hover {
     transform: translateY(-1px);
-    border-color: hsl(var(--intel-blue) / 0.45);
-    background: linear-gradient(180deg, hsl(var(--intel-blue) / 0.12), hsl(var(--intel-violet) / 0.08));
+    border-color: hsl(var(--accent) / 0.42);
+    background: linear-gradient(180deg, hsl(var(--surface-highlight) / 0.92), hsl(var(--accent-soft) / 0.78));
     color: hsl(var(--foreground));
-    box-shadow: 0 8px 24px -10px hsl(var(--intel-blue) / 0.45);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.06),
+      0 14px 32px -18px hsl(var(--glass-shadow) / 0.92),
+      0 0 24px -18px hsl(var(--accent) / 0.42);
   }
 
   /* === 8px grid density presets ===
@@ -421,18 +547,23 @@ All colors MUST be HSL.
   .evidence-tile {
     position: relative;
     background:
-      linear-gradient(180deg, hsl(222 14% 13% / 0.92) 0%, hsl(222 16% 9% / 0.92) 100%);
+      linear-gradient(180deg, hsl(var(--surface-raised) / 0.94) 0%, hsl(var(--surface-overlay) / 0.92) 100%),
+      linear-gradient(135deg, hsl(var(--section-evidence) / 0.06), transparent 38%);
     border: 1px solid hsl(var(--border));
     border-radius: 12px;
     box-shadow:
-      inset 0 1px 0 hsl(0 0% 100% / 0.045),
-      inset 0 0 0 1px hsl(0 0% 0% / 0.25),
-      0 6px 18px -10px hsl(0 0% 0% / 0.55);
+      inset 0 1px 0 hsl(0 0% 100% / 0.05),
+      inset 0 0 0 1px hsl(var(--accent) / 0.025),
+      0 14px 30px -24px hsl(var(--glass-shadow) / 0.88);
     transition: border-color 200ms ease, box-shadow 200ms ease, transform 200ms ease;
   }
   .evidence-tile:hover {
-    border-color: hsl(var(--border-strong));
+    border-color: hsl(var(--glass-border-strong) / 0.32);
     transform: translateY(-1px);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.06),
+      inset 0 0 0 1px hsl(var(--accent) / 0.05),
+      0 18px 34px -24px hsl(var(--glass-shadow) / 0.92);
   }
   .evidence-tile--active {
     border-color: hsl(var(--info) / 0.55);
@@ -470,22 +601,25 @@ All colors MUST be HSL.
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: hsl(var(--muted-foreground));
-    background: hsl(var(--surface-1));
+    background: linear-gradient(180deg, hsl(var(--surface-1) / 0.94), hsl(var(--surface-overlay) / 0.94));
     border: 1px solid hsl(var(--border-subtle));
     border-left: 2px solid hsl(var(--border));
     transition: all 160ms ease;
+    box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.035);
   }
   .forensic-chip:hover {
     color: hsl(var(--foreground));
-    border-left-color: hsl(var(--info) / 0.6);
-    background: hsl(var(--surface-2));
+    border-left-color: hsl(var(--accent) / 0.72);
+    border-color: hsl(var(--glass-border-strong) / 0.24);
+    background: linear-gradient(180deg, hsl(var(--surface-2) / 0.96), hsl(var(--accent-soft) / 0.72));
   }
   .forensic-chip[data-active="true"],
   .forensic-chip.is-active {
     color: hsl(var(--foreground));
-    background: hsl(var(--info-muted));
-    border-color: hsl(var(--info) / 0.35);
-    border-left: 2px solid hsl(var(--info));
+    background: linear-gradient(180deg, hsl(var(--secondary) / 0.96), hsl(var(--accent-soft) / 0.8));
+    border-color: hsl(var(--accent) / 0.34);
+    border-left: 2px solid hsl(var(--accent));
+    box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.04), 0 10px 20px -18px hsl(var(--accent) / 0.55);
   }
 
   /* Group separator label for chip rows / filter bars */
@@ -507,10 +641,11 @@ All colors MUST be HSL.
     border-radius: 8px;
     border: 1px solid hsl(var(--border));
     background:
-      linear-gradient(180deg, hsl(222 18% 6%) 0%, hsl(225 22% 4%) 100%);
+      linear-gradient(180deg, hsl(var(--surface-1) / 0.98) 0%, hsl(225 24% 4%) 100%);
     box-shadow:
       inset 0 1px 0 hsl(0 0% 100% / 0.04),
-      inset 0 0 0 1px hsl(0 0% 0% / 0.4);
+      inset 0 0 0 1px hsl(var(--accent) / 0.02),
+      0 18px 34px -28px hsl(var(--glass-shadow) / 0.9);
     overflow: hidden;
   }
   .code-panel__head {
@@ -519,7 +654,7 @@ All colors MUST be HSL.
     justify-content: space-between;
     padding: 6px 10px;
     background:
-      linear-gradient(180deg, hsl(222 18% 9%) 0%, hsl(222 18% 7%) 100%);
+      linear-gradient(180deg, hsl(var(--surface-2) / 0.98) 0%, hsl(var(--surface-overlay) / 0.98) 100%);
     border-bottom: 1px solid hsl(var(--border-subtle));
     font-family: "JetBrains Mono", ui-monospace, monospace;
     font-size: 10px;
@@ -535,8 +670,8 @@ All colors MUST be HSL.
   .code-panel__head-label::before {
     content: "";
     width: 6px; height: 6px; border-radius: 1px;
-    background: hsl(var(--info));
-    box-shadow: 0 0 8px hsl(var(--info) / 0.7);
+    background: hsl(var(--accent));
+    box-shadow: 0 0 8px hsl(var(--accent) / 0.7);
   }
   .code-panel__head--output .code-panel__head-label::before {
     background: hsl(var(--confidence-high));
@@ -636,20 +771,24 @@ All colors MUST be HSL.
     letter-spacing: 0.12em;
     text-transform: uppercase;
     color: hsl(var(--muted-foreground));
-    background: hsl(var(--surface-1));
+    background: linear-gradient(180deg, hsl(var(--surface-1) / 0.94), hsl(var(--surface-overlay) / 0.94));
     border: 1px solid hsl(var(--border-subtle));
     transition: all 160ms ease;
     cursor: pointer;
+    box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.035);
   }
   .pattern-chip:hover {
     color: hsl(var(--foreground));
-    border-color: hsl(var(--border-strong));
+    border-color: hsl(var(--glass-border-strong) / 0.24);
+    background: linear-gradient(180deg, hsl(var(--surface-2) / 0.96), hsl(var(--accent-soft) / 0.72));
   }
   .pattern-chip[data-active="true"] {
-    color: hsl(var(--primary-foreground));
-    background: hsl(var(--primary) / 0.18);
-    border-color: hsl(var(--primary) / 0.5);
-    box-shadow: 0 0 14px -4px hsl(var(--primary) / 0.6);
+    color: hsl(var(--secondary-foreground));
+    background: linear-gradient(180deg, hsl(var(--secondary) / 0.98), hsl(var(--accent-soft) / 0.82));
+    border-color: hsl(var(--accent) / 0.48);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.05),
+      0 0 18px -10px hsl(var(--accent) / 0.52);
   }
 
   /* Neural-connection motif for pattern cards — subtle dotted edge. */
@@ -740,21 +879,25 @@ All colors MUST be HSL.
 /* Base card material — 1px inner border, soft outer shadow.
    Apply to top-level panels that should read as physical surfaces. */
 .card-material {
-  background: hsl(var(--surface-2));
-  border: 1px solid hsl(var(--border));        /* #262A35 inner */
+  background:
+    linear-gradient(180deg, hsl(var(--surface-2) / 0.96), hsl(var(--surface-overlay) / 0.96)),
+    linear-gradient(135deg, hsl(var(--accent) / 0.05), transparent 35%);
+  border: 1px solid hsl(var(--border));
   box-shadow:
-    inset 0 1px 0 hsl(0 0% 100% / 0.02),
-    0 10px 30px -8px hsl(0 0% 0% / 0.45);
+    inset 0 1px 0 hsl(0 0% 100% / 0.03),
+    inset 0 0 0 1px hsl(var(--accent) / 0.02),
+    0 18px 42px -28px hsl(var(--glass-shadow) / 0.9);
   border-radius: var(--radius);
   transition: border-color 180ms ease, box-shadow 220ms ease, transform 180ms ease;
 }
 .card-material--focus,
 .card-material:focus-within {
-  border-color: hsl(var(--primary) / 0.55);
+  border-color: hsl(var(--accent) / 0.42);
   box-shadow:
-    inset 0 0 0 1px hsl(var(--primary) / 0.22),
-    0 14px 38px -10px hsl(0 0% 0% / 0.55),
-    0 0 0 1px hsl(var(--primary) / 0.18);
+    inset 0 0 0 1px hsl(var(--accent) / 0.18),
+    0 18px 42px -22px hsl(var(--glass-shadow) / 0.92),
+    0 0 0 1px hsl(var(--accent) / 0.12),
+    0 0 24px -18px hsl(var(--primary) / 0.34);
   transform: scale(1.005);
 }
 

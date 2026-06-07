@@ -18,6 +18,14 @@ import { ThreadHeader } from "./ThreadHeader";
 import { detectSeed } from "@/lib/seed";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { buildPivots } from "@/lib/intel";
+import {
+  deriveToolCharge,
+  deriveToolPreview,
+  deriveToolReason,
+  deriveToolTone,
+  describeTransportError,
+  parseHttpStatusFromError,
+} from "@/lib/tool-run";
 import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon } from "lucide-react";
 
 const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.trim();
@@ -44,27 +52,6 @@ function signalWithTimeout(ms: number): { signal: AbortSignal; cancel: () => voi
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new DOMException("TimeoutError", "TimeoutError")), ms);
   return { signal: controller.signal, cancel: () => clearTimeout(timer) };
-}
-
-function parseHttpStatusFromError(err: unknown): number | null {
-  const msg = String((err as { message?: unknown })?.message ?? err ?? "");
-  const m = msg.match(/\bHTTP\s*([45]\d{2})\b/i) ?? msg.match(/\bstatus\s*[:=]\s*([45]\d{2})\b/i) ?? msg.match(/\b([45]\d{2})\b/);
-  if (!m) return null;
-  const n = Number(m[1]);
-  return Number.isFinite(n) ? n : null;
-}
-
-function describeTransportError(err: unknown): string {
-  const msg = String((err as { message?: unknown })?.message ?? err ?? "").toLowerCase();
-  const status = parseHttpStatusFromError(err);
-  if (status === 401) return "Session expired — your login has timed out. Sign in again to continue.";
-  if (status === 403) return "Access denied — this thread doesn't belong to your account. Open your own thread or create a new one.";
-  if (status === 404) return "Edge function not deployed — the OSINT agent backend wasn't found. Deploy the Supabase function and retry.";
-  if (status === 429) return "Rate limited by the scan backend — too many requests. Wait ~30 seconds and try again.";
-  if (status === 502 || status === 503 || status === 504) return "Scan backend temporarily unavailable — upstream provider or dependency is down. Retry in a minute.";
-  if (status && status >= 500) return `Backend error (HTTP ${status}) — the OSINT agent encountered a server fault. Check Supabase function logs for details.`;
-  if (/failed to fetch|networkerror|network request failed|load failed|dns/i.test(msg)) return "Network failure — cannot reach the scan backend. Verify your Supabase project is running and the function URL is correct.";
-  return "Scan request failed before the stream started — check the browser console for transport details.";
 }
 
 async function fetchWithRetry(url: RequestInfo | URL, init?: RequestInit): Promise<Response> {
@@ -202,7 +189,10 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
     setNote(v);
   }, [noteKey]);
 
-  const failed = state === "output-error" || (part.errorText != null);
+  const outputObj: Record<string, unknown> | null =
+    part.output && typeof part.output === "object" ? (part.output as Record<string, unknown>) : null;
+  const tone = deriveToolTone(part);
+  const failed = tone === "error";
   const done = state === "output-available";
   const ts = createdAt ? new Date(createdAt) : null;
 
@@ -257,8 +247,6 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
   }, [failed]);
 
   // Cache-hit detection: the edge function marks cached outputs with `_cached: true`.
-  const outputObj: Record<string, unknown> | null =
-    part.output && typeof part.output === "object" ? (part.output as Record<string, unknown>) : null;
   const cached = !!outputObj?._cached;
 
   // Model tier — tagged by wrapToolsWithCache from the model registry.
@@ -269,32 +257,14 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
   const tierModel: string | null =
     outputObj && typeof outputObj._model === "string" ? outputObj._model : null;
 
-  // Heuristic credit cost: 1 per real tool call, 0 for cache hits.
-  const credits = cached ? 0 : (done || failed ? 1 : 0);
-
   // Skipped ≠ failed. The engine sets `skipped:true` on intentional non-runs
   // (NXDOMAIN host, not-configured key, circuit-breaker, dedup, timeout marker).
   // These read as neutral, not alarming — only a genuine error is red.
-  const isSkipped = !failed && !!outputObj?.skipped;
-  const skipReason = isSkipped
-    ? String(outputObj?.reason ?? (typeof outputObj?.error === "string" ? outputObj.error : "") ?? "").trim()
-    : "";
-  const tone: "error" | "skip" | "ok" | "pending" =
-    failed ? "error" : isSkipped ? "skip" : done ? "ok" : "pending";
+  const statusReason = deriveToolReason(outputObj);
+  const charge = deriveToolCharge(outputObj);
 
   // Extract small artifact preview when output is array-like
-  const artifactPreview = (() => {
-    const out = part.output;
-    if (!out || typeof out !== "object") return null;
-    const o = out as Record<string, unknown>;
-    if (Array.isArray(o.found)) return `${o.hits ?? o.found.length} hits`;
-    if (Array.isArray(o.subdomains)) return `${o.subdomains.length} subdomains`;
-    if (o.data && typeof o.data === "object") {
-      const k = Object.keys(o.data).length;
-      if (k > 0) return `${k} fields`;
-    }
-    return null;
-  })();
+  const artifactPreview = deriveToolPreview(name, part.output);
 
   return (
     <div
@@ -348,12 +318,17 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
         ) : (
           <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground shrink-0" />
         )}
-        {tone === "skip" && skipReason && (
+        {(tone === "skip" || tone === "error") && statusReason && (
           <span
-            className="hidden sm:inline rounded-[3px] border border-border-subtle/60 bg-white/[0.02] px-1.5 py-px text-[10px] font-medium tracking-wide text-muted-foreground/70 truncate max-w-[46%]"
-            title={skipReason}
+            className={cn(
+              "hidden sm:inline rounded-[3px] px-1.5 py-px text-[10px] font-medium tracking-wide truncate max-w-[46%]",
+              tone === "error"
+                ? "border border-destructive/25 bg-destructive/10 text-destructive/75"
+                : "border border-border-subtle/60 bg-white/[0.02] text-muted-foreground/70",
+            )}
+            title={statusReason}
           >
-            {skipReason}
+            {statusReason}
           </span>
         )}
         {artifactPreview && (
@@ -403,7 +378,14 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
               {ts.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
             </span>
           )}
-          <span className="font-mono text-[10px] text-muted-foreground/60">{credits} cr</span>
+          {charge.label && (
+            <span
+              className="font-mono text-[10px] text-muted-foreground/60"
+              title={charge.title ?? undefined}
+            >
+              {charge.label}
+            </span>
+          )}
         </span>
         <span className="ml-auto sm:hidden font-mono text-[10px] text-muted-foreground/70 shrink-0">
           {ts ? ts.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}
