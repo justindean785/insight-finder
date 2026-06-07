@@ -57,7 +57,7 @@ describe("4. first 502/504 blocks retry spam for the same provider", () => {
     recordResult(thread, "oathnet_lookup", "johnd@gmail.com", "default", { status: "http_502" });
     const d = shouldRun(thread, "oathnet_lookup", "another-selector");
     expect(d.allow).toBe(false);
-    if (!d.allow) expect(d.reason).toMatch(/502/);
+    expect((d as { reason?: string }).reason).toMatch(/502/);
   });
 
   it("disables the tool for the run after the FIRST 504", () => {

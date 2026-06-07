@@ -100,21 +100,21 @@ describe("shouldRun / recordResult", () => {
     recordResult(thread, "paid", "sel", "default", { status: "http_402" });
     const d = shouldRun(thread, "paid", "other-sel");
     expect(d.allow).toBe(false);
-    if (!d.allow) expect(d.reason).toMatch(/402/);
+    expect((d as { reason?: string }).reason).toMatch(/402/);
   });
 
   it("blacklists a selector after a 404", () => {
     recordResult(thread, "look", "deadsel", "default", { status: "http_404" });
     const d = shouldRun(thread, "look", "deadsel");
     expect(d.allow).toBe(false);
-    if (!d.allow) expect(d.reason).toMatch(/blacklisted/);
+    expect((d as { reason?: string }).reason).toMatch(/blacklisted/);
   });
 
   it("applies a timed backoff after a 429", () => {
     recordResult(thread, "rl", "sel", "default", { status: "http_429" });
     const d = shouldRun(thread, "rl", "sel");
     expect(d.allow).toBe(false);
-    if (!d.allow) expect(d.until).toBeGreaterThan(Date.now());
+    expect((d as { until?: number }).until).toBeGreaterThan(Date.now());
   });
 
   it("disables a tool after 3 consecutive generic failures", () => {
