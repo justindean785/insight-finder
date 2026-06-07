@@ -178,7 +178,7 @@ function acquireStore(threadId: string, listener: (items: Artifact[]) => void): 
           // applyDelta() decide if it has what it needs.
           const ev = (payload as { eventType?: string }).eventType as
             | "INSERT" | "UPDATE" | "DELETE" | undefined;
-          const newRow = (payload as { new?: Artifact | null }).new ?? null;
+          const newRow = (payload as unknown as { new?: Artifact | null }).new ?? null;
           const oldRow = (payload as { old?: Partial<Artifact> | null }).old ?? null;
           if (!ev) return;
           const merged = applyDelta(store!, ev, newRow, oldRow);
