@@ -10,6 +10,7 @@ export type FailureKind =
   | "http_402"
   | "http_403"
   | "http_404"
+  | "http_422"
   | "http_429"
   | "http_500"
   | "http_502"
@@ -171,6 +172,24 @@ export function callKey(tool: string, selector: string, purpose: string = "defau
   return `${tool}::${selector}::${purpose}`;
 }
 
+/** Expensive providers that should run at most once per normalized entity in an
+ *  investigation. After one successful call for an entity, a repeat (same
+ *  normalized selector) is a free skip — the structural fix for the duplicate
+ *  premium charges (leakcheck ×2, oathnet ×2, breach ×3) in the trace audit. */
+export const PREMIUM_TOOLS = new Set<string>([
+  "oathnet_lookup",
+  "leakcheck_lookup",
+  "breach_check",
+  "exa_search",
+  "exa_find_similar",
+  "exa_get_contents",
+  "hunter_combined",
+]);
+
+export function isPremiumTool(tool: string): boolean {
+  return PREMIUM_TOOLS.has(tool);
+}
+
 /** Should this call run? */
 export function shouldRun(
   threadId: string,
@@ -199,8 +218,16 @@ export function shouldRun(
   if (!opts.force && selector) {
     const key = callKey(tool, selector, purpose);
     const prior = state(threadId).calls.get(key);
-    if (prior && prior.status === "ok" && prior.artifactCount > 0) {
-      return { allow: false, reason: "duplicate call: prior run already produced artifacts" };
+    if (prior && prior.status === "ok") {
+      // Premium providers run once per entity regardless of artifact count
+      // (the wrapper records artifactCount: 0). Cheaper tools only dedup once
+      // they've actually produced an artifact for this selector.
+      if (isPremiumTool(tool)) {
+        return { allow: false, reason: `premium '${tool}' already ran for this entity this investigation` };
+      }
+      if (prior.artifactCount > 0) {
+        return { allow: false, reason: "duplicate call: prior run already produced artifacts" };
+      }
     }
     if (prior && prior.status !== "ok") {
       // Re-run only if last failure was a 500/429 (transient). All other
@@ -249,6 +276,9 @@ export function recordResult(
       break;
     case "http_400":
     case "http_404":
+    case "http_422":
+      // Deterministic per-selector failure (bad request / unprocessable input)
+      // — negative-cache the selector so it isn't immediately retried.
       if (selector) b.deadSelectors.add(selector);
       break;
     case "http_429": {
@@ -305,6 +335,7 @@ export function classifyResult(result: unknown, threw: unknown): FailureKind {
     if (status === 402) return "http_402";
     if (status === 403) return "http_403";
     if (status === 404) return "http_404";
+    if (status === 422) return "http_422";
     if (status === 429) return "http_429";
     if (status === 502) return "http_502";
     if (status === 504) return "http_504";
