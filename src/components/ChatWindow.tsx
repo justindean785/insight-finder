@@ -27,6 +27,7 @@ import {
   describeTransportError,
   parseHttpStatusFromError,
 } from "@/lib/tool-run";
+import { toolDisplayName } from "@/lib/tool-display";
 import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon } from "lucide-react";
 
 // Module-scoped so the health probe survives ChatWindowInner remounts on thread switch.
@@ -305,13 +306,13 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
         />
         <span
           className={cn(
-            "font-mono text-[11px] font-semibold tracking-[0.14em] uppercase truncate",
+            "text-[11px] font-medium tracking-tight truncate",
             tone === "error" ? "text-destructive/80"
               : tone === "skip" ? "text-muted-foreground/65"
               : "text-foreground/85",
           )}
         >
-          {name}
+          {toolDisplayName(name)}
         </span>
         {tone === "error" ? (
           <XCircle className="w-3.5 h-3.5 text-destructive/75 shrink-0" />
@@ -402,6 +403,12 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
       </button>
       {open && (
         <div className="border-t border-white/5 p-4 space-y-3 text-xs">
+          <div className="flex items-center gap-2 text-[10px] text-muted-foreground/60">
+            <Wrench className="w-3 h-3" />
+            <span className="font-mono uppercase tracking-[0.12em]">{name}</span>
+            {durationLabel && <span className="font-mono">· {durationLabel}</span>}
+            {charge && <span className="font-mono">· {charge}</span>}
+          </div>
           {part.input != null && (
             <CodePanel
               label="Input"
