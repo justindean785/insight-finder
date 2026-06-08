@@ -432,6 +432,7 @@ export type Database = {
           investigation_id: string
           output_json: Json
           tool_name: string
+          user_id: string | null
         }
         Insert: {
           created_at?: string
@@ -441,6 +442,7 @@ export type Database = {
           investigation_id: string
           output_json: Json
           tool_name: string
+          user_id?: string | null
         }
         Update: {
           created_at?: string
@@ -450,6 +452,7 @@ export type Database = {
           investigation_id?: string
           output_json?: Json
           tool_name?: string
+          user_id?: string | null
         }
         Relationships: []
       }
@@ -462,6 +465,7 @@ export type Database = {
           duration_ms: number | null
           error_msg: string | null
           id: string
+          input_json: Json | null
           ok: boolean
           status_code: number | null
           thread_id: string
@@ -476,6 +480,7 @@ export type Database = {
           duration_ms?: number | null
           error_msg?: string | null
           id?: string
+          input_json?: Json | null
           ok?: boolean
           status_code?: number | null
           thread_id: string
@@ -490,6 +495,7 @@ export type Database = {
           duration_ms?: number | null
           error_msg?: string | null
           id?: string
+          input_json?: Json | null
           ok?: boolean
           status_code?: number | null
           thread_id?: string
@@ -521,7 +527,23 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      thread_metrics: {
+        Row: {
+          artifacts: number | null
+          breaches: number | null
+          low_conf: number | null
+          thread_id: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "artifacts_thread_id_fkey"
+            columns: ["thread_id"]
+            isOneToOne: false
+            referencedRelation: "threads"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Functions: {
       append_evidence: {
