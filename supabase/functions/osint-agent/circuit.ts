@@ -306,7 +306,14 @@ export function recordResult(
       if (b.consecutive >= 2 && selector) b.deadSelectors.add(selector);
       break;
     case "http_500":
-      if (b.consecutive >= 2 && selector) b.deadSelectors.add(selector);
+      // A 5xx is a server-side fault: retrying the same provider mid-run rarely
+      // recovers within the run and, for paid tools, burns credits. The trace
+      // showed synapsint 500 ×6 before the old `consecutive >= 3` guard tripped.
+      // Suppress the provider for the investigation on the FIRST 500 — the same
+      // fail-fast policy already applied to 429 / timeout / 502 / 504. Coverage
+      // trade-off accepted: an unhealthy provider is not worth re-hitting.
+      suppressProvider(threadId, tool, `5xx — provider '${providerForTool(tool)}' suppressed for investigation`);
+      if (selector) b.deadSelectors.add(selector);
       break;
     default:
       break;

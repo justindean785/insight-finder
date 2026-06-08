@@ -87,9 +87,12 @@ describe("shouldRun / recordResult", () => {
     expect(shouldRun(thread, "tool", "sel")).toMatchObject({ allow: false });
   });
 
-  it("re-allows after a transient (500/429/timeout) failure but not a deterministic one", () => {
+  it("fails the provider over on the FIRST 5xx (CostGate v2: no retry spam)", () => {
+    // Previously a plain 500 was treated as transient and re-allowed; the trace
+    // showed that let synapsint 500 ×6 burn through. A 5xx now suppresses the
+    // provider for the rest of the run on the first occurrence.
     recordResult(thread, "toolA", "sel", "default", { status: "http_500" });
-    expect(shouldRun(thread, "toolA", "sel").allow).toBe(true);
+    expect(shouldRun(thread, "toolA", "sel").allow).toBe(false);
 
     recordResult(thread, "toolB", "sel", "default", { status: "http_400" });
     // 400 also blacklists the selector, so the breaker blocks it.

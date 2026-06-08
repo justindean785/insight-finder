@@ -110,9 +110,15 @@ export function wrapToolsWithCache(
       statusCode: number | null = null,
       freeCall: boolean = false,
     ) => {
-      // Attributed (list) price of this call — logged for every paid, non-cached
-      // call so the export can separate charged vs avoided. The actual credit
-      // charge is success-only: failed/timed-out/dup-key calls bill nothing.
+      // Two distinct numbers, intentionally logged separately:
+      //  • cost_micro_usd   — ATTRIBUTED list price. Logged for every paid,
+      //    non-cached call (incl. failures) so the export can separate charged
+      //    vs. avoided spend. A failed call still carries its list price here.
+      //  • charged_micro_usd — ACTUAL credits consumed. Success-only: cache
+      //    hits, free stubs, and any failure bill 0. This is the user-facing
+      //    "what did this run cost me" number; cost_micro_usd is NOT.
+      // Keeping them separate is what stops a failed-call list price from being
+      // misread as a real charge (the tool_usage_log accounting ambiguity).
       const cost = (cached || freeCall) ? 0 : baseCost;
       const charged = creditsCharged({ ok, cached, free: freeCall, baseCost });
       if (charged > 0) ctx.onCost?.(charged);
@@ -122,6 +128,7 @@ export function wrapToolsWithCache(
           thread_id: ctx.investigationId,
           tool_name: name,
           cost_micro_usd: cost,
+          charged_micro_usd: charged,
           cached,
           ok,
           duration_ms: durationMs,
