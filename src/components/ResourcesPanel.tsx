@@ -236,7 +236,7 @@ export function ResourcesPanel({
   }
 
   return (
-    <div className="w-full md:w-[430px] h-full flex flex-col bg-[radial-gradient(circle_at_top,rgba(72,157,255,0.12),transparent_38%)]">
+    <div className="w-full h-full flex flex-col bg-[radial-gradient(circle_at_top,rgba(72,157,255,0.12),transparent_38%)]">
       <Tabs value={tab} onValueChange={setTab} className="flex-1 flex flex-col min-h-0">
         <div className="sticky top-0 z-10 border-b border-border-subtle/80 bg-[linear-gradient(180deg,rgba(8,13,23,0.96),rgba(8,13,23,0.86))] backdrop-blur-xl">
           <div className="px-4 pt-4 pb-3 space-y-3">

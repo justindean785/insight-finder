@@ -292,7 +292,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   ];
 
   return (
-    <div className="w-72 h-full flex flex-col bg-[radial-gradient(circle_at_top,rgba(72,157,255,0.12),transparent_38%)]">
+    <div className="w-full h-full flex flex-col bg-[radial-gradient(circle_at_top,rgba(72,157,255,0.12),transparent_38%)]">
       <div className="border-b border-border-subtle/80 px-4 pt-4 pb-3 space-y-3">
         <div className="flex items-start gap-3">
           <div className="w-10 h-10 rounded-2xl border border-primary/25 bg-white/[0.04] grid place-items-center shadow-[0_0_24px_-10px_hsl(var(--primary)/0.7)]">

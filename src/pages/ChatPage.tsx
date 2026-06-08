@@ -99,12 +99,12 @@ export default function ChatPage() {
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/40 to-transparent" />
         <div className="absolute inset-y-0 left-[calc(18rem)] hidden w-px bg-gradient-to-b from-transparent via-white/10 to-transparent xl:block" />
-        <div className="absolute inset-y-0 right-[430px] hidden w-px bg-gradient-to-b from-transparent via-white/10 to-transparent 2xl:block" />
+        <div className="absolute inset-y-0 right-[360px] hidden w-px bg-gradient-to-b from-transparent via-white/10 to-transparent xl:block 2xl:right-[430px]" />
       </div>
       <aside
         className={cn(
           "relative shrink-0 h-screen border-r border-border-subtle/80 bg-[linear-gradient(180deg,rgba(9,15,25,0.98),rgba(7,11,20,0.98))] transition-[width] duration-300",
-          leftCollapsed ? "w-14" : "w-72",
+          leftCollapsed ? "w-14" : "w-[17rem] 2xl:w-72",
         )}
       >
         <ThreadSidebar
@@ -122,7 +122,7 @@ export default function ChatPage() {
       <aside
         className={cn(
           "relative shrink-0 h-screen border-l border-border-subtle/80 bg-[linear-gradient(180deg,rgba(8,13,23,0.98),rgba(6,10,18,0.98))] transition-[width] duration-300",
-          rightCollapsed ? "w-14" : "w-full md:w-[430px]",
+          rightCollapsed ? "w-14" : "w-[360px] 2xl:w-[430px]",
         )}
       >
         <ResourcesPanel
