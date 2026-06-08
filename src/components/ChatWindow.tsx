@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
   ArrowUp, Loader2, ChevronDown, ChevronRight, Wrench, RotateCcw, AlertTriangle,
-  StickyNote, CheckCircle2, XCircle, Clock, CircleSlash,
+  StickyNote, CheckCircle2, XCircle, Clock, CircleSlash, Square,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -864,7 +864,7 @@ function ChatWindowInner({
     },
   }));
 
-  const { messages, sendMessage, status, error, setMessages } = useChat({
+  const { messages, sendMessage, status, error, setMessages, stop } = useChat({
     id: threadId,
     messages: initial,
     transport,
@@ -1500,14 +1500,28 @@ function ChatWindowInner({
             >
               <Paperclip className="w-4 h-4" />
             </Button>
-            <Button
-              onClick={send}
-              disabled={(!input.trim() && attachments.length === 0) || isLoading || uploading}
-              size="icon"
-              className="absolute bottom-2.5 right-2.5 rounded-xl h-9 w-9 bg-gradient-to-br from-primary to-[hsl(var(--intel-violet))] hover:opacity-95 text-primary-foreground shadow-[0_8px_24px_-8px_hsl(var(--intel-blue)/0.7)] border-0"
-            >
-              {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowUp className="w-4 h-4" />}
-            </Button>
+            {isLoading ? (
+              <Button
+                type="button"
+                onClick={() => { stop(); toast.message("Investigation stopped"); }}
+                size="icon"
+                aria-label="Stop investigation"
+                title="Stop"
+                className="absolute bottom-2.5 right-2.5 rounded-xl h-9 w-9 bg-destructive/90 hover:bg-destructive text-destructive-foreground border-0"
+              >
+                <Square className="w-3.5 h-3.5 fill-current" />
+              </Button>
+            ) : (
+              <Button
+                onClick={send}
+                disabled={(!input.trim() && attachments.length === 0) || uploading}
+                size="icon"
+                aria-label="Send"
+                className="absolute bottom-2.5 right-2.5 rounded-xl h-9 w-9 bg-gradient-to-br from-primary to-[hsl(var(--intel-violet))] hover:opacity-95 text-primary-foreground shadow-[0_8px_24px_-8px_hsl(var(--intel-blue)/0.7)] border-0"
+              >
+                <ArrowUp className="w-4 h-4" />
+              </Button>
+            )}
             </div>
           </div>
         </div>
