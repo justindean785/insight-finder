@@ -46,7 +46,7 @@ export function InvestigationControls({
     const [{ data: usage }, { data: thread }] = await Promise.all([
       supabase
         .from("tool_usage_log")
-        .select("tool_name,ok,cached,status_code,duration_ms,cost_micro_usd,error_msg,created_at")
+        .select("tool_name,ok,cached,status_code,duration_ms,cost_micro_usd,charged_micro_usd,error_msg,created_at")
         .eq("thread_id", threadId)
         .order("created_at", { ascending: true }),
       supabase
@@ -58,9 +58,8 @@ export function InvestigationControls({
     return {
       exported_at: new Date().toISOString(),
       thread: thread ?? { id: threadId },
-      // Charged cost (successful calls) is reported separately from the cost
-      // avoided by not billing failed/timed-out calls. cost_micro_usd is the
-      // amount actually charged.
+      // charged_micro_usd is actual billed credits; cost_micro_usd is the
+      // attributed/list price retained for avoided-spend analysis.
       summary: summarizeRunCosts(usage ?? []),
       tool_calls: usage ?? [],
       artifacts,

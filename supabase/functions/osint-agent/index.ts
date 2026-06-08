@@ -3905,7 +3905,7 @@ Deno.serve(async (req) => {
         for (const r of (rows ?? []) as UsageLogRow[]) {
           used.add(r.tool_name);
           counts[r.tool_name] = (counts[r.tool_name] ?? 0) + 1;
-          chargedMicro += r.charged_micro_usd ?? 0;
+          chargedMicro += r.charged_micro_usd ?? (r.ok !== false ? r.cost_micro_usd ?? 0 : 0);
           attributedMicro += r.cost_micro_usd ?? 0;
           if (!r.ok) failures[r.tool_name] = (failures[r.tool_name] ?? 0) + 1;
         }
