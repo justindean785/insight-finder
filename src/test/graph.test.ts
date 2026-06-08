@@ -140,6 +140,15 @@ describe("confidence grading (Phase 10)", () => {
     expect(g.score).toBeLessThanOrEqual(SOURCE_CLASS_WEIGHT.breach + 10);
   });
 
+  it("caps a username-sweep-only handle below verified (sweep is not corroboration)", () => {
+    const g = gradeConfidence(nodeFrom([
+      { kind: "username", value: "j_doe_91", source: "username_sweep", confidence: 45, metadata: { platform_hits: 4, source_category: ["username_sweep"] } },
+    ]));
+    expect(g.distinctClasses).toHaveLength(0); // sweep doesn't count toward corroboration
+    expect(g.status).not.toBe("verified");
+    expect(g.score).toBeLessThanOrEqual(SOURCE_CLASS_WEIGHT.username_sweep);
+  });
+
   it("verifies an identity corroborated across >=2 independent classes", () => {
     const g = gradeConfidence(nodeFrom([
       { kind: "name", value: "Aladewura Adegboyega", source: "minimax_web_search (news)", confidence: 80, metadata: { source_category: ["news"] } },
