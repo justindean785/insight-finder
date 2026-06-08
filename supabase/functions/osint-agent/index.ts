@@ -22,6 +22,8 @@ import { buildWorkflowAddendum } from "./workflow_prompt.ts";
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
 import { discoverCapabilities, capabilityEnvKeys } from "./capabilities.ts";
+import { buildNodes } from "./graph.ts";
+import { selectPivots, type PivotCandidate } from "./graph_pivots.ts";
 
 // ---- Extracted modules -------------------------------------------------------
 // env.ts — Environment bindings, API keys, degraded-tools state, fetch helpers
@@ -647,6 +649,27 @@ Deno.serve(async (req) => {
               maxTokens: 1500,
             });
             const parsed = safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content };
+            // Phase 9 — dark-launched behind GRAPH_PIVOTS_ENABLED (default off):
+            // re-rank/filter the planned pivots through the entity graph (drop
+            // dead-end / over-broad / already-confirmed targets, cheapest
+            // justified first). Off → byte-for-byte the existing behavior; any
+            // error falls back to the planner's raw output.
+            if (Deno.env.get("GRAPH_PIVOTS_ENABLED") === "true" && Array.isArray((parsed as { pivots?: unknown }).pivots)) {
+              try {
+                const nodes = buildNodes(artifacts as Array<{ kind: string; value: string }>);
+                const { selected, dropped } = selectPivots(
+                  (parsed as { pivots: PivotCandidate[] }).pivots,
+                  nodes,
+                  { budget: budget_remaining },
+                );
+                (parsed as { pivots: unknown }).pivots = selected;
+                if (dropped.length) {
+                  console.log(`[graph-pivots] dropped ${dropped.length} pivot(s): ${dropped.map((d) => `${d.tool}:${d.reason}`).join(", ")}`);
+                }
+              } catch (e) {
+                console.warn("[graph-pivots] selection failed, using planner output:", e);
+              }
+            }
             guard.planCalledInRound = true;
             guard.artifactsSincePlan = 0;
             return { ok: r.ok, status: r.status, plan: parsed };
