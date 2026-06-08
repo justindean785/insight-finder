@@ -4049,7 +4049,43 @@ Deno.serve(async (req) => {
     const wouldOverflow =
       approxPromptChars > MINIMAX_CHAR_BUDGET ||
       trimmedMessages.length > MINIMAX_MSG_BUDGET;
-    const useFallback = !minimaxAvailable || wouldOverflow;
+    let useFallback = !minimaxAvailable || wouldOverflow;
+    // Pre-flight MiniMax health probe. The fallback selection above only fires
+    // when MiniMax's key is missing or the prompt would overflow — it does NOT
+    // catch the case where MiniMax is configured and accepts the request but is
+    // currently rate-limited / 5xx / unreachable. In that case the run commits
+    // to MiniMax and dies mid-stream with no failover (the live "Provider
+    // returned error"). So when MiniMax is the chosen provider and a Gemini
+    // fallback exists, ping MiniMax first; if it can't answer a trivial probe,
+    // fail the whole run over to Gemini instead of dying. Best-effort: any
+    // probe-internal fault leaves the original selection untouched so a healthy
+    // run is never broken by the probe itself.
+    if (!useFallback && lovableGateway) {
+      try {
+        const probePromise = minimaxChat({ user: "ping", maxTokens: 4, temperature: 0 });
+        // Swallow a late rejection if the timeout wins the race below, so it
+        // never surfaces as an unhandled rejection after we've moved on.
+        probePromise.catch(() => {});
+        const probe = (await Promise.race([
+          probePromise,
+          new Promise<{ ok: boolean; status: number }>((resolve) =>
+            setTimeout(() => resolve({ ok: false, status: 0 }), 6000)),
+        ])) as { ok: boolean; status: number };
+        if (!probe.ok) {
+          useFallback = true;
+          console.warn(
+            `[orchestrator] minimax preflight unhealthy (status=${probe.status || "timeout"}) → Gemini fallback for thread ${threadId}`,
+          );
+        }
+      } catch (e) {
+        // Network error / abort during the probe → MiniMax is unreachable.
+        useFallback = true;
+        console.warn(
+          `[orchestrator] minimax preflight threw → Gemini fallback:`,
+          e instanceof Error ? e.message : String(e),
+        );
+      }
+    }
     if (useFallback && !lovableGateway) {
       throw new Error(
         "Neither MINIMAX_API_KEY nor LOVABLE_API_KEY is configured for the orchestrator.",
@@ -4182,6 +4218,20 @@ Deno.serve(async (req) => {
     return result.toUIMessageStreamResponse({
       headers: corsHeaders,
       originalMessages: messages,
+      // Surface the REAL (redacted) provider reason to the client instead of the
+      // SDK's default generic mask ("An error occurred" / "Provider returned
+      // error"). The failed-run card then shows an actionable message, and a
+      // context-overflow vs. rate-limit vs. unreachable failure is
+      // distinguishable. Strip anything that looks like a credential first.
+      onError: (error) => {
+        const m = error instanceof Error ? error.message : String(error);
+        const redacted = m
+          .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+          .replace(/sk-[A-Za-z0-9._-]+/g, "sk-[REDACTED]")
+          .replace(/xai-[A-Za-z0-9._-]+/g, "xai-[REDACTED]")
+          .replace(/AIza[A-Za-z0-9_-]+/g, "AIza[REDACTED]");
+        return redacted.slice(0, 300) || "Provider stream error";
+      },
       onFinish: async ({ messages: finalMessages }) => {
         const assistant = [...finalMessages].reverse().find((m) => m.role === "assistant");
         if (assistant) {
