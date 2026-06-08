@@ -1041,7 +1041,7 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
       const [{ data: logs }, { data: threads }] = await Promise.all([
         supabase
           .from("tool_usage_log")
-          .select("tool_name, thread_id, cost_micro_usd, created_at")
+          .select("tool_name, thread_id, cost_micro_usd, charged_micro_usd, created_at")
           .order("created_at", { ascending: false })
           .limit(5000),
         supabase
@@ -1053,7 +1053,7 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
       if (!alive) return;
 
       const logRows = (logs ?? []) as Array<{
-        tool_name: string; thread_id: string | null; cost_micro_usd: number; created_at: string;
+        tool_name: string; thread_id: string | null; cost_micro_usd: number; charged_micro_usd: number | null; created_at: string;
       }>;
       const threadRows = (threads ?? []) as Array<{
         id: string; title: string; cost_micro_usd: number; updated_at: string;
@@ -1075,7 +1075,8 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
       for (const l of logRows) {
         if (!l.thread_id) continue;
         const cur = byThread.get(l.thread_id) ?? { cost: 0, tools: new Set<string>(), date: l.created_at };
-        cur.cost += (Number(l.cost_micro_usd) || 0) / 1_000_000;
+        const charged = l.charged_micro_usd ?? l.cost_micro_usd;
+        cur.cost += (Number(charged) || 0) / 1_000_000;
         cur.tools.add(l.tool_name);
         if (l.created_at > cur.date) cur.date = l.created_at;
         byThread.set(l.thread_id, cur);
@@ -1104,7 +1105,8 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
       for (const l of logRows) {
         const ageDays = Math.floor((now - new Date(l.created_at).getTime()) / 86_400_000);
         if (ageDays >= 0 && ageDays < days) {
-          buckets[days - 1 - ageDays] += (Number(l.cost_micro_usd) || 0) / 1_000_000;
+          const charged = l.charged_micro_usd ?? l.cost_micro_usd;
+          buckets[days - 1 - ageDays] += (Number(charged) || 0) / 1_000_000;
         }
       }
       setSpark(buckets);

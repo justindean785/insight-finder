@@ -456,6 +456,7 @@ export type Database = {
       tool_usage_log: {
         Row: {
           cached: boolean
+          charged_micro_usd: number
           cost_micro_usd: number
           created_at: string
           duration_ms: number | null
@@ -469,6 +470,7 @@ export type Database = {
         }
         Insert: {
           cached?: boolean
+          charged_micro_usd?: number
           cost_micro_usd?: number
           created_at?: string
           duration_ms?: number | null
@@ -482,6 +484,7 @@ export type Database = {
         }
         Update: {
           cached?: boolean
+          charged_micro_usd?: number
           cost_micro_usd?: number
           created_at?: string
           duration_ms?: number | null

@@ -81,7 +81,7 @@ function SourceStats({ source, threadId }: { source: string; threadId?: string }
         // 1. tool usage — match by tool_name ILIKE source%
         const usagePromise = supabase
           .from("tool_usage_log")
-          .select("tool_name,ok,cached,duration_ms,cost_micro_usd")
+          .select("tool_name,ok,cached,duration_ms,charged_micro_usd")
           .ilike("tool_name", `${source}%`)
           .limit(500);
 
@@ -102,13 +102,16 @@ function SourceStats({ source, threadId }: { source: string; threadId?: string }
         const [usage, fp, mem] = await Promise.all([usagePromise, fpPromise, memPromise]);
         if (!alive) return;
 
-        const rows = (usage.data ?? []) as { ok: boolean; cached: boolean; duration_ms: number | null; cost_micro_usd: number }[];
+        // costUsd reflects ACTUAL charged credits (charged_micro_usd), not the
+        // attributed list price (cost_micro_usd) — so failed calls don't inflate
+        // the per-source cost the user sees.
+        const rows = (usage.data ?? []) as { ok: boolean; cached: boolean; duration_ms: number | null; charged_micro_usd: number }[];
         let okN = 0, failN = 0, cacheN = 0, dSum = 0, dN = 0, costMicro = 0;
         for (const r of rows) {
           if (r.ok) okN++; else failN++;
           if (r.cached) cacheN++;
           if (typeof r.duration_ms === "number") { dSum += r.duration_ms; dN++; }
-          costMicro += r.cost_micro_usd ?? 0;
+          costMicro += r.charged_micro_usd ?? 0;
         }
         setStats({
           total: rows.length,

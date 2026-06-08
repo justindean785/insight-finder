@@ -3891,17 +3891,22 @@ Deno.serve(async (req) => {
       execute: async () => {
         const { data: rows } = await supabaseAdmin
           .from("tool_usage_log")
-          .select("tool_name,ok,cached,cost_micro_usd,duration_ms,error_msg,status_code")
+          .select("tool_name,ok,cached,cost_micro_usd,charged_micro_usd,duration_ms,error_msg,status_code")
           .eq("thread_id", threadId);
         const used = new Set<string>();
         const failures: Record<string, number> = {};
         const counts: Record<string, number> = {};
-        let totalMicro = 0;
-        type UsageLogRow = { tool_name: string; ok?: boolean; cost_micro_usd?: number };
+        // chargedMicro = credits actually consumed (success-only).
+        // attributedMicro = list price of every paid call incl. failures; the
+        // gap between them is wasted/avoided spend on failed calls.
+        let chargedMicro = 0;
+        let attributedMicro = 0;
+        type UsageLogRow = { tool_name: string; ok?: boolean; cost_micro_usd?: number; charged_micro_usd?: number };
         for (const r of (rows ?? []) as UsageLogRow[]) {
           used.add(r.tool_name);
           counts[r.tool_name] = (counts[r.tool_name] ?? 0) + 1;
-          totalMicro += r.cost_micro_usd ?? 0;
+          chargedMicro += r.charged_micro_usd ?? (r.ok !== false ? r.cost_micro_usd ?? 0 : 0);
+          attributedMicro += r.cost_micro_usd ?? 0;
           if (!r.ok) failures[r.tool_name] = (failures[r.tool_name] ?? 0) + 1;
         }
         const pb = playbookFor(detectedSeedType);
@@ -3913,7 +3918,8 @@ Deno.serve(async (req) => {
         return {
           ok: true,
           seed_type: detectedSeedType,
-          total_cost_usd: +(totalMicro / 1_000_000).toFixed(5),
+          total_cost_usd: +(chargedMicro / 1_000_000).toFixed(5),
+          attributed_cost_usd: +(attributedMicro / 1_000_000).toFixed(5),
           tools_used: [...used],
           tier_a_used: tierAUsed,
           tools_available: [...availableToolsForAudit],

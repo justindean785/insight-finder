@@ -68,16 +68,16 @@ describe("4. first 502/504 blocks retry spam for the same provider", () => {
 
 describe("6. run summary separates charged vs avoided failed-call cost", () => {
   it("reproduces the johnd@gmail.com run shape", () => {
-    // Rows mirror tool_usage_log: cost_micro_usd is the attributed list price;
-    // failed (ok:false) paid calls are NOT billed but their cost is "avoided".
+    // Rows mirror current tool_usage_log: cost_micro_usd is the attributed list
+    // price while charged_micro_usd is actual billed credits.
     const rows = [
-      { tool_name: "leakcheck_lookup", ok: true, cached: false, cost_micro_usd: 5_000 },
-      { tool_name: "hunter_email_verifier", ok: true, cached: false, cost_micro_usd: 1_000 },
-      { tool_name: "oathnet_lookup", ok: false, cached: false, cost_micro_usd: 10_000 }, // 502
-      { tool_name: "stolentax_footprint", ok: false, cached: false, cost_micro_usd: 1_500 }, // 504
-      { tool_name: "memory_save", ok: false, cached: false, cost_micro_usd: 200 }, // dup-key
-      { tool_name: "hibp_lookup", ok: false, cached: false, cost_micro_usd: 0 }, // free (unconfigured)
-      { tool_name: "leakcheck_lookup", ok: true, cached: true, cost_micro_usd: 0 }, // cache hit
+      { tool_name: "leakcheck_lookup", ok: true, cached: false, cost_micro_usd: 5_000, charged_micro_usd: 5_000 },
+      { tool_name: "hunter_email_verifier", ok: true, cached: false, cost_micro_usd: 1_000, charged_micro_usd: 1_000 },
+      { tool_name: "oathnet_lookup", ok: false, cached: false, cost_micro_usd: 10_000, charged_micro_usd: 0 }, // 502
+      { tool_name: "stolentax_footprint", ok: false, cached: false, cost_micro_usd: 1_500, charged_micro_usd: 0 }, // 504
+      { tool_name: "memory_save", ok: false, cached: false, cost_micro_usd: 200, charged_micro_usd: 0 }, // dup-key
+      { tool_name: "hibp_lookup", ok: false, cached: false, cost_micro_usd: 0, charged_micro_usd: 0 }, // free
+      { tool_name: "leakcheck_lookup", ok: true, cached: true, cost_micro_usd: 0, charged_micro_usd: 0 }, // cache hit
     ];
     const s = summarizeRunCosts(rows);
     expect(s.calls).toBe(7);
@@ -87,6 +87,16 @@ describe("6. run summary separates charged vs avoided failed-call cost", () => {
     expect(s.successful_cost_micro_usd).toBe(6_000); // 5000 + 1000
     expect(s.avoided_failed_cost_micro_usd).toBe(11_700); // 10000 + 1500 + 200
     expect(s.cost_micro_usd).toBe(6_000); // charged == successful
+  });
+
+  it("falls back for historical rows that only have attributed cost", () => {
+    const s = summarizeRunCosts([
+      { ok: true, cached: false, cost_micro_usd: 5_000 },
+      { ok: false, cached: false, cost_micro_usd: 5_000 },
+    ]);
+    expect(s.successful_cost_micro_usd).toBe(5_000);
+    expect(s.avoided_failed_cost_micro_usd).toBe(5_000);
+    expect(s.cost_micro_usd).toBe(5_000);
   });
 
   it("handles an empty run", () => {
