@@ -113,10 +113,12 @@ export default function ChatPage() {
         />
       </aside>
       <div className="relative flex-1 min-w-0 h-screen overflow-hidden border-x border-white/5 bg-[linear-gradient(180deg,rgba(10,16,28,0.68),rgba(7,10,18,0.82))]">
-        <div className="pointer-events-none absolute inset-x-6 top-3 z-20 flex items-center justify-between text-[10px] uppercase tracking-[0.24em] text-muted-foreground/45">
-          <span>Investigation workspace</span>
-          <span>Live analysis stream</span>
-        </div>
+        {/* NOTE: the decorative "Investigation workspace / Live analysis stream"
+            corner overlay was removed here — it was a z-20 absolute layer sitting
+            on top of ChatWindow's own sticky ThreadHeader (which already renders
+            "Investigation workspace") and the right-pane "Live analysis stream"
+            header, producing the doubled/overlapping labels. The real headers
+            carry these labels; the overlay was pure duplication. */}
         <ChatWindow threadId={threadId} />
       </div>
       <aside
