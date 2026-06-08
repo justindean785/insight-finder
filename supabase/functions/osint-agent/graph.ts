@@ -311,7 +311,7 @@ export function gradeConfidence(node: GraphNode): ConfidenceGrade {
   else if (onlyMarketing) cap = SOURCE_CLASS_WEIGHT.marketing; // 30
 
   const corroborated = distinct.length >= 2;
-  let score = Math.min(topWeight + (corroborated ? 10 : 0), cap);
+  const score = Math.min(topWeight + (corroborated ? 10 : 0), cap);
 
   let status: ConfidenceGrade["status"];
   if (corroborated && topWeight >= SOURCE_CLASS_WEIGHT.social && !overBroad && !onlyMarketing) status = "verified";
