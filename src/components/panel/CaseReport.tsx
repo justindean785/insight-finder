@@ -9,6 +9,7 @@ import {
   GROUP_LABEL,
   type ConfLabel,
 } from "@/lib/intel";
+import { toolActionLabel } from "@/lib/tool-display";
 import { cn } from "@/lib/utils";
 
 /* ------------------------------------------------------------------ */
@@ -297,7 +298,7 @@ function buildUnknowns(artifacts: Artifact[]): string[] {
   const audit = buildToolAudit(artifacts);
   const gaps = inferToolGaps(audit);
   for (const g of gaps.slice(0, 2)) {
-    out.push(`Coverage gap on ${g.kind}: ${g.suggested.slice(0, 3).join(", ")} not yet attempted.`);
+    out.push(`Coverage gap on ${g.kind}: ${g.suggested.slice(0, 3).map((t) => toolActionLabel(t)).join(", ")} not yet attempted.`);
   }
   return out;
 }

@@ -1,5 +1,6 @@
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { detectSeed } from "@/lib/seed";
+import { toolActionLabel } from "@/lib/tool-display";
 
 /** Analyst-grade group buckets for artifact kinds. */
 export type Group =
@@ -913,7 +914,7 @@ export function buildReportMarkdown(input: ReportInput): string {
   const toolCoverage = audit.tools.length === 0
     ? "_No tools produced artifacts._"
     : audit.tools.map((t) =>
-        `- \`${t.tool}\` — ${t.totalResults} result${t.totalResults === 1 ? "" : "s"}, ${t.highConf} high-confidence, ${t.lowConf} need verification${t.cached ? `, ${t.cached} cached` : ""}${t.failed ? `, ${t.failed} failed` : ""}`,
+        `- ${toolActionLabel(t.tool)} — ${t.totalResults} result${t.totalResults === 1 ? "" : "s"}, ${t.highConf} high-confidence, ${t.lowConf} need verification${t.cached ? `, ${t.cached} cached` : ""}${t.failed ? `, ${t.failed} failed` : ""}`,
       ).join("\n");
 
   const weakAreas = (() => {
@@ -928,11 +929,11 @@ export function buildReportMarkdown(input: ReportInput): string {
 
   const nextSteps = gaps.length === 0
     ? "_No additional tool groups suggested._"
-    : gaps.map((g) => `- **${g.kind}** — consider: ${g.suggested.map((t) => `\`${t}\``).join(", ")}`).join("\n");
+    : gaps.map((g) => `- **${g.kind}** — consider: ${g.suggested.map((t) => toolActionLabel(t)).join(", ")}`).join("\n");
 
   const sourceAppendix = audit.tools.length === 0
     ? "_None._"
-    : audit.tools.map((t) => `- \`${t.tool}\` — produced ${t.kinds.join(", ") || "—"}`).join("\n");
+    : audit.tools.map((t) => `- ${toolActionLabel(t.tool)} — produced ${t.kinds.join(", ") || "—"}`).join("\n");
 
   return [
     `# OSINT Investigation Report`,

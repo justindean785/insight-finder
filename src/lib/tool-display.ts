@@ -1,104 +1,143 @@
-const DISPLAY_NAMES: Record<string, string> = {
-  // Orchestration
-  list_tools: "Loading tool catalog",
-  triage_seed: "Triaging seed intelligence",
+/**
+ * Human-readable display labels for OSINT tool calls.
+ *
+ * Format: "[Agent Role] — [Action Label]"
+ *
+ * Collapsed tool cards show the display name. The raw tool identifier
+ * (e.g. "breach_check") is revealed only in the expanded detail pane.
+ */
 
-  // Breach & exposure
-  breach_check: "Scanning breach databases",
-  hibp_lookup: "Checking known breach records",
-  leakcheck_lookup: "Querying leaked credential indexes",
-  oathnet_lookup: "Deep-scanning credential exposures",
-  stolentax_footprint: "Mapping digital footprint",
-  serus_darkweb_scan: "Probing darkweb exposure",
+const DISPLAY: Record<string, string> = {
+  // ── Orchestration ──
+  list_tools:    "Case Manager — Loading available capabilities",
+  triage_seed:   "Lead Analyst — Triaging seed intelligence",
 
-  // Email intelligence
-  emailrep: "Assessing email reputation",
-  gravatar_profile: "Pulling linked avatar profile",
-  hunter_domain_search: "Enumerating domain contacts",
-  hunter_email_finder: "Locating associated emails",
-  hunter_email_verifier: "Verifying email deliverability",
-  hunter_combined: "Running combined email recon",
-  bosint_email_lookup: "Cross-referencing email intelligence",
-  bosint_phone_lookup: "Cross-referencing phone intelligence",
-  deepfind_reverse_email: "Reverse-searching email ownership",
-  deepfind_disposable_email: "Checking disposable email status",
-  intelbase_email_lookup: "Querying intelligence archives",
+  // ── Breach & exposure (sensitive — no raw tool names in collapsed UI) ──
+  breach_check:          "Risk Signal Analyst — Reviewing restricted indicators",
+  hibp_lookup:           "Risk Signal Analyst — Checking known exposure records",
+  leakcheck_lookup:      "Risk Signal Analyst — Querying credential exposure index",
+  oathnet_lookup:        "Risk Signal Analyst — Deep-scanning credential signals",
+  stolentax_footprint:   "Risk Signal Analyst — Mapping digital footprint exposure",
+  serus_darkweb_scan:    "Risk Signal Analyst — Scanning restricted-source indicators",
 
-  // Social & identity
-  socialfetch_lookup: "Profiling social media presence",
-  cordcat_discord_lookup: "Searching Discord connections",
-  username_sweep: "Sweeping platforms for username",
-  username_search: "Searching username variations",
-  github_user: "Pulling developer profile",
-  github_code_search: "Searching public code repositories",
-  reddit_user: "Analyzing Reddit activity",
-  hackernews_user: "Checking Hacker News footprint",
-  deepfind_profile_analyzer: "Analyzing social profile depth",
-  deepfind_telegram_channel: "Scanning Telegram channels",
-  deepfind_telegram_search: "Searching Telegram content",
+  // ── Email intelligence ──
+  emailrep:              "Evidence Triage — Assessing email reputation signals",
+  gravatar_profile:      "Profile Analyst — Checking linked avatar data",
+  hunter_domain_search:  "Data Hunter — Enumerating domain-linked contacts",
+  hunter_email_finder:   "Data Hunter — Locating associated email addresses",
+  hunter_email_verifier: "Evidence Triage — Verifying email deliverability",
+  hunter_combined:       "Data Hunter — Running combined email reconnaissance",
+  bosint_email_lookup:   "Evidence Triage — Checking internal correlation signals",
+  bosint_phone_lookup:   "Evidence Triage — Checking phone correlation signals",
+  deepfind_reverse_email:"Signal Reviewer — Evaluating email ownership traces",
+  deepfind_disposable_email: "Evidence Triage — Checking disposable address status",
+  intelbase_email_lookup:"Signal Reviewer — Evaluating sensitive-source indicators",
 
-  // Infrastructure
-  whois_lookup: "Querying domain registration",
-  crtsh_subdomains: "Enumerating SSL certificates",
-  dns_records: "Resolving DNS records",
-  shodan_internetdb: "Fingerprinting exposed services",
-  ip_intel: "Gathering IP intelligence",
-  ipgeolocation_lookup: "Geolocating IP address",
-  http_fingerprint: "Fingerprinting web server",
-  virustotal_lookup: "Scanning threat intelligence",
-  hackertarget: "Running network reconnaissance",
-  urlscan_search: "Scanning URL threat history",
-  wayback_snapshots: "Searching archived snapshots",
-  archive_url: "Archiving source for evidence",
-  deepfind_ssl_inspect: "Inspecting SSL certificate chain",
-  deepfind_tech_stack: "Detecting technology stack",
-  deepfind_url_unshorten: "Unshortening redirect chain",
-  deepfind_mac_lookup: "Identifying hardware vendor",
-  deepfind_dark_web_link: "Checking dark web references",
+  // ── Social & identity ──
+  socialfetch_lookup:    "Profile Analyst — Checking public account associations",
+  cordcat_discord_lookup:"Profile Analyst — Searching messaging platform links",
+  username_sweep:        "Data Hunter — Sweeping platforms for handle matches",
+  username_search:       "Data Hunter — Searching username variations",
+  github_user:           "Profile Analyst — Checking developer profile traces",
+  github_code_search:    "Data Hunter — Searching public code repositories",
+  reddit_user:           "Profile Analyst — Reviewing community activity history",
+  hackernews_user:       "Profile Analyst — Reviewing tech community footprint",
+  deepfind_profile_analyzer: "Profile Analyst — Analyzing social profile depth",
+  deepfind_telegram_channel: "Data Hunter — Scanning messaging channel records",
+  deepfind_telegram_search:  "Data Hunter — Searching messaging platform content",
 
-  // Search & enrichment
-  google_dorks: "Building targeted search queries",
-  dork_harvest: "Harvesting search results",
-  gemini_deep_dork: "Running AI-powered deep search",
-  exa_search: "Searching semantic web index",
-  exa_find_similar: "Finding related sources",
-  exa_get_contents: "Extracting page contents",
-  jina_reader_scrape: "Reading source document",
-  minimax_web_search: "Searching the open web",
-  minimax_extract: "Extracting structured data",
-  minimax_correlate: "Correlating data points",
-  minimax_plan_pivots: "Planning next pivots",
+  // ── Infrastructure ──
+  whois_lookup:          "Infrastructure Analyst — Querying domain registration",
+  crtsh_subdomains:      "Infrastructure Analyst — Enumerating certificate transparency",
+  dns_records:           "Infrastructure Analyst — Resolving DNS records",
+  shodan_internetdb:     "Infrastructure Analyst — Fingerprinting exposed services",
+  ip_intel:              "Infrastructure Analyst — Gathering IP intelligence",
+  ipgeolocation_lookup:  "Infrastructure Analyst — Geolocating network address",
+  http_fingerprint:      "Infrastructure Analyst — Fingerprinting web server",
+  virustotal_lookup:     "Risk Signal Analyst — Checking threat intelligence feeds",
+  hackertarget:          "Infrastructure Analyst — Running network reconnaissance",
+  urlscan_search:        "Infrastructure Analyst — Scanning URL threat history",
+  wayback_snapshots:     "Source Analyst — Searching archived page snapshots",
+  archive_url:           "Source Analyst — Archiving source for chain of custody",
+  deepfind_ssl_inspect:  "Infrastructure Analyst — Inspecting SSL certificate chain",
+  deepfind_tech_stack:   "Infrastructure Analyst — Detecting technology stack",
+  deepfind_url_unshorten:"Infrastructure Analyst — Resolving redirect chain",
+  deepfind_mac_lookup:   "Infrastructure Analyst — Identifying hardware vendor",
+  deepfind_dark_web_link:"Risk Signal Analyst — Checking restricted-source references",
 
-  // Crypto
-  crypto_wallet: "Tracing wallet activity",
+  // ── Search & enrichment ──
+  google_dorks:          "Data Hunter — Building targeted search queries",
+  dork_harvest:          "Data Hunter — Harvesting search engine results",
+  gemini_deep_dork:      "Lead Analyst — Running AI-assisted deep search",
+  exa_search:            "Data Hunter — Searching semantic web index",
+  exa_find_similar:      "Data Hunter — Finding related source material",
+  exa_get_contents:      "Source Analyst — Extracting page contents",
+  jina_reader_scrape:    "Source Analyst — Reviewing source material",
+  minimax_web_search:    "Data Hunter — Gathering public-source leads",
+  minimax_extract:       "Source Analyst — Extracting structured data",
+  minimax_correlate:     "Lead Analyst — Correlating cross-source data points",
+  minimax_plan_pivots:   "Lead Analyst — Planning next investigation pivots",
 
-  // Special lookups
-  deepfind_ransomware_exposure: "Checking ransomware exposure",
-  deepfind_vin_lookup: "Running vehicle identification",
-  deepfind_aircraft_lookup: "Searching aircraft registry",
-  deepfind_vessel_lookup: "Searching vessel registry",
-  osint_navigator_query: "Querying OSINT navigator",
-  osint_navigator_search: "Searching OSINT sources",
-  synapsint_lookup: "Searching aggregated intelligence",
+  // ── Crypto ──
+  crypto_wallet:         "Financial Analyst — Tracing blockchain activity",
 
-  // Recording & analysis
-  record_artifacts: "Recording investigation findings",
-  record_artifact: "Logging artifact to case file",
-  record_evidence: "Securing evidence to chain",
-  record_finding: "Documenting key finding",
-  memory_recall: "Recalling prior intelligence",
-  memory_save: "Storing intelligence for future use",
-  coverage_audit: "Auditing investigation coverage",
-  detect_contradictions: "Checking for contradictions",
-  tool_audit: "Reviewing tool execution quality",
+  // ── Special lookups ──
+  deepfind_ransomware_exposure: "Risk Signal Analyst — Checking ransomware exposure signals",
+  deepfind_vin_lookup:   "Data Hunter — Running vehicle identification lookup",
+  deepfind_aircraft_lookup: "Data Hunter — Searching aircraft registry records",
+  deepfind_vessel_lookup:"Data Hunter — Searching vessel registry records",
+  osint_navigator_query: "Lead Analyst — Querying intelligence navigator",
+  osint_navigator_search:"Data Hunter — Searching intelligence source catalog",
+  synapsint_lookup:      "Data Hunter — Searching aggregated intelligence feeds",
+
+  // ── Recording & analysis ──
+  record_artifacts:      "Case Manager — Organizing case artifacts",
+  record_artifact:       "Case Manager — Logging artifact to case file",
+  record_evidence:       "Case Manager — Securing evidence to custody chain",
+  record_finding:        "Case Manager — Documenting key finding",
+  memory_recall:         "Lead Analyst — Recalling prior case intelligence",
+  memory_save:           "Lead Analyst — Storing intelligence for future recall",
+  coverage_audit:        "Quality Control — Auditing investigation coverage",
+  detect_contradictions: "Quality Control — Checking for conflicts",
+  tool_audit:            "Quality Control — Reviewing execution quality",
 };
 
+/**
+ * Returns a professional display label for a tool call.
+ * Format: "[Agent Role] — [Action Label]"
+ */
 export function toolDisplayName(toolName: string): string {
-  return DISPLAY_NAMES[toolName] ?? formatFallback(toolName);
+  return DISPLAY[toolName] ?? fallbackDisplay(toolName);
 }
 
-function formatFallback(name: string): string {
-  return name
+/**
+ * Returns just the action portion (after the " — ") for use in reports
+ * and prose where the full role prefix would be redundant.
+ */
+export function toolActionLabel(toolName: string): string {
+  const full = DISPLAY[toolName];
+  if (full) {
+    const idx = full.indexOf(" — ");
+    return idx >= 0 ? full.slice(idx + 3) : full;
+  }
+  return fallbackDisplay(toolName);
+}
+
+/**
+ * Returns the agent role portion (before the " — ").
+ */
+export function toolAgentRole(toolName: string): string {
+  const full = DISPLAY[toolName];
+  if (full) {
+    const idx = full.indexOf(" — ");
+    return idx >= 0 ? full.slice(0, idx) : "Analyst";
+  }
+  return "Analyst";
+}
+
+function fallbackDisplay(name: string): string {
+  const action = name
     .replace(/_/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
+  return `Analyst — ${action}`;
 }
