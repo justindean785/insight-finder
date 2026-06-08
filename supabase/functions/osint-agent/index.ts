@@ -21,6 +21,7 @@ import { computeAxes, sourceConfidence, applyEvidenceCaps } from "./confidence.t
 import { buildWorkflowAddendum } from "./workflow_prompt.ts";
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
+import { discoverCapabilities, capabilityEnvKeys } from "./capabilities.ts";
 
 // ---- Extracted modules -------------------------------------------------------
 // env.ts — Environment bindings, API keys, degraded-tools state, fetch helpers
@@ -3963,6 +3964,20 @@ Deno.serve(async (req) => {
     let costCheckpointCounter = 0;
     // Bootstrap per-thread circuit breakers (firecrawl/intelbase pre-disabled).
     circuit.applyBaselineDisables(threadId);
+    // Capability discovery: gate providers that can't run (missing key / gated /
+    // disabled / unsupported seed) BEFORE the execution loop, so they never
+    // become attempted live calls or consume credits. Pure evaluation over key
+    // PRESENCE booleans (no secret values); unavailable tools are disabled via
+    // the breaker, which cache.ts skips without billing.
+    {
+      const envPresence: Record<string, boolean> = {};
+      for (const k of capabilityEnvKeys()) envPresence[k] = !!Deno.env.get(k);
+      for (const cap of discoverCapabilities(envPresence, null)) {
+        if (!cap.available) {
+          circuit.disableTool(threadId, cap.tool, `unavailable: ${cap.reason}${cap.detail ? ` (${cap.detail})` : ""}`);
+        }
+      }
+    }
     // Tracks the cost amount already written to the DB via mid-run
     // checkpoints so the final write only adds the remaining delta.
     let lastCheckpointMicroUsd = 0;

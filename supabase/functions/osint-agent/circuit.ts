@@ -345,3 +345,10 @@ export function applyBaselineDisables(threadId: string): void {
 export function clearThread(threadId: string): void {
   THREADS.delete(threadId);
 }
+
+/** Disable a tool for this investigation (used by startup capability gating).
+ *  A disabled tool's breaker reports allow:false from shouldRun, which cache.ts
+ *  turns into a free, un-billed skip before any live call. */
+export function disableTool(threadId: string, tool: string, reason: string): void {
+  breakerFor(threadId, tool).disabledReason = reason;
+}
