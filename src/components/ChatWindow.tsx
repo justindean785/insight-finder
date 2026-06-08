@@ -13,6 +13,7 @@ import {
   StickyNote, CheckCircle2, XCircle, Clock, CircleSlash, Square,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
 import { toast } from "sonner";
 import { ThreadHeader } from "./ThreadHeader";
 import { detectSeed } from "@/lib/seed";
@@ -598,7 +599,10 @@ function formatAge(ms: number): string {
 
 function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean }) {
   if (m.role === "user") {
-    const text = (m.parts as MessagePartShape[]).filter((p) => p.type === "text").map((p) => p.text).join("");
+    const rawText = (m.parts as MessagePartShape[]).filter((p) => p.type === "text").map((p) => p.text).join("");
+    // Split the human text from the "Attached files:" block so we render image
+    // previews / file chips instead of the raw Supabase signed URL.
+    const { body, attachments } = parseUserMessage(rawText);
     return (
       <div className="flex justify-end">
         <div
@@ -620,7 +624,35 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
               boxShadow: "0 0 12px hsl(var(--primary) / 0.55)",
             }}
           />
-          {text}
+          {body && <div>{body}</div>}
+          {attachments.length > 0 && (
+            <div className={cn("flex flex-wrap gap-2", body && "mt-2")}>
+              {attachments.map((a, i) =>
+                isImageAttachment(a) ? (
+                  <a key={i} href={a.url} target="_blank" rel="noreferrer" className="block" title={a.name}>
+                    <img
+                      src={a.url}
+                      alt={a.name}
+                      loading="lazy"
+                      className="max-h-40 max-w-[12rem] rounded-lg border border-white/10 object-cover"
+                    />
+                  </a>
+                ) : (
+                  <a
+                    key={i}
+                    href={a.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={a.name}
+                    className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs hover:bg-white/[0.08] transition-colors no-underline"
+                  >
+                    <FileText className="w-4 h-4 shrink-0 text-muted-foreground" />
+                    <span className="truncate max-w-[10rem]">{a.name}</span>
+                  </a>
+                ),
+              )}
+            </div>
+          )}
         </div>
       </div>
     );
