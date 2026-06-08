@@ -3,7 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import {
   Mail, Phone, Globe, User as UserIcon, Network, ShieldAlert, MapPin, Image as ImgIcon, Tag,
   Copy, CheckCircle2, XCircle, PanelRightOpen, PanelRightClose, Star, ShieldQuestion, EyeOff, Eye,
-  Database, BarChart3, Lock, FileOutput,
+  Database, BarChart3, FileOutput,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -87,29 +87,27 @@ export function ResourcesPanel({
   const [selected, setSelected] = useState<Artifact | null>(null);
   const review = useReviewStates(threadId);
   const [seed, setSeed] = useState<{ value: string | null; type: string | null } | null>(null);
-  const [section, setSection] = useState<"evidence" | "analysis" | "provenance" | "output">("evidence");
+  const [section, setSection] = useState<"evidence" | "analysis" | "output">("evidence");
   const [tab, setTab] = useState<string>("artifacts");
 
   const SECTIONS = [
     { key: "evidence" as const, label: "Evidence", icon: Database, tabs: [
       { v: "artifacts", l: "Artifacts" },
       { v: "clusters",  l: "Clusters" },
-      { v: "matrix",    l: "Matrix" },
+      { v: "matrix",    l: "Review" },
+      { v: "timeline", l: "Timeline" },
     ] },
     { key: "analysis" as const, label: "Analysis", icon: BarChart3, tabs: [
       { v: "overview", l: "Overview" },
       { v: "pivots",   l: "Pivots" },
-      { v: "timeline", l: "Timeline" },
       { v: "map",      l: "Map" },
-    ] },
-    { key: "provenance" as const, label: "Provenance", icon: Lock, tabs: [
-      { v: "custody", l: "Custody" },
-      { v: "audit",   l: "Audit" },
       { v: "issues",  l: "Issues" },
     ] },
     { key: "output" as const, label: "Output", icon: FileOutput, tabs: [
-      { v: "notes",  l: "Notes" },
       { v: "report", l: "Report" },
+      { v: "notes",  l: "Notes" },
+      { v: "custody", l: "Custody" },
+      { v: "audit",   l: "Audit" },
     ] },
   ];
 
@@ -133,7 +131,6 @@ export function ResourcesPanel({
     const SECTION_COUNTS: Record<(typeof SECTIONS)[number]["key"], number | undefined> = {
       evidence: items.length,
       analysis: groupCount,
-      provenance: issueCount,
       output: keyCount,
     };
     const TAB_COUNTS: Record<string, number | undefined> = {
@@ -287,16 +284,15 @@ export function ResourcesPanel({
               </div>
             </div>
 
-            <div className="grid grid-cols-4 gap-2">
-              <PanelMetric label="Groups" value={groupCount} />
-              <PanelMetric label="Reviewed" value={reviewedCount} />
-              <PanelMetric label="Priority" value={keyCount} tone={keyCount > 0 ? "ok" : undefined} />
-              <PanelMetric label="Issues" value={issueCount} tone={issueCount > 0 ? "warn" : undefined} />
+            <div className="flex items-center gap-3 text-[11px] font-mono tabular-nums">
+              <span className="text-muted-foreground">{reviewedCount}/{items.length} reviewed</span>
+              {keyCount > 0 && <span className="text-[hsl(var(--confidence-high))]">{keyCount} priority</span>}
+              {issueCount > 0 && <span className="text-[hsl(var(--confidence-mid))]">{issueCount} issues</span>}
             </div>
           </div>
 
           <div className="px-3 pb-3">
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-3 gap-2">
             {SECTIONS.map((s) => {
               const Icon = s.icon;
               const active = section === s.key;
@@ -327,11 +323,7 @@ export function ResourcesPanel({
           </div>
 
           <div className="border-t border-border-subtle/70 px-3 py-2">
-            <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.18em] text-muted-foreground/70">
-              <span>{activeSection.label} views</span>
-              <span>{activeSection.tabs.length} tabs</span>
-            </div>
-            <div className="mt-2 overflow-x-auto scrollbar-none">
+            <div className="overflow-x-auto scrollbar-none">
               <TabsList className="inline-flex min-w-full h-auto bg-transparent rounded-none p-0 gap-1 justify-start">
               {activeSection.tabs.map((t) => {
                 const count = TAB_COUNTS[t.v];
@@ -406,24 +398,6 @@ export function ResourcesPanel({
   );
 }
 
-function PanelMetric({ label, value, tone }: {
-  label: string;
-  value: number;
-  tone?: "ok" | "warn";
-}) {
-  return (
-    <div className="rounded-xl border border-border-subtle/80 bg-black/10 px-2.5 py-2">
-      <div className="text-[9px] uppercase tracking-[0.18em] text-muted-foreground/70">{label}</div>
-      <div className={cn(
-        "mt-1 font-mono text-[15px] leading-none text-foreground",
-        tone === "ok" && "text-[hsl(var(--confidence-high))]",
-        tone === "warn" && "text-[hsl(var(--danger))]",
-      )}>
-        {value}
-      </div>
-    </div>
-  );
-}
 
 function ArtifactsList({
   items, onSelect, threadId,

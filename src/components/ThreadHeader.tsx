@@ -146,70 +146,48 @@ export function ThreadHeader({
               </span>
             </div>
 
-            <div className="mt-3 rounded-2xl border border-border-subtle/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.015))] px-3 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div className="min-w-0 flex-1">
-                  <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground/75">
-                    Primary lead
-                  </div>
-                  <div className="mt-1 font-mono text-[13px] text-foreground/95 truncate" title={seed}>
-                    {seed || "Awaiting seed input"}
-                  </div>
-                </div>
-                <div className="shrink-0 rounded-xl border border-border-subtle/70 bg-black/10 px-3 py-2 text-right">
-                  <div className="text-[9px] uppercase tracking-[0.18em] text-muted-foreground/70">
-                    Last update
-                  </div>
-                  <div className="mt-1 inline-flex items-center gap-1 font-mono text-[11px] text-foreground/85">
-                    <Clock className="h-3 w-3 text-muted-foreground/80" />
-                    <span title={thread?.updated_at ? new Date(thread.updated_at).toLocaleString() : ""}>
-                      {updatedLabel}
-                    </span>
-                  </div>
-                </div>
+            <div className="mt-2 flex items-center gap-3 min-w-0">
+              <div className="min-w-0 flex-1 font-mono text-[13px] text-foreground/95 truncate" title={seed}>
+                {seed || "Awaiting seed input"}
               </div>
-
-              <div className="mt-3 flex flex-wrap gap-2">
-                <HeaderChip label="Thread" value={threadId.slice(0, 8)} />
-                <HeaderChip label="Log" value={`${messages.length} entries`} />
-                {credits > 0 && <HeaderChip label="Credits" value={String(credits)} />}
-                {integrity && integrity.total > 0 && (
-                  <HeaderChip
-                    label="Chain"
-                    value={`${chainScore} integrity`}
-                    tone={integrity.ok ? "ok" : "bad"}
-                  />
-                )}
+              <div className="shrink-0 inline-flex items-center gap-1 font-mono text-[10px] text-muted-foreground/70">
+                <Clock className="h-3 w-3" />
+                <span title={thread?.updated_at ? new Date(thread.updated_at).toLocaleString() : ""}>
+                  {updatedLabel}
+                </span>
               </div>
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:w-[360px] xl:grid-cols-3">
-            <Stat label="Artifacts" value={artifactCount} />
-            <Stat label="Tools run" value={toolsRun} />
-            <Stat label="Breaches" value={breachCount} tone={breachCount > 0 ? "warn" : undefined} />
-            <Stat
-              label="Failures"
-              value={toolsFailed}
-              tone={toolsFailed > 0 ? "bad" : undefined}
-              onClick={toolsFailed > 0 ? showFailedTools : undefined}
-              title={toolsFailed > 0 ? "Jump to first failed tool call" : undefined}
-            />
-            <Stat label="Messages" value={messages.length} />
-            <Stat
-              label="Chain"
-              value={chainScore}
-              tone={integrity?.total ? (integrity.ok ? "ok" : "bad") : undefined}
-              title={integrity?.total ? (integrity.ok ? `${integrity.total} evidence rows · chain valid` : `Chain break at seq ${integrity.first_break}`) : undefined}
-            />
+          <div className="flex flex-wrap gap-1.5 xl:w-auto xl:justify-end">
+            <HeaderChip label="Artifacts" value={String(artifactCount)} />
+            <HeaderChip label="Tools" value={String(toolsRun)} />
+            {breachCount > 0 && <HeaderChip label="Breaches" value={String(breachCount)} tone="bad" />}
+            {toolsFailed > 0 && (
+              <button onClick={showFailedTools} title="Jump to first failed tool call" className="contents">
+                <HeaderChip label="Failures" value={String(toolsFailed)} tone="bad" />
+              </button>
+            )}
+            {integrity && integrity.total > 0 && (
+              <HeaderChip
+                label="Chain"
+                value={chainScore}
+                tone={integrity.ok ? "ok" : "bad"}
+              />
+            )}
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-muted-foreground/70">
-          <span className="rounded-full border border-border-subtle/70 bg-white/[0.02] px-2.5 py-1">Conversation deck</span>
-          <span className="rounded-full border border-border-subtle/70 bg-white/[0.02] px-2.5 py-1">Evidence aligned</span>
-          <span className="rounded-full border border-border-subtle/70 bg-white/[0.02] px-2.5 py-1">Analyst instrumentation live</span>
-        </div>
+        {/* Status indicator row — minimal, no dead pills */}
+        {isStreaming && (
+          <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-primary/80">
+            <span className="relative flex h-1.5 w-1.5">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60" />
+              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
+            </span>
+            <span>Live collection in progress</span>
+          </div>
+        )}
       </div>
     </header>
   );
@@ -237,30 +215,3 @@ function HeaderChip({ label, value, tone }: {
   );
 }
 
-function Stat({ label, value, tone, onClick, title }: {
-  label: string;
-  value: string | number;
-  tone?: "ok" | "warn" | "bad";
-  onClick?: () => void;
-  title?: string;
-}) {
-  const color =
-    tone === "ok" ? "text-[hsl(var(--confidence-high))]"
-      : tone === "warn" ? "text-[hsl(var(--confidence-mid))]"
-      : tone === "bad" ? "text-destructive/90"
-      : "text-foreground/95";
-  const Comp = onClick ? "button" : "div";
-  return (
-    <Comp
-      onClick={onClick}
-      title={title}
-      className={cn(
-        "flex min-h-[72px] flex-col justify-between rounded-2xl border border-border-subtle/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.015))] px-3 py-2 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]",
-        onClick && "cursor-pointer transition-colors hover:border-primary/35 hover:bg-white/[0.04]",
-      )}
-    >
-      <span className="uppercase text-[9px] tracking-[0.16em] text-muted-foreground/60">{label}</span>
-      <span className={cn("font-mono tabular-nums text-[18px] font-semibold leading-none", color)}>{value}</span>
-    </Comp>
-  );
-}
