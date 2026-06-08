@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Mail, Phone, Globe, User as UserIcon, Network, ShieldAlert, MapPin, Image as ImgIcon, Tag,
-  Copy, CheckCircle2, XCircle, PanelRightOpen, PanelRightClose, Star, ShieldQuestion, EyeOff,
+  Copy, CheckCircle2, XCircle, PanelRightOpen, PanelRightClose, Star, ShieldQuestion, EyeOff, Eye,
   Database, BarChart3, Lock, FileOutput,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
@@ -13,6 +13,7 @@ import { ConfidenceExplain } from "@/components/ConfidenceExplain";
 import { SourceBadge } from "@/components/SourceBadge";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { partitionDismissed } from "@/lib/artifactVisibility";
 import { useThreadArtifacts, type Artifact } from "@/hooks/useThreadArtifacts";
 import {
   groupForKind, GROUP_LABEL, GROUP_ORDER, type Group,
@@ -428,6 +429,7 @@ function ArtifactsList({
   items, onSelect, threadId,
 }: { items: Artifact[]; onSelect: (a: Artifact) => void; threadId: string }) {
   const review = useReviewStates(threadId);
+  const [showDismissed, setShowDismissed] = useState(false);
   if (items.length === 0) {
     return (
       <div className="text-xs text-muted-foreground p-4 space-y-1">
@@ -436,7 +438,29 @@ function ArtifactsList({
       </div>
     );
   }
-  const grouped = items.reduce<Record<Group, Artifact[]>>((acc, a) => {
+  // Dismissed artifacts are hidden by default (reversible — they stay in the
+  // evidence chain/export and can be revealed to un-dismiss).
+  const { visible, hidden } = partitionDismissed(items, (id) => review.get(id) === "dismissed");
+  const shown = showDismissed ? items : visible;
+  const dismissToggle = hidden.length > 0 && (
+    <button
+      type="button"
+      onClick={() => setShowDismissed((v) => !v)}
+      className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground hover:text-foreground transition-colors"
+    >
+      {showDismissed ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+      {showDismissed ? `Hide ${hidden.length} dismissed` : `Show ${hidden.length} dismissed`}
+    </button>
+  );
+  if (shown.length === 0) {
+    return (
+      <div className="p-2 space-y-2">
+        <div className="text-xs text-muted-foreground p-4">All {hidden.length} artifact{hidden.length === 1 ? "" : "s"} dismissed.</div>
+        {dismissToggle}
+      </div>
+    );
+  }
+  const grouped = shown.reduce<Record<Group, Artifact[]>>((acc, a) => {
     const g = groupForKind(a.kind);
     (acc[g] ??= []).push(a);
     return acc;
@@ -569,6 +593,7 @@ function ArtifactsList({
           </div>
         );
       })}
+      {dismissToggle}
     </div>
   );
 }
