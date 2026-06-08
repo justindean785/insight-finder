@@ -29,6 +29,9 @@ import {
 } from "@/lib/tool-run";
 import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon } from "lucide-react";
 
+// Module-scoped so the health probe survives ChatWindowInner remounts on thread switch.
+let _readyProbedOnce = false;
+
 const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.trim();
 const SUPABASE_PROJECT_ID = (import.meta.env.VITE_SUPABASE_PROJECT_ID as string | undefined)?.trim();
 const FUNCTIONS_BASE_URL =
@@ -854,7 +857,6 @@ function ChatWindowInner({
   const [input, setInput] = useState("");
   const failSavedRef = useRef(false);
   const unmountedRef = useRef(false);
-  const readyProbedOnceRef = useRef(false);
   const [rerunBusy, setRerunBusy] = useState(false);
   const { items: artifacts } = useThreadArtifacts(threadId);
   const [seedValue, setSeedValue] = useState<string | null>(null);
@@ -985,8 +987,8 @@ function ChatWindowInner({
     //   404 → function not deployed
     //   200 + ok:true  → ready to scan
     //   200 + ok:false → deployed but a required dep is missing (e.g. orchestrator key)
-    if (!readyProbedOnceRef.current) {
-      readyProbedOnceRef.current = true;
+    if (!_readyProbedOnce) {
+      _readyProbedOnce = true;
       const { signal, cancel } = signalWithTimeout(5000);
       try {
         const probeRes = await fetch(`${FUNCTIONS_URL}?health=1`, { method: "GET", signal });
@@ -1015,7 +1017,7 @@ function ChatWindowInner({
       } catch (probeErr) {
         if ((probeErr as Error)?.name === "TimeoutError" || (probeErr as Error)?.name === "AbortError") {
           toast.error("Scan backend timed out — Supabase function may be cold-starting. Retry in a few seconds.");
-          readyProbedOnceRef.current = false; // allow retry
+          _readyProbedOnce = false; // allow retry
           return;
         }
         // Network error — let it through; the real sendMessage will surface it

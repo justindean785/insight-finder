@@ -95,6 +95,7 @@ export default function BrainGlobalPage() {
   const [promoted, setPromoted] = useState<Set<string>>(() => loadSet(BRAIN_PROMOTED_KEY));
   const [patternFilter, setPatternFilter] = useState<PatternFilter>("ALL");
   const [patternSort, setPatternSort] = useState<PatternSort>("NEWEST");
+  const [sfCreditsLeft, setSfCreditsLeft] = useState<number | null>(null);
 
   const toggleSuppress = (id: string) => {
     setSuppressed((prev) => {
@@ -143,6 +144,13 @@ export default function BrainGlobalPage() {
       const list = (data as Memory[] | null) ?? [];
       setMemories(list);
       setMemLoading(false);
+      // SocialFetch credit count for header chip.
+      const { count: sfUsed } = await supabase
+        .from("tool_usage_log")
+        .select("id", { count: "exact", head: true })
+        .eq("tool_name", "socialfetch_lookup");
+      if (alive) setSfCreditsLeft(Math.max(0, SOCIALFETCH_CAP - (sfUsed ?? 0)));
+
       const ids = Array.from(new Set(list.map((m) => m.source_thread_id).filter(Boolean) as string[]));
       if (ids.length) {
         const { data: t } = await supabase
@@ -224,7 +232,7 @@ export default function BrainGlobalPage() {
           <MetricChip icon={Zap} label="RECALLS" value={stats.recalls} />
           <MetricChip icon={Target} label="AVG CONFIDENCE" value={`${stats.avgConf}%`} />
           <MetricChip icon={ThumbsUp} label="USER CONFIRMED" value={stats.userConfirmed} />
-          <MetricChip icon={CreditCard} label="SOCIALFETCH" value="9,944 left" />
+          <MetricChip icon={CreditCard} label="SOCIALFETCH" value={sfCreditsLeft != null ? `${sfCreditsLeft.toLocaleString()} left` : "—"} />
         </div>
         <div className="px-6 pb-3 flex gap-1 border-t border-border-subtle/40 pt-3">
           {SUB_TABS.map((t) => (
@@ -1013,7 +1021,7 @@ function LearnsExplainer() {
 // Credits sub-tab
 // ============================================================
 
-const SOCIALFETCH_CAP = 10000;
+export const SOCIALFETCH_CAP = 10000;
 
 type RunRow = {
   threadId: string;

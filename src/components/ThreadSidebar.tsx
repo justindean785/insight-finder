@@ -161,6 +161,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   const deleteThread = async (id: string, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (!window.confirm("Delete this investigation? This cannot be undone.")) return;
     await supabase.from("threads").delete().eq("id", id);
     if (id === threadId) navigate("/");
   };
