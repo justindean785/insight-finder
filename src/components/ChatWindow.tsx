@@ -407,7 +407,7 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
             <Wrench className="w-3 h-3" />
             <span className="font-mono uppercase tracking-[0.12em]">{name}</span>
             {durationLabel && <span className="font-mono">· {durationLabel}</span>}
-            {charge && <span className="font-mono">· {charge}</span>}
+            {charge?.label && <span className="font-mono" title={charge.title ?? undefined}>· {charge.label}</span>}
           </div>
           {part.input != null && (
             <CodePanel
