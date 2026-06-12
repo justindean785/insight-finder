@@ -1098,6 +1098,17 @@ export type ClusterReport = {
   seedState: string | null;
 };
 
+const SHARED_INFRA_NAME_THRESHOLD = 3;
+const SHARED_INFRA_KEY_PREFIXES = new Set(["ip", "address", "wallet", "parent"]);
+
+function normalizePersonName(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function isSharedInfraKey(key: string): boolean {
+  return SHARED_INFRA_KEY_PREFIXES.has(key.split(":", 1)[0]);
+}
+
 /**
  * Build identity clusters from the artifact set. Conservative union-find:
  * artifacts merge only when they share a STRONG identifier
@@ -1139,8 +1150,50 @@ export function buildIdentityClusters(
     return m.false_positive !== true;
   });
 
+  // Infrastructure and parent-seed selectors can fan out to unrelated people
+  // (shared IPs, households, wallets, breach rows, or collection batches).
+  // When one such selector carries three or more distinct names, it is no
+  // longer safe to use that selector as an automatic identity-union key.
+  const namesByParentKey = new Map<string, Set<string>>();
   for (const a of live) {
-    const keys = strongKeysFor(a);
+    const kind = a.kind.toLowerCase();
+    if (kind !== "name" && kind !== "person") continue;
+    const name = normalizePersonName(a.value);
+    if (!name) continue;
+    for (const key of strongKeysFor(a)) {
+      if (!key.startsWith("parent:")) continue;
+      const names = namesByParentKey.get(key) ?? new Set<string>();
+      names.add(name);
+      namesByParentKey.set(key, names);
+    }
+  }
+
+  const namesBySharedKey = new Map<string, Set<string>>();
+  for (const [key, names] of namesByParentKey) {
+    namesBySharedKey.set(key, new Set(names));
+  }
+  for (const a of live) {
+    const kind = a.kind.toLowerCase();
+    if (!SHARED_INFRA_KEY_PREFIXES.has(kind) || kind === "parent") continue;
+    const value = a.value.trim().toLowerCase();
+    if (!value) continue;
+    const selectorKey = `${kind}:${value}`;
+    for (const parentKey of strongKeysFor(a).filter((key) => key.startsWith("parent:"))) {
+      const linkedNames = namesByParentKey.get(parentKey);
+      if (!linkedNames) continue;
+      const names = namesBySharedKey.get(selectorKey) ?? new Set<string>();
+      linkedNames.forEach((name) => names.add(name));
+      namesBySharedKey.set(selectorKey, names);
+    }
+  }
+  const sharedInfraKeys = new Set(
+    Array.from(namesBySharedKey.entries())
+      .filter(([, names]) => names.size >= SHARED_INFRA_NAME_THRESHOLD)
+      .map(([key]) => key),
+  );
+
+  for (const a of live) {
+    const keys = strongKeysFor(a).filter((key) => !sharedInfraKeys.has(key));
     if (keys.length === 0) {
       buckets.push({ artifacts: [a], keys: new Set() });
       continue;
@@ -1241,6 +1294,13 @@ export function buildIdentityClusters(
   const collision = dupeName || conflictingStates || conflictingEmailRegions || conflictingAreaCodes;
 
   const warnings: string[] = [];
+  for (const key of sharedInfraKeys) {
+    const names = Array.from(namesBySharedKey.get(key) ?? []);
+    const kind = key.slice(0, key.indexOf(":"));
+    warnings.push(
+      `Shared-infrastructure split: one ${kind} selector links ${names.length} distinct names and was excluded from automatic identity merging. Manual corroboration is required.`,
+    );
+  }
   if (collision) {
     warnings.push(
       "Potential same-name collision detected. The following artifacts may belong to different people and should not be merged without additional corroboration.",
