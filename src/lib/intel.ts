@@ -1088,6 +1088,7 @@ export type IdentityCluster = {
   sources: string[];
   confidence: number;        // 0-100, derived from artifact confidences
   warnings: string[];
+  mergeReasons: string[];    // why these artifacts were merged (auditable)
   matchesSeedLocation: boolean | null;
 };
 
@@ -1101,6 +1102,37 @@ export type ClusterReport = {
 
 const SHARED_INFRA_NAME_THRESHOLD = 3;
 const SHARED_INFRA_KEY_PREFIXES = new Set(["ip", "address", "wallet", "parent"]);
+
+/** T1-2 merge signals. Strength ordering: phone/email > handle ≈ infra. */
+export type MergeSignal = "HANDLE_MATCH" | "EMAIL_MATCH" | "PHONE_MATCH" | "SHARED_INFRASTRUCTURE";
+
+/**
+ * Confidence each signal contributes to a merged cluster. Phone/email are the
+ * strongest single proofs; a handle match is meaningful but must not overpower
+ * them (T1-2 §3). Shared infrastructure is moderate and already gated by the
+ * T1-1 fan-out guard.
+ */
+export const MERGE_SIGNAL_WEIGHT: Record<MergeSignal, number> = {
+  EMAIL_MATCH: 35,
+  PHONE_MATCH: 35,
+  HANDLE_MATCH: 25,
+  SHARED_INFRASTRUCTURE: 20,
+};
+/** Extra confidence per platform a handle appears on beyond the first two,
+ * capped so a handle seen everywhere can't run away with the score (T1-2 §4). */
+const HANDLE_REINFORCE_PER_PLATFORM = 10;
+const HANDLE_REINFORCE_CAP = 20;
+
+/**
+ * Normalize a social handle for cross-platform identity matching (T1-2 §2).
+ * Lowercases, trims, drops a leading "@", and removes the separators users
+ * sprinkle inconsistently across platforms (`_ . -`). Alphanumerics are
+ * preserved, so `nuh_deem`, `nuh.deem`, `NUH-DEEM` all converge to `nuhdeem`
+ * while `nuhdeem1`, `realnuhdeem`, and `nuhdeem_backup` stay distinct.
+ */
+export function normalizeHandle(raw: string): string {
+  return raw.trim().toLowerCase().replace(/^@+/, "").replace(/[_.-]/g, "");
+}
 
 function normalizePersonName(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
@@ -1132,19 +1164,43 @@ export function buildIdentityClusters(
   const buckets: Bucket[] = [];
   const keyToIdx = new Map<string, number>();
 
-  const strongKeysFor = (a: Artifact): string[] => {
-    const keys: string[] = [];
+  // A merge signal is a single reason two artifacts may belong together. Every
+  // key that can union a bucket maps to exactly one signal type — there is no
+  // fuzzy/text path — which is what enforces the T1-2 §8 safety rule: clusters
+  // only merge on handle / email / phone / shared-infrastructure, never on
+  // display names, bios, or other free text.
+  type SignalHit = { key: string; signal: MergeSignal; raw: string; platform: string | null };
+  const signalsFor = (a: Artifact): SignalHit[] => {
+    const hits: SignalHit[] = [];
     const kind = a.kind.toLowerCase();
-    const v = a.value.trim().toLowerCase();
-    if (!v) return keys;
-    if (["email", "phone", "username", "handle", "address", "ip", "wallet"].includes(kind)) {
-      keys.push(`${kind}:${v}`);
-    }
+    const v = a.value.trim();
     const meta = (a.metadata ?? {}) as Record<string, unknown>;
+    const platform = typeof meta.platform === "string" && meta.platform.trim()
+      ? meta.platform.trim().toLowerCase()
+      : (a.source ?? null);
+
+    if (kind === "email" && v) hits.push({ key: `email:${v.toLowerCase()}`, signal: "EMAIL_MATCH", raw: v, platform });
+    if (kind === "phone" && v) hits.push({ key: `phone:${v.toLowerCase()}`, signal: "PHONE_MATCH", raw: v, platform });
+
+    // Handle-bearing signals: the value of username/handle artifacts, plus a
+    // `metadata.handle` on any artifact (social_profile, avatar, …). Display
+    // names and bios are deliberately NOT consulted.
+    const handleRaws: string[] = [];
+    if ((kind === "username" || kind === "handle") && v) handleRaws.push(v);
+    if (typeof meta.handle === "string" && meta.handle.trim()) handleRaws.push(meta.handle.trim());
+    for (const raw of handleRaws) {
+      const norm = normalizeHandle(raw);
+      if (norm) hits.push({ key: `handle:${norm}`, signal: "HANDLE_MATCH", raw, platform });
+    }
+
+    if (["address", "ip", "wallet"].includes(kind) && v) {
+      hits.push({ key: `${kind}:${v.toLowerCase()}`, signal: "SHARED_INFRASTRUCTURE", raw: v, platform });
+    }
     const parent = String(meta.parent ?? meta.parent_seed ?? meta.seed ?? "").trim().toLowerCase();
-    if (parent) keys.push(`parent:${parent}`);
-    return keys;
+    if (parent) hits.push({ key: `parent:${parent}`, signal: "SHARED_INFRASTRUCTURE", raw: parent, platform });
+    return hits;
   };
+  const strongKeysFor = (a: Artifact): string[] => signalsFor(a).map((h) => h.key);
 
   const live = artifacts.filter((a) => {
     const m = (a.metadata ?? {}) as Record<string, unknown>;
@@ -1247,8 +1303,61 @@ export function buildIdentityClusters(
     const areaCodes = Array.from(new Set(phones.map(extractAreaCode).filter(Boolean))) as string[];
     const sources = Array.from(new Set(group.map((a) => a.source ?? "").filter(Boolean)));
     const confidences = group.map((a) => a.confidence ?? 0).filter((n) => n > 0);
-    const confidence = confidences.length ? Math.round(confidences.reduce((s, n) => s + n, 0) / confidences.length) : 0;
-    return { artifacts: group, emails, usernames, phones, addresses, ips, names, states, areaCodes, sources, confidence, warnings: [] };
+    const baseConfidence = confidences.length ? Math.round(confidences.reduce((s, n) => s + n, 0) / confidences.length) : 0;
+
+    // T1-2: explain the merge and reward corroborating signals. Aggregate the
+    // keys actually shared by >=2 artifacts in this group, skipping any
+    // selector the T1-1 fan-out guard disqualified.
+    const agg = new Map<string, { signal: MergeSignal; count: number; raws: Set<string>; platforms: Set<string> }>();
+    for (const a of group) {
+      // A merge needs the key shared by two distinct artifacts, so count each
+      // artifact at most once per key — an artifact that repeats the same handle
+      // in both its value and metadata.handle must not look like two sources.
+      const countedHere = new Set<string>();
+      for (const h of signalsFor(a)) {
+        if (sharedInfraKeys.has(h.key)) continue;
+        let entry = agg.get(h.key);
+        if (!entry) agg.set(h.key, (entry = { signal: h.signal, count: 0, raws: new Set(), platforms: new Set() }));
+        if (!countedHere.has(h.key)) {
+          entry.count += 1;
+          countedHere.add(h.key);
+          if (h.platform) entry.platforms.add(h.platform);
+        }
+        entry.raws.add(h.raw.trim().toLowerCase());
+      }
+    }
+    const signalsPresent = new Set<MergeSignal>();
+    let maxHandlePlatforms = 0;
+    const ranked: { rank: number; sub: number; text: string }[] = [];
+    for (const [key, entry] of agg) {
+      if (entry.count < 2) continue; // only one artifact carries it → not a merge
+      signalsPresent.add(entry.signal);
+      const value = key.slice(key.indexOf(":") + 1);
+      if (entry.signal === "HANDLE_MATCH") {
+        maxHandlePlatforms = Math.max(maxHandlePlatforms, entry.platforms.size || entry.count);
+        ranked.push({ rank: 0, sub: 0, text: `HANDLE_MATCH: ${value}` });
+        for (const raw of Array.from(entry.raws).sort()) {
+          if (raw !== value) ranked.push({ rank: 0, sub: 1, text: `HANDLE_MATCH: ${raw} -> ${value}` });
+        }
+      } else if (entry.signal === "EMAIL_MATCH") {
+        ranked.push({ rank: 1, sub: 0, text: `EMAIL_MATCH: ${value}` });
+      } else if (entry.signal === "PHONE_MATCH") {
+        ranked.push({ rank: 2, sub: 0, text: `PHONE_MATCH: ${value}` });
+      } else {
+        ranked.push({ rank: 3, sub: 0, text: `SHARED_INFRASTRUCTURE: ${key}` });
+      }
+    }
+    ranked.sort((x, y) => x.rank - y.rank || x.sub - y.sub || x.text.localeCompare(y.text));
+    const mergeReasons = ranked.map((r) => r.text);
+
+    let bonus = 0;
+    for (const s of signalsPresent) bonus += MERGE_SIGNAL_WEIGHT[s];
+    if (signalsPresent.has("HANDLE_MATCH")) {
+      bonus += Math.min(HANDLE_REINFORCE_CAP, HANDLE_REINFORCE_PER_PLATFORM * Math.max(0, maxHandlePlatforms - 2));
+    }
+    const confidence = Math.min(100, baseConfidence + bonus);
+
+    return { artifacts: group, emails, usernames, phones, addresses, ips, names, states, areaCodes, sources, confidence, warnings: [], mergeReasons };
   };
 
   const out: IdentityCluster[] = [];
@@ -1380,6 +1489,7 @@ export function buildClusterSection(report: ClusterReport): string {
     if (c.states.length) parts.push(`- **States observed:** ${c.states.join(", ")}`);
     if (c.ips.length) parts.push(`- **IPs:** ${c.ips.join(", ")}`);
     if (c.sources.length) parts.push(`- **Source tools:** ${c.sources.join(", ")}`);
+    if (c.mergeReasons.length) parts.push(`- **Merge reasons:** ${c.mergeReasons.join("; ")}`);
     if (c.warnings.length) parts.push(`- **Warnings:** ${c.warnings.join(" / ")}`);
     parts.push("");
   }

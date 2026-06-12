@@ -98,6 +98,14 @@ function ClusterCard({ cluster: c, index }: { cluster: IdentityCluster; index: n
         <span>conf {c.confidence}</span>
       </div>
 
+      {c.mergeReasons.length > 0 && (
+        <div className="text-[9px] text-muted-foreground/90 flex flex-wrap gap-1 leading-snug">
+          {c.mergeReasons.map((r, i) => (
+            <span key={i} className="font-mono px-1 py-0.5 rounded bg-secondary/40 border border-border/40">{r}</span>
+          ))}
+        </div>
+      )}
+
       {c.warnings.length > 0 && (
         <div className="text-[10px] text-destructive/90 flex items-start gap-1 leading-snug">
           <AlertTriangle className="w-3 h-3 shrink-0 mt-px" />
