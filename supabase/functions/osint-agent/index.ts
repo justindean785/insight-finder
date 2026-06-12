@@ -22,6 +22,9 @@ import { buildWorkflowAddendum } from "./workflow_prompt.ts";
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
 import { DNS_TYPES, VIRTUAL_TYPE_MAP, isVirtualType, resolveVirtualHost, filterTxtByPrefix } from "./tools/dns-virtual.ts";
+import { discoverCapabilities, capabilityEnvKeys } from "./capabilities.ts";
+import { buildNodes } from "./graph.ts";
+import { selectPivots, type PivotCandidate } from "./graph_pivots.ts";
 
 // ---- Extracted modules -------------------------------------------------------
 // env.ts — Environment bindings, API keys, degraded-tools state, fetch helpers
@@ -647,6 +650,27 @@ Deno.serve(async (req) => {
               maxTokens: 1500,
             });
             const parsed = safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content };
+            // Phase 9 — dark-launched behind GRAPH_PIVOTS_ENABLED (default off):
+            // re-rank/filter the planned pivots through the entity graph (drop
+            // dead-end / over-broad / already-confirmed targets, cheapest
+            // justified first). Off → byte-for-byte the existing behavior; any
+            // error falls back to the planner's raw output.
+            if (Deno.env.get("GRAPH_PIVOTS_ENABLED") === "true" && Array.isArray((parsed as { pivots?: unknown }).pivots)) {
+              try {
+                const nodes = buildNodes(artifacts as Array<{ kind: string; value: string }>);
+                const { selected, dropped } = selectPivots(
+                  (parsed as { pivots: PivotCandidate[] }).pivots,
+                  nodes,
+                  { budget: budget_remaining },
+                );
+                (parsed as { pivots: unknown }).pivots = selected;
+                if (dropped.length) {
+                  console.log(`[graph-pivots] dropped ${dropped.length} pivot(s): ${dropped.map((d) => `${d.tool}:${d.reason}`).join(", ")}`);
+                }
+              } catch (e) {
+                console.warn("[graph-pivots] selection failed, using planner output:", e);
+              }
+            }
             guard.planCalledInRound = true;
             guard.artifactsSincePlan = 0;
             return { ok: r.ok, status: r.status, plan: parsed };
@@ -3880,17 +3904,22 @@ Deno.serve(async (req) => {
       execute: async () => {
         const { data: rows } = await supabaseAdmin
           .from("tool_usage_log")
-          .select("tool_name,ok,cached,cost_micro_usd,duration_ms,error_msg,status_code")
+          .select("tool_name,ok,cached,cost_micro_usd,charged_micro_usd,duration_ms,error_msg,status_code")
           .eq("thread_id", threadId);
         const used = new Set<string>();
         const failures: Record<string, number> = {};
         const counts: Record<string, number> = {};
-        let totalMicro = 0;
-        type UsageLogRow = { tool_name: string; ok?: boolean; cost_micro_usd?: number };
+        // chargedMicro = credits actually consumed (success-only).
+        // attributedMicro = list price of every paid call incl. failures; the
+        // gap between them is wasted/avoided spend on failed calls.
+        let chargedMicro = 0;
+        let attributedMicro = 0;
+        type UsageLogRow = { tool_name: string; ok?: boolean; cost_micro_usd?: number; charged_micro_usd?: number };
         for (const r of (rows ?? []) as UsageLogRow[]) {
           used.add(r.tool_name);
           counts[r.tool_name] = (counts[r.tool_name] ?? 0) + 1;
-          totalMicro += r.cost_micro_usd ?? 0;
+          chargedMicro += r.charged_micro_usd ?? (r.ok !== false ? r.cost_micro_usd ?? 0 : 0);
+          attributedMicro += r.cost_micro_usd ?? 0;
           if (!r.ok) failures[r.tool_name] = (failures[r.tool_name] ?? 0) + 1;
         }
         const pb = playbookFor(detectedSeedType);
@@ -3902,7 +3931,8 @@ Deno.serve(async (req) => {
         return {
           ok: true,
           seed_type: detectedSeedType,
-          total_cost_usd: +(totalMicro / 1_000_000).toFixed(5),
+          total_cost_usd: +(chargedMicro / 1_000_000).toFixed(5),
+          attributed_cost_usd: +(attributedMicro / 1_000_000).toFixed(5),
           tools_used: [...used],
           tier_a_used: tierAUsed,
           tools_available: [...availableToolsForAudit],
@@ -3976,6 +4006,20 @@ Deno.serve(async (req) => {
     let costCheckpointCounter = 0;
     // Bootstrap per-thread circuit breakers (firecrawl/intelbase pre-disabled).
     circuit.applyBaselineDisables(threadId);
+    // Capability discovery: gate providers that can't run (missing key / gated /
+    // disabled / unsupported seed) BEFORE the execution loop, so they never
+    // become attempted live calls or consume credits. Pure evaluation over key
+    // PRESENCE booleans (no secret values); unavailable tools are disabled via
+    // the breaker, which cache.ts skips without billing.
+    {
+      const envPresence: Record<string, boolean> = {};
+      for (const k of capabilityEnvKeys()) envPresence[k] = !!Deno.env.get(k);
+      for (const cap of discoverCapabilities(envPresence, null)) {
+        if (!cap.available) {
+          circuit.disableTool(threadId, cap.tool, `unavailable: ${cap.reason}${cap.detail ? ` (${cap.detail})` : ""}`);
+        }
+      }
+    }
     // Tracks the cost amount already written to the DB via mid-run
     // checkpoints so the final write only adds the remaining delta.
     let lastCheckpointMicroUsd = 0;
@@ -4018,7 +4062,43 @@ Deno.serve(async (req) => {
     const wouldOverflow =
       approxPromptChars > MINIMAX_CHAR_BUDGET ||
       trimmedMessages.length > MINIMAX_MSG_BUDGET;
-    const useFallback = !minimaxAvailable || wouldOverflow;
+    let useFallback = !minimaxAvailable || wouldOverflow;
+    // Pre-flight MiniMax health probe. The fallback selection above only fires
+    // when MiniMax's key is missing or the prompt would overflow — it does NOT
+    // catch the case where MiniMax is configured and accepts the request but is
+    // currently rate-limited / 5xx / unreachable. In that case the run commits
+    // to MiniMax and dies mid-stream with no failover (the live "Provider
+    // returned error"). So when MiniMax is the chosen provider and a Gemini
+    // fallback exists, ping MiniMax first; if it can't answer a trivial probe,
+    // fail the whole run over to Gemini instead of dying. Best-effort: any
+    // probe-internal fault leaves the original selection untouched so a healthy
+    // run is never broken by the probe itself.
+    if (!useFallback && lovableGateway) {
+      try {
+        const probePromise = minimaxChat({ user: "ping", maxTokens: 4, temperature: 0 });
+        // Swallow a late rejection if the timeout wins the race below, so it
+        // never surfaces as an unhandled rejection after we've moved on.
+        probePromise.catch(() => {});
+        const probe = (await Promise.race([
+          probePromise,
+          new Promise<{ ok: boolean; status: number }>((resolve) =>
+            setTimeout(() => resolve({ ok: false, status: 0 }), 6000)),
+        ])) as { ok: boolean; status: number };
+        if (!probe.ok) {
+          useFallback = true;
+          console.warn(
+            `[orchestrator] minimax preflight unhealthy (status=${probe.status || "timeout"}) → Gemini fallback for thread ${threadId}`,
+          );
+        }
+      } catch (e) {
+        // Network error / abort during the probe → MiniMax is unreachable.
+        useFallback = true;
+        console.warn(
+          `[orchestrator] minimax preflight threw → Gemini fallback:`,
+          e instanceof Error ? e.message : String(e),
+        );
+      }
+    }
     if (useFallback && !lovableGateway) {
       throw new Error(
         "Neither MINIMAX_API_KEY nor LOVABLE_API_KEY is configured for the orchestrator.",
@@ -4151,6 +4231,20 @@ Deno.serve(async (req) => {
     return result.toUIMessageStreamResponse({
       headers: corsHeaders,
       originalMessages: messages,
+      // Surface the REAL (redacted) provider reason to the client instead of the
+      // SDK's default generic mask ("An error occurred" / "Provider returned
+      // error"). The failed-run card then shows an actionable message, and a
+      // context-overflow vs. rate-limit vs. unreachable failure is
+      // distinguishable. Strip anything that looks like a credential first.
+      onError: (error) => {
+        const m = error instanceof Error ? error.message : String(error);
+        const redacted = m
+          .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+          .replace(/sk-[A-Za-z0-9._-]+/g, "sk-[REDACTED]")
+          .replace(/xai-[A-Za-z0-9._-]+/g, "xai-[REDACTED]")
+          .replace(/AIza[A-Za-z0-9_-]+/g, "AIza[REDACTED]");
+        return redacted.slice(0, 300) || "Provider stream error";
+      },
       onFinish: async ({ messages: finalMessages }) => {
         const assistant = [...finalMessages].reverse().find((m) => m.role === "assistant");
         if (assistant) {

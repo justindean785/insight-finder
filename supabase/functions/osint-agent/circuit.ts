@@ -10,14 +10,58 @@ export type FailureKind =
   | "http_402"
   | "http_403"
   | "http_404"
+  | "http_422"
   | "http_429"
   | "http_500"
+  | "http_502"
+  | "http_504"
   | "timeout"
   | "other";
 
 export type BreakerDecision =
   | { allow: true }
   | { allow: false; reason: string; until?: number };
+
+// ---- Investigation-level provider suppression (Phase 8) --------------------
+// When a provider returns a 429 or times out, it's suppressed for the rest of
+// the investigation (up to this window) so the orchestrator stops re-hitting an
+// exhausted/unreachable upstream and re-billing failed calls. Keyed per
+// investigation + provider; isolated from other investigations; reset at the
+// run boundary (clearThread).
+export const PROVIDER_SUPPRESS_MS = 10 * 60_000;
+
+// Tools that share one upstream provider/quota — suppressing the provider
+// suppresses all of them for the investigation. Tools not listed map to a
+// provider equal to their own name.
+const PROVIDER_TOOLS: Record<string, string[]> = {
+  deepfind: [
+    "deepfind_reverse_email",
+    "deepfind_disposable_email",
+    "deepfind_telegram_channel",
+    "deepfind_ssl_inspect",
+    "deepfind_tech_stack",
+  ],
+  bosint: ["bosint_email_lookup", "bosint_phone_lookup"],
+  hunter: ["hunter_domain_search", "hunter_email_finder", "hunter_email_verifier", "hunter_combined"],
+  exa: ["exa_search", "exa_find_similar", "exa_get_contents"],
+  firecrawl: ["firecrawl_search", "firecrawl_scrape", "firecrawl_map"],
+  minimax: ["minimax_web_search", "minimax_correlate", "minimax_plan_pivots", "minimax_extract"],
+};
+const TOOL_PROVIDER = new Map<string, string>();
+for (const [provider, tools] of Object.entries(PROVIDER_TOOLS)) {
+  for (const t of tools) TOOL_PROVIDER.set(t, provider);
+}
+
+/** The upstream provider a tool belongs to (defaults to the tool itself). */
+export function providerForTool(tool: string): string {
+  return TOOL_PROVIDER.get(tool) ?? tool;
+}
+
+interface Suppression {
+  reason: string;
+  until: number;
+  since: number;
+}
 
 interface BreakerState {
   consecutive: number;
@@ -40,6 +84,8 @@ interface CallRecord {
 interface ThreadState {
   breakers: Map<string, BreakerState>;
   calls: Map<string, CallRecord>;
+  /** provider name → active suppression for this investigation */
+  suppressions: Map<string, Suppression>;
 }
 
 const THREADS = new Map<string, ThreadState>();
@@ -47,10 +93,49 @@ const THREADS = new Map<string, ThreadState>();
 function state(threadId: string): ThreadState {
   let s = THREADS.get(threadId);
   if (!s) {
-    s = { breakers: new Map(), calls: new Map() };
+    s = { breakers: new Map(), calls: new Map(), suppressions: new Map() };
     THREADS.set(threadId, s);
   }
   return s;
+}
+
+/** Suppress a tool's provider for this investigation. The window only extends,
+ *  never shrinks, if the provider fails again. */
+function suppressProvider(threadId: string, tool: string, reason: string, ms: number = PROVIDER_SUPPRESS_MS): void {
+  const provider = providerForTool(tool);
+  const s = state(threadId);
+  const now = Date.now();
+  const existing = s.suppressions.get(provider);
+  s.suppressions.set(provider, {
+    reason,
+    until: Math.max(existing?.until ?? 0, now + ms),
+    since: existing?.since ?? now,
+  });
+}
+
+/** Observable: is the tool's provider currently suppressed for this run? */
+export function isProviderSuppressed(
+  threadId: string,
+  tool: string,
+): { suppressed: boolean; provider: string; reason?: string; until?: number } {
+  const provider = providerForTool(tool);
+  const sup = THREADS.get(threadId)?.suppressions.get(provider);
+  if (sup && Date.now() < sup.until) {
+    return { suppressed: true, provider, reason: sup.reason, until: sup.until };
+  }
+  return { suppressed: false, provider };
+}
+
+/** Snapshot of active provider suppressions for logs / the audit panel. */
+export function suppressionSnapshot(
+  threadId: string,
+): Array<{ provider: string; reason: string; until: number }> {
+  const s = THREADS.get(threadId);
+  if (!s) return [];
+  const now = Date.now();
+  return [...s.suppressions.entries()]
+    .filter(([, sup]) => now < sup.until)
+    .map(([provider, sup]) => ({ provider, reason: sup.reason, until: sup.until }));
 }
 
 function breakerFor(threadId: string, tool: string): BreakerState {
@@ -87,6 +172,24 @@ export function callKey(tool: string, selector: string, purpose: string = "defau
   return `${tool}::${selector}::${purpose}`;
 }
 
+/** Expensive providers that should run at most once per normalized entity in an
+ *  investigation. After one successful call for an entity, a repeat (same
+ *  normalized selector) is a free skip — the structural fix for the duplicate
+ *  premium charges (leakcheck ×2, oathnet ×2, breach ×3) in the trace audit. */
+export const PREMIUM_TOOLS = new Set<string>([
+  "oathnet_lookup",
+  "leakcheck_lookup",
+  "breach_check",
+  "exa_search",
+  "exa_find_similar",
+  "exa_get_contents",
+  "hunter_combined",
+]);
+
+export function isPremiumTool(tool: string): boolean {
+  return PREMIUM_TOOLS.has(tool);
+}
+
 /** Should this call run? */
 export function shouldRun(
   threadId: string,
@@ -97,6 +200,12 @@ export function shouldRun(
 ): BreakerDecision {
   const b = breakerFor(threadId, tool);
   const now = Date.now();
+  // Investigation-level provider suppression takes precedence: a provider that
+  // 429'd or timed out earlier this run is skipped (and not re-billed).
+  const sup = isProviderSuppressed(threadId, tool);
+  if (sup.suppressed) {
+    return { allow: false, reason: sup.reason ?? `provider ${sup.provider} suppressed`, until: sup.until };
+  }
   if (b.disabledUntil && now < b.disabledUntil) {
     return { allow: false, reason: b.disabledReason ?? "backoff", until: b.disabledUntil };
   }
@@ -109,8 +218,16 @@ export function shouldRun(
   if (!opts.force && selector) {
     const key = callKey(tool, selector, purpose);
     const prior = state(threadId).calls.get(key);
-    if (prior && prior.status === "ok" && prior.artifactCount > 0) {
-      return { allow: false, reason: "duplicate call: prior run already produced artifacts" };
+    if (prior && prior.status === "ok") {
+      // Premium providers run once per entity regardless of artifact count
+      // (the wrapper records artifactCount: 0). Cheaper tools only dedup once
+      // they've actually produced an artifact for this selector.
+      if (isPremiumTool(tool)) {
+        return { allow: false, reason: `premium '${tool}' already ran for this entity this investigation` };
+      }
+      if (prior.artifactCount > 0) {
+        return { allow: false, reason: "duplicate call: prior run already produced artifacts" };
+      }
     }
     if (prior && prior.status !== "ok") {
       // Re-run only if last failure was a 500/429 (transient). All other
@@ -159,17 +276,44 @@ export function recordResult(
       break;
     case "http_400":
     case "http_404":
+    case "http_422":
+      // Deterministic per-selector failure (bad request / unprocessable input)
+      // — negative-cache the selector so it isn't immediately retried.
       if (selector) b.deadSelectors.add(selector);
       break;
     case "http_429": {
       const backoff = Math.min(2 ** Math.min(b.consecutive, 6) * 5_000, 5 * 60_000);
       b.disabledUntil = Date.now() + backoff;
       b.disabledReason = `429 backoff ${Math.round(backoff / 1000)}s`;
+      // Investigation-level: rate-limited providers are exhausted for the run,
+      // not just for `backoff` seconds — stop retrying for the whole run.
+      suppressProvider(threadId, tool, `429 rate-limited — provider '${providerForTool(tool)}' suppressed for investigation`);
       break;
     }
+    case "http_502":
+    case "http_504":
+      // Gateway error — the upstream provider is down/unreachable. Fail fast:
+      // disable it for the rest of the run on the FIRST occurrence so the agent
+      // doesn't spam retries (each can hang for the full fetch timeout) or burn
+      // credits re-hitting a dead provider.
+      b.disabledReason = `${outcome.status === "http_504" ? "504 gateway timeout" : "502 bad gateway"} — disabled for thread`;
+      if (selector) b.deadSelectors.add(selector);
+      break;
     case "timeout":
-    case "http_500":
+      // A timed-out upstream wastes the full fetch window on every retry —
+      // suppress the provider for the investigation on the first timeout.
+      suppressProvider(threadId, tool, `timeout — provider '${providerForTool(tool)}' suppressed for investigation`);
       if (b.consecutive >= 2 && selector) b.deadSelectors.add(selector);
+      break;
+    case "http_500":
+      // A 5xx is a server-side fault: retrying the same provider mid-run rarely
+      // recovers within the run and, for paid tools, burns credits. The trace
+      // showed synapsint 500 ×6 before the old `consecutive >= 3` guard tripped.
+      // Suppress the provider for the investigation on the FIRST 500 — the same
+      // fail-fast policy already applied to 429 / timeout / 502 / 504. Coverage
+      // trade-off accepted: an unhealthy provider is not worth re-hitting.
+      suppressProvider(threadId, tool, `5xx — provider '${providerForTool(tool)}' suppressed for investigation`);
+      if (selector) b.deadSelectors.add(selector);
       break;
     default:
       break;
@@ -198,7 +342,10 @@ export function classifyResult(result: unknown, threw: unknown): FailureKind {
     if (status === 402) return "http_402";
     if (status === 403) return "http_403";
     if (status === 404) return "http_404";
+    if (status === 422) return "http_422";
     if (status === 429) return "http_429";
+    if (status === 502) return "http_502";
+    if (status === 504) return "http_504";
     if (status >= 500) return "http_500";
     const err = String(r.error ?? "").toLowerCase();
     if (err.includes("timeout")) return "timeout";
@@ -235,4 +382,11 @@ export function applyBaselineDisables(threadId: string): void {
 
 export function clearThread(threadId: string): void {
   THREADS.delete(threadId);
+}
+
+/** Disable a tool for this investigation (used by startup capability gating).
+ *  A disabled tool's breaker reports allow:false from shouldRun, which cache.ts
+ *  turns into a free, un-billed skip before any live call. */
+export function disableTool(threadId: string, tool: string, reason: string): void {
+  breakerFor(threadId, tool).disabledReason = reason;
 }

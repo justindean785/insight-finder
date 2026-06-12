@@ -292,7 +292,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   ];
 
   return (
-    <div className="w-72 h-full flex flex-col bg-[radial-gradient(circle_at_top,rgba(72,157,255,0.12),transparent_38%)]">
+    <div className="w-full h-full flex flex-col bg-[radial-gradient(circle_at_top,rgba(72,157,255,0.12),transparent_38%)]">
       <div className="border-b border-border-subtle/80 px-4 pt-4 pb-3 space-y-3">
         <div className="flex items-start gap-3">
           <div className="w-10 h-10 rounded-2xl border border-primary/25 bg-white/[0.04] grid place-items-center shadow-[0_0_24px_-10px_hsl(var(--primary)/0.7)]">
@@ -347,11 +347,11 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
             <SidebarMetric label="Breaches" value={breachCaseCount} tone={breachCaseCount > 0 ? "warn" : undefined} />
           </div>
 
-          <div className="mt-3 flex gap-2">
+          <div className="mt-3 grid gap-2">
             <Button
               onClick={newThread}
               size="sm"
-              className="flex-1 justify-center gap-2 rounded-xl bg-gradient-to-r from-primary to-accent text-primary-foreground shadow-[0_6px_24px_-10px_hsl(var(--primary)/0.8)] border-0 hover:opacity-90"
+              className="w-full justify-center gap-2 rounded-xl bg-gradient-to-r from-primary to-accent text-primary-foreground shadow-[0_6px_24px_-10px_hsl(var(--primary)/0.8)] border-0 hover:opacity-90"
             >
               <Plus className="w-4 h-4" /> New investigation
             </Button>
@@ -359,7 +359,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
               to="/brain"
               aria-label="Global Brain"
               className={cn(
-                "relative flex min-w-[108px] items-center justify-center gap-2 rounded-xl border px-3 text-[11px] font-medium uppercase tracking-[0.16em] transition-colors",
+                "relative flex h-9 w-full items-center justify-center gap-2 rounded-xl border px-3 text-[11px] font-medium uppercase tracking-[0.16em] transition-colors",
                 onBrainRoute
                   ? "border-primary/50 bg-primary/10 text-primary"
                   : "border-border-subtle/80 bg-white/[0.02] text-muted-foreground hover:border-primary/40 hover:text-foreground",

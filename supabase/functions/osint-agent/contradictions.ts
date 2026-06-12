@@ -82,6 +82,43 @@ export function detectContradictions(artifacts: ArtifactLike[]): ContradictionFi
     }
   }
 
+  // Conflicting person names — the #1 false-merge signal for identity work.
+  // If a cluster carries two or more distinct full names (e.g. one handle that
+  // resolves to "John Daniels" on GitHub but "John Demos" on Twitter), that is
+  // strong evidence two different people share the selector.
+  const names = artifacts.filter((a) => a.kind === "name" && a.value.trim());
+  const distinctNames = new Set(names.map((a) => a.value.trim().toLowerCase()));
+  if (distinctNames.size > 1) {
+    out.push({
+      kind: "name_conflict",
+      detail: `${distinctNames.size} distinct names across profiles: ${names.map((a) => a.value.trim()).join(" vs ")} — likely different people on the same selector`,
+      involved: names.map((a) => a.value),
+      severity: "high",
+    });
+  }
+
+  // Over-broad username — a handle "confirmed" on an implausible number of
+  // platforms is almost certainly a generic/non-unique handle (squatted or
+  // coincidental), not one identity. Reads the sweep's own platform count.
+  const OVER_BROAD_PLATFORM_COUNT = 15;
+  for (const a of artifacts) {
+    if (a.kind !== "username" && a.kind !== "social") continue;
+    const meta = a.metadata ?? {};
+    const count = typeof meta.platforms_confirmed === "number"
+      ? meta.platforms_confirmed
+      : Array.isArray(meta.primary_platforms)
+      ? meta.primary_platforms.length
+      : 0;
+    if (count >= OVER_BROAD_PLATFORM_COUNT) {
+      out.push({
+        kind: "over_broad_username",
+        detail: `username "${a.value}" appears on ${count} platforms — almost certainly a generic/non-unique handle, not a single identity`,
+        involved: [a.value],
+        severity: "medium",
+      });
+    }
+  }
+
   // CDN / shared infra false-link
   for (const a of artifacts) {
     if (a.kind === "ip") {

@@ -3,6 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { buildEvidenceMatrixMarkdown, buildInvestigationSummary, buildReportMarkdown } from "@/lib/intel";
 import { useReviewStates } from "@/lib/review";
+import { summarizeRunCosts } from "@/lib/runCost";
 import { Button } from "@/components/ui/button";
 import { Copy, FileText, Table, Braces, RotateCcw, CheckCheck, Undo2, Download, Activity, Lock, AlertTriangle } from "lucide-react";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
@@ -45,7 +46,7 @@ export function InvestigationControls({
     const [{ data: usage }, { data: thread }] = await Promise.all([
       supabase
         .from("tool_usage_log")
-        .select("tool_name,ok,cached,status_code,duration_ms,cost_micro_usd,error_msg,created_at")
+        .select("tool_name,ok,cached,status_code,duration_ms,cost_micro_usd,charged_micro_usd,error_msg,created_at")
         .eq("thread_id", threadId)
         .order("created_at", { ascending: true }),
       supabase
@@ -57,13 +58,9 @@ export function InvestigationControls({
     return {
       exported_at: new Date().toISOString(),
       thread: thread ?? { id: threadId },
-      summary: {
-        calls: usage?.length ?? 0,
-        ok: (usage ?? []).filter((u) => u.ok).length,
-        failed: (usage ?? []).filter((u) => !u.ok).length,
-        cached: (usage ?? []).filter((u) => u.cached).length,
-        cost_micro_usd: (usage ?? []).reduce((s, u) => s + (u.cost_micro_usd ?? 0), 0),
-      },
+      // charged_micro_usd is actual billed credits; cost_micro_usd is the
+      // attributed/list price retained for avoided-spend analysis.
+      summary: summarizeRunCosts(usage ?? []),
       tool_calls: usage ?? [],
       artifacts,
     };

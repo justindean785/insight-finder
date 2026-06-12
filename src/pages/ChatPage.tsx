@@ -99,12 +99,12 @@ export default function ChatPage() {
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/40 to-transparent" />
         <div className="absolute inset-y-0 left-[calc(18rem)] hidden w-px bg-gradient-to-b from-transparent via-white/10 to-transparent xl:block" />
-        <div className="absolute inset-y-0 right-[430px] hidden w-px bg-gradient-to-b from-transparent via-white/10 to-transparent 2xl:block" />
+        <div className="absolute inset-y-0 right-[360px] hidden w-px bg-gradient-to-b from-transparent via-white/10 to-transparent xl:block 2xl:right-[430px]" />
       </div>
       <aside
         className={cn(
           "relative shrink-0 h-screen border-r border-border-subtle/80 bg-[linear-gradient(180deg,rgba(9,15,25,0.98),rgba(7,11,20,0.98))] transition-[width] duration-300",
-          leftCollapsed ? "w-14" : "w-72",
+          leftCollapsed ? "w-14" : "w-[17rem] 2xl:w-72",
         )}
       >
         <ThreadSidebar
@@ -113,16 +113,18 @@ export default function ChatPage() {
         />
       </aside>
       <div className="relative flex-1 min-w-0 h-screen overflow-hidden border-x border-white/5 bg-[linear-gradient(180deg,rgba(10,16,28,0.68),rgba(7,10,18,0.82))]">
-        <div className="pointer-events-none absolute inset-x-6 top-3 z-20 flex items-center justify-between text-[10px] uppercase tracking-[0.24em] text-muted-foreground/45">
-          <span>Investigation workspace</span>
-          <span>Live analysis stream</span>
-        </div>
+        {/* NOTE: the decorative "Investigation workspace / Live analysis stream"
+            corner overlay was removed here — it was a z-20 absolute layer sitting
+            on top of ChatWindow's own sticky ThreadHeader (which already renders
+            "Investigation workspace") and the right-pane "Live analysis stream"
+            header, producing the doubled/overlapping labels. The real headers
+            carry these labels; the overlay was pure duplication. */}
         <ChatWindow threadId={threadId} />
       </div>
       <aside
         className={cn(
           "relative shrink-0 h-screen border-l border-border-subtle/80 bg-[linear-gradient(180deg,rgba(8,13,23,0.98),rgba(6,10,18,0.98))] transition-[width] duration-300",
-          rightCollapsed ? "w-14" : "w-full md:w-[430px]",
+          rightCollapsed ? "w-14" : "w-[360px] 2xl:w-[430px]",
         )}
       >
         <ResourcesPanel

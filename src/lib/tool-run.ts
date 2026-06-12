@@ -35,7 +35,7 @@ export function describeTransportError(err: unknown): string {
 
 export function deriveToolTone(part: {
   state?: string;
-  errorText?: string | null;
+  errorText?: unknown;
   output?: unknown;
 }): ToolTone {
   const output = asOutput(part.output);
