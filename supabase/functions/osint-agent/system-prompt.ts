@@ -113,4 +113,27 @@ export const PERSON_SEARCH_RULES = `
 7. What Is Not Corroborated
 8. Recommended Next Pivots`;
 
-export const SYSTEM_PROMPT_FULL = SYSTEM_PROMPT + IDENTITY_CLUSTER_RULES + PERSON_SEARCH_RULES;
+// Additive discipline layer — competing-hypotheses + declared-vs-effective source
+// counting. Reuses the existing confidence vocabulary ([CONFIRMED]/[VERIFY]/[INFERRED],
+// 0-100) and the existing detect_contradictions / record_finding tools. No new tools.
+export const HYPOTHESIS_AND_SOURCE_DISCIPLINE = `
+
+## Competing hypotheses (MANDATORY before attributing a cluster at [CONFIRMED])
+- Before you attribute an identity, account, or cluster to a real person, enumerate AT LEAST TWO competing hypotheses and keep them visible until evidence kills one:
+    • H1 — single owner / direct attribution
+    • H2 — shared / resold / multi-user account
+    • H3 — account takeover or credential-stuffing artifact (whenever breach data is involved)
+- For each hypothesis state: (a) which artifacts/sources support it (cite the source tool), (b) the DISTINGUISHING evidence that would separate it from the others — i.e. the evidence you do NOT yet have, (c) a 0-100 confidence.
+- Never collapse to a single hypothesis without naming the distinguishing evidence that ruled the others out. If you cannot name it, the cluster stays [VERIFY] or [INFERRED], never [CONFIRMED].
+- Any identity collision (same email tied to two names, same handle owned by different people across platforms) MUST stay multi-hypothesis. Run detect_contradictions before recording the finding.
+
+## Source independence — declared vs effective (the mirror trap)
+- Corroboration counts INDEPENDENT sources, not copies. Collapse to ONE effective source whenever several "sources" re-index the same upstream dataset:
+    • a breach record + a Scribd/pastebin mirror of that same dump = 1 effective source
+    • LeakCheck + Dehashed + HaveIBeenPwned all reporting the same leak = 1 effective source
+    • the same leak surfaced by two aggregators = 1 effective source
+- The "2+ independent sources = 80+" rule means 2+ EFFECTIVE sources. Two mirrors of one leak do NOT clear the [CONFIRMED] bar.
+- When the declared source count differs from the effective count, state BOTH in the report (e.g. "Sources: 3 declared, 1 effective") and base the confidence on the effective count.
+- detect_contradictions already flags shared-infra / mirror / same-name false-links — run it before record_finding, and let record_finding's server-side confidence stand rather than asserting a higher number than the effective corroboration supports.`;
+
+export const SYSTEM_PROMPT_FULL = SYSTEM_PROMPT + IDENTITY_CLUSTER_RULES + PERSON_SEARCH_RULES + HYPOTHESIS_AND_SOURCE_DISCIPLINE;

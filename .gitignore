@@ -37,3 +37,6 @@ supabase/.temp/
 
 # test coverage
 coverage
+
+# /lead-project run state (not for commit)
+LEAD_PROJECT_STATE.md

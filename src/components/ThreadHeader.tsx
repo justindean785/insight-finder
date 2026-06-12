@@ -22,6 +22,7 @@ interface MessagePartLike {
   type?: string;
   state?: string;
   errorText?: unknown;
+  output?: unknown;
   text?: unknown;
   [k: string]: unknown;
 }
@@ -78,7 +79,11 @@ export function ThreadHeader({
     for (const p of m.parts as MessagePartLike[]) {
       if (typeof p?.type === "string" && p.type.startsWith("tool-")) {
         toolsRun++;
-        if (deriveToolTone(p) === "error") toolsFailed++;
+        if (deriveToolTone({
+          state: p.state,
+          errorText: p.errorText == null ? null : String(p.errorText),
+          output: p.output,
+        }) === "error") toolsFailed++;
       }
       if (p?.type === "text" && typeof p.text === "string" && p.text.startsWith("__STATUS__:failed:")) {
         isFailed = true;
