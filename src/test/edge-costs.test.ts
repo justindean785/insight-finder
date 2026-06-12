@@ -29,6 +29,19 @@ describe("costForTool", () => {
     expect(costForTool("list_tools")).toBe(0);
     expect(costForTool("list_toolz")).toBe(DEFAULT_TOOL_COST_MICRO_USD);
   });
+
+  it("bills serus_darkweb_scan at its explicit darkweb rate, never the default floor", () => {
+    // Tranche 1 hygiene: serus_darkweb_scan was missing a cost entry and silently
+    // billed the $0.0002 default despite charging 0.25 Serus credits/scan.
+    expect(costForTool("serus_darkweb_scan")).toBe(2500);
+    expect(costForTool("serus_darkweb_scan")).not.toBe(DEFAULT_TOOL_COST_MICRO_USD);
+  });
+
+  it("bills the deprecated username_search alias identically to username_sweep (no duplicate-cost drift)", () => {
+    expect(costForTool("username_search")).toBe(costForTool("username_sweep"));
+    expect(costForTool("username_search")).toBe(0);
+    expect(costForTool("username_search")).not.toBe(DEFAULT_TOOL_COST_MICRO_USD);
+  });
 });
 
 describe("TOOL_COSTS_MICRO_USD table", () => {
