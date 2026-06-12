@@ -13,6 +13,7 @@ import NotFound from "./pages/NotFound";
 const ChatPage = lazy(() => import("./pages/ChatPage"));
 const AdminSecurity = lazy(() => import("./pages/AdminSecurity"));
 const BrainGlobalPage = lazy(() => import("./pages/BrainGlobalPage"));
+const ReportPreview = lazy(() => import("./pages/ReportPreview"));
 import { hasSupabaseEnv, supabaseConfigError } from "./integrations/supabase/client";
 
 const queryClient = new QueryClient();
@@ -42,6 +43,7 @@ const App = () => (
             <Route path="/auth" element={<Auth />} />
             <Route path="/chat/:threadId" element={<ChatPage />} />
             <Route path="/brain" element={<BrainGlobalPage />} />
+            <Route path="/report-preview" element={<ReportPreview />} />
             <Route path="/admin/security" element={<AdminSecurity />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
