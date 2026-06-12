@@ -75,8 +75,11 @@ export const OPENADAPTER_API_KEY = Deno.env.get("OPENADAPTER_API_KEY") ?? "";
 export const OPENADAPTER_BASE_URL = Deno.env.get("OPENADAPTER_BASE_URL") ?? "";
 /** Operator override pinning the primary orchestrator provider. */
 export const ORCHESTRATOR_PROVIDER = (Deno.env.get("ORCHESTRATOR_PROVIDER") ?? "").trim().toLowerCase();
-/** Orchestrator model IDs for the alternative providers (overridable). */
-export const GROK_ORCHESTRATOR_MODEL_ID = Deno.env.get("GROK_ORCHESTRATOR_MODEL_ID") ?? "grok-4";
+/** Orchestrator model IDs for the alternative providers (overridable).
+ * Default grok-4.3 = xAI's current flagship (leads on non-hallucination rate +
+ * agentic tool calling — the right properties for OSINT synthesis). Override
+ * with GROK_ORCHESTRATOR_MODEL_ID if xAI's lineup changes. */
+export const GROK_ORCHESTRATOR_MODEL_ID = Deno.env.get("GROK_ORCHESTRATOR_MODEL_ID") ?? "grok-4.3";
 export const OPENADAPTER_ORCHESTRATOR_MODEL_ID = Deno.env.get("OPENADAPTER_ORCHESTRATOR_MODEL_ID") ?? "";
 
 // xAI Grok — OpenAI-compatible chat completions at api.x.ai.
