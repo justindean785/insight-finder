@@ -702,7 +702,7 @@ export function extractFailedAndSkipped(messages: RawMessage[]): FailedToolEntry
           time: m.created_at ?? null,
           suggestion: suggestFix(name, err),
           messageId: m.id,
-          toolCallId: p.toolCallId ?? null,
+          toolCallId: typeof p.toolCallId === "string" ? p.toolCallId : null,
         });
         continue;
       }
