@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { buildToolAudit, inferToolGaps } from "@/lib/intel";
+import { toolDisplayName, toolActionLabel } from "@/lib/tool-display";
 import { Wrench, AlertTriangle, RotateCcw, Compass, Lightbulb, Wallet, Pencil, Check } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { EmptyState } from "./EmptyState";
@@ -132,7 +133,7 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
             {audit.tools.map((t) => (
               <li key={t.tool} className="rounded-md border border-border bg-card/40 p-2">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-mono text-foreground truncate">{t.tool}</span>
+                  <span className="text-foreground truncate" title={t.tool}>{toolDisplayName(t.tool)}</span>
                   <span className="text-[10px] font-mono text-muted-foreground">{t.totalResults} results</span>
                 </div>
                 <div className="flex flex-wrap gap-1.5 mt-1 text-[10px] font-mono">
@@ -227,7 +228,7 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
           }
           for (const g of gaps) {
             if (!kindStats.has(g.kind)) {
-              rows.push({ kind: g.kind, status: "missing", note: `try: ${g.suggested.slice(0, 2).join(", ")}` });
+              rows.push({ kind: g.kind, status: "missing", note: `try: ${g.suggested.slice(0, 2).map((t) => toolActionLabel(t)).join(", ")}` });
             }
           }
           rows.sort((a, b) =>
@@ -278,7 +279,7 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
             {gaps.map((g) => (
               <li key={g.kind}>
                 Found <span className="font-mono text-foreground">{g.kind}</span> — consider{" "}
-                <span className="font-mono text-foreground">{g.suggested.join(", ")}</span>.
+                <span className="text-foreground">{g.suggested.map((t) => toolActionLabel(t)).join(", ")}</span>.
               </li>
             ))}
           </ul>

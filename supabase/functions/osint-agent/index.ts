@@ -84,6 +84,7 @@ import { SYSTEM_PROMPT, IDENTITY_CLUSTER_RULES, PERSON_SEARCH_RULES, SYSTEM_PROM
 
 // cache.ts — Central tool cache wrapper, tier tagging, auto-evidence
 import { wrapToolsWithCache } from "./cache.ts";
+import { serus_darkweb_scan } from "./tools/serus.ts";
 import { okWithSuccessFlag, socialfetchError, isHackertargetApiError, isCrtshOk, dohTypeError, blockchairError } from "./tool_response.ts";
 
 // ---- Local type aliases for the tool registry -------------------------------
@@ -3696,6 +3697,9 @@ Deno.serve(async (req) => {
       });
       return { ...m, content } as ModelMessage;
     });
+
+    // Serus darkweb scan — imported from tools/serus.ts (was missing from inline tools).
+    (tools as ToolRegistry).serus_darkweb_scan = serus_darkweb_scan;
 
     // Inject memory tools (cross-investigation learning) into the registry.
     //

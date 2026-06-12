@@ -27,7 +27,11 @@ import {
   describeTransportError,
   parseHttpStatusFromError,
 } from "@/lib/tool-run";
+import { toolDisplayName } from "@/lib/tool-display";
 import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon } from "lucide-react";
+
+// Module-scoped so the health probe survives ChatWindowInner remounts on thread switch.
+let _readyProbedOnce = false;
 
 const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.trim();
 const SUPABASE_PROJECT_ID = (import.meta.env.VITE_SUPABASE_PROJECT_ID as string | undefined)?.trim();
@@ -302,13 +306,13 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
         />
         <span
           className={cn(
-            "font-mono text-[11px] font-semibold tracking-[0.14em] uppercase truncate",
+            "text-[11px] font-medium tracking-tight truncate",
             tone === "error" ? "text-destructive/80"
               : tone === "skip" ? "text-muted-foreground/65"
               : "text-foreground/85",
           )}
         >
-          {name}
+          {toolDisplayName(name)}
         </span>
         {tone === "error" ? (
           <XCircle className="w-3.5 h-3.5 text-destructive/75 shrink-0" />
@@ -399,6 +403,12 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
       </button>
       {open && (
         <div className="border-t border-white/5 p-4 space-y-3 text-xs">
+          <div className="flex items-center gap-2 text-[10px] text-muted-foreground/60">
+            <Wrench className="w-3 h-3" />
+            <span className="font-mono uppercase tracking-[0.12em]">{name}</span>
+            {durationLabel && <span className="font-mono">· {durationLabel}</span>}
+            {charge?.label && <span className="font-mono" title={charge.title ?? undefined}>· {charge.label}</span>}
+          </div>
           {part.input != null && (
             <CodePanel
               label="Input"
@@ -851,10 +861,11 @@ function ChatWindowInner({
   const [createdAtMap, setCreatedAtMap] = useState<Record<string, string>>(initialCreatedAtMap);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const userScrolledUpRef = useRef(false);
   const [input, setInput] = useState("");
   const failSavedRef = useRef(false);
   const unmountedRef = useRef(false);
-  const readyProbedOnceRef = useRef(false);
   const [rerunBusy, setRerunBusy] = useState(false);
   const { items: artifacts } = useThreadArtifacts(threadId);
   const [seedValue, setSeedValue] = useState<string | null>(null);
@@ -909,7 +920,12 @@ function ChatWindowInner({
         unmountedRef.current ||
         (e as { name?: unknown })?.name === "AbortError" ||
         /abort|aborted|cancel|user aborted|the operation was aborted/i.test(msg);
-      if (isAbort) return;
+      // On mobile, switching apps suspends the tab and kills the stream with
+      // a generic network error — not an AbortError. Treat "failed to fetch"
+      // while the tab is hidden the same way: the run continues server-side.
+      const isHiddenNetworkDrop =
+        document.hidden && /failed to fetch|load failed|networkerror|network request failed/i.test(msg);
+      if (isAbort || isHiddenNetworkDrop) return;
       failSavedRef.current = true;
       const reason = (e?.message ?? "stream failed").slice(0, 500);
       const friendly = describeTransportError(e);
@@ -935,7 +951,25 @@ function ChatWindowInner({
     if (status === "submitted" || status === "streaming") failSavedRef.current = false;
   }, [status]);
 
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+  // Only auto-scroll if user hasn't manually scrolled up to review old results.
+  useEffect(() => {
+    if (!userScrolledUpRef.current) {
+      endRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages]);
+
+  // Track whether the user has scrolled up away from the bottom.
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      userScrolledUpRef.current = distFromBottom > 150;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
   useEffect(() => { inputRef.current?.focus(); }, [threadId, status]);
 
   const send = async () => {
@@ -985,8 +1019,8 @@ function ChatWindowInner({
     //   404 → function not deployed
     //   200 + ok:true  → ready to scan
     //   200 + ok:false → deployed but a required dep is missing (e.g. orchestrator key)
-    if (!readyProbedOnceRef.current) {
-      readyProbedOnceRef.current = true;
+    if (!_readyProbedOnce) {
+      _readyProbedOnce = true;
       const { signal, cancel } = signalWithTimeout(5000);
       try {
         const probeRes = await fetch(`${FUNCTIONS_URL}?health=1`, { method: "GET", signal });
@@ -1015,7 +1049,7 @@ function ChatWindowInner({
       } catch (probeErr) {
         if ((probeErr as Error)?.name === "TimeoutError" || (probeErr as Error)?.name === "AbortError") {
           toast.error("Scan backend timed out — Supabase function may be cold-starting. Retry in a few seconds.");
-          readyProbedOnceRef.current = false; // allow retry
+          _readyProbedOnce = false; // allow retry
           return;
         }
         // Network error — let it through; the real sendMessage will surface it
@@ -1350,58 +1384,32 @@ function ChatWindowInner({
   return (
     <div className="flex-1 flex flex-col h-screen min-w-0">
       <ThreadHeader threadId={threadId} messages={messages} isStreaming={isLoading} />
-      <div className="flex-1 overflow-y-auto overflow-x-hidden px-6 py-6">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden px-6 py-6">
         <div className="max-w-3xl mx-auto space-y-6 min-w-0">
           {messages.length === 0 && (
-            <div className="py-10 sm:py-16">
-              <div className="max-w-xl mx-auto rounded-xl border border-border-subtle bg-surface-1/80 backdrop-blur-md overflow-hidden">
-                {/* Docket header */}
-                <div className="px-5 py-3 border-b border-border-subtle bg-surface-2/60 flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="w-1.5 h-1.5 rounded-full bg-evidence/80" />
-                    <span className="text-[10px] font-mono uppercase tracking-[0.18em] text-muted-foreground">
-                      Case File
-                    </span>
-                  </div>
-                  <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
-                    {`SWB-${new Date().getFullYear()}-${threadId.slice(0, 4).toUpperCase()}`}
-                  </span>
-                </div>
-                {/* Meta grid */}
-                <div className="px-5 py-4 grid grid-cols-[110px_1fr] gap-y-2 gap-x-4 text-[12px] border-b border-border-subtle">
-                  <span className="text-muted-foreground uppercase text-[10px] tracking-[0.1em] self-center">Examiner</span>
-                  <span className="font-mono tabular-nums text-foreground/90 truncate">
-                    {user?.email ?? "—"}
-                  </span>
-                  <span className="text-muted-foreground uppercase text-[10px] tracking-[0.1em] self-center">Opened</span>
-                  <span className="font-mono tabular-nums text-foreground/90">
-                    {new Date().toUTCString().replace("GMT", "UTC")}
-                  </span>
-                  <span className="text-muted-foreground uppercase text-[10px] tracking-[0.1em] self-center">Classification</span>
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="px-1.5 py-0.5 rounded border border-info/30 bg-info/10 text-info font-mono text-[10px] uppercase tracking-wider">
-                      Internal
-                    </span>
-                  </span>
-                </div>
-                {/* Seed prompt */}
-                <div className="px-5 py-4 space-y-3">
-                  <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-muted-foreground">Seed</div>
-                  <p className="text-[13px] text-foreground/85 leading-relaxed">
-                    Paste a domain, email, handle, IP, phone, or wallet below to open the investigation. The agent will detect the type automatically.
-                  </p>
-                  <div className="flex flex-wrap gap-1.5 pt-1">
-                    {["taciocero@icloud.com", "elonmusk", "8.8.8.8", "lovable.app"].map((s) => (
-                      <button
-                        key={s}
-                        onClick={() => setInput(s)}
-                        className="px-2 py-1 rounded border border-border-subtle bg-surface-2/60 hover:border-info/40 hover:bg-info/5 font-mono text-[11px] tabular-nums text-foreground/80 transition-colors"
-                      >
-                        {s}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+            <div className="flex flex-col items-center justify-center py-16 sm:py-24 animate-fade-up">
+              <div className="text-[10px] font-mono uppercase tracking-[0.22em] text-muted-foreground/60">
+                New investigation
+              </div>
+              <p className="mt-3 text-center text-sm text-muted-foreground max-w-sm leading-relaxed">
+                Paste an email, username, IP, domain, phone, or wallet to begin.
+              </p>
+              <div className="mt-5 flex flex-wrap justify-center gap-2">
+                {[
+                  { seed: "taciocero@icloud.com", label: "Email" },
+                  { seed: "elonmusk", label: "Username" },
+                  { seed: "8.8.8.8", label: "IP" },
+                  { seed: "lovable.app", label: "Domain" },
+                ].map(({ seed: s, label }) => (
+                  <button
+                    key={s}
+                    onClick={() => setInput(s)}
+                    className="group flex items-center gap-2 px-3 py-2 rounded-xl border border-border-subtle/80 bg-white/[0.02] hover:border-primary/30 hover:bg-primary/[0.04] transition-colors"
+                  >
+                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground/50 group-hover:text-primary/60">{label}</span>
+                    <span className="font-mono text-[12px] text-foreground/80">{s}</span>
+                  </button>
+                ))}
               </div>
             </div>
           )}
