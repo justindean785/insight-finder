@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { z } from "zod";
 import { supabase } from "@/integrations/supabase/client";
 
 export type Artifact = {
@@ -10,6 +11,16 @@ export type Artifact = {
   created_at: string;
   metadata: Record<string, unknown> | null;
 };
+
+const realtimeArtifactSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  value: z.string(),
+  confidence: z.number().nullable(),
+  source: z.string().nullable(),
+  created_at: z.string(),
+  metadata: z.record(z.unknown()).nullable(),
+}).partial();
 
 // Canonicalize a value per kind so duplicates across tools collapse cleanly.
 function normalizeValue(kind: string, raw: string): string {
@@ -173,14 +184,12 @@ function acquireStore(threadId: string, listener: (items: Artifact[]) => void): 
         "postgres_changes",
         { event: "*", schema: "public", table: "artifacts", filter: `thread_id=eq.${threadId}` },
         (payload) => {
-          // Type guard: Supabase's typed payload for our table only includes
-          // the columns we selected, but we accept any partial row and let
-          // applyDelta() decide if it has what it needs.
-          const ev = (payload as { eventType?: string }).eventType as
-            | "INSERT" | "UPDATE" | "DELETE" | undefined;
-          const newRow = (payload as { new?: Artifact | null }).new ?? null;
-          const oldRow = (payload as { old?: Partial<Artifact> | null }).old ?? null;
-          if (!ev) return;
+          const ev = payload.eventType;
+          if (ev !== "INSERT" && ev !== "UPDATE" && ev !== "DELETE") return;
+          const parsedNew = realtimeArtifactSchema.safeParse(payload.new);
+          const parsedOld = realtimeArtifactSchema.safeParse(payload.old);
+          const newRow = parsedNew.success ? parsedNew.data : null;
+          const oldRow = parsedOld.success ? parsedOld.data : null;
           const merged = applyDelta(store!, ev, newRow, oldRow);
           if (merged) {
             // Local merge succeeded — notify subscribers without a DB round-trip.
