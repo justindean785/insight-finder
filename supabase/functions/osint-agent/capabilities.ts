@@ -63,26 +63,26 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   bosint_phone_lookup: { requiresKey: "OSINTNOVA_API_KEY" },
   leakcheck_lookup: { requiresKey: "LEAKCHECK_API_KEY" },
   stolentax_footprint: { requiresKey: "STOLENTAX_API_KEY" },
-  // DeepFind status (re-verified 2026-06-13 with a fresh DEEPFIND_API_KEY):
-  // the key auth works again, but DeepFind has REMOVED most of their API —
-  // live-probing every route with a valid key, only these two still return 200:
-  deepfind_reverse_email: { requiresKey: "DEEPFIND_API_KEY" },     // account discovery — works
-  deepfind_disposable_email: { requiresKey: "DEEPFIND_API_KEY" },  // burner-email check — works
-  // The rest now 404 — DeepFind deleted these routes (NOT a key/auth issue, so
-  // the circuit breaker / a key swap won't bring them back). Re-enable any of
-  // them only if DeepFind restores the route AND our path matches.
-  deepfind_ransomware_exposure: { requiresKey: "DEEPFIND_API_KEY", disabled: true }, // 404: route removed
-  deepfind_ssl_inspect: { requiresKey: "DEEPFIND_API_KEY", disabled: true },         // 404: route removed
-  deepfind_tech_stack: { requiresKey: "DEEPFIND_API_KEY", disabled: true },          // 404: route removed
-  deepfind_url_unshorten: { requiresKey: "DEEPFIND_API_KEY", disabled: true },       // 404: route removed
-  deepfind_profile_analyzer: { requiresKey: "DEEPFIND_API_KEY", disabled: true },    // 404: route removed
-  deepfind_telegram_channel: { requiresKey: "DEEPFIND_API_KEY", disabled: true },    // 404: route removed
-  deepfind_telegram_search: { requiresKey: "DEEPFIND_API_KEY", disabled: true },     // 404: route removed
-  deepfind_vin_lookup: { requiresKey: "DEEPFIND_API_KEY", disabled: true },          // 404: route removed
-  deepfind_aircraft_lookup: { requiresKey: "DEEPFIND_API_KEY", disabled: true },     // 404: route removed
-  deepfind_vessel_lookup: { requiresKey: "DEEPFIND_API_KEY", disabled: true },       // 404: route removed
-  deepfind_mac_lookup: { requiresKey: "DEEPFIND_API_KEY", disabled: true },          // 404: route removed
-  deepfind_dark_web_link: { requiresKey: "DEEPFIND_API_KEY", disabled: true },       // 404: route removed
+  // DeepFind re-verified 2026-06-13 against the live API with a valid key: the
+  // ONLY problem was the expired key (403). Our code already uses the correct
+  // HTTP methods (POST+body / path-param). 12 of 14 endpoints return 200/201;
+  // only ransomware-exposure and analyzer genuinely 404 (gone/changed upstream).
+  // Requires DEEPFIND_API_KEY set to the current key in Supabase function secrets.
+  deepfind_reverse_email: { requiresKey: "DEEPFIND_API_KEY" },
+  deepfind_disposable_email: { requiresKey: "DEEPFIND_API_KEY" },
+  deepfind_ssl_inspect: { requiresKey: "DEEPFIND_API_KEY" },
+  deepfind_tech_stack: { requiresKey: "DEEPFIND_API_KEY" },
+  deepfind_url_unshorten: { requiresKey: "DEEPFIND_API_KEY" },
+  deepfind_telegram_channel: { requiresKey: "DEEPFIND_API_KEY" },
+  deepfind_telegram_search: { requiresKey: "DEEPFIND_API_KEY" },
+  deepfind_vin_lookup: { requiresKey: "DEEPFIND_API_KEY" },
+  deepfind_aircraft_lookup: { requiresKey: "DEEPFIND_API_KEY" },
+  deepfind_vessel_lookup: { requiresKey: "DEEPFIND_API_KEY" },
+  deepfind_mac_lookup: { requiresKey: "DEEPFIND_API_KEY" },
+  deepfind_dark_web_link: { requiresKey: "DEEPFIND_API_KEY" },
+  // These two 404 with a valid key + correct method — genuinely gone upstream:
+  deepfind_ransomware_exposure: { requiresKey: "DEEPFIND_API_KEY", disabled: true }, // 404: endpoint gone
+  deepfind_profile_analyzer: { requiresKey: "DEEPFIND_API_KEY", disabled: true },    // 404: endpoint gone
   virustotal_lookup: { requiresKey: "VIRUSTOTAL_API_KEY" },
   ipgeolocation_lookup: { requiresKey: "IPGEOLOCATION_API_KEY" },
   gemini_deep_dork: { requiresKey: "GEMINI_API_KEY" },
