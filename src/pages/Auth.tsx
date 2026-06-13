@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,11 +10,15 @@ import { SwarmMark } from "@/components/ui/swarm-mark";
 
 export default function Auth() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const defaultTab = searchParams.get("tab") === "signup" ? "signup" : "signin";
   const [siEmail, setSiEmail] = useState("");
   const [siPassword, setSiPassword] = useState("");
   const [suEmail, setSuEmail] = useState("");
   const [suPassword, setSuPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [forgotMode, setForgotMode] = useState(false);
+  const [resetEmail, setResetEmail] = useState("");
 
   useEffect(() => {
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
@@ -42,6 +46,21 @@ export default function Auth() {
     setLoading(false);
     if (error) toast.error(error.message);
     else toast.success("Check your email to confirm your account.");
+  };
+
+  const resetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(resetEmail, {
+      redirectTo: `${window.location.origin}/auth`,
+    });
+    setLoading(false);
+    if (error) toast.error(error.message);
+    else {
+      toast.success("Check your email for a reset link.");
+      setForgotMode(false);
+      setResetEmail("");
+    }
   };
 
   const google = async () => {
@@ -103,29 +122,52 @@ export default function Auth() {
 
         {/* Card */}
         <div className="rounded-2xl border border-white/[0.07] glass-card p-5 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.7)]">
-          <Tabs defaultValue="signin" className="w-full">
+          <Tabs defaultValue={defaultTab} className="w-full">
             <TabsList className="grid grid-cols-2 w-full h-9 bg-surface-2/60 p-1">
               <TabsTrigger value="signin" className="text-[13px]">Sign in</TabsTrigger>
               <TabsTrigger value="signup" className="text-[13px]">Sign up</TabsTrigger>
             </TabsList>
             <TabsContent value="signin">
-              <form onSubmit={signIn} className="space-y-3.5 mt-4">
-                <div className="space-y-1.5">
-                  <Label htmlFor="signin-email" className="text-[11px] uppercase tracking-[0.1em] text-muted-foreground">Email</Label>
-                  <Input id="signin-email" type="email" autoComplete="email" required value={siEmail} onChange={(e) => setSiEmail(e.target.value)} />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="signin-password" className="text-[11px] uppercase tracking-[0.1em] text-muted-foreground">Password</Label>
-                  <Input id="signin-password" type="password" autoComplete="current-password" required value={siPassword} onChange={(e) => setSiPassword(e.target.value)} />
-                </div>
-                <Button
-                  type="submit"
-                  className="w-full h-10 bg-gradient-to-r from-primary to-accent text-primary-foreground hover:opacity-90 shadow-[0_8px_24px_-8px_hsl(var(--primary)/0.6)] border-0 font-medium"
-                  disabled={loading}
-                >
-                  {loading ? "Signing in…" : "Sign in"}
-                </Button>
-              </form>
+              {forgotMode ? (
+                <form onSubmit={resetPassword} className="space-y-3.5 mt-4">
+                  <p className="text-xs text-muted-foreground">Enter your email and we'll send a password reset link.</p>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="reset-email" className="text-[11px] uppercase tracking-[0.1em] text-muted-foreground">Email</Label>
+                    <Input id="reset-email" type="email" autoComplete="email" required value={resetEmail} onChange={(e) => setResetEmail(e.target.value)} />
+                  </div>
+                  <Button
+                    type="submit"
+                    className="w-full h-10 bg-gradient-to-r from-primary to-accent text-primary-foreground hover:opacity-90 shadow-[0_8px_24px_-8px_hsl(var(--primary)/0.6)] border-0 font-medium"
+                    disabled={loading}
+                  >
+                    {loading ? "Sending…" : "Send reset link"}
+                  </Button>
+                  <button type="button" onClick={() => setForgotMode(false)} className="w-full text-[11px] text-muted-foreground hover:text-foreground">
+                    Back to sign in
+                  </button>
+                </form>
+              ) : (
+                <form onSubmit={signIn} className="space-y-3.5 mt-4">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="signin-email" className="text-[11px] uppercase tracking-[0.1em] text-muted-foreground">Email</Label>
+                    <Input id="signin-email" type="email" autoComplete="email" required value={siEmail} onChange={(e) => setSiEmail(e.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="signin-password" className="text-[11px] uppercase tracking-[0.1em] text-muted-foreground">Password</Label>
+                    <Input id="signin-password" type="password" autoComplete="current-password" required value={siPassword} onChange={(e) => setSiPassword(e.target.value)} />
+                    <button type="button" onClick={() => setForgotMode(true)} className="text-[11px] text-muted-foreground hover:text-foreground">
+                      Forgot password?
+                    </button>
+                  </div>
+                  <Button
+                    type="submit"
+                    className="w-full h-10 bg-gradient-to-r from-primary to-accent text-primary-foreground hover:opacity-90 shadow-[0_8px_24px_-8px_hsl(var(--primary)/0.6)] border-0 font-medium"
+                    disabled={loading}
+                  >
+                    {loading ? "Signing in…" : "Sign in"}
+                  </Button>
+                </form>
+              )}
             </TabsContent>
             <TabsContent value="signup">
               <form onSubmit={signUp} className="space-y-3.5 mt-4">
@@ -136,6 +178,7 @@ export default function Auth() {
                 <div className="space-y-1.5">
                   <Label htmlFor="signup-password" className="text-[11px] uppercase tracking-[0.1em] text-muted-foreground">Password</Label>
                   <Input id="signup-password" type="password" autoComplete="new-password" required minLength={6} value={suPassword} onChange={(e) => setSuPassword(e.target.value)} />
+                  <p className="text-[10px] text-muted-foreground/60">At least 6 characters</p>
                 </div>
                 <Button
                   type="submit"
@@ -173,7 +216,10 @@ export default function Auth() {
 
         {/* Footnote */}
         <p className="text-center text-[10px] uppercase tracking-[0.16em] text-muted-foreground/60 font-mono">
-          authorized analysts only · all activity logged
+          <Link to="/terms" className="hover:text-muted-foreground transition-colors">Terms</Link>
+          {" · "}
+          <Link to="/privacy" className="hover:text-muted-foreground transition-colors">Privacy</Link>
+          {" · all activity logged"}
         </p>
       </div>
     </div>

@@ -4,21 +4,17 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
 import { addBreadcrumb, captureError } from "@/lib/telemetry";
+import Landing from "./Landing";
 
 export default function IndexRedirect() {
   const { user, loading } = useAuth();
   const navigate = useNavigate();
-  // Bumped by the Retry button to re-run the bootstrap effect.
   const [attempt, setAttempt] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (loading) return;
+    if (loading || !user) return;
     let alive = true;
-    if (!user) {
-      navigate("/auth", { replace: true });
-      return;
-    }
     setError(null);
     addBreadcrumb("route", "index bootstrap start");
     (async () => {
@@ -51,6 +47,14 @@ export default function IndexRedirect() {
     })();
     return () => { alive = false; };
   }, [user, loading, navigate, attempt]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center text-muted-foreground">Loading…</div>
+    );
+  }
+
+  if (!user) return <Landing />;
 
   if (error) {
     return (
