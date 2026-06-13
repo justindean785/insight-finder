@@ -6,6 +6,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { reflowCollapsedTables } from "@/lib/markdown";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -796,7 +797,7 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
         if (p.type === CACHE_BANNER_TYPE) return null;
         if (typeof p.type === "string" && p.type.startsWith("tool-")) return null;
         if (p.type === "text") {
-          const cleaned = stripThinkTags(p.text ?? "");
+          const cleaned = reflowCollapsedTables(stripThinkTags(p.text ?? ""));
           if (!cleaned) return null;
           return (
             <div
