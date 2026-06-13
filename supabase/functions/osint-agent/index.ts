@@ -88,6 +88,7 @@ import { SYSTEM_PROMPT, IDENTITY_CLUSTER_RULES, PERSON_SEARCH_RULES, SYSTEM_PROM
 
 // cache.ts — Central tool cache wrapper, tier tagging, auto-evidence
 import { wrapToolsWithCache } from "./cache.ts";
+import { beginCycle, clearRuntime, completePlan, recordFindingSummary } from "./runtime-policy.ts";
 import { serus_darkweb_scan } from "./tools/serus.ts";
 import { okWithSuccessFlag, socialfetchError, isHackertargetApiError, isCrtshOk, dohTypeError, blockchairError } from "./tool_response.ts";
 
@@ -104,6 +105,19 @@ type ToolRegistry = Record<string, unknown>;
 type ExecutableTool = {
   execute: (input: Record<string, unknown>, options: unknown) => Promise<unknown>;
 };
+
+function extractManualOverrideSelector(messages: UIMessage[]): string | null {
+  const latestUser = [...messages].reverse().find((message) => message.role === "user");
+  if (!latestUser || !Array.isArray(latestUser.parts)) return null;
+  const text = latestUser.parts
+    .filter((part): part is { type: "text"; text: string } =>
+      part?.type === "text" && typeof (part as { text?: unknown }).text === "string"
+    )
+    .map((part) => part.text)
+    .join("\n");
+  const match = text.match(/^\s*manual override\s*:\s*(.+?)\s*$/im);
+  return match?.[1]?.trim() || null;
+}
 
 // ---- Health/readiness probe -------------------------------------------------
 // `GET /osint-agent?health=1` (and HEAD) returns a JSON readiness summary so
@@ -240,6 +254,7 @@ Deno.serve(async (req) => {
     // ---- setupRequest handles CORS, auth, thread verification, message persistence ----
     const ctx = await setupRequest(req);
     const { supabase, supabaseAdmin, user, userId, threadId, archiveEnabled, detectedSeedType, messages } = ctx;
+    const manualOverrideSelector = extractManualOverrideSelector(messages);
 
     const tools = {
       list_tools: tool({
@@ -302,7 +317,7 @@ Deno.serve(async (req) => {
       }),
       triage_seed: tool({
         description:
-          "MANDATORY first step for email or username seeds. Runs the cheap Stage-1 tools (emailrep, gravatar_profile, breach_check) in parallel, then decides which expensive Stage-2 tools (oathnet_lookup, github_code_search, google_dorks, minimax_web_search, urlscan_search) are allowed to run. Stage-2 tools are blocked at the orchestrator level until this runs and clears them. Records a `triage_decision` artifact.",
+          "MANDATORY first step for email or username seeds. Establishes the Stage-1 baseline, then records which Stage-2 categories are eligible for bounded planning. It does not authorize recursive expansion. Records a `triage_decision` artifact.",
         inputSchema: z.object({
           seed: z.string().min(1),
           type: z.enum(["email", "username"]),
@@ -317,18 +332,10 @@ Deno.serve(async (req) => {
           triageState.seedDomain = domain;
           if (type === "username") triageState.identitySignals.username = true;
 
-          // ---- Run Stage 1 in parallel (only the tools that apply to the seed type) ----
+          // Triage is classification-only. Provider calls must pass through the
+          // shared planner/cache/runtime wrapper so they are budgeted, logged,
+          // deduplicated, and eligible for user-scoped cache reuse.
           const stage1: Record<string, unknown> = {};
-          if (type === "email") {
-            const [emailrepRes, gravatarRes, breachRes] = await Promise.all([
-              ((tools as ToolRegistry).emailrep as ExecutableTool).execute({ email: normalized }, {}).catch((e: unknown) => ({ error: String(e) })),
-              ((tools as ToolRegistry).gravatar_profile as ExecutableTool).execute({ email: normalized }, {}).catch((e: unknown) => ({ error: String(e) })),
-              ((tools as ToolRegistry).breach_check as ExecutableTool).execute({ email: normalized }, {}).catch((e: unknown) => ({ error: String(e) })),
-            ]);
-            stage1.emailrep = emailrepRes;
-            stage1.gravatar = gravatarRes;
-            stage1.breach = breachRes;
-          }
 
           // ---- Evaluate gate signals ----
           // Stage-1 tool results carry an optional `data` payload (and the
@@ -371,14 +378,10 @@ Deno.serve(async (req) => {
           if (emailrepScore >= 50) reasons.push(`emailrep score ${emailrepScore}`);
           if (nonConsumerDomain) reasons.push(`non-consumer domain ${domain}`);
 
-          // Loosened gate: Stage-2 tools open as soon as triage runs.
-          // We still record any qualifying `reasons` for transparency, but
-          // even an empty-signal triage (no breach, no gravatar, low emailrep,
-          // consumer domain) no longer blocks Stage-2 follow-ups — pivots
-          // like minimax_web_search / oathnet_lookup / urlscan_search are
-          // still high-value on cold seeds.
+          // Stage-2 categories become eligible after triage, but every provider
+          // call still requires a structured cycle plan and runtime approval.
           const stage2Open = true;
-          if (reasons.length === 0) reasons.push("triage ran (gate permissive)");
+          if (reasons.length === 0) reasons.push("seed classified; provider checks require a planned cycle");
 
           triageState.cleared.clear();
           triageState.skipped = [];
@@ -437,7 +440,7 @@ Deno.serve(async (req) => {
       }),
       minimax_web_search: tool({
         description:
-          "Live web search powered by Perplexity Sonar (grounded, real-time, with citations). Use early on the seed and on every new email/handle/name/domain/phone you discover. Returns a concise synthesized answer plus the list of cited source URLs.",
+          "Live web search powered by Perplexity Sonar (grounded, real-time, with citations). Use for the original seed or a corroborated selector when the planned query can answer a distinct verification question. Returns a concise synthesized answer plus cited source URLs.",
         inputSchema: z.object({
           query: z.string().min(2).describe("Search query, e.g. \"alice@example.com\" leak OR breach"),
           focus: z.string().optional().describe("Optional steering hint, e.g. 'find social profiles', 'find leaks'"),
@@ -517,7 +520,7 @@ Deno.serve(async (req) => {
       }),
       minimax_correlate: tool({
         description:
-          "Have MiniMax correlate and rescore a batch of artifacts. Pass the list of artifacts gathered so far; it returns identity clusters, dedup mapping, confidence rescoring, and contradiction flags. Run after each fan-out round.",
+          "Have MiniMax correlate and rescore a batch of artifacts. Pass the relevant artifacts gathered so far; it returns identity clusters, dedup mapping, confidence rescoring, and contradiction flags. Run after at least three meaningful new artifacts or before final verification.",
         inputSchema: z.object({
           seed: z.string().describe("Original seed identifier"),
           artifacts: z.array(z.object({
@@ -553,7 +556,7 @@ Deno.serve(async (req) => {
       }),
       minimax_plan_pivots: tool({
         description:
-          "Ask MiniMax to plan the next pivot batch. Pass the seed plus what you've found so far; it returns a prioritized list of {tool, args, reason} for the next tool calls. Use when stuck or to avoid repeating work.",
+          "Plan the next bounded investigation cycle. Returns structured JSON with stage, goal, current_findings, proposed_calls[], and calls_rejected[]. Use it before any non-planner pivot batch so the investigation stays budgeted, cache-aware, and evidence-led.",
         inputSchema: z.object({
           seed: z.string(),
           already_queried: z.array(z.string()).max(200).default([]),
@@ -648,7 +651,7 @@ Deno.serve(async (req) => {
             const r = await minimaxChat({
               model: MODELS.smart,
               system:
-                `You plan OSINT pivots. ONLY propose tools from this EXACT list (names must match verbatim — do not invent or rename): ${toolList.join(", ")}.${skippedHighCost.length ? ` HIGH-COST tools already fired and hidden this round (do not request): ${skippedHighCost.join(", ")} — only re-eligible once new corroborating evidence appears.` : ""}\n\nPERMANENTLY DISABLED TOOLS — NEVER PROPOSE: firecrawl_search, firecrawl_scrape, firecrawl_map (credits exhausted — use jina_reader_scrape + exa_search + minimax_web_search), intelbase_email_lookup (gated due to instability — use oathnet_lookup + leakcheck_lookup + bosint_email_lookup instead). Any pivot naming these tools is dropped automatically.\n\nCOST + COVERAGE RULES:\n- jina_reader_scrape is the #1 single-page scraper — fire it liberally (free). exa_search + minimax_web_search run in parallel for any web search.\n- For every newly-discovered EMAIL, fan out in parallel: breach_check, leakcheck_lookup, hibp_lookup, oathnet_lookup, bosint_email_lookup, hunter_email_verifier, hunter_combined, deepfind_reverse_email, deepfind_disposable_email, stolentax_footprint, emailrep, gravatar_profile, gemini_deep_dork, dork_harvest.\n- For every COMPANY / ORGANIZATION / NAME seed, fan out: hunter_domain_search (on the corp domain), exa_search (category=company / linkedin profile), exa_find_similar (after first profile), gemini_deep_dork, dork_harvest, minimax_web_search, osint_navigator_query (for tool gaps).\n- For every DOMAIN, fan out: whois_lookup, dns_records, crtsh_subdomains, http_fingerprint, hunter_domain_search, urlscan_search, virustotal_lookup, synapsint_lookup, shodan_internetdb, hackertarget, deepfind_ssl_inspect, deepfind_tech_stack.\n- For every IP, fan out: ip_intel, ipgeolocation_lookup, shodan_internetdb, oathnet_lookup, synapsint_lookup, hackertarget, urlscan_search, virustotal_lookup.\n- For every USERNAME / HANDLE, fan out: username_sweep, socialfetch_lookup (tiktok/instagram/twitter/facebook), github_user, reddit_user, hackernews_user, stolentax_footprint, deepfind_reverse_email, gemini_deep_dork, leakcheck_lookup.\n- For every confirmed evidence URL likely to vanish, propose archive_url.\n\nReply ONLY with JSON: {pivots:[{tool:string,args:object,reason:string,priority:number}],skip:[string]}. Order by priority desc. Drop any pivot whose tool is in the disabled list above. Do not propose tools already queried with same args. Respect budget_remaining as the max number of pivots.`,
+                `You are the execution planner for a forensic OSINT runtime. ONLY propose tools from this EXACT list (names must match verbatim — do not invent or rename): ${toolList.join(", ")}.${skippedHighCost.length ? ` HIGH-COST tools already fired and hidden this round (do not request): ${skippedHighCost.join(", ")} — only re-eligible once new corroborating evidence appears.` : ""}\n\nPERMANENTLY DISABLED TOOLS — NEVER PROPOSE: firecrawl_search, firecrawl_scrape, firecrawl_map (credits exhausted — use jina_reader_scrape + exa_search + minimax_web_search), intelbase_email_lookup (gated due to instability — use oathnet_lookup + leakcheck_lookup + bosint_email_lookup instead).\n\nRUNTIME RULES:\n- Stage choices: TRIAGE, REVIEW, TARGETED_PIVOT, VERIFY, REPORT.\n- Propose the SMALLEST high-value batch, not a fan-out burst.\n- Respect a hard ceiling of 35 calls total, 3 concurrent calls, 2 paid calls per cycle, and at most 1 same-tool call per cycle.\n- Reject weak leads by default: confidence <50, single-source only, related_profile, AI-summary-only, display-name-only, username collisions, no-hit breach outputs, empty/private profiles, same-name candidates without direct overlap.\n- Cached results NEVER count as corroboration. If a fresh cache hit would satisfy the question, prefer it over a live call.\n- Expensive tools must be justified by corroboration potential, contradiction resolution, or analyst-approved override.\n- If evidence is weak, say so in calls_rejected; do not branch on it.\n\nReply ONLY with JSON matching this exact shape:\n{\n  "stage":"TRIAGE|REVIEW|TARGETED_PIVOT|VERIFY|REPORT",\n  "goal":"string",\n  "current_findings":["string"],\n  "proposed_calls":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "params_preview":{},\n    "expected_value":0,\n    "cost_tier":"free|low|expensive",\n    "reason":"string",\n    "stop_condition":"string",\n    "cache_status":"thread|user|stale|miss"\n  }],\n  "calls_rejected":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "expected_value":0,\n    "reason":"string",\n    "cost_tier":"free|low|expensive",\n    "weak_lead":true,\n    "stale_cache":false,\n    "manual_override":false\n  }]\n}\nOrder proposed_calls by expected_value descending. Respect budget_remaining as the max number of proposed_calls.`,
               user: `Seed: ${seed}\nBudget remaining: ${budget_remaining}\nAlready queried: ${JSON.stringify(already_queried).slice(0,4000)}\nArtifacts so far: ${JSON.stringify(artifacts).slice(0,8000)}`,
               json: true,
               maxTokens: 1500,
@@ -677,6 +680,7 @@ Deno.serve(async (req) => {
             }
             guard.planCalledInRound = true;
             guard.artifactsSincePlan = 0;
+            completePlan(threadId);
             return { ok: r.ok, status: r.status, plan: parsed };
           } catch (e) { return { error: String(e) }; }
         },
@@ -813,8 +817,8 @@ Deno.serve(async (req) => {
         },
       }),
       oathnet_lookup: tool({
-        description:
-         "Query OathNet. v2 breach search for email/username/phone/domain; geo+ASN for ip. 100 calls/day. Fire ONCE per high-value email/username/phone/domain in parallel with breach_check, leakcheck_lookup, and intelbase_email_lookup (do NOT wait for them to fail). Always fire on every ip seed for geo+ASN. Skip only after ~50 calls this session or an explicit 429.",
+       description:
+         "Query OathNet v2 for breach correlation on a high-value email/username/phone/domain, or geo+ASN on an IP. Use once when the planner identifies corroboration or contradiction-resolution value. Do not run on weak leads or as an automatic companion call.",
         inputSchema: z.object({
           type: z.enum(["email", "username", "phone", "ip", "domain"]),
           value: z.string(),
@@ -938,7 +942,7 @@ Deno.serve(async (req) => {
       }),
       bosint_email_lookup: tool({
         description:
-          "OSINTNova (Bosint) email exposure check. Surface-level breach + exposure indicators for an email address. Shared 1000 calls/day quota across Bosint endpoints, 120/min. Fire ONCE per email seed and once per newly-confirmed email mid-run, in parallel with the other breach sources. Returns {success, data, api_metadata}.",
+          "OSINTNova (Bosint) email exposure check. Surface-level breach + exposure indicators for an email address. Shared 1000 calls/day quota across Bosint endpoints, 120/min. Use for an original or independently corroborated email when the planner needs exposure context. Returns {success, data, api_metadata}.",
         inputSchema: z.object({ email: z.string().describe("Email address to check") }),
         execute: async ({ email }) => {
           if (!OSINTNOVA_API_KEY) return { error: "OSINTNOVA_API_KEY not configured" };
@@ -957,7 +961,7 @@ Deno.serve(async (req) => {
       }),
       bosint_phone_lookup: tool({
         description:
-          "OSINTNova (Bosint) phone intelligence. Carrier, location, line type, timezone, and associated names when available. Pass full E.164 number with country code (e.g. '+12025551234'). Shared 1000 calls/day quota across Bosint endpoints, 120/min. Fire ONCE per phone seed in parallel with leakcheck_lookup + oathnet_lookup. SLOW upstream — capped at a single 25s attempt; returns a timeout marker if it hangs.",
+          "OSINTNova (Bosint) phone intelligence. Carrier, location, line type, timezone, and associated names when available. Pass full E.164 number with country code (e.g. '+12025551234'). Shared 1000 calls/day quota across Bosint endpoints, 120/min. Use as the planned primary phone enrichment call; add corroboration only when justified. SLOW upstream — capped at a single 25s attempt; returns a timeout marker if it hangs.",
         inputSchema: z.object({ phone: z.string().describe("Phone number in E.164 format, e.g. +12025551234") }),
         execute: async ({ phone }) => {
           if (!OSINTNOVA_API_KEY) return { error: "OSINTNOVA_API_KEY not configured" };
@@ -1931,7 +1935,7 @@ Deno.serve(async (req) => {
       }),
       google_dorks: tool({
         description:
-          "Generate copy-paste Google/Bing/DuckDuckGo/Yandex dork queries for a seed identifier. NO external API cost — always safe to call. Returns a comprehensive, categorized dork menu (60+ queries per kind across breach/pastes, social, code, forums, dark-web-adjacent, docs, archives, public records, etc.). Fire it EARLY and on every newly-discovered high-value artifact (email, username, phone, name, domain, ip, hash, crypto_wallet).",
+          "Generate copy-paste Google/Bing/DuckDuckGo/Yandex dork queries for a seed identifier. NO external API cost. Use once for the original seed or a corroborated high-value selector when the resulting query set supports a defined verification goal.",
         inputSchema: z.object({
           seed: z.string(),
           // Accept legacy/alias "person" → mapped to "name" in execute().
@@ -2590,7 +2594,7 @@ Deno.serve(async (req) => {
         execute: async () => ({
           error: "firecrawl_disabled",
           skipped: true,
-          hint: "Firecrawl is permanently disabled. Call exa_search and minimax_web_search in parallel instead. Do NOT retry firecrawl_search.",
+          hint: "Firecrawl is permanently disabled. Let the planner choose the highest-value eligible search provider instead. Do NOT retry firecrawl_search.",
         }),
       }),
       firecrawl_scrape: tool({
@@ -2667,7 +2671,7 @@ Deno.serve(async (req) => {
       }),
       exa_search: tool({
         description:
-          "Exa /search — neural + keyword web search with optional inline contents (text, highlights, summary). PRIMARY web search alongside minimax_web_search — call BOTH in parallel on any meaningful query. Exa's neural mode is best for semantic / concept queries ('people who wrote about X', 'companies similar to Y'); keyword mode is best for exact strings (emails, usernames, hashes, wallets). Supports includeDomains/excludeDomains, startPublishedDate/endPublishedDate, and category ('company','research paper','news','pdf','github','tweet','personal site','linkedin profile','financial report').",
+          "Exa /search — neural + keyword web search with optional inline contents (text, highlights, summary). Use when semantic or exact-string discovery has the highest expected value; do not automatically pair it with another search provider. Supports includeDomains/excludeDomains, startPublishedDate/endPublishedDate, and category ('company','research paper','news','pdf','github','tweet','personal site','linkedin profile','financial report').",
         inputSchema: z.object({
           query: z.string().min(2),
           type: z.enum(["auto", "neural", "keyword"]).default("auto"),
@@ -3378,6 +3382,11 @@ Deno.serve(async (req) => {
           const safeRowsForFollowup = insertedRows;
           const flagged = safeRows.filter((r) => (r.metadata as { minor_warning?: unknown } | undefined)?.minor_warning).length;
           bumpArtifacts(safeRowsForFollowup.length, safeRowsForFollowup.map((r) => String(r.kind)));
+          beginCycle(
+            threadId,
+            "Review newly recorded evidence and select the smallest justified verification batch.",
+            safeRowsForFollowup.slice(-12).map((r) => `${String(r.kind)}:${String(r.value)}`),
+          );
           // Collision detection: for any phone/email/address just inserted,
           // check if the same normalized value is already linked to a
           // different cluster_id or different name in this thread. Record a
@@ -3578,6 +3587,11 @@ Deno.serve(async (req) => {
           const { error } = await supabase.from("artifacts").insert([row]);
           if (error) return { ok: false, error: error.message };
           bumpArtifacts(1, [String(row.kind)]);
+          beginCycle(
+            threadId,
+            "Review the newly recorded artifact and select the smallest justified verification batch.",
+            [`${String(row.kind)}:${String(row.value)}`],
+          );
           const minor = (row.metadata as { minor_warning?: unknown } | null)?.minor_warning === true;
           // Chain-of-custody append
           const meta = (row.metadata as Record<string, unknown> | null) ?? {};
@@ -4004,6 +4018,7 @@ Deno.serve(async (req) => {
         };
         const { data, error } = await supabase.from("artifacts").insert([row]).select("id").maybeSingle();
         if (error) return { ok: false, error: error.message };
+        recordFindingSummary(threadId, i.conclusion);
         return { ok: true, id: data?.id ?? null, confidence_axes: axes, applied_label: i.label };
       },
     });
@@ -4011,6 +4026,12 @@ Deno.serve(async (req) => {
     // Cumulative cost tracker for this run.
     let runCostMicroUsd = 0;
     let costCheckpointCounter = 0;
+    clearRuntime(threadId);
+    beginCycle(
+      threadId,
+      "Classify the seed, reject weak pivots, and select the smallest high-value initial batch.",
+      [`seed:${seedValueRaw}`, `stage2:${triageState.ran ? "open" : "pending"}`],
+    );
     // Bootstrap per-thread circuit breakers (firecrawl/intelbase pre-disabled).
     circuit.applyBaselineDisables(threadId);
     // Capability discovery: gate providers that can't run (missing key / gated /
@@ -4150,6 +4171,14 @@ Deno.serve(async (req) => {
     const STEP_OLDER_CHARS = 3000;
     const prepareStep: NonNullable<Parameters<typeof streamText>[0]["prepareStep"]> =
       async ({ messages: stepMessages }) => {
+        const { data: threadState } = await supabase
+          .from("threads")
+          .select("status")
+          .eq("id", threadId)
+          .maybeSingle();
+        if ((threadState as { status?: string } | null)?.status === "stopped") {
+          throw new DOMException("Investigation stopped by analyst", "AbortError");
+        }
         // Clear per-step dedup set at the *start* of every step. Doing this
         // only inside bumpArtifacts() means steps that find zero artifacts
         // never clear the set, silently blocking memory_recall for any
@@ -4185,8 +4214,15 @@ Deno.serve(async (req) => {
       model: orchestratorModel,
       system: SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType),
       messages: trimmedMessages,
-      tools: wrapToolsWithCache(tools, { investigationId: threadId, userId, supabase, supabaseAdmin, onCost }),
-      stopWhen: stepCountIs(100),
+      tools: wrapToolsWithCache(tools, {
+        investigationId: threadId,
+        userId,
+        supabase,
+        supabaseAdmin,
+        onCost,
+        manualOverrideSelector,
+      }),
+      stopWhen: stepCountIs(45),
       prepareStep,
       // Meter orchestrator LLM token spend per step so threads.cost_micro_usd
       // reflects the actual model cost, not just tool fan-out cost.
@@ -4241,40 +4277,10 @@ Deno.serve(async (req) => {
       },
     });
 
-    // Keep the edge function alive after the HTTP response closes so the
-    // model keeps running, tools keep firing, and onFinish persists the
-    // final assistant message even if the client tab is closed.
-    try {
-      // `EdgeRuntime.waitUntil` is the Supabase-Deno equivalent of the
-      // Cloudflare/Vercel `ctx.waitUntil` — schedules background work that
-      // outlives the response.
-      const ert = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
-      if (ert && typeof ert.waitUntil === "function") {
-        ert.waitUntil(result.consumeStream());
-      } else {
-        // Fallback: fire-and-forget consumption.
-        void result.consumeStream();
-      }
-    } catch { /* best-effort background completion */ }
-
-    return result.toUIMessageStreamResponse({
-      headers: corsHeaders,
-      originalMessages: messages,
-      // Surface the REAL (redacted) provider reason to the client instead of the
-      // SDK's default generic mask ("An error occurred" / "Provider returned
-      // error"). The failed-run card then shows an actionable message, and a
-      // context-overflow vs. rate-limit vs. unreachable failure is
-      // distinguishable. Strip anything that looks like a credential first.
-      onError: (error) => {
-        const m = error instanceof Error ? error.message : String(error);
-        const redacted = m
-          .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-          .replace(/sk-[A-Za-z0-9._-]+/g, "sk-[REDACTED]")
-          .replace(/xai-[A-Za-z0-9._-]+/g, "xai-[REDACTED]")
-          .replace(/AIza[A-Za-z0-9_-]+/g, "AIza[REDACTED]");
-        return redacted.slice(0, 300) || "Provider stream error";
-      },
-      onFinish: async ({ messages: finalMessages }) => {
+    let finalPersisted = false;
+    const persistFinalMessages = async ({ messages: finalMessages }: { messages: UIMessage[] }) => {
+      if (finalPersisted) return;
+      finalPersisted = true;
         const assistant = [...finalMessages].reverse().find((m) => m.role === "assistant");
         if (assistant) {
           // Cap `messages.parts` payload to avoid silent PostgREST 500s when
@@ -4351,7 +4357,56 @@ Deno.serve(async (req) => {
             console.error(JSON.stringify({ event: "investigation_cache_fail", thread_id: threadId, error: String(e) }));
           }
         }
+        const { error: statusErr } = await supabase
+          .from("threads")
+          .update({ status: "completed", updated_at: new Date().toISOString() })
+          .eq("id", threadId)
+          .eq("status", "active");
+        if (statusErr) {
+          console.warn("[thread status] completion update failed:", statusErr.message);
+        }
+    };
+
+    // Create a server-owned UI stream branch. Unlike consumeStream(), this
+    // runs the UI-message onFinish callback even if the browser refreshes and
+    // cancels its response branch. The guard above prevents a connected client
+    // and the background branch from saving the same assistant message twice.
+    const persistenceStream = result.toUIMessageStream({
+      originalMessages: messages,
+      onFinish: persistFinalMessages,
+    });
+    const consumePersistenceStream = async () => {
+      for await (const _chunk of persistenceStream) {
+        // Drain the stream so generation, tool calls, and persistence complete.
+      }
+    };
+    try {
+      const task = consumePersistenceStream();
+      const ert = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
+      if (ert && typeof ert.waitUntil === "function") ert.waitUntil(task);
+      else void task;
+    } catch {
+      // Best-effort background completion; stream-level errors are logged above.
+    }
+
+    return result.toUIMessageStreamResponse({
+      headers: corsHeaders,
+      originalMessages: messages,
+      // Surface the REAL (redacted) provider reason to the client instead of the
+      // SDK's default generic mask ("An error occurred" / "Provider returned
+      // error"). The failed-run card then shows an actionable message, and a
+      // context-overflow vs. rate-limit vs. unreachable failure is
+      // distinguishable. Strip anything that looks like a credential first.
+      onError: (error) => {
+        const m = error instanceof Error ? error.message : String(error);
+        const redacted = m
+          .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+          .replace(/sk-[A-Za-z0-9._-]+/g, "sk-[REDACTED]")
+          .replace(/xai-[A-Za-z0-9._-]+/g, "xai-[REDACTED]")
+          .replace(/AIza[A-Za-z0-9_-]+/g, "AIza[REDACTED]");
+        return redacted.slice(0, 300) || "Provider stream error";
       },
+      onFinish: persistFinalMessages,
     });
   } catch (e) {
     // setupRequest throws Response objects for 401/403/400 — return them directly

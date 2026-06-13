@@ -12,6 +12,7 @@ export type FailureKind =
   | "http_404"
   | "http_422"
   | "http_429"
+  | "http_451"
   | "http_500"
   | "http_502"
   | "http_504"
@@ -281,6 +282,11 @@ export function recordResult(
       // — negative-cache the selector so it isn't immediately retried.
       if (selector) b.deadSelectors.add(selector);
       break;
+    case "http_451":
+      // Legal-policy blocks are deterministic for the exact URL/selector.
+      // Preserve the provider for unrelated public sources.
+      if (selector) b.deadSelectors.add(selector);
+      break;
     case "http_429": {
       const backoff = Math.min(2 ** Math.min(b.consecutive, 6) * 5_000, 5 * 60_000);
       b.disabledUntil = Date.now() + backoff;
@@ -344,6 +350,7 @@ export function classifyResult(result: unknown, threw: unknown): FailureKind {
     if (status === 404) return "http_404";
     if (status === 422) return "http_422";
     if (status === 429) return "http_429";
+    if (status === 451) return "http_451";
     if (status === 502) return "http_502";
     if (status === 504) return "http_504";
     if (status >= 500) return "http_500";

@@ -68,6 +68,7 @@ describe("classifyResult", () => {
   it("maps HTTP status codes in error results", () => {
     expect(classifyResult({ ok: false, status: 402 }, null)).toBe("http_402");
     expect(classifyResult({ error: "x", status_code: 404 }, null)).toBe("http_404");
+    expect(classifyResult({ error: "legal restriction", status: 451 }, null)).toBe("http_451");
     expect(classifyResult({ ok: false, status: 503 }, null)).toBe("http_500");
   });
 
@@ -111,6 +112,12 @@ describe("shouldRun / recordResult", () => {
     const d = shouldRun(thread, "look", "deadsel");
     expect(d.allow).toBe(false);
     expect((d as { reason?: string }).reason).toMatch(/blacklisted/);
+  });
+
+  it("limits a 451 legal block to the exact selector", () => {
+    recordResult(thread, "reader", "https://blocked.example/item", "default", { status: "http_451" });
+    expect(shouldRun(thread, "reader", "https://blocked.example/item").allow).toBe(false);
+    expect(shouldRun(thread, "reader", "https://public.example/item").allow).toBe(true);
   });
 
   it("applies a timed backoff after a 429", () => {
