@@ -608,6 +608,7 @@ Deno.serve(async (req) => {
               "deepfind_profile_analyzer","deepfind_telegram_channel","deepfind_telegram_search",
               "deepfind_vin_lookup","deepfind_aircraft_lookup","deepfind_vessel_lookup",
               "deepfind_mac_lookup","deepfind_dark_web_link",
+              "deepfind_email_breach","deepfind_transaction_viewer",
               // Profile / social
               "socialfetch_lookup","cordcat_discord_lookup","github_user","github_code_search",
               "hackernews_user","reddit_user","gravatar_profile","emailrep",
@@ -1608,6 +1609,55 @@ Deno.serve(async (req) => {
             });
             const data = await r.json().catch(() => ({}));
             return { ok: r.ok, status: r.status, source: "deepfind.darkweb", data };
+          } catch (e) { return { error: String(e) }; }
+        },
+      }),
+      deepfind_email_breach: tool({
+        description:
+          "DeepFind.Me email breach lookup (FREE) — checks an email against known public data breaches (HIBP-style). Returns per-breach name, date, PwnCount, and exposed DataClasses (passwords, phones, etc.). Use as a free corroborating breach source, especially as a fallback when paid breach tools (stolentax/oathnet/leakcheck) are rate-limited. Breach hits are verification leads, not confirmed identity facts.",
+        inputSchema: z.object({ email: z.string().email() }),
+        execute: async ({ email }) => {
+          const KEY = Deno.env.get("DEEPFIND_API_KEY");
+          if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
+          try {
+            const r = await fetchT(`https://deepfind.me/api/email-validator/${encodeURIComponent(email)}`, {
+              headers: { "X-DFME-API-KEY": KEY, "Accept": "application/json" },
+            });
+            const data = await r.json().catch(() => ({}));
+            const breaches = Array.isArray(data) ? data : [];
+            return {
+              ok: r.ok,
+              status: r.status,
+              source: "deepfind.email_breach",
+              data: {
+                breach_count: breaches.length,
+                breaches: breaches.slice(0, 50).map((b: Record<string, unknown>) => ({
+                  name: b?.Title ?? b?.Name,
+                  domain: b?.Domain,
+                  breach_date: b?.BreachDate,
+                  pwn_count: b?.PwnCount,
+                  data_classes: b?.DataClasses,
+                  is_verified: b?.IsVerified,
+                  is_sensitive: b?.IsSensitive,
+                })),
+              },
+            };
+          } catch (e) { return { error: String(e) }; }
+        },
+      }),
+      deepfind_transaction_viewer: tool({
+        description:
+          "DeepFind.Me blockchain transaction lookup by HASH (BTC / ETH / SOL). Returns sender, receiver, value (+ USD), fees, status, block, token transfers, and an explorer URL. Complements crypto_wallet (which inspects an ADDRESS) — use this when a transaction hash is the artifact. Auto-detects network from the hash format.",
+        inputSchema: z.object({ hash: z.string().min(16).describe("Transaction hash. BTC: 64 hex chars; ETH: 0x + 64 hex; SOL: base58.") }),
+        execute: async ({ hash }) => {
+          const KEY = Deno.env.get("DEEPFIND_API_KEY");
+          if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
+          try {
+            const r = await fetchT(`https://deepfind.me/api/transaction-viewer/${encodeURIComponent(hash.trim())}`, {
+              headers: { "X-DFME-API-KEY": KEY, "Accept": "application/json" },
+            });
+            const data = await r.json().catch(() => ({}));
+            return { ok: r.ok, status: r.status, source: "deepfind.transaction", data };
           } catch (e) { return { error: String(e) }; }
         },
       }),
@@ -3990,7 +4040,7 @@ Deno.serve(async (req) => {
       ...(HUNTER_API_KEY ? ["hunter_combined", "hunter_email_verifier", "hunter_domain_search"] : []),
       ...(Deno.env.get("LEAKCHECK_API_KEY") ? ["leakcheck_lookup"] : []),
       ...(Deno.env.get("STOLENTAX_API_KEY") ? ["breach_check", "stolentax_footprint"] : []),
-      ...(Deno.env.get("DEEPFIND_API_KEY") ? ["deepfind_reverse_email","deepfind_disposable_email","deepfind_ransomware_exposure","deepfind_ssl_inspect","deepfind_tech_stack","deepfind_telegram_channel","deepfind_telegram_search"] : []),
+      ...(Deno.env.get("DEEPFIND_API_KEY") ? ["deepfind_reverse_email","deepfind_disposable_email","deepfind_ssl_inspect","deepfind_tech_stack","deepfind_url_unshorten","deepfind_telegram_channel","deepfind_telegram_search","deepfind_vin_lookup","deepfind_aircraft_lookup","deepfind_vessel_lookup","deepfind_mac_lookup","deepfind_dark_web_link","deepfind_email_breach","deepfind_transaction_viewer"] : []),
       ...(Deno.env.get("INTELBASE_API_KEY") && INTELBASE_ENABLED ? ["intelbase_email_lookup"] : []),
       ...(Deno.env.get("VIRUSTOTAL_API_KEY") ? ["virustotal_lookup"] : []),
       ...(Deno.env.get("IPGEOLOCATION_API_KEY") ? ["ipgeolocation_lookup"] : []),

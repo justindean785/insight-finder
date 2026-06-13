@@ -5,6 +5,41 @@ import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+export const deepfind_email_breach = tool({
+  description:
+    "DeepFind.Me email breach lookup (FREE) — checks an email against known public data breaches (HIBP-style). Returns per-breach name, date, PwnCount, and exposed DataClasses. Free corroborating breach source / fallback when paid breach tools rate-limit.",
+  inputSchema: z.object({ email: z.string().email() }),
+  execute: async ({ email }) => {
+    const KEY = Deno.env.get("DEEPFIND_API_KEY");
+    if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
+    try {
+      const r = await fetch(`https://deepfind.me/api/email-validator/${encodeURIComponent(email)}`, {
+        headers: { "X-DFME-API-KEY": KEY, "Accept": "application/json" },
+      });
+      const data = await r.json().catch(() => ({}));
+      const breaches = Array.isArray(data) ? data : [];
+      return { ok: r.ok, status: r.status, source: "deepfind.email_breach", data: { breach_count: breaches.length, breaches } };
+    } catch (e) { return { error: String(e) }; }
+  },
+}),
+
+export const deepfind_transaction_viewer = tool({
+  description:
+    "DeepFind.Me blockchain transaction lookup by HASH (BTC/ETH/SOL). Returns sender, receiver, value+USD, fees, status, token transfers, explorer URL. Complements crypto_wallet (address-based).",
+  inputSchema: z.object({ hash: z.string().min(16) }),
+  execute: async ({ hash }) => {
+    const KEY = Deno.env.get("DEEPFIND_API_KEY");
+    if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
+    try {
+      const r = await fetch(`https://deepfind.me/api/transaction-viewer/${encodeURIComponent(hash.trim())}`, {
+        headers: { "X-DFME-API-KEY": KEY, "Accept": "application/json" },
+      });
+      const data = await r.json().catch(() => ({}));
+      return { ok: r.ok, status: r.status, source: "deepfind.transaction", data };
+    } catch (e) { return { error: String(e) }; }
+  },
+}),
+
 export const deepfind_ransomware_exposure = tool({
   description:
     "DeepFind.Me ransomware leak-site exposure check. Searches ransomware group leak sites for a domain, email, or identifier. High-signal for breach/extortion context.",
