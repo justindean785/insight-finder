@@ -5,10 +5,10 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { discoverCapabilities } from "./capabilities.ts";
 
+// DeepFind re-verified 2026-06-13: reverse_email + disposable_email still 200
+// with a valid key (they are NOT in this list); the rest 404 (routes removed).
 const DEAD_TOOLS = [
   "synapsint_lookup",
-  "deepfind_reverse_email",
-  "deepfind_disposable_email",
   "deepfind_ransomware_exposure",
   "deepfind_ssl_inspect",
   "deepfind_tech_stack",
@@ -40,4 +40,12 @@ Deno.test("a healthy keyed provider is still available (control)", () => {
   const ipqs = caps.find((c) => c.tool === "ipqualityscore_lookup");
   assertEquals(ipqs?.available, true);
   assertEquals(ipqs?.reason, "ok");
+});
+
+Deno.test("surviving deepfind endpoints are available when key is set", () => {
+  const caps = discoverCapabilities({ DEEPFIND_API_KEY: true }, null);
+  const byTool = new Map(caps.map((c) => [c.tool, c]));
+  for (const t of ["deepfind_reverse_email", "deepfind_disposable_email"]) {
+    assertEquals(byTool.get(t)?.available, true, `${t} should be available with key`);
+  }
 });

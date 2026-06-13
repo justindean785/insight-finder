@@ -63,25 +63,26 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   bosint_phone_lookup: { requiresKey: "OSINTNOVA_API_KEY" },
   leakcheck_lookup: { requiresKey: "LEAKCHECK_API_KEY" },
   stolentax_footprint: { requiresKey: "STOLENTAX_API_KEY" },
-  // Disabled 2026-06-13: the DEEPFIND_API_KEY is rejected (HTTP 403) and
-  // endpoints 404, so the WHOLE provider family is dead — production traces
-  // showed profile_analyzer 4xx, telegram_search 403, ransomware_exposure 404,
-  // reverse_email timeout. They all share one key/base, so disable the family.
-  // Re-enable by removing `disabled` from these once the key/provider is fixed.
-  deepfind_reverse_email: { requiresKey: "DEEPFIND_API_KEY", disabled: true },
-  deepfind_disposable_email: { requiresKey: "DEEPFIND_API_KEY", disabled: true },
-  deepfind_ransomware_exposure: { requiresKey: "DEEPFIND_API_KEY", disabled: true },
-  deepfind_ssl_inspect: { requiresKey: "DEEPFIND_API_KEY", disabled: true },
-  deepfind_tech_stack: { requiresKey: "DEEPFIND_API_KEY", disabled: true },
-  deepfind_url_unshorten: { requiresKey: "DEEPFIND_API_KEY", disabled: true },
-  deepfind_profile_analyzer: { requiresKey: "DEEPFIND_API_KEY", disabled: true },
-  deepfind_telegram_channel: { requiresKey: "DEEPFIND_API_KEY", disabled: true },
-  deepfind_telegram_search: { requiresKey: "DEEPFIND_API_KEY", disabled: true },
-  deepfind_vin_lookup: { requiresKey: "DEEPFIND_API_KEY", disabled: true },
-  deepfind_aircraft_lookup: { requiresKey: "DEEPFIND_API_KEY", disabled: true },
-  deepfind_vessel_lookup: { requiresKey: "DEEPFIND_API_KEY", disabled: true },
-  deepfind_mac_lookup: { requiresKey: "DEEPFIND_API_KEY", disabled: true },
-  deepfind_dark_web_link: { requiresKey: "DEEPFIND_API_KEY", disabled: true },
+  // DeepFind status (re-verified 2026-06-13 with a fresh DEEPFIND_API_KEY):
+  // the key auth works again, but DeepFind has REMOVED most of their API —
+  // live-probing every route with a valid key, only these two still return 200:
+  deepfind_reverse_email: { requiresKey: "DEEPFIND_API_KEY" },     // account discovery — works
+  deepfind_disposable_email: { requiresKey: "DEEPFIND_API_KEY" },  // burner-email check — works
+  // The rest now 404 — DeepFind deleted these routes (NOT a key/auth issue, so
+  // the circuit breaker / a key swap won't bring them back). Re-enable any of
+  // them only if DeepFind restores the route AND our path matches.
+  deepfind_ransomware_exposure: { requiresKey: "DEEPFIND_API_KEY", disabled: true }, // 404: route removed
+  deepfind_ssl_inspect: { requiresKey: "DEEPFIND_API_KEY", disabled: true },         // 404: route removed
+  deepfind_tech_stack: { requiresKey: "DEEPFIND_API_KEY", disabled: true },          // 404: route removed
+  deepfind_url_unshorten: { requiresKey: "DEEPFIND_API_KEY", disabled: true },       // 404: route removed
+  deepfind_profile_analyzer: { requiresKey: "DEEPFIND_API_KEY", disabled: true },    // 404: route removed
+  deepfind_telegram_channel: { requiresKey: "DEEPFIND_API_KEY", disabled: true },    // 404: route removed
+  deepfind_telegram_search: { requiresKey: "DEEPFIND_API_KEY", disabled: true },     // 404: route removed
+  deepfind_vin_lookup: { requiresKey: "DEEPFIND_API_KEY", disabled: true },          // 404: route removed
+  deepfind_aircraft_lookup: { requiresKey: "DEEPFIND_API_KEY", disabled: true },     // 404: route removed
+  deepfind_vessel_lookup: { requiresKey: "DEEPFIND_API_KEY", disabled: true },       // 404: route removed
+  deepfind_mac_lookup: { requiresKey: "DEEPFIND_API_KEY", disabled: true },          // 404: route removed
+  deepfind_dark_web_link: { requiresKey: "DEEPFIND_API_KEY", disabled: true },       // 404: route removed
   virustotal_lookup: { requiresKey: "VIRUSTOTAL_API_KEY" },
   ipgeolocation_lookup: { requiresKey: "IPGEOLOCATION_API_KEY" },
   gemini_deep_dork: { requiresKey: "GEMINI_API_KEY" },
