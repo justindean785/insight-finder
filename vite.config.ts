@@ -6,7 +6,9 @@ import { componentTagger } from "lovable-tagger";
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
   server: {
-    host: "::",
+    // Bind all interfaces. Avoid hardcoding "::" (IPv6-only), which fails with
+    // EAFNOSUPPORT in containers/sandboxes that aren't IPv6-enabled.
+    host: true,
     port: 8080,
     hmr: {
       overlay: false,
