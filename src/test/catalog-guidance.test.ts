@@ -23,6 +23,10 @@ const CATALOG = fs.readFileSync(
   path.resolve(process.cwd(), "supabase/functions/osint-agent/catalog.ts"),
   "utf-8",
 );
+const INDEX = fs.readFileSync(
+  path.resolve(process.cwd(), "supabase/functions/osint-agent/index.ts"),
+  "utf-8",
+);
 
 describe("catalog guidance — intelbase_email_lookup contradiction", () => {
   it("no longer advertises intelbase as a primary / first-choice / unlimited source", () => {
@@ -56,5 +60,22 @@ describe("catalog guidance — username_search duplicate", () => {
     expect(entry).toMatch(/DEPRECATED/i);
     expect(entry).toMatch(/username_sweep/);
     expect(entry).toMatch(/prefer username_sweep/i);
+  });
+});
+
+describe("paired dork tools — person seed compatibility", () => {
+  it("accepts and normalizes person seeds in both google_dorks and dork_harvest", () => {
+    const googleDorks = INDEX.match(/google_dorks:\s*tool\(\{[^]*?\n\s*\}\),\n\s*dork_harvest:/)?.[0] ?? "";
+    const dorkHarvest = INDEX.match(/dork_harvest:\s*tool\(\{[^]*?\n\s*\}\),\n\s*gemini_deep_dork:/)?.[0] ?? "";
+
+    expect(googleDorks).toMatch(/"name",\s*"person"/);
+    expect(googleDorks).toMatch(/rawKind === "person" \? "name" : rawKind/);
+    expect(dorkHarvest).toMatch(/"name",\s*"person"/);
+    expect(dorkHarvest).toMatch(/rawKind === "person" \? "name" : rawKind/);
+  });
+
+  it("documents person as a valid dork_harvest kind", () => {
+    const entry = CATALOG.match(/name:\s*"dork_harvest"[^}]*\}/)?.[0] ?? "";
+    expect(entry).toMatch(/person/i);
   });
 });

@@ -2257,10 +2257,11 @@ Deno.serve(async (req) => {
           "Execute the highest-yield document/leak dorks for a seed and AUTO-RECORD any PDFs, Office docs, CSV/SQL/log/env dumps, pastebin entries, and stealer-log URLs as artifacts (kind='document' for files, kind='leak_paste' for pastes). This is the way to turn google_dorks output into real evidence. Runs N targeted queries through MiniMax web_search, parses URLs from results, classifies them by extension/host, and inserts them directly into the case. Costs 1 MiniMax call per query.",
         inputSchema: z.object({
           seed: z.string(),
-          kind: z.enum(["email", "username", "phone", "name", "domain", "ip", "hash", "crypto_wallet"]),
+          kind: z.enum(["email", "username", "phone", "name", "person", "domain", "ip", "hash", "crypto_wallet"]),
           max_queries: z.number().int().min(1).max(10).default(5),
         }),
-        execute: async ({ seed, kind, max_queries }) => {
+        execute: async ({ seed, kind: rawKind, max_queries }) => {
+          const kind = rawKind === "person" ? "name" : rawKind;
           // Targeted dork queries per kind, ordered by document/leak yield.
           const QUERIES: Record<string, string[]> = {
             email: [
