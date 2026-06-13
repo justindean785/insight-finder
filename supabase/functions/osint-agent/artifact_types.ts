@@ -63,6 +63,13 @@ export function inferKind(rawKind: string, value: string): { kind: string; recla
   if (/spotify\.com\/artist|music\.apple\.com\/artist|soundcloud\.com|tidal\.com\/browse\/artist/i.test(v)) {
     return { kind: "music_profile", reclassified_from: rawKind };
   }
+  // A "username" with whitespace is never a valid handle — it's almost always a
+  // person name the model mis-kinded. Reclassify instead of hard-rejecting at
+  // validation (the 2026-06-13 trace lost 3 record_artifact calls to
+  // "username must not contain whitespace").
+  if (k === "username" && /\s/.test(v)) {
+    return { kind: "name", reclassified_from: "username" };
+  }
   if (k === "other") return { kind: "weak_lead", reclassified_from: "other" };
   return { kind: rawKind };
 }
@@ -108,6 +115,7 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   crtsh_subdomains: "infra",
   ip_intel: "infra",
   ipgeolocation_lookup: "infra",
+  ipqualityscore_lookup: "infra",
   shodan_internetdb: "infra",
   urlscan_search: "infra",
   http_fingerprint: "infra",
@@ -118,14 +126,27 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   hunter_email_verifier: "infra",
   hunter_combined: "infra",
   emailrep: "infra",
+  emailrep_lookup: "infra",
   gravatar_profile: "social_profile_passive",
+  gravatar_lookup: "social_profile_passive",
+  // phone / people-search aggregators — low-trust aggregators, treat as passive social
+  bosint_phone_lookup: "social_profile_passive",
+  bosint_email_lookup: "breach",
+  "usphonesearch.net": "social_profile_passive",
+  "nomorobo.com": "social_profile_passive",
   // memory / agent
   memory_recall: "unknown",
 };
 
 export function classifySource(toolOrSource: string | null | undefined): SourceClass {
   if (!toolOrSource) return "unknown";
-  const s = toolOrSource.toLowerCase();
+  // Normalize: lowercase, strip a trailing parenthetical qualifier
+  // (e.g. "socialfetch_lookup (instagram)" → "socialfetch_lookup",
+  // "bosint_email_lookup (drizly.com breach)" → "bosint_email_lookup").
+  // Without this, the parenthetical defeats the TOOL_CLASS lookup and the
+  // artifact silently falls through to "unknown" (cap 50) — a loophole that
+  // lets passive-social and breach hits score higher than their class allows.
+  const s = toolOrSource.toLowerCase().replace(/\s*\([^)]*\)\s*$/, "").trim();
   if (TOOL_CLASS[s]) return TOOL_CLASS[s];
   if (/court|docket|legal_record|justice|cdc|cdcr|bop|pacer/.test(s)) return "court_record";
   if (/news|times|herald|tribune|press|magazine|article/.test(s)) return "news";

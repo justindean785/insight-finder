@@ -17,23 +17,26 @@ import { tierOf, TIER_A, TIER_B } from "./tiers.ts";
 import { playbookFor, renderPlaybookForPrompt } from "./playbooks.ts";
 import { auditCoverage } from "./coverage.ts";
 import { detectContradictions } from "./contradictions.ts";
-import { computeAxes, sourceConfidence, applyEvidenceCaps } from "./confidence.ts";
+import { computeAxes, sourceConfidence, applyEvidenceCaps, isUnrelatedEntity, EXCLUDED_COLLISION_CONFIDENCE, isBioCrossLinkName, BIO_CROSS_LINK_NAME_CAP } from "./confidence.ts";
 import { buildWorkflowAddendum } from "./workflow_prompt.ts";
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
 import { discoverCapabilities, capabilityEnvKeys } from "./capabilities.ts";
 import { buildNodes } from "./graph.ts";
 import { selectPivots, type PivotCandidate } from "./graph_pivots.ts";
+import { DNS_TYPES, VIRTUAL_TYPE_MAP, isVirtualType, resolveVirtualHost, filterTxtByPrefix } from "./tools/dns-virtual.ts";
 
 // ---- Extracted modules -------------------------------------------------------
 // env.ts — Environment bindings, API keys, degraded-tools state, fetch helpers
 import {
   corsHeaders, SUPABASE_URL, SERVICE_KEY, MINIMAX_API_KEY, LOVABLE_API_KEY,
   lovableGateway, PRIMARY_ORCHESTRATOR_MODEL_ID, FALLBACK_MODEL_ID,
+  grokGateway, openAdapterGateway, ORCHESTRATOR_PROVIDER,
+  GROK_ORCHESTRATOR_MODEL_ID, OPENADAPTER_ORCHESTRATOR_MODEL_ID,
   OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
   CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED,
   HIBP_API_KEY, GITHUB_API_TOKEN, FIRECRAWL_API_KEY, EXA_API_KEY, JINA_API_KEY,
-  GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY,
+  GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY,
   firecrawlCreditsLow, markFirecrawlCreditsLow, resetFirecrawlCreditsLow, degradedTools,
   markToolDegraded, isDegraded, fetchRetry, fetchT,
   deadHosts, markHostDead, isHostDead,
@@ -69,6 +72,7 @@ import { setupRequest, type SetupContext } from "./auth.ts";
 
 // providers.ts — MiniMax provider, minimaxChat, safeJson, Gemini grounded search
 import { minimax, minimaxChat, safeJson, geminiGroundedSearch } from "./providers.ts";
+import { selectOrchestratorProvider } from "./orchestrator_select.ts";
 
 // sweeper.ts — Built-in Username Sweep (~95 platforms)
 import { sweepUsername } from "./sweeper.ts";
@@ -84,6 +88,8 @@ import { SYSTEM_PROMPT, IDENTITY_CLUSTER_RULES, PERSON_SEARCH_RULES, SYSTEM_PROM
 
 // cache.ts — Central tool cache wrapper, tier tagging, auto-evidence
 import { wrapToolsWithCache } from "./cache.ts";
+import { beginCycle, clearRuntime, completePlan, recordFindingSummary } from "./runtime-policy.ts";
+import { serus_darkweb_scan } from "./tools/serus.ts";
 import { okWithSuccessFlag, socialfetchError, isHackertargetApiError, isCrtshOk, dohTypeError, blockchairError } from "./tool_response.ts";
 
 // ---- Local type aliases for the tool registry -------------------------------
@@ -99,6 +105,19 @@ type ToolRegistry = Record<string, unknown>;
 type ExecutableTool = {
   execute: (input: Record<string, unknown>, options: unknown) => Promise<unknown>;
 };
+
+function extractManualOverrideSelector(messages: UIMessage[]): string | null {
+  const latestUser = [...messages].reverse().find((message) => message.role === "user");
+  if (!latestUser || !Array.isArray(latestUser.parts)) return null;
+  const text = latestUser.parts
+    .filter((part): part is { type: "text"; text: string } =>
+      part?.type === "text" && typeof (part as { text?: unknown }).text === "string"
+    )
+    .map((part) => part.text)
+    .join("\n");
+  const match = text.match(/^\s*manual override\s*:\s*(.+?)\s*$/im);
+  return match?.[1]?.trim() || null;
+}
 
 // ---- Health/readiness probe -------------------------------------------------
 // `GET /osint-agent?health=1` (and HEAD) returns a JSON readiness summary so
@@ -125,6 +144,7 @@ function deriveReadiness(env: {
   EXA_API_KEY?: string | null;
   FIRECRAWL_API_KEY?: string | null;
   SERUS_API_KEY?: string | null;
+  IPQUALITYSCORE_API_KEY?: string | null;
   GITHUB_API_TOKEN?: string | null;
   PERPLEXITY_API_KEY?: string | null;
 }): { ok: boolean; checks: Record<string, { ok: boolean; detail?: string }> } {
@@ -143,6 +163,7 @@ function deriveReadiness(env: {
     exa: has(env.EXA_API_KEY),
     firecrawl: has(env.FIRECRAWL_API_KEY),
     serus: has(env.SERUS_API_KEY),
+    ipqualityscore: has(env.IPQUALITYSCORE_API_KEY),
     github: has(env.GITHUB_API_TOKEN),
     perplexity: has(env.PERPLEXITY_API_KEY),
   };
@@ -181,7 +202,7 @@ Deno.serve(async (req) => {
       MINIMAX_API_KEY, LOVABLE_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY,
       OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
       CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, HIBP_API_KEY, EXA_API_KEY,
-      FIRECRAWL_API_KEY, SERUS_API_KEY, GITHUB_API_TOKEN, PERPLEXITY_API_KEY,
+      FIRECRAWL_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY, GITHUB_API_TOKEN, PERPLEXITY_API_KEY,
     });
     const body = {
       ok: r.ok,
@@ -235,6 +256,7 @@ Deno.serve(async (req) => {
     // ---- setupRequest handles CORS, auth, thread verification, message persistence ----
     const ctx = await setupRequest(req);
     const { supabase, supabaseAdmin, user, userId, threadId, archiveEnabled, detectedSeedType, messages } = ctx;
+    const manualOverrideSelector = extractManualOverrideSelector(messages);
 
     const tools = {
       list_tools: tool({
@@ -297,7 +319,7 @@ Deno.serve(async (req) => {
       }),
       triage_seed: tool({
         description:
-          "MANDATORY first step for email or username seeds. Runs the cheap Stage-1 tools (emailrep, gravatar_profile, breach_check) in parallel, then decides which expensive Stage-2 tools (oathnet_lookup, github_code_search, google_dorks, minimax_web_search, urlscan_search) are allowed to run. Stage-2 tools are blocked at the orchestrator level until this runs and clears them. Records a `triage_decision` artifact.",
+          "MANDATORY first step for email or username seeds. Establishes the Stage-1 baseline, then records which Stage-2 categories are eligible for bounded planning. It does not authorize recursive expansion. Records a `triage_decision` artifact.",
         inputSchema: z.object({
           seed: z.string().min(1),
           type: z.enum(["email", "username"]),
@@ -312,18 +334,10 @@ Deno.serve(async (req) => {
           triageState.seedDomain = domain;
           if (type === "username") triageState.identitySignals.username = true;
 
-          // ---- Run Stage 1 in parallel (only the tools that apply to the seed type) ----
+          // Triage is classification-only. Provider calls must pass through the
+          // shared planner/cache/runtime wrapper so they are budgeted, logged,
+          // deduplicated, and eligible for user-scoped cache reuse.
           const stage1: Record<string, unknown> = {};
-          if (type === "email") {
-            const [emailrepRes, gravatarRes, breachRes] = await Promise.all([
-              ((tools as ToolRegistry).emailrep as ExecutableTool).execute({ email: normalized }, {}).catch((e: unknown) => ({ error: String(e) })),
-              ((tools as ToolRegistry).gravatar_profile as ExecutableTool).execute({ email: normalized }, {}).catch((e: unknown) => ({ error: String(e) })),
-              ((tools as ToolRegistry).breach_check as ExecutableTool).execute({ email: normalized }, {}).catch((e: unknown) => ({ error: String(e) })),
-            ]);
-            stage1.emailrep = emailrepRes;
-            stage1.gravatar = gravatarRes;
-            stage1.breach = breachRes;
-          }
 
           // ---- Evaluate gate signals ----
           // Stage-1 tool results carry an optional `data` payload (and the
@@ -366,14 +380,10 @@ Deno.serve(async (req) => {
           if (emailrepScore >= 50) reasons.push(`emailrep score ${emailrepScore}`);
           if (nonConsumerDomain) reasons.push(`non-consumer domain ${domain}`);
 
-          // Loosened gate: Stage-2 tools open as soon as triage runs.
-          // We still record any qualifying `reasons` for transparency, but
-          // even an empty-signal triage (no breach, no gravatar, low emailrep,
-          // consumer domain) no longer blocks Stage-2 follow-ups — pivots
-          // like minimax_web_search / oathnet_lookup / urlscan_search are
-          // still high-value on cold seeds.
+          // Stage-2 categories become eligible after triage, but every provider
+          // call still requires a structured cycle plan and runtime approval.
           const stage2Open = true;
-          if (reasons.length === 0) reasons.push("triage ran (gate permissive)");
+          if (reasons.length === 0) reasons.push("seed classified; provider checks require a planned cycle");
 
           triageState.cleared.clear();
           triageState.skipped = [];
@@ -432,7 +442,7 @@ Deno.serve(async (req) => {
       }),
       minimax_web_search: tool({
         description:
-          "Live web search powered by Perplexity Sonar (grounded, real-time, with citations). Use early on the seed and on every new email/handle/name/domain/phone you discover. Returns a concise synthesized answer plus the list of cited source URLs.",
+          "Live web search powered by Perplexity Sonar (grounded, real-time, with citations). Use for the original seed or a corroborated selector when the planned query can answer a distinct verification question. Returns a concise synthesized answer plus cited source URLs.",
         inputSchema: z.object({
           query: z.string().min(2).describe("Search query, e.g. \"alice@example.com\" leak OR breach"),
           focus: z.string().optional().describe("Optional steering hint, e.g. 'find social profiles', 'find leaks'"),
@@ -512,7 +522,7 @@ Deno.serve(async (req) => {
       }),
       minimax_correlate: tool({
         description:
-          "Have MiniMax correlate and rescore a batch of artifacts. Pass the list of artifacts gathered so far; it returns identity clusters, dedup mapping, confidence rescoring, and contradiction flags. Run after each fan-out round.",
+          "Have MiniMax correlate and rescore a batch of artifacts. Pass the relevant artifacts gathered so far; it returns identity clusters, dedup mapping, confidence rescoring, and contradiction flags. Run after at least three meaningful new artifacts or before final verification.",
         inputSchema: z.object({
           seed: z.string().describe("Original seed identifier"),
           artifacts: z.array(z.object({
@@ -548,7 +558,7 @@ Deno.serve(async (req) => {
       }),
       minimax_plan_pivots: tool({
         description:
-          "Ask MiniMax to plan the next pivot batch. Pass the seed plus what you've found so far; it returns a prioritized list of {tool, args, reason} for the next tool calls. Use when stuck or to avoid repeating work.",
+          "Plan the next bounded investigation cycle. Returns structured JSON with stage, goal, current_findings, proposed_calls[], and calls_rejected[]. Use it before any non-planner pivot batch so the investigation stays budgeted, cache-aware, and evidence-led.",
         inputSchema: z.object({
           seed: z.string(),
           already_queried: z.array(z.string()).max(200).default([]),
@@ -575,7 +585,7 @@ Deno.serve(async (req) => {
               // Breach + identity
               "breach_check","leakcheck_lookup","hibp_lookup","oathnet_lookup",
               "intelbase_email_lookup","bosint_email_lookup","bosint_phone_lookup",
-              "stolentax_footprint",
+              "stolentax_footprint","serus_darkweb_scan",
               // DeepFind suite (shared 1000/day pool)
               "deepfind_reverse_email","deepfind_disposable_email","deepfind_ransomware_exposure",
               "deepfind_ssl_inspect","deepfind_tech_stack","deepfind_url_unshorten",
@@ -590,7 +600,7 @@ Deno.serve(async (req) => {
               "hunter_domain_search","hunter_email_finder","hunter_email_verifier","hunter_combined",
               // Domain / infra / IP
               "whois_lookup","dns_records","crtsh_subdomains","http_fingerprint",
-              "ip_intel","ipgeolocation_lookup","shodan_internetdb","hackertarget",
+              "ip_intel","ipgeolocation_lookup","ipqualityscore_lookup","shodan_internetdb","hackertarget",
               "urlscan_search","virustotal_lookup","synapsint_lookup",
               // Search + scrape (preferred order)
               "jina_reader_scrape","exa_search","exa_get_contents","exa_find_similar",
@@ -628,6 +638,12 @@ Deno.serve(async (req) => {
               if (PERMANENT_BLOCK.has(name)) return false;
               // HIBP can only fail without a key — keep it off the planner menu.
               if (name === "hibp_lookup" && !HIBP_API_KEY) return false;
+              // Serus needs its API key — without it every call errors, so keep
+              // it off the planner menu (it's still in baseToolList so it appears
+              // the moment SERUS_API_KEY is configured).
+              if (name === "serus_darkweb_scan" && !SERUS_API_KEY) return false;
+              // IPQualityScore: same key-gating — only proposable when configured.
+              if (name === "ipqualityscore_lookup" && !IPQUALITYSCORE_API_KEY) return false;
               // Dead/degraded tools — stop re-proposing them this investigation.
               if (brokenTools.has(name) || isDegraded(name)) return false;
               if (!HIGH_COST_TOOLS.has(name)) return true;
@@ -643,7 +659,7 @@ Deno.serve(async (req) => {
             const r = await minimaxChat({
               model: MODELS.smart,
               system:
-                `You plan OSINT pivots. ONLY propose tools from this EXACT list (names must match verbatim — do not invent or rename): ${toolList.join(", ")}.${skippedHighCost.length ? ` HIGH-COST tools already fired and hidden this round (do not request): ${skippedHighCost.join(", ")} — only re-eligible once new corroborating evidence appears.` : ""}\n\nPERMANENTLY DISABLED TOOLS — NEVER PROPOSE: firecrawl_search, firecrawl_scrape, firecrawl_map (credits exhausted — use jina_reader_scrape + exa_search + minimax_web_search), intelbase_email_lookup (gated due to instability — use oathnet_lookup + leakcheck_lookup + bosint_email_lookup instead). Any pivot naming these tools is dropped automatically.\n\nCOST + COVERAGE RULES:\n- jina_reader_scrape is the #1 single-page scraper — fire it liberally (free). exa_search + minimax_web_search run in parallel for any web search.\n- For every newly-discovered EMAIL, fan out in parallel: breach_check, leakcheck_lookup, hibp_lookup, oathnet_lookup, bosint_email_lookup, hunter_email_verifier, hunter_combined, deepfind_reverse_email, deepfind_disposable_email, stolentax_footprint, emailrep, gravatar_profile, gemini_deep_dork, dork_harvest.\n- For every COMPANY / ORGANIZATION / NAME seed, fan out: hunter_domain_search (on the corp domain), exa_search (category=company / linkedin profile), exa_find_similar (after first profile), gemini_deep_dork, dork_harvest, minimax_web_search, osint_navigator_query (for tool gaps).\n- For every DOMAIN, fan out: whois_lookup, dns_records, crtsh_subdomains, http_fingerprint, hunter_domain_search, urlscan_search, virustotal_lookup, synapsint_lookup, shodan_internetdb, hackertarget, deepfind_ssl_inspect, deepfind_tech_stack.\n- For every IP, fan out: ip_intel, ipgeolocation_lookup, shodan_internetdb, oathnet_lookup, synapsint_lookup, hackertarget, urlscan_search, virustotal_lookup.\n- For every USERNAME / HANDLE, fan out: username_sweep, socialfetch_lookup (tiktok/instagram/twitter/facebook), github_user, reddit_user, hackernews_user, stolentax_footprint, deepfind_reverse_email, gemini_deep_dork, leakcheck_lookup.\n- For every confirmed evidence URL likely to vanish, propose archive_url.\n\nReply ONLY with JSON: {pivots:[{tool:string,args:object,reason:string,priority:number}],skip:[string]}. Order by priority desc. Drop any pivot whose tool is in the disabled list above. Do not propose tools already queried with same args. Respect budget_remaining as the max number of pivots.`,
+                `You are the execution planner for a forensic OSINT runtime. ONLY propose tools from this EXACT list (names must match verbatim — do not invent or rename): ${toolList.join(", ")}.${skippedHighCost.length ? ` HIGH-COST tools already fired and hidden this round (do not request): ${skippedHighCost.join(", ")} — only re-eligible once new corroborating evidence appears.` : ""}\n\nPERMANENTLY DISABLED TOOLS — NEVER PROPOSE: firecrawl_search, firecrawl_scrape, firecrawl_map (credits exhausted — use jina_reader_scrape + exa_search + minimax_web_search), intelbase_email_lookup (gated due to instability — use oathnet_lookup + leakcheck_lookup + bosint_email_lookup instead).\n\nRUNTIME RULES:\n- Stage choices: TRIAGE, REVIEW, TARGETED_PIVOT, VERIFY, REPORT.\n- Propose the SMALLEST high-value batch, not a fan-out burst.\n- Respect a hard ceiling of 35 calls total, 3 concurrent calls, 2 paid calls per cycle, and at most 1 same-tool call per cycle.\n- Reject weak leads by default: confidence <50, single-source only, related_profile, AI-summary-only, display-name-only, username collisions, no-hit breach outputs, empty/private profiles, same-name candidates without direct overlap.\n- Cached results NEVER count as corroboration. If a fresh cache hit would satisfy the question, prefer it over a live call.\n- Expensive tools must be justified by corroboration potential, contradiction resolution, or analyst-approved override.\n- If evidence is weak, say so in calls_rejected; do not branch on it.\n\nReply ONLY with JSON matching this exact shape:\n{\n  "stage":"TRIAGE|REVIEW|TARGETED_PIVOT|VERIFY|REPORT",\n  "goal":"string",\n  "current_findings":["string"],\n  "proposed_calls":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "params_preview":{},\n    "expected_value":0,\n    "cost_tier":"free|low|expensive",\n    "reason":"string",\n    "stop_condition":"string",\n    "cache_status":"thread|user|stale|miss"\n  }],\n  "calls_rejected":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "expected_value":0,\n    "reason":"string",\n    "cost_tier":"free|low|expensive",\n    "weak_lead":true,\n    "stale_cache":false,\n    "manual_override":false\n  }]\n}\nOrder proposed_calls by expected_value descending. Respect budget_remaining as the max number of proposed_calls.`,
               user: `Seed: ${seed}\nBudget remaining: ${budget_remaining}\nAlready queried: ${JSON.stringify(already_queried).slice(0,4000)}\nArtifacts so far: ${JSON.stringify(artifacts).slice(0,8000)}`,
               json: true,
               maxTokens: 1500,
@@ -672,6 +688,7 @@ Deno.serve(async (req) => {
             }
             guard.planCalledInRound = true;
             guard.artifactsSincePlan = 0;
+            completePlan(threadId);
             return { ok: r.ok, status: r.status, plan: parsed };
           } catch (e) { return { error: String(e) }; }
         },
@@ -808,8 +825,8 @@ Deno.serve(async (req) => {
         },
       }),
       oathnet_lookup: tool({
-        description:
-         "Query OathNet. v2 breach search for email/username/phone/domain; geo+ASN for ip. 100 calls/day. Fire ONCE per high-value email/username/phone/domain in parallel with breach_check, leakcheck_lookup, and intelbase_email_lookup (do NOT wait for them to fail). Always fire on every ip seed for geo+ASN. Skip only after ~50 calls this session or an explicit 429.",
+       description:
+         "Query OathNet v2 for breach correlation on a high-value email/username/phone/domain, or geo+ASN on an IP. Use once when the planner identifies corroboration or contradiction-resolution value. Do not run on weak leads or as an automatic companion call.",
         inputSchema: z.object({
           type: z.enum(["email", "username", "phone", "ip", "domain"]),
           value: z.string(),
@@ -933,7 +950,7 @@ Deno.serve(async (req) => {
       }),
       bosint_email_lookup: tool({
         description:
-          "OSINTNova (Bosint) email exposure check. Surface-level breach + exposure indicators for an email address. Shared 1000 calls/day quota across Bosint endpoints, 120/min. Fire ONCE per email seed and once per newly-confirmed email mid-run, in parallel with the other breach sources. Returns {success, data, api_metadata}.",
+          "OSINTNova (Bosint) email exposure check. Surface-level breach + exposure indicators for an email address. Shared 1000 calls/day quota across Bosint endpoints, 120/min. Use for an original or independently corroborated email when the planner needs exposure context. Returns {success, data, api_metadata}.",
         inputSchema: z.object({ email: z.string().describe("Email address to check") }),
         execute: async ({ email }) => {
           if (!OSINTNOVA_API_KEY) return { error: "OSINTNOVA_API_KEY not configured" };
@@ -952,7 +969,7 @@ Deno.serve(async (req) => {
       }),
       bosint_phone_lookup: tool({
         description:
-          "OSINTNova (Bosint) phone intelligence. Carrier, location, line type, timezone, and associated names when available. Pass full E.164 number with country code (e.g. '+12025551234'). Shared 1000 calls/day quota across Bosint endpoints, 120/min. Fire ONCE per phone seed in parallel with leakcheck_lookup + oathnet_lookup. SLOW upstream — capped at a single 25s attempt; returns a timeout marker if it hangs.",
+          "OSINTNova (Bosint) phone intelligence. Carrier, location, line type, timezone, and associated names when available. Pass full E.164 number with country code (e.g. '+12025551234'). Shared 1000 calls/day quota across Bosint endpoints, 120/min. Use as the planned primary phone enrichment call; add corroboration only when justified. SLOW upstream — capped at a single 25s attempt; returns a timeout marker if it hangs.",
         inputSchema: z.object({ phone: z.string().describe("Phone number in E.164 format, e.g. +12025551234") }),
         execute: async ({ phone }) => {
           if (!OSINTNOVA_API_KEY) return { error: "OSINTNOVA_API_KEY not configured" };
@@ -1654,6 +1671,51 @@ Deno.serve(async (req) => {
           } catch (e) { return { error: String(e) }; }
         },
       }),
+      ipqualityscore_lookup: tool({
+        description:
+          "IPQualityScore validity + fraud scoring (https://ipqualityscore.com). One tool, three identifier types: 'phone' | 'email' | 'ip'. Returns a `valid` flag, a 0-100 `fraud_score`, and type-specific signals: " +
+          "phone → active, line_type (mobile/landline/voip), carrier, name (CNAM), recent_abuse, do_not_call, leaked; " +
+          "email → deliverability, disposable, recent_abuse, leaked, first/last name, domain age; " +
+          "ip → proxy, vpn, tor, bot_status, recent_abuse, connection_type, ISP/org. " +
+          "USE THIS EARLY as a VALIDATION GATE before spending on deep lookups: if `valid:false` or fraud_score is high (>=85) for a phone/email seed, the identifier is reserved/fake/disposable — treat any attributions to it as low-confidence and STOP burning paid breach/people-search calls on it. Free tier ~5000/mo.",
+        inputSchema: z.object({
+          kind: z.enum(["phone", "email", "ip"]).describe("Which IPQS endpoint to hit."),
+          value: z.string().min(3).describe("Phone (E.164 preferred), email, or IP address."),
+          country: z.string().length(2).optional().describe("ISO2 country hint for phone validation (e.g. 'US'). Improves carrier/line-type accuracy."),
+          strictness: z.number().int().min(0).max(3).optional().describe("Phone/email only: 0-3. Higher = stricter validation (more checks, may raise false positives). Default 0."),
+        }),
+        execute: async ({ kind, value, country, strictness }) => {
+          const KEY = Deno.env.get("IPQUALITYSCORE_API_KEY");
+          if (!KEY) return { error: "IPQUALITYSCORE_API_KEY not configured", code: "ipqs_key_missing", hint: "Set IPQUALITYSCORE_API_KEY in the Supabase edge function secrets and redeploy." };
+          try {
+            // Host + path per IPQS docs: /api/json/{kind}/{key}/{value}. Email
+            // validation accepts a `timeout` (1-60s) that raises SMTP-probe
+            // accuracy; pass 12s and give fetchT a slightly longer ceiling so
+            // the HTTP client doesn't abort before IPQS replies.
+            const base = `https://www.ipqualityscore.com/api/json/${kind}/${encodeURIComponent(KEY)}/${encodeURIComponent(value)}`;
+            const params = new URLSearchParams();
+            if (kind === "phone" && country) params.set("country[]", country);
+            if (kind === "email") params.set("timeout", "12");
+            if (strictness !== undefined && kind !== "ip") params.set("strictness", String(strictness));
+            const qs = params.toString() ? `?${params.toString()}` : "";
+            const httpTimeout = kind === "email" ? 18_000 : 15_000;
+            const r = await fetchT(`${base}${qs}`, { headers: { Accept: "application/json" } }, httpTimeout);
+            const data = await r.json().catch(() => ({})) as Record<string, unknown>;
+            if (!r.ok || data.success === false) {
+              return { ok: false, status: r.status, error: (data.message as string) ?? "IPQualityScore lookup failed", kind, value };
+            }
+            // Compact, decision-useful projection. The orchestrator mainly needs
+            // validity + fraud_score + the strongest type-specific flags.
+            const pick = (keys: string[]) => Object.fromEntries(keys.filter((k) => k in data).map((k) => [k, data[k]]));
+            const common = pick(["valid", "fraud_score", "recent_abuse", "leaked"]);
+            const detail =
+              kind === "phone" ? pick(["active", "active_status", "formatted", "local_format", "line_type", "carrier", "name", "VOIP", "prepaid", "do_not_call", "risky", "spammer", "tcpa_blacklist", "sms_pumping", "country", "region", "city", "zip_code", "timezone", "dialing_code", "accurate_country_code", "user_activity", "associated_email_addresses"])
+              : kind === "email" ? pick(["deliverability", "disposable", "smtp_score", "overall_score", "catch_all", "dns_valid", "honeypot", "spam_trap_score", "suspect", "frequent_complainer", "generic", "first_name", "domain_age", "first_seen", "suggested_domain", "sanitized_email", "timed_out"])
+              : pick(["proxy", "vpn", "tor", "active_vpn", "active_tor", "bot_status", "connection_type", "ISP", "organization", "ASN", "country_code", "city", "is_crawler", "abuse_velocity"]);
+            return { ok: true, source: "ipqualityscore.com", kind, value, ...common, ...detail };
+          } catch (e) { return { error: String(e) }; }
+        },
+      }),
       ip_intel: tool({
         description: "Geolocate an IP and return ISP, ASN, city, country.",
         inputSchema: z.object({ ip: z.string() }),
@@ -1758,19 +1820,30 @@ Deno.serve(async (req) => {
         },
       }),
       dns_records: tool({
-        description: "Resolve DNS records (A, AAAA, MX, NS, TXT, CNAME) for a hostname via Cloudflare DoH.",
-        inputSchema: z.object({ host: z.string(), types: z.array(z.enum(["A","AAAA","MX","NS","TXT","CNAME","SOA"])).default(["A","MX","NS","TXT"]) }),
-        execute: async ({ host, types }) => {
+        description: "Resolve DNS records for a hostname via Cloudflare DoH. Real types: A, AAAA, MX, NS, TXT, CNAME, SOA, CAA. Virtual types are auto-translated to TXT queries: SPF (TXT @ host, filtered v=spf1), DMARC (TXT @ _dmarc.host, v=DMARC1), DKIM (TXT @ <dkimSelector>._domainkey.host — requires dkimSelector), BIMI (TXT @ default._bimi.host, v=BIMI1). SPF/DKIM/DMARC/BIMI are NOT real record types — never query them as-is; pass them here and they resolve correctly.",
+        inputSchema: z.object({ host: z.string(), types: z.array(z.enum(DNS_TYPES)).default(["A","MX","NS","TXT"]), dkimSelector: z.string().optional() }),
+        execute: async ({ host, types, dkimSelector }) => {
           try {
             const out: Record<string, unknown> = {};
             const errs: Record<string, string> = {};
             const statuses: number[] = [];
             await Promise.all(types.map(async (t) => {
               try {
-                const r = await fetchT(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=${t}`, { headers: { Accept: "application/dns-json" } }, 8_000);
+                // Virtual types (SPF/DMARC/DKIM/BIMI) resolve to a TXT query at a
+                // (possibly mutated) host, then filter answers by a content prefix.
+                let queryHost = host;
+                let queryType: string = t;
+                let txtPrefix: string | null = null;
+                if (isVirtualType(t)) {
+                  queryHost = resolveVirtualHost(t, host, dkimSelector); // throws for DKIM w/o selector
+                  queryType = "TXT";
+                  txtPrefix = VIRTUAL_TYPE_MAP[t].txtPrefix;
+                }
+                const r = await fetchT(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(queryHost)}&type=${queryType}`, { headers: { Accept: "application/dns-json" } }, 8_000);
                 const j = await r.json().catch(() => ({})) as { Status?: number; Answer?: Array<{ data: string }> };
                 if (typeof j.Status === "number") statuses.push(j.Status);
-                out[t] = j.Answer?.map((a) => a.data) ?? [];
+                const answers = j.Answer?.map((a) => a.data) ?? [];
+                out[t] = txtPrefix !== null ? filterTxtByPrefix(answers, txtPrefix) : answers;
                 // Distinguish a genuine empty result (NOERROR/NXDOMAIN) from a lookup
                 // failure (HTTP error or SERVFAIL) so [] can't read as "no records".
                 const dErr = dohTypeError(r.ok, r.status, j.Status);
@@ -1778,6 +1851,7 @@ Deno.serve(async (req) => {
               } catch (e) {
                 // One record-type's network failure/timeout must not collapse the
                 // whole DNS lookup (Promise.all would reject and lose the rest).
+                // resolveVirtualHost throwing (DKIM without selector) is captured here too.
                 out[t] = [];
                 errs[t] = String(e instanceof Error ? e.message : e);
               }
@@ -1914,7 +1988,7 @@ Deno.serve(async (req) => {
       }),
       google_dorks: tool({
         description:
-          "Generate copy-paste Google/Bing/DuckDuckGo/Yandex dork queries for a seed identifier. NO external API cost — always safe to call. Returns a comprehensive, categorized dork menu (60+ queries per kind across breach/pastes, social, code, forums, dark-web-adjacent, docs, archives, public records, etc.). Fire it EARLY and on every newly-discovered high-value artifact (email, username, phone, name, domain, ip, hash, crypto_wallet).",
+          "Generate copy-paste Google/Bing/DuckDuckGo/Yandex dork queries for a seed identifier. NO external API cost. Use once for the original seed or a corroborated high-value selector when the resulting query set supports a defined verification goal.",
         inputSchema: z.object({
           seed: z.string(),
           // Accept legacy/alias "person" → mapped to "name" in execute().
@@ -2236,10 +2310,11 @@ Deno.serve(async (req) => {
           "Execute the highest-yield document/leak dorks for a seed and AUTO-RECORD any PDFs, Office docs, CSV/SQL/log/env dumps, pastebin entries, and stealer-log URLs as artifacts (kind='document' for files, kind='leak_paste' for pastes). This is the way to turn google_dorks output into real evidence. Runs N targeted queries through MiniMax web_search, parses URLs from results, classifies them by extension/host, and inserts them directly into the case. Costs 1 MiniMax call per query.",
         inputSchema: z.object({
           seed: z.string(),
-          kind: z.enum(["email", "username", "phone", "name", "domain", "ip", "hash", "crypto_wallet"]),
+          kind: z.enum(["email", "username", "phone", "name", "person", "domain", "ip", "hash", "crypto_wallet"]),
           max_queries: z.number().int().min(1).max(10).default(5),
         }),
-        execute: async ({ seed, kind, max_queries }) => {
+        execute: async ({ seed, kind: rawKind, max_queries }) => {
+          const kind = rawKind === "person" ? "name" : rawKind;
           // Targeted dork queries per kind, ordered by document/leak yield.
           const QUERIES: Record<string, string[]> = {
             email: [
@@ -2573,7 +2648,7 @@ Deno.serve(async (req) => {
         execute: async () => ({
           error: "firecrawl_disabled",
           skipped: true,
-          hint: "Firecrawl is permanently disabled. Call exa_search and minimax_web_search in parallel instead. Do NOT retry firecrawl_search.",
+          hint: "Firecrawl is permanently disabled. Let the planner choose the highest-value eligible search provider instead. Do NOT retry firecrawl_search.",
         }),
       }),
       firecrawl_scrape: tool({
@@ -2645,12 +2720,19 @@ Deno.serve(async (req) => {
             }
             const text = await r.text();
             return { ok: true, url: clean, markdown: text.slice(0, maxChars), truncated: text.length > maxChars };
-          } catch (e) { return { error: String(e) }; }
+          } catch (e) {
+            // Include the URL on the timeout/abort path too — without it, a
+            // failed scrape in the tool trace shows only "AbortError" with no
+            // way to tell which page timed out, making failures undebuggable.
+            const msg = String(e);
+            const aborted = e instanceof Error && (e.name === "AbortError" || /abort/i.test(msg));
+            return { error: msg, url: clean, ...(aborted ? { aborted: true, hint: "scrape timed out — try wayback_snapshots or a lighter source" } : {}) };
+          }
         },
       }),
       exa_search: tool({
         description:
-          "Exa /search — neural + keyword web search with optional inline contents (text, highlights, summary). PRIMARY web search alongside minimax_web_search — call BOTH in parallel on any meaningful query. Exa's neural mode is best for semantic / concept queries ('people who wrote about X', 'companies similar to Y'); keyword mode is best for exact strings (emails, usernames, hashes, wallets). Supports includeDomains/excludeDomains, startPublishedDate/endPublishedDate, and category ('company','research paper','news','pdf','github','tweet','personal site','linkedin profile','financial report').",
+          "Exa /search — neural + keyword web search with optional inline contents (text, highlights, summary). Use when semantic or exact-string discovery has the highest expected value; do not automatically pair it with another search provider. Supports includeDomains/excludeDomains, startPublishedDate/endPublishedDate, and category ('company','research paper','news','pdf','github','tweet','personal site','linkedin profile','financial report').",
         inputSchema: z.object({
           query: z.string().min(2),
           type: z.enum(["auto", "neural", "keyword"]).default("auto"),
@@ -3307,6 +3389,21 @@ Deno.serve(async (req) => {
               rawConfidence: a.confidence ?? 50,
               sources: [a.source ?? "", ...((a.metadata?.sources ?? []) as Iterable<unknown>)].filter(Boolean) as string[],
             });
+            // Different-person / unrelated-entity gate: if the model flagged this
+            // artifact as a namesake/collision that does NOT belong to the seed,
+            // demote it to excluded_collision with a hard-capped confidence so it
+            // can't roll up into the case score or read as a confirmed link.
+            const unrelated = isUnrelatedEntity(a.metadata ?? null);
+            // Bio-linked name gate: a name pulled out of a profile bio / linked-
+            // accounts block is an unverified identity claim (could be a
+            // collaborator/shoutout/friend), so it can never anchor the case.
+            const bioName = !unrelated && isBioCrossLinkName(v.kind, a.metadata ?? null);
+            const finalKind = unrelated ? "excluded_collision" : v.kind;
+            const finalConfidence = unrelated
+              ? Math.min(cap.confidence, EXCLUDED_COLLISION_CONFIDENCE)
+              : bioName
+                ? Math.min(cap.confidence, BIO_CROSS_LINK_NAME_CAP)
+                : cap.confidence;
             // Required-fields envelope — fill conservative defaults when the
             // agent didn't supply them.
             const meta: Record<string, unknown> = {
@@ -3314,24 +3411,34 @@ Deno.serve(async (req) => {
               ...(v.metaPatch ?? {}),
               ...(inferred.reclassified_from ? { reclassified_from: inferred.reclassified_from } : {}),
               source_category: cap.source_classes,
-              status: a.metadata?.status ?? "new",
+              status: unrelated ? "excluded" : bioName ? "unverified_bio_link" : (a.metadata?.status ?? "new"),
               cluster_id: a.metadata?.cluster_id ?? null,
-              reason_for_confidence: cap.reason_for_confidence,
-              reason_not_confirmed: a.metadata?.reason_not_confirmed ?? cap.reason_not_confirmed ?? null,
+              reason_for_confidence: unrelated
+                ? "excluded: flagged as unrelated/different entity than the seed"
+                : bioName
+                  ? "bio-linked name — unverified identity claim, may be an associate/shoutout, not the subject"
+                  : cap.reason_for_confidence,
+              reason_not_confirmed: unrelated
+                ? (a.metadata?.reason_not_confirmed ?? cap.reason_not_confirmed ?? null)
+                : bioName
+                  ? "name appears only in a bio/linked-accounts block — confirm it is the subject, not a mentioned third party"
+                  : (a.metadata?.reason_not_confirmed ?? cap.reason_not_confirmed ?? null),
               contradictions: a.metadata?.contradictions ?? [],
               next_verification_step: a.metadata?.next_verification_step ?? null,
-              confidence_cap_applied: cap.cap,
+              confidence_cap_applied: bioName ? Math.min(cap.cap, BIO_CROSS_LINK_NAME_CAP) : cap.cap,
+              ...(unrelated ? { excluded_collision: true, reclassified_from: a.kind } : {}),
+              ...(bioName ? { bio_cross_link: true } : {}),
             };
             rows.push({
               thread_id: threadId,
               user_id: userId,
-              kind: v.kind,
+              kind: finalKind,
               value: v.value,
-              confidence: cap.confidence,
+              confidence: finalConfidence,
               source: a.source ?? null,
               metadata: meta,
             });
-            accepted.push({ index: i, kind: v.kind, value: v.value });
+            accepted.push({ index: i, kind: finalKind, value: v.value });
           });
           if (rows.length === 0) {
             return { ok: false, count: 0, accepted, rejected, hint: "All items failed validation — re-check kinds/values against the rules in the tool description." };
@@ -3361,6 +3468,11 @@ Deno.serve(async (req) => {
           const safeRowsForFollowup = insertedRows;
           const flagged = safeRows.filter((r) => (r.metadata as { minor_warning?: unknown } | undefined)?.minor_warning).length;
           bumpArtifacts(safeRowsForFollowup.length, safeRowsForFollowup.map((r) => String(r.kind)));
+          beginCycle(
+            threadId,
+            "Review newly recorded evidence and select the smallest justified verification batch.",
+            safeRowsForFollowup.slice(-12).map((r) => `${String(r.kind)}:${String(r.value)}`),
+          );
           // Collision detection: for any phone/email/address just inserted,
           // check if the same normalized value is already linked to a
           // different cluster_id or different name in this thread. Record a
@@ -3536,31 +3648,56 @@ Deno.serve(async (req) => {
             rawConfidence: confidence ?? 50,
             sources: [source ?? "", ...((metadata?.sources ?? []) as Iterable<unknown>)].filter(Boolean) as string[],
           });
+          // Different-person / unrelated-entity gate (see record_artifacts).
+          const unrelated = isUnrelatedEntity(metadata ?? null);
+          // Bio-linked name gate (see record_artifacts).
+          const bioName = !unrelated && isBioCrossLinkName(v.kind, metadata ?? null);
+          const finalKind = unrelated ? "excluded_collision" : v.kind;
+          const finalConfidence = unrelated
+            ? Math.min(cap.confidence, EXCLUDED_COLLISION_CONFIDENCE)
+            : bioName
+              ? Math.min(cap.confidence, BIO_CROSS_LINK_NAME_CAP)
+              : cap.confidence;
           const enrichedMeta = {
             ...(metadata ?? {}),
             ...(v.metaPatch ?? {}),
             ...(inferred.reclassified_from ? { reclassified_from: inferred.reclassified_from } : {}),
             source_category: cap.source_classes,
-            status: metadata?.status ?? "new",
+            status: unrelated ? "excluded" : bioName ? "unverified_bio_link" : (metadata?.status ?? "new"),
             cluster_id: metadata?.cluster_id ?? null,
-            reason_for_confidence: cap.reason_for_confidence,
-            reason_not_confirmed: metadata?.reason_not_confirmed ?? cap.reason_not_confirmed ?? null,
+            reason_for_confidence: unrelated
+              ? "excluded: flagged as unrelated/different entity than the seed"
+              : bioName
+                ? "bio-linked name — unverified identity claim, may be an associate/shoutout, not the subject"
+                : cap.reason_for_confidence,
+            reason_not_confirmed: unrelated
+              ? (metadata?.reason_not_confirmed ?? cap.reason_not_confirmed ?? null)
+              : bioName
+                ? "name appears only in a bio/linked-accounts block — confirm it is the subject, not a mentioned third party"
+                : (metadata?.reason_not_confirmed ?? cap.reason_not_confirmed ?? null),
             contradictions: metadata?.contradictions ?? [],
             next_verification_step: metadata?.next_verification_step ?? null,
-            confidence_cap_applied: cap.cap,
+            confidence_cap_applied: bioName ? Math.min(cap.cap, BIO_CROSS_LINK_NAME_CAP) : cap.cap,
+            ...(unrelated ? { excluded_collision: true, reclassified_from: kind } : {}),
+            ...(bioName ? { bio_cross_link: true } : {}),
           };
           const row = scrubArtifactRow({
             thread_id: threadId,
             user_id: userId,
-            kind: v.kind,
+            kind: finalKind,
             value: v.value,
-            confidence: cap.confidence,
+            confidence: finalConfidence,
             source: source ?? null,
             metadata: enrichedMeta,
           });
           const { error } = await supabase.from("artifacts").insert([row]);
           if (error) return { ok: false, error: error.message };
           bumpArtifacts(1, [String(row.kind)]);
+          beginCycle(
+            threadId,
+            "Review the newly recorded artifact and select the smallest justified verification batch.",
+            [`${String(row.kind)}:${String(row.value)}`],
+          );
           const minor = (row.metadata as { minor_warning?: unknown } | null)?.minor_warning === true;
           // Chain-of-custody append
           const meta = (row.metadata as Record<string, unknown> | null) ?? {};
@@ -3696,6 +3833,9 @@ Deno.serve(async (req) => {
       });
       return { ...m, content } as ModelMessage;
     });
+
+    // Serus darkweb scan — imported from tools/serus.ts (was missing from inline tools).
+    (tools as ToolRegistry).serus_darkweb_scan = serus_darkweb_scan;
 
     // Inject memory tools (cross-investigation learning) into the registry.
     //
@@ -3838,6 +3978,7 @@ Deno.serve(async (req) => {
       ...(Deno.env.get("INTELBASE_API_KEY") && INTELBASE_ENABLED ? ["intelbase_email_lookup"] : []),
       ...(Deno.env.get("VIRUSTOTAL_API_KEY") ? ["virustotal_lookup"] : []),
       ...(Deno.env.get("IPGEOLOCATION_API_KEY") ? ["ipgeolocation_lookup"] : []),
+      ...(IPQUALITYSCORE_API_KEY ? ["ipqualityscore_lookup"] : []),
       ...(Deno.env.get("EXA_API_KEY") ? ["exa_search","exa_get_contents","exa_find_similar"] : []),
       ...(Deno.env.get("GEMINI_API_KEY") ? ["gemini_deep_dork"] : []),
       // Free / always-on tools
@@ -3984,6 +4125,7 @@ Deno.serve(async (req) => {
         };
         const { data, error } = await supabase.from("artifacts").insert([row]).select("id").maybeSingle();
         if (error) return { ok: false, error: error.message };
+        recordFindingSummary(threadId, i.conclusion);
         return { ok: true, id: data?.id ?? null, confidence_axes: axes, applied_label: i.label };
       },
     });
@@ -3991,6 +4133,12 @@ Deno.serve(async (req) => {
     // Cumulative cost tracker for this run.
     let runCostMicroUsd = 0;
     let costCheckpointCounter = 0;
+    clearRuntime(threadId);
+    beginCycle(
+      threadId,
+      "Classify the seed, reject weak pivots, and select the smallest high-value initial batch.",
+      [`seed:${seedValueRaw}`, `stage2:${triageState.ran ? "open" : "pending"}`],
+    );
     // Bootstrap per-thread circuit breakers (firecrawl/intelbase pre-disabled).
     circuit.applyBaselineDisables(threadId);
     // Capability discovery: gate providers that can't run (missing key / gated /
@@ -4046,10 +4194,25 @@ Deno.serve(async (req) => {
     const MINIMAX_CHAR_BUDGET = 600_000;
     const MINIMAX_MSG_BUDGET = 150;
     const minimaxAvailable = !!MINIMAX_API_KEY;
+    // Tranche 2: pick the PRIMARY orchestrator provider. With nothing new
+    // configured this is always "minimax" and everything below is byte-for-byte
+    // the prior behavior. Grok/OpenAdapter only win when their key is set (and
+    // ORCHESTRATOR_PROVIDER pins them, or they're the only provider available).
+    const orchChoice = selectOrchestratorProvider({
+      pin: ORCHESTRATOR_PROVIDER,
+      minimax: minimaxAvailable,
+      grok: !!grokGateway,
+      openadapter: !!openAdapterGateway,
+    });
+    const minimaxIsPrimary = orchChoice.provider === "minimax";
+    // The MiniMax-specific overflow pre-pivot + health probe only apply when
+    // MiniMax is the primary. Alternative providers carry their own large
+    // context windows and reliability, so they bypass the Gemini fallback path.
     const wouldOverflow =
-      approxPromptChars > MINIMAX_CHAR_BUDGET ||
-      trimmedMessages.length > MINIMAX_MSG_BUDGET;
-    let useFallback = !minimaxAvailable || wouldOverflow;
+      minimaxIsPrimary &&
+      (approxPromptChars > MINIMAX_CHAR_BUDGET ||
+        trimmedMessages.length > MINIMAX_MSG_BUDGET);
+    let useFallback = minimaxIsPrimary ? (!minimaxAvailable || wouldOverflow) : false;
     // Pre-flight MiniMax health probe. The fallback selection above only fires
     // when MiniMax's key is missing or the prompt would overflow — it does NOT
     // catch the case where MiniMax is configured and accepts the request but is
@@ -4060,7 +4223,7 @@ Deno.serve(async (req) => {
     // fail the whole run over to Gemini instead of dying. Best-effort: any
     // probe-internal fault leaves the original selection untouched so a healthy
     // run is never broken by the probe itself.
-    if (!useFallback && lovableGateway) {
+    if (minimaxIsPrimary && !useFallback && lovableGateway) {
       try {
         const probePromise = minimaxChat({ user: "ping", maxTokens: 4, temperature: 0 });
         // Swallow a late rejection if the timeout wins the race below, so it
@@ -4091,12 +4254,19 @@ Deno.serve(async (req) => {
         "Neither MINIMAX_API_KEY nor LOVABLE_API_KEY is configured for the orchestrator.",
       );
     }
+    // Resolve the primary (non-fallback) model from the selected provider.
+    const { model: primaryModel, label: primaryLabel } =
+      orchChoice.provider === "grok"
+        ? { model: grokGateway!.chatModel(GROK_ORCHESTRATOR_MODEL_ID), label: `${GROK_ORCHESTRATOR_MODEL_ID} (xAI Grok)` }
+        : orchChoice.provider === "openadapter"
+        ? { model: openAdapterGateway!.chatModel(OPENADAPTER_ORCHESTRATOR_MODEL_ID), label: `${OPENADAPTER_ORCHESTRATOR_MODEL_ID} (OpenAdapter)` }
+        : { model: minimax.chatModel(PRIMARY_ORCHESTRATOR_MODEL_ID), label: `${PRIMARY_ORCHESTRATOR_MODEL_ID} (MiniMax direct)` };
     const orchestratorModel = useFallback
       ? lovableGateway!.chatModel(FALLBACK_MODEL_ID)
-      : minimax.chatModel(PRIMARY_ORCHESTRATOR_MODEL_ID);
+      : primaryModel;
     console.log(
-      `[orchestrator] running on ${useFallback ? FALLBACK_MODEL_ID + " (Lovable Gateway fallback)" : PRIMARY_ORCHESTRATOR_MODEL_ID + " (MiniMax direct)"} ` +
-        `(approx prompt chars=${approxPromptChars}, messages=${trimmedMessages.length})`,
+      `[orchestrator] running on ${useFallback ? FALLBACK_MODEL_ID + " (Lovable Gateway fallback)" : primaryLabel} ` +
+        `(provider=${orchChoice.provider}/${orchChoice.reason}, approx prompt chars=${approxPromptChars}, messages=${trimmedMessages.length})`,
     );
 
     // Per-step trimmer: re-applies aggressive tool-result truncation to the
@@ -4108,6 +4278,14 @@ Deno.serve(async (req) => {
     const STEP_OLDER_CHARS = 3000;
     const prepareStep: NonNullable<Parameters<typeof streamText>[0]["prepareStep"]> =
       async ({ messages: stepMessages }) => {
+        const { data: threadState } = await supabase
+          .from("threads")
+          .select("status")
+          .eq("id", threadId)
+          .maybeSingle();
+        if ((threadState as { status?: string } | null)?.status === "stopped") {
+          throw new DOMException("Investigation stopped by analyst", "AbortError");
+        }
         // Clear per-step dedup set at the *start* of every step. Doing this
         // only inside bumpArtifacts() means steps that find zero artifacts
         // never clear the set, silently blocking memory_recall for any
@@ -4143,8 +4321,15 @@ Deno.serve(async (req) => {
       model: orchestratorModel,
       system: SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType),
       messages: trimmedMessages,
-      tools: wrapToolsWithCache(tools, { investigationId: threadId, userId, supabase, supabaseAdmin, onCost }),
-      stopWhen: stepCountIs(100),
+      tools: wrapToolsWithCache(tools, {
+        investigationId: threadId,
+        userId,
+        supabase,
+        supabaseAdmin,
+        onCost,
+        manualOverrideSelector,
+      }),
+      stopWhen: stepCountIs(45),
       prepareStep,
       // Meter orchestrator LLM token spend per step so threads.cost_micro_usd
       // reflects the actual model cost, not just tool fan-out cost.
@@ -4199,40 +4384,14 @@ Deno.serve(async (req) => {
       },
     });
 
-    // Keep the edge function alive after the HTTP response closes so the
-    // model keeps running, tools keep firing, and onFinish persists the
-    // final assistant message even if the client tab is closed.
-    try {
-      // `EdgeRuntime.waitUntil` is the Supabase-Deno equivalent of the
-      // Cloudflare/Vercel `ctx.waitUntil` — schedules background work that
-      // outlives the response.
-      const ert = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
-      if (ert && typeof ert.waitUntil === "function") {
-        ert.waitUntil(result.consumeStream());
-      } else {
-        // Fallback: fire-and-forget consumption.
-        void result.consumeStream();
-      }
-    } catch { /* best-effort background completion */ }
-
-    return result.toUIMessageStreamResponse({
-      headers: corsHeaders,
-      originalMessages: messages,
-      // Surface the REAL (redacted) provider reason to the client instead of the
-      // SDK's default generic mask ("An error occurred" / "Provider returned
-      // error"). The failed-run card then shows an actionable message, and a
-      // context-overflow vs. rate-limit vs. unreachable failure is
-      // distinguishable. Strip anything that looks like a credential first.
-      onError: (error) => {
-        const m = error instanceof Error ? error.message : String(error);
-        const redacted = m
-          .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-          .replace(/sk-[A-Za-z0-9._-]+/g, "sk-[REDACTED]")
-          .replace(/xai-[A-Za-z0-9._-]+/g, "xai-[REDACTED]")
-          .replace(/AIza[A-Za-z0-9_-]+/g, "AIza[REDACTED]");
-        return redacted.slice(0, 300) || "Provider stream error";
-      },
-      onFinish: async ({ messages: finalMessages }) => {
+    let finalPersisted = false;
+    const persistFinalMessages = async ({ messages: finalMessages }: { messages: UIMessage[] }) => {
+      if (finalPersisted) return;
+      finalPersisted = true;
+      // Capture the detected seed kind so it can be persisted onto the thread
+      // row at completion — historically seed_type was only stored in the
+      // triage decision JSON and the threads.seed_type column stayed null.
+      let detectedSeedKind: string | null = null;
         const assistant = [...finalMessages].reverse().find((m) => m.role === "assistant");
         if (assistant) {
           // Cap `messages.parts` payload to avoid silent PostgREST 500s when
@@ -4278,6 +4437,7 @@ Deno.serve(async (req) => {
               .filter((p) => p.type === "text").map((p) => p.text ?? "").join(" ").trim();
             const detected = detectSeedServer(seedText);
             if (detected) {
+              detectedSeedKind = detected.kind;
               const { data: arts } = await supabase
                 .from("artifacts")
                 .select("kind,value,confidence,source,metadata")
@@ -4309,7 +4469,60 @@ Deno.serve(async (req) => {
             console.error(JSON.stringify({ event: "investigation_cache_fail", thread_id: threadId, error: String(e) }));
           }
         }
+        const { error: statusErr } = await supabase
+          .from("threads")
+          .update({
+            status: "completed",
+            updated_at: new Date().toISOString(),
+            ...(detectedSeedKind ? { seed_type: detectedSeedKind } : {}),
+          })
+          .eq("id", threadId)
+          .eq("status", "active");
+        if (statusErr) {
+          console.warn("[thread status] completion update failed:", statusErr.message);
+        }
+    };
+
+    // Create a server-owned UI stream branch. Unlike consumeStream(), this
+    // runs the UI-message onFinish callback even if the browser refreshes and
+    // cancels its response branch. The guard above prevents a connected client
+    // and the background branch from saving the same assistant message twice.
+    const persistenceStream = result.toUIMessageStream({
+      originalMessages: messages,
+      onFinish: persistFinalMessages,
+    });
+    const consumePersistenceStream = async () => {
+      for await (const _chunk of persistenceStream) {
+        // Drain the stream so generation, tool calls, and persistence complete.
+      }
+    };
+    try {
+      const task = consumePersistenceStream();
+      const ert = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
+      if (ert && typeof ert.waitUntil === "function") ert.waitUntil(task);
+      else void task;
+    } catch {
+      // Best-effort background completion; stream-level errors are logged above.
+    }
+
+    return result.toUIMessageStreamResponse({
+      headers: corsHeaders,
+      originalMessages: messages,
+      // Surface the REAL (redacted) provider reason to the client instead of the
+      // SDK's default generic mask ("An error occurred" / "Provider returned
+      // error"). The failed-run card then shows an actionable message, and a
+      // context-overflow vs. rate-limit vs. unreachable failure is
+      // distinguishable. Strip anything that looks like a credential first.
+      onError: (error) => {
+        const m = error instanceof Error ? error.message : String(error);
+        const redacted = m
+          .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+          .replace(/sk-[A-Za-z0-9._-]+/g, "sk-[REDACTED]")
+          .replace(/xai-[A-Za-z0-9._-]+/g, "xai-[REDACTED]")
+          .replace(/AIza[A-Za-z0-9_-]+/g, "AIza[REDACTED]");
+        return redacted.slice(0, 300) || "Provider stream error";
       },
+      onFinish: persistFinalMessages,
     });
   } catch (e) {
     // setupRequest throws Response objects for 401/403/400 — return them directly

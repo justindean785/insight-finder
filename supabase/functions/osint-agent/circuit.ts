@@ -12,6 +12,7 @@ export type FailureKind =
   | "http_404"
   | "http_422"
   | "http_429"
+  | "http_451"
   | "http_500"
   | "http_502"
   | "http_504"
@@ -34,12 +35,26 @@ export const PROVIDER_SUPPRESS_MS = 10 * 60_000;
 // suppresses all of them for the investigation. Tools not listed map to a
 // provider equal to their own name.
 const PROVIDER_TOOLS: Record<string, string[]> = {
+  // All DeepFind.Me endpoints share one API key/base. They must ALL be in the
+  // group so a provider suppression (any endpoint 4xx/5xx/timeout) stops the
+  // whole family — otherwise a missing endpoint maps to its own name and keeps
+  // firing (the 2026-06-13 trace burned profile_analyzer×4 404, telegram_search
+  // ×2 403, ransomware_exposure 404 because they weren't listed here).
   deepfind: [
     "deepfind_reverse_email",
     "deepfind_disposable_email",
-    "deepfind_telegram_channel",
+    "deepfind_ransomware_exposure",
     "deepfind_ssl_inspect",
     "deepfind_tech_stack",
+    "deepfind_url_unshorten",
+    "deepfind_profile_analyzer",
+    "deepfind_telegram_channel",
+    "deepfind_telegram_search",
+    "deepfind_vin_lookup",
+    "deepfind_aircraft_lookup",
+    "deepfind_vessel_lookup",
+    "deepfind_mac_lookup",
+    "deepfind_dark_web_link",
   ],
   bosint: ["bosint_email_lookup", "bosint_phone_lookup"],
   hunter: ["hunter_domain_search", "hunter_email_finder", "hunter_email_verifier", "hunter_combined"],
@@ -71,6 +86,8 @@ interface BreakerState {
   disabledUntil?: number;
   /** map of normalized selectors that should never be re-tried */
   deadSelectors: Set<string>;
+  /** distinct selectors that returned 404 — 2+ implies the endpoint is gone */
+  notFound: Set<string>;
 }
 
 interface CallRecord {
@@ -142,7 +159,7 @@ function breakerFor(threadId: string, tool: string): BreakerState {
   const s = state(threadId);
   let b = s.breakers.get(tool);
   if (!b) {
-    b = { consecutive: 0, total: 0, lastAt: 0, deadSelectors: new Set() };
+    b = { consecutive: 0, total: 0, lastAt: 0, deadSelectors: new Set(), notFound: new Set() };
     s.breakers.set(tool, b);
   }
   return b;
@@ -272,13 +289,37 @@ export function recordResult(
       break;
     case "http_403":
     case "http_401":
+      // An auth rejection is provider-wide: the API key/credential is bad or
+      // revoked for EVERY endpoint on that provider, not just this tool. Disable
+      // the tool AND suppress the whole provider for the run so sibling
+      // endpoints on the same dead key stop firing (deepfind_telegram_search
+      // 403 should kill the rest of the deepfind family, not just itself).
       b.disabledReason = "403/401 unauthorized — disabled for thread";
+      suppressProvider(threadId, tool, `401/403 unauthorized — provider '${providerForTool(tool)}' suppressed for investigation`);
+      break;
+    case "http_404":
+      // A single 404 is often "this resource isn't on this site" (legit
+      // per-selector). But 404s across MULTIPLE distinct selectors mean the
+      // endpoint path itself is gone — disable the tool for the run so an
+      // aggregator that 404s on every query (deepfind_profile_analyzer ×4)
+      // stops re-firing across a parallel fan-out.
+      if (selector) {
+        b.deadSelectors.add(selector);
+        b.notFound.add(selector);
+      }
+      if (b.notFound.size >= 2 && !b.disabledReason) {
+        b.disabledReason = `endpoint returned 404 on ${b.notFound.size} distinct inputs — disabled for thread`;
+      }
       break;
     case "http_400":
-    case "http_404":
     case "http_422":
       // Deterministic per-selector failure (bad request / unprocessable input)
       // — negative-cache the selector so it isn't immediately retried.
+      if (selector) b.deadSelectors.add(selector);
+      break;
+    case "http_451":
+      // Legal-policy blocks are deterministic for the exact URL/selector.
+      // Preserve the provider for unrelated public sources.
       if (selector) b.deadSelectors.add(selector);
       break;
     case "http_429": {
@@ -344,6 +385,7 @@ export function classifyResult(result: unknown, threw: unknown): FailureKind {
     if (status === 404) return "http_404";
     if (status === 422) return "http_422";
     if (status === 429) return "http_429";
+    if (status === 451) return "http_451";
     if (status === 502) return "http_502";
     if (status === 504) return "http_504";
     if (status >= 500) return "http_500";

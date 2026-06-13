@@ -118,6 +118,35 @@ export const ipgeolocation_lookup = tool({
   },
 }),
 
+export const ipqualityscore_lookup = tool({
+  description:
+    "IPQualityScore validity + fraud scoring (https://ipqualityscore.com). One tool, three identifier types: 'phone' | 'email' | 'ip'. Returns a `valid` flag, a 0-100 `fraud_score`, and type-specific signals. USE THIS EARLY as a VALIDATION GATE before spending on deep lookups: if `valid:false` or fraud_score is high (>=85) for a phone/email seed, the identifier is reserved/fake/disposable — treat any attributions to it as low-confidence and STOP burning paid breach/people-search calls on it. Free tier ~5000/mo.",
+  inputSchema: z.object({
+    kind: z.enum(["phone", "email", "ip"]),
+    value: z.string().min(3),
+    country: z.string().length(2).optional(),
+    strictness: z.number().int().min(0).max(3).optional(),
+  }),
+  execute: async ({ kind, value, country, strictness }) => {
+    const KEY = Deno.env.get("IPQUALITYSCORE_API_KEY");
+    if (!KEY) return { error: "IPQUALITYSCORE_API_KEY not configured", code: "ipqs_key_missing" };
+    try {
+      const base = `https://www.ipqualityscore.com/api/json/${kind}/${encodeURIComponent(KEY)}/${encodeURIComponent(value)}`;
+      const params = new URLSearchParams();
+      if (kind === "phone" && country) params.set("country[]", country);
+      if (kind === "email") params.set("timeout", "12");
+      if (strictness !== undefined && kind !== "ip") params.set("strictness", String(strictness));
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      const r = await fetch(`${base}${qs}`, { headers: { Accept: "application/json" } });
+      const data = await r.json().catch(() => ({})) as Record<string, unknown>;
+      if (!r.ok || data.success === false) {
+        return { ok: false, status: r.status, error: (data.message as string) ?? "IPQualityScore lookup failed", kind, value };
+      }
+      return { ok: true, source: "ipqualityscore.com", kind, value, ...data };
+    } catch (e) { return { error: String(e) }; }
+  },
+}),
+
 export const http_fingerprint = tool({
   description: "Fetch a URL and return status, server/tech headers, title, and a short text excerpt. Use to investigate a website without leaving the agent.",
   inputSchema: z.object({ url: z.string().url() }),

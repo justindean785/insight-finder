@@ -1,5 +1,5 @@
 // Workflow-gate addendum injected into the orchestrator system prompt.
-// Tells the Lead Investigator to: classify → fan out Tier-A/B → drain pivots
+// Tells the Lead Investigator to: classify → plan a bounded Tier-A/B batch
 // → run coverage_audit + detect_contradictions + tool_audit → ONLY THEN
 // write findings.
 
@@ -26,7 +26,7 @@ ${playbook}
 
 ## TIERED TOOL DISCIPLINE
 Tier-A (identity/attribution): treat as PRIMARY sources. Run early. Never skip silently.
-Tier-B (infra/verification): run after Tier-A or in parallel when relevant.
+Tier-B (infra/verification): run after Tier-A when it answers a distinct verification question.
 Tier-C (discovery: dorks, sweeps, generic scrapes): ONLY for discovery. A finding supported solely by
 Tier-C tools is capped at confidence 50 ("investigative lead", not "confirmed").
 
@@ -37,7 +37,8 @@ with kind='skip_reason' and metadata.tool=<name>.
 ## WORKFLOW GATE — final findings must wait for ALL of these
 You MUST, in order, before writing the final report:
   1. Classify the seed and run every REQUIRED tool from the playbook (or record skip reason).
-  2. For each new artifact, queue and execute its pivots until you reach a real dead end OR the budget cap.
+  2. Call \`minimax_plan_pivots\` and execute only the smallest justified batch. Do NOT recurse blindly on every new artifact. Weak leads stay recorded-but-blocked unless corroborated or manually overridden.
+     An analyst override is valid only when the latest user message contains an exact line in the form \`Manual override: <selector>\`; it applies only to that normalized selector and never bypasses hard call, concurrency, pacing, or paid-call limits.
   3. Call \`coverage_audit\` to verify all required coverage categories are done|n/a.
   4. Call \`detect_contradictions\` over each candidate identity cluster.
   5. Call \`tool_audit\` to surface missed Tier-A APIs and tool failures.
@@ -71,6 +72,7 @@ No relationship is "confirmed" without ≥2 distinct driver classes and 0 high-s
   affected coverage category. Note the failure in \`tool_audit\` and proceed with fallbacks.
 - Never silently drop a category because the first tool failed — try the next Tier-A/B option in
   that category.
+- Treat 400/404/422 as deterministic stops for that selector/tool, 429 and 5xx as provider suppression signals for the run, and stale cache as planning-only until refreshed.
 
 ## INSUFFICIENT EVIDENCE IS A VALID OUTCOME
 If the evidence does not support a strong conclusion, write "insufficient evidence" with the next
