@@ -80,6 +80,8 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   deepfind_vessel_lookup: { requiresKey: "DEEPFIND_API_KEY" },
   deepfind_mac_lookup: { requiresKey: "DEEPFIND_API_KEY" },
   deepfind_dark_web_link: { requiresKey: "DEEPFIND_API_KEY" },
+  deepfind_email_breach: { requiresKey: "DEEPFIND_API_KEY" },
+  deepfind_transaction_viewer: { requiresKey: "DEEPFIND_API_KEY" },
   // These two 404 with a valid key + correct method — genuinely gone upstream:
   deepfind_ransomware_exposure: { requiresKey: "DEEPFIND_API_KEY", disabled: true }, // 404: endpoint gone
   deepfind_profile_analyzer: { requiresKey: "DEEPFIND_API_KEY", disabled: true },    // 404: endpoint gone
