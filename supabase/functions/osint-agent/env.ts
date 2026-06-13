@@ -125,6 +125,12 @@ export const JINA_API_KEY = Deno.env.get("JINA_API_KEY"); // optional — r.jina
 // (passwords, tokens) when the key has the `darkweb:reveal` scope.
 export const SERUS_API_KEY = Deno.env.get("SERUS_API_KEY");
 
+// IPQualityScore — fraud/validity scoring for phone, email, and IP. One key,
+// three endpoints. Directly counters false-positive attribution: invalid /
+// reserved phones, disposable emails, and proxy/VPN IPs come back with low
+// validity + high fraud_score so the orchestrator can down-weight junk.
+export const IPQUALITYSCORE_API_KEY = Deno.env.get("IPQUALITYSCORE_API_KEY");
+
 // ---- Degraded state ----------------------------------------------------------
 // Sticky flag — once Firecrawl returns 402 (insufficient credits) we stop
 // touching it for the rest of this invocation and route through Jina + Exa.

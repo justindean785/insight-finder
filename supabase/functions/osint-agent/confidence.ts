@@ -132,3 +132,65 @@ export function applyEvidenceCaps(input: CapInput): CapResult {
 
   return { confidence, cap, reason_for_confidence, reason_not_confirmed, source_classes: uniqClasses };
 }
+
+// ---- Different-person / unrelated-entity gate --------------------------------
+// The orchestrator routinely discovers same-name/same-handle collisions that
+// belong to a DIFFERENT entity than the seed (e.g. an unrelated TikTok user who
+// happens to share a handle, or a namesake at a different company). It records
+// these with a metadata note ("UNRELATED individual", "DIFFERENT company",
+// "different entity") or an explicit boolean. Historically the server ignored
+// those flags, so the namesake kept its full confidence and polluted the case.
+//
+// This detects the flag from metadata and, when set, downgrades the artifact to
+// an excluded_collision with a hard-capped confidence so it can't roll up into
+// the case score or get mistaken for a confirmed link.
+const UNRELATED_NOTE_RE =
+  /\b(unrelated|different\s+(?:person|individual|company|entity|firm|org(?:anization)?)|not\s+(?:the\s+same|related|our\s+(?:target|subject))|namesake|wrong\s+(?:person|entity)|collision|coincidental)\b/i;
+
+export const EXCLUDED_COLLISION_CONFIDENCE = 15;
+
+export function isUnrelatedEntity(meta: Record<string, unknown> | null | undefined): boolean {
+  const m = meta ?? {};
+  // Explicit booleans the model may set.
+  if (m.different_person === true || m.unrelated === true || m.is_collision === true) return true;
+  if (typeof m.different_person === "string" && /^(true|yes|1)$/i.test(m.different_person)) return true;
+  // Note / free-text fields the model commonly uses instead of a boolean.
+  for (const key of ["note", "notes", "reason", "relationship", "disposition"]) {
+    const v = m[key];
+    if (typeof v === "string" && UNRELATED_NOTE_RE.test(v)) return true;
+  }
+  return false;
+}
+
+// ---- Bio-linked cross-platform name gate -------------------------------------
+// A profile bio frequently lists OTHER people's handles/names — collaborators,
+// shoutouts, group members, "prod. by X", a friend's Facebook. The orchestrator
+// has mistaken a bio-linked Facebook *name* for the subject's legal name and
+// promoted it over the subject's own display name + an independent search hit
+// (real case: SoundCloud "ohifearius" / "BosMan G" mis-reported as the FB name
+// "Raheem Abdul Bey" pulled from the bio link block, when the corroborated
+// identity was "Darius Johnson").
+//
+// A NAME asserted only because it appeared in / was linked from a bio is an
+// UNVERIFIED identity claim. It must stay a lead, never the confirmed identity:
+// we cap it low and flag it so the report and any merge cannot anchor on it.
+export const BIO_CROSS_LINK_NAME_CAP = 30;
+
+const BIO_LINK_KEYS = ["from_bio", "bio_link", "bio_mention", "linked_from_bio"];
+
+/** True when this is a person `name` whose only provenance is a bio cross-link
+ * (i.e. it was scraped out of a profile's bio / linked-accounts block rather
+ * than being the profile's own display name or an independently searched name). */
+export function isBioCrossLinkName(
+  kind: string | null | undefined,
+  meta: Record<string, unknown> | null | undefined,
+): boolean {
+  if (kind !== "name") return false;
+  const m = meta ?? {};
+  for (const key of BIO_LINK_KEYS) {
+    const v = m[key];
+    if (v === true) return true;
+    if (typeof v === "string" && /^(true|yes|1)$/i.test(v)) return true;
+  }
+  return false;
+}

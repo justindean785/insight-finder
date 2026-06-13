@@ -14,6 +14,9 @@ const ChatPage = lazy(() => import("./pages/ChatPage"));
 const AdminSecurity = lazy(() => import("./pages/AdminSecurity"));
 const BrainGlobalPage = lazy(() => import("./pages/BrainGlobalPage"));
 const ReportPreview = lazy(() => import("./pages/ReportPreview"));
+const Settings = lazy(() => import("./pages/Settings"));
+const Terms = lazy(() => import("./pages/Terms"));
+const Privacy = lazy(() => import("./pages/Privacy"));
 import { hasSupabaseEnv, supabaseConfigError } from "./integrations/supabase/client";
 
 const queryClient = new QueryClient();
@@ -45,6 +48,9 @@ const App = () => (
             <Route path="/brain" element={<BrainGlobalPage />} />
             <Route path="/report-preview" element={<ReportPreview />} />
             <Route path="/admin/security" element={<AdminSecurity />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="/terms" element={<Terms />} />
+            <Route path="/privacy" element={<Privacy />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </Suspense>
