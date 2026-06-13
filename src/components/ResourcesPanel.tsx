@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Mail, Phone, Globe, User as UserIcon, Network, ShieldAlert, MapPin, Image as ImgIcon, Tag,
-  Copy, CheckCircle2, XCircle, PanelRightOpen, PanelRightClose, Star, ShieldQuestion, EyeOff, Eye,
-  Database, BarChart3, FileOutput,
+  Copy, CheckCircle2, XCircle, PanelRightOpen, PanelRightClose, Star, ShieldQuestion, EyeOff,
+  Database, BarChart3, Lock, FileOutput,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,6 @@ import { ConfidenceExplain } from "@/components/ConfidenceExplain";
 import { SourceBadge } from "@/components/SourceBadge";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { partitionDismissed } from "@/lib/artifactVisibility";
 import { useThreadArtifacts, type Artifact } from "@/hooks/useThreadArtifacts";
 import {
   groupForKind, GROUP_LABEL, GROUP_ORDER, type Group,
@@ -34,7 +33,6 @@ import { AuditTab } from "./panel/AuditTab";
 import { FailedSkippedTab } from "./panel/FailedSkippedTab";
 import { ClustersTab } from "./panel/ClustersTab";
 import { NotesTab } from "./panel/NotesTab";
-import { StreakIndicator } from "./StreakIndicator";
 import { DensityToggle } from "./DensityToggle";
 
 /**
@@ -87,68 +85,36 @@ export function ResourcesPanel({
   const [selected, setSelected] = useState<Artifact | null>(null);
   const review = useReviewStates(threadId);
   const [seed, setSeed] = useState<{ value: string | null; type: string | null } | null>(null);
-  const [section, setSection] = useState<"evidence" | "analysis" | "output">("evidence");
+  const [section, setSection] = useState<"evidence" | "analysis" | "provenance" | "output">("evidence");
   const [tab, setTab] = useState<string>("artifacts");
 
   const SECTIONS = [
     { key: "evidence" as const, label: "Evidence", icon: Database, tabs: [
       { v: "artifacts", l: "Artifacts" },
       { v: "clusters",  l: "Clusters" },
-      { v: "matrix",    l: "Review" },
-      { v: "timeline", l: "Timeline" },
+      { v: "matrix",    l: "Matrix" },
     ] },
     { key: "analysis" as const, label: "Analysis", icon: BarChart3, tabs: [
       { v: "overview", l: "Overview" },
       { v: "pivots",   l: "Pivots" },
+      { v: "timeline", l: "Timeline" },
       { v: "map",      l: "Map" },
+    ] },
+    { key: "provenance" as const, label: "Provenance", icon: Lock, tabs: [
+      { v: "custody", l: "Custody" },
+      { v: "audit",   l: "Audit" },
       { v: "issues",  l: "Issues" },
     ] },
     { key: "output" as const, label: "Output", icon: FileOutput, tabs: [
-      { v: "report", l: "Report" },
       { v: "notes",  l: "Notes" },
-      { v: "custody", l: "Custody" },
-      { v: "audit",   l: "Audit" },
+      { v: "report", l: "Report" },
     ] },
   ];
 
-  // Derived counts re-run on every render otherwise; memoize the whole pass over
-  // `items` so tab switches and review changes don't re-scan the evidence set.
-  const { groupCount, reviewedCount, keyCount, issueCount, SECTION_COUNTS, TAB_COUNTS } = useMemo(() => {
-    const groupedCounts = GROUP_ORDER.reduce<Record<Group, number>>((acc, group) => {
-      acc[group] = items.filter((item) => groupForKind(item.kind) === group).length;
-      return acc;
-    }, {} as Record<Group, number>);
-    const groupCount = GROUP_ORDER.filter((group) => groupedCounts[group] > 0).length;
-    const reviewStates = items.map((item) => review.get(item.id));
-    const reviewedCount = reviewStates.filter((state) => state !== "new").length;
-    const keyCount = reviewStates.filter((state) => state === "key" || state === "confirmed").length;
-    const issueCount = items.filter((item, index) => {
-      const state = reviewStates[index];
-      const meta = (item.metadata ?? {}) as Record<string, unknown>;
-      return state === "recheck" || state === "dismissed" || state === "wrong" || meta.false_positive === true;
-    }).length;
-    const densityCount = items.filter((item) => item.confidence != null && item.confidence >= 70).length;
-    const SECTION_COUNTS: Record<(typeof SECTIONS)[number]["key"], number | undefined> = {
-      evidence: items.length,
-      analysis: groupCount,
-      output: keyCount,
-    };
-    const TAB_COUNTS: Record<string, number | undefined> = {
-      overview: reviewedCount,
-      artifacts: items.length,
-      clusters: groupCount,
-      matrix: items.length,
-      pivots: densityCount,
-      timeline: items.length,
-      map: items.filter((item) => ["address", "ip"].includes(item.kind.toLowerCase())).length,
-      custody: seed?.value ? 1 : undefined,
-      audit: reviewedCount,
-      issues: issueCount,
-      notes: keyCount,
-      report: keyCount,
-    };
-    return { groupCount, reviewedCount, keyCount, issueCount, SECTION_COUNTS, TAB_COUNTS };
-  }, [items, review, seed]);
+  const TAB_COUNTS: Record<string, number | undefined> = {
+    artifacts: items.length,
+    matrix: items.length,
+  };
 
   const activeSection = SECTIONS.find((s) => s.key === section)!;
 
@@ -190,24 +156,18 @@ export function ResourcesPanel({
 
   if (collapsed) {
     return (
-      <div className="w-14 h-full flex flex-col items-center py-3 gap-3 bg-[radial-gradient(circle_at_top,rgba(72,157,255,0.12),transparent_38%)]">
-        <div className="w-10 h-10 rounded-xl border border-border-subtle/80 bg-white/[0.03] grid place-items-center shadow-[0_0_18px_-8px_hsl(var(--brain-cyan)/0.7)]">
-          <Database className="w-4 h-4 text-[hsl(var(--brain-cyan))]" />
-        </div>
+      <div className="w-14 h-full flex flex-col items-center py-3 gap-3">
         <button
           onClick={onToggleCollapse}
-          className="w-9 h-9 rounded-xl border border-border-subtle/80 bg-white/[0.03] grid place-items-center text-muted-foreground transition-colors hover:border-primary/35 hover:text-foreground"
+          className="w-8 h-8 rounded-md glass-interactive grid place-items-center"
           title="Expand panel"
         >
-          <PanelRightOpen className="w-4 h-4" />
+          <PanelRightOpen className="w-4 h-4 text-muted-foreground" />
         </button>
 
         <div className="w-8 h-px bg-border-subtle" />
 
-        <div className="w-10 rounded-xl border border-border-subtle/80 bg-white/[0.03] px-1 py-1.5 text-center">
-          <div className="text-[8px] uppercase tracking-[0.18em] text-muted-foreground/70">EV</div>
-          <div className="mt-1 font-mono text-[12px] text-foreground">{items.length}</div>
-        </div>
+        <div className="text-[10px] text-muted-foreground font-mono">{items.length}</div>
 
         <div className="flex-1 overflow-y-auto w-full flex flex-col items-center gap-2 px-1">
           {GROUP_ORDER.filter((g) => items.some((a) => groupForKind(a.kind) === g)).map((g) => {
@@ -217,7 +177,7 @@ export function ResourcesPanel({
               <button
                 key={g}
                 onClick={onToggleCollapse}
-                className="w-9 h-9 rounded-xl flex items-center justify-center border border-border-subtle/80 bg-white/[0.03] relative transition-colors hover:border-primary/30 hover:bg-white/[0.05]"
+                className="w-8 h-8 rounded-md flex items-center justify-center glass-interactive relative"
                 title={`${GROUP_LABEL[g]} (${count})`}
               >
                 <Icon className="w-3.5 h-3.5 text-muted-foreground" />
@@ -233,66 +193,42 @@ export function ResourcesPanel({
   }
 
   return (
-    <div className="w-full h-full flex flex-col bg-[radial-gradient(circle_at_top,rgba(72,157,255,0.12),transparent_38%)]">
+    <div className="w-full md:w-[430px] h-full flex flex-col">
       <Tabs value={tab} onValueChange={setTab} className="flex-1 flex flex-col min-h-0">
-        <div className="sticky top-0 z-10 border-b border-border-subtle/80 bg-[linear-gradient(180deg,rgba(8,13,23,0.96),rgba(8,13,23,0.86))] backdrop-blur-xl">
-          <div className="px-4 pt-4 pb-3 space-y-3">
-            <div className="flex items-start gap-3">
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2 text-[10px] font-semibold tracking-[0.16em] text-muted-foreground uppercase">
-                  <span>Case desk</span>
-                  <span className="h-1 w-1 rounded-full bg-[hsl(var(--brain-cyan))]" />
-                  <span>{seed?.type ?? "untyped"}</span>
-                </div>
-                <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <div className="text-sm font-semibold tracking-tight text-foreground">Evidence & analysis</div>
-                  <span className="rounded-full border border-border-subtle/80 bg-white/[0.03] px-2 py-0.5 text-[10px] font-mono text-muted-foreground">
-                    {items.length} entities
-                  </span>
-                </div>
-                <button
-                  onClick={() => {
-                    if (!seed?.value) return;
-                    navigator.clipboard.writeText(seed.value).then(
-                      () => toast.success("Copied"),
-                      () => toast.error("Copy failed"),
-                    );
-                  }}
-                  className="mt-3 w-full rounded-2xl border border-border-subtle/80 bg-white/[0.03] px-3 py-3 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition-colors hover:border-primary/30"
-                  title={seed?.value ?? ""}
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-[9px] uppercase tracking-[0.18em] text-muted-foreground/70">Primary seed</div>
-                      <div className="mt-1 truncate font-mono text-[13px] text-foreground">{compactSeed(seed?.value).display}</div>
-                    </div>
-                    {seed?.value && <Copy className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />}
-                  </div>
-                </button>
-              </div>
-
-              <div className="flex flex-col items-end gap-2">
-                <StreakIndicator artifacts={items} />
-                <DensityToggle className="hidden md:inline-flex" />
-                <button
-                  onClick={onToggleCollapse}
-                  className="h-9 w-9 rounded-xl border border-border-subtle/80 bg-white/[0.03] grid place-items-center text-muted-foreground transition-colors hover:border-primary/35 hover:text-foreground"
-                  title="Collapse panel"
-                >
-                  <PanelRightClose className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-3 text-[11px] font-mono tabular-nums">
-              <span className="text-muted-foreground">{reviewedCount}/{items.length} reviewed</span>
-              {keyCount > 0 && <span className="text-[hsl(var(--confidence-high))]">{keyCount} priority</span>}
-              {issueCount > 0 && <span className="text-[hsl(var(--confidence-mid))]">{issueCount} issues</span>}
-            </div>
+        <div className="sticky top-0 z-10 border-b border-border-subtle bg-background">
+          <div className="px-4 h-14 flex items-center gap-3">
+            <div className="text-[11px] font-semibold tracking-[0.22em] text-muted-foreground shrink-0 uppercase">Case</div>
+            <button
+              onClick={() => {
+                if (!seed?.value) return;
+                navigator.clipboard.writeText(seed.value).then(
+                  () => toast.success("Copied"),
+                  () => toast.error("Copy failed"),
+                );
+              }}
+              className="flex-1 min-w-0 group flex items-center gap-1.5 text-left"
+              title={seed?.value ?? ""}
+            >
+              <span className="font-mono text-[13px] tabular-nums text-foreground truncate">
+                {seed?.value ? compactSeed(seed.value).display : "—"}
+              </span>
+              {seed?.value && (
+                <Copy className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+              )}
+            </button>
+            <span className="px-2.5 py-1 rounded-full border border-border-subtle bg-surface-1 text-[10px] font-mono text-muted-foreground tabular-nums shrink-0">
+              {items.length}
+            </span>
+            <DensityToggle className="hidden md:inline-flex" />
+            <button
+              onClick={onToggleCollapse}
+              className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
+              title="Collapse panel"
+            >
+              <PanelRightClose className="w-4 h-4" />
+            </button>
           </div>
-
-          <div className="px-3 pb-3">
-            <div className="grid grid-cols-3 gap-2">
+          <div className="px-3 py-2 flex items-center gap-1 border-t border-border-subtle">
             {SECTIONS.map((s) => {
               const Icon = s.icon;
               const active = section === s.key;
@@ -301,58 +237,47 @@ export function ResourcesPanel({
                   key={s.key}
                   onClick={() => onSectionChange(s.key)}
                   className={cn(
-                    "flex flex-col items-center justify-center gap-1 rounded-xl border px-2 py-2 text-[10px] font-medium uppercase tracking-[0.14em] transition-colors",
+                    "flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg text-[10px] font-medium uppercase tracking-[0.16em] transition-colors",
                     active
-                      ? "bg-[hsl(var(--brain-cyan))/10] text-[hsl(var(--brain-cyan))] border-[hsl(var(--brain-cyan))/25] shadow-[0_0_20px_-12px_hsl(var(--brain-cyan)/0.8)]"
-                      : "border-border-subtle/80 bg-white/[0.02] text-muted-foreground hover:text-foreground hover:bg-white/[0.05]",
+                      ? "bg-surface-1 text-foreground border border-white/10"
+                      : "text-muted-foreground hover:text-foreground hover:bg-surface-1 border border-transparent",
                   )}
                 >
-                  <div className="flex items-center gap-1.5">
-                    <Icon className="w-3 h-3" />
-                    <span>{s.label}</span>
-                  </div>
-                  {SECTION_COUNTS[s.key] != null && (
-                    <span className="font-mono text-[10px] tabular-nums opacity-80">
-                      {SECTION_COUNTS[s.key]}
-                    </span>
-                  )}
+                  <Icon className="w-3 h-3" />
+                  {s.label}
                 </button>
               );
             })}
-            </div>
           </div>
-
-          <div className="border-t border-border-subtle/70 px-3 py-2">
-            <div className="overflow-x-auto scrollbar-none">
-              <TabsList className="inline-flex min-w-full h-auto bg-transparent rounded-none p-0 gap-1 justify-start">
+          <div className="px-3 pb-3 pt-0.5">
+            <TabsList className="w-full h-9 bg-transparent rounded-none p-0 gap-2 justify-start">
               {activeSection.tabs.map((t) => {
                 const count = TAB_COUNTS[t.v];
                 return (
                   <TabsTrigger
                     key={t.v}
                     value={t.v}
-                    className="relative h-auto min-h-[42px] px-3 py-2 rounded-xl border border-border-subtle/80 bg-white/[0.02] text-[12px] font-medium text-muted-foreground data-[state=active]:bg-white/[0.08] data-[state=active]:text-foreground data-[state=active]:border-primary/25 data-[state=active]:shadow-none transition-colors"
+                    className="relative h-9 px-0 rounded-none bg-transparent text-[13px] font-medium text-muted-foreground border-b border-transparent data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:border-white/30 data-[state=active]:shadow-none transition-colors"
                   >
-                    <span className="uppercase tracking-[0.08em] text-[11px]">{t.l}</span>
+                    <span>{t.l}</span>
                     {count != null && count > 0 && (
-                      <span className="ml-2 font-mono text-[10px] tabular-nums text-muted-foreground/70">
+                      <span className="ml-1.5 font-mono text-[10px] tabular-nums text-muted-foreground/70">
                         {count}
                       </span>
                     )}
                   </TabsTrigger>
                 );
               })}
-              </TabsList>
-            </div>
+            </TabsList>
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto bg-background">
           <TabsContent value="overview" className="m-0">
             <OverviewTab threadId={threadId} artifacts={items} />
           </TabsContent>
           <TabsContent value="artifacts" className="m-0">
-            <ArtifactsList items={items} onSelect={setSelected} threadId={threadId} />
+            <ArtifactsList items={items} onSelect={setSelected} review={review} />
           </TabsContent>
           <TabsContent value="matrix" className="m-0">
             <EvidenceMatrixTab artifacts={items} onLocalUpdate={updateLocal} threadId={threadId} />
@@ -398,12 +323,20 @@ export function ResourcesPanel({
   );
 }
 
-
 function ArtifactsList({
-  items, onSelect, threadId,
-}: { items: Artifact[]; onSelect: (a: Artifact) => void; threadId: string }) {
-  const review = useReviewStates(threadId);
-  const [showDismissed, setShowDismissed] = useState(false);
+  items, onSelect, review,
+}: { items: Artifact[]; onSelect: (a: Artifact) => void; review: ReturnType<typeof useReviewStates> }) {
+  // Memoized so review-state changes / hover / tab switches don't re-group the
+  // whole evidence set on every render.
+  const grouped = useMemo(
+    () => items.reduce<Record<Group, Artifact[]>>((acc, a) => {
+      const g = groupForKind(a.kind);
+      (acc[g] ??= []).push(a);
+      return acc;
+    }, {} as Record<Group, Artifact[]>),
+    [items],
+  );
+
   if (items.length === 0) {
     return (
       <div className="text-xs text-muted-foreground p-4 space-y-1">
@@ -412,36 +345,9 @@ function ArtifactsList({
       </div>
     );
   }
-  // Dismissed artifacts are hidden by default (reversible — they stay in the
-  // evidence chain/export and can be revealed to un-dismiss).
-  const { visible, hidden } = partitionDismissed(items, (id) => review.get(id) === "dismissed");
-  const shown = showDismissed ? items : visible;
-  const dismissToggle = hidden.length > 0 && (
-    <button
-      type="button"
-      onClick={() => setShowDismissed((v) => !v)}
-      className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground hover:text-foreground transition-colors"
-    >
-      {showDismissed ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-      {showDismissed ? `Hide ${hidden.length} dismissed` : `Show ${hidden.length} dismissed`}
-    </button>
-  );
-  if (shown.length === 0) {
-    return (
-      <div className="p-2 space-y-2">
-        <div className="text-xs text-muted-foreground p-4">All {hidden.length} artifact{hidden.length === 1 ? "" : "s"} dismissed.</div>
-        {dismissToggle}
-      </div>
-    );
-  }
-  const grouped = shown.reduce<Record<Group, Artifact[]>>((acc, a) => {
-    const g = groupForKind(a.kind);
-    (acc[g] ??= []).push(a);
-    return acc;
-  }, {} as Record<Group, Artifact[]>);
 
   return (
-    <div className="p-2 space-y-3">
+    <div className="px-2 py-3 space-y-5">
       {GROUP_ORDER.filter((g) => grouped[g]?.length).map((g) => {
         const Icon = GROUP_ICON[g];
         const list = grouped[g];
@@ -455,109 +361,105 @@ function ArtifactsList({
           else if (c >= 50) mid++;
           else low++;
         }
-        const sevColor =
-          failedC > 0 ? "hsl(var(--danger))" :
-          low > 0 ? "hsl(var(--confidence-low))" :
-          mid > 0 ? "hsl(var(--confidence-mid))" :
-          "hsl(var(--brain-cyan))";
         return (
-          <div key={g} className="evidence-tile p-0 overflow-hidden border-l-2 border-l-[hsl(var(--brain-cyan))]">
-            {/* Cluster header: icon · label · count · severity breakdown · severity dot */}
-            <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 border-b border-border-subtle bg-surface-1/60">
-              <div className="flex items-center gap-2 min-w-0">
-                <span className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-surface-2 border border-border-subtle">
-                  <Icon className="w-3 h-3 text-muted-foreground" />
-                </span>
-                <div className="flex flex-col leading-tight min-w-0">
-                  <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-foreground truncate">
-                    {GROUP_LABEL[g]}
-                  </span>
-                  <span className="text-[10px] font-mono text-muted-foreground tabular-nums">
-                    {list.length} artifact{list.length === 1 ? "" : "s"}
-                    {high > 0 && <> · <span className="text-[hsl(var(--brain-cyan))]">{high} high</span></>}
-                    {mid > 0 && <> · <span className="text-[hsl(var(--confidence-mid))]">{mid} med</span></>}
-                    {low > 0 && <> · <span className="text-[hsl(var(--confidence-low))]">{low} low</span></>}
-                    {failedC > 0 && <> · <span className="text-danger">{failedC} false</span></>}
-                  </span>
-                </div>
-              </div>
-              <span
-                className="w-2 h-2 rounded-full shrink-0"
-                style={{
-                  background: sevColor,
-                  boxShadow: `0 0 8px -1px ${sevColor}`,
-                }}
-                title={failedC > 0 ? "Contains false positives" : low > 0 ? "Contains low-confidence" : mid > 0 ? "Contains medium-confidence" : "All high-confidence"}
+          <div key={g}>
+            {/* Group header: quiet label · count, with a muted severity breakdown (red when flagged) */}
+            <div className="flex items-center gap-2 px-2 pb-1.5">
+              <Icon
+                className={cn(
+                  "h-3 w-3 shrink-0",
+                  failedC > 0 ? "text-destructive" : "text-muted-foreground/80",
+                )}
               />
+              <span
+                className="text-[10.5px] font-semibold uppercase tracking-[0.18em]"
+                style={{ color: failedC > 0 ? "hsl(var(--danger))" : "hsl(var(--foreground) / 0.62)" }}
+              >
+                {GROUP_LABEL[g]}
+              </span>
+              <span className="text-[10.5px] tabular-nums text-muted-foreground/80">· {list.length}</span>
+              <span className="ml-auto flex items-center gap-2 text-[9.5px] tabular-nums">
+                {high > 0 && <span style={{ color: "hsl(var(--confidence-high))" }}>{high} hi</span>}
+                {mid > 0 && <span style={{ color: "hsl(var(--confidence-mid))" }}>{mid} md</span>}
+                {low > 0 && <span style={{ color: "hsl(var(--confidence-low))" }}>{low} lo</span>}
+                {failedC > 0 && <span style={{ color: "hsl(var(--danger))" }}>{failedC} flag</span>}
+              </span>
             </div>
 
-            <div className="text-[11px] rounded-md border border-border-subtle/60 overflow-hidden">
-              {list.map((a, ri) => {
+            <div className="divide-y divide-border-subtle/35">
+              {list.map((a) => {
                 const meta = (a.metadata ?? {}) as Record<string, unknown>;
                 const fp = meta.false_positive === true;
-                const KIcon = KIND_ICON[a.kind.toLowerCase()] ?? Tag;
+                const sensitive = meta.possible_minor === true || meta.minor_warning === true;
                 const rState = review.get(a.id);
                 const dismissed = rState === "dismissed";
                 const conf = a.confidence ?? 0;
-                const confTier =
-                  conf >= 70 ? "high" : conf >= 50 ? "mid" : "low";
                 const confColor =
-                  confTier === "high" ? "hsl(var(--brain-cyan))" :
-                  confTier === "mid" ? "hsl(var(--confidence-mid))" :
+                  conf >= 70 ? "hsl(var(--confidence-high))" :
+                  conf >= 50 ? "hsl(var(--confidence-mid))" :
                   "hsl(var(--confidence-low))";
+                const prov =
+                  typeof meta.platform === "string" ? meta.platform :
+                  typeof meta.breach_source === "string" ? `breach · ${meta.breach_source}` :
+                  a.source ?? "";
                 return (
                   <HoverCard key={a.id} openDelay={250} closeDelay={80}>
                     <HoverCardTrigger asChild>
-                      {/* role=button (not <button>) so the inline ConfidenceExplain
-                          popover trigger isn't an invalid nested <button>. */}
                       <div
                         role="button"
                         tabIndex={0}
                         onClick={() => onSelect(a)}
-                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(a); } }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(a); }
+                        }}
                         data-density-row
                         className={cn(
-                          "w-full grid grid-cols-[1fr_auto] items-center gap-3 px-2 py-1.5 font-mono text-left cursor-pointer transition-colors border-b border-border/50 last:border-b-0 focus:outline-none focus-visible:ring-1 focus-visible:ring-primary/50 focus-visible:ring-inset hover:bg-primary/[0.04]",
-                          fp
-                            ? "bg-danger-muted/30 hover:bg-danger-muted/50 line-through opacity-70"
-                            : dismissed
-                            ? "opacity-50"
-                            : ri % 2 === 1 && "bg-white/[0.018]",
+                          "group/row flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                          fp ? "hover:bg-danger-muted/30" : "hover:bg-white/[0.04]",
+                          dismissed && "opacity-50",
                         )}
                       >
-                        <span className="truncate flex items-center gap-2 min-w-0">
-                          {/* typed KIND column — bordered chip, reads as a forensic data table */}
-                          <span className="shrink-0 inline-flex items-center gap-1 w-[78px] rounded-[3px] border border-border/60 bg-white/[0.02] px-1.5 py-0.5">
-                            <KIcon className="w-3 h-3 text-primary/70 shrink-0" />
-                            <span className="text-[9px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/90 truncate">{a.kind}</span>
+                        <span className="min-w-0 flex-1">
+                          <span className="flex items-center gap-1.5">
+                            {rState === "confirmed" && <CheckCircle2 className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-high))]" />}
+                            {rState === "key" && <Star className="h-3 w-3 shrink-0 text-primary" />}
+                            {rState === "recheck" && <ShieldQuestion className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-mid))]" />}
+                            {rState === "dismissed" && <EyeOff className="h-3 w-3 shrink-0 text-muted-foreground" />}
+                            {fp && <XCircle className="h-3 w-3 shrink-0 text-destructive" />}
+                            {sensitive && <ShieldAlert className="h-3 w-3 shrink-0 text-destructive" />}
+                            <span className={cn("truncate text-[13px] text-foreground/95", fp && "line-through opacity-70")}>
+                              {a.value}
+                            </span>
                           </span>
-                          {rState === "confirmed" && <CheckCircle2 className="w-3 h-3 text-[hsl(var(--confidence-high))] shrink-0" />}
-                          {rState === "key" && <Star className="w-3 h-3 text-primary shrink-0" />}
-                          {rState === "recheck" && <ShieldQuestion className="w-3 h-3 text-[hsl(var(--confidence-mid))] shrink-0" />}
-                          {rState === "dismissed" && <EyeOff className="w-3 h-3 text-muted-foreground shrink-0" />}
-                          {fp && <XCircle className="w-3 h-3 text-destructive shrink-0" />}
-                          <span className="truncate text-foreground/90">{a.value}</span>
+                          {prov && (
+                            <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground/80">
+                              {prov}
+                            </span>
+                          )}
                         </span>
+                        <button
+                          type="button"
+                          aria-label={`Copy ${a.value}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigator.clipboard.writeText(a.value).then(
+                              () => toast.success("Copied"),
+                              () => toast.error("Copy failed"),
+                            );
+                          }}
+                          className="shrink-0 rounded text-muted-foreground/70 opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/row:opacity-100"
+                        >
+                          <Copy className="h-3.5 w-3.5" />
+                        </button>
                         {a.confidence != null && (
-                          <span className="flex items-center gap-2 shrink-0">
-                            <span className="confidence-track block w-10">
-                              <span
-                                className="confidence-fill"
-                                style={{ width: `${Math.min(100, Math.max(4, conf))}%`, backgroundColor: confColor }}
-                              />
-                            </span>
-                            <span
-                              className="text-[10px] font-sans tabular-nums w-8 text-right"
-                              style={{ color: confColor }}
-                            >
-                              {conf}%
-                            </span>
+                          <span className="flex shrink-0 items-center gap-1">
+                            <span className="w-9 text-right text-[12px] font-semibold tabular-nums" style={{ color: confColor }}>{conf}%</span>
                             <ConfidenceExplain artifact={a} review={rState} />
                           </span>
                         )}
                       </div>
                     </HoverCardTrigger>
-                    <HoverCardContent side="left" align="start" className="w-72 p-0 overflow-hidden border-border-subtle">
+                    <HoverCardContent side="left" align="start" className="w-72 overflow-hidden p-0 border-border-subtle">
                       <ArtifactPeek artifact={a} confColor={confColor} />
                     </HoverCardContent>
                   </HoverCard>
@@ -567,7 +469,6 @@ function ArtifactsList({
           </div>
         );
       })}
-      {dismissToggle}
     </div>
   );
 }

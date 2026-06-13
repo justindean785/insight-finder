@@ -35,6 +35,15 @@ const breadcrumbs: Breadcrumb[] = [];
 let sink: ((record: CapturedError) => void) | undefined;
 let installed = false;
 
+function getLocalStorage(): Storage | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
 /** Record a non-error event (auth bootstrap, route change, scan start, …). */
 export function addBreadcrumb(category: string, message: string, data?: Record<string, unknown>): void {
   breadcrumbs.push({ ts: Date.now(), category, message, data });
@@ -67,7 +76,7 @@ export function captureError(error: unknown, source: string, extra?: Record<stri
   console.error(`[telemetry:${source}]`, err, record);
 
   try {
-    localStorage.setItem(LAST_ERROR_KEY, JSON.stringify(record));
+    getLocalStorage()?.setItem(LAST_ERROR_KEY, JSON.stringify(record));
   } catch {
     /* localStorage full or unavailable — non-fatal */
   }
@@ -86,7 +95,7 @@ export function captureError(error: unknown, source: string, extra?: Record<stri
 /** The last persisted crash, if any (survives reload). */
 export function getLastError(): CapturedError | null {
   try {
-    const raw = localStorage.getItem(LAST_ERROR_KEY);
+    const raw = getLocalStorage()?.getItem(LAST_ERROR_KEY);
     return raw ? (JSON.parse(raw) as CapturedError) : null;
   } catch {
     return null;

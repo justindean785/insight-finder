@@ -6,6 +6,11 @@ import { supabase } from "@/integrations/supabase/client";
 import { Copy, EyeOff, ArrowRight, Sparkles, CheckSquare, Square, Play, Wallet, GitCompare, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+import {
+  recommendedPivotsStorageKey,
+  toDisplayPivots,
+  type RecommendedPivot,
+} from "@/lib/recommended-pivots";
 
 const SKIP_KEY = (threadId: string) => `proximity:pivot-skip:${threadId}`;
 
@@ -14,6 +19,7 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
   const [skipped, setSkipped] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [costMicro, setCostMicro] = useState<number>(0);
+  const [reportPivots, setReportPivots] = useState<RecommendedPivot[]>([]);
   const review = useReviewStates(threadId);
 
   useEffect(() => {
@@ -31,9 +37,27 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
       const raw = localStorage.getItem(SKIP_KEY(threadId));
       if (raw) setSkipped(new Set(JSON.parse(raw)));
     } catch { /* ignore */ }
+    try {
+      const raw = localStorage.getItem(recommendedPivotsStorageKey(threadId));
+      setReportPivots(raw ? JSON.parse(raw) as RecommendedPivot[] : []);
+    } catch {
+      setReportPivots([]);
+    }
   }, [threadId]);
 
-  const pivots = useMemo(() => buildPivots(artifacts, seedValue), [artifacts, seedValue]);
+  useEffect(() => {
+    const onReportPivots = (event: Event) => {
+      const detail = (event as CustomEvent<{ threadId: string; pivots: RecommendedPivot[] }>).detail;
+      if (detail?.threadId === threadId) setReportPivots(detail.pivots);
+    };
+    window.addEventListener("swarmbot:report-pivots", onReportPivots as EventListener);
+    return () => window.removeEventListener("swarmbot:report-pivots", onReportPivots as EventListener);
+  }, [threadId]);
+
+  const pivots = useMemo(
+    () => reportPivots.length > 0 ? toDisplayPivots(reportPivots) : buildPivots(artifacts, seedValue),
+    [artifacts, reportPivots, seedValue],
+  );
   const visible = pivots.filter((p) => !skipped.has(pivotKey(p)));
 
   // Heuristic: contradictions ≈ artifacts flagged as low-confidence or with conflicting kinds
@@ -100,8 +124,11 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
     navigator.clipboard.writeText(text).then(() => toast.success("Pivot copied"), () => toast.error("Copy failed"));
 
   const runPivot = (p: Pivot) => {
+    const recommendation = reportPivots.find((candidate) =>
+      candidate.value.toLowerCase() === p.value.toLowerCase() && candidate.type === p.type
+    );
     window.dispatchEvent(new CustomEvent("proximity:run-pivot", {
-      detail: { threadId, value: p.value, type: p.type },
+      detail: { threadId, value: p.value, type: p.type, prompt: recommendation?.prompt },
     }));
     // Auto-skip so it doesn't keep appearing as "new"
     skip(p);

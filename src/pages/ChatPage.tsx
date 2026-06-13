@@ -28,41 +28,26 @@ export default function ChatPage() {
 
   if (isMobile) {
     return (
-      <div
-        key={threadId}
-        className="relative flex h-[100dvh] w-full flex-col overflow-hidden bg-[radial-gradient(circle_at_top,rgba(72,157,255,0.12),transparent_34%),linear-gradient(180deg,rgba(10,16,28,0.98),rgba(5,8,16,1))]"
-      >
+      <div key={threadId} className="flex flex-col h-[100dvh] w-full bg-background overflow-hidden">
         <CommandPalette />
-        <div className="pointer-events-none absolute inset-x-0 top-0 z-0 h-px bg-gradient-to-r from-transparent via-primary/40 to-transparent" />
-        <header className="sticky top-0 z-30 border-b border-border-subtle/80 bg-[linear-gradient(180deg,rgba(9,14,24,0.96),rgba(9,14,24,0.86))] backdrop-blur-xl">
-          <div className="flex h-14 items-center justify-between gap-2 px-3">
-            <button
-              onClick={() => setMLeft(true)}
-              className="grid h-10 w-10 place-items-center rounded-xl border border-border-subtle/80 bg-white/[0.03] text-foreground/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-colors hover:border-primary/35 hover:text-primary"
-              aria-label="Open threads"
-            >
-              <PanelLeftOpen className="h-4 w-4" />
-            </button>
-            <div className="min-w-0 flex-1 text-center">
-              <div className="text-[9px] font-medium uppercase tracking-[0.28em] text-muted-foreground/70">
-                Investigation workspace
-              </div>
-              <div className="font-display text-sm font-semibold tracking-tight text-foreground select-none">
-                Swarmbot console
-              </div>
-            </div>
-            <button
-              onClick={() => setMRight(true)}
-              className="grid h-10 w-10 place-items-center rounded-xl border border-border-subtle/80 bg-white/[0.03] text-foreground/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-colors hover:border-primary/35 hover:text-primary"
-              aria-label="Open case panel"
-            >
-              <PanelRightOpen className="h-4 w-4" />
-            </button>
+        <header className="sticky top-0 z-30 h-12 px-3 flex items-center justify-between gap-2 glass-card border-b border-border-subtle">
+          <button
+            onClick={() => setMLeft(true)}
+            className="w-9 h-9 rounded-xl grid place-items-center glass-interactive"
+            aria-label="Open threads"
+          >
+            <PanelLeftOpen className="w-4 h-4 text-foreground/80" />
+          </button>
+          <div className="font-display font-semibold text-sm tracking-tight gradient-text select-none">
+            Swarmbot
           </div>
-          <div className="flex items-center justify-between border-t border-border-subtle/60 px-3 py-2 text-[10px] uppercase tracking-[0.22em] text-muted-foreground/65">
-            <span>Thread {threadId.slice(0, 4).toUpperCase()}</span>
-            <span>Analyst mobile deck</span>
-          </div>
+          <button
+            onClick={() => setMRight(true)}
+            className="w-9 h-9 rounded-xl grid place-items-center glass-interactive"
+            aria-label="Open case panel"
+          >
+            <PanelRightOpen className="w-4 h-4 text-foreground/80" />
+          </button>
         </header>
 
         <main className="flex-1 min-h-0 flex w-full overflow-hidden">
@@ -91,42 +76,16 @@ export default function ChatPage() {
   }
 
   return (
-    <div
-      key={threadId}
-      className="relative flex h-[100dvh] w-full overflow-hidden bg-[radial-gradient(circle_at_top,rgba(72,157,255,0.12),transparent_24%),linear-gradient(180deg,rgba(7,11,20,1),rgba(5,8,16,1))]"
-    >
+    <div key={threadId} className="flex min-h-screen w-full bg-background overflow-x-hidden">
       <CommandPalette />
-      <div className="pointer-events-none absolute inset-0">
-        <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/40 to-transparent" />
-        <div className="absolute inset-y-0 left-[calc(18rem)] hidden w-px bg-gradient-to-b from-transparent via-white/10 to-transparent xl:block" />
-        <div className="absolute inset-y-0 right-[360px] hidden w-px bg-gradient-to-b from-transparent via-white/10 to-transparent xl:block 2xl:right-[430px]" />
-      </div>
-      <aside
-        className={cn(
-          "relative shrink-0 h-screen border-r border-border-subtle/80 bg-[linear-gradient(180deg,rgba(9,15,25,0.98),rgba(7,11,20,0.98))] transition-[width] duration-300",
-          leftCollapsed ? "w-14" : "w-[17rem] 2xl:w-72",
-        )}
-      >
+      <aside className={cn("shrink-0 h-screen border-r border-border-subtle glass-card", leftCollapsed ? "w-14" : "w-72")}>
         <ThreadSidebar
           collapsed={leftCollapsed}
           onToggleCollapse={() => setLeftCollapsed((c) => !c)}
         />
       </aside>
-      <div className="relative flex-1 min-w-0 h-screen overflow-hidden border-x border-white/5 bg-[linear-gradient(180deg,rgba(10,16,28,0.68),rgba(7,10,18,0.82))]">
-        {/* NOTE: the decorative "Investigation workspace / Live analysis stream"
-            corner overlay was removed here — it was a z-20 absolute layer sitting
-            on top of ChatWindow's own sticky ThreadHeader (which already renders
-            "Investigation workspace") and the right-pane "Live analysis stream"
-            header, producing the doubled/overlapping labels. The real headers
-            carry these labels; the overlay was pure duplication. */}
-        <ChatWindow threadId={threadId} />
-      </div>
-      <aside
-        className={cn(
-          "relative shrink-0 h-screen border-l border-border-subtle/80 bg-[linear-gradient(180deg,rgba(8,13,23,0.98),rgba(6,10,18,0.98))] transition-[width] duration-300",
-          rightCollapsed ? "w-14" : "w-[360px] 2xl:w-[430px]",
-        )}
-      >
+      <ChatWindow threadId={threadId} />
+      <aside className={cn("shrink-0 h-screen border-l border-border-subtle glass", rightCollapsed ? "w-14" : "w-[420px]")}>
         <ResourcesPanel
           threadId={threadId}
           collapsed={rightCollapsed}
