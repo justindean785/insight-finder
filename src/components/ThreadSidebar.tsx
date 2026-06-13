@@ -6,8 +6,23 @@ import { Button } from "@/components/ui/button";
 import {
   Plus, LogOut, Trash2, PanelLeftOpen, PanelLeftClose, Search, Brain, CheckCircle2,
   ShieldAlert, Database, Activity,
+  Mail, Phone, Globe, Network, User, Hash, FileSearch, type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { detectSeed } from "@/lib/seed";
+
+// Icon per seed type for the collapsed rail — far cleaner than showing the
+// first two characters of each title (which rendered as a stack of "+1", "8.",
+// "SE", "NI"… fragments that looked like noise). Falls back to detecting the
+// kind from the title for older threads whose seed_type was never persisted.
+const SEED_ICON: Record<string, LucideIcon> = {
+  email: Mail, phone: Phone, domain: Globe, url: Globe, ip: Network,
+  username: User, person: User, name: User, organization: User, crypto: Hash,
+};
+function seedIcon(seedType: string | null, title: string): LucideIcon {
+  const kind = (seedType ?? detectSeed(title)?.kind ?? "other").toLowerCase();
+  return SEED_ICON[kind] ?? FileSearch;
+}
 import { toast } from "sonner";
 import { CostMeter } from "@/components/ui/cost-meter";
 import { SwarmMark } from "@/components/ui/swarm-mark";
@@ -197,19 +212,26 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         </Link>
 
         <div className="flex-1 overflow-y-auto w-full flex flex-col items-center gap-1 px-1">
-          {threads.map((t) => (
-            <Link
-              key={t.id}
-              to={`/chat/${t.id}`}
-              className={cn(
-                "w-8 h-8 rounded-md flex items-center justify-center text-[10px] font-mono font-bold hover:bg-white/5 transition-colors",
-                t.id === threadId && "glass-interactive text-foreground",
-              )}
-              title={`${t.title} · ${formatUsd(t.cost_micro_usd)}`}
-            >
-              {t.title.slice(0, 2).toUpperCase()}
-            </Link>
-          ))}
+          {threads.map((t) => {
+            const Icon = seedIcon(t.seed_type, t.title);
+            const active = t.id === threadId;
+            return (
+              <Link
+                key={t.id}
+                to={`/chat/${t.id}`}
+                className={cn(
+                  "w-8 h-8 rounded-md grid place-items-center transition-colors",
+                  active
+                    ? "glass-interactive text-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-white/5",
+                )}
+                title={`${t.title} · ${formatUsd(t.cost_micro_usd)}`}
+                aria-label={t.title}
+              >
+                <Icon className="w-4 h-4" strokeWidth={1.5} />
+              </Link>
+            );
+          })}
         </div>
 
         <div className="w-8 h-px bg-border-subtle" />
