@@ -534,6 +534,22 @@ Deno.serve(async (req) => {
           })).max(200),
         }),
         execute: async ({ seed, artifacts }) => {
+          // Input guard: never spend a paid MiniMax call on an empty/invalid
+          // payload. The counter check below tracks how many NEW artifacts were
+          // recorded, but the model can still invoke this with no seed or an
+          // empty / malformed `artifacts` array — correlating nothing is pure
+          // waste. Gate on the actual inputs, not just the counter.
+          const cleanSeed = typeof seed === "string" ? seed.trim() : "";
+          const validArtifacts = Array.isArray(artifacts)
+            ? artifacts.filter((a) => a && typeof a.value === "string" && a.value.trim().length > 0)
+            : [];
+          if (!cleanSeed || validArtifacts.length === 0) {
+            return skipStub(
+              "minimax_correlate",
+              `no valid inputs to correlate (seed=${cleanSeed ? "present" : "empty"}, ${validArtifacts.length} valid artifacts). Pass the seed and the artifacts gathered so far.`,
+              { seedProvided: !!cleanSeed, validArtifactCount: validArtifacts.length },
+            );
+          }
           if (guard.artifactsSinceCorrelate < 3) {
             return skipStub(
               "minimax_correlate",
