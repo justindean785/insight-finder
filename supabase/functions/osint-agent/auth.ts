@@ -8,6 +8,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import type { UIMessage } from "npm:ai@6";
 import { corsHeaders, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY } from "./env.ts";
 import { checkRateLimit as checkRateLimitDistributed, MAX_REQS_PER_MIN, MAX_REQS_PER_HOUR } from "./ratelimit.ts";
+import { detectSeedServer } from "./validation.ts";
 
 export interface SetupContext {
   supabase: ReturnType<typeof createClient>;
@@ -147,7 +148,7 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
   // ---- Verify thread ownership ------------------------------------------------
   const { data: thread } = await supabase
     .from("threads")
-    .select("id,user_id,archive_attachments,seed_type,seed_value")
+    .select("id,user_id,title,archive_attachments,seed_type,seed_value")
     .eq("id", threadId)
     .maybeSingle();
 
@@ -162,7 +163,7 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
     );
   }
   const archiveEnabled: boolean = !!(thread as { archive_attachments?: boolean }).archive_attachments;
-  const detectedSeedType: string = String(
+  let detectedSeedType: string = String(
     (thread as { seed_type?: string | null }).seed_type ?? "unknown",
   ).toLowerCase();
 
@@ -183,11 +184,15 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
       .join(" ")
       .trim();
     if (text) {
+      const isNewInvestigation = (thread as { title?: string | null }).title === "New investigation";
+      const detected = isNewInvestigation ? detectSeedServer(text) : null;
+      if (detected) detectedSeedType = detected.kind;
       await supabase
         .from("threads")
         .update({
           title: text.slice(0, 80),
           seed_value: text.slice(0, 200),
+          ...(detected ? { seed_type: detected.kind } : {}),
           updated_at: new Date().toISOString(),
         })
         .eq("id", threadId)

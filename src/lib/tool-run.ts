@@ -1,4 +1,17 @@
 export type ToolTone = "error" | "skip" | "ok" | "pending";
+export type ToolRuntimeMeta = {
+  stage?: string;
+  cycle_id?: number;
+  cache_layer?: string;
+  stale_cache?: boolean;
+  selector?: string;
+  selector_type?: string;
+  expected_value?: number;
+  rejection_reason?: string;
+  weak_lead?: boolean;
+  weak_lead_reasons?: string[];
+  source_created_at?: string;
+};
 
 type ToolOutput = Record<string, unknown> | null;
 
@@ -6,6 +19,12 @@ function asOutput(value: unknown): ToolOutput {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+export function deriveToolRuntime(output: unknown): ToolRuntimeMeta | null {
+  const data = asOutput(output);
+  if (!data || !data._runtime || typeof data._runtime !== "object" || Array.isArray(data._runtime)) return null;
+  return data._runtime as ToolRuntimeMeta;
 }
 
 function formatCredits(value: number): string {
