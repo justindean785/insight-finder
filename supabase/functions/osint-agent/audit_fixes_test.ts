@@ -3,7 +3,7 @@
 //  2. different-person / unrelated-entity gate
 //  3. reserved / fiction / invalid phone detection
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { classifySource } from "./artifact_types.ts";
+import { classifySource, inferKind } from "./artifact_types.ts";
 import { applyEvidenceCaps, isUnrelatedEntity, isBioCrossLinkName, BIO_CROSS_LINK_NAME_CAP } from "./confidence.ts";
 import { isReservedOrInvalidPhone, validateArtifact } from "./validation.ts";
 
@@ -49,6 +49,14 @@ Deno.test("phone validation attaches reserved_number metaPatch", () => {
   const v = validateArtifact("phone", "+14155550171");
   assertEquals(v.ok, true);
   assertEquals((v as { metaPatch?: Record<string, unknown> }).metaPatch?.reserved_number, true);
+});
+
+Deno.test("inferKind coerces whitespace 'username' to name instead of rejecting", () => {
+  const r = inferKind("username", "raheem abdul bey");
+  assertEquals(r.kind, "name");
+  assertEquals(r.reclassified_from, "username");
+  // A real handle is left untouched.
+  assertEquals(inferKind("username", "onerich4life4").kind, "username");
 });
 
 Deno.test("isBioCrossLinkName flags bio-linked names only", () => {

@@ -63,6 +63,13 @@ export function inferKind(rawKind: string, value: string): { kind: string; recla
   if (/spotify\.com\/artist|music\.apple\.com\/artist|soundcloud\.com|tidal\.com\/browse\/artist/i.test(v)) {
     return { kind: "music_profile", reclassified_from: rawKind };
   }
+  // A "username" with whitespace is never a valid handle — it's almost always a
+  // person name the model mis-kinded. Reclassify instead of hard-rejecting at
+  // validation (the 2026-06-13 trace lost 3 record_artifact calls to
+  // "username must not contain whitespace").
+  if (k === "username" && /\s/.test(v)) {
+    return { kind: "name", reclassified_from: "username" };
+  }
   if (k === "other") return { kind: "weak_lead", reclassified_from: "other" };
   return { kind: rawKind };
 }
