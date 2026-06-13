@@ -40,3 +40,6 @@ coverage
 
 # /lead-project run state (not for commit)
 LEAD_PROJECT_STATE.md
+playwright-report/
+test-results/
+/playwright/.cache/
