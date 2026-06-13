@@ -31,6 +31,8 @@ import { DNS_TYPES, VIRTUAL_TYPE_MAP, isVirtualType, resolveVirtualHost, filterT
 import {
   corsHeaders, SUPABASE_URL, SERVICE_KEY, MINIMAX_API_KEY, LOVABLE_API_KEY,
   lovableGateway, PRIMARY_ORCHESTRATOR_MODEL_ID, FALLBACK_MODEL_ID,
+  grokGateway, openAdapterGateway, ORCHESTRATOR_PROVIDER,
+  GROK_ORCHESTRATOR_MODEL_ID, OPENADAPTER_ORCHESTRATOR_MODEL_ID,
   OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
   CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED,
   HIBP_API_KEY, GITHUB_API_TOKEN, FIRECRAWL_API_KEY, EXA_API_KEY, JINA_API_KEY,
@@ -70,6 +72,7 @@ import { setupRequest, type SetupContext } from "./auth.ts";
 
 // providers.ts — MiniMax provider, minimaxChat, safeJson, Gemini grounded search
 import { minimax, minimaxChat, safeJson, geminiGroundedSearch } from "./providers.ts";
+import { selectOrchestratorProvider } from "./orchestrator_select.ts";
 
 // sweeper.ts — Built-in Username Sweep (~95 platforms)
 import { sweepUsername } from "./sweeper.ts";
@@ -4063,10 +4066,25 @@ Deno.serve(async (req) => {
     const MINIMAX_CHAR_BUDGET = 600_000;
     const MINIMAX_MSG_BUDGET = 150;
     const minimaxAvailable = !!MINIMAX_API_KEY;
+    // Tranche 2: pick the PRIMARY orchestrator provider. With nothing new
+    // configured this is always "minimax" and everything below is byte-for-byte
+    // the prior behavior. Grok/OpenAdapter only win when their key is set (and
+    // ORCHESTRATOR_PROVIDER pins them, or they're the only provider available).
+    const orchChoice = selectOrchestratorProvider({
+      pin: ORCHESTRATOR_PROVIDER,
+      minimax: minimaxAvailable,
+      grok: !!grokGateway,
+      openadapter: !!openAdapterGateway,
+    });
+    const minimaxIsPrimary = orchChoice.provider === "minimax";
+    // The MiniMax-specific overflow pre-pivot + health probe only apply when
+    // MiniMax is the primary. Alternative providers carry their own large
+    // context windows and reliability, so they bypass the Gemini fallback path.
     const wouldOverflow =
-      approxPromptChars > MINIMAX_CHAR_BUDGET ||
-      trimmedMessages.length > MINIMAX_MSG_BUDGET;
-    let useFallback = !minimaxAvailable || wouldOverflow;
+      minimaxIsPrimary &&
+      (approxPromptChars > MINIMAX_CHAR_BUDGET ||
+        trimmedMessages.length > MINIMAX_MSG_BUDGET);
+    let useFallback = minimaxIsPrimary ? (!minimaxAvailable || wouldOverflow) : false;
     // Pre-flight MiniMax health probe. The fallback selection above only fires
     // when MiniMax's key is missing or the prompt would overflow — it does NOT
     // catch the case where MiniMax is configured and accepts the request but is
@@ -4077,7 +4095,7 @@ Deno.serve(async (req) => {
     // fail the whole run over to Gemini instead of dying. Best-effort: any
     // probe-internal fault leaves the original selection untouched so a healthy
     // run is never broken by the probe itself.
-    if (!useFallback && lovableGateway) {
+    if (minimaxIsPrimary && !useFallback && lovableGateway) {
       try {
         const probePromise = minimaxChat({ user: "ping", maxTokens: 4, temperature: 0 });
         // Swallow a late rejection if the timeout wins the race below, so it
@@ -4108,12 +4126,19 @@ Deno.serve(async (req) => {
         "Neither MINIMAX_API_KEY nor LOVABLE_API_KEY is configured for the orchestrator.",
       );
     }
+    // Resolve the primary (non-fallback) model from the selected provider.
+    const { model: primaryModel, label: primaryLabel } =
+      orchChoice.provider === "grok"
+        ? { model: grokGateway!.chatModel(GROK_ORCHESTRATOR_MODEL_ID), label: `${GROK_ORCHESTRATOR_MODEL_ID} (xAI Grok)` }
+        : orchChoice.provider === "openadapter"
+        ? { model: openAdapterGateway!.chatModel(OPENADAPTER_ORCHESTRATOR_MODEL_ID), label: `${OPENADAPTER_ORCHESTRATOR_MODEL_ID} (OpenAdapter)` }
+        : { model: minimax.chatModel(PRIMARY_ORCHESTRATOR_MODEL_ID), label: `${PRIMARY_ORCHESTRATOR_MODEL_ID} (MiniMax direct)` };
     const orchestratorModel = useFallback
       ? lovableGateway!.chatModel(FALLBACK_MODEL_ID)
-      : minimax.chatModel(PRIMARY_ORCHESTRATOR_MODEL_ID);
+      : primaryModel;
     console.log(
-      `[orchestrator] running on ${useFallback ? FALLBACK_MODEL_ID + " (Lovable Gateway fallback)" : PRIMARY_ORCHESTRATOR_MODEL_ID + " (MiniMax direct)"} ` +
-        `(approx prompt chars=${approxPromptChars}, messages=${trimmedMessages.length})`,
+      `[orchestrator] running on ${useFallback ? FALLBACK_MODEL_ID + " (Lovable Gateway fallback)" : primaryLabel} ` +
+        `(provider=${orchChoice.provider}/${orchChoice.reason}, approx prompt chars=${approxPromptChars}, messages=${trimmedMessages.length})`,
     );
 
     // Per-step trimmer: re-applies aggressive tool-result truncation to the

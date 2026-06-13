@@ -65,6 +65,41 @@ export const PRIMARY_ORCHESTRATOR_MODEL_ID = "MiniMax-M2.7";
 // Lovable Gateway model used only if MiniMax key is missing.
 export const FALLBACK_MODEL_ID = "google/gemini-2.5-pro";
 
+// ---- Tranche 2: env-gated alternative orchestrator providers -----------------
+// These let an operator move the top-level orchestrator/synthesis turn off
+// MiniMax WITHOUT a code change. Both are null unless their keys are set, so the
+// default selection (see orchestrator_select.ts) stays MiniMax and behavior is
+// unchanged. Activate via Supabase secrets — never the repo.
+export const XAI_API_KEY = Deno.env.get("XAI_API_KEY") ?? "";
+export const OPENADAPTER_API_KEY = Deno.env.get("OPENADAPTER_API_KEY") ?? "";
+export const OPENADAPTER_BASE_URL = Deno.env.get("OPENADAPTER_BASE_URL") ?? "";
+/** Operator override pinning the primary orchestrator provider. */
+export const ORCHESTRATOR_PROVIDER = (Deno.env.get("ORCHESTRATOR_PROVIDER") ?? "").trim().toLowerCase();
+/** Orchestrator model IDs for the alternative providers (overridable).
+ * Default grok-4.3 = xAI's current flagship (leads on non-hallucination rate +
+ * agentic tool calling — the right properties for OSINT synthesis). Override
+ * with GROK_ORCHESTRATOR_MODEL_ID if xAI's lineup changes. */
+export const GROK_ORCHESTRATOR_MODEL_ID = Deno.env.get("GROK_ORCHESTRATOR_MODEL_ID") ?? "grok-4.3";
+export const OPENADAPTER_ORCHESTRATOR_MODEL_ID = Deno.env.get("OPENADAPTER_ORCHESTRATOR_MODEL_ID") ?? "";
+
+// xAI Grok — OpenAI-compatible chat completions at api.x.ai.
+export const grokGateway = XAI_API_KEY
+  ? createOpenAICompatible({
+      name: "xai-grok",
+      baseURL: "https://api.x.ai/v1",
+      headers: { Authorization: `Bearer ${XAI_API_KEY}` },
+    })
+  : null;
+
+// OpenAdapter — operator-supplied OpenAI-compatible gateway (base URL required).
+export const openAdapterGateway = (OPENADAPTER_API_KEY && OPENADAPTER_BASE_URL)
+  ? createOpenAICompatible({
+      name: "openadapter",
+      baseURL: OPENADAPTER_BASE_URL,
+      headers: { Authorization: `Bearer ${OPENADAPTER_API_KEY}` },
+    })
+  : null;
+
 // ---- External API keys -------------------------------------------------------
 export const OATHNET_API_KEY = Deno.env.get("OATHNET_API_KEY");
 export const SYNAPSINT_API_KEY = Deno.env.get("SYNAPSINT_API_KEY");

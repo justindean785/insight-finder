@@ -16,6 +16,7 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   list_tools: 0,
   google_dorks: 0,
   username_sweep: 0,
+  username_search: 0,   // deprecated alias of username_sweep — same edge-native sweep, keep at 0 so the alias never bills the default floor
   http_fingerprint: 0,
   dns_records: 50,
   wayback_snapshots: 0,
@@ -42,6 +43,11 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   oathnet_lookup: 10000,      // 100/day cap, expensive — reserve
   deepfind_reverse_email: 2000,
   deepfind_telegram_channel: 2000,
+  // Serus darkweb scan: serus_core charges 0.25 credits/scan. No public USD
+  // rate, so we use a conservative ~$0.01/credit estimate (in line with peer
+  // darkweb/breach tools like oathnet $0.01, leakcheck $0.005). Explicit on
+  // purpose — a darkweb scan must never fall through to the $0.0002 default.
+  serus_darkweb_scan: 2500,
   emailrep: 0,
   gravatar_profile: 0,
 
