@@ -17,7 +17,7 @@ import { tierOf, TIER_A, TIER_B } from "./tiers.ts";
 import { playbookFor, renderPlaybookForPrompt } from "./playbooks.ts";
 import { auditCoverage } from "./coverage.ts";
 import { detectContradictions } from "./contradictions.ts";
-import { computeAxes, sourceConfidence, applyEvidenceCaps } from "./confidence.ts";
+import { computeAxes, sourceConfidence, applyEvidenceCaps, isUnrelatedEntity, EXCLUDED_COLLISION_CONFIDENCE } from "./confidence.ts";
 import { buildWorkflowAddendum } from "./workflow_prompt.ts";
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
@@ -36,7 +36,7 @@ import {
   OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
   CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED,
   HIBP_API_KEY, GITHUB_API_TOKEN, FIRECRAWL_API_KEY, EXA_API_KEY, JINA_API_KEY,
-  GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY,
+  GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY,
   firecrawlCreditsLow, markFirecrawlCreditsLow, resetFirecrawlCreditsLow, degradedTools,
   markToolDegraded, isDegraded, fetchRetry, fetchT,
   deadHosts, markHostDead, isHostDead,
@@ -144,6 +144,7 @@ function deriveReadiness(env: {
   EXA_API_KEY?: string | null;
   FIRECRAWL_API_KEY?: string | null;
   SERUS_API_KEY?: string | null;
+  IPQUALITYSCORE_API_KEY?: string | null;
   GITHUB_API_TOKEN?: string | null;
   PERPLEXITY_API_KEY?: string | null;
 }): { ok: boolean; checks: Record<string, { ok: boolean; detail?: string }> } {
@@ -162,6 +163,7 @@ function deriveReadiness(env: {
     exa: has(env.EXA_API_KEY),
     firecrawl: has(env.FIRECRAWL_API_KEY),
     serus: has(env.SERUS_API_KEY),
+    ipqualityscore: has(env.IPQUALITYSCORE_API_KEY),
     github: has(env.GITHUB_API_TOKEN),
     perplexity: has(env.PERPLEXITY_API_KEY),
   };
@@ -200,7 +202,7 @@ Deno.serve(async (req) => {
       MINIMAX_API_KEY, LOVABLE_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY,
       OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
       CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, HIBP_API_KEY, EXA_API_KEY,
-      FIRECRAWL_API_KEY, SERUS_API_KEY, GITHUB_API_TOKEN, PERPLEXITY_API_KEY,
+      FIRECRAWL_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY, GITHUB_API_TOKEN, PERPLEXITY_API_KEY,
     });
     const body = {
       ok: r.ok,
@@ -583,7 +585,7 @@ Deno.serve(async (req) => {
               // Breach + identity
               "breach_check","leakcheck_lookup","hibp_lookup","oathnet_lookup",
               "intelbase_email_lookup","bosint_email_lookup","bosint_phone_lookup",
-              "stolentax_footprint",
+              "stolentax_footprint","serus_darkweb_scan",
               // DeepFind suite (shared 1000/day pool)
               "deepfind_reverse_email","deepfind_disposable_email","deepfind_ransomware_exposure",
               "deepfind_ssl_inspect","deepfind_tech_stack","deepfind_url_unshorten",
@@ -598,7 +600,7 @@ Deno.serve(async (req) => {
               "hunter_domain_search","hunter_email_finder","hunter_email_verifier","hunter_combined",
               // Domain / infra / IP
               "whois_lookup","dns_records","crtsh_subdomains","http_fingerprint",
-              "ip_intel","ipgeolocation_lookup","shodan_internetdb","hackertarget",
+              "ip_intel","ipgeolocation_lookup","ipqualityscore_lookup","shodan_internetdb","hackertarget",
               "urlscan_search","virustotal_lookup","synapsint_lookup",
               // Search + scrape (preferred order)
               "jina_reader_scrape","exa_search","exa_get_contents","exa_find_similar",
@@ -636,6 +638,12 @@ Deno.serve(async (req) => {
               if (PERMANENT_BLOCK.has(name)) return false;
               // HIBP can only fail without a key — keep it off the planner menu.
               if (name === "hibp_lookup" && !HIBP_API_KEY) return false;
+              // Serus needs its API key — without it every call errors, so keep
+              // it off the planner menu (it's still in baseToolList so it appears
+              // the moment SERUS_API_KEY is configured).
+              if (name === "serus_darkweb_scan" && !SERUS_API_KEY) return false;
+              // IPQualityScore: same key-gating — only proposable when configured.
+              if (name === "ipqualityscore_lookup" && !IPQUALITYSCORE_API_KEY) return false;
               // Dead/degraded tools — stop re-proposing them this investigation.
               if (brokenTools.has(name) || isDegraded(name)) return false;
               if (!HIGH_COST_TOOLS.has(name)) return true;
@@ -1663,6 +1671,51 @@ Deno.serve(async (req) => {
           } catch (e) { return { error: String(e) }; }
         },
       }),
+      ipqualityscore_lookup: tool({
+        description:
+          "IPQualityScore validity + fraud scoring (https://ipqualityscore.com). One tool, three identifier types: 'phone' | 'email' | 'ip'. Returns a `valid` flag, a 0-100 `fraud_score`, and type-specific signals: " +
+          "phone → active, line_type (mobile/landline/voip), carrier, name (CNAM), recent_abuse, do_not_call, leaked; " +
+          "email → deliverability, disposable, recent_abuse, leaked, first/last name, domain age; " +
+          "ip → proxy, vpn, tor, bot_status, recent_abuse, connection_type, ISP/org. " +
+          "USE THIS EARLY as a VALIDATION GATE before spending on deep lookups: if `valid:false` or fraud_score is high (>=85) for a phone/email seed, the identifier is reserved/fake/disposable — treat any attributions to it as low-confidence and STOP burning paid breach/people-search calls on it. Free tier ~5000/mo.",
+        inputSchema: z.object({
+          kind: z.enum(["phone", "email", "ip"]).describe("Which IPQS endpoint to hit."),
+          value: z.string().min(3).describe("Phone (E.164 preferred), email, or IP address."),
+          country: z.string().length(2).optional().describe("ISO2 country hint for phone validation (e.g. 'US'). Improves carrier/line-type accuracy."),
+          strictness: z.number().int().min(0).max(3).optional().describe("Phone/email only: 0-3. Higher = stricter validation (more checks, may raise false positives). Default 0."),
+        }),
+        execute: async ({ kind, value, country, strictness }) => {
+          const KEY = Deno.env.get("IPQUALITYSCORE_API_KEY");
+          if (!KEY) return { error: "IPQUALITYSCORE_API_KEY not configured", code: "ipqs_key_missing", hint: "Set IPQUALITYSCORE_API_KEY in the Supabase edge function secrets and redeploy." };
+          try {
+            // Host + path per IPQS docs: /api/json/{kind}/{key}/{value}. Email
+            // validation accepts a `timeout` (1-60s) that raises SMTP-probe
+            // accuracy; pass 12s and give fetchT a slightly longer ceiling so
+            // the HTTP client doesn't abort before IPQS replies.
+            const base = `https://www.ipqualityscore.com/api/json/${kind}/${encodeURIComponent(KEY)}/${encodeURIComponent(value)}`;
+            const params = new URLSearchParams();
+            if (kind === "phone" && country) params.set("country[]", country);
+            if (kind === "email") params.set("timeout", "12");
+            if (strictness !== undefined && kind !== "ip") params.set("strictness", String(strictness));
+            const qs = params.toString() ? `?${params.toString()}` : "";
+            const httpTimeout = kind === "email" ? 18_000 : 15_000;
+            const r = await fetchT(`${base}${qs}`, { headers: { Accept: "application/json" } }, httpTimeout);
+            const data = await r.json().catch(() => ({})) as Record<string, unknown>;
+            if (!r.ok || data.success === false) {
+              return { ok: false, status: r.status, error: (data.message as string) ?? "IPQualityScore lookup failed", kind, value };
+            }
+            // Compact, decision-useful projection. The orchestrator mainly needs
+            // validity + fraud_score + the strongest type-specific flags.
+            const pick = (keys: string[]) => Object.fromEntries(keys.filter((k) => k in data).map((k) => [k, data[k]]));
+            const common = pick(["valid", "fraud_score", "recent_abuse", "leaked"]);
+            const detail =
+              kind === "phone" ? pick(["active", "active_status", "formatted", "local_format", "line_type", "carrier", "name", "VOIP", "prepaid", "do_not_call", "risky", "spammer", "tcpa_blacklist", "sms_pumping", "country", "region", "city", "zip_code", "timezone", "dialing_code", "accurate_country_code", "user_activity", "associated_email_addresses"])
+              : kind === "email" ? pick(["deliverability", "disposable", "smtp_score", "overall_score", "catch_all", "dns_valid", "honeypot", "spam_trap_score", "suspect", "frequent_complainer", "generic", "first_name", "domain_age", "first_seen", "suggested_domain", "sanitized_email", "timed_out"])
+              : pick(["proxy", "vpn", "tor", "active_vpn", "active_tor", "bot_status", "connection_type", "ISP", "organization", "ASN", "country_code", "city", "is_crawler", "abuse_velocity"]);
+            return { ok: true, source: "ipqualityscore.com", kind, value, ...common, ...detail };
+          } catch (e) { return { error: String(e) }; }
+        },
+      }),
       ip_intel: tool({
         description: "Geolocate an IP and return ISP, ASN, city, country.",
         inputSchema: z.object({ ip: z.string() }),
@@ -2667,7 +2720,14 @@ Deno.serve(async (req) => {
             }
             const text = await r.text();
             return { ok: true, url: clean, markdown: text.slice(0, maxChars), truncated: text.length > maxChars };
-          } catch (e) { return { error: String(e) }; }
+          } catch (e) {
+            // Include the URL on the timeout/abort path too — without it, a
+            // failed scrape in the tool trace shows only "AbortError" with no
+            // way to tell which page timed out, making failures undebuggable.
+            const msg = String(e);
+            const aborted = e instanceof Error && (e.name === "AbortError" || /abort/i.test(msg));
+            return { error: msg, url: clean, ...(aborted ? { aborted: true, hint: "scrape timed out — try wayback_snapshots or a lighter source" } : {}) };
+          }
         },
       }),
       exa_search: tool({
@@ -3329,6 +3389,15 @@ Deno.serve(async (req) => {
               rawConfidence: a.confidence ?? 50,
               sources: [a.source ?? "", ...((a.metadata?.sources ?? []) as Iterable<unknown>)].filter(Boolean) as string[],
             });
+            // Different-person / unrelated-entity gate: if the model flagged this
+            // artifact as a namesake/collision that does NOT belong to the seed,
+            // demote it to excluded_collision with a hard-capped confidence so it
+            // can't roll up into the case score or read as a confirmed link.
+            const unrelated = isUnrelatedEntity(a.metadata ?? null);
+            const finalKind = unrelated ? "excluded_collision" : v.kind;
+            const finalConfidence = unrelated
+              ? Math.min(cap.confidence, EXCLUDED_COLLISION_CONFIDENCE)
+              : cap.confidence;
             // Required-fields envelope — fill conservative defaults when the
             // agent didn't supply them.
             const meta: Record<string, unknown> = {
@@ -3336,24 +3405,27 @@ Deno.serve(async (req) => {
               ...(v.metaPatch ?? {}),
               ...(inferred.reclassified_from ? { reclassified_from: inferred.reclassified_from } : {}),
               source_category: cap.source_classes,
-              status: a.metadata?.status ?? "new",
+              status: unrelated ? "excluded" : (a.metadata?.status ?? "new"),
               cluster_id: a.metadata?.cluster_id ?? null,
-              reason_for_confidence: cap.reason_for_confidence,
+              reason_for_confidence: unrelated
+                ? "excluded: flagged as unrelated/different entity than the seed"
+                : cap.reason_for_confidence,
               reason_not_confirmed: a.metadata?.reason_not_confirmed ?? cap.reason_not_confirmed ?? null,
               contradictions: a.metadata?.contradictions ?? [],
               next_verification_step: a.metadata?.next_verification_step ?? null,
               confidence_cap_applied: cap.cap,
+              ...(unrelated ? { excluded_collision: true, reclassified_from: a.kind } : {}),
             };
             rows.push({
               thread_id: threadId,
               user_id: userId,
-              kind: v.kind,
+              kind: finalKind,
               value: v.value,
-              confidence: cap.confidence,
+              confidence: finalConfidence,
               source: a.source ?? null,
               metadata: meta,
             });
-            accepted.push({ index: i, kind: v.kind, value: v.value });
+            accepted.push({ index: i, kind: finalKind, value: v.value });
           });
           if (rows.length === 0) {
             return { ok: false, count: 0, accepted, rejected, hint: "All items failed validation — re-check kinds/values against the rules in the tool description." };
@@ -3563,25 +3635,34 @@ Deno.serve(async (req) => {
             rawConfidence: confidence ?? 50,
             sources: [source ?? "", ...((metadata?.sources ?? []) as Iterable<unknown>)].filter(Boolean) as string[],
           });
+          // Different-person / unrelated-entity gate (see record_artifacts).
+          const unrelated = isUnrelatedEntity(metadata ?? null);
+          const finalKind = unrelated ? "excluded_collision" : v.kind;
+          const finalConfidence = unrelated
+            ? Math.min(cap.confidence, EXCLUDED_COLLISION_CONFIDENCE)
+            : cap.confidence;
           const enrichedMeta = {
             ...(metadata ?? {}),
             ...(v.metaPatch ?? {}),
             ...(inferred.reclassified_from ? { reclassified_from: inferred.reclassified_from } : {}),
             source_category: cap.source_classes,
-            status: metadata?.status ?? "new",
+            status: unrelated ? "excluded" : (metadata?.status ?? "new"),
             cluster_id: metadata?.cluster_id ?? null,
-            reason_for_confidence: cap.reason_for_confidence,
+            reason_for_confidence: unrelated
+              ? "excluded: flagged as unrelated/different entity than the seed"
+              : cap.reason_for_confidence,
             reason_not_confirmed: metadata?.reason_not_confirmed ?? cap.reason_not_confirmed ?? null,
             contradictions: metadata?.contradictions ?? [],
             next_verification_step: metadata?.next_verification_step ?? null,
             confidence_cap_applied: cap.cap,
+            ...(unrelated ? { excluded_collision: true, reclassified_from: kind } : {}),
           };
           const row = scrubArtifactRow({
             thread_id: threadId,
             user_id: userId,
-            kind: v.kind,
+            kind: finalKind,
             value: v.value,
-            confidence: cap.confidence,
+            confidence: finalConfidence,
             source: source ?? null,
             metadata: enrichedMeta,
           });
@@ -3873,6 +3954,7 @@ Deno.serve(async (req) => {
       ...(Deno.env.get("INTELBASE_API_KEY") && INTELBASE_ENABLED ? ["intelbase_email_lookup"] : []),
       ...(Deno.env.get("VIRUSTOTAL_API_KEY") ? ["virustotal_lookup"] : []),
       ...(Deno.env.get("IPGEOLOCATION_API_KEY") ? ["ipgeolocation_lookup"] : []),
+      ...(IPQUALITYSCORE_API_KEY ? ["ipqualityscore_lookup"] : []),
       ...(Deno.env.get("EXA_API_KEY") ? ["exa_search","exa_get_contents","exa_find_similar"] : []),
       ...(Deno.env.get("GEMINI_API_KEY") ? ["gemini_deep_dork"] : []),
       // Free / always-on tools
@@ -4282,6 +4364,10 @@ Deno.serve(async (req) => {
     const persistFinalMessages = async ({ messages: finalMessages }: { messages: UIMessage[] }) => {
       if (finalPersisted) return;
       finalPersisted = true;
+      // Capture the detected seed kind so it can be persisted onto the thread
+      // row at completion — historically seed_type was only stored in the
+      // triage decision JSON and the threads.seed_type column stayed null.
+      let detectedSeedKind: string | null = null;
         const assistant = [...finalMessages].reverse().find((m) => m.role === "assistant");
         if (assistant) {
           // Cap `messages.parts` payload to avoid silent PostgREST 500s when
@@ -4327,6 +4413,7 @@ Deno.serve(async (req) => {
               .filter((p) => p.type === "text").map((p) => p.text ?? "").join(" ").trim();
             const detected = detectSeedServer(seedText);
             if (detected) {
+              detectedSeedKind = detected.kind;
               const { data: arts } = await supabase
                 .from("artifacts")
                 .select("kind,value,confidence,source,metadata")
@@ -4360,7 +4447,11 @@ Deno.serve(async (req) => {
         }
         const { error: statusErr } = await supabase
           .from("threads")
-          .update({ status: "completed", updated_at: new Date().toISOString() })
+          .update({
+            status: "completed",
+            updated_at: new Date().toISOString(),
+            ...(detectedSeedKind ? { seed_type: detectedSeedKind } : {}),
+          })
           .eq("id", threadId)
           .eq("status", "active");
         if (statusErr) {

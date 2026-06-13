@@ -45,6 +45,42 @@ export function detectSeedServer(input: string): DetectedSeed | null {
   return { kind: "other", raw, normalized: raw.toLowerCase() };
 }
 
+// ---- Reserved / fiction / invalid phone detection ----------------------------
+// NANPA reserves the 555-0100..555-0199 range for fiction/examples, and certain
+// patterns (all-same digit, sequential, N11 service codes, invalid NANP area/
+// exchange codes) can never belong to a real subscriber. A seed matching any of
+// these should short-circuit to "no real owner" — otherwise reverse-lookup and
+// breach aggregators happily return placeholder/junk records that the agent then
+// mis-attributes to a real person.
+export function isReservedOrInvalidPhone(raw: string): { reserved: boolean; reason?: string } {
+  const digits = (raw ?? "").replace(/[^\d]/g, "");
+  // Strip a leading US/Canada country code for NANP analysis.
+  const nanp = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
+  if (nanp.length === 10) {
+    const area = nanp.slice(0, 3);
+    const exch = nanp.slice(3, 6);
+    const line = nanp.slice(6);
+    // 555-01xx fiction range.
+    if (exch === "555" && line >= "0100" && line <= "0199") {
+      return { reserved: true, reason: "555-01xx is the NANPA fiction/example range — no real subscriber" };
+    }
+    // Invalid NANP: area or exchange code cannot start with 0 or 1.
+    if (/^[01]/.test(area) || /^[01]/.test(exch)) {
+      return { reserved: true, reason: "invalid NANP area/exchange code (cannot start with 0 or 1)" };
+    }
+    // N11 service codes as exchange (211,311,411,511,611,711,811,911).
+    if (/^[2-9]11$/.test(exch)) {
+      return { reserved: true, reason: "N11 service-code exchange — not a subscriber line" };
+    }
+  }
+  // All-same digit or trivially sequential (any length ≥7).
+  if (digits.length >= 7) {
+    if (/^(\d)\1+$/.test(digits)) return { reserved: true, reason: "all-identical-digit number — not a real line" };
+    if (digits === "1234567890" || digits === "0123456789") return { reserved: true, reason: "sequential placeholder number" };
+  }
+  return { reserved: false };
+}
+
 // ---- Per-investigation tool-call cache TTLs ----------------------------------
 // External data changes at different rates. Unknown provider tools use the
 // conservative default instead of becoming effectively permanent.
@@ -208,6 +244,10 @@ export function validateArtifact(kind: string, rawValue: string): ValidateResult
     }
     case "phone": {
       if (!PHONE_RE.test(value)) return { ok: false, reason: "not a valid phone number" };
+      const reserved = isReservedOrInvalidPhone(value);
+      if (reserved.reserved) {
+        return { ok: true, kind, value, metaPatch: { reserved_number: true, reserved_reason: reserved.reason } };
+      }
       return { ok: true, kind, value };
     }
     // ---- Expanded analyst taxonomy (free-form, length-capped) -----------
