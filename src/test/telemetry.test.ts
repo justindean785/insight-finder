@@ -10,7 +10,7 @@ import {
 
 // jsdom provides window/localStorage; silence the structured console.error noise.
 beforeEach(() => {
-  localStorage.clear();
+  window.localStorage.clear();
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 

@@ -13,7 +13,6 @@ import {
 } from "lucide-react";
 import { BarChart3 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { timeAgo } from "@/lib/time";
 
 export const BRAIN_LAST_VISITED_KEY = "brain_last_visited";
 const BRAIN_VISIT_EVENT = "proximity:brain-visited";
@@ -77,6 +76,15 @@ function saveSet(key: string, s: Set<string>) {
   try { window.localStorage.setItem(key, JSON.stringify(Array.from(s))); } catch { /* quota or private mode — ignore */ }
 }
 
+function timeAgo(iso: string | null): string {
+  if (!iso) return "never";
+  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
 
 export default function BrainGlobalPage() {
   const { user, loading } = useAuth();

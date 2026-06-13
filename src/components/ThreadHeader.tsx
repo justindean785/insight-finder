@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import type { UIMessage } from "ai";
+import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
-import { Clock } from "lucide-react";
+import { Database, ShieldAlert, Wrench, AlertTriangle, Clock, Coins, Lock, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
-import { detectSeed } from "@/lib/seed";
 import { deriveToolTone } from "@/lib/tool-run";
-import { timeAgo } from "@/lib/time";
+import { useAuth } from "@/hooks/useAuth";
+import { toast } from "sonner";
 
 type Thread = {
   id: string;
@@ -22,20 +23,25 @@ interface MessagePartLike {
   type?: string;
   state?: string;
   errorText?: unknown;
-  output?: unknown;
   text?: unknown;
   [k: string]: unknown;
 }
 
-function detectSeedType(v: string | null | undefined): string {
-  if (!v) return "—";
-  return detectSeed(v)?.kind ?? "—";
+function timeAgo(iso: string): string {
+  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return new Date(iso).toLocaleDateString();
 }
 
 export function ThreadHeader({
   threadId, messages, isStreaming = false,
 }: { threadId: string; messages: UIMessage[]; isStreaming?: boolean }) {
+  const navigate = useNavigate();
+  const { user } = useAuth();
   const [thread, setThread] = useState<Thread | null>(null);
+  const [creating, setCreating] = useState(false);
   const { items } = useThreadArtifacts(threadId);
   const artifactCount = items.length;
   const breachCount = items.filter((a) => a.kind.toLowerCase() === "breach").length;
@@ -79,11 +85,7 @@ export function ThreadHeader({
     for (const p of m.parts as MessagePartLike[]) {
       if (typeof p?.type === "string" && p.type.startsWith("tool-")) {
         toolsRun++;
-        if (deriveToolTone({
-          state: p.state,
-          errorText: p.errorText == null ? null : String(p.errorText),
-          output: p.output,
-        }) === "error") toolsFailed++;
+        if (deriveToolTone(p) === "error") toolsFailed++;
       }
       if (p?.type === "text" && typeof p.text === "string" && p.text.startsWith("__STATUS__:failed:")) {
         isFailed = true;
@@ -91,8 +93,6 @@ export function ThreadHeader({
     }
   }
 
-  const seed = thread?.seed_value ?? "";
-  const seedType = thread?.seed_type ?? detectSeedType(seed);
   const status: "failed" | "active" | "completed" | "idle" = isFailed
     ? "failed"
     : isStreaming
@@ -101,9 +101,9 @@ export function ThreadHeader({
     ? "completed"
     : "idle";
   const statusColor =
-    status === "failed" ? "text-destructive/90 border-destructive/35 bg-destructive/10"
-      : status === "active" ? "text-primary border-primary/35 bg-primary/10"
-      : status === "completed" ? "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high)/0.3)] bg-[hsl(var(--confidence-high)/0.08)]"
+    status === "failed" ? "text-destructive border-destructive/40 bg-destructive/10"
+      : status === "active" ? "text-primary border-primary/40 bg-primary/10 animate-pulse-ring"
+      : status === "completed" ? "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high)/0.4)] bg-[hsl(var(--confidence-high)/0.1)] shadow-[0_0_14px_-2px_hsl(var(--confidence-high)/0.6)]"
       : "text-muted-foreground border-border bg-secondary/40";
 
   const showFailedTools = () => {
@@ -111,112 +111,96 @@ export function ThreadHeader({
     window.dispatchEvent(new CustomEvent("proximity:show-failed-tools", { detail: { threadId } }));
   };
 
-  const credits = thread?.credits_used ?? toolsRun;
-  const caseCode = `SWB-${new Date().getFullYear()}-${threadId.slice(0, 4).toUpperCase()}`;
-  const updatedLabel = thread?.updated_at ? timeAgo(thread.updated_at) : "—";
-  const chainScore = integrity && integrity.total > 0
-    ? integrity.ok
-      ? "100%"
-      : `${Math.max(0, Math.round(((Number(integrity.first_break ?? 1) - 1) / Math.max(integrity.total, 1)) * 100))}%`
-    : "—";
-  const focusLabel =
-    status === "failed" ? "intervention required"
-      : status === "active" ? "live collection"
-      : status === "completed" ? "review ready"
-      : "awaiting tasking";
-  const title = thread?.title?.trim() || "Untitled investigation";
+  const createInvestigation = async () => {
+    if (!user || creating) return;
+    setCreating(true);
+    const { data, error } = await supabase
+      .from("threads")
+      .insert({ user_id: user.id })
+      .select("id")
+      .single();
+    setCreating(false);
+    if (error || !data) {
+      toast.error(error?.message ?? "Could not create investigation");
+      return;
+    }
+    navigate(`/chat/${data.id}`);
+  };
 
   return (
-    <header className="sticky top-0 z-10 border-b border-border/70 bg-[linear-gradient(180deg,rgba(10,16,28,0.94),rgba(10,16,28,0.78))] px-6 py-3 backdrop-blur-xl">
-      <div className="mx-auto flex max-w-5xl flex-col gap-3 text-xs min-w-0">
-        <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-[0.22em] text-muted-foreground/70">
-              <span>Investigation workspace</span>
-              <span className="h-1 w-1 rounded-full bg-primary/60" />
-              <span className="font-mono">{caseCode}</span>
-              <span className="h-1 w-1 rounded-full bg-white/15" />
-              <span>{focusLabel}</span>
-            </div>
-
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <h1 className="min-w-0 truncate text-sm font-semibold tracking-tight text-foreground/95">
-                {title}
-              </h1>
-              <span className={cn("shrink-0 rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.16em]", statusColor)}>
-                {status}
-              </span>
-              <span className="shrink-0 rounded-full border border-primary/25 bg-primary/[0.08] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.16em] text-primary">
-                {seedType}
-              </span>
-            </div>
-
-            <div className="mt-2 flex items-center gap-3 min-w-0">
-              <div className="min-w-0 flex-1 font-mono text-[13px] text-foreground/95 truncate" title={seed}>
-                {seed || "Awaiting seed input"}
-              </div>
-              <div className="shrink-0 inline-flex items-center gap-1 font-mono text-[10px] text-muted-foreground/70">
-                <Clock className="h-3 w-3" />
-                <span title={thread?.updated_at ? new Date(thread.updated_at).toLocaleString() : ""}>
-                  {updatedLabel}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap gap-1.5 xl:w-auto xl:justify-end">
-            <HeaderChip label="Artifacts" value={String(artifactCount)} />
-            <HeaderChip label="Tools" value={String(toolsRun)} />
-            {breachCount > 0 && <HeaderChip label="Breaches" value={String(breachCount)} tone="bad" />}
-            {toolsFailed > 0 && (
-              <button onClick={showFailedTools} title="Jump to first failed tool call" className="contents">
-                <HeaderChip label="Failures" value={String(toolsFailed)} tone="bad" />
-              </button>
-            )}
-            {integrity && integrity.total > 0 && (
-              <HeaderChip
-                label="Chain"
-                value={chainScore}
-                tone={integrity.ok ? "ok" : "bad"}
-              />
-            )}
-          </div>
+    <header className="sticky top-0 z-10 border-b border-border-subtle bg-background">
+      <div className="h-11 px-4 sm:px-5 flex items-center gap-3 text-[11px] min-w-0">
+        <span className={`shrink-0 rounded-full border px-2.5 py-1 font-mono uppercase tracking-[0.18em] ${statusColor}`}>
+          {status}
+        </span>
+        <div className="flex items-center gap-1 text-muted-foreground shrink-0">
+          <Database className="w-3.5 h-3.5" />
+          <span className="text-foreground">{artifactCount}</span>
+          <span>artifacts</span>
         </div>
-
-        {/* Status indicator row — minimal, no dead pills */}
-        {isStreaming && (
-          <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-primary/80">
-            <span className="relative flex h-1.5 w-1.5">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60" />
-              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
-            </span>
-            <span>Live collection in progress</span>
+        <div className="flex items-center gap-1 text-muted-foreground shrink-0">
+          <Wrench className="w-3.5 h-3.5" />
+          <span className="text-foreground">{toolsRun}</span>
+          <span>tools</span>
+        </div>
+        <div className="flex items-center gap-1 text-muted-foreground shrink-0">
+          <ShieldAlert className="w-3.5 h-3.5" />
+          <span className="text-foreground">{breachCount}</span>
+          <span>breaches</span>
+        </div>
+        {integrity && integrity.total > 0 && (
+          <div
+            className={cn(
+              "flex items-center gap-1 rounded-full border px-2 py-1 font-mono shrink-0",
+              integrity.ok
+                ? "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/40 bg-[hsl(var(--confidence-high))]/10"
+                : "text-destructive border-destructive/40 bg-destructive/10",
+            )}
+            title={integrity.ok ? `${integrity.total} evidence rows · chain valid` : `Chain break at seq ${integrity.first_break}`}
+          >
+            <Lock className="w-3 h-3" />
+            <span>{integrity.ok ? "100%" : Math.max(0, Math.round(((Number(integrity.first_break ?? 1) - 1) / Math.max(integrity.total, 1)) * 100)) + "%"}</span>
           </div>
         )}
+        <button
+          type="button"
+          onClick={showFailedTools}
+          disabled={toolsFailed <= 0}
+          title={toolsFailed > 0 ? "Jump to first failed tool call" : "No failed calls"}
+          className={cn(
+            "flex items-center gap-1 text-muted-foreground rounded px-1 shrink-0",
+            toolsFailed > 0 && "hover:bg-destructive/10 hover:text-destructive cursor-pointer",
+          )}
+        >
+          <AlertTriangle className="w-3.5 h-3.5" />
+          <span className="text-foreground">{toolsFailed}</span>
+          <span>failed</span>
+        </button>
+        {(thread?.credits_used ?? toolsRun) > 0 && (
+          <div className="flex items-center gap-1 text-muted-foreground shrink-0">
+            <Coins className="w-3.5 h-3.5" />
+            <span className="text-foreground">{thread?.credits_used ?? toolsRun}</span>
+            <span>cr</span>
+          </div>
+        )}
+        <div className="ml-auto hidden sm:flex items-center gap-1 text-muted-foreground shrink-0">
+          <Clock className="w-3.5 h-3.5" />
+          <span title={thread?.updated_at ? new Date(thread.updated_at).toLocaleString() : "No activity yet"}>
+            {thread?.updated_at ? timeAgo(thread.updated_at) : "—"}
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={createInvestigation}
+          disabled={creating}
+          className="ml-auto sm:ml-2 inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-white/10 bg-white px-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-black transition-colors hover:bg-white/90 disabled:opacity-50"
+          aria-label="Start a new investigation"
+          title="Start a new investigation"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          <span className="hidden lg:inline">{creating ? "Creating" : "New"}</span>
+        </button>
       </div>
     </header>
   );
 }
-
-function HeaderChip({ label, value, tone }: {
-  label: string;
-  value: string;
-  tone?: "ok" | "bad";
-}) {
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[10px] uppercase tracking-[0.16em]",
-        tone === "ok"
-          ? "border-[hsl(var(--confidence-high)/0.35)] bg-[hsl(var(--confidence-high)/0.08)] text-[hsl(var(--confidence-high))]"
-          : tone === "bad"
-          ? "border-destructive/35 bg-destructive/10 text-destructive/90"
-          : "border-border-subtle/70 bg-black/10 text-muted-foreground/85",
-      )}
-    >
-      <span className="text-muted-foreground/70">{label}</span>
-      <span className="font-mono text-foreground/95">{value}</span>
-    </span>
-  );
-}
-

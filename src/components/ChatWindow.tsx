@@ -9,29 +9,22 @@ import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  ArrowUp, Loader2, ChevronDown, ChevronRight, Wrench, RotateCcw, AlertTriangle,
+  ArrowDown, ArrowUp, Loader2, ChevronDown, ChevronRight, Wrench, RotateCcw, AlertTriangle,
   StickyNote, CheckCircle2, XCircle, Clock, CircleSlash, Square,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
 import { toast } from "sonner";
 import { ThreadHeader } from "./ThreadHeader";
 import { detectSeed } from "@/lib/seed";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { buildPivots } from "@/lib/intel";
+import { deriveToolCharge, deriveToolPreview, deriveToolRuntime, deriveToolTone } from "@/lib/tool-run";
+import { shouldFollowChatScroll } from "@/lib/chat-scroll";
 import {
-  deriveToolCharge,
-  deriveToolPreview,
-  deriveToolReason,
-  deriveToolTone,
-  describeTransportError,
-  parseHttpStatusFromError,
-} from "@/lib/tool-run";
-import { toolDisplayName } from "@/lib/tool-display";
+  extractRecommendedPivots,
+  recommendedPivotsStorageKey,
+} from "@/lib/recommended-pivots";
 import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon } from "lucide-react";
-
-// Module-scoped so the health probe survives ChatWindowInner remounts on thread switch.
-let _readyProbedOnce = false;
 
 const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.trim();
 const SUPABASE_PROJECT_ID = (import.meta.env.VITE_SUPABASE_PROJECT_ID as string | undefined)?.trim();
@@ -57,6 +50,27 @@ function signalWithTimeout(ms: number): { signal: AbortSignal; cancel: () => voi
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new DOMException("TimeoutError", "TimeoutError")), ms);
   return { signal: controller.signal, cancel: () => clearTimeout(timer) };
+}
+
+function parseHttpStatusFromError(err: unknown): number | null {
+  const msg = String((err as { message?: unknown })?.message ?? err ?? "");
+  const m = msg.match(/\bHTTP\s*([45]\d{2})\b/i) ?? msg.match(/\bstatus\s*[:=]\s*([45]\d{2})\b/i) ?? msg.match(/\b([45]\d{2})\b/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
+function describeTransportError(err: unknown): string {
+  const msg = String((err as { message?: unknown })?.message ?? err ?? "").toLowerCase();
+  const status = parseHttpStatusFromError(err);
+  if (status === 401) return "Session expired — your login has timed out. Sign in again to continue.";
+  if (status === 403) return "Access denied — this thread doesn't belong to your account. Open your own thread or create a new one.";
+  if (status === 404) return "Edge function not deployed — the OSINT agent backend wasn't found. Deploy the Supabase function and retry.";
+  if (status === 429) return "Rate limited by the scan backend — too many requests. Wait ~30 seconds and try again.";
+  if (status === 502 || status === 503 || status === 504) return "Scan backend temporarily unavailable — upstream provider or dependency is down. Retry in a minute.";
+  if (status && status >= 500) return `Backend error (HTTP ${status}) — the OSINT agent encountered a server fault. Check Supabase function logs for details.`;
+  if (/failed to fetch|networkerror|network request failed|load failed|dns/i.test(msg)) return "Network failure — cannot reach the scan backend. Verify your Supabase project is running and the function URL is correct.";
+  return "Scan request failed before the stream started — check the browser console for transport details.";
 }
 
 async function fetchWithRetry(url: RequestInfo | URL, init?: RequestInit): Promise<Response> {
@@ -194,11 +208,9 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
     setNote(v);
   }, [noteKey]);
 
-  const outputObj: Record<string, unknown> | null =
-    part.output && typeof part.output === "object" ? (part.output as Record<string, unknown>) : null;
   const tone = deriveToolTone(part);
   const failed = tone === "error";
-  const done = state === "output-available";
+  const done = tone === "ok";
   const ts = createdAt ? new Date(createdAt) : null;
 
   // Duration: capture wall-clock when the call resolves so we can show
@@ -252,6 +264,8 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
   }, [failed]);
 
   // Cache-hit detection: the edge function marks cached outputs with `_cached: true`.
+  const outputObj: Record<string, unknown> | null =
+    part.output && typeof part.output === "object" ? (part.output as Record<string, unknown>) : null;
   const cached = !!outputObj?._cached;
 
   // Model tier — tagged by wrapToolsWithCache from the model registry.
@@ -262,13 +276,7 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
   const tierModel: string | null =
     outputObj && typeof outputObj._model === "string" ? outputObj._model : null;
 
-  // Skipped ≠ failed. The engine sets `skipped:true` on intentional non-runs
-  // (NXDOMAIN host, not-configured key, circuit-breaker, dedup, timeout marker).
-  // These read as neutral, not alarming — only a genuine error is red.
-  const statusReason = deriveToolReason(outputObj);
-  const charge = deriveToolCharge(outputObj);
-
-  // Extract small artifact preview when output is array-like
+  const charge = deriveToolCharge(part.output);
   const artifactPreview = deriveToolPreview(name, part.output);
 
   return (
@@ -276,65 +284,58 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
       ref={rootRef}
       data-failed-tool={failed ? "true" : undefined}
       className={cn(
-        "group relative my-2 text-xs animate-fade-up overflow-hidden",
-        failed ? "intel-node intel-node--failed" : "intel-node",
+        "group relative my-2 text-xs animate-fade-up overflow-hidden rounded-2xl border backdrop-blur-xl",
+        failed
+          ? "intel-node intel-node--failed border-destructive/30 bg-[linear-gradient(180deg,rgba(70,20,20,0.24),rgba(16,9,9,0.82))] shadow-[0_24px_60px_-46px_hsl(var(--danger)/0.55)]"
+          : "intel-node border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.015))] shadow-[0_24px_60px_-48px_rgba(0,0,0,0.85)]",
         flash && "ring-2 ring-destructive/60",
       )}
     >
-      {/* status rail — restrained, no neon glow (Gotham) */}
+      {/* status rail */}
       <span
         className={cn(
           "absolute left-0 top-0 bottom-0 w-[2px]",
-          tone === "error" ? "bg-destructive/70"
-            : tone === "skip" ? "bg-muted-foreground/25"
-            : tone === "ok" ? "bg-primary/70"
+          failed
+            ? "bg-destructive shadow-[0_0_12px_hsl(var(--danger)/0.7)]"
+            : tone === "skip"
+            ? "bg-muted-foreground/30"
+            : done
+            ? "bg-primary shadow-[0_0_12px_hsl(var(--intel-blue)/0.6)]"
             : "bg-muted-foreground/40",
         )}
       />
       <button
         onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-center gap-3 px-4 py-3 text-left"
+        className="w-full flex items-center gap-3 px-4 py-3.5 text-left"
       >
         <span
           className={cn(
-            "inline-flex items-center justify-center w-1.5 h-1.5 rounded-full shrink-0",
-            tone === "error" ? "bg-destructive/70"
-              : tone === "skip" ? "bg-muted-foreground/40"
-              : tone === "ok" ? "bg-primary/70"
-              : "bg-muted-foreground/50 animate-pulse",
+            "inline-flex items-center justify-center w-2 h-2 rounded-full shrink-0",
+            failed
+              ? "bg-destructive shadow-[0_0_10px_hsl(var(--danger)/0.8)]"
+              : tone === "skip"
+              ? "bg-muted-foreground/45"
+              : done
+              ? "bg-primary shadow-[0_0_10px_hsl(var(--intel-blue)/0.7)]"
+              : "bg-muted-foreground/60 animate-pulse",
           )}
         />
         <span
           className={cn(
-            "text-[11px] font-medium tracking-tight truncate",
-            tone === "error" ? "text-destructive/80"
-              : tone === "skip" ? "text-muted-foreground/65"
-              : "text-foreground/85",
+            "font-mono text-[11px] font-semibold tracking-[0.14em] uppercase truncate",
+            failed ? "text-destructive" : "text-foreground/85",
           )}
         >
-          {toolDisplayName(name)}
+          {name}
         </span>
-        {tone === "error" ? (
-          <XCircle className="w-3.5 h-3.5 text-destructive/75 shrink-0" />
+        {failed ? (
+          <XCircle className="w-3.5 h-3.5 text-destructive shrink-0" />
         ) : tone === "skip" ? (
-          <CircleSlash className="w-3.5 h-3.5 text-muted-foreground/55 shrink-0" />
-        ) : tone === "ok" ? (
-          <CheckCircle2 className="w-3.5 h-3.5 text-primary/75 shrink-0" />
+          <CircleSlash className="w-3.5 h-3.5 text-muted-foreground/70 shrink-0" />
+        ) : done ? (
+          <CheckCircle2 className="w-3.5 h-3.5 text-primary shrink-0" />
         ) : (
           <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground shrink-0" />
-        )}
-        {(tone === "skip" || tone === "error") && statusReason && (
-          <span
-            className={cn(
-              "hidden sm:inline rounded-[3px] px-1.5 py-px text-[10px] font-medium tracking-wide truncate max-w-[46%]",
-              tone === "error"
-                ? "border border-destructive/25 bg-destructive/10 text-destructive/75"
-                : "border border-border-subtle/60 bg-white/[0.02] text-muted-foreground/70",
-            )}
-            title={statusReason}
-          >
-            {statusReason}
-          </span>
         )}
         {artifactPreview && (
           <span className="text-[11px] text-muted-foreground font-mono shrink-0">
@@ -402,13 +403,7 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
         )}
       </button>
       {open && (
-        <div className="border-t border-white/5 p-4 space-y-3 text-xs">
-          <div className="flex items-center gap-2 text-[10px] text-muted-foreground/60">
-            <Wrench className="w-3 h-3" />
-            <span className="font-mono uppercase tracking-[0.12em]">{name}</span>
-            {durationLabel && <span className="font-mono">· {durationLabel}</span>}
-            {charge?.label && <span className="font-mono" title={charge.title ?? undefined}>· {charge.label}</span>}
-          </div>
+        <div className="border-t border-white/6 bg-background/40 p-4 space-y-3 text-xs">
           {part.input != null && (
             <CodePanel
               label="Input"
@@ -455,6 +450,132 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
               >Save note</Button>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+type ToolRunGroup = {
+  key: string;
+  stage: string;
+  cycleId: number;
+  parts: ToolPartShape[];
+  selectors: string[];
+  cached: number;
+  stale: number;
+  skipped: number;
+  failed: number;
+  useful: number;
+  credits: string[];
+  expectedValues: number[];
+  reasons: string[];
+};
+
+function groupToolParts(parts: MessagePartShape[]): Array<ToolRunGroup | { part: ToolPartShape }> {
+  const groups: Array<ToolRunGroup | { part: ToolPartShape }> = [];
+  let current: ToolRunGroup | null = null;
+  for (const candidate of parts) {
+    if (typeof candidate.type !== "string" || !candidate.type.startsWith("tool-")) continue;
+    const part = candidate as ToolPartShape;
+    const name = part.type.replace(/^tool-/, "");
+    const runtime = deriveToolRuntime(part.output);
+    const stage = runtime?.stage ?? "REVIEW";
+    const cycleId = typeof runtime?.cycle_id === "number" ? runtime.cycle_id : -1;
+    const key = `${stage}:${cycleId}`;
+    const tone = deriveToolTone(part);
+    const cached = runtime?.cache_layer === "thread" || runtime?.cache_layer === "user" || !!(part.output && typeof part.output === "object" && (part.output as Record<string, unknown>)._cached);
+    const stale = runtime?.stale_cache === true;
+    const charge = deriveToolCharge(part.output).label;
+    const selector = typeof runtime?.selector === "string" && runtime.selector ? runtime.selector : name;
+    const useful = tone === "ok" && !cached && !stale ? 1 : 0;
+    const reason = typeof runtime?.rejection_reason === "string" ? runtime.rejection_reason : "";
+    if (!current || current.key !== key) {
+      current = {
+        key,
+        stage,
+        cycleId,
+        parts: [],
+        selectors: [],
+        cached: 0,
+        stale: 0,
+        skipped: 0,
+        failed: 0,
+        useful: 0,
+        credits: [],
+        expectedValues: [],
+        reasons: [],
+      };
+      groups.push(current);
+    }
+    current.parts.push(part);
+    current.selectors.push(selector);
+    if (cached) current.cached += 1;
+    if (stale) current.stale += 1;
+    if (tone === "skip") current.skipped += 1;
+    if (tone === "error") current.failed += 1;
+    current.useful += useful;
+    if (charge) current.credits.push(charge);
+    if (typeof runtime?.expected_value === "number") current.expectedValues.push(runtime.expected_value);
+    if (reason) current.reasons.push(reason);
+  }
+  return groups;
+}
+
+function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt?: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const avgExpected = group.expectedValues.length
+    ? Math.round(group.expectedValues.reduce((sum, value) => sum + value, 0) / group.expectedValues.length)
+    : null;
+  const time = createdAt ? new Date(createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : null;
+  const selectors = Array.from(new Set(group.selectors)).slice(0, 3);
+  const extra = Math.max(0, new Set(group.selectors).size - selectors.length);
+  const summaryBits = [
+    group.cached > 0 ? `${group.cached} cached` : null,
+    group.stale > 0 ? `${group.stale} stale` : null,
+    group.skipped > 0 ? `${group.skipped} skipped` : null,
+    group.failed > 0 ? `${group.failed} failed` : null,
+    group.useful > 0 ? `${group.useful} completed` : null,
+  ].filter(Boolean);
+  return (
+    <div className="rounded-2xl border border-white/8 bg-white/[0.03] text-[11px] text-muted-foreground">
+      <button
+        type="button"
+        className="w-full px-4 py-3 text-left"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((value) => !value)}
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+          <span className="font-mono uppercase tracking-[0.2em] text-foreground/80">
+            {group.stage} cycle {group.cycleId > 0 ? group.cycleId : "?"}
+          </span>
+          <span>{group.parts.length} call{group.parts.length === 1 ? "" : "s"}</span>
+          {avgExpected != null && <span>EV {avgExpected}</span>}
+          {time && <span>{time}</span>}
+        </div>
+        <div className="mt-1 break-all text-foreground/80 sm:break-normal">
+          {selectors.join(" • ")}
+          {extra > 0 ? ` • +${extra} more` : ""}
+        </div>
+        <div className="mt-1 flex flex-wrap gap-2">
+          {summaryBits.map((bit) => (
+            <span key={bit} className="rounded-md border border-white/8 bg-black/20 px-1.5 py-0.5 font-mono text-[10px]">
+              {bit}
+            </span>
+          ))}
+        </div>
+        {group.reasons[0] && (
+          <div className="mt-1 text-[10px] text-muted-foreground/80">
+            {group.reasons[0]}
+          </div>
+        )}
+      </button>
+      {expanded && (
+        <div className="space-y-2 border-t border-white/8 px-3 py-3">
+          {group.parts.map((part, partIndex) => (
+            <ToolPart key={`${group.key}-${partIndex}`} part={part} createdAt={createdAt} />
+          ))}
         </div>
       )}
     </div>
@@ -609,10 +730,7 @@ function formatAge(ms: number): string {
 
 function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean }) {
   if (m.role === "user") {
-    const rawText = (m.parts as MessagePartShape[]).filter((p) => p.type === "text").map((p) => p.text).join("");
-    // Split the human text from the "Attached files:" block so we render image
-    // previews / file chips instead of the raw Supabase signed URL.
-    const { body, attachments } = parseUserMessage(rawText);
+    const text = (m.parts as MessagePartShape[]).filter((p) => p.type === "text").map((p) => p.text).join("");
     return (
       <div className="flex justify-end">
         <div
@@ -634,35 +752,7 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
               boxShadow: "0 0 12px hsl(var(--primary) / 0.55)",
             }}
           />
-          {body && <div>{body}</div>}
-          {attachments.length > 0 && (
-            <div className={cn("flex flex-wrap gap-2", body && "mt-2")}>
-              {attachments.map((a, i) =>
-                isImageAttachment(a) ? (
-                  <a key={i} href={a.url} target="_blank" rel="noreferrer" className="block" title={a.name}>
-                    <img
-                      src={a.url}
-                      alt={a.name}
-                      loading="lazy"
-                      className="max-h-40 max-w-[12rem] rounded-lg border border-white/10 object-cover"
-                    />
-                  </a>
-                ) : (
-                  <a
-                    key={i}
-                    href={a.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    title={a.name}
-                    className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs hover:bg-white/[0.08] transition-colors no-underline"
-                  >
-                    <FileText className="w-4 h-4 shrink-0 text-muted-foreground" />
-                    <span className="truncate max-w-[10rem]">{a.name}</span>
-                  </a>
-                ),
-              )}
-            </div>
-          )}
+          {text}
         </div>
       </div>
     );
@@ -672,16 +762,18 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
   const cacheMeta = parts.find((p) => p?.type === CACHE_BANNER_TYPE)?.data as
     | { cachedAt: string }
     | undefined;
+  const toolGroups = groupToolParts(parts);
   // Detect failed run sentinel
   const firstText = parts.find((p) => p.type === "text");
   if (firstText?.text?.startsWith?.(FAIL_PREFIX)) {
     const reason = firstText.text.slice(FAIL_PREFIX.length);
     return (
       <div className="space-y-2">
-        {parts.map((p, i) => {
-          if (typeof p.type === "string" && p.type.startsWith("tool-")) return <ToolPart key={i} part={p as ToolPartShape} createdAt={createdAt} />;
-          return null;
-        })}
+        {toolGroups.map((entry, i) => "part" in entry ? (
+          <ToolPart key={`failed-tool-${i}`} part={entry.part} createdAt={createdAt} />
+        ) : (
+          <ToolGroupSummary key={`failed-group-${entry.key}-${i}`} group={entry} createdAt={createdAt} />
+        ))}
         {onRetry && <FailedRunCard reason={reason} onRetry={onRetry} />}
       </div>
     );
@@ -691,15 +783,25 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
       {cacheMeta && onRerun && (
         <CacheBanner cachedAt={cacheMeta.cachedAt} onRerun={onRerun} busy={!!rerunBusy} />
       )}
+      {toolGroups.length > 0 && (
+        <div className="space-y-2">
+          {toolGroups.map((entry, i) => "part" in entry ? (
+            <ToolPart key={`tool-${i}`} part={entry.part} createdAt={createdAt} />
+          ) : (
+            <ToolGroupSummary key={`${entry.key}-${i}`} group={entry} createdAt={createdAt} />
+          ))}
+        </div>
+      )}
       {parts.map((p, i) => {
         if (p.type === CACHE_BANNER_TYPE) return null;
+        if (typeof p.type === "string" && p.type.startsWith("tool-")) return null;
         if (p.type === "text") {
           const cleaned = stripThinkTags(p.text ?? "");
           if (!cleaned) return null;
           return (
             <div
               key={i}
-              className="prose prose-sm prose-invert max-w-none min-w-0 break-words prose-headings:font-display prose-headings:tracking-tight prose-h1:text-base prose-h2:text-sm prose-h2:mt-4 prose-h2:mb-2 prose-h2:pb-1 prose-h2:border-b prose-h2:border-border-subtle prose-h3:text-[13px] prose-h3:mt-3 prose-h3:mb-1.5 prose-p:leading-relaxed prose-p:my-2 prose-li:my-0.5 prose-strong:text-foreground prose-strong:font-semibold prose-code:text-primary prose-code:bg-secondary/60 prose-code:px-1 prose-code:py-px prose-code:rounded prose-code:before:content-none prose-code:after:content-none prose-a:text-primary prose-a:no-underline hover:prose-a:underline prose-hr:border-border-subtle"
+              className="prose prose-sm prose-invert font-chat max-w-none min-w-0 break-words prose-headings:font-display prose-headings:tracking-tight prose-h1:text-base prose-h2:text-sm prose-h2:mt-4 prose-h2:mb-2 prose-h2:pb-1 prose-h2:border-b prose-h2:border-border-subtle prose-h3:text-[13px] prose-h3:mt-3 prose-h3:mb-1.5 prose-p:leading-7 prose-p:my-2 prose-li:my-0.5 prose-strong:text-foreground prose-strong:font-semibold prose-code:text-[hsl(var(--info))] prose-code:px-1 prose-code:py-px prose-code:rounded prose-code:before:content-none prose-code:after:content-none prose-a:text-[hsl(var(--info))] prose-a:no-underline hover:prose-a:underline prose-hr:border-border-subtle"
             >
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
@@ -708,37 +810,29 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
                   p: ({ node, children, ...rest }) => <p {...rest}>{wrapChildren(children)}</p>,
                   li: ({ node, children, ...rest }) => <li {...rest}>{wrapChildren(children)}</li>,
                   pre: ({ node, children, ...rest }) => (
-                    <div className="group/code my-2.5 -mx-1 sm:mx-0 rounded-lg border border-border-subtle bg-[hsl(230_18%_4%)] overflow-hidden shadow-[inset_0_1px_0_hsl(0_0%_100%/0.03)]">
-                      {/* terminal-style data panel header — reads as a real OSINT console */}
-                      <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-border-subtle/70 bg-white/[0.015]">
-                        <span className="h-2 w-2 rounded-full bg-foreground/15" />
-                        <span className="h-2 w-2 rounded-full bg-foreground/15" />
-                        <span className="h-2 w-2 rounded-full bg-foreground/15" />
-                        <span className="ml-1.5 text-[9.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70">output</span>
-                      </div>
-                      {/* pre-wrap (not pre) so long intel-report lines wrap instead of clipping at the panel edge */}
+                    <div className="my-2 -mx-1 sm:mx-0 rounded-lg border border-border-subtle bg-secondary/40 overflow-hidden">
                       <pre
                         {...rest}
-                        className="overflow-x-auto whitespace-pre-wrap break-words px-3.5 py-3 text-[11px] sm:text-[12px] leading-[1.6] font-mono text-foreground/95 [scrollbar-width:thin]"
+                        className="overflow-x-auto whitespace-pre p-3 text-[10.5px] sm:text-[11.5px] leading-[1.55] font-mono text-foreground/90 [scrollbar-width:thin]"
                       >
                         {children}
                       </pre>
                     </div>
                   ),
                   table: ({ node, children, ...rest }) => (
-                    <div className="my-2.5 -mx-1 sm:mx-0 rounded-lg border border-border-subtle bg-[hsl(230_18%_5%)] overflow-x-auto [scrollbar-width:thin]">
-                      <table {...rest} className="w-full text-[11px] border-collapse">
+                    <div className="my-2 -mx-1 sm:mx-0 rounded-lg border border-border-subtle bg-secondary/30 overflow-x-auto [scrollbar-width:thin]">
+                      <table {...rest} className="w-full text-[11.5px] border-collapse">
                         {children}
                       </table>
                     </div>
                   ),
                   th: ({ node, children, ...rest }) => (
-                    <th {...rest} className="text-left font-mono text-[9.5px] font-semibold uppercase tracking-[0.13em] text-muted-foreground/70 px-2.5 py-2 border-b border-border-subtle bg-white/[0.02] whitespace-nowrap">
+                    <th {...rest} className="text-left font-semibold text-foreground px-2.5 py-1.5 border-b border-border-subtle bg-secondary/40 whitespace-nowrap">
                       {children}
                     </th>
                   ),
                   td: ({ node, children, ...rest }) => (
-                    <td {...rest} className="align-top px-2.5 py-1.5 border-b border-border-subtle/35 text-foreground/90 font-mono">
+                    <td {...rest} className="align-top px-2.5 py-1.5 border-b border-border-subtle/60 text-foreground/90">
                       {wrapChildren(children)}
                     </td>
                   ),
@@ -861,11 +955,14 @@ function ChatWindowInner({
   const [createdAtMap, setCreatedAtMap] = useState<Record<string, string>>(initialCreatedAtMap);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const userScrolledUpRef = useRef(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const followLatestRef = useRef(true);
   const [input, setInput] = useState("");
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const failSavedRef = useRef(false);
   const unmountedRef = useRef(false);
+  const readyProbedOnceRef = useRef(false);
   const [rerunBusy, setRerunBusy] = useState(false);
   const { items: artifacts } = useThreadArtifacts(threadId);
   const [seedValue, setSeedValue] = useState<string | null>(null);
@@ -920,12 +1017,7 @@ function ChatWindowInner({
         unmountedRef.current ||
         (e as { name?: unknown })?.name === "AbortError" ||
         /abort|aborted|cancel|user aborted|the operation was aborted/i.test(msg);
-      // On mobile, switching apps suspends the tab and kills the stream with
-      // a generic network error — not an AbortError. Treat "failed to fetch"
-      // while the tab is hidden the same way: the run continues server-side.
-      const isHiddenNetworkDrop =
-        document.hidden && /failed to fetch|load failed|networkerror|network request failed/i.test(msg);
-      if (isAbort || isHiddenNetworkDrop) return;
+      if (isAbort) return;
       failSavedRef.current = true;
       const reason = (e?.message ?? "stream failed").slice(0, 500);
       const friendly = describeTransportError(e);
@@ -951,26 +1043,94 @@ function ChatWindowInner({
     if (status === "submitted" || status === "streaming") failSavedRef.current = false;
   }, [status]);
 
-  // Only auto-scroll if user hasn't manually scrolled up to review old results.
   useEffect(() => {
-    if (!userScrolledUpRef.current) {
-      endRef.current?.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [messages]);
-
-  // Track whether the user has scrolled up away from the bottom.
-  useEffect(() => {
-    const el = scrollContainerRef.current;
-    if (!el) return;
-    const onScroll = () => {
-      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      userScrolledUpRef.current = distFromBottom > 150;
+    const channel = supabase
+      .channel(`chat-message-recovery-${threadId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "messages",
+          filter: `thread_id=eq.${threadId}`,
+        },
+        (payload) => {
+          const row = payload.new as {
+            id?: string;
+            role?: "user" | "assistant";
+            parts?: UIMessage["parts"];
+            created_at?: string;
+          };
+          if (!row.id || !row.role || !Array.isArray(row.parts)) return;
+          const serialized = JSON.stringify(row.parts);
+          setMessages((current) => {
+            const alreadyPresent = current.some((message) =>
+              message.id === row.id ||
+              (message.role === row.role && JSON.stringify(message.parts) === serialized)
+            );
+            if (alreadyPresent) return current;
+            return [...current, {
+              id: row.id,
+              role: row.role,
+              parts: row.parts,
+            } as UIMessage];
+          });
+          if (row.created_at) {
+            setCreatedAtMap((current) => ({ ...current, [row.id!]: row.created_at! }));
+          }
+        },
+      )
+      .subscribe();
+    return () => {
+      void supabase.removeChannel(channel);
     };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
-  }, []);
+  }, [setMessages, threadId]);
 
-  useEffect(() => { inputRef.current?.focus(); }, [threadId, status]);
+  useEffect(() => {
+    if (!followLatestRef.current) return;
+    const frame = requestAnimationFrame(() => {
+      const viewport = scrollRef.current;
+      if (viewport) viewport.scrollTop = viewport.scrollHeight;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [messages]);
+  useEffect(() => { inputRef.current?.focus(); }, [threadId]);
+
+  const beginInvestigation = useCallback(async () => {
+    const { error: statusError } = await supabase
+      .from("threads")
+      .update({ status: "active", updated_at: new Date().toISOString() })
+      .eq("id", threadId);
+    if (statusError) throw statusError;
+    followLatestRef.current = true;
+    setShowJumpToLatest(false);
+  }, [threadId]);
+
+  const stopInvestigation = useCallback(async () => {
+    if (stopping) return;
+    setStopping(true);
+    try {
+      const { error: statusError } = await supabase
+        .from("threads")
+        .update({ status: "stopped", updated_at: new Date().toISOString() })
+        .eq("id", threadId);
+      if (statusError) throw statusError;
+      stop();
+      toast.info("Investigation stopped");
+    } catch (stopError) {
+      console.error("stopInvestigation failed:", stopError);
+      toast.error("Could not stop the investigation");
+    } finally {
+      setStopping(false);
+    }
+  }, [stop, stopping, threadId]);
+
+  const jumpToLatest = useCallback(() => {
+    followLatestRef.current = true;
+    setShowJumpToLatest(false);
+    const viewport = scrollRef.current;
+    if (viewport) viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" });
+  }, []);
 
   const send = async () => {
     const text = input.trim();
@@ -1019,8 +1179,8 @@ function ChatWindowInner({
     //   404 → function not deployed
     //   200 + ok:true  → ready to scan
     //   200 + ok:false → deployed but a required dep is missing (e.g. orchestrator key)
-    if (!_readyProbedOnce) {
-      _readyProbedOnce = true;
+    if (!readyProbedOnceRef.current) {
+      readyProbedOnceRef.current = true;
       const { signal, cancel } = signalWithTimeout(5000);
       try {
         const probeRes = await fetch(`${FUNCTIONS_URL}?health=1`, { method: "GET", signal });
@@ -1049,7 +1209,7 @@ function ChatWindowInner({
       } catch (probeErr) {
         if ((probeErr as Error)?.name === "TimeoutError" || (probeErr as Error)?.name === "AbortError") {
           toast.error("Scan backend timed out — Supabase function may be cold-starting. Retry in a few seconds.");
-          _readyProbedOnce = false; // allow retry
+          readyProbedOnceRef.current = false; // allow retry
           return;
         }
         // Network error — let it through; the real sendMessage will surface it
@@ -1060,6 +1220,7 @@ function ChatWindowInner({
     setInput("");
     setAttachments([]);
     try {
+      await beginInvestigation();
       await sendMessage({ text: composed });
     } catch (e) {
       // useChat's onError only fires for stream errors. Pre-stream failures
@@ -1128,19 +1289,21 @@ function ChatWindowInner({
     const t = text.trim();
     if (!t || status === "streaming" || status === "submitted") return;
     try {
+      await beginInvestigation();
       await sendMessage({ text: t });
     } catch (e) {
       console.error("sendText failed:", e);
       toast.error(`Failed to send message: ${describeTransportError(e)}`);
     }
-  }, [sendMessage, status]);
+  }, [beginInvestigation, sendMessage, status]);
 
   // Listen for "run pivot" events dispatched from the Pivots tab.
   useEffect(() => {
     const onRunPivot = (e: Event) => {
-      const detail = (e as CustomEvent<{ threadId: string; value: string; type?: string }>).detail;
+      const detail = (e as CustomEvent<{ threadId: string; value: string; type?: string; prompt?: string }>).detail;
       if (!detail || detail.threadId !== threadId) return;
-      const prompt = `Pivot on ${detail.value}${detail.type ? ` (${detail.type})` : ""}. Run the next investigation step on this lead.`;
+      const prompt = detail.prompt ??
+        `Pivot on ${detail.value}${detail.type ? ` (${detail.type})` : ""}. Run the next investigation step on this lead.`;
       void sendText(prompt);
     };
     window.addEventListener("proximity:run-pivot", onRunPivot as EventListener);
@@ -1292,6 +1455,7 @@ function ChatWindowInner({
         await supabase.from("messages").delete().in("id", synthIds);
       }
       setMessages((prev) => prev.filter((m) => !(m.role === "assistant" && (m.parts as MessagePartShape[]).some((p) => p?.type === CACHE_BANNER_TYPE))));
+      await beginInvestigation();
       await sendMessage({ text });
     } finally {
       setRerunBusy(false);
@@ -1315,10 +1479,33 @@ function ChatWindowInner({
       }
       return out;
     });
+    await beginInvestigation();
     await sendMessage({ text });
   };
 
   const isLoading = status === "submitted" || status === "streaming";
+
+  const reportPivots = useMemo(() => {
+    const latestAssistant = [...messages].reverse().find((message) => message.role === "assistant");
+    if (!latestAssistant) return [];
+    const text = (latestAssistant.parts as MessagePartShape[])
+      .filter((part) => part.type === "text")
+      .map((part) => part.text ?? "")
+      .join("\n");
+    return extractRecommendedPivots(text);
+  }, [messages]);
+
+  useEffect(() => {
+    if (reportPivots.length === 0) return;
+    try {
+      localStorage.setItem(recommendedPivotsStorageKey(threadId), JSON.stringify(reportPivots));
+    } catch {
+      // Storage may be unavailable in private browsing; the event still syncs this tab.
+    }
+    window.dispatchEvent(new CustomEvent("swarmbot:report-pivots", {
+      detail: { threadId, pivots: reportPivots },
+    }));
+  }, [reportPivots, threadId]);
 
   // Build suggested next-step replies after the agent stops streaming.
   // Memoized — without this the IIFE re-runs on every streamed token because
@@ -1340,31 +1527,35 @@ function ChatWindowInner({
       }
       return v.length > 36 ? v.slice(0, 34) + "…" : v;
     };
-    // Diversify: prefer 1 pivot per type before doubling up, and skip url pivots
-    // unless there's nothing better — they tend to all look identical when truncated.
-    const allPivots = buildPivots(artifacts, seedValue).filter((p) => p.status === "new");
-    const nonUrl = allPivots.filter((p) => p.type !== "url");
-    const urls = allPivots.filter((p) => p.type === "url");
-    const ordered = [...nonUrl, ...urls];
-    for (const p of ordered) {
-      if (out.length >= 3) break;
-      const typeCount = seenTypes.get(p.type) ?? 0;
-      // Cap at 1 per type until every type has been offered
-      if (typeCount >= 1 && out.length < Math.min(3, ordered.length)) {
-        // allow only after we've cycled through other types
-        const distinctTypes = new Set(ordered.map((x) => x.type)).size;
-        if (seenTypes.size < distinctTypes) continue;
+    if (reportPivots.length > 0) {
+      for (const pivot of reportPivots.slice(0, 3)) {
+        seenLabels.add(pivot.label);
+        out.push({ label: pivot.label, prompt: pivot.prompt, icon: "pivot" });
       }
-      const display = shortValue(p.value, p.type);
-      const label = `Pivot on ${display}`;
-      if (seenLabels.has(label)) continue;
-      seenLabels.add(label);
-      seenTypes.set(p.type, typeCount + 1);
-      out.push({
-        label,
-        prompt: `Pivot on "${p.value}" (${p.type}). Run the next investigation step on this specific lead.`,
-        icon: "pivot",
-      });
+    } else {
+      // No explicit final-report recommendations: fall back to artifact-derived leads.
+      const allPivots = buildPivots(artifacts, seedValue).filter((p) => p.status === "new");
+      const nonUrl = allPivots.filter((p) => p.type !== "url");
+      const urls = allPivots.filter((p) => p.type === "url");
+      const ordered = [...nonUrl, ...urls];
+      for (const p of ordered) {
+        if (out.length >= 3) break;
+        const typeCount = seenTypes.get(p.type) ?? 0;
+        if (typeCount >= 1 && out.length < Math.min(3, ordered.length)) {
+          const distinctTypes = new Set(ordered.map((x) => x.type)).size;
+          if (seenTypes.size < distinctTypes) continue;
+        }
+        const display = shortValue(p.value, p.type);
+        const label = `Pivot on ${display}`;
+        if (seenLabels.has(label)) continue;
+        seenLabels.add(label);
+        seenTypes.set(p.type, typeCount + 1);
+        out.push({
+          label,
+          prompt: `Pivot on "${p.value}" (${p.type}). Run the next investigation step on this specific lead.`,
+          icon: "pivot",
+        });
+      }
     }
     // Always include 1-2 generic next steps as fallback.
     const generic = [
@@ -1379,37 +1570,81 @@ function ChatWindowInner({
       out.push({ ...g, icon: "spark" });
     }
     return out.slice(0, 4);
-  }, [isLoading, messages, artifacts, seedValue]);
+  }, [isLoading, messages, artifacts, seedValue, reportPivots]);
 
   return (
-    <div className="flex-1 flex flex-col h-screen min-w-0">
+    <div className="relative flex-1 flex flex-col h-screen min-w-0 overflow-hidden bg-background">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(255,255,255,0.05),transparent_34%),radial-gradient(circle_at_50%_100%,rgba(43,52,68,0.18),transparent_28%)]" />
+      <div className="pointer-events-none absolute inset-y-0 left-[calc(50%-28rem)] w-px bg-gradient-to-b from-transparent via-white/8 to-transparent hidden xl:block" />
+      <div className="pointer-events-none absolute inset-y-0 right-[calc(50%-28rem)] w-px bg-gradient-to-b from-transparent via-white/8 to-transparent hidden xl:block" />
       <ThreadHeader threadId={threadId} messages={messages} isStreaming={isLoading} />
-      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden px-6 py-6">
-        <div className="max-w-3xl mx-auto space-y-6 min-w-0">
+      <div
+        ref={scrollRef}
+        onScroll={(event) => {
+          const viewport = event.currentTarget;
+          const follow = shouldFollowChatScroll(viewport.scrollHeight, viewport.scrollTop, viewport.clientHeight);
+          followLatestRef.current = follow;
+          setShowJumpToLatest(!follow);
+        }}
+        className="relative z-10 flex-1 overflow-y-auto overflow-x-hidden px-4 sm:px-6 py-5"
+      >
+        <div className="max-w-[56rem] mx-auto space-y-6 min-w-0">
+          <div className="h-2" aria-hidden />
           {messages.length === 0 && (
-            <div className="flex flex-col items-center justify-center py-16 sm:py-24 animate-fade-up">
-              <div className="text-[10px] font-mono uppercase tracking-[0.22em] text-muted-foreground/60">
-                New investigation
-              </div>
-              <p className="mt-3 text-center text-sm text-muted-foreground max-w-sm leading-relaxed">
-                Paste an email, username, IP, domain, phone, or wallet to begin.
-              </p>
-              <div className="mt-5 flex flex-wrap justify-center gap-2">
-                {[
-                  { seed: "taciocero@icloud.com", label: "Email" },
-                  { seed: "elonmusk", label: "Username" },
-                  { seed: "8.8.8.8", label: "IP" },
-                  { seed: "lovable.app", label: "Domain" },
-                ].map(({ seed: s, label }) => (
-                  <button
-                    key={s}
-                    onClick={() => setInput(s)}
-                    className="group flex items-center gap-2 px-3 py-2 rounded-xl border border-border-subtle/80 bg-white/[0.02] hover:border-primary/30 hover:bg-primary/[0.04] transition-colors"
-                  >
-                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground/50 group-hover:text-primary/60">{label}</span>
-                    <span className="font-mono text-[12px] text-foreground/80">{s}</span>
-                  </button>
-                ))}
+            <div className="py-10 sm:py-16">
+              <div className="max-w-[52rem] mx-auto rounded-[30px] border border-white/12 bg-[radial-gradient(circle_at_top,rgba(44,50,64,0.28),transparent_42%),linear-gradient(180deg,rgba(17,19,23,0.99),rgba(8,9,11,0.99))] overflow-hidden shadow-[0_40px_120px_-60px_rgba(0,0,0,0.95)] ring-1 ring-white/6">
+                <div className="px-6 py-4 border-b border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.01))] flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-evidence/90 shadow-[0_0_16px_hsl(var(--info)/0.85)]" />
+                    <span className="text-[11px] font-mono uppercase tracking-[0.26em] text-muted-foreground">
+                      Case File
+                    </span>
+                  </div>
+                  <span className="font-mono text-[12px] tabular-nums text-foreground/65">
+                    {`SWB-${new Date().getFullYear()}-${threadId.slice(0, 4).toUpperCase()}`}
+                  </span>
+                </div>
+                <div className="px-6 py-5 grid grid-cols-[180px_1fr] gap-y-3 gap-x-8 text-[13px] border-b border-white/8">
+                  <span className="text-muted-foreground uppercase text-[10px] tracking-[0.18em] self-center">Status</span>
+                  <div className="flex items-center gap-2">
+                    <span className="px-2.5 py-1 rounded-full border border-[hsl(var(--confidence-high))/30] bg-[hsl(var(--confidence-high))/10] text-[hsl(var(--confidence-high))] font-mono text-[10px] uppercase tracking-[0.16em] shadow-[0_0_18px_-14px_hsl(var(--confidence-high)/0.9)]">
+                      Ready
+                    </span>
+                    <span className="text-foreground/65 font-mono text-[12px]">awaiting first seed</span>
+                  </div>
+                  <span className="text-muted-foreground uppercase text-[10px] tracking-[0.18em] self-center">Opened</span>
+                  <span className="font-mono tabular-nums text-foreground">
+                    {new Date().toUTCString().replace("GMT", "UTC")}
+                  </span>
+                  <span className="text-muted-foreground uppercase text-[10px] tracking-[0.18em] self-center">Classification</span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="px-2 py-1 rounded-md border border-info/30 bg-info/10 text-info font-mono text-[10px] uppercase tracking-[0.16em] shadow-[0_0_18px_-12px_hsl(var(--info)/0.85)]">
+                      Internal
+                    </span>
+                  </span>
+                </div>
+                <div className="px-6 py-7 space-y-5 font-chat">
+                  <div className="space-y-2.5 max-w-xl">
+                    <div className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-[0.22em] text-muted-foreground">
+                      <span className="w-1.5 h-1.5 rounded-full bg-primary/80 shadow-[0_0_10px_hsl(var(--primary)/0.8)]" />
+                      Seed
+                    </div>
+                    <p className="max-w-[44ch] text-[15px] text-foreground/92 leading-7">
+                      Paste a domain, email, handle, IP, phone, or wallet below to open the investigation. The agent will detect the type automatically.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {["taciocero@icloud.com", "elonmusk", "8.8.8.8", "lovable.app"].map((s) => (
+                      <button
+                        key={s}
+                        onClick={() => setInput(s)}
+                        className="px-3.5 py-1.5 rounded-lg border border-white/10 bg-white/[0.03] hover:border-info/40 hover:bg-info/5 font-mono text-[11px] tabular-nums text-foreground/88 transition-colors"
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
           )}
@@ -1476,10 +1711,20 @@ function ChatWindowInner({
           )}
           <div ref={endRef} />
         </div>
+        {showJumpToLatest && (
+          <button
+            type="button"
+            onClick={jumpToLatest}
+            className="sticky bottom-3 ml-auto flex h-9 items-center gap-2 rounded-full border border-white/10 bg-surface-2/95 px-3 text-[11px] font-medium text-foreground shadow-[0_16px_40px_-20px_rgba(0,0,0,0.95)] backdrop-blur-xl hover:bg-surface-3"
+          >
+            <ArrowDown className="h-3.5 w-3.5" />
+            Latest
+          </button>
+        )}
       </div>
 
-      <div className="border-t border-white/5 bg-gradient-to-t from-background via-background/95 to-background/0 px-4 pt-6 pb-4 sm:pb-5">
-        <div className="max-w-3xl mx-auto">
+      <div className="relative z-10 border-t border-border-subtle bg-background/95 backdrop-blur-xl px-4 pt-5 pb-4 sm:pb-5">
+        <div className="max-w-[56rem] mx-auto">
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2">
               {attachments.map((a) => {
@@ -1487,7 +1732,7 @@ function ChatWindowInner({
                 return (
                   <div
                     key={a.id}
-                    className="flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full glass-interactive text-xs max-w-[260px]"
+                    className="flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full border border-border-subtle bg-surface-1 text-xs max-w-[260px]"
                   >
                     {a.uploading ? (
                       <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
@@ -1510,58 +1755,55 @@ function ChatWindowInner({
               })}
             </div>
           )}
-          <div className="composer-halo rounded-2xl">
-            <div className="relative rounded-2xl bg-[hsl(230_12%_5%/0.92)] border border-white/10 backdrop-blur-xl transition-colors focus-within:border-primary/40">
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(e) => onFilesPicked(e.target.files)}
-            />
-            <Textarea
-              ref={inputRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-              placeholder="Investigate an email, username, phone, IP, or domain…"
-              rows={2}
-              className="bg-transparent border-0 resize-none focus-visible:ring-0 focus-visible:ring-offset-0 pl-14 pr-16 py-3.5 text-sm placeholder:text-muted-foreground/60"
-            />
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isLoading}
-              className="absolute bottom-2.5 left-2.5 rounded-full h-9 w-9 bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 text-muted-foreground hover:text-foreground transition-all"
-              aria-label="Attach file"
-              title="Attach file"
-            >
-              <Paperclip className="w-4 h-4" />
-            </Button>
-            {isLoading ? (
+          <div className="rounded-[28px] border border-white/10 bg-surface-0 p-1 shadow-[0_24px_54px_-42px_rgba(0,0,0,0.95)]">
+            <div className="relative rounded-[24px] border border-white/10 bg-background transition-colors focus-within:border-white/20">
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(e) => onFilesPicked(e.target.files)}
+              />
+              <Textarea
+                ref={inputRef}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+                placeholder="Investigate an email, username, phone, IP, or domain…"
+                rows={2}
+                className="font-chat bg-transparent border-0 resize-none focus-visible:ring-0 focus-visible:ring-offset-0 pl-14 pr-16 py-4 text-[15px] leading-6 tracking-[-0.01em] placeholder:text-muted-foreground/60"
+              />
               <Button
                 type="button"
-                onClick={() => { stop(); toast.message("Investigation stopped"); }}
+                variant="ghost"
                 size="icon"
-                aria-label="Stop investigation"
-                title="Stop"
-                className="absolute bottom-2.5 right-2.5 rounded-xl h-9 w-9 bg-destructive/90 hover:bg-destructive text-destructive-foreground border-0"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isLoading}
+                className="absolute bottom-2.5 left-2.5 rounded-full h-9 w-9 bg-surface-1 hover:bg-surface-2 border border-white/10 text-muted-foreground hover:text-foreground transition-all"
+                aria-label="Attach file"
+                title="Attach file"
               >
-                <Square className="w-3.5 h-3.5 fill-current" />
+                <Paperclip className="w-4 h-4" />
               </Button>
-            ) : (
               <Button
-                onClick={send}
-                disabled={(!input.trim() && attachments.length === 0) || uploading}
+                onClick={isLoading ? stopInvestigation : send}
+                disabled={isLoading ? stopping : ((!input.trim() && attachments.length === 0) || uploading)}
                 size="icon"
-                aria-label="Send"
-                className="absolute bottom-2.5 right-2.5 rounded-xl h-9 w-9 bg-gradient-to-br from-primary to-[hsl(var(--intel-violet))] hover:opacity-95 text-primary-foreground shadow-[0_8px_24px_-8px_hsl(var(--intel-blue)/0.7)] border-0"
+                className={cn(
+                  "absolute bottom-2.5 right-2.5 rounded-2xl h-10 w-10 border-0",
+                  isLoading
+                    ? "bg-destructive text-destructive-foreground hover:bg-destructive/90 shadow-[0_8px_24px_-10px_hsl(var(--danger)/0.65)]"
+                    : "bg-gradient-to-br from-primary to-[hsl(var(--intel-violet))] hover:opacity-95 text-primary-foreground shadow-[0_8px_24px_-8px_hsl(var(--intel-blue)/0.7)]",
+                )}
+                aria-label={isLoading ? "Stop investigation" : "Start investigation"}
+                title={isLoading ? "Stop investigation" : "Start investigation"}
               >
-                <ArrowUp className="w-4 h-4" />
+                {isLoading
+                  ? stopping
+                    ? <Loader2 className="w-4 h-4 animate-spin" />
+                    : <Square className="w-3.5 h-3.5 fill-current" />
+                  : <ArrowUp className="w-4 h-4" />}
               </Button>
-            )}
             </div>
           </div>
         </div>

@@ -15,11 +15,12 @@ export default {
     },
     extend: {
       fontFamily: {
-        sans: ['Sora', '"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', '-apple-system', 'sans-serif'],
-        condensed: ['Sora', '"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-        display: ['Sora', '"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-        serif: ['"Cormorant Garamond"', 'ui-serif', 'Georgia', 'serif'],
-        mono: ['"JetBrains Mono"', '"IBM Plex Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+        sans: ['Geist', 'ui-sans-serif', 'system-ui', '-apple-system', 'sans-serif'],
+        chat: ['Inter', 'Geist', 'ui-sans-serif', 'system-ui', '-apple-system', 'sans-serif'],
+        condensed: ['Geist', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        display: ['Geist', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        serif: ['ui-serif', 'Georgia', 'serif'],
+        mono: ['"Geist Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
       },
       colors: {
         border: "hsl(var(--border))",
