@@ -5,22 +5,13 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { discoverCapabilities } from "./capabilities.ts";
 
-// DeepFind re-verified 2026-06-13: reverse_email + disposable_email still 200
-// with a valid key (they are NOT in this list); the rest 404 (routes removed).
+// DeepFind re-verified 2026-06-13 against the live API with a valid key: 12/14
+// endpoints work (correct methods already in code). Only these two still 404
+// upstream and stay disabled; synapsint stays disabled (5xx every call).
 const DEAD_TOOLS = [
   "synapsint_lookup",
   "deepfind_ransomware_exposure",
-  "deepfind_ssl_inspect",
-  "deepfind_tech_stack",
-  "deepfind_url_unshorten",
   "deepfind_profile_analyzer",
-  "deepfind_telegram_channel",
-  "deepfind_telegram_search",
-  "deepfind_vin_lookup",
-  "deepfind_aircraft_lookup",
-  "deepfind_vessel_lookup",
-  "deepfind_mac_lookup",
-  "deepfind_dark_web_link",
 ];
 
 Deno.test("disabled providers stay gated even with their API key set", () => {
@@ -42,10 +33,25 @@ Deno.test("a healthy keyed provider is still available (control)", () => {
   assertEquals(ipqs?.reason, "ok");
 });
 
-Deno.test("surviving deepfind endpoints are available when key is set", () => {
+Deno.test("working deepfind endpoints are available when key is set", () => {
   const caps = discoverCapabilities({ DEEPFIND_API_KEY: true }, null);
   const byTool = new Map(caps.map((c) => [c.tool, c]));
-  for (const t of ["deepfind_reverse_email", "deepfind_disposable_email"]) {
+  for (
+    const t of [
+      "deepfind_reverse_email",
+      "deepfind_disposable_email",
+      "deepfind_ssl_inspect",
+      "deepfind_tech_stack",
+      "deepfind_url_unshorten",
+      "deepfind_telegram_channel",
+      "deepfind_telegram_search",
+      "deepfind_vin_lookup",
+      "deepfind_aircraft_lookup",
+      "deepfind_vessel_lookup",
+      "deepfind_mac_lookup",
+      "deepfind_dark_web_link",
+    ]
+  ) {
     assertEquals(byTool.get(t)?.available, true, `${t} should be available with key`);
   }
 });
