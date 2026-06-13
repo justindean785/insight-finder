@@ -3,7 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import {
   Mail, Phone, Globe, User as UserIcon, Network, ShieldAlert, MapPin, Image as ImgIcon, Tag,
   Copy, CheckCircle2, XCircle, PanelRightOpen, PanelRightClose, Star, ShieldQuestion, EyeOff,
-  Database, BarChart3, Lock, FileOutput,
+  Database, BarChart3, Lock, FileOutput, ChevronRight,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -323,19 +323,53 @@ export function ResourcesPanel({
   );
 }
 
+// Provenance string shown under a row / in a cluster header.
+function provFor(a: Artifact): string {
+  const meta = (a.metadata ?? {}) as Record<string, unknown>;
+  return typeof meta.platform === "string" ? meta.platform
+    : typeof meta.breach_source === "string" ? `breach · ${meta.breach_source}`
+    : a.source ?? "";
+}
+
+// Title-case a kind for a subheader, with light pluralization.
+function kindHeading(kind: string, n: number): string {
+  const base = kind.replace(/_/g, " ");
+  const label = base.charAt(0).toUpperCase() + base.slice(1);
+  if (n === 1) return label;
+  if (/[^aeiou]y$/i.test(label)) return label.slice(0, -1) + "ies";
+  if (/(s|x|z|ch|sh)$/i.test(label)) return label + "es";
+  return label + "s";
+}
+
+// Same-kind clusters larger than this collapse by default — they're the source
+// of the "wall of identical rows" (e.g. 11 subdomains, all hackertarget @70%).
+const CLUSTER_COLLAPSE_THRESHOLD = 4;
+
 function ArtifactsList({
   items, onSelect, review,
 }: { items: Artifact[]; onSelect: (a: Artifact) => void; review: ReturnType<typeof useReviewStates> }) {
-  // Memoized so review-state changes / hover / tab switches don't re-group the
-  // whole evidence set on every render.
-  const grouped = useMemo(
-    () => items.reduce<Record<Group, Artifact[]>>((acc, a) => {
+  // Track which kind-clusters the user has manually toggled open/closed.
+  // Keyed by `${group}:${kind}`; undefined = use the default (collapsed when big).
+  const [openClusters, setOpenClusters] = useState<Record<string, boolean>>({});
+
+  // Group → kind → artifacts, with kinds and rows sorted by confidence so the
+  // strongest evidence surfaces first. Memoized so hover / review-state changes
+  // don't re-bucket the whole evidence set.
+  const grouped = useMemo(() => {
+    const byGroup = {} as Record<Group, Record<string, Artifact[]>>;
+    for (const a of items) {
       const g = groupForKind(a.kind);
-      (acc[g] ??= []).push(a);
-      return acc;
-    }, {} as Record<Group, Artifact[]>),
-    [items],
-  );
+      ((byGroup[g] ??= {})[a.kind] ??= []).push(a);
+    }
+    const conf = (a: Artifact) => {
+      const fp = ((a.metadata ?? {}) as Record<string, unknown>).false_positive === true;
+      return fp ? -1 : (a.confidence ?? 0);
+    };
+    for (const g of Object.keys(byGroup) as Group[]) {
+      for (const k of Object.keys(byGroup[g])) byGroup[g][k].sort((a, b) => conf(b) - conf(a));
+    }
+    return byGroup;
+  }, [items]);
 
   if (items.length === 0) {
     return (
@@ -348,12 +382,13 @@ function ArtifactsList({
 
   return (
     <div className="px-2 py-3 space-y-5">
-      {GROUP_ORDER.filter((g) => grouped[g]?.length).map((g) => {
+      {GROUP_ORDER.filter((g) => grouped[g] && Object.keys(grouped[g]).length).map((g) => {
         const Icon = GROUP_ICON[g];
-        const list = grouped[g];
-        // Per-cluster severity breakdown for the header summary.
+        const kinds = Object.keys(grouped[g]);
+        const all = kinds.flatMap((k) => grouped[g][k]);
+        // Per-group severity breakdown for the header summary.
         let high = 0, mid = 0, low = 0, failedC = 0;
-        for (const a of list) {
+        for (const a of all) {
           const meta = (a.metadata ?? {}) as Record<string, unknown>;
           if (meta.false_positive === true) { failedC++; continue; }
           const c = a.confidence ?? 0;
@@ -361,6 +396,8 @@ function ArtifactsList({
           else if (c >= 50) mid++;
           else low++;
         }
+        // Order kinds by their strongest member so high-value kinds lead.
+        kinds.sort((a, b) => (grouped[g][b][0]?.confidence ?? 0) - (grouped[g][a][0]?.confidence ?? 0));
         return (
           <div key={g}>
             {/* Group header: quiet label · count, with a muted severity breakdown (red when flagged) */}
@@ -377,7 +414,7 @@ function ArtifactsList({
               >
                 {GROUP_LABEL[g]}
               </span>
-              <span className="text-[10.5px] tabular-nums text-muted-foreground/80">· {list.length}</span>
+              <span className="text-[10.5px] tabular-nums text-muted-foreground/80">· {all.length}</span>
               <span className="ml-auto flex items-center gap-2 text-[9.5px] tabular-nums">
                 {high > 0 && <span style={{ color: "hsl(var(--confidence-high))" }}>{high} hi</span>}
                 {mid > 0 && <span style={{ color: "hsl(var(--confidence-mid))" }}>{mid} md</span>}
@@ -386,83 +423,70 @@ function ArtifactsList({
               </span>
             </div>
 
-            <div className="divide-y divide-border-subtle/35">
-              {list.map((a) => {
-                const meta = (a.metadata ?? {}) as Record<string, unknown>;
-                const fp = meta.false_positive === true;
-                const sensitive = meta.possible_minor === true || meta.minor_warning === true;
-                const rState = review.get(a.id);
-                const dismissed = rState === "dismissed";
-                const conf = a.confidence ?? 0;
-                const confColor =
-                  conf >= 70 ? "hsl(var(--confidence-high))" :
-                  conf >= 50 ? "hsl(var(--confidence-mid))" :
-                  "hsl(var(--confidence-low))";
-                const prov =
-                  typeof meta.platform === "string" ? meta.platform :
-                  typeof meta.breach_source === "string" ? `breach · ${meta.breach_source}` :
-                  a.source ?? "";
+            <div className="space-y-0.5">
+              {kinds.map((kind) => {
+                const list = grouped[g][kind];
+                // A cluster shares one provenance when every row resolves to the
+                // same source — then we show it once in the subheader and drop
+                // the repeated per-row line.
+                const provs = new Set(list.map(provFor).filter(Boolean));
+                const uniformProv = provs.size === 1 ? [...provs][0] : null;
+                const collapsible = list.length > CLUSTER_COLLAPSE_THRESHOLD;
+                const key = `${g}:${kind}`;
+                const open = openClusters[key] ?? !collapsible;
+                // Confidence range across the cluster, for the collapsed summary.
+                const confs = list.map((a) => a.confidence).filter((c): c is number => c != null);
+                const lo = confs.length ? Math.min(...confs) : null;
+                const hi = confs.length ? Math.max(...confs) : null;
+                const rangeColor = (hi ?? 0) >= 70 ? "hsl(var(--confidence-high))"
+                  : (hi ?? 0) >= 50 ? "hsl(var(--confidence-mid))" : "hsl(var(--confidence-low))";
                 return (
-                  <HoverCard key={a.id} openDelay={250} closeDelay={80}>
-                    <HoverCardTrigger asChild>
-                      <div
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => onSelect(a)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(a); }
-                        }}
-                        data-density-row
-                        className={cn(
-                          "group/row flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                          fp ? "hover:bg-danger-muted/30" : "hover:bg-white/[0.04]",
-                          dismissed && "opacity-50",
-                        )}
-                      >
-                        <span className="min-w-0 flex-1">
-                          <span className="flex items-center gap-1.5">
-                            {rState === "confirmed" && <CheckCircle2 className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-high))]" />}
-                            {rState === "key" && <Star className="h-3 w-3 shrink-0 text-primary" />}
-                            {rState === "recheck" && <ShieldQuestion className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-mid))]" />}
-                            {rState === "dismissed" && <EyeOff className="h-3 w-3 shrink-0 text-muted-foreground" />}
-                            {fp && <XCircle className="h-3 w-3 shrink-0 text-destructive" />}
-                            {sensitive && <ShieldAlert className="h-3 w-3 shrink-0 text-destructive" />}
-                            <span className={cn("truncate text-[13px] text-foreground/95", fp && "line-through opacity-70")}>
-                              {a.value}
-                            </span>
-                          </span>
-                          {prov && (
-                            <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground/80">
-                              {prov}
-                            </span>
-                          )}
+                  <div key={kind}>
+                    {/* Kind subheader — clickable when the cluster is collapsible */}
+                    <div
+                      role={collapsible ? "button" : undefined}
+                      tabIndex={collapsible ? 0 : undefined}
+                      aria-expanded={collapsible ? open : undefined}
+                      onClick={collapsible ? () => setOpenClusters((p) => ({ ...p, [key]: !open })) : undefined}
+                      onKeyDown={collapsible ? (e) => {
+                        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpenClusters((p) => ({ ...p, [key]: !open })); }
+                      } : undefined}
+                      className={cn(
+                        "flex items-center gap-1.5 px-2 py-1 rounded-md",
+                        collapsible && "cursor-pointer hover:bg-white/[0.03] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                      )}
+                    >
+                      {collapsible ? (
+                        <ChevronRight className={cn("h-3 w-3 shrink-0 text-muted-foreground/70 transition-transform", open && "rotate-90")} />
+                      ) : (
+                        <span className="w-3 shrink-0" />
+                      )}
+                      <span className="text-[11px] font-medium text-foreground/75">{kindHeading(kind, list.length)}</span>
+                      <span className="text-[10px] tabular-nums text-muted-foreground/70">· {list.length}</span>
+                      {uniformProv && (
+                        <span className="truncate font-mono text-[9.5px] text-muted-foreground/60">{uniformProv}</span>
+                      )}
+                      {lo != null && hi != null && (
+                        <span className="ml-auto text-[10px] font-semibold tabular-nums" style={{ color: rangeColor }}>
+                          {lo === hi ? `${hi}%` : `${lo}–${hi}%`}
                         </span>
-                        <button
-                          type="button"
-                          aria-label={`Copy ${a.value}`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            navigator.clipboard.writeText(a.value).then(
-                              () => toast.success("Copied"),
-                              () => toast.error("Copy failed"),
-                            );
-                          }}
-                          className="shrink-0 rounded text-muted-foreground/70 opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/row:opacity-100"
-                        >
-                          <Copy className="h-3.5 w-3.5" />
-                        </button>
-                        {a.confidence != null && (
-                          <span className="flex shrink-0 items-center gap-1">
-                            <span className="w-9 text-right text-[12px] font-semibold tabular-nums" style={{ color: confColor }}>{conf}%</span>
-                            <ConfidenceExplain artifact={a} review={rState} />
-                          </span>
-                        )}
+                      )}
+                    </div>
+
+                    {open && (
+                      <div className="divide-y divide-border-subtle/35 pl-2">
+                        {list.map((a) => (
+                          <ArtifactRow
+                            key={a.id}
+                            a={a}
+                            onSelect={onSelect}
+                            review={review}
+                            hideProv={uniformProv != null}
+                          />
+                        ))}
                       </div>
-                    </HoverCardTrigger>
-                    <HoverCardContent side="left" align="start" className="w-72 overflow-hidden p-0 border-border-subtle">
-                      <ArtifactPeek artifact={a} confColor={confColor} />
-                    </HoverCardContent>
-                  </HoverCard>
+                    )}
+                  </div>
                 );
               })}
             </div>
@@ -470,6 +494,89 @@ function ArtifactsList({
         );
       })}
     </div>
+  );
+}
+
+function ArtifactRow({
+  a, onSelect, review, hideProv,
+}: {
+  a: Artifact;
+  onSelect: (a: Artifact) => void;
+  review: ReturnType<typeof useReviewStates>;
+  hideProv: boolean;
+}) {
+  const meta = (a.metadata ?? {}) as Record<string, unknown>;
+  const fp = meta.false_positive === true;
+  const sensitive = meta.possible_minor === true || meta.minor_warning === true;
+  const rState = review.get(a.id);
+  const dismissed = rState === "dismissed";
+  const conf = a.confidence ?? 0;
+  const confColor =
+    conf >= 70 ? "hsl(var(--confidence-high))" :
+    conf >= 50 ? "hsl(var(--confidence-mid))" :
+    "hsl(var(--confidence-low))";
+  const prov = provFor(a);
+  return (
+    <HoverCard openDelay={250} closeDelay={80}>
+      <HoverCardTrigger asChild>
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => onSelect(a)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(a); }
+          }}
+          data-density-row
+          className={cn(
+            "group/row flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            fp ? "hover:bg-danger-muted/30" : "hover:bg-white/[0.04]",
+            dismissed && "opacity-50",
+          )}
+        >
+          <span className="min-w-0 flex-1">
+            <span className="flex items-center gap-1.5">
+              {rState === "confirmed" && <CheckCircle2 className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-high))]" />}
+              {rState === "key" && <Star className="h-3 w-3 shrink-0 text-primary" />}
+              {rState === "recheck" && <ShieldQuestion className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-mid))]" />}
+              {rState === "dismissed" && <EyeOff className="h-3 w-3 shrink-0 text-muted-foreground" />}
+              {fp && <XCircle className="h-3 w-3 shrink-0 text-destructive" />}
+              {sensitive && <ShieldAlert className="h-3 w-3 shrink-0 text-destructive" />}
+              <span className={cn("truncate text-[13px] text-foreground/95", fp && "line-through opacity-70")}>
+                {a.value}
+              </span>
+            </span>
+            {!hideProv && prov && (
+              <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground/80">
+                {prov}
+              </span>
+            )}
+          </span>
+          <button
+            type="button"
+            aria-label={`Copy ${a.value}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              navigator.clipboard.writeText(a.value).then(
+                () => toast.success("Copied"),
+                () => toast.error("Copy failed"),
+              );
+            }}
+            className="shrink-0 rounded text-muted-foreground/70 opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/row:opacity-100"
+          >
+            <Copy className="h-3.5 w-3.5" />
+          </button>
+          {a.confidence != null && (
+            <span className="flex shrink-0 items-center gap-1">
+              <span className="w-9 text-right text-[12px] font-semibold tabular-nums" style={{ color: confColor }}>{conf}%</span>
+              <ConfidenceExplain artifact={a} review={rState} />
+            </span>
+          )}
+        </div>
+      </HoverCardTrigger>
+      <HoverCardContent side="left" align="start" className="w-72 overflow-hidden p-0 border-border-subtle">
+        <ArtifactPeek artifact={a} confColor={confColor} />
+      </HoverCardContent>
+    </HoverCard>
   );
 }
 
