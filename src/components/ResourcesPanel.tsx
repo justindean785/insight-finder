@@ -3,7 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import {
   Mail, Phone, Globe, User as UserIcon, Network, ShieldAlert, MapPin, Image as ImgIcon, Tag,
   Copy, CheckCircle2, XCircle, PanelRightOpen, PanelRightClose, Star, ShieldQuestion, EyeOff,
-  Database, BarChart3, Lock, FileOutput, ChevronRight,
+  Database, BarChart3, Lock, FileOutput, ChevronRight, Layers,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -87,6 +87,10 @@ export function ResourcesPanel({
   const [seed, setSeed] = useState<{ value: string | null; type: string | null } | null>(null);
   const [section, setSection] = useState<"evidence" | "analysis" | "provenance" | "output">("evidence");
   const [tab, setTab] = useState<string>("artifacts");
+  // Two-level chrome: a flat strip of the few main views, plus a "Full review"
+  // tab that reveals the complete section/sub-tab navigation. Keeps the common
+  // case to 3 tabs instead of 4 sections × 12 sub-tabs.
+  const [mode, setMode] = useState<"main" | "full">("main");
 
   const SECTIONS = [
     { key: "evidence" as const, label: "Evidence", icon: Database, tabs: [
@@ -111,6 +115,16 @@ export function ResourcesPanel({
     ] },
   ];
 
+  // The handful of views surfaced at the top level. Each already exists as a
+  // sub-tab inside SECTIONS, so Full review just re-exposes the complete nav.
+  const MAIN_TABS = [
+    { v: "overview", l: "Overview", icon: BarChart3 },
+    { v: "artifacts", l: "Artifacts", icon: Database },
+    { v: "report", l: "Report", icon: FileOutput },
+  ] as const;
+  const sectionForTab = (v: string) =>
+    SECTIONS.find((s) => s.tabs.some((t) => t.v === v))?.key;
+
   const TAB_COUNTS: Record<string, number | undefined> = {
     artifacts: items.length,
     matrix: items.length,
@@ -129,8 +143,18 @@ export function ResourcesPanel({
   useEffect(() => {
     const onNav = (e: Event) => {
       const detail = (e as CustomEvent).detail as { section?: typeof section; tab?: string };
-      if (detail?.section) setSection(detail.section);
-      if (detail?.tab) setTab(detail.tab);
+      if (detail?.section) { setSection(detail.section); setMode("full"); }
+      if (detail?.tab) {
+        setTab(detail.tab);
+        const isMain = ["overview", "artifacts", "report"].includes(detail.tab);
+        if (!detail.section) {
+          setMode(isMain ? "main" : "full");
+          if (!isMain) {
+            const sec = SECTIONS.find((s) => s.tabs.some((t) => t.v === detail.tab))?.key;
+            if (sec) setSection(sec);
+          }
+        }
+      }
     };
     window.addEventListener("swarmbot:navigate", onNav);
     return () => window.removeEventListener("swarmbot:navigate", onNav);
@@ -228,14 +252,16 @@ export function ResourcesPanel({
               <PanelRightClose className="w-4 h-4" />
             </button>
           </div>
+          {/* Primary nav — the few main views plus a Full review tab that opens everything */}
           <div className="px-3 py-2 flex items-center gap-1 border-t border-border-subtle">
-            {SECTIONS.map((s) => {
-              const Icon = s.icon;
-              const active = section === s.key;
+            {MAIN_TABS.map((t) => {
+              const Icon = t.icon;
+              const active = mode === "main" && tab === t.v;
+              const count = TAB_COUNTS[t.v];
               return (
                 <button
-                  key={s.key}
-                  onClick={() => onSectionChange(s.key)}
+                  key={t.v}
+                  onClick={() => { setMode("main"); setTab(t.v); }}
                   className={cn(
                     "flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg text-[10px] font-medium uppercase tracking-[0.16em] transition-colors",
                     active
@@ -244,32 +270,74 @@ export function ResourcesPanel({
                   )}
                 >
                   <Icon className="w-3 h-3" />
-                  {s.label}
+                  {t.l}
+                  {count != null && count > 0 && (
+                    <span className="font-mono text-[9px] tabular-nums text-muted-foreground/70">{count}</span>
+                  )}
                 </button>
               );
             })}
+            <button
+              onClick={() => { setMode("full"); setSection(sectionForTab(tab) ?? "evidence"); }}
+              className={cn(
+                "flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg text-[10px] font-medium uppercase tracking-[0.16em] transition-colors",
+                mode === "full"
+                  ? "bg-surface-1 text-foreground border border-white/10"
+                  : "text-muted-foreground hover:text-foreground hover:bg-surface-1 border border-transparent",
+              )}
+            >
+              <Layers className="w-3 h-3" />
+              Full review
+            </button>
           </div>
-          <div className="px-3 pb-3 pt-0.5">
-            <TabsList className="w-full h-9 bg-transparent rounded-none p-0 gap-2 justify-start">
-              {activeSection.tabs.map((t) => {
-                const count = TAB_COUNTS[t.v];
-                return (
-                  <TabsTrigger
-                    key={t.v}
-                    value={t.v}
-                    className="relative h-9 px-0 rounded-none bg-transparent text-[13px] font-medium text-muted-foreground border-b border-transparent data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:border-white/30 data-[state=active]:shadow-none transition-colors"
-                  >
-                    <span>{t.l}</span>
-                    {count != null && count > 0 && (
-                      <span className="ml-1.5 font-mono text-[10px] tabular-nums text-muted-foreground/70">
-                        {count}
-                      </span>
-                    )}
-                  </TabsTrigger>
-                );
-              })}
-            </TabsList>
-          </div>
+
+          {/* Full review only: the complete section + sub-tab navigation */}
+          {mode === "full" && (
+            <>
+              <div className="px-3 py-2 flex items-center gap-1 border-t border-border-subtle">
+                {SECTIONS.map((s) => {
+                  const Icon = s.icon;
+                  const active = section === s.key;
+                  return (
+                    <button
+                      key={s.key}
+                      onClick={() => onSectionChange(s.key)}
+                      className={cn(
+                        "flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg text-[10px] font-medium uppercase tracking-[0.16em] transition-colors",
+                        active
+                          ? "bg-surface-1 text-foreground border border-white/10"
+                          : "text-muted-foreground hover:text-foreground hover:bg-surface-1 border border-transparent",
+                      )}
+                    >
+                      <Icon className="w-3 h-3" />
+                      {s.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="px-3 pb-3 pt-0.5">
+                <TabsList className="w-full h-9 bg-transparent rounded-none p-0 gap-2 justify-start">
+                  {activeSection.tabs.map((t) => {
+                    const count = TAB_COUNTS[t.v];
+                    return (
+                      <TabsTrigger
+                        key={t.v}
+                        value={t.v}
+                        className="relative h-9 px-0 rounded-none bg-transparent text-[13px] font-medium text-muted-foreground border-b border-transparent data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:border-white/30 data-[state=active]:shadow-none transition-colors"
+                      >
+                        <span>{t.l}</span>
+                        {count != null && count > 0 && (
+                          <span className="ml-1.5 font-mono text-[10px] tabular-nums text-muted-foreground/70">
+                            {count}
+                          </span>
+                        )}
+                      </TabsTrigger>
+                    );
+                  })}
+                </TabsList>
+              </div>
+            </>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto bg-background">
