@@ -40,7 +40,7 @@
 
 ### Fix options for the preview (owner decision)
 1. **Force-push `insight-finder@70bb4a0` into the connected seeker repo's `main`.** Lovable then auto-syncs its workspace to it. This is the sanctioned fix (Lovable suggested it). Requires push access to the seeker repo → either the owner runs git from a computer, **or** the seeker repo is added to a Claude session and the agent does it.
-2. **Abandon Lovable's repo lock-in:** deploy the `insight-finder` frontend elsewhere (e.g. Vercel — a Vercel MCP is available in this environment) pointed at the existing Lovable Cloud (Supabase) backend. Cleaner long-term, more setup (env vars).
+2. **Abandon Lovable's repo lock-in:** deploy the `insight-finder` frontend on any host (e.g. Vercel/Netlify) pointed at the existing Lovable Cloud (Supabase) backend. Cleaner long-term, but needs the `VITE_SUPABASE_URL` / `VITE_SUPABASE_PUBLISHABLE_KEY` / `VITE_SUPABASE_PROJECT_ID` env vars configured.
 3. **Repo rename swap** (Lovable suggested) — messy, conflicts because `insight-finder` already exists. Not recommended.
 
 **Recommended:** Option 1 to get the preview current fast; consider Option 2 if they want to stop fighting Lovable's repo ownership.
@@ -97,8 +97,8 @@ npm install
 npm run dev -- --host 127.0.0.1   # see note below
 ```
 
-- ⚠️ **`vite.config.ts` hardcodes `server.host = "::"` (IPv6).** In sandboxed/container environments that aren't IPv6-enabled, `npm run dev` fails with `EAFNOSUPPORT :::8080`. Workaround: pass `--host 127.0.0.1` (or `0.0.0.0`). **Candidate cleanup:** make the host configurable / default to `0.0.0.0`.
-- App serves at `http://localhost:8080/`. Verified HTTP 200.
+- ✅ **`vite.config.ts` host** now set to `host: true` (this PR). Previously hardcoded `"::"` (IPv6-only), which failed with `EAFNOSUPPORT :::8080` in containers/sandboxes that aren't IPv6-enabled. `npm run dev` now works with no flags everywhere.
+- App serves at `http://localhost:8080/`. Verified HTTP 200. **Note:** this is the *container's* localhost — not reachable from your phone/laptop browser. Viewing the app needs a deployed/preview URL (Lovable or another host).
 - `npm run typecheck` → clean. `npm run lint`, `npm run test` available.
 
 ---
@@ -107,14 +107,14 @@ npm run dev -- --host 127.0.0.1   # see note below
 
 Concrete messiness a new agent should know about (none of it blocks the build):
 
-1. **Dead file:** `supabase/functions/osint-agent/tools/infrastructure.ts` — header literally says *"Auto-extracted. Add imports manually."* It is **imported nowhere** (`grep` confirms). Earlier handoff flagged it as a broken auto-extracted dump. **Safe to delete.**
+1. **`supabase/functions/osint-agent/tools/infrastructure.ts`** — header says *"Auto-extracted. Add imports manually."* and an earlier handoff called it dead, **but it is LIVE**: `tools/index.ts:41` imports `deepfind_mac_lookup` and `deepfind_dark_web_link` from it (relative `./infrastructure.ts`). **Do NOT delete it.** It reads like an auto-generated dump and is a refactor candidate (clean up / fold into siblings), but only after unwiring those two exports. *(A delete was attempted in this PR's history and reverted once the import was found.)*
 2. **Oversized modules** (hard to understand, prime refactor targets):
    - `supabase/functions/osint-agent/index.ts` — **4,367 lines** (the orchestrator god-file: wrappers + validators + planner prompt + record paths all in one).
    - `src/components/ChatWindow.tsx` — 1,577 lines.
    - `src/lib/intel.ts` — 1,497 lines.
    - `src/pages/BrainGlobalPage.tsx` — 1,240 lines.
    - `src/components/ResourcesPanel.tsx` — 849 lines.
-3. **Vite host hardcoded to IPv6** (see §6).
+3. ~~Vite host hardcoded to IPv6~~ — **fixed in this PR** (`host: true`, see §6).
 4. **UI density:** the workspace is heavily decorated (nested radial/linear gradients, absolute decorative overlays, uppercase letter-spacing everywhere). Functional but visually busy — the likely source of the "messy / hard to understand" feeling. A cleanup pass simplifying the chrome (fewer gradients/overlays, calmer typographic scale) would improve clarity without touching logic.
 5. **18 npm audit vulnerabilities** (6 moderate / 11 high / 1 critical) reported on install — worth a `npm audit` review, but several are likely transitive/dev-only.
 6. **Duplicate/throwaway Lovable repos** (§1) — the GitHub account is cluttered with 3 `seeker-spark-search-*` repos; once the preview is sorted, delete the unused ones.
@@ -124,7 +124,7 @@ Concrete messiness a new agent should know about (none of it blocks the build):
 ## 8. Recommended next steps (in order)
 
 1. **Decide the Lovable-preview path** (§2). If Option 1: add the currently-connected seeker repo (`5fea4dc8` per last screen — confirm in Lovable → GitHub settings) to a Claude session, then force-push `insight-finder@70bb4a0` into its `main`; Lovable auto-syncs.
-2. **Quick code hygiene (low risk):** delete dead `infrastructure.ts`; make `vite.config.ts` host configurable.
+2. ✅ **Quick code hygiene (done in this PR):** `vite.config.ts` host fixed (`host: true`). *(Note: `infrastructure.ts` is NOT dead — see §7.1 — leave it.)*
 3. **Investigate `osint-agent` 50% success rate** in Lovable Cloud logs.
 4. **(Optional) UI calm-down pass** on `ChatPage`/`ChatWindow`/`ResourcesPanel` chrome for clarity.
 5. **Cleanup:** delete the two unused `seeker-spark-search*` repos once the preview is settled.
