@@ -17,7 +17,7 @@ import { tierOf, TIER_A, TIER_B } from "./tiers.ts";
 import { playbookFor, renderPlaybookForPrompt } from "./playbooks.ts";
 import { auditCoverage } from "./coverage.ts";
 import { detectContradictions } from "./contradictions.ts";
-import { computeAxes, sourceConfidence, applyEvidenceCaps, isUnrelatedEntity, EXCLUDED_COLLISION_CONFIDENCE } from "./confidence.ts";
+import { computeAxes, sourceConfidence, applyEvidenceCaps, isUnrelatedEntity, EXCLUDED_COLLISION_CONFIDENCE, isBioCrossLinkName, BIO_CROSS_LINK_NAME_CAP } from "./confidence.ts";
 import { buildWorkflowAddendum } from "./workflow_prompt.ts";
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
@@ -3394,10 +3394,16 @@ Deno.serve(async (req) => {
             // demote it to excluded_collision with a hard-capped confidence so it
             // can't roll up into the case score or read as a confirmed link.
             const unrelated = isUnrelatedEntity(a.metadata ?? null);
+            // Bio-linked name gate: a name pulled out of a profile bio / linked-
+            // accounts block is an unverified identity claim (could be a
+            // collaborator/shoutout/friend), so it can never anchor the case.
+            const bioName = !unrelated && isBioCrossLinkName(v.kind, a.metadata ?? null);
             const finalKind = unrelated ? "excluded_collision" : v.kind;
             const finalConfidence = unrelated
               ? Math.min(cap.confidence, EXCLUDED_COLLISION_CONFIDENCE)
-              : cap.confidence;
+              : bioName
+                ? Math.min(cap.confidence, BIO_CROSS_LINK_NAME_CAP)
+                : cap.confidence;
             // Required-fields envelope — fill conservative defaults when the
             // agent didn't supply them.
             const meta: Record<string, unknown> = {
@@ -3405,16 +3411,23 @@ Deno.serve(async (req) => {
               ...(v.metaPatch ?? {}),
               ...(inferred.reclassified_from ? { reclassified_from: inferred.reclassified_from } : {}),
               source_category: cap.source_classes,
-              status: unrelated ? "excluded" : (a.metadata?.status ?? "new"),
+              status: unrelated ? "excluded" : bioName ? "unverified_bio_link" : (a.metadata?.status ?? "new"),
               cluster_id: a.metadata?.cluster_id ?? null,
               reason_for_confidence: unrelated
                 ? "excluded: flagged as unrelated/different entity than the seed"
-                : cap.reason_for_confidence,
-              reason_not_confirmed: a.metadata?.reason_not_confirmed ?? cap.reason_not_confirmed ?? null,
+                : bioName
+                  ? "bio-linked name — unverified identity claim, may be an associate/shoutout, not the subject"
+                  : cap.reason_for_confidence,
+              reason_not_confirmed: unrelated
+                ? (a.metadata?.reason_not_confirmed ?? cap.reason_not_confirmed ?? null)
+                : bioName
+                  ? "name appears only in a bio/linked-accounts block — confirm it is the subject, not a mentioned third party"
+                  : (a.metadata?.reason_not_confirmed ?? cap.reason_not_confirmed ?? null),
               contradictions: a.metadata?.contradictions ?? [],
               next_verification_step: a.metadata?.next_verification_step ?? null,
-              confidence_cap_applied: cap.cap,
+              confidence_cap_applied: bioName ? Math.min(cap.cap, BIO_CROSS_LINK_NAME_CAP) : cap.cap,
               ...(unrelated ? { excluded_collision: true, reclassified_from: a.kind } : {}),
+              ...(bioName ? { bio_cross_link: true } : {}),
             };
             rows.push({
               thread_id: threadId,
@@ -3637,25 +3650,36 @@ Deno.serve(async (req) => {
           });
           // Different-person / unrelated-entity gate (see record_artifacts).
           const unrelated = isUnrelatedEntity(metadata ?? null);
+          // Bio-linked name gate (see record_artifacts).
+          const bioName = !unrelated && isBioCrossLinkName(v.kind, metadata ?? null);
           const finalKind = unrelated ? "excluded_collision" : v.kind;
           const finalConfidence = unrelated
             ? Math.min(cap.confidence, EXCLUDED_COLLISION_CONFIDENCE)
-            : cap.confidence;
+            : bioName
+              ? Math.min(cap.confidence, BIO_CROSS_LINK_NAME_CAP)
+              : cap.confidence;
           const enrichedMeta = {
             ...(metadata ?? {}),
             ...(v.metaPatch ?? {}),
             ...(inferred.reclassified_from ? { reclassified_from: inferred.reclassified_from } : {}),
             source_category: cap.source_classes,
-            status: unrelated ? "excluded" : (metadata?.status ?? "new"),
+            status: unrelated ? "excluded" : bioName ? "unverified_bio_link" : (metadata?.status ?? "new"),
             cluster_id: metadata?.cluster_id ?? null,
             reason_for_confidence: unrelated
               ? "excluded: flagged as unrelated/different entity than the seed"
-              : cap.reason_for_confidence,
-            reason_not_confirmed: metadata?.reason_not_confirmed ?? cap.reason_not_confirmed ?? null,
+              : bioName
+                ? "bio-linked name — unverified identity claim, may be an associate/shoutout, not the subject"
+                : cap.reason_for_confidence,
+            reason_not_confirmed: unrelated
+              ? (metadata?.reason_not_confirmed ?? cap.reason_not_confirmed ?? null)
+              : bioName
+                ? "name appears only in a bio/linked-accounts block — confirm it is the subject, not a mentioned third party"
+                : (metadata?.reason_not_confirmed ?? cap.reason_not_confirmed ?? null),
             contradictions: metadata?.contradictions ?? [],
             next_verification_step: metadata?.next_verification_step ?? null,
-            confidence_cap_applied: cap.cap,
+            confidence_cap_applied: bioName ? Math.min(cap.cap, BIO_CROSS_LINK_NAME_CAP) : cap.cap,
             ...(unrelated ? { excluded_collision: true, reclassified_from: kind } : {}),
+            ...(bioName ? { bio_cross_link: true } : {}),
           };
           const row = scrubArtifactRow({
             thread_id: threadId,

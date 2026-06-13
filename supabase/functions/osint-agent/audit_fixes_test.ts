@@ -4,7 +4,7 @@
 //  3. reserved / fiction / invalid phone detection
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { classifySource } from "./artifact_types.ts";
-import { applyEvidenceCaps, isUnrelatedEntity } from "./confidence.ts";
+import { applyEvidenceCaps, isUnrelatedEntity, isBioCrossLinkName, BIO_CROSS_LINK_NAME_CAP } from "./confidence.ts";
 import { isReservedOrInvalidPhone, validateArtifact } from "./validation.ts";
 
 Deno.test("classifySource strips parenthetical qualifier before lookup", () => {
@@ -49,4 +49,25 @@ Deno.test("phone validation attaches reserved_number metaPatch", () => {
   const v = validateArtifact("phone", "+14155550171");
   assertEquals(v.ok, true);
   assertEquals((v as { metaPatch?: Record<string, unknown> }).metaPatch?.reserved_number, true);
+});
+
+Deno.test("isBioCrossLinkName flags bio-linked names only", () => {
+  // The real misidentification: a Facebook name pulled from a SoundCloud bio.
+  assertEquals(isBioCrossLinkName("name", { from_bio: true, platform: "facebook" }), true);
+  assertEquals(isBioCrossLinkName("name", { bio_link: "true" }), true);
+  assertEquals(isBioCrossLinkName("name", { linked_from_bio: true }), true);
+  // A bio-linked username/handle is plausibly the subject's own alt — not gated here.
+  assertEquals(isBioCrossLinkName("username", { from_bio: true }), false);
+  // The subject's OWN display name (no bio flag) must NOT be gated.
+  assertEquals(isBioCrossLinkName("name", { from_bio: false }), false);
+  assertEquals(isBioCrossLinkName("name", {}), false);
+  assertEquals(isBioCrossLinkName("name", null), false);
+});
+
+Deno.test("bio-linked name cap keeps it below corroborated signals", () => {
+  // A bio name reaching for confidence 50 must be held under the cap so it can
+  // never sit co-equal with the subject's display name / corroborated identity.
+  const cap = Math.min(applyEvidenceCaps({ rawConfidence: 50, sources: ["jina_reader_scrape"] }).confidence, BIO_CROSS_LINK_NAME_CAP);
+  assertEquals(cap, BIO_CROSS_LINK_NAME_CAP);
+  assertEquals(BIO_CROSS_LINK_NAME_CAP < 50, true);
 });

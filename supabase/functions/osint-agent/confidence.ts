@@ -161,3 +161,36 @@ export function isUnrelatedEntity(meta: Record<string, unknown> | null | undefin
   }
   return false;
 }
+
+// ---- Bio-linked cross-platform name gate -------------------------------------
+// A profile bio frequently lists OTHER people's handles/names — collaborators,
+// shoutouts, group members, "prod. by X", a friend's Facebook. The orchestrator
+// has mistaken a bio-linked Facebook *name* for the subject's legal name and
+// promoted it over the subject's own display name + an independent search hit
+// (real case: SoundCloud "ohifearius" / "BosMan G" mis-reported as the FB name
+// "Raheem Abdul Bey" pulled from the bio link block, when the corroborated
+// identity was "Darius Johnson").
+//
+// A NAME asserted only because it appeared in / was linked from a bio is an
+// UNVERIFIED identity claim. It must stay a lead, never the confirmed identity:
+// we cap it low and flag it so the report and any merge cannot anchor on it.
+export const BIO_CROSS_LINK_NAME_CAP = 30;
+
+const BIO_LINK_KEYS = ["from_bio", "bio_link", "bio_mention", "linked_from_bio"];
+
+/** True when this is a person `name` whose only provenance is a bio cross-link
+ * (i.e. it was scraped out of a profile's bio / linked-accounts block rather
+ * than being the profile's own display name or an independently searched name). */
+export function isBioCrossLinkName(
+  kind: string | null | undefined,
+  meta: Record<string, unknown> | null | undefined,
+): boolean {
+  if (kind !== "name") return false;
+  const m = meta ?? {};
+  for (const key of BIO_LINK_KEYS) {
+    const v = m[key];
+    if (v === true) return true;
+    if (typeof v === "string" && /^(true|yes|1)$/i.test(v)) return true;
+  }
+  return false;
+}
