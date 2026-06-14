@@ -29,41 +29,60 @@ describe("evidence-export: response hardening (F-A4)", () => {
   }
 });
 
-describe("frontend index.html: CSP + hardening (F-B5)", () => {
-  // Read the file once at test-time so changes are caught immediately.
-  // ESM import (no CommonJS require) — required for @typescript-eslint/no-require-imports.
+describe("security headers via vercel.json HTTP headers (F-B5)", () => {
+  // Security policies are delivered as real HTTP response headers (vercel.json),
+  // NOT <meta http-equiv> — browsers ignore X-Frame-Options / X-Content-Type-
+  // Options / Permissions-Policy as meta tags. We assert the values on the
+  // header that Vercel actually serves, and that the dead meta tags are gone.
+  const vercelJson = readFileSync(resolve(process.cwd(), "vercel.json"), "utf-8");
   const indexHtml = readFileSync(resolve(process.cwd(), "index.html"), "utf-8");
+  const cfg = JSON.parse(vercelJson) as { headers?: Array<{ source: string; headers: Array<{ key: string; value: string }> }> };
+  const headerMap = Object.fromEntries(
+    (cfg.headers ?? []).flatMap((h) => h.headers).map((h) => [h.key.toLowerCase(), h.value]),
+  );
 
-  it("declares a Content-Security-Policy meta tag", () => {
-    expect(indexHtml).toMatch(/http-equiv="Content-Security-Policy"/);
+  it("delivers a Content-Security-Policy header", () => {
+    expect(headerMap["content-security-policy"]).toBeTruthy();
   });
 
-  it("CSP keeps browser-enforced directives in valid meta-compatible form", () => {
-    expect(indexHtml).not.toMatch(/frame-ancestors 'none'/);
-    expect(indexHtml).toMatch(/base-uri 'self'/);
-    expect(indexHtml).toMatch(/form-action 'self'/);
+  it("CSP uses frame-ancestors (header-only) plus base-uri / form-action", () => {
+    const csp = headerMap["content-security-policy"] ?? "";
+    expect(csp).toMatch(/frame-ancestors 'none'/);
+    expect(csp).toMatch(/base-uri 'self'/);
+    expect(csp).toMatch(/form-action 'self'/);
   });
 
   it("CSP restricts script-src to self + supabase", () => {
-    expect(indexHtml).toMatch(/script-src 'self' 'unsafe-inline' https:\/\/\*\.supabase\.co/);
+    expect(headerMap["content-security-policy"]).toMatch(/script-src 'self' 'unsafe-inline' https:\/\/\*\.supabase\.co/);
   });
 
   it("CSP restricts connect-src to self + supabase + Serus", () => {
-    expect(indexHtml).toMatch(/connect-src[^;]*https:\/\/api\.serus\.ai/);
+    expect(headerMap["content-security-policy"]).toMatch(/connect-src[^;]*https:\/\/api\.serus\.ai/);
   });
 
-  it("declares X-Content-Type-Options nosniff", () => {
-    expect(indexHtml).toMatch(/X-Content-Type-Options.*nosniff/);
+  it("sets X-Frame-Options: DENY", () => {
+    expect(headerMap["x-frame-options"]).toBe("DENY");
   });
 
-  it("declares a strict Referrer-Policy", () => {
-    expect(indexHtml).toMatch(/Referrer-Policy.*strict-origin-when-cross-origin/);
+  it("sets X-Content-Type-Options: nosniff", () => {
+    expect(headerMap["x-content-type-options"]).toBe("nosniff");
+  });
+
+  it("sets a strict Referrer-Policy", () => {
+    expect(headerMap["referrer-policy"]).toBe("strict-origin-when-cross-origin");
   });
 
   it("disables camera/microphone/geolocation via Permissions-Policy", () => {
-    expect(indexHtml).toMatch(/Permissions-Policy[^>]*camera=\(\)/);
-    expect(indexHtml).toMatch(/microphone=\(\)/);
-    expect(indexHtml).toMatch(/geolocation=\(\)/);
+    const pp = headerMap["permissions-policy"] ?? "";
+    expect(pp).toMatch(/camera=\(\)/);
+    expect(pp).toMatch(/microphone=\(\)/);
+    expect(pp).toMatch(/geolocation=\(\)/);
+  });
+
+  it("no longer relies on ignored <meta http-equiv> security tags", () => {
+    expect(indexHtml).not.toMatch(/http-equiv="X-Frame-Options"/);
+    expect(indexHtml).not.toMatch(/http-equiv="X-Content-Type-Options"/);
+    expect(indexHtml).not.toMatch(/http-equiv="Permissions-Policy"/);
   });
 });
 
