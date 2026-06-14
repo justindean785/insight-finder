@@ -95,15 +95,15 @@ export function NotesTab({ threadId }: { threadId: string }) {
           onKeyDown={(e) => {
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); void save(); }
           }}
-          className="w-full min-h-[120px] rounded-md border border-border bg-card/40 p-2 font-mono text-[11px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+          className="w-full min-h-[120px] rounded-md border border-border bg-card/40 p-2 font-mono text-data text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
         />
         <div className="flex items-center justify-end gap-1">
           {editingId && (
-            <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" onClick={() => { setEditingId(null); setDraft(""); }}>
+            <Button size="sm" variant="ghost" className="h-7 px-2 text-data" onClick={() => { setEditingId(null); setDraft(""); }}>
               Cancel
             </Button>
           )}
-          <Button size="sm" disabled={saving || !draft.trim()} className="h-7 px-2.5 gap-1 text-[11px]" onClick={() => void save()}>
+          <Button size="sm" disabled={saving || !draft.trim()} className="h-7 px-2.5 gap-1 text-data" onClick={() => void save()}>
             {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
             {editingId ? "Update" : "Save note"}
           </Button>
@@ -111,7 +111,7 @@ export function NotesTab({ threadId }: { threadId: string }) {
       </div>
 
       <div className="space-y-1.5">
-        <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-muted-foreground">
+        <div className="flex items-center justify-between text-eyebrow uppercase tracking-wider text-muted-foreground">
           <span>Saved</span>
           <span className="font-mono">{notes.length}</span>
         </div>
@@ -123,16 +123,16 @@ export function NotesTab({ threadId }: { threadId: string }) {
           <ul className="space-y-1.5">
             {notes.map((n) => (
               <li key={n.id} className="rounded-md border border-border bg-card/40 p-2 space-y-1">
-                <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                <div className="flex items-center justify-between text-data text-muted-foreground">
                   <span className="font-mono">{new Date(n.updated_at).toLocaleString()}</span>
                   <div className="flex items-center gap-1">
-                    <Button size="sm" variant="ghost" className="h-6 px-1.5 text-[10px]" onClick={() => edit(n)}>Edit</Button>
-                    <Button size="sm" variant="ghost" className="h-6 px-1.5 text-[10px] text-destructive hover:text-destructive" onClick={() => void del(n.id)}>Delete</Button>
+                    <Button size="sm" variant="ghost" className="h-6 px-1.5 text-data" onClick={() => edit(n)}>Edit</Button>
+                    <Button size="sm" variant="ghost" className="h-6 px-1.5 text-data text-destructive hover:text-destructive" onClick={() => void del(n.id)}>Delete</Button>
                   </div>
                 </div>
-                <pre className="whitespace-pre-wrap break-words font-mono text-[11px] text-foreground">{n.body}</pre>
+                <pre className="whitespace-pre-wrap break-words font-mono text-data text-foreground">{n.body}</pre>
                 {editingId === n.id && (
-                  <div className="flex items-center gap-1 text-[10px] text-primary">
+                  <div className="flex items-center gap-1 text-data text-primary">
                     <Check className="w-3 h-3" /> Editing above
                   </div>
                 )}

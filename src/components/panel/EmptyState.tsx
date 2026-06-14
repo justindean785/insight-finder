@@ -19,8 +19,8 @@ export function EmptyState({
           <Icon className="w-4 h-4" />
         </div>
       )}
-      <div className="text-[12px] font-medium text-foreground/80 leading-snug">{title}</div>
-      {hint && <div className="text-[11px] text-muted-foreground leading-relaxed max-w-[260px]">{hint}</div>}
+      <div className="text-data font-medium text-foreground/80 leading-snug">{title}</div>
+      {hint && <div className="text-data text-muted-foreground leading-relaxed max-w-[260px]">{hint}</div>}
     </div>
   );
 }

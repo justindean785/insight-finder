@@ -65,7 +65,7 @@ export default function Settings() {
 
         {/* Profile */}
         <div className="glass-card rounded-2xl border border-white/[0.07] p-6 space-y-3">
-          <h2 className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground/80 font-mono">Profile</h2>
+          <h2 className="text-eyebrow uppercase tracking-[0.16em] text-muted-foreground/80 font-mono">Profile</h2>
           <div className="space-y-2">
             <div>
               <span className="text-xs text-muted-foreground">Email</span>
@@ -88,14 +88,14 @@ export default function Settings() {
 
         {/* Change password */}
         <div className="glass-card rounded-2xl border border-white/[0.07] p-6">
-          <h2 className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground/80 font-mono mb-4">Change password</h2>
+          <h2 className="text-eyebrow uppercase tracking-[0.16em] text-muted-foreground/80 font-mono mb-4">Change password</h2>
           <form onSubmit={changePassword} className="space-y-3.5">
             <div className="space-y-1.5">
-              <Label htmlFor="new-pw" className="text-[11px] uppercase tracking-[0.1em] text-muted-foreground">New password</Label>
+              <Label htmlFor="new-pw" className="text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">New password</Label>
               <Input id="new-pw" type="password" autoComplete="new-password" required minLength={6} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="confirm-pw" className="text-[11px] uppercase tracking-[0.1em] text-muted-foreground">Confirm password</Label>
+              <Label htmlFor="confirm-pw" className="text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">Confirm password</Label>
               <Input id="confirm-pw" type="password" autoComplete="new-password" required minLength={6} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
             </div>
             <Button type="submit" disabled={saving} className="h-9 bg-gradient-to-r from-primary to-accent text-primary-foreground hover:opacity-90 border-0 text-xs font-medium">
@@ -106,7 +106,7 @@ export default function Settings() {
 
         {/* Sign out */}
         <div className="glass-card rounded-2xl border border-white/[0.07] p-6">
-          <h2 className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground/80 font-mono mb-4">Session</h2>
+          <h2 className="text-eyebrow uppercase tracking-[0.16em] text-muted-foreground/80 font-mono mb-4">Session</h2>
           <Button
             variant="outline"
             onClick={signOut}

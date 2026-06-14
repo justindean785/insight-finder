@@ -57,7 +57,7 @@ export function EvidenceMatrixTab({
     <TooltipProvider delayDuration={200}>
       <div className="text-xs">
         <div className="sticky top-0 z-10 bg-card/95 backdrop-blur border-b border-border p-3 space-y-2">
-        <div className="flex items-start gap-2 rounded-md border border-border bg-secondary/30 px-2.5 py-2 text-[11px] text-muted-foreground">
+        <div className="flex items-start gap-2 rounded-md border border-border bg-secondary/30 px-2.5 py-2 text-data text-muted-foreground">
           <Info className="w-3.5 h-3.5 mt-0.5 shrink-0 text-primary" />
           <div className="leading-relaxed">
             <span className="text-foreground font-medium">How review affects scoring:</span>{" "}
@@ -137,12 +137,12 @@ export function EvidenceMatrixTab({
           </DropdownMenu>
 
           <span className="ml-auto flex items-center gap-2">
-            <span className="font-mono text-[10px] text-muted-foreground tabular-nums">
+            <span className="font-mono text-data text-muted-foreground tabular-nums">
               {rows.length} / {artifacts.length}
             </span>
             <button
               onClick={() => { setReviewFilter("ANY"); setFilter("ALL"); }}
-              className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground/70 hover:text-foreground transition-colors"
+              className="text-eyebrow font-mono uppercase tracking-wider text-muted-foreground/70 hover:text-foreground transition-colors"
               title="Reset all filters"
             >
               reset
@@ -156,7 +156,7 @@ export function EvidenceMatrixTab({
         {rows.length === 0 ? (
           <div className="text-muted-foreground p-2 space-y-1">
             <div>No evidence matches the current filters.</div>
-            <div className="text-[10px]">Try clearing filters or running more tools against the seed.</div>
+            <div className="text-data">Try clearing filters or running more tools against the seed.</div>
           </div>
         ) : (
           <ul className="space-y-2">
@@ -187,7 +187,7 @@ export function EvidenceMatrixTab({
                       <div className={"font-mono text-foreground break-all " + (rState === "dismissed" ? "line-through" : "")}>
                         {a.value}
                       </div>
-                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground mt-0.5 flex items-center gap-1.5 flex-wrap">
+                      <div className="text-eyebrow uppercase tracking-wider text-muted-foreground mt-0.5 flex items-center gap-1.5 flex-wrap">
                         <span>{a.kind}</span>
                         <span>·</span>
                         <SourceAttribution artifact={a} threadId={threadId} />
@@ -195,7 +195,7 @@ export function EvidenceMatrixTab({
                         <span>{new Date(a.created_at).toLocaleString()}</span>
                       </div>
                       {preview && (
-                        <div className="text-[10px] font-mono text-muted-foreground mt-1 break-all">{preview}</div>
+                        <div className="text-data font-mono text-muted-foreground mt-1 break-all">{preview}</div>
                       )}
                       {/* Trust badges — multi-source / single-source / stale-breach / analyst */}
                       <TrustBadgesRow artifact={a} review={rState} />
@@ -203,7 +203,7 @@ export function EvidenceMatrixTab({
                     <div className="shrink-0 flex flex-col items-end gap-1">
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <span className={"px-1.5 py-0.5 rounded border font-mono text-[10px] uppercase tracking-wider " + CONF_LABEL_CLASS[label]}>
+                          <span className={"px-1.5 py-0.5 rounded border font-mono text-eyebrow uppercase tracking-wider " + CONF_LABEL_CLASS[label]}>
                             {label}
                           </span>
                         </TooltipTrigger>
@@ -213,7 +213,7 @@ export function EvidenceMatrixTab({
                       </Tooltip>
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <span className={"px-1.5 py-0.5 rounded border font-mono text-[10px] uppercase tracking-wider " + REVIEW_CLASS[rState]}>
+                          <span className={"px-1.5 py-0.5 rounded border font-mono text-eyebrow uppercase tracking-wider " + REVIEW_CLASS[rState]}>
                             {REVIEW_SHORT[rState]}
                           </span>
                         </TooltipTrigger>
@@ -245,10 +245,10 @@ export function EvidenceMatrixTab({
                             />
                           )}
                         </div>
-                        <span className="font-mono tabular-nums text-[11px]" style={{ color: scoreColor }}>
+                        <span className="font-mono tabular-nums text-data" style={{ color: scoreColor }}>
                           {score}
                         </span>
-                        <span className="font-mono text-[10px] text-muted-foreground tabular-nums">/100</span>
+                        <span className="font-mono text-data text-muted-foreground tabular-nums">/100</span>
                         <ConfidenceExplain artifact={a} review={rState} />
                       </div>
                     </TooltipTrigger>
@@ -258,7 +258,7 @@ export function EvidenceMatrixTab({
                         <div className="text-muted-foreground">
                           Base {base}{delta !== 0 && <> · Review <span style={{ color: deltaColor }}>{delta > 0 ? "+" : ""}{delta}</span></>}
                         </div>
-                        <div className="text-muted-foreground text-[10px] mt-1">
+                        <div className="text-muted-foreground text-data mt-1">
                           Base = tool-reported confidence. Review delta from your Confirm/Key/Recheck decisions.
                         </div>
                       </div>
@@ -267,7 +267,7 @@ export function EvidenceMatrixTab({
 
                   {/* Hierarchical actions: primary (Confirm/Key) · secondary (Recheck/Dismiss) · overflow */}
                   <div className="mt-3 flex items-center justify-between gap-2">
-                    <Button size="sm" variant="ghost" className="h-7 px-2 gap-1 text-[10px] text-muted-foreground hover:text-foreground"
+                    <Button size="sm" variant="ghost" className="h-7 px-2 gap-1 text-data text-muted-foreground hover:text-foreground"
                       onClick={() => copy(a.value, "Copied value")}>
                       <Copy className="w-3 h-3" /> Copy
                     </Button>
@@ -349,7 +349,7 @@ function TrustBadgesRow({ artifact, review }: { artifact: Artifact; review: Revi
           <TooltipTrigger asChild>
             <span
               className={
-                "inline-flex items-center gap-1 h-5 px-1.5 rounded-full border text-[10px] font-medium normal-case " +
+                "inline-flex items-center gap-1 h-5 px-1.5 rounded-full border text-data font-medium normal-case " +
                 BADGE_TONE_CLASS[b.tone]
               }
             >
@@ -389,7 +389,7 @@ function PrimaryAction({
     <Tooltip>
       <TooltipTrigger asChild>
         <Button size="sm" variant="ghost"
-          className={"h-7 px-2.5 gap-1 text-[10px] font-medium uppercase tracking-wider " + toneClasses(tone, active)}
+          className={"h-7 px-2.5 gap-1 text-eyebrow font-medium uppercase tracking-wider " + toneClasses(tone, active)}
           onClick={onClick}>
           <Icon className="w-3 h-3" /> {label}
         </Button>

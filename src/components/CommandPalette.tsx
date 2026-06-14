@@ -110,7 +110,7 @@ export function CommandPalette() {
         <CommandEmpty>No matches.</CommandEmpty>
 
         {loadError && (
-          <div className="px-3 py-2 text-[11px] text-destructive">
+          <div className="px-3 py-2 text-data text-destructive">
             Couldn't load recent cases. Close and reopen to retry.
           </div>
         )}
@@ -178,9 +178,9 @@ function PaletteItem({
     <CommandItem onSelect={onSelect} className="gap-3">
       <Icon className="w-4 h-4 text-muted-foreground" />
       <span className="flex-1 truncate text-foreground">{label}</span>
-      {hint && <span className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground">{hint}</span>}
+      {hint && <span className="text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">{hint}</span>}
       {shortcut && (
-        <kbd className="ml-1 px-1.5 py-0.5 rounded border border-border-subtle bg-surface-2 text-[10px] font-mono text-muted-foreground">
+        <kbd className="ml-1 px-1.5 py-0.5 rounded border border-border-subtle bg-surface-2 text-data font-mono text-muted-foreground">
           {shortcut}
         </kbd>
       )}

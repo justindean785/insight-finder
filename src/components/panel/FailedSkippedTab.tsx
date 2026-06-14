@@ -75,10 +75,10 @@ function Section({ title, count, icon, children }: { title: string; count: numbe
   return (
     <section className="space-y-1.5">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+        <div className="flex items-center gap-1.5 text-eyebrow uppercase tracking-wider text-muted-foreground">
           {icon} {title}
         </div>
-        <span className="text-[10px] font-mono text-muted-foreground">{count}</span>
+        <span className="text-data font-mono text-muted-foreground">{count}</span>
       </div>
       <div className="space-y-1.5">{children}</div>
     </section>
@@ -102,29 +102,29 @@ function EntryCard({
       <div className="flex items-center justify-between gap-2">
         <div className="font-mono text-foreground truncate">{entry.name}</div>
         {entry.time && (
-          <span className="text-[10px] font-mono text-muted-foreground shrink-0">
+          <span className="text-data font-mono text-muted-foreground shrink-0">
             {new Date(entry.time).toLocaleTimeString()}
           </span>
         )}
       </div>
-      <div className={"font-mono text-[11px] break-words " + (destructive ? "text-destructive" : "text-muted-foreground")}>
+      <div className={"font-mono text-data break-words " + (destructive ? "text-destructive" : "text-muted-foreground")}>
         {entry.error}
       </div>
       {inputPreview && (
-        <div className="text-[10px] font-mono text-muted-foreground break-all">
+        <div className="text-data font-mono text-muted-foreground break-all">
           <span className="opacity-70">input: </span>{inputPreview}{inputPreview.length === 160 && "…"}
         </div>
       )}
       {entry.suggestion && (
-        <div className="text-[10px] text-muted-foreground italic">Suggested: {entry.suggestion}</div>
+        <div className="text-data text-muted-foreground italic">Suggested: {entry.suggestion}</div>
       )}
       <div className="flex items-center justify-end gap-1 pt-1">
         {destructive && (
-          <Button size="sm" variant="ghost" className="h-6 px-2 gap-1 text-[10px]" onClick={onScroll}>
+          <Button size="sm" variant="ghost" className="h-6 px-2 gap-1 text-data" onClick={onScroll}>
             <ArrowDownToLine className="w-3 h-3" /> Scroll to call
           </Button>
         )}
-        <Button size="sm" variant="ghost" className="h-6 px-2 gap-1 text-[10px]"
+        <Button size="sm" variant="ghost" className="h-6 px-2 gap-1 text-data"
           onClick={() => onCopy(JSON.stringify(entry, null, 2), "Failure JSON copied")}>
           <Copy className="w-3 h-3" /> Copy JSON
         </Button>

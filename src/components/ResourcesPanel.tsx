@@ -191,7 +191,7 @@ export function ResourcesPanel({
 
         <div className="w-8 h-px bg-border-subtle" />
 
-        <div className="text-[10px] text-muted-foreground font-mono">{items.length}</div>
+        <div className="text-data text-muted-foreground font-mono">{items.length}</div>
 
         <div className="flex-1 overflow-y-auto w-full flex flex-col items-center gap-2 px-1">
           {GROUP_ORDER.filter((g) => items.some((a) => groupForKind(a.kind) === g)).map((g) => {
@@ -221,7 +221,7 @@ export function ResourcesPanel({
       <Tabs value={tab} onValueChange={setTab} className="flex-1 flex flex-col min-h-0">
         <div className="sticky top-0 z-10 border-b border-border-subtle bg-background">
           <div className="px-4 h-14 flex items-center gap-3">
-            <div className="text-[11px] font-semibold tracking-[0.22em] text-muted-foreground shrink-0 uppercase">Case</div>
+            <div className="text-eyebrow font-semibold tracking-[0.22em] text-muted-foreground shrink-0 uppercase">Case</div>
             <button
               onClick={() => {
                 if (!seed?.value) return;
@@ -233,14 +233,14 @@ export function ResourcesPanel({
               className="flex-1 min-w-0 group flex items-center gap-1.5 text-left"
               title={seed?.value ?? ""}
             >
-              <span className="font-mono text-[13px] tabular-nums text-foreground truncate">
+              <span className="font-mono text-meta tabular-nums text-foreground truncate">
                 {seed?.value ? compactSeed(seed.value).display : "—"}
               </span>
               {seed?.value && (
                 <Copy className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
               )}
             </button>
-            <span className="px-2.5 py-1 rounded-full border border-border-subtle bg-surface-1 text-[10px] font-mono text-muted-foreground tabular-nums shrink-0">
+            <span className="px-2.5 py-1 rounded-full border border-border-subtle bg-surface-1 text-data font-mono text-muted-foreground tabular-nums shrink-0">
               {items.length}
             </span>
             <DensityToggle className="hidden md:inline-flex" />
@@ -263,7 +263,7 @@ export function ResourcesPanel({
                   key={t.v}
                   onClick={() => { setMode("main"); setTab(t.v); }}
                   className={cn(
-                    "flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg text-[10px] font-medium uppercase tracking-[0.16em] transition-colors",
+                    "flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg text-eyebrow font-medium uppercase tracking-[0.16em] transition-colors",
                     active
                       ? "bg-surface-1 text-foreground border border-white/10"
                       : "text-muted-foreground hover:text-foreground hover:bg-surface-1 border border-transparent",
@@ -280,7 +280,7 @@ export function ResourcesPanel({
             <button
               onClick={() => { setMode("full"); setSection(sectionForTab(tab) ?? "evidence"); }}
               className={cn(
-                "flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg text-[10px] font-medium uppercase tracking-[0.16em] transition-colors",
+                "flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg text-eyebrow font-medium uppercase tracking-[0.16em] transition-colors",
                 mode === "full"
                   ? "bg-surface-1 text-foreground border border-white/10"
                   : "text-muted-foreground hover:text-foreground hover:bg-surface-1 border border-transparent",
@@ -303,7 +303,7 @@ export function ResourcesPanel({
                       key={s.key}
                       onClick={() => onSectionChange(s.key)}
                       className={cn(
-                        "flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg text-[10px] font-medium uppercase tracking-[0.16em] transition-colors",
+                        "flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg text-eyebrow font-medium uppercase tracking-[0.16em] transition-colors",
                         active
                           ? "bg-surface-1 text-foreground border border-white/10"
                           : "text-muted-foreground hover:text-foreground hover:bg-surface-1 border border-transparent",
@@ -323,11 +323,11 @@ export function ResourcesPanel({
                       <TabsTrigger
                         key={t.v}
                         value={t.v}
-                        className="relative h-9 px-0 rounded-none bg-transparent text-[13px] font-medium text-muted-foreground border-b border-transparent data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:border-white/30 data-[state=active]:shadow-none transition-colors"
+                        className="relative h-9 px-0 rounded-none bg-transparent text-meta font-medium text-muted-foreground border-b border-transparent data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:border-white/30 data-[state=active]:shadow-none transition-colors"
                       >
                         <span>{t.l}</span>
                         {count != null && count > 0 && (
-                          <span className="ml-1.5 font-mono text-[10px] tabular-nums text-muted-foreground/70">
+                          <span className="ml-1.5 font-mono text-data tabular-nums text-muted-foreground/70">
                             {count}
                           </span>
                         )}
@@ -477,12 +477,12 @@ function ArtifactsList({
                 )}
               />
               <span
-                className="text-[10.5px] font-semibold uppercase tracking-[0.18em]"
+                className="text-eyebrow font-semibold uppercase tracking-[0.18em]"
                 style={{ color: failedC > 0 ? "hsl(var(--danger))" : "hsl(var(--foreground) / 0.62)" }}
               >
                 {GROUP_LABEL[g]}
               </span>
-              <span className="text-[10.5px] tabular-nums text-muted-foreground/80">· {all.length}</span>
+              <span className="text-data tabular-nums text-muted-foreground/80">· {all.length}</span>
               <span className="ml-auto flex items-center gap-2 text-[9.5px] tabular-nums">
                 {high > 0 && <span style={{ color: "hsl(var(--confidence-high))" }}>{high} hi</span>}
                 {mid > 0 && <span style={{ color: "hsl(var(--confidence-mid))" }}>{mid} md</span>}
@@ -529,13 +529,13 @@ function ArtifactsList({
                       ) : (
                         <span className="w-3 shrink-0" />
                       )}
-                      <span className="text-[11px] font-medium text-foreground/75">{kindHeading(kind, list.length)}</span>
-                      <span className="text-[10px] tabular-nums text-muted-foreground/70">· {list.length}</span>
+                      <span className="text-data font-medium text-foreground/75">{kindHeading(kind, list.length)}</span>
+                      <span className="text-data tabular-nums text-muted-foreground/70">· {list.length}</span>
                       {uniformProv && (
                         <span className="truncate font-mono text-[9.5px] text-muted-foreground/60">{uniformProv}</span>
                       )}
                       {lo != null && hi != null && (
-                        <span className="ml-auto text-[10px] font-semibold tabular-nums" style={{ color: rangeColor }}>
+                        <span className="ml-auto text-data font-semibold tabular-nums" style={{ color: rangeColor }}>
                           {lo === hi ? `${hi}%` : `${lo}–${hi}%`}
                         </span>
                       )}
@@ -609,12 +609,12 @@ function ArtifactRow({
               {rState === "dismissed" && <EyeOff className="h-3 w-3 shrink-0 text-muted-foreground" />}
               {fp && <XCircle className="h-3 w-3 shrink-0 text-destructive" />}
               {sensitive && <ShieldAlert className="h-3 w-3 shrink-0 text-destructive" />}
-              <span className={cn("truncate text-[13px] text-foreground/95", fp && "line-through opacity-70")}>
+              <span className={cn("truncate text-meta text-foreground/95", fp && "line-through opacity-70")}>
                 {a.value}
               </span>
             </span>
             {!hideProv && prov && (
-              <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground/80">
+              <span className="mt-0.5 block truncate font-mono text-data text-muted-foreground/80">
                 {prov}
               </span>
             )}
@@ -635,7 +635,7 @@ function ArtifactRow({
           </button>
           {a.confidence != null && (
             <span className="flex shrink-0 items-center gap-1">
-              <span className="w-9 text-right text-[12px] font-semibold tabular-nums" style={{ color: confColor }}>{conf}%</span>
+              <span className="w-9 text-right text-data font-semibold tabular-nums" style={{ color: confColor }}>{conf}%</span>
               <ConfidenceExplain artifact={a} review={rState} />
             </span>
           )}
@@ -728,15 +728,15 @@ function ArtifactDrawerInner({
             <div className="space-y-1">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-mono">{src.primary}</span>
-                <span className={"px-1.5 py-0.5 rounded border font-mono text-[10px] uppercase tracking-wider " + CACHE_LAYER_CLASS[src.cacheLayer]}>
+                <span className={"px-1.5 py-0.5 rounded border font-mono text-eyebrow uppercase tracking-wider " + CACHE_LAYER_CLASS[src.cacheLayer]}>
                   {CACHE_LAYER_LABEL[src.cacheLayer]}
                 </span>
                 {src.all.length > 1 && (
-                  <span className="text-[10px] text-muted-foreground">+{src.all.length - 1} more</span>
+                  <span className="text-data text-muted-foreground">+{src.all.length - 1} more</span>
                 )}
               </div>
               {src.parent && (
-                <div className="text-[11px] text-muted-foreground">
+                <div className="text-data text-muted-foreground">
                   Parent: <span className="font-mono text-foreground">{src.parent}</span>
                 </div>
               )}
@@ -752,13 +752,13 @@ function ArtifactDrawerInner({
                 {src.all.map((s) => (
                   <li key={s} className="flex items-center justify-between font-mono">
                     <span className="truncate">{s}</span>
-                    <span className="text-[10px] text-muted-foreground shrink-0">
+                    <span className="text-data text-muted-foreground shrink-0">
                       {artifact.confidence != null ? `${artifact.confidence}%` : "—"}
                     </span>
                   </li>
                 ))}
                 {src.rawValue && src.rawValue !== artifact.value && (
-                  <li className="text-[11px] text-muted-foreground">
+                  <li className="text-data text-muted-foreground">
                     raw: <span className="font-mono text-foreground break-all">{src.rawValue}</span>
                   </li>
                 )}
@@ -768,10 +768,10 @@ function ArtifactDrawerInner({
           <Field label="First seen">{new Date(artifact.created_at).toLocaleString()}</Field>
           <Field label="Review">
             <div className="flex items-center gap-2 flex-wrap text-xs">
-              <span className={"px-2 py-0.5 rounded-full border font-mono text-[10px] uppercase tracking-wider " + REVIEW_CLASS[rState]}>
+              <span className={"px-2 py-0.5 rounded-full border font-mono text-eyebrow uppercase tracking-wider " + REVIEW_CLASS[rState]}>
                 {REVIEW_SHORT[rState]}
               </span>
-              {falsePositive && <span className="px-2 py-0.5 rounded-full bg-destructive/15 text-destructive border border-destructive/40 text-[10px] uppercase">false positive</span>}
+              {falsePositive && <span className="px-2 py-0.5 rounded-full bg-destructive/15 text-destructive border border-destructive/40 text-eyebrow uppercase">false positive</span>}
             </div>
             <div className="flex flex-wrap gap-1 mt-2">
               <ReviewBtn current={rState} target="confirmed" onClick={() => reviewSet(artifact.id, "confirmed")}>
@@ -786,7 +786,7 @@ function ArtifactDrawerInner({
               <ReviewBtn current={rState} target="dismissed" onClick={() => reviewSet(artifact.id, "dismissed")}>
                 <EyeOff className="w-3 h-3" /> Dismiss
               </ReviewBtn>
-              <Button size="sm" variant="ghost" className="h-6 px-2 gap-1 text-[10px]" onClick={() => reviewSet(artifact.id, null)}>
+              <Button size="sm" variant="ghost" className="h-6 px-2 gap-1 text-data" onClick={() => reviewSet(artifact.id, null)}>
                 Reset
               </Button>
             </div>
@@ -803,7 +803,7 @@ function ArtifactDrawerInner({
               <Button
                 size="sm"
                 variant="secondary"
-                className="h-6 px-2 text-[10px]"
+                className="h-6 px-2 text-data"
                 onClick={() => {
                   review.setNote(artifact.id, noteDraft);
                   toast.success("Note saved");
@@ -814,7 +814,7 @@ function ArtifactDrawerInner({
             </div>
           </Field>
           <Field label="Metadata">
-            <pre className="text-[11px] font-mono bg-secondary/40 border border-border rounded p-2 overflow-x-auto max-h-48">{JSON.stringify(meta, null, 2)}</pre>
+            <pre className="text-data font-mono bg-secondary/40 border border-border rounded p-2 overflow-x-auto max-h-48">{JSON.stringify(meta, null, 2)}</pre>
           </Field>
 
           <div className="grid grid-cols-2 gap-2">
@@ -844,7 +844,7 @@ function ReviewBtn({
       size="sm"
       variant={active ? "default" : "secondary"}
       onClick={onClick}
-      className="h-6 px-2 gap-1 text-[10px]"
+      className="h-6 px-2 gap-1 text-data"
     >
       {children}
     </Button>
@@ -854,7 +854,7 @@ function ReviewBtn({
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">{label}</div>
+      <div className="text-eyebrow uppercase tracking-wider text-muted-foreground mb-1">{label}</div>
       <div>{children}</div>
     </div>
   );
@@ -872,16 +872,16 @@ function ArtifactPeek({ artifact: a, confColor }: { artifact: Artifact; confColo
     <div className="bg-popover text-popover-foreground">
       <div className="px-3 py-2 border-b border-border-subtle flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 min-w-0">
-          <span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{group}</span>
+          <span className="text-eyebrow uppercase tracking-[0.12em] text-muted-foreground">{group}</span>
           <span className="text-muted-foreground">·</span>
-          <span className="text-[10px] font-mono uppercase text-muted-foreground">{a.kind}</span>
+          <span className="text-eyebrow font-mono uppercase text-muted-foreground">{a.kind}</span>
         </div>
         {a.confidence != null && (
-          <span className="text-[10px] font-mono tabular-nums" style={{ color: confColor }}>{conf}%</span>
+          <span className="text-data font-mono tabular-nums" style={{ color: confColor }}>{conf}%</span>
         )}
       </div>
       <div className="px-3 py-2 space-y-2">
-        <div className="font-mono text-[12px] text-foreground break-all">{a.value}</div>
+        <div className="font-mono text-data text-foreground break-all">{a.value}</div>
         {a.confidence != null && (
           <div className="confidence-track">
             <span
@@ -890,7 +890,7 @@ function ArtifactPeek({ artifact: a, confColor }: { artifact: Artifact; confColo
             />
           </div>
         )}
-        <div className="grid grid-cols-2 gap-2 text-[10px] text-muted-foreground">
+        <div className="grid grid-cols-2 gap-2 text-data text-muted-foreground">
           {src?.all && src.all.length > 0 && (
             <div className="col-span-2">
               <div className="uppercase tracking-[0.1em] text-[9px] text-muted-foreground/70 mb-1">Sources</div>
@@ -907,7 +907,7 @@ function ArtifactPeek({ artifact: a, confColor }: { artifact: Artifact; confColo
           )}
         </div>
       </div>
-      <div className="px-3 py-1.5 border-t border-border-subtle text-[10px] text-muted-foreground flex items-center justify-between">
+      <div className="px-3 py-1.5 border-t border-border-subtle text-data text-muted-foreground flex items-center justify-between">
         <span>Click row to open detail</span>
         <kbd className="px-1 py-0.5 rounded border border-border-subtle bg-surface-2 font-mono">↵</kbd>
       </div>

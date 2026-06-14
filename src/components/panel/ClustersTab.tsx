@@ -28,17 +28,17 @@ export function ClustersTab({ threadId, artifacts }: { threadId: string; artifac
     <div className="p-3 space-y-3">
       {report.warnings.length > 0 && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 space-y-1.5 animate-pivot-in">
-          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-destructive uppercase tracking-wider">
+          <div className="flex items-center gap-1.5 text-eyebrow font-semibold text-destructive uppercase tracking-wider">
             <AlertTriangle className="w-3.5 h-3.5" /> Misattribution warning
           </div>
           {report.warnings.map((w, i) => (
-            <p key={i} className="text-[11px] text-destructive/90 leading-relaxed">{w}</p>
+            <p key={i} className="text-data text-destructive/90 leading-relaxed">{w}</p>
           ))}
         </div>
       )}
 
       {(report.seedName || report.seedState) && (
-        <div className="text-[10px] text-muted-foreground font-mono flex items-center gap-2">
+        <div className="text-data text-muted-foreground font-mono flex items-center gap-2">
           {report.seedName && <span>subject: <span className="text-foreground">{report.seedName}</span></span>}
           {report.seedState && <span>· target: <span className="text-foreground">{report.seedState}</span></span>}
         </div>
@@ -66,7 +66,7 @@ function ClusterCard({ cluster: c, index }: { cluster: IdentityCluster; index: n
       style={{ animationDelay: `${index * 50}ms` }}
     >
       <div className="flex items-start justify-between gap-2">
-        <div className="text-[12px] font-semibold leading-tight">{c.label}</div>
+        <div className="text-data font-semibold leading-tight">{c.label}</div>
         <div className={cn(
           "text-[9px] font-mono px-1.5 py-0.5 rounded border shrink-0",
           matches === true
@@ -81,7 +81,7 @@ function ClusterCard({ cluster: c, index }: { cluster: IdentityCluster; index: n
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-1.5 text-[10px] font-mono">
+      <div className="grid grid-cols-2 gap-1.5 text-data font-mono">
         <Field icon={Mail} label="emails" values={c.emails} />
         <Field icon={UserIcon} label="usernames" values={c.usernames} />
         <Field icon={Phone} label="phones" values={c.phones.map((p, i) => c.areaCodes[i] ? `${p} (${c.areaCodes[i]})` : p)} />
@@ -107,7 +107,7 @@ function ClusterCard({ cluster: c, index }: { cluster: IdentityCluster; index: n
       )}
 
       {c.warnings.length > 0 && (
-        <div className="text-[10px] text-destructive/90 flex items-start gap-1 leading-snug">
+        <div className="text-data text-destructive/90 flex items-start gap-1 leading-snug">
           <AlertTriangle className="w-3 h-3 shrink-0 mt-px" />
           <span>{c.warnings.join(" / ")}</span>
         </div>

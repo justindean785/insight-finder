@@ -69,23 +69,23 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
   return (
     <div className="p-3 space-y-3 text-xs">
       <div className="flex flex-wrap gap-1.5 no-print">
-        <Button size="sm" variant="outline" className="h-7 gap-1 text-[10px]"
+        <Button size="sm" variant="outline" className="h-7 gap-1 text-data"
           onClick={() => copy(markdown, "Report copied")}>
           <Copy className="w-3 h-3" /> Copy markdown
         </Button>
-        <Button size="sm" variant="outline" className="h-7 gap-1 text-[10px]"
+        <Button size="sm" variant="outline" className="h-7 gap-1 text-data"
           onClick={downloadMd}>
           <Download className="w-3 h-3" /> Download .md
         </Button>
-        <Button size="sm" variant="outline" className="h-7 gap-1 text-[10px]"
+        <Button size="sm" variant="outline" className="h-7 gap-1 text-data"
           onClick={printPdf} title="Opens the print dialog — choose 'Save as PDF'">
           <Printer className="w-3 h-3" /> Download PDF
         </Button>
-        <Button size="sm" variant="ghost" className="h-7 gap-1 text-[10px] text-muted-foreground"
+        <Button size="sm" variant="ghost" className="h-7 gap-1 text-data text-muted-foreground"
           onClick={() => copy(matrixMd, "Evidence matrix copied")}>
           <Table className="w-3 h-3" /> Matrix
         </Button>
-        <Button size="sm" variant="ghost" className="h-7 gap-1 text-[10px] text-muted-foreground"
+        <Button size="sm" variant="ghost" className="h-7 gap-1 text-data text-muted-foreground"
           onClick={() => copy(JSON.stringify(artifacts, null, 2), "Artifact JSON copied")}>
           <Braces className="w-3 h-3" /> JSON
         </Button>
@@ -96,10 +96,10 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
       </div>
 
       <details className="rounded-lg border border-border-subtle bg-surface-2 no-print">
-        <summary className="cursor-pointer px-3 py-2 text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+        <summary className="cursor-pointer px-3 py-2 text-eyebrow uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
           <FileText className="w-3 h-3" /> Raw markdown
         </summary>
-        <pre className="p-3 text-[11px] font-mono leading-relaxed text-foreground/80 whitespace-pre-wrap break-words max-h-[50vh] overflow-y-auto [scrollbar-width:thin] border-t border-border-subtle">
+        <pre className="p-3 text-data font-mono leading-relaxed text-foreground/80 whitespace-pre-wrap break-words max-h-[50vh] overflow-y-auto [scrollbar-width:thin] border-t border-border-subtle">
           {markdown}
         </pre>
       </details>

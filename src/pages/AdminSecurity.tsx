@@ -161,7 +161,7 @@ export default function AdminSecurity() {
                               ? <ShieldCheck className="w-4 h-4 text-[hsl(var(--confidence-high))]" />
                               : <ShieldAlert className="w-4 h-4 text-destructive" />}
                             <span className="font-medium">{r.name}</span>
-                            <span className={cn("text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border", severityColor[r.severity])}>
+                            <span className={cn("text-eyebrow uppercase tracking-wide px-1.5 py-0.5 rounded border", severityColor[r.severity])}>
                               {r.severity}
                             </span>
                           </div>

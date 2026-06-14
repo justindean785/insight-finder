@@ -64,15 +64,15 @@ export function TimelineTab({ threadId, artifacts }: { threadId: string; artifac
               </span>
               <div className="rounded-md border border-border bg-card/40 p-2.5 space-y-1">
                 <div className="flex items-center justify-between gap-2">
-                  <span className={"px-1.5 py-0.5 rounded border font-mono text-[10px] uppercase tracking-wider " + COLOR[it.type]}>
+                  <span className={"px-1.5 py-0.5 rounded border font-mono text-eyebrow uppercase tracking-wider " + COLOR[it.type]}>
                     {it.type.replace("_", " ")}
                   </span>
-                  <span className="text-[10px] font-mono text-muted-foreground">
+                  <span className="text-data font-mono text-muted-foreground">
                     {new Date(it.time).toLocaleString()}
                   </span>
                 </div>
                 <div className="font-mono text-foreground break-all">{it.title}</div>
-                <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                <div className="text-eyebrow uppercase tracking-wider text-muted-foreground">
                   {it.kind ?? "—"}
                   {it.source ? ` · via ${it.source}` : ""}
                   {it.confidence != null ? ` · ${it.confidence}%` : ""}

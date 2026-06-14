@@ -295,7 +295,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
           to="/brain"
           aria-label="Global Brain"
           className={cn(
-            "relative mt-3 flex items-center gap-2 w-full px-4 py-3 rounded-xl border text-[12px] font-medium uppercase tracking-[0.18em] transition-colors",
+            "relative mt-3 flex items-center gap-2 w-full px-4 py-3 rounded-xl border text-data font-medium uppercase tracking-[0.18em] transition-colors",
             onBrainRoute
               ? "border-white/20 bg-surface-1 text-foreground"
               : "border-border-subtle bg-surface-0 text-muted-foreground hover:text-foreground hover:border-white/15 hover:bg-surface-1",
@@ -304,7 +304,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
           <Brain className="w-4 h-4" strokeWidth={1.5} />
           <span>Brain</span>
           {newPatternCount > 0 && !onBrainRoute && (
-            <span className="ml-auto inline-flex items-center justify-center min-w-[28px] h-[22px] px-2 rounded-full bg-white text-black text-[11px] font-mono font-bold shadow-[0_8px_18px_-12px_rgba(255,255,255,0.9)]">
+            <span className="ml-auto inline-flex items-center justify-center min-w-[28px] h-[22px] px-2 rounded-full bg-white text-black text-data font-mono font-bold shadow-[0_8px_18px_-12px_rgba(255,255,255,0.9)]">
               {newPatternCount > 99 ? "99+" : newPatternCount}
             </span>
           )}
@@ -318,7 +318,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search investigations"
-            className="min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground"
+            className="min-w-0 flex-1 bg-transparent text-meta text-foreground outline-none placeholder:text-muted-foreground"
           />
         </div>
       </div>
@@ -329,7 +329,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
             key={t.key}
             onClick={() => setTypeFilter(t.key)}
             className={cn(
-              "shrink-0 px-3 py-2 rounded-full border text-eyebrow font-mono uppercase transition-colors",
+              "shrink-0 px-3 py-2 rounded-full border text-eyebrow font-mono uppercase tracking-[0.14em] transition-colors",
               typeFilter === t.key
                 ? "border-white/30 bg-surface-2 text-foreground"
                 : "border-border-subtle bg-surface-0 text-muted-foreground hover:text-foreground hover:bg-surface-1"
@@ -344,7 +344,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         {(["Today", "This week", "Older"] as const).map((bucket) =>
           activeGroups[bucket].length === 0 ? null : (
             <div key={bucket} className="mb-2">
-              <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+              <div className="px-2 py-1 text-eyebrow uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
                 <span className="w-1 h-1 rounded-full bg-muted-foreground/50" />
                 {bucket}
                 <span className="ml-1 font-mono opacity-50">{activeGroups[bucket].length}</span>
@@ -358,7 +358,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
 
         {finished.length > 0 && (
           <div className="mb-2 mt-3">
-            <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1.5 border-t border-border-subtle/60 pt-2">
+            <div className="px-2 py-1 text-eyebrow uppercase tracking-wider text-muted-foreground flex items-center gap-1.5 border-t border-border-subtle/60 pt-2">
               <CheckCircle2 className="w-3 h-3 text-confidence-glow" />
               Finished
               <span className="ml-1 font-mono opacity-60">{finished.length}</span>
@@ -431,24 +431,24 @@ function ThreadRow({
           {dim && <CheckCircle2 className="w-3 h-3 text-confidence-glow shrink-0" />}
           <span className="truncate">{t.title}</span>
         </div>
-        <div className="text-[11px] text-muted-foreground flex items-center gap-1.5 flex-wrap">
+        <div className="text-data text-muted-foreground flex items-center gap-1.5 flex-wrap">
           {t.seed_type && (
             <span className="px-1 py-px rounded border border-border-subtle bg-white/5 font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
               {t.seed_type}
             </span>
           )}
           {(m?.artifacts ?? 0) > 0 && (
-            <span className="inline-flex items-center gap-0.5 font-mono text-[10px] text-foreground/80" title="Artifacts">
+            <span className="inline-flex items-center gap-0.5 font-mono text-data text-foreground/80" title="Artifacts">
               <Database className="w-2.5 h-2.5 opacity-70" />{m!.artifacts}
             </span>
           )}
           {(m?.breaches ?? 0) > 0 && (
-            <span className="inline-flex items-center gap-0.5 font-mono text-[10px] text-[hsl(var(--danger))]" title="Breaches">
+            <span className="inline-flex items-center gap-0.5 font-mono text-data text-[hsl(var(--danger))]" title="Breaches">
               <ShieldAlert className="w-2.5 h-2.5" />{m!.breaches}
             </span>
           )}
           {(m?.lowConf ?? 0) > 0 && (
-            <span className="inline-flex items-center gap-0.5 font-mono text-[10px] text-[hsl(var(--confidence-mid))]" title="Needs verify">
+            <span className="inline-flex items-center gap-0.5 font-mono text-data text-[hsl(var(--confidence-mid))]" title="Needs verify">
               <Activity className="w-2.5 h-2.5" />{m!.lowConf}
             </span>
           )}
@@ -487,7 +487,7 @@ function SpendTrend({ threads, totalCost }: { threads: Thread[]; totalCost: numb
     <div className="evidence-tile px-3 py-2.5">
       <div className="flex items-center justify-between mb-1">
         <span className="label-eyebrow">Total spend</span>
-        <span className="font-mono text-[10px] text-muted-foreground">{threads.length} cases</span>
+        <span className="font-mono text-data text-muted-foreground">{threads.length} cases</span>
       </div>
       <div className="font-mono text-xl font-semibold text-foreground tabular-nums leading-none tracking-tight">
         {formatUsd(totalCost)}
@@ -495,7 +495,7 @@ function SpendTrend({ threads, totalCost }: { threads: Thread[]; totalCost: numb
       {series.length > 1 && (
         <div className="flex items-center gap-1.5 mt-1.5">
           <span className={cn(
-            "inline-flex items-center gap-0.5 text-[10px] font-mono font-medium",
+            "inline-flex items-center gap-0.5 text-data font-mono font-medium",
             trend === "up" ? "text-[hsl(var(--confidence-mid))]"
             : trend === "down" ? "text-[hsl(var(--brain-cyan))]"
             : "text-muted-foreground",
@@ -505,7 +505,7 @@ function SpendTrend({ threads, totalCost }: { threads: Thread[]; totalCost: numb
             </span>
             {formatUsd(Math.abs(delta))} last run
           </span>
-          <span className="text-[10px] text-muted-foreground">
+          <span className="text-data text-muted-foreground">
             · across {threads.length} case{threads.length === 1 ? "" : "s"}
           </span>
         </div>

@@ -251,7 +251,7 @@ export function CustodyTab({ threadId }: { threadId: string }) {
                         <span className="font-mono text-muted-foreground tabular-nums">#{r.seq}</span>
                         <span
                           className={cn(
-                            "px-1.5 py-0.5 rounded text-[10px] uppercase tracking-[0.1em] border font-mono",
+                            "px-1.5 py-0.5 rounded text-eyebrow uppercase tracking-[0.1em] border font-mono",
                             hard
                               ? "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/40 bg-[hsl(var(--confidence-high))]/10"
                               : "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid))]/40 bg-[hsl(var(--confidence-mid))]/10",
@@ -260,15 +260,15 @@ export function CustodyTab({ threadId }: { threadId: string }) {
                           {hard ? "hard" : "soft"}
                         </span>
                         {r.kind && (
-                          <span className="px-1.5 py-0.5 rounded text-[10px] border border-border-subtle bg-surface-1 text-muted-foreground font-mono uppercase tracking-wider">
+                          <span className="px-1.5 py-0.5 rounded text-eyebrow border border-border-subtle bg-surface-1 text-muted-foreground font-mono uppercase tracking-wider">
                             {r.kind}
                           </span>
                         )}
                         {typeof r.confidence === "number" && (
-                          <span className="text-muted-foreground font-mono tabular-nums text-[11px]">{r.confidence}%</span>
+                          <span className="text-muted-foreground font-mono tabular-nums text-data">{r.confidence}%</span>
                         )}
                       </div>
-                      <span className="text-muted-foreground font-mono text-[11px] tabular-nums shrink-0">
+                      <span className="text-muted-foreground font-mono text-data tabular-nums shrink-0">
                         {timeAgo(r.collected_at)}
                       </span>
                     </div>
@@ -277,7 +277,7 @@ export function CustodyTab({ threadId }: { threadId: string }) {
                       <div className="text-sm text-foreground font-mono break-all">{r.value}</div>
                     )}
 
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] text-muted-foreground border-t border-border-subtle pt-2">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-data text-muted-foreground border-t border-border-subtle pt-2">
                       {r.source && (
                         <span className="font-mono">
                           via <span className="text-foreground/80">{r.source}</span>
@@ -350,7 +350,7 @@ function ChainIntegrityBanner({
             <span className="label-eyebrow">Chain integrity</span>
             <span
               className={cn(
-                "font-mono text-[11px] tabular-nums",
+                "font-mono text-data tabular-nums",
                 ok && "text-[hsl(var(--confidence-high))]",
                 broken && "text-danger",
                 !verification && "text-muted-foreground",
@@ -359,7 +359,7 @@ function ChainIntegrityBanner({
               {verifying ? "checking…" : ok ? "100%" : broken ? "broken" : "—"}
             </span>
           </div>
-          <div className="text-[11px] text-muted-foreground mt-0.5">
+          <div className="text-data text-muted-foreground mt-0.5">
             {ok && <>No broken links · <span className="font-mono tabular-nums text-foreground/80">{verification!.total}</span> events anchored</>}
             {broken && (
               <>

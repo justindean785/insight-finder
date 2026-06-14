@@ -28,9 +28,9 @@ export function SourceBadge({
       ? "border-border-subtle bg-surface-2 text-muted-foreground"
       : "border-border-subtle bg-surface-2 text-foreground/85";
   const sz =
-    size === "xs" ? "h-5 px-1.5 text-[10px]"
-    : size === "sm" ? "h-5 px-2 text-[10px]"
-    : "h-6 px-2 text-[11px]";
+    size === "xs" ? "h-5 px-1.5 text-data"
+    : size === "sm" ? "h-5 px-2 text-data"
+    : "h-6 px-2 text-data";
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -148,7 +148,7 @@ function SourceStats({ source, threadId }: { source: string; threadId?: string }
         {successRate != null && (
           <span
             className={cn(
-              "font-mono tabular-nums text-[11px]",
+              "font-mono tabular-nums text-data",
               successRate >= 90 ? "text-[hsl(var(--confidence-high))]" :
               successRate >= 70 ? "text-[hsl(var(--confidence-mid))]" :
               "text-[hsl(var(--confidence-low))]",
@@ -175,15 +175,15 @@ function SourceStats({ source, threadId }: { source: string; threadId?: string }
       )}
 
       <div className="px-3 py-2 border-t border-border-subtle">
-        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.1em] text-muted-foreground mb-1">
+        <div className="flex items-center gap-1.5 text-eyebrow uppercase tracking-[0.1em] text-muted-foreground mb-1">
           <Brain className="w-3 h-3" /> Mentioned in patterns
         </div>
         {stats.patternMentions.length === 0 ? (
-          <div className="text-[11px] text-muted-foreground">No agent-memory patterns reference this source yet.</div>
+          <div className="text-data text-muted-foreground">No agent-memory patterns reference this source yet.</div>
         ) : (
           <ul className="space-y-1">
             {stats.patternMentions.map((p, i) => (
-              <li key={i} className="text-[11px]">
+              <li key={i} className="text-data">
                 <span className="font-mono text-foreground">{p.subject}</span>
                 <span className="text-muted-foreground"> — {truncate(p.content, 80)}</span>
               </li>

@@ -154,7 +154,7 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
           <Button
             size="sm"
             onClick={queueAll}
-            className="h-7 gap-1 text-[11px] bg-primary text-primary-foreground hover:bg-primary/90"
+            className="h-7 gap-1 text-data bg-primary text-primary-foreground hover:bg-primary/90"
           >
             <Zap className="w-3 h-3" /> Queue all pivots
           </Button>
@@ -163,7 +163,7 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
       {/* Run-meta pills: cost + contradictions */}
       <div className="flex flex-wrap gap-1.5">
         <span
-          className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full border border-border-subtle bg-surface-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground"
+          className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full border border-border-subtle bg-surface-1 font-mono text-eyebrow uppercase tracking-wider text-muted-foreground"
           title="Estimated API cost so far"
         >
           <Wallet className="w-3 h-3 text-[hsl(var(--info))]" />
@@ -175,7 +175,7 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
             window.dispatchEvent(new CustomEvent("proximity:open-tab", { detail: { tab: "matrix" } }));
           }}
           className={
-            "inline-flex items-center gap-1.5 px-2 py-1 rounded-full border font-mono text-[10px] uppercase tracking-wider transition-colors " +
+            "inline-flex items-center gap-1.5 px-2 py-1 rounded-full border font-mono text-eyebrow uppercase tracking-wider transition-colors " +
             (contradictions > 0
               ? "border-[hsl(var(--confidence-mid))]/40 bg-[hsl(var(--warning-muted))] text-[hsl(var(--confidence-mid))] hover:bg-[hsl(var(--warning-muted))]/80"
               : "border-border-subtle bg-surface-1 text-muted-foreground")
@@ -188,15 +188,15 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
       </div>
       {visible.length > 0 && (
         <div className="flex items-center justify-between rounded-md border border-border bg-card/40 px-2 py-1.5">
-          <button onClick={toggleAll} className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground hover:text-foreground">
+          <button onClick={toggleAll} className="flex items-center gap-1.5 text-eyebrow uppercase tracking-wider text-muted-foreground hover:text-foreground">
             {allSelected ? <CheckSquare className="w-3.5 h-3.5 text-primary" /> : <Square className="w-3.5 h-3.5" />}
             {selected.size > 0 ? `${selected.size} selected` : "Select all"}
           </button>
           <div className="flex items-center gap-1">
-            <Button size="sm" variant="ghost" disabled={selected.size === 0} className="h-6 px-2 gap-1 text-[10px] hover:text-primary disabled:opacity-40" onClick={copySelected}>
+            <Button size="sm" variant="ghost" disabled={selected.size === 0} className="h-6 px-2 gap-1 text-data hover:text-primary disabled:opacity-40" onClick={copySelected}>
               <Copy className="w-3 h-3" /> Copy
             </Button>
-            <Button size="sm" variant="ghost" disabled={selected.size === 0} className="h-6 px-2 gap-1 text-[10px] disabled:opacity-40" onClick={skipSelected}>
+            <Button size="sm" variant="ghost" disabled={selected.size === 0} className="h-6 px-2 gap-1 text-data disabled:opacity-40" onClick={skipSelected}>
               <EyeOff className="w-3 h-3" /> Skip
             </Button>
           </div>
@@ -205,7 +205,7 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
       {visible.length === 0 ? (
         <div className="text-muted-foreground p-2 space-y-1">
           <div>No pivots available yet.</div>
-          <div className="text-[10px]">Pivots appear automatically as the agent records emails, usernames, domains, IPs, or wallets.</div>
+          <div className="text-data">Pivots appear automatically as the agent records emails, usernames, domains, IPs, or wallets.</div>
         </div>
       ) : (
         <ul className="space-y-2">
@@ -232,14 +232,14 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
                   </button>
                   <div className="min-w-0">
                   <div className="font-mono text-foreground break-all group-hover:text-primary transition-colors">{p.value}</div>
-                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground mt-0.5">
+                  <div className="text-eyebrow uppercase tracking-wider text-muted-foreground mt-0.5">
                     {p.type} · source: {p.source}
                   </div>
                   </div>
                 </div>
                 <div className="shrink-0 flex flex-col items-end gap-1">
                   <span className={
-                    "px-1.5 py-0.5 rounded border font-mono text-[10px] uppercase tracking-wider " +
+                    "px-1.5 py-0.5 rounded border font-mono text-eyebrow uppercase tracking-wider " +
                     (p.status === "new"
                       ? "text-primary border-primary/40 bg-primary/10 shadow-[0_0_12px_-4px_hsl(var(--primary)/0.6)]"
                       : "text-muted-foreground border-border bg-secondary/40")
@@ -248,7 +248,7 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
                     const r = review.get(p.sourceArtifactId);
                     if (r === "new") return null;
                     return (
-                      <span className={"px-1.5 py-0.5 rounded border font-mono text-[10px] uppercase tracking-wider " + REVIEW_CLASS[r]}>
+                      <span className={"px-1.5 py-0.5 rounded border font-mono text-eyebrow uppercase tracking-wider " + REVIEW_CLASS[r]}>
                         {REVIEW_SHORT[r]}
                       </span>
                     );
@@ -256,7 +256,7 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
                 </div>
               </div>
               <div className="text-muted-foreground">{p.why}</div>
-              <div className="text-[10px] text-muted-foreground flex items-center gap-1">
+              <div className="text-data text-muted-foreground flex items-center gap-1">
                 <ArrowRight className="w-3 h-3 text-primary/70 transition-transform group-hover:translate-x-0.5" />
                 Fan-out: <span className="text-foreground">{p.fanout}</span>
               </div>
@@ -264,15 +264,15 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
                 <Button
                   size="sm"
                   onClick={() => runPivot(p)}
-                  className="h-7 px-2.5 gap-1 text-[11px] bg-primary text-primary-foreground hover:bg-primary/90"
+                  className="h-7 px-2.5 gap-1 text-data bg-primary text-primary-foreground hover:bg-primary/90"
                 >
                   <Play className="w-3 h-3 fill-current" /> Run pivot <ArrowRight className="w-3 h-3" />
                 </Button>
                 <div className="flex items-center gap-1">
-                <Button size="sm" variant="ghost" className="h-6 px-2 gap-1 text-[10px] hover:text-primary" onClick={() => copy(p.value)}>
+                <Button size="sm" variant="ghost" className="h-6 px-2 gap-1 text-data hover:text-primary" onClick={() => copy(p.value)}>
                   <Copy className="w-3 h-3" /> Copy
                 </Button>
-                <Button size="sm" variant="ghost" className="h-6 px-2 gap-1 text-[10px]" onClick={() => skip(p)}>
+                <Button size="sm" variant="ghost" className="h-6 px-2 gap-1 text-data" onClick={() => skip(p)}>
                   <EyeOff className="w-3 h-3" /> Skip
                 </Button>
                 </div>

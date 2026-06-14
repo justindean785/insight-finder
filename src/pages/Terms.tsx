@@ -5,7 +5,7 @@ export default function Terms() {
     <div className="min-h-screen bg-background text-foreground">
       <div className="mx-auto flex min-h-screen max-w-2xl items-start px-6 py-16">
         <div className="glass-card w-full rounded-3xl border border-border-subtle/80 p-8 shadow-[0_30px_120px_-40px_rgba(0,0,0,0.8)]">
-          <div className="text-[10px] uppercase tracking-[0.26em] text-muted-foreground/80">Legal</div>
+          <div className="text-eyebrow uppercase tracking-[0.26em] text-muted-foreground/80">Legal</div>
           <h1 className="mt-3 text-2xl font-semibold tracking-tight">Terms of Service</h1>
           <p className="mt-1 text-xs text-muted-foreground">Last updated: June 2026</p>
 

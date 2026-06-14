@@ -108,7 +108,7 @@ export default function Auth() {
             <h1 className="font-display text-[28px] leading-none font-semibold tracking-tight gradient-text">
               Swarmbot
             </h1>
-            <p className="text-muted-foreground text-[13px]">
+            <p className="text-muted-foreground text-meta">
               OSINT investigator.{" "}
               <span className="font-mono text-foreground/70">seed</span>
               <span className="text-muted-foreground/60"> → </span>
@@ -124,15 +124,15 @@ export default function Auth() {
         <div className="rounded-2xl border border-white/[0.07] glass-card p-5 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.7)]">
           <Tabs defaultValue={defaultTab} className="w-full">
             <TabsList className="grid grid-cols-2 w-full h-9 bg-surface-2/60 p-1">
-              <TabsTrigger value="signin" className="text-[13px]">Sign in</TabsTrigger>
-              <TabsTrigger value="signup" className="text-[13px]">Sign up</TabsTrigger>
+              <TabsTrigger value="signin" className="text-meta">Sign in</TabsTrigger>
+              <TabsTrigger value="signup" className="text-meta">Sign up</TabsTrigger>
             </TabsList>
             <TabsContent value="signin">
               {forgotMode ? (
                 <form onSubmit={resetPassword} className="space-y-3.5 mt-4">
                   <p className="text-xs text-muted-foreground">Enter your email and we'll send a password reset link.</p>
                   <div className="space-y-1.5">
-                    <Label htmlFor="reset-email" className="text-[11px] uppercase tracking-[0.1em] text-muted-foreground">Email</Label>
+                    <Label htmlFor="reset-email" className="text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">Email</Label>
                     <Input id="reset-email" type="email" autoComplete="email" required value={resetEmail} onChange={(e) => setResetEmail(e.target.value)} />
                   </div>
                   <Button
@@ -142,20 +142,20 @@ export default function Auth() {
                   >
                     {loading ? "Sending…" : "Send reset link"}
                   </Button>
-                  <button type="button" onClick={() => setForgotMode(false)} className="w-full text-[11px] text-muted-foreground hover:text-foreground">
+                  <button type="button" onClick={() => setForgotMode(false)} className="w-full text-data text-muted-foreground hover:text-foreground">
                     Back to sign in
                   </button>
                 </form>
               ) : (
                 <form onSubmit={signIn} className="space-y-3.5 mt-4">
                   <div className="space-y-1.5">
-                    <Label htmlFor="signin-email" className="text-[11px] uppercase tracking-[0.1em] text-muted-foreground">Email</Label>
+                    <Label htmlFor="signin-email" className="text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">Email</Label>
                     <Input id="signin-email" type="email" autoComplete="email" required value={siEmail} onChange={(e) => setSiEmail(e.target.value)} />
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="signin-password" className="text-[11px] uppercase tracking-[0.1em] text-muted-foreground">Password</Label>
+                    <Label htmlFor="signin-password" className="text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">Password</Label>
                     <Input id="signin-password" type="password" autoComplete="current-password" required value={siPassword} onChange={(e) => setSiPassword(e.target.value)} />
-                    <button type="button" onClick={() => setForgotMode(true)} className="text-[11px] text-muted-foreground hover:text-foreground">
+                    <button type="button" onClick={() => setForgotMode(true)} className="text-data text-muted-foreground hover:text-foreground">
                       Forgot password?
                     </button>
                   </div>
@@ -172,13 +172,13 @@ export default function Auth() {
             <TabsContent value="signup">
               <form onSubmit={signUp} className="space-y-3.5 mt-4">
                 <div className="space-y-1.5">
-                  <Label htmlFor="signup-email" className="text-[11px] uppercase tracking-[0.1em] text-muted-foreground">Email</Label>
+                  <Label htmlFor="signup-email" className="text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">Email</Label>
                   <Input id="signup-email" type="email" autoComplete="email" required value={suEmail} onChange={(e) => setSuEmail(e.target.value)} />
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor="signup-password" className="text-[11px] uppercase tracking-[0.1em] text-muted-foreground">Password</Label>
+                  <Label htmlFor="signup-password" className="text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">Password</Label>
                   <Input id="signup-password" type="password" autoComplete="new-password" required minLength={6} value={suPassword} onChange={(e) => setSuPassword(e.target.value)} />
-                  <p className="text-[10px] text-muted-foreground/60">At least 6 characters</p>
+                  <p className="text-data text-muted-foreground/60">At least 6 characters</p>
                 </div>
                 <Button
                   type="submit"
@@ -194,7 +194,7 @@ export default function Auth() {
           <div className="relative my-5">
             <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-white/[0.06]" /></div>
             <div className="relative flex justify-center">
-              <span className="px-2.5 text-[10px] uppercase tracking-[0.18em] text-muted-foreground bg-[hsl(var(--surface-1))]">
+              <span className="px-2.5 text-eyebrow uppercase tracking-[0.18em] text-muted-foreground bg-[hsl(var(--surface-1))]">
                 or
               </span>
             </div>
@@ -215,7 +215,7 @@ export default function Auth() {
         </div>
 
         {/* Footnote */}
-        <p className="text-center text-[10px] uppercase tracking-[0.16em] text-muted-foreground/60 font-mono">
+        <p className="text-center text-eyebrow uppercase tracking-[0.16em] text-muted-foreground/60 font-mono">
           <Link to="/terms" className="hover:text-muted-foreground transition-colors">Terms</Link>
           {" · "}
           <Link to="/privacy" className="hover:text-muted-foreground transition-colors">Privacy</Link>
