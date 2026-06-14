@@ -282,7 +282,20 @@ export function startCall(input: RuntimeDecisionInput): RuntimeDecision {
   if ((state.cycleToolCounts.get(input.toolName) ?? 0) >= MAX_SAME_TOOL_CALLS_PER_CYCLE) {
     return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `same-tool cycle limit reached (${MAX_SAME_TOOL_CALLS_PER_CYCLE})` };
   }
-  if (input.expectedValue < threshold && !(input.staleCache && input.manualOverride)) {
+  // The expected-value gate suppresses low-value EXTERNAL evidence-gathering
+  // pivots. It must NOT block the agent's own orchestration tools (planning,
+  // memory recall, recording, auditing, triage) — those are bookkeeping, not
+  // data-source spend, and they carry their own rate limits (e.g. memory_recall's
+  // 30s window, the planner's once-per-round guard, the same-tool-per-cycle cap).
+  // Without this exemption the planner (minimax_plan_pivots, "expensive" tier →
+  // threshold 70) can never clear the gate on a bare seed, planRequired never
+  // clears, every other tool is blocked by "execution plan required", and the
+  // investigation deadlocks into a retry loop and FAILS.
+  if (
+    !ALWAYS_ALLOWED_BEFORE_PLAN.has(input.toolName) &&
+    input.expectedValue < threshold &&
+    !(input.staleCache && input.manualOverride)
+  ) {
     return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `expected value ${input.expectedValue} below ${threshold}` };
   }
 
