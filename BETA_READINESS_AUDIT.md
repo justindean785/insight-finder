@@ -215,3 +215,58 @@ The original BLOCKER-2 recommendation (`sse_stream.ts` ~200, `request_context.ts
 2. Move tool groups out one file at a time (`email` → `social` → `breach` → …), each as `make<Group>Tools(ctx)`, running `npm run test:edge` + a live smoke scan after each.
 3. Extract the SSE/`streamText` block last into `sse_stream.ts`.
 4. Target end state: `index.ts` = handler shell that assembles `ctx`, spreads the factory outputs, and streams (~300–400 LOC).
+
+---
+
+## 11) Beta UI / layout polish (2026-06-14)
+
+Follow-up to the layout overflow hotfix (PR #45, case-panel nav clipping). A
+broader pass on the investigation surface to make the beta feel intentional.
+**Scope: presentation only — no routing, auth, or investigation-execution
+logic was changed.**
+
+**Shipped (PR: `refactor/beta-ui-layout`):**
+
+- **Empty state owns the workflow.** Replaced the heavy multi-section "Case
+  File" card (bordered status/opened/classification grid) with a compact,
+  vertically-centered block: one headline ("Start an investigation"), a single
+  instruction line, example seed chips that populate the composer, and a small
+  `Ready · SWB-…` status line. The case-file no longer competes with the
+  composer. (`ChatWindow.tsx`)
+- **Composer is the clear primary CTA.** On an empty case it gets a subtle ring
+  + intel-blue glow so it reads as *the* action. (`ChatWindow.tsx`)
+- **Telemetry strip quieted + compacted.** `h-11 → h-10`, tighter gaps, tracking
+  `0.18em → 0.1em`, smaller icons, zero-value stats hidden (no more
+  "0 breaches 0 failed" on a fresh case), and the duplicate `ml-auto` (which
+  split the right cluster) fixed — time + New are now one right-aligned group.
+  (`ThreadHeader.tsx`)
+- **Left sidebar de-cluttered.** New-investigation button `h-14 → h-11`. Brain
+  demoted from a prominent uppercase bordered button to a slim secondary link in
+  the footer (badge preserved). Two redundant spend widgets (`SpendTrend` +
+  `CostMeter`) collapsed to one. Type-filter chips quieted (borderless inactive,
+  tracking `0.14em → 0.06em`). Thread-row 2px full-height side-stripe (an
+  anti-pattern) replaced with a small leading severity dot. (`ThreadSidebar.tsx`)
+- **Right panel useful when empty.** The blank "No artifacts recorded yet"
+  replaced with an explainer of what **Artifacts / Report / Full review** will
+  contain once the run starts. (`ResourcesPanel.tsx`)
+- **Responsive / overflow.** Case panel now defaults to collapsed below `xl`
+  (1279px) so the tablet 3-column layout isn't crushed; expands by default above
+  `xl`. Combined with the PR #45 `min-w-0`/`truncate` work, the panel can no
+  longer overflow at any width. Mobile remains the single-column + sheet layout.
+  (`ChatPage.tsx`)
+- Added a `.no-scrollbar` utility (`index.css`) for the horizontally-scrollable
+  nav strips.
+
+**Verification:**
+
+| Check | Result |
+|---|---|
+| `tsc --noEmit` | clean |
+| `eslint` (changed files) | 0 errors (1 pre-existing `exhaustive-deps` warning, unrelated) |
+| `vitest run` | **525 / 525 pass** |
+| `vite build` | succeeds |
+| Horizontal overflow | structurally prevented — every flex child is `min-w-0`, no fixed width exceeds the viewport, right panel collapses below `xl` |
+
+Live pixel verification at desktop / tablet / mobile widths is pending on a
+logged-in session (the app gates behind Supabase auth, which can't be driven
+headlessly here); to be confirmed on the Vercel preview after deploy.
