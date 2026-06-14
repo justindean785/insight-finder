@@ -68,6 +68,7 @@ export interface ExpectedValueInput {
   sourceIndependenceBonus?: number;
   corroborationPotential?: number;
   freshnessNeed?: number;
+  freshSeedBonus?: number;
   costPenalty?: number;
   duplicatePenalty?: number;
   priorFailurePenalty?: number;
@@ -193,6 +194,7 @@ export function scoreExpectedValue(input: ExpectedValueInput): number {
     + (input.sourceIndependenceBonus ?? 0)
     + (input.corroborationPotential ?? 0)
     + (input.freshnessNeed ?? 0)
+    + (input.freshSeedBonus ?? 0)
     - (input.costPenalty ?? 0)
     - (input.duplicatePenalty ?? 0)
     - (input.priorFailurePenalty ?? 0)
