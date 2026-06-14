@@ -129,7 +129,7 @@ export function ThreadHeader({
 
   return (
     <header className="sticky top-0 z-10 border-b border-border-subtle bg-background">
-      <div className="h-11 px-4 sm:px-5 flex items-center gap-3 text-[11px] min-w-0">
+      <div className="h-11 px-4 sm:px-5 flex items-center gap-3 text-data min-w-0">
         <span className={`shrink-0 rounded-full border px-2.5 py-1 font-mono uppercase tracking-[0.18em] ${statusColor}`}>
           {status}
         </span>
@@ -193,7 +193,7 @@ export function ThreadHeader({
           type="button"
           onClick={createInvestigation}
           disabled={creating}
-          className="ml-auto sm:ml-2 inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-white/10 bg-white px-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-black transition-colors hover:bg-white/90 disabled:opacity-50"
+          className="ml-auto sm:ml-2 inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-white/10 bg-white px-2.5 text-eyebrow font-semibold uppercase tracking-[0.12em] text-black transition-colors hover:bg-white/90 disabled:opacity-50"
           aria-label="Start a new investigation"
           title="Start a new investigation"
         >

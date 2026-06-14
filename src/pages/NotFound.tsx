@@ -14,7 +14,7 @@ const NotFound = () => {
       <div className="mx-auto flex min-h-screen max-w-2xl items-center px-6 py-12">
         <div className="glass-card w-full rounded-3xl border border-border-subtle/80 p-8 shadow-[0_30px_120px_-40px_rgba(0,0,0,0.8)] text-center">
           <SwarmMark className="w-10 h-10 mx-auto opacity-40" glow={false} />
-          <div className="mt-4 text-[10px] uppercase tracking-[0.26em] text-warning/80">
+          <div className="mt-4 text-eyebrow uppercase tracking-[0.26em] text-warning/80">
             Signal lost
           </div>
           <h1 className="mt-3 text-5xl font-semibold tracking-tight">404</h1>

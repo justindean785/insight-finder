@@ -102,16 +102,16 @@ function Hero({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <StatusPip status={status} />
-          <span className="font-mono text-[10px] uppercase tracking-[0.24em] text-muted-foreground">
+          <span className="font-mono text-eyebrow uppercase tracking-[0.24em] text-muted-foreground">
             OSINT · Investigation
           </span>
           <div className="h-3 w-px bg-border-strong/60" />
-          <span className="font-mono text-[10px] tabular-nums text-muted-foreground/60">{caseId ?? "—"}</span>
+          <span className="font-mono text-data tabular-nums text-muted-foreground/60">{caseId ?? "—"}</span>
         </div>
         <div className="flex items-center gap-2">
           <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground/60">Verdict</span>
           <span
-            className="rounded-[3px] px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em]"
+            className="rounded-[3px] px-2 py-0.5 font-mono text-eyebrow uppercase tracking-[0.16em]"
             style={{ color: `hsl(${vc})`, background: `hsl(${vc} / 0.1)`, border: `1px solid hsl(${vc} / 0.3)` }}
           >
             {verdict.label}
@@ -132,7 +132,7 @@ function Hero({
         <Stat label="Cost (USD)" value={`$${cost.toFixed(4)}`} />
       </div>
 
-      <div className="mt-4 flex items-center gap-4 font-mono text-[10px] text-muted-foreground/60">
+      <div className="mt-4 flex items-center gap-4 font-mono text-data text-muted-foreground/60">
         <span>ANALYST <span className="text-muted-foreground">{analyst ?? "—"}</span></span>
         <div className="h-2 w-px bg-border-strong/60" />
         <span>GENERATED <span className="text-muted-foreground">{generatedAt ?? "—"}</span></span>
@@ -168,7 +168,7 @@ function Seed({ seed }: { seed: { value: string; type: string } }) {
       <span className="font-mono text-[15px] tracking-tight text-primary">{seed.value}</span>
       <button
         onClick={() => navigator.clipboard?.writeText(seed.value)}
-        className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground/60 transition-colors hover:text-foreground"
+        className="font-mono text-eyebrow uppercase tracking-[0.16em] text-muted-foreground/60 transition-colors hover:text-foreground"
       >
         Copy →
       </button>
@@ -195,10 +195,10 @@ function Clusters({ clusters, findings }: { clusters: ClusterAudit[]; findings: 
               {/* Header — only border in this whole card body */}
               <div className="flex items-center justify-between border-b border-border-subtle px-4 py-3">
                 <div className="flex items-center gap-3">
-                  <span className="font-mono text-[10px] tabular-nums text-muted-foreground/60">
+                  <span className="font-mono text-data tabular-nums text-muted-foreground/60">
                     {c.cells.length.toString().padStart(2, "0")}
                   </span>
-                  <h3 className="text-[14px] tracking-tight text-foreground">{c.name}</h3>
+                  <h3 className="text-body tracking-tight text-foreground">{c.name}</h3>
                 </div>
                 <div className="flex items-center gap-3">
                   {drifted ? (
@@ -227,11 +227,11 @@ function Clusters({ clusters, findings }: { clusters: ClusterAudit[]; findings: 
                 </div>
                 {c.cells.map((cell, i) => (
                   <div key={i} className="grid grid-cols-[140px_1fr_180px_120px] items-center gap-4 px-4 py-2.5">
-                    <span className="truncate font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">
+                    <span className="truncate font-mono text-eyebrow uppercase tracking-[0.12em] text-muted-foreground/70">
                       {cell.claim}
                     </span>
-                    <span className="truncate text-[13px] tracking-tight text-foreground">{String(cell.value)}</span>
-                    <span className="truncate font-mono text-[11px] text-muted-foreground">{cell.source}</span>
+                    <span className="truncate text-meta tracking-tight text-foreground">{String(cell.value)}</span>
+                    <span className="truncate font-mono text-data text-muted-foreground">{cell.source}</span>
                     <ConfidenceMeter value={cell.confidence} width={72} />
                   </div>
                 ))}
@@ -291,7 +291,7 @@ function Hypotheses({ items }: { items: Hypothesis[] }) {
               }}
             >
               <div className="flex flex-col gap-1">
-                <span className="font-mono text-[10px] tracking-[0.16em]" style={{ color: isLead ? "hsl(var(--primary))" : "hsl(var(--muted-foreground))" }}>
+                <span className="font-mono text-data tracking-[0.16em]" style={{ color: isLead ? "hsl(var(--primary))" : "hsl(var(--muted-foreground))" }}>
                   {h.id}
                 </span>
                 {isLead && (
@@ -299,11 +299,11 @@ function Hypotheses({ items }: { items: Hypothesis[] }) {
                 )}
               </div>
               <div className="flex flex-col gap-2">
-                <span className="text-[13px] tracking-tight text-foreground">{h.label}</span>
-                <span className="text-[11.5px] leading-relaxed text-muted-foreground">{h.evidence}</span>
+                <span className="text-meta tracking-tight text-foreground">{h.label}</span>
+                <span className="text-data leading-relaxed text-muted-foreground">{h.evidence}</span>
                 <div className="mt-1 flex items-start gap-2 rounded-[2px] bg-surface-1 px-2.5 py-1.5">
                   <span className="font-mono text-[8px] uppercase tracking-[0.18em] text-muted-foreground/60">Needs</span>
-                  <span className="text-[10.5px] text-muted-foreground">{h.distinguishingEvidence}</span>
+                  <span className="text-data text-muted-foreground">{h.distinguishingEvidence}</span>
                 </div>
               </div>
               <div className="flex justify-end">
@@ -338,7 +338,7 @@ function Independence({
         <div className="flex flex-col items-center gap-1">
           <DriftArrow wide />
           {declared - effective > 0 && (
-            <span className="font-mono text-[10px] tabular-nums" style={{ color: "hsl(var(--confidence-mid))" }}>
+            <span className="font-mono text-data tabular-nums" style={{ color: "hsl(var(--confidence-mid))" }}>
               −{declared - effective}
             </span>
           )}
@@ -355,11 +355,11 @@ function Independence({
         </div>
         {sources.map((s) => (
           <div key={s.id} className="grid grid-cols-[40px_70px_1fr_1fr_140px_56px] items-center gap-3 px-4 py-2">
-            <span className="font-mono text-[11px] text-primary">{s.id}</span>
-            <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">{s.type}</span>
-            <span className="truncate font-mono text-[11px] text-foreground">{s.origin ?? "—"}</span>
-            <span className="truncate font-mono text-[10px] text-muted-foreground/60">{s.url ?? "—"}</span>
-            <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
+            <span className="font-mono text-data text-primary">{s.id}</span>
+            <span className="font-mono text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">{s.type}</span>
+            <span className="truncate font-mono text-data text-foreground">{s.origin ?? "—"}</span>
+            <span className="truncate font-mono text-data text-muted-foreground/60">{s.url ?? "—"}</span>
+            <span className="font-mono text-data tabular-nums text-muted-foreground">
               {s.retrievedAt.slice(0, 19).replace("T", " ")}
             </span>
             <ConfidenceMeter value={s.confidence} width={44} showValue={false} />
@@ -399,7 +399,7 @@ function CollapseBlock({
         <span className="font-mono text-[36px] leading-none tabular-nums tracking-tight" style={{ color: collapsed ? "hsl(var(--primary))" : "hsl(var(--foreground))" }}>
           {value.toString().padStart(2, "0")}
         </span>
-        <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground/60">sources</span>
+        <span className="font-mono text-eyebrow uppercase tracking-[0.16em] text-muted-foreground/60">sources</span>
       </div>
       <div className="mt-3 flex gap-1">
         {Array.from({ length: Math.max(total, 1) }).map((_, i) => (
@@ -435,9 +435,9 @@ function AuditFooter({
     <div className="flex items-center justify-between px-6 py-4" style={{ background: `hsl(${c} / 0.04)` }}>
       <div className="flex items-center gap-3">
         <span className="h-1.5 w-1.5 rounded-full" style={{ background: `hsl(${c})`, boxShadow: `0 0 8px hsl(${c})` }} />
-        <span className="font-mono text-[11px]" style={{ color: `hsl(${c})` }}>{msg}</span>
+        <span className="font-mono text-data" style={{ color: `hsl(${c})` }}>{msg}</span>
       </div>
-      <div className="flex items-center gap-5 font-mono text-[10px] text-muted-foreground/60">
+      <div className="flex items-center gap-5 font-mono text-data text-muted-foreground/60">
         <span>ERR <span style={{ color: errors > 0 ? "hsl(var(--danger))" : "hsl(var(--muted-foreground))" }}>{errors.toString().padStart(2, "0")}</span></span>
         <span>WRN <span style={{ color: warns > 0 ? "hsl(var(--confidence-mid))" : "hsl(var(--muted-foreground))" }}>{warns.toString().padStart(2, "0")}</span></span>
       </div>

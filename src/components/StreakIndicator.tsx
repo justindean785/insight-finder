@@ -81,7 +81,7 @@ export function StreakIndicator({ artifacts }: { artifacts: Artifact[] }) {
   return (
     <div
       className={cn(
-        "relative shrink-0 flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[10px] font-mono uppercase tracking-wider overflow-hidden",
+        "relative shrink-0 flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-eyebrow font-mono uppercase tracking-wider overflow-hidden",
         tone,
         pulse && "animate-pulse-ring",
       )}

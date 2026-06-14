@@ -26,7 +26,8 @@ export default {
       // (`data` and up) is floored at 12px for legibility; `eyebrow` is the only
       // sub-12px size and is reserved for uppercase labels/badges, never prose.
       fontSize: {
-        eyebrow: ['0.625rem', { lineHeight: '1', letterSpacing: '0.14em' }], // 10px — uppercase labels only
+        // size-only so each label keeps its own `tracking-[...]`; never used for prose
+        eyebrow: ['0.625rem', { lineHeight: '1.1' }],                         // 10px — uppercase labels only
         data: ['0.75rem', { lineHeight: '1.45' }],                            // 12px — dense data / table cells (reading floor)
         meta: ['0.8125rem', { lineHeight: '1.5' }],                           // 13px — secondary/body-supporting
         body: ['0.875rem', { lineHeight: '1.6' }],                            // 14px — body

@@ -223,10 +223,10 @@ export function MapTab({ artifacts }: { artifacts: Artifact[] }) {
   return (
     <div className="p-3 space-y-3 text-xs">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+        <div className="flex items-center gap-2 text-eyebrow uppercase tracking-[0.18em] text-muted-foreground">
           <Radar className="w-3 h-3 text-primary" /> Geo-tactical Map
         </div>
-        <span className="font-mono text-[10px] text-muted-foreground">
+        <span className="font-mono text-data text-muted-foreground">
           {pins.length} pin{pins.length === 1 ? "" : "s"}
           {addressArtifacts.length > pins.length && (
             <> · {addressArtifacts.length - addressPins.length} geocoding…</>
@@ -284,14 +284,14 @@ export function MapTab({ artifacts }: { artifacts: Artifact[] }) {
                 }}
               >
                 <Tooltip direction="top" offset={[0, -6]} opacity={1} className="cyber-tip">
-                  <div className="font-mono text-[10px]">
+                  <div className="font-mono text-data">
                     <div className="uppercase tracking-wider opacity-70">{p.kind}</div>
                     <div className="text-foreground">{p.label}</div>
                   </div>
                 </Tooltip>
                 <Popup className="cyber-popup">
-                  <div className="font-mono text-[11px] space-y-1">
-                    <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider opacity-70">
+                  <div className="font-mono text-data space-y-1">
+                    <div className="flex items-center gap-1.5 text-eyebrow uppercase tracking-wider opacity-70">
                       <Crosshair className="w-3 h-3" /> {p.kind}
                       {p.confidence != null && <span className="ml-auto">{p.confidence}%</span>}
                     </div>
@@ -331,10 +331,10 @@ export function MapTab({ artifacts }: { artifacts: Artifact[] }) {
                 className="w-2 h-2 rounded-full shrink-0"
                 style={{ background: colorForKind(p.kind), boxShadow: `0 0 8px ${colorForKind(p.kind)}` }}
               />
-              <span className="text-[10px] uppercase tracking-wider text-muted-foreground shrink-0">{p.kind}</span>
+              <span className="text-eyebrow uppercase tracking-wider text-muted-foreground shrink-0">{p.kind}</span>
               <span className="font-mono truncate">{p.label}</span>
             </div>
-            <span className="font-mono text-[10px] text-muted-foreground shrink-0">
+            <span className="font-mono text-data text-muted-foreground shrink-0">
               {p.lat.toFixed(2)},{p.lon.toFixed(2)}
             </span>
           </li>

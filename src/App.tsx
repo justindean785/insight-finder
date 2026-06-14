@@ -66,7 +66,7 @@ function MissingConfigScreen() {
     <div className="min-h-screen bg-background text-foreground">
       <div className="mx-auto flex min-h-screen max-w-3xl items-center px-6 py-12">
         <div className="glass-card w-full rounded-3xl border border-border-subtle/80 p-8 shadow-[0_30px_120px_-40px_rgba(0,0,0,0.8)]">
-          <div className="text-[10px] uppercase tracking-[0.26em] text-primary/80">Local setup required</div>
+          <div className="text-eyebrow uppercase tracking-[0.26em] text-primary/80">Local setup required</div>
           <h1 className="mt-3 text-2xl font-semibold tracking-tight">Frontend env vars are missing</h1>
           <p className="mt-3 max-w-2xl text-sm text-muted-foreground">
             {supabaseConfigError}

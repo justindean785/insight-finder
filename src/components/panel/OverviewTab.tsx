@@ -94,9 +94,9 @@ export function OverviewTab({ threadId, artifacts }: { threadId: string; artifac
 
       <section className="rounded-lg border border-border-subtle bg-surface-2 p-4 space-y-2">
         <div className="flex items-center justify-between">
-          <div className="uppercase tracking-[0.08em] text-[10px] text-muted-foreground">Case</div>
+          <div className="uppercase tracking-[0.08em] text-eyebrow text-muted-foreground">Case</div>
           <span className={
-            "px-2 py-0.5 rounded-full border font-mono uppercase tracking-wider text-[10px] " +
+            "px-2 py-0.5 rounded-full border font-mono uppercase tracking-wider text-eyebrow " +
             (status === "complete"
               ? "text-success border-success/50 bg-success/10"
               : status === "active"
@@ -106,13 +106,13 @@ export function OverviewTab({ threadId, artifacts }: { threadId: string; artifac
         </div>
         <div className="font-mono text-base text-foreground break-all">{thread?.seed_value || "—"}</div>
         <div className="flex items-center gap-2">
-          <span className="px-1.5 py-0.5 rounded border border-border text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+          <span className="px-1.5 py-0.5 rounded border border-border text-eyebrow font-mono uppercase tracking-wider text-muted-foreground">
             {thread?.seed_type
               || (thread?.seed_value ? detectSeed(thread.seed_value)?.kind : null)
               || "no seed"}
           </span>
           {lastUpdated && (
-            <span className="text-[10px] text-muted-foreground">
+            <span className="text-data text-muted-foreground">
               updated {lastUpdated.toLocaleDateString()}
             </span>
           )}
@@ -127,7 +127,7 @@ export function OverviewTab({ threadId, artifacts }: { threadId: string; artifac
       </section>
 
       <section className="rounded-lg border border-border-subtle bg-surface-2 p-3">
-        <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-muted-foreground mb-2">
+        <div className="flex items-center gap-2 text-eyebrow uppercase tracking-wider text-muted-foreground mb-2">
           <Activity className="w-3 h-3" /> Coverage
         </div>
         <div className="space-y-1.5">
@@ -148,7 +148,7 @@ export function OverviewTab({ threadId, artifacts }: { threadId: string; artifac
       </section>
 
       <section className="rounded-lg border border-border-subtle bg-surface-2 p-3">
-        <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2">Strongest leads</div>
+        <div className="text-eyebrow uppercase tracking-wider text-muted-foreground mb-2">Strongest leads</div>
         {strongest.length === 0 ? (
           <div className="text-muted-foreground">
             No confirmed findings yet. Mark a strong artifact as <span className="text-foreground">important</span> or run more pivots.
@@ -158,7 +158,7 @@ export function OverviewTab({ threadId, artifacts }: { threadId: string; artifac
             {strongest.map((a) => (
               <li key={a.id} className="flex items-center justify-between gap-2">
                 <span className="font-mono truncate text-foreground" title={a.value}>{a.value}</span>
-                <span className="text-[10px] uppercase tracking-wider text-muted-foreground shrink-0">{a.kind}</span>
+                <span className="text-eyebrow uppercase tracking-wider text-muted-foreground shrink-0">{a.kind}</span>
               </li>
             ))}
           </ul>
@@ -166,7 +166,7 @@ export function OverviewTab({ threadId, artifacts }: { threadId: string; artifac
       </section>
 
       <section className="rounded-lg border border-border-subtle bg-surface-2 p-3">
-        <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2">Weak areas</div>
+        <div className="text-eyebrow uppercase tracking-wider text-muted-foreground mb-2">Weak areas</div>
         {weakAreas.length === 0 ? (
           <div className="text-muted-foreground">Core surfaces covered. Consider pivoting deeper.</div>
         ) : (
@@ -227,7 +227,7 @@ function Stat({
   return (
     <div className="relative overflow-hidden rounded-lg border border-border-subtle bg-surface-2 p-4 transition-colors hover:bg-surface-3">
       <div className={`absolute left-0 top-0 bottom-0 w-[3px] ${rail}`} />
-      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
+      <div className="flex items-center gap-1.5 text-eyebrow uppercase tracking-[0.08em] text-muted-foreground">
         <Icon className={`w-3 h-3 ${iconColor}`} /> {label}
       </div>
       <div className={`mt-1.5 text-3xl font-display font-semibold tabular-nums leading-none ${valueColor}`}>
@@ -289,21 +289,21 @@ function AnalystSummary({
     <div className="grid grid-cols-1 gap-3">
       <section className="rounded-lg border border-primary/25 bg-gradient-to-br from-primary/[0.06] to-transparent p-3">
         <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.12em] text-primary">
+          <div className="flex items-center gap-1.5 text-eyebrow uppercase tracking-[0.12em] text-primary">
             <Sparkles className="w-3 h-3" /> Analyst-ready summary
           </div>
           <span className="text-[9px] font-mono uppercase tracking-wider text-muted-foreground">auto · derived</span>
         </div>
-        <p className="text-[12px] leading-relaxed text-foreground/90">
+        <p className="text-data leading-relaxed text-foreground/90">
           {narrative.join(" ")}
         </p>
       </section>
 
       <section className="rounded-lg border border-warning/25 bg-gradient-to-br from-warning/[0.06] to-transparent p-3">
-        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.12em] text-warning mb-2">
+        <div className="flex items-center gap-1.5 text-eyebrow uppercase tracking-[0.12em] text-warning mb-2">
           <Eye className="w-3 h-3" /> Caveats &amp; blind spots
         </div>
-        <ul className="space-y-1 text-[12px] leading-relaxed text-foreground/85">
+        <ul className="space-y-1 text-data leading-relaxed text-foreground/85">
           {caveats.map((c, i) => (
             <li key={i} className="flex gap-2">
               <span className="text-warning/80 mt-1.5 w-1 h-1 rounded-full bg-warning shrink-0" />

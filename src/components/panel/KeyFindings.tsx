@@ -31,10 +31,10 @@ export function KeyFindings({ threadId, artifacts }: { threadId: string; artifac
   return (
     <section className="rounded-lg border border-primary/30 bg-primary/5 p-3 space-y-2">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-primary">
+        <div className="flex items-center gap-1.5 text-eyebrow uppercase tracking-wider text-primary">
           <Star className="w-3 h-3" /> Key findings
         </div>
-        <span className="font-mono text-[10px] text-muted-foreground">{pinned.length}</span>
+        <span className="font-mono text-data text-muted-foreground">{pinned.length}</span>
       </div>
       <ul className="space-y-1.5">
         {pinned.map(({ a, state, note }) => {
@@ -42,7 +42,7 @@ export function KeyFindings({ threadId, artifacts }: { threadId: string; artifac
           return (
             <li
               key={a.id}
-              className="group rounded-md border border-border/60 bg-card/60 px-2 py-1.5 text-[11px]"
+              className="group rounded-md border border-border/60 bg-card/60 px-2 py-1.5 text-data"
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0 flex items-start gap-1.5">
@@ -58,7 +58,7 @@ export function KeyFindings({ threadId, artifacts }: { threadId: string; artifac
                       {a.kind} {a.source ? `· ${a.source}` : ""}
                     </div>
                     {note && (
-                      <div className="mt-1 text-[10px] text-muted-foreground italic break-words">
+                      <div className="mt-1 text-data text-muted-foreground italic break-words">
                         “{note}”
                       </div>
                     )}

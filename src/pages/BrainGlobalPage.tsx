@@ -230,7 +230,7 @@ export default function BrainGlobalPage() {
             </p>
           </div>
           {stats.newSince > 0 && (
-            <span className="mt-1 px-2 py-1 rounded-full bg-primary/15 border border-primary/30 text-primary text-[10px] font-mono uppercase tracking-wider shrink-0">
+            <span className="mt-1 px-2 py-1 rounded-full bg-primary/15 border border-primary/30 text-primary text-eyebrow font-mono uppercase tracking-wider shrink-0">
               {stats.newSince} new
             </span>
           )}
@@ -248,7 +248,7 @@ export default function BrainGlobalPage() {
               key={t.id}
               onClick={() => setSubTab(t.id)}
               className={cn(
-                "px-3 py-1.5 rounded-md text-[10px] uppercase tracking-wider font-mono transition-colors",
+                "px-3 py-1.5 rounded-md text-eyebrow uppercase tracking-wider font-mono transition-colors",
                 subTab === t.id
                   ? "bg-primary/15 text-primary border border-primary/30"
                   : "text-muted-foreground hover:text-foreground hover:bg-white/5 border border-transparent",
@@ -349,9 +349,9 @@ function MetricChip({
   return (
     <div className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-1/60 px-2.5 py-1.5">
       <Icon className="w-3 h-3 text-muted-foreground" strokeWidth={1.75} />
-      <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</span>
-      <span className="text-[10px] text-muted-foreground">·</span>
-      <span className="text-[10px] font-mono text-foreground tabular-nums">{value}</span>
+      <span className="text-eyebrow uppercase tracking-wider text-muted-foreground">{label}</span>
+      <span className="text-data text-muted-foreground">·</span>
+      <span className="text-data font-mono text-foreground tabular-nums">{value}</span>
     </div>
   );
 }
@@ -371,7 +371,7 @@ function MemoryCard({ m, isNew }: { m: Memory; isNew: boolean }) {
       <div className="flex items-start justify-between gap-2 mb-1.5">
         <div className="flex items-center gap-1.5 min-w-0">
           <Icon className={cn("w-3 h-3 shrink-0", meta.tone)} strokeWidth={1.75} />
-          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{meta.label}</span>
+          <span className="text-eyebrow uppercase tracking-wider text-muted-foreground">{meta.label}</span>
           {m.subject_kind && (
             <span className="px-1 py-px rounded border border-border-subtle font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
               {m.subject_kind}
@@ -383,7 +383,7 @@ function MemoryCard({ m, isNew }: { m: Memory; isNew: boolean }) {
             </span>
           )}
         </div>
-        <div className="flex items-center gap-1.5 shrink-0 text-[10px] font-mono">
+        <div className="flex items-center gap-1.5 shrink-0 text-data font-mono">
           {m.confidence != null && (
             <span
               style={{
@@ -408,7 +408,7 @@ function MemoryCard({ m, isNew }: { m: Memory; isNew: boolean }) {
       {m.related_values && m.related_values.length > 0 && (
         <div className="flex items-center gap-1 mt-2 flex-wrap">
           {m.related_values.slice(0, 6).map((v, i) => (
-            <span key={i} className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-white/5 border border-border-subtle text-muted-foreground [overflow-wrap:anywhere]">
+            <span key={i} className="font-mono text-data px-1.5 py-0.5 rounded bg-white/5 border border-border-subtle text-muted-foreground [overflow-wrap:anywhere]">
               {v}
             </span>
           ))}
@@ -457,7 +457,7 @@ function MemoriesTab({
             </button>
           )}
         </div>
-        <div className="ml-auto text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+        <div className="ml-auto text-eyebrow font-mono uppercase tracking-wider text-muted-foreground">
           MEMORIES · <span className="text-foreground tabular-nums">{totalCount}</span>
         </div>
       </div>
@@ -468,7 +468,7 @@ function MemoriesTab({
             key={f}
             onClick={() => setFilter(f)}
             className={cn(
-              "shrink-0 px-2.5 py-1 rounded-full text-[10px] uppercase tracking-wider font-mono border transition-colors",
+              "shrink-0 px-2.5 py-1 rounded-full text-eyebrow uppercase tracking-wider font-mono border transition-colors",
               filter === f
                 ? "bg-primary/15 text-primary border-primary/30"
                 : "bg-surface-1/40 text-muted-foreground border-border-subtle hover:text-foreground",
@@ -541,7 +541,7 @@ function MemoryRichCard({
           </span>
           {m.confidence != null && (
             <span
-              className="text-[10px] font-mono tabular-nums"
+              className="text-data font-mono tabular-nums"
               style={{
                 color:
                   m.confidence >= 75 ? "hsl(var(--confidence-high))" :
@@ -553,12 +553,12 @@ function MemoryRichCard({
             </span>
           )}
           {m.hit_count > 0 && (
-            <span className="flex items-center gap-0.5 text-[10px] font-mono text-primary">
+            <span className="flex items-center gap-0.5 text-data font-mono text-primary">
               <Zap className="w-2.5 h-2.5" strokeWidth={1.75} />{m.hit_count}
             </span>
           )}
         </div>
-        <span className="text-[10px] font-mono text-muted-foreground shrink-0">
+        <span className="text-data font-mono text-muted-foreground shrink-0">
           {timeAgo(m.last_used_at ?? m.created_at)}
         </span>
       </div>
@@ -572,7 +572,7 @@ function MemoryRichCard({
           {threadTitle && m.source_thread_id && (
             <button
               onClick={onOpenCase}
-              className="px-1.5 py-0.5 rounded-full bg-white/5 border border-border-subtle text-[10px] text-muted-foreground hover:text-foreground hover:border-primary/30 truncate max-w-[200px]"
+              className="px-1.5 py-0.5 rounded-full bg-white/5 border border-border-subtle text-data text-muted-foreground hover:text-foreground hover:border-primary/30 truncate max-w-[200px]"
               title={threadTitle}
             >
               {threadTitle}
@@ -625,7 +625,7 @@ function PatternsTab({
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
-        <div className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+        <div className="text-eyebrow font-mono uppercase tracking-wider text-muted-foreground">
           PATTERNS · <span className="text-foreground tabular-nums">{patterns.length}</span>
         </div>
         <div className="ml-auto inline-flex items-center gap-0.5 rounded-lg bg-surface-1/60 border border-border-subtle p-0.5">
@@ -634,7 +634,7 @@ function PatternsTab({
               key={s}
               onClick={() => setSort(s)}
               className={cn(
-                "px-2 py-1 rounded text-[10px] uppercase tracking-wider font-mono transition-colors",
+                "px-2 py-1 rounded text-eyebrow uppercase tracking-wider font-mono transition-colors",
                 sort === s
                   ? "bg-primary/15 text-primary"
                   : "text-muted-foreground hover:text-foreground",
@@ -652,7 +652,7 @@ function PatternsTab({
             key={f}
             onClick={() => setFilter(f)}
             className={cn(
-              "shrink-0 px-2.5 py-1 rounded-full text-[10px] uppercase tracking-wider font-mono border transition-colors",
+              "shrink-0 px-2.5 py-1 rounded-full text-eyebrow uppercase tracking-wider font-mono border transition-colors",
               filter === f
                 ? "bg-primary/15 text-primary border-primary/30"
                 : "bg-surface-1/40 text-muted-foreground border-border-subtle hover:text-foreground",
@@ -735,7 +735,7 @@ function PatternCard({
           </span>
           {m.confidence != null && (
             <span
-              className="text-[10px] font-mono tabular-nums"
+              className="text-data font-mono tabular-nums"
               style={{
                 color:
                   m.confidence >= 75 ? "hsl(var(--confidence-high))" :
@@ -747,7 +747,7 @@ function PatternCard({
             </span>
           )}
           {m.hit_count > 0 && (
-            <span className="flex items-center gap-0.5 text-[10px] font-mono text-primary">
+            <span className="flex items-center gap-0.5 text-data font-mono text-primary">
               <Zap className="w-2.5 h-2.5" strokeWidth={1.75} />{m.hit_count}
             </span>
           )}
@@ -762,7 +762,7 @@ function PatternCard({
             </span>
           )}
         </div>
-        <span className="text-[10px] font-mono text-muted-foreground shrink-0">
+        <span className="text-data font-mono text-muted-foreground shrink-0">
           {timeAgo(m.last_used_at ?? m.created_at)}
         </span>
       </div>
@@ -783,7 +783,7 @@ function PatternCard({
             return (
               <span
                 key={i}
-                className="inline-flex items-center gap-1 font-mono text-[10px] px-1.5 py-0.5 rounded bg-white/5 border border-border-subtle text-muted-foreground [overflow-wrap:anywhere]"
+                className="inline-flex items-center gap-1 font-mono text-data px-1.5 py-0.5 rounded bg-white/5 border border-border-subtle text-muted-foreground [overflow-wrap:anywhere]"
               >
                 <Icon className="w-2.5 h-2.5" strokeWidth={1.75} />
                 {v}
@@ -795,10 +795,10 @@ function PatternCard({
 
       {threadTitle && m.source_thread_id && (
         <div className="flex items-center gap-1 flex-wrap">
-          <span className="text-[10px] uppercase tracking-wider font-mono text-muted-foreground">Cases:</span>
+          <span className="text-eyebrow uppercase tracking-wider font-mono text-muted-foreground">Cases:</span>
           <button
             onClick={onOpenCase}
-            className="px-1.5 py-0.5 rounded-full bg-white/5 border border-border-subtle text-[10px] text-muted-foreground hover:text-foreground hover:border-primary/30 truncate max-w-[200px]"
+            className="px-1.5 py-0.5 rounded-full bg-white/5 border border-border-subtle text-data text-muted-foreground hover:text-foreground hover:border-primary/30 truncate max-w-[200px]"
             title={threadTitle}
           >
             {threadTitle}
@@ -810,7 +810,7 @@ function PatternCard({
         <button
           onClick={onPromote}
           className={cn(
-            "inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] uppercase tracking-wider font-mono transition-colors hover:bg-white/5",
+            "inline-flex items-center gap-1 px-2 py-1 rounded text-eyebrow uppercase tracking-wider font-mono transition-colors hover:bg-white/5",
             promoted ? "text-primary" : "text-muted-foreground/70 hover:text-foreground",
           )}
         >
@@ -820,7 +820,7 @@ function PatternCard({
         <button
           onClick={onSuppress}
           className={cn(
-            "inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] uppercase tracking-wider font-mono transition-colors hover:bg-white/5",
+            "inline-flex items-center gap-1 px-2 py-1 rounded text-eyebrow uppercase tracking-wider font-mono transition-colors hover:bg-white/5",
             suppressed ? "text-primary" : "text-muted-foreground/70 hover:text-foreground",
           )}
         >
@@ -829,7 +829,7 @@ function PatternCard({
         </button>
         <button
           onClick={onDelete}
-          className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] uppercase tracking-wider font-mono text-muted-foreground/70 hover:text-destructive hover:bg-white/5"
+          className="inline-flex items-center gap-1 px-2 py-1 rounded text-eyebrow uppercase tracking-wider font-mono text-muted-foreground/70 hover:text-destructive hover:bg-white/5"
         >
           <Trash2 className="w-3 h-3" strokeWidth={1.75} />
           Delete
@@ -927,7 +927,7 @@ function SourcesTab() {
 
       <div className="rounded-xl border border-border-subtle bg-surface-1/40 overflow-hidden">
         <div className="px-3 py-2 border-b border-border-subtle/60 flex items-center">
-          <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+          <span className="text-eyebrow font-mono uppercase tracking-wider text-muted-foreground">
             SOURCE WEIGHTS · <span className="text-foreground tabular-nums">{rows.length}</span>
           </span>
         </div>
@@ -952,9 +952,9 @@ function FeedbackChip({ label, value, tone }: { label: string; value: number; to
       style={{ borderColor: `${tone}40` }}
     >
       <span className="w-1.5 h-1.5 rounded-full" style={{ background: tone }} />
-      <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</span>
-      <span className="text-[10px] text-muted-foreground">·</span>
-      <span className="text-[10px] font-mono tabular-nums" style={{ color: tone }}>{value}</span>
+      <span className="text-eyebrow uppercase tracking-wider text-muted-foreground">{label}</span>
+      <span className="text-data text-muted-foreground">·</span>
+      <span className="text-data font-mono tabular-nums" style={{ color: tone }}>{value}</span>
     </div>
   );
 }
@@ -974,22 +974,22 @@ function SourceWeightRow({ row }: { row: SourceRow }) {
           />
         </div>
       </div>
-      <div className="font-mono text-[11px] tabular-nums w-10 text-right" style={{ color: tone }}>
+      <div className="font-mono text-data tabular-nums w-10 text-right" style={{ color: tone }}>
         {row.reliability}%
       </div>
       <div className="w-12 text-right">
         {hasDelta ? (
           <span
-            className="font-mono text-[10px] tabular-nums"
+            className="font-mono text-data tabular-nums"
             style={{ color: deltaUp ? "hsl(var(--brain-status-ok))" : "hsl(var(--brain-status-bad))" }}
           >
             {deltaUp ? "+" : ""}{row.delta} {deltaUp ? "↑" : "↓"}
           </span>
         ) : (
-          <span className="font-mono text-[10px] text-muted-foreground/60">—</span>
+          <span className="font-mono text-data text-muted-foreground/60">—</span>
         )}
       </div>
-      <span className="px-1.5 py-0.5 rounded border border-border-subtle font-mono text-[10px] text-muted-foreground tabular-nums shrink-0">
+      <span className="px-1.5 py-0.5 rounded border border-border-subtle font-mono text-data text-muted-foreground tabular-nums shrink-0">
         {row.runs} runs
       </span>
     </div>
@@ -1002,8 +1002,8 @@ function LearnsExplainer() {
       <div className="w-12 h-12 rounded-full grid place-items-center border border-border-subtle bg-surface-1">
         <Icon className="w-5 h-5 text-primary" strokeWidth={1.5} />
       </div>
-      <div className="text-[11px] font-mono uppercase tracking-wider text-foreground">{label}</div>
-      <div className="text-[10px] text-muted-foreground text-center leading-tight">{sub}</div>
+      <div className="text-eyebrow font-mono uppercase tracking-wider text-foreground">{label}</div>
+      <div className="text-data text-muted-foreground text-center leading-tight">{sub}</div>
     </div>
   );
   return (
@@ -1011,7 +1011,7 @@ function LearnsExplainer() {
       className="rounded-xl p-5"
       style={{ background: "hsl(var(--brain-card))", border: "1px solid hsl(var(--brain-border))" }}
     >
-      <div className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground mb-4">
+      <div className="text-eyebrow font-mono uppercase tracking-wider text-muted-foreground mb-4">
         How the agent learns
       </div>
       <div className="flex items-start justify-center gap-2 sm:gap-4">
@@ -1139,7 +1139,7 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* SocialFetch Credits card */}
         <div className="rounded-xl p-5 bg-brain-card border border-brain-border">
-          <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider font-mono text-muted-foreground mb-3">
+          <div className="flex items-center gap-2 text-eyebrow uppercase tracking-wider font-mono text-muted-foreground mb-3">
             <CreditCard className="w-3.5 h-3.5" strokeWidth={1.5} />
             SocialFetch Credits
           </div>
@@ -1155,14 +1155,14 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
               style={{ width: `${sfPct}%`, backgroundColor: "hsl(var(--brain-status-ok))", borderRadius: 4 }}
             />
           </div>
-          <div className="text-[11px] text-muted-foreground mt-3 font-mono">
+          <div className="text-data text-muted-foreground mt-3 font-mono">
             Last used: {timeAgo(socialLastUsed)}
           </div>
         </div>
 
         {/* Total API Spend card */}
         <div className="rounded-xl p-5 bg-brain-card border border-brain-border">
-          <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider font-mono text-muted-foreground mb-3">
+          <div className="flex items-center gap-2 text-eyebrow uppercase tracking-wider font-mono text-muted-foreground mb-3">
             <BarChart3 className="w-3.5 h-3.5" strokeWidth={1.5} />
             Total API Spend
           </div>
@@ -1175,7 +1175,7 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
           <div className="mt-4">
             <Sparkline data={spark} />
           </div>
-          <div className="text-[11px] text-muted-foreground mt-3 font-mono">
+          <div className="text-data text-muted-foreground mt-3 font-mono">
             ${lastRunUsd.toFixed(3)} last run · avg ${avgRunUsd.toFixed(3)}/run
           </div>
         </div>
@@ -1183,7 +1183,7 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
 
       {/* Per-run breakdown */}
       <div className="rounded-xl bg-brain-card border border-brain-border overflow-hidden">
-        <div className="px-5 py-3 border-b border-brain-border text-[10px] uppercase tracking-wider font-mono text-muted-foreground">
+        <div className="px-5 py-3 border-b border-brain-border text-eyebrow uppercase tracking-wider font-mono text-muted-foreground">
           Last 10 Runs
         </div>
         {loading ? (
@@ -1193,7 +1193,7 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
         ) : (
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-[10px] uppercase tracking-wider font-mono text-muted-foreground/70">
+              <tr className="text-eyebrow uppercase tracking-wider font-mono text-muted-foreground/70">
                 <th className="text-left font-normal px-5 py-2">Case</th>
                 <th className="text-left font-normal px-5 py-2">Date</th>
                 <th className="text-left font-normal px-5 py-2">Tools</th>
@@ -1223,7 +1223,7 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
         )}
       </div>
 
-      <p className="text-[12px] text-muted-foreground leading-relaxed">
+      <p className="text-data text-muted-foreground leading-relaxed">
         API costs are driven by tool count and data volume per run. Pivot-heavy investigations cost more.
         Use Cost-Aware Mode in Swarmbot settings to cap per-run spend.
       </p>

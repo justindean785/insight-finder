@@ -34,7 +34,7 @@ export function TierBadge({
   muted?: boolean;
   size?: "sm" | "md";
 }) {
-  const pad = size === "sm" ? "px-1.5 py-[1px] text-[9px]" : "px-2 py-0.5 text-[10px]";
+  const pad = size === "sm" ? "px-1.5 py-[1px] text-[9px]" : "px-2 py-0.5 text-data";
 
   if (muted) {
     return (
@@ -101,7 +101,7 @@ export function ConfidenceMeter({
         ))}
       </div>
       {showValue && (
-        <span className="font-mono text-[10px] tabular-nums" style={{ color: `hsl(${c})` }}>
+        <span className="font-mono text-data tabular-nums" style={{ color: `hsl(${c})` }}>
           {value.toString().padStart(2, "0")}
         </span>
       )}
@@ -131,11 +131,11 @@ export function SectionLabel({
         className="h-[5px] w-[5px] rounded-full"
         style={{ background: `hsl(${dot})`, boxShadow: status ? `0 0 6px hsl(${dot})` : "none" }}
       />
-      <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
+      <span className="font-mono text-eyebrow uppercase tracking-[0.22em] text-muted-foreground">
         {children}
       </span>
       {count !== undefined && (
-        <span className="font-mono text-[10px] tabular-nums text-muted-foreground/60">
+        <span className="font-mono text-data tabular-nums text-muted-foreground/60">
           {count.toString().padStart(2, "0")}
         </span>
       )}
@@ -160,10 +160,10 @@ export function FindingPill({
   const icon = severity === "error" ? "■" : severity === "warn" ? "▲" : "ℹ";
   return (
     <div
-      className="flex items-start gap-2.5 rounded-[3px] px-3 py-2 font-mono text-[11px] leading-relaxed"
+      className="flex items-start gap-2.5 rounded-[3px] px-3 py-2 font-mono text-data leading-relaxed"
       style={{ color: `hsl(${c})`, background: `hsl(${c} / 0.07)`, borderLeft: `2px solid hsl(${c})` }}
     >
-      <span className="mt-px text-[10px] opacity-80">{icon}</span>
+      <span className="mt-px text-data opacity-80">{icon}</span>
       <span className="flex-1">{children}</span>
     </div>
   );
@@ -196,7 +196,7 @@ export function Stat({
         <span className="font-mono text-[22px] leading-none tabular-nums tracking-tight" style={{ color: valueColor }}>
           {value}
         </span>
-        {delta && <span className="font-mono text-[10px] tabular-nums text-muted-foreground/70">{delta}</span>}
+        {delta && <span className="font-mono text-data tabular-nums text-muted-foreground/70">{delta}</span>}
       </div>
     </div>
   );

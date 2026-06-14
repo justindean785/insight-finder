@@ -184,8 +184,8 @@ export function BrainPanel({
                         <div key={kind}>
                           <div className="flex items-center gap-2 mb-2">
                             <Icon className={cn("w-3.5 h-3.5", meta.color)} />
-                            <span className="text-[10px] uppercase tracking-[0.12em] font-semibold text-muted-foreground">{meta.label}</span>
-                            <span className="text-[10px] font-mono opacity-60">{list.length}</span>
+                            <span className="text-eyebrow uppercase tracking-[0.12em] font-semibold text-muted-foreground">{meta.label}</span>
+                            <span className="text-data font-mono opacity-60">{list.length}</span>
                           </div>
                           <div className="space-y-2">
                             {list.slice(0, 30).map((m) => (
@@ -215,7 +215,7 @@ export function BrainPanel({
                           <div key={s.source} className="glass-card rounded-lg px-3 py-2.5 border border-border-subtle">
                             <div className="flex items-center justify-between gap-2 mb-1.5">
                               <span className="font-mono text-xs text-foreground truncate">{s.source}</span>
-                              <div className="flex items-center gap-2 text-[10px] font-mono shrink-0">
+                              <div className="flex items-center gap-2 text-data font-mono shrink-0">
                                 {s.confirmed > 0 && (
                                   <span className="flex items-center gap-0.5 text-[hsl(var(--confidence-high))]">
                                     <ThumbsUp className="w-2.5 h-2.5" />{s.confirmed}
@@ -267,7 +267,7 @@ export function BrainPanel({
 function Stat({ icon: Icon, label, value }: { icon: typeof Brain; label: string; value: string | number }) {
   return (
     <div className="glass-card rounded-lg px-3 py-2 border border-border-subtle">
-      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+      <div className="flex items-center gap-1.5 text-eyebrow uppercase tracking-wider text-muted-foreground">
         <Icon className="w-3 h-3" />
         {label}
       </div>
@@ -284,14 +284,14 @@ function MemoryCard({ m }: { m: Memory }) {
       <div className="flex items-start justify-between gap-2 mb-1.5">
         <div className="flex items-center gap-1.5 min-w-0">
           <Icon className={cn("w-3 h-3 shrink-0", meta.color)} />
-          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{meta.label}</span>
+          <span className="text-eyebrow uppercase tracking-wider text-muted-foreground">{meta.label}</span>
           {m.subject_kind && (
             <span className="px-1 py-px rounded border border-border-subtle font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
               {m.subject_kind}
             </span>
           )}
         </div>
-        <div className="flex items-center gap-1.5 shrink-0 text-[10px] font-mono">
+        <div className="flex items-center gap-1.5 shrink-0 text-data font-mono">
           {m.confidence != null && (
             <span
               style={{
@@ -316,7 +316,7 @@ function MemoryCard({ m }: { m: Memory }) {
       {m.related_values && m.related_values.length > 0 && (
         <div className="flex items-center gap-1 mt-2 flex-wrap">
           {m.related_values.slice(0, 6).map((v, i) => (
-            <span key={i} className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-white/5 border border-border-subtle text-muted-foreground [overflow-wrap:anywhere]">
+            <span key={i} className="font-mono text-data px-1.5 py-0.5 rounded bg-white/5 border border-border-subtle text-muted-foreground [overflow-wrap:anywhere]">
               {v}
             </span>
           ))}
@@ -372,7 +372,7 @@ function PatternsView({ memories }: { memories: Memory[] }) {
         {filters.size > 0 && (
           <button
             type="button"
-            className="text-[10px] uppercase tracking-wider text-muted-foreground hover:text-foreground ml-1"
+            className="text-eyebrow uppercase tracking-wider text-muted-foreground hover:text-foreground ml-1"
             onClick={() => setFilters(new Set())}
           >clear</button>
         )}
@@ -411,14 +411,14 @@ function PatternCard({ m, type, sev }: { m: Memory; type: PatternType; sev: "hig
           )}>
             <TypeIcon className="w-3 h-3 text-primary" />
           </span>
-          <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-foreground/90">{typeMeta.label}</span>
+          <span className="font-mono text-eyebrow uppercase tracking-[0.14em] text-foreground/90">{typeMeta.label}</span>
           {m.subject_kind && (
             <span className="px-1 py-px rounded border border-border-subtle font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
               {m.subject_kind}
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2 shrink-0 text-[10px] font-mono">
+        <div className="flex items-center gap-2 shrink-0 text-data font-mono">
           <span className={cn("px-1.5 py-0.5 rounded border tracking-wider uppercase", sevColor,
             sev === "high" && "border-[hsl(var(--confidence-high))]/40 bg-[hsl(var(--confidence-high))]/10",
             sev === "mid"  && "border-[hsl(var(--confidence-mid))]/40 bg-[hsl(var(--confidence-mid))]/10",
@@ -436,7 +436,7 @@ function PatternCard({ m, type, sev }: { m: Memory; type: PatternType; sev: "hig
       {m.related_values && m.related_values.length > 0 && (
         <div className="relative flex items-center gap-1 mt-2 flex-wrap">
           {m.related_values.slice(0, 6).map((v, i) => (
-            <span key={i} className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-white/5 border border-border-subtle text-muted-foreground [overflow-wrap:anywhere]">
+            <span key={i} className="font-mono text-data px-1.5 py-0.5 rounded bg-white/5 border border-border-subtle text-muted-foreground [overflow-wrap:anywhere]">
               {v}
             </span>
           ))}
@@ -453,7 +453,7 @@ function FeedbackCard({ label, value, icon: Icon, tone }: { label: string; value
     "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid))]/30";
   return (
     <div className={cn("glass-card rounded-lg p-3 border", toneClass)}>
-      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider">
+      <div className="flex items-center gap-1.5 text-eyebrow uppercase tracking-wider">
         <Icon className="w-3 h-3" />
         {label}
       </div>
@@ -478,11 +478,11 @@ function SocialFetchQuotaBar({ used, total }: { used: number; total: number }) {
   return (
     <div className="mt-3 glass-card rounded-lg px-3 py-2.5 border border-border-subtle">
       <div className="flex items-center justify-between gap-2 mb-1.5">
-        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+        <div className="flex items-center gap-1.5 text-eyebrow uppercase tracking-wider text-muted-foreground">
           <Gauge className="w-3 h-3" />
           SocialFetch credits
         </div>
-        <div className="flex items-center gap-2 text-[10px] font-mono">
+        <div className="flex items-center gap-2 text-data font-mono">
           <span className="text-muted-foreground">{used.toLocaleString()} used</span>
           <span className="opacity-40">·</span>
           <span className={cn("tabular-nums", low ? "text-destructive" : "text-primary")}>
@@ -535,7 +535,7 @@ function FeedbackView({
             <TrendingUp className="w-3 h-3 text-primary" />
             Source weighting
           </div>
-          <span className="text-[10px] font-mono text-muted-foreground">
+          <span className="text-data font-mono text-muted-foreground">
             {total} marks · {sources.length} sources
           </span>
         </div>
@@ -550,7 +550,7 @@ function FeedbackView({
               const neg = s.score < 0;
               const widthPct = (Math.abs(s.score) / maxAbs) * 50; // half-axis
               return (
-                <div key={s.source} className="grid grid-cols-[110px_1fr_72px] items-center gap-2 text-[11px]">
+                <div key={s.source} className="grid grid-cols-[110px_1fr_72px] items-center gap-2 text-data">
                   <span className="font-mono text-foreground/90 truncate" title={s.source}>{s.source}</span>
                   <div className="relative h-3 rounded-sm bg-white/[0.04] border border-border-subtle overflow-hidden">
                     {/* center axis */}
@@ -596,7 +596,7 @@ function FeedbackView({
           <LoopArrow />
           <LoopNode icon={Brain} label="Agent" sub="Reweight sources" tone="brand" />
         </div>
-        <div className="mt-3 text-[11px] text-muted-foreground leading-relaxed">
+        <div className="mt-3 text-data text-muted-foreground leading-relaxed">
           Every mark shifts source weight. Repeated misses become patterns — the next run skips the failing format.
         </div>
       </div>
@@ -616,8 +616,8 @@ function LoopNode({
       <div className={cn("w-12 h-12 rounded-full grid place-items-center border-2 bg-surface-1", toneCls)}>
         <Icon className="w-5 h-5" />
       </div>
-      <div className="mt-2 text-[11px] font-semibold uppercase tracking-wider text-foreground">{label}</div>
-      <div className="text-[10px] text-muted-foreground">{sub}</div>
+      <div className="mt-2 text-eyebrow font-semibold uppercase tracking-wider text-foreground">{label}</div>
+      <div className="text-data text-muted-foreground">{sub}</div>
     </div>
   );
 }

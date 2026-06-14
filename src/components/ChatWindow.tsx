@@ -177,7 +177,7 @@ function CodePanel({
         <span className="code-panel__head-label">{label}</span>
         <button
           type="button"
-          className="text-[10px] tracking-wider hover:text-foreground transition-colors"
+          className="text-data tracking-wider hover:text-foreground transition-colors"
           onClick={onCopy}
         >
           copy
@@ -323,7 +323,7 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
         />
         <span
           className={cn(
-            "font-mono text-[11px] font-semibold tracking-[0.14em] uppercase truncate",
+            "font-mono text-eyebrow font-semibold tracking-[0.14em] uppercase truncate",
             failed ? "text-destructive" : "text-foreground/85",
           )}
         >
@@ -339,13 +339,13 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
           <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground shrink-0" />
         )}
         {artifactPreview && (
-          <span className="text-[11px] text-muted-foreground font-mono shrink-0">
+          <span className="text-data text-muted-foreground font-mono shrink-0">
             · {artifactPreview}
           </span>
         )}
         {argSummary && (
           <span
-            className="hidden md:inline text-[10.5px] text-muted-foreground/70 font-mono truncate min-w-0 max-w-[42%]"
+            className="hidden md:inline text-data text-muted-foreground/70 font-mono truncate min-w-0 max-w-[42%]"
             title={argSummary}
           >
             {argSummary}
@@ -380,21 +380,21 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
             </span>
           )}
           {ts && (
-            <span className="font-mono text-[10px] text-muted-foreground/70 flex items-center gap-1">
+            <span className="font-mono text-data text-muted-foreground/70 flex items-center gap-1">
               <Clock className="w-3 h-3" />
               {ts.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
             </span>
           )}
           {charge.label && (
             <span
-              className="font-mono text-[10px] text-muted-foreground/60"
+              className="font-mono text-data text-muted-foreground/60"
               title={charge.title ?? undefined}
             >
               {charge.label}
             </span>
           )}
         </span>
-        <span className="ml-auto sm:hidden font-mono text-[10px] text-muted-foreground/70 shrink-0">
+        <span className="ml-auto sm:hidden font-mono text-data text-muted-foreground/70 shrink-0">
           {ts ? ts.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}
         </span>
         {open ? (
@@ -430,7 +430,7 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
             />
           )}
           <div>
-            <div className="text-muted-foreground mb-1.5 flex items-center gap-1 font-mono uppercase tracking-wider text-[10px]"><StickyNote className="w-3 h-3" /> Note</div>
+            <div className="text-muted-foreground mb-1.5 flex items-center gap-1 font-mono uppercase tracking-wider text-eyebrow"><StickyNote className="w-3 h-3" /> Note</div>
             <Textarea
               value={note}
               onChange={(e) => setNote(e.target.value)}
@@ -439,7 +439,7 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
               className="text-xs"
             />
             <div className="flex items-center justify-end gap-2 mt-1">
-              {noteSaved && <span className="text-[10px] text-muted-foreground">saved</span>}
+              {noteSaved && <span className="text-data text-muted-foreground">saved</span>}
               <Button
                 size="sm"
                 variant="secondary"
@@ -539,7 +539,7 @@ function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt
     group.useful > 0 ? `${group.useful} completed` : null,
   ].filter(Boolean);
   return (
-    <div className="rounded-2xl border border-white/8 bg-white/[0.03] text-[11px] text-muted-foreground">
+    <div className="rounded-2xl border border-white/8 bg-white/[0.03] text-data text-muted-foreground">
       <button
         type="button"
         className="w-full px-4 py-3 text-left"
@@ -561,13 +561,13 @@ function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt
         </div>
         <div className="mt-1 flex flex-wrap gap-2">
           {summaryBits.map((bit) => (
-            <span key={bit} className="rounded-md border border-white/8 bg-black/20 px-1.5 py-0.5 font-mono text-[10px]">
+            <span key={bit} className="rounded-md border border-white/8 bg-black/20 px-1.5 py-0.5 font-mono text-data">
               {bit}
             </span>
           ))}
         </div>
         {group.reasons[0] && (
-          <div className="mt-1 text-[10px] text-muted-foreground/80">
+          <div className="mt-1 text-data text-muted-foreground/80">
             {group.reasons[0]}
           </div>
         )}
@@ -604,7 +604,7 @@ function renderTextWithBadges(text: string): React.ReactNode {
       <span
         key={`b-${i++}`}
         className={cn(
-          "inline-block px-1.5 py-0.5 mr-1 rounded text-[10px] font-semibold font-mono border align-middle",
+          "inline-block px-1.5 py-0.5 mr-1 rounded text-data font-semibold font-mono border align-middle",
           LABEL_STYLES[tag],
         )}
       >{tag}</span>,
@@ -650,7 +650,7 @@ function FailedRunCard({ reason, onRetry }: { reason: string; onRetry: () => voi
           <AlertTriangle className="w-4 h-4 text-destructive animate-warning-pulse" />
         </span>
         <div className="min-w-0 flex-1 space-y-1">
-          <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-destructive/80">
+          <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-destructive/80">
             System alert
           </div>
           <div className="text-sm font-semibold text-foreground">
@@ -659,7 +659,7 @@ function FailedRunCard({ reason, onRetry }: { reason: string; onRetry: () => voi
           <div className="text-xs text-foreground/70 leading-relaxed break-words">
             {body}
           </div>
-          <div className="text-[11px] text-muted-foreground pt-1">
+          <div className="text-data text-muted-foreground pt-1">
             <span className="text-foreground/70 font-medium">Suggested fix · </span>
             {hint}
           </div>
@@ -678,21 +678,21 @@ function FailedRunCard({ reason, onRetry }: { reason: string; onRetry: () => voi
         <button
           type="button"
           onClick={copyDetails}
-          className="text-[11px] font-mono uppercase tracking-[0.14em] text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-white/[0.04]"
+          className="text-eyebrow font-mono uppercase tracking-[0.14em] text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-white/[0.04]"
         >
           Copy technical details
         </button>
         <button
           type="button"
           onClick={() => setShowDetails((v) => !v)}
-          className="text-[11px] font-mono uppercase tracking-[0.14em] text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-white/[0.04]"
+          className="text-eyebrow font-mono uppercase tracking-[0.14em] text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-white/[0.04]"
         >
           {showDetails ? "Hide" : "Show"} technical details
         </button>
       </div>
 
       {showDetails && (
-        <pre className="mt-3 max-h-48 overflow-auto rounded-lg border border-white/5 bg-black/40 p-3 text-[11px] font-mono text-muted-foreground whitespace-pre-wrap break-words">
+        <pre className="mt-3 max-h-48 overflow-auto rounded-lg border border-white/5 bg-black/40 p-3 text-data font-mono text-muted-foreground whitespace-pre-wrap break-words">
           {raw}
         </pre>
       )}
@@ -802,7 +802,7 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
           return (
             <div
               key={i}
-              className="prose prose-sm prose-invert font-chat max-w-none min-w-0 break-words prose-headings:font-display prose-headings:tracking-tight prose-h1:text-base prose-h2:text-sm prose-h2:mt-4 prose-h2:mb-2 prose-h2:pb-1 prose-h2:border-b prose-h2:border-border-subtle prose-h3:text-[13px] prose-h3:mt-3 prose-h3:mb-1.5 prose-p:leading-7 prose-p:my-2 prose-li:my-0.5 prose-strong:text-foreground prose-strong:font-semibold prose-code:text-[hsl(var(--info))] prose-code:px-1 prose-code:py-px prose-code:rounded prose-code:before:content-none prose-code:after:content-none prose-a:text-[hsl(var(--info))] prose-a:no-underline hover:prose-a:underline prose-hr:border-border-subtle"
+              className="prose prose-sm prose-invert font-chat max-w-none min-w-0 break-words prose-headings:font-display prose-headings:tracking-tight prose-h1:text-base prose-h2:text-sm prose-h2:mt-4 prose-h2:mb-2 prose-h2:pb-1 prose-h2:border-b prose-h2:border-border-subtle prose-h3:text-meta prose-h3:mt-3 prose-h3:mb-1.5 prose-p:leading-7 prose-p:my-2 prose-li:my-0.5 prose-strong:text-foreground prose-strong:font-semibold prose-code:text-[hsl(var(--info))] prose-code:px-1 prose-code:py-px prose-code:rounded prose-code:before:content-none prose-code:after:content-none prose-a:text-[hsl(var(--info))] prose-a:no-underline hover:prose-a:underline prose-hr:border-border-subtle"
             >
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
@@ -1597,36 +1597,36 @@ function ChatWindowInner({
                 <div className="px-6 py-4 border-b border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.01))] flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <span className="w-2.5 h-2.5 rounded-full bg-evidence/90 shadow-[0_0_16px_hsl(var(--info)/0.85)]" />
-                    <span className="text-[11px] font-mono uppercase tracking-[0.26em] text-muted-foreground">
+                    <span className="text-eyebrow font-mono uppercase tracking-[0.26em] text-muted-foreground">
                       Case File
                     </span>
                   </div>
-                  <span className="font-mono text-[12px] tabular-nums text-foreground/65">
+                  <span className="font-mono text-data tabular-nums text-foreground/65">
                     {`SWB-${new Date().getFullYear()}-${threadId.slice(0, 4).toUpperCase()}`}
                   </span>
                 </div>
-                <div className="px-6 py-5 grid grid-cols-[180px_1fr] gap-y-3 gap-x-8 text-[13px] border-b border-white/8">
-                  <span className="text-muted-foreground uppercase text-[10px] tracking-[0.18em] self-center">Status</span>
+                <div className="px-6 py-5 grid grid-cols-[180px_1fr] gap-y-3 gap-x-8 text-meta border-b border-white/8">
+                  <span className="text-muted-foreground uppercase text-eyebrow tracking-[0.18em] self-center">Status</span>
                   <div className="flex items-center gap-2">
-                    <span className="px-2.5 py-1 rounded-full border border-[hsl(var(--confidence-high))/30] bg-[hsl(var(--confidence-high))/10] text-[hsl(var(--confidence-high))] font-mono text-[10px] uppercase tracking-[0.16em] shadow-[0_0_18px_-14px_hsl(var(--confidence-high)/0.9)]">
+                    <span className="px-2.5 py-1 rounded-full border border-[hsl(var(--confidence-high))/30] bg-[hsl(var(--confidence-high))/10] text-[hsl(var(--confidence-high))] font-mono text-eyebrow uppercase tracking-[0.16em] shadow-[0_0_18px_-14px_hsl(var(--confidence-high)/0.9)]">
                       Ready
                     </span>
-                    <span className="text-foreground/65 font-mono text-[12px]">awaiting first seed</span>
+                    <span className="text-foreground/65 font-mono text-data">awaiting first seed</span>
                   </div>
-                  <span className="text-muted-foreground uppercase text-[10px] tracking-[0.18em] self-center">Opened</span>
+                  <span className="text-muted-foreground uppercase text-eyebrow tracking-[0.18em] self-center">Opened</span>
                   <span className="font-mono tabular-nums text-foreground">
                     {new Date().toUTCString().replace("GMT", "UTC")}
                   </span>
-                  <span className="text-muted-foreground uppercase text-[10px] tracking-[0.18em] self-center">Classification</span>
+                  <span className="text-muted-foreground uppercase text-eyebrow tracking-[0.18em] self-center">Classification</span>
                   <span className="inline-flex items-center gap-1.5">
-                    <span className="px-2 py-1 rounded-md border border-info/30 bg-info/10 text-info font-mono text-[10px] uppercase tracking-[0.16em] shadow-[0_0_18px_-12px_hsl(var(--info)/0.85)]">
+                    <span className="px-2 py-1 rounded-md border border-info/30 bg-info/10 text-info font-mono text-eyebrow uppercase tracking-[0.16em] shadow-[0_0_18px_-12px_hsl(var(--info)/0.85)]">
                       Internal
                     </span>
                   </span>
                 </div>
                 <div className="px-6 py-7 space-y-5 font-chat">
                   <div className="space-y-2.5 max-w-xl">
-                    <div className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-[0.22em] text-muted-foreground">
+                    <div className="flex items-center gap-2 text-eyebrow font-mono uppercase tracking-[0.22em] text-muted-foreground">
                       <span className="w-1.5 h-1.5 rounded-full bg-primary/80 shadow-[0_0_10px_hsl(var(--primary)/0.8)]" />
                       Seed
                     </div>
@@ -1639,7 +1639,7 @@ function ChatWindowInner({
                       <button
                         key={s}
                         onClick={() => setInput(s)}
-                        className="px-3.5 py-1.5 rounded-lg border border-white/10 bg-white/[0.03] hover:border-info/40 hover:bg-info/5 font-mono text-[11px] tabular-nums text-foreground/88 transition-colors"
+                        className="px-3.5 py-1.5 rounded-lg border border-white/10 bg-white/[0.03] hover:border-info/40 hover:bg-info/5 font-mono text-data tabular-nums text-foreground/88 transition-colors"
                       >
                         {s}
                       </button>
@@ -1686,7 +1686,7 @@ function ChatWindowInner({
             <div className="pt-2 animate-fade-up">
               <div className="flex items-center gap-2 mb-3 px-1">
                 <Sparkles className="w-3 h-3 text-primary" />
-                <span className="text-[10px] font-mono uppercase tracking-[0.18em] text-muted-foreground">
+                <span className="text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">
                   Next steps
                 </span>
                 <div className="h-px flex-1 bg-gradient-to-r from-white/10 to-transparent" />
@@ -1716,7 +1716,7 @@ function ChatWindowInner({
           <button
             type="button"
             onClick={jumpToLatest}
-            className="sticky bottom-3 ml-auto flex h-9 items-center gap-2 rounded-full border border-white/10 bg-surface-2/95 px-3 text-[11px] font-medium text-foreground shadow-[0_16px_40px_-20px_rgba(0,0,0,0.95)] backdrop-blur-xl hover:bg-surface-3"
+            className="sticky bottom-3 ml-auto flex h-9 items-center gap-2 rounded-full border border-white/10 bg-surface-2/95 px-3 text-data font-medium text-foreground shadow-[0_16px_40px_-20px_rgba(0,0,0,0.95)] backdrop-blur-xl hover:bg-surface-3"
           >
             <ArrowDown className="h-3.5 w-3.5" />
             Latest
@@ -1743,7 +1743,7 @@ function ChatWindowInner({
                       <FileText className="w-3 h-3 text-primary" />
                     )}
                     <span className="truncate">{a.name}</span>
-                    <span className="text-muted-foreground text-[10px]">{formatBytes(a.size)}</span>
+                    <span className="text-muted-foreground text-data">{formatBytes(a.size)}</span>
                     <button
                       onClick={() => removeAttachment(a.id)}
                       className="ml-0.5 p-0.5 rounded-full hover:bg-white/10 text-muted-foreground hover:text-foreground"

@@ -34,11 +34,11 @@ function ArtifactRow({ a }: { a: Artifact }) {
   const m = (a.metadata ?? {}) as Record<string, unknown>;
   return (
     <tr className="border-t border-border-subtle align-top">
-      <td className="px-3 py-2 text-muted-foreground text-[11px] uppercase tracking-wider">{a.kind}</td>
+      <td className="px-3 py-2 text-muted-foreground text-eyebrow uppercase tracking-wider">{a.kind}</td>
       <td className="px-3 py-2 font-mono break-all">{a.value}</td>
-      <td className="px-3 py-2 text-[11px] text-muted-foreground">{a.source ?? "—"}</td>
-      <td className="px-3 py-2 text-[11px]">{a.confidence ?? "—"}</td>
-      <td className="px-3 py-2 text-[11px] text-muted-foreground">
+      <td className="px-3 py-2 text-data text-muted-foreground">{a.source ?? "—"}</td>
+      <td className="px-3 py-2 text-data">{a.confidence ?? "—"}</td>
+      <td className="px-3 py-2 text-data text-muted-foreground">
         {String((m.reason_for_confidence as string) ?? "")}
         {m.reason_not_confirmed ? <div className="text-destructive/80">{String(m.reason_not_confirmed)}</div> : null}
       </td>
@@ -47,12 +47,12 @@ function ArtifactRow({ a }: { a: Artifact }) {
 }
 
 function BucketTable({ rows, empty }: { rows: Artifact[]; empty: string }) {
-  if (!rows.length) return <p className="text-muted-foreground italic text-[11px] mt-2">{empty}</p>;
+  if (!rows.length) return <p className="text-muted-foreground italic text-data mt-2">{empty}</p>;
   return (
     <div className="rounded-md border border-border-subtle overflow-hidden mt-2">
-      <table className="w-full text-[12px]">
+      <table className="w-full text-data">
         <thead>
-          <tr className="bg-surface-2 text-[10px] uppercase tracking-[0.15em] text-muted-foreground">
+          <tr className="bg-surface-2 text-eyebrow uppercase tracking-[0.15em] text-muted-foreground">
             <th className="text-left font-normal px-3 py-2 w-[110px]">Kind</th>
             <th className="text-left font-normal px-3 py-2">Value</th>
             <th className="text-left font-normal px-3 py-2 w-[140px]">Source</th>
@@ -73,7 +73,7 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex items-center gap-2 mt-6 mb-3">
       <span className="w-[3px] h-4 bg-destructive rounded-sm" />
-      <h3 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-destructive">
+      <h3 className="text-eyebrow font-semibold uppercase tracking-[0.18em] text-destructive">
         {children}
       </h3>
     </div>
@@ -83,10 +83,10 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
 function HunterNote({ children }: { children: React.ReactNode }) {
   return (
     <aside className="my-3 pl-3 border-l-2 border-destructive/80 text-foreground/90 leading-relaxed">
-      <div className="text-[10px] font-semibold tracking-[0.2em] uppercase text-destructive mb-1">
+      <div className="text-eyebrow font-semibold tracking-[0.2em] uppercase text-destructive mb-1">
         Hunter's Note
       </div>
-      <div className="text-[12px]">{children}</div>
+      <div className="text-data">{children}</div>
     </aside>
   );
 }
@@ -116,7 +116,7 @@ function ConfPill({ label }: { label: ConfLabel }) {
   return (
     <span
       className={cn(
-        "inline-block px-2 py-0.5 rounded border text-[10px] font-mono uppercase tracking-wider",
+        "inline-block px-2 py-0.5 rounded border text-eyebrow font-mono uppercase tracking-wider",
         CONF_PILL[label],
       )}
     >
@@ -406,13 +406,13 @@ export function CaseReport({
     <article id="case-report-print-root" className="text-[12.5px] leading-relaxed text-foreground/95">
       {/* Header */}
       <header className="space-y-1.5 border-b border-border-subtle pb-3">
-        <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+        <div className="text-eyebrow uppercase tracking-[0.2em] text-muted-foreground">
           Case file
         </div>
         <h2 className="text-base font-display font-semibold break-all">
           {seedValue ?? "—"}
         </h2>
-        <div className="flex flex-wrap gap-1.5 text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+        <div className="flex flex-wrap gap-1.5 text-eyebrow font-mono uppercase tracking-wider text-muted-foreground">
           <span className="px-1.5 py-0.5 border border-border rounded">{seedType ?? "unknown"}</span>
           <span className="px-1.5 py-0.5 border border-border rounded">{artifacts.length} artifacts</span>
           <span className="px-1.5 py-0.5 border border-border rounded">{audit.tools.length} tools</span>
@@ -442,7 +442,7 @@ export function CaseReport({
 
       {/* 3. Seed details */}
       <SectionHeader>Seed Details</SectionHeader>
-      <div className="text-foreground/90 font-mono text-[12px]">
+      <div className="text-foreground/90 font-mono text-data">
         {seedType ?? "unknown"} · {seedValue ?? "—"}
       </div>
 
@@ -478,7 +478,7 @@ export function CaseReport({
       {nextPivots.length > 0 && (
         <>
           <SectionHeader>Recommended Next Pivots</SectionHeader>
-          <ul className="space-y-1.5 list-disc pl-5 text-foreground/90 font-mono text-[12px]">
+          <ul className="space-y-1.5 list-disc pl-5 text-foreground/90 font-mono text-data">
             {nextPivots.map((p, i) => <li key={i}>{p}</li>)}
           </ul>
         </>
@@ -489,9 +489,9 @@ export function CaseReport({
         <>
           <SectionHeader>Identity</SectionHeader>
           <div className="rounded-md border border-border-subtle overflow-hidden">
-            <table className="w-full text-[12px]">
+            <table className="w-full text-data">
               <thead>
-                <tr className="bg-surface-2 text-[10px] uppercase tracking-[0.15em] text-muted-foreground">
+                <tr className="bg-surface-2 text-eyebrow uppercase tracking-[0.15em] text-muted-foreground">
                   <th className="text-left font-normal px-3 py-2 w-[35%]">Field</th>
                   <th className="text-left font-normal px-3 py-2">Value</th>
                   <th className="text-left font-normal px-3 py-2 w-[110px]">Confidence</th>
@@ -519,9 +519,9 @@ export function CaseReport({
         <>
           <SectionHeader>Sensitive Registrations</SectionHeader>
           <div className="rounded-md border border-border-subtle overflow-hidden">
-            <table className="w-full text-[12px]">
+            <table className="w-full text-data">
               <thead>
-                <tr className="bg-surface-2 text-[10px] uppercase tracking-[0.15em] text-muted-foreground">
+                <tr className="bg-surface-2 text-eyebrow uppercase tracking-[0.15em] text-muted-foreground">
                   <th className="text-left font-normal px-3 py-2 w-[30%]">Site</th>
                   <th className="text-left font-normal px-3 py-2">Account identifier</th>
                   <th className="text-left font-normal px-3 py-2 w-[120px]">Source</th>
@@ -533,7 +533,7 @@ export function CaseReport({
                   <tr key={i} className="border-t border-border-subtle align-top">
                     <td className="px-3 py-2">{r.site}</td>
                     <td className="px-3 py-2 font-mono break-all">{r.identifier}</td>
-                    <td className="px-3 py-2 text-muted-foreground text-[11px]">{r.source}</td>
+                    <td className="px-3 py-2 text-muted-foreground text-data">{r.source}</td>
                     <td className="px-3 py-2"><ConfPill label={r.label} /></td>
                   </tr>
                 ))}
@@ -561,11 +561,11 @@ export function CaseReport({
       <div className={cn("rounded-md border-t-2 border border-border-subtle bg-surface-2 p-4", RISK_COLOR[risk.level])}>
         <div className="flex items-center gap-2">
           <span className="w-2 h-2 rounded-full bg-current" />
-          <span className="px-2 py-0.5 rounded border border-current text-[11px] font-mono uppercase tracking-[0.2em]">
+          <span className="px-2 py-0.5 rounded border border-current text-eyebrow font-mono uppercase tracking-[0.2em]">
             {risk.level}
           </span>
         </div>
-        <div className="mt-3 text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+        <div className="mt-3 text-eyebrow uppercase tracking-[0.2em] text-muted-foreground">
           Key risks
         </div>
         {risk.risks.length === 0 ? (

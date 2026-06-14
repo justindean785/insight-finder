@@ -45,22 +45,22 @@ export function ConfidenceExplain({
         onClick={(e) => e.stopPropagation()}
       >
         <header className="px-3 py-2 border-b border-border-subtle flex items-baseline justify-between gap-2">
-          <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Why this score?</div>
+          <div className="text-eyebrow uppercase tracking-[0.12em] text-muted-foreground">Why this score?</div>
           <div className="flex items-baseline gap-1">
             <span className={cn("font-mono text-lg tabular-nums leading-none", verdictColor)}>{exp.final}</span>
-            <span className="font-mono text-[10px] text-muted-foreground">/100</span>
+            <span className="font-mono text-data text-muted-foreground">/100</span>
           </div>
         </header>
         <ul className="py-1">
           {exp.components.map((c, i) => (
             <li key={i} className="px-3 py-1.5 grid grid-cols-[1fr_auto] gap-2 items-start">
               <div className="min-w-0">
-                <div className="text-[12px] text-foreground">{c.label}</div>
-                <div className="text-[10px] text-muted-foreground leading-snug">{c.why}</div>
+                <div className="text-data text-foreground">{c.label}</div>
+                <div className="text-data text-muted-foreground leading-snug">{c.why}</div>
               </div>
               <span
                 className={cn(
-                  "font-mono text-[11px] tabular-nums shrink-0 mt-0.5",
+                  "font-mono text-data tabular-nums shrink-0 mt-0.5",
                   c.delta > 0 ? "text-[hsl(var(--confidence-high))]" :
                   c.delta < 0 ? "text-[hsl(var(--confidence-low))]" :
                   "text-muted-foreground",
@@ -72,7 +72,7 @@ export function ConfidenceExplain({
           ))}
         </ul>
         {artifact.confidence != null && artifact.confidence !== exp.final && (
-          <div className="px-3 py-2 border-t border-border-subtle text-[10px] text-muted-foreground">
+          <div className="px-3 py-2 border-t border-border-subtle text-data text-muted-foreground">
             Tool-reported raw: <span className="font-mono text-foreground">{artifact.confidence}</span>. The decomposed score above is the analyst-facing reconstruction.
           </div>
         )}

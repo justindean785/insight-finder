@@ -72,7 +72,7 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
       {threadId && (
         <Section icon={Wallet} title="Budget" count={undefined}>
           <div className="space-y-2">
-            <div className="flex items-center justify-between text-[11px]">
+            <div className="flex items-center justify-between text-data">
               <div className="text-muted-foreground">
                 Spent <span className="font-mono text-foreground">{fmtUsd(spentMicro)}</span>
                 <span className="mx-1.5 opacity-40">/</span>
@@ -115,7 +115,7 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
               />
             </div>
             {warn && (
-              <div className={"text-[10px] " + (overCap ? "text-destructive" : "text-[hsl(var(--confidence-mid))]")}>
+              <div className={"text-data " + (overCap ? "text-destructive" : "text-[hsl(var(--confidence-mid))]")}>
                 {overCap
                   ? `Over cap by ${fmtUsd(spentMicro - capUsd * 1_000_000)} — consider finishing or raising the cap.`
                   : "Approaching cap — set a higher cap to resume deeper sweeps."}
@@ -134,9 +134,9 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
               <li key={t.tool} className="rounded-md border border-border bg-card/40 p-2">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-foreground truncate" title={t.tool}>{toolDisplayName(t.tool)}</span>
-                  <span className="text-[10px] font-mono text-muted-foreground">{t.totalResults} results</span>
+                  <span className="text-data font-mono text-muted-foreground">{t.totalResults} results</span>
                 </div>
-                <div className="flex flex-wrap gap-1.5 mt-1 text-[10px] font-mono">
+                <div className="flex flex-wrap gap-1.5 mt-1 text-data font-mono">
                   {t.highConf > 0 && (
                     <span className="px-1.5 py-0.5 rounded border border-[hsl(var(--confidence-high))]/40 bg-[hsl(var(--confidence-high))]/10 text-[hsl(var(--confidence-high))]">
                       {t.highConf} high
@@ -244,7 +244,7 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
           const labels: Record<string, string> = { done: "Done", partial: "Partial", missing: "Missing" };
           return (
             <div className="space-y-2">
-              <div className="flex items-center gap-3 text-[10px] uppercase tracking-wider text-muted-foreground">
+              <div className="flex items-center gap-3 text-eyebrow uppercase tracking-wider text-muted-foreground">
                 {(["done","partial","missing"] as const).map((s) => (
                   <span key={s} className="inline-flex items-center gap-1.5">
                     <span className={cn("coverage-cell__dot", palette[s])} />
@@ -255,14 +255,14 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
               <div className="coverage-grid">
                 {rows.map((r) => (
                   <div key={r.kind} className="coverage-cell" data-status={r.status}>
-                    <div className="flex items-center justify-between text-[10px] uppercase tracking-wider">
+                    <div className="flex items-center justify-between text-eyebrow uppercase tracking-wider">
                       <span className="text-foreground/90 truncate">
                         <span className={cn("coverage-cell__dot", palette[r.status])} />
                         {r.kind}
                       </span>
                       <span className={cn("font-mono", palette[r.status])}>{labels[r.status]}</span>
                     </div>
-                    <div className="mt-1 text-[10px] text-muted-foreground font-mono truncate">{r.note}</div>
+                    <div className="mt-1 text-data text-muted-foreground font-mono truncate">{r.note}</div>
                   </div>
                 ))}
               </div>
@@ -295,10 +295,10 @@ function Section({
   return (
     <section className="rounded-lg border border-border bg-card/30 p-3 space-y-2">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-muted-foreground">
+        <div className="flex items-center gap-2 text-eyebrow uppercase tracking-wider text-muted-foreground">
           <Icon className="w-3 h-3" /> {title}
         </div>
-        {count != null && <span className="text-[10px] font-mono text-muted-foreground">{count}</span>}
+        {count != null && <span className="text-data font-mono text-muted-foreground">{count}</span>}
       </div>
       {children}
     </section>

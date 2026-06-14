@@ -89,7 +89,7 @@ export default function Landing() {
         </div>
 
         {/* Footer */}
-        <footer className="text-center text-[10px] uppercase tracking-[0.16em] text-muted-foreground/60 font-mono">
+        <footer className="text-center text-eyebrow uppercase tracking-[0.16em] text-muted-foreground/60 font-mono">
           <Link to="/terms" className="hover:text-muted-foreground transition-colors">Terms</Link>
           <span className="mx-2">·</span>
           <Link to="/privacy" className="hover:text-muted-foreground transition-colors">Privacy</Link>
