@@ -128,30 +128,44 @@ export function ThreadHeader({
   };
 
   return (
-    <header className="sticky top-0 z-10 border-b border-border-subtle bg-background">
-      <div className="h-11 px-4 sm:px-5 flex items-center gap-3 text-data min-w-0">
-        <span className={`shrink-0 rounded-full border px-2.5 py-1 font-mono uppercase tracking-[0.18em] ${statusColor}`}>
+    <header className="sticky top-0 z-10 border-b border-border-subtle bg-background/95 backdrop-blur">
+      <div className="h-10 px-4 sm:px-5 flex items-center gap-x-3 text-data min-w-0">
+        <span className={`shrink-0 rounded-full border px-2 py-0.5 font-mono uppercase tracking-[0.1em] ${statusColor}`}>
           {status}
         </span>
         <div className="flex items-center gap-1 text-muted-foreground shrink-0">
-          <Database className="w-3.5 h-3.5" />
-          <span className="text-foreground">{artifactCount}</span>
-          <span>artifacts</span>
+          <Database className="w-3 h-3" />
+          <span className="text-foreground tabular-nums">{artifactCount}</span>
+          <span className="hidden sm:inline">artifacts</span>
         </div>
         <div className="flex items-center gap-1 text-muted-foreground shrink-0">
-          <Wrench className="w-3.5 h-3.5" />
-          <span className="text-foreground">{toolsRun}</span>
-          <span>tools</span>
+          <Wrench className="w-3 h-3" />
+          <span className="text-foreground tabular-nums">{toolsRun}</span>
+          <span className="hidden sm:inline">tools</span>
         </div>
-        <div className="flex items-center gap-1 text-muted-foreground shrink-0">
-          <ShieldAlert className="w-3.5 h-3.5" />
-          <span className="text-foreground">{breachCount}</span>
-          <span>breaches</span>
-        </div>
+        {breachCount > 0 && (
+          <div className="flex items-center gap-1 text-[hsl(var(--danger))] shrink-0" title={`${breachCount} breach artifacts`}>
+            <ShieldAlert className="w-3 h-3" />
+            <span className="tabular-nums">{breachCount}</span>
+            <span className="hidden sm:inline">breaches</span>
+          </div>
+        )}
+        {toolsFailed > 0 && (
+          <button
+            type="button"
+            onClick={showFailedTools}
+            title="Jump to first failed tool call"
+            className="flex items-center gap-1 text-muted-foreground rounded px-1 shrink-0 hover:bg-destructive/10 hover:text-destructive cursor-pointer"
+          >
+            <AlertTriangle className="w-3 h-3" />
+            <span className="tabular-nums">{toolsFailed}</span>
+            <span className="hidden sm:inline">failed</span>
+          </button>
+        )}
         {integrity && integrity.total > 0 && (
           <div
             className={cn(
-              "flex items-center gap-1 rounded-full border px-2 py-1 font-mono shrink-0",
+              "flex items-center gap-1 rounded-full border px-1.5 py-0.5 font-mono shrink-0",
               integrity.ok
                 ? "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/40 bg-[hsl(var(--confidence-high))]/10"
                 : "text-destructive border-destructive/40 bg-destructive/10",
@@ -159,47 +173,35 @@ export function ThreadHeader({
             title={integrity.ok ? `${integrity.total} evidence rows · chain valid` : `Chain break at seq ${integrity.first_break}`}
           >
             <Lock className="w-3 h-3" />
-            <span>{integrity.ok ? "100%" : Math.max(0, Math.round(((Number(integrity.first_break ?? 1) - 1) / Math.max(integrity.total, 1)) * 100)) + "%"}</span>
+            <span className="tabular-nums">{integrity.ok ? "100%" : Math.max(0, Math.round(((Number(integrity.first_break ?? 1) - 1) / Math.max(integrity.total, 1)) * 100)) + "%"}</span>
           </div>
         )}
-        <button
-          type="button"
-          onClick={showFailedTools}
-          disabled={toolsFailed <= 0}
-          title={toolsFailed > 0 ? "Jump to first failed tool call" : "No failed calls"}
-          className={cn(
-            "flex items-center gap-1 text-muted-foreground rounded px-1 shrink-0",
-            toolsFailed > 0 && "hover:bg-destructive/10 hover:text-destructive cursor-pointer",
-          )}
-        >
-          <AlertTriangle className="w-3.5 h-3.5" />
-          <span className="text-foreground">{toolsFailed}</span>
-          <span>failed</span>
-        </button>
-        {(thread?.credits_used ?? toolsRun) > 0 && (
-          <div className="flex items-center gap-1 text-muted-foreground shrink-0">
-            <Coins className="w-3.5 h-3.5" />
-            <span className="text-foreground">{thread?.credits_used ?? toolsRun}</span>
+        {(thread?.credits_used ?? 0) > 0 && (
+          <div className="hidden md:flex items-center gap-1 text-muted-foreground shrink-0">
+            <Coins className="w-3 h-3" />
+            <span className="text-foreground tabular-nums">{thread?.credits_used}</span>
             <span>cr</span>
           </div>
         )}
-        <div className="ml-auto hidden sm:flex items-center gap-1 text-muted-foreground shrink-0">
-          <Clock className="w-3.5 h-3.5" />
-          <span title={thread?.updated_at ? new Date(thread.updated_at).toLocaleString() : "No activity yet"}>
-            {thread?.updated_at ? timeAgo(thread.updated_at) : "—"}
-          </span>
+        <div className="ml-auto flex items-center gap-3 shrink-0">
+          <div className="hidden sm:flex items-center gap-1 text-muted-foreground">
+            <Clock className="w-3 h-3" />
+            <span title={thread?.updated_at ? new Date(thread.updated_at).toLocaleString() : "No activity yet"}>
+              {thread?.updated_at ? timeAgo(thread.updated_at) : "—"}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={createInvestigation}
+            disabled={creating}
+            className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-white/10 bg-white px-2.5 text-eyebrow font-semibold uppercase tracking-[0.1em] text-black transition-colors hover:bg-white/90 disabled:opacity-50"
+            aria-label="Start a new investigation"
+            title="Start a new investigation"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            <span className="hidden lg:inline">{creating ? "Creating" : "New"}</span>
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={createInvestigation}
-          disabled={creating}
-          className="ml-auto sm:ml-2 inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-white/10 bg-white px-2.5 text-eyebrow font-semibold uppercase tracking-[0.12em] text-black transition-colors hover:bg-white/90 disabled:opacity-50"
-          aria-label="Start a new investigation"
-          title="Start a new investigation"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          <span className="hidden lg:inline">{creating ? "Creating" : "New"}</span>
-        </button>
       </div>
     </header>
   );

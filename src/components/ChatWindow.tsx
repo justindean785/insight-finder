@@ -1592,60 +1592,32 @@ function ChatWindowInner({
         <div className="max-w-[56rem] mx-auto space-y-6 min-w-0">
           <div className="h-2" aria-hidden />
           {messages.length === 0 && (
-            <div className="py-10 sm:py-16">
-              <div className="max-w-[52rem] mx-auto rounded-[30px] border border-white/12 bg-[radial-gradient(circle_at_top,rgba(44,50,64,0.28),transparent_42%),linear-gradient(180deg,rgba(17,19,23,0.99),rgba(8,9,11,0.99))] overflow-hidden shadow-[0_40px_120px_-60px_rgba(0,0,0,0.95)] ring-1 ring-white/6">
-                <div className="px-6 py-4 border-b border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.01))] flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-evidence/90 shadow-[0_0_16px_hsl(var(--info)/0.85)]" />
-                    <span className="text-eyebrow font-mono uppercase tracking-[0.26em] text-muted-foreground">
-                      Case File
-                    </span>
-                  </div>
-                  <span className="font-mono text-data tabular-nums text-foreground/65">
-                    {`SWB-${new Date().getFullYear()}-${threadId.slice(0, 4).toUpperCase()}`}
-                  </span>
-                </div>
-                <div className="px-6 py-5 grid grid-cols-[180px_1fr] gap-y-3 gap-x-8 text-meta border-b border-white/8">
-                  <span className="text-muted-foreground uppercase text-eyebrow tracking-[0.18em] self-center">Status</span>
-                  <div className="flex items-center gap-2">
-                    <span className="px-2.5 py-1 rounded-full border border-[hsl(var(--confidence-high))/30] bg-[hsl(var(--confidence-high))/10] text-[hsl(var(--confidence-high))] font-mono text-eyebrow uppercase tracking-[0.16em] shadow-[0_0_18px_-14px_hsl(var(--confidence-high)/0.9)]">
-                      Ready
-                    </span>
-                    <span className="text-foreground/65 font-mono text-data">awaiting first seed</span>
-                  </div>
-                  <span className="text-muted-foreground uppercase text-eyebrow tracking-[0.18em] self-center">Opened</span>
-                  <span className="font-mono tabular-nums text-foreground">
-                    {new Date().toUTCString().replace("GMT", "UTC")}
-                  </span>
-                  <span className="text-muted-foreground uppercase text-eyebrow tracking-[0.18em] self-center">Classification</span>
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="px-2 py-1 rounded-md border border-info/30 bg-info/10 text-info font-mono text-eyebrow uppercase tracking-[0.16em] shadow-[0_0_18px_-12px_hsl(var(--info)/0.85)]">
-                      Internal
-                    </span>
-                  </span>
-                </div>
-                <div className="px-6 py-7 space-y-5 font-chat">
-                  <div className="space-y-2.5 max-w-xl">
-                    <div className="flex items-center gap-2 text-eyebrow font-mono uppercase tracking-[0.22em] text-muted-foreground">
-                      <span className="w-1.5 h-1.5 rounded-full bg-primary/80 shadow-[0_0_10px_hsl(var(--primary)/0.8)]" />
-                      Seed
-                    </div>
-                    <p className="max-w-[44ch] text-[15px] text-foreground/92 leading-7">
-                      Paste a domain, email, handle, IP, phone, or wallet below to open the investigation. The agent will detect the type automatically.
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap gap-2 pt-1">
-                    {["taciocero@icloud.com", "elonmusk", "8.8.8.8", "lovable.app"].map((s) => (
-                      <button
-                        key={s}
-                        onClick={() => setInput(s)}
-                        className="px-3.5 py-1.5 rounded-lg border border-white/10 bg-white/[0.03] hover:border-info/40 hover:bg-info/5 font-mono text-data tabular-nums text-foreground/88 transition-colors"
-                      >
-                        {s}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+            <div className="min-h-[56vh] flex flex-col items-center justify-center text-center py-8">
+              <div className="inline-flex items-center gap-2 font-mono text-eyebrow uppercase tracking-[0.12em] text-muted-foreground">
+                <span className="w-1.5 h-1.5 rounded-full bg-[hsl(var(--confidence-high))] shadow-[0_0_10px_hsl(var(--confidence-high)/0.8)]" />
+                Ready
+                <span className="text-muted-foreground/50">·</span>
+                <span className="tabular-nums text-foreground/55">
+                  {`SWB-${new Date().getFullYear()}-${threadId.slice(0, 4).toUpperCase()}`}
+                </span>
+              </div>
+              <h1 className="mt-4 font-display text-[26px] sm:text-[30px] font-semibold tracking-tight text-foreground text-balance">
+                Start an investigation
+              </h1>
+              <p className="mt-2.5 max-w-[46ch] text-[15px] leading-7 text-muted-foreground text-pretty">
+                Paste a domain, email, handle, IP, phone, or wallet below. The agent detects the type and works the case automatically.
+              </p>
+              <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+                <span className="text-eyebrow font-mono uppercase tracking-[0.12em] text-muted-foreground/70 mr-0.5">Try</span>
+                {["taciocero@icloud.com", "elonmusk", "8.8.8.8", "lovable.app"].map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => { setInput(s); inputRef.current?.focus(); }}
+                    className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/[0.02] hover:border-info/40 hover:bg-info/[0.06] font-mono text-data tabular-nums text-foreground/85 transition-colors"
+                  >
+                    {s}
+                  </button>
+                ))}
               </div>
             </div>
           )}
@@ -1756,7 +1728,12 @@ function ChatWindowInner({
               })}
             </div>
           )}
-          <div className="rounded-[28px] border border-white/10 bg-surface-0 p-1 shadow-[0_24px_54px_-42px_rgba(0,0,0,0.95)]">
+          <div className={cn(
+            "rounded-[28px] border bg-surface-0 p-1 transition-shadow",
+            messages.length === 0
+              ? "border-white/15 shadow-[0_24px_60px_-36px_hsl(var(--intel-blue)/0.5)] ring-1 ring-white/10"
+              : "border-white/10 shadow-[0_24px_54px_-42px_rgba(0,0,0,0.95)]",
+          )}>
             <div className="relative rounded-[24px] border border-white/10 bg-background transition-colors focus-within:border-white/20">
               <input
                 ref={fileInputRef}

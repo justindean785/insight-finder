@@ -24,7 +24,6 @@ function seedIcon(seedType: string | null, title: string): LucideIcon {
   return SEED_ICON[kind] ?? FileSearch;
 }
 import { toast } from "sonner";
-import { CostMeter } from "@/components/ui/cost-meter";
 import { SwarmMark } from "@/components/ui/swarm-mark";
 
 function timeAgo(iso: string): string {
@@ -287,28 +286,10 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         <Button
           onClick={newThread}
           size="sm"
-          className="w-full h-14 justify-center gap-2 rounded-xl border border-white/15 bg-white text-black hover:bg-white/95 shadow-[0_16px_36px_-24px_rgba(255,255,255,0.95)]"
+          className="w-full h-11 justify-center gap-2 rounded-xl border border-white/15 bg-white text-black hover:bg-white/95 shadow-[0_14px_30px_-22px_rgba(255,255,255,0.9)]"
         >
           <Plus className="w-4 h-4" /> New investigation
         </Button>
-        <Link
-          to="/brain"
-          aria-label="Global Brain"
-          className={cn(
-            "relative mt-3 flex items-center gap-2 w-full px-4 py-3 rounded-xl border text-data font-medium uppercase tracking-[0.18em] transition-colors",
-            onBrainRoute
-              ? "border-white/20 bg-surface-1 text-foreground"
-              : "border-border-subtle bg-surface-0 text-muted-foreground hover:text-foreground hover:border-white/15 hover:bg-surface-1",
-          )}
-        >
-          <Brain className="w-4 h-4" strokeWidth={1.5} />
-          <span>Brain</span>
-          {newPatternCount > 0 && !onBrainRoute && (
-            <span className="ml-auto inline-flex items-center justify-center min-w-[28px] h-[22px] px-2 rounded-full bg-white text-black text-data font-mono font-bold shadow-[0_8px_18px_-12px_rgba(255,255,255,0.9)]">
-              {newPatternCount > 99 ? "99+" : newPatternCount}
-            </span>
-          )}
-        </Link>
       </div>
 
       <div className="px-4 pb-2">
@@ -324,16 +305,16 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         </div>
       </div>
 
-      <div className="px-4 pb-3 flex items-center gap-2 overflow-x-auto scrollbar-none">
+      <div className="px-4 pb-3 flex items-center gap-1 overflow-x-auto no-scrollbar">
         {TYPES.map((t) => (
           <button
             key={t.key}
             onClick={() => setTypeFilter(t.key)}
             className={cn(
-              "shrink-0 px-3 py-2 rounded-full border text-eyebrow font-mono uppercase tracking-[0.14em] transition-colors",
+              "shrink-0 px-2.5 py-1 rounded-md text-eyebrow font-mono uppercase tracking-[0.06em] transition-colors",
               typeFilter === t.key
-                ? "border-white/30 bg-surface-2 text-foreground"
-                : "border-border-subtle bg-surface-0 text-muted-foreground hover:text-foreground hover:bg-surface-1"
+                ? "bg-surface-2 text-foreground"
+                : "text-muted-foreground hover:text-foreground hover:bg-surface-1"
             )}
           >
             {t.label}
@@ -379,12 +360,29 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
 
       <div className="p-4 border-t border-border-subtle space-y-3">
         <SpendTrend threads={threads} totalCost={totalCost} />
-        <CostMeter microUsd={totalCost} threadCount={threads.length} />
-        <div className="flex items-center justify-between text-xs">
-          <div className="truncate text-muted-foreground">{user?.email}</div>
-          <button onClick={signOut} className="text-muted-foreground hover:text-foreground" aria-label="Sign out">
-            <LogOut className="w-4 h-4" />
-          </button>
+        <div className="flex items-center justify-between gap-2">
+          <Link
+            to="/brain"
+            aria-label="Global Brain"
+            className={cn(
+              "inline-flex items-center gap-1.5 text-meta transition-colors min-w-0 shrink-0",
+              onBrainRoute ? "text-foreground" : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <Brain className="w-3.5 h-3.5 shrink-0" strokeWidth={1.5} />
+            <span>Brain</span>
+            {newPatternCount > 0 && !onBrainRoute && (
+              <span className="ml-0.5 inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full bg-surface-2 text-foreground/80 text-[9px] font-mono tabular-nums">
+                {newPatternCount > 99 ? "99+" : newPatternCount}
+              </span>
+            )}
+          </Link>
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="truncate text-data text-muted-foreground max-w-[150px]">{user?.email}</span>
+            <button onClick={signOut} className="text-muted-foreground hover:text-foreground shrink-0" aria-label="Sign out">
+              <LogOut className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -405,31 +403,25 @@ function ThreadRow({
     : (m?.lowConf ?? 0) > 0 ? "mid"
     : (m?.artifacts ?? 0) > 0 ? "ok"
     : "low";
-  const stripCls =
-    sev === "high" ? "bg-[hsl(var(--danger))] shadow-[0_0_10px_hsl(var(--danger)/0.7)]"
-    : sev === "mid" ? "bg-[hsl(var(--confidence-mid))] shadow-[0_0_10px_hsl(var(--confidence-mid)/0.55)]"
-    : sev === "ok"  ? "bg-[hsl(var(--confidence-high))] shadow-[0_0_10px_hsl(var(--confidence-high)/0.55)]"
+  const dotCls =
+    sev === "high" ? "bg-[hsl(var(--danger))]"
+    : sev === "mid" ? "bg-[hsl(var(--confidence-mid))]"
+    : sev === "ok"  ? "bg-[hsl(var(--confidence-high))]"
     : "bg-border-strong/70";
   return (
     <Link
       to={`/chat/${t.id}`}
       className={cn(
-        "group relative flex items-start justify-between gap-2 pl-3 pr-2 py-3 rounded-xl text-sm transition-all hover:bg-surface-1",
+        "group relative flex items-start justify-between gap-2 px-2.5 py-2.5 rounded-xl text-sm transition-colors hover:bg-surface-1",
         active && "bg-surface-1 text-foreground ring-1 ring-white/10",
         dim && !active && "opacity-60",
       )}
     >
-      <span
-        aria-hidden
-        className={cn(
-          "absolute left-0 top-2 bottom-2 w-0.5 rounded-full",
-          active ? "bg-gradient-to-b from-primary to-accent" : stripCls,
-          !active && sev === "low" && "opacity-50",
-        )}
-      />
       <div className="min-w-0 flex-1">
         <div className="truncate flex items-center gap-1.5">
-          {dim && <CheckCircle2 className="w-3 h-3 text-confidence-glow shrink-0" />}
+          {dim
+            ? <CheckCircle2 className="w-3 h-3 text-confidence-glow shrink-0" />
+            : <span aria-hidden className={cn("w-1.5 h-1.5 rounded-full shrink-0", dotCls, sev === "low" && "opacity-50")} />}
           <span className="truncate">{t.title}</span>
         </div>
         <div className="text-data text-muted-foreground flex items-center gap-1.5 flex-wrap">
