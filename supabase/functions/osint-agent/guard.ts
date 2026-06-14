@@ -9,10 +9,13 @@
 // - artifactsSincePlan:      new artifacts recorded since last successful minimax_plan_pivots
 // - planCalledInRound:       true after plan_pivots runs; reset when ANY new artifact is recorded
 //                            (a fresh artifact = a new round opportunity)
+// - nullRoundReplans:        consecutive plan calls that produced zero new artifacts;
+//                            allows up to 2 null-round re-plans before hard-blocking
 export const guard = {
   artifactsSinceCorrelate: 0,
   artifactsSincePlan: 0,
   planCalledInRound: false,
+  nullRoundReplans: 0,
 };
 
 // ---- Routing guard: memory_recall rate limit + high-cost tool dedup ------------
@@ -80,6 +83,7 @@ export function bumpArtifacts(n: number, kinds?: string[]) {
   guard.artifactsSinceCorrelate += n;
   guard.artifactsSincePlan += n;
   guard.planCalledInRound = false;
+  guard.nullRoundReplans = 0;
   routingGuard.artifactsTotal += n;
   // New evidence = new reasoning step; clear per-step dedup for memory_recall.
   routingGuard.memoryRecallSubjectsThisStep.clear();

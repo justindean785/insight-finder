@@ -238,6 +238,7 @@ Deno.serve(async (req) => {
   guard.artifactsSinceCorrelate = 0;
   guard.artifactsSincePlan = 0;
   guard.planCalledInRound = false;
+  guard.nullRoundReplans = 0;
   routingGuard.artifactsTotal = 0;
   routingGuard.memoryRecallTimestamps = [];
   routingGuard.memoryRecallSubjectsThisStep.clear();
@@ -583,11 +584,17 @@ Deno.serve(async (req) => {
         }),
         execute: async ({ seed, already_queried, artifacts, budget_remaining }) => {
           if (guard.artifactsSincePlan === 0 && guard.planCalledInRound) {
-            return skipStub(
-              "minimax_plan_pivots",
-              "previous round produced zero new artifacts — gather more before planning.",
-              { artifactsSincePlan: guard.artifactsSincePlan, planCalledInRound: guard.planCalledInRound },
-            );
+            if (guard.nullRoundReplans >= 2) {
+              return skipStub(
+                "minimax_plan_pivots",
+                "3 consecutive plan rounds produced zero new artifacts — try a free pivot (emailrep, gravatar_profile, google_dorks, jina_reader_scrape) or call record_artifacts with whatever partial data exists.",
+                { artifactsSincePlan: guard.artifactsSincePlan, planCalledInRound: guard.planCalledInRound, nullRoundReplans: guard.nullRoundReplans },
+              );
+            }
+            // Allow up to 2 null-round re-plans so the model can adapt its
+            // strategy when all proposed tools error or are skipped.
+            guard.nullRoundReplans++;
+            guard.planCalledInRound = false;
           }
           if (guard.planCalledInRound) {
             return skipStub(

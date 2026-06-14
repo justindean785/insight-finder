@@ -370,6 +370,11 @@ export function wrapToolsWithCache(
           sourceIndependenceBonus: signal.sourceCount >= 2 ? 18 : 0,
           corroborationPotential: ["email", "phone", "domain", "username"].includes(selectorType) ? 12 : 6,
           freshnessNeed: name === "wayback_snapshots" || name === "archive_url" ? 10 : 0,
+          // First call on a zero-evidence seed: any data is high-value. Without
+          // this bonus, all paid breach/identity tools score 37-49 against
+          // thresholds of 50-70 and get EV-blocked before a single artifact
+          // lands — deadlocking the investigation on a fresh seed.
+          freshSeedBonus: signal.confidence === null && signal.sourceCount === 0 ? 35 : 0,
           costPenalty: costTierForTool(baseCost) === "expensive" ? 20 : costTierForTool(baseCost) === "low" ? 8 : 0,
           duplicatePenalty: selectorType === "value" ? 8 : 0,
           priorFailurePenalty: circuit.snapshot(ctx.investigationId).find((entry) => entry.tool === name)?.consecutive ?? 0,
