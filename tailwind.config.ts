@@ -22,6 +22,16 @@ export default {
         serif: ['ui-serif', 'Georgia', 'serif'],
         mono: ['"Geist Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
       },
+      // Semantic type scale — replaces ad-hoc inline `text-[Xpx]`. Reading text
+      // (`data` and up) is floored at 12px for legibility; `eyebrow` is the only
+      // sub-12px size and is reserved for uppercase labels/badges, never prose.
+      fontSize: {
+        eyebrow: ['0.625rem', { lineHeight: '1', letterSpacing: '0.14em' }], // 10px — uppercase labels only
+        data: ['0.75rem', { lineHeight: '1.45' }],                            // 12px — dense data / table cells (reading floor)
+        meta: ['0.8125rem', { lineHeight: '1.5' }],                           // 13px — secondary/body-supporting
+        body: ['0.875rem', { lineHeight: '1.6' }],                            // 14px — body
+        title: ['1rem', { lineHeight: '1.3', letterSpacing: '-0.01em' }],     // 16px — section titles
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",

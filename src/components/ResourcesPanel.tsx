@@ -629,7 +629,7 @@ function ArtifactRow({
                 () => toast.error("Copy failed"),
               );
             }}
-            className="shrink-0 rounded text-muted-foreground/70 opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/row:opacity-100"
+            className="-m-2 shrink-0 rounded p-2 text-muted-foreground/60 opacity-60 transition-opacity hover:text-foreground hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/row:opacity-100"
           >
             <Copy className="h-3.5 w-3.5" />
           </button>

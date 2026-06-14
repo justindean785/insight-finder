@@ -814,7 +814,7 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
                     <div className="my-2 -mx-1 sm:mx-0 rounded-lg border border-border-subtle bg-secondary/40 overflow-hidden">
                       <pre
                         {...rest}
-                        className="overflow-x-auto whitespace-pre p-3 text-[10.5px] sm:text-[11.5px] leading-[1.55] font-mono text-foreground/90 [scrollbar-width:thin]"
+                        className="overflow-x-auto whitespace-pre p-3 text-data leading-[1.55] font-mono text-foreground/90 [scrollbar-width:thin]"
                       >
                         {children}
                       </pre>
@@ -822,7 +822,7 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
                   ),
                   table: ({ node, children, ...rest }) => (
                     <div className="my-2 -mx-1 sm:mx-0 rounded-lg border border-border-subtle bg-secondary/30 overflow-x-auto [scrollbar-width:thin]">
-                      <table {...rest} className="w-full text-[11.5px] border-collapse">
+                      <table {...rest} className="w-full text-data border-collapse">
                         {children}
                       </table>
                     </div>
