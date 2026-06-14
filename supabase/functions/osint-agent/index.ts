@@ -582,7 +582,7 @@ Deno.serve(async (req) => {
           budget_remaining: z.number().int().min(0).max(100).default(30),
         }),
         execute: async ({ seed, already_queried, artifacts, budget_remaining }) => {
-          if (guard.artifactsSincePlan === 0) {
+          if (guard.artifactsSincePlan === 0 && guard.planCalledInRound) {
             return skipStub(
               "minimax_plan_pivots",
               "previous round produced zero new artifacts — gather more before planning.",
