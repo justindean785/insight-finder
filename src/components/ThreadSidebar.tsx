@@ -318,6 +318,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search investigations"
+            aria-label="Search investigations"
             className="min-w-0 flex-1 bg-transparent text-meta text-foreground outline-none placeholder:text-muted-foreground"
           />
         </div>
