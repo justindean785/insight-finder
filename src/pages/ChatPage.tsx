@@ -15,12 +15,7 @@ export default function ChatPage() {
   const { user, loading } = useAuth();
   const isMobile = useIsMobile();
   const [leftCollapsed, setLeftCollapsed] = useState(false);
-  // On tablet-width desktops the 3-column layout is cramped (sidebar + chat +
-  // 420px panel). Start the case panel collapsed below xl so the chat keeps
-  // room; the user can expand it. Above xl it opens by default.
-  const [rightCollapsed, setRightCollapsed] = useState(
-    () => typeof window !== "undefined" && window.matchMedia("(max-width: 1279px)").matches,
-  );
+  const [rightCollapsed, setRightCollapsed] = useState(false);
   const [mLeft, setMLeft] = useState(false);
   const [mRight, setMRight] = useState(false);
 

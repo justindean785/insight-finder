@@ -443,35 +443,10 @@ function ArtifactsList({
   }, [items]);
 
   if (items.length === 0) {
-    const sections: { icon: typeof Database; label: string; desc: string }[] = [
-      { icon: Database, label: "Artifacts", desc: "Every identifier the agent confirms — emails, handles, domains, breaches — grouped and ranked by confidence." },
-      { icon: FileOutput, label: "Report", desc: "A written summary with findings, confidence, and cited sources once the run completes." },
-      { icon: Layers, label: "Full review", desc: "Deeper tabs: evidence matrix, clusters, timeline, map, custody chain, and audit." },
-    ];
     return (
-      <div className="p-4">
-        <div className="rounded-xl border border-border-subtle bg-surface-0 p-4">
-          <div className="text-meta font-medium text-foreground">This case is empty</div>
-          <p className="mt-1 text-data text-muted-foreground leading-relaxed">
-            Submit a seed in the composer to begin. As the agent works, this panel fills in:
-          </p>
-          <ul className="mt-4 space-y-3.5">
-            {sections.map((s) => {
-              const Icon = s.icon;
-              return (
-                <li key={s.label} className="flex gap-3">
-                  <div className="mt-0.5 w-7 h-7 shrink-0 rounded-lg border border-border-subtle bg-surface-1 grid place-items-center">
-                    <Icon className="w-3.5 h-3.5 text-muted-foreground" strokeWidth={1.5} />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-data font-medium text-foreground/90">{s.label}</div>
-                    <div className="text-data text-muted-foreground leading-relaxed">{s.desc}</div>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
+      <div className="text-xs text-muted-foreground p-4 space-y-1">
+        <div>No artifacts recorded yet.</div>
+        <div>Submit a seed (email, username, domain, IP, wallet, phone) to start the investigation.</div>
       </div>
     );
   }
