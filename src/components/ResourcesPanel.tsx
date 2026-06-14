@@ -217,7 +217,7 @@ export function ResourcesPanel({
   }
 
   return (
-    <div className="w-full md:w-[430px] h-full flex flex-col">
+    <div className="w-full min-w-0 h-full flex flex-col overflow-x-hidden">
       <Tabs value={tab} onValueChange={setTab} className="flex-1 flex flex-col min-h-0">
         <div className="sticky top-0 z-10 border-b border-border-subtle bg-background">
           <div className="px-4 h-14 flex items-center gap-3">
@@ -262,32 +262,34 @@ export function ResourcesPanel({
                 <button
                   key={t.v}
                   onClick={() => { setMode("main"); setTab(t.v); }}
+                  title={t.l}
                   className={cn(
-                    "flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg text-eyebrow font-medium uppercase tracking-[0.16em] transition-colors",
+                    "flex-1 min-w-0 flex items-center justify-center gap-1 h-8 rounded-lg text-eyebrow font-medium uppercase tracking-[0.06em] transition-colors",
                     active
                       ? "bg-surface-1 text-foreground border border-white/10"
                       : "text-muted-foreground hover:text-foreground hover:bg-surface-1 border border-transparent",
                   )}
                 >
-                  <Icon className="w-3 h-3" />
-                  {t.l}
+                  <Icon className="w-3 h-3 shrink-0" />
+                  <span className="truncate">{t.l}</span>
                   {count != null && count > 0 && (
-                    <span className="font-mono text-[9px] tabular-nums text-muted-foreground/70">{count}</span>
+                    <span className="font-mono text-[9px] tabular-nums text-muted-foreground/70 shrink-0">{count}</span>
                   )}
                 </button>
               );
             })}
             <button
               onClick={() => { setMode("full"); setSection(sectionForTab(tab) ?? "evidence"); }}
+              title="Full review"
               className={cn(
-                "flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg text-eyebrow font-medium uppercase tracking-[0.16em] transition-colors",
+                "flex-1 min-w-0 flex items-center justify-center gap-1 h-8 rounded-lg text-eyebrow font-medium uppercase tracking-[0.06em] transition-colors",
                 mode === "full"
                   ? "bg-surface-1 text-foreground border border-white/10"
                   : "text-muted-foreground hover:text-foreground hover:bg-surface-1 border border-transparent",
               )}
             >
-              <Layers className="w-3 h-3" />
-              Full review
+              <Layers className="w-3 h-3 shrink-0" />
+              <span className="truncate">Full</span>
             </button>
           </div>
 
@@ -302,21 +304,22 @@ export function ResourcesPanel({
                     <button
                       key={s.key}
                       onClick={() => onSectionChange(s.key)}
+                      title={s.label}
                       className={cn(
-                        "flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg text-eyebrow font-medium uppercase tracking-[0.16em] transition-colors",
+                        "flex-1 min-w-0 flex items-center justify-center gap-1 h-8 rounded-lg text-eyebrow font-medium uppercase tracking-[0.06em] transition-colors",
                         active
                           ? "bg-surface-1 text-foreground border border-white/10"
                           : "text-muted-foreground hover:text-foreground hover:bg-surface-1 border border-transparent",
                       )}
                     >
-                      <Icon className="w-3 h-3" />
-                      {s.label}
+                      <Icon className="w-3 h-3 shrink-0" />
+                      <span className="truncate">{s.label}</span>
                     </button>
                   );
                 })}
               </div>
-              <div className="px-3 pb-3 pt-0.5">
-                <TabsList className="w-full h-9 bg-transparent rounded-none p-0 gap-2 justify-start">
+              <div className="px-3 pb-3 pt-0.5 overflow-x-auto no-scrollbar">
+                <TabsList className="w-full min-w-max h-9 bg-transparent rounded-none p-0 gap-4 justify-start">
                   {activeSection.tabs.map((t) => {
                     const count = TAB_COUNTS[t.v];
                     return (

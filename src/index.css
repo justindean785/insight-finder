@@ -171,6 +171,15 @@ All colors MUST be HSL.
   .text-glow {
     text-shadow: 0 0 16px hsl(var(--primary) / 0.3);
   }
+  /* Hide the scrollbar on horizontally-scrollable nav strips (the case-panel
+     sub-tab row) while keeping them scrollable via wheel/trackpad/touch. */
+  .no-scrollbar {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
   /* Single glass treatment — every panel surface uses this.
      Legacy class names (.glass, .glass-strong, .glass-interactive, .glass-hover-shine)
      alias to the same look to keep existing markup working. */
