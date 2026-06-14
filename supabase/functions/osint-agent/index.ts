@@ -4200,6 +4200,16 @@ Deno.serve(async (req) => {
     let runCostMicroUsd = 0;
     let costCheckpointCounter = 0;
     clearRuntime(threadId);
+    // Seed breadcrumb for the cycle log — the first user message's text.
+    const seedValueRaw = (() => {
+      const fu = ((messages ?? []) as Array<{ role?: string; parts?: Array<{ type?: string; text?: string }> }>)
+        .find((m) => m?.role === "user");
+      return (fu?.parts ?? [])
+        .filter((p) => p?.type === "text")
+        .map((p) => p?.text ?? "")
+        .join(" ")
+        .trim() || "(seed)";
+    })();
     beginCycle(
       threadId,
       "Classify the seed, reject weak pivots, and select the smallest high-value initial batch.",
