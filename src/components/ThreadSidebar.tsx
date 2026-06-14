@@ -329,7 +329,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
             key={t.key}
             onClick={() => setTypeFilter(t.key)}
             className={cn(
-              "shrink-0 px-3 py-1.5 rounded-full border text-[11px] font-mono uppercase tracking-[0.14em] transition-colors",
+              "shrink-0 px-3 py-2 rounded-full border text-eyebrow font-mono uppercase transition-colors",
               typeFilter === t.key
                 ? "border-white/30 bg-surface-2 text-foreground"
                 : "border-border-subtle bg-surface-0 text-muted-foreground hover:text-foreground hover:bg-surface-1"
