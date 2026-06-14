@@ -4028,6 +4028,12 @@ Deno.serve(async (req) => {
     let runCostMicroUsd = 0;
     let costCheckpointCounter = 0;
     clearRuntime(threadId);
+    // Raw seed = first user message text (the investigation subject). Derived
+    // here for the cycle context hint; mirrors the seedText extraction used for
+    // the investigation_cache persistence below.
+    const firstUserMsg = messages.find((m) => m.role === "user");
+    const seedValueRaw = ((firstUserMsg?.parts ?? []) as Array<{ type: string; text?: string }>)
+      .filter((p) => p.type === "text").map((p) => p.text ?? "").join(" ").trim();
     beginCycle(
       threadId,
       "Classify the seed, reject weak pivots, and select the smallest high-value initial batch.",
