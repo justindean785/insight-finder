@@ -1,7 +1,7 @@
 import { useState, useRef, type ReactNode } from "react";
 import {
   Copy, Check, CheckCircle2, XCircle, MinusCircle, Loader2, ChevronRight,
-  ShieldCheck, ShieldQuestion, ShieldAlert, Search, Server, AlertTriangle, Circle,
+  ShieldCheck, ShieldQuestion, Search, Server, AlertTriangle, Circle, Ban,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -169,12 +169,14 @@ export function FilterChips<T extends string>({
 
 /* ── ToolStatusBadge ────────────────────────────────────────────────── */
 
-export type ToolRunStatus = "succeeded" | "failed" | "skipped" | "pending";
+export type ToolRunStatus = "succeeded" | "failed" | "skipped" | "gated" | "degraded" | "pending";
 
 const TOOL_STATUS_META: Record<ToolRunStatus, { label: string; icon: LucideIcon; classes: string; spin?: boolean }> = {
   succeeded: { label: "Succeeded", icon: CheckCircle2, classes: "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/30 bg-[hsl(var(--confidence-high))]/10" },
   failed:    { label: "Failed",    icon: XCircle,      classes: "text-destructive border-destructive/30 bg-destructive/10" },
   skipped:   { label: "Skipped",   icon: MinusCircle,  classes: "text-muted-foreground border-border-subtle bg-surface-2/60" },
+  gated:     { label: "Gated",     icon: Ban,          classes: "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid))]/30 bg-[hsl(var(--confidence-mid))]/10" },
+  degraded:  { label: "Degraded",  icon: AlertTriangle, classes: "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid))]/30 bg-[hsl(var(--confidence-mid))]/10" },
   pending:   { label: "Running",   icon: Loader2,      classes: "text-primary border-primary/30 bg-primary/10", spin: true },
 };
 
@@ -216,6 +218,7 @@ const EVIDENCE_TONE_CLASS: Record<EvidenceStatusTone, string> = {
 
 const EVIDENCE_STATUS_ICON: Record<EvidenceDisplayStatus, LucideIcon> = {
   verified: ShieldCheck,
+  verified_infrastructure: Server,
   probable: CheckCircle2,
   needs_corroboration: ShieldQuestion,
   manual_review: Search,

@@ -25,13 +25,42 @@ describe("evidenceStatus — never overstates, always textual", () => {
     expect(s.basis).toContain("Single-source");
   });
 
-  it("breach kind is Manual review, never confirmed", () => {
+  it("VirusTotal reads as Threat/reputation, not Breach (review #4)", () => {
     const s = evidenceStatus(art({
       kind: "breach", value: "doxbyte.com", confidence: 30, source: "virustotal",
-      metadata: { sources: ["virustotal"] },
+      metadata: { sources: ["virustotal"], source_category: ["unknown"] },
+    }));
+    expect(s.status).toBe("manual_review");
+    expect(s.basis).toContain("Threat/reputation");
+    expect(s.basis).not.toContain("Breach/exposure");
+  });
+
+  it("real breach source reads as Breach/exposure manual review", () => {
+    const s = evidenceStatus(art({
+      kind: "breach_exposure", value: "x@y.com", confidence: 55, source: "leakcheck_lookup",
+      metadata: { sources: ["leakcheck_lookup"], source_category: ["breach"] },
     }));
     expect(s.status).toBe("manual_review");
     expect(s.basis).toContain("Breach/exposure");
+  });
+
+  it("infra-only multi-source reads as Verified infrastructure, not generic Verified (review #1)", () => {
+    const s = evidenceStatus(art({
+      kind: "domain", value: "doxbyte.net", confidence: 85, source: "whois_lookup",
+      metadata: { sources: ["whois_lookup", "dns_records"], source_category: ["infra_registry", "infra_dns"] },
+    }));
+    expect(s.status).toBe("verified_infrastructure");
+    expect(s.label).toBe("Verified infrastructure");
+    expect(s.basis).toContain("not ownership proof");
+  });
+
+  it("Cloudflare-hosted IP reads as Shared infrastructure (review #2)", () => {
+    const s = evidenceStatus(art({
+      kind: "ip", value: "104.26.0.99", confidence: 70, source: "dns_records",
+      metadata: { asn: "AS13335 (Cloudflare)", source_category: ["infra_dns"] },
+    }));
+    expect(s.status).toBe("shared_infrastructure");
+    expect(s.basis).toContain("not ownership proof");
   });
 
   it("single-source breach data is Manual review even at higher confidence", () => {

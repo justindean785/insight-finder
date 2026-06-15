@@ -23,6 +23,8 @@ export const STRICT_KINDS = [
   "hash",
   "crypto_wallet",
   "breach_exposure",
+  "threat_reputation",
+  "reputation_signal",
   "contradiction",
   "weak_lead",
   "excluded_collision",
@@ -90,6 +92,8 @@ export type SourceClass =
   | "infra_dns"
   | "infra_scan"
   | "infra_reputation"
+  | "infra_passive"
+  | "infra_shared_host"
   | "unknown";
 
 const TOOL_CLASS: Record<string, SourceClass> = {
@@ -127,10 +131,14 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   hackertarget: "infra_scan",
   synapsint_lookup: "infra_scan",
   virustotal_lookup: "infra_reputation",
-  urlscan_search: "infra_reputation",
   ipqualityscore_lookup: "infra_reputation",
   emailrep: "infra_reputation",
   emailrep_lookup: "infra_reputation",
+  // passive / historical — observe the past, not the live asset
+  urlscan_search: "infra_passive",
+  wayback_snapshots: "infra_passive",
+  archive_url: "infra_passive",
+  passive_dns: "infra_passive",
   gravatar_profile: "social_profile_passive",
   gravatar_lookup: "social_profile_passive",
   // phone / people-search aggregators — low-trust aggregators, treat as passive social
@@ -152,6 +160,9 @@ export function classifySource(toolOrSource: string | null | undefined): SourceC
   // lets passive-social and breach hits score higher than their class allows.
   const s = toolOrSource.toLowerCase().replace(/\s*\([^)]*\)\s*$/, "").trim();
   if (TOOL_CLASS[s]) return TOOL_CLASS[s];
+  // Reverse-IP / shared-host lookups describe co-tenants on a shared/CDN IP —
+  // they never prove ownership and must not corroborate identity.
+  if (/reverse[\s._-]?ip|reverseiplookup|shared[\s._-]?host|co[\s._-]?hosted/.test(s)) return "infra_shared_host";
   if (/court|docket|legal_record|justice|cdc|cdcr|bop|pacer/.test(s)) return "court_record";
   if (/news|times|herald|tribune|press|magazine|article/.test(s)) return "news";
   return "unknown";

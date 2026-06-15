@@ -64,6 +64,38 @@ export function deriveToolTone(part: {
   return part.state === "output-available" ? "ok" : "pending";
 }
 
+/** Operational status with the analyst-relevant distinctions a bare tone lacks:
+ *  a *gated* call was blocked by a triage/policy/budget gate (an intentional
+ *  decision, not a fault), and a *degraded* call returned a partial/stale result
+ *  (worth a second look, but not a hard failure). */
+export type ToolStatus = "succeeded" | "failed" | "skipped" | "gated" | "degraded" | "pending";
+
+const GATE_REASON_RE = /\bgate(d|s)?\b|triage|policy|disabled|not promoted|budget|over[\s-]?budget|cost cap|quota|rate limit/i;
+
+export function deriveToolStatus(part: {
+  state?: string;
+  errorText?: unknown;
+  output?: unknown;
+}): ToolStatus {
+  if (part.state === "output-error" || part.errorText != null) return "failed";
+  const output = asOutput(part.output);
+  if (output) {
+    if (output.ok === false) return "failed";
+    if (output.gated === true) return "gated";
+    if (output.skipped === true) {
+      const runtime = deriveToolRuntime(output);
+      const reason = `${typeof output.reason === "string" ? output.reason : ""} ${runtime?.rejection_reason ?? ""}`;
+      return GATE_REASON_RE.test(reason) ? "gated" : "skipped";
+    }
+    if (output.degraded === true || output.partial === true) return "degraded";
+    const runtime = deriveToolRuntime(output);
+    if (runtime?.stale_cache === true) return "degraded";
+    const status = typeof output.status === "string" ? output.status.toLowerCase() : "";
+    if (status === "timeout" || status === "partial" || status === "degraded") return "degraded";
+  }
+  return part.state === "output-available" ? "succeeded" : "pending";
+}
+
 export function deriveToolReason(output: unknown): string {
   const data = asOutput(output);
   if (!data) return "";

@@ -62,7 +62,7 @@ export type EvidenceSortMode = "strength" | "confidence" | "newest";
 // Which display statuses each quick-filter admits.
 const STATUS_FILTER_GROUPS: Record<EvidenceStatusFilter, Set<string> | null> = {
   all: null,
-  strong: new Set(["verified", "probable"]),
+  strong: new Set(["verified", "verified_infrastructure", "probable"]),
   review: new Set(["needs_corroboration", "manual_review", "contradicted"]),
   weak: new Set(["lead", "shared_infrastructure"]),
   excluded: new Set(["rejected"]),

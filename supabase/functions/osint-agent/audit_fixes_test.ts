@@ -21,10 +21,49 @@ Deno.test("classifySource maps infra tools to sub-classes", () => {
   assertEquals(classifySource("hackertarget"), "infra_scan");
   assertEquals(classifySource("http_fingerprint"), "infra_scan");
   assertEquals(classifySource("virustotal_lookup"), "infra_reputation");
-  assertEquals(classifySource("urlscan_search"), "infra_reputation");
   assertEquals(classifySource("ipqualityscore_lookup"), "infra_reputation");
   assertEquals(classifySource("emailrep"), "infra_reputation");
   assertEquals(classifySource("hunter_domain_search"), "infra_registry");
+});
+
+Deno.test("classifySource maps passive + shared-host sources", () => {
+  assertEquals(classifySource("urlscan_search"), "infra_passive");
+  assertEquals(classifySource("wayback_snapshots"), "infra_passive");
+  assertEquals(classifySource("archive_url"), "infra_passive");
+  // Reverse-IP / shared-host lookups never prove ownership.
+  assertEquals(classifySource("hackertarget/reverseiplookup"), "infra_shared_host");
+  assertEquals(classifySource("reverse_ip_lookup"), "infra_shared_host");
+  assertEquals(classifySource("shared-host scan"), "infra_shared_host");
+});
+
+Deno.test("shared-host source is capped at 35 and never corroborates", () => {
+  const r = applyEvidenceCaps({ rawConfidence: 90, sources: ["hackertarget/reverseiplookup"] });
+  assertEquals(r.confidence, 35);
+  // Adding a shared-host class does NOT lift a WHOIS finding.
+  const combo = applyEvidenceCaps({ rawConfidence: 90, sources: ["whois_lookup", "hackertarget/reverseiplookup"] });
+  assertEquals(combo.confidence, 75); // whois cap only; shared-host adds nothing
+});
+
+Deno.test("infra + weak ai_summary cannot exceed infra-safe 85", () => {
+  const r = applyEvidenceCaps({
+    rawConfidence: 100,
+    sources: ["whois_lookup", "dns_records", "shodan_internetdb", "gemini_deep_dork"],
+  });
+  assertEquals(r.confidence <= 85, true);
+});
+
+Deno.test("infra + trusted class CAN lift past 85", () => {
+  // whois (infra) + a court record (trusted non-infra) → cross-class unlock.
+  const r = applyEvidenceCaps({ rawConfidence: 100, sources: ["whois_lookup", "pacer_docket"] });
+  assertEquals(r.confidence > 85, true);
+  // whois + independent_public alone tops out at its own caps (infra-safe-ish).
+  const r2 = applyEvidenceCaps({ rawConfidence: 100, sources: ["whois_lookup", "jina_reader_scrape"] });
+  assertEquals(r2.confidence <= 85, true);
+});
+
+Deno.test("court_record + news still reaches 95 (unchanged)", () => {
+  const r = applyEvidenceCaps({ rawConfidence: 100, sources: ["pacer_docket", "nytimes_article"] });
+  assertEquals(r.confidence, 95);
 });
 
 Deno.test("passive-social hit no longer leaks to unknown cap (40 not 50)", () => {

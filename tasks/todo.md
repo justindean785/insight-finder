@@ -120,3 +120,66 @@ new investigations. The Evidence-status UI works against whatever the backend
 stores today (it reads existing `confidence` + metadata), so it improves the
 display of past cases immediately once the frontend ships to Vercel.
 
+
+## Review fix pass — semantic correctness (2026-06-15, PR #56 review)
+
+Addressed all 6 blockers from the PR review.
+
+### 1. Infra-only no longer overstated as generic "Verified"
+- `evidence-status.ts` now reads the backend's authoritative `metadata.source_category`
+  (falls back to source-string split only for legacy rows).
+- New status `verified_infrastructure` ("Verified infrastructure", blue/probable
+  tone) with basis "Infrastructure-only · not ownership proof". Infra-only
+  findings can never display as a confirmed identity/owner claim.
+
+### 2. Shared-infrastructure detection broadened
+- `isSharedInfrastructure` now also catches `metadata.cdn`, `shared_infra`, and
+  Cloudflare/Akamai/Fastly/AWS/GCP/Azure/shared-host strings in
+  provider/org/asn_org/as_name/isp/asn (network-layer artifacts), plus
+  reverse-IP/shared-host source strings and the `infra_shared_host` class.
+
+### 3. New source sub-classes infra_passive + infra_shared_host
+- `artifact_types.ts`: urlscan/wayback/archive/passive_dns → `infra_passive`;
+  reverse-IP/shared-host sources → `infra_shared_host`.
+- `confidence.ts`: caps infra_passive 70, infra_shared_host 35. Shared-host is
+  excluded from infra corroboration counting and is in NEVER_HIGH.
+
+### 4. VirusTotal taxonomy
+- Added `threat_reputation` + `reputation_signal` to STRICT_KINDS.
+- Evidence status treats VirusTotal/URLScan/EmailRep/IPQS as a
+  "Threat/reputation signal" (Manual review), distinct from "Breach/exposure".
+
+### 5. Weak AI summaries can't unlock 90+
+- `confidence.ts`: new TRUSTED_NON_INFRA gate — only official_profile_match /
+  court_record / news / independent_public unlock the >85 ownership path. infra +
+  ai_summary (or many infra perspectives) stays ≤85.
+
+### 6. Tools tab Gated / Degraded statuses
+- `tool-run.ts` `deriveToolStatus()` → succeeded/failed/skipped/gated/degraded/pending.
+  Gated = triage/policy/budget/rate-limit block; Degraded = partial/stale/timeout.
+- `useThreadToolActivity` exposes status + gated/degraded counts; ToolsTab adds
+  Gated/Degraded filter chips and a "Skipped / Gated" metric card; ToolStatusBadge
+  gains Gated/Degraded variants.
+
+### Tests added
+- Backend (mirrored in vitest via `infra-confidence.test.ts`): shared-host cap 35
+  + no-corroboration, passive classification, infra+ai_summary ≤85,
+  infra+court_record >85, court+news = 95. Also in Deno `audit_fixes_test.ts`.
+- `evidence-status.test.ts`: VirusTotal→reputation, real breach→breach/exposure,
+  infra-only→Verified infrastructure, Cloudflare IP→shared infrastructure.
+- `tool-activity-reason.test.ts`: deriveToolStatus gated/degraded/skipped/failed.
+
+### Verification
+- `npx vitest run` → **48 files / 581 tests pass** (was 567).
+- `npm run typecheck` → clean. `npx eslint` (changed files) → clean.
+- `npm run build` → succeeds.
+
+### Remaining nuance
+- The client-side **markdown report** (`buildReportMarkdown`) still groups by
+  artifact `kind`, so a VirusTotal row stored as `kind:"breach"` lists under the
+  report's Breach/Exposure section even though the Evidence board now labels it
+  Threat/reputation. The board (the primary analyst surface) is correct; aligning
+  the markdown grouping is a small follow-up.
+- Backend confidence/taxonomy changes only affect new runs once synced to
+  `seeker-spark-search-5362c57c` + deployed via Lovable. Frontend display fixes
+  ship immediately via Vercel and improve existing cases.

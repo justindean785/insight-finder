@@ -24,7 +24,6 @@ describe("infrastructure source sub-class classification", () => {
   });
   it("maps reputation tools to infra_reputation", () => {
     expect(classifySource("virustotal_lookup")).toBe("infra_reputation");
-    expect(classifySource("urlscan_search")).toBe("infra_reputation");
     expect(classifySource("emailrep")).toBe("infra_reputation");
     expect(classifySource("ipqualityscore_lookup")).toBe("infra_reputation");
   });
@@ -106,5 +105,41 @@ describe("infrastructure confidence caps", () => {
     const r = applyEvidenceCaps({ rawConfidence: 80, sources: ["whois_lookup"] });
     expect(r.confidence).toBe(75);
     expect(r.confidence).toBeGreaterThan(70);
+  });
+});
+
+describe("shared-host, passive, and trusted-class guards (review #3/#5)", () => {
+  it("reverse-IP / shared host classifies as infra_shared_host and caps at 35", () => {
+    expect(classifySource("hackertarget/reverseiplookup")).toBe("infra_shared_host");
+    const r = applyEvidenceCaps({ rawConfidence: 90, sources: ["hackertarget/reverseiplookup"] });
+    expect(r.confidence).toBe(35);
+  });
+
+  it("shared host adds no corroboration to a WHOIS finding", () => {
+    const r = applyEvidenceCaps({ rawConfidence: 90, sources: ["whois_lookup", "hackertarget/reverseiplookup"] });
+    expect(r.confidence).toBe(75); // whois cap only
+  });
+
+  it("passive sources classify as infra_passive", () => {
+    expect(classifySource("urlscan_search")).toBe("infra_passive");
+    expect(classifySource("wayback_snapshots")).toBe("infra_passive");
+  });
+
+  it("infra + weak ai_summary cannot exceed infra-safe 85", () => {
+    const r = applyEvidenceCaps({
+      rawConfidence: 100,
+      sources: ["whois_lookup", "dns_records", "shodan_internetdb", "gemini_deep_dork"],
+    });
+    expect(r.confidence).toBeLessThanOrEqual(85);
+  });
+
+  it("infra + trusted court_record CAN lift past 85", () => {
+    const r = applyEvidenceCaps({ rawConfidence: 100, sources: ["whois_lookup", "pacer_docket"] });
+    expect(r.confidence).toBeGreaterThan(85);
+  });
+
+  it("court_record + news still reaches 95", () => {
+    const r = applyEvidenceCaps({ rawConfidence: 100, sources: ["pacer_docket", "nytimes_article"] });
+    expect(r.confidence).toBe(95);
   });
 });
