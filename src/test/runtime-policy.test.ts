@@ -12,6 +12,8 @@ import {
   finishCall,
   MAX_CONCURRENT_CALLS,
   MAX_TOTAL_CALLS,
+  MAX_PAID_CALLS_PER_CYCLE,
+  MAX_SAME_TOOL_CALLS_PER_CYCLE,
   MIN_START_GAP_MS,
 } from "../../supabase/functions/osint-agent/runtime-policy.ts";
 
@@ -96,60 +98,75 @@ describe("runtime-policy", () => {
   it("enforces per-cycle same-tool and paid-call limits", () => {
     beginCycle(THREAD);
     completePlan(THREAD);
-    expect(startCall({
-      threadId: THREAD,
-      toolName: "leakcheck_lookup",
-      selector: "foo@example.com",
-      selectorType: "email",
-      costTier: "expensive",
-      expectedValue: 90,
-      familyKey: "leakcheck_lookup::email::foo@example.com",
-      weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
-      staleCache: false,
-    }).allow).toBe(true);
-    finishCall(THREAD, "leakcheck_lookup");
 
-    expect(startCall({
-      threadId: THREAD,
-      toolName: "oathnet_lookup",
-      selector: "foo@example.com",
-      selectorType: "email",
-      costTier: "expensive",
-      expectedValue: 90,
-      familyKey: "oathnet_lookup::email::foo@example.com",
-      weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
-      staleCache: false,
-      now: Date.now() + 1000,
-    }).allow).toBe(true);
-    finishCall(THREAD, "oathnet_lookup");
+    // Up to MAX_PAID_CALLS_PER_CYCLE distinct paid tools are allowed; one beyond
+    // is blocked. (Each finishes immediately so concurrency never gates here.)
+    for (let i = 0; i < MAX_PAID_CALLS_PER_CYCLE; i++) {
+      expect(startCall({
+        threadId: THREAD,
+        toolName: `paid_tool_${i}`,
+        selector: "foo@example.com",
+        selectorType: "email",
+        costTier: "expensive",
+        expectedValue: 90,
+        familyKey: `paid_tool_${i}::email::foo@example.com`,
+        weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
+        staleCache: false,
+        now: 1_000 + i * MIN_START_GAP_MS,
+      }).allow).toBe(true);
+      finishCall(THREAD, `paid_tool_${i}`);
+    }
 
-    const thirdPaid = startCall({
+    const overPaid = startCall({
       threadId: THREAD,
-      toolName: "breach_check",
+      toolName: "paid_tool_over",
       selector: "foo@example.com",
       selectorType: "email",
       costTier: "expensive",
       expectedValue: 90,
-      familyKey: "breach_check::email::foo@example.com",
+      familyKey: "paid_tool_over::email::foo@example.com",
       weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
       staleCache: false,
-      now: Date.now() + 2000,
+      now: 1_000 + (MAX_PAID_CALLS_PER_CYCLE + 1) * MIN_START_GAP_MS,
     });
-    expect(thirdPaid.allow).toBe(false);
+    expect(overPaid.allow).toBe(false);
+  });
 
-    const repeatTool = startCall({
+  it("enforces the per-cycle same-tool cap", () => {
+    beginCycle(THREAD);
+    completePlan(THREAD);
+
+    // The same tool may run up to MAX_SAME_TOOL_CALLS_PER_CYCLE times per cycle
+    // (free tier so the paid cap never interferes); one beyond is blocked.
+    for (let i = 0; i < MAX_SAME_TOOL_CALLS_PER_CYCLE; i++) {
+      expect(startCall({
+        threadId: THREAD,
+        toolName: "google_dorks",
+        selector: `selector-${i}@example.com`,
+        selectorType: "email",
+        costTier: "free",
+        expectedValue: 90,
+        familyKey: `google_dorks::email::selector-${i}@example.com`,
+        weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
+        staleCache: false,
+        now: 1_000 + i * MIN_START_GAP_MS,
+      }).allow).toBe(true);
+      finishCall(THREAD, "google_dorks");
+    }
+
+    const overSameTool = startCall({
       threadId: THREAD,
-      toolName: "oathnet_lookup",
-      selector: "bar@example.com",
+      toolName: "google_dorks",
+      selector: "selector-over@example.com",
       selectorType: "email",
-      costTier: "expensive",
+      costTier: "free",
       expectedValue: 90,
-      familyKey: "oathnet_lookup::email::bar@example.com",
+      familyKey: "google_dorks::email::selector-over@example.com",
       weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
       staleCache: false,
-      now: Date.now() + 3000,
+      now: 1_000 + (MAX_SAME_TOOL_CALLS_PER_CYCLE + 1) * MIN_START_GAP_MS,
     });
-    expect(repeatTool.allow).toBe(false);
+    expect(overSameTool.allow).toBe(false);
   });
 
   it("tracks active concurrency separately from completed calls", () => {

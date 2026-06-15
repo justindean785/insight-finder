@@ -111,11 +111,18 @@ interface RuntimeThreadState {
 
 const THREADS = new Map<string, RuntimeThreadState>();
 
-export const MAX_TOTAL_CALLS = 35;
-export const MAX_CONCURRENT_CALLS = 3;
-export const MAX_PAID_CALLS_PER_CYCLE = 2;
-export const MAX_SAME_TOOL_CALLS_PER_CYCLE = 1;
-export const MIN_START_GAP_MS = 750;
+// Call budget. These are runaway-cost backstops, NOT per-run throttles: the
+// old values (paid=2/cycle, same-tool=1/cycle) choked every investigation —
+// the agent burned its cycle on 2 paid tools, hit "paid-call cycle limit
+// reached (2)", fell back to free tools that find nothing, and finished with 0
+// artifacts. Paid OSINT calls cost ~$0.0014/run, so the bottleneck bought no
+// real savings while killing yield. Raised so a cycle can actually gather
+// evidence; MAX_TOTAL_CALLS remains the hard stop against infinite loops.
+export const MAX_TOTAL_CALLS = 60;
+export const MAX_CONCURRENT_CALLS = 6;
+export const MAX_PAID_CALLS_PER_CYCLE = 12;
+export const MAX_SAME_TOOL_CALLS_PER_CYCLE = 3;
+export const MIN_START_GAP_MS = 400;
 
 function getThread(threadId: string): RuntimeThreadState {
   let state = THREADS.get(threadId);
