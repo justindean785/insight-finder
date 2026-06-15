@@ -207,16 +207,6 @@ export const leakcheck_lookup = tool({
     if (!LEAKCHECK_API_KEY) return { error: "LEAKCHECK_API_KEY not configured" };
     const q = value.trim();
     if (!q) return { error: "missing value" };
-    // High-cost: one call per seed unless new corroborating evidence has appeared.
-    {
-      const last = routingGuard.highCostLastArtifactCount.get("leakcheck_lookup");
-      if (last !== undefined && routingGuard.artifactsTotal - last < 5) {
-        const note = `leakcheck_lookup skipped — high-cost tool already used this seed (${routingGuard.artifactsTotal - last} new artifacts since, need ≥5).`;
-        console.log(`[high-cost-gate] ${note}`);
-        return { ok: false, skipped: true, gated: true, reason: note };
-      }
-      routingGuard.highCostLastArtifactCount.set("leakcheck_lookup", routingGuard.artifactsTotal);
-    }
     try {
       const url = `https://leakcheck.io/api/v2/query/${encodeURIComponent(q)}?type=${encodeURIComponent(type ?? "auto")}`;
       const r = await fetch(url, { headers: { "X-API-Key": LEAKCHECK_API_KEY, "Accept": "application/json" } });
@@ -276,4 +266,3 @@ export const hibp_lookup = tool({
     }
   },
 }),
-

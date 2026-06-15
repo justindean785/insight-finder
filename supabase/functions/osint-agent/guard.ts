@@ -6,32 +6,18 @@
 
 // ---- Per-investigation guard state ---------------------------------------------
 // - artifactsSinceCorrelate: new artifacts recorded since last successful minimax_correlate
-// - artifactsSincePlan:      new artifacts recorded since last successful minimax_plan_pivots
-// - planCalledInRound:       true after plan_pivots runs; reset when ANY new artifact is recorded
-//                            (a fresh artifact = a new round opportunity)
-// - nullRoundReplans:        consecutive plan calls that produced zero new artifacts;
-//                            allows up to 2 null-round re-plans before hard-blocking
 export const guard = {
   artifactsSinceCorrelate: 0,
-  artifactsSincePlan: 0,
-  planCalledInRound: false,
-  nullRoundReplans: 0,
 };
 
-// ---- Routing guard: memory_recall rate limit + high-cost tool dedup ------------
+// ---- Routing guard: memory_recall rate limit -----------------------------------
 // memory_recall: max 2 calls per 30s window across the run, and never
 //                repeat the same normalized subject in a single reasoning
 //                step (cleared whenever a new artifact lands).
-// high-cost tools (oathnet_lookup, leakcheck_lookup): one call per seed
-//                unless ≥5 new artifacts have appeared since the last call
-//                (proxy for "new corroborating evidence").
-export const HIGH_COST_TOOLS = new Set<string>(["oathnet_lookup", "leakcheck_lookup"]);
-
 export const routingGuard = {
   artifactsTotal: 0,
   memoryRecallTimestamps: [] as number[],
   memoryRecallSubjectsThisStep: new Set<string>(),
-  highCostLastArtifactCount: new Map<string, number>(),
 };
 
 // ---- Two-stage fan-out triage state (email/username seeds) ---------------------
@@ -81,9 +67,6 @@ export const triageState: TriageState = {
 export function bumpArtifacts(n: number, kinds?: string[]) {
   if (n <= 0) return;
   guard.artifactsSinceCorrelate += n;
-  guard.artifactsSincePlan += n;
-  guard.planCalledInRound = false;
-  guard.nullRoundReplans = 0;
   routingGuard.artifactsTotal += n;
   // New evidence = new reasoning step; clear per-step dedup for memory_recall.
   routingGuard.memoryRecallSubjectsThisStep.clear();
@@ -104,21 +87,8 @@ export function skipStub(tool: string, reason: string, state: Record<string, unk
   };
 }
 
-// Returns null when the Stage 2 tool is allowed to run, or a skip-stub when it must be blocked.
+// Triage is advisory. Kept as a compatibility hook for extracted tools.
 export function gateStage2(name: string): null | ReturnType<typeof skipStub> {
-  // If triage never ran, do NOT gate — the seed was likely a domain/ip/phone/url
-  // and the two-stage rule only applies to email/username seeds.
-  if (!triageState.ran) return null;
-  if (!triageState.cleared.has(name)) {
-    const reasons = triageState.skipped.find((s) => s.tool === name)?.reason
-      ?? "Stage 1 produced no qualifying signal (no breach, no real gravatar, low emailrep, consumer domain).";
-    return skipStub(name, `gated by triage_seed → ${reasons}`, {
-      triage_ran: true,
-      seed: triageState.seed,
-      seed_domain: triageState.seedDomain,
-      identity_signals: triageState.identitySignals,
-      cleared: [...triageState.cleared],
-    });
-  }
+  void name;
   return null;
 }

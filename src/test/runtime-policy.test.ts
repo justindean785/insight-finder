@@ -22,7 +22,7 @@ beforeEach(() => {
 });
 
 describe("runtime-policy", () => {
-  it("requires a planner cycle before non-planner tools run", () => {
+  it("allows bounded execution without a planner object", () => {
     beginCycle(THREAD);
     const decision = startCall({
       threadId: THREAD,
@@ -35,8 +35,8 @@ describe("runtime-policy", () => {
       weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
       staleCache: false,
     });
-    expect(decision.allow).toBe(false);
-    if ("reason" in decision) expect(decision.reason).toMatch(/execution plan required/i);
+    expect(decision.allow).toBe(true);
+    finishCall(THREAD, "breach_check");
   });
 
   it("allows execution after the planner completes", () => {
@@ -57,7 +57,7 @@ describe("runtime-policy", () => {
     finishCall(THREAD, "minimax_web_search");
   });
 
-  it("blocks weak leads unless manually overridden", () => {
+  it("allows targeted weak-lead verification while preserving the weak label", () => {
     const weakLead = analyzeWeakLead({
       selector: "richbrat444",
       selectorType: "username",
@@ -76,7 +76,9 @@ describe("runtime-policy", () => {
     });
     beginCycle(THREAD);
     completePlan(THREAD);
-    const blocked = startCall({
+    expect(weakLead.weak).toBe(true);
+    expect(weakLead.reasons).toContain("username collision");
+    const decision = startCall({
       threadId: THREAD,
       toolName: "socialfetch_lookup",
       selector: "richbrat444",
@@ -87,21 +89,8 @@ describe("runtime-policy", () => {
       weakLead,
       staleCache: false,
     });
-    expect(blocked.allow).toBe(false);
-
-    const manual = startCall({
-      threadId: THREAD,
-      toolName: "socialfetch_lookup",
-      selector: "richbrat444",
-      selectorType: "username",
-      costTier: "low",
-      expectedValue: 68,
-      familyKey: "socialfetch_lookup::username::richbrat444",
-      weakLead,
-      staleCache: false,
-      manualOverride: true,
-    });
-    expect(manual.allow).toBe(true);
+    expect(decision.allow).toBe(true);
+    finishCall(THREAD, "socialfetch_lookup");
   });
 
   it("enforces per-cycle same-tool and paid-call limits", () => {

@@ -92,7 +92,7 @@ export function parseInitiateResponse(text: string, status: number): { scanId: s
 }
 
 /** Returns true if a poll response indicates the scan is finished (success or failed). */
-export function isTerminalStatus(data: PollResponse | null): boolean {
+export function isTerminalStatus(data: PollResponse | null): data is TerminalPollResponse {
   return !!data && (data.status === "success" || data.status === "failed");
 }
 
@@ -225,7 +225,7 @@ export async function runSerusScan(
     };
   }
 
-  let terminal = last as TerminalPollResponse;
+  let terminal = last;
   if (revealRequested && terminal.status === "success") {
     try {
       const revealRes = await fetchRetry(buildScanUrl(scanId, true), { method: "GET", headers }, { retries: 1 });

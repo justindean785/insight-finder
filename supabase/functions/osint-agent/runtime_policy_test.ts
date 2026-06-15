@@ -20,12 +20,8 @@ function baseInput(overrides: Partial<Parameters<typeof startCall>[0]> = {}) {
   };
 }
 
-// ── Regression: orchestration tools must bypass the expected-value gate ──────
-// The planner (minimax_plan_pivots, "expensive" tier → threshold 70) scores far
-// below 70 on a bare seed. If the EV gate blocks it, planRequired never clears,
-// every pivot is blocked by "execution plan required", and the investigation
-// deadlocks into a retry loop → FAILED. These tools are orchestration/bookkeeping,
-// not external data-source spend, and carry their own rate limits.
+// Runtime policy is fail-open for investigative choice. Expected value,
+// planning, and weak-lead analysis are advisory metadata, not hard blockers.
 
 Deno.test("minimax_plan_pivots bypasses the expected-value gate on a bare seed", () => {
   clearRuntime("t-policy-test");
@@ -37,19 +33,11 @@ Deno.test("minimax_plan_pivots bypasses the expected-value gate on a bare seed",
   assertEquals(decision.allow, true);
 });
 
-Deno.test("running the planner clears planRequired so the next pivot can proceed", () => {
+Deno.test("external pivots do not require a planner call", () => {
   clearRuntime("t-policy-test");
-  // 1. Planner runs despite low EV → clears the plan-required latch.
-  const plan = startCall(baseInput({
-    toolName: "minimax_plan_pivots",
-    expectedValue: 30,
-    familyKey: "minimax_plan_pivots::email::alice@example.com",
-  }));
-  assertEquals(plan.allow, true);
-  // 2. A high-value external pivot is now permitted (plan gate cleared).
   const pivot = startCall(baseInput({
     toolName: "exa_search",
-    expectedValue: 85,
+    expectedValue: 20,
     familyKey: "exa_search::email::alice@example.com",
   }));
   assertEquals(pivot.allow, true);
@@ -66,22 +54,26 @@ Deno.test("memory_recall bypasses the expected-value gate (regression: '43 below
   assertEquals(decision.allow, true);
 });
 
-Deno.test("external pivots are still EV-gated (the gate is not globally disabled)", () => {
+Deno.test("low expected value does not block an external pivot", () => {
   clearRuntime("t-policy-test");
-  // Clear the plan latch first so we isolate the EV gate, not the plan gate.
-  startCall(baseInput({
-    toolName: "minimax_plan_pivots",
-    expectedValue: 30,
-    familyKey: "minimax_plan_pivots::email::alice@example.com",
-  }));
   const decision = startCall(baseInput({
     toolName: "exa_search",
     costTier: "expensive",
-    expectedValue: 37, // below 70 → must still be blocked for a real data source
+    expectedValue: 0,
     familyKey: "exa_search::email::alice@example.com",
   }));
-  assertEquals(decision.allow, false);
-  if (!decision.allow) {
-    assertEquals(decision.reason, "expected value 37 below 70");
-  }
+  assertEquals(decision.allow, true);
+});
+
+Deno.test("weak-lead analysis does not hard-block a pivot", () => {
+  clearRuntime("t-policy-test");
+  const decision = startCall(baseInput({
+    toolName: "exa_search",
+    weakLead: {
+      weak: true,
+      reasons: ["single-source lead"],
+      autoPivotBlocked: true,
+    },
+  }));
+  assertEquals(decision.allow, true);
 });

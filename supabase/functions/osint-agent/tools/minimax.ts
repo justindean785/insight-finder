@@ -6,9 +6,11 @@
 import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { PERPLEXITY_API_KEY, fetchRetry } from "../env.ts";
-import { gateStage2, guard, routingGuard, skipStub, HIGH_COST_TOOLS } from "../guard.ts";
+import { gateStage2, guard } from "../guard.ts";
 import { minimaxChat, safeJson } from "../providers.ts";
 import { MODELS } from "../models.ts";
+import { detectSeedServer } from "../validation.ts";
+import { enforceNameSeedPriority, NAME_SEED_PLANNER_RULES } from "../planner-guidance.ts";
 
 // ---- minimax_web_search (Perplexity Sonar) ----------------------------------
 
@@ -112,13 +114,6 @@ export const minimax_correlate = tool({
     })).max(200),
   }),
   execute: async ({ seed, artifacts }) => {
-    if (guard.artifactsSinceCorrelate < 3) {
-      return skipStub(
-        "minimax_correlate",
-        `need >=3 new artifacts since last correlation (have ${guard.artifactsSinceCorrelate}). Keep gathering, or call at end of round.`,
-        { artifactsSinceCorrelate: guard.artifactsSinceCorrelate },
-      );
-    }
     try {
       const r = await minimaxChat({
         model: MODELS.smart,
@@ -147,20 +142,6 @@ export const minimax_plan_pivots = tool({
     budget_remaining: z.number().int().min(0).max(100).default(30),
   }),
   execute: async ({ seed, already_queried, artifacts, budget_remaining }) => {
-    if (guard.artifactsSincePlan === 0) {
-      return skipStub(
-        "minimax_plan_pivots",
-        "previous round produced zero new artifacts — gather more before planning.",
-        { artifactsSincePlan: guard.artifactsSincePlan, planCalledInRound: guard.planCalledInRound },
-      );
-    }
-    if (guard.planCalledInRound) {
-      return skipStub(
-        "minimax_plan_pivots",
-        "already called once this fan-out round. Execute the planned pivots before re-planning.",
-        { artifactsSincePlan: guard.artifactsSincePlan, planCalledInRound: guard.planCalledInRound },
-      );
-    }
     try {
       const baseToolList = [
         "breach_check","leakcheck_lookup","hibp_lookup","oathnet_lookup",
@@ -185,34 +166,29 @@ export const minimax_plan_pivots = tool({
         "minimax_extract","minimax_correlate",
         "record_artifacts","record_artifact","record_evidence",
       ];
-      const skippedHighCost: string[] = [];
       const PERMANENT_BLOCK = new Set([
         "firecrawl_search","firecrawl_scrape","firecrawl_map",
         "intelbase_email_lookup",
       ]);
       const toolList = baseToolList.filter((name) => {
         if (PERMANENT_BLOCK.has(name)) return false;
-        if (!HIGH_COST_TOOLS.has(name)) return true;
-        const last = routingGuard.highCostLastArtifactCount.get(name);
-        if (last === undefined) return true;
-        if (routingGuard.artifactsTotal - last >= 5) return true;
-        skippedHighCost.push(name);
-        return false;
+        return true;
       });
-      if (skippedHighCost.length) {
-        console.log(`[planner] high-cost tools removed from menu (already fired, insufficient new evidence): ${skippedHighCost.join(", ")}`);
-      }
       const r = await minimaxChat({
         model: MODELS.smart,
         system:
-          `You plan OSINT pivots. ONLY propose tools from this EXACT list (names must match verbatim — do not invent or rename): ${toolList.join(", ")}.${skippedHighCost.length ? ` HIGH-COST tools already fired and hidden this round (do not request): ${skippedHighCost.join(", ")} — only re-eligible once new corroborating evidence appears.` : ""}\n\nPERMANENTLY DISABLED TOOLS — NEVER PROPOSE: firecrawl_search, firecrawl_scrape, firecrawl_map (credits exhausted — use jina_reader_scrape + exa_search + minimax_web_search), intelbase_email_lookup (gated due to instability — use oathnet_lookup + leakcheck_lookup + bosint_email_lookup instead). Any pivot naming these tools is dropped automatically.\n\nCOST + COVERAGE RULES:\n- jina_reader_scrape is the #1 single-page scraper — fire it liberally (free). exa_search + minimax_web_search run in parallel for any web search.\n- For every newly-discovered EMAIL, fan out in parallel: breach_check, leakcheck_lookup, hibp_lookup, oathnet_lookup, bosint_email_lookup, hunter_email_verifier, hunter_combined, deepfind_reverse_email, deepfind_disposable_email, stolentax_footprint, emailrep, gravatar_profile, gemini_deep_dork, dork_harvest.\n- For every COMPANY / ORGANIZATION / NAME seed, fan out: hunter_domain_search (on the corp domain), exa_search (category=company / linkedin profile), exa_find_similar (after first profile), gemini_deep_dork, dork_harvest, minimax_web_search, osint_navigator_query (for tool gaps).\n- For every DOMAIN, fan out: whois_lookup, dns_records, crtsh_subdomains, http_fingerprint, hunter_domain_search, urlscan_search, virustotal_lookup, synapsint_lookup, shodan_internetdb, hackertarget, deepfind_ssl_inspect, deepfind_tech_stack.\n- For every IP, fan out: ip_intel, ipgeolocation_lookup, shodan_internetdb, oathnet_lookup, synapsint_lookup, hackertarget, urlscan_search, virustotal_lookup.\n- For every USERNAME / HANDLE, fan out: username_sweep, socialfetch_lookup (tiktok/instagram/twitter/facebook), github_user, hackernews_user, reddit_user, oathnet_lookup, deepfind_profile_analyzer (high-value only).\n- Return JSON: {pivots:[{tool:string, args:Record<string,unknown>, reason:string, priority:number}]}. Priority 1=highest. Max 8 pivots.`,
+          `You plan OSINT pivots. ONLY propose tools from this EXACT list (names must match verbatim — do not invent or rename): ${toolList.join(", ")}.\n\n${NAME_SEED_PLANNER_RULES}\n\nExpected value and weak-lead status are advisory ranking signals, never prerequisites. Keep weak results [VERIFY] until corroborated. Return JSON: {pivots:[{tool:string, args:Record<string,unknown>, reason:string, priority:number}]}. Priority 1=highest. Max 8 pivots.`,
         user: `Seed: ${seed}\nBudget remaining: ${budget_remaining}\nAlready queried: ${JSON.stringify(already_queried).slice(0,4000)}\nArtifacts so far: ${JSON.stringify(artifacts).slice(0,8000)}`,
         json: true,
         maxTokens: 1500,
       });
-      const parsed = safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content };
-      guard.planCalledInRound = true;
-      guard.artifactsSincePlan = 0;
+      const parsed = enforceNameSeedPriority(
+        safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content },
+        {
+          seedType: detectSeedServer(seed)?.kind,
+          alreadyQueried: already_queried,
+        },
+      );
       return { ok: r.ok, status: r.status, plan: parsed };
     } catch (e) { return { error: String(e) }; }
   },
