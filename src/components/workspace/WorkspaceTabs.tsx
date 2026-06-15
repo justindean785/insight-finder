@@ -46,7 +46,7 @@ export function WorkspaceTabs({
     <div
       role="tablist"
       aria-label="Investigation workspace"
-      className="flex items-stretch gap-1 px-2 sm:px-3 border-b border-border-subtle bg-background overflow-x-auto scrollbar-none snap-x snap-mandatory [scrollbar-width:none]"
+      className="flex items-stretch gap-1 px-3 sm:px-4 border-b border-border-subtle bg-background overflow-x-auto scrollbar-none snap-x snap-mandatory [scrollbar-width:none]"
     >
       {TABS.map((t, idx) => {
         const Icon = t.icon;

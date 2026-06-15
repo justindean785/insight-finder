@@ -10,6 +10,7 @@ import {
   type FilterChip,
 } from "@/components/ui/workspace-primitives";
 import { Activity, Gauge, AlertTriangle, Lock, CheckCircle2, XCircle, MinusCircle, ListChecks, Clock, type LucideIcon } from "lucide-react";
+import { timeAgo } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
 type ActivityFilter = "all" | "succeeded" | "failed" | "skipped" | "gated" | "degraded" | "pending";
@@ -22,14 +23,6 @@ const VIEWS: { key: View; label: string; icon: LucideIcon }[] = [
   { key: "issues", label: "Failures", icon: AlertTriangle },
   { key: "custody", label: "Custody", icon: Lock },
 ];
-
-function timeAgo(iso: string): string {
-  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (diff < 60) return "just now";
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return new Date(iso).toLocaleDateString();
-}
 
 /**
  * Tools / Activity workspace — the operational record kept separate from the

@@ -106,7 +106,7 @@ export function WorkspaceHeader({ threadId, onShowTools }: { threadId: string; o
       <div className="h-14 px-4 sm:px-5 flex items-center gap-3 min-w-0">
         <span className="text-eyebrow font-semibold uppercase tracking-[0.2em] text-muted-foreground shrink-0 hidden sm:inline">Case</span>
         <button onClick={copySeed} className="group flex items-center gap-1.5 min-w-0 shrink text-left" title={thread?.seed_value ?? ""}>
-          <span className="font-mono text-meta text-foreground truncate max-w-[40vw]">{thread?.seed_value || "—"}</span>
+          <span className="font-mono text-meta text-foreground truncate max-w-[58vw] sm:max-w-[40vw]">{thread?.seed_value || "—"}</span>
           {thread?.seed_value && <Copy className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />}
         </button>
         <span className={cn("shrink-0 rounded-full border px-2.5 py-1 text-eyebrow font-mono uppercase tracking-[0.16em]", statusColor)}>

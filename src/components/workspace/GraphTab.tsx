@@ -162,7 +162,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
               onClick={() => toggleGroup(g)}
               aria-pressed={!off}
               className={cn(
-                "inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-data font-medium border transition-colors",
+                "inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-meta font-medium border transition-colors",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 off
                   ? "border-transparent text-muted-foreground/50 line-through hover:text-muted-foreground"

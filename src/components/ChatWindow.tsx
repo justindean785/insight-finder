@@ -595,13 +595,12 @@ function renderTextWithBadges(text: string): React.ReactNode {
   const out: React.ReactNode[] = [];
   let last = 0;
   let m: RegExpExecArray | null;
-  let i = 0;
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) out.push(text.slice(last, m.index));
     const tag = m[1];
     out.push(
       <span
-        key={`b-${i++}`}
+        key={`b-${m.index}`}
         className={cn(
           "inline-block px-1.5 py-0.5 mr-1 rounded text-data font-semibold font-mono border align-middle",
           LABEL_STYLES[tag],
@@ -1109,17 +1108,31 @@ function ChatWindowInner({
   const stopInvestigation = useCallback(async () => {
     if (stopping) return;
     setStopping(true);
+    // Abort the in-flight stream FIRST — this is the action the analyst actually
+    // wants. It must not depend on the DB status write succeeding, otherwise a
+    // failed bookkeeping update would leave the run going and report "couldn't
+    // stop" (the original bug).
+    let aborted = true;
+    try {
+      stop();
+    } catch (abortErr) {
+      aborted = false;
+      console.error("stop() threw:", abortErr);
+    }
+    // Best-effort case-status bookkeeping. A failure here does not mean the run
+    // is still running — the stream is already aborted above.
     try {
       const { error: statusError } = await supabase
         .from("threads")
-        .update({ status: "stopped", updated_at: new Date().toISOString() })
+        .update({ status: "finished", updated_at: new Date().toISOString() })
         .eq("id", threadId);
       if (statusError) throw statusError;
-      stop();
       toast.info("Investigation stopped");
-    } catch (stopError) {
-      console.error("stopInvestigation failed:", stopError);
-      toast.error("Could not stop the investigation");
+    } catch (statusErr) {
+      console.error("stopInvestigation status update failed:", statusErr);
+      toast[aborted ? "warning" : "error"](
+        aborted ? "Run halted — couldn't update case status" : "Could not stop the investigation",
+      );
     } finally {
       setStopping(false);
     }
