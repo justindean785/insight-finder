@@ -60,3 +60,31 @@ describe("extractFailedAndSkipped parity (review #3)", () => {
     expect(out).toHaveLength(0);
   });
 });
+
+import { buildReportMarkdown } from "@/lib/intel";
+
+describe("report network grouping routes reputation correctly (Codex P2)", () => {
+  it("threat_reputation-kinded VirusTotal row appears under Threat / Reputation, not Other", () => {
+    const md = buildReportMarkdown({
+      seedValue: "doxbyte.com", seedType: "domain",
+      artifacts: [
+        art({ id: "1", kind: "threat_reputation", value: "doxbyte.com", source: "virustotal", confidence: 30, metadata: { source_category: ["infra_reputation"] } }),
+        art({ id: "2", kind: "domain", value: "doxbyte.net", source: "whois_lookup", confidence: 70, metadata: { source_category: ["infra_registry"] } }),
+      ],
+    });
+    const repIdx = md.indexOf("Threat / Reputation");
+    expect(repIdx).toBeGreaterThan(-1);
+    // the VT value must appear after the Threat/Reputation header
+    expect(md.indexOf("doxbyte.com", repIdx)).toBeGreaterThan(repIdx);
+  });
+
+  it("breach-kinded VirusTotal row is also pulled out of Breach / Exposure", () => {
+    const md = buildReportMarkdown({
+      seedValue: "x.com", seedType: "domain",
+      artifacts: [
+        art({ id: "1", kind: "breach", value: "x.com", source: "virustotal", confidence: 30, metadata: { source_category: ["unknown"] } }),
+      ],
+    });
+    expect(md).toContain("Threat / Reputation");
+  });
+});

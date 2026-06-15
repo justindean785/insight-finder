@@ -894,18 +894,17 @@ export function buildReportMarkdown(input: ReportInput): string {
 
   const network = (() => {
     const sections: string[] = [];
-    const reputation: Artifact[] = [];
     const line = (a: Artifact) => `- \`${a.value}\` _(observed via ${a.source ?? "tool"})_`;
+    // Threat/reputation rows (VirusTotal, IPQS, EmailRep…) are pulled into their
+    // own section regardless of which group they land in — they may be
+    // mis-kinded as `breach` (→ breach group) OR correctly kinded as
+    // `threat_reputation`/`reputation_signal` (→ other group). Collecting by
+    // isReputationArtifact() catches both so they never report as exposures.
+    const reputation = artifacts.filter((a) => isReputationArtifact(a));
+    const repIds = new Set(reputation.map((a) => a.id));
     for (const g of GROUP_ORDER) {
-      let items = byGroup.get(g);
-      if (!items?.length) continue;
-      // Threat/reputation rows (VirusTotal etc.) are mis-bucketed under breach —
-      // pull them into their own section so they aren't reported as exposures.
-      if (g === "breach") {
-        reputation.push(...items.filter((a) => isReputationArtifact(a)));
-        items = items.filter((a) => !isReputationArtifact(a));
-        if (!items.length) continue;
-      }
+      const items = (byGroup.get(g) ?? []).filter((a) => !repIds.has(a.id));
+      if (!items.length) continue;
       sections.push(`**${GROUP_LABEL[g]}**\n` + items.map(line).join("\n"));
     }
     if (reputation.length) {

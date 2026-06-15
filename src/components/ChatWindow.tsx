@@ -1108,31 +1108,30 @@ function ChatWindowInner({
   const stopInvestigation = useCallback(async () => {
     if (stopping) return;
     setStopping(true);
-    // Abort the in-flight stream FIRST — this is the action the analyst actually
-    // wants. It must not depend on the DB status write succeeding, otherwise a
-    // failed bookkeeping update would leave the run going and report "couldn't
-    // stop" (the original bug).
-    let aborted = true;
+    // Abort the in-flight browser stream FIRST so the UI stops immediately,
+    // regardless of whether the status write below succeeds.
     try {
       stop();
     } catch (abortErr) {
-      aborted = false;
       console.error("stop() threw:", abortErr);
     }
-    // Best-effort case-status bookkeeping. A failure here does not mean the run
-    // is still running — the stream is already aborted above.
+    // Persist "stopped" — this is the status the edge worker's prepareStep polls
+    // to abort the in-flight server-side run (the stream is intentionally NOT
+    // bound to req.signal, so the browser stop() alone does not halt the
+    // server). A failure here means the server run may keep going, so it is
+    // surfaced as an error rather than a soft warning.
     try {
       const { error: statusError } = await supabase
         .from("threads")
-        .update({ status: "finished", updated_at: new Date().toISOString() })
+        .update({ status: "stopped", updated_at: new Date().toISOString() })
         .eq("id", threadId);
       if (statusError) throw statusError;
       toast.info("Investigation stopped");
     } catch (statusErr) {
       console.error("stopInvestigation status update failed:", statusErr);
-      toast[aborted ? "warning" : "error"](
-        aborted ? "Run halted — couldn't update case status" : "Could not stop the investigation",
-      );
+      // The browser stream was aborted, but without the persisted "stopped"
+      // status the server-side worker can keep running — so this is a real error.
+      toast.error("Could not fully stop the investigation — the server run may still be active. Retry.");
     } finally {
       setStopping(false);
     }

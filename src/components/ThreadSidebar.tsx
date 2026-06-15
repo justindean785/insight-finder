@@ -41,7 +41,7 @@ type Thread = {
   updated_at: string;
   credits_used: number;
   cost_micro_usd: number | null;
-  status: "active" | "finished" | null;
+  status: "active" | "finished" | "stopped" | null;
   seed_type: string | null;
 };
 
@@ -251,8 +251,8 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   const filtered = typeFilter === "all"
     ? byQuery
     : byQuery.filter((t) => (t.seed_type ?? "other").toLowerCase() === typeFilter);
-  const active = filtered.filter((t) => (t.status ?? "active") !== "finished");
-  const finished = filtered.filter((t) => t.status === "finished");
+  const active = filtered.filter((t) => (t.status ?? "active") === "active");
+  const finished = filtered.filter((t) => t.status === "finished" || t.status === "stopped");
   const activeGroups: Record<string, Thread[]> = { Today: [], "This week": [], Older: [] };
   for (const t of active) activeGroups[bucketOf(t.updated_at)].push(t);
   const totalCost = threads.reduce((s, t) => s + Number(t.cost_micro_usd ?? 0), 0);

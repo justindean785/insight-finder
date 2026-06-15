@@ -12,7 +12,7 @@ type Thread = {
   id: string;
   seed_value: string | null;
   seed_type: string | null;
-  status: "active" | "finished" | null;
+  status: "active" | "finished" | "stopped" | null;
   credits_used: number;
   cost_micro_usd: number | null;
 };
@@ -73,7 +73,7 @@ export function WorkspaceHeader({ threadId, onShowTools }: { threadId: string; o
   }, [threadId, loadIntegrity]);
 
   const status: "idle" | "active" | "completed" =
-    thread?.status === "finished" ? "completed"
+    thread?.status === "finished" || thread?.status === "stopped" ? "completed"
     : artifactCount > 0 || activity.total > 0 ? "active"
     : "idle";
   const statusColor =
