@@ -1,7 +1,4 @@
-// Workflow-gate addendum injected into the orchestrator system prompt.
-// Tells the Lead Investigator to: classify → plan a bounded Tier-A/B batch
-// → run coverage_audit + detect_contradictions + tool_audit → ONLY THEN
-// write findings.
+// Advisory workflow addendum injected into the orchestrator system prompt.
 
 import { renderPlaybookForPrompt } from "./playbooks.ts";
 import { ROLES } from "./roles.ts";
@@ -20,34 +17,22 @@ You operate as a small intelligence team. Each turn you wear one of these hats:
   • ${ROLES.NETWORK}   — chooses next-best pivots from the evidence graph.
   • ${ROLES.CHRONOLOGY} — builds timeline of discovered events.
   • ${ROLES.HISTORIAN} — uses \`memory_recall\` first, \`memory_save\` last, distinguishes case vs global.
-  • ${ROLES.OFFICER}   — writes the final defensible report. ONLY runs after gates below pass.
+  • ${ROLES.OFFICER}   — writes the final defensible, source-backed report.
 
 ${playbook}
 
 ## TIERED TOOL DISCIPLINE
-Tier-A (identity/attribution): treat as PRIMARY sources. Run early. Never skip silently.
+Tier-A (identity/attribution): treat as PRIMARY sources and prefer them early.
 Tier-B (infra/verification): run after Tier-A when it answers a distinct verification question.
 Tier-C (discovery: dorks, sweeps, generic scrapes): ONLY for discovery. A finding supported solely by
 Tier-C tools is capped at confidence 50 ("investigative lead", not "confirmed").
 
-If an API key for a Tier-A tool listed in the playbook is configured but the tool was NOT called,
-the case is INCOMPLETE. Either call it or record an explicit skip reason via \`record_artifact\`
-with kind='skip_reason' and metadata.tool=<name>.
-
-## WORKFLOW GATE — final findings must wait for ALL of these
-You MUST, in order, before writing the final report:
-  1. Classify the seed and run every REQUIRED tool from the playbook (or record skip reason).
-  2. Call \`minimax_plan_pivots\` and execute only the smallest justified batch. Do NOT recurse blindly on every new artifact. Weak leads stay recorded-but-blocked unless corroborated or manually overridden.
-     An analyst override is valid only when the latest user message contains an exact line in the form \`Manual override: <selector>\`; it applies only to that normalized selector and never bypasses hard call, concurrency, pacing, or paid-call limits.
-  3. Call \`coverage_audit\` to verify all required coverage categories are done|n/a.
-  4. Call \`detect_contradictions\` over each candidate identity cluster.
-  5. Call \`tool_audit\` to surface missed Tier-A APIs and tool failures.
-  6. ONLY then call \`record_finding\` for each conclusion. Each finding MUST include:
-     conclusion, supporting_artifact_ids[], drivers[], reducers[], contradictions[], unresolved[], next_pivots[].
-
-If \`coverage_audit\` returns complete=false, you MUST either:
-   (a) run the missing tools and re-audit, OR
-   (b) mark the investigation status as "incomplete" in the final report and list the missing opportunities.
+## ADVISORY WORKFLOW
+- Classify the seed and use the playbook as a ranked checklist, not a prerequisite list.
+- Use \`minimax_plan_pivots\`, \`coverage_audit\`, \`detect_contradictions\`, and \`tool_audit\` when they improve the investigation. None is required for progress.
+- Missing tools or incomplete coverage should be disclosed as limitations, not converted into retry loops.
+- \`record_finding\` may run whenever source-backed evidence exists. Each finding still needs named sources, drivers, reducers, contradictions, unresolved questions, and next pivots.
+- Manual override never bypasses hard call, concurrency, pacing, timeout, circuit-breaker, or paid-call limits.
 
 ## ARTIFACT vs FINDING (do not conflate)
 - An artifact is a collected data point. Everything from a tool starts as an artifact.

@@ -13,7 +13,7 @@ import {
   isDegraded,
   markToolDegraded,
 } from "../env.ts";
-import { gateStage2, routingGuard } from "../guard.ts";
+import { gateStage2 } from "../guard.ts";
 import type {
   NavigatorQueryResponse,
   NavigatorSearchResponse,
@@ -70,16 +70,6 @@ export const oathnet_lookup = tool({
   execute: async ({ type, value }) => {
     const gated = gateStage2("oathnet_lookup");
     if (gated) return gated;
-    // High-cost: one call per seed unless new corroborating evidence has appeared.
-    {
-      const last = routingGuard.highCostLastArtifactCount.get("oathnet_lookup");
-      if (last !== undefined && routingGuard.artifactsTotal - last < 5) {
-        const note = `oathnet_lookup skipped — high-cost tool already used this seed (${routingGuard.artifactsTotal - last} new artifacts since, need ≥5).`;
-        console.log(`[high-cost-gate] ${note}`);
-        return { ok: false, skipped: true, gated: true, reason: note };
-      }
-      routingGuard.highCostLastArtifactCount.set("oathnet_lookup", routingGuard.artifactsTotal);
-    }
     if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
     try {
       let url: string;
@@ -185,4 +175,3 @@ export const osint_navigator_search = tool({
     } catch (e) { return { error: String(e) }; }
   },
 }),
-

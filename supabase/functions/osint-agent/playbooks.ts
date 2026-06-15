@@ -104,7 +104,8 @@ export const PLAYBOOKS: Record<SeedType, Playbook> = {
 };
 
 export function playbookFor(seedType: string | null | undefined): Playbook {
-  const k = (seedType ?? "unknown").toLowerCase() as SeedType;
+  const raw = (seedType ?? "unknown").toLowerCase();
+  const k = (raw === "person" ? "name" : raw) as SeedType;
   return PLAYBOOKS[k] ?? PLAYBOOKS.unknown;
 }
 
@@ -114,7 +115,7 @@ export function renderPlaybookForPrompt(seedType: string | null | undefined): st
   const t = (seedType ?? "unknown").toUpperCase();
   const lines: string[] = [];
   lines.push(`## Playbook for seed type: ${t}`);
-  lines.push(`REQUIRED Tier-A/B tools (must attempt or explicitly skip with reason):`);
+  lines.push(`Suggested Tier-A/B baseline tools (advisory, never a blocking gate):`);
   lines.push(`  ${pb.required.join(", ")}`);
   lines.push(`RECOMMENDED follow-ups:`);
   lines.push(`  ${pb.recommended.join(", ")}`);
