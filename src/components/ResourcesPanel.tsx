@@ -1,13 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import {
-  Mail, Phone, Globe, User as UserIcon, Network, ShieldAlert, MapPin, Image as ImgIcon, Tag,
-  Copy, CheckCircle2, XCircle, PanelRightOpen, PanelRightClose, Star, ShieldQuestion, EyeOff,
-  Database, BarChart3, Lock, FileOutput, ChevronRight, Layers,
+  Mail, Globe, User as UserIcon, Network, ShieldAlert, Image as ImgIcon, Tag,
+  Copy, CheckCircle2, XCircle, Star, ShieldQuestion, EyeOff, ChevronRight,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { HoverCard, HoverCardTrigger, HoverCardContent } from "@/components/ui/hover-card";
 import { ConfidenceExplain } from "@/components/ConfidenceExplain";
 import { SourceBadge } from "@/components/SourceBadge";
@@ -22,39 +20,6 @@ import {
   useReviewStates, REVIEW_CLASS, REVIEW_SHORT,
   type ReviewState,
 } from "@/lib/review";
-import { OverviewTab } from "./panel/OverviewTab";
-import { EvidenceMatrixTab } from "./panel/EvidenceMatrixTab";
-import { PivotsTab } from "./panel/PivotsTab";
-import { ReportTab } from "./panel/ReportTab";
-import { TimelineTab } from "./panel/TimelineTab";
-import { MapTab } from "./panel/MapTab";
-import { CustodyTab } from "./panel/CustodyTab";
-import { AuditTab } from "./panel/AuditTab";
-import { FailedSkippedTab } from "./panel/FailedSkippedTab";
-import { ClustersTab } from "./panel/ClustersTab";
-import { NotesTab } from "./panel/NotesTab";
-import { DensityToggle } from "./DensityToggle";
-
-/**
- * Compact a long seed (typically a signed URL) into a host + filename
- * representation so the case header stays one calm line instead of a
- * 200-char truncated blob with random query-string fragments.
- */
-function compactSeed(raw: string | null | undefined): { display: string; isUrl: boolean } {
-  if (!raw) return { display: "—", isUrl: false };
-  try {
-    const u = new URL(raw);
-    const segs = u.pathname.split("/").filter(Boolean);
-    const file = segs[segs.length - 1] ?? "";
-    if (file) {
-      const short = file.length > 36 ? file.slice(0, 18) + "…" + file.slice(-14) : file;
-      return { display: `${u.hostname}/…/${short}`, isUrl: true };
-    }
-    return { display: u.hostname, isUrl: true };
-  } catch {
-    return { display: raw, isUrl: false };
-  }
-}
 
 const GROUP_ICON: Record<Group, React.ComponentType<{ className?: string }>> = {
   identity: Tag,
@@ -66,331 +31,6 @@ const GROUP_ICON: Record<Group, React.ComponentType<{ className?: string }>> = {
   crypto: ImgIcon,
   other: Tag,
 };
-
-const KIND_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
-  email: Mail, phone: Phone, ip: Network, username: UserIcon, domain: Globe,
-  avatar: ImgIcon, breach: ShieldAlert, address: MapPin, name: Tag, social: UserIcon,
-};
-
-export function ResourcesPanel({
-  threadId,
-  collapsed,
-  onToggleCollapse,
-}: {
-  threadId: string;
-  collapsed?: boolean;
-  onToggleCollapse?: () => void;
-}) {
-  const { items, updateLocal } = useThreadArtifacts(threadId);
-  const [selected, setSelected] = useState<Artifact | null>(null);
-  const review = useReviewStates(threadId);
-  const [seed, setSeed] = useState<{ value: string | null; type: string | null } | null>(null);
-  const [section, setSection] = useState<"evidence" | "analysis" | "provenance" | "output">("evidence");
-  const [tab, setTab] = useState<string>("artifacts");
-  // Two-level chrome: a flat strip of the few main views, plus a "Full review"
-  // tab that reveals the complete section/sub-tab navigation. Keeps the common
-  // case to 3 tabs instead of 4 sections × 12 sub-tabs.
-  const [mode, setMode] = useState<"main" | "full">("main");
-
-  const SECTIONS = [
-    { key: "evidence" as const, label: "Evidence", icon: Database, tabs: [
-      { v: "artifacts", l: "Artifacts" },
-      { v: "clusters",  l: "Clusters" },
-      { v: "matrix",    l: "Matrix" },
-    ] },
-    { key: "analysis" as const, label: "Analysis", icon: BarChart3, tabs: [
-      { v: "overview", l: "Overview" },
-      { v: "pivots",   l: "Pivots" },
-      { v: "timeline", l: "Timeline" },
-      { v: "map",      l: "Map" },
-    ] },
-    { key: "provenance" as const, label: "Provenance", icon: Lock, tabs: [
-      { v: "custody", l: "Custody" },
-      { v: "audit",   l: "Audit" },
-      { v: "issues",  l: "Issues" },
-    ] },
-    { key: "output" as const, label: "Output", icon: FileOutput, tabs: [
-      { v: "notes",  l: "Notes" },
-      { v: "report", l: "Report" },
-    ] },
-  ];
-
-  // The handful of views surfaced at the top level. Each already exists as a
-  // sub-tab inside SECTIONS, so Full review just re-exposes the complete nav.
-  const MAIN_TABS = [
-    { v: "overview", l: "Overview", icon: BarChart3 },
-    { v: "artifacts", l: "Artifacts", icon: Database },
-    { v: "report", l: "Report", icon: FileOutput },
-  ] as const;
-  const sectionForTab = (v: string) =>
-    SECTIONS.find((s) => s.tabs.some((t) => t.v === v))?.key;
-
-  const TAB_COUNTS: Record<string, number | undefined> = {
-    artifacts: items.length,
-    matrix: items.length,
-  };
-
-  const activeSection = SECTIONS.find((s) => s.key === section)!;
-
-  const onSectionChange = (next: typeof section) => {
-    setSection(next);
-    const first = SECTIONS.find((s) => s.key === next)?.tabs[0]?.v;
-    if (first) setTab(first);
-  };
-
-  // Command palette / external navigation requests.
-  // Dispatch: window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { section, tab } }))
-  useEffect(() => {
-    const onNav = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { section?: typeof section; tab?: string };
-      if (detail?.section) { setSection(detail.section); setMode("full"); }
-      if (detail?.tab) {
-        setTab(detail.tab);
-        const isMain = ["overview", "artifacts", "report"].includes(detail.tab);
-        if (!detail.section) {
-          setMode(isMain ? "main" : "full");
-          if (!isMain) {
-            const sec = SECTIONS.find((s) => s.tabs.some((t) => t.v === detail.tab))?.key;
-            if (sec) setSection(sec);
-          }
-        }
-      }
-    };
-    window.addEventListener("swarmbot:navigate", onNav);
-    return () => window.removeEventListener("swarmbot:navigate", onNav);
-  }, []);
-
-  useEffect(() => {
-    let alive = true;
-    const load = async () => {
-      const { data } = await supabase
-        .from("threads")
-        .select("seed_value,seed_type")
-        .eq("id", threadId)
-        .maybeSingle();
-      if (alive) setSeed(data ? { value: data.seed_value, type: data.seed_type } : null);
-    };
-    load();
-    const ch = supabase
-      .channel(`rp-seed-${threadId}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "threads", filter: `id=eq.${threadId}` }, load)
-      .subscribe();
-    return () => { alive = false; supabase.removeChannel(ch); };
-  }, [threadId]);
-
-  if (collapsed) {
-    return (
-      <div className="w-14 h-full flex flex-col items-center py-3 gap-3">
-        <button
-          onClick={onToggleCollapse}
-          className="w-8 h-8 rounded-md glass-interactive grid place-items-center"
-          title="Expand panel"
-        >
-          <PanelRightOpen className="w-4 h-4 text-muted-foreground" />
-        </button>
-
-        <div className="w-8 h-px bg-border-subtle" />
-
-        <div className="text-data text-muted-foreground font-mono">{items.length}</div>
-
-        <div className="flex-1 overflow-y-auto w-full flex flex-col items-center gap-2 px-1">
-          {GROUP_ORDER.filter((g) => items.some((a) => groupForKind(a.kind) === g)).map((g) => {
-            const Icon = GROUP_ICON[g];
-            const count = items.filter((a) => groupForKind(a.kind) === g).length;
-            return (
-              <button
-                key={g}
-                onClick={onToggleCollapse}
-                className="w-8 h-8 rounded-md flex items-center justify-center glass-interactive relative"
-                title={`${GROUP_LABEL[g]} (${count})`}
-              >
-                <Icon className="w-3.5 h-3.5 text-muted-foreground" />
-                <span className="absolute -top-0.5 -right-0.5 text-[9px] glass-card text-muted-foreground border border-border-subtle rounded-full w-3.5 h-3.5 flex items-center justify-center font-mono">
-                  {count}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="w-full min-w-0 h-full flex flex-col overflow-x-hidden">
-      <Tabs value={tab} onValueChange={setTab} className="flex-1 flex flex-col min-h-0">
-        <div className="sticky top-0 z-10 border-b border-border-subtle bg-background">
-          <div className="px-4 h-14 flex items-center gap-3">
-            <div className="text-eyebrow font-semibold tracking-[0.22em] text-muted-foreground shrink-0 uppercase">Case</div>
-            <button
-              onClick={() => {
-                if (!seed?.value) return;
-                navigator.clipboard.writeText(seed.value).then(
-                  () => toast.success("Copied"),
-                  () => toast.error("Copy failed"),
-                );
-              }}
-              className="flex-1 min-w-0 group flex items-center gap-1.5 text-left"
-              title={seed?.value ?? ""}
-            >
-              <span className="font-mono text-meta tabular-nums text-foreground truncate">
-                {seed?.value ? compactSeed(seed.value).display : "—"}
-              </span>
-              {seed?.value && (
-                <Copy className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
-              )}
-            </button>
-            <span className="px-2.5 py-1 rounded-full border border-border-subtle bg-surface-1 text-data font-mono text-muted-foreground tabular-nums shrink-0">
-              {items.length}
-            </span>
-            <DensityToggle className="hidden md:inline-flex" />
-            <button
-              onClick={onToggleCollapse}
-              className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
-              title="Collapse panel"
-            >
-              <PanelRightClose className="w-4 h-4" />
-            </button>
-          </div>
-          {/* Primary nav — the few main views plus a Full review tab that opens everything */}
-          <div className="px-3 py-2 flex items-center gap-1 border-t border-border-subtle">
-            {MAIN_TABS.map((t) => {
-              const active = mode === "main" && tab === t.v;
-              const count = TAB_COUNTS[t.v];
-              return (
-                <button
-                  key={t.v}
-                  onClick={() => { setMode("main"); setTab(t.v); }}
-                  title={t.l}
-                  className={cn(
-                    "flex-1 min-w-0 flex items-center justify-center gap-1.5 h-8 rounded-lg text-[11px] font-medium tracking-wide transition-colors",
-                    active
-                      ? "bg-surface-1 text-foreground border border-white/10"
-                      : "text-muted-foreground hover:text-foreground hover:bg-surface-1 border border-transparent",
-                  )}
-                >
-                  <span className="truncate">{t.l}</span>
-                  {count != null && count > 0 && (
-                    <span className="font-mono text-[9px] tabular-nums text-muted-foreground/70 shrink-0">{count}</span>
-                  )}
-                </button>
-              );
-            })}
-            <button
-              onClick={() => { setMode("full"); setSection(sectionForTab(tab) ?? "evidence"); }}
-              title="Full review"
-              className={cn(
-                "flex-1 min-w-0 flex items-center justify-center gap-1.5 h-8 rounded-lg text-[11px] font-medium tracking-wide transition-colors",
-                mode === "full"
-                  ? "bg-surface-1 text-foreground border border-white/10"
-                  : "text-muted-foreground hover:text-foreground hover:bg-surface-1 border border-transparent",
-              )}
-            >
-              <Layers className="w-3 h-3 shrink-0" />
-              <span className="truncate">Full</span>
-            </button>
-          </div>
-
-          {/* Full review only: the complete section + sub-tab navigation */}
-          {mode === "full" && (
-            <>
-              <div className="px-3 py-2 flex items-center gap-1 border-t border-border-subtle">
-                {SECTIONS.map((s) => {
-                  const Icon = s.icon;
-                  const active = section === s.key;
-                  return (
-                    <button
-                      key={s.key}
-                      onClick={() => onSectionChange(s.key)}
-                      title={s.label}
-                      className={cn(
-                        "flex-1 min-w-0 flex items-center justify-center gap-1 h-8 rounded-lg text-eyebrow font-medium uppercase tracking-[0.06em] transition-colors",
-                        active
-                          ? "bg-surface-1 text-foreground border border-white/10"
-                          : "text-muted-foreground hover:text-foreground hover:bg-surface-1 border border-transparent",
-                      )}
-                    >
-                      <Icon className="w-3 h-3 shrink-0" />
-                      <span className="truncate">{s.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="px-3 pb-3 pt-0.5 overflow-x-auto no-scrollbar">
-                <TabsList className="w-full min-w-max h-9 bg-transparent rounded-none p-0 gap-4 justify-start">
-                  {activeSection.tabs.map((t) => {
-                    const count = TAB_COUNTS[t.v];
-                    return (
-                      <TabsTrigger
-                        key={t.v}
-                        value={t.v}
-                        className="relative h-9 px-0 rounded-none bg-transparent text-meta font-medium text-muted-foreground border-b border-transparent data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:border-white/30 data-[state=active]:shadow-none transition-colors"
-                      >
-                        <span>{t.l}</span>
-                        {count != null && count > 0 && (
-                          <span className="ml-1.5 font-mono text-data tabular-nums text-muted-foreground/70">
-                            {count}
-                          </span>
-                        )}
-                      </TabsTrigger>
-                    );
-                  })}
-                </TabsList>
-              </div>
-            </>
-          )}
-        </div>
-
-        <div className="flex-1 overflow-y-auto bg-background">
-          <TabsContent value="overview" className="m-0">
-            <OverviewTab threadId={threadId} artifacts={items} />
-          </TabsContent>
-          <TabsContent value="artifacts" className="m-0">
-            <ArtifactsList items={items} onSelect={setSelected} review={review} />
-          </TabsContent>
-          <TabsContent value="matrix" className="m-0">
-            <EvidenceMatrixTab artifacts={items} onLocalUpdate={updateLocal} threadId={threadId} />
-          </TabsContent>
-          <TabsContent value="clusters" className="m-0">
-            <ClustersTab threadId={threadId} artifacts={items} />
-          </TabsContent>
-          <TabsContent value="pivots" className="m-0">
-            <PivotsTab threadId={threadId} artifacts={items} />
-          </TabsContent>
-          <TabsContent value="timeline" className="m-0">
-            <TimelineTab threadId={threadId} artifacts={items} />
-          </TabsContent>
-          <TabsContent value="map" className="m-0">
-            <MapTab artifacts={items} />
-          </TabsContent>
-          <TabsContent value="custody" className="m-0">
-            <CustodyTab threadId={threadId} />
-          </TabsContent>
-          <TabsContent value="notes" className="m-0">
-            <NotesTab threadId={threadId} />
-          </TabsContent>
-          <TabsContent value="audit" className="m-0">
-            <AuditTab threadId={threadId} artifacts={items} />
-          </TabsContent>
-          <TabsContent value="issues" className="m-0">
-            <FailedSkippedTab threadId={threadId} />
-          </TabsContent>
-          <TabsContent value="report" className="m-0">
-            <ReportTab threadId={threadId} artifacts={items} />
-          </TabsContent>
-        </div>
-      </Tabs>
-      <ArtifactDrawer
-        artifact={selected}
-        onClose={() => setSelected(null)}
-        onChanged={(a) => { updateLocal(a); setSelected(a); }}
-        reviewGet={review.get}
-        reviewSet={review.set}
-        threadId={threadId}
-      />
-    </div>
-  );
-}
 
 // Provenance string shown under a row / in a cluster header.
 function provFor(a: Artifact): string {
@@ -923,5 +563,29 @@ function PeekField({ label, children }: { label: string; children: React.ReactNo
       <div className="uppercase tracking-[0.1em] text-[9px] text-muted-foreground/70">{label}</div>
       <div className="text-foreground truncate" title={typeof children === "string" ? children : undefined}>{children}</div>
     </div>
+  );
+}
+
+/**
+ * EvidenceBoard — the grouped artifact list + detail drawer, self-contained
+ * (pass a threadId). This is the core surface of the Evidence workspace tab;
+ * it reuses the same ArtifactsList/ArtifactDrawer the rail used to render.
+ */
+export function EvidenceBoard({ threadId }: { threadId: string }) {
+  const { items, updateLocal } = useThreadArtifacts(threadId);
+  const review = useReviewStates(threadId);
+  const [selected, setSelected] = useState<Artifact | null>(null);
+  return (
+    <>
+      <ArtifactsList items={items} onSelect={setSelected} review={review} />
+      <ArtifactDrawer
+        artifact={selected}
+        onClose={() => setSelected(null)}
+        onChanged={(a) => { updateLocal(a); setSelected(a); }}
+        reviewGet={review.get}
+        reviewSet={review.set}
+        threadId={threadId}
+      />
+    </>
   );
 }
