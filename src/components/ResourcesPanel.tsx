@@ -16,6 +16,8 @@ import {
   groupForKind, GROUP_LABEL, GROUP_ORDER, type Group,
   extractSourceInfo, CACHE_LAYER_LABEL, CACHE_LAYER_CLASS,
 } from "@/lib/intel";
+import { evidenceStatus, EVIDENCE_STATUS_RANK } from "@/lib/evidence-status";
+import { EvidenceStatusBadge, FilterChips } from "@/components/ui/workspace-primitives";
 import {
   useReviewStates, REVIEW_CLASS, REVIEW_SHORT,
   type ReviewState,
@@ -54,19 +56,42 @@ function kindHeading(kind: string, n: number): string {
 // of the "wall of identical rows" (e.g. 11 subdomains, all hackertarget @70%).
 const CLUSTER_COLLAPSE_THRESHOLD = 4;
 
+export type EvidenceStatusFilter = "all" | "strong" | "review" | "weak" | "excluded";
+export type EvidenceSortMode = "strength" | "confidence" | "newest";
+
+// Which display statuses each quick-filter admits.
+const STATUS_FILTER_GROUPS: Record<EvidenceStatusFilter, Set<string> | null> = {
+  all: null,
+  strong: new Set(["verified", "probable"]),
+  review: new Set(["needs_corroboration", "manual_review", "contradicted"]),
+  weak: new Set(["lead", "shared_infrastructure"]),
+  excluded: new Set(["rejected"]),
+};
+
 function ArtifactsList({
-  items, onSelect, review,
-}: { items: Artifact[]; onSelect: (a: Artifact) => void; review: ReturnType<typeof useReviewStates> }) {
+  items, onSelect, review, statusFilter, sortMode,
+}: {
+  items: Artifact[];
+  onSelect: (a: Artifact) => void;
+  review: ReturnType<typeof useReviewStates>;
+  statusFilter: EvidenceStatusFilter;
+  sortMode: EvidenceSortMode;
+}) {
   // Track which kind-clusters the user has manually toggled open/closed.
   // Keyed by `${group}:${kind}`; undefined = use the default (collapsed when big).
   const [openClusters, setOpenClusters] = useState<Record<string, boolean>>({});
 
-  // Group → kind → artifacts, with kinds and rows sorted by confidence so the
-  // strongest evidence surfaces first. Memoized so hover / review-state changes
-  // don't re-bucket the whole evidence set.
+  // Apply the status quick-filter, then bucket Group → kind → artifacts and sort
+  // each kind by the chosen mode so the strongest evidence surfaces first.
+  // Not memoized on `review` so toggling a review state re-filters immediately.
+  const allow = STATUS_FILTER_GROUPS[statusFilter];
+  const filtered = allow
+    ? items.filter((a) => allow.has(evidenceStatus(a, review.get(a.id)).status))
+    : items;
+
   const grouped = useMemo(() => {
     const byGroup = {} as Record<Group, Record<string, Artifact[]>>;
-    for (const a of items) {
+    for (const a of filtered) {
       const g = groupForKind(a.kind);
       ((byGroup[g] ??= {})[a.kind] ??= []).push(a);
     }
@@ -74,17 +99,39 @@ function ArtifactsList({
       const fp = ((a.metadata ?? {}) as Record<string, unknown>).false_positive === true;
       return fp ? -1 : (a.confidence ?? 0);
     };
+    const cmp = (a: Artifact, b: Artifact) => {
+      if (sortMode === "newest") {
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      }
+      if (sortMode === "strength") {
+        const ra = EVIDENCE_STATUS_RANK[evidenceStatus(a, review.get(a.id)).status];
+        const rb = EVIDENCE_STATUS_RANK[evidenceStatus(b, review.get(b.id)).status];
+        if (ra !== rb) return ra - rb;
+        return conf(b) - conf(a);
+      }
+      return conf(b) - conf(a); // "confidence"
+    };
     for (const g of Object.keys(byGroup) as Group[]) {
-      for (const k of Object.keys(byGroup[g])) byGroup[g][k].sort((a, b) => conf(b) - conf(a));
+      for (const k of Object.keys(byGroup[g])) byGroup[g][k].sort(cmp);
     }
     return byGroup;
-  }, [items]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered, sortMode, statusFilter]);
 
   if (items.length === 0) {
     return (
       <div className="text-xs text-muted-foreground p-4 space-y-1">
         <div>No artifacts recorded yet.</div>
         <div>Submit a seed (email, username, domain, IP, wallet, phone) to start the investigation.</div>
+      </div>
+    );
+  }
+
+  if (filtered.length === 0) {
+    return (
+      <div className="text-xs text-muted-foreground p-6 text-center space-y-1">
+        <div className="text-foreground/80 font-medium">No evidence matches this filter.</div>
+        <div>Switch back to “All” to see every recorded artifact.</div>
       </div>
     );
   }
@@ -222,6 +269,7 @@ function ArtifactRow({
     conf >= 50 ? "hsl(var(--confidence-mid))" :
     "hsl(var(--confidence-low))";
   const prov = provFor(a);
+  const status = evidenceStatus(a, rState);
   return (
     <HoverCard openDelay={250} closeDelay={80}>
       <HoverCardTrigger asChild>
@@ -251,11 +299,22 @@ function ArtifactRow({
                 {a.value}
               </span>
             </span>
-            {!hideProv && prov && (
-              <span className="mt-0.5 block truncate font-mono text-data text-muted-foreground/80">
-                {prov}
+            <span className="mt-1 flex items-center gap-1.5 flex-wrap">
+              <EvidenceStatusBadge
+                status={status.status}
+                label={status.label}
+                tone={status.tone}
+                hint={status.hint}
+              />
+              <span className="truncate text-data text-muted-foreground/75" title={status.basis}>
+                {status.basis}
               </span>
-            )}
+              {!hideProv && prov && (
+                <span className="truncate font-mono text-data text-muted-foreground/55">
+                  · {prov}
+                </span>
+              )}
+            </span>
           </span>
           <button
             type="button"
@@ -575,9 +634,61 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
   const { items, updateLocal } = useThreadArtifacts(threadId);
   const review = useReviewStates(threadId);
   const [selected, setSelected] = useState<Artifact | null>(null);
+  const [statusFilter, setStatusFilter] = useState<EvidenceStatusFilter>("all");
+  const [sortMode, setSortMode] = useState<EvidenceSortMode>("strength");
+
+  // Live counts per quick-filter so the analyst sees how much sits in each bucket.
+  const counts = useMemo(() => {
+    const c = { all: items.length, strong: 0, review: 0, weak: 0, excluded: 0 };
+    for (const a of items) {
+      const s = evidenceStatus(a, review.get(a.id)).status;
+      if (STATUS_FILTER_GROUPS.strong!.has(s)) c.strong++;
+      else if (STATUS_FILTER_GROUPS.review!.has(s)) c.review++;
+      else if (STATUS_FILTER_GROUPS.weak!.has(s)) c.weak++;
+      else if (STATUS_FILTER_GROUPS.excluded!.has(s)) c.excluded++;
+    }
+    return c;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items]);
+
   return (
     <>
-      <ArtifactsList items={items} onSelect={setSelected} review={review} />
+      {items.length > 0 && (
+        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-x-3 gap-y-2 px-2 py-2.5 border-b border-border-subtle bg-background/90 backdrop-blur">
+          <FilterChips<EvidenceStatusFilter>
+            ariaLabel="Filter evidence by strength"
+            active={statusFilter}
+            onChange={setStatusFilter}
+            options={[
+              { key: "all", label: "All", count: counts.all },
+              { key: "strong", label: "Findings", count: counts.strong, tone: "ok" },
+              { key: "review", label: "Needs review", count: counts.review, tone: "warn" },
+              { key: "weak", label: "Leads", count: counts.weak },
+              { key: "excluded", label: "Excluded", count: counts.excluded, tone: "danger" },
+            ]}
+          />
+          <div className="ml-auto flex items-center gap-1.5">
+            <span className="text-eyebrow uppercase tracking-[0.14em] text-muted-foreground/70">Sort</span>
+            <FilterChips<EvidenceSortMode>
+              ariaLabel="Sort evidence"
+              active={sortMode}
+              onChange={setSortMode}
+              options={[
+                { key: "strength", label: "Strength" },
+                { key: "confidence", label: "Confidence" },
+                { key: "newest", label: "Newest" },
+              ]}
+            />
+          </div>
+        </div>
+      )}
+      <ArtifactsList
+        items={items}
+        onSelect={setSelected}
+        review={review}
+        statusFilter={statusFilter}
+        sortMode={sortMode}
+      />
       <ArtifactDrawer
         artifact={selected}
         onClose={() => setSelected(null)}

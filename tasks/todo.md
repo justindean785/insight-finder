@@ -87,3 +87,36 @@ Baseline: `npx vitest run` → 45 files / 536 tests pass.
   highest-value gaps (Tools, Graph, primitives, a11y) rather than touching the
   integrity-critical evidence/confidence logic.
 
+## Follow-up pass — Evidence textual status + filters (2026-06-15)
+
+The Evidence board previously conveyed strength by a color-coded `%` only —
+violating the "never color alone" rule and making strong-vs-weak hard to scan.
+
+### Shipped
+- **`src/lib/evidence-status.ts`** — pure, integrity-safe presentation layer that
+  derives an analyst-facing status from the existing `labelForArtifact()` engine.
+  Statuses: Verified / Probable / Needs corroboration / Manual review / Lead /
+  Shared infrastructure / Contradicted / Rejected. Conservative by design:
+  single-source can never display "Verified", breach/leak → "Manual review",
+  shared-host/collision → "Shared infrastructure — not ownership proof".
+- **`EvidenceStatusBadge`** (workspace-primitives) — icon + text chip, never
+  color alone; distinct icon per status.
+- **Evidence board rows** (`ResourcesPanel.tsx`) — every row now shows the status
+  badge + an evidence-basis line (e.g. "Single-source · infrastructure").
+- **Filter + sort toolbar** — quick-filter chips (All / Findings / Needs review /
+  Leads / Excluded) with live counts, and sort (Strength / Confidence / Newest);
+  accessible `radiogroup`s; sticky header; no-results state.
+
+### Verification
+- `npx vitest run` → **48 files / 567 tests pass** (was 47 / 557; +1 file, +10 tests).
+- `npm run typecheck` → clean.
+- `npx eslint` on changed files → clean.
+- `npm run build` → succeeds.
+
+### Backend note
+The infra confidence sub-class split (earlier commit) is in the edge function and
+must be synced to `seeker-spark-search-5362c57c` + deployed via Lovable to affect
+new investigations. The Evidence-status UI works against whatever the backend
+stores today (it reads existing `confidence` + metadata), so it improves the
+display of past cases immediately once the frontend ships to Vercel.
+

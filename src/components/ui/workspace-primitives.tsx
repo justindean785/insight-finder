@@ -1,9 +1,11 @@
 import { useState, useRef, type ReactNode } from "react";
 import {
   Copy, Check, CheckCircle2, XCircle, MinusCircle, Loader2, ChevronRight,
+  ShieldCheck, ShieldQuestion, ShieldAlert, Search, Server, AlertTriangle, Circle,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { EvidenceDisplayStatus, EvidenceStatusTone } from "@/lib/evidence-status";
 
 /**
  * Shared workspace UI primitives — small, typed, reusable building blocks used
@@ -198,6 +200,64 @@ export function ToolStatusBadge({
     >
       <Icon className={cn("w-3 h-3", meta.spin && "animate-spin")} />
       {meta.label}
+    </span>
+  );
+}
+
+/* ── EvidenceStatusBadge ────────────────────────────────────────────── */
+
+const EVIDENCE_TONE_CLASS: Record<EvidenceStatusTone, string> = {
+  ok: "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/30 bg-[hsl(var(--confidence-high))]/10",
+  probable: "text-primary border-primary/30 bg-primary/10",
+  warn: "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid))]/30 bg-[hsl(var(--confidence-mid))]/10",
+  muted: "text-muted-foreground border-border-subtle bg-surface-2/60",
+  danger: "text-destructive border-destructive/30 bg-destructive/10",
+};
+
+const EVIDENCE_STATUS_ICON: Record<EvidenceDisplayStatus, LucideIcon> = {
+  verified: ShieldCheck,
+  probable: CheckCircle2,
+  needs_corroboration: ShieldQuestion,
+  manual_review: Search,
+  lead: Circle,
+  shared_infrastructure: Server,
+  contradicted: AlertTriangle,
+  rejected: XCircle,
+};
+
+/**
+ * Analyst evidence-strength chip. Always renders icon + text (never color
+ * alone), so single-source/weak findings read as restrained and strong
+ * findings read as clear without being overstated.
+ */
+export function EvidenceStatusBadge({
+  status,
+  label,
+  tone,
+  hint,
+  size = "sm",
+  className,
+}: {
+  status: EvidenceDisplayStatus;
+  label: string;
+  tone: EvidenceStatusTone;
+  hint?: string;
+  size?: "sm" | "md";
+  className?: string;
+}) {
+  const Icon = EVIDENCE_STATUS_ICON[status];
+  return (
+    <span
+      title={hint}
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full border font-medium tracking-tight whitespace-nowrap",
+        size === "sm" ? "px-2 py-0.5 text-[10px]" : "px-2.5 py-1 text-[11px]",
+        EVIDENCE_TONE_CLASS[tone],
+        className,
+      )}
+    >
+      <Icon className="w-3 h-3 shrink-0" strokeWidth={2} />
+      {label}
     </span>
   );
 }
