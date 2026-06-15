@@ -108,3 +108,53 @@ Deno.test("planner guidance explicitly forbids username-first name investigation
   assertStringIncludes(NAME_SEED_PLANNER_RULES, "rank username_sweep or username_search below");
   assertStringIncludes(NAME_SEED_PLANNER_RULES, "[VERIFY]");
 });
+
+Deno.test("unknown/unclassified seed still labels guessed handles [VERIFY] (conservative, never blocks)", () => {
+  const plan = enforceNameSeedPriority({
+    proposed_calls: [
+      { tool_name: "username_sweep", selector: "domrovai", expected_value: 92, reason: "candidate" },
+      { tool_name: "exa_search", selector: "Dom Rovai", expected_value: 70, reason: "name" },
+    ],
+  }, {
+    seedType: "unknown", // misclassified person seed
+    alreadyQueried: [],
+  });
+
+  const proposed = plan.proposed_calls as Array<Record<string, unknown>>;
+  // name-first ordering + [VERIFY] labeling applied even though the seed wasn't
+  // classified name/person — the guessed handle is never silently promoted.
+  assertEquals(proposed.map((call) => call.tool_name), ["exa_search", "username_sweep"]);
+  assertEquals(proposed[1]?.expected_value, 45);
+  assertStringIncludes(String(proposed[1]?.reason), "[VERIFY]");
+});
+
+Deno.test("malformed (non-object) planner calls are preserved, not silently dropped", () => {
+  const plan = enforceNameSeedPriority({
+    proposed_calls: [
+      "not-an-object",
+      null,
+      { tool_name: "username_sweep", selector: "domrovai", expected_value: 90, reason: "candidate" },
+      { tool_name: "exa_search", selector: "Dom Rovai", expected_value: 70, reason: "name" },
+    ],
+  }, {
+    seedType: "person",
+    alreadyQueried: [],
+  });
+
+  const proposed = plan.proposed_calls as Array<unknown>;
+  assertEquals(proposed.length, 4); // every entry survives — none dropped
+  assertEquals(proposed.includes("not-an-object"), true);
+  assertEquals(proposed.includes(null), true);
+});
+
+Deno.test("known non-name seeds (e.g. email) are returned unchanged", () => {
+  const input = {
+    proposed_calls: [
+      { tool_name: "username_sweep", selector: "x", expected_value: 90, reason: "r" },
+      { tool_name: "exa_search", selector: "y", expected_value: 70, reason: "r" },
+    ],
+  };
+  const plan = enforceNameSeedPriority(input, { seedType: "email", alreadyQueried: [] });
+  // no name-first reordering or [VERIFY] labeling for non-name identifiers
+  assertEquals(plan, input);
+});

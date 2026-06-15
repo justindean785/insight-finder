@@ -788,8 +788,6 @@ export const minimax_web_search = tool({
     focus: z.string().optional().describe("Optional steering hint, e.g. 'find social profiles', 'find leaks'"),
   }),
   execute: async ({ query, focus }) => {
-    const gated = gateStage2("minimax_web_search");
-    if (gated) return gated;
     if (!PERPLEXITY_API_KEY) return { error: "PERPLEXITY_API_KEY not configured" };
     try {
       const r = await fetchRetry("https://api.perplexity.ai/chat/completions", {
