@@ -24,7 +24,6 @@ function seedIcon(seedType: string | null, title: string): LucideIcon {
   return SEED_ICON[kind] ?? FileSearch;
 }
 import { toast } from "sonner";
-import { CostMeter } from "@/components/ui/cost-meter";
 import { SwarmMark } from "@/components/ui/swarm-mark";
 
 function timeAgo(iso: string): string {
@@ -269,11 +268,11 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
 
   return (
     <div className="w-72 h-full flex flex-col">
-      <div className="px-4 py-5 border-b border-border-subtle flex items-center gap-3">
-        <div className="w-9 h-9 rounded-xl border border-border-subtle bg-surface-1 grid place-items-center shadow-[0_0_24px_-16px_hsl(var(--primary)/0.6)]">
-          <SwarmMark className="w-5 h-5 text-foreground/90" />
+      <div className="px-4 py-4 border-b border-border-subtle flex items-center gap-2.5">
+        <div className="w-8 h-8 rounded-lg border border-border-subtle bg-surface-1 grid place-items-center shadow-[0_0_24px_-16px_hsl(var(--primary)/0.6)]">
+          <SwarmMark className="w-4 h-4 text-foreground/90" />
         </div>
-        <span className="font-display font-semibold tracking-tight text-[15px] text-foreground">Swarmbot</span>
+        <span className="font-display font-semibold tracking-tight text-meta text-foreground">Swarmbot</span>
         <button
           onClick={onToggleCollapse}
           className="ml-auto w-8 h-8 rounded-lg border border-border-subtle bg-surface-1 text-muted-foreground hover:text-foreground transition-colors"
@@ -287,7 +286,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         <Button
           onClick={newThread}
           size="sm"
-          className="w-full h-14 justify-center gap-2 rounded-xl border border-white/15 bg-white text-black hover:bg-white/95 shadow-[0_16px_36px_-24px_rgba(255,255,255,0.95)]"
+          className="w-full h-10 justify-center gap-2 rounded-lg border border-white/15 bg-white text-black font-medium hover:bg-white/95 shadow-[0_10px_26px_-20px_rgba(255,255,255,0.85)]"
         >
           <Plus className="w-4 h-4" /> New investigation
         </Button>
@@ -295,16 +294,16 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
           to="/brain"
           aria-label="Global Brain"
           className={cn(
-            "relative mt-3 flex items-center gap-2 w-full px-4 py-3 rounded-xl border text-data font-medium uppercase tracking-[0.18em] transition-colors",
+            "relative mt-2.5 flex items-center gap-2 w-full px-3 py-2 rounded-lg border text-data font-medium uppercase tracking-[0.14em] transition-colors",
             onBrainRoute
               ? "border-white/20 bg-surface-1 text-foreground"
               : "border-border-subtle bg-surface-0 text-muted-foreground hover:text-foreground hover:border-white/15 hover:bg-surface-1",
           )}
         >
-          <Brain className="w-4 h-4" strokeWidth={1.5} />
+          <Brain className="w-3.5 h-3.5" strokeWidth={1.5} />
           <span>Brain</span>
           {newPatternCount > 0 && !onBrainRoute && (
-            <span className="ml-auto inline-flex items-center justify-center min-w-[28px] h-[22px] px-2 rounded-full bg-white text-black text-data font-mono font-bold shadow-[0_8px_18px_-12px_rgba(255,255,255,0.9)]">
+            <span className="ml-auto inline-flex items-center justify-center min-w-[22px] h-[18px] px-1.5 rounded-full bg-white text-black text-eyebrow font-mono font-bold tracking-normal">
               {newPatternCount > 99 ? "99+" : newPatternCount}
             </span>
           )}
@@ -324,13 +323,13 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         </div>
       </div>
 
-      <div className="px-4 pb-3 flex items-center gap-2 overflow-x-auto scrollbar-none">
+      <div className="px-4 pb-3 flex items-center gap-1.5 overflow-x-auto scrollbar-none">
         {TYPES.map((t) => (
           <button
             key={t.key}
             onClick={() => setTypeFilter(t.key)}
             className={cn(
-              "shrink-0 px-3 py-2 rounded-full border text-eyebrow font-mono uppercase tracking-[0.14em] transition-colors",
+              "shrink-0 px-2.5 py-1 rounded-full border text-eyebrow font-mono uppercase tracking-[0.12em] transition-colors",
               typeFilter === t.key
                 ? "border-white/30 bg-surface-2 text-foreground"
                 : "border-border-subtle bg-surface-0 text-muted-foreground hover:text-foreground hover:bg-surface-1"
@@ -379,10 +378,9 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
 
       <div className="p-4 border-t border-border-subtle space-y-3">
         <SpendTrend threads={threads} totalCost={totalCost} />
-        <CostMeter microUsd={totalCost} threadCount={threads.length} />
-        <div className="flex items-center justify-between text-xs">
+        <div className="flex items-center justify-between gap-2 text-meta">
           <div className="truncate text-muted-foreground">{user?.email}</div>
-          <button onClick={signOut} className="text-muted-foreground hover:text-foreground" aria-label="Sign out">
+          <button onClick={signOut} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors" aria-label="Sign out" title="Sign out">
             <LogOut className="w-4 h-4" />
           </button>
         </div>
@@ -490,13 +488,13 @@ function SpendTrend({ threads, totalCost }: { threads: Thread[]; totalCost: numb
         <span className="label-eyebrow">Total spend</span>
         <span className="font-mono text-data text-muted-foreground">{threads.length} cases</span>
       </div>
-      <div className="font-mono text-xl font-semibold text-foreground tabular-nums leading-none tracking-tight">
+      <div className="font-mono text-lg font-semibold text-foreground tabular-nums leading-none tracking-tight">
         {formatUsd(totalCost)}
       </div>
       {series.length > 1 && (
-        <div className="flex items-center gap-1.5 mt-1.5">
+        <div className="mt-1.5">
           <span className={cn(
-            "inline-flex items-center gap-0.5 text-data font-mono font-medium",
+            "inline-flex items-center gap-1 text-data font-mono font-medium",
             trend === "up" ? "text-[hsl(var(--confidence-mid))]"
             : trend === "down" ? "text-[hsl(var(--brain-cyan))]"
             : "text-muted-foreground",
@@ -505,9 +503,6 @@ function SpendTrend({ threads, totalCost }: { threads: Thread[]; totalCost: numb
               {trend === "up" ? "↑" : trend === "down" ? "↓" : "→"}
             </span>
             {formatUsd(Math.abs(delta))} last run
-          </span>
-          <span className="text-data text-muted-foreground">
-            · across {threads.length} case{threads.length === 1 ? "" : "s"}
           </span>
         </div>
       )}
