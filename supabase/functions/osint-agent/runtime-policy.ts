@@ -126,11 +126,16 @@ const THREADS = new Map<string, RuntimeThreadState>();
 // burned its cycle on 2 paid tools, hit the cap, fell back to free tools, and
 // finished with 0 artifacts. As per-run backstops they are set generously so an
 // investigation can pivot freely; MAX_TOTAL_CALLS is the ultimate ceiling.
-export const MAX_TOTAL_CALLS = 60;
-export const MAX_CONCURRENT_CALLS = 6;
-export const MAX_PAID_CALLS = 30;
-export const MAX_SAME_TOOL_CALLS = 10;
-export const MIN_START_GAP_MS = 400;
+// Tuned for speed + provider-rate-limit friendliness. Still fail-open: startCall
+// never blocks on confirmation/EV/weak-lead — these are pure runaway/cost/rate
+// backstops. Lower concurrency + a wider start gap keep bursts under common
+// provider limits (e.g. stolen.tax = 2 req/s); tighter budgets stop the agent
+// grinding low-value fan-out on a no-match seed.
+export const MAX_TOTAL_CALLS = 30;
+export const MAX_CONCURRENT_CALLS = 3;
+export const MAX_PAID_CALLS = 12;
+export const MAX_SAME_TOOL_CALLS = 4;
+export const MIN_START_GAP_MS = 600;
 
 function getThread(threadId: string): RuntimeThreadState {
   let state = THREADS.get(threadId);

@@ -214,7 +214,7 @@ Deno.serve(async (req) => {
       // Verify a deploy landed with: GET /osint-agent?health=1 → expect this value.
       // (Prior builds froze `version` at 1.0.0, so merged fixes were unverifiable
       //  against the live function — that gap is what this field closes.)
-      build: "2026-06-15-scans-not-gated",
+      build: "2026-06-15-balanced-pivots",
       checks: r.checks,
       intelbase_enabled: INTELBASE_ENABLED,
     };
@@ -4331,7 +4331,7 @@ Deno.serve(async (req) => {
         onCost,
         manualOverrideSelector,
       }),
-      stopWhen: stepCountIs(45),
+      stopWhen: stepCountIs(28),
       prepareStep,
       // Meter orchestrator LLM token spend per step so threads.cost_micro_usd
       // reflects the actual model cost, not just tool fan-out cost.
