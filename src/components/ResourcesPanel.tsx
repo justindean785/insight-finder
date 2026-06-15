@@ -255,7 +255,6 @@ export function ResourcesPanel({
           {/* Primary nav — the few main views plus a Full review tab that opens everything */}
           <div className="px-3 py-2 flex items-center gap-1 border-t border-border-subtle">
             {MAIN_TABS.map((t) => {
-              const Icon = t.icon;
               const active = mode === "main" && tab === t.v;
               const count = TAB_COUNTS[t.v];
               return (
@@ -264,13 +263,12 @@ export function ResourcesPanel({
                   onClick={() => { setMode("main"); setTab(t.v); }}
                   title={t.l}
                   className={cn(
-                    "flex-1 min-w-0 flex items-center justify-center gap-1 h-8 rounded-lg text-eyebrow font-medium uppercase tracking-[0.06em] transition-colors",
+                    "flex-1 min-w-0 flex items-center justify-center gap-1.5 h-8 rounded-lg text-[11px] font-medium tracking-wide transition-colors",
                     active
                       ? "bg-surface-1 text-foreground border border-white/10"
                       : "text-muted-foreground hover:text-foreground hover:bg-surface-1 border border-transparent",
                   )}
                 >
-                  <Icon className="w-3 h-3 shrink-0" />
                   <span className="truncate">{t.l}</span>
                   {count != null && count > 0 && (
                     <span className="font-mono text-[9px] tabular-nums text-muted-foreground/70 shrink-0">{count}</span>
@@ -282,7 +280,7 @@ export function ResourcesPanel({
               onClick={() => { setMode("full"); setSection(sectionForTab(tab) ?? "evidence"); }}
               title="Full review"
               className={cn(
-                "flex-1 min-w-0 flex items-center justify-center gap-1 h-8 rounded-lg text-eyebrow font-medium uppercase tracking-[0.06em] transition-colors",
+                "flex-1 min-w-0 flex items-center justify-center gap-1.5 h-8 rounded-lg text-[11px] font-medium tracking-wide transition-colors",
                 mode === "full"
                   ? "bg-surface-1 text-foreground border border-white/10"
                   : "text-muted-foreground hover:text-foreground hover:bg-surface-1 border border-transparent",
@@ -458,20 +456,16 @@ function ArtifactsList({
         const kinds = Object.keys(grouped[g]);
         const all = kinds.flatMap((k) => grouped[g][k]);
         // Per-group severity breakdown for the header summary.
-        let high = 0, mid = 0, low = 0, failedC = 0;
+        let failedC = 0;
         for (const a of all) {
           const meta = (a.metadata ?? {}) as Record<string, unknown>;
-          if (meta.false_positive === true) { failedC++; continue; }
-          const c = a.confidence ?? 0;
-          if (c >= 70) high++;
-          else if (c >= 50) mid++;
-          else low++;
+          if (meta.false_positive === true) failedC++;
         }
         // Order kinds by their strongest member so high-value kinds lead.
         kinds.sort((a, b) => (grouped[g][b][0]?.confidence ?? 0) - (grouped[g][a][0]?.confidence ?? 0));
         return (
           <div key={g}>
-            {/* Group header: quiet label · count, with a muted severity breakdown (red when flagged) */}
+            {/* Group header: quiet label · count; only a flag count when something is flagged */}
             <div className="flex items-center gap-2 px-2 pb-1.5">
               <Icon
                 className={cn(
@@ -486,12 +480,11 @@ function ArtifactsList({
                 {GROUP_LABEL[g]}
               </span>
               <span className="text-data tabular-nums text-muted-foreground/80">· {all.length}</span>
-              <span className="ml-auto flex items-center gap-2 text-[9.5px] tabular-nums">
-                {high > 0 && <span style={{ color: "hsl(var(--confidence-high))" }}>{high} hi</span>}
-                {mid > 0 && <span style={{ color: "hsl(var(--confidence-mid))" }}>{mid} md</span>}
-                {low > 0 && <span style={{ color: "hsl(var(--confidence-low))" }}>{low} lo</span>}
-                {failedC > 0 && <span style={{ color: "hsl(var(--danger))" }}>{failedC} flag</span>}
-              </span>
+              {failedC > 0 && (
+                <span className="ml-auto text-[9.5px] tabular-nums" style={{ color: "hsl(var(--danger))" }}>
+                  {failedC} flagged
+                </span>
+              )}
             </div>
 
             <div className="space-y-0.5">
@@ -537,7 +530,9 @@ function ArtifactsList({
                       {uniformProv && (
                         <span className="truncate font-mono text-[9.5px] text-muted-foreground/60">{uniformProv}</span>
                       )}
-                      {lo != null && hi != null && (
+                      {/* Singletons show their score on the row itself; only
+                          show a subheader figure for multi-row clusters. */}
+                      {lo != null && hi != null && list.length > 1 && (
                         <span className="ml-auto text-data font-semibold tabular-nums" style={{ color: rangeColor }}>
                           {lo === hi ? `${hi}%` : `${lo}–${hi}%`}
                         </span>
@@ -632,14 +627,18 @@ function ArtifactRow({
                 () => toast.error("Copy failed"),
               );
             }}
-            className="-m-2 shrink-0 rounded p-2 text-muted-foreground/60 opacity-60 transition-opacity hover:text-foreground hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/row:opacity-100"
+            className="-m-2 shrink-0 rounded p-2 text-muted-foreground/60 opacity-0 transition-opacity hover:text-foreground hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/row:opacity-100"
           >
             <Copy className="h-3.5 w-3.5" />
           </button>
           {a.confidence != null && (
             <span className="flex shrink-0 items-center gap-1">
               <span className="w-9 text-right text-data font-semibold tabular-nums" style={{ color: confColor }}>{conf}%</span>
-              <ConfidenceExplain artifact={a} review={rState} />
+              <ConfidenceExplain
+                artifact={a}
+                review={rState}
+                className="opacity-0 transition-opacity focus-visible:opacity-100 group-hover/row:opacity-100 data-[state=open]:opacity-100"
+              />
             </span>
           )}
         </div>
