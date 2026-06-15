@@ -86,6 +86,10 @@ export type SourceClass =
   | "independent_public"
   | "ai_summary"
   | "infra"
+  | "infra_registry"
+  | "infra_dns"
+  | "infra_scan"
+  | "infra_reputation"
   | "unknown";
 
 const TOOL_CLASS: Record<string, SourceClass> = {
@@ -109,24 +113,24 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   dork_harvest: "ai_summary",
   jina_reader_scrape: "independent_public",
   exa_get_contents: "independent_public",
-  // infra
-  whois_lookup: "infra",
-  dns_records: "infra",
-  crtsh_subdomains: "infra",
-  ip_intel: "infra",
-  ipgeolocation_lookup: "infra",
-  ipqualityscore_lookup: "infra",
-  shodan_internetdb: "infra",
-  urlscan_search: "infra",
-  http_fingerprint: "infra",
-  hackertarget: "infra",
-  virustotal_lookup: "infra",
-  synapsint_lookup: "infra",
-  hunter_domain_search: "infra",
-  hunter_email_verifier: "infra",
-  hunter_combined: "infra",
-  emailrep: "infra",
-  emailrep_lookup: "infra",
+  // infra — split into sub-classes so cross-tool corroboration counts
+  whois_lookup: "infra_registry",
+  hunter_domain_search: "infra_registry",
+  hunter_email_verifier: "infra_registry",
+  hunter_combined: "infra_registry",
+  dns_records: "infra_dns",
+  crtsh_subdomains: "infra_dns",
+  ip_intel: "infra_scan",
+  ipgeolocation_lookup: "infra_scan",
+  shodan_internetdb: "infra_scan",
+  http_fingerprint: "infra_scan",
+  hackertarget: "infra_scan",
+  synapsint_lookup: "infra_scan",
+  virustotal_lookup: "infra_reputation",
+  urlscan_search: "infra_reputation",
+  ipqualityscore_lookup: "infra_reputation",
+  emailrep: "infra_reputation",
+  emailrep_lookup: "infra_reputation",
   gravatar_profile: "social_profile_passive",
   gravatar_lookup: "social_profile_passive",
   // phone / people-search aggregators — low-trust aggregators, treat as passive social

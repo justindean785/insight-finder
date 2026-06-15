@@ -65,8 +65,27 @@ const CLASS_CAP: Record<SourceClass, number> = {
   independent_public: 75,
   ai_summary: 55,
   infra: 70,
+  infra_registry: 75,
+  infra_dns: 75,
+  infra_scan: 70,
+  infra_reputation: 65,
   unknown: 50,
 };
+
+// Infrastructure sub-classes that should count as independent perspectives
+// when corroborating infrastructure claims (domain exists, resolves, has
+// footprint) — but NOT when corroborating identity/ownership claims.
+const INFRA_SUBCLASSES = new Set<SourceClass>([
+  "infra_registry",
+  "infra_dns",
+  "infra_scan",
+  "infra_reputation",
+  "infra",
+]);
+
+function isInfraClass(c: SourceClass): boolean {
+  return INFRA_SUBCLASSES.has(c);
+}
 
 // Sources that can never alone produce a high-confidence (>= 90) finding.
 const NEVER_HIGH = new Set<SourceClass>([
@@ -106,8 +125,23 @@ export function applyEvidenceCaps(input: CapInput): CapResult {
     cap = 65;
   }
 
-  // Cross-class corroboration: ≥2 distinct classes lifts cap.
-  if (uniqClasses.length >= 2) {
+  // ── Infrastructure sub-class corroboration ──
+  // Count how many distinct infra sub-classes are present. If ≥2, they
+  // corroborate an infrastructure claim (domain exists, resolves, has
+  // footprint) and the cap can lift — but NOT past 85, because infra
+  // alone cannot confirm identity or ownership.
+  const infraClasses = uniqClasses.filter(isInfraClass);
+  const nonInfraClasses = uniqClasses.filter((c) => !isInfraClass(c));
+  const infraOnly = nonInfraClasses.length === 0 && infraClasses.length > 0;
+
+  if (infraClasses.length >= 2) {
+    // Modest boost for 2 sub-classes, stronger for 3+.
+    const infraBoost = infraClasses.length >= 3 ? 15 : 8;
+    cap = Math.min(infraOnly ? 85 : 95, cap + infraBoost);
+  }
+
+  // Cross-class corroboration (non-infra or mixed): ≥2 distinct classes lifts cap.
+  if (uniqClasses.length >= 2 && !infraOnly) {
     cap = Math.min(95, cap + 10);
   }
   if (uniqClasses.includes("court_record") && uniqClasses.some((c) => c === "news" || c === "independent_public")) {
@@ -119,16 +153,36 @@ export function applyEvidenceCaps(input: CapInput): CapResult {
     cap = Math.min(cap, 65);
   }
 
+  // Infra-only hard ceiling: infrastructure evidence alone can support a
+  // domain/IP claim but never confirm identity or ownership.
+  if (infraOnly) {
+    cap = Math.min(cap, 85);
+  }
+
   const confidence = Math.max(0, Math.min(input.rawConfidence ?? 50, cap));
-  const reason_for_confidence =
-    uniqClasses.length >= 2
-      ? `corroborated across ${uniqClasses.length} source classes: ${uniqClasses.join(", ")}`
-      : `single source class: ${uniqClasses[0] ?? "unknown"}`;
-  const reason_not_confirmed = confidence < 90
-    ? (uniqClasses.length < 2
-        ? "needs second independent class of evidence"
-        : "evidence does not yet meet official+independent threshold")
-    : undefined;
+
+  // Build human-readable reason strings.
+  const infraCount = infraClasses.length;
+  const totalDistinct = uniqClasses.length;
+  let reason_for_confidence: string;
+  if (totalDistinct >= 2 && infraCount >= 2 && infraOnly) {
+    reason_for_confidence = `infrastructure corroborated across ${infraCount} sub-classes: ${infraClasses.join(", ")}`;
+  } else if (totalDistinct >= 2) {
+    reason_for_confidence = `corroborated across ${totalDistinct} source classes: ${uniqClasses.join(", ")}`;
+  } else {
+    reason_for_confidence = `single source class: ${uniqClasses[0] ?? "unknown"}`;
+  }
+
+  let reason_not_confirmed: string | undefined;
+  if (confidence >= 90) {
+    reason_not_confirmed = undefined;
+  } else if (infraOnly && infraCount >= 2) {
+    reason_not_confirmed = "infrastructure evidence supports existence, not ownership or identity";
+  } else if (totalDistinct < 2) {
+    reason_not_confirmed = "needs second independent class of evidence";
+  } else {
+    reason_not_confirmed = "evidence does not yet meet official+independent threshold";
+  }
 
   return { confidence, cap, reason_for_confidence, reason_not_confirmed, source_classes: uniqClasses };
 }
