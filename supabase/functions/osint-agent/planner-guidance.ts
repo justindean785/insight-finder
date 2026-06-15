@@ -36,6 +36,17 @@ function pivotPriority(call: Record<string, unknown>): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 99;
 }
 
+// Known non-name seed identifiers. For these, name-first ordering would be
+// wrong, so the plan is returned untouched. ANY other value — "name", "person",
+// "unknown", "", null — gets the conservative name-safe treatment below: a
+// misclassified person seed must still have its guessed handles labeled
+// [VERIFY], never silently promoted. This is labeling/ranking only; it never
+// drops or blocks a call.
+const NON_NAME_SEEDS = new Set([
+  "email", "username", "handle", "phone", "ip", "ip_address",
+  "domain", "url", "wallet", "crypto", "crypto_wallet",
+]);
+
 export function enforceNameSeedPriority(
   rawPlan: Record<string, unknown>,
   context: {
@@ -44,51 +55,57 @@ export function enforceNameSeedPriority(
   },
 ): Record<string, unknown> {
   const seedType = (context.seedType ?? "").toLowerCase();
-  if (seedType !== "name" && seedType !== "person") return rawPlan;
+  if (NON_NAME_SEEDS.has(seedType)) return rawPlan;
 
   const nameSearchComplete = context.alreadyQueried.some((entry) => {
     const normalized = entry.toLowerCase();
     return [...NAME_FIRST_TOOLS].some((name) => normalized.includes(name));
   });
-  const proposed = Array.isArray(rawPlan.proposed_calls)
-    ? rawPlan.proposed_calls.filter(isRecord).map((call) => {
-      if (!USERNAME_SWEEP_TOOLS.has(toolName(call))) return call;
-      return {
-        ...call,
-        expected_value: Math.min(expectedValue(call), nameSearchComplete ? 55 : 45),
-        reason: `[VERIFY] Secondary guessed-handle pivot. ${String(call.reason ?? "")}`.trim(),
-      };
-    })
-    : [];
 
-  proposed.sort((a, b) => {
-    const aNameFirst = NAME_FIRST_TOOLS.has(toolName(a)) ? 1 : 0;
-    const bNameFirst = NAME_FIRST_TOOLS.has(toolName(b)) ? 1 : 0;
-    if (aNameFirst !== bNameFirst) return bNameFirst - aNameFirst;
+  // Preserve every entry. Non-object ("malformed") entries are passed through
+  // untouched rather than dropped — a planner-proposed call is never silently
+  // lost. Only object entries that are guessed-handle sweeps get re-labeled.
+  const labelValue = (call: unknown) => {
+    if (!isRecord(call) || !USERNAME_SWEEP_TOOLS.has(toolName(call))) return call;
+    return {
+      ...call,
+      expected_value: Math.min(expectedValue(call), nameSearchComplete ? 55 : 45),
+      reason: `[VERIFY] Secondary guessed-handle pivot. ${String(call.reason ?? "")}`.trim(),
+    };
+  };
+  const labelPriority = (call: unknown) => {
+    if (!isRecord(call) || !USERNAME_SWEEP_TOOLS.has(toolName(call))) return call;
+    return {
+      ...call,
+      priority: Math.max(pivotPriority(call), nameSearchComplete ? 6 : 8),
+      reason: `[VERIFY] Secondary guessed-handle pivot. ${String(call.reason ?? "")}`.trim(),
+    };
+  };
+
+  // Records sort by name-first then value/priority; non-records keep their
+  // relative position at the end (no orderable fields, but still retained).
+  const nameRank = (call: unknown) => (isRecord(call) && NAME_FIRST_TOOLS.has(toolName(call)) ? 1 : 0);
+  const byValue = (a: unknown, b: unknown) => {
+    if (!isRecord(a) || !isRecord(b)) return Number(isRecord(b)) - Number(isRecord(a));
+    if (nameRank(a) !== nameRank(b)) return nameRank(b) - nameRank(a);
     return expectedValue(b) - expectedValue(a);
-  });
-
-  const pivots = Array.isArray(rawPlan.pivots)
-    ? rawPlan.pivots.filter(isRecord).map((call) => {
-      if (!USERNAME_SWEEP_TOOLS.has(toolName(call))) return call;
-      return {
-        ...call,
-        priority: Math.max(pivotPriority(call), nameSearchComplete ? 6 : 8),
-        reason: `[VERIFY] Secondary guessed-handle pivot. ${String(call.reason ?? "")}`.trim(),
-      };
-    })
-    : [];
-
-  pivots.sort((a, b) => {
-    const aNameFirst = NAME_FIRST_TOOLS.has(toolName(a)) ? 1 : 0;
-    const bNameFirst = NAME_FIRST_TOOLS.has(toolName(b)) ? 1 : 0;
-    if (aNameFirst !== bNameFirst) return bNameFirst - aNameFirst;
+  };
+  const byPriority = (a: unknown, b: unknown) => {
+    if (!isRecord(a) || !isRecord(b)) return Number(isRecord(b)) - Number(isRecord(a));
+    if (nameRank(a) !== nameRank(b)) return nameRank(b) - nameRank(a);
     return pivotPriority(a) - pivotPriority(b);
-  });
+  };
+
+  const proposed = Array.isArray(rawPlan.proposed_calls)
+    ? [...rawPlan.proposed_calls].map(labelValue).sort(byValue)
+    : undefined;
+  const pivots = Array.isArray(rawPlan.pivots)
+    ? [...rawPlan.pivots].map(labelPriority).sort(byPriority)
+    : undefined;
 
   return {
     ...rawPlan,
-    ...(Array.isArray(rawPlan.proposed_calls) ? { proposed_calls: proposed } : {}),
-    ...(Array.isArray(rawPlan.pivots) ? { pivots } : {}),
+    ...(proposed ? { proposed_calls: proposed } : {}),
+    ...(pivots ? { pivots } : {}),
   };
 }

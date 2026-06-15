@@ -6,7 +6,6 @@
 import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { INTELBASE_ENABLED, INTELBASE_API_KEY } from "../env.ts";
-import { gateStage2 } from "../guard.ts";
 
 export const intelbase_email_lookup = tool({
   description:
@@ -27,8 +26,6 @@ export const intelbase_email_lookup = tool({
         reason: "intelbase disabled (provider unhealthy ~33% success). Use breach_check / leakcheck_lookup / oathnet_lookup / bosint_email_lookup instead.",
       };
     }
-    const gated = gateStage2("intelbase_email_lookup");
-    if (gated) return gated;
     if (!INTELBASE_API_KEY) return { error: "INTELBASE_API_KEY not configured" };
     try {
       const body: Record<string, unknown> = { email, include_data_breaches };

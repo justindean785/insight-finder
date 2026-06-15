@@ -6,7 +6,7 @@
 import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { PERPLEXITY_API_KEY, fetchRetry } from "../env.ts";
-import { gateStage2, guard } from "../guard.ts";
+import { guard } from "../guard.ts";
 import { minimaxChat, safeJson } from "../providers.ts";
 import { MODELS } from "../models.ts";
 import { detectSeedServer } from "../validation.ts";
@@ -22,8 +22,6 @@ export const minimax_web_search = tool({
     focus: z.string().optional().describe("Optional steering hint, e.g. 'find social profiles', 'find leaks'"),
   }),
   execute: async ({ query, focus }) => {
-    const gated = gateStage2("minimax_web_search");
-    if (gated) return gated;
     if (!PERPLEXITY_API_KEY) return { error: "PERPLEXITY_API_KEY not configured" };
     try {
       const r = await fetchRetry("https://api.perplexity.ai/chat/completions", {
