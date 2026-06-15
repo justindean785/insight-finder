@@ -207,7 +207,13 @@ Deno.serve(async (req) => {
     const body = {
       ok: r.ok,
       service: "osint-agent",
-      version: "1.0.0",
+      version: "1.1.0",
+      // `build` is a monotonic deploy marker — bump it on every backend sync so a
+      // caller can tell which code is actually *running*, not just what's merged.
+      // Verify a deploy landed with: GET /osint-agent?health=1 → expect this value.
+      // (Prior builds froze `version` at 1.0.0, so merged fixes were unverifiable
+      //  against the live function — that gap is what this field closes.)
+      build: "2026-06-15-deadlock-verify",
       checks: r.checks,
       intelbase_enabled: INTELBASE_ENABLED,
     };
