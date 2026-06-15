@@ -84,6 +84,42 @@ describe("runtime-policy: fail-open execution", () => {
     }));
     expect(decision.allow).toBe(true);
   });
+
+  it("never blocks a scan on confirmation/source/EV signals (weakest lead still runs)", () => {
+    const fullyWeak = analyzeWeakLead({
+      selector: "domrovai",
+      selectorType: "username",
+      confidence: 20,
+      sourceCount: 1,
+      sourceNames: ["github_code_search"],
+      artifactKinds: ["weak_lead"],
+      statuses: ["new"],
+      relatedProfile: false,
+      aiSummaryOnly: true,
+      usernameCollision: true,
+      noHit: true,
+      emptyProfile: true,
+      sameNameWithoutOverlap: true,
+      displayNameOnly: true,
+    });
+    expect(fullyWeak.weak).toBe(true);
+    expect(fullyWeak.autoPivotBlocked).toBe(true);
+    // Weakest possible lead (every weak signal set) + lowest EV + stale cache +
+    // NO manual override → a PAID breach scan is still allowed. Confirmation
+    // status, source category, and EV never gate execution.
+    const decision = startCall(base({
+      toolName: "breach_check",
+      costTier: "expensive",
+      selector: "domrovai",
+      selectorType: "username",
+      familyKey: "breach_check::username::domrovai",
+      expectedValue: 1,
+      weakLead: fullyWeak,
+      staleCache: true,
+      manualOverride: false,
+    }));
+    expect(decision.allow).toBe(true);
+  });
 });
 
 // ---- Hard stops: real runaway backstops, per run, NOT refreshed by recording --
