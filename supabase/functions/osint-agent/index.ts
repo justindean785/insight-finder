@@ -63,7 +63,7 @@ import {
 
 // guard.ts — Per-investigation guard state, routing guards, triage gating
 import {
-  guard, routingGuard, HIGH_COST_TOOLS, CONSUMER_DOMAINS, STAGE2_TOOLS,
+  guard, routingGuard, CONSUMER_DOMAINS, STAGE2_TOOLS,
   triageState, bumpArtifacts, skipStub, gateStage2,
 } from "./guard.ts";
 
@@ -88,9 +88,10 @@ import { SYSTEM_PROMPT, IDENTITY_CLUSTER_RULES, PERSON_SEARCH_RULES, SYSTEM_PROM
 
 // cache.ts — Central tool cache wrapper, tier tagging, auto-evidence
 import { wrapToolsWithCache } from "./cache.ts";
-import { beginCycle, clearRuntime, completePlan, recordFindingSummary } from "./runtime-policy.ts";
+import { beginCycle, clearRuntime, recordFindingSummary } from "./runtime-policy.ts";
 import { serus_darkweb_scan } from "./tools/serus.ts";
 import { okWithSuccessFlag, socialfetchError, isHackertargetApiError, isCrtshOk, dohTypeError, blockchairError } from "./tool_response.ts";
+import { enforceNameSeedPriority, NAME_SEED_PLANNER_RULES } from "./planner-guidance.ts";
 
 // ---- Local type aliases for the tool registry -------------------------------
 // The `tools` object is one large literal that self-references inside its own
@@ -213,7 +214,7 @@ Deno.serve(async (req) => {
       // Verify a deploy landed with: GET /osint-agent?health=1 → expect this value.
       // (Prior builds froze `version` at 1.0.0, so merged fixes were unverifiable
       //  against the live function — that gap is what this field closes.)
-      build: "2026-06-15-deadlock-verify",
+      build: "2026-06-15-fail-open-name-first",
       checks: r.checks,
       intelbase_enabled: INTELBASE_ENABLED,
     };
@@ -242,13 +243,9 @@ Deno.serve(async (req) => {
 
   // ---- Reset guard/triage state (module-scoped, must be reset per-request) ----
   guard.artifactsSinceCorrelate = 0;
-  guard.artifactsSincePlan = 0;
-  guard.planCalledInRound = false;
-  guard.nullRoundReplans = 0;
   routingGuard.artifactsTotal = 0;
   routingGuard.memoryRecallTimestamps = [];
   routingGuard.memoryRecallSubjectsThisStep.clear();
-  routingGuard.highCostLastArtifactCount.clear();
   triageState.ran = false;
   triageState.seed = null;
   triageState.seedType = null;
@@ -268,16 +265,9 @@ Deno.serve(async (req) => {
     const tools = {
       list_tools: tool({
         description:
-          "Returns the OSINT tool catalog (names, descriptions, when-to-use, input shape) plus per-seed fan-out recipes and finding-label rules, FILTERED to what's currently allowed in this investigation. If triage_seed has run, Stage-2 tools that did NOT clear the gate are hidden from `tools` and listed in `disabled_tools` with the reason — do NOT call them, they will be skipped. Call this once at the start, and OPTIONALLY again immediately after `triage_seed` to refresh the allowed set.",
+          "Returns the OSINT tool catalog, per-seed fan-out recipes, finding-label rules, and tools disabled by provider configuration. Triage and expected-value signals never hide otherwise available tools.",
         inputSchema: z.object({}).strict(),
         execute: async () => {
-          // Build a triage-aware view of the catalog. Stage-2 tools that
-          // failed to clear the gate are removed from `tools` and surfaced
-          // separately as `disabled_tools` so the agent stops trying them.
-          const stage2 = [
-            "intelbase_email_lookup","oathnet_lookup",
-            "github_code_search","google_dorks","minimax_web_search","urlscan_search",
-          ];
           const disabled: Array<{ name: string; reason: string }> = [];
           // IntelBase is hard-gated at the planner level when the feature flag
           // is off — it must never be selected, regardless of triage outcome.
@@ -295,15 +285,6 @@ Deno.serve(async (req) => {
               name: "hibp_lookup",
               reason: "HIBP_API_KEY not configured — use breach_check / leakcheck_lookup / oathnet_lookup for breach corroboration.",
             });
-          }
-          if (triageState.ran) {
-            for (const name of stage2) {
-              if (!triageState.cleared.has(name)) {
-                const r = triageState.skipped.find((s) => s.tool === name)?.reason
-                  ?? "Stage 1 produced no qualifying signal (no breach / no real gravatar / low emailrep / consumer domain).";
-                disabled.push({ name, reason: r });
-              }
-            }
           }
           const disabledNames = new Set(disabled.map((d) => d.name));
           const filtered = {
@@ -326,7 +307,7 @@ Deno.serve(async (req) => {
       }),
       triage_seed: tool({
         description:
-          "MANDATORY first step for email or username seeds. Establishes the Stage-1 baseline, then records which Stage-2 categories are eligible for bounded planning. It does not authorize recursive expansion. Records a `triage_decision` artifact.",
+          "Optional early classification for email or username seeds. Records a `triage_decision` artifact but never unlocks or blocks other tools.",
         inputSchema: z.object({
           seed: z.string().min(1),
           type: z.enum(["email", "username"]),
@@ -557,13 +538,6 @@ Deno.serve(async (req) => {
               { seedProvided: !!cleanSeed, validArtifactCount: validArtifacts.length },
             );
           }
-          if (guard.artifactsSinceCorrelate < 3) {
-            return skipStub(
-              "minimax_correlate",
-              `need >=3 new artifacts since last correlation (have ${guard.artifactsSinceCorrelate}). Keep gathering, or call at end of round.`,
-              { artifactsSinceCorrelate: guard.artifactsSinceCorrelate },
-            );
-          }
           try {
             const r = await minimaxChat({
               model: MODELS.smart,
@@ -589,26 +563,6 @@ Deno.serve(async (req) => {
           budget_remaining: z.number().int().min(0).max(100).default(30),
         }),
         execute: async ({ seed, already_queried, artifacts, budget_remaining }) => {
-          if (guard.artifactsSincePlan === 0 && guard.planCalledInRound) {
-            if (guard.nullRoundReplans >= 2) {
-              return skipStub(
-                "minimax_plan_pivots",
-                "3 consecutive plan rounds produced zero new artifacts — try a free pivot (emailrep, gravatar_profile, google_dorks, jina_reader_scrape) or call record_artifacts with whatever partial data exists.",
-                { artifactsSincePlan: guard.artifactsSincePlan, planCalledInRound: guard.planCalledInRound, nullRoundReplans: guard.nullRoundReplans },
-              );
-            }
-            // Allow up to 2 null-round re-plans so the model can adapt its
-            // strategy when all proposed tools error or are skipped.
-            guard.nullRoundReplans++;
-            guard.planCalledInRound = false;
-          }
-          if (guard.planCalledInRound) {
-            return skipStub(
-              "minimax_plan_pivots",
-              "already called once this fan-out round. Execute the planned pivots before re-planning.",
-              { artifactsSincePlan: guard.artifactsSincePlan, planCalledInRound: guard.planCalledInRound },
-            );
-          }
           try {
             const baseToolList = [
               // Breach + identity
@@ -646,9 +600,6 @@ Deno.serve(async (req) => {
               // Firecrawl — last resort only
               // firecrawl_* are disabled — intentionally omitted from pivot planner
             ];
-            // Drop high-cost tools from the planner's menu once they've fired
-            // unless enough new evidence has appeared to justify a re-run.
-            const skippedHighCost: string[] = [];
             // Permanently blocked tools — never let the planner pick them.
             // Firecrawl: credits exhausted, stubs return immediate error.
             // Intelbase: gated due to instability (ENABLE_INTELBASE=false).
@@ -676,25 +627,20 @@ Deno.serve(async (req) => {
               if (name === "ipqualityscore_lookup" && !IPQUALITYSCORE_API_KEY) return false;
               // Dead/degraded tools — stop re-proposing them this investigation.
               if (brokenTools.has(name) || isDegraded(name)) return false;
-              if (!HIGH_COST_TOOLS.has(name)) return true;
-              const last = routingGuard.highCostLastArtifactCount.get(name);
-              if (last === undefined) return true;
-              if (routingGuard.artifactsTotal - last >= 5) return true;
-              skippedHighCost.push(name);
-              return false;
+              return true;
             });
-            if (skippedHighCost.length) {
-              console.log(`[planner] high-cost tools removed from menu (already fired, insufficient new evidence): ${skippedHighCost.join(", ")}`);
-            }
             const r = await minimaxChat({
               model: MODELS.smart,
               system:
-                `You are the execution planner for a forensic OSINT runtime. ONLY propose tools from this EXACT list (names must match verbatim — do not invent or rename): ${toolList.join(", ")}.${skippedHighCost.length ? ` HIGH-COST tools already fired and hidden this round (do not request): ${skippedHighCost.join(", ")} — only re-eligible once new corroborating evidence appears.` : ""}\n\nPERMANENTLY DISABLED TOOLS — NEVER PROPOSE: firecrawl_search, firecrawl_scrape, firecrawl_map (credits exhausted — use jina_reader_scrape + exa_search + minimax_web_search), intelbase_email_lookup (gated due to instability — use oathnet_lookup + leakcheck_lookup + bosint_email_lookup instead).\n\nRUNTIME RULES:\n- Stage choices: TRIAGE, REVIEW, TARGETED_PIVOT, VERIFY, REPORT.\n- Propose the SMALLEST high-value batch, not a fan-out burst.\n- Respect a hard ceiling of 35 calls total, 3 concurrent calls, 2 paid calls per cycle, and at most 1 same-tool call per cycle.\n- Reject weak leads by default: confidence <50, single-source only, related_profile, AI-summary-only, display-name-only, username collisions, no-hit breach outputs, empty/private profiles, same-name candidates without direct overlap.\n- Cached results NEVER count as corroboration. If a fresh cache hit would satisfy the question, prefer it over a live call.\n- Expensive tools must be justified by corroboration potential, contradiction resolution, or analyst-approved override.\n- If evidence is weak, say so in calls_rejected; do not branch on it.\n\nReply ONLY with JSON matching this exact shape:\n{\n  "stage":"TRIAGE|REVIEW|TARGETED_PIVOT|VERIFY|REPORT",\n  "goal":"string",\n  "current_findings":["string"],\n  "proposed_calls":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "params_preview":{},\n    "expected_value":0,\n    "cost_tier":"free|low|expensive",\n    "reason":"string",\n    "stop_condition":"string",\n    "cache_status":"thread|user|stale|miss"\n  }],\n  "calls_rejected":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "expected_value":0,\n    "reason":"string",\n    "cost_tier":"free|low|expensive",\n    "weak_lead":true,\n    "stale_cache":false,\n    "manual_override":false\n  }]\n}\nOrder proposed_calls by expected_value descending. Respect budget_remaining as the max number of proposed_calls.`,
+                `You are the execution planner for a forensic OSINT runtime. ONLY propose tools from this EXACT list (names must match verbatim — do not invent or rename): ${toolList.join(", ")}.\n\n${NAME_SEED_PLANNER_RULES}\n\nPERMANENTLY DISABLED TOOLS — NEVER PROPOSE: firecrawl_search, firecrawl_scrape, firecrawl_map (credits exhausted — use jina_reader_scrape + exa_search + minimax_web_search), intelbase_email_lookup (gated due to instability — use oathnet_lookup + leakcheck_lookup + bosint_email_lookup instead).\n\nRUNTIME RULES:\n- Stage choices: TRIAGE, REVIEW, TARGETED_PIVOT, VERIFY, REPORT.\n- Propose the SMALLEST high-value batch, not a fan-out burst.\n- Respect the hard total-call and concurrency ceilings enforced by the runtime.\n- Weak-lead and expected-value signals are advisory. Do not turn them into prerequisites or retry loops.\n- Cached results NEVER count as corroboration. If a fresh cache hit would satisfy the question, prefer it over a live call.\n- If evidence is weak, explain that in the reason and keep the result [VERIFY].\n\nReply ONLY with JSON matching this exact shape:\n{\n  "stage":"TRIAGE|REVIEW|TARGETED_PIVOT|VERIFY|REPORT",\n  "goal":"string",\n  "current_findings":["string"],\n  "proposed_calls":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "params_preview":{},\n    "expected_value":0,\n    "cost_tier":"free|low|expensive",\n    "reason":"string",\n    "stop_condition":"string",\n    "cache_status":"thread|user|stale|miss"\n  }],\n  "calls_rejected":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "expected_value":0,\n    "reason":"string",\n    "cost_tier":"free|low|expensive",\n    "weak_lead":true,\n    "stale_cache":false,\n    "manual_override":false\n  }]\n}\nOrder proposed_calls by expected_value descending. Respect budget_remaining as the max number of proposed_calls.`,
               user: `Seed: ${seed}\nBudget remaining: ${budget_remaining}\nAlready queried: ${JSON.stringify(already_queried).slice(0,4000)}\nArtifacts so far: ${JSON.stringify(artifacts).slice(0,8000)}`,
               json: true,
               maxTokens: 1500,
             });
-            const parsed = safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content };
+            const parsed = enforceNameSeedPriority(
+              safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content },
+              { seedType: detectedSeedType, alreadyQueried: already_queried },
+            );
             // Phase 9 — dark-launched behind GRAPH_PIVOTS_ENABLED (default off):
             // re-rank/filter the planned pivots through the entity graph (drop
             // dead-end / over-broad / already-confirmed targets, cheapest
@@ -716,9 +662,6 @@ Deno.serve(async (req) => {
                 console.warn("[graph-pivots] selection failed, using planner output:", e);
               }
             }
-            guard.planCalledInRound = true;
-            guard.artifactsSincePlan = 0;
-            completePlan(threadId);
             return { ok: r.ok, status: r.status, plan: parsed };
           } catch (e) { return { error: String(e) }; }
         },
@@ -864,16 +807,6 @@ Deno.serve(async (req) => {
         execute: async ({ type, value }) => {
           const gated = gateStage2("oathnet_lookup");
           if (gated) return gated;
-          // High-cost: one call per seed unless new corroborating evidence has appeared.
-          {
-            const last = routingGuard.highCostLastArtifactCount.get("oathnet_lookup");
-            if (last !== undefined && routingGuard.artifactsTotal - last < 5) {
-              const note = `oathnet_lookup skipped — high-cost tool already used this seed (${routingGuard.artifactsTotal - last} new artifacts since, need ≥5).`;
-              console.log(`[high-cost-gate] ${note}`);
-              return { ok: false, skipped: true, gated: true, reason: note };
-            }
-            routingGuard.highCostLastArtifactCount.set("oathnet_lookup", routingGuard.artifactsTotal);
-          }
           if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
           try {
             let url: string;
@@ -1257,16 +1190,6 @@ Deno.serve(async (req) => {
           if (!LEAKCHECK_API_KEY) return { error: "LEAKCHECK_API_KEY not configured" };
           const q = value.trim();
           if (!q) return { error: "missing value" };
-          // High-cost: one call per seed unless new corroborating evidence has appeared.
-          {
-            const last = routingGuard.highCostLastArtifactCount.get("leakcheck_lookup");
-            if (last !== undefined && routingGuard.artifactsTotal - last < 5) {
-              const note = `leakcheck_lookup skipped — high-cost tool already used this seed (${routingGuard.artifactsTotal - last} new artifacts since, need ≥5).`;
-              console.log(`[high-cost-gate] ${note}`);
-              return { ok: false, skipped: true, gated: true, reason: note };
-            }
-            routingGuard.highCostLastArtifactCount.set("leakcheck_lookup", routingGuard.artifactsTotal);
-          }
           try {
             const url = `https://leakcheck.io/api/v2/query/${encodeURIComponent(q)}?type=${encodeURIComponent(type ?? "auto")}`;
             const r = await fetchT(url, { headers: { "X-API-Key": LEAKCHECK_API_KEY, "Accept": "application/json" } }, 20_000);
@@ -4078,7 +4001,7 @@ Deno.serve(async (req) => {
 
     (tools as ToolRegistry).coverage_audit = tool({
       description:
-        "MANDATORY before record_finding. Audits the 12 investigative coverage categories (identity/email/username/phone/domain/infrastructure/social/breach/location/employment/relationships/timeline) against the playbook for this seed type. Returns {complete, categories, missingOpportunities}. If complete=false you MUST either run the missing tools or mark the case 'incomplete' in the final report.",
+        "Advisory coverage audit. Returns gaps and missing opportunities but never blocks progress or reporting.",
       inputSchema: z.object({}).strict(),
       execute: async () => {
         const called = await callsForThread();
@@ -4089,7 +4012,7 @@ Deno.serve(async (req) => {
 
     (tools as ToolRegistry).detect_contradictions = tool({
       description:
-        "MANDATORY before record_finding. Examines the artifacts already recorded for this investigation and surfaces conflicts (location mismatch, employer mismatch, common-handle collision, CDN/shared-infra false-link, stale breach data, thin same-name). Each contradiction reduces relevant confidence axes.",
+        "Advisory contradiction analysis. Strongly recommended before high-confidence attribution, but never an execution prerequisite.",
       inputSchema: z.object({
         cluster_artifact_kinds: z.array(z.string()).optional()
           .describe("Optional. Restrict to specific artifact kinds (e.g. ['email','username','name','ip'])."),
@@ -4106,7 +4029,7 @@ Deno.serve(async (req) => {
 
     (tools as ToolRegistry).tool_audit = tool({
       description:
-        "MANDATORY before record_finding. Returns tool health + API utilization for this investigation: which Tier-A APIs were configured, which were called, which were skipped without justification (a 'missed_opportunity'), failure counts per tool, and artifact yield per tool.",
+        "Advisory tool health and utilization summary. Never a progress gate.",
       inputSchema: z.object({}).strict(),
       execute: async () => {
         const { data: rows } = await supabaseAdmin
@@ -4152,7 +4075,7 @@ Deno.serve(async (req) => {
 
     (tools as ToolRegistry).record_finding = tool({
       description:
-        "Persist an analyst-grade FINDING (distinct from a raw artifact). Use ONLY after coverage_audit + detect_contradictions + tool_audit have run. Each finding must cite supporting artifacts, name drivers and reducers, and acknowledge contradictions. Confidence is computed server-side from sources + corroboration + contradictions; your `confidence` value is treated as a target, not a guarantee. Tier-C-only evidence is hard-capped at 50.",
+        "Persist a source-backed analyst FINDING. Audit helpers are optional. Each finding must cite supporting artifacts, name drivers and reducers, and acknowledge contradictions. Confidence is computed server-side; Tier-C-only evidence is hard-capped at 50.",
       inputSchema: z.object({
         conclusion: z.string().min(5).max(2000),
         cluster_label: z.string().optional().describe("e.g. 'Cluster A — Rocklin candidate'"),

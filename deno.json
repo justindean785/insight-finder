@@ -1,7 +1,7 @@
 {
   "nodeModulesDir": "auto",
   "tasks": {
-    "test": "deno test --allow-net supabase/functions/osint-agent/**/*_test.ts"
+    "test": "deno test --allow-net --allow-env --allow-sys --allow-read supabase/functions/osint-agent/**/*_test.ts"
   },
   "imports": {
     "npm:@supabase/supabase-js@2": "./node_modules/@supabase/supabase-js",

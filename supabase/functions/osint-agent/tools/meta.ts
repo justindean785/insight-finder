@@ -1,5 +1,5 @@
 /**
- * tools/meta.ts — Meta-tools: list_tools (catalog) and triage_seed (Stage-1 gating).
+ * tools/meta.ts — Meta-tools: list_tools (catalog) and triage_seed (Stage-1 context).
  * Extracted from index.ts (lines 1753–1927).
  */
 
@@ -32,19 +32,12 @@ interface Stage1Result {
 
 export const list_tools = tool({
   description:
-    "Returns the OSINT tool catalog (names, descriptions, when-to-use, input shape) plus per-seed fan-out recipes and finding-label rules, FILTERED to what's currently allowed in this investigation. If triage_seed has run, Stage-2 tools that did NOT clear the gate are hidden from `tools` and listed in `disabled_tools` with the reason — do NOT call them, they will be skipped. Call this once at the start, and OPTIONALLY again immediately after `triage_seed` to refresh the allowed set.",
+    "Returns the OSINT tool catalog, per-seed fan-out recipes, finding-label rules, and tools disabled by provider configuration. Triage never hides otherwise available tools.",
   inputSchema: z.object({
     thread_id: z.string().optional().describe("Thread/investigation ID for cache key (best-effort)"),
   }),
   execute: async ({ thread_id }) => {
     const threadId = thread_id ?? "unknown";
-    // Build a triage-aware view of the catalog. Stage-2 tools that
-    // failed to clear the gate are removed from `tools` and surfaced
-    // separately as `disabled_tools` so the agent stops trying them.
-    const stage2 = [
-      "intelbase_email_lookup","oathnet_lookup",
-      "github_code_search","google_dorks","minimax_web_search","urlscan_search",
-    ];
     const disabled: Array<{ name: string; reason: string }> = [];
     // IntelBase is hard-gated at the planner level when the feature flag
     // is off — it must never be selected, regardless of triage outcome.
@@ -54,22 +47,13 @@ export const list_tools = tool({
         reason: "IntelBase gated — provider instability (feature flag off). Use breach_check / leakcheck_lookup / oathnet_lookup / bosint_email_lookup instead.",
       });
     }
-    if (triageState.ran) {
-      for (const name of stage2) {
-        if (!triageState.cleared.has(name)) {
-          const r = triageState.skipped.find((s) => s.tool === name)?.reason
-            ?? "Stage 1 produced no qualifying signal (no breach / no real gravatar / low emailrep / consumer domain).";
-          disabled.push({ name, reason: r });
-        }
-      }
-    }
     const disabledNames = new Set(disabled.map((d) => d.name));
     const filtered = {
       ...TOOL_CATALOG,
       tools: TOOL_CATALOG.tools.filter((t) => !disabledNames.has(t.name)),
     };
-    // Only memoize the BASELINE (pre-triage) catalog so the post-triage
-    // refresh isn't poisoned by a stale early-call cache.
+    // Only memoize the baseline catalog; provider-disabled tools are evaluated
+    // on every call so configuration changes are visible.
     if (!triageState.ran && !CATALOG_CACHE.get(threadId)) {
       CATALOG_CACHE.set(threadId, TOOL_CATALOG);
     }
@@ -84,7 +68,7 @@ export const list_tools = tool({
 });
 
 // ---- triage_seed ------------------------------------------------------------
-// Stage-1 gating tool. Calls emailrep.io, Gravatar, and stolen.tax directly
+// Stage-1 context tool. Calls emailrep.io, Gravatar, and stolen.tax directly
 // (inlined from the emailrep / gravatar_profile / breach_check tools to avoid
 // circular imports before those tools are extracted).
 
@@ -175,7 +159,7 @@ async function callBreachCheck(query: string) {
 
 export const triage_seed = tool({
   description:
-    "MANDATORY first step for email or username seeds. Runs the cheap Stage-1 tools (emailrep, gravatar_profile, breach_check) in parallel, then decides which expensive Stage-2 tools (oathnet_lookup, github_code_search, google_dorks, minimax_web_search, urlscan_search) are allowed to run. Stage-2 tools are blocked at the orchestrator level until this runs and clears them. Records a `triage_decision` artifact.",
+    "Optional early context for email or username seeds. Runs cheap Stage-1 checks and records a `triage_decision` artifact without unlocking or blocking other tools.",
   inputSchema: z.object({
     seed: z.string().min(1),
     type: z.enum(["email", "username"]),
@@ -207,7 +191,7 @@ export const triage_seed = tool({
       stage1.breach = breachRes;
     }
 
-    // ---- Evaluate gate signals ----
+    // ---- Evaluate advisory signals ----
     const erData = (stage1.emailrep as Stage1Result)?.data ?? {};
     const gvData = (stage1.gravatar as Stage1Result)?.data ?? {};
     const brData = (stage1.breach as Stage1Result)?.data ?? {};
@@ -239,9 +223,9 @@ export const triage_seed = tool({
     if (emailrepScore >= 50) reasons.push(`emailrep score ${emailrepScore}`);
     if (nonConsumerDomain) reasons.push(`non-consumer domain ${domain}`);
 
-    // Loosened gate: Stage-2 tools open as soon as triage runs.
+    // Compatibility state remains open because triage is advisory.
     const stage2Open = true;
-    if (reasons.length === 0) reasons.push("triage ran (gate permissive)");
+    if (reasons.length === 0) reasons.push("triage completed with no qualifying signal");
 
     triageState.cleared.clear();
     triageState.skipped = [];
@@ -281,7 +265,7 @@ export const triage_seed = tool({
         thread_id: threadId,
         user_id: userId,
         kind: "triage_decision",
-        value: `triage_decision: ${stage2Open ? "Stage 2 OPEN" : "Stage 2 SKIPPED"} for ${normalized}`,
+        value: `triage_decision: advisory context recorded for ${normalized}`,
         confidence: null,
         source: "triage_seed",
         metadata: { label: "triage_decision", ...decision } as Record<string, unknown>,

@@ -99,7 +99,6 @@ export type RuntimeDecision =
 interface RuntimeThreadState {
   stage: InvestigationStage;
   cycleId: number;
-  planRequired: boolean;
   totalCalls: number;
   activeCalls: number;
   cyclePaidCalls: number;
@@ -111,20 +110,6 @@ interface RuntimeThreadState {
 }
 
 const THREADS = new Map<string, RuntimeThreadState>();
-
-const ALWAYS_ALLOWED_BEFORE_PLAN = new Set([
-  "list_tools",
-  "triage_seed",
-  "memory_recall",
-  "minimax_plan_pivots",
-  "coverage_audit",
-  "detect_contradictions",
-  "tool_audit",
-  "record_artifacts",
-  "record_artifact",
-  "record_finding",
-  "memory_save",
-]);
 
 export const MAX_TOTAL_CALLS = 35;
 export const MAX_CONCURRENT_CALLS = 3;
@@ -138,7 +123,6 @@ function getThread(threadId: string): RuntimeThreadState {
     state = {
       stage: "TRIAGE",
       cycleId: 1,
-      planRequired: true,
       totalCalls: 0,
       activeCalls: 0,
       cyclePaidCalls: 0,
@@ -160,7 +144,6 @@ export function clearRuntime(threadId: string): void {
 export function beginCycle(threadId: string, goal = "Review current evidence and select the next highest-value pivots", findings: string[] = []): ExecutionCyclePlan {
   const state = getThread(threadId);
   state.cycleId += state.plan ? 1 : 0;
-  state.planRequired = true;
   state.cyclePaidCalls = 0;
   state.cycleToolCounts = new Map();
   state.lastStartAt = 0;
@@ -240,8 +223,7 @@ export function noteRejectedCall(threadId: string, rejected: RejectedCall): void
 }
 
 export function completePlan(threadId: string): void {
-  const state = getThread(threadId);
-  state.planRequired = false;
+  ensureCycle(threadId);
 }
 
 export function recordFindingSummary(threadId: string, finding: string): void {
@@ -263,15 +245,7 @@ function nextStageForTool(current: InvestigationStage, toolName: string): Invest
 export function startCall(input: RuntimeDecisionInput): RuntimeDecision {
   const state = getThread(input.threadId);
   const now = input.now ?? Date.now();
-  const repeatedFamily = state.familyCalls.has(input.familyKey);
-  const threshold = requiredThreshold(input.costTier, repeatedFamily);
 
-  if (input.weakLead.autoPivotBlocked && !input.manualOverride) {
-    return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `weak lead blocked: ${input.weakLead.reasons.join("; ")}` };
-  }
-  if (state.planRequired && !ALWAYS_ALLOWED_BEFORE_PLAN.has(input.toolName)) {
-    return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: "execution plan required for this cycle" };
-  }
   if (state.totalCalls >= MAX_TOTAL_CALLS) {
     return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `call budget exhausted (${MAX_TOTAL_CALLS})` };
   }
@@ -284,23 +258,6 @@ export function startCall(input: RuntimeDecisionInput): RuntimeDecision {
   if ((state.cycleToolCounts.get(input.toolName) ?? 0) >= MAX_SAME_TOOL_CALLS_PER_CYCLE) {
     return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `same-tool cycle limit reached (${MAX_SAME_TOOL_CALLS_PER_CYCLE})` };
   }
-  // The expected-value gate suppresses low-value EXTERNAL evidence-gathering
-  // pivots. It must NOT block the agent's own orchestration tools (planning,
-  // memory recall, recording, auditing, triage) — those are bookkeeping, not
-  // data-source spend, and they carry their own rate limits (e.g. memory_recall's
-  // 30s window, the planner's once-per-round guard, the same-tool-per-cycle cap).
-  // Without this exemption the planner (minimax_plan_pivots, "expensive" tier →
-  // threshold 70) can never clear the gate on a bare seed, planRequired never
-  // clears, every other tool is blocked by "execution plan required", and the
-  // investigation deadlocks into a retry loop and FAILS.
-  if (
-    !ALWAYS_ALLOWED_BEFORE_PLAN.has(input.toolName) &&
-    input.expectedValue < threshold &&
-    !(input.staleCache && input.manualOverride)
-  ) {
-    return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `expected value ${input.expectedValue} below ${threshold}` };
-  }
-
   const scheduledStartAt = Math.max(now, state.lastStartAt + MIN_START_GAP_MS);
   const waitMs = Math.max(0, scheduledStartAt - now);
   state.stage = nextStageForTool(state.stage, input.toolName);
@@ -310,7 +267,6 @@ export function startCall(input: RuntimeDecisionInput): RuntimeDecision {
   state.cycleToolCounts.set(input.toolName, (state.cycleToolCounts.get(input.toolName) ?? 0) + 1);
   state.familyCalls.add(input.familyKey);
   state.lastStartAt = scheduledStartAt;
-  if (input.toolName === "minimax_plan_pivots") state.planRequired = false;
   return { allow: true, stage: state.stage, cycleId: state.cycleId, waitMs };
 }
 
