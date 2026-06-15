@@ -15,7 +15,6 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import { ThreadHeader } from "./ThreadHeader";
 import { detectSeed } from "@/lib/seed";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { buildPivots } from "@/lib/intel";
@@ -1574,11 +1573,10 @@ function ChatWindowInner({
   }, [isLoading, messages, artifacts, seedValue, reportPivots]);
 
   return (
-    <div className="relative flex-1 flex flex-col h-screen min-w-0 overflow-hidden bg-background">
+    <div className="relative flex-1 flex flex-col h-full min-w-0 overflow-hidden bg-background">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(255,255,255,0.05),transparent_34%),radial-gradient(circle_at_50%_100%,rgba(43,52,68,0.18),transparent_28%)]" />
       <div className="pointer-events-none absolute inset-y-0 left-[calc(50%-28rem)] w-px bg-gradient-to-b from-transparent via-white/8 to-transparent hidden xl:block" />
       <div className="pointer-events-none absolute inset-y-0 right-[calc(50%-28rem)] w-px bg-gradient-to-b from-transparent via-white/8 to-transparent hidden xl:block" />
-      <ThreadHeader threadId={threadId} messages={messages} isStreaming={isLoading} />
       <div
         ref={scrollRef}
         onScroll={(event) => {
