@@ -133,20 +133,20 @@ export function ThreadHeader({
         <span className={`shrink-0 rounded-full border px-2.5 py-1 font-mono uppercase tracking-[0.18em] ${statusColor}`}>
           {status}
         </span>
-        <div className="flex items-center gap-1 text-muted-foreground shrink-0">
+        <div className="flex items-center gap-1 text-muted-foreground shrink-0" title={`${artifactCount} artifacts`}>
           <Database className="w-3.5 h-3.5" />
           <span className="text-foreground">{artifactCount}</span>
-          <span>artifacts</span>
+          <span className="hidden lg:inline">artifacts</span>
         </div>
-        <div className="flex items-center gap-1 text-muted-foreground shrink-0">
+        <div className="flex items-center gap-1 text-muted-foreground shrink-0" title={`${toolsRun} tools run`}>
           <Wrench className="w-3.5 h-3.5" />
           <span className="text-foreground">{toolsRun}</span>
-          <span>tools</span>
+          <span className="hidden lg:inline">tools</span>
         </div>
-        <div className="flex items-center gap-1 text-muted-foreground shrink-0">
+        <div className="flex items-center gap-1 text-muted-foreground shrink-0" title={`${breachCount} breaches`}>
           <ShieldAlert className="w-3.5 h-3.5" />
           <span className="text-foreground">{breachCount}</span>
-          <span>breaches</span>
+          <span className="hidden lg:inline">breaches</span>
         </div>
         {integrity && integrity.total > 0 && (
           <div
@@ -162,20 +162,18 @@ export function ThreadHeader({
             <span>{integrity.ok ? "100%" : Math.max(0, Math.round(((Number(integrity.first_break ?? 1) - 1) / Math.max(integrity.total, 1)) * 100)) + "%"}</span>
           </div>
         )}
-        <button
-          type="button"
-          onClick={showFailedTools}
-          disabled={toolsFailed <= 0}
-          title={toolsFailed > 0 ? "Jump to first failed tool call" : "No failed calls"}
-          className={cn(
-            "flex items-center gap-1 text-muted-foreground rounded px-1 shrink-0",
-            toolsFailed > 0 && "hover:bg-destructive/10 hover:text-destructive cursor-pointer",
-          )}
-        >
-          <AlertTriangle className="w-3.5 h-3.5" />
-          <span className="text-foreground">{toolsFailed}</span>
-          <span>failed</span>
-        </button>
+        {toolsFailed > 0 && (
+          <button
+            type="button"
+            onClick={showFailedTools}
+            title="Jump to first failed tool call"
+            className="flex items-center gap-1 rounded px-1 shrink-0 text-destructive hover:bg-destructive/10 cursor-pointer"
+          >
+            <AlertTriangle className="w-3.5 h-3.5" />
+            <span>{toolsFailed}</span>
+            <span className="hidden lg:inline">failed</span>
+          </button>
+        )}
         {(thread?.credits_used ?? toolsRun) > 0 && (
           <div className="flex items-center gap-1 text-muted-foreground shrink-0">
             <Coins className="w-3.5 h-3.5" />
