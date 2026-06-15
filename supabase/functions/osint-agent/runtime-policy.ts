@@ -101,8 +101,8 @@ interface RuntimeThreadState {
   cycleId: number;
   totalCalls: number;
   activeCalls: number;
-  cyclePaidCalls: number;
-  cycleToolCounts: Map<string, number>;
+  paidCalls: number;
+  toolCounts: Map<string, number>;
   familyCalls: Set<string>;
   lastStartAt: number;
   findings: string[];
@@ -111,17 +111,25 @@ interface RuntimeThreadState {
 
 const THREADS = new Map<string, RuntimeThreadState>();
 
-// Call budget. These are runaway-cost backstops, NOT per-run throttles: the
-// old values (paid=2/cycle, same-tool=1/cycle) choked every investigation —
-// the agent burned its cycle on 2 paid tools, hit "paid-call cycle limit
-// reached (2)", fell back to free tools that find nothing, and finished with 0
-// artifacts. Paid OSINT calls cost ~$0.0014/run, so the bottleneck bought no
-// real savings while killing yield. Raised so a cycle can actually gather
-// evidence; MAX_TOTAL_CALLS remains the hard stop against infinite loops.
+// Runaway-cost backstops, enforced PER RUN (per investigation thread) — NOT per
+// cycle and NOT advisory. startCall refuses once any of these is hit; that is
+// the only place the runtime says "no". Everything else (which tool, in what
+// order, weak-lead handling) is advisory and lives in the planner/prompt.
+//
+// These reset ONLY when the thread is cleared (clearRuntime → a brand-new
+// investigation). beginCycle must NEVER refresh them: beginCycle runs on every
+// free record_artifacts, and the old per-cycle counters let free recording
+// silently hand paid-execution allowance back, defeating the budget. Counters
+// are therefore lifetime-of-run.
+//
+// Old per-cycle values (paid=2, same-tool=1) also choked yield — the agent
+// burned its cycle on 2 paid tools, hit the cap, fell back to free tools, and
+// finished with 0 artifacts. As per-run backstops they are set generously so an
+// investigation can pivot freely; MAX_TOTAL_CALLS is the ultimate ceiling.
 export const MAX_TOTAL_CALLS = 60;
 export const MAX_CONCURRENT_CALLS = 6;
-export const MAX_PAID_CALLS_PER_CYCLE = 12;
-export const MAX_SAME_TOOL_CALLS_PER_CYCLE = 3;
+export const MAX_PAID_CALLS = 30;
+export const MAX_SAME_TOOL_CALLS = 10;
 export const MIN_START_GAP_MS = 400;
 
 function getThread(threadId: string): RuntimeThreadState {
@@ -132,8 +140,8 @@ function getThread(threadId: string): RuntimeThreadState {
       cycleId: 1,
       totalCalls: 0,
       activeCalls: 0,
-      cyclePaidCalls: 0,
-      cycleToolCounts: new Map(),
+      paidCalls: 0,
+      toolCounts: new Map(),
       familyCalls: new Set(),
       lastStartAt: 0,
       findings: [],
@@ -151,8 +159,11 @@ export function clearRuntime(threadId: string): void {
 export function beginCycle(threadId: string, goal = "Review current evidence and select the next highest-value pivots", findings: string[] = []): ExecutionCyclePlan {
   const state = getThread(threadId);
   state.cycleId += state.plan ? 1 : 0;
-  state.cyclePaidCalls = 0;
-  state.cycleToolCounts = new Map();
+  // NOTE: paidCalls / toolCounts are deliberately NOT reset here. They are
+  // per-run runaway backstops; beginCycle fires on every free record_artifacts,
+  // and resetting them would let free recording refresh paid-execution budget
+  // (the reset bug). Only clearRuntime (a new investigation) zeroes them.
+  // lastStartAt resets so a fresh cycle isn't penalized by the prior pacing gap.
   state.lastStartAt = 0;
   state.findings = findings;
   state.plan = {
@@ -194,12 +205,9 @@ export function scoreExpectedValue(input: ExpectedValueInput): number {
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
-export function requiredThreshold(costTier: ToolCostTier, repeatedToolFamily = false): number {
-  if (repeatedToolFamily) return 80;
-  if (costTier === "free") return 35;
-  if (costTier === "low") return 50;
-  return 70;
-}
+// NOTE: there is intentionally no expected-value threshold gate. Expected value
+// is advisory — it ranks pivots (scoreExpectedValue) but never blocks a call.
+// Low EV → lower ranking, never allow:false. (Removed requiredThreshold.)
 
 export function analyzeWeakLead(signal: SelectorEvidenceSignal): WeakLeadDecision {
   const reasons: string[] = [];
@@ -259,19 +267,19 @@ export function startCall(input: RuntimeDecisionInput): RuntimeDecision {
   if (state.activeCalls >= MAX_CONCURRENT_CALLS) {
     return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `active-call concurrency limit reached (${MAX_CONCURRENT_CALLS})` };
   }
-  if (input.costTier !== "free" && state.cyclePaidCalls >= MAX_PAID_CALLS_PER_CYCLE) {
-    return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `paid-call cycle limit reached (${MAX_PAID_CALLS_PER_CYCLE})` };
+  if (input.costTier !== "free" && state.paidCalls >= MAX_PAID_CALLS) {
+    return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `paid-call budget exhausted (${MAX_PAID_CALLS} per run)` };
   }
-  if ((state.cycleToolCounts.get(input.toolName) ?? 0) >= MAX_SAME_TOOL_CALLS_PER_CYCLE) {
-    return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `same-tool cycle limit reached (${MAX_SAME_TOOL_CALLS_PER_CYCLE})` };
+  if ((state.toolCounts.get(input.toolName) ?? 0) >= MAX_SAME_TOOL_CALLS) {
+    return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `same-tool budget exhausted (${MAX_SAME_TOOL_CALLS} per run)` };
   }
   const scheduledStartAt = Math.max(now, state.lastStartAt + MIN_START_GAP_MS);
   const waitMs = Math.max(0, scheduledStartAt - now);
   state.stage = nextStageForTool(state.stage, input.toolName);
   state.totalCalls += 1;
   state.activeCalls += 1;
-  if (input.costTier !== "free") state.cyclePaidCalls += 1;
-  state.cycleToolCounts.set(input.toolName, (state.cycleToolCounts.get(input.toolName) ?? 0) + 1);
+  if (input.costTier !== "free") state.paidCalls += 1;
+  state.toolCounts.set(input.toolName, (state.toolCounts.get(input.toolName) ?? 0) + 1);
   state.familyCalls.add(input.familyKey);
   state.lastStartAt = scheduledStartAt;
   return { allow: true, stage: state.stage, cycleId: state.cycleId, waitMs };

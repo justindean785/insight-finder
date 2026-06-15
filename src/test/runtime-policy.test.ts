@@ -3,63 +3,61 @@ import {
   analyzeWeakLead,
   beginCycle,
   clearRuntime,
-  completePlan,
   currentStage,
+  finishCall,
   noteRejectedCall,
-  requiredThreshold,
   scoreExpectedValue,
   startCall,
-  finishCall,
   MAX_CONCURRENT_CALLS,
+  MAX_PAID_CALLS,
+  MAX_SAME_TOOL_CALLS,
   MAX_TOTAL_CALLS,
-  MAX_PAID_CALLS_PER_CYCLE,
-  MAX_SAME_TOOL_CALLS_PER_CYCLE,
   MIN_START_GAP_MS,
+  type RuntimeDecisionInput,
 } from "../../supabase/functions/osint-agent/runtime-policy.ts";
+import { SYSTEM_PROMPT } from "../../supabase/functions/osint-agent/system-prompt.ts";
 
 const THREAD = "runtime-policy-test";
+const noWeakLead = { weak: false, reasons: [], autoPivotBlocked: false };
+
+function base(overrides: Partial<RuntimeDecisionInput> = {}): RuntimeDecisionInput {
+  return {
+    threadId: THREAD,
+    toolName: "minimax_web_search",
+    selector: "foo@example.com",
+    selectorType: "email",
+    costTier: "low",
+    expectedValue: 70,
+    familyKey: "minimax_web_search::email::foo@example.com",
+    weakLead: noWeakLead,
+    staleCache: false,
+    ...overrides,
+  };
+}
 
 beforeEach(() => {
   clearRuntime(THREAD);
 });
 
-describe("runtime-policy", () => {
-  it("allows bounded execution without a planner object", () => {
-    beginCycle(THREAD);
-    const decision = startCall({
-      threadId: THREAD,
-      toolName: "breach_check",
-      selector: "foo@example.com",
-      selectorType: "email",
+// ---- Fail-open execution: the agent always gets to run the best tool ----------
+describe("runtime-policy: fail-open execution", () => {
+  it("runs a tool with no planner cycle (no execution-plan deadlock)", () => {
+    // No beginCycle() / plan object — must still fall back to executing.
+    const decision = startCall(base({ toolName: "breach_check", costTier: "expensive" }));
+    expect(decision.allow).toBe(true);
+  });
+
+  it("treats low expected value as advisory, never a block", () => {
+    const decision = startCall(base({
+      toolName: "leakcheck_lookup",
       costTier: "expensive",
-      expectedValue: 90,
-      familyKey: "breach_check::email::foo@example.com",
-      weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
-      staleCache: false,
-    });
+      expectedValue: 1,
+      familyKey: "leakcheck_lookup::email::foo@example.com",
+    }));
     expect(decision.allow).toBe(true);
-    finishCall(THREAD, "breach_check");
   });
 
-  it("allows execution after the planner completes", () => {
-    beginCycle(THREAD);
-    completePlan(THREAD);
-    const decision = startCall({
-      threadId: THREAD,
-      toolName: "minimax_web_search",
-      selector: "foo@example.com",
-      selectorType: "email",
-      costTier: "low",
-      expectedValue: 72,
-      familyKey: "minimax_web_search::email::foo@example.com",
-      weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
-      staleCache: false,
-    });
-    expect(decision.allow).toBe(true);
-    finishCall(THREAD, "minimax_web_search");
-  });
-
-  it("allows targeted weak-lead verification while preserving the weak label", () => {
+  it("still executes a weak lead (labeled, not auto-rejected)", () => {
     const weakLead = analyzeWeakLead({
       selector: "richbrat444",
       selectorType: "username",
@@ -76,246 +74,146 @@ describe("runtime-policy", () => {
       sameNameWithoutOverlap: false,
       displayNameOnly: false,
     });
-    beginCycle(THREAD);
-    completePlan(THREAD);
-    expect(weakLead.weak).toBe(true);
-    expect(weakLead.reasons).toContain("username collision");
-    const decision = startCall({
-      threadId: THREAD,
+    expect(weakLead.weak).toBe(true); // it IS classified weak (for labeling)
+    const decision = startCall(base({
       toolName: "socialfetch_lookup",
       selector: "richbrat444",
       selectorType: "username",
-      costTier: "low",
-      expectedValue: 68,
       familyKey: "socialfetch_lookup::username::richbrat444",
-      weakLead,
-      staleCache: false,
-    });
+      weakLead, // weak + autoPivotBlocked, yet still allowed
+    }));
     expect(decision.allow).toBe(true);
-    finishCall(THREAD, "socialfetch_lookup");
   });
+});
 
-  it("enforces per-cycle same-tool and paid-call limits", () => {
-    beginCycle(THREAD);
-    completePlan(THREAD);
-
-    // Up to MAX_PAID_CALLS_PER_CYCLE distinct paid tools are allowed; one beyond
-    // is blocked. (Each finishes immediately so concurrency never gates here.)
-    for (let i = 0; i < MAX_PAID_CALLS_PER_CYCLE; i++) {
-      expect(startCall({
-        threadId: THREAD,
-        toolName: `paid_tool_${i}`,
-        selector: "foo@example.com",
-        selectorType: "email",
+// ---- Hard stops: real runaway backstops, per run, NOT refreshed by recording --
+describe("runtime-policy: per-run hard stops", () => {
+  it("does NOT refresh the paid-call budget when artifacts are recorded (beginCycle)", () => {
+    // Exhaust the per-run paid budget with distinct paid tools.
+    for (let i = 0; i < MAX_PAID_CALLS; i++) {
+      const d = startCall(base({
+        toolName: `paid_${i}`,
         costTier: "expensive",
-        expectedValue: 90,
-        familyKey: `paid_tool_${i}::email::foo@example.com`,
-        weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
-        staleCache: false,
-        now: 1_000 + i * MIN_START_GAP_MS,
-      }).allow).toBe(true);
-      finishCall(THREAD, `paid_tool_${i}`);
+        familyKey: `paid_${i}::email::foo`,
+        now: i * MIN_START_GAP_MS,
+      }));
+      expect(d.allow).toBe(true);
+      finishCall(THREAD, `paid_${i}`);
     }
-
-    const overPaid = startCall({
-      threadId: THREAD,
-      toolName: "paid_tool_over",
-      selector: "foo@example.com",
-      selectorType: "email",
+    const blocked = startCall(base({
+      toolName: "paid_overflow",
       costTier: "expensive",
-      expectedValue: 90,
-      familyKey: "paid_tool_over::email::foo@example.com",
-      weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
-      staleCache: false,
-      now: 1_000 + (MAX_PAID_CALLS_PER_CYCLE + 1) * MIN_START_GAP_MS,
-    });
-    expect(overPaid.allow).toBe(false);
+      familyKey: "paid_overflow::email::foo",
+      now: MAX_PAID_CALLS * MIN_START_GAP_MS,
+    }));
+    expect(blocked.allow).toBe(false);
+    if ("reason" in blocked) expect(blocked.reason).toMatch(/paid-call budget/i);
+
+    // Simulate record_artifacts → beginCycle (this used to reset the counter).
+    beginCycle(THREAD);
+
+    // Paid budget must STILL be exhausted — free recording cannot buy paid calls.
+    const stillBlocked = startCall(base({
+      toolName: "paid_after_record",
+      costTier: "expensive",
+      familyKey: "paid_after_record::email::foo",
+      now: 1_000_000,
+    }));
+    expect(stillBlocked.allow).toBe(false);
+    if ("reason" in stillBlocked) expect(stillBlocked.reason).toMatch(/paid-call budget/i);
+
+    // ...but FREE tools still run, proving this is the paid budget, not total exhaustion.
+    const free = startCall(base({
+      toolName: "free_after_record",
+      costTier: "free",
+      familyKey: "free_after_record::email::foo",
+      now: 1_000_001,
+    }));
+    expect(free.allow).toBe(true);
   });
 
-  it("enforces the per-cycle same-tool cap", () => {
-    beginCycle(THREAD);
-    completePlan(THREAD);
-
-    // The same tool may run up to MAX_SAME_TOOL_CALLS_PER_CYCLE times per cycle
-    // (free tier so the paid cap never interferes); one beyond is blocked.
-    for (let i = 0; i < MAX_SAME_TOOL_CALLS_PER_CYCLE; i++) {
-      expect(startCall({
-        threadId: THREAD,
+  it("hard-stops same-tool repeats per run, and recording does not reset it", () => {
+    for (let i = 0; i < MAX_SAME_TOOL_CALLS; i++) {
+      const d = startCall(base({
         toolName: "google_dorks",
-        selector: `selector-${i}@example.com`,
-        selectorType: "email",
         costTier: "free",
-        expectedValue: 90,
-        familyKey: `google_dorks::email::selector-${i}@example.com`,
-        weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
-        staleCache: false,
-        now: 1_000 + i * MIN_START_GAP_MS,
-      }).allow).toBe(true);
+        selector: `s${i}`,
+        familyKey: `google_dorks::email::s${i}`,
+        now: i * MIN_START_GAP_MS,
+      }));
+      expect(d.allow).toBe(true);
       finishCall(THREAD, "google_dorks");
     }
-
-    const overSameTool = startCall({
-      threadId: THREAD,
+    const blocked = startCall(base({
       toolName: "google_dorks",
-      selector: "selector-over@example.com",
-      selectorType: "email",
       costTier: "free",
-      expectedValue: 90,
-      familyKey: "google_dorks::email::selector-over@example.com",
-      weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
-      staleCache: false,
-      now: 1_000 + (MAX_SAME_TOOL_CALLS_PER_CYCLE + 1) * MIN_START_GAP_MS,
-    });
-    expect(overSameTool.allow).toBe(false);
-  });
+      familyKey: "google_dorks::email::overflow",
+      now: MAX_SAME_TOOL_CALLS * MIN_START_GAP_MS,
+    }));
+    expect(blocked.allow).toBe(false);
+    if ("reason" in blocked) expect(blocked.reason).toMatch(/same-tool budget/i);
 
-  it("tracks active concurrency separately from completed calls", () => {
-    beginCycle(THREAD);
-    completePlan(THREAD);
-    const first = startCall({
-      threadId: THREAD,
+    beginCycle(THREAD); // record_artifacts must not refresh it
+    const stillBlocked = startCall(base({
       toolName: "google_dorks",
-      selector: "one@example.com",
-      selectorType: "email",
       costTier: "free",
-      expectedValue: 80,
-      familyKey: "google_dorks::email::one@example.com",
-      weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
-      staleCache: false,
-      now: 1_000,
-    });
-    expect(first.allow).toBe(true);
-    finishCall(THREAD, "google_dorks");
-
-    const second = startCall({
-      threadId: THREAD,
-      toolName: "dork_harvest",
-      selector: "two@example.com",
-      selectorType: "email",
-      costTier: "free",
-      expectedValue: 80,
-      familyKey: "dork_harvest::email::two@example.com",
-      weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
-      staleCache: false,
-      now: 2_000,
-    });
-    expect(second.allow).toBe(true);
+      familyKey: "google_dorks::email::overflow2",
+      now: 1_000_000,
+    }));
+    expect(stillBlocked.allow).toBe(false);
   });
 
-  it("blocks a fourth active call and releases capacity after finish", () => {
-    beginCycle(THREAD);
-    completePlan(THREAD);
-    for (let index = 0; index < MAX_CONCURRENT_CALLS; index++) {
-      expect(startCall({
-        threadId: THREAD,
-        toolName: `free_tool_${index}`,
-        selector: `selector-${index}`,
-        selectorType: "value",
+  it("hard-stops the total call budget", () => {
+    for (let i = 0; i < MAX_TOTAL_CALLS; i++) {
+      const d = startCall(base({
+        toolName: `t_${i}`,
         costTier: "free",
-        expectedValue: 90,
-        familyKey: `free_tool_${index}::selector-${index}`,
-        weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
-        staleCache: false,
-        now: 1_000,
-      }).allow).toBe(true);
-    }
-    expect(startCall({
-      threadId: THREAD,
-      toolName: "fourth_tool",
-      selector: "selector-four",
-      selectorType: "value",
-      costTier: "free",
-      expectedValue: 90,
-      familyKey: "fourth_tool::selector-four",
-      weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
-      staleCache: false,
-      now: 1_000,
-    }).allow).toBe(false);
-
-    finishCall(THREAD, "free_tool_0");
-    expect(startCall({
-      threadId: THREAD,
-      toolName: "replacement_tool",
-      selector: "replacement",
-      selectorType: "value",
-      costTier: "free",
-      expectedValue: 90,
-      familyKey: "replacement_tool::replacement",
-      weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
-      staleCache: false,
-      now: 4_000,
-    }).allow).toBe(true);
-  });
-
-  it("enforces the total call budget even when force is requested", () => {
-    beginCycle(THREAD);
-    completePlan(THREAD);
-    for (let index = 0; index < MAX_TOTAL_CALLS; index++) {
-      const decision = startCall({
-        threadId: THREAD,
-        toolName: `budget_tool_${index}`,
-        selector: `selector-${index}`,
-        selectorType: "value",
-        costTier: "free",
-        expectedValue: 90,
-        familyKey: `budget_tool_${index}::selector-${index}`,
-        weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
-        staleCache: false,
+        familyKey: `t_${i}::v`,
         force: true,
-        now: 1_000 + index * MIN_START_GAP_MS,
-      });
-      expect(decision.allow).toBe(true);
-      finishCall(THREAD, `budget_tool_${index}`);
+        now: i * MIN_START_GAP_MS,
+      }));
+      expect(d.allow).toBe(true);
+      finishCall(THREAD, `t_${i}`);
     }
-    const exhausted = startCall({
-      threadId: THREAD,
-      toolName: "budget_tool_overflow",
-      selector: "overflow",
-      selectorType: "value",
+    const exhausted = startCall(base({
+      toolName: "overflow",
       costTier: "free",
-      expectedValue: 100,
-      familyKey: "budget_tool_overflow::overflow",
-      weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
-      staleCache: false,
+      familyKey: "overflow::v",
       force: true,
-      now: 100_000,
-    });
+      now: 10_000_000,
+    }));
     expect(exhausted.allow).toBe(false);
     if ("reason" in exhausted) expect(exhausted.reason).toMatch(/budget exhausted/i);
   });
 
-  it("queues provider starts to preserve the minimum pacing gap", () => {
-    beginCycle(THREAD);
-    completePlan(THREAD);
-    const first = startCall({
-      threadId: THREAD,
-      toolName: "google_dorks",
-      selector: "one",
-      selectorType: "username",
-      costTier: "free",
-      expectedValue: 80,
-      familyKey: "google_dorks::username::one",
-      weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
-      staleCache: false,
-      now: 1_000,
-    });
-    const second = startCall({
-      threadId: THREAD,
-      toolName: "dork_harvest",
-      selector: "two",
-      selectorType: "username",
-      costTier: "free",
-      expectedValue: 80,
-      familyKey: "dork_harvest::username::two",
-      weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
-      staleCache: false,
-      now: 1_000,
-    });
+  it("hard-stops concurrency and releases capacity on finish", () => {
+    for (let i = 0; i < MAX_CONCURRENT_CALLS; i++) {
+      expect(startCall(base({
+        toolName: `c_${i}`,
+        costTier: "free",
+        familyKey: `c_${i}::v`,
+        now: 1_000,
+      })).allow).toBe(true);
+    }
+    const over = startCall(base({ toolName: "c_over", costTier: "free", familyKey: "c_over::v", now: 1_000 }));
+    expect(over.allow).toBe(false);
+    if ("reason" in over) expect(over.reason).toMatch(/concurrency/i);
+
+    finishCall(THREAD, "c_0");
+    expect(startCall(base({ toolName: "c_repl", costTier: "free", familyKey: "c_repl::v", now: 4_000 })).allow).toBe(true);
+  });
+
+  it("preserves the minimum pacing gap between starts", () => {
+    const first = startCall(base({ toolName: "google_dorks", costTier: "free", familyKey: "gd::v", now: 1_000 }));
+    const second = startCall(base({ toolName: "dork_harvest", costTier: "free", familyKey: "dh::v", now: 1_000 }));
     expect(first.allow && first.waitMs).toBe(0);
     expect(second.allow && second.waitMs).toBe(MIN_START_GAP_MS);
   });
+});
 
-  it("scores expected value and thresholds predictably", () => {
+// ---- Advisory ranking + bookkeeping ------------------------------------------
+describe("runtime-policy: advisory scoring & bookkeeping", () => {
+  it("scores expected value for ranking (advisory only)", () => {
     expect(scoreExpectedValue({
       selectorConfidence: 70,
       sourceIndependenceBonus: 18,
@@ -324,27 +222,16 @@ describe("runtime-policy", () => {
       duplicatePenalty: 10,
       weakLeadPenalty: 15,
     })).toBe(55);
-    expect(requiredThreshold("free")).toBe(35);
-    expect(requiredThreshold("low")).toBe(50);
-    expect(requiredThreshold("expensive")).toBe(70);
-    expect(requiredThreshold("low", true)).toBe(80);
   });
 
-  it("keeps track of stage progression and rejected calls", () => {
+  it("tracks stage progression and logs rejected calls without throwing", () => {
     beginCycle(THREAD, "test");
-    completePlan(THREAD);
     expect(currentStage(THREAD)).toBe("TRIAGE");
-    const decision = startCall({
-      threadId: THREAD,
+    const decision = startCall(base({
       toolName: "triage_seed",
-      selector: "foo@example.com",
-      selectorType: "email",
       costTier: "free",
-      expectedValue: 85,
       familyKey: "triage_seed::email::foo@example.com",
-      weakLead: { weak: false, reasons: [], autoPivotBlocked: false },
-      staleCache: false,
-    });
+    }));
     expect(decision.allow).toBe(true);
     finishCall(THREAD, "triage_seed");
     expect(currentStage(THREAD)).toBe("REVIEW");
@@ -354,11 +241,27 @@ describe("runtime-policy", () => {
       selector: "foo",
       selector_type: "username",
       expected_value: 12,
-      reason: "weak lead blocked",
+      reason: "circuit breaker open",
       cost_tier: "low",
       weak_lead: true,
       stale_cache: false,
       manual_override: false,
     })).not.toThrow();
+  });
+});
+
+// ---- Prompt/constant consistency (no drift) ----------------------------------
+describe("runtime-policy: system prompt advertises real caps", () => {
+  it("interpolates the actual runtime constants and drops the stale numbers", () => {
+    expect(SYSTEM_PROMPT).toContain(String(MAX_TOTAL_CALLS));
+    expect(SYSTEM_PROMPT).toContain(String(MAX_PAID_CALLS));
+    expect(SYSTEM_PROMPT).toContain(String(MAX_SAME_TOOL_CALLS));
+    expect(SYSTEM_PROMPT).toContain(String(MAX_CONCURRENT_CALLS));
+    expect(SYSTEM_PROMPT).toContain(`${MIN_START_GAP_MS}ms`);
+    // The pre-fix prompt advertised these; they must be gone.
+    expect(SYSTEM_PROMPT).not.toMatch(/35 calls total/);
+    expect(SYSTEM_PROMPT).not.toMatch(/750ms/);
+    expect(SYSTEM_PROMPT).not.toMatch(/2 paid calls per cycle/);
+    expect(SYSTEM_PROMPT).not.toMatch(/1 same-tool call per cycle/);
   });
 });

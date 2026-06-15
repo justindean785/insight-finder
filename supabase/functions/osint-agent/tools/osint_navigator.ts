@@ -13,7 +13,6 @@ import {
   isDegraded,
   markToolDegraded,
 } from "../env.ts";
-import { gateStage2 } from "../guard.ts";
 import type {
   NavigatorQueryResponse,
   NavigatorSearchResponse,
@@ -68,8 +67,6 @@ export const oathnet_lookup = tool({
     value: z.string(),
   }),
   execute: async ({ type, value }) => {
-    const gated = gateStage2("oathnet_lookup");
-    if (gated) return gated;
     if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
     try {
       let url: string;

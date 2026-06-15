@@ -246,8 +246,6 @@ export const urlscan_search = tool({
     "Search urlscan.io's public scan database (no auth). Use to find historical URLs/screenshots referencing a domain, IP, hash, or string. Returns up to 20 scan results with page URL, screenshot, IP, ASN.",
   inputSchema: z.object({ query: z.string().describe('Lucene query, e.g. domain:example.com or ip:1.2.3.4 or page.url:"keyword"') }),
   execute: async ({ query }) => {
-    const gated = gateStage2("urlscan_search");
-    if (gated) return gated;
     try {
       const r = await fetch(`https://urlscan.io/api/v1/search/?q=${encodeURIComponent(query)}&size=20`);
       const data = await r.json().catch(() => ({}));

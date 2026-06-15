@@ -64,7 +64,7 @@ import {
 // guard.ts — Per-investigation guard state, routing guards, triage gating
 import {
   guard, routingGuard, CONSUMER_DOMAINS, STAGE2_TOOLS,
-  triageState, bumpArtifacts, skipStub, gateStage2,
+  triageState, bumpArtifacts, skipStub,
 } from "./guard.ts";
 
 // auth.ts — Request setup: CORS preflight, JWT auth, thread ownership, message persistence
@@ -436,8 +436,6 @@ Deno.serve(async (req) => {
           focus: z.string().optional().describe("Optional steering hint, e.g. 'find social profiles', 'find leaks'"),
         }),
         execute: async ({ query, focus }) => {
-          const gated = gateStage2("minimax_web_search");
-          if (gated) return gated;
           if (!PERPLEXITY_API_KEY) return { error: "PERPLEXITY_API_KEY not configured" };
           try {
             const r = await fetchRetry("https://api.perplexity.ai/chat/completions", {
@@ -685,8 +683,6 @@ Deno.serve(async (req) => {
               reason: "intelbase disabled (provider unhealthy ~33% success). Use breach_check / leakcheck_lookup / oathnet_lookup / bosint_email_lookup instead.",
             };
           }
-          const gated = gateStage2("intelbase_email_lookup");
-          if (gated) return gated;
           if (!INTELBASE_API_KEY) return { error: "INTELBASE_API_KEY not configured" };
           try {
             const body: Record<string, unknown> = { email, include_data_breaches };
@@ -805,8 +801,6 @@ Deno.serve(async (req) => {
           value: z.string(),
         }),
         execute: async ({ type, value }) => {
-          const gated = gateStage2("oathnet_lookup");
-          if (gated) return gated;
           if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
           try {
             let url: string;
@@ -2888,8 +2882,6 @@ Deno.serve(async (req) => {
           "Search urlscan.io's public scan database (no auth). Use to find historical URLs/screenshots referencing a domain, IP, hash, or string. Returns up to 20 scan results with page URL, screenshot, IP, ASN.",
         inputSchema: z.object({ query: z.string().describe('Lucene query, e.g. domain:example.com or ip:1.2.3.4 or page.url:"keyword"') }),
         execute: async ({ query }) => {
-          const gated = gateStage2("urlscan_search");
-          if (gated) return gated;
           try {
             const r = await fetchT(`https://urlscan.io/api/v1/search/?q=${encodeURIComponent(query)}&size=20`, {}, 12_000);
             interface UrlscanResult {
@@ -2990,8 +2982,6 @@ Deno.serve(async (req) => {
           "Search GitHub's public code index for a string (email, username, key fragment, internal hostname). Returns up to 20 file matches with repo and snippet. Authenticated via GITHUB_API_TOKEN (5,000 req/hr) when configured, else falls back to unauthenticated (60 req/hr).",
         inputSchema: z.object({ query: z.string() }),
         execute: async ({ query }) => {
-          const gated = gateStage2("github_code_search");
-          if (gated) return gated;
           try {
             const headers: Record<string, string> = {
               "User-Agent": "Proximity-OSINT",

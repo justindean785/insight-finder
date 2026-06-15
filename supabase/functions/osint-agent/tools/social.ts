@@ -173,8 +173,6 @@ export const github_code_search = tool({
     "Search GitHub's public code index for a string (email, username, key fragment, internal hostname). Returns up to 20 file matches with repo and snippet. Authenticated via GITHUB_API_TOKEN (5,000 req/hr) when configured, else falls back to unauthenticated (60 req/hr).",
   inputSchema: z.object({ query: z.string() }),
   execute: async ({ query }) => {
-    const gated = gateStage2("github_code_search");
-    if (gated) return gated;
     try {
       const headers: Record<string, string> = {
         "User-Agent": "Proximity-OSINT",

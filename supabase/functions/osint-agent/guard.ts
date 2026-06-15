@@ -86,9 +86,3 @@ export function skipStub(tool: string, reason: string, state: Record<string, unk
     guard_state: state,
   };
 }
-
-// Triage is advisory. Kept as a compatibility hook for extracted tools.
-export function gateStage2(name: string): null | ReturnType<typeof skipStub> {
-  void name;
-  return null;
-}
