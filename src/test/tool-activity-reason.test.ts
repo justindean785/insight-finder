@@ -62,3 +62,21 @@ describe("deriveToolStatus — gated/degraded distinctions (review #6)", () => {
     expect(deriveToolStatus({ state: "input-available" })).toBe("pending");
   });
 });
+
+describe("deriveToolStatus — budget/provider reclassification (review #4)", () => {
+  it("budget exhausted is gated, not failed (errorText path)", () => {
+    expect(deriveToolStatus({ state: "output-error", errorText: "paid-call budget exhausted (12 per run)" })).toBe("gated");
+    expect(deriveToolStatus({ state: "output-error", errorText: "same-tool budget exhausted (4 per run)" })).toBe("gated");
+  });
+  it("budget exhausted via ok:false is gated", () => {
+    expect(deriveToolStatus({ state: "output-available", output: { ok: false, reason: "paid-call budget exhausted" } })).toBe("gated");
+  });
+  it("provider disabled is degraded, not failed", () => {
+    expect(deriveToolStatus({ state: "output-error", errorText: "unavailable: disabled (provider disabled)" })).toBe("degraded");
+    expect(deriveToolStatus({ state: "output-available", output: { ok: false, reason: "provider disabled" } })).toBe("degraded");
+  });
+  it("a genuine error is still failed", () => {
+    expect(deriveToolStatus({ state: "output-error", errorText: "invalid email: validation failed" })).toBe("failed");
+    expect(deriveToolStatus({ state: "output-available", output: { ok: false, reason: "404 not found" } })).toBe("failed");
+  });
+});

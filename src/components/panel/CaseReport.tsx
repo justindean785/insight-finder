@@ -7,6 +7,8 @@ import {
   inferToolGaps,
   groupForKind,
   GROUP_LABEL,
+  displayKind,
+  isReputationArtifact,
   type ConfLabel,
 } from "@/lib/intel";
 import { toolActionLabel } from "@/lib/tool-display";
@@ -34,7 +36,7 @@ function ArtifactRow({ a }: { a: Artifact }) {
   const m = (a.metadata ?? {}) as Record<string, unknown>;
   return (
     <tr className="border-t border-border-subtle align-top">
-      <td className="px-3 py-2 text-muted-foreground text-eyebrow uppercase tracking-wider">{a.kind}</td>
+      <td className="px-3 py-2 text-muted-foreground text-eyebrow uppercase tracking-wider">{displayKind(a)}</td>
       <td className="px-3 py-2 font-mono break-all">{a.value}</td>
       <td className="px-3 py-2 text-data text-muted-foreground">{a.source ?? "—"}</td>
       <td className="px-3 py-2 text-data">{a.confidence ?? "—"}</td>
@@ -207,7 +209,7 @@ function buildRegistrationRows(artifacts: Artifact[]): RegistrationRow[] {
       (meta.service as string) ||
       (meta.source_name as string) ||
       null;
-    if (k === "breach") {
+    if (k === "breach" && !isReputationArtifact(a)) {
       rows.push({
         site: site || a.value,
         identifier:

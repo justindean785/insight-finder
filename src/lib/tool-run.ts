@@ -67,28 +67,45 @@ export function deriveToolTone(part: {
 /** Operational status with the analyst-relevant distinctions a bare tone lacks:
  *  a *gated* call was blocked by a triage/policy/budget gate (an intentional
  *  decision, not a fault), and a *degraded* call returned a partial/stale result
- *  (worth a second look, but not a hard failure). */
+ *  or hit a temporarily-disabled provider (worth a second look, but not a hard
+ *  failure). Only a real provider/runtime error counts as *failed*. */
 export type ToolStatus = "succeeded" | "failed" | "skipped" | "gated" | "degraded" | "pending";
 
-const GATE_REASON_RE = /\bgate(d|s)?\b|triage|policy|disabled|not promoted|budget|over[\s-]?budget|cost cap|quota|rate limit/i;
+// Budget / policy / quota / triage stops — an intentional control decision, not
+// a fault. These must read as "Gated", never red "Failed".
+const GATE_REASON_RE = /\bgate(d|s)?\b|triage|policy|not promoted|budget|over[\s-]?budget|cost cap|quota|rate[\s-]?limit/i;
+// Provider unhealthy / temporarily disabled / circuit-open — degraded, not failed.
+const DEGRADED_REASON_RE = /provider disabled|temporarily disabled|\bdisabled\b|unavailable|circuit|unhealthy|degraded|stale|timeout/i;
 
 export function deriveToolStatus(part: {
   state?: string;
   errorText?: unknown;
   output?: unknown;
 }): ToolStatus {
-  if (part.state === "output-error" || part.errorText != null) return "failed";
   const output = asOutput(part.output);
+  const runtime = deriveToolRuntime(output);
+  const reasonText = [
+    typeof part.errorText === "string" ? part.errorText : "",
+    output ? deriveToolReason(output) : "",
+    runtime?.rejection_reason ?? "",
+  ].join(" ").toLowerCase();
+
+  // An "error-ish" outcome: stream error, explicit errorText, or ok:false. Before
+  // calling it a failure, see whether the reason is really a gate or a degraded
+  // provider — budget exhaustion and "provider disabled" are not hard failures.
+  const erroredOut = part.state === "output-error" || part.errorText != null || output?.ok === false;
+  if (erroredOut) {
+    if (GATE_REASON_RE.test(reasonText)) return "gated";
+    if (DEGRADED_REASON_RE.test(reasonText)) return "degraded";
+    return "failed";
+  }
+
   if (output) {
-    if (output.ok === false) return "failed";
     if (output.gated === true) return "gated";
     if (output.skipped === true) {
-      const runtime = deriveToolRuntime(output);
-      const reason = `${typeof output.reason === "string" ? output.reason : ""} ${runtime?.rejection_reason ?? ""}`;
-      return GATE_REASON_RE.test(reason) ? "gated" : "skipped";
+      return GATE_REASON_RE.test(reasonText) ? "gated" : "skipped";
     }
     if (output.degraded === true || output.partial === true) return "degraded";
-    const runtime = deriveToolRuntime(output);
     if (runtime?.stale_cache === true) return "degraded";
     const status = typeof output.status === "string" ? output.status.toLowerCase() : "";
     if (status === "timeout" || status === "partial" || status === "degraded") return "degraded";

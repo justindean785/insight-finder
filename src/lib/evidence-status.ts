@@ -3,6 +3,7 @@ import {
   labelForArtifact,
   isBreachSource,
   isUsernameSweepSource,
+  isReputationArtifact,
   type ConfLabel,
   type ReviewAdjustment,
 } from "@/lib/intel";
@@ -151,7 +152,6 @@ function sourceClasses(a: Artifact): string[] {
 
 const SHARED_PROVIDER_RE = /cloudflare|akamai|fastly|amazon|aws\b|google\s*cloud|gcp\b|azure|shared\s*host/i;
 const SHARED_SOURCE_RE = /reverse[\s._-]?ip|shared[\s._-]?host|co[\s._-]?hosted/i;
-const REPUTATION_SOURCE_RE = /virustotal|urlscan|emailrep|ipqualityscore|ipqs|abuseipdb|reputation|threat/i;
 
 /** True when the row describes shared/CDN infrastructure or a reverse-IP collision. */
 export function isSharedInfrastructure(a: Artifact): boolean {
@@ -179,13 +179,6 @@ export function isSharedInfrastructure(a: Artifact): boolean {
   return false;
 }
 
-/** True when the row is a threat/reputation signal (distinct from a breach). */
-function isReputationEvidence(a: Artifact, classes: string[]): boolean {
-  const kind = a.kind.toLowerCase();
-  if (kind === "threat_reputation" || kind === "reputation_signal") return true;
-  if (classes.includes("infra_reputation")) return true;
-  return REPUTATION_SOURCE_RE.test(a.source ?? "");
-}
 
 /**
  * Resolve the analyst-facing status + evidence basis for an artifact.
@@ -203,7 +196,7 @@ export function evidenceStatus(a: Artifact, review?: ReviewAdjustment): Evidence
 
   const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
   const allSources = [a.source ?? null, ...metaSources].filter(Boolean) as string[];
-  const reputation = isReputationEvidence(a, classes);
+  const reputation = isReputationArtifact(a);
   const breachRelated =
     !reputation &&
     (kind === "breach" || kind === "breach_exposure" ||

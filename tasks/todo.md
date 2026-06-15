@@ -183,3 +183,51 @@ Addressed all 6 blockers from the PR review.
 - Backend confidence/taxonomy changes only affect new runs once synced to
   `seeker-spark-search-5362c57c` + deployed via Lovable. Frontend display fixes
   ship immediately via Vercel and improve existing cases.
+
+## Screenshot review fix pass — 6 more blockers (2026-06-15)
+
+Fixed all 6 issues found in the live preview screenshots.
+
+1. **VirusTotal no longer shows as BREACH.** Added `isReputationArtifact()` +
+   `displayKind()` to intel.ts (single source of truth). A breach-kinded row from
+   a reputation source (VirusTotal/URLScan/EmailRep/IPQS) now displays as
+   `threat_reputation`. Wired into the Evidence **Table** (EvidenceMatrixTab),
+   the on-screen **Report** (CaseReport leads table + excluded from Sensitive
+   Registrations), the markdown **entity table**, and the markdown **Network
+   Connections** section (new "Threat / Reputation" subsection, pulled out of
+   Breach/Exposure). evidence-status.ts now reuses the canonical helper.
+
+2. **Clusters view labels infrastructure correctly.** ClustersTab detects an
+   infrastructure-only cluster (all artifacts in the `infrastructure` group) and
+   renders an "infrastructure" / "shared infra" badge instead of the identity
+   "unknown" badge, with a "Shared infrastructure · not ownership proof" line for
+   Cloudflare/CDN/reverse-IP clusters.
+
+3. **Failures tab now matches Activity.** `extractFailedAndSkipped` was only
+   catching `errorText`/`output-error`, missing `ok:false` rows (why the tab was
+   empty while Activity showed 14). It now classifies every problem tool with the
+   SAME `deriveToolStatus` the Activity feed uses, so the counts can't disagree,
+   and groups Failed / Gated / Degraded / Skipped.
+
+4. **Budget/gating no longer shown as red FAILED.** `deriveToolStatus` now
+   inspects the reason text (errorText + output reason + runtime.rejection_reason)
+   before calling something a failure: "budget exhausted" → **Gated**, "provider
+   disabled / unavailable" → **Degraded**. Only real provider/runtime errors stay
+   Failed. ToolsTab + FailedSkippedTab surface Gated/Degraded as first-class.
+
+5. **Mobile primary nav.** Renamed "Chatbot" → "Chat", reordered to
+   Chat | Evidence | Tools | Graph | Report, added scroll-snap (snap-x +
+   snap-start) so tabs land cleanly and the active underline isn't clipped.
+
+6. **Shared-infra confidence nuance.** Board/Table/Clusters all carry the
+   "Shared infrastructure · not ownership proof" basis next to the confidence so
+   a 70% DNS-resolution number can't be misread as ownership confidence. Shared-
+   infra detection broadened to Cloudflare/Akamai/Fastly/AWS/GCP/Azure ASN/org.
+
+### Verification
+- `npx vitest run` → **49 files / 593 tests pass** (was 581; +12).
+- `npm run typecheck` → clean. `npx eslint` (changed files) → clean.
+- `npm run build` → succeeds.
+- Activity ↔ Failures parity now guaranteed (shared `deriveToolStatus`).
+- VirusTotal renders as Threat/Reputation across Table, Report, and markdown.
+- Clusters label infra IPs as infrastructure / shared infra, not "unknown".

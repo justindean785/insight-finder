@@ -5,11 +5,11 @@ import { cn } from "@/lib/utils";
 export type WorkspaceTab = "chat" | "evidence" | "report" | "graph" | "tools";
 
 const TABS: { key: WorkspaceTab; label: string; icon: LucideIcon }[] = [
-  { key: "chat", label: "Chatbot", icon: MessagesSquare },
+  { key: "chat", label: "Chat", icon: MessagesSquare },
   { key: "evidence", label: "Evidence", icon: Database },
-  { key: "report", label: "Report", icon: FileText },
-  { key: "graph", label: "Graph", icon: Share2 },
   { key: "tools", label: "Tools", icon: Activity },
+  { key: "graph", label: "Graph", icon: Share2 },
+  { key: "report", label: "Report", icon: FileText },
 ];
 
 /**
@@ -46,7 +46,7 @@ export function WorkspaceTabs({
     <div
       role="tablist"
       aria-label="Investigation workspace"
-      className="flex items-stretch gap-1 px-2 sm:px-3 border-b border-border-subtle bg-background overflow-x-auto scrollbar-none"
+      className="flex items-stretch gap-1 px-2 sm:px-3 border-b border-border-subtle bg-background overflow-x-auto scrollbar-none snap-x snap-mandatory [scrollbar-width:none]"
     >
       {TABS.map((t, idx) => {
         const Icon = t.icon;
@@ -62,7 +62,7 @@ export function WorkspaceTabs({
             onKeyDown={(e) => onKeyDown(e, idx)}
             onClick={() => onChange(t.key)}
             className={cn(
-              "group relative shrink-0 inline-flex items-center gap-2 h-11 px-3 sm:px-4 text-meta font-medium transition-colors rounded-md",
+              "group relative shrink-0 snap-start inline-flex items-center gap-2 h-11 px-3 sm:px-4 text-meta font-medium transition-colors rounded-md",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
               isActive ? "text-foreground" : "text-muted-foreground hover:text-foreground",
             )}

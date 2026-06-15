@@ -1,6 +1,7 @@
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { detectSeed } from "@/lib/seed";
 import { toolActionLabel } from "@/lib/tool-display";
+import { deriveToolStatus, deriveToolReason } from "@/lib/tool-run";
 
 /** Analyst-grade group buckets for artifact kinds. */
 export type Group =
@@ -147,6 +148,34 @@ export function isDirectProfileSource(src: string | null | undefined, _meta?: Re
   if (!src) return false;
   const s = src.toLowerCase();
   return [...DIRECT_PROFILE_SOURCES].some((k) => s.includes(k));
+}
+
+// Threat/reputation sources (VirusTotal, URLScan, EmailRep, IPQS, AbuseIPDB).
+// These describe reputation/abuse signals, NOT credential breach data, and must
+// never be presented under "Breach / Exposure".
+const REPUTATION_SOURCE_RE = /virustotal|urlscan|emailrep|ipqualityscore|ipqs|abuseipdb|reputation|threat/i;
+
+/** True when an artifact is a threat/reputation signal rather than a breach. */
+export function isReputationArtifact(a: { kind: string; source: string | null; metadata: Record<string, unknown> | null }): boolean {
+  const kind = a.kind.toLowerCase();
+  if (kind === "threat_reputation" || kind === "reputation_signal") return true;
+  const meta = (a.metadata ?? {}) as Record<string, unknown>;
+  const sc = Array.isArray(meta.source_category) ? meta.source_category.map((s) => String(s)) : [];
+  if (sc.includes("infra_reputation")) return true;
+  return REPUTATION_SOURCE_RE.test(a.source ?? "");
+}
+
+/**
+ * Display kind for an artifact. Remaps a row the model mis-kinded as `breach`
+ * but which actually came from a reputation source to `threat_reputation`, so
+ * VirusTotal/URLScan results never render under Breach / Exposure.
+ */
+export function displayKind(a: { kind: string; source: string | null; metadata: Record<string, unknown> | null }): string {
+  const kind = a.kind.toLowerCase();
+  if ((kind === "breach" || kind === "breach_exposure") && isReputationArtifact(a)) {
+    return "threat_reputation";
+  }
+  return a.kind;
 }
 
 export function isSensitiveKind(kind: string, meta?: Record<string, unknown>): boolean {
@@ -637,7 +666,8 @@ export const CACHE_LAYER_CLASS: Record<CacheLayer, string> = {
 
 export type FailedToolEntry = {
   id: string;
-  kind: "failed" | "skipped";
+  /** Operational status — mirrors the Tools/Activity feed so counts agree. */
+  kind: "failed" | "skipped" | "gated" | "degraded";
   name: string;
   error: string;
   input: unknown;
@@ -690,18 +720,28 @@ export function extractFailedAndSkipped(messages: RawMessage[]): FailedToolEntry
       if (!p || typeof p.type !== "string") continue;
       if (!p.type.startsWith("tool-")) continue;
       const name = p.type.replace(/^tool-/, "");
-      const failed = p.state === "output-error" || p.errorText != null;
-      if (failed) {
-        const err = String(p.errorText ?? p.error ?? "Tool failed");
+      // Classify with the SAME engine the Tools/Activity feed uses so the
+      // Failures register can never disagree with the header count. This also
+      // catches ok:false results (e.g. "budget exhausted") that the old
+      // errorText-only check missed, and splits real failures from
+      // gated/degraded/skipped outcomes.
+      const status = deriveToolStatus(p);
+      if (status === "failed" || status === "gated" || status === "degraded") {
+        const err = String(
+          (typeof p.errorText === "string" && p.errorText) ||
+          deriveToolReason(p.output) ||
+          p.error ||
+          (status === "failed" ? "Tool failed" : status === "gated" ? "Blocked by a gate" : "Degraded result"),
+        );
         out.push({
           id: `${m.id}-${i}`,
-          kind: "failed",
+          kind: status,
           name,
           error: err,
           input: p.input,
           output: p.output,
           time: m.created_at ?? null,
-          suggestion: suggestFix(name, err),
+          suggestion: status === "failed" ? suggestFix(name, err) : null,
           messageId: m.id,
           toolCallId: typeof p.toolCallId === "string" ? p.toolCallId : null,
         });
@@ -786,7 +826,7 @@ export function buildEvidenceMatrixMarkdown(artifacts: Artifact[]): string {
   if (artifacts.length === 0) return "_No evidence recorded._";
   const rows = artifacts.map((a) => {
     const label = labelForArtifact(a);
-    return `| ${mdEscape(a.value)} | ${a.kind} | ${a.source ?? "—"} | ${label} | ${a.confidence ?? "—"} | ${new Date(a.created_at).toISOString()} |`;
+    return `| ${mdEscape(a.value)} | ${displayKind(a)} | ${a.source ?? "—"} | ${label} | ${a.confidence ?? "—"} | ${new Date(a.created_at).toISOString()} |`;
   });
   return [
     "| Value | Kind | Source | Label | Confidence | First seen |",
@@ -854,10 +894,22 @@ export function buildReportMarkdown(input: ReportInput): string {
 
   const network = (() => {
     const sections: string[] = [];
+    const reputation: Artifact[] = [];
+    const line = (a: Artifact) => `- \`${a.value}\` _(observed via ${a.source ?? "tool"})_`;
     for (const g of GROUP_ORDER) {
-      const items = byGroup.get(g);
+      let items = byGroup.get(g);
       if (!items?.length) continue;
-      sections.push(`**${GROUP_LABEL[g]}**\n` + items.map((a) => `- \`${a.value}\` _(observed via ${a.source ?? "tool"})_`).join("\n"));
+      // Threat/reputation rows (VirusTotal etc.) are mis-bucketed under breach —
+      // pull them into their own section so they aren't reported as exposures.
+      if (g === "breach") {
+        reputation.push(...items.filter((a) => isReputationArtifact(a)));
+        items = items.filter((a) => !isReputationArtifact(a));
+        if (!items.length) continue;
+      }
+      sections.push(`**${GROUP_LABEL[g]}**\n` + items.map(line).join("\n"));
+    }
+    if (reputation.length) {
+      sections.push(`**Threat / Reputation**\n` + reputation.map(line).join("\n"));
     }
     return sections.length ? sections.join("\n\n") : "_No correlated entities yet._";
   })();
