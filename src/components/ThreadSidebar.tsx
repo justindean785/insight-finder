@@ -85,25 +85,15 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
 
   useEffect(() => {
     if (!user) return;
-    const load = async () => {
+
+    // Cheap: the thread list + Global-Brain "new patterns" badge. Safe to run
+    // often (it's a small, indexed query set).
+    const loadThreadsAndBrain = async () => {
       const { data } = await supabase
         .from("threads")
         .select("id,title,updated_at,credits_used,cost_micro_usd,status,seed_type")
         .order("updated_at", { ascending: false });
       setThreads((data as Thread[] | null) ?? []);
-      const { data: arts } = await supabase
-        .from("artifacts")
-        .select("thread_id,kind,confidence")
-        .limit(5000);
-      const agg: Record<string, ThreadMetrics> = {};
-      for (const a of (arts ?? []) as { thread_id: string; kind: string; confidence: number | null }[]) {
-        const m = agg[a.thread_id] ?? { artifacts: 0, breaches: 0, lowConf: 0 };
-        m.artifacts++;
-        if (a.kind?.toLowerCase() === "breach") m.breaches++;
-        if ((a.confidence ?? 0) < 50) m.lowConf++;
-        agg[a.thread_id] = m;
-      }
-      setMetrics(agg);
       const { count } = await supabase
         .from("agent_memory")
         .select("id", { count: "exact", head: true });
@@ -121,24 +111,52 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         setNewPatternCount(count ?? 0);
       }
     };
-    load();
-    let debounceTimer: ReturnType<typeof setTimeout> | undefined;
-    const scheduleLoad = () => {
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => {
-        void load();
-      }, 400);
+
+    // Expensive: pulls up to 5000 artifact rows across ALL threads to aggregate
+    // the per-thread sidebar badges. During a live run the agent writes
+    // artifacts in rapid bursts, so this MUST NOT re-run on every insert — it is
+    // driven by its own long-debounced scheduler below.
+    const loadMetrics = async () => {
+      const { data: arts } = await supabase
+        .from("artifacts")
+        .select("thread_id,kind,confidence")
+        .limit(5000);
+      const agg: Record<string, ThreadMetrics> = {};
+      for (const a of (arts ?? []) as { thread_id: string; kind: string; confidence: number | null }[]) {
+        const m = agg[a.thread_id] ?? { artifacts: 0, breaches: 0, lowConf: 0 };
+        m.artifacts++;
+        if (a.kind?.toLowerCase() === "breach") m.breaches++;
+        if ((a.confidence ?? 0) < 50) m.lowConf++;
+        agg[a.thread_id] = m;
+      }
+      setMetrics(agg);
+    };
+
+    void loadThreadsAndBrain();
+    void loadMetrics();
+
+    let fullTimer: ReturnType<typeof setTimeout> | undefined;
+    let metricsTimer: ReturnType<typeof setTimeout> | undefined;
+    const scheduleFull = () => {
+      if (fullTimer) clearTimeout(fullTimer);
+      fullTimer = setTimeout(() => void loadThreadsAndBrain(), 400);
+    };
+    // Collapse a burst of artifact writes into one heavy aggregation refresh.
+    const scheduleMetrics = () => {
+      if (metricsTimer) clearTimeout(metricsTimer);
+      metricsTimer = setTimeout(() => void loadMetrics(), 3000);
     };
     const ch = supabase
       .channel("threads-sidebar")
-      .on("postgres_changes", { event: "*", schema: "public", table: "threads" }, scheduleLoad)
-      .on("postgres_changes", { event: "*", schema: "public", table: "agent_memory" }, scheduleLoad)
-      .on("postgres_changes", { event: "*", schema: "public", table: "artifacts" }, scheduleLoad)
+      .on("postgres_changes", { event: "*", schema: "public", table: "threads" }, scheduleFull)
+      .on("postgres_changes", { event: "*", schema: "public", table: "agent_memory" }, scheduleFull)
+      .on("postgres_changes", { event: "*", schema: "public", table: "artifacts" }, scheduleMetrics)
       .subscribe();
-    const onVisit = () => scheduleLoad();
+    const onVisit = () => scheduleFull();
     window.addEventListener("proximity:brain-visited", onVisit);
     return () => {
-      if (debounceTimer) clearTimeout(debounceTimer);
+      if (fullTimer) clearTimeout(fullTimer);
+      if (metricsTimer) clearTimeout(metricsTimer);
       supabase.removeChannel(ch);
       window.removeEventListener("proximity:brain-visited", onVisit);
     };
