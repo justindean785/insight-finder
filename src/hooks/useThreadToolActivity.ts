@@ -1,7 +1,27 @@
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { deriveToolTone, type ToolTone } from "@/lib/tool-run";
+import { deriveToolTone, deriveToolReason, type ToolTone } from "@/lib/tool-run";
 import { toolDisplayName, toolActionLabel } from "@/lib/tool-display";
+
+/**
+ * Best-effort short reason for a non-OK tool event, for the Activity feed.
+ * Reads the error text first, then any structured `reason`/`error`/`message`
+ * in the output. Truncated so the activity row stays compact.
+ */
+export function toolActivityReason(
+  part: { state?: string; errorText?: unknown; output?: unknown },
+  tone: ToolTone,
+): string | undefined {
+  if (tone === "ok" || tone === "pending") return undefined;
+  const fromError =
+    typeof part.errorText === "string" && part.errorText.trim()
+      ? part.errorText.trim()
+      : "";
+  const reason = fromError || deriveToolReason(part.output);
+  if (!reason) return undefined;
+  const clean = reason.replace(/\s+/g, " ").trim();
+  return clean.length > 160 ? `${clean.slice(0, 159)}…` : clean;
+}
 
 // Per-instance channel id. Several components subscribe to the same thread at
 // once (header, tab badges, Tools view); Supabase rejects a second
@@ -18,6 +38,8 @@ export interface ToolEvent {
   tone: ToolTone;
   state?: string;
   at: string;
+  /** Short failure/skip reason, when the tone is not "ok". */
+  reason?: string;
 }
 
 export interface ThreadToolActivity {
@@ -65,14 +87,16 @@ export function useThreadToolActivity(threadId: string): ThreadToolActivity {
         for (const p of row.parts as PartLike[]) {
           if (typeof p?.type !== "string" || !p.type.startsWith("tool-")) continue;
           const toolName = p.type.slice("tool-".length);
+          const tone = deriveToolTone(p);
           out.push({
             id: `${row.id}:${i++}`,
             toolName,
             displayName: toolDisplayName(toolName),
             actionLabel: toolActionLabel(toolName),
-            tone: deriveToolTone(p),
+            tone,
             state: p.state,
             at: row.created_at,
+            reason: toolActivityReason(p, tone),
           });
         }
       }

@@ -1,0 +1,238 @@
+import { useState, useRef, type ReactNode } from "react";
+import {
+  Copy, Check, CheckCircle2, XCircle, MinusCircle, Loader2, ChevronRight,
+  type LucideIcon,
+} from "lucide-react";
+import { cn } from "@/lib/utils";
+
+/**
+ * Shared workspace UI primitives — small, typed, reusable building blocks used
+ * across the investigation tabs (Tools, Graph, Evidence). Status is always
+ * conveyed by icon + text, never color alone, and every icon-only control
+ * carries an accessible label.
+ */
+
+/* ── CopyButton ─────────────────────────────────────────────────────── */
+
+export function CopyButton({
+  value,
+  label = "Copy",
+  className,
+  size = "sm",
+}: {
+  value: string;
+  /** Accessible label, e.g. "Copy email". */
+  label?: string;
+  className?: string;
+  size?: "sm" | "md";
+}) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout>>();
+  const onCopy = () => {
+    navigator.clipboard.writeText(value).then(() => {
+      setCopied(true);
+      clearTimeout(timer.current);
+      timer.current = setTimeout(() => setCopied(false), 1400);
+    });
+  };
+  const dim = size === "md" ? "w-8 h-8" : "w-7 h-7";
+  return (
+    <button
+      type="button"
+      onClick={onCopy}
+      aria-label={copied ? "Copied" : label}
+      title={copied ? "Copied" : label}
+      className={cn(
+        "shrink-0 grid place-items-center rounded-md border border-border-subtle text-muted-foreground transition-colors",
+        "hover:text-foreground hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0",
+        dim,
+        className,
+      )}
+    >
+      {copied ? (
+        <Check className="w-3.5 h-3.5 text-[hsl(var(--confidence-high))]" />
+      ) : (
+        <Copy className="w-3.5 h-3.5" />
+      )}
+    </button>
+  );
+}
+
+/* ── MetricCard ─────────────────────────────────────────────────────── */
+
+export type MetricTone = "neutral" | "ok" | "danger" | "warn";
+
+const METRIC_TONE: Record<MetricTone, string> = {
+  neutral: "text-foreground",
+  ok: "text-[hsl(var(--confidence-high))]",
+  danger: "text-destructive",
+  warn: "text-[hsl(var(--confidence-mid))]",
+};
+
+export function MetricCard({
+  icon: Icon,
+  label,
+  value,
+  tone = "neutral",
+  hint,
+  className,
+}: {
+  icon?: LucideIcon;
+  label: string;
+  value: ReactNode;
+  tone?: MetricTone;
+  /** Tooltip explaining the metric. */
+  hint?: string;
+  className?: string;
+}) {
+  const color = METRIC_TONE[tone];
+  return (
+    <div
+      className={cn("rounded-lg border border-border-subtle bg-surface-1 px-3 py-2.5", className)}
+      title={hint}
+    >
+      <div className="flex items-center gap-1.5 text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">
+        {Icon && <Icon className={cn("w-3 h-3", tone !== "neutral" && color)} />}
+        <span className="truncate">{label}</span>
+      </div>
+      <div className={cn("mt-1 text-2xl font-display font-semibold tabular-nums leading-none", color)}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+/* ── FilterChips (accessible segmented filter) ──────────────────────── */
+
+export type FilterChip<T extends string> = {
+  key: T;
+  label: string;
+  count?: number;
+  tone?: MetricTone;
+};
+
+export function FilterChips<T extends string>({
+  options,
+  active,
+  onChange,
+  ariaLabel,
+  className,
+}: {
+  options: FilterChip<T>[];
+  active: T;
+  onChange: (key: T) => void;
+  ariaLabel: string;
+  className?: string;
+}) {
+  return (
+    <div role="radiogroup" aria-label={ariaLabel} className={cn("flex flex-wrap items-center gap-1.5", className)}>
+      {options.map((o) => {
+        const isActive = o.key === active;
+        const toneCls =
+          o.tone === "danger" ? "text-destructive" :
+          o.tone === "ok" ? "text-[hsl(var(--confidence-high))]" :
+          o.tone === "warn" ? "text-[hsl(var(--confidence-mid))]" : "";
+        return (
+          <button
+            key={o.key}
+            role="radio"
+            aria-checked={isActive}
+            onClick={() => onChange(o.key)}
+            className={cn(
+              "inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-meta font-medium transition-colors",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              isActive
+                ? "bg-surface-2 text-foreground border border-white/10"
+                : "text-muted-foreground hover:text-foreground hover:bg-surface-1 border border-transparent",
+            )}
+          >
+            <span className={cn(!isActive && toneCls)}>{o.label}</span>
+            {o.count !== undefined && (
+              <span
+                className={cn(
+                  "inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-mono tabular-nums",
+                  isActive ? "bg-background/60 text-foreground" : "bg-surface-2 text-muted-foreground",
+                  toneCls,
+                )}
+              >
+                {o.count > 99 ? "99+" : o.count}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ── ToolStatusBadge ────────────────────────────────────────────────── */
+
+export type ToolRunStatus = "succeeded" | "failed" | "skipped" | "pending";
+
+const TOOL_STATUS_META: Record<ToolRunStatus, { label: string; icon: LucideIcon; classes: string; spin?: boolean }> = {
+  succeeded: { label: "Succeeded", icon: CheckCircle2, classes: "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/30 bg-[hsl(var(--confidence-high))]/10" },
+  failed:    { label: "Failed",    icon: XCircle,      classes: "text-destructive border-destructive/30 bg-destructive/10" },
+  skipped:   { label: "Skipped",   icon: MinusCircle,  classes: "text-muted-foreground border-border-subtle bg-surface-2/60" },
+  pending:   { label: "Running",   icon: Loader2,      classes: "text-primary border-primary/30 bg-primary/10", spin: true },
+};
+
+export function ToolStatusBadge({
+  status,
+  size = "sm",
+  className,
+}: {
+  status: ToolRunStatus;
+  size?: "sm" | "md";
+  className?: string;
+}) {
+  const meta = TOOL_STATUS_META[status];
+  const Icon = meta.icon;
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full border font-mono uppercase tracking-[0.08em]",
+        size === "sm" ? "px-2 py-0.5 text-[10px]" : "px-2.5 py-1 text-[11px]",
+        meta.classes,
+        className,
+      )}
+    >
+      <Icon className={cn("w-3 h-3", meta.spin && "animate-spin")} />
+      {meta.label}
+    </span>
+  );
+}
+
+/* ── ExpandableRow ──────────────────────────────────────────────────── */
+
+export function ExpandableRow({
+  summary,
+  children,
+  defaultOpen = false,
+  className,
+}: {
+  summary: ReactNode;
+  children: ReactNode;
+  defaultOpen?: boolean;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className={className}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className={cn(
+          "w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-surface-2/50",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+        )}
+      >
+        <ChevronRight
+          className={cn("w-3.5 h-3.5 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")}
+        />
+        <div className="min-w-0 flex-1">{summary}</div>
+      </button>
+      {open && <div className="px-3 pb-3 pl-9">{children}</div>}
+    </div>
+  );
+}
