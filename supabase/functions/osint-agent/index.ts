@@ -214,7 +214,7 @@ Deno.serve(async (req) => {
       // Verify a deploy landed with: GET /osint-agent?health=1 → expect this value.
       // (Prior builds froze `version` at 1.0.0, so merged fixes were unverifiable
       //  against the live function — that gap is what this field closes.)
-      build: "2026-06-15-fail-open-runtime",
+      build: "2026-06-15-scans-not-gated",
       checks: r.checks,
       intelbase_enabled: INTELBASE_ENABLED,
     };
