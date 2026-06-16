@@ -514,13 +514,16 @@ Deno.serve(async (req) => {
           "Have MiniMax correlate and rescore a batch of artifacts. Pass the relevant artifacts gathered so far; it returns identity clusters, dedup mapping, confidence rescoring, and contradiction flags. Run after at least three meaningful new artifacts or before final verification.",
         inputSchema: z.object({
           seed: z.string().describe("Original seed identifier"),
-          artifacts: z.array(z.object({
+          // Models frequently pass `artifacts` as a JSON STRING; coerce to an
+          // array before validating (same as record_artifacts) so a stringified
+          // batch doesn't fail correlation and lose the run's findings.
+          artifacts: z.preprocess(coerceArtifactsInput, z.array(z.object({
             kind: z.string(),
             value: z.string(),
             source: z.string().optional(),
             confidence: z.number().optional(),
             metadata: z.unknown().optional(),
-          })).max(200),
+          })).max(200)),
         }),
         execute: async ({ seed, artifacts }) => {
           // Input guard: never spend a paid MiniMax call on an empty/invalid
@@ -560,7 +563,7 @@ Deno.serve(async (req) => {
         inputSchema: z.object({
           seed: z.string(),
           already_queried: z.array(z.string()).max(200).default([]),
-          artifacts: z.array(z.object({ kind: z.string(), value: z.string() })).max(200),
+          artifacts: z.preprocess(coerceArtifactsInput, z.array(z.object({ kind: z.string(), value: z.string() })).max(200)),
           budget_remaining: z.number().int().min(0).max(100).default(30),
         }),
         execute: async ({ seed, already_queried, artifacts, budget_remaining }) => {
