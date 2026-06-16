@@ -76,94 +76,23 @@ export function inferKind(rawKind: string, value: string): { kind: string; recla
   return { kind: rawKind };
 }
 
-/** Source-class for confidence caps. */
-export type SourceClass =
-  | "breach"
-  | "username_sweep"
-  | "social_profile_passive"
-  | "social_profile_active"
-  | "news"
-  | "court_record"
-  | "official_profile_match"
-  | "independent_public"
-  | "ai_summary"
-  | "infra"
-  | "infra_registry"
-  | "infra_dns"
-  | "infra_scan"
-  | "infra_reputation"
-  | "infra_passive"
-  | "infra_shared_host"
-  | "unknown";
-
-const TOOL_CLASS: Record<string, SourceClass> = {
-  // breach / leak
-  breach_check: "breach",
-  leakcheck_lookup: "breach",
-  hibp_lookup: "breach",
-  oathnet_lookup: "breach",
-  intelbase_email_lookup: "breach",
-  stolentax_footprint: "breach",
-  deepfind_reverse_email: "breach",
-  deepfind_disposable_email: "breach",
-  // username sweeps
-  username_sweep: "username_sweep",
-  socialfetch_lookup: "social_profile_passive",
-  // search/summary
-  minimax_web_search: "ai_summary",
-  exa_search: "ai_summary",
-  gemini_deep_dork: "ai_summary",
-  google_dorks: "ai_summary",
-  dork_harvest: "ai_summary",
-  jina_reader_scrape: "independent_public",
-  exa_get_contents: "independent_public",
-  // infra — split into sub-classes so cross-tool corroboration counts
-  whois_lookup: "infra_registry",
-  hunter_domain_search: "infra_registry",
-  hunter_email_verifier: "infra_registry",
-  hunter_combined: "infra_registry",
-  dns_records: "infra_dns",
-  crtsh_subdomains: "infra_dns",
-  ip_intel: "infra_scan",
-  ipgeolocation_lookup: "infra_scan",
-  shodan_internetdb: "infra_scan",
-  http_fingerprint: "infra_scan",
-  hackertarget: "infra_scan",
-  synapsint_lookup: "infra_scan",
-  virustotal_lookup: "infra_reputation",
-  ipqualityscore_lookup: "infra_reputation",
-  emailrep: "infra_reputation",
-  emailrep_lookup: "infra_reputation",
-  // passive / historical — observe the past, not the live asset
-  urlscan_search: "infra_passive",
-  wayback_snapshots: "infra_passive",
-  archive_url: "infra_passive",
-  passive_dns: "infra_passive",
-  gravatar_profile: "social_profile_passive",
-  gravatar_lookup: "social_profile_passive",
-  // phone / people-search aggregators — low-trust aggregators, treat as passive social
-  bosint_phone_lookup: "social_profile_passive",
-  bosint_email_lookup: "breach",
-  "usphonesearch.net": "social_profile_passive",
-  "nomorobo.com": "social_profile_passive",
-  // memory / agent
-  memory_recall: "unknown",
-};
-
-export function classifySource(toolOrSource: string | null | undefined): SourceClass {
-  if (!toolOrSource) return "unknown";
-  // Normalize: lowercase, strip a trailing parenthetical qualifier
-  // (e.g. "socialfetch_lookup (instagram)" → "socialfetch_lookup",
-  // "bosint_email_lookup (drizly.com breach)" → "bosint_email_lookup").
-  // Without this, the parenthetical defeats the TOOL_CLASS lookup and the
-  // artifact silently falls through to "unknown" (cap 50) — a loophole that
-  // lets passive-social and breach hits score higher than their class allows.
-  const s = toolOrSource.toLowerCase().replace(/\s*\([^)]*\)\s*$/, "").trim();
-  if (TOOL_CLASS[s]) return TOOL_CLASS[s];
-  // Reverse-IP / shared-host lookups describe co-tenants on a shared/CDN IP —
-  // they never prove ownership and must not corroborate identity.
-  if (/reverse[\s._-]?ip|reverseiplookup|shared[\s._-]?host|co[\s._-]?hosted/.test(s)) return "infra_shared_host";
-  if (/court|docket|legal_record|justice|cdc|cdcr|bop|pacer/.test(s)) return "court_record";
-  if (/news|times|herald|tribune|press|magazine|article/.test(s)) return "news";
-  return "unknown";
-}
+// ── Source classification lives in source-classification.ts ──────────────────
+// (the single source of truth — the recording paths and the confidence engine
+// both consume it). Re-exported here so existing importers (`confidence.ts`,
+// `index.ts`, tests that do `import { classifySource } from "./artifact_types.ts"`)
+// are unaffected by the #16 architecture change. The re-exported `SourceClass`
+// carries post-#56 main's SPLIT infra taxonomy (the integrity contract).
+export type { SourceClass } from "./source-classification.ts";
+export {
+  classifySource,
+  classifySourceLabel,
+  classifySourceInput,
+  normalizeSourceLabel,
+  splitSourceLabels,
+  isWrapperLabel,
+  isInfraClass,
+  countIndependentClasses,
+  hasOfficialClass,
+  NON_CORROBORATING_CLASSES,
+  OFFICIAL_CLASSES,
+} from "./source-classification.ts";

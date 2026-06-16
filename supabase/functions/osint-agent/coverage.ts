@@ -27,6 +27,13 @@ const CATEGORY_TOOLS: Record<string, string[]> = {
   employment: ["hunter_domain_search", "exa_search", "gemini_deep_dork"],
   relationships: ["socialfetch_lookup", "exa_find_similar", "gemini_deep_dork"],
   timeline: ["wayback_snapshots", "archive_url"],
+  // Property / public-record + business-registry pivots for address/business
+  // cases — these must be attempted before such an investigation is "complete"
+  // (the 1677 Iroquois Rd gap: assessor/recorder/SOS/license never ran). The
+  // runtime has no dedicated county-assessor tool, so these are satisfied by
+  // OATHNET + targeted property/registry dorks via the search tools.
+  property: ["oathnet_lookup", "minimax_web_search", "exa_search", "gemini_deep_dork", "google_dorks", "jina_reader_scrape"],
+  business_registry: ["minimax_web_search", "exa_search", "gemini_deep_dork", "google_dorks", "jina_reader_scrape"],
 };
 
 export function auditCoverage(

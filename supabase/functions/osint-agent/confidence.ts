@@ -1,10 +1,22 @@
 // Five-axis confidence engine.
 // Replaces a single percentage with axis-decomposed scores so the UI / report
 // can show *why* a finding is strong or weak.
+//
+// ── Merge note (backport mirror #16 PR2) ────────────────────────────────────
+// SourceClass + classifySource now come from source-classification.ts (mirror
+// #16's single-classifier architecture). The CLASS_CAP table and applyEvidenceCaps
+// below preserve post-#56 main's BEHAVIOR verbatim — the SPLIT-infra caps, the
+// infra-corroboration boost, the ownership guard, and the NEVER_HIGH ceiling are
+// the integrity contract (audit_fixes_test.ts). #16's status-derivation helpers
+// (deriveStatus / coerceCoherentStatus / looksDeadEnd) are kept (index.ts wires
+// them). For back-compat, classifySource / SourceClass are re-exported here.
 
 import { tierOf, TIER_SOURCE_RELIABILITY, TIER_C_ONLY_CONFIDENCE_CAP } from "./tiers.ts";
 import type { ContradictionFinding } from "./contradictions.ts";
-import { classifySource, type SourceClass } from "./artifact_types.ts";
+import { classifySource, countIndependentClasses, type SourceClass } from "./source-classification.ts";
+
+// Back-compat re-export: historically these lived in confidence.ts / artifact_types.ts.
+export { classifySource, type SourceClass };
 
 export interface ConfidenceAxes {
   artifact: number;     // is the data point itself accurate?
@@ -54,6 +66,10 @@ export function computeAxes(input: {
 // Source-class cap table — defensive ceilings on raw model-assigned confidence.
 // Keys are SourceClass values; the cap is the maximum confidence allowed when
 // the artifact's sources only fall into that class (or a strictly-weaker one).
+//
+// post-#56 main values are the integrity contract (infra split). #16's free-text
+// classes (government_*/business_directory/real_estate_listing/etc.) are appended
+// with #16's caps so the table is exhaustive over the merged SourceClass union.
 const CLASS_CAP: Record<SourceClass, number> = {
   breach: 60,
   username_sweep: 45,
@@ -64,6 +80,7 @@ const CLASS_CAP: Record<SourceClass, number> = {
   official_profile_match: 85,
   independent_public: 75,
   ai_summary: 55,
+  // ── infrastructure (post-#56 split caps — the integrity contract) ──
   infra: 70,
   infra_registry: 75,
   infra_dns: 75,
@@ -73,6 +90,18 @@ const CLASS_CAP: Record<SourceClass, number> = {
   // Shared/CDN host & reverse-IP co-tenancy: describes neighbours, not the
   // subject. Capped very low and never counted as independent corroboration.
   infra_shared_host: 35,
+  // ── public-record / directory / listing classes (free-text labels, #16) ──
+  government_property_record: 90,
+  government_business_registry: 90,
+  government_business_license: 88,
+  business_directory: 65,
+  real_estate_listing: 60,
+  property_aggregator: 55,
+  professional_profile: 70,
+  social_review: 35,
+  public_record: 75,
+  web_search: 50,
+  archive: 70,
   unknown: 50,
 };
 
@@ -103,21 +132,30 @@ function isInfraCorroborationClass(c: SourceClass): boolean {
 // Only these non-infra classes are strong enough to unlock the 90+ ownership /
 // identity path. Weak signals (ai_summary, username_sweep, breach-only, passive
 // social) can supply context but must never lift a finding past the infra-safe
-// ceiling on their own.
+// ceiling on their own. (#16's official/government public-record classes are
+// added — they are authoritative identity/ownership sources too.)
 const TRUSTED_NON_INFRA = new Set<SourceClass>([
   "official_profile_match",
   "court_record",
   "news",
   "independent_public",
+  "government_property_record",
+  "government_business_registry",
+  "government_business_license",
+  "public_record",
 ]);
 
 // Sources that can never alone produce a high-confidence (>= 90) finding.
+// (post-#56 main set, plus #16's weak free-text classes.)
 const NEVER_HIGH = new Set<SourceClass>([
   "breach",
   "username_sweep",
   "social_profile_passive",
   "ai_summary",
   "infra_shared_host",
+  "social_review",
+  "web_search",
+  "property_aggregator",
 ]);
 
 export interface CapInput {
@@ -178,16 +216,16 @@ export function applyEvidenceCaps(input: CapInput): CapResult {
   }
 
   // Hard ceiling: weak-only sources can never get to 90+.
-  if (uniqClasses.every((c) => NEVER_HIGH.has(c))) {
+  if (uniqClasses.length > 0 && uniqClasses.every((c) => NEVER_HIGH.has(c))) {
     cap = Math.min(cap, 65);
   }
 
   // Ownership / identity guard: without at least one TRUSTED non-infra class
-  // (official match, court record, news, independent public page), a finding
-  // can never exceed the infra-safe ceiling of 85 — no matter how many infra
-  // sub-classes or weak ai_summary/breach signals corroborate it. This is what
-  // stops "infra + ai_summary" (or many infra perspectives) from displaying as
-  // a confirmed ownership/identity claim.
+  // (official match, court record, news, independent public page, government
+  // public record), a finding can never exceed the infra-safe ceiling of 85 —
+  // no matter how many infra sub-classes or weak ai_summary/breach signals
+  // corroborate it. This is what stops "infra + ai_summary" (or many infra
+  // perspectives) from displaying as a confirmed ownership/identity claim.
   if (!hasTrustedNonInfra) {
     cap = Math.min(cap, 85);
   }
@@ -282,4 +320,89 @@ export function isBioCrossLinkName(
     if (typeof v === "string" && /^(true|yes|1)$/i.test(v)) return true;
   }
   return false;
+}
+
+// ---- Status coherence --------------------------------------------------------
+// The recording layer used to persist the model's `status` verbatim, so a
+// model-asserted `status: "verified"` coexisted with the cap engine's
+// `reason_not_confirmed: "needs second independent class of evidence"` — an
+// internally contradictory artifact (the exact bug in the 1677 Iroquois Rd
+// trace). Status is now DERIVED from the evidence so it can never contradict the
+// confirmation reason.
+
+export type ArtifactStatus =
+  | "observed"             // a source asserts this exists; no independent corroboration yet
+  | "needs_corroboration" // plausible lead, missing a required independent class
+  | "verified"            // sufficiently supported for its OWN limited claim (≥90, no open reason)
+  | "confirmed"           // ≥2 independent classes, no material contradiction
+  | "excluded"            // unrelated / collision
+  | "exhausted"           // dead-end OR pivot checklist complete
+  | "contradicted"
+  | "needs_review"
+  | "manual_review_required";
+
+const DEAD_END_NOTE_RE = /\b(defunct|parked|expired|invalid|no records?|not found|disconnected|no longer (?:in service|active)|404|410)\b/i;
+
+/** True when metadata indicates a genuine dead-end (so "exhausted" is honest). */
+export function looksDeadEnd(meta: Record<string, unknown> | null | undefined): boolean {
+  const m = meta ?? {};
+  if (m.http_status === 404 || m.http_status === 410) return true;
+  for (const key of ["note", "notes", "reason", "dns_result", "status_detail"]) {
+    const v = m[key];
+    if (typeof v === "string" && DEAD_END_NOTE_RE.test(v)) return true;
+  }
+  return false;
+}
+
+/** Minimal guard: a verified/confirmed status can never coexist with an open
+ *  `reason_not_confirmed`. Safe-downgrade (never throws in production). */
+export function coerceCoherentStatus(
+  status: ArtifactStatus,
+  reasonNotConfirmed?: string | null,
+): ArtifactStatus {
+  if ((status === "verified" || status === "confirmed") && reasonNotConfirmed) {
+    return "needs_corroboration";
+  }
+  return status;
+}
+
+export interface DeriveStatusInput {
+  /** status the model asked for (may be a legacy/loose value). */
+  requested?: string | null;
+  /** the RESOLVED reason_not_confirmed (model-supplied ?? cap). null ⇒ confidence ≥ 90. */
+  reasonNotConfirmed: string | null;
+  sourceClasses: SourceClass[];
+  contradictions?: unknown[];
+  unrelated?: boolean;
+  deadEnd?: boolean;
+  /** for conclusion/pivot artifacts: whether the required pivot checklist is done. */
+  pivotChecklistComplete?: boolean;
+}
+
+/** Derive a coherent status from the evidence. The invariant guaranteed:
+ *  a returned "verified"/"confirmed" implies `reasonNotConfirmed == null`. */
+export function deriveStatus(input: DeriveStatusInput): ArtifactStatus {
+  const req = (input.requested ?? "").toLowerCase().trim();
+  const contra = Array.isArray(input.contradictions) && input.contradictions.length > 0;
+  const notConfirmed = !!input.reasonNotConfirmed;
+  const independent = countIndependentClasses(input.sourceClasses);
+
+  if (input.unrelated || req === "excluded") return "excluded";
+  if (req === "contradicted" || contra) return "contradicted";
+  if (req === "needs_review") return "needs_review";
+  if (req === "manual_review_required") return "manual_review_required";
+
+  if (req === "exhausted") {
+    // Only honor "exhausted" when it's a real dead-end or the checklist is done.
+    if (input.deadEnd || input.pivotChecklistComplete) return "exhausted";
+    return notConfirmed ? "needs_corroboration" : "observed";
+  }
+
+  // verified/confirmed are only granted when there is no open confirmation gap.
+  if (notConfirmed) {
+    return independent >= 2 ? "needs_corroboration" : "observed";
+  }
+  // reasonNotConfirmed == null ⇒ confidence ≥ 90 (strong, capped-through).
+  if (independent >= 2 && !contra) return "confirmed";
+  return "verified";
 }
