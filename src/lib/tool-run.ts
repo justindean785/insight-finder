@@ -71,11 +71,18 @@ export function deriveToolTone(part: {
  *  failure). Only a real provider/runtime error counts as *failed*. */
 export type ToolStatus = "succeeded" | "failed" | "skipped" | "gated" | "degraded" | "pending";
 
-// Budget / policy / quota / triage stops — an intentional control decision, not
-// a fault. These must read as "Gated", never red "Failed".
-const GATE_REASON_RE = /\bgate(d|s)?\b|triage|policy|not promoted|budget|over[\s-]?budget|cost cap|quota|rate[\s-]?limit/i;
-// Provider unhealthy / temporarily disabled / circuit-open — degraded, not failed.
-const DEGRADED_REASON_RE = /provider disabled|temporarily disabled|\bdisabled\b|unavailable|circuit|unhealthy|degraded|stale|timeout/i;
+// Budget / policy / quota / triage / orchestration stops — an intentional
+// control decision, not a fault. These must read as "Gated", never red
+// "Failed". Covers the planner's EV gate ("expected value N below 70"), the
+// per-investigation burst / cycle caps, and the "execution plan required" gate.
+const GATE_REASON_RE = /\bgate(d|s)?\b|triage|policy|not promoted|budget|over[\s-]?budget|cost cap|quota|rate[\s-]?limit|expected value\b|\bev below\b|burst limit|cycle limit|execution plan required/i;
+// Dedup / guard / no-op skips — the tool was intentionally not run, or ran and
+// produced nothing actionable. Not a fault.
+const SKIP_REASON_RE = /duplicate call|guard not met|already used this seed|high-cost tool already used|no usable result|\bskipped\b/i;
+// Provider unhealthy / temporarily disabled / circuit-open / 5xx upstream —
+// degraded, not failed (the fault is on the provider side). A 4xx (e.g. 404)
+// is left as a real failure since it usually points at a bad request/path.
+const DEGRADED_REASON_RE = /provider disabled|temporarily disabled|\bdisabled\b|unavailable|circuit|unhealthy|degraded|stale|timeout|http\s*5\d\d|\b5\d\d\b/i;
 
 export function deriveToolStatus(part: {
   state?: string;
@@ -96,6 +103,7 @@ export function deriveToolStatus(part: {
   const erroredOut = part.state === "output-error" || part.errorText != null || output?.ok === false;
   if (erroredOut) {
     if (GATE_REASON_RE.test(reasonText)) return "gated";
+    if (SKIP_REASON_RE.test(reasonText)) return "skipped";
     if (DEGRADED_REASON_RE.test(reasonText)) return "degraded";
     return "failed";
   }

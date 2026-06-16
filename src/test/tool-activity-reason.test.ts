@@ -80,3 +80,34 @@ describe("deriveToolStatus — budget/provider reclassification (review #4)", ()
     expect(deriveToolStatus({ state: "output-available", output: { ok: false, reason: "404 not found" } })).toBe("failed");
   });
 });
+
+describe("deriveToolStatus — orchestration gates from production logs", () => {
+  const gate = (reason: string) =>
+    deriveToolStatus({ state: "output-available", output: { ok: false, reason } });
+  it("EV gate is gated, not failed", () => {
+    expect(gate("expected value 23 below 70")).toBe("gated");
+  });
+  it("burst/cycle limits are gated", () => {
+    expect(gate("burst limit reached for oathnet_lookup (6/6 on this investigation)")).toBe("gated");
+    expect(gate("paid-call cycle limit reached (2)")).toBe("gated");
+    expect(gate("same-tool cycle limit reached (1)")).toBe("gated");
+  });
+  it("execution-plan gate is gated", () => {
+    expect(gate("execution plan required for this cycle")).toBe("gated");
+  });
+  it("dedup / guard / no-result are skipped, not failed", () => {
+    expect(gate("duplicate call: prior other")).toBe("skipped");
+    expect(gate("skipped: guard not met")).toBe("skipped");
+    expect(gate("tool returned no usable result")).toBe("skipped");
+    expect(gate("leakcheck_lookup skipped — high-cost tool already used this seed")).toBe("skipped");
+  });
+  it("provider disabled after consecutive failures is degraded", () => {
+    expect(gate("disabled after 3 consecutive failures")).toBe("degraded");
+    expect(gate("unavailable: disabled (provider disabled in config)")).toBe("degraded");
+  });
+  it("real upstream 404/500 and timeouts", () => {
+    expect(deriveToolStatus({ state: "output-error", errorText: "upstream returned HTTP 404" })).toBe("failed");
+    expect(deriveToolStatus({ state: "output-error", errorText: "upstream returned HTTP 500" })).toBe("degraded"); // 5xx provider fault
+    expect(deriveToolStatus({ state: "output-available", output: { ok: false, reason: "bosint_phone_timeout" } })).toBe("degraded");
+  });
+});
