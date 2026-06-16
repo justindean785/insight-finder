@@ -35,15 +35,22 @@ All colors MUST be HSL.
     --accent: 0 0% 95%;
     --accent-foreground: 0 0% 5%;
 
-    --destructive: 0 84% 60%;        /* #ef4444 — Proximity red */
+    --destructive: 0 72% 48%;        /* #d32222 — Proximity red, darkened to clear 4.5:1 vs white text */
     --destructive-foreground: 0 0% 100%;
 
     /* Semantic tokens — un-aliased. One meaning per token. */
     --info: 212 78% 58%;             /* system / agent state — cool blue */
     --success: 147 56% 56%;          /* instrument green */
     --warning: 33 86% 67%;           /* amber */
-    --danger: 0 84% 60%;             /* #ef4444 — red */
+    --danger: 0 72% 48%;             /* #d32222 — red, darkened to clear 4.5:1 vs white text */
     --evidence: 0 0% 64%;            /* immutable / custody marker — neutral */
+
+    /* Dark "ink" foregrounds for solid bright-colored badges. These fills are
+       too light for white text (1.8–3.4:1); near-black text clears AA (5.2–9.4:1). */
+    --info-foreground: 0 0% 10%;
+    --success-foreground: 0 0% 10%;
+    --warning-foreground: 0 0% 10%;
+    --highconf-foreground: 0 0% 10%;
 
     /* Muted semantic backgrounds — for soft chips, row tints, alerts */
     --info-muted: 212 30% 12%;

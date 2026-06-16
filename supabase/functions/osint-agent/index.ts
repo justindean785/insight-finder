@@ -16,8 +16,8 @@ import { costForTool } from "./costs.ts";
 import { tierOf, TIER_A, TIER_B } from "./tiers.ts";
 import { playbookFor, renderPlaybookForPrompt } from "./playbooks.ts";
 import { auditCoverage } from "./coverage.ts";
-import { detectContradictions } from "./contradictions.ts";
-import { computeAxes, sourceConfidence, applyEvidenceCaps } from "./confidence.ts";
+import { detectContradictions, detectIdentityMisattribution, isOffenderKind, computeContradictionPenalty } from "./contradictions.ts";
+import { computeAxes, sourceConfidence, applyEvidenceCaps, deriveStatus, coerceStatus, isConfirmedStatus, isCrimeKind, CRIME_WEAK_CAP } from "./confidence.ts";
 import { buildWorkflowAddendum } from "./workflow_prompt.ts";
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
@@ -37,9 +37,9 @@ import {
   CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED,
   HIBP_API_KEY, GITHUB_API_TOKEN, FIRECRAWL_API_KEY, EXA_API_KEY, JINA_API_KEY,
   GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY,
-  firecrawlCreditsLow, markFirecrawlCreditsLow, resetFirecrawlCreditsLow, degradedTools,
+  isFirecrawlCreditsLow, markFirecrawlCreditsLow, resetFirecrawlCreditsLow,
   markToolDegraded, isDegraded, fetchRetry, fetchT,
-  deadHosts, markHostDead, isHostDead,
+  markHostDead, isHostDead, clearEnvThreadState,
 } from "./env.ts";
 
 // validation.ts — Seed detection, cache TTLs, artifact validation
@@ -63,8 +63,9 @@ import {
 
 // guard.ts — Per-investigation guard state, routing guards, triage gating
 import {
-  guard, routingGuard, HIGH_COST_TOOLS, CONSUMER_DOMAINS, STAGE2_TOOLS,
-  triageState, bumpArtifacts, skipStub, gateStage2,
+  getGuard, getRoutingGuard, getTriageState, clearThreadState,
+  HIGH_COST_TOOLS, CONSUMER_DOMAINS, STAGE2_TOOLS,
+  bumpArtifacts, skipStub, gateStage2,
 } from "./guard.ts";
 
 // auth.ts — Request setup: CORS preflight, JWT auth, thread ownership, message persistence
@@ -225,36 +226,20 @@ Deno.serve(async (req) => {
     );
   }
 
-  // Reset per-invocation sticky flags. Deno isolates are reused across
-  // requests, so module-scope state must be cleared at the top of each
-  // handler call or one investigation's 402 disables Firecrawl forever.
-  degradedTools.clear();
-  deadHosts.clear();
-  resetFirecrawlCreditsLow(); // Reset per-request: one investigation's 402 shouldn't carry over
-
-  // ---- Reset guard/triage state (module-scoped, must be reset per-request) ----
-  guard.artifactsSinceCorrelate = 0;
-  guard.artifactsSincePlan = 0;
-  guard.planCalledInRound = false;
-  routingGuard.artifactsTotal = 0;
-  routingGuard.memoryRecallTimestamps = [];
-  routingGuard.memoryRecallSubjectsThisStep.clear();
-  routingGuard.highCostLastArtifactCount.clear();
-  triageState.ran = false;
-  triageState.seed = null;
-  triageState.seedType = null;
-  triageState.seedDomain = null;
-  triageState.cleared.clear();
-  triageState.reasons = [];
-  triageState.skipped = [];
-  triageState.identitySignals.name = false;
-  triageState.identitySignals.username = false;
-
   try {
     // ---- setupRequest handles CORS, auth, thread verification, message persistence ----
     const ctx = await setupRequest(req);
     const { supabase, supabaseAdmin, user, userId, threadId, archiveEnabled, detectedSeedType, messages } = ctx;
     const manualOverrideSelector = extractManualOverrideSelector(messages);
+
+    // ---- REL-1: Concurrency-safe state (thread-keyed) -------------------------
+    // Clear first so get* calls return fresh objects that are correctly mapped.
+    clearThreadState(threadId);
+    clearEnvThreadState(threadId);
+
+    const g = getGuard(threadId);
+    const rg = getRoutingGuard(threadId);
+    const ts = getTriageState(threadId);
 
     const tools = {
       list_tools: tool({
@@ -287,10 +272,10 @@ Deno.serve(async (req) => {
               reason: "HIBP_API_KEY not configured — use breach_check / leakcheck_lookup / oathnet_lookup for breach corroboration.",
             });
           }
-          if (triageState.ran) {
+          if (ts.ran) {
             for (const name of stage2) {
-              if (!triageState.cleared.has(name)) {
-                const r = triageState.skipped.find((s) => s.tool === name)?.reason
+              if (!ts.cleared.has(name)) {
+                const r = ts.skipped.find((s) => s.tool === name)?.reason
                   ?? "Stage 1 produced no qualifying signal (no breach / no real gravatar / low emailrep / consumer domain).";
                 disabled.push({ name, reason: r });
               }
@@ -303,13 +288,13 @@ Deno.serve(async (req) => {
           };
           // Only memoize the BASELINE (pre-triage) catalog so the post-triage
           // refresh isn't poisoned by a stale early-call cache.
-          if (!triageState.ran && !CATALOG_CACHE.get(threadId)) {
+          if (!ts.ran && !CATALOG_CACHE.get(threadId)) {
             CATALOG_CACHE.set(threadId, TOOL_CATALOG);
           }
           return {
             ok: true,
-            triage_ran: triageState.ran,
-            cached_for_investigation: !triageState.ran && !!CATALOG_CACHE.get(threadId),
+            triage_ran: ts.ran,
+            cached_for_investigation: !ts.ran && !!CATALOG_CACHE.get(threadId),
             disabled_tools: disabled,
             ...filtered,
           };
@@ -327,10 +312,10 @@ Deno.serve(async (req) => {
           const domain = type === "email" && normalized.includes("@")
             ? normalized.split("@")[1].toLowerCase()
             : null;
-          triageState.seed = normalized;
-          triageState.seedType = type;
-          triageState.seedDomain = domain;
-          if (type === "username") triageState.identitySignals.username = true;
+          ts.seed = normalized;
+          ts.seedType = type;
+          ts.seedDomain = domain;
+          if (type === "username") ts.identitySignals.username = true;
 
           // Triage is classification-only. Provider calls must pass through the
           // shared planner/cache/runtime wrapper so they are budgeted, logged,
@@ -383,9 +368,9 @@ Deno.serve(async (req) => {
           const stage2Open = true;
           if (reasons.length === 0) reasons.push("seed classified; provider checks require a planned cycle");
 
-          triageState.cleared.clear();
-          triageState.skipped = [];
-          triageState.reasons = reasons;
+          ts.cleared.clear();
+          ts.skipped = [];
+          ts.reasons = reasons;
 
           const blockedReasonGlobal = "";
 
@@ -398,11 +383,11 @@ Deno.serve(async (req) => {
             // google_dorks is intentionally NOT gated: it only generates
             // copy-paste query URLs (no external API call, no quota), so it
             // is safe and high-value to run on every seed type. Always allow.
-            if (allow) triageState.cleared.add(t);
-            else triageState.skipped.push({ tool: t, reason: blockedReason });
+            if (allow) ts.cleared.add(t);
+            else ts.skipped.push({ tool: t, reason: blockedReason });
           }
 
-          triageState.ran = true;
+          ts.ran = true;
 
           const decision = {
             seed: normalized,
@@ -416,8 +401,8 @@ Deno.serve(async (req) => {
               non_consumer_domain: nonConsumerDomain,
             },
             gate_open: stage2Open,
-            cleared: [...triageState.cleared],
-            skipped: triageState.skipped,
+            cleared: [...ts.cleared],
+            skipped: ts.skipped,
             reasons,
           };
 
@@ -432,7 +417,7 @@ Deno.serve(async (req) => {
               source: "triage_seed",
               metadata: { label: "triage_decision", ...decision } as Record<string, unknown>,
             }]);
-            bumpArtifacts(1, ["triage_decision"]);
+            bumpArtifacts(threadId, 1, ["triage_decision"]);
           } catch { /* best-effort */ }
 
           return { ok: true, stage1, decision };
@@ -446,7 +431,7 @@ Deno.serve(async (req) => {
           focus: z.string().optional().describe("Optional steering hint, e.g. 'find social profiles', 'find leaks'"),
         }),
         execute: async ({ query, focus }) => {
-          const gated = gateStage2("minimax_web_search");
+          const gated = gateStage2(threadId,"minimax_web_search");
           if (gated) return gated;
           if (!PERPLEXITY_API_KEY) return { error: "PERPLEXITY_API_KEY not configured" };
           try {
@@ -532,11 +517,11 @@ Deno.serve(async (req) => {
           })).max(200),
         }),
         execute: async ({ seed, artifacts }) => {
-          if (guard.artifactsSinceCorrelate < 3) {
+          if (g.artifactsSinceCorrelate < 3) {
             return skipStub(
               "minimax_correlate",
-              `need >=3 new artifacts since last correlation (have ${guard.artifactsSinceCorrelate}). Keep gathering, or call at end of round.`,
-              { artifactsSinceCorrelate: guard.artifactsSinceCorrelate },
+              `need >=3 new artifacts since last correlation (have ${g.artifactsSinceCorrelate}). Keep gathering, or call at end of round.`,
+              { artifactsSinceCorrelate: g.artifactsSinceCorrelate },
             );
           }
           try {
@@ -549,7 +534,7 @@ Deno.serve(async (req) => {
               maxTokens: 1500,
             });
             const parsed = safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content };
-            guard.artifactsSinceCorrelate = 0;
+            g.artifactsSinceCorrelate = 0;
             return { ok: r.ok, status: r.status, analysis: parsed };
           } catch (e) { return { error: String(e) }; }
         },
@@ -564,18 +549,18 @@ Deno.serve(async (req) => {
           budget_remaining: z.number().int().min(0).max(100).default(30),
         }),
         execute: async ({ seed, already_queried, artifacts, budget_remaining }) => {
-          if (guard.artifactsSincePlan === 0) {
+          if (g.artifactsSincePlan === 0) {
             return skipStub(
               "minimax_plan_pivots",
               "previous round produced zero new artifacts — gather more before planning.",
-              { artifactsSincePlan: guard.artifactsSincePlan, planCalledInRound: guard.planCalledInRound },
+              { artifactsSincePlan: g.artifactsSincePlan, planCalledInRound: g.planCalledInRound },
             );
           }
-          if (guard.planCalledInRound) {
+          if (g.planCalledInRound) {
             return skipStub(
               "minimax_plan_pivots",
               "already called once this fan-out round. Execute the planned pivots before re-planning.",
-              { artifactsSincePlan: guard.artifactsSincePlan, planCalledInRound: guard.planCalledInRound },
+              { artifactsSincePlan: g.artifactsSincePlan, planCalledInRound: g.planCalledInRound },
             );
           }
           try {
@@ -637,11 +622,11 @@ Deno.serve(async (req) => {
               // HIBP can only fail without a key — keep it off the planner menu.
               if (name === "hibp_lookup" && !HIBP_API_KEY) return false;
               // Dead/degraded tools — stop re-proposing them this investigation.
-              if (brokenTools.has(name) || isDegraded(name)) return false;
+              if (brokenTools.has(name) || isDegraded(threadId,name)) return false;
               if (!HIGH_COST_TOOLS.has(name)) return true;
-              const last = routingGuard.highCostLastArtifactCount.get(name);
+              const last = rg.highCostLastArtifactCount.get(name);
               if (last === undefined) return true;
-              if (routingGuard.artifactsTotal - last >= 5) return true;
+              if (rg.artifactsTotal - last >= 5) return true;
               skippedHighCost.push(name);
               return false;
             });
@@ -678,8 +663,8 @@ Deno.serve(async (req) => {
                 console.warn("[graph-pivots] selection failed, using planner output:", e);
               }
             }
-            guard.planCalledInRound = true;
-            guard.artifactsSincePlan = 0;
+            g.planCalledInRound = true;
+            g.artifactsSincePlan = 0;
             completePlan(threadId);
             return { ok: r.ok, status: r.status, plan: parsed };
           } catch (e) { return { error: String(e) }; }
@@ -704,7 +689,7 @@ Deno.serve(async (req) => {
               reason: "intelbase disabled (provider unhealthy ~33% success). Use breach_check / leakcheck_lookup / oathnet_lookup / bosint_email_lookup instead.",
             };
           }
-          const gated = gateStage2("intelbase_email_lookup");
+          const gated = gateStage2(threadId,"intelbase_email_lookup");
           if (gated) return gated;
           if (!INTELBASE_API_KEY) return { error: "INTELBASE_API_KEY not configured" };
           try {
@@ -824,17 +809,17 @@ Deno.serve(async (req) => {
           value: z.string(),
         }),
         execute: async ({ type, value }) => {
-          const gated = gateStage2("oathnet_lookup");
+          const gated = gateStage2(threadId,"oathnet_lookup");
           if (gated) return gated;
           // High-cost: one call per seed unless new corroborating evidence has appeared.
           {
-            const last = routingGuard.highCostLastArtifactCount.get("oathnet_lookup");
-            if (last !== undefined && routingGuard.artifactsTotal - last < 5) {
-              const note = `oathnet_lookup skipped — high-cost tool already used this seed (${routingGuard.artifactsTotal - last} new artifacts since, need ≥5).`;
+            const last = rg.highCostLastArtifactCount.get("oathnet_lookup");
+            if (last !== undefined && rg.artifactsTotal - last < 5) {
+              const note = `oathnet_lookup skipped — high-cost tool already used this seed (${rg.artifactsTotal - last} new artifacts since, need ≥5).`;
               console.log(`[high-cost-gate] ${note}`);
               return { ok: false, skipped: true, gated: true, reason: note };
             }
-            routingGuard.highCostLastArtifactCount.set("oathnet_lookup", routingGuard.artifactsTotal);
+            rg.highCostLastArtifactCount.set("oathnet_lookup", rg.artifactsTotal);
           }
           if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
           try {
@@ -881,7 +866,7 @@ Deno.serve(async (req) => {
         }),
         execute: async ({ endpoint, value }) => {
           if (!SYNAPSINT_API_KEY) return { error: "SYNAPSINT_API_KEY not configured" };
-          const deg = isDegraded("synapsint_lookup"); if (deg) return deg;
+          const deg = isDegraded(threadId,"synapsint_lookup"); if (deg) return deg;
           try {
             const url = `https://synapsint.pythonanywhere.com/${endpoint}/${encodeURIComponent(value)}`;
             const r = await fetchRetry(url, {
@@ -890,10 +875,10 @@ Deno.serve(async (req) => {
             const text = await r.text();
             let data: unknown;
             try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 4000) }; }
-            if (r.status >= 500) markToolDegraded("synapsint_lookup", `HTTP ${r.status}`);
+            if (r.status >= 500) markToolDegraded(threadId,"synapsint_lookup", `HTTP ${r.status}`);
             return { ok: r.ok, status: r.status, endpoint, value, data };
           } catch (e) {
-            markToolDegraded("synapsint_lookup", `network error`);
+            markToolDegraded(threadId,"synapsint_lookup", `network error`);
             return { error: String(e) };
           }
         },
@@ -1221,13 +1206,13 @@ Deno.serve(async (req) => {
           if (!q) return { error: "missing value" };
           // High-cost: one call per seed unless new corroborating evidence has appeared.
           {
-            const last = routingGuard.highCostLastArtifactCount.get("leakcheck_lookup");
-            if (last !== undefined && routingGuard.artifactsTotal - last < 5) {
-              const note = `leakcheck_lookup skipped — high-cost tool already used this seed (${routingGuard.artifactsTotal - last} new artifacts since, need ≥5).`;
+            const last = rg.highCostLastArtifactCount.get("leakcheck_lookup");
+            if (last !== undefined && rg.artifactsTotal - last < 5) {
+              const note = `leakcheck_lookup skipped — high-cost tool already used this seed (${rg.artifactsTotal - last} new artifacts since, need ≥5).`;
               console.log(`[high-cost-gate] ${note}`);
               return { ok: false, skipped: true, gated: true, reason: note };
             }
-            routingGuard.highCostLastArtifactCount.set("leakcheck_lookup", routingGuard.artifactsTotal);
+            rg.highCostLastArtifactCount.set("leakcheck_lookup", rg.artifactsTotal);
           }
           try {
             const url = `https://leakcheck.io/api/v2/query/${encodeURIComponent(q)}?type=${encodeURIComponent(type ?? "auto")}`;
@@ -1375,7 +1360,7 @@ Deno.serve(async (req) => {
         execute: async ({ url }) => {
           const KEY = Deno.env.get("DEEPFIND_API_KEY");
           if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
-          const deg = isDegraded("deepfind_tech_stack"); if (deg) return deg;
+          const deg = isDegraded(threadId,"deepfind_tech_stack"); if (deg) return deg;
           if (isHostDead(url)) return { skipped: true, reason: "host does not resolve (NXDOMAIN) — skipped" };
           try {
             const r = await fetchT(`https://deepfind.me/api/tech-stack/detect`, {
@@ -1384,7 +1369,7 @@ Deno.serve(async (req) => {
               body: JSON.stringify({ url }),
             });
             const data = await r.json().catch(() => ({}));
-            if (r.status >= 500) markToolDegraded("deepfind_tech_stack", `HTTP ${r.status}`);
+            if (r.status >= 500) markToolDegraded(threadId,"deepfind_tech_stack", `HTTP ${r.status}`);
             return { ok: r.ok, status: r.status, source: "deepfind.tech_stack", data };
           } catch (e) { return { error: String(e) }; }
         },
@@ -1807,7 +1792,7 @@ Deno.serve(async (req) => {
             // flag the host so the live-host tools skip it instead of each
             // re-discovering the same DNS failure.
             if (statuses.some((s) => s === 3)) {
-              markHostDead(host, "NXDOMAIN — domain does not resolve");
+              markHostDead(threadId,host, "NXDOMAIN — domain does not resolve");
             }
             const hasErr = Object.keys(errs).length > 0;
             return { ok: !hasErr, host, records: out, ...(hasErr ? { errors: errs } : {}) };
@@ -1907,7 +1892,7 @@ Deno.serve(async (req) => {
             // A DNS-resolution failure is a definitive "host doesn't exist" —
             // flag it so siblings (jina, deepfind_ssl/tech) skip the same host.
             if (/dns error|failed to lookup address|name or service not known|getaddrinfo|ENOTFOUND/i.test(msg)) {
-              markHostDead(url, "DNS lookup failed");
+              markHostDead(threadId,url, "DNS lookup failed");
             }
             return { error: msg };
           }
@@ -2464,7 +2449,7 @@ Deno.serve(async (req) => {
             const { error } = await supabase.from("artifacts").insert(safeRows);
             if (!error) {
               inserted = safeRows.length;
-              bumpArtifacts(safeRows.length, safeRows.map((r) => String(r.kind)));
+              bumpArtifacts(threadId,safeRows.length, safeRows.map((r) => String(r.kind)));
             } else {
               return { ok: false, error: error.message, queries: queryResults, found: collected.length, inserted: 0 };
             }
@@ -2550,7 +2535,7 @@ Deno.serve(async (req) => {
             const { error } = await supabase.from("artifacts").insert(safeRows);
             if (!error) {
               inserted = safeRows.length;
-              bumpArtifacts(safeRows.length, safeRows.map((r) => String(r.kind)));
+              bumpArtifacts(threadId,safeRows.length, safeRows.map((r) => String(r.kind)));
             }
           }
           return {
@@ -2826,7 +2811,7 @@ Deno.serve(async (req) => {
           "Search urlscan.io's public scan database (no auth). Use to find historical URLs/screenshots referencing a domain, IP, hash, or string. Returns up to 20 scan results with page URL, screenshot, IP, ASN.",
         inputSchema: z.object({ query: z.string().describe('Lucene query, e.g. domain:example.com or ip:1.2.3.4 or page.url:"keyword"') }),
         execute: async ({ query }) => {
-          const gated = gateStage2("urlscan_search");
+          const gated = gateStage2(threadId,"urlscan_search");
           if (gated) return gated;
           try {
             const r = await fetchT(`https://urlscan.io/api/v1/search/?q=${encodeURIComponent(query)}&size=20`, {}, 12_000);
@@ -2928,7 +2913,7 @@ Deno.serve(async (req) => {
           "Search GitHub's public code index for a string (email, username, key fragment, internal hostname). Returns up to 20 file matches with repo and snippet. Authenticated via GITHUB_API_TOKEN (5,000 req/hr) when configured, else falls back to unauthenticated (60 req/hr).",
         inputSchema: z.object({ query: z.string() }),
         execute: async ({ query }) => {
-          const gated = gateStage2("github_code_search");
+          const gated = gateStage2(threadId,"github_code_search");
           if (gated) return gated;
           try {
             const headers: Record<string, string> = {
@@ -3324,10 +3309,29 @@ Deno.serve(async (req) => {
               rejected.push({ index: i, reason: v.reason, kind: a.kind, value: a.value });
               return;
             }
+            // Verified URL — the SOLE path to court_record/news class (H4).
+            // Never inferred from free-text source prose.
+            const vUrl = (() => {
+              const m = a.metadata ?? {};
+              const u = m.source_url ?? m.url ?? m.archived_url ?? m.profile_url ?? null;
+              return typeof u === "string" ? u : null;
+            })();
             // Apply conservative confidence caps based on source class.
             const cap = applyEvidenceCaps({
               rawConfidence: a.confidence ?? 50,
               sources: [a.source ?? "", ...((a.metadata?.sources ?? []) as Iterable<unknown>)].filter(Boolean) as string[],
+              kind: v.kind,
+              verifiedUrl: vUrl,
+            });
+            // Clamp the harm-bearing status label through the shared authority
+            // (C1/C2/C3/C4). A model-supplied "confirmed_indicted" never survives
+            // weak/single-source/UNVERIFIED evidence; it is coerced/downgraded.
+            const derived = deriveStatus({
+              cap: cap.cap,
+              rawStatus: (a.metadata?.status ?? null) as string | null,
+              classes: cap.source_classes,
+              kind: v.kind,
+              verificationStatus: (a.metadata?.verification_status ?? null) as string | null,
             });
             // Required-fields envelope — fill conservative defaults when the
             // agent didn't supply them.
@@ -3336,7 +3340,8 @@ Deno.serve(async (req) => {
               ...(v.metaPatch ?? {}),
               ...(inferred.reclassified_from ? { reclassified_from: inferred.reclassified_from } : {}),
               source_category: cap.source_classes,
-              status: a.metadata?.status ?? "new",
+              status: derived.status,
+              ...(derived.downgraded ? { status_downgrade_reason: derived.reason, raw_status: a.metadata?.status ?? null } : {}),
               cluster_id: a.metadata?.cluster_id ?? null,
               reason_for_confidence: cap.reason_for_confidence,
               reason_not_confirmed: a.metadata?.reason_not_confirmed ?? cap.reason_not_confirmed ?? null,
@@ -3382,7 +3387,7 @@ Deno.serve(async (req) => {
           }
           const safeRowsForFollowup = insertedRows;
           const flagged = safeRows.filter((r) => (r.metadata as { minor_warning?: unknown } | undefined)?.minor_warning).length;
-          bumpArtifacts(safeRowsForFollowup.length, safeRowsForFollowup.map((r) => String(r.kind)));
+          bumpArtifacts(threadId,safeRowsForFollowup.length, safeRowsForFollowup.map((r) => String(r.kind)));
           beginCycle(
             threadId,
             "Review newly recorded evidence and select the smallest justified verification batch.",
@@ -3559,16 +3564,35 @@ Deno.serve(async (req) => {
           const inferred = inferKind(kind, value);
           const v = validateArtifact(inferred.kind, value);
           if (!v.ok) return { ok: false, rejected: true, reason: v.reason };
+
+          const vUrl = (() => {
+            const m = metadata ?? {};
+            const u = m.source_url ?? m.url ?? m.archived_url ?? m.profile_url ?? null;
+            return typeof u === "string" ? u : null;
+          })();
+
           const cap = applyEvidenceCaps({
             rawConfidence: confidence ?? 50,
             sources: [source ?? "", ...((metadata?.sources ?? []) as Iterable<unknown>)].filter(Boolean) as string[],
+            kind: v.kind,
+            verifiedUrl: vUrl,
           });
+
+          const derived = deriveStatus({
+            cap: cap.cap,
+            rawStatus: (metadata?.status ?? null) as string | null,
+            classes: cap.source_classes,
+            kind: v.kind,
+            verificationStatus: (metadata?.verification_status ?? null) as string | null,
+          });
+
           const enrichedMeta = {
             ...(metadata ?? {}),
             ...(v.metaPatch ?? {}),
             ...(inferred.reclassified_from ? { reclassified_from: inferred.reclassified_from } : {}),
             source_category: cap.source_classes,
-            status: metadata?.status ?? "new",
+            status: derived.status,
+            ...(derived.downgraded ? { status_downgrade_reason: derived.reason, raw_status: metadata?.status ?? null } : {}),
             cluster_id: metadata?.cluster_id ?? null,
             reason_for_confidence: cap.reason_for_confidence,
             reason_not_confirmed: metadata?.reason_not_confirmed ?? cap.reason_not_confirmed ?? null,
@@ -3587,7 +3611,7 @@ Deno.serve(async (req) => {
           });
           const { error } = await supabase.from("artifacts").insert([row]);
           if (error) return { ok: false, error: error.message };
-          bumpArtifacts(1, [String(row.kind)]);
+          bumpArtifacts(threadId,1, [String(row.kind)]);
           beginCycle(
             threadId,
             "Review the newly recorded artifact and select the smallest justified verification batch.",
@@ -3750,21 +3774,21 @@ Deno.serve(async (req) => {
         const subj = String(subject ?? "").trim().toLowerCase();
         if (!subj) return { ok: false, error: "empty subject" };
         // Per-step dedup: never recall the same subject twice in one reasoning step.
-        if (routingGuard.memoryRecallSubjectsThisStep.has(subj)) {
+        if (rg.memoryRecallSubjectsThisStep.has(subj)) {
           const msg = "memory_recall skipped — rate limit reached (duplicate subject in current reasoning step).";
           console.log(`[memory_recall] ${msg} subject=${subj}`);
           return { ok: false, skipped: true, gated: true, reason: msg };
         }
         // Sliding 30s window, max 2 calls.
         const now = Date.now();
-        routingGuard.memoryRecallTimestamps = routingGuard.memoryRecallTimestamps.filter((t) => now - t < 30_000);
-        if (routingGuard.memoryRecallTimestamps.length >= 2) {
+        rg.memoryRecallTimestamps = rg.memoryRecallTimestamps.filter((t) => now - t < 30_000);
+        if (rg.memoryRecallTimestamps.length >= 2) {
           const msg = "memory_recall skipped — rate limit reached (max 2 calls per 30s window).";
           console.log(`[memory_recall] ${msg} subject=${subj}`);
           return { ok: false, skipped: true, gated: true, reason: msg };
         }
-        routingGuard.memoryRecallTimestamps.push(now);
-        routingGuard.memoryRecallSubjectsThisStep.add(subj);
+        rg.memoryRecallTimestamps.push(now);
+        rg.memoryRecallSubjectsThisStep.add(subj);
         let q = supabase
           .from("agent_memory")
           .select("id,kind,subject,subject_kind,related_values,content,confidence,source_thread_id,hit_count,last_used_at,created_at")
@@ -3910,12 +3934,69 @@ Deno.serve(async (req) => {
           .describe("Optional. Restrict to specific artifact kinds (e.g. ['email','username','name','ip'])."),
       }),
       execute: async ({ cluster_artifact_kinds }) => {
-        let q = supabase.from("artifacts").select("kind,value,source,metadata,created_at").eq("thread_id", threadId);
+        let q = supabase.from("artifacts").select("id,kind,value,source,metadata,confidence,created_at").eq("thread_id", threadId);
         if (cluster_artifact_kinds?.length) q = q.in("kind", cluster_artifact_kinds);
         const { data, error } = await q;
         if (error) return { ok: false, error: error.message };
-        const findings = detectContradictions((data ?? []) as Parameters<typeof detectContradictions>[0]);
-        return { ok: true, count: findings.length, contradictions: findings };
+        const rows = (data ?? []) as Array<{ id?: unknown; kind: string; value: string; source?: string | null; metadata?: Record<string, unknown> | null; confidence?: number | null }>;
+        const findings = detectContradictions(rows as Parameters<typeof detectContradictions>[0]);
+
+        // ── T-H2 — contradiction WRITE-BACK ──────────────────────────────
+        // Previously advisory-only: a high-severity same-name location
+        // conflict fired but confirmed artifacts were never re-clamped. Now we
+        // PERSIST a penalty against the implicated artifacts:
+        //   • downgrade status → review (via deriveStatus/coerceStatus)
+        //   • reduce confidence
+        //   • HARD-BLOCK any confirmed status on a high-sev location_conflict
+        //     among crime kinds
+        // Idempotent: a per-finding signature is stored on each penalized row;
+        // re-running detect_contradictions never double-penalizes.
+        let penalized = 0;
+        try {
+          // Index rows by value for quick lookup of involved artifacts.
+          const byValue = new Map<string, typeof rows>();
+          for (const r of rows) {
+            const k = String(r.value);
+            const arr = byValue.get(k) ?? [];
+            arr.push(r);
+            byValue.set(k, arr);
+          }
+          for (const f of findings) {
+            for (const val of f.involved) {
+              for (const r of byValue.get(val) ?? []) {
+                const meta = { ...((r.metadata ?? {}) as Record<string, unknown>) };
+                const applied = Array.isArray(meta.contra_penalties_applied)
+                  ? (meta.contra_penalties_applied as string[])
+                  : [];
+                const decision = computeContradictionPenalty({
+                  finding: f,
+                  kind: String(r.kind),
+                  rawStatus: (meta.status ?? null) as string | null,
+                  confidence: typeof r.confidence === "number" ? r.confidence : 50,
+                  classes: (Array.isArray(meta.source_category) ? meta.source_category : []) as never[],
+                  verificationStatus: (meta.verification_status ?? null) as string | null,
+                  alreadyApplied: applied,
+                  priorPenalty: typeof meta.contradiction_penalty === "number" ? meta.contradiction_penalty : 0,
+                });
+                if (!decision) continue; // idempotent — already penalized for this sig
+                meta.status = decision.status;
+                meta.contra_penalties_applied = [...applied, decision.appliedSig];
+                meta.contradiction_penalty = decision.totalPenalty;
+                if (decision.confirmedBlocked) meta.confirmed_blocked_reason = "high-severity location_conflict among crime kinds";
+                const upd: Record<string, unknown> = { metadata: meta, confidence: decision.confidence };
+                let uq = supabase.from("artifacts").update(upd).eq("thread_id", threadId).eq("value", String(r.value)).eq("kind", String(r.kind));
+                if (r.id !== undefined && r.id !== null) uq = supabase.from("artifacts").update(upd).eq("id", r.id as string);
+                const { error: upErr } = await uq;
+                if (!upErr) penalized++;
+                else console.warn("[detect_contradictions writeback]", upErr.message);
+              }
+            }
+          }
+        } catch (e) {
+          console.warn("[detect_contradictions writeback]", (e as Error).message);
+        }
+
+        return { ok: true, count: findings.length, contradictions: findings, artifacts_penalized: penalized };
       },
     });
 
@@ -3996,6 +4077,19 @@ Deno.serve(async (req) => {
           identityEvidenceStrength: i.identity_evidence_strength,
           relationshipEvidenceStrength: i.relationship_evidence_strength,
         });
+
+        // EV-8 — record_finding.label is now derived/clamped by the shared
+        // authority instead of being stored verbatim. A model-supplied
+        // "CONFIRMED" is only allowed if numeric axes + source classes
+        // support it.
+        const classes = i.supporting_sources.map((s) => classifySource(s));
+        const derived = deriveStatus({
+          cap: axes.case,
+          rawStatus: i.label,
+          classes,
+          kind: i.supporting_artifact_values?.[0]?.includes("v.") ? "court_case" : "unknown",
+        });
+
         const row = {
           thread_id: threadId,
           user_id: userId,
@@ -4004,7 +4098,8 @@ Deno.serve(async (req) => {
           confidence: axes.case,
           source: i.supporting_sources.join(","),
           metadata: {
-            label: i.label,
+            label: derived.status,
+            raw_label: i.label,
             cluster_label: i.cluster_label,
             drivers: i.drivers,
             reducers: i.reducers ?? [],
@@ -4015,12 +4110,13 @@ Deno.serve(async (req) => {
             supporting_artifact_values: i.supporting_artifact_values ?? [],
             confidence_axes: axes,
             source_reliability: sourceConfidence(i.supporting_sources),
+            status_clamped: derived.downgraded,
           },
         };
         const { data, error } = await supabase.from("artifacts").insert([row]).select("id").maybeSingle();
         if (error) return { ok: false, error: error.message };
         recordFindingSummary(threadId, i.conclusion);
-        return { ok: true, id: data?.id ?? null, confidence_axes: axes, applied_label: i.label };
+        return { ok: true, id: data?.id ?? null, confidence_axes: axes, applied_label: derived.status };
       },
     });
 
@@ -4037,7 +4133,7 @@ Deno.serve(async (req) => {
     beginCycle(
       threadId,
       "Classify the seed, reject weak pivots, and select the smallest high-value initial batch.",
-      [`seed:${seedValueRaw}`, `stage2:${triageState.ran ? "open" : "pending"}`],
+      [`seed:${seedValueRaw}`, `stage2:${ts.ran ? "open" : "pending"}`],
     );
     // Bootstrap per-thread circuit breakers (firecrawl/intelbase pre-disabled).
     circuit.applyBaselineDisables(threadId);
@@ -4190,7 +4286,7 @@ Deno.serve(async (req) => {
         // only inside bumpArtifacts() means steps that find zero artifacts
         // never clear the set, silently blocking memory_recall for any
         // previously-queried subject for the rest of the investigation.
-        routingGuard.memoryRecallSubjectsThisStep.clear();
+        rg.memoryRecallSubjectsThisStep.clear();
         if (!Array.isArray(stepMessages) || stepMessages.length === 0) return {};
         const trimmed: ModelMessage[] = stepMessages.map((m: ModelMessage, idx: number) => {
           const isRecent = idx >= stepMessages.length - STEP_RECENT_WINDOW;

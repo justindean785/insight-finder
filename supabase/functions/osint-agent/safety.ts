@@ -164,26 +164,70 @@ export function sanitizeToolOutput<T>(input: T, maxStr = 2000, depth = 0): T {
   return out as unknown as T;
 }
 
-// ---- SSRF guard ---------------------------------------------------------------
-// SSRF guard for any tool that fetches a user/LLM-supplied URL. Blocks
-// loopback, link-local (cloud metadata!), and RFC1918 private ranges so the
-// edge function cannot be turned into a scanner of internal infra.
+/**
+ * SSRF guard for any tool that fetches a user/LLM-supplied URL. Blocks
+ * loopback, link-local (cloud metadata!), and RFC1918 private ranges so the
+ * edge function cannot be turned into a scanner of internal infra.
+ */
 export function isPrivateHost(hostname: string): boolean {
-  const h = hostname.toLowerCase();
+  const h = hostname.toLowerCase().trim();
   if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".internal")) return true;
-  if (h === "::1" || h.startsWith("[::1")) return true;
-  // IPv4
-  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (m) {
-    const [a, b] = [Number(m[1]), Number(m[2])];
-    if (a === 10) return true;
-    if (a === 127) return true;
-    if (a === 0) return true;
-    if (a === 169 && b === 254) return true; // link-local + cloud metadata
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a >= 224) return true; // multicast / reserved
+  if (h === "::1" || h === "[::1]") return true;
+
+  // 1. Check for IPv6 bracketed/unbracketed link-local and private ranges
+  // [fc00::]/7 (unique local), [fe80::]/10 (link-local), [::ffff:0:0]/96 (IPv4-mapped)
+  const v6 = h.replace(/^\[|\]$/g, "");
+  if (v6.includes(":")) {
+    if (v6 === "::1") return true;
+    if (v6.startsWith("fc") || v6.startsWith("fd")) return true; // fc00::/7
+    if (v6.startsWith("fe8") || v6.startsWith("fe9") || v6.startsWith("fea") || v6.startsWith("feb")) return true; // fe80::/10
+    if (v6.startsWith("::ffff:")) {
+      const mapped = v6.split(":").pop();
+      if (mapped && isPrivateHost(mapped)) return true;
+    }
+    return false;
   }
+
+  // 2. Canonicalize IPv4 (handles decimal, hex, octal, and dotted-quad)
+  // We use a simple but robust check: if it parses as a single 32-bit integer,
+  // check that integer against the private ranges.
+  let ip32: number | null = null;
+
+  // Handle dotted-quad first
+  const parts = h.split(".");
+  if (parts.length === 4) {
+    const vals = parts.map((p) => {
+      if (p.startsWith("0x")) return parseInt(p, 16);
+      if (p.startsWith("0") && p.length > 1) return parseInt(p, 8);
+      return parseInt(p, 10);
+    });
+    if (vals.every((v) => !isNaN(v) && v >= 0 && v <= 255)) {
+      ip32 = (vals[0] << 24) | (vals[1] << 16) | (vals[2] << 8) | vals[3];
+    }
+  } else if (parts.length === 1) {
+    // Handle bare decimal/hex/octal
+    const p = parts[0];
+    const val = p.startsWith("0x") ? parseInt(p, 16) : p.startsWith("0") && p.length > 1 ? parseInt(p, 8) : parseInt(p, 10);
+    if (!isNaN(val) && val >= 0 && val <= 0xffffffff) {
+      ip32 = val;
+    }
+  }
+
+  if (ip32 !== null) {
+    // Unsigned 32-bit for range checks
+    const u32 = ip32 >>> 0;
+    const a = (u32 >>> 24) & 0xff;
+    const b = (u32 >>> 16) & 0xff;
+
+    if (a === 127) return true;    // 127.0.0.0/8 loopback
+    if (a === 10) return true;     // 10.0.0.0/8 private
+    if (a === 172 && (b >= 16 && b <= 31)) return true; // 172.16.0.0/12 private
+    if (a === 192 && b === 168) return true; // 192.168.0.0/16 private
+    if (a === 169 && b === 254) return true; // 169.254.0.0/16 link-local
+    if (a === 0) return true;      // 0.0.0.0/8 reserved
+    if (a >= 224) return true;     // 224.0.0.0+ multicast/reserved
+  }
+
   return false;
 }
 

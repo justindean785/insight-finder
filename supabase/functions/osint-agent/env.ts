@@ -128,28 +128,43 @@ export const SERUS_API_KEY = Deno.env.get("SERUS_API_KEY");
 // ---- Degraded state ----------------------------------------------------------
 // Sticky flag — once Firecrawl returns 402 (insufficient credits) we stop
 // touching it for the rest of this invocation and route through Jina + Exa.
-export let firecrawlCreditsLow = false;
-export function markFirecrawlCreditsLow(where: string) {
-  if (!firecrawlCreditsLow) {
-    firecrawlCreditsLow = true;
+const firecrawlCreditsLowMap = new Map<string, boolean>();
+export function isFirecrawlCreditsLow(threadId: string) {
+  return firecrawlCreditsLowMap.get(threadId) ?? false;
+}
+export function markFirecrawlCreditsLow(threadId: string, where: string) {
+  if (!firecrawlCreditsLowMap.get(threadId)) {
+    firecrawlCreditsLowMap.set(threadId, true);
     console.warn(`Firecrawl credits low — using Jina Reader + Exa fallback (tripped at ${where})`);
   }
 }
-export function resetFirecrawlCreditsLow() { firecrawlCreditsLow = false; }
+export function resetFirecrawlCreditsLow(threadId: string) {
+  firecrawlCreditsLowMap.delete(threadId);
+}
 
 // Sticky per-thread degraded-tools set. Any tool that 500s twice in a row, or
 // that the caller manually marks, short-circuits with a uniform error for the
 // rest of the invocation. Prevents the agent from burning cost + time on a
 // provider that's already proven dead this run.
-export const degradedTools = new Set<string>();
-export function markToolDegraded(name: string, reason: string) {
-  if (!degradedTools.has(name)) {
-    degradedTools.add(name);
+const degradedToolsMap = new Map<string, Set<string>>();
+function getDegradedTools(threadId: string): Set<string> {
+  let s = degradedToolsMap.get(threadId);
+  if (!s) {
+    s = new Set<string>();
+    degradedToolsMap.set(threadId, s);
+  }
+  return s;
+}
+export function markToolDegraded(threadId: string, name: string, reason: string) {
+  const s = getDegradedTools(threadId);
+  if (!s.has(name)) {
+    s.add(name);
     console.warn(`[degraded] ${name} disabled for this thread: ${reason}`);
   }
 }
-export function isDegraded(name: string): { error: string; degraded: true } | null {
-  if (degradedTools.has(name)) {
+export function isDegraded(threadId: string, name: string): { error: string; degraded: true } | null {
+  const s = getDegradedTools(threadId);
+  if (s.has(name)) {
     return { error: `${name} degraded this run — skipped`, degraded: true };
   }
   return null;
@@ -160,7 +175,15 @@ export function isDegraded(name: string): { error: string; degraded: true } | nu
 // tools (http_fingerprint, jina_reader_scrape, deepfind_ssl_inspect,
 // deepfind_tech_stack) skip a known-dead host instead of re-collecting the
 // same DNS failure every fan-out round (observed on a seized doxbin.net seed).
-export const deadHosts = new Set<string>();
+const deadHostsMap = new Map<string, Set<string>>();
+function getDeadHosts(threadId: string): Set<string> {
+  let s = deadHostsMap.get(threadId);
+  if (!s) {
+    s = new Set<string>();
+    deadHostsMap.set(threadId, s);
+  }
+  return s;
+}
 export function normalizeHost(input: string): string {
   const raw = (input ?? "").trim().toLowerCase();
   if (!raw) return "";
@@ -172,16 +195,24 @@ export function normalizeHost(input: string): string {
   // dead www. wrongly gate live-host tools on the live apex (and vice versa).
   return host;
 }
-export function markHostDead(input: string, reason: string) {
+export function markHostDead(threadId: string, input: string, reason: string) {
   const host = normalizeHost(input);
-  if (host && !deadHosts.has(host)) {
-    deadHosts.add(host);
+  const s = getDeadHosts(threadId);
+  if (host && !s.has(host)) {
+    s.add(host);
     console.warn(`[dead-host] ${host} unresolvable this thread: ${reason}`);
   }
 }
-export function isHostDead(input: string): boolean {
+export function isHostDead(threadId: string, input: string): boolean {
   const host = normalizeHost(input);
-  return !!host && deadHosts.has(host);
+  const s = getDeadHosts(threadId);
+  return !!host && s.has(host);
+}
+
+export function clearEnvThreadState(threadId: string) {
+  firecrawlCreditsLowMap.delete(threadId);
+  degradedToolsMap.delete(threadId);
+  deadHostsMap.delete(threadId);
 }
 
 // ---- Additional API keys -----------------------------------------------------

@@ -1,0 +1,44 @@
+{
+  "theme": {
+    "extend": {
+      "colors": {
+        "background": "#080808",
+        "foreground": "#fafafa",
+        "card": "#141414",
+        "popover": "#0f0f0f",
+        "primary": "#f2f2f2",
+        "muted": "#0d0d0d",
+        "muted-foreground": "#b3b3b3",
+        "destructive": "#ef4444"
+      },
+      "fontFamily": {
+        "sans": [
+          "Geist"
+        ],
+        "mono": [
+          "Geist Mono"
+        ]
+      },
+      "fontSize": {
+        "sans": [
+          "16px",
+          {}
+        ],
+        "mono": [
+          "14px",
+          {}
+        ]
+      },
+      "borderRadius": {
+        "sm": "4px",
+        "md": "6px",
+        "lg": "8px"
+      },
+      "spacing": {
+        "sm": "8px",
+        "md": "16px",
+        "lg": "24px"
+      }
+    }
+  }
+}

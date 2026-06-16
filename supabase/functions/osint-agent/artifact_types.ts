@@ -123,11 +123,52 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   memory_recall: "unknown",
 };
 
+/**
+ * Source-class is keyed SOLELY on the canonical originating TOOL name (T-H4).
+ *
+ * Previously a free-text `source` string was regex-matched, so model prose like
+ * "bx_on_x tweet, DOJ press release" inflated the class to `news`/`court_record`
+ * even when the cited record was about a *different* person. We no longer infer
+ * class from arbitrary prose: an unrecognized source is `unknown`. The only way
+ * to reach the high-trust `court_record`/`news` classes is via a *verified URL*
+ * whose host is a recognized court/news domain — see classifySourceWithUrl.
+ */
 export function classifySource(toolOrSource: string | null | undefined): SourceClass {
   if (!toolOrSource) return "unknown";
-  const s = toolOrSource.toLowerCase();
+  const s = toolOrSource.toLowerCase().trim();
   if (TOOL_CLASS[s]) return TOOL_CLASS[s];
-  if (/court|docket|legal_record|justice|cdc|cdcr|bop|pacer/.test(s)) return "court_record";
-  if (/news|times|herald|tribune|press|magazine|article/.test(s)) return "news";
   return "unknown";
+}
+
+// Recognized court/government-record hosts and news hosts. Class is only granted
+// when a *verified URL* (not model prose) resolves to one of these.
+const COURT_HOST_RE =
+  /(^|\.)(courtlistener\.com|pacer\.gov|justia\.com|justice\.gov|uscourts\.gov|bop\.gov|cdcr\.ca\.gov|law\.justia\.com)$/i;
+const NEWS_HOST_RE =
+  /(^|\.)(nytimes\.com|washingtonpost\.com|reuters\.com|apnews\.com|bbc\.co\.uk|bbc\.com|theguardian\.com|wsj\.com|bloomberg\.com|npr\.org|cnn\.com|latimes\.com)$/i;
+
+/**
+ * Class a source given its canonical tool name AND, optionally, a verified URL.
+ * Court_record / news are reachable ONLY through a verified URL whose host is a
+ * recognized court/news domain — never through the free-text source string.
+ */
+export function classifySourceWithUrl(
+  toolOrSource: string | null | undefined,
+  verifiedUrl?: string | null,
+): SourceClass {
+  const base = classifySource(toolOrSource);
+  if (base !== "unknown") return base;
+  if (verifiedUrl) {
+    let host = "";
+    try {
+      host = new URL(verifiedUrl).hostname.toLowerCase();
+    } catch {
+      host = "";
+    }
+    if (host) {
+      if (COURT_HOST_RE.test(host)) return "court_record";
+      if (NEWS_HOST_RE.test(host)) return "news";
+    }
+  }
+  return base;
 }
