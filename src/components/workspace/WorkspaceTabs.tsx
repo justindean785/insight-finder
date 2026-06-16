@@ -1,14 +1,15 @@
+import { useRef } from "react";
 import { MessagesSquare, Database, FileText, Share2, Activity, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export type WorkspaceTab = "chat" | "evidence" | "report" | "graph" | "tools";
 
 const TABS: { key: WorkspaceTab; label: string; icon: LucideIcon }[] = [
-  { key: "chat", label: "Chatbot", icon: MessagesSquare },
+  { key: "chat", label: "Chat", icon: MessagesSquare },
   { key: "evidence", label: "Evidence", icon: Database },
-  { key: "report", label: "Report", icon: FileText },
-  { key: "graph", label: "Graph", icon: Share2 },
   { key: "tools", label: "Tools", icon: Activity },
+  { key: "graph", label: "Graph", icon: Share2 },
+  { key: "report", label: "Report", icon: FileText },
 ];
 
 /**
@@ -26,24 +27,43 @@ export function WorkspaceTabs({
   onChange: (t: WorkspaceTab) => void;
   counts?: Partial<Record<WorkspaceTab, { value: number; tone?: "default" | "danger" }>>;
 }) {
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  // Roving arrow-key navigation across the tab bar (WAI-ARIA tabs pattern).
+  const onKeyDown = (e: React.KeyboardEvent, idx: number) => {
+    let next = idx;
+    if (e.key === "ArrowRight") next = (idx + 1) % TABS.length;
+    else if (e.key === "ArrowLeft") next = (idx - 1 + TABS.length) % TABS.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = TABS.length - 1;
+    else return;
+    e.preventDefault();
+    onChange(TABS[next].key);
+    tabRefs.current[next]?.focus();
+  };
+
   return (
     <div
       role="tablist"
       aria-label="Investigation workspace"
-      className="flex items-stretch gap-1 px-2 sm:px-3 border-b border-border-subtle bg-background overflow-x-auto scrollbar-none"
+      className="flex items-stretch gap-1 px-3 sm:px-4 border-b border-border-subtle bg-background overflow-x-auto scrollbar-none snap-x snap-mandatory [scrollbar-width:none]"
     >
-      {TABS.map((t) => {
+      {TABS.map((t, idx) => {
         const Icon = t.icon;
         const isActive = active === t.key;
         const count = counts?.[t.key];
         return (
           <button
             key={t.key}
+            ref={(el) => { tabRefs.current[idx] = el; }}
             role="tab"
             aria-selected={isActive}
+            tabIndex={isActive ? 0 : -1}
+            onKeyDown={(e) => onKeyDown(e, idx)}
             onClick={() => onChange(t.key)}
             className={cn(
-              "group relative shrink-0 inline-flex items-center gap-2 h-11 px-3 sm:px-4 text-meta font-medium transition-colors",
+              "group relative shrink-0 snap-start inline-flex items-center gap-2 h-11 px-3 sm:px-4 text-meta font-medium transition-colors rounded-md",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
               isActive ? "text-foreground" : "text-muted-foreground hover:text-foreground",
             )}
           >

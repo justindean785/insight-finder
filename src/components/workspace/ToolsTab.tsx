@@ -1,11 +1,19 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadToolActivity, type ToolEvent } from "@/hooks/useThreadToolActivity";
 import { AuditTab } from "@/components/panel/AuditTab";
 import { FailedSkippedTab } from "@/components/panel/FailedSkippedTab";
 import { CustodyTab } from "@/components/panel/CustodyTab";
-import { Activity, Gauge, AlertTriangle, Lock, CheckCircle2, XCircle, MinusCircle, Clock, type LucideIcon } from "lucide-react";
+import { EmptyState } from "@/components/panel/EmptyState";
+import {
+  MetricCard, FilterChips, ToolStatusBadge, ExpandableRow,
+  type FilterChip,
+} from "@/components/ui/workspace-primitives";
+import { Activity, Gauge, AlertTriangle, Lock, CheckCircle2, XCircle, MinusCircle, ListChecks, Clock, type LucideIcon } from "lucide-react";
+import { timeAgo } from "@/lib/time";
 import { cn } from "@/lib/utils";
+
+type ActivityFilter = "all" | "succeeded" | "failed" | "skipped" | "gated" | "degraded" | "pending";
 
 type View = "activity" | "audit" | "issues" | "custody";
 
@@ -15,14 +23,6 @@ const VIEWS: { key: View; label: string; icon: LucideIcon }[] = [
   { key: "issues", label: "Failures", icon: AlertTriangle },
   { key: "custody", label: "Custody", icon: Lock },
 ];
-
-function timeAgo(iso: string): string {
-  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (diff < 60) return "just now";
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return new Date(iso).toLocaleDateString();
-}
 
 /**
  * Tools / Activity workspace — the operational record kept separate from the
@@ -64,7 +64,18 @@ export function ToolsTab({ threadId }: { threadId: string }) {
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto">
-        {view === "activity" && <ActivityLog events={activity.events} ok={activity.ok} failed={activity.failed} skipped={activity.skipped} loading={activity.loading} />}
+        {view === "activity" && (
+          <ActivityLog
+            events={activity.events}
+            ok={activity.ok}
+            failed={activity.failed}
+            skipped={activity.skipped}
+            gated={activity.gated}
+            degraded={activity.degraded}
+            total={activity.total}
+            loading={activity.loading}
+          />
+        )}
         {view === "audit" && <div className="mx-auto max-w-5xl"><AuditTab threadId={threadId} artifacts={items} /></div>}
         {view === "issues" && <div className="mx-auto max-w-5xl"><FailedSkippedTab threadId={threadId} /></div>}
         {view === "custody" && <div className="mx-auto max-w-5xl"><CustodyTab threadId={threadId} /></div>}
@@ -74,71 +85,112 @@ export function ToolsTab({ threadId }: { threadId: string }) {
 }
 
 function ActivityLog({
-  events, ok, failed, skipped, loading,
-}: { events: ToolEvent[]; ok: number; failed: number; skipped: number; loading: boolean }) {
+  events, ok, failed, skipped, gated, degraded, total, loading,
+}: { events: ToolEvent[]; ok: number; failed: number; skipped: number; gated: number; degraded: number; total: number; loading: boolean }) {
+  const [filter, setFilter] = useState<ActivityFilter>("all");
+  const pending = events.filter((e) => e.status === "pending").length;
+
+  // Newest first, but always float failures to the top so troubleshooting is
+  // the first thing an analyst sees.
+  const ordered = useMemo(() => {
+    const byFilter = events.filter((e) => {
+      if (filter === "all") return true;
+      return e.status === filter;
+    });
+    return [...byFilter].reverse().sort((a, b) => {
+      const af = a.status === "failed" ? 0 : 1;
+      const bf = b.status === "failed" ? 0 : 1;
+      return af - bf;
+    });
+  }, [events, filter]);
+
   if (loading) return <div className="p-4 text-data text-muted-foreground">Loading activity…</div>;
-  if (events.length === 0) {
+  if (total === 0) {
     return (
-      <div className="p-6 text-data text-muted-foreground max-w-md">
-        No tool calls yet. Once the agent runs lookups, every call lands here with its result and timing.
-      </div>
+      <EmptyState
+        icon={Activity}
+        title="No tool activity yet"
+        hint="Once the agent runs lookups, every call lands here with its status, reason, and timing — failures float to the top."
+      />
     );
   }
-  // Newest first for a live operational feed.
-  const ordered = [...events].reverse();
+
+  const filters: FilterChip<ActivityFilter>[] = [
+    { key: "all", label: "All", count: total },
+    { key: "succeeded", label: "Succeeded", count: ok, tone: "ok" },
+    { key: "failed", label: "Failed", count: failed, tone: failed > 0 ? "danger" : "neutral" },
+    { key: "skipped", label: "Skipped", count: skipped },
+    ...(gated > 0 ? [{ key: "gated" as const, label: "Gated", count: gated, tone: "warn" as const }] : []),
+    ...(degraded > 0 ? [{ key: "degraded" as const, label: "Degraded", count: degraded, tone: "warn" as const }] : []),
+    ...(pending > 0 ? [{ key: "pending" as const, label: "Running", count: pending }] : []),
+  ];
+
   return (
-    <div className="mx-auto max-w-4xl p-3 sm:p-4 space-y-3">
-      <div className="grid grid-cols-3 gap-3">
-        <Stat label="Succeeded" value={ok} icon={CheckCircle2} tone="ok" />
-        <Stat label="Failed" value={failed} icon={XCircle} tone={failed > 0 ? "danger" : "muted"} />
-        <Stat label="Skipped" value={skipped} icon={MinusCircle} tone="muted" />
+    <div className="mx-auto max-w-4xl p-3 sm:p-4 space-y-4">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <MetricCard label="Total tools" value={total} icon={ListChecks} hint="Every tool call recorded for this case." />
+        <MetricCard label="Succeeded" value={ok} icon={CheckCircle2} tone={ok > 0 ? "ok" : "neutral"} hint="Calls that returned a usable result." />
+        <MetricCard label="Failed" value={failed} icon={XCircle} tone={failed > 0 ? "danger" : "neutral"} hint="Calls that errored or returned ok:false." />
+        <MetricCard
+          label={gated > 0 ? "Skipped / Gated" : "Skipped"}
+          value={gated > 0 ? `${skipped}/${gated}` : skipped}
+          icon={MinusCircle}
+          tone={gated > 0 ? "warn" : "neutral"}
+          hint="Skipped = deduped/no-op. Gated = blocked by a triage, policy, or budget gate (an intentional decision, not a fault)."
+        />
       </div>
-      <ul className="rounded-xl border border-border-subtle bg-surface-1 divide-y divide-border-subtle/60 overflow-hidden">
-        {ordered.map((e) => {
-          const tone =
-            e.tone === "error" ? "text-destructive" :
-            e.tone === "skip" ? "text-muted-foreground" :
-            e.tone === "pending" ? "text-primary" :
-            "text-[hsl(var(--confidence-high))]";
-          const Dot =
-            e.tone === "error" ? XCircle :
-            e.tone === "skip" ? MinusCircle :
-            CheckCircle2;
-          return (
-            <li key={e.id} className="flex items-center gap-3 px-3 py-2.5">
-              <Dot className={cn("w-4 h-4 shrink-0", tone)} />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-meta text-foreground truncate">{e.displayName}</span>
-                  <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70 shrink-0">{e.toolName}</span>
+
+      <FilterChips<ActivityFilter>
+        ariaLabel="Filter tool activity by status"
+        options={filters}
+        active={filter}
+        onChange={setFilter}
+      />
+
+      {ordered.length === 0 ? (
+        <EmptyState icon={Activity} title="No tools match this filter" hint="Try a different status filter." />
+      ) : (
+        <ul className="rounded-xl border border-border-subtle bg-surface-1 divide-y divide-border-subtle/60 overflow-hidden">
+          {ordered.map((e) => (
+            <li key={e.id}>
+              {e.reason ? (
+                <ExpandableRow
+                  summary={<ActivityRowSummary e={e} />}
+                >
+                  <div className="rounded-lg border border-border-subtle bg-surface-2/40 px-3 py-2 text-data text-muted-foreground leading-relaxed">
+                    <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70">Reason</span>
+                    <div className="mt-1 text-foreground/90 break-words">{e.reason}</div>
+                    <div className="mt-2 font-mono text-[10px] text-muted-foreground/60 break-all">id: {e.id}</div>
+                  </div>
+                </ExpandableRow>
+              ) : (
+                <div className="px-3 py-2.5">
+                  <ActivityRowSummary e={e} />
                 </div>
-                <div className="text-data text-muted-foreground truncate">{e.actionLabel}</div>
-              </div>
-              <div className="flex items-center gap-1 shrink-0 text-data text-muted-foreground tabular-nums">
-                <Clock className="w-3 h-3" />
-                {timeAgo(e.at)}
-              </div>
+              )}
             </li>
-          );
-        })}
-      </ul>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
 
-function Stat({
-  label, value, icon: Icon, tone,
-}: { label: string; value: number; icon: LucideIcon; tone: "ok" | "danger" | "muted" }) {
-  const color =
-    tone === "ok" ? "text-[hsl(var(--confidence-high))]" :
-    tone === "danger" ? "text-destructive" :
-    "text-muted-foreground";
+function ActivityRowSummary({ e }: { e: ToolEvent }) {
   return (
-    <div className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2.5">
-      <div className="flex items-center gap-1.5 text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">
-        <Icon className={cn("w-3 h-3", color)} /> {label}
+    <div className="flex items-center gap-3">
+      <ToolStatusBadge status={e.status} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-meta text-foreground truncate">{e.displayName}</span>
+          <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70 shrink-0">{e.toolName}</span>
+        </div>
+        <div className="text-data text-muted-foreground truncate">{e.reason ?? e.actionLabel}</div>
       </div>
-      <div className={cn("mt-1 text-2xl font-display font-semibold tabular-nums leading-none", color)}>{value}</div>
+      <div className="flex items-center gap-1 shrink-0 text-data text-muted-foreground tabular-nums">
+        <Clock className="w-3 h-3" />
+        {timeAgo(e.at)}
+      </div>
     </div>
   );
 }

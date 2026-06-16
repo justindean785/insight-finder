@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import {
   CONF_LABEL_CLASS, CONF_LABEL_HELP, labelForArtifact, adjustedConfidence, type ConfLabel,
-  extractSourceInfo,
+  extractSourceInfo, displayKind,
 } from "@/lib/intel";
 import {
   useReviewStates, REVIEW_CLASS, REVIEW_SHORT, REVIEW_STATES, REVIEW_HELP,
@@ -188,7 +188,7 @@ export function EvidenceMatrixTab({
                         {a.value}
                       </div>
                       <div className="text-eyebrow uppercase tracking-wider text-muted-foreground mt-0.5 flex items-center gap-1.5 flex-wrap">
-                        <span>{a.kind}</span>
+                        <span>{displayKind(a)}</span>
                         <span>·</span>
                         <SourceAttribution artifact={a} threadId={threadId} />
                         <span>·</span>

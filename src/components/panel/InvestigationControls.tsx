@@ -16,7 +16,7 @@ export function InvestigationControls({
 }: { threadId: string; artifacts: Artifact[] }) {
   const { clear } = useReviewStates(threadId);
   const [seed, setSeed] = useState<{ value: string | null; type: string | null }>({ value: null, type: null });
-  const [status, setStatus] = useState<"active" | "finished">("active");
+  const [status, setStatus] = useState<"active" | "finished" | "stopped">("active");
 
   useEffect(() => {
     supabase
@@ -25,9 +25,9 @@ export function InvestigationControls({
       .eq("id", threadId)
       .maybeSingle()
       .then(({ data }) => {
-        const d = data as { seed_value: string | null; seed_type: string | null; status: "active" | "finished" | null } | null;
+        const d = data as { seed_value: string | null; seed_type: string | null; status: "active" | "finished" | "stopped" | null } | null;
         setSeed({ value: d?.seed_value ?? null, type: d?.seed_type ?? null });
-        setStatus((d?.status as "active" | "finished") ?? "active");
+        setStatus((d?.status as "active" | "finished" | "stopped") ?? "active");
       });
   }, [threadId]);
 
@@ -134,7 +134,7 @@ export function InvestigationControls({
           </DropdownMenuContent>
         </DropdownMenu>
 
-        {status === "finished" ? (
+        {status !== "active" ? (
           <Button size="sm" variant="outline"
             className="h-7 gap-1 text-data border-[hsl(var(--confidence-high))]/40 text-[hsl(var(--confidence-high))]"
             onClick={toggleStatus}>

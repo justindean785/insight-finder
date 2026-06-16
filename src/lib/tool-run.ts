@@ -64,6 +64,63 @@ export function deriveToolTone(part: {
   return part.state === "output-available" ? "ok" : "pending";
 }
 
+/** Operational status with the analyst-relevant distinctions a bare tone lacks:
+ *  a *gated* call was blocked by a triage/policy/budget gate (an intentional
+ *  decision, not a fault), and a *degraded* call returned a partial/stale result
+ *  or hit a temporarily-disabled provider (worth a second look, but not a hard
+ *  failure). Only a real provider/runtime error counts as *failed*. */
+export type ToolStatus = "succeeded" | "failed" | "skipped" | "gated" | "degraded" | "pending";
+
+// Budget / policy / quota / triage / orchestration stops — an intentional
+// control decision, not a fault. These must read as "Gated", never red
+// "Failed". Covers the planner's EV gate ("expected value N below 70"), the
+// per-investigation burst / cycle caps, and the "execution plan required" gate.
+const GATE_REASON_RE = /\bgate(d|s)?\b|triage|policy|not promoted|budget|over[\s-]?budget|cost cap|quota|rate[\s-]?limit|expected value\b|\bev below\b|burst limit|cycle limit|execution plan required/i;
+// Dedup / guard / no-op skips — the tool was intentionally not run, or ran and
+// produced nothing actionable. Not a fault.
+const SKIP_REASON_RE = /duplicate call|guard not met|already used this seed|high-cost tool already used|no usable result|\bskipped\b/i;
+// Provider unhealthy / temporarily disabled / circuit-open / 5xx upstream —
+// degraded, not failed (the fault is on the provider side). A 4xx (e.g. 404)
+// is left as a real failure since it usually points at a bad request/path.
+const DEGRADED_REASON_RE = /provider disabled|temporarily disabled|\bdisabled\b|unavailable|circuit|unhealthy|degraded|stale|timeout|http\s*5\d\d|\b5\d\d\b/i;
+
+export function deriveToolStatus(part: {
+  state?: string;
+  errorText?: unknown;
+  output?: unknown;
+}): ToolStatus {
+  const output = asOutput(part.output);
+  const runtime = deriveToolRuntime(output);
+  const reasonText = [
+    typeof part.errorText === "string" ? part.errorText : "",
+    output ? deriveToolReason(output) : "",
+    runtime?.rejection_reason ?? "",
+  ].join(" ").toLowerCase();
+
+  // An "error-ish" outcome: stream error, explicit errorText, or ok:false. Before
+  // calling it a failure, see whether the reason is really a gate or a degraded
+  // provider — budget exhaustion and "provider disabled" are not hard failures.
+  const erroredOut = part.state === "output-error" || part.errorText != null || output?.ok === false;
+  if (erroredOut) {
+    if (GATE_REASON_RE.test(reasonText)) return "gated";
+    if (SKIP_REASON_RE.test(reasonText)) return "skipped";
+    if (DEGRADED_REASON_RE.test(reasonText)) return "degraded";
+    return "failed";
+  }
+
+  if (output) {
+    if (output.gated === true) return "gated";
+    if (output.skipped === true) {
+      return GATE_REASON_RE.test(reasonText) ? "gated" : "skipped";
+    }
+    if (output.degraded === true || output.partial === true) return "degraded";
+    if (runtime?.stale_cache === true) return "degraded";
+    const status = typeof output.status === "string" ? output.status.toLowerCase() : "";
+    if (status === "timeout" || status === "partial" || status === "degraded") return "degraded";
+  }
+  return part.state === "output-available" ? "succeeded" : "pending";
+}
+
 export function deriveToolReason(output: unknown): string {
   const data = asOutput(output);
   if (!data) return "";

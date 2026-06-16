@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
-import { buildIdentityClusters, type IdentityCluster } from "@/lib/intel";
-import { AlertTriangle, MapPin, Mail, Phone, User as UserIcon, Network, Tag, ShieldCheck, ShieldQuestion } from "lucide-react";
+import { buildIdentityClusters, groupForKind, type IdentityCluster } from "@/lib/intel";
+import { isSharedInfrastructure } from "@/lib/evidence-status";
+import { AlertTriangle, MapPin, Mail, Phone, User as UserIcon, Network, Tag, ShieldCheck, ShieldQuestion, Server } from "lucide-react";
 import { EmptyState } from "./EmptyState";
 import { cn } from "@/lib/utils";
 
@@ -55,31 +56,50 @@ export function ClustersTab({ threadId, artifacts }: { threadId: string; artifac
 
 function ClusterCard({ cluster: c, index }: { cluster: IdentityCluster; index: number }) {
   const matches = c.matchesSeedLocation;
+  // An infrastructure-only cluster (IPs / domains / nameservers, no identity
+  // signals) must not read as a generic "unknown" identity cluster. Detect it
+  // and label it as infrastructure — flagging shared/CDN hosts that are not
+  // ownership proof.
+  const infraOnly = c.artifacts.length > 0 && c.artifacts.every((a) => groupForKind(a.kind) === "infrastructure");
+  const shared = infraOnly && c.artifacts.some((a) => isSharedInfrastructure(a));
+  const title = infraOnly ? c.label.replace(/—\s*unknown\s*$/i, "— infrastructure") : c.label;
   return (
     <div
       className={cn(
         "glass rounded-lg border p-3 space-y-2 animate-pivot-in",
-        matches === true && "border-[hsl(var(--confidence-high))]/50 ring-1 ring-[hsl(var(--confidence-high))]/30",
-        matches === false && "border-destructive/30",
-        matches === null && "border-border/60",
+        !infraOnly && matches === true && "border-[hsl(var(--confidence-high))]/50 ring-1 ring-[hsl(var(--confidence-high))]/30",
+        !infraOnly && matches === false && "border-destructive/30",
+        (infraOnly || matches === null) && "border-border/60",
       )}
       style={{ animationDelay: `${index * 50}ms` }}
     >
       <div className="flex items-start justify-between gap-2">
-        <div className="text-data font-semibold leading-tight">{c.label}</div>
-        <div className={cn(
-          "text-[9px] font-mono px-1.5 py-0.5 rounded border shrink-0",
-          matches === true
-            ? "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/40 bg-[hsl(var(--confidence-high))]/10"
-            : matches === false
-            ? "text-destructive border-destructive/40 bg-destructive/10"
-            : "text-muted-foreground border-border bg-secondary/40",
-        )}>
-          {matches === true ? <span className="flex items-center gap-1"><ShieldCheck className="w-2.5 h-2.5" />seed match</span>
-            : matches === false ? <span className="flex items-center gap-1"><AlertTriangle className="w-2.5 h-2.5" />out-of-area</span>
-            : <span className="flex items-center gap-1"><ShieldQuestion className="w-2.5 h-2.5" />unknown</span>}
-        </div>
+        <div className="text-data font-semibold leading-tight">{title}</div>
+        {infraOnly ? (
+          <div className="text-[9px] font-mono px-1.5 py-0.5 rounded border shrink-0 text-muted-foreground border-border bg-secondary/40">
+            <span className="flex items-center gap-1"><Server className="w-2.5 h-2.5" />{shared ? "shared infra" : "infrastructure"}</span>
+          </div>
+        ) : (
+          <div className={cn(
+            "text-[9px] font-mono px-1.5 py-0.5 rounded border shrink-0",
+            matches === true
+              ? "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/40 bg-[hsl(var(--confidence-high))]/10"
+              : matches === false
+              ? "text-destructive border-destructive/40 bg-destructive/10"
+              : "text-muted-foreground border-border bg-secondary/40",
+          )}>
+            {matches === true ? <span className="flex items-center gap-1"><ShieldCheck className="w-2.5 h-2.5" />seed match</span>
+              : matches === false ? <span className="flex items-center gap-1"><AlertTriangle className="w-2.5 h-2.5" />out-of-area</span>
+              : <span className="flex items-center gap-1"><ShieldQuestion className="w-2.5 h-2.5" />unknown</span>}
+          </div>
+        )}
       </div>
+      {shared && (
+        <div className="text-[10px] text-muted-foreground/90 flex items-center gap-1">
+          <Server className="w-2.5 h-2.5 shrink-0" />
+          Shared infrastructure · not ownership proof
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-1.5 text-data font-mono">
         <Field icon={Mail} label="emails" values={c.emails} />

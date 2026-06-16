@@ -595,13 +595,12 @@ function renderTextWithBadges(text: string): React.ReactNode {
   const out: React.ReactNode[] = [];
   let last = 0;
   let m: RegExpExecArray | null;
-  let i = 0;
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) out.push(text.slice(last, m.index));
     const tag = m[1];
     out.push(
       <span
-        key={`b-${i++}`}
+        key={`b-${m.index}`}
         className={cn(
           "inline-block px-1.5 py-0.5 mr-1 rounded text-data font-semibold font-mono border align-middle",
           LABEL_STYLES[tag],
@@ -1109,17 +1108,30 @@ function ChatWindowInner({
   const stopInvestigation = useCallback(async () => {
     if (stopping) return;
     setStopping(true);
+    // Abort the in-flight browser stream FIRST so the UI stops immediately,
+    // regardless of whether the status write below succeeds.
+    try {
+      stop();
+    } catch (abortErr) {
+      console.error("stop() threw:", abortErr);
+    }
+    // Persist "stopped" — this is the status the edge worker's prepareStep polls
+    // to abort the in-flight server-side run (the stream is intentionally NOT
+    // bound to req.signal, so the browser stop() alone does not halt the
+    // server). A failure here means the server run may keep going, so it is
+    // surfaced as an error rather than a soft warning.
     try {
       const { error: statusError } = await supabase
         .from("threads")
         .update({ status: "stopped", updated_at: new Date().toISOString() })
         .eq("id", threadId);
       if (statusError) throw statusError;
-      stop();
       toast.info("Investigation stopped");
-    } catch (stopError) {
-      console.error("stopInvestigation failed:", stopError);
-      toast.error("Could not stop the investigation");
+    } catch (statusErr) {
+      console.error("stopInvestigation status update failed:", statusErr);
+      // The browser stream was aborted, but without the persisted "stopped"
+      // status the server-side worker can keep running — so this is a real error.
+      toast.error("Could not fully stop the investigation — the server run may still be active. Retry.");
     } finally {
       setStopping(false);
     }

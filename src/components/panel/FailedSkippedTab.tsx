@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { extractFailedAndSkipped, type FailedToolEntry, type RawMessage } from "@/lib/intel";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle, ShieldQuestion, Copy, ArrowDownToLine } from "lucide-react";
+import { AlertTriangle, ShieldQuestion, Copy, ArrowDownToLine, Ban, Activity } from "lucide-react";
 import { toast } from "sonner";
 
 export function FailedSkippedTab({ threadId }: { threadId: string }) {
@@ -42,13 +42,15 @@ export function FailedSkippedTab({ threadId }: { threadId: string }) {
   if (entries.length === 0) {
     return (
       <div className="p-4 text-xs text-muted-foreground space-y-2">
-        <div className="flex items-center gap-1.5"><AlertTriangle className="w-3.5 h-3.5" /> No failed or skipped tools detected.</div>
-        <p>If the agent reports validation errors or 4xx responses, they will show up here.</p>
+        <div className="flex items-center gap-1.5"><AlertTriangle className="w-3.5 h-3.5" /> No failed, gated, degraded, or skipped tools detected.</div>
+        <p>If the agent reports validation errors, budget gates, or degraded providers, they will show up here.</p>
       </div>
     );
   }
 
   const failed = entries.filter((e) => e.kind === "failed");
+  const gated = entries.filter((e) => e.kind === "gated");
+  const degraded = entries.filter((e) => e.kind === "degraded");
   const skipped = entries.filter((e) => e.kind === "skipped");
 
   return (
@@ -57,6 +59,20 @@ export function FailedSkippedTab({ threadId }: { threadId: string }) {
         <Section title="Failed" count={failed.length} icon={<AlertTriangle className="w-3 h-3 text-destructive" />}>
           {failed.map((e) => (
             <EntryCard key={e.id} entry={e} onCopy={copy} onScroll={scrollToCard} destructive />
+          ))}
+        </Section>
+      )}
+      {gated.length > 0 && (
+        <Section title="Gated — budget / policy / triage (not a fault)" count={gated.length} icon={<Ban className="w-3 h-3 text-[hsl(var(--confidence-mid))]" />}>
+          {gated.map((e) => (
+            <EntryCard key={e.id} entry={e} onCopy={copy} onScroll={scrollToCard} />
+          ))}
+        </Section>
+      )}
+      {degraded.length > 0 && (
+        <Section title="Degraded — provider unavailable / partial" count={degraded.length} icon={<Activity className="w-3 h-3 text-[hsl(var(--confidence-mid))]" />}>
+          {degraded.map((e) => (
+            <EntryCard key={e.id} entry={e} onCopy={copy} onScroll={scrollToCard} />
           ))}
         </Section>
       )}
