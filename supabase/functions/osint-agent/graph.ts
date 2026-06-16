@@ -120,14 +120,15 @@ export function classifySource(category: string | null | undefined): SourceClass
   const c = (category ?? "").toLowerCase().trim();
   if (!c) return "unknown";
   if (c.includes("official") || c.includes("gov_record")) return "official";
-  if (c.includes("government")) return "government";
+  if (c.includes("government") || c.includes("public_record")) return "government";
   if (c.includes("news")) return "news";
-  if (c.includes("corporate") || c.includes("company")) return "corporate";
+  if (c.includes("corporate") || c.includes("company") || c.includes("business_directory") || c.includes("real_estate") || c.includes("property")) return "corporate";
   if (c.includes("marketing")) return "marketing";
-  if (c.includes("social")) return "social";
+  if (c.includes("professional_profile") || c.includes("social")) return "social";
   if (c.includes("breach") || c.includes("leak")) return "breach";
   if (c.includes("username_sweep") || c.includes("sweep")) return "username_sweep";
-  if (c.includes("generic")) return "generic";
+  // web_search / archive are discovery sources → generic (excluded from corroboration)
+  if (c.includes("web_search") || c.includes("generic") || c.includes("archive")) return "generic";
   // infra / independent_public / unknown → conservative
   return "unknown";
 }

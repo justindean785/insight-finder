@@ -74,81 +74,19 @@ export function inferKind(rawKind: string, value: string): { kind: string; recla
   return { kind: rawKind };
 }
 
-/** Source-class for confidence caps. */
-export type SourceClass =
-  | "breach"
-  | "username_sweep"
-  | "social_profile_passive"
-  | "social_profile_active"
-  | "news"
-  | "court_record"
-  | "official_profile_match"
-  | "independent_public"
-  | "ai_summary"
-  | "infra"
-  | "unknown";
-
-const TOOL_CLASS: Record<string, SourceClass> = {
-  // breach / leak
-  breach_check: "breach",
-  leakcheck_lookup: "breach",
-  hibp_lookup: "breach",
-  oathnet_lookup: "breach",
-  intelbase_email_lookup: "breach",
-  stolentax_footprint: "breach",
-  deepfind_reverse_email: "breach",
-  deepfind_disposable_email: "breach",
-  // username sweeps
-  username_sweep: "username_sweep",
-  socialfetch_lookup: "social_profile_passive",
-  // search/summary
-  minimax_web_search: "ai_summary",
-  exa_search: "ai_summary",
-  gemini_deep_dork: "ai_summary",
-  google_dorks: "ai_summary",
-  dork_harvest: "ai_summary",
-  jina_reader_scrape: "independent_public",
-  exa_get_contents: "independent_public",
-  // infra
-  whois_lookup: "infra",
-  dns_records: "infra",
-  crtsh_subdomains: "infra",
-  ip_intel: "infra",
-  ipgeolocation_lookup: "infra",
-  ipqualityscore_lookup: "infra",
-  shodan_internetdb: "infra",
-  urlscan_search: "infra",
-  http_fingerprint: "infra",
-  hackertarget: "infra",
-  virustotal_lookup: "infra",
-  synapsint_lookup: "infra",
-  hunter_domain_search: "infra",
-  hunter_email_verifier: "infra",
-  hunter_combined: "infra",
-  emailrep: "infra",
-  emailrep_lookup: "infra",
-  gravatar_profile: "social_profile_passive",
-  gravatar_lookup: "social_profile_passive",
-  // phone / people-search aggregators — low-trust aggregators, treat as passive social
-  bosint_phone_lookup: "social_profile_passive",
-  bosint_email_lookup: "breach",
-  "usphonesearch.net": "social_profile_passive",
-  "nomorobo.com": "social_profile_passive",
-  // memory / agent
-  memory_recall: "unknown",
-};
-
-export function classifySource(toolOrSource: string | null | undefined): SourceClass {
-  if (!toolOrSource) return "unknown";
-  // Normalize: lowercase, strip a trailing parenthetical qualifier
-  // (e.g. "socialfetch_lookup (instagram)" → "socialfetch_lookup",
-  // "bosint_email_lookup (drizly.com breach)" → "bosint_email_lookup").
-  // Without this, the parenthetical defeats the TOOL_CLASS lookup and the
-  // artifact silently falls through to "unknown" (cap 50) — a loophole that
-  // lets passive-social and breach hits score higher than their class allows.
-  const s = toolOrSource.toLowerCase().replace(/\s*\([^)]*\)\s*$/, "").trim();
-  if (TOOL_CLASS[s]) return TOOL_CLASS[s];
-  if (/court|docket|legal_record|justice|cdc|cdcr|bop|pacer/.test(s)) return "court_record";
-  if (/news|times|herald|tribune|press|magazine|article/.test(s)) return "news";
-  return "unknown";
-}
+// Source classification lives in source-classification.ts (the single source of
+// truth — the recording paths and the confidence engine both consume it). Kept
+// re-exported here so existing importers (`confidence.ts`, tests) are unaffected.
+export type { SourceClass } from "./source-classification.ts";
+export {
+  classifySource,
+  classifySourceLabel,
+  classifySourceInput,
+  normalizeSourceLabel,
+  splitSourceLabels,
+  isWrapperLabel,
+  countIndependentClasses,
+  hasOfficialClass,
+  NON_CORROBORATING_CLASSES,
+  OFFICIAL_CLASSES,
+} from "./source-classification.ts";

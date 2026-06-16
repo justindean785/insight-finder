@@ -134,7 +134,15 @@ const THREADS = new Map<string, RuntimeThreadState>();
 export const MAX_TOTAL_CALLS = 30;
 export const MAX_CONCURRENT_CALLS = 3;
 export const MAX_PAID_CALLS = 12;
-export const MAX_SAME_TOOL_CALLS = 4;
+// Same-tool: a HIGH runaway backstop only. Raw same-tool count must NOT be the
+// thing that kills the best pivot. Beyond SAME_TOOL_SOFT_LIMIT, repeat calls are
+// SPACED with an escalating cooldown (queue-like) rather than refused; the true
+// ceilings are the total/paid budgets above. (Was 4 — which mislabeled
+// Minimax/OATHNET reuse as a "rate limit" and diverted away from the
+// highest-value tool while property/registry pivots were still pending.)
+export const SAME_TOOL_SOFT_LIMIT = 6;
+export const SAME_TOOL_COOLDOWN_MS = 400;
+export const MAX_SAME_TOOL_CALLS = 16;
 export const MIN_START_GAP_MS = 600;
 
 function getThread(threadId: string): RuntimeThreadState {
@@ -266,25 +274,35 @@ export function startCall(input: RuntimeDecisionInput): RuntimeDecision {
   const state = getThread(input.threadId);
   const now = input.now ?? Date.now();
 
+  // Internal runaway/cost backstops. NONE of these is a provider rate limit, and
+  // the reasons say so explicitly — the agent must never narrate an internal cap
+  // as a provider "rate limit" or quota "exhausted" (only a real HTTP 429 may).
   if (state.totalCalls >= MAX_TOTAL_CALLS) {
-    return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `call budget exhausted (${MAX_TOTAL_CALLS})` };
+    return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `internal run cap reached (${MAX_TOTAL_CALLS} calls this investigation) — internal throttle, not a provider limit` };
   }
   if (state.activeCalls >= MAX_CONCURRENT_CALLS) {
-    return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `active-call concurrency limit reached (${MAX_CONCURRENT_CALLS})` };
+    return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `internal concurrency cap reached (${MAX_CONCURRENT_CALLS} parallel calls) — retry momentarily; internal throttle, not a provider limit` };
   }
   if (input.costTier !== "free" && state.paidCalls >= MAX_PAID_CALLS) {
-    return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `paid-call budget exhausted (${MAX_PAID_CALLS} per run)` };
+    return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `internal paid-call cap reached (${MAX_PAID_CALLS} this run) — internal throttle, not a provider limit` };
   }
-  if ((state.toolCounts.get(input.toolName) ?? 0) >= MAX_SAME_TOOL_CALLS) {
-    return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `same-tool budget exhausted (${MAX_SAME_TOOL_CALLS} per run)` };
+  const sameToolCount = state.toolCounts.get(input.toolName) ?? 0;
+  if (sameToolCount >= MAX_SAME_TOOL_CALLS) {
+    return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `internal per-tool cap reached (${input.toolName} ran ${MAX_SAME_TOOL_CALLS}× this run) — vary the selector or choose another pivot; internal throttle, not a provider limit` };
   }
-  const scheduledStartAt = Math.max(now, state.lastStartAt + MIN_START_GAP_MS);
+
+  // Beyond the soft limit, SPACE repeat same-tool calls (queue-like cooldown)
+  // instead of refusing — a still-useful tool (Minimax/OATHNET) stays available.
+  const sameToolCooldown = sameToolCount >= SAME_TOOL_SOFT_LIMIT
+    ? (sameToolCount - SAME_TOOL_SOFT_LIMIT + 1) * SAME_TOOL_COOLDOWN_MS
+    : 0;
+  const scheduledStartAt = Math.max(now, state.lastStartAt + MIN_START_GAP_MS) + sameToolCooldown;
   const waitMs = Math.max(0, scheduledStartAt - now);
   state.stage = nextStageForTool(state.stage, input.toolName);
   state.totalCalls += 1;
   state.activeCalls += 1;
   if (input.costTier !== "free") state.paidCalls += 1;
-  state.toolCounts.set(input.toolName, (state.toolCounts.get(input.toolName) ?? 0) + 1);
+  state.toolCounts.set(input.toolName, sameToolCount + 1);
   state.familyCalls.add(input.familyKey);
   state.lastStartAt = scheduledStartAt;
   return { allow: true, stage: state.stage, cycleId: state.cycleId, waitMs };
@@ -298,4 +316,76 @@ export function finishCall(threadId: string, toolName: string): void {
   } else if (toolName === "record_finding" || toolName === "memory_save") {
     state.stage = "REPORT";
   }
+}
+
+// ---- Tool-call admission policy ----------------------------------------------
+// Encodes the intended same-tool / concurrency / rate-limit semantics as a pure,
+// testable decision: raw same-tool COUNT never blocks a useful tool. The only
+// "rate limit" is a real provider 429/quota. Duplicate and dead query families
+// are suppressed (the TOOL stays available); concurrency QUEUES rather than kills.
+
+export const QUERY_FAMILY_NO_YIELD_LIMIT = 3;
+
+export interface ToolCallPolicyInput {
+  toolName: string;
+  rawCallCount: number;                 // how many times this tool ran this run
+  providerReturned429: boolean;         // a REAL provider 429/quota response
+  isDuplicateQuery: boolean;            // exact-equivalent query already run
+  satisfiesPendingRequiredPivot: boolean;
+  queryFamilyNoYieldCount: number;      // consecutive no-new-artifact runs for this family
+  inFlight: number;
+  maxConcurrency: number;
+  cooldownUntil?: number;               // epoch ms; set ONLY on a real provider error
+  now?: number;
+}
+
+export interface ToolCallPolicyDecision {
+  allowed: boolean;
+  action: "run" | "queue" | "suppress" | "cooldown";
+  reason: string;
+}
+
+export function shouldAllowToolCall(input: ToolCallPolicyInput): ToolCallPolicyDecision {
+  const now = input.now ?? 0;
+  // The ONLY condition that may be called a rate limit/quota: a real provider 429.
+  if (input.providerReturned429 || (input.cooldownUntil !== undefined && input.cooldownUntil > now)) {
+    return {
+      allowed: false,
+      action: "cooldown",
+      reason: `Provider returned 429/quota for ${input.toolName}; backing off until cooldown expires.`,
+    };
+  }
+  // Suppress the duplicate QUERY — keep the TOOL available for new pivots.
+  if (input.isDuplicateQuery) {
+    return {
+      allowed: false,
+      action: "suppress",
+      reason: `Suppressed duplicate query family; keeping ${input.toolName} available for new pivots.`,
+    };
+  }
+  // Suppress a family that keeps yielding nothing — unless it still serves a
+  // pending required pivot (then keep going).
+  if (input.queryFamilyNoYieldCount >= QUERY_FAMILY_NO_YIELD_LIMIT && !input.satisfiesPendingRequiredPivot) {
+    return {
+      allowed: false,
+      action: "suppress",
+      reason: `Suppressed no-yield query family for ${input.toolName}; vary the query or switch pivots.`,
+    };
+  }
+  // Concurrency: QUEUE, do not kill the tool.
+  if (input.inFlight >= input.maxConcurrency) {
+    return {
+      allowed: true,
+      action: "queue",
+      reason: `Queued ${input.toolName} to avoid parallel overload (internal concurrency, not a provider limit).`,
+    };
+  }
+  // rawCallCount NEVER blocks a useful tool.
+  return {
+    allowed: true,
+    action: "run",
+    reason: input.satisfiesPendingRequiredPivot
+      ? `Continuing ${input.toolName} because it satisfies a pending required pivot.`
+      : `${input.toolName} eligible.`,
+  };
 }

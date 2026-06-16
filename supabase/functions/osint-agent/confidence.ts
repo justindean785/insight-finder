@@ -4,7 +4,11 @@
 
 import { tierOf, TIER_SOURCE_RELIABILITY, TIER_C_ONLY_CONFIDENCE_CAP } from "./tiers.ts";
 import type { ContradictionFinding } from "./contradictions.ts";
-import { classifySource, type SourceClass } from "./artifact_types.ts";
+import {
+  classifySourceLabel,
+  countIndependentClasses,
+  type SourceClass,
+} from "./source-classification.ts";
 
 export interface ConfidenceAxes {
   artifact: number;     // is the data point itself accurate?
@@ -65,15 +69,32 @@ const CLASS_CAP: Record<SourceClass, number> = {
   independent_public: 75,
   ai_summary: 55,
   infra: 70,
+  // public-record / directory / listing classes
+  government_property_record: 90,
+  government_business_registry: 90,
+  government_business_license: 88,
+  business_directory: 65,
+  real_estate_listing: 60,
+  property_aggregator: 55,
+  professional_profile: 70,
+  social_review: 35,
+  public_record: 75,
+  web_search: 50,
+  archive: 70,
   unknown: 50,
 };
 
 // Sources that can never alone produce a high-confidence (>= 90) finding.
+// (Government/court/official public records CAN be authoritative alone, so they
+// are deliberately excluded.)
 const NEVER_HIGH = new Set<SourceClass>([
   "breach",
   "username_sweep",
   "social_profile_passive",
   "ai_summary",
+  "social_review",
+  "web_search",
+  "property_aggregator",
 ]);
 
 export interface CapInput {
@@ -89,12 +110,23 @@ export interface CapResult {
   source_classes: SourceClass[];
 }
 
-/** Apply conservative caps. Breach-only ≤60, two breaches ≤65, etc. */
+/** Apply conservative caps. Breach-only ≤60, two breaches ≤65, etc.
+ *
+ * `sources` may contain internal tool slugs OR free-text provider labels, and a
+ * single entry may be a mixed label ("D&B / Redfin") — classifySourceLabel
+ * splits it into multiple classes and drops wrapper labels ("Multiple sources").
+ * The CALLER is expected to pass [source, ...metadata.sources] so a wrapper
+ * top-level source still resolves via its members. */
 export function applyEvidenceCaps(input: CapInput): CapResult {
-  const classes = (input.sources ?? []).map(classifySource);
+  const classes = (input.sources ?? []).flatMap(classifySourceLabel);
   const uniqClasses = Array.from(new Set(classes));
   const counts: Record<string, number> = {};
   for (const c of classes) counts[c] = (counts[c] ?? 0) + 1;
+
+  // Distinct classes that can INDEPENDENTLY corroborate (excludes discovery /
+  // low-trust aggregators / single AI summaries). Two Redfin pages are still one
+  // real_estate_listing class — they never count as independent corroboration.
+  const independent = countIndependentClasses(uniqClasses);
 
   // Base cap = the most permissive class present.
   let cap = uniqClasses.length === 0
@@ -106,8 +138,8 @@ export function applyEvidenceCaps(input: CapInput): CapResult {
     cap = 65;
   }
 
-  // Cross-class corroboration: ≥2 distinct classes lifts cap.
-  if (uniqClasses.length >= 2) {
+  // Cross-class corroboration: ≥2 INDEPENDENT classes lifts cap.
+  if (independent >= 2) {
     cap = Math.min(95, cap + 10);
   }
   if (uniqClasses.includes("court_record") && uniqClasses.some((c) => c === "news" || c === "independent_public")) {
@@ -115,19 +147,22 @@ export function applyEvidenceCaps(input: CapInput): CapResult {
   }
 
   // Hard ceiling: weak-only sources can never get to 90+.
-  if (uniqClasses.every((c) => NEVER_HIGH.has(c))) {
+  if (uniqClasses.length > 0 && uniqClasses.every((c) => NEVER_HIGH.has(c))) {
     cap = Math.min(cap, 65);
   }
 
   const confidence = Math.max(0, Math.min(input.rawConfidence ?? 50, cap));
+  const classList = uniqClasses.join(", ") || "unknown";
   const reason_for_confidence =
-    uniqClasses.length >= 2
-      ? `corroborated across ${uniqClasses.length} source classes: ${uniqClasses.join(", ")}`
-      : `single source class: ${uniqClasses[0] ?? "unknown"}`;
+    independent >= 2
+      ? `corroborated across ${independent} independent source classes: ${classList}`
+      : uniqClasses.length >= 2
+        ? `multiple source classes (${classList}) but not independently corroborating`
+        : `single source class: ${uniqClasses[0] ?? "unknown"}`;
   const reason_not_confirmed = confidence < 90
-    ? (uniqClasses.length < 2
-        ? "needs second independent class of evidence"
-        : "evidence does not yet meet official+independent threshold")
+    ? (independent < 2
+        ? `only ${uniqClasses.length <= 1 ? "one" : "low-independence"} source class (${classList}); needs a second independent class (official/government public record, court, or news)`
+        : `source classes present (${classList}) but evidence does not yet meet the official+independent threshold`)
     : undefined;
 
   return { confidence, cap, reason_for_confidence, reason_not_confirmed, source_classes: uniqClasses };
@@ -193,4 +228,89 @@ export function isBioCrossLinkName(
     if (typeof v === "string" && /^(true|yes|1)$/i.test(v)) return true;
   }
   return false;
+}
+
+// ---- Status coherence --------------------------------------------------------
+// The recording layer used to persist the model's `status` verbatim, so a
+// model-asserted `status: "verified"` coexisted with the cap engine's
+// `reason_not_confirmed: "needs second independent class of evidence"` — an
+// internally contradictory artifact (the exact bug in the 1677 Iroquois Rd
+// trace). Status is now DERIVED from the evidence so it can never contradict the
+// confirmation reason.
+
+export type ArtifactStatus =
+  | "observed"             // a source asserts this exists; no independent corroboration yet
+  | "needs_corroboration" // plausible lead, missing a required independent class
+  | "verified"            // sufficiently supported for its OWN limited claim (≥90, no open reason)
+  | "confirmed"           // ≥2 independent classes, no material contradiction
+  | "excluded"            // unrelated / collision
+  | "exhausted"           // dead-end OR pivot checklist complete
+  | "contradicted"
+  | "needs_review"
+  | "manual_review_required";
+
+const DEAD_END_NOTE_RE = /\b(defunct|parked|expired|invalid|no records?|not found|disconnected|no longer (?:in service|active)|404|410)\b/i;
+
+/** True when metadata indicates a genuine dead-end (so "exhausted" is honest). */
+export function looksDeadEnd(meta: Record<string, unknown> | null | undefined): boolean {
+  const m = meta ?? {};
+  if (m.http_status === 404 || m.http_status === 410) return true;
+  for (const key of ["note", "notes", "reason", "dns_result", "status_detail"]) {
+    const v = m[key];
+    if (typeof v === "string" && DEAD_END_NOTE_RE.test(v)) return true;
+  }
+  return false;
+}
+
+/** Minimal guard: a verified/confirmed status can never coexist with an open
+ *  `reason_not_confirmed`. Safe-downgrade (never throws in production). */
+export function coerceCoherentStatus(
+  status: ArtifactStatus,
+  reasonNotConfirmed?: string | null,
+): ArtifactStatus {
+  if ((status === "verified" || status === "confirmed") && reasonNotConfirmed) {
+    return "needs_corroboration";
+  }
+  return status;
+}
+
+export interface DeriveStatusInput {
+  /** status the model asked for (may be a legacy/loose value). */
+  requested?: string | null;
+  /** the RESOLVED reason_not_confirmed (model-supplied ?? cap). null ⇒ confidence ≥ 90. */
+  reasonNotConfirmed: string | null;
+  sourceClasses: SourceClass[];
+  contradictions?: unknown[];
+  unrelated?: boolean;
+  deadEnd?: boolean;
+  /** for conclusion/pivot artifacts: whether the required pivot checklist is done. */
+  pivotChecklistComplete?: boolean;
+}
+
+/** Derive a coherent status from the evidence. The invariant guaranteed:
+ *  a returned "verified"/"confirmed" implies `reasonNotConfirmed == null`. */
+export function deriveStatus(input: DeriveStatusInput): ArtifactStatus {
+  const req = (input.requested ?? "").toLowerCase().trim();
+  const contra = Array.isArray(input.contradictions) && input.contradictions.length > 0;
+  const notConfirmed = !!input.reasonNotConfirmed;
+  const independent = countIndependentClasses(input.sourceClasses);
+
+  if (input.unrelated || req === "excluded") return "excluded";
+  if (req === "contradicted" || contra) return "contradicted";
+  if (req === "needs_review") return "needs_review";
+  if (req === "manual_review_required") return "manual_review_required";
+
+  if (req === "exhausted") {
+    // Only honor "exhausted" when it's a real dead-end or the checklist is done.
+    if (input.deadEnd || input.pivotChecklistComplete) return "exhausted";
+    return notConfirmed ? "needs_corroboration" : "observed";
+  }
+
+  // verified/confirmed are only granted when there is no open confirmation gap.
+  if (notConfirmed) {
+    return independent >= 2 ? "needs_corroboration" : "observed";
+  }
+  // reasonNotConfirmed == null ⇒ confidence ≥ 90 (strong, capped-through).
+  if (independent >= 2 && !contra) return "confirmed";
+  return "verified";
 }
