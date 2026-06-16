@@ -35,6 +35,14 @@ export function detectSeedServer(input: string): DetectedSeed | null {
   if (PHONE.test(raw)) return { kind: "phone", raw, normalized: raw.replace(/[^\d+]/g, "") };
   if (DOMAIN.test(raw)) return { kind: "domain", raw, normalized: raw.toLowerCase() };
   if (USER.test(raw)) return { kind: "username", raw, normalized: raw.toLowerCase() };
+  // US street-address heuristic: leading street number + a 2-letter state + a
+  // ZIP. Routes to the address playbook + property/business pivot checklist so an
+  // address/business seed is not treated as a generic name search.
+  // MUST match src/lib/seed.ts.
+  const ADDRESS = /^\d{1,6}\s+.+\s[A-Za-z]{2}\s+\d{5}(?:-\d{4})?$/;
+  if (ADDRESS.test(raw)) {
+    return { kind: "address", raw, normalized: raw.toLowerCase().replace(/\s+/g, " ").trim() };
+  }
   // Person/name-location heuristic: multi-word, mostly letters, not a structured identifier.
   // Example: "josh gillman rocklin ca" → person seed (so the agent uses person fan-out
   // instead of treating it as a free-form `other` blob and running username_sweep on it).

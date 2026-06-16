@@ -1,5 +1,10 @@
 /**
- * tools/recording.ts — Auto-extracted. Add imports manually.
+ * tools/recording.ts — Auto-extracted MIRROR. The LIVE definitions run inline in
+ * ../index.ts (record_artifacts / record_artifact) — that is authoritative.
+ * Source classification, confidence caps, and status derivation are owned by
+ * ../source-classification.ts + ../confidence.ts (single source of truth); both
+ * the live path and this mirror call them, so they never diverge. Add imports
+ * manually when running this file directly.
  */
 import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
@@ -58,17 +63,30 @@ export const record_artifacts = tool({
         rawConfidence: a.confidence ?? 50,
         sources: [a.source ?? "", ...((aMeta.sources as unknown[]) ?? [])].filter(Boolean) as string[],
       });
-      // Required-fields envelope — fill conservative defaults when the
-      // agent didn't supply them.
+      // Required-fields envelope. Status is DERIVED (deriveStatus) so it can never
+      // contradict reason_not_confirmed — mirrors the live record_artifacts.
+      const resolvedReasonNotConfirmed =
+        (typeof aMeta.reason_not_confirmed === "string" ? aMeta.reason_not_confirmed : null) ??
+        cap.reason_not_confirmed ?? null;
       const meta: Record<string, unknown> = {
         ...(a.metadata ?? {}),
         ...(v.metaPatch ?? {}),
         ...(inferred.reclassified_from ? { reclassified_from: inferred.reclassified_from } : {}),
         source_category: cap.source_classes,
-        status: aMeta.status ?? "new",
+        query_types: queryTypesOf({ value: v.value, kind: v.kind, metadata: aMeta }),
+        status: coerceCoherentStatus(
+          deriveStatus({
+            requested: typeof aMeta.status === "string" ? aMeta.status : null,
+            reasonNotConfirmed: resolvedReasonNotConfirmed,
+            sourceClasses: cap.source_classes,
+            contradictions: Array.isArray(aMeta.contradictions) ? aMeta.contradictions : [],
+            deadEnd: looksDeadEnd(aMeta),
+          }),
+          resolvedReasonNotConfirmed,
+        ),
         cluster_id: aMeta.cluster_id ?? null,
         reason_for_confidence: cap.reason_for_confidence,
-        reason_not_confirmed: aMeta.reason_not_confirmed ?? cap.reason_not_confirmed ?? null,
+        reason_not_confirmed: resolvedReasonNotConfirmed,
         contradictions: aMeta.contradictions ?? [],
         next_verification_step: aMeta.next_verification_step ?? null,
         confidence_cap_applied: cap.cap,
@@ -288,15 +306,28 @@ export const record_artifact = tool({
       rawConfidence: confidence ?? 50,
       sources: [source ?? "", ...((inMeta.sources as unknown[]) ?? [])].filter(Boolean) as string[],
     });
+    const resolvedReasonNotConfirmed =
+      (typeof inMeta.reason_not_confirmed === "string" ? inMeta.reason_not_confirmed : null) ??
+      cap.reason_not_confirmed ?? null;
     const enrichedMeta = {
       ...(metadata ?? {}),
       ...(v.metaPatch ?? {}),
       ...(inferred.reclassified_from ? { reclassified_from: inferred.reclassified_from } : {}),
       source_category: cap.source_classes,
-      status: inMeta.status ?? "new",
+      query_types: queryTypesOf({ value: v.value, kind: v.kind, metadata: inMeta }),
+      status: coerceCoherentStatus(
+        deriveStatus({
+          requested: typeof inMeta.status === "string" ? inMeta.status : null,
+          reasonNotConfirmed: resolvedReasonNotConfirmed,
+          sourceClasses: cap.source_classes,
+          contradictions: Array.isArray(inMeta.contradictions) ? inMeta.contradictions : [],
+          deadEnd: looksDeadEnd(inMeta),
+        }),
+        resolvedReasonNotConfirmed,
+      ),
       cluster_id: inMeta.cluster_id ?? null,
       reason_for_confidence: cap.reason_for_confidence,
-      reason_not_confirmed: inMeta.reason_not_confirmed ?? cap.reason_not_confirmed ?? null,
+      reason_not_confirmed: resolvedReasonNotConfirmed,
       contradictions: inMeta.contradictions ?? [],
       next_verification_step: inMeta.next_verification_step ?? null,
       confidence_cap_applied: cap.cap,

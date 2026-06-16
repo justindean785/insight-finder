@@ -14,6 +14,7 @@ export type SeedType =
   | "ip"
   | "name"
   | "company"
+  | "address"
   | "url"
   | "crypto_wallet"
   | "hash"
@@ -72,9 +73,19 @@ export const PLAYBOOKS: Record<SeedType, Playbook> = {
     pivots: EMAIL_PIVOTS,
   },
   company: {
-    required: ["hunter_domain_search", "exa_search", "whois_lookup", "dns_records", "crtsh_subdomains", "urlscan_search"],
-    recommended: ["virustotal_lookup", "shodan_internetdb", "gemini_deep_dork", "google_dorks", "exa_find_similar"],
-    coverage: ["identity", "domain", "infrastructure", "employment", "relationships"],
+    required: ["exa_search", "minimax_web_search", "oathnet_lookup", "gemini_deep_dork", "google_dorks", "hunter_domain_search", "whois_lookup"],
+    recommended: ["dns_records", "crtsh_subdomains", "urlscan_search", "virustotal_lookup", "exa_find_similar", "dork_harvest"],
+    // business_registry (Secretary of State / license) + property are REQUIRED
+    // for completeness — a company at an address can't be "done" without them.
+    coverage: ["identity", "business_registry", "property", "employment", "relationships", "domain"],
+    pivots: EMAIL_PIVOTS,
+  },
+  address: {
+    required: ["oathnet_lookup", "minimax_web_search", "exa_search", "gemini_deep_dork", "google_dorks", "jina_reader_scrape"],
+    recommended: ["dork_harvest", "exa_get_contents", "hunter_domain_search"],
+    // property + business_registry pivots (assessor/recorder/parcel, SOS/license)
+    // gate completeness for an address/business investigation.
+    coverage: ["property", "business_registry", "identity", "location", "relationships"],
     pivots: EMAIL_PIVOTS,
   },
   url: {

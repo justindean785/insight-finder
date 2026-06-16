@@ -143,7 +143,10 @@ describe("runtime-policy: per-run hard stops", () => {
       now: MAX_PAID_CALLS * MIN_START_GAP_MS,
     }));
     expect(blocked.allow).toBe(false);
-    if ("reason" in blocked) expect(blocked.reason).toMatch(/paid-call budget/i);
+    // #16 reworded internal caps as "internal ... cap reached ... internal
+    // throttle, not a provider limit" (never narrate an internal cap as a
+    // provider rate limit). The block behavior is unchanged.
+    if ("reason" in blocked) expect(blocked.reason).toMatch(/internal paid-call cap reached/i);
 
     // Simulate record_artifacts → beginCycle (this used to reset the counter).
     beginCycle(THREAD);
@@ -156,7 +159,7 @@ describe("runtime-policy: per-run hard stops", () => {
       now: 1_000_000,
     }));
     expect(stillBlocked.allow).toBe(false);
-    if ("reason" in stillBlocked) expect(stillBlocked.reason).toMatch(/paid-call budget/i);
+    if ("reason" in stillBlocked) expect(stillBlocked.reason).toMatch(/internal paid-call cap reached/i);
 
     // ...but FREE tools still run, proving this is the paid budget, not total exhaustion.
     const free = startCall(base({
@@ -187,7 +190,7 @@ describe("runtime-policy: per-run hard stops", () => {
       now: MAX_SAME_TOOL_CALLS * MIN_START_GAP_MS,
     }));
     expect(blocked.allow).toBe(false);
-    if ("reason" in blocked) expect(blocked.reason).toMatch(/same-tool budget/i);
+    if ("reason" in blocked) expect(blocked.reason).toMatch(/internal per-tool cap reached/i);
 
     beginCycle(THREAD); // record_artifacts must not refresh it
     const stillBlocked = startCall(base({
@@ -219,7 +222,7 @@ describe("runtime-policy: per-run hard stops", () => {
       now: 10_000_000,
     }));
     expect(exhausted.allow).toBe(false);
-    if ("reason" in exhausted) expect(exhausted.reason).toMatch(/budget exhausted/i);
+    if ("reason" in exhausted) expect(exhausted.reason).toMatch(/internal run cap reached/i);
   });
 
   it("hard-stops concurrency and releases capacity on finish", () => {

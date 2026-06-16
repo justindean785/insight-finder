@@ -15,11 +15,21 @@
 // splits mixed labels ("D&B / Redfin" → two classes), and recognises wrapper
 // labels ("Multiple sources" / "Investigation") so the real provenance is read
 // from `metadata.sources` instead.
+//
+// ── Merge note (backport mirror #16 PR2) ────────────────────────────────────
+// This module is the merged single classifier. It adopts mirror #16's
+// architecture (one classifier, free-text label support, mixed-label splitting,
+// wrapper-label handling, OFFICIAL_CLASSES / countIndependentClasses helpers)
+// BUT preserves post-#56 main's BEHAVIOR verbatim: the SPLIT infrastructure
+// sub-class taxonomy (infra_registry / infra_dns / infra_scan / infra_reputation
+// / infra_passive / infra_shared_host) and main's exact internal-tool → class
+// mapping replace #16's coarse single "infra". Where #16 and #56 disagreed on a
+// source's class, #56 WON — see the tier-disagreement log in the PR report.
 
 /** Source-class taxonomy used for confidence caps and corroboration counting.
- *  Superset: the original internal-tool classes are preserved (so TOOL_CLASS,
- *  the existing caps, and existing tests stay valid) PLUS the public-record /
- *  directory / listing classes that free-text provider labels map to. */
+ *  Superset: post-#56 main's split internal-tool classes are preserved (so the
+ *  caps + tests stay valid) PLUS the public-record / directory / listing classes
+ *  that free-text provider labels map to (from mirror #16). */
 export type SourceClass =
   // ── original internal-tool classes (do not rename: TOOL_CLASS + tests rely on these)
   | "breach"
@@ -31,7 +41,16 @@ export type SourceClass =
   | "official_profile_match"
   | "independent_public"
   | "ai_summary"
+  // ── infrastructure (post-#56 SPLIT sub-classes — the integrity contract).
+  // Coarse "infra" is retained for legacy/free-text mapping but the tool slugs
+  // resolve to specific sub-classes so cross-tool corroboration can count.
   | "infra"
+  | "infra_registry"
+  | "infra_dns"
+  | "infra_scan"
+  | "infra_reputation"
+  | "infra_passive"
+  | "infra_shared_host"
   // ── public-record / directory / listing classes (free-text provider labels)
   | "government_property_record"
   | "government_business_registry"
@@ -47,7 +66,11 @@ export type SourceClass =
   | "unknown";
 
 /** Internal tool slug → SourceClass. The slug is what the orchestrator passes
- *  as `source` when it records a tool result directly. */
+ *  as `source` when it records a tool result directly.
+ *
+ *  Infra slugs map to post-#56 main's SPLIT sub-classes (NOT #16's coarse
+ *  "infra"). This is the integrity contract: cross-tool infra corroboration and
+ *  the per-sub-class caps depend on these exact values. */
 const TOOL_CLASS: Record<string, SourceClass> = {
   // breach / leak
   breach_check: "breach",
@@ -69,24 +92,28 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   dork_harvest: "ai_summary",
   jina_reader_scrape: "independent_public",
   exa_get_contents: "independent_public",
-  // infra
-  whois_lookup: "infra",
-  dns_records: "infra",
-  crtsh_subdomains: "infra",
-  ip_intel: "infra",
-  ipgeolocation_lookup: "infra",
-  ipqualityscore_lookup: "infra",
-  shodan_internetdb: "infra",
-  urlscan_search: "infra",
-  http_fingerprint: "infra",
-  hackertarget: "infra",
-  virustotal_lookup: "infra",
-  synapsint_lookup: "infra",
-  hunter_domain_search: "infra",
-  hunter_email_verifier: "infra",
-  hunter_combined: "infra",
-  emailrep: "infra",
-  emailrep_lookup: "infra",
+  // infra — split into sub-classes so cross-tool corroboration counts (#56)
+  whois_lookup: "infra_registry",
+  hunter_domain_search: "infra_registry",
+  hunter_email_verifier: "infra_registry",
+  hunter_combined: "infra_registry",
+  dns_records: "infra_dns",
+  crtsh_subdomains: "infra_dns",
+  ip_intel: "infra_scan",
+  ipgeolocation_lookup: "infra_scan",
+  shodan_internetdb: "infra_scan",
+  http_fingerprint: "infra_scan",
+  hackertarget: "infra_scan",
+  synapsint_lookup: "infra_scan",
+  virustotal_lookup: "infra_reputation",
+  ipqualityscore_lookup: "infra_reputation",
+  emailrep: "infra_reputation",
+  emailrep_lookup: "infra_reputation",
+  // passive / historical — observe the past, not the live asset
+  urlscan_search: "infra_passive",
+  wayback_snapshots: "infra_passive",
+  archive_url: "infra_passive",
+  passive_dns: "infra_passive",
   gravatar_profile: "social_profile_passive",
   gravatar_lookup: "social_profile_passive",
   // phone / people-search aggregators — low-trust aggregators, treat as passive social
@@ -134,7 +161,14 @@ export function splitSourceLabels(label: string | null | undefined): string[] {
 }
 
 /** Classify ONE source token (internal slug or a single free-text label) into a
- *  single SourceClass. Returns "unknown" only when nothing matches. */
+ *  single SourceClass. Returns "unknown" only when nothing matches.
+ *
+ *  Order is load-bearing:
+ *   1. internal-slug fast path (TOOL_CLASS, split-infra) — post-#56 contract;
+ *   2. shared-host / reverse-IP free-text → infra_shared_host (#56 guard);
+ *   3. #56's court / news free-text regexes (keep their exact behavior);
+ *   4. #16's richer free-text provider regexes (gov/registry/directory/etc.);
+ *   5. #16's coarse infra free-text → "infra" (only for free-text, never slugs). */
 export function classifySource(toolOrSource: string | null | undefined): SourceClass {
   if (!toolOrSource) return "unknown";
   // Internal-slug fast path: strip a trailing parenthetical qualifier
@@ -143,10 +177,21 @@ export function classifySource(toolOrSource: string | null | undefined): SourceC
   const slug = toolOrSource.toLowerCase().replace(/\s*\([^)]*\)\s*$/, "").trim();
   if (TOOL_CLASS[slug]) return TOOL_CLASS[slug];
 
+  // Reverse-IP / shared-host lookups describe co-tenants on a shared/CDN IP —
+  // they never prove ownership and must not corroborate identity (#56). Matched
+  // on the raw-ish slug form so "hackertarget/reverseiplookup" is caught.
+  if (/reverse[\s._-]?ip|reverseiplookup|shared[\s._-]?host|co[\s._-]?hosted/.test(slug)) {
+    return "infra_shared_host";
+  }
+
   // Free-text provider-label path.
   const s = normalizeSourceLabel(toolOrSource);
 
-  // Government / official public records (highest authority).
+  // ── #56's court / news free-text (preserve exact behavior + tests) ──
+  // pacer_docket → court_record; nytimes_article → news; etc.
+  if (/court|docket|legal_record|justice|cdc|cdcr|bop|pacer/.test(slug)) return "court_record";
+
+  // Government / official public records (highest authority) — #16.
   if (/\b(secretary of state|sec of state|ca sos|cal sos|bizfile|business entity search|business search|statement of information)\b/.test(s)) {
     return "government_business_registry";
   }
@@ -160,7 +205,7 @@ export function classifySource(toolOrSource: string | null | undefined): SourceC
     return "court_record";
   }
 
-  // Directories / listings / profiles.
+  // Directories / listings / profiles — #16.
   if (/\b(dnb|d b|dun and bradstreet|d and b|dun bradstreet|d b credibility|business directory|yellow ?pages|manta|bizapedia|opencorporates|corporationwiki)\b/.test(s)) {
     return "business_directory";
   }
@@ -177,28 +222,31 @@ export function classifySource(toolOrSource: string | null | undefined): SourceC
     return "social_review";
   }
 
-  // Public-record aggregators (people-search / OSINT property+person providers).
+  // Public-record aggregators (people-search / OSINT property+person providers) — #16.
   if (/\b(oathnet|whitepages|thatsthem|fastpeoplesearch|truepeoplesearch|beenverified|radaris|spokeo|intelius|peoplefinders|public records?)\b/.test(s)) {
     return "public_record";
   }
 
-  // Infra (whois/dns/cert/asn/reputation).
+  // Infra free-text (whois/dns/cert/asn/reputation) — #16 coarse "infra".
+  // NOTE: only reachable for FREE-TEXT labels; the split-infra slugs above
+  // already short-circuited via TOOL_CLASS, so #56's per-sub-class behavior is
+  // never weakened by these.
   if (/\b(whois|registrar|registration)\b/.test(s)) return "infra";
   if (/\b(dns|mx record|txt record|a record|aaaa record|cname|name ?server)\b/.test(s)) return "infra";
   if (/\b(certificate transparency|crt\.sh|ssl cert|tls cert|x509)\b/.test(s)) return "infra";
   if (/\b(shodan|censys|asn|reverse dns|rdns|ipinfo|ip intel|geolocation)\b/.test(s)) return "infra";
   if (/\b(virustotal|urlscan|malwarebytes|safe browsing|reputation|phishing|malware)\b/.test(s)) return "infra";
 
-  // Breach / leak free-text.
+  // Breach / leak free-text — #16.
   if (/\b(breach|hibp|have i been pwned|leak|paste|combolist|stealer log|dehashed)\b/.test(s)) return "breach";
 
-  // Archive.
+  // Archive — #16.
   if (/\b(wayback|web archive|archive\.org|archive\.is|archive\.today|cachedview)\b/.test(s)) return "archive";
 
-  // News / media.
+  // News / media — #16 (superset of #56's `/news|times|.../`).
   if (/\b(news|times|herald|tribune|press|gazette|magazine|article|reuters|associated press|\bap\b)\b/.test(s)) return "news";
 
-  // Generic web search (discovery, not verification).
+  // Generic web search (discovery, not verification) — #16.
   if (/\b(web search|google(?: search)?|bing|duckduckgo|ddg|search engine|exa|minimax|gemini(?: deep dork)?|deep dork|serp)\b/.test(s)) {
     return "web_search";
   }
@@ -246,10 +294,27 @@ export function classifySourceInput(input: {
   return out.size ? [...out] : ["unknown"];
 }
 
+// Infrastructure sub-classes (post-#56). These count as independent
+// perspectives when corroborating an INFRASTRUCTURE claim (domain exists,
+// resolves, has footprint) — but never when corroborating identity/ownership.
+const INFRA_SUBCLASSES: ReadonlySet<SourceClass> = new Set<SourceClass>([
+  "infra_registry",
+  "infra_dns",
+  "infra_scan",
+  "infra_reputation",
+  "infra_passive",
+  "infra_shared_host",
+  "infra",
+]);
+
+export function isInfraClass(c: SourceClass): boolean {
+  return INFRA_SUBCLASSES.has(c);
+}
+
 /** Classes that do NOT, by themselves, constitute independent corroboration of
  *  an identity/association claim (discovery + low-trust aggregators + single
- *  AI summaries). Used by the status/confidence layer to count *independent*
- *  source classes. */
+ *  AI summaries). Used by the status layer to count *independent* source
+ *  classes. (infra_shared_host is also non-corroborating — see #56.) */
 export const NON_CORROBORATING_CLASSES: ReadonlySet<SourceClass> = new Set<SourceClass>([
   "unknown",
   "web_search",
@@ -257,6 +322,7 @@ export const NON_CORROBORATING_CLASSES: ReadonlySet<SourceClass> = new Set<Sourc
   "username_sweep",
   "social_profile_passive",
   "social_review",
+  "infra_shared_host",
 ]);
 
 /** Count distinct source classes that can independently corroborate. */
