@@ -47,6 +47,7 @@ import {
 // validation.ts — Seed detection, cache TTLs, artifact validation
 import {
   detectSeedServer, validateArtifact, TTL_24H_MS, TOOL_TTL_MS, NO_CACHE_TOOLS,
+  coerceArtifactsInput,
 } from "./validation.ts";
 
 // api_types.ts — Loose TypeScript interfaces for third-party API responses.
@@ -3341,19 +3342,7 @@ Deno.serve(async (req) => {
         inputSchema: z.object({
           // Tolerant input: some models emit `artifacts` as a JSON string
           // (or fenced code block). Parse it back into an array.
-          artifacts: z.preprocess((raw) => {
-            const parseMaybe = (v: unknown): unknown => {
-              if (typeof v !== "string") return v;
-              const s = v.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
-              try { return JSON.parse(s); } catch { /* fall through */ }
-              const a = s.indexOf("["); const b = s.lastIndexOf("]");
-              if (a >= 0 && b > a) { try { return JSON.parse(s.slice(a, b + 1)); } catch { /* noop */ } }
-              return v;
-            };
-            let v: unknown = parseMaybe(raw);
-            if (v && !Array.isArray(v) && typeof v === "object") v = [v];
-            return v;
-          }, z.array(
+          artifacts: z.preprocess(coerceArtifactsInput, z.array(
               z.object({
                 kind: z.string().describe("Pick the most specific kind. Primary: email|phone|ip|username|domain|subdomain|avatar|breach|address|name|social|organization|case|legal_record|infrastructure|financial_claim|event|source_person|risk_note. Use 'other' ONLY as a last resort. Common reclass: company/firm names → organization; 'United States v. X' → case; DRE/court records → legal_record; crm./portal./ledger./staging. hosts → subdomain; DNS/MX/SPF/CDN summaries → infrastructure; reporter/journalist → source_person; real-estate / donation summaries → financial_claim. Unknown kinds are coerced to 'other'."),
                 value: z.string(),

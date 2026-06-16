@@ -125,6 +125,27 @@ export const NO_CACHE_TOOLS = new Set<string>([
   "record_evidence",
 ]);
 
+// ---- record_artifacts input coercion -----------------------------------------
+// Some models emit the `artifacts` field as a JSON string (sometimes wrapped in
+// a ```json fenced code block) instead of a real array. This pure function
+// coerces such input back into an array WITHOUT changing behavior: a valid
+// stringified array parses to an array; a real array passes through; a malformed
+// / non-JSON string returns the original string (so the downstream strict
+// z.array then rejects it). Extracted verbatim from index.ts so it is unit-testable.
+export function coerceArtifactsInput(raw: unknown): unknown {
+  const parseMaybe = (v: unknown): unknown => {
+    if (typeof v !== "string") return v;
+    const s = v.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
+    try { return JSON.parse(s); } catch { /* fall through */ }
+    const a = s.indexOf("["); const b = s.lastIndexOf("]");
+    if (a >= 0 && b > a) { try { return JSON.parse(s.slice(a, b + 1)); } catch { /* noop */ } }
+    return v;
+  };
+  let v: unknown = parseMaybe(raw);
+  if (v && !Array.isArray(v) && typeof v === "object") v = [v];
+  return v;
+}
+
 // ---- Artifact validation / reclassification ----------------------------------
 // Server-side gatekeeper for `record_artifact(s)`. Catches malformed values,
 // drops opaque blobs, and reclassifies obvious mismatches (e.g. "@handle" tagged

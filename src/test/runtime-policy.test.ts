@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   analyzeWeakLead,
   beginCycle,
@@ -6,6 +6,8 @@ import {
   currentStage,
   finishCall,
   noteRejectedCall,
+  routeUnsupportedPlatform,
+  runtimeLimits,
   scoreExpectedValue,
   startCall,
   MAX_CONCURRENT_CALLS,
@@ -15,7 +17,14 @@ import {
   MIN_START_GAP_MS,
   type RuntimeDecisionInput,
 } from "../../supabase/functions/osint-agent/runtime-policy.ts";
+import { coerceArtifactsInput } from "../../supabase/functions/osint-agent/validation.ts";
 import { SYSTEM_PROMPT } from "../../supabase/functions/osint-agent/system-prompt.ts";
+
+// Snapshot of the default (unlimited) config so each cap test can restore it.
+const DEFAULT_LIMITS = { ...runtimeLimits };
+function restoreLimits() {
+  Object.assign(runtimeLimits, DEFAULT_LIMITS);
+}
 
 const THREAD = "runtime-policy-test";
 const noWeakLead = { weak: false, reasons: [], autoPivotBlocked: false };
@@ -123,8 +132,24 @@ describe("runtime-policy: fail-open execution", () => {
 });
 
 // ---- Hard stops: real runaway backstops, per run, NOT refreshed by recording --
-describe("runtime-policy: per-run hard stops", () => {
+// Budgets are UNLIMITED by default now; these tests explicitly OPT IN to the
+// operator backstop (STOP_ON_BUDGET_EXHAUSTED + finite limits) and reset after.
+describe("runtime-policy: per-run hard stops (cap enabled)", () => {
+  afterEach(restoreLimits);
+
+  // Enable budget enforcement but DEFAULT every cap to unlimited; each test sets
+  // only the one cap it exercises so the others don't fire first.
+  function enableCaps() {
+    runtimeLimits.stopOnBudgetExhausted = true;
+    runtimeLimits.maxTotalToolCallsPerRun = Number.POSITIVE_INFINITY;
+    runtimeLimits.maxPaidCallsPerRun = Number.POSITIVE_INFINITY;
+    runtimeLimits.maxSameToolCallsPerRun = Number.POSITIVE_INFINITY;
+    runtimeLimits.maxParallelTools = MAX_CONCURRENT_CALLS;
+  }
+
   it("does NOT refresh the paid-call budget when artifacts are recorded (beginCycle)", () => {
+    enableCaps();
+    runtimeLimits.maxPaidCallsPerRun = MAX_PAID_CALLS;
     // Exhaust the per-run paid budget with distinct paid tools.
     for (let i = 0; i < MAX_PAID_CALLS; i++) {
       const d = startCall(base({
@@ -172,10 +197,12 @@ describe("runtime-policy: per-run hard stops", () => {
   });
 
   it("hard-stops same-tool repeats per run, and recording does not reset it", () => {
+    enableCaps();
+    runtimeLimits.maxSameToolCallsPerRun = MAX_SAME_TOOL_CALLS;
     for (let i = 0; i < MAX_SAME_TOOL_CALLS; i++) {
       const d = startCall(base({
         toolName: "google_dorks",
-        costTier: "free",
+        costTier: "expensive",
         selector: `s${i}`,
         familyKey: `google_dorks::email::s${i}`,
         now: i * MIN_START_GAP_MS,
@@ -185,7 +212,7 @@ describe("runtime-policy: per-run hard stops", () => {
     }
     const blocked = startCall(base({
       toolName: "google_dorks",
-      costTier: "free",
+      costTier: "expensive",
       familyKey: "google_dorks::email::overflow",
       now: MAX_SAME_TOOL_CALLS * MIN_START_GAP_MS,
     }));
@@ -195,7 +222,7 @@ describe("runtime-policy: per-run hard stops", () => {
     beginCycle(THREAD); // record_artifacts must not refresh it
     const stillBlocked = startCall(base({
       toolName: "google_dorks",
-      costTier: "free",
+      costTier: "expensive",
       familyKey: "google_dorks::email::overflow2",
       now: 1_000_000,
     }));
@@ -203,10 +230,12 @@ describe("runtime-policy: per-run hard stops", () => {
   });
 
   it("hard-stops the total call budget", () => {
+    enableCaps();
+    runtimeLimits.maxTotalToolCallsPerRun = MAX_TOTAL_CALLS;
     for (let i = 0; i < MAX_TOTAL_CALLS; i++) {
       const d = startCall(base({
         toolName: `t_${i}`,
-        costTier: "free",
+        costTier: "expensive",
         familyKey: `t_${i}::v`,
         force: true,
         now: i * MIN_START_GAP_MS,
@@ -216,7 +245,7 @@ describe("runtime-policy: per-run hard stops", () => {
     }
     const exhausted = startCall(base({
       toolName: "overflow",
-      costTier: "free",
+      costTier: "expensive",
       familyKey: "overflow::v",
       force: true,
       now: 10_000_000,
@@ -225,7 +254,8 @@ describe("runtime-policy: per-run hard stops", () => {
     if ("reason" in exhausted) expect(exhausted.reason).toMatch(/internal run cap reached/i);
   });
 
-  it("hard-stops concurrency and releases capacity on finish", () => {
+  it("QUEUES (does not fail) when concurrency exceeds maxParallelTools, releasing capacity on finish", () => {
+    enableCaps();
     for (let i = 0; i < MAX_CONCURRENT_CALLS; i++) {
       expect(startCall(base({
         toolName: `c_${i}`,
@@ -234,9 +264,10 @@ describe("runtime-policy: per-run hard stops", () => {
         now: 1_000,
       })).allow).toBe(true);
     }
+    // Over the parallel cap: QUEUED, not failed — allow:true with a backoff waitMs.
     const over = startCall(base({ toolName: "c_over", costTier: "free", familyKey: "c_over::v", now: 1_000 }));
-    expect(over.allow).toBe(false);
-    if ("reason" in over) expect(over.reason).toMatch(/concurrency/i);
+    expect(over.allow).toBe(true);
+    if (over.allow) expect(over.waitMs).toBeGreaterThan(0);
 
     finishCall(THREAD, "c_0");
     expect(startCall(base({ toolName: "c_repl", costTier: "free", familyKey: "c_repl::v", now: 4_000 })).allow).toBe(true);
@@ -247,6 +278,81 @@ describe("runtime-policy: per-run hard stops", () => {
     const second = startCall(base({ toolName: "dork_harvest", costTier: "free", familyKey: "dh::v", now: 1_000 }));
     expect(first.allow && first.waitMs).toBe(0);
     expect(second.allow && second.waitMs).toBe(MIN_START_GAP_MS);
+  });
+});
+
+// ---- Configurable limits: unlimited by default, essential bypass, queueing ----
+describe("runtime-policy: configurable limits", () => {
+  afterEach(restoreLimits);
+
+  it("(1) paid cap is UNLIMITED by default — many paid calls all allow:true", () => {
+    for (let i = 0; i < 50; i++) {
+      const d = startCall(base({
+        toolName: `paid_${i}`,
+        costTier: "expensive",
+        familyKey: `paid_${i}::email::foo`,
+        now: i * MIN_START_GAP_MS,
+      }));
+      expect(d.allow).toBe(true);
+      finishCall(THREAD, `paid_${i}`);
+    }
+  });
+
+  it("(2) cap ENABLED + paid exhausted, but record_artifacts still allow:true (essential bypass)", () => {
+    runtimeLimits.stopOnBudgetExhausted = true;
+    runtimeLimits.maxPaidCallsPerRun = 2;
+    for (let i = 0; i < 2; i++) {
+      startCall(base({ toolName: `p_${i}`, costTier: "expensive", familyKey: `p_${i}::v`, now: i * MIN_START_GAP_MS }));
+      finishCall(THREAD, `p_${i}`);
+    }
+    // paid budget exhausted for non-essential:
+    const blocked = startCall(base({ toolName: "p_over", costTier: "expensive", familyKey: "p_over::v", now: 999_999 }));
+    expect(blocked.allow).toBe(false);
+    // record_artifacts is essential → always allowed:
+    const rec = startCall(base({ toolName: "record_artifacts", costTier: "free", familyKey: "record_artifacts::v", now: 1_000_000 }));
+    expect(rec.allow).toBe(true);
+  });
+
+  it("(3) cap ENABLED + total exhausted, but record_report / record_finding still allow:true", () => {
+    runtimeLimits.stopOnBudgetExhausted = true;
+    runtimeLimits.maxTotalToolCallsPerRun = 3;
+    for (let i = 0; i < 3; i++) {
+      startCall(base({ toolName: `x_${i}`, costTier: "expensive", familyKey: `x_${i}::v`, now: i * MIN_START_GAP_MS }));
+      finishCall(THREAD, `x_${i}`);
+    }
+    expect(startCall(base({ toolName: "x_over", costTier: "expensive", familyKey: "x_over::v", now: 999_999 })).allow).toBe(false);
+    expect(startCall(base({ toolName: "record_report", costTier: "free", familyKey: "record_report::v", now: 1_000_000 })).allow).toBe(true);
+    expect(startCall(base({ toolName: "record_finding", costTier: "free", familyKey: "record_finding::v", now: 1_000_001 })).allow).toBe(true);
+  });
+
+  it("(4) over maxParallelTools → allow:true with waitMs>0 (queued, not failed)", () => {
+    runtimeLimits.maxParallelTools = 2;
+    expect(startCall(base({ toolName: "a", costTier: "free", familyKey: "a::v", now: 1_000 })).allow).toBe(true);
+    expect(startCall(base({ toolName: "b", costTier: "free", familyKey: "b::v", now: 1_000 })).allow).toBe(true);
+    const queued = startCall(base({ toolName: "c", costTier: "free", familyKey: "c::v", now: 1_000 }));
+    expect(queued.allow).toBe(true);
+    if (queued.allow) expect(queued.waitMs).toBeGreaterThan(0);
+  });
+
+  it("(5) routeUnsupportedPlatform flags soundcloud for socialfetch_lookup but allows supported platforms", () => {
+    const bad = routeUnsupportedPlatform("socialfetch_lookup", "soundcloud");
+    expect(bad.supported).toBe(false);
+    expect(bad.suggestion).toMatch(/http_fingerprint|wayback|minimax_web_search/i);
+    expect(routeUnsupportedPlatform("socialfetch_lookup", "instagram").supported).toBe(true);
+  });
+});
+
+// ---- record_artifacts coercion (unit-testable) -------------------------------
+describe("coerceArtifactsInput", () => {
+  it("(6) leaves a real array unchanged", () => {
+    const arr = [{ kind: "email", value: "x" }];
+    expect(coerceArtifactsInput(arr)).toEqual(arr);
+  });
+  it("(7) parses a stringified JSON array into an array", () => {
+    expect(coerceArtifactsInput('[{"kind":"email","value":"x"}]')).toEqual([{ kind: "email", value: "x" }]);
+  });
+  it("(8) returns the original string for non-JSON (strict z.array would then reject)", () => {
+    expect(coerceArtifactsInput("not json")).toBe("not json");
   });
 });
 
