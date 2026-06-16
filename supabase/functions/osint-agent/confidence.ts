@@ -1,14 +1,22 @@
 // Five-axis confidence engine.
 // Replaces a single percentage with axis-decomposed scores so the UI / report
 // can show *why* a finding is strong or weak.
+//
+// ── Merge note (backport mirror #16 PR2) ────────────────────────────────────
+// SourceClass + classifySource now come from source-classification.ts (mirror
+// #16's single-classifier architecture). The CLASS_CAP table and applyEvidenceCaps
+// below preserve post-#56 main's BEHAVIOR verbatim — the SPLIT-infra caps, the
+// infra-corroboration boost, the ownership guard, and the NEVER_HIGH ceiling are
+// the integrity contract (audit_fixes_test.ts). #16's status-derivation helpers
+// (deriveStatus / coerceCoherentStatus / looksDeadEnd) are kept (index.ts wires
+// them). For back-compat, classifySource / SourceClass are re-exported here.
 
 import { tierOf, TIER_SOURCE_RELIABILITY, TIER_C_ONLY_CONFIDENCE_CAP } from "./tiers.ts";
 import type { ContradictionFinding } from "./contradictions.ts";
-import {
-  classifySourceLabel,
-  countIndependentClasses,
-  type SourceClass,
-} from "./source-classification.ts";
+import { classifySource, countIndependentClasses, type SourceClass } from "./source-classification.ts";
+
+// Back-compat re-export: historically these lived in confidence.ts / artifact_types.ts.
+export { classifySource, type SourceClass };
 
 export interface ConfidenceAxes {
   artifact: number;     // is the data point itself accurate?
@@ -58,6 +66,10 @@ export function computeAxes(input: {
 // Source-class cap table — defensive ceilings on raw model-assigned confidence.
 // Keys are SourceClass values; the cap is the maximum confidence allowed when
 // the artifact's sources only fall into that class (or a strictly-weaker one).
+//
+// post-#56 main values are the integrity contract (infra split). #16's free-text
+// classes (government_*/business_directory/real_estate_listing/etc.) are appended
+// with #16's caps so the table is exhaustive over the merged SourceClass union.
 const CLASS_CAP: Record<SourceClass, number> = {
   breach: 60,
   username_sweep: 45,
@@ -68,8 +80,17 @@ const CLASS_CAP: Record<SourceClass, number> = {
   official_profile_match: 85,
   independent_public: 75,
   ai_summary: 55,
+  // ── infrastructure (post-#56 split caps — the integrity contract) ──
   infra: 70,
-  // public-record / directory / listing classes
+  infra_registry: 75,
+  infra_dns: 75,
+  infra_scan: 70,
+  infra_reputation: 65,
+  infra_passive: 70,
+  // Shared/CDN host & reverse-IP co-tenancy: describes neighbours, not the
+  // subject. Capped very low and never counted as independent corroboration.
+  infra_shared_host: 35,
+  // ── public-record / directory / listing classes (free-text labels, #16) ──
   government_property_record: 90,
   government_business_registry: 90,
   government_business_license: 88,
@@ -84,14 +105,54 @@ const CLASS_CAP: Record<SourceClass, number> = {
   unknown: 50,
 };
 
+// Infrastructure sub-classes. These count as independent perspectives when
+// corroborating an INFRASTRUCTURE claim (domain exists, resolves, has
+// footprint) — but never when corroborating identity/ownership.
+const INFRA_SUBCLASSES = new Set<SourceClass>([
+  "infra_registry",
+  "infra_dns",
+  "infra_scan",
+  "infra_reputation",
+  "infra_passive",
+  "infra_shared_host",
+  "infra",
+]);
+
+function isInfraClass(c: SourceClass): boolean {
+  return INFRA_SUBCLASSES.has(c);
+}
+
+// Infra sub-classes that can actually CORROBORATE an infra claim. A shared/CDN
+// host tells you nothing the subject controls, so it is excluded — it must not
+// lift a cap or count toward the "≥2 sub-classes" infra-corroboration boost.
+function isInfraCorroborationClass(c: SourceClass): boolean {
+  return isInfraClass(c) && c !== "infra_shared_host";
+}
+
+// Only these non-infra classes are strong enough to unlock the 90+ ownership /
+// identity path. Weak signals (ai_summary, username_sweep, breach-only, passive
+// social) can supply context but must never lift a finding past the infra-safe
+// ceiling on their own. (#16's official/government public-record classes are
+// added — they are authoritative identity/ownership sources too.)
+const TRUSTED_NON_INFRA = new Set<SourceClass>([
+  "official_profile_match",
+  "court_record",
+  "news",
+  "independent_public",
+  "government_property_record",
+  "government_business_registry",
+  "government_business_license",
+  "public_record",
+]);
+
 // Sources that can never alone produce a high-confidence (>= 90) finding.
-// (Government/court/official public records CAN be authoritative alone, so they
-// are deliberately excluded.)
+// (post-#56 main set, plus #16's weak free-text classes.)
 const NEVER_HIGH = new Set<SourceClass>([
   "breach",
   "username_sweep",
   "social_profile_passive",
   "ai_summary",
+  "infra_shared_host",
   "social_review",
   "web_search",
   "property_aggregator",
@@ -110,23 +171,12 @@ export interface CapResult {
   source_classes: SourceClass[];
 }
 
-/** Apply conservative caps. Breach-only ≤60, two breaches ≤65, etc.
- *
- * `sources` may contain internal tool slugs OR free-text provider labels, and a
- * single entry may be a mixed label ("D&B / Redfin") — classifySourceLabel
- * splits it into multiple classes and drops wrapper labels ("Multiple sources").
- * The CALLER is expected to pass [source, ...metadata.sources] so a wrapper
- * top-level source still resolves via its members. */
+/** Apply conservative caps. Breach-only ≤60, two breaches ≤65, etc. */
 export function applyEvidenceCaps(input: CapInput): CapResult {
-  const classes = (input.sources ?? []).flatMap(classifySourceLabel);
+  const classes = (input.sources ?? []).map(classifySource);
   const uniqClasses = Array.from(new Set(classes));
   const counts: Record<string, number> = {};
   for (const c of classes) counts[c] = (counts[c] ?? 0) + 1;
-
-  // Distinct classes that can INDEPENDENTLY corroborate (excludes discovery /
-  // low-trust aggregators / single AI summaries). Two Redfin pages are still one
-  // real_estate_listing class — they never count as independent corroboration.
-  const independent = countIndependentClasses(uniqClasses);
 
   // Base cap = the most permissive class present.
   let cap = uniqClasses.length === 0
@@ -138,8 +188,27 @@ export function applyEvidenceCaps(input: CapInput): CapResult {
     cap = 65;
   }
 
-  // Cross-class corroboration: ≥2 INDEPENDENT classes lifts cap.
-  if (independent >= 2) {
+  // ── Infrastructure sub-class corroboration ──
+  // Distinct infra sub-classes that can corroborate (shared-host excluded). If
+  // ≥2, they corroborate an infrastructure claim (domain exists, resolves, has
+  // footprint) and the cap can lift — but NOT past 85, because infrastructure
+  // alone never confirms identity or ownership.
+  const infraCorroborationClasses = uniqClasses.filter(isInfraCorroborationClass);
+  const nonInfraClasses = uniqClasses.filter((c) => !isInfraClass(c));
+  const hasTrustedNonInfra = nonInfraClasses.some((c) => TRUSTED_NON_INFRA.has(c));
+  // "infra-only" for ownership purposes = nothing but infrastructure signals.
+  const infraOnly = nonInfraClasses.length === 0 && uniqClasses.some(isInfraClass);
+
+  if (infraCorroborationClasses.length >= 2) {
+    // Modest boost for 2 sub-classes, stronger for 3+.
+    const infraBoost = infraCorroborationClasses.length >= 3 ? 15 : 8;
+    cap = Math.min(95, cap + infraBoost);
+  }
+
+  // Cross-class corroboration with a non-infra class: ≥2 distinct classes lifts
+  // the cap. This is allowed for any mix, but the trusted-class guard below
+  // prevents weak non-infra signals from escaping the infra-safe ceiling.
+  if (uniqClasses.length >= 2 && !infraOnly) {
     cap = Math.min(95, cap + 10);
   }
   if (uniqClasses.includes("court_record") && uniqClasses.some((c) => c === "news" || c === "independent_public")) {
@@ -151,19 +220,42 @@ export function applyEvidenceCaps(input: CapInput): CapResult {
     cap = Math.min(cap, 65);
   }
 
+  // Ownership / identity guard: without at least one TRUSTED non-infra class
+  // (official match, court record, news, independent public page, government
+  // public record), a finding can never exceed the infra-safe ceiling of 85 —
+  // no matter how many infra sub-classes or weak ai_summary/breach signals
+  // corroborate it. This is what stops "infra + ai_summary" (or many infra
+  // perspectives) from displaying as a confirmed ownership/identity claim.
+  if (!hasTrustedNonInfra) {
+    cap = Math.min(cap, 85);
+  }
+
   const confidence = Math.max(0, Math.min(input.rawConfidence ?? 50, cap));
-  const classList = uniqClasses.join(", ") || "unknown";
-  const reason_for_confidence =
-    independent >= 2
-      ? `corroborated across ${independent} independent source classes: ${classList}`
-      : uniqClasses.length >= 2
-        ? `multiple source classes (${classList}) but not independently corroborating`
-        : `single source class: ${uniqClasses[0] ?? "unknown"}`;
-  const reason_not_confirmed = confidence < 90
-    ? (independent < 2
-        ? `only ${uniqClasses.length <= 1 ? "one" : "low-independence"} source class (${classList}); needs a second independent class (official/government public record, court, or news)`
-        : `source classes present (${classList}) but evidence does not yet meet the official+independent threshold`)
-    : undefined;
+
+  // Build human-readable reason strings.
+  const infraCount = infraCorroborationClasses.length;
+  const totalDistinct = uniqClasses.length;
+  let reason_for_confidence: string;
+  if (infraOnly && infraCount >= 2) {
+    reason_for_confidence = `infrastructure corroborated across ${infraCount} sub-classes: ${infraCorroborationClasses.join(", ")}`;
+  } else if (totalDistinct >= 2) {
+    reason_for_confidence = `corroborated across ${totalDistinct} source classes: ${uniqClasses.join(", ")}`;
+  } else {
+    reason_for_confidence = `single source class: ${uniqClasses[0] ?? "unknown"}`;
+  }
+
+  let reason_not_confirmed: string | undefined;
+  if (confidence >= 90) {
+    reason_not_confirmed = undefined;
+  } else if (infraOnly) {
+    reason_not_confirmed = "infrastructure evidence supports existence, not ownership or identity";
+  } else if (!hasTrustedNonInfra && totalDistinct >= 2) {
+    reason_not_confirmed = "no independent identity/ownership source — needs an official, court, news, or independent-public class";
+  } else if (totalDistinct < 2) {
+    reason_not_confirmed = "needs second independent class of evidence";
+  } else {
+    reason_not_confirmed = "evidence does not yet meet official+independent threshold";
+  }
 
   return { confidence, cap, reason_for_confidence, reason_not_confirmed, source_classes: uniqClasses };
 }

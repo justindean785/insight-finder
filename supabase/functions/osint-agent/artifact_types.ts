@@ -23,6 +23,8 @@ export const STRICT_KINDS = [
   "hash",
   "crypto_wallet",
   "breach_exposure",
+  "threat_reputation",
+  "reputation_signal",
   "contradiction",
   "weak_lead",
   "excluded_collision",
@@ -74,9 +76,12 @@ export function inferKind(rawKind: string, value: string): { kind: string; recla
   return { kind: rawKind };
 }
 
-// Source classification lives in source-classification.ts (the single source of
-// truth — the recording paths and the confidence engine both consume it). Kept
-// re-exported here so existing importers (`confidence.ts`, tests) are unaffected.
+// ── Source classification lives in source-classification.ts ──────────────────
+// (the single source of truth — the recording paths and the confidence engine
+// both consume it). Re-exported here so existing importers (`confidence.ts`,
+// `index.ts`, tests that do `import { classifySource } from "./artifact_types.ts"`)
+// are unaffected by the #16 architecture change. The re-exported `SourceClass`
+// carries post-#56 main's SPLIT infra taxonomy (the integrity contract).
 export type { SourceClass } from "./source-classification.ts";
 export {
   classifySource,
@@ -85,6 +90,7 @@ export {
   normalizeSourceLabel,
   splitSourceLabels,
   isWrapperLabel,
+  isInfraClass,
   countIndependentClasses,
   hasOfficialClass,
   NON_CORROBORATING_CLASSES,
