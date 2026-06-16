@@ -7,6 +7,7 @@ import { useAuth } from "@/hooks/useAuth";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { reflowCollapsedTables } from "@/lib/markdown";
+import { osintAgentUrl } from "@/lib/functionsUrl";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -28,10 +29,9 @@ import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon } from 
 
 const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.trim();
 const SUPABASE_PROJECT_ID = (import.meta.env.VITE_SUPABASE_PROJECT_ID as string | undefined)?.trim();
-const FUNCTIONS_BASE_URL =
-  SUPABASE_URL?.replace(/\/+$/, "") ||
-  (SUPABASE_PROJECT_ID ? `https://${SUPABASE_PROJECT_ID}.supabase.co` : "");
-const FUNCTIONS_URL = FUNCTIONS_BASE_URL ? `${FUNCTIONS_BASE_URL}/functions/v1/osint-agent` : "";
+// Defensive: strips a trailing /functions/v1 from the base so a misconfigured
+// VITE_SUPABASE_URL can't produce a doubled `/functions/v1/functions/v1/…` 404.
+const FUNCTIONS_URL = osintAgentUrl(SUPABASE_URL, SUPABASE_PROJECT_ID);
 
 const FAIL_PREFIX = "__STATUS__:failed:";
 const CACHE_BANNER_TYPE = "data-investigation-cache";
