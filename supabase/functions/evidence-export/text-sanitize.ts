@@ -17,7 +17,9 @@ export function sanitizeWinAnsi(input: string | null | undefined): string {
     .replace(/•/g, "*")                         // bullet
     .replace(/[✓✅✔]/g, "[OK]")        // check marks
     .replace(/[✗✘❌✖]/g, "[X]")   // crosses
-    .replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\xFF]/g, "?"); // drop emoji/CJK/etc.
+    .replace(/[^\u0020-\u007E\u00A0-\u00FF]/g, (char) =>
+      char === "\t" || char === "\n" || char === "\r" ? char : "?",
+    ); // drop emoji/CJK/etc. while preserving ASCII whitespace.
 }
 
 // new Date(bad).toISOString() throws "Invalid time value" — guard it so one
