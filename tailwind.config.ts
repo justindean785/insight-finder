@@ -15,12 +15,12 @@ export default {
     },
     extend: {
       fontFamily: {
-        sans: ['Geist', 'ui-sans-serif', 'system-ui', '-apple-system', 'sans-serif'],
-        chat: ['Inter', 'Geist', 'ui-sans-serif', 'system-ui', '-apple-system', 'sans-serif'],
-        condensed: ['Geist', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-        display: ['Geist', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        sans: ['"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', '-apple-system', 'sans-serif'],
+        chat: ['"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', '-apple-system', 'sans-serif'],
+        condensed: ['"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        display: ['"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
         serif: ['ui-serif', 'Georgia', 'serif'],
-        mono: ['"Geist Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+        mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
       },
       // Semantic type scale — replaces ad-hoc inline `text-[Xpx]`. Reading text
       // (`data` and up) is floored at 12px for legibility; `eyebrow` is the only
@@ -32,6 +32,9 @@ export default {
         meta: ['0.8125rem', { lineHeight: '1.5' }],                           // 13px — secondary/body-supporting
         body: ['0.875rem', { lineHeight: '1.6' }],                            // 14px — body
         title: ['1rem', { lineHeight: '1.3', letterSpacing: '-0.01em' }],     // 16px — section titles
+      },
+      transitionTimingFunction: {
+        premium: "cubic-bezier(0.32, 0.72, 0, 1)",
       },
       colors: {
         border: "hsl(var(--border))",

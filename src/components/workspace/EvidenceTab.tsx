@@ -28,29 +28,36 @@ export function EvidenceTab({ threadId }: { threadId: string }) {
 
   return (
     <div className="h-full flex flex-col min-h-0">
-      <div className="shrink-0 px-3 sm:px-4 py-2 border-b border-border-subtle flex items-center gap-1">
+      <div className="shrink-0 h-11 px-3 sm:px-4 border-b border-border-subtle flex items-center gap-3 bg-[hsl(var(--surface-0))/0.98]">
+        <div className="min-w-0 flex-1">
+          <div className="text-[13px] font-semibold text-foreground leading-none">Evidence</div>
+          <div className="mt-0.5 text-[10px] text-muted-foreground leading-none">
+            {items.length} artifact{items.length === 1 ? "" : "s"}
+          </div>
+        </div>
+        <div className="inline-flex shrink-0 items-center gap-1 rounded-xl border border-white/10 bg-white/[0.035] p-1">
         {VIEWS.map((v) => {
           const Icon = v.icon;
           const active = view === v.key;
           return (
             <button
               key={v.key}
+              type="button"
               onClick={() => setView(v.key)}
+              title={v.label}
+              aria-label={`Show ${v.label.toLowerCase()} evidence view`}
               className={cn(
-                "inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-meta font-medium transition-colors",
+                "inline-flex h-7 w-8 items-center justify-center rounded-lg transition-colors",
                 active
-                  ? "bg-surface-1 text-foreground border border-white/10"
-                  : "text-muted-foreground hover:text-foreground hover:bg-surface-1 border border-transparent",
+                  ? "bg-white text-black"
+                  : "text-muted-foreground hover:text-foreground hover:bg-white/[0.05]",
               )}
             >
               <Icon className="w-3.5 h-3.5 shrink-0" strokeWidth={1.75} />
-              {v.label}
             </button>
           );
         })}
-        <span className="ml-auto text-data font-mono tabular-nums text-muted-foreground pr-1">
-          {items.length} artifact{items.length === 1 ? "" : "s"}
-        </span>
+        </div>
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto">

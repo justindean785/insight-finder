@@ -89,19 +89,21 @@ export default function ChatPage() {
     return (
       <div key={threadId} className="flex flex-col h-[100dvh] w-full bg-background overflow-hidden">
         <CommandPalette />
-        <header className="shrink-0 h-12 px-2 flex items-center gap-2 border-b border-border-subtle bg-background">
-          <button onClick={() => setMLeft(true)} className="w-9 h-9 rounded-lg grid place-items-center glass-interactive" aria-label="Open cases">
+        <header className="shrink-0 h-14 px-2 flex items-center gap-2 border-b border-border-subtle bg-[hsl(var(--surface-0))/0.98]">
+          <button onClick={() => setMLeft(true)} className="shrink-0 w-9 h-9 rounded-xl grid place-items-center border border-white/10 bg-white/[0.035] text-muted-foreground transition-all duration-500 ease-premium hover:text-foreground hover:bg-white/[0.06] active:scale-[0.97]" aria-label="Open cases">
             <PanelLeftOpen className="w-4 h-4 text-foreground/80" />
           </button>
-          <span className="font-display font-semibold text-sm tracking-tight gradient-text select-none">Swarmbot</span>
-          <button onClick={() => navigate("/")} className="ml-auto w-9 h-9 rounded-lg grid place-items-center glass-interactive" aria-label="New investigation">
-            <Plus className="w-4 h-4 text-foreground/80" />
+          <span className="hidden min-[430px]:inline shrink-0 font-display font-semibold text-sm tracking-tight text-foreground select-none">
+            Swarmbot
+          </span>
+          <WorkspaceTabs active={tab} onChange={setTab} counts={tabCounts} variant="inline" />
+          <button onClick={() => navigate("/")} className="shrink-0 w-9 h-9 rounded-xl grid place-items-center border border-white/10 bg-white text-black transition-all duration-500 ease-premium hover:bg-white/90 active:scale-[0.97]" aria-label="New investigation">
+            <Plus className="w-4 h-4 text-black" />
           </button>
         </header>
-        <WorkspaceTabs active={tab} onChange={setTab} counts={tabCounts} />
         {content}
         <Sheet open={mLeft} onOpenChange={setMLeft}>
-          <SheetContent side="left" className="p-0 w-[86vw] max-w-[320px] sm:max-w-[320px] border-r border-white/5 bg-[hsl(230_14%_4%)] [&>button]:hidden overflow-hidden">
+          <SheetContent side="left" className="p-0 w-[82vw] max-w-[300px] sm:max-w-[300px] border-r border-white/8 bg-[hsl(var(--surface-0))] [&>button]:hidden overflow-hidden">
             <ThreadSidebar />
           </SheetContent>
         </Sheet>

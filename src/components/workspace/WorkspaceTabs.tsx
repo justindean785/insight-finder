@@ -1,5 +1,5 @@
-import { useRef } from "react";
-import { MessagesSquare, Database, FileText, Share2, Activity, type LucideIcon } from "lucide-react";
+import { useRef, useState } from "react";
+import { ChevronDown, MessagesSquare, Database, FileText, Share2, Activity, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export type WorkspaceTab = "chat" | "evidence" | "report" | "graph" | "tools";
@@ -12,6 +12,9 @@ const TABS: { key: WorkspaceTab; label: string; icon: LucideIcon }[] = [
   { key: "report", label: "Report", icon: FileText },
 ];
 
+const COMPACT_PRIMARY = TABS.filter((t) => t.key === "chat" || t.key === "evidence" || t.key === "report");
+const COMPACT_MORE = TABS.filter((t) => t.key === "tools" || t.key === "graph");
+
 /**
  * Primary workspace navigation — the five major investigation modes. These are
  * top-level app sections (not nested panel tabs): a single active mode fills the
@@ -22,12 +25,15 @@ export function WorkspaceTabs({
   active,
   onChange,
   counts,
+  variant = "bar",
 }: {
   active: WorkspaceTab;
   onChange: (t: WorkspaceTab) => void;
   counts?: Partial<Record<WorkspaceTab, { value: number; tone?: "default" | "danger" }>>;
+  variant?: "bar" | "inline";
 }) {
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const [moreOpen, setMoreOpen] = useState(false);
 
   // Roving arrow-key navigation across the tab bar (WAI-ARIA tabs pattern).
   const onKeyDown = (e: React.KeyboardEvent, idx: number) => {
@@ -41,6 +47,105 @@ export function WorkspaceTabs({
     onChange(TABS[next].key);
     tabRefs.current[next]?.focus();
   };
+
+  if (variant === "inline") {
+    const moreActive = COMPACT_MORE.some((t) => t.key === active);
+    const activeMore = COMPACT_MORE.find((t) => t.key === active);
+    const ActiveMoreIcon = activeMore?.icon;
+
+    return (
+      <div className="relative min-w-0 flex-1">
+        <div
+          role="tablist"
+          aria-label="Investigation workspace"
+          className="flex min-w-0 items-center gap-1 rounded-xl border border-white/10 bg-white/[0.035] p-1"
+        >
+          {COMPACT_PRIMARY.map((t) => {
+            const Icon = t.icon;
+            const isActive = active === t.key;
+            const count = counts?.[t.key];
+            return (
+              <button
+                key={t.key}
+                id={`workspace-tab-${t.key}`}
+                role="tab"
+                aria-selected={isActive}
+                aria-controls={`workspace-tabpanel-${t.key}`}
+                tabIndex={isActive ? 0 : -1}
+                onClick={() => { setMoreOpen(false); onChange(t.key); }}
+                className={cn(
+                  "relative min-w-0 flex-1 inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-2 text-[12px] font-medium transition-all duration-500 ease-premium active:scale-[0.98]",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                  isActive ? "bg-white text-black shadow-sm" : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
+                )}
+              >
+                <Icon className="h-3.5 w-3.5 shrink-0" strokeWidth={1.8} />
+                <span className="truncate">{t.label}</span>
+                {count && count.value > 0 && (
+                  <span
+                    className={cn(
+                      "absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[9px] font-mono",
+                      count.tone === "danger" ? "bg-destructive text-destructive-foreground" : "bg-surface-4 text-foreground",
+                    )}
+                  >
+                    {count.value > 99 ? "99+" : count.value}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded={moreOpen}
+            onClick={() => setMoreOpen((open) => !open)}
+            className={cn(
+              "inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-lg px-2 text-[12px] font-medium transition-all duration-500 ease-premium active:scale-[0.98]",
+              moreActive ? "bg-[hsl(var(--info-muted))] text-[hsl(var(--info))]" : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
+            )}
+          >
+            {activeMore && ActiveMoreIcon ? (
+              <>
+                <ActiveMoreIcon className="h-3.5 w-3.5" strokeWidth={1.8} />
+                <span className="hidden min-[460px]:inline">{activeMore.label}</span>
+              </>
+            ) : (
+              <span>More</span>
+            )}
+            <ChevronDown className="h-3 w-3" />
+          </button>
+        </div>
+
+        {moreOpen && (
+          <div className="absolute right-0 top-[calc(100%+0.35rem)] z-50 w-40 overflow-hidden rounded-xl border border-white/10 bg-[hsl(var(--popover))] p-1 shadow-[0_24px_80px_-34px_rgba(0,0,0,0.95)]">
+            {COMPACT_MORE.map((t) => {
+              const Icon = t.icon;
+              const count = counts?.[t.key];
+              return (
+                <button
+                  key={t.key}
+                  type="button"
+                  onClick={() => { setMoreOpen(false); onChange(t.key); }}
+                  className={cn(
+                    "flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-sm transition-all duration-500 ease-premium",
+                    active === t.key ? "bg-surface-2 text-foreground" : "text-muted-foreground hover:bg-surface-1 hover:text-foreground",
+                  )}
+                >
+                  <Icon className="h-4 w-4" strokeWidth={1.8} />
+                  <span className="min-w-0 flex-1 truncate">{t.label}</span>
+                  {count && count.value > 0 && (
+                    <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
+                      {count.value > 99 ? "99+" : count.value}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div
