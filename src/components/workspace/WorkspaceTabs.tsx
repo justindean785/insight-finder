@@ -56,8 +56,10 @@ export function WorkspaceTabs({
           <button
             key={t.key}
             ref={(el) => { tabRefs.current[idx] = el; }}
+            id={`workspace-tab-${t.key}`}
             role="tab"
             aria-selected={isActive}
+            aria-controls={`workspace-tabpanel-${t.key}`}
             tabIndex={isActive ? 0 : -1}
             onKeyDown={(e) => onKeyDown(e, idx)}
             onClick={() => onChange(t.key)}
@@ -75,14 +77,20 @@ export function WorkspaceTabs({
               strokeWidth={1.75}
             />
             <span className="tracking-tight">{t.label}</span>
-            {count && count.value > 0 && (
+            {/* Reserve the badge slot whenever this tab tracks a count, even at
+                zero, so the badge doesn't pop in and reflow the tab bar once the
+                async artifact/activity counts load. */}
+            {count && (
               <span
                 className={cn(
                   "ml-0.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-mono tabular-nums tracking-normal",
-                  count.tone === "danger"
-                    ? "bg-destructive/15 text-destructive border border-destructive/30"
-                    : "bg-surface-2 text-muted-foreground border border-border-subtle",
+                  count.value > 0
+                    ? count.tone === "danger"
+                      ? "bg-destructive/15 text-destructive border border-destructive/30"
+                      : "bg-surface-2 text-muted-foreground border border-border-subtle"
+                    : "opacity-0",
                 )}
+                aria-hidden={count.value === 0}
               >
                 {count.value > 99 ? "99+" : count.value}
               </span>

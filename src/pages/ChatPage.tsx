@@ -66,17 +66,22 @@ export default function ChatPage() {
   const content = (
     <div className="flex-1 min-h-0 relative">
       {/* Chat stays mounted so streaming survives tab switches. */}
-      <div className={cn("absolute inset-0", tab === "chat" ? "" : "hidden")}>
+      <div
+        role="tabpanel"
+        id="workspace-tabpanel-chat"
+        aria-labelledby="workspace-tab-chat"
+        className={cn("absolute inset-0", tab === "chat" ? "" : "hidden")}
+      >
         <ChatWindow threadId={threadId} />
       </div>
-      {tab === "evidence" && <div className="absolute inset-0"><EvidenceTab threadId={threadId} /></div>}
+      {tab === "evidence" && <div role="tabpanel" id="workspace-tabpanel-evidence" aria-labelledby="workspace-tab-evidence" className="absolute inset-0"><EvidenceTab threadId={threadId} /></div>}
       {tab === "report" && (
-        <div className="absolute inset-0 overflow-y-auto">
+        <div role="tabpanel" id="workspace-tabpanel-report" aria-labelledby="workspace-tab-report" className="absolute inset-0 overflow-y-auto">
           <div className="mx-auto max-w-4xl"><ReportTab threadId={threadId} artifacts={items} /></div>
         </div>
       )}
-      {tab === "graph" && <div className="absolute inset-0"><GraphTab threadId={threadId} /></div>}
-      {tab === "tools" && <div className="absolute inset-0"><ToolsTab threadId={threadId} /></div>}
+      {tab === "graph" && <div role="tabpanel" id="workspace-tabpanel-graph" aria-labelledby="workspace-tab-graph" className="absolute inset-0"><GraphTab threadId={threadId} /></div>}
+      {tab === "tools" && <div role="tabpanel" id="workspace-tabpanel-tools" aria-labelledby="workspace-tab-tools" className="absolute inset-0"><ToolsTab threadId={threadId} /></div>}
     </div>
   );
 

@@ -131,6 +131,9 @@ export function WorkspaceHeader({ threadId, onShowTools }: { threadId: string; o
           {integrityPct != null && (
             <div
               title={integrity?.ok ? `${integrity.total} evidence rows · chain valid` : `Chain break at seq ${integrity?.first_break}`}
+              aria-label={integrity?.ok
+                ? `Chain of custody valid — ${integrityPct}%`
+                : `Chain of custody broken at sequence ${integrity?.first_break} — ${integrityPct}%`}
               className={cn(
                 "flex items-center gap-1 rounded-full border px-2 py-1 font-mono tabular-nums",
                 integrity?.ok
@@ -138,7 +141,8 @@ export function WorkspaceHeader({ threadId, onShowTools }: { threadId: string; o
                   : "text-destructive border-destructive/40 bg-destructive/10",
               )}
             >
-              <Lock className="w-3 h-3" />
+              {/* Glyph carries the state too, so it isn't color-only. */}
+              {integrity?.ok ? <Lock className="w-3 h-3" /> : <ShieldAlert className="w-3 h-3" />}
               {integrityPct}%
             </div>
           )}
