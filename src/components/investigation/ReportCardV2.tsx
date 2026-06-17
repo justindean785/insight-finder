@@ -216,8 +216,11 @@ function Clusters({ clusters, findings }: { clusters: ClusterAudit[]; findings: 
                 </div>
               </div>
 
-              {/* Cell table — header divider only, body rows use spacing */}
-              <div>
+              {/* Cell table — header divider only, body rows use spacing.
+                  Scrolls horizontally below the table's min width so the
+                  fixed-px columns never clip on narrow viewports. */}
+              <div className="overflow-x-auto">
+                <div className="min-w-[560px]">
                 <div className="grid grid-cols-[140px_1fr_180px_120px] gap-4 border-b border-border-subtle px-4 py-2">
                   {["Claim", "Value", "Source", "Conf"].map((h) => (
                     <span key={h} className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground/60">
@@ -235,6 +238,7 @@ function Clusters({ clusters, findings }: { clusters: ClusterAudit[]; findings: 
                     <ConfidenceMeter value={cell.confidence} width={72} />
                   </div>
                 ))}
+                </div>
               </div>
 
               {issues.length > 0 && (
@@ -346,8 +350,10 @@ function Independence({
         <CollapseBlock label="Effective" value={effective} total={sources.length} collapsed />
       </div>
 
-      {/* Source ledger — header divider only */}
-      <div className="mt-5 overflow-hidden rounded-[4px] border border-border-subtle bg-surface-2">
+      {/* Source ledger — header divider only. Scrolls horizontally below the
+          table's min width instead of clipping the fixed-px columns. */}
+      <div className="mt-5 overflow-x-auto rounded-[4px] border border-border-subtle bg-surface-2">
+        <div className="min-w-[680px]">
         <div className="grid grid-cols-[40px_70px_1fr_1fr_140px_56px] gap-3 border-b border-border-subtle bg-surface-1 px-4 py-2">
           {["ID", "Type", "Origin", "URL", "Retrieved", "Conf"].map((h) => (
             <span key={h} className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground/60">{h}</span>
@@ -365,6 +371,7 @@ function Independence({
             <ConfidenceMeter value={s.confidence} width={44} showValue={false} />
           </div>
         ))}
+        </div>
       </div>
 
       {findings.length > 0 && (

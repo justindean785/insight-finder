@@ -61,10 +61,17 @@ export default function AdminSecurity() {
     setRunning(true);
     setError(null);
     setSummary(null);
-    const { data, error: invokeErr } = await supabase.functions.invoke("security-test-lab", { body: {} });
-    setRunning(false);
-    if (invokeErr) { setError(invokeErr.message); return; }
-    setSummary(data as Summary);
+    try {
+      const { data, error: invokeErr } = await supabase.functions.invoke("security-test-lab", { body: {} });
+      if (invokeErr) { setError(invokeErr.message); return; }
+      setSummary(data as Summary);
+    } catch (e) {
+      // A network drop / thrown rejection from invoke() must not strand the
+      // button on "Running…" with no feedback.
+      setError(e instanceof Error ? e.message : "Red-team run failed to start.");
+    } finally {
+      setRunning(false);
+    }
   };
 
   if (loading || isAdmin === null) {

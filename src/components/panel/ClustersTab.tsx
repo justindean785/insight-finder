@@ -3,6 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { buildIdentityClusters, groupForKind, type IdentityCluster } from "@/lib/intel";
 import { isSharedInfrastructure } from "@/lib/evidence-status";
+import { captureError } from "@/lib/telemetry";
 import { AlertTriangle, MapPin, Mail, Phone, User as UserIcon, Network, Tag, ShieldCheck, ShieldQuestion, Server } from "lucide-react";
 import { EmptyState } from "./EmptyState";
 import { cn } from "@/lib/utils";
@@ -16,7 +17,10 @@ export function ClustersTab({ threadId, artifacts }: { threadId: string; artifac
       .select("seed_value")
       .eq("id", threadId)
       .maybeSingle()
-      .then(({ data }) => setSeedValue((data as { seed_value: string | null } | null)?.seed_value ?? null));
+      .then(({ data, error }) => {
+        if (error) { captureError(error, "ClustersTab.seedFetch", { threadId }); return; }
+        setSeedValue((data as { seed_value: string | null } | null)?.seed_value ?? null);
+      });
   }, [threadId]);
 
   const report = useMemo(() => buildIdentityClusters(artifacts, seedValue), [artifacts, seedValue]);

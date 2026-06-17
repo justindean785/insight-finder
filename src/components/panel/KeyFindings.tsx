@@ -77,6 +77,7 @@ export function KeyFindings({ threadId, artifacts }: { threadId: string; artifac
                     onClick={() => copy(a.value)}
                     className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground"
                     title="Copy value"
+                    aria-label="Copy value"
                   >
                     <Copy className="w-3 h-3" />
                   </button>

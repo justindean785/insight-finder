@@ -1,12 +1,16 @@
 import { useLocation, Link } from "react-router-dom";
 import { useEffect } from "react";
 import { SwarmMark } from "@/components/ui/swarm-mark";
+import { addBreadcrumb } from "@/lib/telemetry";
 
 const NotFound = () => {
   const location = useLocation();
 
   useEffect(() => {
-    console.error("404 Error: User attempted to access non-existent route:", location.pathname);
+    // A mistyped/stale link is an expected event, not an error — record it as a
+    // breadcrumb so it shows up in the trail of a *real* error without polluting
+    // the console/telemetry with error-level noise on every 404.
+    addBreadcrumb("navigation", "404 — route not found", { path: location.pathname });
   }, [location.pathname]);
 
   return (

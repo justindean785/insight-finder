@@ -7,6 +7,7 @@ import { CopyButton } from "@/components/ui/workspace-primitives";
 import { EmptyState } from "@/components/panel/EmptyState";
 import { ZoomIn, ZoomOut, Maximize2, Share2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { captureError } from "@/lib/telemetry";
 
 /** One meaning per hue — keeps the graph legible at a glance. */
 const GROUP_COLOR: Record<Group, string> = {
@@ -87,7 +88,10 @@ export function GraphTab({ threadId }: { threadId: string }) {
   useEffect(() => {
     let alive = true;
     supabase.from("threads").select("seed_value,seed_type").eq("id", threadId).maybeSingle()
-      .then(({ data }) => { if (alive) setSeed(data ? { value: data.seed_value, type: data.seed_type } : null); });
+      .then(({ data, error }) => {
+        if (error) { captureError(error, "GraphTab.seedFetch", { threadId }); return; }
+        if (alive) setSeed(data ? { value: data.seed_value, type: data.seed_type } : null);
+      });
     return () => { alive = false; };
   }, [threadId]);
 

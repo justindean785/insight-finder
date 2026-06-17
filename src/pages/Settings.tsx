@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate, Navigate, Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { SwarmMark } from "@/components/ui/swarm-mark";
@@ -22,8 +22,7 @@ export default function Settings() {
   }
 
   if (!user) {
-    navigate("/auth", { replace: true });
-    return null;
+    return <Navigate to="/auth" replace />;
   }
 
   const changePassword = async (e: React.FormEvent) => {

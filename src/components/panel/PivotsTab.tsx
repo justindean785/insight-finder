@@ -20,6 +20,7 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [costMicro, setCostMicro] = useState<number>(0);
   const [reportPivots, setReportPivots] = useState<RecommendedPivot[]>([]);
+  const [statusMsg, setStatusMsg] = useState("");
   const review = useReviewStates(threadId);
 
   useEffect(() => {
@@ -111,6 +112,7 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
     setSelected(new Set());
     localStorage.setItem(SKIP_KEY(threadId), JSON.stringify(Array.from(next)));
     toast.success(`Skipped ${selectedPivots.length} pivots`);
+    setStatusMsg(`Skipped ${selectedPivots.length} pivots`);
   };
 
   const skip = (p: Pivot) => {
@@ -118,6 +120,7 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
     next.add(pivotKey(p));
     setSkipped(next);
     localStorage.setItem(SKIP_KEY(threadId), JSON.stringify(Array.from(next)));
+    setStatusMsg(`Pivot ${p.value} skipped`);
   };
 
   const copy = (text: string) =>
@@ -132,6 +135,7 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
     }));
     // Auto-skip so it doesn't keep appearing as "new"
     skip(p);
+    setStatusMsg(`Running pivot: ${p.value}`);
     toast.success(`Running pivot: ${p.value}`);
   };
 
@@ -141,10 +145,14 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
       setTimeout(() => runPivot(p), i * 250);
     });
     toast.success(`Queued ${visible.length} pivots`);
+    setStatusMsg(`Queued ${visible.length} pivots`);
   };
 
   return (
     <div className="p-3 space-y-3 text-xs">
+      {/* Announces run/queue/skip actions for screen readers — the card itself
+          disappears on action, so a visual-only toast isn't enough. */}
+      <div role="status" aria-live="polite" className="sr-only">{statusMsg}</div>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2 text-muted-foreground">
           <Sparkles className="w-3.5 h-3.5 text-primary animate-pulse" />

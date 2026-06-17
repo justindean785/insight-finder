@@ -10,17 +10,25 @@ export function NotesTab({ threadId }: { threadId: string }) {
   const [notes, setNotes] = useState<Note[]>([]);
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
 
   const load = async () => {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("investigator_notes")
       .select("id,body,updated_at")
       .eq("thread_id", threadId)
       .order("updated_at", { ascending: false });
-    setNotes((data ?? []) as Note[]);
+    if (error) {
+      // Surface load failures distinctly — collapsing them into the empty
+      // state ("No notes yet.") makes a broken query look like a clean slate.
+      setLoadError(error.message);
+    } else {
+      setLoadError(null);
+      setNotes((data ?? []) as Note[]);
+    }
     setLoading(false);
   };
 
@@ -117,6 +125,18 @@ export function NotesTab({ threadId }: { threadId: string }) {
         </div>
         {loading ? (
           <div className="text-muted-foreground">Loading…</div>
+        ) : loadError ? (
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 p-2 space-y-1.5">
+            <div className="text-destructive">Couldn't load notes — {loadError}</div>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-6 px-1.5 text-data"
+              onClick={() => { setLoading(true); void load(); }}
+            >
+              Retry
+            </Button>
+          </div>
         ) : notes.length === 0 ? (
           <div className="text-muted-foreground">No notes yet.</div>
         ) : (
