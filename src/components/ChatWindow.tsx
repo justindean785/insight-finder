@@ -1602,58 +1602,82 @@ function ChatWindowInner({
         <div className="max-w-[56rem] mx-auto space-y-6 min-w-0">
           <div className="h-2" aria-hidden />
           {messages.length === 0 && (
-            <div className="py-5 sm:py-16">
-              <div className="w-full max-w-[52rem] mx-auto rounded-[24px] sm:rounded-[30px] border border-white/12 bg-[radial-gradient(circle_at_top,rgba(44,50,64,0.28),transparent_42%),linear-gradient(180deg,rgba(17,19,23,0.99),rgba(8,9,11,0.99))] overflow-hidden shadow-[0_40px_120px_-60px_rgba(0,0,0,0.95)] ring-1 ring-white/6">
-                <div className="px-4 sm:px-6 py-4 border-b border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.01))] flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-evidence/90 shadow-[0_0_16px_hsl(var(--info)/0.85)]" />
-                    <span className="text-eyebrow font-mono uppercase tracking-[0.26em] text-muted-foreground">
-                      Case File
-                    </span>
-                  </div>
-                  <span className="min-w-0 truncate font-mono text-data tabular-nums text-foreground/65">
-                    {`SWB-${new Date().getFullYear()}-${threadId.slice(0, 4).toUpperCase()}`}
-                  </span>
-                </div>
-                <div className="px-4 sm:px-6 py-5 grid grid-cols-1 sm:grid-cols-[180px_1fr] gap-y-2 sm:gap-y-3 gap-x-8 text-meta border-b border-white/8">
-                  <span className="text-muted-foreground uppercase text-eyebrow tracking-[0.18em] self-center">Status</span>
-                  <div className="flex min-w-0 flex-wrap items-center gap-2">
-                    <span className="px-2.5 py-1 rounded-full border border-[hsl(var(--confidence-high))/30] bg-[hsl(var(--confidence-high))/10] text-[hsl(var(--confidence-high))] font-mono text-eyebrow uppercase tracking-[0.16em] shadow-[0_0_18px_-14px_hsl(var(--confidence-high)/0.9)]">
-                      Ready
-                    </span>
-                    <span className="min-w-0 truncate text-foreground/65 font-mono text-data">awaiting first seed</span>
-                  </div>
-                  <span className="text-muted-foreground uppercase text-eyebrow tracking-[0.18em] self-center">Opened</span>
-                  <span className="min-w-0 break-words font-mono tabular-nums text-foreground">
-                    {new Date().toUTCString().replace("GMT", "UTC")}
-                  </span>
-                  <span className="text-muted-foreground uppercase text-eyebrow tracking-[0.18em] self-center">Classification</span>
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="px-2 py-1 rounded-md border border-info/30 bg-info/10 text-info font-mono text-eyebrow uppercase tracking-[0.16em] shadow-[0_0_18px_-12px_hsl(var(--info)/0.85)]">
-                      Internal
-                    </span>
-                  </span>
-                </div>
-                <div className="px-4 sm:px-6 py-6 sm:py-7 space-y-5 font-chat">
-                  <div className="space-y-2.5 max-w-xl">
+            <div className="py-3 sm:py-10">
+              <div className="w-full max-w-[54rem] mx-auto overflow-hidden rounded-[22px] border border-white/12 bg-[linear-gradient(180deg,rgba(19,22,27,0.99),rgba(6,7,9,0.99))] shadow-[0_42px_130px_-64px_rgba(0,0,0,0.96)] ring-1 ring-white/6">
+                <div className="grid border-b border-white/8 sm:grid-cols-[1fr_auto]">
+                  <div className="px-4 sm:px-6 py-4 bg-white/[0.025]">
                     <div className="flex items-center gap-2 text-eyebrow font-mono uppercase tracking-[0.22em] text-muted-foreground">
-                      <span className="w-1.5 h-1.5 rounded-full bg-primary/80 shadow-[0_0_10px_hsl(var(--primary)/0.8)]" />
-                      Seed
+                      <span className="h-2 w-2 rounded-full bg-evidence shadow-[0_0_18px_hsl(var(--info)/0.8)]" />
+                      Live intake
                     </div>
-                    <p className="max-w-[44ch] text-[15px] text-foreground/92 leading-7">
-                      Paste a domain, email, handle, IP, phone, or wallet below to open the investigation. The agent will detect the type automatically.
-                    </p>
+                    <div className="mt-2 text-2xl sm:text-3xl font-semibold tracking-normal text-foreground">
+                      Launch an investigation
+                    </div>
                   </div>
-                  <div className="flex flex-wrap gap-2 pt-1">
-                    {["taciocero@icloud.com", "elonmusk", "8.8.8.8", "lovable.app"].map((s) => (
-                      <button
-                        key={s}
-                        onClick={() => setInput(s)}
-                        className="max-w-full truncate px-3.5 py-1.5 rounded-lg border border-white/10 bg-white/[0.03] hover:border-info/40 hover:bg-info/5 font-mono text-data tabular-nums text-foreground/88 transition-colors"
-                      >
-                        {s}
-                      </button>
-                    ))}
+                  <div className="grid grid-cols-2 sm:grid-cols-1 divide-x sm:divide-x-0 sm:divide-y divide-white/8 border-t sm:border-t-0 sm:border-l border-white/8">
+                    <div className="px-4 py-3 min-w-[170px]">
+                      <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">Status</div>
+                      <div className="mt-1 inline-flex items-center gap-2 rounded-full border border-[hsl(var(--confidence-high))/28] bg-[hsl(var(--confidence-high))/9] px-2.5 py-1 text-eyebrow font-mono uppercase tracking-[0.14em] text-[hsl(var(--confidence-high))]">
+                        <span className="h-1.5 w-1.5 rounded-full bg-[hsl(var(--confidence-high))]" />
+                        Ready
+                      </div>
+                    </div>
+                    <div className="px-4 py-3 min-w-[170px]">
+                      <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">Case</div>
+                      <div className="mt-1 font-mono text-data tabular-nums text-foreground/72">
+                        {`SWB-${new Date().getFullYear()}-${threadId.slice(0, 4).toUpperCase()}`}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-px bg-white/8 sm:grid-cols-3">
+                  {[
+                    ["1", "Seed", "Email, domain, handle, IP, phone, wallet"],
+                    ["2", "Route", "Agent selects providers and pivots"],
+                    ["3", "Review", "Evidence lands with confidence tiers"],
+                  ].map(([step, title, copy]) => (
+                    <div key={step} className="bg-background/95 p-4 sm:p-5">
+                      <div className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/12 bg-white/[0.035] font-mono text-data text-foreground">
+                        {step}
+                      </div>
+                      <div className="mt-4 text-sm font-semibold text-foreground">{title}</div>
+                      <div className="mt-1 text-xs leading-5 text-muted-foreground">{copy}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="grid gap-px bg-white/8 md:grid-cols-[1.15fr_0.85fr]">
+                  <div className="bg-background/95 px-4 sm:px-6 py-5 sm:py-6 font-chat">
+                    <div className="flex items-center gap-2 text-eyebrow font-mono uppercase tracking-[0.22em] text-muted-foreground">
+                      <span className="h-1.5 w-1.5 rounded-full bg-primary/80 shadow-[0_0_10px_hsl(var(--primary)/0.8)]" />
+                      Seed examples
+                    </div>
+                    <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                      {["taciocero@icloud.com", "elonmusk", "8.8.8.8", "lovable.app"].map((s) => (
+                        <button
+                          key={s}
+                          onClick={() => setInput(s)}
+                          className="min-w-0 truncate rounded-xl border border-white/10 bg-white/[0.035] px-3.5 py-3 text-left font-mono text-data tabular-nums text-foreground/90 transition-colors hover:border-info/45 hover:bg-info/6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/35"
+                        >
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="bg-background/95 px-4 sm:px-6 py-5 sm:py-6">
+                    <div className="text-eyebrow font-mono uppercase tracking-[0.22em] text-muted-foreground">
+                      Opened
+                    </div>
+                    <div className="mt-2 break-words font-mono text-data tabular-nums text-foreground/82">
+                      {new Date().toUTCString().replace("GMT", "UTC")}
+                    </div>
+                    <div className="mt-5 text-eyebrow font-mono uppercase tracking-[0.22em] text-muted-foreground">
+                      Classification
+                    </div>
+                    <div className="mt-2 inline-flex rounded-lg border border-info/30 bg-info/10 px-2.5 py-1.5 font-mono text-eyebrow uppercase tracking-[0.16em] text-info">
+                      Internal
+                    </div>
                   </div>
                 </div>
               </div>

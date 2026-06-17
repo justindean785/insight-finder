@@ -120,9 +120,63 @@ function ArtifactsList({
 
   if (items.length === 0) {
     return (
-      <div className="text-xs text-muted-foreground p-4 space-y-1">
-        <div>No artifacts recorded yet.</div>
-        <div>Submit a seed (email, username, domain, IP, wallet, phone) to start the investigation.</div>
+      <div className="p-3 sm:p-5">
+        <div className="overflow-hidden rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(17,19,23,0.98),rgba(5,6,8,0.98))] shadow-[0_34px_110px_-70px_rgba(0,0,0,0.95)]">
+          <div className="border-b border-white/8 px-4 sm:px-5 py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="text-eyebrow font-mono uppercase tracking-[0.22em] text-muted-foreground">
+                Evidence board
+              </div>
+              <div className="mt-1 text-lg sm:text-xl font-semibold text-foreground">
+                Awaiting first artifact
+              </div>
+            </div>
+            <div className="inline-flex w-fit items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-data font-mono text-muted-foreground">
+              <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/70" />
+              0 captured
+            </div>
+          </div>
+
+          <div className="grid gap-px bg-white/8 sm:grid-cols-2 lg:grid-cols-4">
+            {[
+              { label: "Identity", icon: Tag, lines: ["profiles", "aliases", "names"] },
+              { label: "Contact", icon: Mail, lines: ["emails", "phones", "accounts"] },
+              { label: "Infrastructure", icon: Network, lines: ["domains", "IPs", "services"] },
+              { label: "Risk", icon: ShieldAlert, lines: ["breaches", "exposure", "review"] },
+            ].map(({ label, icon: Icon, lines }) => (
+              <div key={label} className="min-h-[164px] bg-background/95 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-white/10 bg-white/[0.035]">
+                    <Icon className="h-4 w-4 text-foreground/72" strokeWidth={1.75} />
+                  </div>
+                  <span className="text-data font-mono text-muted-foreground">empty</span>
+                </div>
+                <div className="mt-5 text-sm font-medium text-foreground">{label}</div>
+                <div className="mt-4 space-y-2">
+                  {lines.map((line, index) => (
+                    <div key={line} className="flex items-center gap-2">
+                      <span className="h-1.5 w-1.5 rounded-full bg-white/18" />
+                      <span
+                        className={cn(
+                          "h-2 rounded-full bg-white/[0.07]",
+                          index === 0 ? "w-24" : index === 1 ? "w-16" : "w-20",
+                        )}
+                        aria-label={line}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="px-4 sm:px-5 py-4 border-t border-white/8 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between text-sm">
+            <span className="text-muted-foreground">
+              Submit a seed from Chat to populate confidence, source, and review state.
+            </span>
+            <span className="font-mono text-data text-foreground/70">T1-T6 confidence ready</span>
+          </div>
+        </div>
       </div>
     );
   }

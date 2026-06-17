@@ -341,13 +341,13 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         </div>
       </div>
 
-      <div className="px-4 pb-3 flex items-center gap-1.5 overflow-x-auto scrollbar-none">
+      <div className="px-4 pb-3 grid grid-cols-3 gap-1.5">
         {TYPES.map((t) => (
           <button
             key={t.key}
             onClick={() => setTypeFilter(t.key)}
             className={cn(
-              "shrink-0 px-2.5 py-1 rounded-full border text-eyebrow font-mono uppercase tracking-[0.12em] transition-colors",
+              "min-w-0 px-2 py-1 rounded-full border text-eyebrow font-mono uppercase tracking-[0.12em] transition-colors truncate",
               typeFilter === t.key
                 ? "border-white/30 bg-surface-2 text-foreground"
                 : "border-border-subtle bg-surface-0 text-muted-foreground hover:text-foreground hover:bg-surface-1"
