@@ -3,6 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { buildTimelineItems, type TimelineEventType } from "@/lib/intel";
 import { useThreadMessages } from "@/hooks/useThreadMessages";
+import { captureError } from "@/lib/telemetry";
 import { Database, ShieldQuestion, Wrench, XCircle, RotateCcw, FileCheck, Flag, Clock } from "lucide-react";
 import { EmptyState } from "./EmptyState";
 
@@ -35,7 +36,8 @@ export function TimelineTab({ threadId, artifacts }: { threadId: string; artifac
       .select("seed_value,seed_type,created_at")
       .eq("id", threadId)
       .maybeSingle()
-      .then(({ data }) => {
+      .then(({ data, error }) => {
+        if (error) { captureError(error, "TimelineTab.seedFetch", { threadId }); return; }
         const d = data as { seed_value: string | null; seed_type: string | null; created_at: string } | null;
         if (d) setSeed({ value: d.seed_value, type: d.seed_type, createdAt: d.created_at });
       });
