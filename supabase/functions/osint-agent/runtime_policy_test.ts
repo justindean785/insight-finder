@@ -1,7 +1,6 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
   clearRuntime,
-  routeUnsupportedPlatform,
   runtimeLimits,
   startCall,
 } from "./runtime-policy.ts";
@@ -150,11 +149,4 @@ Deno.test("(4) over maxParallelTools → allow:true with waitMs>0 (queued, not f
   } finally {
     restoreLimits();
   }
-});
-
-Deno.test("(5) routeUnsupportedPlatform flags soundcloud for socialfetch_lookup; supported platform OK", () => {
-  const bad = routeUnsupportedPlatform("socialfetch_lookup", "soundcloud");
-  assertEquals(bad.supported, false);
-  assertEquals(typeof bad.suggestion, "string");
-  assertEquals(routeUnsupportedPlatform("socialfetch_lookup", "instagram").supported, true);
 });

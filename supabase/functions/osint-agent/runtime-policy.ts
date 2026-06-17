@@ -155,10 +155,11 @@ function envNumber(name: string, fallback: number): number {
   const raw = readEnv(name);
   if (raw === undefined) return fallback;
   const s = raw.trim().toLowerCase();
-  if (s === "" || s === "inf" || s === "infinity" || s === "unlimited" || s === "none") {
-    return fallback;
+  if (s === "") return fallback;
+  // "unlimited" words mean exactly that — not the (possibly finite) fallback.
+  if (s === "inf" || s === "infinity" || s === "infinite" || s === "unlimited" || s === "none") {
+    return Number.POSITIVE_INFINITY;
   }
-  if (s === "infinite") return Number.POSITIVE_INFINITY;
   const n = Number(s);
   if (Number.isFinite(n) && n > 0) return n;
   return fallback;
@@ -177,7 +178,7 @@ function envBool(name: string, fallback: boolean): boolean {
 export const runtimeLimits = {
   maxPaidCallsPerRun: envNumber("MAX_PAID_CALLS_PER_RUN", Number.POSITIVE_INFINITY),
   maxTotalToolCallsPerRun: envNumber("MAX_TOTAL_TOOL_CALLS_PER_RUN", Number.POSITIVE_INFINITY),
-  maxParallelTools: envNumber("MAX_PARALLEL_TOOLS", 6),
+  maxParallelTools: envNumber("MAX_PARALLEL_TOOLS", MAX_CONCURRENT_CALLS),
   maxSameToolCallsPerRun: envNumber("MAX_SAME_TOOL_CALLS_PER_RUN", Number.POSITIVE_INFINITY),
   stopOnBudgetExhausted: envBool("STOP_ON_BUDGET_EXHAUSTED", false),
 };
@@ -337,9 +338,11 @@ export function startCall(input: RuntimeDecisionInput): RuntimeDecision {
   const state = getThread(input.threadId);
   const now = input.now ?? Date.now();
 
-  // Essential tools (evidence recording + free-tier) are NEVER blocked by the
-  // runaway budgets — recording can't be starved by the total/paid/same-tool caps.
-  const essential = ALWAYS_ALLOW_TOOLS.has(input.toolName) || input.costTier === "free";
+  // Evidence-recording tools are NEVER blocked by the runaway budgets — recording
+  // can't be starved by the total/paid/same-tool caps. Free-tier tools are NOT
+  // blanket-exempt here: they skip only the PAID cap (via its own costTier guard
+  // below), but stay bound by the total/same-tool runaway backstops when enabled.
+  const essential = ALWAYS_ALLOW_TOOLS.has(input.toolName);
 
   // Internal runaway/cost backstops. These apply ONLY when budget enforcement is
   // explicitly enabled (STOP_ON_BUDGET_EXHAUSTED) AND the call is non-essential
@@ -467,27 +470,3 @@ export function shouldAllowToolCall(input: ToolCallPolicyInput): ToolCallPolicyD
   };
 }
 
-// ---- Unsupported-platform routing --------------------------------------------
-// Pure, data-driven check: some tools cannot fetch certain platforms. When a
-// tool/platform pair is unsupported, return a concrete fallback suggestion so the
-// agent pivots instead of retry-looping. Keep the table small.
-const UNSUPPORTED_PLATFORMS: Record<string, { platforms: Set<string>; suggestion: string }> = {
-  socialfetch_lookup: {
-    platforms: new Set(["soundcloud", "spotify", "bandcamp", "soundcloud.com"]),
-    suggestion: "Use http_fingerprint on the profile URL, wayback_snapshots, or minimax_web_search",
-  },
-};
-
-export function routeUnsupportedPlatform(
-  tool: string,
-  platform: string | undefined,
-): { supported: boolean; suggestion?: string } {
-  if (!platform) return { supported: true };
-  const entry = UNSUPPORTED_PLATFORMS[tool];
-  if (!entry) return { supported: true };
-  const p = platform.trim().toLowerCase();
-  if (entry.platforms.has(p)) {
-    return { supported: false, suggestion: entry.suggestion };
-  }
-  return { supported: true };
-}

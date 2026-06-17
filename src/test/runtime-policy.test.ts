@@ -6,7 +6,6 @@ import {
   currentStage,
   finishCall,
   noteRejectedCall,
-  routeUnsupportedPlatform,
   runtimeLimits,
   scoreExpectedValue,
   startCall,
@@ -334,11 +333,17 @@ describe("runtime-policy: configurable limits", () => {
     if (queued.allow) expect(queued.waitMs).toBeGreaterThan(0);
   });
 
-  it("(5) routeUnsupportedPlatform flags soundcloud for socialfetch_lookup but allows supported platforms", () => {
-    const bad = routeUnsupportedPlatform("socialfetch_lookup", "soundcloud");
-    expect(bad.supported).toBe(false);
-    expect(bad.suggestion).toMatch(/http_fingerprint|wayback|minimax_web_search/i);
-    expect(routeUnsupportedPlatform("socialfetch_lookup", "instagram").supported).toBe(true);
+  it("(5) free-tier tools stay bound by total/same-tool caps when the backstop is enabled (not blanket-essential)", () => {
+    clearRuntime("free-cap");
+    runtimeLimits.stopOnBudgetExhausted = true;
+    runtimeLimits.maxTotalToolCallsPerRun = 2;
+    let blocked = false;
+    for (let i = 0; i < 5; i++) {
+      const d = startCall({ threadId: "free-cap", toolName: "google_dorks", selector: "s", selectorType: "email", costTier: "free", expectedValue: 50, familyKey: `f${i}`, weakLead: { weak: false, reasons: [], autoPivotBlocked: false }, staleCache: false });
+      if (!d.allow) { blocked = true; break; }
+      finishCall("free-cap", "google_dorks");
+    }
+    expect(blocked).toBe(true); // free tool is NOT exempt from the total cap
   });
 });
 
