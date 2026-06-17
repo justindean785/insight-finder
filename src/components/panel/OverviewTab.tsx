@@ -4,6 +4,7 @@ import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { labelForArtifact, adjustedConfidence, groupForKind, GROUP_LABEL } from "@/lib/intel";
 import { useReviewStates } from "@/lib/review";
 import { detectSeed } from "@/lib/seed";
+import { captureError } from "@/lib/telemetry";
 import { Activity, AlertTriangle, Database, ShieldAlert, Sparkles, Clock, Eye } from "lucide-react";
 import { InvestigationControls } from "./InvestigationControls";
 import { KeyFindings } from "./KeyFindings";
@@ -22,11 +23,12 @@ export function OverviewTab({ threadId, artifacts }: { threadId: string; artifac
   useEffect(() => {
     let alive = true;
     const load = async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("threads")
         .select("id,seed_value,seed_type,updated_at")
         .eq("id", threadId)
         .maybeSingle();
+      if (error) { captureError(error, "OverviewTab.threadFetch", { threadId }); return; }
       if (alive) setThread(data as Thread | null);
     };
     load();

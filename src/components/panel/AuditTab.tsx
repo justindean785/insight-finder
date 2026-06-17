@@ -24,6 +24,7 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
   const [capUsd, setCapUsd] = useState<number>(1);
   const [editingCap, setEditingCap] = useState(false);
   const [capDraft, setCapDraft] = useState<string>("1.00");
+  const [capError, setCapError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!threadId) return;
@@ -49,7 +50,12 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
 
   const saveCap = () => {
     const v = Number(capDraft);
-    if (!Number.isFinite(v) || v <= 0) return;
+    if (!Number.isFinite(v) || v <= 0) {
+      // Don't silently no-op on bad input — that reads as a broken field.
+      setCapError("Enter a positive dollar amount.");
+      return;
+    }
+    setCapError(null);
     setCapUsd(v);
     if (threadId) localStorage.setItem(CAP_KEY(threadId), String(v));
     setEditingCap(false);
@@ -81,15 +87,21 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
                     <span className="opacity-60">$</span>
                     <input
                       autoFocus
+                      inputMode="decimal"
+                      aria-label="Budget cap in dollars"
+                      aria-invalid={!!capError}
                       value={capDraft}
-                      onChange={(e) => setCapDraft(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter") saveCap(); if (e.key === "Escape") setEditingCap(false); }}
-                      className="w-14 bg-secondary/60 border border-border rounded px-1 font-mono text-foreground outline-none focus:border-primary/60"
+                      onChange={(e) => { setCapDraft(e.target.value); if (capError) setCapError(null); }}
+                      onKeyDown={(e) => { if (e.key === "Enter") saveCap(); if (e.key === "Escape") { setEditingCap(false); setCapError(null); } }}
+                      className={cn(
+                        "w-14 bg-secondary/60 border rounded px-1 font-mono text-foreground outline-none focus:border-primary/60",
+                        capError ? "border-destructive" : "border-border",
+                      )}
                     />
                     <button onClick={saveCap} className="text-primary hover:opacity-80"><Check className="w-3 h-3" /></button>
                   </span>
                 ) : (
-                  <button onClick={() => { setCapDraft(capUsd.toFixed(2)); setEditingCap(true); }}
+                  <button onClick={() => { setCapDraft(capUsd.toFixed(2)); setCapError(null); setEditingCap(true); }}
                     className="font-mono text-foreground hover:text-primary inline-flex items-center gap-1">
                     cap ${capUsd.toFixed(2)}
                     <Pencil className="w-2.5 h-2.5 opacity-60" />
@@ -101,6 +113,9 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
                 (overCap ? "text-destructive" : warn ? "text-[hsl(var(--confidence-mid))]" : "text-muted-foreground")
               }>{pct}%</span>
             </div>
+            {editingCap && capError && (
+              <div className="text-data text-destructive" role="alert">{capError}</div>
+            )}
             <div className="h-1.5 rounded-full bg-secondary/60 overflow-hidden">
               <div
                 className={
