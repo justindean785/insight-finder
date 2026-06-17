@@ -9,7 +9,7 @@ import { PERPLEXITY_API_KEY, fetchRetry } from "../env.ts";
 import { guard } from "../guard.ts";
 import { minimaxChat, safeJson } from "../providers.ts";
 import { MODELS } from "../models.ts";
-import { detectSeedServer } from "../validation.ts";
+import { coerceArtifactsInput, detectSeedServer } from "../validation.ts";
 import { enforceNameSeedPriority, NAME_SEED_PLANNER_RULES } from "../planner-guidance.ts";
 
 // ---- minimax_web_search (Perplexity Sonar) ----------------------------------
@@ -103,13 +103,13 @@ export const minimax_correlate = tool({
     "Have MiniMax correlate and rescore a batch of artifacts. Pass the list of artifacts gathered so far; it returns identity clusters, dedup mapping, confidence rescoring, and contradiction flags. Run after each fan-out round.",
   inputSchema: z.object({
     seed: z.string().describe("Original seed identifier"),
-    artifacts: z.array(z.object({
+    artifacts: z.preprocess(coerceArtifactsInput, z.array(z.object({
       kind: z.string(),
       value: z.string(),
       source: z.string().optional(),
       confidence: z.number().optional(),
       metadata: z.unknown().optional(),
-    })).max(200),
+    })).max(200)),
   }),
   execute: async ({ seed, artifacts }) => {
     try {
@@ -136,7 +136,7 @@ export const minimax_plan_pivots = tool({
   inputSchema: z.object({
     seed: z.string(),
     already_queried: z.array(z.string()).max(200).default([]),
-    artifacts: z.array(z.object({ kind: z.string(), value: z.string() })).max(200),
+    artifacts: z.preprocess(coerceArtifactsInput, z.array(z.object({ kind: z.string(), value: z.string() })).max(200)),
     budget_remaining: z.number().int().min(0).max(100).default(30),
   }),
   execute: async ({ seed, already_queried, artifacts, budget_remaining }) => {
