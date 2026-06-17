@@ -134,6 +134,70 @@ const THREADS = new Map<string, RuntimeThreadState>();
 export const MAX_TOTAL_CALLS = 30;
 export const MAX_CONCURRENT_CALLS = 3;
 export const MAX_PAID_CALLS = 12;
+
+// ---- Configurable runtime limits ---------------------------------------------
+// Hard caps are now configurable and DEFAULT TO UNLIMITED investigation depth.
+// The old constants above remain exported for other importers, but startCall
+// reads `runtimeLimits.*` (which tests mutate directly). All env reads are
+// guarded so this module can be imported from Node (vitest) where `Deno` does
+// not exist and from Deno without --allow-env (which throws PermissionError).
+function readEnv(name: string): string | undefined {
+  try {
+    return (typeof Deno !== "undefined" && Deno.env?.get)
+      ? (Deno.env.get(name) ?? undefined)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function envNumber(name: string, fallback: number): number {
+  const raw = readEnv(name);
+  if (raw === undefined) return fallback;
+  const s = raw.trim().toLowerCase();
+  if (s === "") return fallback;
+  // "unlimited" words mean exactly that — not the (possibly finite) fallback.
+  if (s === "inf" || s === "infinity" || s === "infinite" || s === "unlimited" || s === "none") {
+    return Number.POSITIVE_INFINITY;
+  }
+  const n = Number(s);
+  if (Number.isFinite(n) && n > 0) return n;
+  return fallback;
+}
+
+function envBool(name: string, fallback: boolean): boolean {
+  const raw = readEnv(name);
+  if (raw === undefined) return fallback;
+  const s = raw.trim().toLowerCase();
+  if (s === "1" || s === "true" || s === "yes" || s === "on") return true;
+  if (s === "0" || s === "false" || s === "no" || s === "off") return false;
+  return fallback;
+}
+
+// EXPORTED MUTABLE config — tests mutate this directly to enable caps.
+export const runtimeLimits = {
+  maxPaidCallsPerRun: envNumber("MAX_PAID_CALLS_PER_RUN", Number.POSITIVE_INFINITY),
+  maxTotalToolCallsPerRun: envNumber("MAX_TOTAL_TOOL_CALLS_PER_RUN", Number.POSITIVE_INFINITY),
+  maxParallelTools: envNumber("MAX_PARALLEL_TOOLS", MAX_CONCURRENT_CALLS),
+  maxSameToolCallsPerRun: envNumber("MAX_SAME_TOOL_CALLS_PER_RUN", Number.POSITIVE_INFINITY),
+  stopOnBudgetExhausted: envBool("STOP_ON_BUDGET_EXHAUSTED", false),
+};
+
+// Tools that record/persist evidence — NEVER throttled by runaway budgets, so a
+// recording call can never be starved by the total/paid/same-tool caps.
+export const ALWAYS_ALLOW_TOOLS = new Set<string>([
+  "record_artifacts",
+  "record_artifact",
+  "record_evidence",
+  "record_finding",
+  "record_report",
+  "append_evidence",
+  "memory_save",
+]);
+
+// Concurrency over the parallel cap QUEUES (escalating backoff) rather than failing.
+export const CONCURRENCY_BACKOFF_MS = 250;
+export const MAX_CONCURRENCY_BACKOFF_MS = 5000;
 // Same-tool: a HIGH runaway backstop only. Raw same-tool count must NOT be the
 // thing that kills the best pivot. Beyond SAME_TOOL_SOFT_LIMIT, repeat calls are
 // SPACED with an escalating cooldown (queue-like) rather than refused; the true
@@ -274,21 +338,37 @@ export function startCall(input: RuntimeDecisionInput): RuntimeDecision {
   const state = getThread(input.threadId);
   const now = input.now ?? Date.now();
 
-  // Internal runaway/cost backstops. NONE of these is a provider rate limit, and
-  // the reasons say so explicitly — the agent must never narrate an internal cap
-  // as a provider "rate limit" or quota "exhausted" (only a real HTTP 429 may).
-  if (state.totalCalls >= MAX_TOTAL_CALLS) {
-    return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `internal run cap reached (${MAX_TOTAL_CALLS} calls this investigation) — internal throttle, not a provider limit` };
-  }
-  if (state.activeCalls >= MAX_CONCURRENT_CALLS) {
-    return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `internal concurrency cap reached (${MAX_CONCURRENT_CALLS} parallel calls) — retry momentarily; internal throttle, not a provider limit` };
-  }
-  if (input.costTier !== "free" && state.paidCalls >= MAX_PAID_CALLS) {
-    return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `internal paid-call cap reached (${MAX_PAID_CALLS} this run) — internal throttle, not a provider limit` };
-  }
+  // Evidence-recording tools are NEVER blocked by the runaway budgets — recording
+  // can't be starved by the total/paid/same-tool caps. Free-tier tools are NOT
+  // blanket-exempt here: they skip only the PAID cap (via its own costTier guard
+  // below), but stay bound by the total/same-tool runaway backstops when enabled.
+  const essential = ALWAYS_ALLOW_TOOLS.has(input.toolName);
+
+  // Internal runaway/cost backstops. These apply ONLY when budget enforcement is
+  // explicitly enabled (STOP_ON_BUDGET_EXHAUSTED) AND the call is non-essential
+  // AND the relevant limit is finite AND exceeded. By default everything is
+  // unlimited, so none of these fires. NONE of these is a provider rate limit —
+  // the reasons say so explicitly. (Concurrency is handled below as a QUEUE,
+  // never allow:false.)
   const sameToolCount = state.toolCounts.get(input.toolName) ?? 0;
-  if (sameToolCount >= MAX_SAME_TOOL_CALLS) {
-    return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `internal per-tool cap reached (${input.toolName} ran ${MAX_SAME_TOOL_CALLS}× this run) — vary the selector or choose another pivot; internal throttle, not a provider limit` };
+  if (runtimeLimits.stopOnBudgetExhausted && !essential) {
+    if (Number.isFinite(runtimeLimits.maxTotalToolCallsPerRun) && state.totalCalls >= runtimeLimits.maxTotalToolCallsPerRun) {
+      return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `internal run cap reached (${runtimeLimits.maxTotalToolCallsPerRun} calls this investigation) — internal throttle, not a provider limit` };
+    }
+    if (Number.isFinite(runtimeLimits.maxPaidCallsPerRun) && input.costTier !== "free" && state.paidCalls >= runtimeLimits.maxPaidCallsPerRun) {
+      return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `internal paid-call cap reached (${runtimeLimits.maxPaidCallsPerRun} this run) — internal throttle, not a provider limit` };
+    }
+    if (Number.isFinite(runtimeLimits.maxSameToolCallsPerRun) && sameToolCount >= runtimeLimits.maxSameToolCallsPerRun) {
+      return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `internal per-tool cap reached (${input.toolName} ran ${runtimeLimits.maxSameToolCallsPerRun}× this run) — vary the selector or choose another pivot; internal throttle, not a provider limit` };
+    }
+  }
+
+  // CONCURRENCY: never refuse — QUEUE the call with an escalating backoff when it
+  // would push active calls over maxParallelTools.
+  let concurrencyBackoff = 0;
+  if (Number.isFinite(runtimeLimits.maxParallelTools) && state.activeCalls + 1 > runtimeLimits.maxParallelTools) {
+    const over = (state.activeCalls + 1) - runtimeLimits.maxParallelTools;
+    concurrencyBackoff = Math.min(over * CONCURRENCY_BACKOFF_MS, MAX_CONCURRENCY_BACKOFF_MS);
   }
 
   // Beyond the soft limit, SPACE repeat same-tool calls (queue-like cooldown)
@@ -296,7 +376,7 @@ export function startCall(input: RuntimeDecisionInput): RuntimeDecision {
   const sameToolCooldown = sameToolCount >= SAME_TOOL_SOFT_LIMIT
     ? (sameToolCount - SAME_TOOL_SOFT_LIMIT + 1) * SAME_TOOL_COOLDOWN_MS
     : 0;
-  const scheduledStartAt = Math.max(now, state.lastStartAt + MIN_START_GAP_MS) + sameToolCooldown;
+  const scheduledStartAt = Math.max(now, state.lastStartAt + MIN_START_GAP_MS) + sameToolCooldown + concurrencyBackoff;
   const waitMs = Math.max(0, scheduledStartAt - now);
   state.stage = nextStageForTool(state.stage, input.toolName);
   state.totalCalls += 1;
@@ -389,3 +469,4 @@ export function shouldAllowToolCall(input: ToolCallPolicyInput): ToolCallPolicyD
       : `${input.toolName} eligible.`,
   };
 }
+

@@ -47,6 +47,7 @@ import {
 // validation.ts — Seed detection, cache TTLs, artifact validation
 import {
   detectSeedServer, validateArtifact, TTL_24H_MS, TOOL_TTL_MS, NO_CACHE_TOOLS,
+  coerceArtifactsInput,
 } from "./validation.ts";
 
 // api_types.ts — Loose TypeScript interfaces for third-party API responses.
@@ -216,7 +217,7 @@ Deno.serve(async (req) => {
       // Verify a deploy landed with: GET /osint-agent?health=1 → expect this value.
       // (Prior builds froze `version` at 1.0.0, so merged fixes were unverifiable
       //  against the live function — that gap is what this field closes.)
-      build: "2026-06-16-backport-reconcile",
+      build: "2026-06-16-runtime-dorks-serus",
       checks: r.checks,
       intelbase_enabled: INTELBASE_ENABLED,
     };
@@ -513,13 +514,16 @@ Deno.serve(async (req) => {
           "Have MiniMax correlate and rescore a batch of artifacts. Pass the relevant artifacts gathered so far; it returns identity clusters, dedup mapping, confidence rescoring, and contradiction flags. Run after at least three meaningful new artifacts or before final verification.",
         inputSchema: z.object({
           seed: z.string().describe("Original seed identifier"),
-          artifacts: z.array(z.object({
+          // Models frequently pass `artifacts` as a JSON STRING; coerce to an
+          // array before validating (same as record_artifacts) so a stringified
+          // batch doesn't fail correlation and lose the run's findings.
+          artifacts: z.preprocess(coerceArtifactsInput, z.array(z.object({
             kind: z.string(),
             value: z.string(),
             source: z.string().optional(),
             confidence: z.number().optional(),
             metadata: z.unknown().optional(),
-          })).max(200),
+          })).max(200)),
         }),
         execute: async ({ seed, artifacts }) => {
           // Input guard: never spend a paid MiniMax call on an empty/invalid
@@ -559,7 +563,7 @@ Deno.serve(async (req) => {
         inputSchema: z.object({
           seed: z.string(),
           already_queried: z.array(z.string()).max(200).default([]),
-          artifacts: z.array(z.object({ kind: z.string(), value: z.string() })).max(200),
+          artifacts: z.preprocess(coerceArtifactsInput, z.array(z.object({ kind: z.string(), value: z.string() })).max(200)),
           budget_remaining: z.number().int().min(0).max(100).default(30),
         }),
         execute: async ({ seed, already_queried, artifacts, budget_remaining }) => {
@@ -2155,6 +2159,10 @@ Deno.serve(async (req) => {
               { category: "Public Records", query: `"${seed}" site:opencorporates.com OR site:crunchbase.com OR site:bizapedia.com`, url: `https://www.google.com/search?q=%22${e}%22+site:opencorporates.com` },
               { category: "Public Records", query: `"${seed}" site:gov OR site:gov.uk OR site:europa.eu`, url: `https://www.google.com/search?q=%22${e}%22+site:gov` },
               { category: "Public Records", query: `"${seed}" site:courtlistener.com OR site:justia.com OR site:pacer.gov`, url: `https://www.google.com/search?q=%22${e}%22+site:courtlistener.com` },
+              { category: "Legal/Court Records", query: `"${seed}" (site:unicourt.com OR site:trellis.law OR site:judyrecords.com OR site:plainsite.org OR site:courtlistener.com)`, url: `https://www.google.com/search?q=%22${e}%22+site:unicourt.com+OR+site:trellis.law+OR+site:judyrecords.com` },
+              { category: "Legal/Court Records", query: `"${seed}" ("docket" OR "case no" OR "v." OR "plaintiff" OR "defendant" OR "indictment" OR "complaint") (filetype:pdf OR site:gov)`, url: `https://www.google.com/search?q=%22${e}%22+%22docket%22+OR+%22case+no%22+filetype:pdf` },
+              { category: "Legal/Court Records", query: `"${seed}" ("arrested" OR "convicted" OR "sentenced" OR "pleaded guilty" OR "charged with" OR "booking" OR "felony" OR "misdemeanor")`, url: `https://www.google.com/search?q=%22${e}%22+%22arrested%22+OR+%22convicted%22+OR+%22sentenced%22` },
+              { category: "Legal/Court Records", query: `"${seed}" (site:mugshots.com OR site:bustednewspaper.com OR site:arrests.org OR site:jailbase.com OR site:nsopw.gov)`, url: `https://www.google.com/search?q=%22${e}%22+site:bustednewspaper.com+OR+site:arrests.org+OR+site:jailbase.com` },
               { category: "Public Records", query: `"${seed}" "address" OR "phone" OR "email"`, url: `https://www.google.com/search?q=%22${e}%22+%22address%22+%22phone%22` },
               { category: "Images", query: `"${seed}" site:imgur.com OR site:flickr.com OR site:photobucket.com`, url: `https://www.google.com/search?q=%22${e}%22+site:imgur.com` },
               { category: "Images", query: `"${seed}" site:youtube.com OR site:vimeo.com OR site:dailymotion.com`, url: `https://www.google.com/search?q=%22${e}%22+site:youtube.com` },
@@ -2309,7 +2317,7 @@ Deno.serve(async (req) => {
         inputSchema: z.object({
           seed: z.string(),
           kind: z.enum(["email", "username", "phone", "name", "person", "domain", "ip", "hash", "crypto_wallet"]),
-          max_queries: z.number().int().min(1).max(10).default(5),
+          max_queries: z.number().int().min(1).max(12).default(8),
         }),
         execute: async ({ seed, kind: rawKind, max_queries }) => {
           const kind = rawKind === "person" ? "name" : rawKind;
@@ -2341,7 +2349,8 @@ Deno.serve(async (req) => {
             name: [
               `"${seed}" (filetype:pdf OR filetype:doc OR filetype:docx)`,
               `"${seed}" ("resume" OR "cv" OR "curriculum vitae") filetype:pdf`,
-              `"${seed}" ("deed" OR "property record" OR "court" OR "lawsuit") (filetype:pdf OR filetype:html)`,
+              `"${seed}" ("deed" OR "property record" OR "assessor") (filetype:pdf OR filetype:html)`,
+              `"${seed}" ("docket" OR "case no" OR "v." OR "indictment" OR "complaint" OR "judgment" OR "arrested" OR "convicted" OR "sentenced") (filetype:pdf OR site:courtlistener.com OR site:unicourt.com OR site:justia.com OR site:gov)`,
               `"${seed}" (site:fec.gov OR site:opensecrets.org) filetype:pdf OR filetype:csv`,
               `"${seed}" ("biography" OR "about" OR "portfolio") filetype:pdf`,
             ],
@@ -3341,19 +3350,7 @@ Deno.serve(async (req) => {
         inputSchema: z.object({
           // Tolerant input: some models emit `artifacts` as a JSON string
           // (or fenced code block). Parse it back into an array.
-          artifacts: z.preprocess((raw) => {
-            const parseMaybe = (v: unknown): unknown => {
-              if (typeof v !== "string") return v;
-              const s = v.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
-              try { return JSON.parse(s); } catch { /* fall through */ }
-              const a = s.indexOf("["); const b = s.lastIndexOf("]");
-              if (a >= 0 && b > a) { try { return JSON.parse(s.slice(a, b + 1)); } catch { /* noop */ } }
-              return v;
-            };
-            let v: unknown = parseMaybe(raw);
-            if (v && !Array.isArray(v) && typeof v === "object") v = [v];
-            return v;
-          }, z.array(
+          artifacts: z.preprocess(coerceArtifactsInput, z.array(
               z.object({
                 kind: z.string().describe("Pick the most specific kind. Primary: email|phone|ip|username|domain|subdomain|avatar|breach|address|name|social|organization|case|legal_record|infrastructure|financial_claim|event|source_person|risk_note. Use 'other' ONLY as a last resort. Common reclass: company/firm names → organization; 'United States v. X' → case; DRE/court records → legal_record; crm./portal./ledger./staging. hosts → subdomain; DNS/MX/SPF/CDN summaries → infrastructure; reporter/journalist → source_person; real-estate / donation summaries → financial_claim. Unknown kinds are coerced to 'other'."),
                 value: z.string(),
