@@ -2159,6 +2159,10 @@ Deno.serve(async (req) => {
               { category: "Public Records", query: `"${seed}" site:opencorporates.com OR site:crunchbase.com OR site:bizapedia.com`, url: `https://www.google.com/search?q=%22${e}%22+site:opencorporates.com` },
               { category: "Public Records", query: `"${seed}" site:gov OR site:gov.uk OR site:europa.eu`, url: `https://www.google.com/search?q=%22${e}%22+site:gov` },
               { category: "Public Records", query: `"${seed}" site:courtlistener.com OR site:justia.com OR site:pacer.gov`, url: `https://www.google.com/search?q=%22${e}%22+site:courtlistener.com` },
+              { category: "Legal/Court Records", query: `"${seed}" (site:unicourt.com OR site:trellis.law OR site:judyrecords.com OR site:plainsite.org OR site:courtlistener.com)`, url: `https://www.google.com/search?q=%22${e}%22+site:unicourt.com+OR+site:trellis.law+OR+site:judyrecords.com` },
+              { category: "Legal/Court Records", query: `"${seed}" ("docket" OR "case no" OR "v." OR "plaintiff" OR "defendant" OR "indictment" OR "complaint") (filetype:pdf OR site:gov)`, url: `https://www.google.com/search?q=%22${e}%22+%22docket%22+OR+%22case+no%22+filetype:pdf` },
+              { category: "Legal/Court Records", query: `"${seed}" ("arrested" OR "convicted" OR "sentenced" OR "pleaded guilty" OR "charged with" OR "booking" OR "felony" OR "misdemeanor")`, url: `https://www.google.com/search?q=%22${e}%22+%22arrested%22+OR+%22convicted%22+OR+%22sentenced%22` },
+              { category: "Legal/Court Records", query: `"${seed}" (site:mugshots.com OR site:bustednewspaper.com OR site:arrests.org OR site:jailbase.com OR site:nsopw.gov)`, url: `https://www.google.com/search?q=%22${e}%22+site:bustednewspaper.com+OR+site:arrests.org+OR+site:jailbase.com` },
               { category: "Public Records", query: `"${seed}" "address" OR "phone" OR "email"`, url: `https://www.google.com/search?q=%22${e}%22+%22address%22+%22phone%22` },
               { category: "Images", query: `"${seed}" site:imgur.com OR site:flickr.com OR site:photobucket.com`, url: `https://www.google.com/search?q=%22${e}%22+site:imgur.com` },
               { category: "Images", query: `"${seed}" site:youtube.com OR site:vimeo.com OR site:dailymotion.com`, url: `https://www.google.com/search?q=%22${e}%22+site:youtube.com` },
@@ -2313,7 +2317,7 @@ Deno.serve(async (req) => {
         inputSchema: z.object({
           seed: z.string(),
           kind: z.enum(["email", "username", "phone", "name", "person", "domain", "ip", "hash", "crypto_wallet"]),
-          max_queries: z.number().int().min(1).max(10).default(5),
+          max_queries: z.number().int().min(1).max(12).default(8),
         }),
         execute: async ({ seed, kind: rawKind, max_queries }) => {
           const kind = rawKind === "person" ? "name" : rawKind;
@@ -2345,7 +2349,8 @@ Deno.serve(async (req) => {
             name: [
               `"${seed}" (filetype:pdf OR filetype:doc OR filetype:docx)`,
               `"${seed}" ("resume" OR "cv" OR "curriculum vitae") filetype:pdf`,
-              `"${seed}" ("deed" OR "property record" OR "court" OR "lawsuit") (filetype:pdf OR filetype:html)`,
+              `"${seed}" ("deed" OR "property record" OR "assessor") (filetype:pdf OR filetype:html)`,
+              `"${seed}" ("docket" OR "case no" OR "v." OR "indictment" OR "complaint" OR "judgment" OR "arrested" OR "convicted" OR "sentenced") (filetype:pdf OR site:courtlistener.com OR site:unicourt.com OR site:justia.com OR site:gov)`,
               `"${seed}" (site:fec.gov OR site:opensecrets.org) filetype:pdf OR filetype:csv`,
               `"${seed}" ("biography" OR "about" OR "portfolio") filetype:pdf`,
             ],
