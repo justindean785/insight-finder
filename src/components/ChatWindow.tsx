@@ -1597,34 +1597,34 @@ function ChatWindowInner({
           followLatestRef.current = follow;
           setShowJumpToLatest(!follow);
         }}
-        className="relative z-10 flex-1 overflow-y-auto overflow-x-hidden px-4 sm:px-6 py-5"
+        className="relative z-10 flex-1 overflow-y-auto overflow-x-hidden px-3 sm:px-6 py-4 sm:py-5"
       >
         <div className="max-w-[56rem] mx-auto space-y-6 min-w-0">
           <div className="h-2" aria-hidden />
           {messages.length === 0 && (
-            <div className="py-10 sm:py-16">
-              <div className="max-w-[52rem] mx-auto rounded-[30px] border border-white/12 bg-[radial-gradient(circle_at_top,rgba(44,50,64,0.28),transparent_42%),linear-gradient(180deg,rgba(17,19,23,0.99),rgba(8,9,11,0.99))] overflow-hidden shadow-[0_40px_120px_-60px_rgba(0,0,0,0.95)] ring-1 ring-white/6">
-                <div className="px-6 py-4 border-b border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.01))] flex items-center justify-between">
+            <div className="py-5 sm:py-16">
+              <div className="w-full max-w-[52rem] mx-auto rounded-[24px] sm:rounded-[30px] border border-white/12 bg-[radial-gradient(circle_at_top,rgba(44,50,64,0.28),transparent_42%),linear-gradient(180deg,rgba(17,19,23,0.99),rgba(8,9,11,0.99))] overflow-hidden shadow-[0_40px_120px_-60px_rgba(0,0,0,0.95)] ring-1 ring-white/6">
+                <div className="px-4 sm:px-6 py-4 border-b border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.01))] flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <span className="w-2.5 h-2.5 rounded-full bg-evidence/90 shadow-[0_0_16px_hsl(var(--info)/0.85)]" />
                     <span className="text-eyebrow font-mono uppercase tracking-[0.26em] text-muted-foreground">
                       Case File
                     </span>
                   </div>
-                  <span className="font-mono text-data tabular-nums text-foreground/65">
+                  <span className="min-w-0 truncate font-mono text-data tabular-nums text-foreground/65">
                     {`SWB-${new Date().getFullYear()}-${threadId.slice(0, 4).toUpperCase()}`}
                   </span>
                 </div>
-                <div className="px-6 py-5 grid grid-cols-[180px_1fr] gap-y-3 gap-x-8 text-meta border-b border-white/8">
+                <div className="px-4 sm:px-6 py-5 grid grid-cols-1 sm:grid-cols-[180px_1fr] gap-y-2 sm:gap-y-3 gap-x-8 text-meta border-b border-white/8">
                   <span className="text-muted-foreground uppercase text-eyebrow tracking-[0.18em] self-center">Status</span>
-                  <div className="flex items-center gap-2">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
                     <span className="px-2.5 py-1 rounded-full border border-[hsl(var(--confidence-high))/30] bg-[hsl(var(--confidence-high))/10] text-[hsl(var(--confidence-high))] font-mono text-eyebrow uppercase tracking-[0.16em] shadow-[0_0_18px_-14px_hsl(var(--confidence-high)/0.9)]">
                       Ready
                     </span>
-                    <span className="text-foreground/65 font-mono text-data">awaiting first seed</span>
+                    <span className="min-w-0 truncate text-foreground/65 font-mono text-data">awaiting first seed</span>
                   </div>
                   <span className="text-muted-foreground uppercase text-eyebrow tracking-[0.18em] self-center">Opened</span>
-                  <span className="font-mono tabular-nums text-foreground">
+                  <span className="min-w-0 break-words font-mono tabular-nums text-foreground">
                     {new Date().toUTCString().replace("GMT", "UTC")}
                   </span>
                   <span className="text-muted-foreground uppercase text-eyebrow tracking-[0.18em] self-center">Classification</span>
@@ -1634,7 +1634,7 @@ function ChatWindowInner({
                     </span>
                   </span>
                 </div>
-                <div className="px-6 py-7 space-y-5 font-chat">
+                <div className="px-4 sm:px-6 py-6 sm:py-7 space-y-5 font-chat">
                   <div className="space-y-2.5 max-w-xl">
                     <div className="flex items-center gap-2 text-eyebrow font-mono uppercase tracking-[0.22em] text-muted-foreground">
                       <span className="w-1.5 h-1.5 rounded-full bg-primary/80 shadow-[0_0_10px_hsl(var(--primary)/0.8)]" />
@@ -1649,7 +1649,7 @@ function ChatWindowInner({
                       <button
                         key={s}
                         onClick={() => setInput(s)}
-                        className="px-3.5 py-1.5 rounded-lg border border-white/10 bg-white/[0.03] hover:border-info/40 hover:bg-info/5 font-mono text-data tabular-nums text-foreground/88 transition-colors"
+                        className="max-w-full truncate px-3.5 py-1.5 rounded-lg border border-white/10 bg-white/[0.03] hover:border-info/40 hover:bg-info/5 font-mono text-data tabular-nums text-foreground/88 transition-colors"
                       >
                         {s}
                       </button>
@@ -1734,7 +1734,7 @@ function ChatWindowInner({
         )}
       </div>
 
-      <div className="relative z-10 border-t border-border-subtle bg-background/95 backdrop-blur-xl px-4 pt-5 pb-4 sm:pb-5">
+      <div className="relative z-10 border-t border-border-subtle bg-background/95 backdrop-blur-xl px-3 sm:px-4 pt-3 sm:pt-5 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:pb-5">
         <div className="max-w-[56rem] mx-auto">
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2">
@@ -1766,8 +1766,8 @@ function ChatWindowInner({
               })}
             </div>
           )}
-          <div className="rounded-[28px] border border-white/10 bg-surface-0 p-1 shadow-[0_24px_54px_-42px_rgba(0,0,0,0.95)]">
-            <div className="relative rounded-[24px] border border-white/10 bg-background transition-colors focus-within:border-white/20">
+          <div className="rounded-[22px] sm:rounded-[28px] border border-white/10 bg-surface-0 p-1 shadow-[0_24px_54px_-42px_rgba(0,0,0,0.95)]">
+            <div className="relative rounded-[18px] sm:rounded-[24px] border border-white/10 bg-background transition-colors focus-within:border-white/20">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -1782,7 +1782,7 @@ function ChatWindowInner({
                 onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
                 placeholder="Investigate an email, username, phone, IP, or domain…"
                 rows={2}
-                className="font-chat bg-transparent border-0 resize-none focus-visible:ring-0 focus-visible:ring-offset-0 pl-14 pr-16 py-4 text-[15px] leading-6 tracking-[-0.01em] placeholder:text-muted-foreground/60"
+                className="min-h-[72px] max-h-32 font-chat bg-transparent border-0 resize-none overflow-y-auto focus-visible:ring-0 focus-visible:ring-offset-0 pl-[3.25rem] sm:pl-14 pr-14 sm:pr-16 py-3 sm:py-4 text-[15px] leading-6 tracking-[-0.01em] placeholder:text-muted-foreground/60"
               />
               <Button
                 type="button"
@@ -1790,7 +1790,7 @@ function ChatWindowInner({
                 size="icon"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={isLoading}
-                className="absolute bottom-2.5 left-2.5 rounded-full h-9 w-9 bg-surface-1 hover:bg-surface-2 border border-white/10 text-muted-foreground hover:text-foreground transition-all"
+                className="absolute bottom-3 left-2.5 rounded-full h-9 w-9 bg-surface-1 hover:bg-surface-2 border border-white/10 text-muted-foreground hover:text-foreground transition-all"
                 aria-label="Attach file"
                 title="Attach file"
               >
@@ -1801,7 +1801,7 @@ function ChatWindowInner({
                 disabled={isLoading ? stopping : ((!input.trim() && attachments.length === 0) || uploading)}
                 size="icon"
                 className={cn(
-                  "absolute bottom-2.5 right-2.5 rounded-2xl h-10 w-10 border-0",
+                  "absolute bottom-3 right-2.5 rounded-2xl h-10 w-10 border-0",
                   isLoading
                     ? "bg-destructive text-destructive-foreground hover:bg-destructive/90 shadow-[0_8px_24px_-10px_hsl(var(--danger)/0.65)]"
                     : "bg-gradient-to-br from-primary to-[hsl(var(--intel-violet))] hover:opacity-95 text-primary-foreground shadow-[0_8px_24px_-8px_hsl(var(--intel-blue)/0.7)]",

@@ -46,7 +46,7 @@ export function WorkspaceTabs({
     <div
       role="tablist"
       aria-label="Investigation workspace"
-      className="flex items-stretch gap-1 px-3 sm:px-4 border-b border-border-subtle bg-background overflow-x-auto scrollbar-none snap-x snap-mandatory [scrollbar-width:none]"
+      className="grid grid-cols-5 items-stretch gap-0.5 px-2 sm:flex sm:gap-1 sm:px-4 border-b border-border-subtle bg-background overflow-hidden sm:overflow-x-auto scrollbar-none snap-x snap-mandatory [scrollbar-width:none]"
     >
       {TABS.map((t, idx) => {
         const Icon = t.icon;
@@ -64,7 +64,7 @@ export function WorkspaceTabs({
             onKeyDown={(e) => onKeyDown(e, idx)}
             onClick={() => onChange(t.key)}
             className={cn(
-              "group relative shrink-0 snap-start inline-flex items-center gap-2 h-11 px-3 sm:px-4 text-meta font-medium transition-colors rounded-md",
+              "group relative min-w-0 snap-start inline-flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-2 h-14 sm:h-11 px-1 sm:px-4 text-[10px] sm:text-meta font-medium transition-colors rounded-md",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
               isActive ? "text-foreground" : "text-muted-foreground hover:text-foreground",
             )}
@@ -76,14 +76,14 @@ export function WorkspaceTabs({
               )}
               strokeWidth={1.75}
             />
-            <span className="tracking-tight">{t.label}</span>
+            <span className="max-w-full truncate tracking-tight leading-none">{t.label}</span>
             {/* Reserve the badge slot whenever this tab tracks a count, even at
                 zero, so the badge doesn't pop in and reflow the tab bar once the
                 async artifact/activity counts load. */}
             {count && (
               <span
                 className={cn(
-                  "ml-0.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-mono tabular-nums tracking-normal",
+                  "absolute right-1 top-1 sm:static sm:ml-0.5 inline-flex items-center justify-center min-w-[16px] sm:min-w-[18px] h-4 sm:h-[18px] px-1 rounded-full text-[9px] sm:text-[10px] font-mono tabular-nums tracking-normal",
                   count.value > 0
                     ? count.tone === "danger"
                       ? "bg-destructive/15 text-destructive border border-destructive/30"
