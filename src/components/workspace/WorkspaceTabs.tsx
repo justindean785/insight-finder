@@ -74,7 +74,7 @@ export function WorkspaceTabs({
                 tabIndex={isActive ? 0 : -1}
                 onClick={() => { setMoreOpen(false); onChange(t.key); }}
                 className={cn(
-                  "relative min-w-0 flex-1 inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-2 text-[12px] font-medium transition-all duration-500 ease-premium active:scale-[0.98]",
+                  "relative min-w-0 flex-1 inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-2 text-[12px] font-medium transition-all duration-200 ease-premium active:scale-[0.98]",
                   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                   isActive ? "bg-white text-black shadow-sm" : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
                 )}
@@ -100,7 +100,7 @@ export function WorkspaceTabs({
             aria-expanded={moreOpen}
             onClick={() => setMoreOpen((open) => !open)}
             className={cn(
-              "inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-lg px-2 text-[12px] font-medium transition-all duration-500 ease-premium active:scale-[0.98]",
+              "inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-lg px-2 text-[12px] font-medium transition-all duration-200 ease-premium active:scale-[0.98]",
               moreActive ? "bg-[hsl(var(--info-muted))] text-[hsl(var(--info))]" : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
             )}
           >
@@ -127,7 +127,7 @@ export function WorkspaceTabs({
                   type="button"
                   onClick={() => { setMoreOpen(false); onChange(t.key); }}
                   className={cn(
-                    "flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-sm transition-all duration-500 ease-premium",
+                    "flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-sm transition-all duration-200 ease-premium",
                     active === t.key ? "bg-surface-2 text-foreground" : "text-muted-foreground hover:bg-surface-1 hover:text-foreground",
                   )}
                 >
@@ -151,7 +151,7 @@ export function WorkspaceTabs({
     <div
       role="tablist"
       aria-label="Investigation workspace"
-      className="grid grid-cols-5 items-stretch gap-0.5 px-2 sm:flex sm:gap-1 sm:px-4 border-b border-border-subtle bg-background overflow-hidden sm:overflow-x-auto scrollbar-none snap-x snap-mandatory [scrollbar-width:none]"
+      className="grid grid-cols-5 items-end gap-0.5 px-2 sm:flex sm:gap-0.5 sm:px-3 border-b border-border-subtle bg-background overflow-hidden sm:overflow-x-auto scrollbar-none snap-x snap-mandatory [scrollbar-width:none]"
     >
       {TABS.map((t, idx) => {
         const Icon = t.icon;
@@ -169,9 +169,13 @@ export function WorkspaceTabs({
             onKeyDown={(e) => onKeyDown(e, idx)}
             onClick={() => onChange(t.key)}
             className={cn(
-              "group relative min-w-0 snap-start inline-flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-2 h-14 sm:h-11 px-1 sm:px-4 text-[10px] sm:text-meta font-medium transition-colors rounded-md",
+              "group relative min-w-0 snap-start inline-flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-2 h-14 sm:h-11 px-1 sm:px-4 text-[10px] sm:text-meta font-medium transition-[color,background-color] duration-200 ease-premium rounded-md sm:rounded-b-none",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-              isActive ? "text-foreground" : "text-muted-foreground hover:text-foreground",
+              // Active mode reads as a lifted segment connected to the content
+              // below (calm surface tint + accent underline), not just brighter text.
+              isActive
+                ? "text-foreground sm:bg-foreground/[0.045]"
+                : "text-muted-foreground hover:text-foreground sm:hover:bg-foreground/[0.025]",
             )}
           >
             <Icon
@@ -204,7 +208,7 @@ export function WorkspaceTabs({
             <span
               aria-hidden
               className={cn(
-                "absolute left-2 right-2 -bottom-px h-[2px] rounded-full transition-all",
+                "absolute left-2 right-2 sm:left-3 sm:right-3 -bottom-px h-[2px] rounded-full transition-all duration-200 ease-premium",
                 isActive ? "bg-primary opacity-100" : "bg-transparent opacity-0",
               )}
             />
