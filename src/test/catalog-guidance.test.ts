@@ -23,10 +23,11 @@ const CATALOG = fs.readFileSync(
   path.resolve(process.cwd(), "supabase/functions/osint-agent/catalog.ts"),
   "utf-8",
 );
-const INDEX = fs.readFileSync(
-  path.resolve(process.cwd(), "supabase/functions/osint-agent/index.ts"),
-  "utf-8",
-);
+const TOOL_REGISTRY_PATH = path.resolve(process.cwd(), "supabase/functions/osint-agent/tool-registry.ts");
+const INDEX_PATH = path.resolve(process.cwd(), "supabase/functions/osint-agent/index.ts");
+const INDEX = fs.existsSync(TOOL_REGISTRY_PATH)
+  ? fs.readFileSync(TOOL_REGISTRY_PATH, "utf-8")
+  : fs.readFileSync(INDEX_PATH, "utf-8");
 
 describe("catalog guidance — intelbase_email_lookup contradiction", () => {
   it("no longer advertises intelbase as a primary / first-choice / unlimited source", () => {
