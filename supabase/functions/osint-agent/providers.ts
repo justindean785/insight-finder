@@ -66,6 +66,17 @@ export async function minimaxChat(opts: {
   }
 }
 
+// ---- MiniMax health signal (per-isolate) ------------------------------------
+// When the orchestrator stream or a direct minimaxChat call recently succeeded,
+// MiniMax is demonstrably alive, so index.ts can SKIP its preflight ping —
+// removing an extra round-trip (and up to the 6s probe timeout on the unhealthy
+// path) from time-to-first-token. Cold isolate ⇒ 0 ⇒ probe still runs (safe).
+let lastMinimaxOkAt = 0;
+export function markMinimaxHealthy(): void { lastMinimaxOkAt = Date.now(); }
+export function minimaxHealthyWithin(ms: number): boolean {
+  return lastMinimaxOkAt > 0 && Date.now() - lastMinimaxOkAt < ms;
+}
+
 export type FallbackResult = {
   ok: boolean;
   status: number;
@@ -122,28 +133,46 @@ async function callFallbackProvider(
   }
 }
 
+export function shouldFallbackOnStatus(status: number): boolean {
+  return status === 401 || status === 403 || status === 429 || status >= 500;
+}
+
+export function shouldFallbackOnError(e: unknown): boolean {
+  if (e instanceof DOMException && e.name === "AbortError") return true;
+  const msg = e instanceof Error ? e.message : String(e);
+  if (msg.includes("abort")) return true;
+  if (e instanceof TypeError) return true;
+  if (/dns|ECONNREFUSED|ECONNRESET|ENOTFOUND|network|fetch failed/i.test(msg)) return true;
+  return false;
+}
+
 export async function minimaxChatWithFallback(
   opts: Parameters<typeof minimaxChat>[0],
+  // Optional dependency injection for testing the cascade without env mutation.
+  // `env.ts` captures API keys at module load, so a test can't flip availability
+  // after import. Production passes nothing → availability is read from the live
+  // env bindings exactly as before, so runtime behavior is unchanged.
+  deps?: { lovable?: boolean; grok?: boolean },
 ): Promise<FallbackResult> {
   try {
     const result = await minimaxChat(opts);
-    if (result.status !== 429 && result.status < 500) {
+    if (!shouldFallbackOnStatus(result.status)) {
       return { ...result, usedFallback: false };
     }
     console.warn(
       `[orchestrator-fallback] MiniMax failed (status=${result.status}), retrying on fallback`,
     );
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (!(e instanceof DOMException && e.name === "AbortError") && !msg.includes("abort")) {
+    if (!shouldFallbackOnError(e)) {
       throw e;
     }
-    console.warn(`[orchestrator-fallback] MiniMax aborted, retrying on fallback`);
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`[orchestrator-fallback] MiniMax error (${msg}), retrying on fallback`);
   }
 
   const fb = selectFallbackProvider({
-    lovable: !!LOVABLE_API_KEY,
-    grok: !!XAI_API_KEY,
+    lovable: deps?.lovable ?? !!LOVABLE_API_KEY,
+    grok: deps?.grok ?? !!XAI_API_KEY,
   });
   if (!fb.provider) {
     return { ok: false, status: 0, content: "", raw: { error: fb.reason }, usedFallback: false };
