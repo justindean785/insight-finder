@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { selectOrchestratorProvider } from "../../supabase/functions/osint-agent/orchestrator_select.ts";
+import { selectOrchestratorProvider, selectFallbackProvider } from "../../supabase/functions/osint-agent/orchestrator_select.ts";
 
 // Tranche 2 provider chain. The load-bearing guarantee: with nothing new
 // configured the orchestrator provider is ALWAYS minimax — merging the wiring
@@ -70,5 +70,33 @@ describe("selectOrchestratorProvider — only-available fallthrough", () => {
   it("prefers grok over openadapter when both are configured and minimax is absent", () => {
     expect(selectOrchestratorProvider({ pin: "", minimax: false, grok: true, openadapter: true }).provider)
       .toBe("grok");
+  });
+});
+
+describe("selectFallbackProvider — tool-level fallback selection", () => {
+  it("selects grok when both grok and lovable are available", () => {
+    expect(selectFallbackProvider({ grok: true, lovable: true }))
+      .toEqual({ provider: "grok", reason: "XAI_API_KEY configured" });
+  });
+
+  it("selects grok when only grok is available", () => {
+    expect(selectFallbackProvider({ grok: true, lovable: false }))
+      .toEqual({ provider: "grok", reason: "XAI_API_KEY configured" });
+  });
+
+  it("selects lovable when only lovable is available", () => {
+    expect(selectFallbackProvider({ grok: false, lovable: true }))
+      .toEqual({ provider: "lovable", reason: "LOVABLE_API_KEY configured" });
+  });
+
+  it("returns null provider when neither is available", () => {
+    const result = selectFallbackProvider({ grok: false, lovable: false });
+    expect(result.provider).toBeNull();
+    expect(result.reason).toMatch(/exhausted/i);
+  });
+
+  it("prefers grok over lovable (deterministic priority)", () => {
+    const result = selectFallbackProvider({ grok: true, lovable: true });
+    expect(result.provider).toBe("grok");
   });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, lazy, Suspense } from "react";
 import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
@@ -7,15 +7,20 @@ import { ThreadSidebar } from "@/components/ThreadSidebar";
 import { ChatWindow } from "@/components/ChatWindow";
 import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader";
 import { WorkspaceTabs, type WorkspaceTab } from "@/components/workspace/WorkspaceTabs";
-import { EvidenceTab } from "@/components/workspace/EvidenceTab";
-import { ToolsTab } from "@/components/workspace/ToolsTab";
-import { GraphTab } from "@/components/workspace/GraphTab";
-import { ReportTab } from "@/components/panel/ReportTab";
+// Non-default tabs are code-split: Chat (default) loads eagerly; the heavier
+// Evidence/Report/Graph/Tools panels (and their markdown/graph libs) only load
+// when first opened, shrinking the initial ChatPage chunk and first paint.
+const EvidenceTab = lazy(() => import("@/components/workspace/EvidenceTab").then((m) => ({ default: m.EvidenceTab })));
+const ToolsTab = lazy(() => import("@/components/workspace/ToolsTab").then((m) => ({ default: m.ToolsTab })));
+const GraphTab = lazy(() => import("@/components/workspace/GraphTab").then((m) => ({ default: m.GraphTab })));
+const ReportTab = lazy(() => import("@/components/panel/ReportTab").then((m) => ({ default: m.ReportTab })));
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { PanelLeftOpen, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { CommandPalette } from "@/components/CommandPalette";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
 
 /**
  * Investigation workspace. A persistent header + top-level tab bar drive five
@@ -34,6 +39,19 @@ export default function ChatPage() {
 
   // Reset to the conversation when switching cases.
   useEffect(() => { setTab("chat"); setMLeft(false); }, [threadId]);
+
+  // "New investigation" must CREATE a fresh thread, never route through "/"
+  // (IndexRedirect resumes the most-recent EXISTING thread, so navigate("/")
+  // reopens the latest old case instead of starting new).
+  const [creating, setCreating] = useState(false);
+  const createNew = async () => {
+    if (!user || creating) return;
+    setCreating(true);
+    const { data, error } = await supabase.from("threads").insert({ user_id: user.id }).select("id").single();
+    setCreating(false);
+    if (error || !data) { toast.error(error?.message ?? "Could not create investigation"); return; }
+    navigate(`/chat/${data.id}`);
+  };
 
   // A command-palette "jump to <tab>" should switch the workspace mode.
   useEffect(() => {
@@ -74,14 +92,18 @@ export default function ChatPage() {
       >
         <ChatWindow threadId={threadId} />
       </div>
-      {tab === "evidence" && <div role="tabpanel" id="workspace-tabpanel-evidence" aria-labelledby="workspace-tab-evidence" className="absolute inset-0"><EvidenceTab threadId={threadId} /></div>}
-      {tab === "report" && (
-        <div role="tabpanel" id="workspace-tabpanel-report" aria-labelledby="workspace-tab-report" className="absolute inset-0 overflow-y-auto">
-          <div className="mx-auto max-w-4xl"><ReportTab threadId={threadId} artifacts={items} /></div>
-        </div>
+      {tab !== "chat" && (
+        <Suspense fallback={<div className="absolute inset-0 grid place-items-center text-muted-foreground text-sm">Loading…</div>}>
+          {tab === "evidence" && <div role="tabpanel" id="workspace-tabpanel-evidence" aria-labelledby="workspace-tab-evidence" className="absolute inset-0"><EvidenceTab threadId={threadId} /></div>}
+          {tab === "report" && (
+            <div role="tabpanel" id="workspace-tabpanel-report" aria-labelledby="workspace-tab-report" className="absolute inset-0 overflow-y-auto">
+              <div className="mx-auto max-w-4xl"><ReportTab threadId={threadId} artifacts={items} /></div>
+            </div>
+          )}
+          {tab === "graph" && <div role="tabpanel" id="workspace-tabpanel-graph" aria-labelledby="workspace-tab-graph" className="absolute inset-0"><GraphTab threadId={threadId} /></div>}
+          {tab === "tools" && <div role="tabpanel" id="workspace-tabpanel-tools" aria-labelledby="workspace-tab-tools" className="absolute inset-0"><ToolsTab threadId={threadId} /></div>}
+        </Suspense>
       )}
-      {tab === "graph" && <div role="tabpanel" id="workspace-tabpanel-graph" aria-labelledby="workspace-tab-graph" className="absolute inset-0"><GraphTab threadId={threadId} /></div>}
-      {tab === "tools" && <div role="tabpanel" id="workspace-tabpanel-tools" aria-labelledby="workspace-tab-tools" className="absolute inset-0"><ToolsTab threadId={threadId} /></div>}
     </div>
   );
 
@@ -97,7 +119,7 @@ export default function ChatPage() {
             Swarmbot
           </span>
           <WorkspaceTabs active={tab} onChange={setTab} counts={tabCounts} variant="inline" />
-          <button onClick={() => navigate("/")} className="shrink-0 w-9 h-9 rounded-xl grid place-items-center border border-white/10 bg-white text-black transition-all duration-500 ease-premium hover:bg-white/90 active:scale-[0.97]" aria-label="New investigation">
+          <button onClick={createNew} disabled={creating} className="shrink-0 w-9 h-9 rounded-xl grid place-items-center border border-white/10 bg-white text-black transition-all duration-500 ease-premium hover:bg-white/90 active:scale-[0.97] disabled:opacity-60" aria-label="New investigation">
             <Plus className="w-4 h-4 text-black" />
           </button>
         </header>

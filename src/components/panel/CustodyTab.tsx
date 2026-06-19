@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { HashChip } from "@/components/ui/hash-chip";
 import { ArrowRight } from "lucide-react";
+import { sanitizeValueForLabel } from "@/lib/report-hygiene";
 
 type EvidenceRow = {
   id: string;
@@ -274,7 +275,7 @@ export function CustodyTab({ threadId }: { threadId: string }) {
                     </div>
 
                     {r.value && (
-                      <div className="text-sm text-foreground font-mono break-all">{r.value}</div>
+                      <div className="text-sm text-foreground font-mono break-all">{sanitizeValueForLabel(r.value, r.classification === "hard")}</div>
                     )}
 
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-data text-muted-foreground border-t border-border-subtle pt-2">

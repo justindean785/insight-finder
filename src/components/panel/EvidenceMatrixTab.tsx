@@ -17,6 +17,7 @@ import { toast } from "sonner";
 import { ConfidenceExplain } from "@/components/ConfidenceExplain";
 import { SourceBadge } from "@/components/SourceBadge";
 import { explainConfidence, BADGE_TONE_CLASS } from "@/lib/confidence";
+import { sanitizeValueForLabel } from "@/lib/report-hygiene";
 
 // Primary segmented controls — 5 visible options each, anything else goes into the overflow.
 const STATUS_PRIMARY: (ConfLabel | "ALL")[] = ["ALL", "CONFIRMED", "INFERRED", "VERIFY", "LOW"];
@@ -185,7 +186,7 @@ export function EvidenceMatrixTab({
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <div className={"font-mono text-foreground break-all " + (rState === "dismissed" ? "line-through" : "")}>
-                        {a.value}
+                        {sanitizeValueForLabel(a.value, label === "CONFIRMED")}
                       </div>
                       <div className="text-eyebrow uppercase tracking-wider text-muted-foreground mt-0.5 flex items-center gap-1.5 flex-wrap">
                         <span>{displayKind(a)}</span>

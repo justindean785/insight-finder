@@ -2,6 +2,14 @@ import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { detectSeed } from "@/lib/seed";
 import { toolActionLabel } from "@/lib/tool-display";
 import { deriveToolStatus, deriveToolReason } from "@/lib/tool-run";
+import {
+  clusterDisplayId,
+  bucketQualifiesAsCluster,
+  isCollisionArtifact,
+  sanitizeValueForLabel,
+  reportDisplayKind,
+  reservedNumberAnnotation,
+} from "@/lib/report-hygiene";
 
 /** Analyst-grade group buckets for artifact kinds. */
 export type Group =
@@ -826,7 +834,16 @@ export function buildEvidenceMatrixMarkdown(artifacts: Artifact[]): string {
   if (artifacts.length === 0) return "_No evidence recorded._";
   const rows = artifacts.map((a) => {
     const label = labelForArtifact(a);
-    return `| ${mdEscape(a.value)} | ${displayKind(a)} | ${a.source ?? "—"} | ${label} | ${a.confidence ?? "—"} | ${new Date(a.created_at).toISOString()} |`;
+    // #3: strip promotional "CONFIRMED" wording from the VALUE when the row is
+    // not actually backend-CONFIRMED (render-only; artifact untouched).
+    let value = sanitizeValueForLabel(a.value, label === "CONFIRMED");
+    // #7: annotate reserved/fictional numbers as non-actionable (never delete).
+    const reserved = reservedNumberAnnotation(a);
+    if (reserved) value = `${value} — ${reserved}`;
+    // #8: a legal_record that is really a source/claim discrepancy displays as
+    // source_conflict so a reporting disagreement isn't shown as a criminal record.
+    const kind = reportDisplayKind(a) === a.kind ? displayKind(a) : "source_conflict";
+    return `| ${mdEscape(value)} | ${kind} | ${a.source ?? "—"} | ${label} | ${a.confidence ?? "—"} | ${new Date(a.created_at).toISOString()} |`;
   });
   return [
     "| Value | Kind | Source | Label | Confidence | First seen |",
@@ -884,26 +901,58 @@ export function buildReportMarkdown(input: ReportInput): string {
     return parts.join(" ");
   })();
 
-  const keyFindings = confirmed.length === 0
-    ? "_No high-confidence findings yet._"
-    : confirmed.slice(0, 10).map((a) =>
+  // Key Findings must stay consistent with the Artifact Table. If there are no
+  // fully-CONFIRMED rows we do NOT just print "nothing" while the table shows
+  // high-confidence INFERRED/CORRELATED rows — we surface the strongest
+  // uncorroborated leads, clearly labelled, without promoting them.
+  const keyFindings = (() => {
+    if (confirmed.length) {
+      return confirmed.slice(0, 10).map((a) =>
         `- **${a.kind}** — \`${a.value}\` _(source indicates via ${a.source ?? "tool"}, confidence ${a.confidence ?? "—"})_`,
       ).join("\n");
+    }
+    const leads = artifacts
+      .filter((a) => { const l = labelForArtifact(a); return l === "CORRELATED" || l === "INFERRED"; })
+      .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
+      .slice(0, 10);
+    if (!leads.length) return "_No findings recorded yet._";
+    return [
+      "_No fully-corroborated findings yet (none reach CONFIRMED — 2+ independent source classes or analyst review). Strongest uncorroborated leads:_",
+      "",
+      ...leads.map((a) =>
+        `- **${a.kind}** — \`${sanitizeValueForLabel(a.value, false)}\` _(${labelForArtifact(a)}, confidence ${a.confidence ?? "—"}, via ${a.source ?? "tool"})_`,
+      ),
+    ].join("\n");
+  })();
 
   const entityTable = buildEvidenceMatrixMarkdown(artifacts);
 
+  // #6: collision-flagged artifacts (namesakes / unrelated entities) are
+  // quarantined into their own section and kept out of the main network.
+  const collisionArtifacts = artifacts.filter((a) => isCollisionArtifact(a));
+  const collisionIds = new Set(collisionArtifacts.map((a) => a.id));
+  const collisionSection = collisionArtifacts.length === 0
+    ? "_No collisions flagged._"
+    : [
+        "_These artifacts were flagged as namesakes / unrelated entities. They do NOT belong to the subject and do NOT strengthen the main network._",
+        "",
+        ...collisionArtifacts.map((a) =>
+          `- \`${sanitizeValueForLabel(a.value, false)}\` — ${reportDisplayKind(a) === a.kind ? displayKind(a) : "source_conflict"} _(${labelForArtifact(a)}, via ${a.source ?? "tool"})_`,
+        ),
+      ].join("\n");
+
   const network = (() => {
     const sections: string[] = [];
-    const line = (a: Artifact) => `- \`${a.value}\` _(observed via ${a.source ?? "tool"})_`;
+    const line = (a: Artifact) => `- \`${sanitizeValueForLabel(a.value, labelForArtifact(a) === "CONFIRMED")}\` _(observed via ${a.source ?? "tool"})_`;
     // Threat/reputation rows (VirusTotal, IPQS, EmailRep…) are pulled into their
     // own section regardless of which group they land in — they may be
     // mis-kinded as `breach` (→ breach group) OR correctly kinded as
     // `threat_reputation`/`reputation_signal` (→ other group). Collecting by
     // isReputationArtifact() catches both so they never report as exposures.
-    const reputation = artifacts.filter((a) => isReputationArtifact(a));
+    const reputation = artifacts.filter((a) => isReputationArtifact(a) && !collisionIds.has(a.id));
     const repIds = new Set(reputation.map((a) => a.id));
     for (const g of GROUP_ORDER) {
-      const items = (byGroup.get(g) ?? []).filter((a) => !repIds.has(a.id));
+      const items = (byGroup.get(g) ?? []).filter((a) => !repIds.has(a.id) && !collisionIds.has(a.id));
       if (!items.length) continue;
       sections.push(`**${GROUP_LABEL[g]}**\n` + items.map(line).join("\n"));
     }
@@ -1017,6 +1066,9 @@ export function buildReportMarkdown(input: ReportInput): string {
     "",
     `## Network Connections`,
     network,
+    "",
+    `## Collision / Likely Unrelated`,
+    collisionSection,
     "",
     ...(isNameSearch
       ? [
@@ -1174,6 +1226,19 @@ export const MERGE_SIGNAL_WEIGHT: Record<MergeSignal, number> = {
 const HANDLE_REINFORCE_PER_PLATFORM = 10;
 const HANDLE_REINFORCE_CAP = 20;
 
+// A cluster whose ONLY merge evidence is repeated username/handle matches —
+// with no corroborating identity evidence (email/phone/address/durable selector
+// or an identity-bearing record) — is a LEAD, not a confirmed identity. A handle
+// seen on many platforms is not proof of who the person is (the inverse, even —
+// see the `over_broad_username` contradiction). Such clusters are capped in the
+// VERIFY band (below the INFERRED≥65 / CONFIRMED≥85 thresholds in
+// labelForArtifact) so cluster confidence can't inflate into confirmed/high-
+// confidence territory and contradict the per-artifact labels.
+const HANDLE_ONLY_CLUSTER_CAP = 60;
+// Metadata keys whose presence means a record carries identity-bearing fields
+// (a breach/profile row that ties the handle to a real person).
+const IDENTITY_BEARING_META_KEYS = ["full_name", "name", "real_name", "address", "phone", "dob", "date_of_birth", "ssn"];
+
 /**
  * Normalize a social handle for cross-platform identity matching (T1-2 §2).
  * Lowercases, trims, drops a leading "@", and removes the separators users
@@ -1253,9 +1318,15 @@ export function buildIdentityClusters(
   };
   const strongKeysFor = (a: Artifact): string[] => signalsFor(a).map((h) => h.key);
 
+  // Collision-flagged artifacts (namesakes / unrelated entities the pipeline
+  // already quarantined) must NOT seed or strengthen the subject's identity
+  // clusters. They are surfaced separately in the report (collision section)
+  // and remain in the artifact table for audit.
   const live = artifacts.filter((a) => {
     const m = (a.metadata ?? {}) as Record<string, unknown>;
-    return m.false_positive !== true;
+    if (m.false_positive === true) return false;
+    if (isCollisionArtifact(a)) return false;
+    return true;
   });
 
   // Infrastructure and parent-seed selectors can fan out to unrelated people
@@ -1406,15 +1477,45 @@ export function buildIdentityClusters(
     if (signalsPresent.has("HANDLE_MATCH")) {
       bonus += Math.min(HANDLE_REINFORCE_CAP, HANDLE_REINFORCE_PER_PLATFORM * Math.max(0, maxHandlePlatforms - 2));
     }
-    const confidence = Math.min(100, baseConfidence + bonus);
+    let confidence = Math.min(100, baseConfidence + bonus);
+
+    // Corroborating identity evidence — anything beyond a repeated handle that
+    // ties the cluster to a real person: an email/phone/address/IP selector in
+    // the cluster, a non-handle merge signal (email/phone/shared-infrastructure),
+    // or an identity-bearing record (breach/profile row carrying name/address/
+    // phone/dob/etc.).
+    const hasIdentityRecord = group.some((a) => {
+      const m = (a.metadata ?? {}) as Record<string, unknown>;
+      return IDENTITY_BEARING_META_KEYS.some((k) => typeof m[k] === "string" && (m[k] as string).trim().length > 0);
+    });
+    const hasIdentityCorroboration =
+      emails.length > 0 || phones.length > 0 || addresses.length > 0 || ips.length > 0 ||
+      signalsPresent.has("EMAIL_MATCH") || signalsPresent.has("PHONE_MATCH") || signalsPresent.has("SHARED_INFRASTRUCTURE") ||
+      hasIdentityRecord;
+
+    // Handle-only / username-only cluster → cap into the VERIFY band. Platform
+    // breadth still raised the raw score (lead strength), but it must not read
+    // as a confirmed identity. Genuinely corroborated clusters are untouched.
+    if (!hasIdentityCorroboration && confidence > HANDLE_ONLY_CLUSTER_CAP) {
+      confidence = HANDLE_ONLY_CLUSTER_CAP;
+    }
 
     return { artifacts: group, emails, usernames, phones, addresses, ips, names, states, areaCodes, sources, confidence, warnings: [], mergeReasons };
   };
 
   const out: IdentityCluster[] = [];
   let idx = 0;
+  // Cluster-explosion guard: a single weak artifact with no durable selector
+  // (account-existence checks, breach rows, lone sweep-only handles, "other"
+  // notes) must NOT each become its own "candidate identity cluster". They
+  // stay in the Artifact Table for audit; we only tally how many were withheld.
+  let suppressedWeakSingletons = 0;
   for (const b of buckets) {
     if (b.artifacts.length === 0) continue;
+    if (!bucketQualifiesAsCluster(b.artifacts, b.keys)) {
+      suppressedWeakSingletons += b.artifacts.length;
+      continue;
+    }
     const base = summarize(b.artifacts);
     // Split by US state if a cluster spans more than one observed state.
     if (base.states.length > 1) {
@@ -1428,7 +1529,7 @@ export function buildIdentityClusters(
         if (!subset.length) continue;
         const sub = summarize(subset);
         sub.warnings.push(`Split from larger cluster on state=${st}; verify before merging back.`);
-        out.push({ ...sub, id: `c${idx}`, label: clusterLabel(idx, sub, seedName), matchesSeedLocation: seedState ? st === seedState : null });
+        out.push({ ...sub, id: clusterDisplayId(idx), label: clusterLabel(idx, sub, seedName), matchesSeedLocation: seedState ? st === seedState : null });
         idx++;
       }
       continue;
@@ -1437,7 +1538,7 @@ export function buildIdentityClusters(
     if (seedState && base.states[0] && base.states[0] !== seedState) {
       base.warnings.push(`Geography conflict: cluster ties to ${base.states[0]} but seed targets ${seedState}.`);
     }
-    out.push({ ...base, id: `c${idx}`, label: clusterLabel(idx, base, seedName), matchesSeedLocation: matches });
+    out.push({ ...base, id: clusterDisplayId(idx), label: clusterLabel(idx, base, seedName), matchesSeedLocation: matches });
     idx++;
   }
 
@@ -1460,6 +1561,11 @@ export function buildIdentityClusters(
     const kind = key.slice(0, key.indexOf(":"));
     warnings.push(
       `Shared-infrastructure split: one ${kind} selector links ${names.length} distinct names and was excluded from automatic identity merging. Manual corroboration is required.`,
+    );
+  }
+  if (suppressedWeakSingletons > 0) {
+    warnings.push(
+      `${suppressedWeakSingletons} weak single-artifact signal${suppressedWeakSingletons === 1 ? "" : "s"} (account-existence checks, sweep-only handles, breach rows) are listed in the Artifact Table but are NOT shown as standalone identity clusters — they lack a durable selector or corroboration.`,
     );
   }
   if (collision) {
@@ -1511,10 +1617,13 @@ export function buildIdentityClusters(
 }
 
 function clusterLabel(idx: number, c: Omit<IdentityCluster, "id" | "label" | "matchesSeedLocation">, seedName: string | null): string {
-  const letter = String.fromCharCode(65 + idx);
+  // Deterministic, ASCII-safe id (C001, C002, …). Never String.fromCharCode —
+  // that walked past 'Z' into punctuation/control characters once a run
+  // produced >26 clusters. See report-hygiene.clusterDisplayId.
+  const id = clusterDisplayId(idx);
   const loc = c.states[0] ?? c.addresses[0] ?? null;
   const who = c.names[0] ?? seedName ?? c.emails[0] ?? c.usernames[0] ?? "unknown";
-  return loc ? `Cluster ${letter} — ${who} (${loc})` : `Cluster ${letter} — ${who}`;
+  return loc ? `Cluster ${id} — ${who} (${loc})` : `Cluster ${id} — ${who}`;
 }
 
 // ---- Report integration -----------------------------------------------

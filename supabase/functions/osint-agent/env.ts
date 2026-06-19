@@ -131,6 +131,10 @@ export const SERUS_API_KEY = Deno.env.get("SERUS_API_KEY");
 // validity + high fraud_score so the orchestrator can down-weight junk.
 export const IPQUALITYSCORE_API_KEY = Deno.env.get("IPQUALITYSCORE_API_KEY");
 
+// Health probe secret — gates the paid ?probe=1 path. Fail closed: if unset,
+// ?probe=1 is rejected. The lightweight ?health=1 path remains public.
+export const OSINT_AGENT_PROBE_SECRET = Deno.env.get("OSINT_AGENT_PROBE_SECRET") ?? "";
+
 // ---- Degraded state ----------------------------------------------------------
 // Sticky flag — once Firecrawl returns 402 (insufficient credits) we stop
 // touching it for the rest of this invocation and route through Jina + Exa.

@@ -955,7 +955,12 @@ function ChatWindowInner({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const followLatestRef = useRef(true);
+  // Set true immediately before any programmatic scrollTop write so the
+  // resulting scroll event doesn't get misread as the user scrolling away
+  // (which would disengage follow mid-stream).
+  const programmaticScrollRef = useRef(false);
   const [input, setInput] = useState("");
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [stopping, setStopping] = useState(false);
@@ -1085,14 +1090,36 @@ function ChatWindowInner({
     };
   }, [setMessages, threadId]);
 
+  // Pin the viewport to the true bottom. Flags the write as programmatic so
+  // onScroll won't treat it as the user scrolling away.
+  const pinToBottom = useCallback(() => {
+    const viewport = scrollRef.current;
+    if (!viewport) return;
+    programmaticScrollRef.current = true;
+    viewport.scrollTop = viewport.scrollHeight;
+  }, []);
+
+  // New message added / message array changed → pin if following. A single
+  // rAF isn't enough because streamed markdown lays out across several frames;
+  // the ResizeObserver below catches that continuous growth.
   useEffect(() => {
     if (!followLatestRef.current) return;
-    const frame = requestAnimationFrame(() => {
-      const viewport = scrollRef.current;
-      if (viewport) viewport.scrollTop = viewport.scrollHeight;
-    });
+    const frame = requestAnimationFrame(pinToBottom);
     return () => cancelAnimationFrame(frame);
-  }, [messages]);
+  }, [messages, pinToBottom]);
+
+  // While streamed content grows (markdown/tables/code lay out asynchronously),
+  // keep the view pinned to the bottom so the live reply stays visible instead
+  // of landing "a few messages up". Observes the message content wrapper.
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (followLatestRef.current) pinToBottom();
+    });
+    ro.observe(content);
+    return () => ro.disconnect();
+  }, [pinToBottom]);
   useEffect(() => { inputRef.current?.focus(); }, [threadId]);
 
   const beginInvestigation = useCallback(async () => {
@@ -1592,6 +1619,13 @@ function ChatWindowInner({
       <div
         ref={scrollRef}
         onScroll={(event) => {
+          // Ignore the scroll event produced by our own pin-to-bottom write —
+          // otherwise a mid-stream programmatic scroll that momentarily lands
+          // short would flip follow off and stop tracking the live reply.
+          if (programmaticScrollRef.current) {
+            programmaticScrollRef.current = false;
+            return;
+          }
           const viewport = event.currentTarget;
           const follow = shouldFollowChatScroll(viewport.scrollHeight, viewport.scrollTop, viewport.clientHeight);
           followLatestRef.current = follow;
@@ -1599,7 +1633,7 @@ function ChatWindowInner({
         }}
         className="relative z-10 flex-1 overflow-y-auto overflow-x-hidden px-3 sm:px-6 py-4 sm:py-5"
       >
-        <div className="max-w-[56rem] mx-auto space-y-6 min-w-0">
+        <div ref={contentRef} className="max-w-[56rem] mx-auto space-y-6 min-w-0">
           <div className="h-2" aria-hidden />
           {messages.length === 0 && (
             <div className="py-3 sm:py-10">

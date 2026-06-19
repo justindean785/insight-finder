@@ -220,18 +220,24 @@ describe("buildIdentityClusters handle-based merging (T1-2)", () => {
     expect(report.clusters[0].mergeReasons).toContain("HANDLE_MATCH: nuh-deem -> nuhdeem");
   });
 
-  it("scores a 3-platform handle higher than a 2-platform handle (reinforcement)", () => {
+  it("scores a 3-platform handle higher than a 2-platform handle (reinforcement, below the handle-only cap)", () => {
+    // Reinforcement still orders handle-only clusters by platform breadth — but
+    // only BELOW the handle-only cap (handle breadth is lead strength, not
+    // identity certainty). Low base confidences keep both clusters under the
+    // cap so the ordering is observable; the cap flattening above 60 is covered
+    // by the "handle-only confidence cap" suite below.
     const two = buildIdentityClusters([
-      profile("instagram", "nuhdeem", { confidence: 40 }),
-      profile("tiktok", "nuhdeem", { confidence: 40 }),
+      profile("instagram", "nuhdeem", { confidence: 20 }),
+      profile("tiktok", "nuhdeem", { confidence: 20 }),
     ], null);
     const three = buildIdentityClusters([
-      profile("instagram", "nuhdeem", { confidence: 40 }),
-      profile("tiktok", "nuhdeem", { confidence: 40 }),
-      profile("x", "nuhdeem", { confidence: 40 }),
+      profile("instagram", "nuhdeem", { confidence: 20 }),
+      profile("tiktok", "nuhdeem", { confidence: 20 }),
+      profile("x", "nuhdeem", { confidence: 20 }),
     ], null);
     expect(two.clusters).toHaveLength(1);
     expect(three.clusters).toHaveLength(1);
+    expect(three.clusters[0].confidence).toBeLessThanOrEqual(60);
     expect(three.clusters[0].confidence).toBeGreaterThan(two.clusters[0].confidence);
   });
 
@@ -307,5 +313,63 @@ describe("buildIdentityClusters handle-based merging (T1-2)", () => {
     expect(report.clusters[0].mergeReasons).toContain("EMAIL_MATCH: m@example.com");
     expect(report.clusters[0].mergeReasons.some((r) => r.startsWith("SHARED_INFRASTRUCTURE"))).toBe(true);
     expect(report.warnings.some((w) => w.includes("Shared-infrastructure split"))).toBe(false);
+  });
+});
+
+describe("buildIdentityClusters handle-only confidence cap (no overstated certainty)", () => {
+  it("a handle-only cluster across many platforms does NOT reach confirmed/high-confidence", () => {
+    // Same handle seen on 5 platforms, each a high-confidence profile hit, but
+    // with NO email/phone/address/identity record. Without the cap this inflated
+    // to 100 (base 80 + HANDLE_MATCH 25 + reinforcement 20).
+    const report = buildIdentityClusters([
+      profile("instagram", "kota", { confidence: 80 }),
+      profile("tiktok", "kota", { confidence: 80 }),
+      profile("twitter", "kota", { confidence: 80 }),
+      profile("twitch", "kota", { confidence: 80 }),
+      profile("steam", "kota", { confidence: 80 }),
+    ], null);
+    // All 5 profiles merge on handle:kota → one cluster (handle lives in
+    // metadata, so cluster.usernames is empty for social_profile artifacts).
+    expect(report.clusters).toHaveLength(1);
+    const c = report.clusters[0];
+    expect(c.confidence).toBeLessThanOrEqual(60);
+    // Stays in the VERIFY band — below INFERRED(65)/CONFIRMED(85) grade, so it
+    // can't contradict the per-artifact labels or read as a confirmed identity.
+    expect(c.confidence).toBeLessThan(65);
+  });
+
+  it("a broad username with many sweep hits does NOT inflate to 90-100", () => {
+    const report = buildIdentityClusters(
+      Array.from({ length: 6 }, (_, i) => profile(`platform${i}`, "broadhandle", { confidence: 45 })),
+      null,
+    );
+    expect(report.clusters).toHaveLength(1);
+    const c = report.clusters[0];
+    expect(c.confidence).toBeLessThan(90);
+    expect(c.confidence).toBeLessThanOrEqual(60);
+  });
+
+  it("a cluster with REAL corroborating identity evidence (email) is NOT capped", () => {
+    // Same handle merge, but an email selector ties it to a real identity.
+    const report = buildIdentityClusters([
+      profile("instagram", "kota", { confidence: 80 }),
+      profile("tiktok", "kota", { confidence: 80 }),
+      artifact("email", "kota@example.com", { handle: "kota" }),
+    ], null);
+    const c = report.clusters.find((x) => x.emails.includes("kota@example.com"))!;
+    expect(c).toBeTruthy();
+    // Corroborated → keeps its full (high) confidence, well above the cap.
+    expect(c.confidence).toBeGreaterThan(60);
+  });
+
+  it("an identity-bearing record (breach row with a name) is NOT capped as handle-only", () => {
+    const report = buildIdentityClusters([
+      profile("instagram", "kota", { confidence: 80 }),
+      profile("tiktok", "kota", { confidence: 80 }),
+      artifact("breach_exposure", "Acme 2019 — kota", { handle: "kota", full_name: "Real Person" }),
+    ], null);
+    expect(report.clusters).toHaveLength(1);
+    const c = report.clusters[0];
+    expect(c.confidence).toBeGreaterThan(60);
   });
 });

@@ -5,6 +5,7 @@ import {
   HIBP_API_KEY, EXA_API_KEY, FIRECRAWL_API_KEY, SERUS_API_KEY,
   GITHUB_API_TOKEN, PERPLEXITY_API_KEY, IPQUALITYSCORE_API_KEY,
   XAI_API_KEY, GROK_ORCHESTRATOR_MODEL_ID,
+  OSINT_AGENT_PROBE_SECRET,
 } from "./env.ts";
 import { minimaxChat } from "./providers.ts";
 
@@ -82,6 +83,17 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   });
   const u = new URL(req.url);
   const wantProbe = u.searchParams.get("probe") === "1";
+
+  if (wantProbe) {
+    const supplied = req.headers.get("x-probe-secret") ?? "";
+    if (!OSINT_AGENT_PROBE_SECRET || supplied !== OSINT_AGENT_PROBE_SECRET) {
+      return new Response(
+        JSON.stringify({ ok: false, error: "unauthorized" }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+  }
+
   type ProbeResult = { ok: boolean; latencyMs: number; error?: string };
   const providers: Record<string, ProbeResult> = {};
   if (wantProbe) {
@@ -90,17 +102,17 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
       hasKey: boolean,
       fn: () => Promise<{ ok: boolean; status: number }>,
     ): Promise<ProbeResult> => {
-      if (!hasKey) return { ok: false, latencyMs: 0, error: `${name.toUpperCase()} key not set` };
+      if (!hasKey) return { ok: false, latencyMs: 0, error: "key_not_configured" };
       const t0 = Date.now();
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
       try {
-        const res = await Promise.race([
-          fn(),
-          new Promise<{ ok: false; status: 0 }>((resolve) =>
-            setTimeout(() => resolve({ ok: false, status: 0 }), 8000)),
-        ]);
-        return { ok: res.ok, latencyMs: Date.now() - t0, ...(res.ok ? {} : { error: `status=${res.status || "timeout"}` }) };
-      } catch (e) {
-        return { ok: false, latencyMs: Date.now() - t0, error: e instanceof Error ? e.message : String(e) };
+        const res = await fn();
+        return { ok: res.ok, latencyMs: Date.now() - t0, ...(res.ok ? {} : { error: `status=${res.status}` }) };
+      } catch {
+        return { ok: false, latencyMs: Date.now() - t0, error: "unreachable" };
+      } finally {
+        clearTimeout(timer);
       }
     };
     const [mm, lov, gk] = await Promise.all([
@@ -129,8 +141,8 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   const body: Record<string, unknown> = {
     ok: r.ok,
     service: "osint-agent",
-    version: "1.2.0",
-    build: "2026-06-18-fallback-hardening",
+    version: "1.2.1",
+    build: "2026-06-19-probe-hardening",
     checks: r.checks,
     intelbase_enabled: INTELBASE_ENABLED,
   };
