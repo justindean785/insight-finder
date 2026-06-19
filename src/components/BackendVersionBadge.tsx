@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Activity, RefreshCw } from "lucide-react";
 
@@ -22,29 +21,16 @@ export function BackendVersionBadge() {
     setLoading(true);
     setErr(null);
     try {
-      const { data, error } = await supabase.functions.invoke("osint-agent", {
-        method: "GET",
-        // health probe is a query param; invoke appends via URL builder
-        // @ts-expect-error - body unused for GET; using fetch-style options
-        headers: {},
+      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/osint-agent?health=1`;
+      const res = await fetch(url, {
+        headers: { apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string },
       });
-      if (error) throw error;
-      // Fallback to direct fetch since invoke doesn't expose query params cleanly
-      throw new Error("use-direct");
-    } catch {
-      // Direct fetch path — supabase.functions.invoke can't pass ?health=1
-      try {
-        const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/osint-agent?health=1`;
-        const res = await fetch(url, {
-          headers: { apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string },
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = (await res.json()) as Health;
-        setData(json);
-        setFetchedAt(new Date());
-      } catch (e) {
-        setErr(e instanceof Error ? e.message : String(e));
-      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = (await res.json()) as Health;
+      setData(json);
+      setFetchedAt(new Date());
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
     }
     setLoading(false);
   };
