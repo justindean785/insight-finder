@@ -1,0 +1,149 @@
+import {
+  corsHeaders, MINIMAX_API_KEY, LOVABLE_API_KEY, SUPABASE_URL, SERVICE_KEY,
+  OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
+  CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED,
+  HIBP_API_KEY, EXA_API_KEY, FIRECRAWL_API_KEY, SERUS_API_KEY,
+  GITHUB_API_TOKEN, PERPLEXITY_API_KEY, IPQUALITYSCORE_API_KEY,
+  XAI_API_KEY, GROK_ORCHESTRATOR_MODEL_ID,
+} from "./env.ts";
+import { minimaxChat } from "./providers.ts";
+
+function deriveReadiness(env: {
+  MINIMAX_API_KEY?: string | null;
+  LOVABLE_API_KEY?: string | null;
+  SUPABASE_URL?: string | null;
+  SUPABASE_SERVICE_ROLE_KEY?: string | null;
+  OATHNET_API_KEY?: string | null;
+  SYNAPSINT_API_KEY?: string | null;
+  OSINTNOVA_API_KEY?: string | null;
+  SOCIALFETCH_API_KEY?: string | null;
+  CORDCAT_API_KEY?: string | null;
+  HUNTER_API_KEY?: string | null;
+  INTELBASE_API_KEY?: string | null;
+  HIBP_API_KEY?: string | null;
+  EXA_API_KEY?: string | null;
+  FIRECRAWL_API_KEY?: string | null;
+  SERUS_API_KEY?: string | null;
+  IPQUALITYSCORE_API_KEY?: string | null;
+  GITHUB_API_TOKEN?: string | null;
+  PERPLEXITY_API_KEY?: string | null;
+}): { ok: boolean; checks: Record<string, { ok: boolean; detail?: string }> } {
+  const has = (v: string | null | undefined) => !!(v && v.length > 0);
+  const orchestratorOk = has(env.MINIMAX_API_KEY) || has(env.LOVABLE_API_KEY);
+  const coreOk = has(env.SUPABASE_URL) && has(env.SUPABASE_SERVICE_ROLE_KEY);
+  const tools = {
+    oathnet: has(env.OATHNET_API_KEY),
+    synapsint: has(env.SYNAPSINT_API_KEY),
+    osintnova: has(env.OSINTNOVA_API_KEY),
+    socialfetch: has(env.SOCIALFETCH_API_KEY),
+    cordcat: has(env.CORDCAT_API_KEY),
+    hunter: has(env.HUNTER_API_KEY),
+    intelbase: has(env.INTELBASE_API_KEY), // note: gated by INTELBASE_ENABLED at runtime
+    hibp: has(env.HIBP_API_KEY),
+    exa: has(env.EXA_API_KEY),
+    firecrawl: has(env.FIRECRAWL_API_KEY),
+    serus: has(env.SERUS_API_KEY),
+    ipqualityscore: has(env.IPQUALITYSCORE_API_KEY),
+    github: has(env.GITHUB_API_TOKEN),
+    perplexity: has(env.PERPLEXITY_API_KEY),
+  };
+  const enabledOptional = Object.values(tools).filter(Boolean).length;
+  const checks: Record<string, { ok: boolean; detail?: string }> = {
+    orchestrator: orchestratorOk
+      ? { ok: true }
+      : { ok: false, detail: "Set MINIMAX_API_KEY or LOVABLE_API_KEY in Supabase secrets" },
+    core: coreOk
+      ? { ok: true }
+      : { ok: false, detail: "SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY missing" },
+    tools: {
+      ok: true, // optional tools are never required
+      detail: `${enabledOptional}/${Object.keys(tools).length} optional tool APIs configured`,
+    },
+  };
+  return { ok: orchestratorOk && coreOk, checks };
+}
+
+export function isHealthProbe(req: Request): boolean {
+  if (req.method !== "GET" && req.method !== "HEAD") return false;
+  try {
+    const u = new URL(req.url);
+    return u.searchParams.get("health") === "1";
+  } catch {
+    return false;
+  }
+}
+
+export async function handleHealthProbe(req: Request): Promise<Response> {
+  const r = deriveReadiness({
+    MINIMAX_API_KEY, LOVABLE_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY,
+    OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
+    CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, HIBP_API_KEY, EXA_API_KEY,
+    FIRECRAWL_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY, GITHUB_API_TOKEN, PERPLEXITY_API_KEY,
+  });
+  const u = new URL(req.url);
+  const wantProbe = u.searchParams.get("probe") === "1";
+  type ProbeResult = { ok: boolean; latencyMs: number; error?: string };
+  const providers: Record<string, ProbeResult> = {};
+  if (wantProbe) {
+    const probeProvider = async (
+      name: string,
+      hasKey: boolean,
+      fn: () => Promise<{ ok: boolean; status: number }>,
+    ): Promise<ProbeResult> => {
+      if (!hasKey) return { ok: false, latencyMs: 0, error: `${name.toUpperCase()} key not set` };
+      const t0 = Date.now();
+      try {
+        const res = await Promise.race([
+          fn(),
+          new Promise<{ ok: false; status: 0 }>((resolve) =>
+            setTimeout(() => resolve({ ok: false, status: 0 }), 8000)),
+        ]);
+        return { ok: res.ok, latencyMs: Date.now() - t0, ...(res.ok ? {} : { error: `status=${res.status || "timeout"}` }) };
+      } catch (e) {
+        return { ok: false, latencyMs: Date.now() - t0, error: e instanceof Error ? e.message : String(e) };
+      }
+    };
+    const [mm, lov, gk] = await Promise.all([
+      probeProvider("minimax", !!MINIMAX_API_KEY, () => minimaxChat({ user: "ping", maxTokens: 4, temperature: 0 })),
+      probeProvider("lovable", !!LOVABLE_API_KEY, async () => {
+        const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+          method: "POST",
+          headers: { "Lovable-API-Key": LOVABLE_API_KEY, "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "google/gemini-2.5-pro", messages: [{ role: "user", content: "ping" }], max_tokens: 4 }),
+        });
+        return { ok: res.ok, status: res.status };
+      }),
+      probeProvider("grok", !!XAI_API_KEY, async () => {
+        const res = await fetch("https://api.x.ai/v1/chat/completions", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${XAI_API_KEY}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ model: GROK_ORCHESTRATOR_MODEL_ID, messages: [{ role: "user", content: "ping" }], max_tokens: 4 }),
+        });
+        return { ok: res.ok, status: res.status };
+      }),
+    ]);
+    providers.minimax = mm;
+    providers.lovable = lov;
+    providers.grok = gk;
+  }
+  const body: Record<string, unknown> = {
+    ok: r.ok,
+    service: "osint-agent",
+    version: "1.2.0",
+    build: "2026-06-18-fallback-hardening",
+    checks: r.checks,
+    intelbase_enabled: INTELBASE_ENABLED,
+  };
+  if (wantProbe) body.providers = providers;
+  return new Response(
+    req.method === "HEAD" ? null : JSON.stringify(body),
+    {
+      status: 200,
+      headers: {
+        ...corsHeaders,
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      },
+    },
+  );
+}

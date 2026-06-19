@@ -12,11 +12,12 @@
 // SMART_TOOLS below. The orchestrator itself runs on the smart model because
 // its job is multi-source synthesis.
 
-export type Tier = "fast" | "smart";
+export type Tier = "fast" | "smart" | "fallback";
 
 export const MODELS: Record<Tier, string> = {
   fast: "MiniMax-M2.7",
   smart: "MiniMax-M2.7",
+  fallback: "google/gemini-2.5-pro",
 };
 
 // Steps that MUST run on the smart tier. Everything else defaults to "fast".
