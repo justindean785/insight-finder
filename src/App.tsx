@@ -14,6 +14,7 @@ const ChatPage = lazy(() => import("./pages/ChatPage"));
 const AdminSecurity = lazy(() => import("./pages/AdminSecurity"));
 const BrainGlobalPage = lazy(() => import("./pages/BrainGlobalPage"));
 import { hasSupabaseEnv, supabaseConfigError } from "./integrations/supabase/client";
+import { BackendVersionBadge } from "./components/BackendVersionBadge";
 
 const queryClient = new QueryClient();
 
@@ -48,6 +49,7 @@ const App = () => (
         </Suspense>
       </BrowserRouter>
       )}
+      {hasSupabaseEnv && <BackendVersionBadge />}
     </TooltipProvider>
   </QueryClientProvider>
   </ErrorBoundary>
