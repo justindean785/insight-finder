@@ -8,7 +8,13 @@ import { costForTool } from "./costs.ts";
 import { tierOf, TIER_A, TIER_B } from "./tiers.ts";
 import { playbookFor, renderPlaybookForPrompt } from "./playbooks.ts";
 import { auditCoverage } from "./coverage.ts";
-import { detectContradictions } from "./contradictions.ts";
+import {
+  detectContradictions,
+  structuredContradictionPatches,
+  mergeStructuredContradictions,
+  type StructuredContradiction,
+} from "./contradictions.ts";
+import { applyDateSanity } from "./date-sanity.ts";
 import { computeAxes, sourceConfidence, applyEvidenceCaps, isUnrelatedEntity, EXCLUDED_COLLISION_CONFIDENCE, isBioCrossLinkName, BIO_CROSS_LINK_NAME_CAP, deriveStatus, coerceCoherentStatus, looksDeadEnd } from "./confidence.ts";
 import { queryTypesOf } from "./query-type-router.ts";
 import { isSameSurnameOnlyLead, isListingAgentLead } from "./collision-policy.ts";
@@ -19,10 +25,7 @@ import { selectPivots, type PivotCandidate } from "./graph_pivots.ts";
 import { DNS_TYPES, VIRTUAL_TYPE_MAP, isVirtualType, resolveVirtualHost, filterTxtByPrefix } from "./tools/dns-virtual.ts";
 
 import {
-  corsHeaders, SUPABASE_URL, SERVICE_KEY, MINIMAX_API_KEY, LOVABLE_API_KEY,
-  lovableGateway, PRIMARY_ORCHESTRATOR_MODEL_ID, FALLBACK_MODEL_ID,
-  grokGateway, openAdapterGateway, ORCHESTRATOR_PROVIDER,
-  GROK_ORCHESTRATOR_MODEL_ID, OPENADAPTER_ORCHESTRATOR_MODEL_ID,
+  MINIMAX_API_KEY, LOVABLE_API_KEY,
   OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
   CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED,
   HIBP_API_KEY, GITHUB_API_TOKEN, FIRECRAWL_API_KEY, EXA_API_KEY, JINA_API_KEY,
@@ -30,11 +33,10 @@ import {
   firecrawlCreditsLow, markFirecrawlCreditsLow, resetFirecrawlCreditsLow, degradedTools,
   markToolDegraded, isDegraded, fetchRetry, fetchT,
   deadHosts, markHostDead, isHostDead,
-  XAI_API_KEY,
 } from "./env.ts";
 
 import {
-  detectSeedServer, validateArtifact, TTL_24H_MS, TOOL_TTL_MS, NO_CACHE_TOOLS,
+  validateArtifact, TTL_24H_MS, TOOL_TTL_MS, NO_CACHE_TOOLS,
   coerceArtifactsInput,
 } from "./validation.ts";
 
@@ -43,7 +45,6 @@ import type { NavigatorQueryResponse, NavigatorSearchResponse, NavigatorTool, St
 import {
   scrubArtifactRow, scrubArtifactRows, hashInput, normalizeForHash,
   sanitizeToolOutput, TOOL_CACHE_LRU, LRU, isPrivateHost, assertSafeUrl,
-  capPartsSize,
   type CacheEntry,
 } from "./safety.ts";
 
@@ -55,8 +56,7 @@ import {
 import { minimaxChat, minimaxChatWithFallback, safeJson, geminiGroundedSearch } from "./providers.ts";
 
 import { TOOL_CATALOG, CATALOG_CACHE, FINDING_LABELS } from "./catalog.ts";
-import { SYSTEM_PROMPT, IDENTITY_CLUSTER_RULES, PERSON_SEARCH_RULES, SYSTEM_PROMPT_FULL } from "./system-prompt.ts";
-import { beginCycle, clearRuntime, recordFindingSummary } from "./runtime-policy.ts";
+import { beginCycle, recordFindingSummary } from "./runtime-policy.ts";
 import { serus_darkweb_scan } from "./tools/serus.ts";
 import { okWithSuccessFlag, socialfetchError, isHackertargetApiError, isCrtshOk, dohTypeError, blockchairError } from "./tool_response.ts";
 import { enforceNameSeedPriority, NAME_SEED_PLANNER_RULES } from "./planner-guidance.ts";
@@ -2565,21 +2565,31 @@ export function buildTools(ctx: ToolContext) {
         excludeDomains: z.array(z.string()).optional(),
         startPublishedDate: z.string().optional().describe("ISO date, e.g. 2024-01-01"),
         endPublishedDate: z.string().optional(),
-        category: z.enum([
-          "company","research paper","news","pdf","github","tweet",
-          "personal site","linkedin profile","financial report",
-        ]).optional(),
+        // Tolerant: accept any string so an out-of-enum value (e.g. "person")
+        // does NOT reject the whole tool call at input validation. Invalid
+        // categories are dropped inside execute (the search still runs, just
+        // unfiltered) and surfaced in `dropped_category` for auditability.
+        category: z.string().optional().describe(
+          "One of: company, research paper, news, pdf, github, tweet, personal site, linkedin profile, financial report. Other values are ignored (search runs unfiltered).",
+        ),
         contents: z.boolean().default(true).describe("If true, include text+highlights+summary for each result."),
       }),
       execute: async ({ query, type, numResults, includeDomains, excludeDomains, startPublishedDate, endPublishedDate, category, contents }) => {
         if (!EXA_API_KEY) return { error: "EXA_API_KEY not configured" };
+        const EXA_CATEGORIES = new Set([
+          "company", "research paper", "news", "pdf", "github", "tweet",
+          "personal site", "linkedin profile", "financial report",
+        ]);
+        const normalizedCategory = typeof category === "string" ? category.trim().toLowerCase() : "";
+        const validCategory = EXA_CATEGORIES.has(normalizedCategory) ? normalizedCategory : null;
+        const droppedCategory = category && !validCategory ? category : null;
         try {
           const body: Record<string, unknown> = { query, type, numResults };
           if (includeDomains?.length) body.includeDomains = includeDomains;
           if (excludeDomains?.length) body.excludeDomains = excludeDomains;
           if (startPublishedDate) body.startPublishedDate = startPublishedDate;
           if (endPublishedDate) body.endPublishedDate = endPublishedDate;
-          if (category) body.category = category;
+          if (validCategory) body.category = validCategory;
           if (contents) body.contents = { text: { maxCharacters: 2000 }, highlights: true, summary: true };
           const r = await fetchRetry("https://api.exa.ai/search", {
             method: "POST",
@@ -2590,7 +2600,7 @@ export function buildTools(ctx: ToolContext) {
             body: JSON.stringify(body),
           });
           const data = await r.json().catch(() => ({}));
-          return { ok: r.ok, status: r.status, data: trimExaResults(data) };
+          return { ok: r.ok, status: r.status, data: trimExaResults(data), ...(droppedCategory ? { dropped_category: droppedCategory } : {}) };
         } catch (e) { return { error: String(e) }; }
       },
     }),
@@ -3237,6 +3247,11 @@ export function buildTools(ctx: ToolContext) {
                   }),
                   resolvedReasonNotConfirmed,
                 );
+          // Deterministic date-sanity guard for harm-bearing records: flags a
+          // genuinely-future date and neutralizes false model-authored
+          // "future date" notes when the date is not actually future. Provenance
+          // guard only — never promotes or changes status/confidence.
+          const dateSanity = applyDateSanity(v.kind, v.value, a.metadata ?? null, new Date().toISOString());
           // Required-fields envelope — fill conservative defaults when the
           // agent didn't supply them.
           const meta: Record<string, unknown> = {
@@ -3262,6 +3277,8 @@ export function buildTools(ctx: ToolContext) {
             ...(surnameOnly ? { excluded_reason: "same_surname_only" } : {}),
             ...(listingAgent ? { contact_type: "real_estate_listing_agent" } : {}),
             ...(bioName ? { bio_cross_link: true } : {}),
+            // Spread LAST so a corrected `note` overrides the model-supplied one.
+            ...dateSanity.metaPatch,
           };
           rows.push({
             thread_id: threadId,
@@ -3817,12 +3834,49 @@ export function buildTools(ctx: ToolContext) {
         .describe("Optional. Restrict to specific artifact kinds (e.g. ['email','username','name','ip'])."),
     }),
     execute: async ({ cluster_artifact_kinds }) => {
-      let q = supabase.from("artifacts").select("kind,value,source,metadata,created_at").eq("thread_id", threadId);
+      let q = supabase.from("artifacts").select("id,kind,value,source,metadata,created_at").eq("thread_id", threadId);
       if (cluster_artifact_kinds?.length) q = q.in("kind", cluster_artifact_kinds);
       const { data, error } = await q;
       if (error) return { ok: false, error: error.message };
-      const findings = detectContradictions((data ?? []) as Parameters<typeof detectContradictions>[0]);
-      return { ok: true, count: findings.length, contradictions: findings };
+      type Row = { id: string; kind: string; value: string; source: string | null; metadata: Record<string, unknown> | null };
+      const rows = (data ?? []) as Row[];
+      const findings = detectContradictions(rows as Parameters<typeof detectContradictions>[0]);
+
+      // Persist explicit conflicts back onto the involved artifacts so the
+      // contradiction is represented structurally in metadata.contradictions[]
+      // instead of being buried in prose. This does NOT re-derive status on
+      // these historical rows (deriveStatus only runs at record_artifacts
+      // insert time), so labels/confidence of existing rows are unchanged; the
+      // structured field is surfaced for the UI, detect helpers, and any
+      // subsequent record_finding that naturally reacts to it.
+      const patches = structuredContradictionPatches(rows as Parameters<typeof structuredContradictionPatches>[0], new Date().toISOString());
+      const byId = new Map<string, StructuredContradiction[]>();
+      for (const p of patches) {
+        const row = rows.find((r) => r.value === p.value);
+        if (!row) continue;
+        const list = byId.get(row.id) ?? [];
+        list.push(p.entry);
+        byId.set(row.id, list);
+      }
+      let persisted = 0;
+      for (const [id, entries] of byId) {
+        const row = rows.find((r) => r.id === id);
+        if (!row) continue;
+        const existing = Array.isArray(row.metadata?.contradictions) ? (row.metadata!.contradictions as unknown[]) : [];
+        const merged = mergeStructuredContradictions(existing, entries);
+        if (merged.length === existing.length) continue; // idempotent: nothing new
+        const { error: upErr } = await supabase
+          .from("artifacts")
+          // Cast: the Supabase client has no generated DB types in this repo, so
+          // .update()'s payload param resolves to `never` (the same pre-existing
+          // type-graph state every .insert/.update here hits). Cast keeps the
+          // deno-check baseline unchanged without altering runtime behavior.
+          .update({ metadata: { ...(row.metadata ?? {}), contradictions: merged } } as never)
+          .eq("id", id);
+        if (!upErr) persisted++;
+        else console.warn("[detect_contradictions] persist failed:", upErr.message);
+      }
+      return { ok: true, count: findings.length, contradictions: findings, persisted };
     },
   });
 
