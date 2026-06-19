@@ -81,7 +81,21 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     FIRECRAWL_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY, GITHUB_API_TOKEN, PERPLEXITY_API_KEY,
   });
   const u = new URL(req.url);
-  const wantProbe = u.searchParams.get("probe") === "1";
+  const requestedProbe = u.searchParams.get("probe") === "1";
+  const PROBE_SECRET = (Deno.env.get("OSINT_AGENT_PROBE_SECRET") || "").trim();
+  const providedSecret =
+    (req.headers.get("x-probe-secret") || u.searchParams.get("probe_secret") || "").trim();
+  let probeDenied: string | null = null;
+  let wantProbe = false;
+  if (requestedProbe) {
+    if (!PROBE_SECRET) {
+      probeDenied = "probe gate disabled: OSINT_AGENT_PROBE_SECRET not configured";
+    } else if (providedSecret !== PROBE_SECRET) {
+      probeDenied = "probe denied: missing or invalid x-probe-secret";
+    } else {
+      wantProbe = true;
+    }
+  }
   type ProbeResult = { ok: boolean; latencyMs: number; error?: string };
   const providers: Record<string, ProbeResult> = {};
   if (wantProbe) {
@@ -130,11 +144,12 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     ok: r.ok,
     service: "osint-agent",
     version: "1.2.0",
-    build: "2026-06-18-fallback-hardening",
+    build: "2026-06-19-probe-gated",
     checks: r.checks,
     intelbase_enabled: INTELBASE_ENABLED,
   };
   if (wantProbe) body.providers = providers;
+  if (probeDenied) body.probe = { ok: false, denied: probeDenied };
   return new Response(
     req.method === "HEAD" ? null : JSON.stringify(body),
     {
