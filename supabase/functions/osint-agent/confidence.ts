@@ -354,103 +354,16 @@ export function looksDeadEnd(meta: Record<string, unknown> | null | undefined): 
   return false;
 }
 
-/** Canonical artifact status whitelist — the ONLY values allowed to land in
- *  `metadata.status`. Anything else is normalized away. */
-export const ARTIFACT_STATUS_WHITELIST: readonly ArtifactStatus[] = [
-  "observed",
-  "needs_corroboration",
-  "verified",
-  "confirmed",
-  "excluded",
-  "exhausted",
-  "contradicted",
-  "needs_review",
-  "manual_review_required",
-] as const;
-
-const STATUS_WHITELIST_SET: ReadonlySet<string> = new Set(ARTIFACT_STATUS_WHITELIST);
-
-/** Map common legacy / free-text labels into the canonical whitelist. Anything
- *  not in the whitelist or this alias map falls through to `needs_review` so
- *  arbitrary model-asserted strings ("CONFIRMED", "found", "verify", "active",
- *  "inferred", "documented", "private", "deceased", free text…) can never
- *  pollute the artifact stream again. */
-const STATUS_ALIAS: Record<string, ArtifactStatus> = {
-  new: "observed",
-  found: "observed",
-  active: "observed",
-  noted: "observed",
-  documented: "observed",
-  inferred: "needs_corroboration",
-  probable: "needs_corroboration",
-  unverified_connection: "needs_corroboration",
-  unverified_bio_link: "needs_corroboration",
-  verify: "needs_review",
-  needs_verification: "needs_review",
-  needs_verify: "needs_review",
-  pending: "needs_review",
-  unknown: "needs_review",
-  manual_review: "manual_review_required",
-  // Evidence-integrity policy (P1 audit follow-up): legacy high-confidence
-  // labels do NOT promote to confirmed/verified on their own. They become a
-  // review lead; the cap engine / deriveStatus must lift them based on
-  // source classes, not on a model-asserted string.
-  confirmed_owner: "needs_review",
-  primary_subject: "observed",
-  verified_clean: "verified",
-  clean: "verified",
-  deliverable: "verified",
-  correlated: "verified",
-  public_record: "needs_review",
-  not_found: "exhausted",
-  page_not_found: "exhausted",
-  deleted_or_never_created: "exhausted",
-  deactivated: "exhausted",
-  account_exists_but_inactive: "exhausted",
-  no_content_visible: "exhausted",
-  inaccessible: "exhausted",
-  auth_gated: "exhausted",
-  private: "exhausted",
-  rate_limited: "exhausted",
-  inactive_402: "exhausted",
-  timeout: "exhausted",
-  aborted: "exhausted",
-  failed: "exhausted",
-  false_positive: "excluded",
-  deceased: "excluded",
-  past_address: "observed",
-  current_address: "needs_corroboration",
-};
-
-/** Normalize ANY status-shaped input into the canonical whitelist, then apply
- *  the coherence guard: a verified/confirmed status can never coexist with an
- *  open `reason_not_confirmed`. Unknown / free-text / cased values land as
- *  `needs_review`. Safe-downgrade — never throws. */
+/** Minimal guard: a verified/confirmed status can never coexist with an open
+ *  `reason_not_confirmed`. Safe-downgrade (never throws in production). */
 export function coerceCoherentStatus(
-  status: ArtifactStatus | string | null | undefined,
+  status: ArtifactStatus,
   reasonNotConfirmed?: string | null,
 ): ArtifactStatus {
-  // 1. Normalize shape.
-  const raw = (typeof status === "string" ? status : "").trim().toLowerCase();
-  let normalized: ArtifactStatus;
-  if (raw === "") {
-    normalized = "needs_review";
-  } else if (STATUS_WHITELIST_SET.has(raw)) {
-    normalized = raw as ArtifactStatus;
-  } else if (raw in STATUS_ALIAS) {
-    normalized = STATUS_ALIAS[raw];
-  } else {
-    // Strip any free-text trailers and try once more on the leading token.
-    const head = raw.split(/[\s—\-:;,(/]+/)[0] ?? "";
-    if (STATUS_WHITELIST_SET.has(head)) normalized = head as ArtifactStatus;
-    else if (head in STATUS_ALIAS) normalized = STATUS_ALIAS[head];
-    else normalized = "needs_review";
-  }
-  // 2. Coherence guard — verified/confirmed cannot coexist with an open reason.
-  if ((normalized === "verified" || normalized === "confirmed") && reasonNotConfirmed) {
+  if ((status === "verified" || status === "confirmed") && reasonNotConfirmed) {
     return "needs_corroboration";
   }
-  return normalized;
+  return status;
 }
 
 export interface DeriveStatusInput {
