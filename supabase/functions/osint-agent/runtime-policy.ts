@@ -143,9 +143,12 @@ export const MAX_PAID_CALLS = 12;
 // not exist and from Deno without --allow-env (which throws PermissionError).
 function readEnv(name: string): string | undefined {
   try {
-    return (typeof Deno !== "undefined" && Deno.env?.get)
-      ? (Deno.env.get(name) ?? undefined)
-      : undefined;
+    // Access Deno.env via globalThis so the FRONTEND tsc gate (no Deno types)
+    // still compiles — src/test imports this module, and a bare `Deno` reference
+    // breaks the build with TS2304. Runtime behavior is unchanged (Deno provides
+    // the global; Node/browser get undefined → fallback).
+    const env = (globalThis as { Deno?: { env?: { get?(k: string): string | undefined } } }).Deno?.env;
+    return env?.get ? (env.get(name) ?? undefined) : undefined;
   } catch {
     return undefined;
   }
