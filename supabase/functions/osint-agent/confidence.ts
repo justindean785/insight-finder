@@ -391,13 +391,17 @@ const STATUS_ALIAS: Record<string, ArtifactStatus> = {
   pending: "needs_review",
   unknown: "needs_review",
   manual_review: "manual_review_required",
-  confirmed_owner: "confirmed",
-  primary_subject: "confirmed",
+  // Evidence-integrity policy (P1 audit follow-up): legacy high-confidence
+  // labels do NOT promote to confirmed/verified on their own. They become a
+  // review lead; the cap engine / deriveStatus must lift them based on
+  // source classes, not on a model-asserted string.
+  confirmed_owner: "needs_review",
+  primary_subject: "observed",
   verified_clean: "verified",
   clean: "verified",
   deliverable: "verified",
   correlated: "verified",
-  public_record: "verified",
+  public_record: "needs_review",
   not_found: "exhausted",
   page_not_found: "exhausted",
   deleted_or_never_created: "exhausted",
@@ -415,7 +419,7 @@ const STATUS_ALIAS: Record<string, ArtifactStatus> = {
   false_positive: "excluded",
   deceased: "excluded",
   past_address: "observed",
-  current_address: "verified",
+  current_address: "needs_corroboration",
 };
 
 /** Normalize ANY status-shaped input into the canonical whitelist, then apply
