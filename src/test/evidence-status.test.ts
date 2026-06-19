@@ -135,4 +135,60 @@ describe("evidenceStatus — never overstates, always textual", () => {
     expect(EVIDENCE_STATUS_RANK.verified).toBeLessThan(EVIDENCE_STATUS_RANK.lead);
     expect(EVIDENCE_STATUS_RANK.lead).toBeLessThan(EVIDENCE_STATUS_RANK.rejected);
   });
+
+  // ── Legacy NULL / missing metadata.status safety (audit Task 1) ───────────────
+  // Some legacy artifact rows have metadata->>'status' = NULL (or no metadata at
+  // all). The analyst-facing status is DERIVED from confidence + source class and
+  // must never read the raw stored status, so these rows must: (1) not throw,
+  // (2) never render a raw `null`, and (3) never be promoted to verified/confirmed
+  // off the back of a missing status. The display falls back to a safe, low value.
+  const NEVER_TRUSTED = new Set(["verified", "verified_infrastructure", "probable"]);
+
+  it("legacy row with metadata:null does not crash and never reads as Verified", () => {
+    const s = evidenceStatus(art({
+      kind: "username", value: "doxbytes", confidence: 50, source: "username_sweep",
+      metadata: null,
+    }));
+    expect(s.status).toBeTruthy();
+    expect(s.label.length).toBeGreaterThan(0);
+    expect(s.hint.length).toBeGreaterThan(0);
+    // Single weak source + no status → must stay a lead / needs-corroboration band.
+    expect(NEVER_TRUSTED.has(s.status)).toBe(false);
+  });
+
+  it("explicit metadata.status === null is ignored, falls back to a safe derived status", () => {
+    // A row that *stored* null as its status. The display layer must ignore the
+    // raw value entirely and derive from evidence — never echo `null`.
+    const s = evidenceStatus(art({
+      kind: "email", value: "a@b.com", confidence: 40, source: "breach_check",
+      metadata: { status: null, sources: ["breach_check"] },
+    }));
+    expect(s.label).not.toMatch(/null|undefined/i);
+    expect(s.status).not.toMatch(/null|undefined/i);
+    // Single-source breach → manual review (never auto-confirmed off a null status).
+    expect(NEVER_TRUSTED.has(s.status)).toBe(false);
+  });
+
+  it("missing status with no source falls back to a safe low band, not Verified", () => {
+    const s = evidenceStatus(art({
+      kind: "name", value: "Jane Doe", confidence: 0, source: null,
+      metadata: { status: undefined },
+    }));
+    // Zero-confidence, no source, no status → a weak band (lead / needs
+    // corroboration), never a trusted finding.
+    expect(["lead", "needs_corroboration"]).toContain(s.status);
+    expect(NEVER_TRUSTED.has(s.status)).toBe(false);
+  });
+
+  it("NULL status never blocks rank/sort (every fallback status has a rank)", () => {
+    const rows = [
+      art({ kind: "domain", value: "x.com", metadata: null }),
+      art({ kind: "email", value: "a@b.com", metadata: { status: null } }),
+      art({ kind: "username", value: "u", confidence: 0, metadata: {} }),
+    ];
+    for (const a of rows) {
+      const s = evidenceStatus(a);
+      expect(EVIDENCE_STATUS_RANK[s.status]).toBeGreaterThanOrEqual(0);
+    }
+  });
 });

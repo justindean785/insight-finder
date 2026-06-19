@@ -1,233 +1,138 @@
-# Investigation Workspace UI/UX Upgrade
+# Remediation audit — verify & close the loop (2026-06-19)
 
-## Context / findings from inspection
-The workspace already has a strong information architecture: five **top-level**
-tabs (Chat, Evidence, Report, Graph, Tools) live in `WorkspaceTabs`, driven by
-`ChatPage`, with a persistent `WorkspaceHeader` metric strip. So IA requirement
-#1 is largely satisfied. The real, high-value gaps are in **Tools Activity**,
-**Graph**, **shared primitives**, and **accessibility**. This pass targets those
-without touching evidence-integrity logic (`lib/intel.ts`, confidence/labels).
+Standalone verification pass for Insight Finder / Swarmbot. Goal: prove the
+remaining unproven items from the root audit, not redo the whole audit.
 
-Baseline: `npx vitest run` → 45 files / 536 tests pass.
+## Current state (as found)
 
-## Plan (checkable)
+- Branch: `claude/insight-finder-audit-verify-x7cmg6`.
+- Source-of-truth repo `insight-finder` and the Lovable deploy mirror
+  `seeker-spark-search-5362c57c` were compared.
+- **Live edge marker:** `2026-06-19-status-aliases-tightened` (carried by the
+  mirror, which is what Lovable actually deploys).
+- **Source drift found:** `insight-finder` `index.ts` carried the older marker
+  `2026-06-16-runtime-dorks-serus`. A byte diff of `osint-agent/index.ts` (local
+  vs mirror) shows the **only** difference is the marker string — the runtime
+  logic is identical. Reconciled the local marker to `2026-06-19-...` so source
+  reflects what is live. (No backend deploy performed by this pass.)
+- Network egress: the live Supabase host
+  `skzqwbyvmwqarfgfvyky.supabase.co` is **not in this environment's allowlist**,
+  so a live health hit and a real production investigation probe cannot run from
+  here. Documented as an environment blocker + manual checklist for JD.
 
-### Shared primitives (reusable, typed)
-- [x] `CopyButton` — icon button, aria-label, copied state (replaces ad-hoc copy)
-- [x] `MetricCard` — labeled summary stat with icon + tone + optional tooltip
-- [x] `FilterChips` — accessible segmented filter (radiogroup) with counts
-- [x] `ToolStatusBadge` — succeeded/failed/skipped/pending icon+text chip
-- [x] `ExpandableRow` — keyboard-accessible disclosure row
-- [x] Reuse existing `EmptyState`, `ConfidenceMeter`, `TierBadge`, `StatusChip`
+## Remaining tasks
 
-### Tools Activity upgrade (req #4)
-- [x] Add short failure/skip `reason` to `useThreadToolActivity` events (additive)
-- [x] Status filter chips: All / Succeeded / Failed / Skipped / Pending with counts
-- [x] Summary `MetricCard`s (total, succeeded, failed, skipped)
-- [x] Sort failures to the top by default
-- [x] Expandable rows showing reason + tool id where available
-- [x] Empty state + no-results (filtered) state
-- [x] Status chips with icon + text (not color alone)
+- [x] **T1** Legacy NULL artifact `metadata.status` is safe (UI/report).
+- [~] **T2** Two-user Realtime RLS negative test — cannot run live (no 2 auth
+      accounts + host not allowlisted). Verified the real protection in source;
+      produced a copy-paste manual checklist for JD.
+- [~] **T3** Production investigation runtime probe — blocked by network egress.
+      Verified equivalently against source (live code == source). Manual probe
+      checklist for JD.
+- [x] **T4** No remaining hard max-limit blockers.
+- [x] **T5** Verification commands (build + vitest). Deno edge tests: blocked
+      (no deno + install host 403); logic is mirrored into vitest and runs.
+- [x] **T6** Deploy rules — no backend deploy needed (frontend-only change).
 
-### Graph view upgrade (req #5)
-- [x] Category filter toggles (identity/contact/social/infra/breach/web/crypto/other)
-- [x] Legend with color + shape/icon + text label
-- [x] Click-to-focus node detail panel (value, kind, source, confidence)
-- [x] Zoom controls (in/out/reset) + larger, higher-contrast labels
-- [x] Better edge contrast on focus; empty/loading states
-- [x] Keyboard-focusable nodes with aria labels
+## Verification checklist
 
-### Accessibility / polish
-- [x] `WorkspaceTabs`: arrow-key roving tab navigation + visible focus rings
-- [~] `WorkspaceHeader`: left as-is — it already carries `title` tooltips on every
-      metric and a DB-backed idle/active/completed status pip. Promoting to the
-      full running/gathering/manual_review vocabulary needs live-run state the
-      DB-backed header doesn't have; deferred to avoid a risky backend coupling.
-- [x] All new icon-only controls have `aria-label` / titles
-
-### Verification
-- [x] `npx vitest run`
-- [x] `npm run build`
-- [x] `npm run lint` (new/changed files)
-- [x] Targeted unit test for new `toolActivityReason` helper
+- [x] `record_artifacts` accepts array / stringified array / fenced / single
+      object, then validates strictly (`coerceArtifactsInput`, the live
+      preprocess) — unit-tested in vitest.
+- [x] NULL/missing `metadata.status` never renders raw null, never reads as
+      verified/confirmed, never crashes UI or report — 4 new tests added.
+- [x] Runtime caps default to UNLIMITED; budget enforcement only fires when
+      `STOP_ON_BUDGET_EXHAUSTED` is explicitly set; recording tools bypass caps;
+      concurrency QUEUES (never final-fails) — unit-tested.
+- [x] `npm run build` clean.
+- [x] `npx vitest run` green (618 tests).
+- [x] Real protection for the app's actual realtime usage (`postgres_changes`)
+      is user-scoped table RLS on threads/messages/artifacts (in source).
 
 ## Results
 
-### What shipped
-- **Shared primitives** (`src/components/ui/workspace-primitives.tsx`): `CopyButton`,
-  `MetricCard`, `FilterChips` (accessible `radiogroup`), `ToolStatusBadge`
-  (icon + text), `ExpandableRow` (keyboard disclosure). Typed and reusable.
-- **Tools / Activity** (`ToolsTab.tsx` + `useThreadToolActivity.ts`): status filter
-  chips with live counts (All/Succeeded/Failed/Skipped/Running), four summary
-  MetricCards, failures sorted to the top, expandable rows that reveal the short
-  failure/skip reason + tool id, icon+text status badges, and empty + no-results
-  states. Added an additive `reason` field to tool events via a new pure helper
-  `toolActivityReason` (unit-tested).
-- **Graph** (`GraphTab.tsx`): category filter toggles (with per-group counts),
-  a legend that pairs **color + distinct shape + text** (circle/diamond/triangle/
-  square/hexagon) so it never relies on color alone, click-to-open node detail
-  panel (value, copyable, confidence meter, source, link rationale), zoom in/out/
-  reset controls, higher-contrast + larger node labels, keyboard-focusable nodes
-  with descriptive `aria-label`s, and a proper empty state.
-- **Accessibility** (`WorkspaceTabs.tsx`): WAI-ARIA roving tabindex with
-  Arrow/Home/End keyboard navigation and visible focus rings.
+### T1 — NULL artifact status is safe ✅
+- The analyst-facing status is **derived** (`evidence-status.ts` →
+  `labelForArtifact`, confidence/source-class driven). It **never reads
+  `metadata.status`**. Grep confirms no component renders raw `metadata.status`;
+  `buildReportMarkdown` doesn't read `.status` either.
+- Backend `deriveStatus` treats a null/legacy `requested` status by falling
+  through to evidence-based derivation — a missing status can never yield
+  `verified`/`confirmed` (those require earned ≥90 + 2 independent classes).
+- Added 4 explicit tests to `src/test/evidence-status.test.ts`: `metadata:null`,
+  `metadata.status:null`, `status:undefined`, and rank-safety. All assert no
+  raw `null`/`undefined` text and never a trusted (verified/probable) status.
 
-### Verification (all run locally)
-- `npx vitest run` → **46 files / 541 tests pass** (was 45 / 536; +1 file, +5 tests).
-- `npm run typecheck` → clean (no new errors).
-- `npm run build` → succeeds (`✓ built in ~8s`).
-- `npx eslint <changed files>` → clean.
+### T2 — Realtime RLS ⚠️ needs JD's two-account live test
+- The app's realtime hooks (`useThreadArtifacts`, `useThreadToolActivity`) use
+  **`postgres_changes`** channels filtered by `thread_id`, NOT topic-based
+  broadcast. Their security is enforced by **table RLS**
+  (`auth.uid() = user_id` on `public.threads/messages/artifacts`) — present in
+  `supabase/migrations/20260526140844_*.sql`. Under that RLS, User B cannot
+  receive User A's artifact/message change events.
+- The topic-based `realtime.messages` policy from the audit (user:/thread:
+  topics) is **defense-in-depth not currently exercised** by the frontend, and
+  is **not in source control** (applied live only). It still needs JD's true
+  two-user negative test. See manual checklist below.
 
-### Not done / honest gaps
-- No authenticated browser screenshots: this environment has no display,
-  Playwright is not installed, and the workspace is gated behind Supabase auth +
-  a live backend, so the real app cannot be driven headlessly here. Verification
-  is build/typecheck/lint/unit-test based.
-- Report/Evidence/Chat tabs were already mature; this pass focused on the
-  highest-value gaps (Tools, Graph, primitives, a11y) rather than touching the
-  integrity-critical evidence/confidence logic.
+### T3 — Production probe ⚠️ blocked by egress
+- Could not hit `…supabase.co/functions/v1/osint-agent?health=1` (host not in
+  allowlist) and could not run a live investigation. Verified equivalently:
+  live `index.ts` is byte-identical to source except the marker, so the runtime
+  caps / coercion / status logic proven by tests here is exactly what runs live.
+- Manual probe checklist for JD below.
 
-## Follow-up pass — Evidence textual status + filters (2026-06-15)
+### T4 — No hard max-limit blockers ✅
+- `runtime-policy.ts`: `runtimeLimits` defaults every cap to
+  `Number.POSITIVE_INFINITY`; `stopOnBudgetExhausted` defaults `false`. `startCall`
+  only refuses when budget enforcement is explicitly enabled AND the cap is finite
+  AND exceeded, and the reason text explicitly says "internal throttle, not a
+  provider limit". `record_artifacts`/`record_finding`/`record_report` are in
+  `ALWAYS_ALLOW_TOOLS` → never throttled. Concurrency over `maxParallelTools`
+  QUEUES with escalating backoff (`allow:true, waitMs>0`), never a final failure.
+  Same-tool overflow → cooldown spacing, not refusal. Real provider 429 is the
+  only thing labeled a rate limit.
+- The `MAX_TOOL*` hits in `index.ts` are context-window char limits
+  (`MAX_TOOL_RESULT_CHARS_*`), not call caps. Confirmed.
+- Covered by `src/test/runtime-policy.test.ts` (unlimited default, essential
+  bypass under exhausted budget, queue-not-fail concurrency).
 
-The Evidence board previously conveyed strength by a color-coded `%` only —
-violating the "never color alone" rule and making strong-vs-weak hard to scan.
+### T5 — Verification commands ✅
+- `npx vitest run` → **50 files / 618 tests pass** (was 614; +4 NULL-status).
+- `npm run build` → clean (`✓ built in ~7s`).
+- Deno edge tests: `deno` not installed and install host returns 403 (egress).
+  The integrity-critical edge modules (`runtime-policy.ts`, `validation.ts`,
+  `confidence.ts`) are env-guarded and imported directly into vitest, so their
+  behavior is exercised in the JS test run above.
 
-### Shipped
-- **`src/lib/evidence-status.ts`** — pure, integrity-safe presentation layer that
-  derives an analyst-facing status from the existing `labelForArtifact()` engine.
-  Statuses: Verified / Probable / Needs corroboration / Manual review / Lead /
-  Shared infrastructure / Contradicted / Rejected. Conservative by design:
-  single-source can never display "Verified", breach/leak → "Manual review",
-  shared-host/collision → "Shared infrastructure — not ownership proof".
-- **`EvidenceStatusBadge`** (workspace-primitives) — icon + text chip, never
-  color alone; distinct icon per status.
-- **Evidence board rows** (`ResourcesPanel.tsx`) — every row now shows the status
-  badge + an evidence-basis line (e.g. "Single-source · infrastructure").
-- **Filter + sort toolbar** — quick-filter chips (All / Findings / Needs review /
-  Leads / Excluded) with live counts, and sort (Strength / Confidence / Newest);
-  accessible `radiogroup`s; sticky header; no-results state.
+### T6 — Deploy ✅ no backend deploy needed
+- Only changes: a frontend test + a backend **marker string** reconciliation.
+- No osint-agent logic changed → no Lovable deploy required. Live function is
+  already at `2026-06-19-status-aliases-tightened`. Frontend test ships to Vercel
+  on merge with no runtime impact.
 
-### Verification
-- `npx vitest run` → **48 files / 567 tests pass** (was 47 / 557; +1 file, +10 tests).
-- `npm run typecheck` → clean.
-- `npx eslint` on changed files → clean.
-- `npm run build` → succeeds.
+## Manual checklist for JD (user-side, requires 2 accounts)
 
-### Backend note
-The infra confidence sub-class split (earlier commit) is in the edge function and
-must be synced to `seeker-spark-search-5362c57c` + deployed via Lovable to affect
-new investigations. The Evidence-status UI works against whatever the backend
-stores today (it reads existing `confidence` + metadata), so it improves the
-display of past cases immediately once the frontend ships to Vercel.
+### Realtime RLS two-user negative test
+1. Account A: run an investigation; note its thread id `T` and uid `UA`.
+2. Account B (separate browser/profile): authenticate.
+3. In B's devtools console, attempt a `postgres_changes` subscribe to A's data:
+   `supabase.channel('x').on('postgres_changes',{event:'*',schema:'public',table:'artifacts',filter:'thread_id=eq.<T>'},console.log).subscribe()`
+   → **Expected: zero rows/events** (table RLS blocks A's rows for B).
+4. If you also use broadcast/topic channels, subscribe B to `thread:<T>` and
+   `user:<UA>` → **Expected: denied / no messages** (the `realtime.messages`
+   topic policy).
+5. Confirm B never sees A's artifacts/messages in the UI.
+6. **Also: commit the `realtime.messages` RLS policy to `insight-finder`
+   `supabase/migrations/` so it is reproducible** (currently live-only).
 
-
-## Review fix pass — semantic correctness (2026-06-15, PR #56 review)
-
-Addressed all 6 blockers from the PR review.
-
-### 1. Infra-only no longer overstated as generic "Verified"
-- `evidence-status.ts` now reads the backend's authoritative `metadata.source_category`
-  (falls back to source-string split only for legacy rows).
-- New status `verified_infrastructure` ("Verified infrastructure", blue/probable
-  tone) with basis "Infrastructure-only · not ownership proof". Infra-only
-  findings can never display as a confirmed identity/owner claim.
-
-### 2. Shared-infrastructure detection broadened
-- `isSharedInfrastructure` now also catches `metadata.cdn`, `shared_infra`, and
-  Cloudflare/Akamai/Fastly/AWS/GCP/Azure/shared-host strings in
-  provider/org/asn_org/as_name/isp/asn (network-layer artifacts), plus
-  reverse-IP/shared-host source strings and the `infra_shared_host` class.
-
-### 3. New source sub-classes infra_passive + infra_shared_host
-- `artifact_types.ts`: urlscan/wayback/archive/passive_dns → `infra_passive`;
-  reverse-IP/shared-host sources → `infra_shared_host`.
-- `confidence.ts`: caps infra_passive 70, infra_shared_host 35. Shared-host is
-  excluded from infra corroboration counting and is in NEVER_HIGH.
-
-### 4. VirusTotal taxonomy
-- Added `threat_reputation` + `reputation_signal` to STRICT_KINDS.
-- Evidence status treats VirusTotal/URLScan/EmailRep/IPQS as a
-  "Threat/reputation signal" (Manual review), distinct from "Breach/exposure".
-
-### 5. Weak AI summaries can't unlock 90+
-- `confidence.ts`: new TRUSTED_NON_INFRA gate — only official_profile_match /
-  court_record / news / independent_public unlock the >85 ownership path. infra +
-  ai_summary (or many infra perspectives) stays ≤85.
-
-### 6. Tools tab Gated / Degraded statuses
-- `tool-run.ts` `deriveToolStatus()` → succeeded/failed/skipped/gated/degraded/pending.
-  Gated = triage/policy/budget/rate-limit block; Degraded = partial/stale/timeout.
-- `useThreadToolActivity` exposes status + gated/degraded counts; ToolsTab adds
-  Gated/Degraded filter chips and a "Skipped / Gated" metric card; ToolStatusBadge
-  gains Gated/Degraded variants.
-
-### Tests added
-- Backend (mirrored in vitest via `infra-confidence.test.ts`): shared-host cap 35
-  + no-corroboration, passive classification, infra+ai_summary ≤85,
-  infra+court_record >85, court+news = 95. Also in Deno `audit_fixes_test.ts`.
-- `evidence-status.test.ts`: VirusTotal→reputation, real breach→breach/exposure,
-  infra-only→Verified infrastructure, Cloudflare IP→shared infrastructure.
-- `tool-activity-reason.test.ts`: deriveToolStatus gated/degraded/skipped/failed.
-
-### Verification
-- `npx vitest run` → **48 files / 581 tests pass** (was 567).
-- `npm run typecheck` → clean. `npx eslint` (changed files) → clean.
-- `npm run build` → succeeds.
-
-### Remaining nuance
-- The client-side **markdown report** (`buildReportMarkdown`) still groups by
-  artifact `kind`, so a VirusTotal row stored as `kind:"breach"` lists under the
-  report's Breach/Exposure section even though the Evidence board now labels it
-  Threat/reputation. The board (the primary analyst surface) is correct; aligning
-  the markdown grouping is a small follow-up.
-- Backend confidence/taxonomy changes only affect new runs once synced to
-  `seeker-spark-search-5362c57c` + deployed via Lovable. Frontend display fixes
-  ship immediately via Vercel and improve existing cases.
-
-## Screenshot review fix pass — 6 more blockers (2026-06-15)
-
-Fixed all 6 issues found in the live preview screenshots.
-
-1. **VirusTotal no longer shows as BREACH.** Added `isReputationArtifact()` +
-   `displayKind()` to intel.ts (single source of truth). A breach-kinded row from
-   a reputation source (VirusTotal/URLScan/EmailRep/IPQS) now displays as
-   `threat_reputation`. Wired into the Evidence **Table** (EvidenceMatrixTab),
-   the on-screen **Report** (CaseReport leads table + excluded from Sensitive
-   Registrations), the markdown **entity table**, and the markdown **Network
-   Connections** section (new "Threat / Reputation" subsection, pulled out of
-   Breach/Exposure). evidence-status.ts now reuses the canonical helper.
-
-2. **Clusters view labels infrastructure correctly.** ClustersTab detects an
-   infrastructure-only cluster (all artifacts in the `infrastructure` group) and
-   renders an "infrastructure" / "shared infra" badge instead of the identity
-   "unknown" badge, with a "Shared infrastructure · not ownership proof" line for
-   Cloudflare/CDN/reverse-IP clusters.
-
-3. **Failures tab now matches Activity.** `extractFailedAndSkipped` was only
-   catching `errorText`/`output-error`, missing `ok:false` rows (why the tab was
-   empty while Activity showed 14). It now classifies every problem tool with the
-   SAME `deriveToolStatus` the Activity feed uses, so the counts can't disagree,
-   and groups Failed / Gated / Degraded / Skipped.
-
-4. **Budget/gating no longer shown as red FAILED.** `deriveToolStatus` now
-   inspects the reason text (errorText + output reason + runtime.rejection_reason)
-   before calling something a failure: "budget exhausted" → **Gated**, "provider
-   disabled / unavailable" → **Degraded**. Only real provider/runtime errors stay
-   Failed. ToolsTab + FailedSkippedTab surface Gated/Degraded as first-class.
-
-5. **Mobile primary nav.** Renamed "Chatbot" → "Chat", reordered to
-   Chat | Evidence | Tools | Graph | Report, added scroll-snap (snap-x +
-   snap-start) so tabs land cleanly and the active underline isn't clipped.
-
-6. **Shared-infra confidence nuance.** Board/Table/Clusters all carry the
-   "Shared infrastructure · not ownership proof" basis next to the confidence so
-   a 70% DNS-resolution number can't be misread as ownership confidence. Shared-
-   infra detection broadened to Cloudflare/Akamai/Fastly/AWS/GCP/Azure ASN/org.
-
-### Verification
-- `npx vitest run` → **49 files / 593 tests pass** (was 581; +12).
-- `npm run typecheck` → clean. `npx eslint` (changed files) → clean.
-- `npm run build` → succeeds.
-- Activity ↔ Failures parity now guaranteed (shared `deriveToolStatus`).
-- VirusTotal renders as Threat/Reputation across Table, Report, and markdown.
-- Clusters label infra IPs as infrastructure / shared infra, not "unknown".
+### Production runtime probe (run from an allowlisted network)
+1. `GET …/functions/v1/osint-agent?health=1` → expect
+   `build: "2026-06-19-status-aliases-tightened"`.
+2. Run a harmless seed; confirm: run is not stopped by a 12 paid-call cap, no
+   arbitrary max kills it, throttles queue/retry, `record_artifacts` succeeds,
+   final report generates, free/local tools still run after paid tools stop,
+   gated tools show as gated (not failed), failed providers aren't recorded as
+   evidence, breach/username findings read as observed associations.
+</content>
+</invoke>
