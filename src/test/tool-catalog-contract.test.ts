@@ -37,7 +37,7 @@ function staticToolNames(): Set<string> {
 
 function lateInjectedNames(): Set<string> {
   const out = bash(
-    `grep -oE '\\(tools as (any|ToolRegistry)\\)\\.([a-z_]+) *= *tool' "${ROOT}/index.ts" | ` +
+    `grep -oE '\\(tools as (any|ToolRegistry)\\)\\.([a-z_]+) *= *tool' "${ROOT}/tool-registry.ts" "${ROOT}/index.ts" 2>/dev/null | ` +
       `sed -E 's/.+\\.([a-z_]+) *= *tool/\\1/'`,
   );
   return new Set(out.split("\n").map((s) => s.trim()).filter(Boolean));

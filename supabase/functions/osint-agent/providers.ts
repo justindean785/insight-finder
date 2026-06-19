@@ -5,7 +5,11 @@
 
 import { createOpenAICompatible } from "npm:@ai-sdk/openai-compatible@1";
 import { MODELS } from "./models.ts";
-import { MINIMAX_API_KEY, GEMINI_API_KEY, fetchRetry } from "./env.ts";
+import {
+  MINIMAX_API_KEY, GEMINI_API_KEY, fetchRetry,
+  LOVABLE_API_KEY, XAI_API_KEY, GROK_ORCHESTRATOR_MODEL_ID,
+} from "./env.ts";
+import { selectFallbackProvider } from "./orchestrator_select.ts";
 
 // ---- MiniMax OpenAI-compatible provider ----------------------------------------
 export const minimax = createOpenAICompatible({
@@ -60,6 +64,93 @@ export async function minimaxChat(opts: {
   } finally {
     clearTimeout(timer);
   }
+}
+
+export type FallbackResult = {
+  ok: boolean;
+  status: number;
+  content: string;
+  raw: unknown;
+  usedFallback: boolean;
+};
+
+async function callFallbackProvider(
+  provider: "lovable" | "grok",
+  opts: Parameters<typeof minimaxChat>[0],
+): Promise<{ ok: boolean; status: number; content: string; raw: unknown }> {
+  const isGrok = provider === "grok";
+  const baseURL = isGrok ? "https://api.x.ai/v1" : "https://ai.gateway.lovable.dev/v1";
+  const apiKey = isGrok ? XAI_API_KEY : LOVABLE_API_KEY;
+  const model = isGrok ? GROK_ORCHESTRATOR_MODEL_ID : MODELS.fallback;
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (isGrok) {
+    headers["Authorization"] = `Bearer ${apiKey}`;
+  } else {
+    headers["Lovable-API-Key"] = apiKey;
+    headers["X-Lovable-AIG-SDK"] = "vercel-ai-sdk";
+  }
+
+  const body: Record<string, unknown> = {
+    model,
+    messages: [
+      ...(opts.system ? [{ role: "system", content: opts.system }] : []),
+      { role: "user", content: opts.user },
+    ],
+    temperature: opts.temperature ?? 0.2,
+    max_tokens: opts.maxTokens ?? 1500,
+  };
+  if (opts.json) body.response_format = { type: "json_object" };
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 60000);
+  try {
+    const r = await fetch(`${baseURL}/chat/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    const text = await r.text();
+    let raw: unknown;
+    try { raw = JSON.parse(text); } catch { raw = { raw: text.slice(0, 4000) }; }
+    const content =
+      (raw as { choices?: Array<{ message?: { content?: string } }> })
+        ?.choices?.[0]?.message?.content ?? "";
+    return { ok: r.ok, status: r.status, content, raw };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function minimaxChatWithFallback(
+  opts: Parameters<typeof minimaxChat>[0],
+): Promise<FallbackResult> {
+  try {
+    const result = await minimaxChat(opts);
+    if (result.status !== 429 && result.status < 500) {
+      return { ...result, usedFallback: false };
+    }
+    console.warn(
+      `[orchestrator-fallback] MiniMax failed (status=${result.status}), retrying on fallback`,
+    );
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!(e instanceof DOMException && e.name === "AbortError") && !msg.includes("abort")) {
+      throw e;
+    }
+    console.warn(`[orchestrator-fallback] MiniMax aborted, retrying on fallback`);
+  }
+
+  const fb = selectFallbackProvider({
+    lovable: !!LOVABLE_API_KEY,
+    grok: !!XAI_API_KEY,
+  });
+  if (!fb.provider) {
+    return { ok: false, status: 0, content: "", raw: { error: fb.reason }, usedFallback: false };
+  }
+  console.warn(`[orchestrator-fallback] using ${fb.provider} (${fb.reason})`);
+  const result = await callFallbackProvider(fb.provider, opts);
+  return { ...result, usedFallback: true };
 }
 
 // ---- JSON parsing helper -------------------------------------------------------

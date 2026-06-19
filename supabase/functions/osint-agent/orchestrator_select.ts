@@ -8,7 +8,7 @@
 // provider is selected only when its key is configured AND it is either pinned
 // via ORCHESTRATOR_PROVIDER or is the only available provider.
 
-export type OrchestratorProvider = "minimax" | "grok" | "openadapter";
+export type OrchestratorProvider = "minimax" | "grok" | "openadapter" | "lovable";
 
 export interface OrchestratorAvailability {
   /** ORCHESTRATOR_PROVIDER secret, lowercased/trimmed ("" if unset). */
@@ -47,7 +47,7 @@ function normalizePin(pin: string): OrchestratorProvider | "" {
  *      same contract as before).
  */
 export function selectOrchestratorProvider(a: OrchestratorAvailability): OrchestratorChoice {
-  const has: Record<OrchestratorProvider, boolean> = {
+  const has: Partial<Record<OrchestratorProvider, boolean>> = {
     minimax: a.minimax,
     grok: a.grok,
     openadapter: a.openadapter,
@@ -62,4 +62,20 @@ export function selectOrchestratorProvider(a: OrchestratorAvailability): Orchest
     if (has[p]) return { provider: p, reason: "only-available" };
   }
   return { provider: "minimax", reason: "none-configured" };
+}
+
+export interface FallbackAvailability {
+  lovable: boolean;
+  grok: boolean;
+}
+
+export interface FallbackChoice {
+  provider: "lovable" | "grok" | null;
+  reason: string;
+}
+
+export function selectFallbackProvider(a: FallbackAvailability): FallbackChoice {
+  if (a.grok) return { provider: "grok", reason: "XAI_API_KEY configured" };
+  if (a.lovable) return { provider: "lovable", reason: "LOVABLE_API_KEY configured" };
+  return { provider: null, reason: "All orchestrators exhausted — check API quotas" };
 }
