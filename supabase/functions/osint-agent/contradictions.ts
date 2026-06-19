@@ -256,6 +256,38 @@ export function structuredContradictionPatches(
   return patches;
 }
 
+/**
+ * Cluster-scoped variant of structuredContradictionPatches.
+ *
+ * A contradiction (e.g. a location conflict) is only real WITHIN a single
+ * candidate identity — two different people in a multi-hypothesis thread
+ * legitimately have different locations/employers and must NOT be marked as
+ * contradicting each other. So we group by `metadata.cluster_id` and detect
+ * conflicts only within each explicitly-assigned cluster. Artifacts with no
+ * cluster_id are NOT auto-persisted (we can't assert they're the same entity);
+ * the thread-wide advisory `detectContradictions()` result is unaffected.
+ */
+export function clusterScopedContradictionPatches(
+  artifacts: ArtifactLike[],
+  nowIso: string,
+): ContradictionPatch[] {
+  const groups = new Map<string, ArtifactLike[]>();
+  for (const a of artifacts) {
+    const cid = a.metadata?.cluster_id;
+    if (typeof cid !== "string" || !cid.trim()) continue; // unclustered → not same-entity
+    const key = cid.trim();
+    const list = groups.get(key);
+    if (list) list.push(a);
+    else groups.set(key, [a]);
+  }
+  const out: ContradictionPatch[] = [];
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    out.push(...structuredContradictionPatches(group, nowIso));
+  }
+  return out;
+}
+
 /** True when two structured contradictions describe the same conflict
  *  (same finding kind + same attribute). Used for idempotent merging. */
 function sameContradiction(a: unknown, b: StructuredContradiction): boolean {
