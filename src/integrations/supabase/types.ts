@@ -578,30 +578,20 @@ export type Database = {
         Args: { _delta_cost: number; _id: string }
         Returns: undefined
       }
-      save_agent_memories:
-        | {
-            Args: { _entries: Json; _thread_id: string; _user_id: string }
-            Returns: {
-              id: string
-              out_hit_count: number
-              out_kind: string
-              out_subject: string
-            }[]
-          }
-        | {
-            Args: {
-              _entries: Json
-              _scope?: string
-              _thread_id: string
-              _user_id: string
-            }
-            Returns: {
-              id: string
-              out_hit_count: number
-              out_kind: string
-              out_subject: string
-            }[]
-          }
+      save_agent_memories: {
+        Args: {
+          _entries: Json
+          _scope?: string
+          _thread_id: string
+          _user_id: string
+        }
+        Returns: {
+          id: string
+          out_hit_count: number
+          out_kind: string
+          out_subject: string
+        }[]
+      }
       verify_evidence_chain: {
         Args: { _thread_id: string }
         Returns: {
