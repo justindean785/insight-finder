@@ -5,6 +5,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { SpeedInsights } from "@vercel/speed-insights/react";
 // Entry/auth routes stay eager — they're tiny and on the first-paint path.
 import IndexRedirect from "./pages/IndexRedirect";
 import Auth from "./pages/Auth";
@@ -56,6 +57,7 @@ const App = () => (
         </Suspense>
       </BrowserRouter>
       )}
+      <SpeedInsights />
     </TooltipProvider>
   </QueryClientProvider>
   </ErrorBoundary>
