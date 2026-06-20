@@ -5,7 +5,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import {
   Plus, LogOut, Trash2, PanelLeftOpen, PanelLeftClose, Search, Brain, CheckCircle2,
-  ShieldAlert, Database, Activity,
+  ShieldAlert, Database, Activity, BarChart3,
   Mail, Phone, Globe, Network, User, Hash, FileSearch, type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -77,6 +77,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   const navigate = useNavigate();
   const location = useLocation();
   const onBrainRoute = location.pathname.startsWith("/brain");
+  const onInsightsRoute = location.pathname.startsWith("/insights");
   const [threads, setThreads] = useState<Thread[]>([]);
   const [metrics, setMetrics] = useState<Record<string, ThreadMetrics>>({});
   const [query, setQuery] = useState("");
@@ -228,6 +229,20 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
           )}
         </Link>
 
+        <Link
+          to="/insights"
+          className={cn(
+            "relative w-8 h-8 rounded-lg grid place-items-center transition-colors",
+            onInsightsRoute
+              ? "bg-primary/15 text-primary ring-1 ring-primary/40"
+              : "glass-interactive text-muted-foreground hover:text-primary",
+          )}
+          title="Insights"
+          aria-label="Insights"
+        >
+          <BarChart3 className="w-4 h-4" strokeWidth={1.5} />
+        </Link>
+
         <div className="flex-1 overflow-y-auto w-full flex flex-col items-center gap-1 px-1">
           {threads.map((t) => {
             const Icon = seedIcon(t.seed_type, t.title);
@@ -287,13 +302,19 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   return (
     <div className="w-full h-full flex flex-col bg-[hsl(var(--surface-0))]">
       <div className="px-3 py-3 border-b border-border-subtle flex items-center gap-2">
-        <div className="w-8 h-8 rounded-lg border border-white/10 bg-white/[0.035] grid place-items-center">
-          <SwarmMark className="w-4 h-4 text-foreground/90" />
-        </div>
-        <div className="min-w-0">
-          <div className="font-display font-semibold tracking-tight text-sm text-foreground leading-none">Swarmbot</div>
-          <div className="mt-0.5 text-[10px] text-muted-foreground leading-none">Cases</div>
-        </div>
+        <Link
+          to="/"
+          aria-label="Home"
+          className="flex items-center gap-2 min-w-0 group focus:outline-none focus:ring-2 focus:ring-primary/40 rounded-lg"
+        >
+          <div className="w-8 h-8 rounded-lg border border-white/10 bg-white/[0.035] grid place-items-center transition-colors group-hover:bg-white/[0.06]">
+            <SwarmMark className="w-4 h-4 text-foreground/90" />
+          </div>
+          <div className="min-w-0">
+            <div className="font-display font-semibold tracking-tight text-sm text-foreground leading-none">Swarmbot</div>
+            <div className="mt-0.5 text-[10px] text-muted-foreground leading-none">Cases</div>
+          </div>
+        </Link>
         <button
           onClick={onToggleCollapse}
           className="ml-auto w-8 h-8 rounded-lg border border-white/10 bg-white/[0.035] text-muted-foreground hover:text-foreground hover:bg-white/[0.06] transition-colors"
@@ -328,6 +349,19 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
               {newPatternCount > 99 ? "99+" : newPatternCount}
             </span>
           )}
+        </Link>
+        <Link
+          to="/insights"
+          aria-label="Insights"
+          className={cn(
+            "relative mt-2 flex items-center gap-2 w-full px-3 py-2 rounded-lg border text-sm font-medium transition-colors",
+            onInsightsRoute
+              ? "border-white/20 bg-surface-1 text-foreground"
+              : "border-border-subtle bg-surface-0 text-muted-foreground hover:text-foreground hover:border-white/15 hover:bg-surface-1",
+          )}
+        >
+          <BarChart3 className="w-3.5 h-3.5" strokeWidth={1.5} />
+          <span>Insights</span>
         </Link>
       </div>
 

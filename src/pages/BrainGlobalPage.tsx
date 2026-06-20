@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { Link, Navigate, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -215,12 +215,16 @@ export default function BrainGlobalPage() {
     <div className="flex-1 min-h-0 overflow-y-auto">
       <header className="sticky top-0 z-10 glass-card border-b border-border-subtle">
         <div className="px-6 pt-5 pb-3 flex items-start gap-3">
-          <div className="relative shrink-0">
-            <div className="w-10 h-10 rounded-xl glass-strong grid place-items-center ring-1 ring-primary/40 shadow-[0_0_24px_-6px_hsl(var(--primary)/0.7)]">
+          <Link
+            to="/"
+            aria-label="Home"
+            className="relative shrink-0 focus:outline-none focus:ring-2 focus:ring-primary/40 rounded-xl"
+          >
+            <div className="w-10 h-10 rounded-xl glass-strong grid place-items-center ring-1 ring-primary/40 shadow-[0_0_24px_-6px_hsl(var(--primary)/0.7)] hover:bg-white/[0.04] transition-colors">
               <Brain className="w-5 h-5 text-primary" strokeWidth={1.5} />
             </div>
             <Sparkles className="absolute -top-1 -right-1 w-3 h-3 text-primary animate-pulse" />
-          </div>
+          </Link>
           <div className="flex-1 min-w-0">
             <h1 className="font-display text-xl tracking-tight text-foreground">
               AGENT BRAIN · LEARNING LOG
@@ -313,9 +317,13 @@ export default function BrainGlobalPage() {
           >
             <PanelLeftOpen className="w-4 h-4 text-foreground/80" />
           </button>
-          <div className="font-display font-semibold text-sm tracking-tight gradient-text select-none">
+          <Link
+            to="/"
+            aria-label="Home"
+            className="font-display font-semibold text-sm tracking-tight gradient-text select-none hover:opacity-80 transition-opacity"
+          >
             Brain
-          </div>
+          </Link>
           <div className="w-9" />
         </header>
         <main className="flex-1 min-h-0 flex w-full overflow-hidden">
