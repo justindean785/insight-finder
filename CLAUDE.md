@@ -32,7 +32,7 @@ There is **ONE place to work: this repo, `justindean785/insight-finder`** (local
 `seeker-spark-search`, `seeker-spark-search-5fea4dc8`, `seeker-spark-search-ec85cfea` are **archived dead spawns** from past Lovable reconnect cycles. The ONLY live Lovable repo is `…-5362c57c`. Never push to the others; never disconnect/reconnect GitHub in Lovable (it spawns more dead repos).
 
 ## Edge function internals (gotchas)
-- **Live tool defs are INLINE in `supabase/functions/osint-agent/index.ts`** (~4500 lines). Files under `tools/*.ts` are **stale auto-extracted mirrors** used only by the catalog↔runtime contract test — keep them in sync when adding a tool, but the inline def is what runs.
+- **Live tool defs are in `supabase/functions/osint-agent/tool-registry.ts`** (`buildTools`), **not** inline in `index.ts` (which now only orchestrates the request). The god-file refactor moved them; `index.ts` has zero tool defs. The catalog↔runtime contract test (`src/test/catalog-guidance.test.ts`) reads `tool-registry.ts` (with an `index.ts` fallback) to assert every `catalog.ts` entry has a runtime def — keep `catalog.ts` and `tool-registry.ts` in sync when adding a tool. (Any older `tools/*.ts` files are stale mirrors, not the runtime source.)
 - Tests: `cd supabase/functions/osint-agent && deno test --allow-net --no-check`. `deno check index.ts` has ~12–157 **pre-existing** AI-SDK/Supabase type-graph errors — not a gate; verify your change adds none.
 - Frontend tests: `npx vitest run` from repo root.
 
