@@ -3856,7 +3856,10 @@ export function buildTools(ctx: ToolContext) {
       const patches = clusterScopedContradictionPatches(rows as Parameters<typeof clusterScopedContradictionPatches>[0], new Date().toISOString());
       const byId = new Map<string, StructuredContradiction[]>();
       for (const p of patches) {
-        const row = rows.find((r) => r.value === p.value);
+        // Prefer the exact artifact id carried by the patch. Falling back to a
+        // value match would attach a cluster-c1 conflict to the first row with
+        // the same value thread-wide — which can be a different cluster's row.
+        const row = p.id ? rows.find((r) => r.id === p.id) : rows.find((r) => r.value === p.value);
         if (!row) continue;
         const list = byId.get(row.id) ?? [];
         list.push(p.entry);

@@ -29,6 +29,11 @@ export async function minimaxChat(opts: {
   webSearch?: boolean;
   temperature?: number;
   maxTokens?: number;
+  /** Optional external abort signal (e.g. a health probe's bounded timeout).
+   *  When it fires, the underlying fetch is aborted — without it, an external
+   *  timeout only abandons the promise while the paid MiniMax call keeps
+   *  running to the internal 45s cap. */
+  signal?: AbortSignal;
 }): Promise<{ ok: boolean; status: number; content: string; raw: unknown }> {
   const body: Record<string, unknown> = {
     model: opts.model ?? MODELS.fast,
@@ -44,6 +49,13 @@ export async function minimaxChat(opts: {
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 45000);
+  // Chain an external signal (probe timeout / request cancellation) onto our
+  // controller so it actually aborts the in-flight fetch, not just the await.
+  const onExternalAbort = () => ctrl.abort();
+  if (opts.signal) {
+    if (opts.signal.aborted) ctrl.abort();
+    else opts.signal.addEventListener("abort", onExternalAbort, { once: true });
+  }
   try {
     const r = await fetch("https://api.minimax.io/v1/chat/completions", {
       method: "POST",
@@ -63,6 +75,7 @@ export async function minimaxChat(opts: {
     return { ok: r.ok, status: r.status, content, raw };
   } finally {
     clearTimeout(timer);
+    opts.signal?.removeEventListener("abort", onExternalAbort);
   }
 }
 
