@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { supabase, SUPABASE_URL } from "@/integrations/supabase/client";
+import { edgeFunctionUrl } from "@/lib/functionsUrl";
 import { ShieldCheck, ShieldAlert, ExternalLink, Lock, RefreshCw, Link2, Download, Archive, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -114,7 +115,8 @@ export function CustodyTab({ threadId }: { threadId: string }) {
       const { data: sess } = await supabase.auth.getSession();
       const token = sess.session?.access_token;
       if (!token) throw new Error("Not authenticated");
-      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/evidence-export`;
+      const url = edgeFunctionUrl("evidence-export", SUPABASE_URL);
+      if (!url) throw new Error("Supabase function URL is not configured.");
       const res = await fetch(url, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },

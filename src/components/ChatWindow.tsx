@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
-import { supabase } from "@/integrations/supabase/client";
+import { supabase, SUPABASE_URL } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -28,10 +28,12 @@ import {
 } from "@/lib/recommended-pivots";
 import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon } from "lucide-react";
 
-const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.trim();
 const SUPABASE_PROJECT_ID = (import.meta.env.VITE_SUPABASE_PROJECT_ID as string | undefined)?.trim();
-// Defensive: strips a trailing /functions/v1 from the base so a misconfigured
-// VITE_SUPABASE_URL can't produce a doubled `/functions/v1/functions/v1/…` 404.
+// Resolve from the client's SUPABASE_URL (which carries the baked-in default),
+// NOT raw import.meta.env — otherwise a deploy without VITE_SUPABASE_URL set
+// resolves this to "" and every scan dies with "function URL not configured",
+// even though the supabase client itself works off the default. osintAgentUrl
+// also strips a trailing /functions/v1 so a misconfigured base can't double it.
 const FUNCTIONS_URL = osintAgentUrl(SUPABASE_URL, SUPABASE_PROJECT_ID);
 
 const FAIL_PREFIX = "__STATUS__:failed:";
