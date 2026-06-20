@@ -323,3 +323,65 @@ Deno.test("minimaxChatWithFallback does not call fallback when MiniMax succeeds"
     globalThis.fetch = origFetch;
   }
 });
+
+// ---------------------------------------------------------------------------
+// minimaxChat external-signal propagation — a health probe's bounded timeout
+// must actually abort the underlying MiniMax fetch, not merely abandon the
+// promise while the paid call runs on to its internal 45s cap.
+// ---------------------------------------------------------------------------
+
+Deno.test("minimaxChat: external signal aborts the in-flight fetch", async () => {
+  const { minimaxChat } = await import("./providers.ts");
+  const origFetch = globalThis.fetch;
+  const external = new AbortController();
+  let capturedSignal: AbortSignal | undefined;
+  try {
+    // Hang until the request's own signal aborts — mimics a stalled provider.
+    globalThis.fetch = ((_url: string | URL | Request, init?: RequestInit) => {
+      capturedSignal = init?.signal ?? undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("Aborted", "AbortError")),
+          { once: true },
+        );
+      });
+    }) as typeof globalThis.fetch;
+
+    const pending = minimaxChat({ user: "ping", signal: external.signal });
+    external.abort(); // the "8s probe timeout" firing
+    let threw = false;
+    try { await pending; } catch { threw = true; }
+    // The external abort propagated through to the fetch and unwound the call.
+    assertEquals(threw, true);
+    assertEquals(capturedSignal?.aborted, true);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+Deno.test("minimaxChat: an already-aborted external signal never issues the fetch", async () => {
+  const { minimaxChat } = await import("./providers.ts");
+  const origFetch = globalThis.fetch;
+  let fetchCalled = false;
+  try {
+    globalThis.fetch = ((_url: string | URL | Request, init?: RequestInit) => {
+      fetchCalled = true;
+      if (init?.signal?.aborted) {
+        return Promise.reject(new DOMException("Aborted", "AbortError"));
+      }
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    }) as typeof globalThis.fetch;
+
+    const pre = new AbortController();
+    pre.abort();
+    let threw = false;
+    try { await minimaxChat({ user: "ping", signal: pre.signal }); } catch { threw = true; }
+    assertEquals(threw, true);
+    // The request carried an already-aborted signal, so the fetch rejects
+    // immediately rather than completing a live call.
+    assertEquals(fetchCalled, true);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});

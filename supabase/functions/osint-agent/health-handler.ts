@@ -132,7 +132,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
       }
     };
     const [mm, lov, gk] = await Promise.all([
-      probeProvider("minimax", !!MINIMAX_API_KEY, () => minimaxChat({ user: "ping", maxTokens: 4, temperature: 0 })),
+      probeProvider("minimax", !!MINIMAX_API_KEY, (signal) => minimaxChat({ user: "ping", maxTokens: 4, temperature: 0, signal })),
       probeProvider("lovable", !!LOVABLE_API_KEY, async (signal) => {
         const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
           method: "POST",
