@@ -18,8 +18,18 @@ export function functionsBaseUrl(
   return pid ? `https://${pid}.supabase.co` : "";
 }
 
+/** Full URL for an arbitrary edge function, or "" if the env isn't configured.
+ *  Shares the trailing-/functions/v1 defense so no caller can double the path. */
+export function edgeFunctionUrl(
+  name: string,
+  supabaseUrl?: string | null,
+  projectId?: string | null,
+): string {
+  const base = functionsBaseUrl(supabaseUrl, projectId);
+  return base ? `${base}/functions/v1/${name}` : "";
+}
+
 /** Full osint-agent function URL, or "" if the env isn't configured. */
 export function osintAgentUrl(supabaseUrl?: string | null, projectId?: string | null): string {
-  const base = functionsBaseUrl(supabaseUrl, projectId);
-  return base ? `${base}/functions/v1/osint-agent` : "";
+  return edgeFunctionUrl("osint-agent", supabaseUrl, projectId);
 }

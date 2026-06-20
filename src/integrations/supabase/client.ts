@@ -10,7 +10,13 @@ const DEFAULT_SUPABASE_URL = "https://skzqwbyvmwqarfgfvyky.supabase.co";
 const DEFAULT_SUPABASE_PUBLISHABLE_KEY =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNrenF3Ynl2bXdxYXJmZ2Z2eWt5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3ODg5MTksImV4cCI6MjA5NTM2NDkxOX0.B2k5sI10zk1nxjZdXEFxuVV3B755FxDFGkT6TfWY6TE";
 
-const SUPABASE_URL =
+// Exported so edge-function callers (osint-agent scan, evidence-export) resolve
+// the function base from the SAME value the client uses — including the baked-in
+// default. Reading import.meta.env directly at those call sites is the bug that
+// 500s every scan on a deploy where VITE_SUPABASE_URL isn't set: the client
+// falls back to the default and works, but the raw-env function URL resolves to
+// "" and the scan dies with "Supabase function URL is not configured".
+export const SUPABASE_URL =
   (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.trim() || DEFAULT_SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY =
   (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined)?.trim() ||
