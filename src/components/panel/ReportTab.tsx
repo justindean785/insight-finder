@@ -4,13 +4,24 @@ import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { buildReportMarkdown, buildEvidenceMatrixMarkdown } from "@/lib/intel";
 import { useThreadMessages } from "@/hooks/useThreadMessages";
 import { Button } from "@/components/ui/button";
-import { Copy, FileText, Table, Braces, ScrollText, Download, Printer } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Copy, FileText, Table, Braces, ScrollText, Download, Printer, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 import { EmptyState } from "./EmptyState";
 import { CaseReport } from "./CaseReport";
 
 export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts: Artifact[] }) {
   const [seed, setSeed] = useState<{ value: string | null; type: string | null }>({ value: null, type: null });
+  const [jsonGateOpen, setJsonGateOpen] = useState(false);
+  const [jsonGateAck, setJsonGateAck] = useState(false);
 
   useEffect(() => {
     // Guard against a late response from a previous thread overwriting the
@@ -62,6 +73,16 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
     }, 50);
   };
 
+  const openJsonGate = () => {
+    setJsonGateAck(false);
+    setJsonGateOpen(true);
+  };
+  const confirmJsonExport = () => {
+    if (!jsonGateAck) return;
+    copy(JSON.stringify(artifacts, null, 2), "Artifact JSON copied");
+    setJsonGateOpen(false);
+  };
+
   if (artifacts.length === 0) {
     return <EmptyState icon={ScrollText} title="No report yet" hint="Run the agent on a seed and the case report will populate here." />;
   }
@@ -86,7 +107,8 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
           <Table className="w-3 h-3" /> Matrix
         </Button>
         <Button size="sm" variant="ghost" className="h-7 gap-1 text-data text-muted-foreground"
-          onClick={() => copy(JSON.stringify(artifacts, null, 2), "Artifact JSON copied")}>
+          onClick={openJsonGate}
+          title="Raw JSON export — requires confirmation">
           <Braces className="w-3 h-3" /> JSON
         </Button>
       </div>
@@ -103,6 +125,46 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
           {markdown}
         </pre>
       </details>
+
+      <Dialog open={jsonGateOpen} onOpenChange={setJsonGateOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <ShieldAlert className="w-4 h-4 text-warning" /> Export raw artifact JSON?
+            </DialogTitle>
+            <DialogDescription className="text-xs leading-relaxed">
+              Raw artifacts may include PII, unreviewed leads, source metadata, and identifiers
+              the case has not yet redacted. Treat the export as sensitive investigative data.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="rounded-md border border-border-subtle bg-surface-2 px-3 py-2 flex items-center justify-between gap-2 text-xs">
+            <span className="text-muted-foreground uppercase tracking-wider text-eyebrow">Classification</span>
+            <span className="font-mono text-foreground">INTERNAL</span>
+          </div>
+
+          <label className="flex items-start gap-2 text-xs leading-relaxed cursor-pointer">
+            <Checkbox
+              checked={jsonGateAck}
+              onCheckedChange={(v) => setJsonGateAck(v === true)}
+              className="mt-0.5"
+            />
+            <span className="text-foreground">
+              I understand this export may include sensitive investigative data, including PII and
+              unreviewed leads, and I am authorized to handle it.
+            </span>
+          </label>
+
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setJsonGateOpen(false)}>
+              Cancel
+            </Button>
+            <Button size="sm" disabled={!jsonGateAck} onClick={confirmJsonExport}>
+              Copy JSON
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -195,9 +195,10 @@ export default function Insights() {
           <StatTile
             loading={loading}
             icon={TrendingUp}
-            label="Avg confidence"
+            label="Avg source confidence"
             value={derived?.totals.avgConfidence ?? 0}
             suffix="%"
+            sub="Tool/source score — not analyst review"
           />
         </section>
 

@@ -23,7 +23,7 @@ const VIEWS: { key: View; label: string; icon: LucideIcon }[] = [
  * clusters, and a chronological timeline. Fills the full main workspace width.
  */
 export function EvidenceTab({ threadId }: { threadId: string }) {
-  const { items, updateLocal } = useThreadArtifacts(threadId);
+  const { items, updateLocal, hasMore, cap } = useThreadArtifacts(threadId);
   const [view, setView] = useState<View>("board");
 
   return (
@@ -33,6 +33,14 @@ export function EvidenceTab({ threadId }: { threadId: string }) {
           <div className="text-[13px] font-semibold text-foreground leading-none">Evidence</div>
           <div className="mt-0.5 text-[10px] text-muted-foreground leading-none">
             {items.length} artifact{items.length === 1 ? "" : "s"}
+            {hasMore && (
+              <span
+                className="ml-2 inline-flex items-center rounded border border-warning/30 bg-warning/10 px-1 py-px text-[9px] uppercase tracking-wider text-warning"
+                title={`Initial load capped at ${cap.toLocaleString()} rows. New realtime inserts still apply, but older artifacts beyond the cap are not yet loaded.`}
+              >
+                ⚠ sampled (latest {cap.toLocaleString()})
+              </span>
+            )}
           </div>
         </div>
         <div className="inline-flex shrink-0 items-center gap-1 rounded-xl border border-white/10 bg-white/[0.035] p-1">

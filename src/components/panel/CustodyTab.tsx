@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { HashChip } from "@/components/ui/hash-chip";
 import { ArrowRight } from "lucide-react";
 import { sanitizeValueForLabel } from "@/lib/report-hygiene";
+import { scrollBehavior } from "@/lib/motion";
 
 type EvidenceRow = {
   id: string;
@@ -39,6 +40,12 @@ function timeAgo(iso: string): string {
   return new Date(iso).toLocaleString();
 }
 
+/** Upper bound on evidence_log rows fetched for the visible custody panel.
+ *  When the result hits this cap, the panel labels itself as "latest N" rather
+ *  than implying the chain visible here is complete — the integrity verify RPC
+ *  still runs over the full chain server-side. */
+const CUSTODY_VISIBLE_LIMIT = 500;
+
 export function CustodyTab({ threadId }: { threadId: string }) {
   const [rows, setRows] = useState<EvidenceRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -55,7 +62,7 @@ export function CustodyTab({ threadId }: { threadId: string }) {
         .select("id,seq,classification,kind,value,source,source_url,tool_name,confidence,chain_hash,prev_hash,collected_at,metadata,archive_storage_path,archive_sha256,archive_bytes")
         .eq("thread_id", threadId)
         .order("seq", { ascending: false })
-        .limit(500),
+        .limit(CUSTODY_VISIBLE_LIMIT),
       supabase.from("threads").select("archive_attachments").eq("id", threadId).maybeSingle(),
     ]);
     setRows((data as EvidenceRow[]) ?? []);
@@ -140,7 +147,7 @@ export function CustodyTab({ threadId }: { threadId: string }) {
           onRecheck={verify}
           onJumpToBreak={(seq) => {
             const el = document.getElementById(`custody-seq-${seq}`);
-            if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+            if (el) el.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
           }}
         />
       )}
@@ -175,6 +182,20 @@ export function CustodyTab({ threadId }: { threadId: string }) {
           </Button>
         </div>
       </div>
+
+      {/* Visibility cap banner — only when the latest-N window is saturated. */}
+      {rows.length >= CUSTODY_VISIBLE_LIMIT && (
+        <div className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning flex items-start gap-2">
+          <span aria-hidden>⚠</span>
+          <span>
+            Showing the latest {CUSTODY_VISIBLE_LIMIT.toLocaleString()} custody entries.
+            {verification?.total && verification.total > rows.length
+              ? ` ${(verification.total - rows.length).toLocaleString()} older entries exist on the chain and are not displayed in this view — `
+              : " Older entries on the chain are not displayed in this view — "}
+            integrity verification still runs over the full chain server-side.
+          </span>
+        </div>
+      )}
 
       {/* Archive toggle */}
       <div className="glass-card rounded-lg p-3 flex items-center justify-between gap-3">

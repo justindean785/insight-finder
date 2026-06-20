@@ -98,7 +98,11 @@ function dedupeArtifacts(rows: Artifact[]): Artifact[] {
 // ---------------------------------------------------------------------------
 type Store = {
   items: Artifact[];
-  subscribers: Set<(items: Artifact[]) => void>;
+  // loadedCount is the raw row count returned by the most recent load,
+  // before dedupe — used to detect cap saturation honestly.
+  loadedCount: number;
+  hasMore: boolean;
+  subscribers: Set<(snapshot: StoreSnapshot) => void>;
   channel: ReturnType<typeof supabase.channel> | null;
   loading: Promise<void> | null;
   refCount: number;
@@ -107,17 +111,38 @@ type Store = {
   // scan inserting 50+ rows in <100ms) hammering the DB.
   pendingReload: ReturnType<typeof setTimeout> | null;
 };
+
+type StoreSnapshot = {
+  items: Artifact[];
+  loadedCount: number;
+  hasMore: boolean;
+};
+
+/** Hard cap on initial artifact load per thread. Large investigations
+ *  surface a UI warning when this is hit so the analyst knows the view
+ *  is windowed, not complete. Realtime INSERTs continue to apply on top. */
+export const ARTIFACTS_INITIAL_LIMIT = 1000;
+
 const stores = new Map<string, Store>();
 const THROTTLE_MS = 500;
+
+function snapshot(store: Store): StoreSnapshot {
+  return { items: store.items, loadedCount: store.loadedCount, hasMore: store.hasMore };
+}
 
 async function loadStore(threadId: string, store: Store) {
   const { data } = await supabase
     .from("artifacts")
     .select("id,kind,value,confidence,source,created_at,metadata")
     .eq("thread_id", threadId)
-    .order("created_at", { ascending: true });
-  store.items = dedupeArtifacts((data ?? []) as Artifact[]);
-  for (const fn of store.subscribers) fn(store.items);
+    .order("created_at", { ascending: true })
+    .limit(ARTIFACTS_INITIAL_LIMIT);
+  const rows = (data ?? []) as Artifact[];
+  store.loadedCount = rows.length;
+  store.hasMore = rows.length >= ARTIFACTS_INITIAL_LIMIT;
+  store.items = dedupeArtifacts(rows);
+  const snap = snapshot(store);
+  for (const fn of store.subscribers) fn(snap);
 }
 
 /**
@@ -165,11 +190,13 @@ function scheduleReload(threadId: string, store: Store) {
   }, THROTTLE_MS);
 }
 
-function acquireStore(threadId: string, listener: (items: Artifact[]) => void): Store {
+function acquireStore(threadId: string, listener: (snapshot: StoreSnapshot) => void): Store {
   let store = stores.get(threadId);
   if (!store) {
     store = {
       items: [],
+      loadedCount: 0,
+      hasMore: false,
       subscribers: new Set(),
       channel: null,
       loading: null,
@@ -193,7 +220,8 @@ function acquireStore(threadId: string, listener: (items: Artifact[]) => void): 
           const merged = applyDelta(store!, ev, newRow, oldRow);
           if (merged) {
             // Local merge succeeded — notify subscribers without a DB round-trip.
-            for (const fn of store!.subscribers) fn(store!.items);
+            const snap = snapshot(store!);
+            for (const fn of store!.subscribers) fn(snap);
           } else {
             // Payload was missing fields; fall back to a (throttled) full reload.
             scheduleReload(threadId, store!);
@@ -207,7 +235,7 @@ function acquireStore(threadId: string, listener: (items: Artifact[]) => void): 
   return store;
 }
 
-function releaseStore(threadId: string, listener: (items: Artifact[]) => void) {
+function releaseStore(threadId: string, listener: (snapshot: StoreSnapshot) => void) {
   const store = stores.get(threadId);
   if (!store) return;
   store.subscribers.delete(listener);
@@ -220,14 +248,19 @@ function releaseStore(threadId: string, listener: (items: Artifact[]) => void) {
 }
 
 export function useThreadArtifacts(threadId: string) {
-  const [items, setItems] = useState<Artifact[]>(() => stores.get(threadId)?.items ?? []);
+  const seed = stores.get(threadId);
+  const [snap, setSnap] = useState<StoreSnapshot>(() => ({
+    items: seed?.items ?? [],
+    loadedCount: seed?.loadedCount ?? 0,
+    hasMore: seed?.hasMore ?? false,
+  }));
 
   useEffect(() => {
     if (!threadId) return;
-    const listener = (next: Artifact[]) => setItems(next);
+    const listener = (next: StoreSnapshot) => setSnap(next);
     const store = acquireStore(threadId, listener);
     // Seed with whatever's already cached so the first paint isn't empty.
-    setItems(store.items);
+    setSnap(snapshot(store));
     return () => releaseStore(threadId, listener);
   }, [threadId]);
 
@@ -235,10 +268,19 @@ export function useThreadArtifacts(threadId: string) {
     const store = stores.get(threadId);
     if (!store) return;
     store.items = store.items.map((x) => (x.id === a.id ? a : x));
-    for (const fn of store.subscribers) fn(store.items);
+    const next = snapshot(store);
+    for (const fn of store.subscribers) fn(next);
   };
 
-  const userItems = items.filter((a) => !isMeta(a));
-  const metaItems = items.filter(isMeta);
-  return { items: userItems, metaItems, allItems: items, updateLocal };
+  const userItems = snap.items.filter((a) => !isMeta(a));
+  const metaItems = snap.items.filter(isMeta);
+  return {
+    items: userItems,
+    metaItems,
+    allItems: snap.items,
+    updateLocal,
+    loadedCount: snap.loadedCount,
+    hasMore: snap.hasMore,
+    cap: ARTIFACTS_INITIAL_LIMIT,
+  };
 }

@@ -19,6 +19,7 @@ import { toast } from "sonner";
 import { detectSeed } from "@/lib/seed";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { buildPivots } from "@/lib/intel";
+import { scrollBehavior } from "@/lib/motion";
 import { deriveToolCharge, deriveToolPreview, deriveToolRuntime, deriveToolTone } from "@/lib/tool-run";
 import { shouldFollowChatScroll } from "@/lib/chat-scroll";
 import {
@@ -253,7 +254,7 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
     const onShow = () => {
       const first = document.querySelector('[data-failed-tool="true"]');
       if (first === rootRef.current) {
-        rootRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+        rootRef.current?.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
         setOpen(true);
         setFlash(true);
         setTimeout(() => setFlash(false), 1800);
@@ -1168,7 +1169,7 @@ function ChatWindowInner({
     followLatestRef.current = true;
     setShowJumpToLatest(false);
     const viewport = scrollRef.current;
-    if (viewport) viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" });
+    if (viewport) viewport.scrollTo({ top: viewport.scrollHeight, behavior: scrollBehavior() });
   }, []);
 
   const send = async () => {
