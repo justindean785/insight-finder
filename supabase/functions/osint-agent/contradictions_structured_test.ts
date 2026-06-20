@@ -2,6 +2,7 @@ import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
   detectContradictions,
   structuredContradictionPatches,
+  clusterScopedContradictionPatches,
   mergeStructuredContradictions,
   type StructuredContradiction,
 } from "./contradictions.ts";
@@ -105,6 +106,72 @@ Deno.test("merge is idempotent — re-running detect does not duplicate the same
   const once = mergeStructuredContradictions([], [entry]);
   const twice = mergeStructuredContradictions(once, [entry]);
   assertEquals(twice.length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Cluster-scoped persistence — a contradiction is only real WITHIN a single
+// candidate identity. Distinct hypotheses (different cluster_id) must never be
+// cross-marked as contradicting each other.
+// ---------------------------------------------------------------------------
+
+Deno.test("cluster-scoped: conflicting locations in DIFFERENT clusters are NOT cross-marked", () => {
+  const artifacts = [
+    { kind: "address", value: "Tampa, FL", source: "A", metadata: { cluster_id: "c1", residence: "Tampa, Florida" } },
+    { kind: "address", value: "Los Angeles, CA", source: "B", metadata: { cluster_id: "c2", residence: "Los Angeles, CA" } },
+  ];
+  // Thread-wide detection WOULD flag a location_conflict...
+  assertEquals(structuredContradictionPatches(artifacts, NOW).length > 0, true);
+  // ...but cluster-scoped persistence must NOT, since they're separate candidates.
+  assertEquals(clusterScopedContradictionPatches(artifacts, NOW).length, 0);
+});
+
+Deno.test("cluster-scoped: conflicting locations WITHIN the same cluster ARE structured", () => {
+  const artifacts = [
+    { kind: "address", value: "Tampa, FL", source: "A", metadata: { cluster_id: "c1", residence: "Tampa, Florida" } },
+    { kind: "employer", value: "OpenSponsorship", source: "B", metadata: { cluster_id: "c1", based: "Los Angeles, CA" } },
+  ];
+  const patches = clusterScopedContradictionPatches(artifacts, NOW);
+  assertEquals(patches.length, 2);
+  assertEquals(patches[0].entry.field, "location");
+});
+
+Deno.test("cluster-scoped: patches carry the source artifact id (not just value)", () => {
+  const artifacts = [
+    { id: "A1", kind: "address", value: "123 Main St", source: "A", metadata: { cluster_id: "c1", residence: "Tampa, Florida" } },
+    { id: "A2", kind: "employer", value: "Shared Value", source: "B", metadata: { cluster_id: "c1", based: "Los Angeles, CA" } },
+  ];
+  const patches = clusterScopedContradictionPatches(artifacts, NOW);
+  // Every patch resolves to a concrete in-cluster artifact id.
+  assertEquals(patches.every((p) => typeof p.id === "string"), true);
+  const ids = patches.map((p) => p.id).sort();
+  assertEquals(ids, ["A1", "A2"]);
+});
+
+Deno.test("cluster-scoped: a value shared across clusters is NOT cross-marked (id-keyed)", () => {
+  // "Shared Value" is the c1 employer (A2) AND a c2 address (B1). The c1
+  // location conflict must attach to A2 — never to B1 in the other cluster.
+  // A value-only persistence match (the pre-fix behavior) could write it onto
+  // whichever same-value row sorts first, cross-marking a distinct candidate.
+  const artifacts = [
+    { id: "B1", kind: "address", value: "Shared Value", source: "Z", metadata: { cluster_id: "c2", residence: "Tampa, Florida" } },
+    { id: "A1", kind: "address", value: "123 Main St", source: "A", metadata: { cluster_id: "c1", residence: "Tampa, Florida" } },
+    { id: "A2", kind: "employer", value: "Shared Value", source: "B", metadata: { cluster_id: "c1", based: "Los Angeles, CA" } },
+  ];
+  const patches = clusterScopedContradictionPatches(artifacts, NOW);
+  // The conflict touches only the c1 artifacts.
+  assertEquals(patches.some((p) => p.id === "A2"), true);
+  assertEquals(patches.some((p) => p.id === "B1"), false);
+  // The "Shared Value" patch is bound to the c1 row, not the c2 row.
+  const sharedPatch = patches.find((p) => p.value === "Shared Value");
+  assertEquals(sharedPatch?.id, "A2");
+});
+
+Deno.test("cluster-scoped: unclustered artifacts (no cluster_id) are NOT auto-persisted", () => {
+  const artifacts = [
+    { kind: "address", value: "Tampa, FL", source: "A", metadata: { residence: "Tampa, Florida" } },
+    { kind: "address", value: "Los Angeles, CA", source: "B", metadata: { residence: "Los Angeles, CA" } },
+  ];
+  assertEquals(clusterScopedContradictionPatches(artifacts, NOW).length, 0);
 });
 
 Deno.test("merge preserves prior entries (including legacy string contradictions)", () => {

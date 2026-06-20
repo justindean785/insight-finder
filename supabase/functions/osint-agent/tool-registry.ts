@@ -10,7 +10,7 @@ import { playbookFor, renderPlaybookForPrompt } from "./playbooks.ts";
 import { auditCoverage } from "./coverage.ts";
 import {
   detectContradictions,
-  structuredContradictionPatches,
+  clusterScopedContradictionPatches,
   mergeStructuredContradictions,
   type StructuredContradiction,
 } from "./contradictions.ts";
@@ -3849,10 +3849,17 @@ export function buildTools(ctx: ToolContext) {
       // insert time), so labels/confidence of existing rows are unchanged; the
       // structured field is surfaced for the UI, detect helpers, and any
       // subsequent record_finding that naturally reacts to it.
-      const patches = structuredContradictionPatches(rows as Parameters<typeof structuredContradictionPatches>[0], new Date().toISOString());
+      // Scope persistence to WITHIN each candidate cluster — never cross-mark
+      // distinct hypotheses (different cluster_id, different locations/employers)
+      // as contradicting each other. The advisory `findings` above stays
+      // thread-wide; only the structural writes are cluster-scoped.
+      const patches = clusterScopedContradictionPatches(rows as Parameters<typeof clusterScopedContradictionPatches>[0], new Date().toISOString());
       const byId = new Map<string, StructuredContradiction[]>();
       for (const p of patches) {
-        const row = rows.find((r) => r.value === p.value);
+        // Prefer the exact artifact id carried by the patch. Falling back to a
+        // value match would attach a cluster-c1 conflict to the first row with
+        // the same value thread-wide — which can be a different cluster's row.
+        const row = p.id ? rows.find((r) => r.id === p.id) : rows.find((r) => r.value === p.value);
         if (!row) continue;
         const list = byId.get(row.id) ?? [];
         list.push(p.entry);

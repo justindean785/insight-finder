@@ -97,18 +97,35 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   type ProbeResult = { ok: boolean; latencyMs: number; error?: string };
   const providers: Record<string, ProbeResult> = {};
   if (wantProbe) {
+    const PROBE_TIMEOUT_MS = 8000;
     const probeProvider = async (
       name: string,
       hasKey: boolean,
-      fn: () => Promise<{ ok: boolean; status: number }>,
+      fn: (signal: AbortSignal) => Promise<{ ok: boolean; status: number }>,
     ): Promise<ProbeResult> => {
       if (!hasKey) return { ok: false, latencyMs: 0, error: "key_not_configured" };
       const t0 = Date.now();
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 8000);
+      // Hard 8s cap: race the provider call against a timeout that both aborts
+      // the in-flight request (bare fetches honor ctrl.signal) AND resolves a
+      // bounded result — so a stalled paid probe can never hang the health
+      // response (e.g. MiniMax's own 45s internal timeout, or a hung gateway).
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<ProbeResult>((resolve) => {
+        timer = setTimeout(() => {
+          ctrl.abort();
+          resolve({ ok: false, latencyMs: Date.now() - t0, error: "timeout" });
+        }, PROBE_TIMEOUT_MS);
+      });
       try {
-        const res = await fn();
-        return { ok: res.ok, latencyMs: Date.now() - t0, ...(res.ok ? {} : { error: `status=${res.status}` }) };
+        return await Promise.race([
+          fn(ctrl.signal).then((res) => ({
+            ok: res.ok,
+            latencyMs: Date.now() - t0,
+            ...(res.ok ? {} : { error: `status=${res.status}` }),
+          })),
+          timeout,
+        ]);
       } catch {
         return { ok: false, latencyMs: Date.now() - t0, error: "unreachable" };
       } finally {
@@ -116,20 +133,22 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
       }
     };
     const [mm, lov, gk] = await Promise.all([
-      probeProvider("minimax", !!MINIMAX_API_KEY, () => minimaxChat({ user: "ping", maxTokens: 4, temperature: 0 })),
-      probeProvider("lovable", !!LOVABLE_API_KEY, async () => {
+      probeProvider("minimax", !!MINIMAX_API_KEY, (signal) => minimaxChat({ user: "ping", maxTokens: 4, temperature: 0, signal })),
+      probeProvider("lovable", !!LOVABLE_API_KEY, async (signal) => {
         const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
           method: "POST",
           headers: { "Lovable-API-Key": LOVABLE_API_KEY, "Content-Type": "application/json" },
           body: JSON.stringify({ model: "google/gemini-2.5-pro", messages: [{ role: "user", content: "ping" }], max_tokens: 4 }),
+          signal,
         });
         return { ok: res.ok, status: res.status };
       }),
-      probeProvider("grok", !!XAI_API_KEY, async () => {
+      probeProvider("grok", !!XAI_API_KEY, async (signal) => {
         const res = await fetch("https://api.x.ai/v1/chat/completions", {
           method: "POST",
           headers: { Authorization: `Bearer ${XAI_API_KEY}`, "Content-Type": "application/json" },
           body: JSON.stringify({ model: GROK_ORCHESTRATOR_MODEL_ID, messages: [{ role: "user", content: "ping" }], max_tokens: 4 }),
+          signal,
         });
         return { ok: res.ok, status: res.status };
       }),

@@ -19,6 +19,10 @@ export interface ContradictionFinding {
 }
 
 interface ArtifactLike {
+  /** Stable artifact id. When present, structured patches carry it so the
+   *  persistence layer attaches a conflict to the EXACT source artifact rather
+   *  than the first row sharing its value (which may live in another cluster). */
+  id?: string;
   kind: string;
   value: string;
   source?: string | null;
@@ -220,8 +224,13 @@ export interface StructuredContradiction {
 }
 
 export interface ContradictionPatch {
-  /** Artifact value the entry should be attached to. */
+  /** Artifact value the entry should be attached to (retained for callers that
+   *  match by value and for human-readable logging). */
   value: string;
+  /** Stable artifact id of the EXACT source artifact, when the input carried
+   *  one. Persistence must prefer this over `value`: a value can recur across
+   *  clusters, so a value-only match can write a c1 conflict onto a c2 row. */
+  id?: string;
   entry: StructuredContradiction;
 }
 
@@ -248,12 +257,54 @@ export function structuredContradictionPatches(
       claims: f.claims,
       detected_at: nowIso,
     };
-    // De-dup involved values: one entry per affected artifact value.
+    // One patch per AFFECTED ARTIFACT (resolved by id from this artifact set),
+    // not per value. Emitting by id lets the persistence layer attach the entry
+    // to the exact source row; matching only on value can cross-mark a same-value
+    // row in a different cluster. When the input carries no ids (pure callers /
+    // tests), fall back to a single value-keyed patch per distinct value.
     for (const value of new Set(f.involved)) {
-      patches.push({ value, entry });
+      const matches = artifacts.filter((a) => a.value === value);
+      const withIds = matches.filter((a) => typeof a.id === "string" && a.id);
+      if (withIds.length > 0) {
+        for (const a of withIds) patches.push({ value, id: a.id, entry });
+      } else {
+        patches.push({ value, entry });
+      }
     }
   }
   return patches;
+}
+
+/**
+ * Cluster-scoped variant of structuredContradictionPatches.
+ *
+ * A contradiction (e.g. a location conflict) is only real WITHIN a single
+ * candidate identity — two different people in a multi-hypothesis thread
+ * legitimately have different locations/employers and must NOT be marked as
+ * contradicting each other. So we group by `metadata.cluster_id` and detect
+ * conflicts only within each explicitly-assigned cluster. Artifacts with no
+ * cluster_id are NOT auto-persisted (we can't assert they're the same entity);
+ * the thread-wide advisory `detectContradictions()` result is unaffected.
+ */
+export function clusterScopedContradictionPatches(
+  artifacts: ArtifactLike[],
+  nowIso: string,
+): ContradictionPatch[] {
+  const groups = new Map<string, ArtifactLike[]>();
+  for (const a of artifacts) {
+    const cid = a.metadata?.cluster_id;
+    if (typeof cid !== "string" || !cid.trim()) continue; // unclustered → not same-entity
+    const key = cid.trim();
+    const list = groups.get(key);
+    if (list) list.push(a);
+    else groups.set(key, [a]);
+  }
+  const out: ContradictionPatch[] = [];
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    out.push(...structuredContradictionPatches(group, nowIso));
+  }
+  return out;
 }
 
 /** True when two structured contradictions describe the same conflict
