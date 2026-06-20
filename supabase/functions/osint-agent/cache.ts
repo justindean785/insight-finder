@@ -329,7 +329,7 @@ export function wrapToolsWithCache(
               out = await orig(input, opts);
               ok = deriveOk(out);
               if (!ok) errInfo = extractToolError(out);
-              return tagTier(scrub(out), tier, model);
+              return tagSkipState(tagTier(scrub(out), tier, model));
             } catch (e) {
               ok = false;
               errInfo = { errorMsg: redactSecrets(String((e as Error)?.message ?? e)).slice(0, 500), statusCode: null };
@@ -574,7 +574,7 @@ export function wrapToolsWithCache(
         let result: unknown;
         let errInfo: { errorMsg: string | null; statusCode: number | null } = { errorMsg: null, statusCode: null };
         try {
-          result = attachRuntimeMeta(tagTier(scrub(await originalExecute(input, opts)), tier, model), {
+          result = attachRuntimeMeta(tagSkipState(tagTier(scrub(await originalExecute(input, opts)), tier, model)), {
             ...runtimeMetaBase,
             stage: runtimeDecision.stage,
             cycle_id: runtimeDecision.cycleId,
@@ -666,6 +666,29 @@ export function tagTier(output: unknown, tier: Tier, model: string) {
     return { ...o, _tier: o._tier ?? tier, _model: o._model ?? model };
   }
   return { value: output, _tier: tier, _model: model };
+}
+
+// ---- Skip-state tagging --------------------------------------------------------
+// The UI tool-status taxonomy (src/lib/tool-run.ts → deriveToolStatus) renders a
+// call as "skipped" when output.skipped === true. Most self-skips already set it
+// (skipStub → guard/dedup, dead-host, intelbase gate, bosint timeout) or carry
+// reason text the UI regexes match (circuit/5xx/disabled → degraded; budget/quota
+// → gated). The one class that does NOT is a missing-key bail: a bare
+// { error: "X_API_KEY not configured" } with no flag, matching no regex — so the
+// Tools tab mis-renders it. Tag exactly that case so it reads as Skipped.
+// Additive only: deriveOk already treats an error/skip as not-ok and isFreeCall
+// already treats "not configured" as a free (unbilled) call, so ok / billing /
+// caching are unchanged.
+export function tagSkipState(output: unknown): unknown {
+  if (!output || typeof output !== "object") return output;
+  const o = output as Record<string, unknown>;
+  if (o.ok === true) return output;
+  if (o.skipped === true || o.gated === true || o.degraded === true || o.partial === true) return output;
+  const text = [o.error, o.note, o.reason, o.detail]
+    .filter((v): v is string => typeof v === "string")
+    .join(" ");
+  if (/not configured/i.test(text)) o.skipped = true;
+  return output;
 }
 
 // ---- No-sanitize tools ---------------------------------------------------------
