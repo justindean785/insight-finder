@@ -1,5 +1,5 @@
 import { useEffect, useState, lazy, Suspense } from "react";
-import { Navigate, useNavigate, useParams } from "react-router-dom";
+import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadToolActivity } from "@/hooks/useThreadToolActivity";
@@ -115,9 +115,13 @@ export default function ChatPage() {
           <button onClick={() => setMLeft(true)} className="shrink-0 w-9 h-9 rounded-xl grid place-items-center border border-white/10 bg-white/[0.035] text-muted-foreground transition-all duration-500 ease-premium hover:text-foreground hover:bg-white/[0.06] active:scale-[0.97]" aria-label="Open cases">
             <PanelLeftOpen className="w-4 h-4 text-foreground/80" />
           </button>
-          <span className="hidden min-[430px]:inline shrink-0 font-display font-semibold text-sm tracking-tight text-foreground select-none">
+          <Link
+            to="/"
+            aria-label="Home"
+            className="hidden min-[430px]:inline shrink-0 font-display font-semibold text-sm tracking-tight text-foreground select-none hover:text-foreground/80 transition-colors"
+          >
             Swarmbot
-          </span>
+          </Link>
           <WorkspaceTabs active={tab} onChange={setTab} counts={tabCounts} variant="inline" />
           <button onClick={createNew} disabled={creating} className="shrink-0 w-9 h-9 rounded-xl grid place-items-center border border-white/10 bg-white text-black transition-all duration-500 ease-premium hover:bg-white/90 active:scale-[0.97] disabled:opacity-60" aria-label="New investigation">
             <Plus className="w-4 h-4 text-black" />

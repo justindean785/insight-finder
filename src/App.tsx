@@ -12,8 +12,10 @@ import Auth from "./pages/Auth";
 import NotFound from "./pages/NotFound";
 // Heavy routes are code-split out of the main bundle.
 const ChatPage = lazy(() => import("./pages/ChatPage"));
+const ChatResume = lazy(() => import("./pages/ChatResume"));
 const AdminSecurity = lazy(() => import("./pages/AdminSecurity"));
 const BrainGlobalPage = lazy(() => import("./pages/BrainGlobalPage"));
+const Insights = lazy(() => import("./pages/Insights"));
 const ReportPreview = lazy(() => import("./pages/ReportPreview"));
 const Settings = lazy(() => import("./pages/Settings"));
 const Terms = lazy(() => import("./pages/Terms"));
@@ -45,7 +47,9 @@ const App = () => (
           <Routes>
             <Route path="/" element={<IndexRedirect />} />
             <Route path="/auth" element={<Auth />} />
+            <Route path="/chat" element={<ChatResume />} />
             <Route path="/chat/:threadId" element={<ChatPage />} />
+            <Route path="/insights" element={<Insights />} />
             <Route path="/brain" element={<BrainGlobalPage />} />
             <Route path="/report-preview" element={<ReportPreview />} />
             <Route path="/admin/security" element={<AdminSecurity />} />

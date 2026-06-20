@@ -5,7 +5,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import {
   Plus, LogOut, Trash2, PanelLeftOpen, PanelLeftClose, Search, Brain, CheckCircle2,
-  ShieldAlert, Database, Activity,
+  ShieldAlert, Database, Activity, BarChart3,
   Mail, Phone, Globe, Network, User, Hash, FileSearch, type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -25,6 +25,11 @@ function seedIcon(seedType: string | null, title: string): LucideIcon {
 }
 import { toast } from "sonner";
 import { SwarmMark } from "@/components/ui/swarm-mark";
+
+/** Upper bound on the global artifact rows pulled to compute per-thread
+ *  sidebar badges. When this is hit the badges become a *sample*, not totals,
+ *  so the UI surfaces a "metrics sampled" pill — never silently truncate. */
+const SIDEBAR_METRICS_SAMPLE_LIMIT = 5000;
 
 function timeAgo(iso: string): string {
   const diff = (Date.now() - new Date(iso).getTime()) / 1000;
@@ -77,8 +82,10 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   const navigate = useNavigate();
   const location = useLocation();
   const onBrainRoute = location.pathname.startsWith("/brain");
+  const onInsightsRoute = location.pathname.startsWith("/insights");
   const [threads, setThreads] = useState<Thread[]>([]);
   const [metrics, setMetrics] = useState<Record<string, ThreadMetrics>>({});
+  const [metricsSampled, setMetricsSampled] = useState(false);
   const [query, setQuery] = useState("");
   const [newPatternCount, setNewPatternCount] = useState<number>(0);
   const [typeFilter, setTypeFilter] = useState<string>("all");
@@ -112,17 +119,20 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
       }
     };
 
-    // Expensive: pulls up to 5000 artifact rows across ALL threads to aggregate
-    // the per-thread sidebar badges. During a live run the agent writes
-    // artifacts in rapid bursts, so this MUST NOT re-run on every insert — it is
-    // driven by its own long-debounced scheduler below.
+    // Expensive: pulls up to SIDEBAR_METRICS_SAMPLE_LIMIT artifact rows across
+    // ALL threads to aggregate the per-thread sidebar badges. During a live
+    // run the agent writes artifacts in rapid bursts, so this MUST NOT re-run
+    // on every insert — it is driven by its own long-debounced scheduler
+    // below. When the limit is hit the badges are a sample, not a total, and
+    // the UI surfaces a "sampled" pill so counts aren't read as authoritative.
     const loadMetrics = async () => {
       const { data: arts } = await supabase
         .from("artifacts")
         .select("thread_id,kind,confidence")
-        .limit(5000);
+        .limit(SIDEBAR_METRICS_SAMPLE_LIMIT);
+      const rows = (arts ?? []) as { thread_id: string; kind: string; confidence: number | null }[];
       const agg: Record<string, ThreadMetrics> = {};
-      for (const a of (arts ?? []) as { thread_id: string; kind: string; confidence: number | null }[]) {
+      for (const a of rows) {
         const m = agg[a.thread_id] ?? { artifacts: 0, breaches: 0, lowConf: 0 };
         m.artifacts++;
         if (a.kind?.toLowerCase() === "breach") m.breaches++;
@@ -130,6 +140,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         agg[a.thread_id] = m;
       }
       setMetrics(agg);
+      setMetricsSampled(rows.length >= SIDEBAR_METRICS_SAMPLE_LIMIT);
     };
 
     void loadThreadsAndBrain();
@@ -228,6 +239,20 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
           )}
         </Link>
 
+        <Link
+          to="/insights"
+          className={cn(
+            "relative w-8 h-8 rounded-lg grid place-items-center transition-colors",
+            onInsightsRoute
+              ? "bg-primary/15 text-primary ring-1 ring-primary/40"
+              : "glass-interactive text-muted-foreground hover:text-primary",
+          )}
+          title="Insights"
+          aria-label="Insights"
+        >
+          <BarChart3 className="w-4 h-4" strokeWidth={1.5} />
+        </Link>
+
         <div className="flex-1 overflow-y-auto w-full flex flex-col items-center gap-1 px-1">
           {threads.map((t) => {
             const Icon = seedIcon(t.seed_type, t.title);
@@ -287,13 +312,19 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   return (
     <div className="w-full h-full flex flex-col bg-[hsl(var(--surface-0))]">
       <div className="px-3 py-3 border-b border-border-subtle flex items-center gap-2">
-        <div className="w-8 h-8 rounded-lg border border-white/10 bg-white/[0.035] grid place-items-center">
-          <SwarmMark className="w-4 h-4 text-foreground/90" />
-        </div>
-        <div className="min-w-0">
-          <div className="font-display font-semibold tracking-tight text-sm text-foreground leading-none">Swarmbot</div>
-          <div className="mt-0.5 text-[10px] text-muted-foreground leading-none">Cases</div>
-        </div>
+        <Link
+          to="/"
+          aria-label="Home"
+          className="flex items-center gap-2 min-w-0 group focus:outline-none focus:ring-2 focus:ring-primary/40 rounded-lg"
+        >
+          <div className="w-8 h-8 rounded-lg border border-white/10 bg-white/[0.035] grid place-items-center transition-colors group-hover:bg-white/[0.06]">
+            <SwarmMark className="w-4 h-4 text-foreground/90" />
+          </div>
+          <div className="min-w-0">
+            <div className="font-display font-semibold tracking-tight text-sm text-foreground leading-none">Swarmbot</div>
+            <div className="mt-0.5 text-[10px] text-muted-foreground leading-none">Cases</div>
+          </div>
+        </Link>
         <button
           onClick={onToggleCollapse}
           className="ml-auto w-8 h-8 rounded-lg border border-white/10 bg-white/[0.035] text-muted-foreground hover:text-foreground hover:bg-white/[0.06] transition-colors"
@@ -329,6 +360,19 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
             </span>
           )}
         </Link>
+        <Link
+          to="/insights"
+          aria-label="Insights"
+          className={cn(
+            "relative mt-2 flex items-center gap-2 w-full px-3 py-2 rounded-lg border text-sm font-medium transition-colors",
+            onInsightsRoute
+              ? "border-white/20 bg-surface-1 text-foreground"
+              : "border-border-subtle bg-surface-0 text-muted-foreground hover:text-foreground hover:border-white/15 hover:bg-surface-1",
+          )}
+        >
+          <BarChart3 className="w-3.5 h-3.5" strokeWidth={1.5} />
+          <span>Insights</span>
+        </Link>
       </div>
 
       <div className="px-3 pb-2">
@@ -359,6 +403,14 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
       </div>
 
       <div className="flex-1 overflow-y-auto px-2.5 pb-3">
+        {metricsSampled && (
+          <div
+            className="mb-2 mx-1 inline-flex items-center gap-1 rounded border border-warning/25 bg-warning/8 px-2 py-1 text-[10px] text-warning"
+            title={`Per-thread badges are aggregated from the latest ${SIDEBAR_METRICS_SAMPLE_LIMIT.toLocaleString()} artifact rows. Counts on older or very large threads may be undercounted.`}
+          >
+            ⚠ Metrics sampled · latest {SIDEBAR_METRICS_SAMPLE_LIMIT.toLocaleString()} rows
+          </div>
+        )}
         {(["Today", "This week", "Older"] as const).map((bucket) =>
           activeGroups[bucket].length === 0 ? null : (
             <div key={bucket} className="mb-2.5">

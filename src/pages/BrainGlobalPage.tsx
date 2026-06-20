@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { Link, Navigate, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -183,8 +183,8 @@ export default function BrainGlobalPage() {
     const newSince = sinceVisit
       ? visible.filter((m) => new Date(m.created_at).getTime() > new Date(sinceVisit).getTime()).length
       : 0;
-    const userConfirmed = visible.filter((m) => (m.confidence ?? 0) >= 75).length;
-    return { total, recalls, avgConf, newSince, userConfirmed };
+    const highConfidence = visible.filter((m) => (m.confidence ?? 0) >= 75).length;
+    return { total, recalls, avgConf, newSince, highConfidence };
   }, [memories, sinceVisit, deleted]);
 
   const filteredMemories = useMemo(() => {
@@ -215,18 +215,26 @@ export default function BrainGlobalPage() {
     <div className="flex-1 min-h-0 overflow-y-auto">
       <header className="sticky top-0 z-10 glass-card border-b border-border-subtle">
         <div className="px-6 pt-5 pb-3 flex items-start gap-3">
-          <div className="relative shrink-0">
-            <div className="w-10 h-10 rounded-xl glass-strong grid place-items-center ring-1 ring-primary/40 shadow-[0_0_24px_-6px_hsl(var(--primary)/0.7)]">
+          <Link
+            to="/"
+            aria-label="Home"
+            className="relative shrink-0 focus:outline-none focus:ring-2 focus:ring-primary/40 rounded-xl"
+          >
+            <div className="w-10 h-10 rounded-xl glass-strong grid place-items-center ring-1 ring-primary/40 shadow-[0_0_24px_-6px_hsl(var(--primary)/0.7)] hover:bg-white/[0.04] transition-colors">
               <Brain className="w-5 h-5 text-primary" strokeWidth={1.5} />
             </div>
             <Sparkles className="absolute -top-1 -right-1 w-3 h-3 text-primary animate-pulse" />
-          </div>
+          </Link>
           <div className="flex-1 min-w-0">
             <h1 className="font-display text-xl tracking-tight text-foreground">
               AGENT BRAIN · LEARNING LOG
             </h1>
             <p className="text-xs text-muted-foreground mt-0.5">
               Patterns, lessons and source weighting the agent has accumulated across investigations.
+            </p>
+            <p className="mt-1.5 text-[11px] text-muted-foreground/80">
+              Pin / mute / hide actions on this screen are local view controls — they do not modify
+              the source memory or create an audited governance record.
             </p>
           </div>
           {stats.newSince > 0 && (
@@ -239,7 +247,12 @@ export default function BrainGlobalPage() {
           <MetricChip icon={Brain} label="MEMORIES" value={stats.total} />
           <MetricChip icon={Zap} label="RECALLS" value={stats.recalls} />
           <MetricChip icon={Target} label="AVG CONFIDENCE" value={`${stats.avgConf}%`} />
-          <MetricChip icon={ThumbsUp} label="USER CONFIRMED" value={stats.userConfirmed} />
+          <MetricChip
+            icon={TrendingUp}
+            label="HIGH CONFIDENCE"
+            value={stats.highConfidence}
+            title="Memories with confidence ≥75%. This is a source/tool confidence score, not an analyst confirmation."
+          />
           <MetricChip icon={CreditCard} label="SOCIALFETCH" value={sfCreditsLeft != null ? `${sfCreditsLeft.toLocaleString()} left` : "—"} />
         </div>
         <div className="px-6 pb-3 flex gap-1 border-t border-border-subtle/40 pt-3">
@@ -313,9 +326,13 @@ export default function BrainGlobalPage() {
           >
             <PanelLeftOpen className="w-4 h-4 text-foreground/80" />
           </button>
-          <div className="font-display font-semibold text-sm tracking-tight gradient-text select-none">
+          <Link
+            to="/"
+            aria-label="Home"
+            className="font-display font-semibold text-sm tracking-tight gradient-text select-none hover:opacity-80 transition-opacity"
+          >
             Brain
-          </div>
+          </Link>
           <div className="w-9" />
         </header>
         <main className="flex-1 min-h-0 flex w-full overflow-hidden">
@@ -344,10 +361,13 @@ export default function BrainGlobalPage() {
 }
 
 function MetricChip({
-  icon: Icon, label, value,
-}: { icon: typeof Brain; label: string; value: string | number }) {
+  icon: Icon, label, value, title,
+}: { icon: typeof Brain; label: string; value: string | number; title?: string }) {
   return (
-    <div className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-1/60 px-2.5 py-1.5">
+    <div
+      className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-1/60 px-2.5 py-1.5"
+      title={title}
+    >
       <Icon className="w-3 h-3 text-muted-foreground" strokeWidth={1.75} />
       <span className="text-eyebrow uppercase tracking-wider text-muted-foreground">{label}</span>
       <span className="text-data text-muted-foreground">·</span>
@@ -583,7 +603,8 @@ function MemoryRichCard({
         <div className="flex items-center gap-0.5 shrink-0">
           <button
             onClick={onSuppress}
-            aria-label={suppressed ? "Unsuppress memory" : "Suppress memory"}
+            aria-label={suppressed ? "Unmute memory (local)" : "Mute memory (local)"}
+            title={suppressed ? "Unmute in your local view — no audited change" : "Mute in your local view — no audited change"}
             className={cn(
               "w-6 h-6 grid place-items-center rounded hover:bg-white/5",
               suppressed ? "text-primary" : "text-muted-foreground/60 hover:text-foreground",
@@ -593,8 +614,9 @@ function MemoryRichCard({
           </button>
           <button
             onClick={onDelete}
-            aria-label="Delete memory"
-            className="w-6 h-6 grid place-items-center rounded text-muted-foreground/60 hover:text-destructive hover:bg-white/5"
+            aria-label="Hide memory from your local view"
+            title="Hide in your local view — no audited deletion"
+            className="w-6 h-6 grid place-items-center rounded text-muted-foreground/60 hover:text-foreground hover:bg-white/5"
           >
             <Trash2 className="w-3 h-3" strokeWidth={1.75} />
           </button>
@@ -810,30 +832,33 @@ function PatternCard({
       <div className="flex items-center gap-1 mt-auto pt-1 border-t border-border-subtle/40">
         <button
           onClick={onPromote}
+          title="Pin in your local view — no audited change to source priority"
           className={cn(
             "inline-flex items-center gap-1 px-2 py-1 rounded text-eyebrow uppercase tracking-wider font-mono transition-colors hover:bg-white/5",
             promoted ? "text-primary" : "text-muted-foreground/70 hover:text-foreground",
           )}
         >
           <ArrowUp className="w-3 h-3" strokeWidth={1.75} />
-          Promote
+          {promoted ? "Unpin" : "Pin locally"}
         </button>
         <button
           onClick={onSuppress}
+          title="Mute in your local view — no audited change to source memory"
           className={cn(
             "inline-flex items-center gap-1 px-2 py-1 rounded text-eyebrow uppercase tracking-wider font-mono transition-colors hover:bg-white/5",
             suppressed ? "text-primary" : "text-muted-foreground/70 hover:text-foreground",
           )}
         >
           <EyeOff className="w-3 h-3" strokeWidth={1.75} />
-          {suppressed ? "Unsuppress" : "Suppress"}
+          {suppressed ? "Unmute" : "Mute locally"}
         </button>
         <button
           onClick={onDelete}
-          className="inline-flex items-center gap-1 px-2 py-1 rounded text-eyebrow uppercase tracking-wider font-mono text-muted-foreground/70 hover:text-destructive hover:bg-white/5"
+          title="Hide in your local view — no audited deletion"
+          className="inline-flex items-center gap-1 px-2 py-1 rounded text-eyebrow uppercase tracking-wider font-mono text-muted-foreground/70 hover:text-foreground hover:bg-white/5"
         >
           <Trash2 className="w-3 h-3" strokeWidth={1.75} />
-          Delete
+          Hide locally
         </button>
       </div>
     </div>

@@ -225,7 +225,9 @@ export function EvidenceMatrixTab({
                     </div>
                   </div>
 
-                  {/* Score bar — replaces "score 55 (40+20)" */}
+                  {/* Priority score bar — combines source confidence + analyst review delta.
+                      The raw (tool/source) confidence is surfaced as a separate chip below so
+                      review state never silently masquerades as source truth. */}
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <div className="mt-2.5 flex items-center gap-2 cursor-help">
@@ -253,18 +255,29 @@ export function EvidenceMatrixTab({
                         <ConfidenceExplain artifact={a} review={rState} />
                       </div>
                     </TooltipTrigger>
-                    <TooltipContent side="bottom" className="max-w-[240px] text-xs">
+                    <TooltipContent side="bottom" className="max-w-[260px] text-xs">
                       <div className="space-y-0.5">
-                        <div><span className="text-foreground font-medium">Score {score}/100</span></div>
+                        <div><span className="text-foreground font-medium">Priority {score}/100</span></div>
                         <div className="text-muted-foreground">
-                          Base {base}{delta !== 0 && <> · Review <span style={{ color: deltaColor }}>{delta > 0 ? "+" : ""}{delta}</span></>}
+                          Raw confidence {base}{delta !== 0 && <> · Review <span style={{ color: deltaColor }}>{delta > 0 ? "+" : ""}{delta}</span></>}
                         </div>
                         <div className="text-muted-foreground text-data mt-1">
-                          Base = tool-reported confidence. Review delta from your Confirm/Key/Recheck decisions.
+                          Raw confidence comes from the source/tool. Review state changes analyst priority — not the underlying evidence.
                         </div>
                       </div>
                     </TooltipContent>
                   </Tooltip>
+                  {/* Raw source confidence chip — always-visible when the analyst review delta
+                      has bent the visible score away from the source-reported value. */}
+                  {delta !== 0 && (
+                    <div
+                      className="mt-1 inline-flex items-center gap-1 text-data text-muted-foreground font-mono"
+                      title="Raw source/tool confidence — not affected by analyst review actions."
+                    >
+                      <span className="uppercase tracking-wider text-eyebrow">raw</span>
+                      <span>{base}/100</span>
+                    </div>
+                  )}
 
                   {/* Hierarchical actions: primary (Confirm/Key) · secondary (Recheck/Dismiss) · overflow */}
                   <div className="mt-3 flex items-center justify-between gap-2">
