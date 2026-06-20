@@ -11,7 +11,7 @@ evidence board showed ~9 tools "failed" and an empty Identity coverage row.
 
 ---
 
-## A. Tool "failed" flood — root cause is config + upstream, not a code bug
+## A. Tool "failed" flood — upstream/provider + gating, not missing keys, not a code bug
 
 Every failing tool was traced. None can throw unhandled; all wrap fetch+parse in
 try/catch and return a structured `{ error }` / `{ ok:false }` / `{ skipped:true }`.
@@ -23,19 +23,34 @@ try/catch and return a structured `{ error }` / `{ ok:false }` / `{ skipped:true
 billed** — but the timeline has no third state, so a missing key looks identical
 to a provider 500.
 
-| Tool(s) | Verified cause | Action |
+**CORRECTION (2026-06-20, after reviewing the Supabase Secrets dashboard):** an
+earlier draft of this note guessed `SYNAPSINT_API_KEY` / `IPQUALITYSCORE_API_KEY` /
+`INTELBASE_API_KEY` were unset. **They are all present** (along with
+`STOLENTAX_API_KEY`, `DEEPFIND_API_KEY`, etc.). So the "failed" flood is **not** a
+missing-key problem. With keys confirmed set, the causes are upstream/provider-side
+and gating, per the table below.
+
+| Tool(s) | Verified cause (keys confirmed SET) | Action |
 | --- | --- | --- |
-| `synapsint_lookup` (tool-registry.ts:671), `ipqualityscore_lookup` (1508), `intelbase_email_lookup` (500-509) | Key-gated; returned `"…_API_KEY not configured"`. Keys likely **unset in deployed Supabase secrets**. | **Config**: set secrets |
-| `stolentax_footprint` (955-996) | Same `STOLENTAX_API_KEY` as `breach_check` (813+), which **succeeded** → key is set. 25s timeout / per-endpoint quota on `osintcat-footprint`. | Upstream/tuning |
-| `deepfind_reverse_email` (1085), `deepfind_email_breach` (1373) | Shared `DEEPFIND_API_KEY`; `deepfind_email_breach` completed once → key is set. Rate-limit / provider-grouped circuit (`circuit.ts:43-58`): one 5xx suppresses the deepfind family. | Expected (circuit) |
+| `synapsint_lookup` (tool-registry.ts:671), `ipqualityscore_lookup` (1508) | Key present → guard passes → real call failed upstream (5xx/quota/timeout). synapsint marks `isDegraded()` on 5xx (681); ipqs has a tight SMTP+fetch timeout window (~1517). | Upstream/quota |
+| `intelbase_email_lookup` (500-509) | `INTELBASE_API_KEY` is set but **`INTELBASE_ENABLED` is absent** from secrets → tool stays gated and returns a structured skip. Working as designed (intelbase is the known ~33%-success tool). | Config *if* you want it on: add `INTELBASE_ENABLED` |
+| `stolentax_footprint` (955-996) | `STOLENTAX_API_KEY` set (and `breach_check` succeeded). 25s timeout / per-endpoint quota on `osintcat-footprint`. | Upstream/tuning |
+| `deepfind_reverse_email` (1085), `deepfind_email_breach` (1373) | `DEEPFIND_API_KEY` set; `deepfind_email_breach` completed once. Rate-limit / provider-grouped circuit (`circuit.ts:43-58`): one 5xx suppresses the deepfind family. | Expected (circuit) |
 | `emailrep` (2665), `gravatar_profile` (2679) | **Keyless.** Upstream/network; gravatar "fail" is often a 404 (no avatar), not an error. | Upstream / cosmetic |
 | `jina_reader_scrape` (some) | Per-URL 403/422/451 (blocked/unparseable). | Expected |
 
-**User config action (cannot be verified from the repo — deployed secrets live in
-Supabase function settings):** confirm/set `SYNAPSINT_API_KEY`,
-`IPQUALITYSCORE_API_KEY`, `INTELBASE_API_KEY` (+ `INTELBASE_ENABLED`). The Identity
-coverage gap on this run traces directly to `emailrep`/`gravatar`/`intelbase` not
-returning — not a logic flaw.
+**Config hygiene (from the dashboard):** `IPGEOLOCATION_API_KEY`,
+`VIRUSTOTAL_API_KEY`, `LEAKCHECK_API_KEY`, `STOLENTAX_API_KEY`, `INTELBASE_API_KEY`
+each appear to have **duplicate entries** (all dated May 27). Confirm and de-dup —
+duplicate secret names can resolve ambiguously.
+
+**To pin the exact per-tool error** (vs. these structured inferences), read the
+redacted `error_msg` for that run from the `tool_usage_log` table (the wrapper logs
+every call there — `cache.ts:637`). That is the ground truth; the table above is
+inferred from code paths since the keys are now known to be set.
+
+The Identity coverage gap on this run traces to `emailrep`/`gravatar`/`intelbase`
+not returning — upstream blips + intelbase being gated — **not a logic flaw.**
 
 **Deliberately not changed:** normalizing the ~30 `"not configured"` returns to a
 structured `{skipped:true, reason}` (only HIBP at `1048` does this today) was
