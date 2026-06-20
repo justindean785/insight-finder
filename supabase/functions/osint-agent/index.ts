@@ -11,11 +11,10 @@ import * as circuit from "./circuit.ts";
 import { discoverCapabilities, capabilityEnvKeys } from "./capabilities.ts";
 
 import {
-  corsHeaders, SUPABASE_URL, SERVICE_KEY, MINIMAX_API_KEY, LOVABLE_API_KEY,
+  corsHeaders, MINIMAX_API_KEY, LOVABLE_API_KEY,
   lovableGateway, PRIMARY_ORCHESTRATOR_MODEL_ID, FALLBACK_MODEL_ID,
   grokGateway, openAdapterGateway, ORCHESTRATOR_PROVIDER,
   GROK_ORCHESTRATOR_MODEL_ID, OPENADAPTER_ORCHESTRATOR_MODEL_ID,
-  XAI_API_KEY,
   degradedTools, deadHosts, resetFirecrawlCreditsLow,
 } from "./env.ts";
 
@@ -23,7 +22,7 @@ import { detectSeedServer } from "./validation.ts";
 import { sanitizeToolOutput, capPartsSize } from "./safety.ts";
 import { guard, routingGuard, triageState } from "./guard.ts";
 import { setupRequest } from "./auth.ts";
-import { minimax, minimaxChat } from "./providers.ts";
+import { minimax, minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider } from "./orchestrator_select.ts";
 import { FINDING_LABELS } from "./catalog.ts";
 import { SYSTEM_PROMPT_FULL } from "./system-prompt.ts";
@@ -228,7 +227,11 @@ Deno.serve(async (req) => {
     // fail the whole run over to Gemini instead of dying. Best-effort: any
     // probe-internal fault leaves the original selection untouched so a healthy
     // run is never broken by the probe itself.
-    if (minimaxIsPrimary && !useFallback && lovableGateway) {
+    // Skip the preflight when MiniMax answered within the last 60s on this warm
+    // isolate — it's demonstrably alive, so the extra round-trip (and up to the
+    // 6s timeout on the unhealthy path) is removed from time-to-first-token.
+    // A cold isolate has no cached health → the probe still runs (safe default).
+    if (minimaxIsPrimary && !useFallback && lovableGateway && !minimaxHealthyWithin(60_000)) {
       try {
         const probePromise = minimaxChat({ user: "ping", maxTokens: 4, temperature: 0 });
         // Swallow a late rejection if the timeout wins the race below, so it
@@ -342,6 +345,9 @@ Deno.serve(async (req) => {
       //   MiniMax-M2.7:    in $0.30/M  out $1.20/M  → 0.30, 1.20
       //   Gemini 2.5 Pro:  in $1.25/M  out $10.00/M → 1.25, 10.00
       onStepFinish: ({ usage }) => {
+        // A completed step on the primary provider proves MiniMax is alive —
+        // record it so the NEXT turn's preflight probe can be skipped.
+        if (!useFallback) markMinimaxHealthy();
         try {
           const u = usage as { inputTokens?: number; promptTokens?: number; outputTokens?: number; completionTokens?: number } | undefined;
           const inTok = Number(u?.inputTokens ?? u?.promptTokens ?? 0);

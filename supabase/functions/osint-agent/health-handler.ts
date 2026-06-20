@@ -5,6 +5,7 @@ import {
   HIBP_API_KEY, EXA_API_KEY, FIRECRAWL_API_KEY, SERUS_API_KEY,
   GITHUB_API_TOKEN, PERPLEXITY_API_KEY, IPQUALITYSCORE_API_KEY,
   XAI_API_KEY, GROK_ORCHESTRATOR_MODEL_ID,
+  OSINT_AGENT_PROBE_SECRET,
 } from "./env.ts";
 import { minimaxChat } from "./providers.ts";
 
@@ -81,57 +82,72 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     FIRECRAWL_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY, GITHUB_API_TOKEN, PERPLEXITY_API_KEY,
   });
   const u = new URL(req.url);
-  const requestedProbe = u.searchParams.get("probe") === "1";
-  const PROBE_SECRET = (Deno.env.get("OSINT_AGENT_PROBE_SECRET") || "").trim();
-  const providedSecret =
-    (req.headers.get("x-probe-secret") || u.searchParams.get("probe_secret") || "").trim();
-  let probeDenied: string | null = null;
-  let wantProbe = false;
-  if (requestedProbe) {
-    if (!PROBE_SECRET) {
-      probeDenied = "probe gate disabled: OSINT_AGENT_PROBE_SECRET not configured";
-    } else if (providedSecret !== PROBE_SECRET) {
-      probeDenied = "probe denied: missing or invalid x-probe-secret";
-    } else {
-      wantProbe = true;
+  const wantProbe = u.searchParams.get("probe") === "1";
+
+  if (wantProbe) {
+    const supplied = req.headers.get("x-probe-secret") ?? "";
+    if (!OSINT_AGENT_PROBE_SECRET || supplied !== OSINT_AGENT_PROBE_SECRET) {
+      return new Response(
+        JSON.stringify({ ok: false, error: "unauthorized" }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
     }
   }
   type ProbeResult = { ok: boolean; latencyMs: number; error?: string };
   const providers: Record<string, ProbeResult> = {};
   if (wantProbe) {
+    const PROBE_TIMEOUT_MS = 8000;
     const probeProvider = async (
       name: string,
       hasKey: boolean,
-      fn: () => Promise<{ ok: boolean; status: number }>,
+      fn: (signal: AbortSignal) => Promise<{ ok: boolean; status: number }>,
     ): Promise<ProbeResult> => {
-      if (!hasKey) return { ok: false, latencyMs: 0, error: `${name.toUpperCase()} key not set` };
+      if (!hasKey) return { ok: false, latencyMs: 0, error: "key_not_configured" };
       const t0 = Date.now();
+      const ctrl = new AbortController();
+      // Hard 8s cap: race the provider call against a timeout that both aborts
+      // the in-flight request (bare fetches honor ctrl.signal) AND resolves a
+      // bounded result — so a stalled paid probe can never hang the health
+      // response (e.g. MiniMax's own 45s internal timeout, or a hung gateway).
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<ProbeResult>((resolve) => {
+        timer = setTimeout(() => {
+          ctrl.abort();
+          resolve({ ok: false, latencyMs: Date.now() - t0, error: "timeout" });
+        }, PROBE_TIMEOUT_MS);
+      });
       try {
-        const res = await Promise.race([
-          fn(),
-          new Promise<{ ok: false; status: 0 }>((resolve) =>
-            setTimeout(() => resolve({ ok: false, status: 0 }), 8000)),
+        return await Promise.race([
+          fn(ctrl.signal).then((res) => ({
+            ok: res.ok,
+            latencyMs: Date.now() - t0,
+            ...(res.ok ? {} : { error: `status=${res.status}` }),
+          })),
+          timeout,
         ]);
-        return { ok: res.ok, latencyMs: Date.now() - t0, ...(res.ok ? {} : { error: `status=${res.status || "timeout"}` }) };
-      } catch (e) {
-        return { ok: false, latencyMs: Date.now() - t0, error: e instanceof Error ? e.message : String(e) };
+      } catch {
+        return { ok: false, latencyMs: Date.now() - t0, error: "unreachable" };
+      } finally {
+        clearTimeout(timer);
       }
     };
     const [mm, lov, gk] = await Promise.all([
       probeProvider("minimax", !!MINIMAX_API_KEY, () => minimaxChat({ user: "ping", maxTokens: 4, temperature: 0 })),
-      probeProvider("lovable", !!LOVABLE_API_KEY, async () => {
+      probeProvider("lovable", !!LOVABLE_API_KEY, async (signal) => {
         const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
           method: "POST",
           headers: { "Lovable-API-Key": LOVABLE_API_KEY, "Content-Type": "application/json" },
           body: JSON.stringify({ model: "google/gemini-2.5-pro", messages: [{ role: "user", content: "ping" }], max_tokens: 4 }),
+          signal,
         });
         return { ok: res.ok, status: res.status };
       }),
-      probeProvider("grok", !!XAI_API_KEY, async () => {
+      probeProvider("grok", !!XAI_API_KEY, async (signal) => {
         const res = await fetch("https://api.x.ai/v1/chat/completions", {
           method: "POST",
           headers: { Authorization: `Bearer ${XAI_API_KEY}`, "Content-Type": "application/json" },
           body: JSON.stringify({ model: GROK_ORCHESTRATOR_MODEL_ID, messages: [{ role: "user", content: "ping" }], max_tokens: 4 }),
+          signal,
         });
         return { ok: res.ok, status: res.status };
       }),
@@ -143,13 +159,12 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   const body: Record<string, unknown> = {
     ok: r.ok,
     service: "osint-agent",
-    version: "1.2.0",
+    version: "1.2.1",
     build: "2026-06-19-probe-gated",
     checks: r.checks,
     intelbase_enabled: INTELBASE_ENABLED,
   };
   if (wantProbe) body.providers = providers;
-  if (probeDenied) body.probe = { ok: false, denied: probeDenied };
   return new Response(
     req.method === "HEAD" ? null : JSON.stringify(body),
     {
