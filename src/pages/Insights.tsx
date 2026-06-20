@@ -100,7 +100,7 @@ export default function Insights() {
             .select("id,kind,source,confidence,created_at,thread_id")
             .order("created_at", { ascending: false })
             .limit(ARTIFACT_CAP),
-          supabase.from("memories").select("id", { count: "exact", head: true }),
+          supabase.from("agent_memory").select("id", { count: "exact", head: true }),
         ]);
         if (!alive) return;
         if (threadsRes.error) throw threadsRes.error;

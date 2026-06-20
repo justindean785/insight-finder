@@ -60,7 +60,7 @@ export default function HomeHub() {
         const [threadsRes, artifactsRes, memoriesRes, recentRes] = await Promise.all([
           supabase.from("threads").select("id", { count: "exact", head: true }),
           supabase.from("artifacts").select("id", { count: "exact", head: true }),
-          supabase.from("memories").select("id", { count: "exact", head: true }),
+          supabase.from("agent_memory").select("id", { count: "exact", head: true }),
           supabase
             .from("threads")
             .select("id,title,updated_at")
