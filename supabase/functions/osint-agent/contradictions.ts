@@ -19,6 +19,10 @@ export interface ContradictionFinding {
 }
 
 interface ArtifactLike {
+  /** Stable artifact id. When present, structured patches carry it so the
+   *  persistence layer attaches a conflict to the EXACT source artifact rather
+   *  than the first row sharing its value (which may live in another cluster). */
+  id?: string;
   kind: string;
   value: string;
   source?: string | null;
@@ -220,8 +224,13 @@ export interface StructuredContradiction {
 }
 
 export interface ContradictionPatch {
-  /** Artifact value the entry should be attached to. */
+  /** Artifact value the entry should be attached to (retained for callers that
+   *  match by value and for human-readable logging). */
   value: string;
+  /** Stable artifact id of the EXACT source artifact, when the input carried
+   *  one. Persistence must prefer this over `value`: a value can recur across
+   *  clusters, so a value-only match can write a c1 conflict onto a c2 row. */
+  id?: string;
   entry: StructuredContradiction;
 }
 
@@ -248,9 +257,19 @@ export function structuredContradictionPatches(
       claims: f.claims,
       detected_at: nowIso,
     };
-    // De-dup involved values: one entry per affected artifact value.
+    // One patch per AFFECTED ARTIFACT (resolved by id from this artifact set),
+    // not per value. Emitting by id lets the persistence layer attach the entry
+    // to the exact source row; matching only on value can cross-mark a same-value
+    // row in a different cluster. When the input carries no ids (pure callers /
+    // tests), fall back to a single value-keyed patch per distinct value.
     for (const value of new Set(f.involved)) {
-      patches.push({ value, entry });
+      const matches = artifacts.filter((a) => a.value === value);
+      const withIds = matches.filter((a) => typeof a.id === "string" && a.id);
+      if (withIds.length > 0) {
+        for (const a of withIds) patches.push({ value, id: a.id, entry });
+      } else {
+        patches.push({ value, entry });
+      }
     }
   }
   return patches;

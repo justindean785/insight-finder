@@ -135,6 +135,37 @@ Deno.test("cluster-scoped: conflicting locations WITHIN the same cluster ARE str
   assertEquals(patches[0].entry.field, "location");
 });
 
+Deno.test("cluster-scoped: patches carry the source artifact id (not just value)", () => {
+  const artifacts = [
+    { id: "A1", kind: "address", value: "123 Main St", source: "A", metadata: { cluster_id: "c1", residence: "Tampa, Florida" } },
+    { id: "A2", kind: "employer", value: "Shared Value", source: "B", metadata: { cluster_id: "c1", based: "Los Angeles, CA" } },
+  ];
+  const patches = clusterScopedContradictionPatches(artifacts, NOW);
+  // Every patch resolves to a concrete in-cluster artifact id.
+  assertEquals(patches.every((p) => typeof p.id === "string"), true);
+  const ids = patches.map((p) => p.id).sort();
+  assertEquals(ids, ["A1", "A2"]);
+});
+
+Deno.test("cluster-scoped: a value shared across clusters is NOT cross-marked (id-keyed)", () => {
+  // "Shared Value" is the c1 employer (A2) AND a c2 address (B1). The c1
+  // location conflict must attach to A2 — never to B1 in the other cluster.
+  // A value-only persistence match (the pre-fix behavior) could write it onto
+  // whichever same-value row sorts first, cross-marking a distinct candidate.
+  const artifacts = [
+    { id: "B1", kind: "address", value: "Shared Value", source: "Z", metadata: { cluster_id: "c2", residence: "Tampa, Florida" } },
+    { id: "A1", kind: "address", value: "123 Main St", source: "A", metadata: { cluster_id: "c1", residence: "Tampa, Florida" } },
+    { id: "A2", kind: "employer", value: "Shared Value", source: "B", metadata: { cluster_id: "c1", based: "Los Angeles, CA" } },
+  ];
+  const patches = clusterScopedContradictionPatches(artifacts, NOW);
+  // The conflict touches only the c1 artifacts.
+  assertEquals(patches.some((p) => p.id === "A2"), true);
+  assertEquals(patches.some((p) => p.id === "B1"), false);
+  // The "Shared Value" patch is bound to the c1 row, not the c2 row.
+  const sharedPatch = patches.find((p) => p.value === "Shared Value");
+  assertEquals(sharedPatch?.id, "A2");
+});
+
 Deno.test("cluster-scoped: unclustered artifacts (no cluster_id) are NOT auto-persisted", () => {
   const artifacts = [
     { kind: "address", value: "Tampa, FL", source: "A", metadata: { residence: "Tampa, Florida" } },
