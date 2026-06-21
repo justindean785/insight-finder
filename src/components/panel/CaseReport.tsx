@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import {
   labelForArtifact,
+  adjustedConfidence,
   buildIdentityClusters,
   buildToolAudit,
   inferToolGaps,
@@ -11,8 +12,13 @@ import {
   isReputationArtifact,
   type ConfLabel,
 } from "@/lib/intel";
+import { REVIEW_SHORT, REVIEW_CLASS, type ReviewState } from "@/lib/review";
 import { toolActionLabel } from "@/lib/tool-display";
 import { cn } from "@/lib/utils";
+
+/** Analyst review lookup — `new` (unreviewed) when absent. */
+type ReviewMap = Record<string, ReviewState>;
+const reviewOf = (reviews: ReviewMap | undefined, id: string): ReviewState => reviews?.[id] ?? "new";
 
 /* ------------------------------------------------------------------ */
 /* Evidence-strength bucketing                                         */
@@ -22,8 +28,15 @@ function statusOf(a: Artifact): string {
   const m = (a.metadata ?? {}) as Record<string, unknown>;
   return String((m.status as string) ?? "new");
 }
-function bucket(a: Artifact): "confirmed" | "probable" | "lead" | "contradiction" | "excluded" {
-  const c = a.confidence ?? 0;
+function bucket(
+  a: Artifact,
+  review: ReviewState = "new",
+): "confirmed" | "probable" | "lead" | "contradiction" | "excluded" {
+  // Analyst review wins over the source-derived status — a human verdict is the
+  // strongest signal we have. Verified/key promote; dismissed/wrong exclude.
+  if (review === "dismissed" || review === "wrong") return "excluded";
+  if (review === "confirmed" || review === "key") return "confirmed";
+  const c = adjustedConfidence(a, review);
   const st = statusOf(a);
   if (a.kind.toLowerCase() === "contradiction" || st === "contradicted") return "contradiction";
   if (st === "excluded" || a.kind.toLowerCase() === "excluded_collision") return "excluded";
@@ -32,37 +45,72 @@ function bucket(a: Artifact): "confirmed" | "probable" | "lead" | "contradiction
   return "lead";
 }
 
-function ArtifactRow({ a }: { a: Artifact }) {
+/** Color-coded confidence meter — number alone reads as noise across 40 rows. */
+function ConfMeter({ value }: { value: number | null }) {
+  const v = Math.max(0, Math.min(100, value ?? 0));
+  const tone =
+    value == null ? "muted-foreground"
+    : v >= 70 ? "confidence-high"
+    : v >= 40 ? "confidence-mid"
+    : "danger";
+  return (
+    <div className="flex items-center gap-2 min-w-[84px]">
+      <div className="relative h-1.5 flex-1 rounded-full bg-white/[0.06] overflow-hidden">
+        <div className="absolute inset-y-0 left-0 rounded-full" style={{ width: `${v}%`, backgroundColor: `hsl(var(--${tone}))` }} />
+      </div>
+      <span className="font-mono tabular-nums text-[11px] w-7 text-right" style={{ color: `hsl(var(--${tone}))` }}>
+        {value ?? "—"}
+      </span>
+    </div>
+  );
+}
+
+/** Analyst verdict pill — the marks that previously never reached the report. */
+function ReviewPill({ review }: { review: ReviewState }) {
+  if (review === "new") return <span className="text-muted-foreground/50 text-[11px]">—</span>;
+  return (
+    <span className={cn("inline-block px-1.5 py-0.5 rounded border text-[10px] font-mono uppercase tracking-wide", REVIEW_CLASS[review])}>
+      {REVIEW_SHORT[review]}
+    </span>
+  );
+}
+
+function ArtifactRow({ a, review }: { a: Artifact; review: ReviewState }) {
   const m = (a.metadata ?? {}) as Record<string, unknown>;
+  const reviewed = review !== "new";
   return (
     <tr className="border-t border-border-subtle align-top">
+      <td className="px-3 py-2"><ReviewPill review={review} /></td>
       <td className="px-3 py-2 text-muted-foreground text-eyebrow uppercase tracking-wider">{displayKind(a)}</td>
       <td className="px-3 py-2 font-mono break-all">{a.value}</td>
       <td className="px-3 py-2 text-data text-muted-foreground">{a.source ?? "—"}</td>
-      <td className="px-3 py-2 text-data">{a.confidence ?? "—"}</td>
+      <td className="px-3 py-2"><ConfMeter value={reviewed ? adjustedConfidence(a, review) : a.confidence} /></td>
       <td className="px-3 py-2 text-data text-muted-foreground">
-        {String((m.reason_for_confidence as string) ?? "")}
-        {m.reason_not_confirmed ? <div className="text-destructive/80">{String(m.reason_not_confirmed)}</div> : null}
+        {reviewed
+          ? <span className="text-foreground/70">Analyst {REVIEW_SHORT[review].toLowerCase()} (review-adjusted)</span>
+          : String((m.reason_for_confidence as string) ?? "")}
+        {m.reason_not_confirmed && !reviewed ? <div className="text-destructive/80">{String(m.reason_not_confirmed)}</div> : null}
       </td>
     </tr>
   );
 }
 
-function BucketTable({ rows, empty }: { rows: Artifact[]; empty: string }) {
+function BucketTable({ rows, empty, reviews }: { rows: Artifact[]; empty: string; reviews?: ReviewMap }) {
   if (!rows.length) return <p className="text-muted-foreground italic text-data mt-2">{empty}</p>;
   return (
     <div className="rounded-md border border-border-subtle overflow-hidden mt-2">
       <table className="w-full text-data">
         <thead>
           <tr className="bg-surface-2 text-eyebrow uppercase tracking-[0.15em] text-muted-foreground">
-            <th className="text-left font-normal px-3 py-2 w-[110px]">Kind</th>
+            <th className="text-left font-normal px-3 py-2 w-[72px]">Review</th>
+            <th className="text-left font-normal px-3 py-2 w-[100px]">Kind</th>
             <th className="text-left font-normal px-3 py-2">Value</th>
-            <th className="text-left font-normal px-3 py-2 w-[140px]">Source</th>
-            <th className="text-left font-normal px-3 py-2 w-[60px]">Conf.</th>
+            <th className="text-left font-normal px-3 py-2 w-[130px]">Source</th>
+            <th className="text-left font-normal px-3 py-2 w-[120px]">Confidence</th>
             <th className="text-left font-normal px-3 py-2">Reasoning</th>
           </tr>
         </thead>
-        <tbody>{rows.map((a) => <ArtifactRow key={a.id} a={a} />)}</tbody>
+        <tbody>{rows.map((a) => <ArtifactRow key={a.id} a={a} review={reviewOf(reviews, a.id)} />)}</tbody>
       </table>
     </div>
   );
@@ -133,15 +181,15 @@ function ConfPill({ label }: { label: ConfLabel }) {
 
 type IdentityRow = { field: string; value: string; label: ConfLabel };
 
-function pickBest(artifacts: Artifact[], kinds: string[]): Artifact | null {
+function pickBest(artifacts: Artifact[], kinds: string[], reviews?: ReviewMap): Artifact | null {
   const pool = artifacts.filter((a) => kinds.includes(a.kind.toLowerCase()));
   if (!pool.length) return null;
   const rank: Record<ConfLabel, number> = {
     CONFIRMED: 6, CORRELATED: 5, INFERRED: 4, VERIFY: 3, LOW: 2, CONFLICT: 1, FAILED: 0,
   };
   return pool.slice().sort((a, b) => {
-    const ra = rank[labelForArtifact(a)] ?? 0;
-    const rb = rank[labelForArtifact(b)] ?? 0;
+    const ra = rank[labelForArtifact(a, reviewOf(reviews, a.id))] ?? 0;
+    const rb = rank[labelForArtifact(b, reviewOf(reviews, b.id))] ?? 0;
     if (ra !== rb) return rb - ra;
     return (b.confidence ?? 0) - (a.confidence ?? 0);
   })[0];
@@ -159,34 +207,35 @@ function pickAllEmails(artifacts: Artifact[]): Artifact[] {
   return out;
 }
 
-function buildIdentityRows(artifacts: Artifact[]): IdentityRow[] {
+function buildIdentityRows(artifacts: Artifact[], reviews?: ReviewMap): IdentityRow[] {
   const rows: IdentityRow[] = [];
-  const name = pickBest(artifacts, ["name", "person"]);
-  if (name) rows.push({ field: "Real name", value: name.value, label: labelForArtifact(name) });
+  const lbl = (a: Artifact) => labelForArtifact(a, reviewOf(reviews, a.id));
+  const name = pickBest(artifacts, ["name", "person"], reviews);
+  if (name) rows.push({ field: "Real name", value: name.value, label: lbl(name) });
 
-  const dob = pickBest(artifacts, ["dob"]);
-  if (dob) rows.push({ field: "Date of birth", value: dob.value, label: labelForArtifact(dob) });
+  const dob = pickBest(artifacts, ["dob"], reviews);
+  if (dob) rows.push({ field: "Date of birth", value: dob.value, label: lbl(dob) });
 
-  const age = pickBest(artifacts, ["age"]);
-  if (age && !dob) rows.push({ field: "Age", value: age.value, label: labelForArtifact(age) });
+  const age = pickBest(artifacts, ["age"], reviews);
+  if (age && !dob) rows.push({ field: "Age", value: age.value, label: lbl(age) });
 
-  const phone = pickBest(artifacts, ["phone"]);
-  if (phone) rows.push({ field: "Phone", value: phone.value, label: labelForArtifact(phone) });
+  const phone = pickBest(artifacts, ["phone"], reviews);
+  if (phone) rows.push({ field: "Phone", value: phone.value, label: lbl(phone) });
 
-  const region = pickBest(artifacts, ["location", "geo", "address"]);
-  if (region) rows.push({ field: "Likely region", value: region.value, label: labelForArtifact(region) });
+  const region = pickBest(artifacts, ["location", "geo", "address"], reviews);
+  if (region) rows.push({ field: "Likely region", value: region.value, label: lbl(region) });
 
   const emails = pickAllEmails(artifacts);
   emails.forEach((e, i) => {
     rows.push({
       field: i === 0 ? "Primary email" : i === 1 ? "Alt email" : `Email ${i + 1}`,
       value: e.value,
-      label: labelForArtifact(e),
+      label: lbl(e),
     });
   });
 
-  const gender = pickBest(artifacts, ["gender"]);
-  if (gender) rows.push({ field: "Gender (implied)", value: gender.value, label: labelForArtifact(gender) });
+  const gender = pickBest(artifacts, ["gender"], reviews);
+  if (gender) rows.push({ field: "Gender (implied)", value: gender.value, label: lbl(gender) });
 
   return rows;
 }
@@ -198,7 +247,7 @@ type RegistrationRow = {
   label: ConfLabel;
 };
 
-function buildRegistrationRows(artifacts: Artifact[]): RegistrationRow[] {
+function buildRegistrationRows(artifacts: Artifact[], reviews?: ReviewMap): RegistrationRow[] {
   const rows: RegistrationRow[] = [];
   for (const a of artifacts) {
     const k = a.kind.toLowerCase();
@@ -219,14 +268,14 @@ function buildRegistrationRows(artifacts: Artifact[]): RegistrationRow[] {
           (meta.account as string) ||
           "—",
         source: a.source ?? "—",
-        label: labelForArtifact(a),
+        label: labelForArtifact(a, reviewOf(reviews, a.id)),
       });
     } else if ((k === "account" || k === "social" || k === "handle") && site) {
       rows.push({
         site,
         identifier: a.value,
         source: a.source ?? "—",
-        label: labelForArtifact(a),
+        label: labelForArtifact(a, reviewOf(reviews, a.id)),
       });
     }
   }
@@ -365,26 +414,41 @@ export function CaseReport({
   seedValue,
   seedType,
   artifacts,
+  reviews,
 }: {
   seedValue: string | null;
   seedType: string | null;
   artifacts: Artifact[];
+  /** Analyst review verdicts by artifact id. Drives bucketing + adjusted confidence. */
+  reviews?: ReviewMap;
 }) {
-  const identity = useMemo(() => buildIdentityRows(artifacts), [artifacts]);
-  const registrations = useMemo(() => buildRegistrationRows(artifacts), [artifacts]);
+  const identity = useMemo(() => buildIdentityRows(artifacts, reviews), [artifacts, reviews]);
+  const registrations = useMemo(() => buildRegistrationRows(artifacts, reviews), [artifacts, reviews]);
   const hunterNotes = useMemo(() => buildHunterNotes(artifacts, seedValue), [artifacts, seedValue]);
   const unknowns = useMemo(() => buildUnknowns(artifacts), [artifacts]);
   const risk = useMemo(() => computeRisk(artifacts), [artifacts]);
 
   const audit = buildToolAudit(artifacts);
-  const confirmed = artifacts.filter((a) => labelForArtifact(a) === "CONFIRMED").length;
 
-  // Evidence-strength buckets per the new audit rules.
+  // Analyst review tally — surfaces the verdicts that previously never reached
+  // the report at all (they only showed in the Evidence view).
+  const reviewTally = useMemo(() => {
+    let verified = 0, rejected = 0, needs = 0;
+    for (const a of artifacts) {
+      const r = reviewOf(reviews, a.id);
+      if (r === "confirmed" || r === "key") verified++;
+      else if (r === "dismissed" || r === "wrong") rejected++;
+      else if (r === "recheck") needs++;
+    }
+    return { verified, rejected, needs, total: verified + rejected + needs };
+  }, [artifacts, reviews]);
+
+  // Evidence-strength buckets — analyst review verdicts override source status.
   const buckets = useMemo(() => {
     const g: Record<string, Artifact[]> = { confirmed: [], probable: [], lead: [], contradiction: [], excluded: [] };
-    for (const a of artifacts) g[bucket(a)].push(a);
+    for (const a of artifacts) g[bucket(a, reviewOf(reviews, a.id))].push(a);
     return g;
-  }, [artifacts]);
+  }, [artifacts, reviews]);
 
   const safetyFlags = useMemo(
     () => artifacts.filter((a) => {
@@ -422,6 +486,20 @@ export function CaseReport({
           <span className="px-1.5 py-0.5 border border-border rounded">{buckets.probable.length} probable</span>
           <span className="px-1.5 py-0.5 border border-border rounded">{buckets.lead.length} leads</span>
         </div>
+        {reviewTally.total > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 pt-0.5 text-eyebrow font-mono uppercase tracking-wider">
+            <span className="text-muted-foreground/70">Analyst review</span>
+            {reviewTally.verified > 0 && (
+              <span className={cn("px-1.5 py-0.5 rounded border", REVIEW_CLASS.confirmed)}>{reviewTally.verified} verified</span>
+            )}
+            {reviewTally.rejected > 0 && (
+              <span className={cn("px-1.5 py-0.5 rounded border", REVIEW_CLASS.wrong)}>{reviewTally.rejected} rejected</span>
+            )}
+            {reviewTally.needs > 0 && (
+              <span className={cn("px-1.5 py-0.5 rounded border", REVIEW_CLASS.recheck)}>{reviewTally.needs} recheck</span>
+            )}
+          </div>
+        )}
       </header>
 
       {/* 1. Executive summary */}
@@ -438,7 +516,7 @@ export function CaseReport({
       {safetyFlags.length > 0 && (
         <>
           <SectionHeader>Safety / Legal Flags</SectionHeader>
-          <BucketTable rows={safetyFlags} empty="No safety flags." />
+          <BucketTable rows={safetyFlags} empty="No safety flags." reviews={reviews} />
         </>
       )}
 
@@ -450,21 +528,21 @@ export function CaseReport({
 
       {/* 4. Confirmed findings */}
       <SectionHeader>Confirmed Findings</SectionHeader>
-      <BucketTable rows={buckets.confirmed} empty="No findings meet the confirmation threshold (official + independent corroboration)." />
+      <BucketTable rows={buckets.confirmed} empty="No findings meet the confirmation threshold (official + independent corroboration)." reviews={reviews} />
 
       {/* 5. Probable findings */}
       <SectionHeader>Probable Findings</SectionHeader>
-      <BucketTable rows={buckets.probable} empty="No probable findings." />
+      <BucketTable rows={buckets.probable} empty="No probable findings." reviews={reviews} />
 
       {/* 6. Leads requiring verification */}
       <SectionHeader>Leads Requiring Verification</SectionHeader>
-      <BucketTable rows={buckets.lead.slice(0, 40)} empty="No outstanding leads." />
+      <BucketTable rows={buckets.lead.slice(0, 40)} empty="No outstanding leads." reviews={reviews} />
 
       {/* 7. Excluded / collision clusters */}
       {buckets.excluded.length > 0 && (
         <>
           <SectionHeader>Excluded / Collision Clusters</SectionHeader>
-          <BucketTable rows={buckets.excluded} empty="—" />
+          <BucketTable rows={buckets.excluded} empty="—" reviews={reviews} />
         </>
       )}
 
@@ -472,7 +550,7 @@ export function CaseReport({
       {buckets.contradiction.length > 0 && (
         <>
           <SectionHeader>Contradictions &amp; Data Quality Problems</SectionHeader>
-          <BucketTable rows={buckets.contradiction} empty="—" />
+          <BucketTable rows={buckets.contradiction} empty="—" reviews={reviews} />
         </>
       )}
 
