@@ -960,10 +960,6 @@ function ChatWindowInner({
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const followLatestRef = useRef(true);
-  // Set true immediately before any programmatic scrollTop write so the
-  // resulting scroll event doesn't get misread as the user scrolling away
-  // (which would disengage follow mid-stream).
-  const programmaticScrollRef = useRef(false);
   const [input, setInput] = useState("");
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [stopping, setStopping] = useState(false);
@@ -1050,6 +1046,22 @@ function ChatWindowInner({
     if (status === "submitted" || status === "streaming") failSavedRef.current = false;
   }, [status]);
 
+  // Re-seed the chat from the freshly-loaded DB state on (re)mount. useChat keys
+  // its message store by `id` (threadId) and that store SURVIVES an unmount, so
+  // the `messages: initial` seed above is a no-op when you navigate away during
+  // a run and come back — the chat then shows the stale store (often just your
+  // input, the aborted stream's partial content discarded) while the assistant
+  // work the server persisted via waitUntil sits unused in the DB. Applying the
+  // DB-loaded `initial` here makes the DB the source of truth on return, which
+  // also covers a run that finished while you were away (the realtime recovery
+  // subscription only catches INSERTs that land after you're back). We skip
+  // while THIS client is actively streaming so a live run is never clobbered.
+  useEffect(() => {
+    if (status === "streaming" || status === "submitted") return;
+    setMessages(initial);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initial, setMessages]);
+
   useEffect(() => {
     const channel = supabase
       .channel(`chat-message-recovery-${threadId}`)
@@ -1098,7 +1110,6 @@ function ChatWindowInner({
   const pinToBottom = useCallback(() => {
     const viewport = scrollRef.current;
     if (!viewport) return;
-    programmaticScrollRef.current = true;
     viewport.scrollTop = viewport.scrollHeight;
   }, []);
 
@@ -1123,6 +1134,38 @@ function ChatWindowInner({
     ro.observe(content);
     return () => ro.disconnect();
   }, [pinToBottom]);
+
+  // Disengage follow on genuine user-intent scrolling (wheel up / touch drag
+  // down). These events NEVER fire from a programmatic pin, so — unlike the
+  // onScroll position check — they can't be swallowed by the rapid mid-stream
+  // pins that previously trapped the user at the bottom while a run streamed.
+  // Re-engagement is handled in onScroll (when they return to the bottom) and
+  // by the Jump-to-latest button.
+  useEffect(() => {
+    const viewport = scrollRef.current;
+    if (!viewport) return;
+    const disengage = () => {
+      if (!followLatestRef.current) return;
+      followLatestRef.current = false;
+      setShowJumpToLatest(true);
+    };
+    const onWheel = (e: WheelEvent) => { if (e.deltaY < 0) disengage(); };
+    let touchY = 0;
+    const onTouchStart = (e: TouchEvent) => { touchY = e.touches[0]?.clientY ?? 0; };
+    const onTouchMove = (e: TouchEvent) => {
+      // Finger dragging downward reveals earlier messages (scrolls up).
+      if ((e.touches[0]?.clientY ?? 0) - touchY > 6) disengage();
+    };
+    viewport.addEventListener("wheel", onWheel, { passive: true });
+    viewport.addEventListener("touchstart", onTouchStart, { passive: true });
+    viewport.addEventListener("touchmove", onTouchMove, { passive: true });
+    return () => {
+      viewport.removeEventListener("wheel", onWheel);
+      viewport.removeEventListener("touchstart", onTouchStart);
+      viewport.removeEventListener("touchmove", onTouchMove);
+    };
+  }, []);
+
   useEffect(() => { inputRef.current?.focus(); }, [threadId]);
 
   const beginInvestigation = useCallback(async () => {
@@ -1622,17 +1665,17 @@ function ChatWindowInner({
       <div
         ref={scrollRef}
         onScroll={(event) => {
-          // Ignore the scroll event produced by our own pin-to-bottom write —
-          // otherwise a mid-stream programmatic scroll that momentarily lands
-          // short would flip follow off and stop tracking the live reply.
-          if (programmaticScrollRef.current) {
-            programmaticScrollRef.current = false;
-            return;
-          }
+          // Re-engage follow ONLY when the viewport is actually at the bottom.
+          // Disengaging is driven exclusively by the user-intent listeners
+          // (wheel/touch) above, so a programmatic pin that momentarily lands
+          // short while streamed content is still growing can never be misread
+          // as the user scrolling away — the race that previously yanked the
+          // user back to the bottom mid-stream.
           const viewport = event.currentTarget;
-          const follow = shouldFollowChatScroll(viewport.scrollHeight, viewport.scrollTop, viewport.clientHeight);
-          followLatestRef.current = follow;
-          setShowJumpToLatest(!follow);
+          if (shouldFollowChatScroll(viewport.scrollHeight, viewport.scrollTop, viewport.clientHeight)) {
+            followLatestRef.current = true;
+            setShowJumpToLatest(false);
+          }
         }}
         className="relative z-10 flex-1 overflow-y-auto overflow-x-hidden px-3 sm:px-6 py-4 sm:py-5"
       >

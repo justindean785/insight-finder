@@ -121,6 +121,7 @@ export function WorkspaceHeader({ threadId, onShowTools }: { threadId: string; o
             <button
               onClick={onShowTools}
               title="Review failed tool calls"
+              aria-label={`Review ${activity.failed} failed tool calls`}
               className="flex items-center gap-1 rounded px-1 text-destructive hover:bg-destructive/10 transition-colors"
             >
               <AlertTriangle className="w-3.5 h-3.5" />
@@ -157,6 +158,7 @@ export function WorkspaceHeader({ threadId, onShowTools }: { threadId: string; o
             disabled={creating}
             className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-white/10 bg-white px-2.5 text-eyebrow font-semibold uppercase tracking-[0.12em] text-black transition-colors hover:bg-white/90 disabled:opacity-50"
             title="Start a new investigation"
+            aria-label="Start a new investigation"
           >
             <Plus className="h-3.5 w-3.5" />
             <span className="hidden lg:inline">{creating ? "Creating" : "New"}</span>
