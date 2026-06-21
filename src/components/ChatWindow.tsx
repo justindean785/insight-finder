@@ -1046,6 +1046,22 @@ function ChatWindowInner({
     if (status === "submitted" || status === "streaming") failSavedRef.current = false;
   }, [status]);
 
+  // Re-seed the chat from the freshly-loaded DB state on (re)mount. useChat keys
+  // its message store by `id` (threadId) and that store SURVIVES an unmount, so
+  // the `messages: initial` seed above is a no-op when you navigate away during
+  // a run and come back — the chat then shows the stale store (often just your
+  // input, the aborted stream's partial content discarded) while the assistant
+  // work the server persisted via waitUntil sits unused in the DB. Applying the
+  // DB-loaded `initial` here makes the DB the source of truth on return, which
+  // also covers a run that finished while you were away (the realtime recovery
+  // subscription only catches INSERTs that land after you're back). We skip
+  // while THIS client is actively streaming so a live run is never clobbered.
+  useEffect(() => {
+    if (status === "streaming" || status === "submitted") return;
+    setMessages(initial);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initial, setMessages]);
+
   useEffect(() => {
     const channel = supabase
       .channel(`chat-message-recovery-${threadId}`)
