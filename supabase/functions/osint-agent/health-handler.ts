@@ -93,6 +93,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
       );
     }
   }
+
   type ProbeResult = { ok: boolean; latencyMs: number; error?: string };
   const providers: Record<string, ProbeResult> = {};
   if (wantProbe) {
@@ -160,7 +161,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     ok: r.ok,
     service: "osint-agent",
     version: "1.2.1",
-    build: "2026-06-19-probe-gated",
+    build: "2026-06-19-probe-hardening",
     checks: r.checks,
     intelbase_enabled: INTELBASE_ENABLED,
   };
