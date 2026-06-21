@@ -206,6 +206,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
           onClick={onToggleCollapse}
           className="w-8 h-8 rounded-lg glass-interactive grid place-items-center"
           title="Expand sidebar"
+          aria-label="Expand sidebar"
         >
           <PanelLeftOpen className="w-4 h-4 text-primary" />
         </button>
@@ -216,6 +217,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
           onClick={newThread}
           className="w-8 h-8 rounded-lg glass-interactive grid place-items-center text-primary"
           title="New investigation"
+          aria-label="New investigation"
         >
           <Plus className="w-4 h-4" />
         </button>
@@ -282,6 +284,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
           onClick={signOut}
           className="w-8 h-8 rounded-lg grid place-items-center text-muted-foreground hover:text-foreground glass-interactive transition-colors"
           title="Sign out"
+          aria-label="Sign out"
         >
           <LogOut className="w-4 h-4" />
         </button>
@@ -329,6 +332,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
           onClick={onToggleCollapse}
           className="ml-auto w-8 h-8 rounded-lg border border-white/10 bg-white/[0.035] text-muted-foreground hover:text-foreground hover:bg-white/[0.06] transition-colors"
           title="Collapse sidebar"
+          aria-label="Collapse sidebar"
         >
           <PanelLeftClose className="w-4 h-4 mx-auto" />
         </button>
