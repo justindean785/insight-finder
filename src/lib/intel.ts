@@ -957,14 +957,46 @@ export function buildReportMarkdown(input: ReportInput): string {
   // quarantined into their own section and kept out of the main network.
   const collisionArtifacts = artifacts.filter((a) => isCollisionArtifact(a));
   const collisionIds = new Set(collisionArtifacts.map((a) => a.id));
-  const collisionSection = collisionArtifacts.length === 0
+  // Conflict metadata the pipeline attaches inline (a different name/address
+  // across breaches, a geo disagreement) WITHOUT quarantining the row. These
+  // were never surfaced, so the section read "No collisions flagged" even when
+  // an artifact's own metadata said "see Conflicts section". We list them here
+  // (without quarantining — they stay in the main network) so the pointer
+  // resolves and the analyst sees the discrepancy.
+  const conflictNoted = artifacts.filter((a) => {
+    if (collisionIds.has(a.id)) return false;
+    const m = (a.metadata ?? {}) as Record<string, unknown>;
+    return (typeof m.conflict_note === "string" && m.conflict_note.trim().length > 0)
+      || m.geo_conflict === true;
+  });
+  const conflictNote = (a: Artifact): string => {
+    const m = (a.metadata ?? {}) as Record<string, unknown>;
+    if (typeof m.conflict_note === "string" && m.conflict_note.trim()) return m.conflict_note.trim();
+    if (typeof m.geo_conflict_note === "string" && m.geo_conflict_note.trim()) return m.geo_conflict_note.trim();
+    return "conflicting attributes across sources";
+  };
+  const collisionSection = (collisionArtifacts.length === 0 && conflictNoted.length === 0)
     ? "_No collisions flagged._"
     : [
-        "_These artifacts were flagged as namesakes / unrelated entities. They do NOT belong to the subject and do NOT strengthen the main network._",
-        "",
-        ...collisionArtifacts.map((a) =>
-          `- \`${sanitizeValueForLabel(a.value, false)}\` — ${reportDisplayKind(a) === a.kind ? displayKind(a) : "source_conflict"} _(${labelForArtifact(a)}, via ${a.source ?? "tool"})_`,
-        ),
+        ...(collisionArtifacts.length
+          ? [
+              "_These artifacts were flagged as namesakes / unrelated entities. They do NOT belong to the subject and do NOT strengthen the main network._",
+              "",
+              ...collisionArtifacts.map((a) =>
+                `- \`${sanitizeValueForLabel(a.value, false)}\` — ${reportDisplayKind(a) === a.kind ? displayKind(a) : "source_conflict"} _(${labelForArtifact(a)}, via ${a.source ?? "tool"})_`,
+              ),
+            ]
+          : []),
+        ...(conflictNoted.length
+          ? [
+              ...(collisionArtifacts.length ? [""] : []),
+              "_Conflicts noted across sources — may indicate different people or data errors. Corroborate before merging; these rows are NOT auto-quarantined._",
+              "",
+              ...conflictNoted.map((a) =>
+                `- \`${sanitizeValueForLabel(a.value, false)}\` — ${conflictNote(a)} _(via ${a.source ?? "tool"})_`,
+              ),
+            ]
+          : []),
       ].join("\n");
 
   const network = (() => {
@@ -995,7 +1027,13 @@ export function buildReportMarkdown(input: ReportInput): string {
       messages,
     );
     if (items.length === 0) return "_No events recorded._";
-    return items.slice(-15).map((t) =>
+    // Tool-call events all inherit their parent message's single timestamp — a
+    // final batch can collapse a dozen calls into one instant, which rendered as
+    // a "timeline" where every row shared the same time. They also duplicate the
+    // Activity Log's tool breakdown. The evidentiary chronology (seed, queries,
+    // artifacts, report) carries real per-event timestamps, so render that.
+    const chronology = items.filter((t) => t.type !== "tool_result");
+    return (chronology.length ? chronology : items).slice(-15).map((t) =>
       `- \`${new Date(t.time).toISOString()}\` — **${t.type}** — ${t.title}${t.source ? ` _(via ${t.source})_` : ""}`,
     ).join("\n");
   })();
@@ -1082,7 +1120,7 @@ export function buildReportMarkdown(input: ReportInput): string {
     `- **Artifacts recorded:** ${total}`,
     "",
     `## Candidate Identity Clusters`,
-    buildClusterSection(clusterReport),
+    buildClusterSection(clusterReport, { includeWarnings: false }),
     "",
     `## Key Findings`,
     keyFindings,
@@ -1655,10 +1693,15 @@ function clusterLabel(idx: number, c: Omit<IdentityCluster, "id" | "label" | "ma
 // ---- Report integration -----------------------------------------------
 
 /** Render an identity-cluster section + collision warning for the markdown report. */
-export function buildClusterSection(report: ClusterReport): string {
+export function buildClusterSection(
+  report: ClusterReport,
+  opts: { includeWarnings?: boolean } = {},
+): string {
   if (report.clusters.length === 0) return "_No identity clusters extracted yet._";
   const parts: string[] = [];
-  if (report.warnings.length) {
+  // The full report renders these warnings once at the top, so it opts out here
+  // to avoid printing the banner twice; standalone callers keep them by default.
+  if ((opts.includeWarnings ?? true) && report.warnings.length) {
     parts.push(`> ⚠️ **${report.warnings[0]}**`);
     for (const w of report.warnings.slice(1)) parts.push(`> ${w}`);
     parts.push("");
