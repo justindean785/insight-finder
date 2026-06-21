@@ -863,17 +863,36 @@ export type ReportInput = {
     summary: string;
     toolCalls: Array<{ toolName: string; resultSummary?: string }>;
   }>;
+  /** Analyst review verdicts by artifact id (Verified/Rejected/Key/Recheck). */
+  reviews?: Record<string, ReviewAdjustment>;
 };
 
 export function buildReportMarkdown(input: ReportInput): string {
-  const { seedValue, seedType, artifacts, messages } = input;
+  const { seedValue, seedType, artifacts, messages, reviews } = input;
   const total = artifacts.length;
 
-  const confirmed = artifacts.filter((a) => labelForArtifact(a) === "CONFIRMED");
-  const inferred = artifacts.filter((a) => labelForArtifact(a) === "INFERRED");
-  const verify = artifacts.filter((a) => labelForArtifact(a) === "VERIFY");
-  const low = artifacts.filter((a) => labelForArtifact(a) === "LOW");
-  const failed = artifacts.filter((a) => labelForArtifact(a) === "FAILED");
+  // Analyst review wins over source-derived label/confidence so a marked
+  // artifact reads the same here as in the Evidence view.
+  const rev = (a: Artifact): ReviewAdjustment => reviews?.[a.id];
+  const lbl = (a: Artifact): ConfLabel => labelForArtifact(a, rev(a));
+  const conf = (a: Artifact): number | null => (rev(a) ? adjustedConfidence(a, rev(a)) : a.confidence);
+
+  const confirmed = artifacts.filter((a) => lbl(a) === "CONFIRMED");
+  const inferred = artifacts.filter((a) => lbl(a) === "INFERRED");
+  const verify = artifacts.filter((a) => lbl(a) === "VERIFY");
+  const low = artifacts.filter((a) => lbl(a) === "LOW");
+  const failed = artifacts.filter((a) => lbl(a) === "FAILED");
+
+  const reviewTally = (() => {
+    let verified = 0, rejected = 0, needs = 0;
+    for (const a of artifacts) {
+      const r = rev(a);
+      if (r === "confirmed" || r === "key") verified++;
+      else if (r === "dismissed" || r === "wrong") rejected++;
+      else if (r === "recheck") needs++;
+    }
+    return { verified, rejected, needs };
+  })();
 
   const audit = buildToolAudit(artifacts);
   const gaps = inferToolGaps(audit);
@@ -897,6 +916,13 @@ export function buildReportMarkdown(input: ReportInput): string {
     if (confirmed.length) parts.push(`${confirmed.length} finding${confirmed.length === 1 ? "" : "s"} observed in multiple sources or analyst-reviewed.`);
     if (verify.length + low.length) parts.push(`${verify.length + low.length} item${verify.length + low.length === 1 ? "" : "s"} need verification before reporting.`);
     if (failed.length) parts.push(`${failed.length} item${failed.length === 1 ? "" : "s"} marked as false positive.`);
+    if (reviewTally.verified || reviewTally.rejected || reviewTally.needs) {
+      const bits: string[] = [];
+      if (reviewTally.verified) bits.push(`${reviewTally.verified} analyst-verified`);
+      if (reviewTally.rejected) bits.push(`${reviewTally.rejected} analyst-rejected`);
+      if (reviewTally.needs) bits.push(`${reviewTally.needs} flagged for recheck`);
+      parts.push(`Analyst review: ${bits.join(", ")}.`);
+    }
     parts.push("All findings are presented as observations from named sources, not as confirmed identity claims.");
     return parts.join(" ");
   })();
@@ -908,19 +934,19 @@ export function buildReportMarkdown(input: ReportInput): string {
   const keyFindings = (() => {
     if (confirmed.length) {
       return confirmed.slice(0, 10).map((a) =>
-        `- **${a.kind}** — \`${a.value}\` _(source indicates via ${a.source ?? "tool"}, confidence ${a.confidence ?? "—"})_`,
+        `- **${a.kind}** — \`${a.value}\` _(source indicates via ${a.source ?? "tool"}, confidence ${conf(a) ?? "—"})_`,
       ).join("\n");
     }
     const leads = artifacts
-      .filter((a) => { const l = labelForArtifact(a); return l === "CORRELATED" || l === "INFERRED"; })
-      .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
+      .filter((a) => { const l = lbl(a); return l === "CORRELATED" || l === "INFERRED"; })
+      .sort((a, b) => (conf(b) ?? 0) - (conf(a) ?? 0))
       .slice(0, 10);
     if (!leads.length) return "_No findings recorded yet._";
     return [
       "_No fully-corroborated findings yet (none reach CONFIRMED — 2+ independent source classes or analyst review). Strongest uncorroborated leads:_",
       "",
       ...leads.map((a) =>
-        `- **${a.kind}** — \`${sanitizeValueForLabel(a.value, false)}\` _(${labelForArtifact(a)}, confidence ${a.confidence ?? "—"}, via ${a.source ?? "tool"})_`,
+        `- **${a.kind}** — \`${sanitizeValueForLabel(a.value, false)}\` _(${lbl(a)}, confidence ${conf(a) ?? "—"}, via ${a.source ?? "tool"})_`,
       ),
     ].join("\n");
   })();

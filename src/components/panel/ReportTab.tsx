@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { buildReportMarkdown, buildEvidenceMatrixMarkdown } from "@/lib/intel";
+import { useReviewStates } from "@/lib/review";
 import { useThreadMessages } from "@/hooks/useThreadMessages";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -42,9 +43,23 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
 
   const messages = useThreadMessages(threadId);
 
+  // Analyst review verdicts (Verified/Rejected/Key/Recheck) — these previously
+  // never reached the report; load them and thread them into both the rendered
+  // CaseReport and the markdown export so a marked artifact reads the same in
+  // Evidence and Report.
+  const review = useReviewStates(threadId);
+  const reviews = useMemo(() => {
+    const m: Record<string, ReturnType<typeof review.get>> = {};
+    for (const a of artifacts) {
+      const r = review.get(a.id);
+      if (r !== "new") m[a.id] = r;
+    }
+    return m;
+  }, [artifacts, review]);
+
   const markdown = useMemo(
-    () => buildReportMarkdown({ seedValue: seed.value, seedType: seed.type, artifacts, messages }),
-    [seed, artifacts, messages],
+    () => buildReportMarkdown({ seedValue: seed.value, seedType: seed.type, artifacts, messages, reviews }),
+    [seed, artifacts, messages, reviews],
   );
   const matrixMd = useMemo(() => buildEvidenceMatrixMarkdown(artifacts), [artifacts]);
 
@@ -114,7 +129,7 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
       </div>
 
       <div className="rounded-lg border border-border-subtle bg-surface-1 px-4 py-5 max-h-[78vh] overflow-y-auto [scrollbar-width:thin]">
-        <CaseReport seedValue={seed.value} seedType={seed.type} artifacts={artifacts} />
+        <CaseReport seedValue={seed.value} seedType={seed.type} artifacts={artifacts} reviews={reviews} />
       </div>
 
       <details className="rounded-lg border border-border-subtle bg-surface-2 no-print">
