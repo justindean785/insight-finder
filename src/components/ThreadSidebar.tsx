@@ -487,7 +487,7 @@ function ThreadRow({
       to={`/chat/${t.id}`}
       className={cn(
         "group relative flex items-start justify-between gap-2 pl-3 pr-2 py-2.5 rounded-lg text-[13px] transition-all duration-500 ease-premium hover:bg-white/[0.045]",
-        active && "bg-white/[0.06] text-foreground ring-1 ring-white/10",
+        active && "bg-white/[0.08] text-foreground ring-1 ring-white/20",
         dim && !active && "opacity-60",
       )}
     >

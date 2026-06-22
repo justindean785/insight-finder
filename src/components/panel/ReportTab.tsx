@@ -130,7 +130,9 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
   );
 
   const exportActions = (
-    <div className="flex flex-wrap items-center gap-1.5">
+    // Primary downloads grouped together; secondary/raw exports (Matrix / JSON)
+    // are quieter and split off by a divider that collapses cleanly on mobile.
+    <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Report exports">
       <Button size="sm" variant="outline" className="h-7 gap-1 text-data"
         onClick={() => copy(markdown, "Report copied")}>
         <Copy className="w-3 h-3" /> Copy markdown
@@ -143,8 +145,10 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
         onClick={printPdf} title="Opens the print dialog — choose 'Save as PDF'">
         <Printer className="w-3 h-3" /> Download PDF
       </Button>
+      <span aria-hidden className="hidden sm:block h-5 w-px bg-border-subtle mx-0.5" />
       <Button size="sm" variant="ghost" className="h-7 gap-1 text-data text-muted-foreground"
-        onClick={() => copy(matrixMd, "Evidence matrix copied")}>
+        onClick={() => copy(matrixMd, "Evidence matrix copied")}
+        title="Copy the evidence matrix as markdown">
         <Table className="w-3 h-3" /> Matrix
       </Button>
       <Button size="sm" variant="ghost" className="h-7 gap-1 text-data text-muted-foreground"

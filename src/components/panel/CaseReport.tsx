@@ -80,16 +80,16 @@ function ArtifactRow({ a, review }: { a: Artifact; review: ReviewState }) {
   const reviewed = review !== "new";
   return (
     <tr className="border-t border-border-subtle align-top">
-      <td className="px-3 py-2"><ReviewPill review={review} /></td>
-      <td className="px-3 py-2 text-muted-foreground text-eyebrow uppercase tracking-wider">{displayKind(a)}</td>
-      <td className="px-3 py-2 font-mono break-all">{a.value}</td>
-      <td className="px-3 py-2 text-data text-muted-foreground">{a.source ?? "—"}</td>
-      <td className="px-3 py-2"><ConfMeter value={reviewed ? adjustedConfidence(a, review) : a.confidence} /></td>
-      <td className="px-3 py-2 text-data text-muted-foreground">
+      <td className="px-3 py-2.5"><ReviewPill review={review} /></td>
+      <td className="px-3 py-2.5 text-muted-foreground text-eyebrow uppercase tracking-wider">{displayKind(a)}</td>
+      <td className="px-3 py-2.5 font-mono break-all">{a.value}</td>
+      <td className="px-3 py-2.5 text-data text-muted-foreground">{a.source ?? "—"}</td>
+      <td className="px-3 py-2.5"><ConfMeter value={reviewed ? adjustedConfidence(a, review) : a.confidence} /></td>
+      <td className="px-3 py-2.5 text-data text-muted-foreground/90 leading-relaxed min-w-[180px]">
         {reviewed
-          ? <span className="text-foreground/70">Analyst {REVIEW_SHORT[review].toLowerCase()} (review-adjusted)</span>
+          ? <span className="text-foreground/80">Analyst {REVIEW_SHORT[review].toLowerCase()} (review-adjusted)</span>
           : String((m.reason_for_confidence as string) ?? "")}
-        {m.reason_not_confirmed && !reviewed ? <div className="text-destructive/80">{String(m.reason_not_confirmed)}</div> : null}
+        {m.reason_not_confirmed && !reviewed ? <div className="text-destructive mt-0.5">{String(m.reason_not_confirmed)}</div> : null}
       </td>
     </tr>
   );
@@ -98,8 +98,8 @@ function ArtifactRow({ a, review }: { a: Artifact; review: ReviewState }) {
 function BucketTable({ rows, empty, reviews }: { rows: Artifact[]; empty: string; reviews?: ReviewMap }) {
   if (!rows.length) return <p className="text-muted-foreground italic text-data mt-2">{empty}</p>;
   return (
-    <div className="rounded-md border border-border-subtle overflow-hidden mt-2">
-      <table className="w-full text-data">
+    <div className="rounded-md border border-border-subtle overflow-x-auto mt-2 [scrollbar-width:thin]">
+      <table className="w-full min-w-[640px] text-data">
         <thead>
           <tr className="bg-surface-2 text-eyebrow uppercase tracking-[0.15em] text-muted-foreground">
             <th className="text-left font-normal px-3 py-2 w-[72px]">Review</th>
@@ -119,11 +119,15 @@ function BucketTable({ rows, empty, reviews }: { rows: Artifact[]; empty: string
 /* ------------------------------------------------------------------ */
 /* Section header — red bar + ALL-CAPS spaced title, like the ref UI. */
 /* ------------------------------------------------------------------ */
-function SectionHeader({ children }: { children: React.ReactNode }) {
+function SectionHeader({ children, tone = "default" }: { children: React.ReactNode; tone?: "default" | "danger" }) {
+  // Red is reserved for genuine risk sections (safety, contradictions); every
+  // other section uses a calm neutral header so the report doesn't read as a
+  // wall of warnings.
+  const danger = tone === "danger";
   return (
     <div className="flex items-center gap-2 mt-6 mb-3">
-      <span className="w-[3px] h-4 bg-destructive rounded-sm" />
-      <h3 className="text-eyebrow font-semibold uppercase tracking-[0.18em] text-destructive">
+      <span className={cn("w-[3px] h-4 rounded-sm", danger ? "bg-destructive" : "bg-foreground/25")} />
+      <h3 className={cn("text-eyebrow font-semibold uppercase tracking-[0.18em]", danger ? "text-destructive" : "text-foreground/80")}>
         {children}
       </h3>
     </div>
@@ -428,8 +432,6 @@ export function CaseReport({
   const unknowns = useMemo(() => buildUnknowns(artifacts), [artifacts]);
   const risk = useMemo(() => computeRisk(artifacts), [artifacts]);
 
-  const audit = buildToolAudit(artifacts);
-
   // Analyst review tally — surfaces the verdicts that previously never reached
   // the report at all (they only showed in the Evidence view).
   const reviewTally = useMemo(() => {
@@ -475,16 +477,14 @@ export function CaseReport({
         <div className="text-eyebrow uppercase tracking-[0.2em] text-muted-foreground">
           Case file
         </div>
-        <h2 className="text-base font-display font-semibold break-all">
+        <h2 className="text-lg font-display font-semibold break-all leading-snug">
           {seedValue ?? "—"}
         </h2>
-        <div className="flex flex-wrap gap-1.5 text-eyebrow font-mono uppercase tracking-wider text-muted-foreground">
-          <span className="px-1.5 py-0.5 border border-border rounded">{seedType ?? "unknown"}</span>
-          <span className="px-1.5 py-0.5 border border-border rounded">{artifacts.length} artifacts</span>
-          <span className="px-1.5 py-0.5 border border-border rounded">{audit.tools.length} tools</span>
-          <span className="px-1.5 py-0.5 border border-border rounded">{buckets.confirmed.length} confirmed</span>
-          <span className="px-1.5 py-0.5 border border-border rounded">{buckets.probable.length} probable</span>
-          <span className="px-1.5 py-0.5 border border-border rounded">{buckets.lead.length} leads</span>
+        {/* One calm scope line. The bucket counts (confirmed/probable/leads)
+            live in the Executive Summary prose below; artifact/tool totals are
+            owned by the Evidence/Tools tab badges — not repeated here. */}
+        <div className="font-mono text-data text-muted-foreground">
+          {seedType ?? "unknown"} · {artifacts.length} artifact{artifacts.length === 1 ? "" : "s"} analyzed
         </div>
         {reviewTally.total > 0 && (
           <div className="flex flex-wrap items-center gap-1.5 pt-0.5 text-eyebrow font-mono uppercase tracking-wider">
@@ -515,7 +515,7 @@ export function CaseReport({
       {/* 2. Safety / legal flags */}
       {safetyFlags.length > 0 && (
         <>
-          <SectionHeader>Safety / Legal Flags</SectionHeader>
+          <SectionHeader tone="danger">Safety / Legal Flags</SectionHeader>
           <BucketTable rows={safetyFlags} empty="No safety flags." reviews={reviews} />
         </>
       )}
@@ -549,7 +549,7 @@ export function CaseReport({
       {/* 9. Contradictions */}
       {buckets.contradiction.length > 0 && (
         <>
-          <SectionHeader>Contradictions &amp; Data Quality Problems</SectionHeader>
+          <SectionHeader tone="danger">Contradictions &amp; Data Quality Problems</SectionHeader>
           <BucketTable rows={buckets.contradiction} empty="—" reviews={reviews} />
         </>
       )}
@@ -568,8 +568,8 @@ export function CaseReport({
       {identity.length > 0 && (
         <>
           <SectionHeader>Identity</SectionHeader>
-          <div className="rounded-md border border-border-subtle overflow-hidden">
-            <table className="w-full text-data">
+          <div className="rounded-md border border-border-subtle overflow-x-auto [scrollbar-width:thin]">
+            <table className="w-full min-w-[420px] text-data">
               <thead>
                 <tr className="bg-surface-2 text-eyebrow uppercase tracking-[0.15em] text-muted-foreground">
                   <th className="text-left font-normal px-3 py-2 w-[35%]">Field</th>
@@ -598,8 +598,8 @@ export function CaseReport({
       {registrations.length > 0 && (
         <>
           <SectionHeader>Sensitive Registrations</SectionHeader>
-          <div className="rounded-md border border-border-subtle overflow-hidden">
-            <table className="w-full text-data">
+          <div className="rounded-md border border-border-subtle overflow-x-auto [scrollbar-width:thin]">
+            <table className="w-full min-w-[520px] text-data">
               <thead>
                 <tr className="bg-surface-2 text-eyebrow uppercase tracking-[0.15em] text-muted-foreground">
                   <th className="text-left font-normal px-3 py-2 w-[30%]">Site</th>
