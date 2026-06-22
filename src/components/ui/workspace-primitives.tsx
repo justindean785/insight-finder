@@ -14,6 +14,52 @@ import type { EvidenceDisplayStatus, EvidenceStatusTone } from "@/lib/evidence-s
  * carries an accessible label.
  */
 
+/* ── TabHeader (per-tab section identity) ───────────────────────────── */
+
+/**
+ * Section header that gives each top-level workspace tab its own identity — an
+ * icon + a semantic <h2> title, an optional context subtitle, and an optional
+ * slot for controls on the right (view switchers, exports, zoom). Shared so
+ * every tab reads as the same calm, segmented workspace rather than the same
+ * panel with swapped content. Wraps gracefully: on narrow widths the controls
+ * drop below the title instead of overflowing.
+ */
+export function TabHeader({
+  icon: Icon,
+  title,
+  subtitle,
+  children,
+  className,
+}: {
+  icon?: LucideIcon;
+  title: string;
+  /** Concise local context — counts, review state, a one-line descriptor. */
+  subtitle?: ReactNode;
+  /** Right-aligned controls: view switchers, export actions, zoom. */
+  children?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "shrink-0 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-3 sm:px-4 py-2 border-b border-border-subtle bg-[hsl(var(--surface-0))/0.98]",
+        className,
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-2.5">
+        {Icon && <Icon className="w-4 h-4 shrink-0 text-muted-foreground" strokeWidth={1.75} aria-hidden />}
+        <div className="min-w-0">
+          <h2 className="text-[13px] font-semibold leading-tight tracking-tight text-foreground">{title}</h2>
+          {subtitle != null && (
+            <div className="mt-0.5 text-[11px] leading-tight text-muted-foreground">{subtitle}</div>
+          )}
+        </div>
+      </div>
+      {children ? <div className="flex shrink-0 items-center gap-2">{children}</div> : null}
+    </div>
+  );
+}
+
 /* ── CopyButton ─────────────────────────────────────────────────────── */
 
 export function CopyButton({

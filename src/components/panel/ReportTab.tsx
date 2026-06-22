@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import { Copy, FileText, Table, Braces, ScrollText, Download, Printer, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
+import { TabHeader } from "@/components/ui/workspace-primitives";
 import { EmptyState } from "./EmptyState";
 import { CaseReport } from "./CaseReport";
 
@@ -98,36 +99,77 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
     setJsonGateOpen(false);
   };
 
+  // Analyst review state, summarised for the header context line (same tally
+  // the report body shows — kept read-only, no semantics changed).
+  const reviewTally = useMemo(() => {
+    let verified = 0, rejected = 0;
+    for (const s of Object.values(reviews)) {
+      if (s === "confirmed" || s === "key") verified++;
+      else if (s === "wrong" || s === "dismissed") rejected++;
+    }
+    return { verified, rejected };
+  }, [reviews]);
+
+  const subtitle = (
+    <span className="inline-flex flex-wrap items-center">
+      <span>Case report &amp; exports</span>
+      {reviewTally.verified > 0 && (
+        <>
+          <span className="mx-1.5 text-muted-foreground/40" aria-hidden>·</span>
+          <span className="text-[hsl(var(--confidence-high))]">{reviewTally.verified} verified</span>
+        </>
+      )}
+      {reviewTally.rejected > 0 && (
+        <>
+          <span className="mx-1.5 text-muted-foreground/40" aria-hidden>·</span>
+          <span className="text-destructive">{reviewTally.rejected} rejected</span>
+        </>
+      )}
+    </span>
+  );
+
+  const exportActions = (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <Button size="sm" variant="outline" className="h-7 gap-1 text-data"
+        onClick={() => copy(markdown, "Report copied")}>
+        <Copy className="w-3 h-3" /> Copy markdown
+      </Button>
+      <Button size="sm" variant="outline" className="h-7 gap-1 text-data"
+        onClick={downloadMd}>
+        <Download className="w-3 h-3" /> Download .md
+      </Button>
+      <Button size="sm" variant="outline" className="h-7 gap-1 text-data"
+        onClick={printPdf} title="Opens the print dialog — choose 'Save as PDF'">
+        <Printer className="w-3 h-3" /> Download PDF
+      </Button>
+      <Button size="sm" variant="ghost" className="h-7 gap-1 text-data text-muted-foreground"
+        onClick={() => copy(matrixMd, "Evidence matrix copied")}>
+        <Table className="w-3 h-3" /> Matrix
+      </Button>
+      <Button size="sm" variant="ghost" className="h-7 gap-1 text-data text-muted-foreground"
+        onClick={openJsonGate}
+        title="Raw JSON export — requires confirmation">
+        <Braces className="w-3 h-3" /> JSON
+      </Button>
+    </div>
+  );
+
   if (artifacts.length === 0) {
-    return <EmptyState icon={ScrollText} title="No report yet" hint="Run the agent on a seed and the case report will populate here." />;
+    return (
+      <div className="text-xs">
+        <TabHeader icon={FileText} title="Report" subtitle="Case report & exports" className="no-print" />
+        <EmptyState icon={ScrollText} title="No report yet" hint="Run the agent on a seed and the case report will populate here." />
+      </div>
+    );
   }
 
   return (
-    <div className="p-3 space-y-3 text-xs">
-      <div className="flex flex-wrap gap-1.5 no-print">
-        <Button size="sm" variant="outline" className="h-7 gap-1 text-data"
-          onClick={() => copy(markdown, "Report copied")}>
-          <Copy className="w-3 h-3" /> Copy markdown
-        </Button>
-        <Button size="sm" variant="outline" className="h-7 gap-1 text-data"
-          onClick={downloadMd}>
-          <Download className="w-3 h-3" /> Download .md
-        </Button>
-        <Button size="sm" variant="outline" className="h-7 gap-1 text-data"
-          onClick={printPdf} title="Opens the print dialog — choose 'Save as PDF'">
-          <Printer className="w-3 h-3" /> Download PDF
-        </Button>
-        <Button size="sm" variant="ghost" className="h-7 gap-1 text-data text-muted-foreground"
-          onClick={() => copy(matrixMd, "Evidence matrix copied")}>
-          <Table className="w-3 h-3" /> Matrix
-        </Button>
-        <Button size="sm" variant="ghost" className="h-7 gap-1 text-data text-muted-foreground"
-          onClick={openJsonGate}
-          title="Raw JSON export — requires confirmation">
-          <Braces className="w-3 h-3" /> JSON
-        </Button>
-      </div>
+    <div className="text-xs">
+      <TabHeader icon={FileText} title="Report" subtitle={subtitle} className="no-print sticky top-0 z-10">
+        {exportActions}
+      </TabHeader>
 
+      <div className="p-3 space-y-3">
       <div className="rounded-lg border border-border-subtle bg-surface-1 px-4 py-5 max-h-[78vh] overflow-y-auto [scrollbar-width:thin]">
         <CaseReport seedValue={seed.value} seedType={seed.type} artifacts={artifacts} reviews={reviews} />
       </div>
@@ -140,6 +182,7 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
           {markdown}
         </pre>
       </details>
+      </div>
 
       <Dialog open={jsonGateOpen} onOpenChange={setJsonGateOpen}>
         <DialogContent className="max-w-md">
