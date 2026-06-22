@@ -100,6 +100,41 @@ describe("buildEntityGraph — honest, deterministic edge derivation", () => {
     expect(g.nodes.find((n) => n.id === "c2")!.conflict).toBe(true);
   });
 
+  it("excludes ALL conflict rows (breach / metadata.conflict / *_conflict), not just collisions, from identity edges", () => {
+    const g = buildEntityGraph(
+      [
+        A({ id: "u", kind: "username", value: "nuhdeem", confidence: 80 }),
+        // A breach row carrying the same handle must NOT forge an identity link.
+        A({ id: "b", kind: "breach", value: "Acme leak", confidence: 50, metadata: { handle: "nuhdeem" } }),
+        // A metadata.conflict row sharing the same handle, likewise.
+        A({ id: "x", kind: "social", value: "nuhdeem (x)", confidence: 50, metadata: { handle: "nuhdeem", conflict: true } }),
+      ],
+      null,
+      null,
+    );
+    expect(edgeBetween(g, "u", "b")).toBeUndefined();
+    expect(edgeBetween(g, "u", "x")).toBeUndefined();
+    expect(g.nodes.find((n) => n.id === "b")!.conflict).toBe(true);
+    expect(g.nodes.find((n) => n.id === "x")!.conflict).toBe(true);
+  });
+
+  it("does not count a node with a real edge as isolated, even if it also has a parent→seed edge", () => {
+    // 'm' shares a phone with peer 'p' (a real identity edge) AND carries a
+    // parent pointer to the seed (a separate seed-discovery edge). Counting
+    // seed-discovery EDGES would wrongly flag 'm' as isolated; counting nodes
+    // with zero real edges does not.
+    const g = buildEntityGraph(
+      [
+        A({ id: "m", kind: "phone", value: "555-0001", confidence: 70, metadata: { parent: "scero@me.com" } }),
+        A({ id: "p", kind: "phone", value: "555-0001", confidence: 60 }),
+      ],
+      "scero@me.com",
+      "email",
+    );
+    expect(edgeBetween(g, "m", "p")!.type).toBe("identity");
+    expect(g.stats.isolatedCount).toBe(0);
+  });
+
   it("the seed-discovery fallback ties an isolated node to the seed (faint, not a real edge)", () => {
     const g = buildEntityGraph([A({ id: "n1", kind: "name", value: "Bob", confidence: 30 })], "scero@me.com", "email");
     const e = edgeBetween(g, SEED_ID, "n1");

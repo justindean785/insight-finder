@@ -3,6 +3,7 @@ import {
   buildIdentityClusters,
   groupForKind,
   normalizeHandle,
+  GROUP_ORDER,
   type Group,
 } from "@/lib/intel";
 import { isCollisionArtifact } from "@/lib/report-hygiene";
@@ -182,7 +183,10 @@ export function buildEntityGraph(
   const sorted = [...artifacts].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
   // ---- Nodes ------------------------------------------------------------
-  const clusterReport = buildIdentityClusters(artifacts, seedValue);
+  // Cluster from the SORTED set so cluster ids / order / bridge flags are
+  // deterministic w.r.t. our declared ordering (the input array order is not
+  // guaranteed stable across loads). Same artifacts, read-only — no logic change.
+  const clusterReport = buildIdentityClusters(sorted, seedValue);
   const clusterOf = new Map<string, string>();
   for (const c of clusterReport.clusters) {
     for (const a of c.artifacts) clusterOf.set(a.id, c.id);
@@ -248,7 +252,11 @@ export function buildEntityGraph(
     addSelectors(SEED_ID, seedSels);
   }
   for (const a of sorted) {
-    if (isCollisionArtifact(a) || (a.metadata as Record<string, unknown> | null)?.false_positive === true) continue;
+    // ANY conflict row (collision / false-positive / metadata.conflict / breach
+    // / *_conflict) renders as a node but must never seed an identity edge — so
+    // the graph never overstates a disputed link and stays consistent with the
+    // detail panel's "excluded from identity links".
+    if (isConflict(a)) continue;
     addSelectors(a.id, selectorsFor(a.kind, a.value, a.metadata));
   }
 
@@ -331,9 +339,19 @@ export function buildEntityGraph(
   layout(nodes, nodeById, clusterReport.clusters);
 
   const realEdgeCount = edges.filter((e) => e.type !== "seed-discovery").length;
-  // Every seed-discovery edge is built touching the seed, so this counts the
-  // nodes that only tie in via the faint provenance fallback.
-  const isolatedCount = edges.filter((e) => e.type === "seed-discovery").length;
+  // "Isolated" = a node tied in ONLY through the faint seed-discovery fallback
+  // (zero real edges) — not merely any node a fallback edge touches, since a
+  // node can carry both a real edge and a parent→seed discovery edge.
+  const realDeg = new Map<string, number>();
+  const fallbackDeg = new Map<string, number>();
+  for (const e of edges) {
+    const m = e.type === "seed-discovery" ? fallbackDeg : realDeg;
+    m.set(e.source, (m.get(e.source) ?? 0) + 1);
+    m.set(e.target, (m.get(e.target) ?? 0) + 1);
+  }
+  const isolatedCount = nodes.filter(
+    (n) => !n.isSeed && (realDeg.get(n.id) ?? 0) === 0 && (fallbackDeg.get(n.id) ?? 0) > 0,
+  ).length;
 
   return {
     nodes,
@@ -392,10 +410,14 @@ function layout(
   });
 
   // Unclustered nodes (not the seed) → outer ring, grouped by category for
-  // legibility, deterministic by GROUP order then id.
+  // legibility, deterministic by canonical GROUP_ORDER then id.
+  const groupRank = (g: Group) => {
+    const i = GROUP_ORDER.indexOf(g);
+    return i === -1 ? GROUP_ORDER.length : i;
+  };
   const unclustered = nodes
     .filter((n) => !n.isSeed && !n.clusterId)
-    .sort((a, b) => (a.group < b.group ? -1 : a.group > b.group ? 1 : a.id < b.id ? -1 : 1));
+    .sort((a, b) => groupRank(a.group) - groupRank(b.group) || (a.id < b.id ? -1 : 1));
   const outerR = 150 + 58 * Math.sqrt(Math.max(1, clusters.length)) + 70;
   const n = unclustered.length;
   unclustered.forEach((node, k) => {

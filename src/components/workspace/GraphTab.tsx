@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { GROUP_LABEL, GROUP_ORDER, type Group } from "@/lib/intel";
-import { buildEntityGraph, SEED_ID, type GraphNode, type GraphEdge } from "@/lib/entity-graph";
+import { buildEntityGraph, type GraphNode, type GraphEdge } from "@/lib/entity-graph";
 import { ConfidenceMeter } from "@/components/investigation/primitives";
 import { CopyButton, TabHeader } from "@/components/ui/workspace-primitives";
 import { EmptyState } from "@/components/panel/EmptyState";
@@ -281,7 +281,6 @@ export function GraphTab({ threadId }: { threadId: string }) {
               {visibleEdges.map((e) => {
                 const a = nodeById.get(e.source)!;
                 const b = nodeById.get(e.target)!;
-                const isLit = !lit || lit.edges.has(e.id);
                 const st = edgeStyle(e, !!lit && lit.edges.has(e.id));
                 return (
                   <line
