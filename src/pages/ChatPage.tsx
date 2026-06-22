@@ -114,7 +114,7 @@ export default function ChatPage() {
     return (
       <div key={threadId} className="flex flex-col h-[100dvh] w-full bg-background overflow-hidden">
         <CommandPalette />
-        <header className="shrink-0 h-14 px-2 flex items-center gap-2 border-b border-border-subtle bg-[hsl(var(--surface-0))/0.98]">
+        <header className="shrink-0 h-14 px-2 flex items-center gap-2 border-b border-border-subtle bg-surface-0">
           <button onClick={() => setMLeft(true)} className="shrink-0 w-9 h-9 rounded-xl grid place-items-center border border-white/10 bg-white/[0.035] text-muted-foreground transition-all duration-500 ease-premium hover:text-foreground hover:bg-white/[0.06] active:scale-[0.97]" aria-label="Open cases">
             <PanelLeftOpen className="w-4 h-4 text-foreground/80" />
           </button>
