@@ -76,9 +76,12 @@ export default function ChatPage() {
   if (!user) return <Navigate to="/auth" replace />;
   if (!threadId) return <Navigate to="/" replace />;
 
+  // Tab badges own the section counts; alerts (breaches, failed tool calls)
+  // ride along as a red dot so a tab number always means "items in this tab".
+  const breachCount = items.filter((a) => a.kind.toLowerCase() === "breach").length;
   const tabCounts = {
-    evidence: { value: items.length },
-    tools: activity.failed > 0 ? { value: activity.failed, tone: "danger" as const } : undefined,
+    evidence: { value: items.length, alert: breachCount },
+    tools: { value: activity.total, alert: activity.failed },
   };
 
   const content = (
@@ -144,7 +147,7 @@ export default function ChatPage() {
         <ThreadSidebar collapsed={leftCollapsed} onToggleCollapse={() => setLeftCollapsed((c) => !c)} />
       </aside>
       <main className="flex-1 min-w-0 h-screen flex flex-col">
-        <WorkspaceHeader threadId={threadId} onShowTools={() => setTab("tools")} />
+        <WorkspaceHeader threadId={threadId} />
         <WorkspaceTabs active={tab} onChange={setTab} counts={tabCounts} />
         {content}
       </main>

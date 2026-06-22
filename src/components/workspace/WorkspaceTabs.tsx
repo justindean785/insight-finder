@@ -4,6 +4,12 @@ import { cn } from "@/lib/utils";
 
 export type WorkspaceTab = "chat" | "evidence" | "report" | "graph" | "tools";
 
+/** Per-tab badge data. `value` is the section count (how many items live in the
+ * tab); `alert` is the number that NEEDS ATTENTION (failed tool calls, breaches)
+ * and renders as a red dot — never as a count, so a tab number always means the
+ * same thing as the word next to it. */
+export type TabCount = { value: number; alert?: number };
+
 const TABS: { key: WorkspaceTab; label: string; icon: LucideIcon }[] = [
   { key: "chat", label: "Chat", icon: MessagesSquare },
   { key: "evidence", label: "Evidence", icon: Database },
@@ -15,11 +21,51 @@ const TABS: { key: WorkspaceTab; label: string; icon: LucideIcon }[] = [
 const COMPACT_PRIMARY = TABS.filter((t) => t.key === "chat" || t.key === "evidence" || t.key === "report");
 const COMPACT_MORE = TABS.filter((t) => t.key === "tools" || t.key === "graph");
 
+/** Small red "needs attention" dot. Carries a label so it is not color-only. */
+function AlertDot({ count, className }: { count: number; className?: string }) {
+  if (count <= 0) return null;
+  const label = `${count} need${count === 1 ? "s" : ""} attention`;
+  return (
+    <span
+      role="img"
+      aria-label={label}
+      title={label}
+      className={cn(
+        "inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-destructive shadow-[0_0_6px_hsl(var(--destructive)/0.85)]",
+        className,
+      )}
+    />
+  );
+}
+
+/** Count pill that recolours for the raised (white) active tab vs the dim rest.
+ * The slot is reserved even at zero so an async count loading in never reflows
+ * the tab bar. */
+function CountPill({ value, active }: { value: number; active: boolean }) {
+  return (
+    <span
+      aria-hidden={value === 0}
+      className={cn(
+        "inline-flex h-[17px] min-w-[17px] items-center justify-center rounded-full px-1 font-mono text-[10px] tabular-nums leading-none transition-colors",
+        value === 0
+          ? "opacity-0"
+          : active
+            ? "bg-black/10 text-black/65"
+            : "bg-surface-3 text-muted-foreground",
+      )}
+    >
+      {value > 999 ? "999+" : value}
+    </span>
+  );
+}
+
 /**
  * Primary workspace navigation — the five major investigation modes. These are
  * top-level app sections (not nested panel tabs): a single active mode fills the
- * main workspace. Active state is unmistakable (lit label + accent underline);
- * the bar scrolls horizontally on narrow viewports rather than wrapping.
+ * main workspace. Rendered as a real segmented control — the active tab is a
+ * raised surface, not just tinted text — so it unmistakably reads as a tab you
+ * switch between. Tab badges OWN the section counts (Evidence = artifacts,
+ * Tools = tool calls); a red dot flags items needing attention.
  */
 export function WorkspaceTabs({
   active,
@@ -29,7 +75,7 @@ export function WorkspaceTabs({
 }: {
   active: WorkspaceTab;
   onChange: (t: WorkspaceTab) => void;
-  counts?: Partial<Record<WorkspaceTab, { value: number; tone?: "default" | "danger" }>>;
+  counts?: Partial<Record<WorkspaceTab, TabCount>>;
   variant?: "bar" | "inline";
 }) {
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -52,6 +98,7 @@ export function WorkspaceTabs({
     const moreActive = COMPACT_MORE.some((t) => t.key === active);
     const activeMore = COMPACT_MORE.find((t) => t.key === active);
     const ActiveMoreIcon = activeMore?.icon;
+    const moreAlert = COMPACT_MORE.reduce((sum, t) => sum + (counts?.[t.key]?.alert ?? 0), 0);
 
     return (
       <div className="relative min-w-0 flex-1">
@@ -84,23 +131,28 @@ export function WorkspaceTabs({
                 {count && count.value > 0 && (
                   <span
                     className={cn(
-                      "absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[9px] font-mono",
-                      count.tone === "danger" ? "bg-destructive text-destructive-foreground" : "bg-surface-4 text-foreground",
+                      "inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 font-mono text-[9px] tabular-nums leading-none",
+                      isActive ? "bg-black/10 text-black/65" : "bg-surface-4 text-foreground",
                     )}
                   >
                     {count.value > 99 ? "99+" : count.value}
                   </span>
                 )}
+                {count?.alert ? <AlertDot count={count.alert} className="absolute -right-0.5 -top-0.5" /> : null}
               </button>
             );
           })}
           <button
             type="button"
+            // When a "More" tab (Tools/Graph) is the active workspace tab, this
+            // trigger stands in as its tab element so the active tabpanel's
+            // aria-labelledby={workspace-tab-<key>} resolves to a real node.
+            id={moreActive && activeMore ? `workspace-tab-${activeMore.key}` : undefined}
             aria-haspopup="menu"
             aria-expanded={moreOpen}
             onClick={() => setMoreOpen((open) => !open)}
             className={cn(
-              "inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-lg px-2 text-[12px] font-medium transition-all duration-500 ease-premium active:scale-[0.98]",
+              "relative inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-lg px-2 text-[12px] font-medium transition-all duration-500 ease-premium active:scale-[0.98]",
               moreActive ? "bg-[hsl(var(--info-muted))] text-[hsl(var(--info))]" : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
             )}
           >
@@ -113,11 +165,12 @@ export function WorkspaceTabs({
               <span>More</span>
             )}
             <ChevronDown className="h-3 w-3" />
+            {moreAlert > 0 && !moreActive ? <AlertDot count={moreAlert} className="absolute -right-0.5 -top-0.5" /> : null}
           </button>
         </div>
 
         {moreOpen && (
-          <div className="absolute right-0 top-[calc(100%+0.35rem)] z-50 w-40 overflow-hidden rounded-xl border border-white/10 bg-[hsl(var(--popover))] p-1 shadow-[0_24px_80px_-34px_rgba(0,0,0,0.95)]">
+          <div className="absolute right-0 top-[calc(100%+0.35rem)] z-50 w-44 overflow-hidden rounded-xl border border-white/10 bg-[hsl(var(--popover))] p-1 shadow-[0_24px_80px_-34px_rgba(0,0,0,0.95)]">
             {COMPACT_MORE.map((t) => {
               const Icon = t.icon;
               const count = counts?.[t.key];
@@ -133,6 +186,7 @@ export function WorkspaceTabs({
                 >
                   <Icon className="h-4 w-4" strokeWidth={1.8} />
                   <span className="min-w-0 flex-1 truncate">{t.label}</span>
+                  {count?.alert ? <AlertDot count={count.alert} /> : null}
                   {count && count.value > 0 && (
                     <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
                       {count.value > 99 ? "99+" : count.value}
@@ -147,70 +201,50 @@ export function WorkspaceTabs({
     );
   }
 
+  // Desktop: a real segmented control. A contained pill bar gives the raised
+  // active tab a surface to sit against, so the bar reads as navigation and
+  // separates from the identity header above it.
   return (
-    <div
-      role="tablist"
-      aria-label="Investigation workspace"
-      className="grid grid-cols-5 items-stretch gap-0.5 px-2 sm:flex sm:gap-1 sm:px-4 border-b border-border-subtle bg-background overflow-hidden sm:overflow-x-auto scrollbar-none snap-x snap-mandatory [scrollbar-width:none]"
-    >
-      {TABS.map((t, idx) => {
-        const Icon = t.icon;
-        const isActive = active === t.key;
-        const count = counts?.[t.key];
-        return (
-          <button
-            key={t.key}
-            ref={(el) => { tabRefs.current[idx] = el; }}
-            id={`workspace-tab-${t.key}`}
-            role="tab"
-            aria-selected={isActive}
-            aria-controls={`workspace-tabpanel-${t.key}`}
-            tabIndex={isActive ? 0 : -1}
-            onKeyDown={(e) => onKeyDown(e, idx)}
-            onClick={() => onChange(t.key)}
-            className={cn(
-              "group relative min-w-0 snap-start inline-flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-2 h-14 sm:h-11 px-1 sm:px-4 text-[10px] sm:text-meta font-medium transition-colors rounded-md",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-              isActive ? "text-foreground" : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            <Icon
+    <div className="border-b border-border-subtle bg-background px-3 sm:px-4 py-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div
+        role="tablist"
+        aria-label="Investigation workspace"
+        className="inline-flex w-max items-center gap-1 rounded-xl border border-white/10 bg-white/[0.04] p-1"
+      >
+        {TABS.map((t, idx) => {
+          const Icon = t.icon;
+          const isActive = active === t.key;
+          const count = counts?.[t.key];
+          return (
+            <button
+              key={t.key}
+              ref={(el) => { tabRefs.current[idx] = el; }}
+              id={`workspace-tab-${t.key}`}
+              role="tab"
+              aria-selected={isActive}
+              aria-controls={`workspace-tabpanel-${t.key}`}
+              tabIndex={isActive ? 0 : -1}
+              onKeyDown={(e) => onKeyDown(e, idx)}
+              onClick={() => onChange(t.key)}
               className={cn(
-                "w-4 h-4 shrink-0 transition-colors",
-                isActive ? "text-primary" : "text-muted-foreground group-hover:text-foreground",
+                "relative inline-flex h-9 items-center gap-2 rounded-lg px-3.5 text-meta font-medium transition-all duration-300 ease-premium active:scale-[0.98]",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                isActive
+                  ? "bg-white text-black shadow-[0_1px_2px_rgba(0,0,0,0.4)]"
+                  : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
               )}
-              strokeWidth={1.75}
-            />
-            <span className="max-w-full truncate tracking-tight leading-none">{t.label}</span>
-            {/* Reserve the badge slot whenever this tab tracks a count, even at
-                zero, so the badge doesn't pop in and reflow the tab bar once the
-                async artifact/activity counts load. */}
-            {count && (
-              <span
-                className={cn(
-                  "absolute right-1 top-1 sm:static sm:ml-0.5 inline-flex items-center justify-center min-w-[16px] sm:min-w-[18px] h-4 sm:h-[18px] px-1 rounded-full text-[9px] sm:text-[10px] font-mono tabular-nums tracking-normal",
-                  count.value > 0
-                    ? count.tone === "danger"
-                      ? "bg-destructive/15 text-destructive border border-destructive/30"
-                      : "bg-surface-2 text-muted-foreground border border-border-subtle"
-                    : "opacity-0",
-                )}
-                aria-hidden={count.value === 0}
-              >
-                {count.value > 99 ? "99+" : count.value}
-              </span>
-            )}
-            {/* Active underline indicator */}
-            <span
-              aria-hidden
-              className={cn(
-                "absolute left-2 right-2 -bottom-px h-[2px] rounded-full transition-all",
-                isActive ? "bg-primary opacity-100" : "bg-transparent opacity-0",
-              )}
-            />
-          </button>
-        );
-      })}
+            >
+              <Icon
+                className={cn("h-4 w-4 shrink-0 transition-colors", isActive ? "text-black" : "text-current")}
+                strokeWidth={1.8}
+              />
+              <span className="leading-none tracking-tight">{t.label}</span>
+              {count ? <CountPill value={count.value} active={isActive} /> : null}
+              {count?.alert ? <AlertDot count={count.alert} /> : null}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadToolActivity } from "@/hooks/useThreadToolActivity";
-import { Database, Wrench, ShieldAlert, AlertTriangle, Lock, Coins, Plus, Copy } from "lucide-react";
+import { ShieldAlert, Lock, Coins, Plus, Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -26,13 +26,12 @@ function fmtUsd(micro: number | null | undefined): string {
 }
 
 /**
- * Persistent investigation header that sits above the workspace tabs — case
- * seed, run status, and the headline metrics (artifacts, tools, breaches,
- * failures, chain integrity, spend). DB-backed so it reads the same numbers no
- * matter which workspace mode is active. Clicking the failure chip jumps to the
- * Tools tab.
+ * Persistent investigation header — the case IDENTITY bar. It carries the seed,
+ * run status, chain-of-custody integrity, and spend. The per-section counts
+ * (artifacts, tool calls) and their alerts live on the workspace tabs instead,
+ * so every number appears in exactly one place.
  */
-export function WorkspaceHeader({ threadId, onShowTools }: { threadId: string; onShowTools?: () => void }) {
+export function WorkspaceHeader({ threadId }: { threadId: string }) {
   const navigate = useNavigate();
   const { user } = useAuth();
   const { items } = useThreadArtifacts(threadId);
@@ -42,7 +41,6 @@ export function WorkspaceHeader({ threadId, onShowTools }: { threadId: string; o
   const [integrity, setIntegrity] = useState<{ ok: boolean; total: number; first_break: number | null } | null>(null);
 
   const artifactCount = items.length;
-  const breachCount = items.filter((a) => a.kind.toLowerCase() === "breach").length;
 
   const loadIntegrity = useCallback(async () => {
     const [{ count }, { data: v }] = await Promise.all([
@@ -80,6 +78,10 @@ export function WorkspaceHeader({ threadId, onShowTools }: { threadId: string; o
     status === "completed" ? "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high)/0.4)] bg-[hsl(var(--confidence-high)/0.1)]"
     : status === "active" ? "text-primary border-primary/40 bg-primary/10"
     : "text-muted-foreground border-border bg-secondary/40";
+  const dotColor =
+    status === "completed" ? "bg-[hsl(var(--confidence-high))] shadow-[0_0_8px_hsl(var(--confidence-high)/0.7)]"
+    : status === "active" ? "bg-primary shadow-[0_0_8px_hsl(var(--primary)/0.5)] animate-pulse"
+    : "bg-muted-foreground";
 
   const integrityPct = integrity && integrity.total > 0
     ? (integrity.ok ? 100 : Math.max(0, Math.round(((Number(integrity.first_break ?? 1) - 1) / Math.max(integrity.total, 1)) * 100)))
@@ -104,9 +106,12 @@ export function WorkspaceHeader({ threadId, onShowTools }: { threadId: string; o
   return (
     <header className="border-b border-border-subtle bg-background">
       <div className="h-14 px-4 sm:px-5 flex items-center gap-3 min-w-0">
-        <span className="text-eyebrow font-semibold uppercase tracking-[0.2em] text-muted-foreground shrink-0 hidden sm:inline">Case</span>
+        <span
+          className={cn("h-2 w-2 shrink-0 rounded-full", dotColor)}
+          aria-hidden
+        />
         <button onClick={copySeed} className="group flex items-center gap-1.5 min-w-0 shrink text-left" title={thread?.seed_value ?? ""}>
-          <span className="font-mono text-meta text-foreground truncate max-w-[58vw] sm:max-w-[40vw]">{thread?.seed_value || "—"}</span>
+          <span className="font-mono text-meta text-foreground truncate max-w-[58vw] sm:max-w-[42vw]">{thread?.seed_value || "—"}</span>
           {thread?.seed_value && <Copy className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />}
         </button>
         <span className={cn("shrink-0 rounded-full border px-2.5 py-1 text-eyebrow font-mono uppercase tracking-[0.16em]", statusColor)}>
@@ -114,21 +119,6 @@ export function WorkspaceHeader({ threadId, onShowTools }: { threadId: string; o
         </span>
 
         <div className="ml-auto flex items-center gap-3 sm:gap-4 text-data shrink-0">
-          <Metric icon={Database} value={artifactCount} label="artifacts" title={`${artifactCount} artifacts`} />
-          <Metric icon={Wrench} value={activity.total} label="tools" title={`${activity.total} tool calls`} />
-          <Metric icon={ShieldAlert} value={breachCount} label="breaches" title={`${breachCount} breaches`} tone={breachCount > 0 ? "danger" : undefined} />
-          {activity.failed > 0 && (
-            <button
-              onClick={onShowTools}
-              title="Review failed tool calls"
-              aria-label={`Review ${activity.failed} failed tool calls`}
-              className="flex items-center gap-1 rounded px-1 text-destructive hover:bg-destructive/10 transition-colors"
-            >
-              <AlertTriangle className="w-3.5 h-3.5" />
-              <span className="tabular-nums">{activity.failed}</span>
-              <span className="hidden lg:inline">failed</span>
-            </button>
-          )}
           {integrityPct != null && (
             <div
               title={integrity?.ok ? `${integrity.total} evidence rows · chain valid` : `Chain break at seq ${integrity?.first_break}`}
@@ -166,17 +156,5 @@ export function WorkspaceHeader({ threadId, onShowTools }: { threadId: string; o
         </div>
       </div>
     </header>
-  );
-}
-
-function Metric({
-  icon: Icon, value, label, title, tone,
-}: { icon: typeof Database; value: number; label: string; title: string; tone?: "danger" }) {
-  return (
-    <div className="flex items-center gap-1 text-muted-foreground" title={title}>
-      <Icon className={cn("w-3.5 h-3.5", tone === "danger" && value > 0 && "text-destructive")} />
-      <span className={cn("tabular-nums", tone === "danger" && value > 0 ? "text-destructive" : "text-foreground")}>{value}</span>
-      <span className="hidden lg:inline">{label}</span>
-    </div>
   );
 }
