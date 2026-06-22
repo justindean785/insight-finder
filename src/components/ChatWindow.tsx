@@ -1697,7 +1697,7 @@ function ChatWindowInner({
                   <div className="grid grid-cols-2 sm:grid-cols-1 divide-x sm:divide-x-0 sm:divide-y divide-white/8 border-t sm:border-t-0 sm:border-l border-white/8">
                     <div className="px-4 py-3 min-w-[170px]">
                       <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">Status</div>
-                      <div className="mt-1 inline-flex items-center gap-2 rounded-full border border-[hsl(var(--confidence-high))/28] bg-[hsl(var(--confidence-high))/9] px-2.5 py-1 text-eyebrow font-mono uppercase tracking-[0.14em] text-[hsl(var(--confidence-high))]">
+                      <div className="mt-1 inline-flex items-center gap-2 rounded-full border border-[hsl(var(--confidence-high))]/30 bg-[hsl(var(--confidence-high))]/10 px-2.5 py-1 text-eyebrow font-mono uppercase tracking-[0.14em] text-[hsl(var(--confidence-high))]">
                         <span className="h-1.5 w-1.5 rounded-full bg-[hsl(var(--confidence-high))]" />
                         Ready
                       </div>
