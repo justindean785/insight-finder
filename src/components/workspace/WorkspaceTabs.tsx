@@ -27,7 +27,7 @@ function AlertDot({ count, className }: { count: number; className?: string }) {
   const label = `${count} need${count === 1 ? "s" : ""} attention`;
   return (
     <span
-      role="status"
+      role="img"
       aria-label={label}
       title={label}
       className={cn(
@@ -144,6 +144,10 @@ export function WorkspaceTabs({
           })}
           <button
             type="button"
+            // When a "More" tab (Tools/Graph) is the active workspace tab, this
+            // trigger stands in as its tab element so the active tabpanel's
+            // aria-labelledby={workspace-tab-<key>} resolves to a real node.
+            id={moreActive && activeMore ? `workspace-tab-${activeMore.key}` : undefined}
             aria-haspopup="menu"
             aria-expanded={moreOpen}
             onClick={() => setMoreOpen((open) => !open)}
@@ -201,11 +205,11 @@ export function WorkspaceTabs({
   // active tab a surface to sit against, so the bar reads as navigation and
   // separates from the identity header above it.
   return (
-    <div className="border-b border-border-subtle bg-background px-3 sm:px-4 py-2">
+    <div className="border-b border-border-subtle bg-background px-3 sm:px-4 py-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       <div
         role="tablist"
         aria-label="Investigation workspace"
-        className="inline-flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.04] p-1"
+        className="inline-flex w-max items-center gap-1 rounded-xl border border-white/10 bg-white/[0.04] p-1"
       >
         {TABS.map((t, idx) => {
           const Icon = t.icon;
