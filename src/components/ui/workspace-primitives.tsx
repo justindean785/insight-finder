@@ -42,7 +42,10 @@ export function TabHeader({
   return (
     <div
       className={cn(
-        "shrink-0 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-3 sm:px-4 py-2 border-b border-border-subtle bg-[hsl(var(--surface-0))/0.98]",
+        // Fully opaque, valid bg. The previous `bg-[hsl(var(--surface-0))/0.98]`
+        // compiled to invalid CSS (`hsl(0 0% 3%)/0.98`) → no background at all,
+        // so the sticky Report header let scrolling content show through (#110).
+        "shrink-0 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-3 sm:px-4 py-2 border-b border-border-subtle bg-[hsl(var(--surface-0))]",
         className,
       )}
     >
