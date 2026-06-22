@@ -55,7 +55,7 @@ export function TabHeader({
           )}
         </div>
       </div>
-      {children ? <div className="flex shrink-0 items-center gap-2">{children}</div> : null}
+      {children ? <div className="flex min-w-0 flex-wrap items-center gap-2">{children}</div> : null}
     </div>
   );
 }

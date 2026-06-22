@@ -38,7 +38,9 @@ export function ToolsTab({ threadId }: { threadId: string }) {
   return (
     <div className="h-full flex flex-col min-h-0">
       <TabHeader icon={Activity} title="Tools" subtitle="Activity, audit & chain of custody">
-        <div role="tablist" aria-label="Tools view" className="inline-flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.035] p-1">
+        {/* Segmented view switcher — toggle buttons (aria-pressed), not ARIA
+            tabs: these swap content in place and have no associated tabpanels. */}
+        <div role="group" aria-label="Tools view" className="inline-flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.035] p-1">
           {VIEWS.map((v) => {
             const Icon = v.icon;
             const active = view === v.key;
@@ -46,8 +48,8 @@ export function ToolsTab({ threadId }: { threadId: string }) {
             return (
               <button
                 key={v.key}
-                role="tab"
-                aria-selected={active}
+                type="button"
+                aria-pressed={active}
                 onClick={() => setView(v.key)}
                 title={v.label}
                 aria-label={v.label}
@@ -62,7 +64,7 @@ export function ToolsTab({ threadId }: { threadId: string }) {
                 <Icon className={cn("w-3.5 h-3.5 shrink-0", danger && !active && "text-destructive")} strokeWidth={1.75} />
                 <span className="hidden min-[420px]:inline">{v.label}</span>
                 {danger && (
-                  <span className={cn("font-mono text-[10px] tabular-nums", active ? "text-destructive" : "text-destructive")}>{activity.failed}</span>
+                  <span className="font-mono text-[10px] tabular-nums text-destructive">{activity.failed}</span>
                 )}
               </button>
             );
