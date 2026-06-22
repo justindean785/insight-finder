@@ -17,6 +17,7 @@ import {
 import { Copy, FileText, Table, Braces, ScrollText, Download, Printer, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 import { TabHeader } from "@/components/ui/workspace-primitives";
+import { ConfidenceRadar } from "@/components/workspace/ConfidenceRadar";
 import { EmptyState } from "./EmptyState";
 import { CaseReport } from "./CaseReport";
 
@@ -170,6 +171,10 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
       </TabHeader>
 
       <div className="p-3 space-y-3">
+      {/* Evidence-signal summary — UI-only, kept out of the printed report. */}
+      <div className="no-print">
+        <ConfidenceRadar artifacts={artifacts} seedValue={seed.value} reviews={reviews} />
+      </div>
       <div className="rounded-lg border border-border-subtle bg-surface-1 px-4 py-5 max-h-[78vh] overflow-y-auto [scrollbar-width:thin]">
         <CaseReport seedValue={seed.value} seedType={seed.type} artifacts={artifacts} reviews={reviews} />
       </div>
