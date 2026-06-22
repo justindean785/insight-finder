@@ -231,3 +231,46 @@ Fixed all 6 issues found in the live preview screenshots.
 - Activity ↔ Failures parity now guaranteed (shared `deriveToolStatus`).
 - VirusTotal renders as Threat/Reputation across Table, Report, and markdown.
 - Clusters label infra IPs as infrastructure / shared infra, not "unknown".
+
+---
+
+## 2026-06-22 — Workspace UI polish & IA audit (`feat/workspace-ui-polish-audit`)
+
+Builds ON the unmerged UI stack: #104 (segmented tabs + deduped counts),
+#105 (per-tab section headers), #106 (entity graph), #107 (confidence radar).
+Header overload (audit #1) and global repeated-counts (audit #2) were already
+resolved by #104/#105 — **verified, not redone**. This pass is presentation-only.
+
+### Plan
+- [x] Report card header: dropped the 6-chip count row (it duplicated the tab
+      badges for artifacts/tools AND the Executive-Summary prose for
+      confirmed/probable/leads) → one calm `type · N artifacts analyzed` scope
+      line; kept the analyst-review tally. Bumped the seed to `text-lg` so the
+      header reads as the title and Executive Summary is the first anchor.
+- [x] Report section headers: were RED for every section (number-soup of
+      warnings). Added a `tone` to `SectionHeader`; neutral by default, red
+      reserved for genuine-risk sections (Safety/Legal Flags, Contradictions).
+- [x] Report tables (bucket tables, Identity, Registrations): swapped
+      `overflow-hidden` → `overflow-x-auto` + `min-w-[…]` so narrow widths
+      scroll instead of exploding; row padding `py-2 → py-2.5`; reasoning
+      contrast lifted (`text-destructive/80 → text-destructive`, muted/90).
+- [x] Report export toolbar: primary downloads (Copy md / .md / PDF) split from
+      secondary/raw (Matrix / JSON) by a divider that collapses on mobile;
+      wrapped in a labelled `role="group"`.
+- [x] Sidebar: active case row strengthened (`bg-white/[0.08]` + `ring-white/20`).
+- [x] Contrast: lifted reasoning + reason-not-confirmed text where touched
+      (restrained; no neon).
+- [x] A11y: tables keep `<th>` semantics; export group labelled; status stays
+      text+colour (ConfPill / ReviewPill), never colour-only; focus rings intact.
+
+### Constraints
+Frontend-only. No backend / clustering / confidence-math / report-generation /
+graph / radar transform changes. No new/fake metrics. Presentation-only (no new
+pure logic → no new transform tests; full suite stayed green).
+
+### Results
+- Files: `CaseReport.tsx`, `ReportTab.tsx`, `ThreadSidebar.tsx` (+ this doc).
+- `npm run typecheck` clean · `eslint` 0 · `npm run build` OK · **675 tests pass**.
+- Diff: +70/−32 across 3 components — focused, presentation-only.
+- Header overload (#1) / global repeated-counts (#2) confirmed already handled
+  by #104/#105 — not duplicated here.
