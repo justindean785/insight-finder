@@ -274,3 +274,45 @@ pure logic → no new transform tests; full suite stayed green).
 - Diff: +70/−32 across 3 components — focused, presentation-only.
 - Header overload (#1) / global repeated-counts (#2) confirmed already handled
   by #104/#105 — not duplicated here.
+
+---
+
+## 2026-06-22 — Production UI overlap bugs (`fix/production-ui-overlap-bugs`)
+
+Small bugfix PR on top of the merged redesign (`main` @ b48406ef). Surfaced from
+production screenshots. Fixes #110. Frontend-only; no redesign.
+
+### Plan / findings
+- [x] **Bug 1 — sticky Report sub-header transparent / bleed-through.** Root
+      cause: shared `TabHeader` used `bg-[hsl(var(--surface-0))/0.98]`, which
+      compiles to invalid CSS (`background-color: hsl(0 0% 3%)/0.98`) → the
+      browser drops it → header has NO background. Only visible on Report (the
+      one sticky header). Fix: valid opaque `bg-[hsl(var(--surface-0))]`.
+      **Verified the generated CSS** is emitted (see Results), not assumed.
+- [x] **Bug 2 — confidence radar overlaps export toolbar.** Same root cause as
+      Bug 1 (transparent sticky header). The opaque-bg fix resolves it; the
+      radar already sits below the header in flow, so no layout change needed.
+- [x] **Bug 3 — possible duplicate vertical icon rail.** Investigated
+      `ChatPage` layout: exactly ONE `<aside><ThreadSidebar/></aside>` (desktop)
+      / one Sheet (mobile). The narrow icon rail in screenshots is the
+      **collapsed** sidebar (one icon per thread) — intentional, NOT a
+      duplicate. No change.
+- [x] **Bug 4 — stale old-UI screenshot.** A browser tab loaded before the
+      deploy still serving the cached SPA bundle. Not a code regression;
+      hard-refresh (Cmd+Shift+R) shows the new build. No cache/service-worker
+      work in this PR (none exists to hook into).
+
+### Out of scope (noted, not changed per "same overlap bug only")
+- `src/pages/ChatPage.tsx:117` mobile header carries the same malformed class,
+  but it is NOT sticky-over-content (flex-column header) and its target colour
+  equals the page background, so there is no visible bleed. Left as-is; can be
+  swept separately.
+
+### Results
+- Code change: `src/components/ui/workspace-primitives.tsx` only (`TabHeader` bg
+  → valid opaque `bg-[hsl(var(--surface-0))]`). +4/−1.
+- **Generated-CSS verified** (built `dist/assets/*.css`): the fixed class emits
+  `background-color:hsl(var(--surface-0))`; the old malformed
+  `hsl(var(--surface-0))/0.98` value is absent. Not assumed — grepped.
+- `npm run typecheck` clean · `eslint` 0 · `npm run build` OK · **675 tests pass**.
+- Bugs 2/3/4 required no code change (see above). Scope held: one-file fix.
