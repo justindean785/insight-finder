@@ -6,7 +6,7 @@ import { FailedSkippedTab } from "@/components/panel/FailedSkippedTab";
 import { CustodyTab } from "@/components/panel/CustodyTab";
 import { EmptyState } from "@/components/panel/EmptyState";
 import {
-  MetricCard, FilterChips, ToolStatusBadge, ExpandableRow,
+  MetricCard, FilterChips, ToolStatusBadge, ExpandableRow, TabHeader,
   type FilterChip,
 } from "@/components/ui/workspace-primitives";
 import { Activity, Gauge, AlertTriangle, Lock, CheckCircle2, XCircle, MinusCircle, ListChecks, Clock, type LucideIcon } from "lucide-react";
@@ -37,31 +37,40 @@ export function ToolsTab({ threadId }: { threadId: string }) {
 
   return (
     <div className="h-full flex flex-col min-h-0">
-      <div className="shrink-0 px-3 sm:px-4 py-2 border-b border-border-subtle flex items-center gap-1">
-        {VIEWS.map((v) => {
-          const Icon = v.icon;
-          const active = view === v.key;
-          const danger = v.key === "issues" && activity.failed > 0;
-          return (
-            <button
-              key={v.key}
-              onClick={() => setView(v.key)}
-              className={cn(
-                "inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-meta font-medium transition-colors",
-                active
-                  ? "bg-surface-1 text-foreground border border-white/10"
-                  : "text-muted-foreground hover:text-foreground hover:bg-surface-1 border border-transparent",
-              )}
-            >
-              <Icon className={cn("w-3.5 h-3.5 shrink-0", danger && !active && "text-destructive")} strokeWidth={1.75} />
-              {v.label}
-              {danger && (
-                <span className="font-mono text-[10px] tabular-nums text-destructive">{activity.failed}</span>
-              )}
-            </button>
-          );
-        })}
-      </div>
+      <TabHeader icon={Activity} title="Tools" subtitle="Activity, audit & chain of custody">
+        {/* Segmented view switcher — toggle buttons (aria-pressed), not ARIA
+            tabs: these swap content in place and have no associated tabpanels. */}
+        <div role="group" aria-label="Tools view" className="inline-flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.035] p-1">
+          {VIEWS.map((v) => {
+            const Icon = v.icon;
+            const active = view === v.key;
+            const danger = v.key === "issues" && activity.failed > 0;
+            return (
+              <button
+                key={v.key}
+                type="button"
+                aria-pressed={active}
+                onClick={() => setView(v.key)}
+                title={v.label}
+                aria-label={v.label}
+                className={cn(
+                  "inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-meta font-medium transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  active
+                    ? "bg-white text-black"
+                    : "text-muted-foreground hover:text-foreground hover:bg-white/[0.05]",
+                )}
+              >
+                <Icon className={cn("w-3.5 h-3.5 shrink-0", danger && !active && "text-destructive")} strokeWidth={1.75} />
+                <span className="hidden min-[420px]:inline">{v.label}</span>
+                {danger && (
+                  <span className="font-mono text-[10px] tabular-nums text-destructive">{activity.failed}</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </TabHeader>
 
       <div className="flex-1 min-h-0 overflow-y-auto">
         {view === "activity" && (

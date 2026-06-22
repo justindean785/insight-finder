@@ -3,7 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useThreadArtifacts, type Artifact } from "@/hooks/useThreadArtifacts";
 import { groupForKind, GROUP_LABEL, GROUP_ORDER, type Group } from "@/lib/intel";
 import { ConfidenceMeter } from "@/components/investigation/primitives";
-import { CopyButton } from "@/components/ui/workspace-primitives";
+import { CopyButton, TabHeader } from "@/components/ui/workspace-primitives";
 import { EmptyState } from "@/components/panel/EmptyState";
 import { ZoomIn, ZoomOut, Maximize2, Share2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -135,16 +135,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
   }, [items, hidden]);
 
   const selectedNode = nodes.find((n) => n.id === selected) ?? null;
-
-  if (items.length === 0) {
-    return (
-      <EmptyState
-        icon={Share2}
-        title="No entities to graph yet"
-        hint="As the investigation discovers emails, usernames, domains and other identifiers, they'll appear here linked back to the seed."
-      />
-    );
-  }
+  const isEmpty = items.length === 0;
 
   const toggleGroup = (g: Group) =>
     setHidden((prev) => {
@@ -155,41 +146,56 @@ export function GraphTab({ threadId }: { threadId: string }) {
 
   return (
     <div className="h-full flex flex-col min-h-0">
-      {/* Category filter toggles + zoom controls */}
-      <div className="shrink-0 px-3 sm:px-4 py-2 border-b border-border-subtle flex items-center gap-2 flex-wrap">
-        <span className="text-eyebrow uppercase tracking-[0.16em] text-muted-foreground/70 mr-1 hidden sm:inline">Categories</span>
-        {presentGroups.map((g) => {
-          const off = hidden.has(g);
-          return (
-            <button
-              key={g}
-              onClick={() => toggleGroup(g)}
-              aria-pressed={!off}
-              className={cn(
-                "inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-meta font-medium border transition-colors",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                off
-                  ? "border-transparent text-muted-foreground/50 line-through hover:text-muted-foreground"
-                  : "border-white/10 bg-surface-1 text-foreground",
-              )}
-              title={off ? `Show ${GROUP_LABEL[g]}` : `Hide ${GROUP_LABEL[g]}`}
-            >
-              <span className="w-2.5 h-2.5 rounded-[2px]" style={{ backgroundColor: GROUP_COLOR[g], opacity: off ? 0.4 : 1 }} />
-              {GROUP_LABEL[g]}
-              <span className="font-mono text-[10px] tabular-nums text-muted-foreground">{groupCounts.get(g)}</span>
-            </button>
-          );
-        })}
-        <div className="ml-auto flex items-center gap-1">
-          <ZoomBtn icon={ZoomOut} label="Zoom out" onClick={() => setZoom((z) => Math.max(0.5, +(z - 0.2).toFixed(2)))} />
-          <span className="font-mono text-data tabular-nums text-muted-foreground w-10 text-center">{Math.round(zoom * 100)}%</span>
-          <ZoomBtn icon={ZoomIn} label="Zoom in" onClick={() => setZoom((z) => Math.min(2.5, +(z + 0.2).toFixed(2)))} />
-          <ZoomBtn icon={Maximize2} label="Reset zoom" onClick={() => setZoom(1)} />
+      <TabHeader icon={Share2} title="Graph" subtitle="Entity relationship map">
+        {!isEmpty && (
+          <div className="flex items-center gap-1">
+            <ZoomBtn icon={ZoomOut} label="Zoom out" onClick={() => setZoom((z) => Math.max(0.5, +(z - 0.2).toFixed(2)))} />
+            <span className="font-mono text-data tabular-nums text-muted-foreground w-10 text-center">{Math.round(zoom * 100)}%</span>
+            <ZoomBtn icon={ZoomIn} label="Zoom in" onClick={() => setZoom((z) => Math.min(2.5, +(z + 0.2).toFixed(2)))} />
+            <ZoomBtn icon={Maximize2} label="Reset zoom" onClick={() => setZoom(1)} />
+          </div>
+        )}
+      </TabHeader>
+
+      {/* Category filter toggles */}
+      {!isEmpty && (
+        <div className="shrink-0 px-3 sm:px-4 py-2 border-b border-border-subtle flex items-center gap-2 flex-wrap">
+          <span className="text-eyebrow uppercase tracking-[0.16em] text-muted-foreground/70 mr-1 hidden sm:inline">Categories</span>
+          {presentGroups.map((g) => {
+            const off = hidden.has(g);
+            return (
+              <button
+                key={g}
+                onClick={() => toggleGroup(g)}
+                aria-pressed={!off}
+                className={cn(
+                  "inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-meta font-medium border transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  off
+                    ? "border-transparent text-muted-foreground/50 line-through hover:text-muted-foreground"
+                    : "border-white/10 bg-surface-1 text-foreground",
+                )}
+                title={off ? `Show ${GROUP_LABEL[g]}` : `Hide ${GROUP_LABEL[g]}`}
+              >
+                <span className="w-2.5 h-2.5 rounded-[2px]" style={{ backgroundColor: GROUP_COLOR[g], opacity: off ? 0.4 : 1 }} />
+                {GROUP_LABEL[g]}
+                <span className="font-mono text-[10px] tabular-nums text-muted-foreground">{groupCounts.get(g)}</span>
+              </button>
+            );
+          })}
         </div>
-      </div>
+      )}
 
       <div className="flex-1 min-h-0 relative">
-        <div className="absolute inset-0 overflow-auto grid place-items-center bg-[radial-gradient(circle_at_50%_45%,hsl(var(--surface-1)/0.6),transparent_70%)]">
+        {isEmpty ? (
+          <EmptyState
+            icon={Share2}
+            title="No entities to graph yet"
+            hint="As the investigation discovers emails, usernames, domains and other identifiers, they'll appear here linked back to the seed."
+          />
+        ) : (
+          <>
+            <div className="absolute inset-0 overflow-auto grid place-items-center bg-[radial-gradient(circle_at_50%_45%,hsl(var(--surface-1)/0.6),transparent_70%)]">
           <svg
             viewBox={`0 0 ${W} ${H}`}
             className="w-full h-full max-w-[1100px]"
@@ -287,22 +293,26 @@ export function GraphTab({ threadId }: { threadId: string }) {
             </p>
           </div>
         )}
+          </>
+        )}
       </div>
 
       {/* Legend: color + shape + label + count */}
-      <div className="shrink-0 border-t border-border-subtle px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5">
-        {presentGroups.map((g) => (
-          <span key={g} className={cn("inline-flex items-center gap-1.5 text-data", hidden.has(g) ? "text-muted-foreground/40" : "text-muted-foreground")}>
-            <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden className="shrink-0">
-              <NodeGlyph shape={GROUP_SHAPE[g]} x={7} y={7} r={4.5} fill={GROUP_COLOR[g]} stroke="transparent" active />
-            </svg>
-            {GROUP_LABEL[g]}
+      {!isEmpty && (
+        <div className="shrink-0 border-t border-border-subtle px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5">
+          {presentGroups.map((g) => (
+            <span key={g} className={cn("inline-flex items-center gap-1.5 text-data", hidden.has(g) ? "text-muted-foreground/40" : "text-muted-foreground")}>
+              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden className="shrink-0">
+                <NodeGlyph shape={GROUP_SHAPE[g]} x={7} y={7} r={4.5} fill={GROUP_COLOR[g]} stroke="transparent" active />
+              </svg>
+              {GROUP_LABEL[g]}
+            </span>
+          ))}
+          <span className="ml-auto text-data text-muted-foreground/70">
+            {nodes.length} of {items.length} {items.length === 1 ? "entity" : "entities"} shown
           </span>
-        ))}
-        <span className="ml-auto text-data text-muted-foreground/70">
-          {nodes.length} of {items.length} {items.length === 1 ? "entity" : "entities"} shown
-        </span>
-      </div>
+        </div>
+      )}
     </div>
   );
 }

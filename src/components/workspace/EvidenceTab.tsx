@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
+import { useReviewStates } from "@/lib/review";
 import { EvidenceBoard } from "@/components/ResourcesPanel";
 import { EvidenceMatrixTab } from "@/components/panel/EvidenceMatrixTab";
 import { ClustersTab } from "@/components/panel/ClustersTab";
 import { TimelineTab } from "@/components/panel/TimelineTab";
-import { LayoutGrid, Table2, Network, Clock, type LucideIcon } from "lucide-react";
+import { TabHeader } from "@/components/ui/workspace-primitives";
+import { LayoutGrid, Table2, Network, Clock, Database, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type View = "board" | "table" | "clusters" | "timeline";
@@ -24,49 +26,75 @@ const VIEWS: { key: View; label: string; icon: LucideIcon }[] = [
  */
 export function EvidenceTab({ threadId }: { threadId: string }) {
   const { items, updateLocal, hasMore, cap } = useThreadArtifacts(threadId);
+  const review = useReviewStates(threadId);
   const [view, setView] = useState<View>("board");
+
+  // Analyst review state, summarised for the header context line. Read-only
+  // tally — verification logic is untouched.
+  const tally = useMemo(() => {
+    let verified = 0, rejected = 0, recheck = 0;
+    for (const a of items) {
+      const s = review.get(a.id);
+      if (s === "confirmed" || s === "key") verified++;
+      else if (s === "wrong" || s === "dismissed") rejected++;
+      else if (s === "recheck") recheck++;
+    }
+    return { verified, rejected, recheck };
+  }, [items, review]);
+
+  const parts: ReactNode[] = [`${items.length} artifact${items.length === 1 ? "" : "s"}`];
+  if (tally.verified) parts.push(<span className="text-[hsl(var(--confidence-high))]">{tally.verified} verified</span>);
+  if (tally.rejected) parts.push(<span className="text-destructive">{tally.rejected} rejected</span>);
+  if (tally.recheck) parts.push(<span className="text-[hsl(var(--confidence-mid))]">{tally.recheck} to recheck</span>);
+
+  const subtitle = (
+    <span className="inline-flex flex-wrap items-center">
+      {parts.map((p, i) => (
+        <span key={i} className="inline-flex items-center">
+          {i > 0 && <span className="mx-1.5 text-muted-foreground/40" aria-hidden>·</span>}
+          {p}
+        </span>
+      ))}
+      {hasMore && (
+        <span
+          className="ml-2 inline-flex items-center rounded border border-warning/30 bg-warning/10 px-1 py-px text-[9px] uppercase tracking-wider text-warning"
+          title={`Initial load capped at ${cap.toLocaleString()} rows. New realtime inserts still apply, but older artifacts beyond the cap are not yet loaded.`}
+        >
+          ⚠ sampled (latest {cap.toLocaleString()})
+        </span>
+      )}
+    </span>
+  );
 
   return (
     <div className="h-full flex flex-col min-h-0">
-      <div className="shrink-0 h-11 px-3 sm:px-4 border-b border-border-subtle flex items-center gap-3 bg-[hsl(var(--surface-0))/0.98]">
-        <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold text-foreground leading-none">Evidence</div>
-          <div className="mt-0.5 text-[10px] text-muted-foreground leading-none">
-            {items.length} artifact{items.length === 1 ? "" : "s"}
-            {hasMore && (
-              <span
-                className="ml-2 inline-flex items-center rounded border border-warning/30 bg-warning/10 px-1 py-px text-[9px] uppercase tracking-wider text-warning"
-                title={`Initial load capped at ${cap.toLocaleString()} rows. New realtime inserts still apply, but older artifacts beyond the cap are not yet loaded.`}
+      <TabHeader icon={Database} title="Evidence" subtitle={subtitle}>
+        <div className="inline-flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.035] p-1">
+          {VIEWS.map((v) => {
+            const Icon = v.icon;
+            const active = view === v.key;
+            return (
+              <button
+                key={v.key}
+                type="button"
+                onClick={() => setView(v.key)}
+                title={v.label}
+                aria-label={`Show ${v.label.toLowerCase()} evidence view`}
+                aria-pressed={active}
+                className={cn(
+                  "inline-flex h-7 w-8 items-center justify-center rounded-lg transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  active
+                    ? "bg-white text-black"
+                    : "text-muted-foreground hover:text-foreground hover:bg-white/[0.05]",
+                )}
               >
-                ⚠ sampled (latest {cap.toLocaleString()})
-              </span>
-            )}
-          </div>
+                <Icon className="w-3.5 h-3.5 shrink-0" strokeWidth={1.75} />
+              </button>
+            );
+          })}
         </div>
-        <div className="inline-flex shrink-0 items-center gap-1 rounded-xl border border-white/10 bg-white/[0.035] p-1">
-        {VIEWS.map((v) => {
-          const Icon = v.icon;
-          const active = view === v.key;
-          return (
-            <button
-              key={v.key}
-              type="button"
-              onClick={() => setView(v.key)}
-              title={v.label}
-              aria-label={`Show ${v.label.toLowerCase()} evidence view`}
-              className={cn(
-                "inline-flex h-7 w-8 items-center justify-center rounded-lg transition-colors",
-                active
-                  ? "bg-white text-black"
-                  : "text-muted-foreground hover:text-foreground hover:bg-white/[0.05]",
-              )}
-            >
-              <Icon className="w-3.5 h-3.5 shrink-0" strokeWidth={1.75} />
-            </button>
-          );
-        })}
-        </div>
-      </div>
+      </TabHeader>
 
       <div className="flex-1 min-h-0 overflow-y-auto">
         {/* The board reads its own data so it can own the detail drawer; the
