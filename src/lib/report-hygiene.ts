@@ -168,3 +168,86 @@ export function sweepRouteQuality(a: Artifact): SweepRouteQuality {
   if (m.profile_content === true || /profile|bio|avatar/.test(text)) return "content";
   return "exists";
 }
+
+// ---------------------------------------------------------------------------
+// Conservative breach-dataset dedup.
+//
+// The pipeline sometimes records the SAME breach dataset twice under name
+// variants from the same source pair — e.g. "Synthient Credential Stuffing 2025
+// (1.9B)" (kind breach_exposure) and "Synthient Credential Stuffing Threat Data
+// (1.9B records, April 2025)" (kind weak_lead). The hash-based insert dedup keys
+// on exact value+kind, so name variants slip through and double-list in both the
+// Artifact Table and Network Connections.
+//
+// This collapses two breach artifacts ONLY when ALL of the following hold:
+//   • both are breach-dataset kinds (breach_exposure / weak_lead),
+//   • the same normalized source string,
+//   • the same record-count magnitude token (1.9b / 220m / 73k),
+//   • the same year, AND
+//   • they share at least one significant (≥4-char) word.
+// Different breaches, different sources, or a shared number alone never collapse.
+// ---------------------------------------------------------------------------
+
+const BREACH_DEDUP_KINDS = new Set(["breach_exposure", "weak_lead"]);
+const BREACH_COUNT_RE = /(\d+(?:\.\d+)?)\s*(b|m|k|billion|million|thousand)\b/i;
+const BREACH_YEAR_RE = /\b(?:19|20)\d{2}\b/;
+
+function breachMagnitude(unit: string): string {
+  const u = unit.toLowerCase();
+  if (u === "billion") return "b";
+  if (u === "million") return "m";
+  if (u === "thousand") return "k";
+  return u;
+}
+
+function breachCountToken(value: string): string | null {
+  const m = value.match(BREACH_COUNT_RE);
+  return m ? `${m[1]}${breachMagnitude(m[2])}` : null;
+}
+
+function breachSignificantWords(value: string): Set<string> {
+  return new Set(value.toLowerCase().match(/[a-z]{4,}/g) ?? []);
+}
+
+function normalizedBreachSource(source: string | null | undefined): string {
+  return (source ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/** Higher rank wins as the surviving representative: prefer the more specific
+ *  breach_exposure kind, then higher confidence, then richer metadata. */
+function breachRepRank(a: Artifact): number {
+  let r = 0;
+  if (a.kind === "breach_exposure") r += 1000;
+  r += a.confidence ?? 0;
+  r += Object.keys(a.metadata ?? {}).length;
+  return r;
+}
+
+export function dedupeBreachDatasets(artifacts: Artifact[]): Artifact[] {
+  type Cand = { a: Artifact; words: Set<string> };
+  const groups = new Map<string, Cand[]>();
+  for (const a of artifacts) {
+    if (!BREACH_DEDUP_KINDS.has(a.kind)) continue;
+    const count = breachCountToken(a.value);
+    const year = a.value.match(BREACH_YEAR_RE)?.[0] ?? null;
+    if (!count || !year) continue; // require BOTH a count magnitude and a year
+    const key = `${normalizedBreachSource(a.source)}::${count}::${year}`;
+    const arr = groups.get(key) ?? [];
+    arr.push({ a, words: breachSignificantWords(a.value) });
+    groups.set(key, arr);
+  }
+
+  const dropIds = new Set<string>();
+  for (const members of groups.values()) {
+    if (members.length < 2) continue;
+    const [rep, ...rest] = [...members].sort((x, y) => breachRepRank(y.a) - breachRepRank(x.a));
+    for (const m of rest) {
+      // Only collapse when the variant shares a significant word with the rep —
+      // guards against two genuinely different datasets that happen to share a
+      // source pair, count magnitude, and year.
+      if ([...m.words].some((w) => rep.words.has(w))) dropIds.add(m.a.id);
+    }
+  }
+
+  return dropIds.size ? artifacts.filter((a) => !dropIds.has(a.id)) : artifacts;
+}

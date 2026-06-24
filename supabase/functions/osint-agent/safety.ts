@@ -16,6 +16,14 @@ const MINOR_AGE_NUM_RE = /\b(?:i['’]?m|im|age[ds]?|edad|years? old|y\/?o|yrs?)
 const MINOR_AGE_BARE_RE = /(?:^|[^\d])(1[0-7])\s*(?:y\/?o|yo|yrs?\b|years?\s*old)\b/i;
 const MINOR_PHRASE_RE = /\b(?:minor|underage|under\s*18|middle\s*school|junior\s*high|freshman|sophomore|jr\.?\s*high|high\s*school\s*(?:freshman|sophomore)|grade\s*(?:6|7|8|9|10|11)|6th\s*grade|7th\s*grade|8th\s*grade|9th\s*grade|10th\s*grade|11th\s*grade|teen(?:ager)?|kiddo|preteen)\b/i;
 const BIO_META_FIELDS = ["bio", "biography", "description", "about", "tagline", "headline", "profile_bio", "summary", "status"];
+// Date-like strings (ISO `1958-10-11`, `10/11/1958`, `11.10.58`) carry month/day
+// numbers in the 10–17 range that must NEVER be read as a minor's age. A DOB is
+// routinely reclassified `dob`→`other` for value-masking, which would otherwise
+// feed it straight into the bare-age scan below.
+const DATE_LIKE_RE = /\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b/;
+function isDateLike(s: string): boolean {
+  return DATE_LIKE_RE.test(s);
+}
 
 export function scrubArtifactRow(row: Record<string, unknown>): Record<string, unknown> {
   const kind = String(row.kind ?? "").toLowerCase();
@@ -28,7 +36,11 @@ export function scrubArtifactRow(row: Record<string, unknown>): Record<string, u
     const val = meta[f];
     if (typeof val === "string") haystacks.push(val);
   }
-  if (kind === "username" || kind === "social" || kind === "name" || kind === "other" || kind === "bio") {
+  // A date-of-birth carries no bio text — its digits are date parts, not ages.
+  // Reclassified DOBs land in kind "other", so guard on original_kind too.
+  const originalKind = String(meta.original_kind ?? "").toLowerCase();
+  const isDob = kind === "dob" || originalKind === "dob";
+  if (!isDob && (kind === "username" || kind === "social" || kind === "name" || kind === "other" || kind === "bio")) {
     if (typeof row.value === "string") haystacks.push(String(row.value));
   }
   const signals: string[] = [];
@@ -45,8 +57,10 @@ export function scrubArtifactRow(row: Record<string, unknown>): Record<string, u
     }
     const phraseMatch = h.match(MINOR_PHRASE_RE);
     if (phraseMatch) signals.push(`phrase:${phraseMatch[0].toLowerCase()}`);
-    // Bare digit 10–17 in a short bio (≤120 chars) is a soft signal.
-    if (!cueMatch && h.length <= 120) {
+    // Bare digit 10–17 in a short bio (≤120 chars) is a soft signal — but never
+    // on a date-like string, whose month/day (e.g. "1958-10-11" → "10") is not
+    // an age. Explicit age cues ("i'm 16", "16 y/o") still match above.
+    if (!cueMatch && h.length <= 120 && !isDateLike(h)) {
       const bare = h.match(/(?:^|[^\d])(1[0-7])(?:[^\d]|$)/);
       if (bare) {
         const age = parseInt(bare[1], 10);

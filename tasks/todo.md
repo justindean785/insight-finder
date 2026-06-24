@@ -277,6 +277,70 @@ pure logic → no new transform tests; full suite stayed green).
 
 ---
 
+## 2026-06-24 — Integrity fixes: safety DOB scan + breach caps (`fix/integrity-safety-breach-caps`)
+
+Backend/report integrity ONLY (no UI, no schema, no runtime policy). From the
+`gmansexybeast@att.net` trace. Priority #1 → #2 → #3.
+
+### #1 — False minor-signal collision from DOB date parts  ✅
+- Root cause: DOB reclassified `dob`→`other`; `safety.ts` scanned the raw value
+  `1958-10-11`; the bare-age regex matched the month `10` → `bare-10` →
+  `possible_minor`, conf cap 35, adult×minor collision, false top-of-report banner.
+- Fix (`supabase/functions/osint-agent/safety.ts`): skip the value haystack for
+  DOB artifacts (`kind==="dob"` or `metadata.original_kind==="dob"`); skip the
+  bare-age heuristic on date-like strings (`DATE_LIKE_RE`). Cue/phrase detection
+  (`age 16`, `i'm 15`, `minor`) untouched.
+- Tests (`safety_test.ts`, 5): `1958-10-11` not flagged · date month/day 10–17 not
+  flagged · adult-platform DOB no false collision · real cue/phrase/bare-age STILL
+  fire · explicit cue inside a date-bearing bio still fires.
+
+### #2 — Breach source caps misclassified as `unknown`  ✅
+- Root cause: `applyEvidenceCaps` mapped single-token `classifySource` over WHOLE
+  compound strings, so `breach_check+leakcheck+oathnet_lookup+deepfind_email_breach+serus_darkweb_scan`
+  fell to `unknown`/cap 50 unless " breach" appeared standalone.
+- Fix (`confidence.ts`): classify the whole label first; only `splitSourceLabels`
+  when the whole is `unknown`; per-element drop of split-noise `unknown` sub-labels
+  (keeps a genuine whole-element `unknown`, so court+news=95 stays). Added missing
+  breach slug aliases (`deepfind_email_breach`, `serus_darkweb_scan`,
+  `deepfind_dark_web_link`, `deepfind_ransomware_exposure`, `leakcheck`) to
+  `source-classification.ts`. Whole-string-first preserves the shared-host/35
+  downgrade (no split dilution) and the standalone-breach address at cap 60.
+- Tests (`compound_source_caps_test.ts`, 6): compound→breach not unknown · `/`+`+`
+  split · truly-unknown stays unknown/50 · two-breach nudge 65 / single 60 ·
+  shared-host still 35 · standalone-breach address still 60.
+
+### #3 — Duplicate Synthient breach artifacts  ✅
+- Root cause: same Synthient 1.9B breach recorded twice (`weak_lead` +
+  `breach_exposure`) under name variants from the same source pair; exact-match
+  insert dedup misses name variants → double-listed in table + Network Connections.
+- Fix (`report-hygiene.ts` `dedupeBreachDatasets`, wired into `intel.ts`
+  `buildReportMarkdown`): collapse ONLY when same normalized source AND same
+  count-magnitude token AND same year AND ≥1 shared significant word; keep the
+  richer `breach_exposure` representative. Report-layer only; non-destructive.
+- Tests (`report-hygiene.test.ts`, +5): two Synthient variants collapse to the
+  breach_exposure row · different breaches stay separate · different source pairs
+  stay separate · shared-number-only (no shared word) stays separate · non-breach
+  kinds / missing count or year ignored.
+
+### Verification (all run)
+- `deno test --allow-net --allow-env --allow-sys --no-check` → **223 pass / 0 fail**
+  (was 212; +11). `deno check` on changed modules → clean, no TS2304.
+- `npx vitest run` → **680 pass / 0 fail** (was 675; +5).
+- `npm run typecheck` clean · `eslint` (changed files) 0 · `npm run build` OK.
+- No UI files changed (edge fn + `src/lib` report logic + tests only).
+- Real-input confirmation (exact trace values used in tests): `1958-10-11` no
+  longer flags minor; the compound breach email source classifies as breach (cap
+  65, not unknown/50); the two Synthient rows collapse to one.
+
+### Preserved / not weakened
+- Real minor-age detection intact (cue + phrase + non-date bare age).
+- Source caps still use split compound labels; shared-host & infra ceilings, the
+  ownership guard, and the two-breach nudge all unchanged.
+- Dedup is conservative + dataset-specific (source+count+year+shared-word), not a
+  broad fuzzy collapse.
+
+---
+
 ## 2026-06-22 — Production UI overlap bugs (`fix/production-ui-overlap-bugs`)
 
 Small bugfix PR on top of the merged redesign (`main` @ b48406ef). Surfaced from

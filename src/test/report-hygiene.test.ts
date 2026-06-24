@@ -11,6 +11,7 @@ import {
   reportDisplayKind,
   bucketQualifiesAsCluster,
   sweepRouteQuality,
+  dedupeBreachDatasets,
 } from "@/lib/report-hygiene";
 
 function art(partial: Partial<Artifact> & { kind: string; value: string }): Artifact {
@@ -167,5 +168,50 @@ describe("#5 sweep route quality (classification only)", () => {
   });
   it("classifies a profile-content hit as content", () => {
     expect(sweepRouteQuality(art({ kind: "account_id", value: "Behance — bio + avatar", metadata: { profile_content: true } }))).toBe("content");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #6 — Conservative breach-dataset dedup.
+// ---------------------------------------------------------------------------
+describe("#6 dedupeBreachDatasets", () => {
+  const SRC = "deepfind_email_breach+serus_darkweb_scan";
+
+  it("collapses the two Synthient name variants (same source/count/year) to one", () => {
+    const a = art({ id: "weak", kind: "weak_lead", value: "Synthient Credential Stuffing Threat Data (1.9B records, April 2025)", source: SRC });
+    const b = art({ id: "exp", kind: "breach_exposure", value: "Synthient Credential Stuffing 2025 (1.9B)", source: SRC, metadata: { breach_date: "2025-04" } });
+    const out = dedupeBreachDatasets([a, b]);
+    expect(out).toHaveLength(1);
+    // The richer breach_exposure row survives, not the weak_lead.
+    expect(out[0].id).toBe("exp");
+  });
+
+  it("keeps genuinely different breaches separate (different count + year)", () => {
+    const synthient = art({ kind: "breach_exposure", value: "Synthient Credential Stuffing 2025 (1.9B)", source: SRC });
+    const pdl = art({ kind: "breach_exposure", value: "PDL (People Data Labs) 2019 - enrichment database", source: SRC });
+    const imavex = art({ kind: "breach_exposure", value: "Imavex 2021", source: SRC });
+    const out = dedupeBreachDatasets([synthient, pdl, imavex]);
+    expect(out).toHaveLength(3);
+  });
+
+  it("does NOT collapse same dataset name across different source pairs", () => {
+    const a = art({ kind: "breach_exposure", value: "Synthient Credential Stuffing 2025 (1.9B)", source: "deepfind_email_breach+serus_darkweb_scan" });
+    const b = art({ kind: "breach_exposure", value: "Synthient Credential Stuffing 2025 (1.9B)", source: "some_other_tool" });
+    expect(dedupeBreachDatasets([a, b])).toHaveLength(2);
+  });
+
+  it("does NOT collapse on a shared number alone (no shared significant word)", () => {
+    // Same source + same 1.9B + same year but unrelated datasets → must stay split.
+    const a = art({ kind: "breach_exposure", value: "Synthient Credential Stuffing 2025 (1.9B)", source: SRC });
+    const b = art({ kind: "breach_exposure", value: "Telegram Combolist 2025 (1.9B)", source: SRC });
+    expect(dedupeBreachDatasets([a, b])).toHaveLength(2);
+  });
+
+  it("ignores non-breach kinds and rows lacking a count or year", () => {
+    const email = art({ kind: "email", value: "x@att.net", source: SRC });
+    const noCount = art({ kind: "breach_exposure", value: "Imavex 2021", source: SRC });
+    const noYear = art({ kind: "breach_exposure", value: "Some Dump (1.9B)", source: SRC });
+    const out = dedupeBreachDatasets([email, noCount, noYear]);
+    expect(out).toHaveLength(3);
   });
 });
