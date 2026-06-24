@@ -417,36 +417,37 @@ export function GraphTab({ threadId }: { threadId: string }) {
 
   return (
     <div className="graph-workspace h-full flex flex-col min-h-0">
-      <div className="graph-toolbar shrink-0 border-b border-white/[0.08] px-3 sm:px-4 py-2.5">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.035] px-2 py-1">
+      <div className="graph-toolbar shrink-0 border-b border-white/[0.08] px-2.5 py-2 sm:px-4 sm:py-2.5">
+        <div className="grid grid-cols-1 gap-2 sm:flex sm:flex-wrap sm:items-center">
+          <div className="grid grid-cols-3 items-center gap-1 rounded-xl border border-white/10 bg-white/[0.035] p-1 sm:inline-flex sm:w-auto sm:gap-2 sm:px-2">
             <ControlLabel icon={Layers3} label="Layout" />
             {(["radial", "cluster", "timeline"] as const).map((mode) => (
               <button
                 key={mode}
                 onClick={() => setLayout(mode)}
-                className={cn("h-7 rounded-lg px-2.5 text-data font-medium capitalize transition-colors", layout === mode ? "bg-[hsl(var(--info))] text-black" : "text-muted-foreground hover:bg-white/[0.06] hover:text-foreground")}
+                className={cn("h-7 min-w-0 rounded-lg px-2 text-data font-medium capitalize transition-colors", layout === mode ? "bg-[hsl(var(--info))] text-black" : "text-muted-foreground hover:bg-white/[0.06] hover:text-foreground")}
               >
                 {mode}
               </button>
             ))}
           </div>
 
-          <div className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.035] px-2 py-1">
+          <div className="grid grid-cols-3 items-center gap-1 rounded-xl border border-white/10 bg-white/[0.035] p-1 sm:inline-flex sm:w-auto sm:gap-2 sm:px-2">
             <ControlLabel icon={SlidersHorizontal} label="Detail" />
             {(["compact", "standard", "full"] as const).map((mode) => (
               <button
                 key={mode}
                 onClick={() => setDetail(mode)}
-                className={cn("h-7 rounded-lg px-2.5 text-data font-medium capitalize transition-colors", detail === mode ? "bg-white text-black" : "text-muted-foreground hover:bg-white/[0.06] hover:text-foreground")}
+                className={cn("h-7 min-w-0 rounded-lg px-2 text-data font-medium capitalize transition-colors", detail === mode ? "bg-white text-black" : "text-muted-foreground hover:bg-white/[0.06] hover:text-foreground")}
               >
                 {mode}
               </button>
             ))}
           </div>
 
-          <label className="inline-flex h-9 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.035] px-3 text-data text-muted-foreground">
-            Density
+          <div className="flex min-w-0 items-center gap-2 sm:ml-auto">
+          <label className="inline-flex h-8 flex-1 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.035] px-2.5 text-data text-muted-foreground sm:flex-none">
+            <span className="hidden sm:inline">Density</span>
             <input
               type="range"
               min={25}
@@ -454,30 +455,31 @@ export function GraphTab({ threadId }: { threadId: string }) {
               step={5}
               value={density}
               onChange={(event) => setDensity(Number(event.target.value))}
-              className="w-24 accent-[hsl(var(--info))]"
+              className="min-w-0 flex-1 accent-[hsl(var(--info))] sm:w-24 sm:flex-none"
             />
-            <span className="w-8 font-mono text-foreground/80">{density}%</span>
+            <span className="w-8 text-right font-mono text-foreground/80">{density}%</span>
           </label>
 
           <button
             type="button"
             onClick={() => setShowSourceEdges((v) => !v)}
-            className={cn("inline-flex h-9 items-center gap-2 rounded-xl border px-3 text-data font-medium transition-colors", showSourceEdges ? "border-[hsl(var(--info)/0.32)] bg-[hsl(var(--info)/0.1)] text-[hsl(var(--info))]" : "border-white/10 bg-white/[0.035] text-muted-foreground hover:text-foreground")}
+            className={cn("inline-flex h-8 items-center gap-1.5 rounded-xl border px-2.5 text-data font-medium transition-colors sm:px-3", showSourceEdges ? "border-[hsl(var(--info)/0.32)] bg-[hsl(var(--info)/0.1)] text-[hsl(var(--info))]" : "border-white/10 bg-white/[0.035] text-muted-foreground hover:text-foreground")}
           >
             <GitBranch className="h-3.5 w-3.5" />
-            Source links
+            <span className="hidden min-[420px]:inline">Source links</span>
           </button>
 
-          <div className="ml-auto flex items-center gap-1">
+          <div className="flex items-center gap-1">
             <ZoomBtn icon={Move} label="Drag canvas or nodes" onClick={() => setDrag(null)} />
             <ZoomBtn icon={ZoomOut} label="Zoom out" onClick={() => setZoom((z) => Math.max(0.5, +(z - 0.2).toFixed(2)))} />
-            <span className="font-mono text-data tabular-nums text-muted-foreground w-10 text-center">{Math.round(zoom * 100)}%</span>
+            <span className="hidden w-10 text-center font-mono text-data tabular-nums text-muted-foreground min-[420px]:inline-block">{Math.round(zoom * 100)}%</span>
             <ZoomBtn icon={ZoomIn} label="Zoom in" onClick={() => setZoom((z) => Math.min(2.6, +(z + 0.2).toFixed(2)))} />
             <ZoomBtn icon={Maximize2} label="Reset zoom" onClick={resetView} />
           </div>
+          </div>
         </div>
 
-        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        <div className="mt-2 flex items-center gap-1.5 overflow-x-auto pb-0.5 sm:flex-wrap sm:overflow-visible">
           {presentGroups.map((g) => {
             const off = hidden.has(g);
             return (
@@ -486,7 +488,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
                 onClick={() => toggleGroup(g)}
                 aria-pressed={!off}
                 className={cn(
-                  "inline-flex h-7 items-center gap-1.5 rounded-lg border px-2 text-data font-medium transition-colors",
+                  "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg border px-2 text-data font-medium transition-colors",
                   off
                     ? "border-transparent text-muted-foreground/45 line-through hover:text-muted-foreground"
                     : "border-white/10 bg-surface-1/80 text-foreground",

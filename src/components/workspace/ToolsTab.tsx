@@ -2,25 +2,23 @@ import { useMemo, useState } from "react";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadToolActivity, type ToolEvent } from "@/hooks/useThreadToolActivity";
 import { AuditTab } from "@/components/panel/AuditTab";
-import { FailedSkippedTab } from "@/components/panel/FailedSkippedTab";
 import { CustodyTab } from "@/components/panel/CustodyTab";
 import { EmptyState } from "@/components/panel/EmptyState";
 import {
   MetricCard, FilterChips, ToolStatusBadge, ExpandableRow, TabHeader,
   type FilterChip,
 } from "@/components/ui/workspace-primitives";
-import { Activity, Gauge, AlertTriangle, Lock, CheckCircle2, XCircle, MinusCircle, ListChecks, Clock, type LucideIcon } from "lucide-react";
+import { Activity, Gauge, Lock, CheckCircle2, MinusCircle, ListChecks, Clock, type LucideIcon } from "lucide-react";
 import { timeAgo } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
-type ActivityFilter = "all" | "succeeded" | "failed" | "skipped" | "gated" | "degraded" | "pending";
+type ActivityFilter = "all" | "succeeded" | "skipped" | "gated" | "degraded" | "pending";
 
-type View = "activity" | "audit" | "issues" | "custody";
+type View = "activity" | "audit" | "custody";
 
 const VIEWS: { key: View; label: string; icon: LucideIcon }[] = [
   { key: "activity", label: "Activity", icon: Activity },
   { key: "audit", label: "Audit", icon: Gauge },
-  { key: "issues", label: "Failures", icon: AlertTriangle },
   { key: "custody", label: "Custody", icon: Lock },
 ];
 
@@ -44,7 +42,6 @@ export function ToolsTab({ threadId }: { threadId: string }) {
           {VIEWS.map((v) => {
             const Icon = v.icon;
             const active = view === v.key;
-            const danger = v.key === "issues" && activity.failed > 0;
             return (
               <button
                 key={v.key}
@@ -61,11 +58,8 @@ export function ToolsTab({ threadId }: { threadId: string }) {
                     : "text-muted-foreground hover:text-foreground hover:bg-white/[0.05]",
                 )}
               >
-                <Icon className={cn("w-3.5 h-3.5 shrink-0", danger && !active && "text-destructive")} strokeWidth={1.75} />
+                <Icon className="w-3.5 h-3.5 shrink-0" strokeWidth={1.75} />
                 <span className="hidden min-[420px]:inline">{v.label}</span>
-                {danger && (
-                  <span className="font-mono text-[10px] tabular-nums text-destructive">{activity.failed}</span>
-                )}
               </button>
             );
           })}
@@ -77,7 +71,6 @@ export function ToolsTab({ threadId }: { threadId: string }) {
           <ActivityLog
             events={activity.events}
             ok={activity.ok}
-            failed={activity.failed}
             skipped={activity.skipped}
             gated={activity.gated}
             degraded={activity.degraded}
@@ -86,7 +79,6 @@ export function ToolsTab({ threadId }: { threadId: string }) {
           />
         )}
         {view === "audit" && <div className="mx-auto max-w-5xl"><AuditTab threadId={threadId} artifacts={items} /></div>}
-        {view === "issues" && <div className="mx-auto max-w-5xl"><FailedSkippedTab threadId={threadId} /></div>}
         {view === "custody" && <div className="mx-auto max-w-5xl"><CustodyTab threadId={threadId} /></div>}
       </div>
     </div>
@@ -94,22 +86,15 @@ export function ToolsTab({ threadId }: { threadId: string }) {
 }
 
 function ActivityLog({
-  events, ok, failed, skipped, gated, degraded, total, loading,
-}: { events: ToolEvent[]; ok: number; failed: number; skipped: number; gated: number; degraded: number; total: number; loading: boolean }) {
+  events, ok, skipped, gated, degraded, total, loading,
+}: { events: ToolEvent[]; ok: number; skipped: number; gated: number; degraded: number; total: number; loading: boolean }) {
   const [filter, setFilter] = useState<ActivityFilter>("all");
   const pending = events.filter((e) => e.status === "pending").length;
 
-  // Newest first, but always float failures to the top so troubleshooting is
-  // the first thing an analyst sees.
   const ordered = useMemo(() => {
-    const byFilter = events.filter((e) => {
+    return [...events].reverse().filter((e) => {
       if (filter === "all") return true;
       return e.status === filter;
-    });
-    return [...byFilter].reverse().sort((a, b) => {
-      const af = a.status === "failed" ? 0 : 1;
-      const bf = b.status === "failed" ? 0 : 1;
-      return af - bf;
     });
   }, [events, filter]);
 
@@ -118,8 +103,8 @@ function ActivityLog({
     return (
       <EmptyState
         icon={Activity}
-        title="No tool activity yet"
-        hint="Once the agent runs lookups, every call lands here with its status, reason, and timing — failures float to the top."
+        title="No visible tool activity yet"
+        hint="When the agent runs lookups, completed, running, skipped, gated, and degraded activity appears here."
       />
     );
   }
@@ -127,7 +112,6 @@ function ActivityLog({
   const filters: FilterChip<ActivityFilter>[] = [
     { key: "all", label: "All", count: total },
     { key: "succeeded", label: "Succeeded", count: ok, tone: "ok" },
-    { key: "failed", label: "Failed", count: failed, tone: failed > 0 ? "danger" : "neutral" },
     { key: "skipped", label: "Skipped", count: skipped },
     ...(gated > 0 ? [{ key: "gated" as const, label: "Gated", count: gated, tone: "warn" as const }] : []),
     ...(degraded > 0 ? [{ key: "degraded" as const, label: "Degraded", count: degraded, tone: "warn" as const }] : []),
@@ -136,10 +120,9 @@ function ActivityLog({
 
   return (
     <div className="mx-auto max-w-4xl p-3 sm:p-4 space-y-4">
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
         <MetricCard label="Total tools" value={total} icon={ListChecks} hint="Every tool call recorded for this case." />
         <MetricCard label="Succeeded" value={ok} icon={CheckCircle2} tone={ok > 0 ? "ok" : "neutral"} hint="Calls that returned a usable result." />
-        <MetricCard label="Failed" value={failed} icon={XCircle} tone={failed > 0 ? "danger" : "neutral"} hint="Calls that errored or returned ok:false." />
         <MetricCard
           label={gated > 0 ? "Skipped / Gated" : "Skipped"}
           value={gated > 0 ? `${skipped}/${gated}` : skipped}
@@ -157,7 +140,7 @@ function ActivityLog({
       />
 
       {ordered.length === 0 ? (
-        <EmptyState icon={Activity} title="No tools match this filter" hint="Try a different status filter." />
+        <EmptyState icon={Activity} title="No visible tools match this filter" hint="Try a different status filter." />
       ) : (
         <ul className="rounded-xl border border-border-subtle bg-surface-1 divide-y divide-border-subtle/60 overflow-hidden">
           {ordered.map((e) => (

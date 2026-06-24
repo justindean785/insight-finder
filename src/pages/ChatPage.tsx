@@ -76,12 +76,12 @@ export default function ChatPage() {
   if (!user) return <Navigate to="/auth" replace />;
   if (!threadId) return <Navigate to="/" replace />;
 
-  // Tab badges own the section counts; alerts (breaches, failed tool calls)
+  // Tab badges own the section counts; alerts (breaches)
   // ride along as a red dot so a tab number always means "items in this tab".
   const breachCount = items.filter((a) => a.kind.toLowerCase() === "breach").length;
   const tabCounts = {
     evidence: { value: items.length, alert: breachCount },
-    tools: { value: activity.total, alert: activity.failed },
+    tools: { value: activity.total, alert: 0 },
   };
 
   const content = (

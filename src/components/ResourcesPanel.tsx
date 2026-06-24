@@ -469,17 +469,45 @@ function ArtifactDrawerInner({
 
   return (
     <Sheet open onOpenChange={(o) => !o && onClose()}>
-      <SheetContent side="right" className="w-[420px] sm:max-w-[420px] overflow-y-auto">
-        <SheetHeader>
-          <SheetTitle className="font-mono break-words [overflow-wrap:anywhere]">{artifact.value}</SheetTitle>
-          <SheetDescription>
-            <span className="uppercase text-xs tracking-wider">{artifact.kind}</span>
-            {artifact.confidence != null && <span className="ml-2 text-xs">{artifact.confidence}% confidence</span>}
+      <SheetContent
+        side="right"
+        className="w-[min(92vw,460px)] overflow-y-auto border-l border-white/[0.08] bg-[hsl(var(--surface-0))] p-0 sm:max-w-[460px]"
+      >
+        <SheetHeader className="border-b border-white/[0.08] px-5 py-5 text-left">
+          <SheetDescription className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+            Evidence detail
           </SheetDescription>
+          <SheetTitle className="font-mono text-xl leading-tight break-words [overflow-wrap:anywhere]">
+            {artifact.value}
+          </SheetTitle>
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+              {artifact.kind}
+            </span>
+            {artifact.confidence != null && (
+              <span className="rounded-md border border-[hsl(var(--confidence-mid)/0.35)] bg-[hsl(var(--confidence-mid)/0.1)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[hsl(var(--confidence-mid))]">
+                {artifact.confidence}% confidence
+              </span>
+            )}
+            <span className={"rounded-md border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] " + REVIEW_CLASS[rState]}>
+              {REVIEW_SHORT[rState]}
+            </span>
+          </div>
         </SheetHeader>
 
-        <div className="space-y-4 mt-4 text-sm">
-          <Field label="Source">
+        <div className="space-y-4 px-5 py-4 text-sm">
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded-lg border border-white/[0.08] bg-white/[0.035] p-3">
+              <div className="text-eyebrow uppercase tracking-wider text-muted-foreground">Primary source</div>
+              <div className="mt-1 min-w-0 font-mono text-sm break-all">{src.primary}</div>
+            </div>
+            <div className="rounded-lg border border-white/[0.08] bg-white/[0.035] p-3">
+              <div className="text-eyebrow uppercase tracking-wider text-muted-foreground">First seen</div>
+              <div className="mt-1 font-mono text-sm">{new Date(artifact.created_at).toLocaleString()}</div>
+            </div>
+          </div>
+
+          <Field label="Source stack">
             <div className="space-y-1">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-mono">{src.primary}</span>
@@ -497,13 +525,13 @@ function ArtifactDrawerInner({
               )}
             </div>
           </Field>
-          <Field label="Sources">
+          <Field label="Corroboration">
             {!src.hasMetadata ? (
               <div className="text-muted-foreground text-xs">source metadata unavailable</div>
             ) : src.all.length === 0 ? (
               <div className="text-muted-foreground text-xs">No source recorded.</div>
             ) : (
-              <ul className="space-y-1 text-xs">
+              <ul className="space-y-1 rounded-lg border border-white/[0.08] bg-white/[0.025] p-2 text-xs">
                 {src.all.map((s) => (
                   <li key={s} className="flex items-center justify-between font-mono">
                     <span className="truncate">{s}</span>
@@ -520,15 +548,14 @@ function ArtifactDrawerInner({
               </ul>
             )}
           </Field>
-          <Field label="First seen">{new Date(artifact.created_at).toLocaleString()}</Field>
           <Field label="Review">
-            <div className="flex items-center gap-2 flex-wrap text-xs">
+            <div className="mb-2 flex items-center gap-2 flex-wrap text-xs">
               <span className={"px-2 py-0.5 rounded-full border font-mono text-eyebrow uppercase tracking-wider " + REVIEW_CLASS[rState]}>
                 {REVIEW_SHORT[rState]}
               </span>
               {falsePositive && <span className="px-2 py-0.5 rounded-full bg-destructive/15 text-destructive border border-destructive/40 text-eyebrow uppercase">false positive</span>}
             </div>
-            <div className="flex flex-wrap gap-1 mt-2">
+            <div className="grid grid-cols-2 gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.025] p-2">
               <ReviewBtn current={rState} target="confirmed" onClick={() => reviewSet(artifact.id, "confirmed")}>
                 <CheckCircle2 className="w-3 h-3" /> Confirm
               </ReviewBtn>
@@ -541,7 +568,7 @@ function ArtifactDrawerInner({
               <ReviewBtn current={rState} target="dismissed" onClick={() => reviewSet(artifact.id, "dismissed")}>
                 <EyeOff className="w-3 h-3" /> Dismiss
               </ReviewBtn>
-              <Button size="sm" variant="ghost" className="h-6 px-2 gap-1 text-data" onClick={() => reviewSet(artifact.id, null)}>
+              <Button size="sm" variant="ghost" className="col-span-2 h-7 px-2 gap-1 text-data" onClick={() => reviewSet(artifact.id, null)}>
                 Reset
               </Button>
             </div>
@@ -569,13 +596,13 @@ function ArtifactDrawerInner({
             </div>
           </Field>
           <Field label="Metadata">
-            <pre className="text-data font-mono bg-secondary/40 border border-border rounded p-2 overflow-x-auto max-h-48">{JSON.stringify(meta, null, 2)}</pre>
+            <pre className="code-panel max-h-64 overflow-x-auto p-3 text-data font-mono">{JSON.stringify(meta, null, 2)}</pre>
           </Field>
 
           <div className="grid grid-cols-2 gap-2">
             <Button size="sm" variant="outline" onClick={() => copy(artifact.value, "Value copied")} className="gap-1.5"><Copy className="w-3.5 h-3.5" /> Copy value</Button>
             <Button size="sm" variant="outline" onClick={() => copy(citation, "Citation copied")} className="gap-1.5"><Copy className="w-3.5 h-3.5" /> Copy citation</Button>
-            <Button size="sm" variant={falsePositive ? "destructive" : "secondary"} onClick={() => updateMeta({ false_positive: !falsePositive })} className="gap-1.5">
+            <Button size="sm" variant={falsePositive ? "destructive" : "secondary"} onClick={() => updateMeta({ false_positive: !falsePositive })} className="col-span-2 gap-1.5">
               <XCircle className="w-3.5 h-3.5" /> {falsePositive ? "Unmark FP" : "Mark false positive"}
             </Button>
           </div>
