@@ -13,7 +13,7 @@
 
 import { tierOf, TIER_SOURCE_RELIABILITY, TIER_C_ONLY_CONFIDENCE_CAP } from "./tiers.ts";
 import type { ContradictionFinding } from "./contradictions.ts";
-import { classifySource, countIndependentClasses, type SourceClass } from "./source-classification.ts";
+import { classifySource, splitSourceLabels, countIndependentClasses, type SourceClass } from "./source-classification.ts";
 
 // Back-compat re-export: historically these lived in confidence.ts / artifact_types.ts.
 export { classifySource, type SourceClass };
@@ -173,7 +173,27 @@ export interface CapResult {
 
 /** Apply conservative caps. Breach-only ≤60, two breaches ≤65, etc. */
 export function applyEvidenceCaps(input: CapInput): CapResult {
-  const classes = (input.sources ?? []).map(classifySource);
+  // A single source string can name several tools ("breach_check+leakcheck+…"
+  // or "snusbase/ATT breach"). Classify the WHOLE label first — that already
+  // resolves shared-host/reverse-IP, parenthetical, and standalone-"breach"
+  // labels exactly as before — and only fall back to splitting into component
+  // tokens when the whole label is unrecognised. This rescues compound
+  // multi-tool breach labels that previously collapsed to `unknown` (cap 50)
+  // without disturbing any label that already classifies.
+  const classes = (input.sources ?? []).flatMap((s) => {
+    const whole = classifySource(s);
+    if (whole !== "unknown") return [whole];
+    // Unrecognised whole label → split into component tokens. Keep the tokens
+    // that DO resolve and drop the split-noise "unknown" sub-labels (e.g.
+    // "snusbase", "property_records") so they can't pollute the class set or
+    // trip the cross-class corroboration boost. If nothing resolves, the
+    // element is genuinely unknown. (Per-element so a real whole-element
+    // `unknown` — e.g. an unrecognised single source — is preserved.)
+    const parts = splitSourceLabels(s);
+    const split = (parts.length ? parts : [s]).map(classifySource);
+    const known = split.filter((c) => c !== "unknown");
+    return known.length ? known : (["unknown"] as SourceClass[]);
+  });
   const uniqClasses = Array.from(new Set(classes));
   const counts: Record<string, number> = {};
   for (const c of classes) counts[c] = (counts[c] ?? 0) + 1;
