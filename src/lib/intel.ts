@@ -9,6 +9,7 @@ import {
   sanitizeValueForLabel,
   reportDisplayKind,
   reservedNumberAnnotation,
+  dedupeBreachDatasets,
 } from "@/lib/report-hygiene";
 
 /** Analyst-grade group buckets for artifact kinds. */
@@ -868,7 +869,11 @@ export type ReportInput = {
 };
 
 export function buildReportMarkdown(input: ReportInput): string {
-  const { seedValue, seedType, artifacts, messages, reviews } = input;
+  const { seedValue, seedType, messages, reviews } = input;
+  // Collapse breach datasets recorded twice under name variants from the same
+  // source pair (conservative — see dedupeBreachDatasets) so the Artifact Table
+  // and Network Connections don't double-list one breach.
+  const artifacts = dedupeBreachDatasets(input.artifacts);
   const total = artifacts.length;
 
   // Analyst review wins over source-derived label/confidence so a marked

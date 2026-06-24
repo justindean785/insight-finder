@@ -81,6 +81,11 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   stolentax_footprint: "breach",
   deepfind_reverse_email: "breach",
   deepfind_disposable_email: "breach",
+  deepfind_email_breach: "breach",
+  deepfind_dark_web_link: "breach",
+  deepfind_ransomware_exposure: "breach",
+  serus_darkweb_scan: "breach",
+  leakcheck: "breach", // bare alias of leakcheck_lookup seen in compound source strings
   // username sweeps
   username_sweep: "username_sweep",
   socialfetch_lookup: "social_profile_passive",
