@@ -16,7 +16,11 @@ const ChatResume = lazy(() => import("./pages/ChatResume"));
 const AdminSecurity = lazy(() => import("./pages/AdminSecurity"));
 const BrainGlobalPage = lazy(() => import("./pages/BrainGlobalPage"));
 const Insights = lazy(() => import("./pages/Insights"));
-const ReportPreview = lazy(() => import("./pages/ReportPreview"));
+// Dev-only preview of the report card. It renders hardcoded sample/demo PII, so
+// it must never be a production route nor ship in the prod bundle. Gating the
+// dynamic import on `import.meta.env.DEV` (constant-folded to `false` in prod)
+// lets the bundler dead-code-eliminate the chunk entirely.
+const ReportPreview = import.meta.env.DEV ? lazy(() => import("./pages/ReportPreview")) : null;
 const Settings = lazy(() => import("./pages/Settings"));
 const Terms = lazy(() => import("./pages/Terms"));
 const Privacy = lazy(() => import("./pages/Privacy"));
@@ -51,7 +55,9 @@ const App = () => (
             <Route path="/chat/:threadId" element={<ChatPage />} />
             <Route path="/insights" element={<Insights />} />
             <Route path="/brain" element={<BrainGlobalPage />} />
-            <Route path="/report-preview" element={<ReportPreview />} />
+            {import.meta.env.DEV && ReportPreview && (
+              <Route path="/report-preview" element={<ReportPreview />} />
+            )}
             <Route path="/admin/security" element={<AdminSecurity />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/terms" element={<Terms />} />
