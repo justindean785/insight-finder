@@ -1,8 +1,22 @@
 import { useMemo } from "react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  PolarAngleAxis,
+  PolarGrid,
+  Radar,
+  RadarChart,
+  ResponsiveContainer,
+  XAxis,
+  YAxis,
+} from "recharts";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
+import { SourceBadge } from "@/components/SourceBadge";
+import { EvidenceStatusBadge } from "@/components/ui/workspace-primitives";
+import { evidenceStatus } from "@/lib/evidence-status";
 import {
   labelForArtifact,
-  adjustedConfidence,
   buildIdentityClusters,
   buildToolAudit,
   inferToolGaps,
@@ -12,13 +26,8 @@ import {
   isReputationArtifact,
   type ConfLabel,
 } from "@/lib/intel";
-import { REVIEW_SHORT, REVIEW_CLASS, type ReviewState } from "@/lib/review";
 import { toolActionLabel } from "@/lib/tool-display";
 import { cn } from "@/lib/utils";
-
-/** Analyst review lookup — `new` (unreviewed) when absent. */
-type ReviewMap = Record<string, ReviewState>;
-const reviewOf = (reviews: ReviewMap | undefined, id: string): ReviewState => reviews?.[id] ?? "new";
 
 /* ------------------------------------------------------------------ */
 /* Evidence-strength bucketing                                         */
@@ -28,89 +37,62 @@ function statusOf(a: Artifact): string {
   const m = (a.metadata ?? {}) as Record<string, unknown>;
   return String((m.status as string) ?? "new");
 }
-function bucket(
-  a: Artifact,
-  review: ReviewState = "new",
-): "confirmed" | "probable" | "lead" | "contradiction" | "excluded" {
-  // Analyst review wins over the source-derived status — a human verdict is the
-  // strongest signal we have. Verified/key promote; dismissed/wrong exclude.
-  if (review === "dismissed" || review === "wrong") return "excluded";
-  if (review === "confirmed" || review === "key") return "confirmed";
-  const c = adjustedConfidence(a, review);
-  const st = statusOf(a);
-  if (a.kind.toLowerCase() === "contradiction" || st === "contradicted") return "contradiction";
-  if (st === "excluded" || a.kind.toLowerCase() === "excluded_collision") return "excluded";
-  if (st === "verified" || c >= 90) return "confirmed";
-  if (st === "probable" || c >= 75) return "probable";
+function bucket(a: Artifact): "confirmed" | "probable" | "lead" | "contradiction" | "excluded" {
+  const rawStatus = statusOf(a);
+  const kind = a.kind.toLowerCase();
+  if (kind === "contradiction" || rawStatus === "contradicted") return "contradiction";
+  if (kind === "excluded_collision" || rawStatus === "excluded") return "excluded";
+  const status = evidenceStatus(a).status;
+  if (status === "contradicted") return "contradiction";
+  if (status === "rejected") return "excluded";
+  if (status === "verified") return "confirmed";
+  if (status === "probable" || status === "verified_infrastructure") return "probable";
   return "lead";
 }
 
-/** Color-coded confidence meter — number alone reads as noise across 40 rows. */
-function ConfMeter({ value }: { value: number | null }) {
-  const v = Math.max(0, Math.min(100, value ?? 0));
-  const tone =
-    value == null ? "muted-foreground"
-    : v >= 70 ? "confidence-high"
-    : v >= 40 ? "confidence-mid"
-    : "danger";
-  return (
-    <div className="flex items-center gap-2 min-w-[84px]">
-      <div className="relative h-1.5 flex-1 rounded-full bg-white/[0.06] overflow-hidden">
-        <div className="absolute inset-y-0 left-0 rounded-full" style={{ width: `${v}%`, backgroundColor: `hsl(var(--${tone}))` }} />
-      </div>
-      <span className="font-mono tabular-nums text-[11px] w-7 text-right" style={{ color: `hsl(var(--${tone}))` }}>
-        {value ?? "—"}
-      </span>
-    </div>
-  );
-}
-
-/** Analyst verdict pill — the marks that previously never reached the report. */
-function ReviewPill({ review }: { review: ReviewState }) {
-  if (review === "new") return <span className="text-muted-foreground/50 text-[11px]">—</span>;
-  return (
-    <span className={cn("inline-block px-1.5 py-0.5 rounded border text-[10px] font-mono uppercase tracking-wide", REVIEW_CLASS[review])}>
-      {REVIEW_SHORT[review]}
-    </span>
-  );
-}
-
-function ArtifactRow({ a, review }: { a: Artifact; review: ReviewState }) {
+function ArtifactRow({ a }: { a: Artifact }) {
   const m = (a.metadata ?? {}) as Record<string, unknown>;
-  const reviewed = review !== "new";
+  const status = evidenceStatus(a);
   return (
-    <tr className="border-t border-border-subtle align-top">
-      <td className="px-3 py-2.5"><ReviewPill review={review} /></td>
-      <td className="px-3 py-2.5 text-muted-foreground text-eyebrow uppercase tracking-wider">{displayKind(a)}</td>
-      <td className="px-3 py-2.5 font-mono break-all">{a.value}</td>
-      <td className="px-3 py-2.5 text-data text-muted-foreground">{a.source ?? "—"}</td>
-      <td className="px-3 py-2.5"><ConfMeter value={reviewed ? adjustedConfidence(a, review) : a.confidence} /></td>
-      <td className="px-3 py-2.5 text-data text-muted-foreground/90 leading-relaxed min-w-[180px]">
-        {reviewed
-          ? <span className="text-foreground/80">Analyst {REVIEW_SHORT[review].toLowerCase()} (review-adjusted)</span>
-          : String((m.reason_for_confidence as string) ?? "")}
-        {m.reason_not_confirmed && !reviewed ? <div className="text-destructive mt-0.5">{String(m.reason_not_confirmed)}</div> : null}
+    <tr className="border-t border-white/[0.06] align-top">
+      <td className="px-3 py-2 text-muted-foreground text-eyebrow uppercase tracking-wider">{displayKind(a)}</td>
+      <td className="px-3 py-2 font-mono break-all">{a.value}</td>
+      <td className="px-3 py-2 text-data text-muted-foreground">
+        {a.source ? <SourceBadge source={a.source} size="xs" /> : "—"}
+      </td>
+      <td className="px-3 py-2">
+        <EvidenceStatusBadge status={status.status} label={status.label} tone={status.tone} hint={status.hint} />
+        <div className="mt-1 text-[10px] leading-snug text-muted-foreground">{status.basis}</div>
+      </td>
+      <td className="px-3 py-2 text-data font-mono tabular-nums">{a.confidence ?? "—"}</td>
+      <td className="px-3 py-2 text-data text-muted-foreground whitespace-nowrap">
+        {new Date(a.created_at).toLocaleDateString()}
+      </td>
+      <td className="px-3 py-2 text-data text-muted-foreground">
+        {String((m.reason_for_confidence as string) ?? "")}
+        {m.reason_not_confirmed ? <div className="text-destructive/80">{String(m.reason_not_confirmed)}</div> : null}
       </td>
     </tr>
   );
 }
 
-function BucketTable({ rows, empty, reviews }: { rows: Artifact[]; empty: string; reviews?: ReviewMap }) {
+function BucketTable({ rows, empty }: { rows: Artifact[]; empty: string }) {
   if (!rows.length) return <p className="text-muted-foreground italic text-data mt-2">{empty}</p>;
   return (
-    <div className="rounded-md border border-border-subtle overflow-x-auto mt-2 [scrollbar-width:thin]">
-      <table className="w-full min-w-[640px] text-data">
+    <div className="rounded-xl border border-white/[0.08] overflow-hidden mt-2 bg-[hsl(var(--surface-1))/0.42]">
+      <table className="w-full text-data">
         <thead>
-          <tr className="bg-surface-2 text-eyebrow uppercase tracking-[0.15em] text-muted-foreground">
-            <th className="text-left font-normal px-3 py-2 w-[72px]">Review</th>
-            <th className="text-left font-normal px-3 py-2 w-[100px]">Kind</th>
+          <tr className="bg-white/[0.035] text-eyebrow uppercase tracking-[0.15em] text-muted-foreground">
+            <th className="text-left font-normal px-3 py-2 w-[110px]">Kind</th>
             <th className="text-left font-normal px-3 py-2">Value</th>
-            <th className="text-left font-normal px-3 py-2 w-[130px]">Source</th>
-            <th className="text-left font-normal px-3 py-2 w-[120px]">Confidence</th>
+            <th className="text-left font-normal px-3 py-2 w-[140px]">Source</th>
+            <th className="text-left font-normal px-3 py-2 w-[170px]">Status</th>
+            <th className="text-left font-normal px-3 py-2 w-[60px]">Score</th>
+            <th className="text-left font-normal px-3 py-2 w-[88px]">Captured</th>
             <th className="text-left font-normal px-3 py-2">Reasoning</th>
           </tr>
         </thead>
-        <tbody>{rows.map((a) => <ArtifactRow key={a.id} a={a} review={reviewOf(reviews, a.id)} />)}</tbody>
+        <tbody>{rows.map((a) => <ArtifactRow key={a.id} a={a} />)}</tbody>
       </table>
     </div>
   );
@@ -119,15 +101,11 @@ function BucketTable({ rows, empty, reviews }: { rows: Artifact[]; empty: string
 /* ------------------------------------------------------------------ */
 /* Section header — red bar + ALL-CAPS spaced title, like the ref UI. */
 /* ------------------------------------------------------------------ */
-function SectionHeader({ children, tone = "default" }: { children: React.ReactNode; tone?: "default" | "danger" }) {
-  // Red is reserved for genuine risk sections (safety, contradictions); every
-  // other section uses a calm neutral header so the report doesn't read as a
-  // wall of warnings.
-  const danger = tone === "danger";
+function SectionHeader({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex items-center gap-2 mt-6 mb-3">
-      <span className={cn("w-[3px] h-4 rounded-sm", danger ? "bg-destructive" : "bg-foreground/25")} />
-      <h3 className={cn("text-eyebrow font-semibold uppercase tracking-[0.18em]", danger ? "text-destructive" : "text-foreground/80")}>
+      <span className="w-[3px] h-4 bg-[hsl(var(--info))] rounded-sm shadow-[0_0_16px_hsl(var(--info)/0.55)]" />
+      <h3 className="text-eyebrow font-semibold uppercase tracking-[0.18em] text-[hsl(var(--info))]">
         {children}
       </h3>
     </div>
@@ -185,15 +163,15 @@ function ConfPill({ label }: { label: ConfLabel }) {
 
 type IdentityRow = { field: string; value: string; label: ConfLabel };
 
-function pickBest(artifacts: Artifact[], kinds: string[], reviews?: ReviewMap): Artifact | null {
+function pickBest(artifacts: Artifact[], kinds: string[]): Artifact | null {
   const pool = artifacts.filter((a) => kinds.includes(a.kind.toLowerCase()));
   if (!pool.length) return null;
   const rank: Record<ConfLabel, number> = {
     CONFIRMED: 6, CORRELATED: 5, INFERRED: 4, VERIFY: 3, LOW: 2, CONFLICT: 1, FAILED: 0,
   };
   return pool.slice().sort((a, b) => {
-    const ra = rank[labelForArtifact(a, reviewOf(reviews, a.id))] ?? 0;
-    const rb = rank[labelForArtifact(b, reviewOf(reviews, b.id))] ?? 0;
+    const ra = rank[labelForArtifact(a)] ?? 0;
+    const rb = rank[labelForArtifact(b)] ?? 0;
     if (ra !== rb) return rb - ra;
     return (b.confidence ?? 0) - (a.confidence ?? 0);
   })[0];
@@ -211,35 +189,34 @@ function pickAllEmails(artifacts: Artifact[]): Artifact[] {
   return out;
 }
 
-function buildIdentityRows(artifacts: Artifact[], reviews?: ReviewMap): IdentityRow[] {
+function buildIdentityRows(artifacts: Artifact[]): IdentityRow[] {
   const rows: IdentityRow[] = [];
-  const lbl = (a: Artifact) => labelForArtifact(a, reviewOf(reviews, a.id));
-  const name = pickBest(artifacts, ["name", "person"], reviews);
-  if (name) rows.push({ field: "Real name", value: name.value, label: lbl(name) });
+  const name = pickBest(artifacts, ["name", "person"]);
+  if (name) rows.push({ field: "Real name", value: name.value, label: labelForArtifact(name) });
 
-  const dob = pickBest(artifacts, ["dob"], reviews);
-  if (dob) rows.push({ field: "Date of birth", value: dob.value, label: lbl(dob) });
+  const dob = pickBest(artifacts, ["dob"]);
+  if (dob) rows.push({ field: "Date of birth", value: dob.value, label: labelForArtifact(dob) });
 
-  const age = pickBest(artifacts, ["age"], reviews);
-  if (age && !dob) rows.push({ field: "Age", value: age.value, label: lbl(age) });
+  const age = pickBest(artifacts, ["age"]);
+  if (age && !dob) rows.push({ field: "Age", value: age.value, label: labelForArtifact(age) });
 
-  const phone = pickBest(artifacts, ["phone"], reviews);
-  if (phone) rows.push({ field: "Phone", value: phone.value, label: lbl(phone) });
+  const phone = pickBest(artifacts, ["phone"]);
+  if (phone) rows.push({ field: "Phone", value: phone.value, label: labelForArtifact(phone) });
 
-  const region = pickBest(artifacts, ["location", "geo", "address"], reviews);
-  if (region) rows.push({ field: "Likely region", value: region.value, label: lbl(region) });
+  const region = pickBest(artifacts, ["location", "geo", "address"]);
+  if (region) rows.push({ field: "Likely region", value: region.value, label: labelForArtifact(region) });
 
   const emails = pickAllEmails(artifacts);
   emails.forEach((e, i) => {
     rows.push({
       field: i === 0 ? "Primary email" : i === 1 ? "Alt email" : `Email ${i + 1}`,
       value: e.value,
-      label: lbl(e),
+      label: labelForArtifact(e),
     });
   });
 
-  const gender = pickBest(artifacts, ["gender"], reviews);
-  if (gender) rows.push({ field: "Gender (implied)", value: gender.value, label: lbl(gender) });
+  const gender = pickBest(artifacts, ["gender"]);
+  if (gender) rows.push({ field: "Gender (implied)", value: gender.value, label: labelForArtifact(gender) });
 
   return rows;
 }
@@ -251,7 +228,7 @@ type RegistrationRow = {
   label: ConfLabel;
 };
 
-function buildRegistrationRows(artifacts: Artifact[], reviews?: ReviewMap): RegistrationRow[] {
+function buildRegistrationRows(artifacts: Artifact[]): RegistrationRow[] {
   const rows: RegistrationRow[] = [];
   for (const a of artifacts) {
     const k = a.kind.toLowerCase();
@@ -272,14 +249,14 @@ function buildRegistrationRows(artifacts: Artifact[], reviews?: ReviewMap): Regi
           (meta.account as string) ||
           "—",
         source: a.source ?? "—",
-        label: labelForArtifact(a, reviewOf(reviews, a.id)),
+        label: labelForArtifact(a),
       });
     } else if ((k === "account" || k === "social" || k === "handle") && site) {
       rows.push({
         site,
         identifier: a.value,
         source: a.source ?? "—",
-        label: labelForArtifact(a, reviewOf(reviews, a.id)),
+        label: labelForArtifact(a),
       });
     }
   }
@@ -410,6 +387,190 @@ const RISK_COLOR: Record<RiskLevel, string> = {
   CRITICAL: "text-destructive border-destructive/70",
 };
 
+type ReportMetric = {
+  label: string;
+  value: number;
+  detail: string;
+};
+
+type ChartDatum = {
+  name: string;
+  value: number;
+};
+
+function clampScore(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+function averageConfidence(artifacts: Artifact[]): number {
+  const vals = artifacts.map((a) => a.confidence).filter((n): n is number => typeof n === "number");
+  if (!vals.length) return 0;
+  return Math.round(vals.reduce((sum, n) => sum + n, 0) / vals.length);
+}
+
+function uniqueSources(artifacts: Artifact[]): string[] {
+  const sources = new Set<string>();
+  for (const a of artifacts) {
+    if (a.source) sources.add(a.source);
+    const metaSources = a.metadata?.sources;
+    if (Array.isArray(metaSources)) {
+      for (const s of metaSources) {
+        if (typeof s === "string" && s.trim()) sources.add(s.trim());
+      }
+    }
+  }
+  return Array.from(sources).sort((a, b) => a.localeCompare(b));
+}
+
+function buildAnalyticRadar(artifacts: Artifact[], riskLevel: RiskLevel): ReportMetric[] {
+  const kinds = new Set(artifacts.map((a) => a.kind.toLowerCase()));
+  const sources = uniqueSources(artifacts);
+  const avg = averageConfidence(artifacts);
+  const audit = buildToolAudit(artifacts);
+  const confirmed = artifacts.filter((a) => labelForArtifact(a) === "CONFIRMED").length;
+  const probable = artifacts.filter((a) => labelForArtifact(a) === "CORRELATED" || labelForArtifact(a) === "INFERRED").length;
+  const identityHits = ["name", "person", "phone", "email", "address", "dob", "age", "location"]
+    .filter((kind) => kinds.has(kind)).length;
+  const exposureHits = ["breach", "password", "hash", "credential", "leak"]
+    .filter((kind) => kinds.has(kind)).length;
+  const riskScore: Record<RiskLevel, number> = { LOW: 22, MEDIUM: 48, HIGH: 74, CRITICAL: 94 };
+
+  return [
+    {
+      label: "Identity",
+      value: clampScore((identityHits / 8) * 100),
+      detail: `${identityHits}/8 identity categories observed`,
+    },
+    {
+      label: "Corroboration",
+      value: clampScore((sources.length / 8) * 100 + confirmed * 4),
+      detail: `${sources.length} distinct sources; ${confirmed} confirmed findings`,
+    },
+    {
+      label: "Confidence",
+      value: clampScore(avg),
+      detail: `${avg}% average artifact confidence`,
+    },
+    {
+      label: "Exposure",
+      value: clampScore((exposureHits / 5) * 100),
+      detail: `${exposureHits}/5 breach or credential-exposure categories`,
+    },
+    {
+      label: "Coverage",
+      value: clampScore((audit.tools.length / 12) * 100),
+      detail: `${audit.tools.length} tools represented in artifacts`,
+    },
+    {
+      label: "Risk",
+      value: riskScore[riskLevel],
+      detail: `${riskLevel.toLowerCase()} current risk classification`,
+    },
+    {
+      label: "Signal",
+      value: clampScore(((confirmed + probable) / Math.max(artifacts.length, 1)) * 100),
+      detail: `${confirmed + probable}/${artifacts.length} findings are confirmed/probable`,
+    },
+  ];
+}
+
+function buildGroupDistribution(artifacts: Artifact[]): ChartDatum[] {
+  const counts = new Map<string, number>();
+  for (const a of artifacts) {
+    const group = GROUP_LABEL[groupForKind(a.kind)] ?? "Other";
+    counts.set(group, (counts.get(group) ?? 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 8);
+}
+
+function buildSourceDistribution(artifacts: Artifact[]): ChartDatum[] {
+  const counts = new Map<string, number>();
+  for (const a of artifacts) {
+    const source = a.source || "unknown";
+    counts.set(source, (counts.get(source) ?? 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .map(([name, value]) => ({ name: name.length > 18 ? `${name.slice(0, 17)}...` : name, value }))
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 8);
+}
+
+function buildConfidenceDistribution(artifacts: Artifact[]): ChartDatum[] {
+  const bands = [
+    { name: "90-100", min: 90, max: 101 },
+    { name: "75-89", min: 75, max: 90 },
+    { name: "50-74", min: 50, max: 75 },
+    { name: "0-49", min: 0, max: 50 },
+    { name: "Unknown", min: -1, max: -1 },
+  ];
+  return bands.map((band) => ({
+    name: band.name,
+    value: artifacts.filter((a) => {
+      if (band.name === "Unknown") return a.confidence == null;
+      const c = a.confidence ?? -1;
+      return c >= band.min && c < band.max;
+    }).length,
+  }));
+}
+
+function ReportChartCard({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
+  return (
+    <div className="report-chart-card rounded-xl border border-white/[0.08] bg-[hsl(var(--surface-1))/0.72] p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">{title}</div>
+          <div className="mt-1 text-data text-muted-foreground">{subtitle}</div>
+        </div>
+      </div>
+      <div className="mt-3 h-[230px] min-w-0">{children}</div>
+    </div>
+  );
+}
+
+function AnalyticRadar({ data }: { data: ReportMetric[] }) {
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <RadarChart data={data} outerRadius="74%">
+        <PolarGrid stroke="hsl(var(--foreground) / 0.13)" radialLines />
+        <PolarAngleAxis dataKey="label" tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 10 }} />
+        <Radar
+          name="Score"
+          dataKey="value"
+          stroke="hsl(var(--info))"
+          fill="hsl(var(--info))"
+          fillOpacity={0.28}
+          strokeWidth={2}
+          dot={{ r: 2.5, fill: "hsl(var(--info))" }}
+        />
+      </RadarChart>
+    </ResponsiveContainer>
+  );
+}
+
+function CompactBarChart({ data, color = "hsl(var(--info))" }: { data: ChartDatum[]; color?: string }) {
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <BarChart data={data} layout="vertical" margin={{ top: 4, right: 12, left: 8, bottom: 4 }}>
+        <CartesianGrid horizontal={false} stroke="hsl(var(--foreground) / 0.06)" />
+        <XAxis type="number" hide allowDecimals={false} />
+        <YAxis
+          type="category"
+          dataKey="name"
+          width={82}
+          tickLine={false}
+          axisLine={false}
+          tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 10 }}
+        />
+        <Bar dataKey="value" radius={[0, 6, 6, 0]} fill={color} />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* Render                                                              */
 /* ------------------------------------------------------------------ */
@@ -418,39 +579,33 @@ export function CaseReport({
   seedValue,
   seedType,
   artifacts,
-  reviews,
 }: {
   seedValue: string | null;
   seedType: string | null;
   artifacts: Artifact[];
-  /** Analyst review verdicts by artifact id. Drives bucketing + adjusted confidence. */
-  reviews?: ReviewMap;
+  reviews?: Record<string, unknown>;
 }) {
-  const identity = useMemo(() => buildIdentityRows(artifacts, reviews), [artifacts, reviews]);
-  const registrations = useMemo(() => buildRegistrationRows(artifacts, reviews), [artifacts, reviews]);
+  const identity = useMemo(() => buildIdentityRows(artifacts), [artifacts]);
+  const registrations = useMemo(() => buildRegistrationRows(artifacts), [artifacts]);
   const hunterNotes = useMemo(() => buildHunterNotes(artifacts, seedValue), [artifacts, seedValue]);
   const unknowns = useMemo(() => buildUnknowns(artifacts), [artifacts]);
   const risk = useMemo(() => computeRisk(artifacts), [artifacts]);
+  const radar = useMemo(() => buildAnalyticRadar(artifacts, risk.level), [artifacts, risk.level]);
+  const groupDistribution = useMemo(() => buildGroupDistribution(artifacts), [artifacts]);
+  const sourceDistribution = useMemo(() => buildSourceDistribution(artifacts), [artifacts]);
+  const confidenceDistribution = useMemo(() => buildConfidenceDistribution(artifacts), [artifacts]);
+  const sources = useMemo(() => uniqueSources(artifacts), [artifacts]);
+  const avgConfidence = useMemo(() => averageConfidence(artifacts), [artifacts]);
 
-  // Analyst review tally — surfaces the verdicts that previously never reached
-  // the report at all (they only showed in the Evidence view).
-  const reviewTally = useMemo(() => {
-    let verified = 0, rejected = 0, needs = 0;
-    for (const a of artifacts) {
-      const r = reviewOf(reviews, a.id);
-      if (r === "confirmed" || r === "key") verified++;
-      else if (r === "dismissed" || r === "wrong") rejected++;
-      else if (r === "recheck") needs++;
-    }
-    return { verified, rejected, needs, total: verified + rejected + needs };
-  }, [artifacts, reviews]);
+  const audit = buildToolAudit(artifacts);
+  const confirmed = artifacts.filter((a) => labelForArtifact(a) === "CONFIRMED").length;
 
-  // Evidence-strength buckets — analyst review verdicts override source status.
+  // Evidence-strength buckets per the new audit rules.
   const buckets = useMemo(() => {
     const g: Record<string, Artifact[]> = { confirmed: [], probable: [], lead: [], contradiction: [], excluded: [] };
-    for (const a of artifacts) g[bucket(a, reviewOf(reviews, a.id))].push(a);
+    for (const a of artifacts) g[bucket(a)].push(a);
     return g;
-  }, [artifacts, reviews]);
+  }, [artifacts]);
 
   const safetyFlags = useMemo(
     () => artifacts.filter((a) => {
@@ -471,52 +626,120 @@ export function CaseReport({
   }, [buckets]);
 
   return (
-    <article id="case-report-print-root" className="text-[12.5px] leading-relaxed text-foreground/95">
+    <article id="case-report-print-root" className="case-report-doc text-[12.5px] leading-relaxed text-foreground/95">
       {/* Header */}
-      <header className="space-y-1.5 border-b border-border-subtle pb-3">
-        <div className="text-eyebrow uppercase tracking-[0.2em] text-muted-foreground">
-          Case file
-        </div>
-        <h2 className="text-lg font-display font-semibold break-all leading-snug">
-          {seedValue ?? "—"}
-        </h2>
-        {/* One calm scope line. The bucket counts (confirmed/probable/leads)
-            live in the Executive Summary prose below; artifact/tool totals are
-            owned by the Evidence/Tools tab badges — not repeated here. */}
-        <div className="font-mono text-data text-muted-foreground">
-          {seedType ?? "unknown"} · {artifacts.length} artifact{artifacts.length === 1 ? "" : "s"} analyzed
-        </div>
-        {reviewTally.total > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5 pt-0.5 text-eyebrow font-mono uppercase tracking-wider">
-            <span className="text-muted-foreground/70">Analyst review</span>
-            {reviewTally.verified > 0 && (
-              <span className={cn("px-1.5 py-0.5 rounded border", REVIEW_CLASS.confirmed)}>{reviewTally.verified} verified</span>
-            )}
-            {reviewTally.rejected > 0 && (
-              <span className={cn("px-1.5 py-0.5 rounded border", REVIEW_CLASS.wrong)}>{reviewTally.rejected} rejected</span>
-            )}
-            {reviewTally.needs > 0 && (
-              <span className={cn("px-1.5 py-0.5 rounded border", REVIEW_CLASS.recheck)}>{reviewTally.needs} recheck</span>
-            )}
+      <header className="report-cover relative overflow-hidden rounded-2xl border border-white/[0.08] bg-[hsl(var(--surface-1))/0.72] p-4 sm:p-5">
+        <div className="relative z-10 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div className="min-w-0">
+            <div className="text-eyebrow uppercase tracking-[0.22em] text-[hsl(var(--info))]">
+              Case file / analytical report
+            </div>
+            <h2 className="mt-2 text-xl sm:text-2xl font-display font-semibold tracking-normal break-all">
+              {seedValue ?? "—"}
+            </h2>
+            <div className="mt-2 flex flex-wrap gap-1.5 text-eyebrow font-mono uppercase tracking-wider text-muted-foreground">
+              <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{seedType ?? "unknown"}</span>
+              <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{artifacts.length} artifacts</span>
+              <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{audit.tools.length} tools</span>
+              <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{sources.length} sources</span>
+              <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{avgConfidence}% avg confidence</span>
+            </div>
           </div>
-        )}
+          <div className={cn("shrink-0 rounded-2xl border px-4 py-3 text-right", RISK_COLOR[risk.level])}>
+            <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">Risk posture</div>
+            <div className="mt-1 font-display text-2xl font-semibold tracking-normal">{risk.level}</div>
+          </div>
+        </div>
       </header>
+
+      <section className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <ReportKpi label="Confirmed" value={buckets.confirmed.length} detail="verified or >=90 confidence" tone="ok" />
+        <ReportKpi label="Probable" value={buckets.probable.length} detail="high-signal, needs final corroboration" tone="info" />
+        <ReportKpi label="Leads" value={buckets.lead.length} detail="requires analyst verification" tone="warn" />
+        <ReportKpi label="Contradictions" value={buckets.contradiction.length} detail="quality or conflict flags" tone={buckets.contradiction.length > 0 ? "danger" : "neutral"} />
+      </section>
+
+      <section className="mt-4 grid gap-3 xl:grid-cols-[1.05fr_0.95fr]">
+        <ReportChartCard title="Analytic Radar" subtitle="Composite profile from evidence, source, risk, and coverage signals.">
+          <AnalyticRadar data={radar} />
+        </ReportChartCard>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+          <ReportChartCard title="Evidence Groups" subtitle="Artifact distribution by investigation domain.">
+            <CompactBarChart data={groupDistribution} />
+          </ReportChartCard>
+          <ReportChartCard title="Confidence Bands" subtitle="How strong the current artifact set is.">
+            <CompactBarChart data={confidenceDistribution} color="hsl(var(--confidence-high))" />
+          </ReportChartCard>
+        </div>
+      </section>
+
+      <section className="mt-4 grid gap-3 lg:grid-cols-[0.9fr_1.1fr]">
+        <ReportChartCard title="Source Coverage" subtitle="Top sources contributing artifacts to this report.">
+          <CompactBarChart data={sourceDistribution} color="hsl(var(--brain-cyan))" />
+        </ReportChartCard>
+        <div className="rounded-xl border border-white/[0.08] bg-[hsl(var(--surface-1))/0.62] p-3">
+          <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">Radar Notes</div>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            {radar.map((metric) => (
+              <div key={metric.label} className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-data font-medium text-foreground">{metric.label}</span>
+                  <span className="font-mono text-data text-[hsl(var(--info))]">{metric.value}</span>
+                </div>
+                <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
+                  <div className="h-full rounded-full bg-[hsl(var(--info))]" style={{ width: `${metric.value}%` }} />
+                </div>
+                <p className="mt-1 text-data leading-relaxed text-muted-foreground">{metric.detail}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="mt-4 rounded-xl border border-[hsl(var(--info)/0.18)] bg-[hsl(var(--info)/0.055)] p-3">
+        <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-[hsl(var(--info))]">
+          Accuracy Guardrails
+        </div>
+        <div className="mt-2 grid gap-2 md:grid-cols-3">
+          <GuardrailCard
+            label="Breach / reputation"
+            body="Breach, leak, and threat-reputation records display as manual-review evidence until independently corroborated."
+          />
+          <GuardrailCard
+            label="Infrastructure"
+            body="DNS, IP, and host data can verify an asset, but do not prove ownership or identity by themselves."
+          />
+          <GuardrailCard
+            label="Source basis"
+            body="Each table row includes source class, status basis, score, capture date, and backend reasoning where available."
+          />
+        </div>
+      </section>
 
       {/* 1. Executive summary */}
       <SectionHeader>Executive Summary</SectionHeader>
-      <p className="text-foreground/90">
-        Investigation of <span className="font-mono">{seedValue ?? "—"}</span> produced{" "}
-        {buckets.confirmed.length} confirmed, {buckets.probable.length} probable, and{" "}
-        {buckets.lead.length} unverified leads. {buckets.contradiction.length} contradictions
-        were detected. Source-based confidence caps are applied conservatively — breach-only
-        evidence cannot exceed 65 without independent corroboration.
-      </p>
+      <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-4">
+        <p className="text-foreground/90">
+          Investigation of <span className="font-mono">{seedValue ?? "—"}</span> produced{" "}
+          {buckets.confirmed.length} confirmed, {buckets.probable.length} probable, and{" "}
+          {buckets.lead.length} unverified leads across {sources.length} distinct source
+          {sources.length === 1 ? "" : "s"}. {buckets.contradiction.length} contradiction
+          {buckets.contradiction.length === 1 ? "" : "s"} were detected. Source-based confidence caps
+          are applied conservatively: breach-only or aggregator-only evidence remains unconfirmed until
+          independently corroborated.
+        </p>
+        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          <MiniAssessment label="Evidence volume" value={`${artifacts.length}`} hint="raw artifacts retained after client-side grouping" />
+          <MiniAssessment label="Source depth" value={`${sources.length}`} hint="distinct artifact source labels observed" />
+          <MiniAssessment label="Tool coverage" value={`${audit.tools.length}`} hint="tools represented in this case artifact set" />
+        </div>
+      </div>
 
       {/* 2. Safety / legal flags */}
       {safetyFlags.length > 0 && (
         <>
-          <SectionHeader tone="danger">Safety / Legal Flags</SectionHeader>
-          <BucketTable rows={safetyFlags} empty="No safety flags." reviews={reviews} />
+          <SectionHeader>Safety / Legal Flags</SectionHeader>
+          <BucketTable rows={safetyFlags} empty="No safety flags." />
         </>
       )}
 
@@ -528,29 +751,29 @@ export function CaseReport({
 
       {/* 4. Confirmed findings */}
       <SectionHeader>Confirmed Findings</SectionHeader>
-      <BucketTable rows={buckets.confirmed} empty="No findings meet the confirmation threshold (official + independent corroboration)." reviews={reviews} />
+      <BucketTable rows={buckets.confirmed} empty="No findings meet the confirmation threshold (official + independent corroboration)." />
 
       {/* 5. Probable findings */}
       <SectionHeader>Probable Findings</SectionHeader>
-      <BucketTable rows={buckets.probable} empty="No probable findings." reviews={reviews} />
+      <BucketTable rows={buckets.probable} empty="No probable findings." />
 
       {/* 6. Leads requiring verification */}
       <SectionHeader>Leads Requiring Verification</SectionHeader>
-      <BucketTable rows={buckets.lead.slice(0, 40)} empty="No outstanding leads." reviews={reviews} />
+      <BucketTable rows={buckets.lead.slice(0, 40)} empty="No outstanding leads." />
 
       {/* 7. Excluded / collision clusters */}
       {buckets.excluded.length > 0 && (
         <>
           <SectionHeader>Excluded / Collision Clusters</SectionHeader>
-          <BucketTable rows={buckets.excluded} empty="—" reviews={reviews} />
+          <BucketTable rows={buckets.excluded} empty="—" />
         </>
       )}
 
       {/* 9. Contradictions */}
       {buckets.contradiction.length > 0 && (
         <>
-          <SectionHeader tone="danger">Contradictions &amp; Data Quality Problems</SectionHeader>
-          <BucketTable rows={buckets.contradiction} empty="—" reviews={reviews} />
+          <SectionHeader>Contradictions &amp; Data Quality Problems</SectionHeader>
+          <BucketTable rows={buckets.contradiction} empty="—" />
         </>
       )}
 
@@ -568,8 +791,8 @@ export function CaseReport({
       {identity.length > 0 && (
         <>
           <SectionHeader>Identity</SectionHeader>
-          <div className="rounded-md border border-border-subtle overflow-x-auto [scrollbar-width:thin]">
-            <table className="w-full min-w-[420px] text-data">
+          <div className="rounded-md border border-border-subtle overflow-hidden">
+            <table className="w-full text-data">
               <thead>
                 <tr className="bg-surface-2 text-eyebrow uppercase tracking-[0.15em] text-muted-foreground">
                   <th className="text-left font-normal px-3 py-2 w-[35%]">Field</th>
@@ -598,8 +821,8 @@ export function CaseReport({
       {registrations.length > 0 && (
         <>
           <SectionHeader>Sensitive Registrations</SectionHeader>
-          <div className="rounded-md border border-border-subtle overflow-x-auto [scrollbar-width:thin]">
-            <table className="w-full min-w-[520px] text-data">
+          <div className="rounded-md border border-border-subtle overflow-hidden">
+            <table className="w-full text-data">
               <thead>
                 <tr className="bg-surface-2 text-eyebrow uppercase tracking-[0.15em] text-muted-foreground">
                   <th className="text-left font-normal px-3 py-2 w-[30%]">Site</th>
@@ -658,6 +881,76 @@ export function CaseReport({
           </ul>
         )}
       </div>
+
+      <SectionHeader>Methodology & Confidence Controls</SectionHeader>
+      <div className="grid gap-3 lg:grid-cols-3">
+        <MethodCard
+          title="Evidence handling"
+          body="Artifacts are separated with the conservative evidence-status layer used by the analyst UI. Confirmation requires strong source quality or corroboration."
+        />
+        <MethodCard
+          title="Source weighting"
+          body="Radar and charts are descriptive analytics. Shared-source dashed links, breach-only hits, and aggregator records should not be promoted without independent support."
+        />
+        <MethodCard
+          title="Analyst action"
+          body="Use recommended pivots and unknowns to close coverage gaps. Treat the chart scores as prioritization aids, not final attribution."
+        />
+      </div>
     </article>
+  );
+}
+
+function GuardrailCard({ label, body }: { label: string; body: string }) {
+  return (
+    <div className="rounded-lg border border-white/[0.07] bg-black/15 p-2">
+      <div className="text-data font-semibold text-foreground">{label}</div>
+      <p className="mt-1 text-data leading-relaxed text-muted-foreground">{body}</p>
+    </div>
+  );
+}
+
+function ReportKpi({
+  label,
+  value,
+  detail,
+  tone,
+}: {
+  label: string;
+  value: number | string;
+  detail: string;
+  tone: "neutral" | "ok" | "info" | "warn" | "danger";
+}) {
+  const toneClass =
+    tone === "ok" ? "text-[hsl(var(--confidence-high))]" :
+    tone === "info" ? "text-[hsl(var(--info))]" :
+    tone === "warn" ? "text-[hsl(var(--confidence-mid))]" :
+    tone === "danger" ? "text-destructive" :
+    "text-foreground";
+  return (
+    <div className="report-kpi relative overflow-hidden rounded-xl border border-white/[0.08] bg-[hsl(var(--surface-1))/0.72] p-3">
+      <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">{label}</div>
+      <div className={cn("mt-2 font-display text-2xl font-semibold leading-none", toneClass)}>{value}</div>
+      <div className="mt-2 text-data leading-relaxed text-muted-foreground">{detail}</div>
+    </div>
+  );
+}
+
+function MiniAssessment({ label, value, hint }: { label: string; value: string; hint: string }) {
+  return (
+    <div className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-2">
+      <div className="text-eyebrow font-mono uppercase tracking-[0.14em] text-muted-foreground">{label}</div>
+      <div className="mt-1 font-mono text-lg leading-none text-foreground">{value}</div>
+      <div className="mt-1 text-data leading-relaxed text-muted-foreground">{hint}</div>
+    </div>
+  );
+}
+
+function MethodCard({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="rounded-xl border border-white/[0.08] bg-[hsl(var(--surface-1))/0.58] p-3">
+      <div className="text-data font-semibold text-foreground">{title}</div>
+      <p className="mt-1 text-data leading-relaxed text-muted-foreground">{body}</p>
+    </div>
   );
 }

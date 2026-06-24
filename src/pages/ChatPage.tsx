@@ -96,7 +96,7 @@ export default function ChatPage() {
         <ChatWindow threadId={threadId} />
       </div>
       {tab !== "chat" && (
-        <Suspense fallback={<div className="absolute inset-0 grid place-items-center text-muted-foreground text-sm">Loading…</div>}>
+        <Suspense fallback={<div className="absolute inset-0 grid place-items-center text-muted-foreground text-sm">Loading workspace…</div>}>
           {tab === "evidence" && <div role="tabpanel" id="workspace-tabpanel-evidence" aria-labelledby="workspace-tab-evidence" className="absolute inset-0"><EvidenceTab threadId={threadId} /></div>}
           {tab === "report" && (
             <div role="tabpanel" id="workspace-tabpanel-report" aria-labelledby="workspace-tab-report" className="absolute inset-0 overflow-y-auto">
