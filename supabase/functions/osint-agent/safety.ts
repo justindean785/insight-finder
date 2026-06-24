@@ -20,7 +20,7 @@ const BIO_META_FIELDS = ["bio", "biography", "description", "about", "tagline", 
 // numbers in the 10–17 range that must NEVER be read as a minor's age. A DOB is
 // routinely reclassified `dob`→`other` for value-masking, which would otherwise
 // feed it straight into the bare-age scan below.
-const DATE_LIKE_RE = /\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}\b/;
+const DATE_LIKE_RE = /\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b/;
 function isDateLike(s: string): boolean {
   return DATE_LIKE_RE.test(s);
 }
