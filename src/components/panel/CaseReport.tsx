@@ -28,6 +28,7 @@ import {
 } from "@/lib/intel";
 import { toolActionLabel } from "@/lib/tool-display";
 import { cn } from "@/lib/utils";
+import type { ReviewState } from "@/lib/review";
 
 /* ------------------------------------------------------------------ */
 /* Evidence-strength bucketing                                         */
@@ -583,7 +584,7 @@ export function CaseReport({
   seedValue: string | null;
   seedType: string | null;
   artifacts: Artifact[];
-  reviews?: Record<string, unknown>;
+  reviews?: Record<string, ReviewState>;
 }) {
   const identity = useMemo(() => buildIdentityRows(artifacts), [artifacts]);
   const registrations = useMemo(() => buildRegistrationRows(artifacts), [artifacts]);
@@ -598,7 +599,6 @@ export function CaseReport({
   const avgConfidence = useMemo(() => averageConfidence(artifacts), [artifacts]);
 
   const audit = buildToolAudit(artifacts);
-  const confirmed = artifacts.filter((a) => labelForArtifact(a) === "CONFIRMED").length;
 
   // Evidence-strength buckets per the new audit rules.
   const buckets = useMemo(() => {

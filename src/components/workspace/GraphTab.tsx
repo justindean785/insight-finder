@@ -11,7 +11,6 @@ import {
   Layers3,
   Maximize2,
   Move,
-  RotateCcw,
   Share2,
   SlidersHorizontal,
   X,
@@ -81,7 +80,7 @@ const CX = W / 2;
 const CY = H / 2;
 
 function shorten(s: string, n = 22): string {
-  return s.length > n ? s.slice(0, n - 1) + "..." : s;
+  return s.length > n ? `${s.slice(0, Math.max(0, n - 1))}…` : s;
 }
 
 function metadataOf(a: Artifact): Record<string, unknown> {
