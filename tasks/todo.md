@@ -380,3 +380,46 @@ production screenshots. Fixes #110. Frontend-only; no redesign.
   `hsl(var(--surface-0))/0.98` value is absent. Not assumed — grepped.
 - `npm run typecheck` clean · `eslint` 0 · `npm run build` OK · **675 tests pass**.
 - Bugs 2/3/4 required no code change (see above). Scope held: one-file fix.
+
+---
+
+## 2026-06-24 — osint-agent runtime reliability (`fix/osint-agent-runtime-reliability`)
+
+Context: a GPT-authored plan blamed the ~50% scan success rate on "~46 bare `fetch()`
+with no retry." Verified against `origin/main`: those 46 live in `tools/*.ts` **dead
+mirror files** (not imported by the runtime — `CLAUDE.md` confirms). The live runtime
+(`tool-registry.ts`) already wraps 13/15 calls in `fetchRetry`. So that diagnosis was
+misdirected. Live-data diagnosis (`tool_usage_log`) was **deferred** by operator decision
+("ship safe subset now") — so this ships only the statically-supported, behavior-equivalent
+change. The real root cause should still be confirmed from `tool_usage_log` later.
+
+### Scope (operator-approved "safe subset")
+- [x] **`index.ts:340` `stepCountIs(28) → stepCountIs(50)`** — the one real, live, behavior-safe
+      reliability fix. A 14-tool investigation with planning can exceed 28 AI-SDK steps and get
+      truncated mid-run → reads as failure. The per-tool cost gate still bounds spend.
+
+### Deliberately NOT changed (on inspection — honoring "keep behavior equivalent")
+- [ ] ~~`tool-registry.ts:764` (`bosint_phone_lookup`) fetch → fetchRetry~~ — **REJECTED.** In-code
+      note: "Single strict 25s attempt — no retry … old retry pushed worst case to 60s and stalled
+      interactive scans (observed in prod)." Converting reintroduces a documented prod regression.
+- [ ] ~~`tool-registry.ts:1746` (`http_fingerprint`) fetch → fetchRetry~~ — **REJECTED.** It's a
+      fingerprinting tool; a 5xx IS the data being reported. `fetchRetry` retries 5xx → not
+      behavior-equivalent. (Open question for operator: accept a minor 5xx-retry change for
+      network-blip resilience? Held.)
+- Dead mirror fetches in `tools/{infrastructure,social,email,breach,crypto}.ts` — never run; no edit.
+- Integrity-critical zone (confidence caps / custody / credential masking / minor-safety / labels)
+  and budget/cost gating — untouched.
+
+### Files
+- Change: `supabase/functions/osint-agent/index.ts` (1 line).
+- Do NOT touch: tool-registry.ts fetch sites, tools/*.ts mirrors, integrity/budget logic, env.
+
+### Verification
+- [ ] `cd supabase/functions/osint-agent && deno test --allow-net --allow-env --allow-sys --no-check`
+- [ ] `deno check index.ts` adds no new TS2304 vs baseline
+- [ ] `npm run lint` / `typecheck` / `build` / `npx vitest run` (frontend unaffected by backend change)
+- [ ] committed diff = index.ts only; no env; no integrity/budget changes
+
+### Ship path
+Backend change → after merge, **sync `osint-agent/` into `seeker-spark-search-5362c57c` → Lovable
+auto-deploys**. Not `supabase functions deploy`.

@@ -337,7 +337,7 @@ Deno.serve(async (req) => {
         onCost,
         manualOverrideSelector,
       }),
-      stopWhen: stepCountIs(28),
+      stopWhen: stepCountIs(50),
       prepareStep,
       // Meter orchestrator LLM token spend per step so threads.cost_micro_usd
       // reflects the actual model cost, not just tool fan-out cost.
