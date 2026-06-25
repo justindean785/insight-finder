@@ -380,3 +380,49 @@ production screenshots. Fixes #110. Frontend-only; no redesign.
   `hsl(var(--surface-0))/0.98` value is absent. Not assumed — grepped.
 - `npm run typecheck` clean · `eslint` 0 · `npm run build` OK · **675 tests pass**.
 - Bugs 2/3/4 required no code change (see above). Scope held: one-file fix.
+
+---
+
+## 2026-06-25 — thread terminal status rejected by DB (`fix/thread-terminal-status`)
+
+Evidence: production edge logs show `[thread status] completion update failed: new row for
+relation "threads" violates check constraint "threads_status_check"`. Diagnosed from repo
+(read-only).
+
+### Root cause
+`threads_status_check` (migration `20260527120934`) allows **only** `('active','finished')`,
+but the code writes statuses outside that set:
+- `index.ts:486` success → `"completed"` (REJECTED) ← main symptom
+- `index.ts:388` overflow → `"failed_context_limit"` (REJECTED)
+- `ChatWindow.tsx:1199` Stop button → `"stopped"` (REJECTED)
+- Nothing ever writes the allowed terminal `"finished"`.
+Frontend header (`WorkspaceHeader.tsx:73-75`) shows COMPLETED only for `finished`/`stopped`;
+with `completed` rejected the thread stays `active` → **permanent ACTIVE badge** on finished runs.
+
+### Files inspected (read-only)
+`index.ts` (status writes), `ChatWindow.tsx`, `WorkspaceHeader.tsx`, `ThreadSidebar.tsx`,
+migrations `20260527120934` (constraint) + `20260613070000` (cache), `cache.ts`, `CLAUDE.md`.
+
+### Change in THIS PR (smallest safe fix — no migration, no decision needed)
+- [x] `index.ts:486` `status: "completed"` → `status: "finished"`.
+  DB-allowed + frontend-recognized (`WorkspaceHeader`/`ThreadSidebar` treat `finished` as done).
+  The `.eq("status","active")` guard is preserved (only `active→finished`).
+
+### Deliberately NOT changed here — needs operator decision (stop-and-report)
+- [ ] `failed_context_limit` (index.ts:388): rejected; **no existing persisted thread field**
+  stores the reason (only console-logged). Options reported separately — do not silently map
+  a failure to `finished`.
+- [ ] `stopped` (ChatWindow.tsx:1199 Stop button): also rejected. Options: widen constraint to
+  add `stopped` (already in the frontend vocabulary) vs map to `finished`. Reported separately.
+- Constraint-widening migration is NOT added here (would also hit the migration-deploy gap; see
+  the cache writeup). Awaiting decision.
+
+### Explicitly NOT touched
+Confidence caps / custody / credential masking / minor-safety / collision-exclusion / source
+classification / budget gating / dead-mirror `tools/*.ts` / PR #119/#120/#121/#122.
+
+### Verification
+- [ ] `npx eslint` (changed file) · `npm run typecheck` · `npx vitest run` · `npm run build` · `npm run test:edge`
+
+### Ship path
+Backend change → after merge, sync `osint-agent/` → `seeker-spark-search-5362c57c` → Lovable.
