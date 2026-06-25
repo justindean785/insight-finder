@@ -120,6 +120,10 @@ export function useThreadToolActivity(threadId: string): ThreadToolActivity {
     return () => { alive = false; supabase.removeChannel(ch); };
   }, [threadId]);
 
+  // `events` and `total` are VISIBLE activity only — failed calls are suppressed
+  // from the beta feed (see the filter above). `hiddenFailed` carries the
+  // suppressed count so consumers can acknowledge hidden activity (rather than
+  // showing an empty surface) without exposing failure noise.
   return {
     events,
     total: events.length,

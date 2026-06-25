@@ -134,7 +134,10 @@ export function extractRecommendedPivots(text: string): RecommendedPivot[] {
     const line = cleanLine(rawLine);
     if (!line) continue;
     if (NEXT_HEADING_RE.test(line)) break;
-    if (line.endsWith(":") && !/^(?:investigate|pivot|verify|cross-reference|check|review)\b/i.test(line)) break;
+    // Verb list kept in sync with extractTarget()'s — a pivot line that happens
+    // to end with ":" (e.g. "Corroborate the PO Box:") must not be mistaken for a
+    // section heading and stop extraction early.
+    if (line.endsWith(":") && !/^(?:investigate|pivot|verify|cross-reference|check|review|corroborate|confirm|compare)\b/i.test(line)) break;
 
     const value = extractTarget(line);
     const key = line.toLowerCase();

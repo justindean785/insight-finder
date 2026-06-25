@@ -38,6 +38,22 @@ describe("extractRecommendedPivots", () => {
     expect(extractRecommendedPivots(text)).toHaveLength(1);
   });
 
+  it("keeps extracting when a corroborate/confirm pivot line ends with a colon", () => {
+    // Regression: extractTarget recognizes corroborate/confirm/compare, but the
+    // section-break guard's verb list used to omit them, so a "Corroborate …:"
+    // line was misread as a heading and stopped extraction after the first pivot.
+    const text = `
+**Recommended next pivots:**
+- Investigate scero@me.com — same person
+- Corroborate the Oakley PO Box with county records:
+- Confirm Exavier Hill-Larot via independent identity check
+`;
+    const labels = extractRecommendedPivots(text).map((pivot) => pivot.label);
+    expect(labels).toContain("Corroborate the Oakley PO Box with county records:");
+    expect(labels).toContain("Confirm Exavier Hill-Larot via independent identity check");
+    expect(labels).toHaveLength(3);
+  });
+
   it("blocks sensitive secret-like pivots and minor-related pivots", () => {
     const text = `
 ## Recommended Next Pivots

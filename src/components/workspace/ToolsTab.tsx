@@ -75,6 +75,7 @@ export function ToolsTab({ threadId }: { threadId: string }) {
             gated={activity.gated}
             degraded={activity.degraded}
             total={activity.total}
+            hiddenFailed={activity.hiddenFailed}
             loading={activity.loading}
           />
         )}
@@ -86,8 +87,8 @@ export function ToolsTab({ threadId }: { threadId: string }) {
 }
 
 function ActivityLog({
-  events, ok, skipped, gated, degraded, total, loading,
-}: { events: ToolEvent[]; ok: number; skipped: number; gated: number; degraded: number; total: number; loading: boolean }) {
+  events, ok, skipped, gated, degraded, total, hiddenFailed, loading,
+}: { events: ToolEvent[]; ok: number; skipped: number; gated: number; degraded: number; total: number; hiddenFailed: number; loading: boolean }) {
   const [filter, setFilter] = useState<ActivityFilter>("all");
   const pending = events.filter((e) => e.status === "pending").length;
 
@@ -104,7 +105,11 @@ function ActivityLog({
       <EmptyState
         icon={Activity}
         title="No visible tool activity yet"
-        hint="When the agent runs lookups, completed, running, skipped, gated, and degraded activity appears here."
+        hint={
+          hiddenFailed > 0
+            ? `${hiddenFailed} tool call${hiddenFailed === 1 ? "" : "s"} recorded but not shown here. Completed, running, skipped, gated, and degraded activity appears as the agent runs lookups.`
+            : "When the agent runs lookups, completed, running, skipped, gated, and degraded activity appears here."
+        }
       />
     );
   }
@@ -121,7 +126,16 @@ function ActivityLog({
   return (
     <div className="mx-auto max-w-4xl p-3 sm:p-4 space-y-4">
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        <MetricCard label="Total tools" value={total} icon={ListChecks} hint="Every tool call recorded for this case." />
+        <MetricCard
+          label="Tools shown"
+          value={total}
+          icon={ListChecks}
+          hint={
+            hiddenFailed > 0
+              ? `Visible tool calls for this case. ${hiddenFailed} more recorded but not shown.`
+              : "Visible tool calls for this case."
+          }
+        />
         <MetricCard label="Succeeded" value={ok} icon={CheckCircle2} tone={ok > 0 ? "ok" : "neutral"} hint="Calls that returned a usable result." />
         <MetricCard
           label={gated > 0 ? "Skipped / Gated" : "Skipped"}

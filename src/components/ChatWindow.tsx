@@ -1636,9 +1636,10 @@ function ChatWindowInner({
       }
     } else {
       // No explicit final-report recommendations: fall back to artifact-derived leads.
+      const artifactById = new Map(artifacts.map((candidate) => [candidate.id, candidate]));
       const allPivots = buildPivots(artifacts, seedValue).filter((p) => {
         if (p.status !== "new") return false;
-        const artifact = artifacts.find((candidate) => candidate.id === p.sourceArtifactId);
+        const artifact = artifactById.get(p.sourceArtifactId);
         const meta = (artifact?.metadata ?? {}) as Record<string, unknown>;
         if (meta.false_positive === true || meta.collision === true || meta.excluded_collision === true) return false;
         if (meta.possible_minor === true || meta.minor_warning === true || meta.auto_pivot_blocked === true) return false;

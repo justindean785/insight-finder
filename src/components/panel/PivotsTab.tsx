@@ -252,7 +252,9 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
                   </button>
                   <div className="min-w-0">
                   <div className="text-sm font-semibold text-foreground break-words group-hover:text-primary transition-colors">{headline}</div>
-                  <div className="font-mono text-foreground/88 break-all mt-1">{detail}</div>
+                  {detail !== headline && (
+                    <div className="font-mono text-foreground/88 break-all mt-1">{detail}</div>
+                  )}
                   <div className="text-eyebrow uppercase tracking-wider text-muted-foreground mt-0.5">
                     {p.type} · source: {p.source}
                   </div>
