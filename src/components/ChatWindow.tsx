@@ -535,6 +535,25 @@ function groupToolParts(parts: MessagePartShape[]): Array<ToolRunGroup | { part:
   return groups;
 }
 
+// Beta-facing cycle badges. Failed tool calls are intentionally NOT surfaced to
+// users — `group.failed` is still counted in the group data (and kept in state),
+// it is only hidden from this presentation. Exported solely for a regression
+// test; it is a pure helper, not a component.
+// eslint-disable-next-line react-refresh/only-export-components
+export function cycleSummaryBadges(group: {
+  cached: number;
+  stale: number;
+  skipped: number;
+  useful: number;
+}): string[] {
+  return [
+    group.cached > 0 ? `${group.cached} cached` : null,
+    group.stale > 0 ? `${group.stale} stale` : null,
+    group.skipped > 0 ? `${group.skipped} skipped` : null,
+    group.useful > 0 ? `${group.useful} completed` : null,
+  ].filter((bit): bit is string => Boolean(bit));
+}
+
 function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt?: string }) {
   const [expanded, setExpanded] = useState(false);
   const avgExpected = group.expectedValues.length
@@ -543,13 +562,11 @@ function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt
   const time = createdAt ? new Date(createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : null;
   const selectors = Array.from(new Set(group.selectors)).slice(0, 3);
   const extra = Math.max(0, new Set(group.selectors).size - selectors.length);
-  const summaryBits = [
-    group.cached > 0 ? `${group.cached} cached` : null,
-    group.stale > 0 ? `${group.stale} stale` : null,
-    group.skipped > 0 ? `${group.skipped} skipped` : null,
-    group.failed > 0 ? `${group.failed} failed` : null,
-    group.useful > 0 ? `${group.useful} completed` : null,
-  ].filter(Boolean);
+  const summaryBits = cycleSummaryBadges(group);
+  // Beta-facing: failed tool parts are hidden from the expanded list too. The
+  // underlying group.parts stays intact in state; only the rendered subset omits
+  // errors, so a user who expands a cycle never sees a red "failed" card.
+  const visibleParts = group.parts.filter((part) => deriveToolTone(part) !== "error");
   return (
     <div className="rounded-2xl border border-white/8 bg-white/[0.03] text-data text-muted-foreground">
       <button
@@ -584,9 +601,9 @@ function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt
           </div>
         )}
       </button>
-      {expanded && (
+      {expanded && visibleParts.length > 0 && (
         <div className="space-y-2 border-t border-white/8 px-3 py-3">
-          {group.parts.map((part, partIndex) => (
+          {visibleParts.map((part, partIndex) => (
             <ToolPart key={`${group.key}-${partIndex}`} part={part} createdAt={createdAt} />
           ))}
         </div>
