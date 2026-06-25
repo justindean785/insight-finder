@@ -101,8 +101,11 @@ export default function Auth() {
       <div className="relative w-full max-w-[400px] space-y-7">
         {/* Identity block */}
         <div className="text-center space-y-3.5">
-          <div className="relative inline-flex items-center justify-center w-16 h-16 rounded-2xl glass-strong border border-white/10 mx-auto shadow-[0_8px_40px_-12px_rgba(0,0,0,0.7)]">
-            <SwarmMark className="w-10 h-10" />
+          <div className="relative mx-auto w-16 h-16">
+            <span aria-hidden className="pointer-events-none absolute inset-0 -m-2 rounded-full bg-white/[0.05] blur-xl" />
+            <div className="relative inline-flex items-center justify-center w-16 h-16 rounded-2xl glass-strong border border-white/[0.12] shadow-[0_8px_40px_-12px_rgba(0,0,0,0.7)]">
+              <SwarmMark className="w-10 h-10" />
+            </div>
           </div>
           <div className="space-y-1.5">
             <h1 className="font-display text-[28px] leading-none font-semibold tracking-tight gradient-text">
@@ -121,7 +124,8 @@ export default function Auth() {
         </div>
 
         {/* Card */}
-        <div className="rounded-2xl border border-white/[0.07] glass-card p-5 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.7)]">
+        <div className="relative overflow-hidden rounded-2xl intel-surface p-5">
+          <div className="live-seam" aria-hidden />
           <Tabs defaultValue={defaultTab} className="w-full">
             <TabsList className="grid grid-cols-2 w-full h-9 bg-surface-2/60 p-1">
               <TabsTrigger value="signin" className="text-meta">Sign in</TabsTrigger>

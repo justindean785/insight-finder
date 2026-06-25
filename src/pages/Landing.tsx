@@ -53,8 +53,11 @@ export default function Landing() {
               Investigator beta
             </span>
           </div>
-          <div className="relative inline-flex items-center justify-center w-20 h-20 rounded-2xl glass-strong border border-white/10 mx-auto shadow-[0_8px_40px_-12px_rgba(0,0,0,0.7)]">
-            <SwarmMark className="w-12 h-12" />
+          <div className="relative mx-auto w-20 h-20">
+            <span aria-hidden className="pointer-events-none absolute inset-0 -m-2.5 rounded-full bg-white/[0.05] blur-2xl" />
+            <div className="relative inline-flex items-center justify-center w-20 h-20 rounded-2xl glass-strong border border-white/[0.12] shadow-[0_8px_40px_-12px_rgba(0,0,0,0.7)]">
+              <SwarmMark className="w-12 h-12" />
+            </div>
           </div>
           <div className="space-y-3">
             <h1 className="font-display text-4xl sm:text-5xl leading-none font-semibold tracking-tight gradient-text">
@@ -85,7 +88,7 @@ export default function Landing() {
           {FEATURES.map(({ icon: Icon, title, desc }) => (
             <div
               key={title}
-              className="glass-card rounded-2xl border border-white/[0.07] p-6 space-y-3"
+              className="evidence-tile !rounded-2xl p-6 space-y-3"
             >
               <div className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-white/10 bg-white/[0.04]">
                 <Icon className="w-4 h-4 text-foreground/80" strokeWidth={1.5} />
