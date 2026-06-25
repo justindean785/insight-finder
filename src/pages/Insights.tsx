@@ -313,7 +313,10 @@ export default function Insights() {
   );
 }
 
-function deriveInsights(s: Stats) {
+// Exported only so the confidence-aggregation logic can be unit-tested; this is
+// a pure helper, not a component, so the fast-refresh rule does not apply here.
+// eslint-disable-next-line react-refresh/only-export-components
+export function deriveInsights(s: Stats) {
   const byGroupMap = new Map<Group, number>();
   const sourceMap = new Map<string, number>();
   const confidenceBuckets = [
@@ -340,7 +343,11 @@ function deriveInsights(s: Stats) {
     if (a.confidence == null) {
       confidenceBuckets[confidenceBuckets.length - 1].count++;
     } else {
-      const pct = a.confidence * 100;
+      // artifacts.confidence is already a 0–100 score (DB CHECK 0–100); it is
+      // NOT a 0–1 fraction, so it must not be rescaled. Multiplying by 100 here
+      // produced an impossible "4,817%" average and collapsed every artifact
+      // into the top (≥80%) distribution bucket.
+      const pct = a.confidence;
       confSum += pct;
       confN++;
       for (const b of confidenceBuckets) {
