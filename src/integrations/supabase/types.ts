@@ -426,31 +426,49 @@ export type Database = {
       tool_call_cache: {
         Row: {
           created_at: string
+          expires_at: string | null
           id: string
           input_hash: string
           input_json: Json
           investigation_id: string
           output_json: Json
+          params_hash: string | null
+          selector_normalized: string | null
+          selector_type: string | null
+          source_created_at: string | null
+          stale: boolean
           tool_name: string
           user_id: string | null
         }
         Insert: {
           created_at?: string
+          expires_at?: string | null
           id?: string
           input_hash: string
           input_json: Json
           investigation_id: string
           output_json: Json
+          params_hash?: string | null
+          selector_normalized?: string | null
+          selector_type?: string | null
+          source_created_at?: string | null
+          stale?: boolean
           tool_name: string
           user_id?: string | null
         }
         Update: {
           created_at?: string
+          expires_at?: string | null
           id?: string
           input_hash?: string
           input_json?: Json
           investigation_id?: string
           output_json?: Json
+          params_hash?: string | null
+          selector_normalized?: string | null
+          selector_type?: string | null
+          source_created_at?: string | null
+          stale?: boolean
           tool_name?: string
           user_id?: string | null
         }
