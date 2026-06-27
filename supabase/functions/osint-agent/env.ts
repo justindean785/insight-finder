@@ -131,6 +131,12 @@ export const SERUS_API_KEY = Deno.env.get("SERUS_API_KEY");
 // validity + high fraud_score so the orchestrator can down-weight junk.
 export const IPQUALITYSCORE_API_KEY = Deno.env.get("IPQUALITYSCORE_API_KEY");
 
+// OpenCorporates company-registry search. OPTIONAL — the v0.4 search endpoint
+// works key-free (heavily rate-limited; 401/403/429 without a token), so this
+// is intentionally NOT suffixed with `!`. When set, it is appended as
+// `&api_token=` to lift the anonymous rate limit.
+export const OPENCORPORATES_API_KEY = Deno.env.get("OPENCORPORATES_API_KEY");
+
 // Health probe secret — gates the paid ?probe=1 path. Fail closed: if unset,
 // ?probe=1 is rejected. The lightweight ?health=1 path remains public.
 export const OSINT_AGENT_PROBE_SECRET = Deno.env.get("OSINT_AGENT_PROBE_SECRET") ?? "";
