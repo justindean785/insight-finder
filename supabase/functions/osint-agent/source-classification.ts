@@ -86,6 +86,13 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   deepfind_ransomware_exposure: "breach",
   serus_darkweb_scan: "breach",
   leakcheck: "breach", // bare alias of leakcheck_lookup seen in compound source strings
+  // ── Phase 1 free tools — mapped to the closest EXISTING source class.
+  // TODO(integrity): no "threat_intel" class exists; ransomware-victim exposure
+  // is mapped to "breach" (same class as the dead deepfind_ransomware_exposure it
+  // replaces). Confirm whether a dedicated threat-intel class/cap is warranted.
+  ransomwarelive_lookup: "breach",
+  // k-anonymity password-exposure check — breach corpus by nature.
+  hibp_pwned_passwords_kanon: "breach",
   // username sweeps
   username_sweep: "username_sweep",
   socialfetch_lookup: "social_profile_passive",
@@ -114,9 +121,23 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   ipqualityscore_lookup: "infra_reputation",
   emailrep: "infra_reputation",
   emailrep_lookup: "infra_reputation",
+  // certificate transparency — DNS/infra perspective
+  crtsh_lookup: "infra_dns",
+  // geocoders — address-existence public records
+  census_geocode: "public_record",
+  nominatim_geocode: "public_record",
+  // corporate registry search. TODO(integrity): free-text "opencorporates" maps
+  // to "business_directory" (line ~214); the Phase-1 proposal classifies the
+  // slug as "public_record" (an OFFICIAL_CLASS). Mapped to public_record per the
+  // proposal — confirm the intended class for the slug vs the free-text label.
+  opencorporates_search: "public_record",
+  // GLEIF LEI registry — official corporate registry, same class as the other
+  // company-registry sources. (LEIs are issued by accredited LOUs.)
+  gleif_lei_search: "public_record",
   // passive / historical — observe the past, not the live asset
   urlscan_search: "infra_passive",
   wayback_snapshots: "infra_passive",
+  wayback_cdx_search: "archive",
   archive_url: "infra_passive",
   passive_dns: "infra_passive",
   gravatar_profile: "social_profile_passive",

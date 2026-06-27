@@ -118,12 +118,52 @@ export const TOOL_TTL_MS: Record<string, number> = {
 };
 
 // Tools that mutate state — never cache.
+// hibp_pwned_passwords_kanon is here for TWO reasons:
+//   1. Its input (a password / full SHA-1) must NEVER be persisted to
+//      tool_call_cache.input_json — the no-cache path skips that write entirely.
+//   2. normalizeForHash() lowercases the key, so caching would collide across
+//      case ("Password1" vs "password1") and return a wrong count. It is a cheap
+//      idempotent lookup, so not caching is the correct, simple fix.
 export const NO_CACHE_TOOLS = new Set<string>([
   "triage_seed",
   "record_artifact",
   "record_artifacts",
   "record_evidence",
+  "hibp_pwned_passwords_kanon",
 ]);
+
+// Tools whose raw input is sensitive and must be REDACTED before it is written
+// to tool_usage_log.input_json or tool_call_cache.input_json. The HIBP k-anon
+// tool receives a plaintext password or a full 40-hex SHA-1; persisting either
+// would defeat the k-anonymity guarantee the tool advertises. Defense-in-depth:
+// even though NO_CACHE_TOOLS already keeps HIBP off the cache write path, this
+// guarantees no path ever stores the secret should the tool be re-routed later.
+export const SENSITIVE_INPUT_TOOLS = new Set<string>([
+  "hibp_pwned_passwords_kanon",
+]);
+
+// Replace any plaintext password / full SHA-1 in a tool input with a
+// NON-reversible representation before persistence. For a precomputed sha1 we
+// keep only its 5-char prefix (the same k-anonymity boundary the tool uses on
+// the wire); a plaintext password is dropped to a constant placeholder (we
+// cannot synchronously hash it here). Returns the input unchanged for any
+// non-sensitive tool.
+export function redactSensitiveToolInput(name: string, input: unknown): unknown {
+  if (!SENSITIVE_INPUT_TOOLS.has(name) || !input || typeof input !== "object" || Array.isArray(input)) {
+    return input;
+  }
+  const o = { ...(input as Record<string, unknown>) };
+  let redacted = false;
+  const sha1 = typeof o.sha1 === "string" ? o.sha1 : null;
+  if (sha1 && /^[0-9a-fA-F]{40}$/.test(sha1)) {
+    o.sha1_prefix = sha1.slice(0, 5).toUpperCase();
+    redacted = true;
+  }
+  if ("password" in o) { delete o.password; redacted = true; }
+  if ("sha1" in o) { delete o.sha1; redacted = true; }
+  if (redacted) o.redacted = true;
+  return o;
+}
 
 // ---- record_artifacts input coercion -----------------------------------------
 // Some models emit the `artifacts` field as a JSON string (sometimes wrapped in

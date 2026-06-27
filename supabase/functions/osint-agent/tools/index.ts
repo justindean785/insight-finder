@@ -52,6 +52,11 @@ import { crypto_wallet } from "./crypto.ts";
 import { deepfind_ransomware_exposure, deepfind_vin_lookup,
   deepfind_aircraft_lookup, deepfind_vessel_lookup } from "./deepfind_special.ts";
 
+// Phase 1 free / no-required-key tools
+import { ransomwarelive_lookup, wayback_cdx_search, crtsh_lookup,
+  census_geocode, nominatim_geocode, hibp_pwned_passwords_kanon,
+  gleif_lei_search, opencorporates_search } from "./phase1_free.ts";
+
 // Recording
 import { record_artifacts, record_artifact, record_evidence } from "./recording.ts";
 
@@ -95,6 +100,10 @@ export const ALL_STATIC_TOOLS = {
   // DeepFind special
   deepfind_ransomware_exposure, deepfind_vin_lookup,
   deepfind_aircraft_lookup, deepfind_vessel_lookup,
+  // Phase 1 free / no-required-key tools
+  ransomwarelive_lookup, wayback_cdx_search, crtsh_lookup,
+  census_geocode, nominatim_geocode, hibp_pwned_passwords_kanon,
+  gleif_lei_search, opencorporates_search,
   // Recording
   record_artifacts, record_artifact, record_evidence,
   // Disabled
