@@ -54,7 +54,8 @@ import {
   triageState, bumpArtifacts, skipStub,
 } from "./guard.ts";
 
-import { minimaxChat, minimaxChatWithFallback, safeJson, geminiGroundedSearch } from "./providers.ts";
+import { minimaxChat, minimaxChatWithFallback, safeJson, geminiGroundedSearch, perplexitySearch } from "./providers.ts";
+import { dorkToExaQuery } from "./dork-translate.ts";
 
 import { TOOL_CATALOG, CATALOG_CACHE, FINDING_LABELS } from "./catalog.ts";
 import { beginCycle, recordFindingSummary } from "./runtime-policy.ts";
@@ -2419,7 +2420,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     dork_harvest: tool({
       description:
-        "Execute the highest-yield document/leak dorks for a seed and AUTO-RECORD any PDFs, Office docs, CSV/SQL/log/env dumps, pastebin entries, and stealer-log URLs as artifacts (kind='document' for files, kind='leak_paste' for pastes). This is the way to turn google_dorks output into real evidence. Runs N targeted queries through MiniMax web_search, parses URLs from results, classifies them by extension/host, and inserts them directly into the case. Costs 1 MiniMax call per query.",
+        "Execute the highest-yield document/leak dorks for a seed and AUTO-RECORD any PDFs, Office docs, CSV/SQL/log/env dumps, pastebin entries, and stealer-log URLs as artifacts (kind='document' for files, kind='leak_paste' for pastes). This is the way to turn google_dorks output into real evidence. Runs N targeted queries through Perplexity Sonar web search (with an Exa keyword fallback that honors site: domains), parses URLs from results, classifies them by extension/host, and inserts them directly into the case. Costs 1 Perplexity call per query.",
       inputSchema: z.object({
         seed: z.string(),
         kind: z.enum(["email", "username", "phone", "name", "person", "domain", "ip", "hash", "crypto_wallet"]),
@@ -2503,7 +2504,7 @@ export function buildTools(ctx: ToolContext) {
           query: string;
           ok: boolean;
           hits: number;
-          provider?: "minimax_web_search" | "exa_search";
+          provider?: "perplexity_search" | "exa_search";
           status?: number;
           answer?: string;
           error?: string;
@@ -2512,16 +2513,24 @@ export function buildTools(ctx: ToolContext) {
         const extractUrls = (text: string): string[] =>
           Array.from(new Set((text.match(URL_RE) ?? []).map((u) => u.replace(/[).,;:]+$/, ""))));
 
-        const exaSearchUrls = async (q: string): Promise<{ ok: boolean; status: number; urls: string[]; note?: string }> => {
+        const exaSearchUrls = async (dork: string): Promise<{ ok: boolean; status: number; urls: string[]; note?: string }> => {
           if (!EXA_API_KEY) return { ok: false, status: 0, urls: [], note: "EXA_API_KEY not configured" };
+          // Exa keyword search ignores dork operators, so translate first:
+          // strip filetype:/ext:/intitle:/inurl:/quotes/OR-groups down to core
+          // terms and lift site: domains into the structured includeDomains
+          // filter Exa actually honors.
+          const { query: exaQuery, includeDomains } = dorkToExaQuery(dork);
+          const finalQuery = exaQuery || seed;
           try {
+            const exaBody: Record<string, unknown> = { query: finalQuery, type: "keyword", numResults: 10, contents: false };
+            if (includeDomains.length) exaBody.includeDomains = includeDomains;
             const r = await fetchRetry("https://api.exa.ai/search", {
               method: "POST",
               headers: {
                 "x-api-key": EXA_API_KEY,
                 "Content-Type": "application/json",
               },
-              body: JSON.stringify({ query: q, type: "keyword", numResults: 10, contents: false }),
+              body: JSON.stringify(exaBody),
             });
             interface ExaSearchResp {
               results?: Array<{ url?: unknown; [k: string]: unknown }>;
@@ -2542,23 +2551,27 @@ export function buildTools(ctx: ToolContext) {
 
         for (const q of queries) {
           try {
-            const r = await minimaxChatWithFallback({
+            // Route every dork through the working search path (Perplexity
+            // Sonar). MiniMax's chat API 400s on the web_search tool shape, so
+            // minimaxChat({webSearch:true}) is NOT usable here.
+            const r = await perplexitySearch({
+              query: q,
               system:
-                "You are an OSINT dork-harvester. Use the web_search tool. Run the user's query VERBATIM. Return ONLY a bullet list of every result URL you find (one URL per line, no commentary). Do not summarize. Do not editorialize. If nothing is found, reply with exactly: NONE.",
-              user: q,
-              webSearch: true,
+                "You are an OSINT dork-harvester. Run the user's query and return ONLY a bullet list of every result URL you find (one URL per line, no commentary). Do not summarize. Do not editorialize. If nothing is found, reply with exactly: NONE.",
               maxTokens: 1200,
             });
 
-            let provider: "minimax_web_search" | "exa_search" = "minimax_web_search";
+            let provider: "perplexity_search" | "exa_search" = "perplexity_search";
             let status = r.status;
-            let text = r.content ?? "";
-            let urls = extractUrls(text);
+            // Perplexity returns grounded source URLs as `citations`; also parse
+            // any URLs it listed in the answer body.
+            let text = r.ok ? [r.answer, ...r.citations].join("\n") : "";
+            let urls = r.ok ? Array.from(new Set([...r.citations, ...extractUrls(r.answer)])) : [];
             let providerError: string | undefined;
 
-            // MiniMax web_search occasionally returns upstream 5xx/timeout responses.
-            // Treat those as provider degradation, then fall back to Exa so
-            // Google Dorking remains available instead of surfacing as offline.
+            // Perplexity may fail (auth/rate/5xx) or return nothing usable.
+            // Fall back to Exa (with dork→keyword translation) so Google
+            // Dorking remains available instead of surfacing as offline.
             if (!r.ok || urls.length === 0) {
               const exa = await exaSearchUrls(q);
               if (exa.ok && exa.urls.length > 0) {
@@ -2568,8 +2581,8 @@ export function buildTools(ctx: ToolContext) {
                 text = `EXA_FALLBACK:${exa.urls.slice(0, 20).join("\n")}`;
               } else {
                 providerError = !r.ok
-                  ? `minimax_web_search HTTP ${r.status}`
-                  : (exa.note ? `fallback exa failed: ${exa.note}` : "no URLs returned by minimax or exa");
+                  ? (r.error ?? `perplexity_search HTTP ${r.status}`)
+                  : (exa.note ? `fallback exa failed: ${exa.note}` : "no URLs returned by perplexity or exa");
               }
             }
 
@@ -2602,14 +2615,14 @@ export function buildTools(ctx: ToolContext) {
         let inserted = 0;
         const providerStats = queryResults.reduce(
           (acc, q) => {
-            const p = q.provider ?? "minimax_web_search";
+            const p = q.provider ?? "perplexity_search";
             if (p === "exa_search") acc.exa++;
-            else acc.minimax++;
+            else acc.perplexity++;
             if (q.ok) acc.success++;
             else acc.failed++;
             return acc;
           },
-          { minimax: 0, exa: 0, success: 0, failed: 0 },
+          { perplexity: 0, exa: 0, success: 0, failed: 0 },
         );
         if (collected.length > 0) {
           const rows = collected.map((c) => ({
@@ -2623,7 +2636,7 @@ export function buildTools(ctx: ToolContext) {
               seed,
               seed_kind: kind,
               dork_query: c.via,
-              discovered_via: "google_dork → minimax web_search",
+              discovered_via: "google_dork → perplexity sonar (exa keyword fallback)",
             },
           }));
           const safeRows = scrubArtifactRows(rows);
