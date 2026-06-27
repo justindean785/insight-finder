@@ -470,3 +470,112 @@ the artifact data model (`metadata.sources`, machine fields).
 - On-screen Report tab raw slugs come from the **shared `SourceBadge` component** (artifact rows / pivots /
   patterns) — humanizing it is a broad shared-component change ("do not broaden scope / no broad UI cleanup").
   Follow-up: humanize SourceBadge's collapsed pill text, keep raw in its `title`/popover + DB queries.
+## 2026-06-27 — QoL: stop `<think>`/reasoning leakage in Next Steps cards (`fix/next-steps-think-leak`)
+
+Branch off `main` @ 6a7075d (clean, fresh worktree). Frontend-only, presentation +
+sanitization layer. No evidence-integrity, confidence, provenance, or backend logic touched.
+
+### Audit (done)
+- Branch state: on `claude/agitated-lalande-b1ceca` @ origin/main, clean tree.
+- Open PRs: #121 (DIRTY/CONFLICTING) + #84 (DIRTY) are **backend/secondary** — out of
+  scope, not touched. Building fresh off main is the safe base; #134's QoL polish already
+  merged into main.
+- Baseline: `npx vitest run` → **58 files / 699 tests pass**.
+- Root cause of the screenshot bug: Next Steps cards derive from
+  `extractRecommendedPivots(text)` where `text` is the **raw** latest-assistant message
+  (`ChatWindow.tsx:1603-1607`). The chat renderer strips `<think>` (`ChatWindow.tsx:828`)
+  but the pivot parser does **not**, so reasoning blocks (`<think>… the detect_contradictions
+  tool flagged …</think>`, "Let me also call …") get parsed into card titles/details.
+
+### Plan (checkable)
+- [ ] New shared, tested sanitizer `src/lib/sanitize-agent-text.ts`:
+  - `stripReasoningMarkup(text)` — closed `<think>…</think>`, trailing unclosed `<think>…`,
+    stray `</think>`, and sibling reasoning tags (`reasoning`/`scratchpad`/`analysis`/`internal`/`plan`).
+  - `stripInlineTags(text)` — drop any residual `<…>` tag fragments from a single field.
+- [ ] `recommended-pivots.ts`: sanitize the whole report text before parsing; skip any
+  candidate line that still smells of reasoning (`Let me`, `I'll`, `I should`, residual `<`);
+  run each emitted `label`/`detail`/`reason` through `stripInlineTags`.
+- [ ] `ChatWindow.tsx`: route `reportPivots` text through the shared sanitizer; replace the
+  local `stripThinkTags` with the shared `stripReasoningMarkup` (single source of truth).
+- [ ] Tests:
+  - [ ] `src/test/sanitize-agent-text.test.ts` — sanitizer unit coverage.
+  - [ ] extend `recommended-pivots.test.ts` — regression: a `<think>` block under the
+    Recommended-pivots heading produces no leaked pivot/detail.
+
+### Verification
+- [ ] `npx vitest run` (no regressions; new tests pass)
+- [ ] `npm run typecheck`
+- [ ] `npm run lint` (changed files)
+- [ ] `npm run build`
+- [ ] Browser: best-effort (auth-gated workspace — documented honestly below)
+
+### Constraints honored
+Hard rules 1–5: sanitizing reasoning leakage is integrity-neutral (it only removes
+model chain-of-thought, never weakens claims, hides uncertainty, or touches
+provenance/confidence). Rule 6: small, single-purpose diff. Rule 9: no backend logic.
+
+### RESULTS — implemented + LIVE-VERIFIED (2026-06-27)
+
+Scope grew slightly (same theme/helper) to also fix the Evidence board's raw source labels.
+
+**Shipped**
+- `src/lib/sanitize-agent-text.ts` (new) — `stripReasoningMarkup` / `stripInlineTags` /
+  `looksLikeReasoning`. Single source of truth for chain-of-thought stripping.
+- `src/lib/next-step-cards.ts` (new) — `normalizeTarget`, `humanizeLeadReason`, `dedupeCards`.
+- `src/lib/tool-display.ts` — `readableSourceLabel` (concise, compound-aware, domain-safe).
+- `src/lib/recommended-pivots.ts` — sanitize report text before parse; drop reasoning lines;
+  strip inline tags from emitted fields.
+- `src/components/ChatWindow.tsx` — shared sanitizer; humanize lead source; `dedupeCards`.
+- `src/components/ResourcesPanel.tsx` — Evidence subheader + per-row provenance now display
+  `readableSourceLabel(...)`; the raw string stays in the `title` tooltip (provenance kept).
+- Tests: `sanitize-agent-text.test.ts` (12), `next-step-cards.test.ts` (14), +2 in
+  `recommended-pivots.test.ts`.
+
+**Verification (evidence, not assertion)**
+- `npx vitest run` → **60 files / 727 tests pass** (was 58 / 699; +2 files, +28).
+- `npm run typecheck` → clean. `npx eslint` (6 changed files) → clean. `npm run build` → OK.
+- **LIVE browser QA** (signed in to the real backend, Damien `damienbunnyobrien@gmail.com`
+  case, 1440px + 390px):
+  - Next Steps: ONE "Review lead — Damien O Brien · …via **breach/profile lookup**" card —
+    the duplicate `Damien O Brien` / `Damien O'Brien` pair collapsed; `<think>` absent from
+    the whole DOM (`hasThinkInBody:false`); raw `oathnet_lookup` humanized.
+  - Evidence board: `breach_check+oathnet_lookup+…+deepfind_email_breach` → shown as
+    **"breach lookup +4 more"**, raw preserved in the hover `title`; `minimax_web_search` →
+    "public-source search"; `breach · mindjolt.com` left untouched.
+  - 0 console warnings/errors.
+
+**Deferred (audited, NOT done — out of scope for one reviewable PR)**
+- **A — `CONFIRMED` label wording** (Source Evidence Table shows `CONFIRMED 80`): integrity-
+  critical per CLAUDE.md → needs explicit sign-off. NOT changed unilaterally. Recommend a
+  follow-up that splits "confirmed artifact observed" from "confirmed identity ownership".
+- Mobile report table heavy horizontal scroll (scrolls within its own container — page does
+  not break); report section-card redesign; phase/skeleton states. Each is a larger,
+  separate, browser-verified change.
+
+## 2026-06-27 — Cherry-pick from QoL audit §5: `threat_intel` source class (`feat/threat-intel-source-class`)
+
+Continuation of the source-attribution-honesty theme. Resolves `TODO(integrity)` at
+`source-classification.ts:92` — ransomware-victim / threat-intel exposure is mislabeled `breach`
+(breach-level identity weight). Branch off `main`, independent of frontend PR #135.
+
+- [x] `source-classification.ts`: `SourceClass += "threat_intel"`; map `ransomwarelive_lookup`
+  + dead `deepfind_ransomware_exposure` → `threat_intel`; resolve TODO.
+- [x] `confidence.ts`: `CLASS_CAP.threat_intel = 50` (< breach 60); add to `NEVER_HIGH`; keep out
+  of `TRUSTED_NON_INFRA` + infra sets ⇒ threat-intel-only never reaches ≥90 or counts as identity.
+- [x] Backend Deno test `threat_intel_test.ts`.
+- [x] Frontend `evidence-status.ts`: `threat_intel` source_category ⇒ manual_review + "Threat intel" basis.
+- [x] `tool-display.ts` DISPLAY: add `ransomwarelive_lookup` readable name.
+- [x] Frontend `evidence-status.test.ts`: threat_intel row → manual review.
+- [x] Verify: deno test · vitest · typecheck · eslint · build.
+
+Deploy: backend ships via Lovable sync (sync `osint-agent/` → `seeker-spark-search-5362c57c`), not Vercel merge.
+
+### Results — implemented + verified (2026-06-27)
+- Backend: `threat_intel` class added; `ransomwarelive_lookup` + dead `deepfind_ransomware_exposure`
+  reclassified breach→threat_intel; `CLASS_CAP.threat_intel=50`, in `NEVER_HIGH` + `NON_CORROBORATING_CLASSES`.
+- Frontend: `evidence-status.ts` shows threat_intel as "Threat intel · not identity proof" manual-review
+  (never as breach/exposure); `ransomwarelive_lookup` added to tool-display.
+- Tests: `threat_intel_test.ts` (6, Deno) + `evidence-status.test.ts` (+1). `deno test` **287 pass / 0 fail**;
+  `deno check` on changed modules clean (no TS2304). `vitest` **700 pass**; typecheck/eslint/build clean.
+- Files: source-classification.ts, confidence.ts, threat_intel_test.ts, evidence-status.ts, evidence-status.test.ts, tool-display.ts.
+- Deploy: backend ships via Lovable sync (`osint-agent/`→`seeker-spark-search-5362c57c`), not the Vercel merge.

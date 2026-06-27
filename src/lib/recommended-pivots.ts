@@ -1,5 +1,6 @@
 import { detectSeed } from "@/lib/seed";
 import type { Pivot, PivotType } from "@/lib/intel";
+import { looksLikeReasoning, stripInlineTags, stripReasoningMarkup } from "@/lib/sanitize-agent-text";
 
 export type RecommendedPivot = {
   label: string;
@@ -124,7 +125,11 @@ function detailForRecommendation(actionLabel: string, value: string, reason: str
 }
 
 export function extractRecommendedPivots(text: string): RecommendedPivot[] {
-  const lines = text.split(/\r?\n/);
+  // Strip agent chain-of-thought before parsing: the report text can carry
+  // <think>…</think> blocks (model reasoning), and the chat renderer removes
+  // them but this parser previously read the raw text, so reasoning lines leaked
+  // into Next Steps cards. Sanitize once here so cards never show it.
+  const lines = stripReasoningMarkup(text).split(/\r?\n/);
   const start = lines.findIndex((line) => HEADING_RE.test(cleanLine(line)));
   if (start < 0) return [];
 
@@ -134,6 +139,9 @@ export function extractRecommendedPivots(text: string): RecommendedPivot[] {
     const line = cleanLine(rawLine);
     if (!line) continue;
     if (NEXT_HEADING_RE.test(line)) break;
+    // Defense-in-depth: drop any first-person reasoning line that survived
+    // block stripping (e.g. a malformed/unterminated think block).
+    if (looksLikeReasoning(line)) continue;
     // Verb list kept in sync with extractTarget()'s — a pivot line that happens
     // to end with ":" (e.g. "Corroborate the PO Box:") must not be mistaken for a
     // section heading and stop extraction early.
@@ -147,14 +155,15 @@ export function extractRecommendedPivots(text: string): RecommendedPivot[] {
     const type = pivotType(value);
     const priority = priorityForRecommendation(line, value, type);
     const actionLabel = actionLabelForRecommendation(line, value, type);
-    const detail = detailForRecommendation(actionLabel, value, split.reason);
+    const reason = stripInlineTags(split.reason);
+    const detail = stripInlineTags(detailForRecommendation(actionLabel, value, reason));
     pivots.push({
-      label: line,
+      label: stripInlineTags(line),
       actionLabel,
       detail,
-      reason: split.reason,
+      reason,
       priority,
-      prompt: `Run this ${priority}-priority pivot.\n\nAction: ${actionLabel}\nTarget: ${value}\nType: ${type}\nReason: ${split.reason}\n\nUse authorized public-source methods only. Corroborate with independent sources when possible. Return source URLs, confidence tier, and what changed in the case graph.`,
+      prompt: `Run this ${priority}-priority pivot.\n\nAction: ${actionLabel}\nTarget: ${value}\nType: ${type}\nReason: ${reason}\n\nUse authorized public-source methods only. Corroborate with independent sources when possible. Return source URLs, confidence tier, and what changed in the case graph.`,
       value,
       type,
     });
