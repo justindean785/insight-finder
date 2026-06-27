@@ -105,13 +105,38 @@ interface ThreadState {
   suppressions: Map<string, Suppression>;
 }
 
+// Upper bound on threads tracked in-memory. clearThread(threadId) is the
+// primary, explicit release path — but on a warm/long-running Supabase isolate
+// it can be missed (error path, timeout, unhandled rejection, isolate reuse),
+// leaving ThreadState (breakers/calls/suppressions Maps) to accumulate forever
+// → memory pressure → OOM-kills → silent investigation failures. This LRU cap
+// is the safety net: the most-recently-touched threads are retained and the
+// least-recently-used is evicted once the cap is exceeded. Sized well above any
+// realistic count of concurrent investigations on a single isolate so an
+// actively-running thread is never evicted out from under itself.
+export const MAX_TRACKED_THREADS = 256;
+
 const THREADS = new Map<string, ThreadState>();
 
 function state(threadId: string): ThreadState {
-  let s = THREADS.get(threadId);
-  if (!s) {
-    s = { breakers: new Map(), calls: new Map(), suppressions: new Map() };
-    THREADS.set(threadId, s);
+  const existing = THREADS.get(threadId);
+  if (existing) {
+    // Touch: bump to the most-recently-used position. A Map preserves insertion
+    // order, so delete + re-set moves this thread to the end of the eviction
+    // queue (true LRU rather than plain FIFO).
+    THREADS.delete(threadId);
+    THREADS.set(threadId, existing);
+    return existing;
+  }
+  const s: ThreadState = { breakers: new Map(), calls: new Map(), suppressions: new Map() };
+  THREADS.set(threadId, s);
+  // Evict the least-recently-used thread(s) when over the cap. The just-inserted
+  // thread is at the end of the iteration order, so the first key is always an
+  // older entry — never the one we just added.
+  while (THREADS.size > MAX_TRACKED_THREADS) {
+    const oldest = THREADS.keys().next().value;
+    if (oldest === undefined || oldest === threadId) break;
+    THREADS.delete(oldest);
   }
   return s;
 }

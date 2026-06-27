@@ -496,6 +496,14 @@ Deno.serve(async (req) => {
         if (statusErr) {
           console.warn("[thread status] completion update failed:", statusErr.message);
         }
+        // Investigation is done generating — release the in-memory circuit-breaker
+        // state for this thread so it doesn't linger on the warm isolate. This is
+        // the genuine end-of-run hook: the request handler returns its streaming
+        // Response while generation continues in the background (EdgeRuntime
+        // .waitUntil below), so a request-level `finally` would clear breakers
+        // mid-investigation. The LRU cap in circuit.ts is the backstop for the
+        // paths where this never runs (isolate death, unhandled rejection).
+        circuit.clearThread(threadId);
     };
 
     // Create a server-owned UI stream branch. Unlike consumeStream(), this
