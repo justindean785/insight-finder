@@ -5,9 +5,9 @@
 
 import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
-import { PERPLEXITY_API_KEY, fetchRetry } from "../env.ts";
+import { PERPLEXITY_API_KEY } from "../env.ts";
 import { guard } from "../guard.ts";
-import { minimaxChat, safeJson } from "../providers.ts";
+import { minimaxChat, safeJson, perplexitySearch } from "../providers.ts";
 import { MODELS } from "../models.ts";
 import { coerceArtifactsInput, detectSeedServer } from "../validation.ts";
 import { enforceNameSeedPriority, NAME_SEED_PLANNER_RULES } from "../planner-guidance.ts";
@@ -23,52 +23,18 @@ export const minimax_web_search = tool({
   }),
   execute: async ({ query, focus }) => {
     if (!PERPLEXITY_API_KEY) return { error: "PERPLEXITY_API_KEY not configured" };
-    try {
-      const r = await fetchRetry("https://api.perplexity.ai/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${PERPLEXITY_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "sonar",
-          messages: [
-            {
-              role: "system",
-              content:
-                "You are an OSINT web-search worker. Return a concise factual answer in bullet points. Do not speculate. Prefer specific names, dates, URLs, and identifiers. If nothing relevant is found, say so explicitly.",
-            },
-            {
-              role: "user",
-              content: `${focus ? `Focus: ${focus}\n\n` : ""}Query: ${query}`,
-            },
-          ],
-          max_tokens: 1200,
-        }),
-      });
-      if (!r.ok) {
-        const body = await r.text().catch(() => "");
-        console.warn(`[minimax_web_search] perplexity ${r.status} for query="${query.slice(0,120)}": ${body.slice(0, 300)}`);
-        return { ok: false, status: r.status, error: `perplexity ${r.status}: ${body.slice(0, 300)}`, answer: "", citations: [] };
-      }
-      const data = await r.json() as {
-        choices?: { message?: { content?: string } }[];
-        citations?: string[];
-        search_results?: { url?: string; title?: string }[];
-      };
-      const answer = (data.choices?.[0]?.message?.content ?? "").trim();
-      const citations = (data.citations ?? data.search_results?.map((s) => s.url ?? "").filter(Boolean) ?? [])
-        .filter((u) => typeof u === "string" && /^https?:\/\//i.test(u))
-        .slice(0, 25);
-      const usable = answer.length > 0 || citations.length > 0;
-      if (!usable) {
-        return { ok: false, status: r.status, error: "perplexity returned empty answer and no citations", answer, citations };
-      }
-      return { ok: true, status: r.status, answer, citations };
-    } catch (e) {
-      console.warn(`[minimax_web_search] threw for query="${query.slice(0,120)}":`, e);
-      return { ok: false, error: String(e), answer: "", citations: [] };
+    // Shared working search path (Perplexity sonar) — see perplexitySearch in
+    // providers.ts. dork_harvest uses the same helper so both stay in lockstep.
+    const r = await perplexitySearch({ query, focus });
+    if (!r.ok) {
+      console.warn(`[minimax_web_search] ${r.error ?? "perplexity error"} for query="${query.slice(0,120)}"`);
+      return { ok: false, status: r.status, error: r.error ?? "perplexity error", answer: "", citations: [] };
     }
+    const usable = r.answer.length > 0 || r.citations.length > 0;
+    if (!usable) {
+      return { ok: false, status: r.status, error: "perplexity returned empty answer and no citations", answer: r.answer, citations: r.citations };
+    }
+    return { ok: true, status: r.status, answer: r.answer, citations: r.citations };
   },
 });
 
