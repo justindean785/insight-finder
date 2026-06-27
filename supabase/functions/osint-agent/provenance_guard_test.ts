@@ -135,8 +135,7 @@ function ctxWith(supabase: unknown): ToolContext {
 
 async function recordOne(source: string, mock: MockSupabase) {
   const { tools } = buildTools(ctxWith(mock.supabase));
-  // deno-lint-ignore no-explicit-any
-  await (tools as any).record_artifacts.execute(
+  await (tools as Record<string, { execute: (i: unknown, o: unknown) => Promise<unknown> }>).record_artifacts.execute(
     { artifacts: [{ kind: "email", value: "victim@example.com", source }] },
     {},
   );
