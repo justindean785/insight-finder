@@ -143,6 +143,14 @@ Deno.serve(async (req) => {
       "Classify the seed, reject weak pivots, and select the smallest high-value initial batch.",
       [`seed:${seedValueRaw}`, `stage2:${triageState.ran ? "open" : "pending"}`],
     );
+    // Register this run as an active owner of the thread's circuit state. A
+    // double-submit / retry can start a second overlapping run for the same
+    // threadId (setupRequest verifies ownership but does not lock out an active
+    // run); the matching release() in persistFinalMessages only tears the state
+    // down once the LAST overlapping run finishes, so the first run to complete
+    // can't wipe suppressions / premium dedup / capability disables out from
+    // under a still-running sibling.
+    circuit.acquire(threadId);
     // Bootstrap per-thread circuit breakers (firecrawl/intelbase pre-disabled).
     circuit.applyBaselineDisables(threadId);
     // Capability discovery: gate providers that can't run (missing key / gated /
@@ -496,6 +504,18 @@ Deno.serve(async (req) => {
         if (statusErr) {
           console.warn("[thread status] completion update failed:", statusErr.message);
         }
+        // Investigation is done generating — release this run's hold on the
+        // in-memory circuit-breaker state so it doesn't linger on the warm
+        // isolate. This is the genuine end-of-run hook: the request handler
+        // returns its streaming Response while generation continues in the
+        // background (EdgeRuntime.waitUntil below), so a request-level `finally`
+        // would clear breakers mid-investigation. release() (vs. an outright
+        // clearThread) only deletes the state once the LAST overlapping run for
+        // this thread finishes, so a double-submit / retry can't wipe a sibling
+        // run's suppressions mid-flight. The LRU cap in circuit.ts is the
+        // backstop for the paths where this never runs (isolate death,
+        // unhandled rejection).
+        circuit.release(threadId);
     };
 
     // Create a server-owned UI stream branch. Unlike consumeStream(), this
