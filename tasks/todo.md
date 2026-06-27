@@ -426,3 +426,47 @@ classification / budget gating / dead-mirror `tools/*.ts` / PR #119/#120/#121/#1
 
 ### Ship path
 Backend change → after merge, sync `osint-agent/` → `seeker-spark-search-5362c57c` → Lovable.
+
+---
+
+## 2026-06-27 — P1-2: humanize report/export source labels (`fix/report-source-labels`)
+
+From the beta audit P1-2. `buildReportMarkdown` (src/lib/intel.ts) still emits raw tool
+slugs in analyst-facing report prose (`via oathnet_lookup+serus_darkweb_scan+…`). #135 fixed
+the Evidence board + Next Steps UI but NOT the generated report/export. Branch off `main`;
+#135 is unmerged and its `readableSourceLabel` summarizes (primary+N) — the report needs the
+FULL chain expanded, so a dedicated, conflict-free helper in a new file is the right call.
+
+Presentation-only. No confidence/classification/status/threshold changes. Raw source stays in
+the artifact data model (`metadata.sources`, machine fields).
+
+- [x] New `src/lib/report-source-labels.ts` → `humanizeSourceChain(raw|array)`:
+  split on `+`/`,`/`/`, map known slugs (conservative labels), dedupe, de-underscore unknowns,
+  leave free-text/domains untouched, safe non-empty fallback.
+- [x] Unit tests `src/test/report-source-labels.test.ts` (single, chain, web/deep, unknown, dedupe).
+- [x] Wire into intel.ts report paths: table Source col (:847), via-lines (:942/:954/:991/:1001/:1009),
+  timeline (:1042), corroborated clusters (:1148), "Source tools" (:1725).
+- [x] Report-markdown regression test: no raw `oathnet_lookup`/`serus_darkweb_scan` in output;
+  readable equivalents present; `<think>` still absent; Damien-style fixture keeps uncertainty +
+  collision-not-confirmed wording.
+- [x] Verify: vitest · typecheck · eslint · build · browser report-render smoke (live Damien case).
+
+### Results — implemented + LIVE-VERIFIED (2026-06-27)
+- New `src/lib/report-source-labels.ts` `humanizeSourceChain(raw|array)`: splits `+`/`,`/`/`,
+  maps known slugs to conservative labels, **replaces embedded slugs in "slug analysis" tokens**,
+  dedupes, de-underscores unknowns, leaves domains/free-text untouched, safe non-empty fallback.
+- Wired into `src/lib/intel.ts buildReportMarkdown`: Key Findings, Artifact/Entity Table (Source col),
+  Network Connections, Collision, Timeline, corroborated-cluster + "Source tools" lines.
+- Tests: `report-source-labels.test.ts` (13) + `report-source-labels-integration.test.ts` (5, Damien-style).
+- Verify: `vitest` **717 pass** (+18); typecheck/eslint/build clean.
+- **LIVE (real Damien case, Copy markdown export):** all analyst sections humanized — e.g.
+  `via breach_check+oathnet_lookup+serus_darkweb_scan+bosint_email_lookup+deepfind_email_breach`
+  → `via breach check + breach/profile lookup + dark-web scan + email intelligence lookup + email breach lookup`;
+  `observed via username_sweep analysis` → `observed via username sweep analysis`. Raw slugs remain ONLY in
+  `Activity Log → Tool breakdown` (intentionally-diagnostic `tool×count`, task-sanctioned).
+- Provenance preserved: raw `source` untouched in artifact data; only the rendered report TEXT humanized.
+
+### Deferred (deliberately out of scope — flagged)
+- On-screen Report tab raw slugs come from the **shared `SourceBadge` component** (artifact rows / pivots /
+  patterns) — humanizing it is a broad shared-component change ("do not broaden scope / no broad UI cleanup").
+  Follow-up: humanize SourceBadge's collapsed pill text, keep raw in its `title`/popover + DB queries.
