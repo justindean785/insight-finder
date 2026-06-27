@@ -21,6 +21,16 @@ export default defineConfig({
         "src/vite-env.d.ts",
         "src/main.tsx",
       ],
+      // Ratchet floors calibrated to current measured coverage (2026-06-27):
+      // statements 24.16 / branches 78.85 / functions 57.52 / lines 24.16.
+      // Set just below current so CI passes today but coverage can't regress.
+      // Raise these as coverage improves; do not lower them.
+      thresholds: {
+        statements: 24,
+        branches: 75,
+        functions: 55,
+        lines: 24,
+      },
     },
   },
   resolve: {
