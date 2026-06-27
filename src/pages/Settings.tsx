@@ -97,7 +97,7 @@ export default function Settings() {
               <Label htmlFor="confirm-pw" className="text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">Confirm password</Label>
               <Input id="confirm-pw" type="password" autoComplete="new-password" required minLength={6} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
             </div>
-            <Button type="submit" disabled={saving} className="h-9 bg-gradient-to-r from-primary to-accent text-primary-foreground hover:opacity-90 border-0 text-xs font-medium">
+            <Button type="submit" disabled={saving} className="h-9 bg-white text-black hover:bg-white/90 border-0 text-xs font-medium">
               {saving ? "Updating…" : "Update password"}
             </Button>
           </form>

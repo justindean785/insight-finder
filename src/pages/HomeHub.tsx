@@ -143,7 +143,7 @@ export default function HomeHub() {
 
       <header className="relative z-10 px-6 sm:px-10 py-5 flex items-center gap-3">
         <Link to="/" aria-label="Home" className="flex items-center gap-2.5 group">
-          <div className="w-9 h-9 rounded-xl glass-strong border border-white/10 grid place-items-center shadow-[0_0_24px_-6px_hsl(var(--primary)/0.55)]">
+          <div className="w-9 h-9 rounded-xl glass-strong border border-white/10 grid place-items-center shadow-[0_10px_28px_-12px_rgba(0,0,0,0.7)]">
             <SwarmMark className="w-5 h-5" />
           </div>
           <div className="font-display text-base font-semibold tracking-tight">Swarmbot</div>
