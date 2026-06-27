@@ -4,6 +4,8 @@ An AI-native open-source intelligence workstation. Orchestrates 14 specialized O
 
 **Stack:** React 18 + TypeScript + Tailwind CSS + shadcn/ui | Supabase (Auth, DB, Storage, Edge Functions) | AI SDK
 
+> **React version:** This project is intentionally pinned to **React 18** (`react`/`react-dom` `^18.3.1`, matching `@types/react` 18.x and the resolved `package-lock.json`). It uses no React-19-only APIs (`useOptimistic`, `useActionState`, `useFormStatus`, `use()`, server actions). `react-leaflet@5` declares a React 19 peer dependency that works fine at runtime against React 18; `.npmrc` sets `legacy-peer-deps=true` to suppress the peer-mismatch error. Do not bump to React 19 without an explicit migration.
+
 **URL:** https://github.com/justindean785/insight-finder
 
 ---
