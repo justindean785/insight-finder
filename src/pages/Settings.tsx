@@ -14,6 +14,7 @@ export default function Settings() {
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [saving, setSaving] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
 
   if (loading) {
     return (
@@ -47,6 +48,8 @@ export default function Settings() {
   };
 
   const signOut = async () => {
+    if (signingOut) return;
+    setSigningOut(true);
     await supabase.auth.signOut();
     navigate("/auth", { replace: true });
   };
@@ -97,7 +100,7 @@ export default function Settings() {
               <Label htmlFor="confirm-pw" className="text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">Confirm password</Label>
               <Input id="confirm-pw" type="password" autoComplete="new-password" required minLength={6} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
             </div>
-            <Button type="submit" disabled={saving} className="h-9 bg-white text-black hover:bg-white/90 border-0 text-xs font-medium">
+            <Button type="submit" disabled={saving} variant="cta" className="h-9 border-0 text-xs font-medium">
               {saving ? "Updating…" : "Update password"}
             </Button>
           </form>
@@ -109,9 +112,10 @@ export default function Settings() {
           <Button
             variant="outline"
             onClick={signOut}
+            disabled={signingOut}
             className="h-9 border-destructive/30 text-destructive hover:bg-destructive/10 text-xs"
           >
-            Sign out
+            {signingOut ? "Signing out…" : "Sign out"}
           </Button>
         </div>
       </div>
