@@ -288,7 +288,7 @@ export default function Insights() {
                 <Link
                   key={c.id}
                   to={`/chat/${c.id}`}
-                  className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.03] transition-colors"
+                  className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.03] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                 >
                   <div className="min-w-0 flex-1">
                     <div className="text-sm text-foreground truncate">
@@ -423,7 +423,7 @@ function NavLink({
     <Link
       to={to}
       className={
-        "inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md transition-colors " +
+        "inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background " +
         (active
           ? "bg-white/[0.06] text-foreground"
           : "text-muted-foreground hover:text-foreground hover:bg-white/[0.04]")

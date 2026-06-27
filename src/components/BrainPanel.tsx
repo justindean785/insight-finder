@@ -214,7 +214,7 @@ export function BrainPanel({
                         return (
                           <div key={s.source} className="glass-card rounded-lg px-3 py-2.5 border border-border-subtle">
                             <div className="flex items-center justify-between gap-2 mb-1.5">
-                              <span className="font-mono text-xs text-foreground truncate">{s.source}</span>
+                              <span className="font-mono text-xs text-foreground truncate" title={s.source}>{s.source}</span>
                               <div className="flex items-center gap-2 text-data font-mono shrink-0">
                                 {s.confirmed > 0 && (
                                   <span className="flex items-center gap-0.5 text-[hsl(var(--confidence-high))]">

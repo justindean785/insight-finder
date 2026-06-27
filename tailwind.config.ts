@@ -36,6 +36,9 @@ export default {
       transitionTimingFunction: {
         premium: "cubic-bezier(0.32, 0.72, 0, 1)",
       },
+      boxShadow: {
+        cta: "0 10px 28px -12px rgba(0,0,0,0.7)",
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",

@@ -76,7 +76,7 @@ export default function Landing() {
             </Link>
             <Link
               to="/auth?tab=signup"
-              className="rounded-md bg-white px-5 py-2.5 text-sm font-medium text-black hover:bg-white/90 shadow-[0_10px_28px_-12px_rgba(0,0,0,0.7)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+              className="rounded-md bg-white px-5 py-2.5 text-sm font-medium text-black hover:bg-white/90 shadow-cta transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
               Get started
             </Link>

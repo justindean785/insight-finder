@@ -111,14 +111,17 @@ export function WorkspaceTabs({
             const Icon = t.icon;
             const isActive = active === t.key;
             const count = counts?.[t.key];
+            const idx = TABS.indexOf(t);
             return (
               <button
                 key={t.key}
+                ref={(el) => { tabRefs.current[idx] = el; }}
                 id={`workspace-tab-${t.key}`}
                 role="tab"
                 aria-selected={isActive}
                 aria-controls={`workspace-tabpanel-${t.key}`}
                 tabIndex={isActive ? 0 : -1}
+                onKeyDown={(e) => onKeyDown(e, idx)}
                 onClick={() => { setMoreOpen(false); onChange(t.key); }}
                 className={cn(
                   "relative min-w-0 flex-1 inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-2 text-[12px] font-medium transition-all duration-500 ease-premium active:scale-[0.98]",

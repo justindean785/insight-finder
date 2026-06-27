@@ -342,7 +342,8 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         <Button
           onClick={newThread}
           size="sm"
-          className="w-full h-9 justify-center gap-2 rounded-lg border border-white/12 bg-white text-black text-sm font-semibold hover:bg-white/92"
+          variant="cta"
+          className="w-full h-9 justify-center gap-2 rounded-lg border border-white/12 text-sm font-semibold"
         >
           <Plus className="w-4 h-4" /> New investigation
         </Button>
@@ -453,7 +454,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
       <div className="p-3 border-t border-border-subtle space-y-2.5">
         <SpendTrend threads={threads} totalCost={totalCost} />
         <div className="flex items-center justify-between gap-2 text-xs">
-          <div className="truncate text-muted-foreground">{user?.email}</div>
+          <div className="truncate text-muted-foreground" title={user?.email}>{user?.email}</div>
           <button onClick={signOut} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors" aria-label="Sign out" title="Sign out">
             <LogOut className="w-4 h-4" />
           </button>
@@ -502,7 +503,7 @@ function ThreadRow({
       <div className="min-w-0 flex-1">
         <div className="truncate flex items-center gap-1.5 leading-5">
           {dim && <CheckCircle2 className="w-3 h-3 text-confidence-glow shrink-0" />}
-          <span className="truncate font-medium">{t.title}</span>
+          <span className="truncate font-medium" title={t.title}>{t.title}</span>
         </div>
         <div className="text-[11px] text-muted-foreground flex items-center gap-1.5 flex-wrap leading-5">
           {t.seed_type && (

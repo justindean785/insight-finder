@@ -143,7 +143,7 @@ export default function HomeHub() {
 
       <header className="relative z-10 px-6 sm:px-10 py-5 flex items-center gap-3">
         <Link to="/" aria-label="Home" className="flex items-center gap-2.5 group">
-          <div className="w-9 h-9 rounded-xl glass-strong border border-white/10 grid place-items-center shadow-[0_10px_28px_-12px_rgba(0,0,0,0.7)]">
+          <div className="w-9 h-9 rounded-xl glass-strong border border-white/10 grid place-items-center shadow-cta">
             <SwarmMark className="w-5 h-5" />
           </div>
           <div className="font-display text-base font-semibold tracking-tight">Swarmbot</div>
@@ -152,7 +152,7 @@ export default function HomeHub() {
           <Link
             to="/settings"
             aria-label="Settings"
-            className="w-9 h-9 rounded-xl grid place-items-center border border-white/10 bg-white/[0.035] text-muted-foreground hover:text-foreground hover:bg-white/[0.06] transition-colors"
+            className="w-9 h-9 rounded-xl grid place-items-center border border-white/10 bg-white/[0.035] text-muted-foreground hover:text-foreground hover:bg-white/[0.06] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           >
             <SettingsIcon className="w-4 h-4" />
           </Link>
@@ -173,14 +173,15 @@ export default function HomeHub() {
             <Button
               onClick={startCase}
               disabled={creating}
-              className="h-10 rounded-xl px-4 gap-2 bg-white text-black hover:bg-white/90 disabled:opacity-60"
+              variant="cta"
+              className="h-10 rounded-xl px-4 gap-2 disabled:opacity-60"
             >
               <Plus className="w-4 h-4" />
               {creating ? "Starting…" : "Start new case"}
             </Button>
             <Link
               to="/chat"
-              className="h-10 rounded-xl px-4 inline-flex items-center gap-2 border border-white/12 bg-white/[0.035] hover:bg-white/[0.06] text-foreground text-sm font-medium transition-colors"
+              className="h-10 rounded-xl px-4 inline-flex items-center gap-2 border border-white/12 bg-white/[0.035] hover:bg-white/[0.06] text-foreground text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
               <MessageSquare className="w-4 h-4" />
               Resume most recent
@@ -229,7 +230,7 @@ export default function HomeHub() {
             <h2 className="font-display text-lg font-semibold tracking-tight">Recent cases</h2>
             <Link
               to="/chat"
-              className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+              className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
               All cases <ArrowRight className="w-3 h-3" />
             </Link>
@@ -250,7 +251,7 @@ export default function HomeHub() {
                 <Link
                   key={c.id}
                   to={`/chat/${c.id}`}
-                  className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.03] transition-colors"
+                  className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.03] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                 >
                   <MessageSquare className="w-4 h-4 text-muted-foreground shrink-0" />
                   <div className="min-w-0 flex-1">
@@ -288,7 +289,7 @@ function HubCard({
   return (
     <Link
       to={to}
-      className="group relative rounded-2xl border border-border-subtle/80 glass-card p-5 hover:border-white/20 transition-colors flex flex-col"
+      className="group relative rounded-2xl border border-border-subtle/80 glass-card p-5 hover:border-white/20 transition-colors flex flex-col focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
     >
       <div className="w-10 h-10 rounded-xl border border-white/10 bg-white/[0.035] grid place-items-center mb-4">
         <Icon className="w-5 h-5 text-primary" strokeWidth={1.5} />

@@ -1948,7 +1948,7 @@ function ChatWindowInner({
                 onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
                 placeholder="Investigate an email, username, phone, IP, or domain…"
                 rows={2}
-                className="min-h-[72px] max-h-32 font-chat bg-transparent border-0 resize-none overflow-y-auto focus-visible:ring-0 focus-visible:ring-offset-0 pl-[3.25rem] sm:pl-14 pr-14 sm:pr-16 py-3 sm:py-4 text-[15px] leading-6 tracking-[-0.01em] placeholder:text-muted-foreground/60"
+                className="min-h-[72px] max-h-32 font-chat bg-transparent border-0 resize-none overflow-y-auto focus-visible:ring-0 focus-visible:ring-offset-0 pl-[3.25rem] sm:pl-14 pr-14 sm:pr-16 py-3 sm:py-4 text-[15px] leading-6 tracking-[-0.01em] placeholder:text-muted-foreground/70"
               />
               <Button
                 type="button"

@@ -141,7 +141,8 @@ export default function Auth() {
                   </div>
                   <Button
                     type="submit"
-                    className="w-full h-10 bg-white text-black hover:bg-white/90 shadow-[0_10px_28px_-12px_rgba(0,0,0,0.7)] border-0 font-medium"
+                    variant="cta"
+                    className="w-full h-10 shadow-cta border-0 font-medium"
                     disabled={loading}
                   >
                     {loading ? "Sending…" : "Send reset link"}
@@ -172,7 +173,8 @@ export default function Auth() {
                   </div>
                   <Button
                     type="submit"
-                    className="w-full h-10 bg-white text-black hover:bg-white/90 shadow-[0_10px_28px_-12px_rgba(0,0,0,0.7)] border-0 font-medium"
+                    variant="cta"
+                    className="w-full h-10 shadow-cta border-0 font-medium"
                     disabled={loading}
                   >
                     {loading ? "Signing in…" : "Sign in"}
@@ -189,11 +191,12 @@ export default function Auth() {
                 <div className="space-y-1.5">
                   <Label htmlFor="signup-password" className="text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">Password</Label>
                   <Input id="signup-password" type="password" autoComplete="new-password" required minLength={6} value={suPassword} onChange={(e) => setSuPassword(e.target.value)} />
-                  <p className="text-data text-muted-foreground/60">At least 6 characters</p>
+                  <p className="text-data text-muted-foreground/70">At least 6 characters</p>
                 </div>
                 <Button
                   type="submit"
-                  className="w-full h-10 bg-white text-black hover:bg-white/90 shadow-[0_10px_28px_-12px_rgba(0,0,0,0.7)] border-0 font-medium"
+                  variant="cta"
+                  className="w-full h-10 shadow-cta border-0 font-medium"
                   disabled={loading}
                 >
                   {loading ? "Creating…" : "Create account"}
@@ -226,7 +229,7 @@ export default function Auth() {
         </div>
 
         {/* Footnote */}
-        <p className="text-center text-eyebrow uppercase tracking-[0.16em] text-muted-foreground/60 font-mono">
+        <p className="text-center text-eyebrow uppercase tracking-[0.16em] text-muted-foreground/70 font-mono">
           <Link to="/terms" className="rounded-sm hover:text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background">Terms</Link>
           {" · "}
           <Link to="/privacy" className="rounded-sm hover:text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background">Privacy</Link>

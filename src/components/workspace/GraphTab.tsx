@@ -438,7 +438,8 @@ export function GraphTab({ threadId }: { threadId: string }) {
               <button
                 key={mode}
                 onClick={() => setDetail(mode)}
-                className={cn("h-7 min-w-0 rounded-lg px-2 text-data font-medium capitalize transition-colors", detail === mode ? "bg-white text-black" : "text-muted-foreground hover:bg-white/[0.06] hover:text-foreground")}
+                aria-pressed={detail === mode}
+                className={cn("h-7 min-w-0 rounded-lg px-2 text-data font-medium capitalize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", detail === mode ? "bg-white text-black" : "text-muted-foreground hover:bg-white/[0.06] hover:text-foreground")}
               >
                 {mode}
               </button>

@@ -269,7 +269,7 @@ function ArtifactsList({
                       <span className="text-data font-medium text-foreground/75">{kindHeading(kind, list.length)}</span>
                       <span className="text-data tabular-nums text-muted-foreground/70">· {list.length}</span>
                       {uniformProv && (
-                        <span className="truncate font-mono text-[9.5px] text-muted-foreground/60">{uniformProv}</span>
+                        <span className="truncate font-mono text-[9.5px] text-muted-foreground/60" title={uniformProv}>{uniformProv}</span>
                       )}
                       {/* Singletons show their score on the row itself; only
                           show a subheader figure for multi-row clusters. */}
@@ -349,7 +349,7 @@ function ArtifactRow({
               {rState === "dismissed" && <EyeOff className="h-3 w-3 shrink-0 text-muted-foreground" />}
               {fp && <XCircle className="h-3 w-3 shrink-0 text-destructive" />}
               {sensitive && <ShieldAlert className="h-3 w-3 shrink-0 text-destructive" />}
-              <span className={cn("truncate text-meta text-foreground/95", fp && "line-through opacity-70")}>
+              <span className={cn("truncate text-meta text-foreground/95", fp && "line-through opacity-70")} title={a.value}>
                 {a.value}
               </span>
             </span>
@@ -364,7 +364,7 @@ function ArtifactRow({
                 {status.basis}
               </span>
               {!hideProv && prov && (
-                <span className="truncate font-mono text-data text-muted-foreground/55">
+                <span className="truncate font-mono text-data text-muted-foreground/55" title={prov}>
                   · {prov}
                 </span>
               )}
@@ -444,6 +444,7 @@ function ArtifactDrawerInner({
   const src = extractSourceInfo(artifact);
   const review = useReviewStates(threadId);
   const [noteDraft, setNoteDraft] = useState(review.getNote(artifact.id));
+  const [saving, setSaving] = useState(false);
 
   const copy = (text: string, label: string) => {
     navigator.clipboard.writeText(text).then(
@@ -453,16 +454,22 @@ function ArtifactDrawerInner({
   };
 
   const updateMeta = async (patch: Record<string, unknown>) => {
-    const next = { ...meta, ...patch };
-    const { data, error } = await supabase
-      .from("artifacts")
-      .update({ metadata: next as never })
-      .eq("id", artifact.id)
-      .select("id,kind,value,confidence,source,created_at,metadata")
-      .maybeSingle();
-    if (error || !data) return toast.error(error?.message ?? "Update failed");
-    onChanged(data as Artifact);
-    toast.success("Updated");
+    if (saving) return;
+    setSaving(true);
+    try {
+      const next = { ...meta, ...patch };
+      const { data, error } = await supabase
+        .from("artifacts")
+        .update({ metadata: next as never })
+        .eq("id", artifact.id)
+        .select("id,kind,value,confidence,source,created_at,metadata")
+        .maybeSingle();
+      if (error || !data) return toast.error(error?.message ?? "Update failed");
+      onChanged(data as Artifact);
+      toast.success("Updated");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const citation = `\`${artifact.value}\` (${artifact.kind}${artifact.source ? `, via ${artifact.source}` : ""}${artifact.confidence != null ? `, ${artifact.confidence}%` : ""})`;
@@ -602,7 +609,7 @@ function ArtifactDrawerInner({
           <div className="grid grid-cols-2 gap-2">
             <Button size="sm" variant="outline" onClick={() => copy(artifact.value, "Value copied")} className="gap-1.5"><Copy className="w-3.5 h-3.5" /> Copy value</Button>
             <Button size="sm" variant="outline" onClick={() => copy(citation, "Citation copied")} className="gap-1.5"><Copy className="w-3.5 h-3.5" /> Copy citation</Button>
-            <Button size="sm" variant={falsePositive ? "destructive" : "secondary"} onClick={() => updateMeta({ false_positive: !falsePositive })} className="col-span-2 gap-1.5">
+            <Button size="sm" variant={falsePositive ? "destructive" : "secondary"} disabled={saving} onClick={() => updateMeta({ false_positive: !falsePositive })} className="col-span-2 gap-1.5">
               <XCircle className="w-3.5 h-3.5" /> {falsePositive ? "Unmark FP" : "Mark false positive"}
             </Button>
           </div>
