@@ -19,6 +19,7 @@ import { toast } from "sonner";
 import { detectSeed } from "@/lib/seed";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { buildPivots } from "@/lib/intel";
+import { isSubmitBlocked } from "@/lib/submit-guard";
 import { scrollBehavior } from "@/lib/motion";
 import { deriveToolCharge, deriveToolPreview, deriveToolRuntime, deriveToolTone } from "@/lib/tool-run";
 import { shouldFollowChatScroll } from "@/lib/chat-scroll";
@@ -993,6 +994,13 @@ function ChatWindowInner({
   const failSavedRef = useRef(false);
   const unmountedRef = useRef(false);
   const readyProbedOnceRef = useRef(false);
+  // Synchronous re-entrancy lock for scan submission. `status` (from useChat)
+  // only flips to "submitted" once sendMessage() runs — which is AFTER the async
+  // cache lookup + readiness probe in send(). Without this ref a rapid double/
+  // triple-click fires multiple scans (each POST costs credits, and the duplicate
+  // messages trigger React "duplicate key" warnings). Set synchronously before
+  // any await; released in finally.
+  const submitLockRef = useRef(false);
   const [rerunBusy, setRerunBusy] = useState(false);
   const { items: artifacts } = useThreadArtifacts(threadId);
   const [seedValue, setSeedValue] = useState<string | null>(null);
@@ -1247,11 +1255,13 @@ function ChatWindowInner({
   const send = async () => {
     const text = input.trim();
     const hasFiles = attachments.length > 0;
-    if ((!text && !hasFiles) || status === "streaming" || status === "submitted") return;
+    if ((!text && !hasFiles) || isSubmitBlocked(status, submitLockRef.current)) return;
     if (uploading) {
       toast.error("Wait for uploads to finish");
       return;
     }
+    submitLockRef.current = true;
+    try {
     const attachLines = attachments.map(
       (a) => `- [${a.name}](${a.url}) (${a.type || "file"}, ${formatBytes(a.size)})`,
     );
@@ -1341,6 +1351,9 @@ function ChatWindowInner({
       console.error("sendMessage failed:", e);
       toast.error(`Failed to send message: ${describeTransportError(e)}`);
     }
+    } finally {
+      submitLockRef.current = false;
+    }
   };
 
   const onFilesPicked = async (files: FileList | null) => {
@@ -1399,13 +1412,16 @@ function ChatWindowInner({
   // Send arbitrary text without going through the input (used by pivots + suggestions).
   const sendText = useCallback(async (text: string) => {
     const t = text.trim();
-    if (!t || status === "streaming" || status === "submitted") return;
+    if (!t || isSubmitBlocked(status, submitLockRef.current)) return;
+    submitLockRef.current = true;
     try {
       await beginInvestigation();
       await sendMessage({ text: t });
     } catch (e) {
       console.error("sendText failed:", e);
       toast.error(`Failed to send message: ${describeTransportError(e)}`);
+    } finally {
+      submitLockRef.current = false;
     }
   }, [beginInvestigation, sendMessage, status]);
 
