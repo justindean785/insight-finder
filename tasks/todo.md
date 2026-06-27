@@ -510,3 +510,31 @@ Scope grew slightly (same theme/helper) to also fix the Evidence board's raw sou
 - Mobile report table heavy horizontal scroll (scrolls within its own container — page does
   not break); report section-card redesign; phase/skeleton states. Each is a larger,
   separate, browser-verified change.
+
+## 2026-06-27 — Cherry-pick from QoL audit §5: `threat_intel` source class (`feat/threat-intel-source-class`)
+
+Continuation of the source-attribution-honesty theme. Resolves `TODO(integrity)` at
+`source-classification.ts:92` — ransomware-victim / threat-intel exposure is mislabeled `breach`
+(breach-level identity weight). Branch off `main`, independent of frontend PR #135.
+
+- [x] `source-classification.ts`: `SourceClass += "threat_intel"`; map `ransomwarelive_lookup`
+  + dead `deepfind_ransomware_exposure` → `threat_intel`; resolve TODO.
+- [x] `confidence.ts`: `CLASS_CAP.threat_intel = 50` (< breach 60); add to `NEVER_HIGH`; keep out
+  of `TRUSTED_NON_INFRA` + infra sets ⇒ threat-intel-only never reaches ≥90 or counts as identity.
+- [x] Backend Deno test `threat_intel_test.ts`.
+- [x] Frontend `evidence-status.ts`: `threat_intel` source_category ⇒ manual_review + "Threat intel" basis.
+- [x] `tool-display.ts` DISPLAY: add `ransomwarelive_lookup` readable name.
+- [x] Frontend `evidence-status.test.ts`: threat_intel row → manual review.
+- [x] Verify: deno test · vitest · typecheck · eslint · build.
+
+Deploy: backend ships via Lovable sync (sync `osint-agent/` → `seeker-spark-search-5362c57c`), not Vercel merge.
+
+### Results — implemented + verified (2026-06-27)
+- Backend: `threat_intel` class added; `ransomwarelive_lookup` + dead `deepfind_ransomware_exposure`
+  reclassified breach→threat_intel; `CLASS_CAP.threat_intel=50`, in `NEVER_HIGH` + `NON_CORROBORATING_CLASSES`.
+- Frontend: `evidence-status.ts` shows threat_intel as "Threat intel · not identity proof" manual-review
+  (never as breach/exposure); `ransomwarelive_lookup` added to tool-display.
+- Tests: `threat_intel_test.ts` (6, Deno) + `evidence-status.test.ts` (+1). `deno test` **287 pass / 0 fail**;
+  `deno check` on changed modules clean (no TS2304). `vitest` **700 pass**; typecheck/eslint/build clean.
+- Files: source-classification.ts, confidence.ts, threat_intel_test.ts, evidence-status.ts, evidence-status.test.ts, tool-display.ts.
+- Deploy: backend ships via Lovable sync (`osint-agent/`→`seeker-spark-search-5362c57c`), not the Vercel merge.

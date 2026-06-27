@@ -83,6 +83,7 @@ const DISPLAY: Record<string, string> = {
 
   // ── Special lookups ──
   deepfind_ransomware_exposure: "Risk Signal Analyst — Checking ransomware exposure signals",
+  ransomwarelive_lookup: "Risk Signal Analyst — Checking ransomware-victim exposure",
   deepfind_vin_lookup:   "Data Hunter — Running vehicle identification lookup",
   deepfind_aircraft_lookup: "Data Hunter — Searching aircraft registry records",
   deepfind_vessel_lookup:"Data Hunter — Searching vessel registry records",
