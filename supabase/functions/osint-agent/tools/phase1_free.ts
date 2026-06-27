@@ -10,22 +10,27 @@ import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { fetchRetry, fetchT } from "../fetch_retry.ts";
 import { isCrtshOk } from "../tool_response.ts";
-import { OPENCORPORATES_API_KEY } from "../env.ts";
+import { OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY } from "../env.ts";
 
 export const ransomwarelive_lookup = tool({
   description:
-    "Ransomware.live victim-exposure check — is a DOMAIN listed as a ransomware/extortion victim on a leak site? Input: { domain: string } (a registrable domain like 'acme.com', NOT a URL or email). Returns up to 25 victim entries (group, date, description). A 404 or empty result means NOT listed → { ok:true, listed:false, victims:[] }. No API key. Replaces the dead deepfind_ransomware_exposure.",
+    "Ransomware.live victim-exposure check — is a DOMAIN listed as a ransomware/extortion victim on a leak site? Input: { domain: string } (a registrable domain like 'acme.com', NOT a URL or email). Returns up to 25 victim entries (group, date, description). Uses api-pro.ransomware.live when RANSOMWARELIVE_API_KEY is set; without a key the tool returns { ok:false, degraded:true } because the free api.ransomware.live API has been retired. A real empty result means NOT listed → { ok:true, listed:false, victims:[] }.",
   inputSchema: z.object({ domain: z.string().min(1).describe("registrable domain, e.g. acme.com") }),
   execute: async ({ domain }) => {
     try {
       const d = domain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-      let r = await fetchRetry(`https://api.ransomware.live/v2/victims/${encodeURIComponent(d)}`, {}, { timeoutMs: 12_000 });
-      if (r.status === 404) {
-        await r.body?.cancel().catch(() => {});
-        r = await fetchRetry(`https://api.ransomware.live/v2/searchvictims/${encodeURIComponent(d)}`, {}, { timeoutMs: 12_000 });
+      if (!RANSOMWARELIVE_API_KEY) {
+        return { ok: false, degraded: true, domain: d, error: "ransomware.live free API retired; set RANSOMWARELIVE_API_KEY (api-pro.ransomware.live) to enable" };
       }
+      const r = await fetchRetry(
+        `https://api-pro.ransomware.live/victims/search?q=${encodeURIComponent(d)}`,
+        { headers: { "X-API-KEY": RANSOMWARELIVE_API_KEY, "Accept": "application/json" } },
+        { timeoutMs: 12_000 },
+      );
       if (r.status === 404) { await r.body?.cancel().catch(() => {}); return { ok: true, domain: d, listed: false, count: 0, victims: [] }; }
       if (!r.ok) return { ok: false, status: r.status, error: `ransomware.live ${r.status}`, domain: d };
+      const ct = r.headers.get("content-type") ?? "";
+      if (!ct.includes("json")) { await r.body?.cancel().catch(() => {}); return { ok: false, degraded: true, domain: d, error: `non-JSON response (${ct || "unknown"})` }; }
       const data = await r.json().catch(() => null);
       const rows = Array.isArray(data)
         ? data
