@@ -20,6 +20,8 @@ import { detectSeed } from "@/lib/seed";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { buildPivots } from "@/lib/intel";
 import { isSubmitBlocked } from "@/lib/submit-guard";
+import { dedupeCards, humanizeLeadReason } from "@/lib/next-step-cards";
+import { stripReasoningMarkup } from "@/lib/sanitize-agent-text";
 import { scrollBehavior } from "@/lib/motion";
 import { deriveToolCharge, deriveToolPreview, deriveToolRuntime, deriveToolTone } from "@/lib/tool-run";
 import { shouldFollowChatScroll } from "@/lib/chat-scroll";
@@ -49,6 +51,8 @@ type NextStepSuggestion = {
   icon: "pivot" | "spark";
   meta: string;
   priority?: RecommendedPivot["priority"];
+  /** Normalized dedupe key target (e.g. name/email), if this card pivots on one. */
+  target?: string;
 };
 
 // Cross-browser timeout helper. AbortSignal.timeout() is missing on
@@ -890,18 +894,10 @@ function wrapChildren(children: React.ReactNode): React.ReactNode {
   return children;
 }
 
-/**
- * Remove agent chain-of-thought tokens so raw <think>…</think> blocks don't
- * leak into the rendered chat. Drops closed blocks and any trailing unclosed
- * block streaming in.
- */
-function stripThinkTags(text: string): string {
-  return text
-    .replace(/<think[\s\S]*?<\/think>/gi, "")
-    .replace(/<think[\s\S]*$/i, "")
-    .replace(/<\/think>/gi, "")
-    .trim();
-}
+// Chain-of-thought stripping is centralized in `@/lib/sanitize-agent-text`
+// (`stripReasoningMarkup`) so the chat body and the Next Steps card parser share
+// one source of truth. Local alias kept for the existing render call site.
+const stripThinkTags = stripReasoningMarkup;
 
 export function ChatWindow({ threadId }: { threadId: string }) {
   const [state, setState] = useState<
@@ -1665,6 +1661,7 @@ function ChatWindowInner({
           icon: "pivot",
           meta: `${pivot.type} verification`,
           priority: pivot.priority,
+          target: pivot.value,
         });
       }
     } else {
@@ -1701,13 +1698,16 @@ function ChatWindowInner({
           p.type === "ip" ? "Check IP attribution" :
           p.type === "username" ? "Verify username linkage" :
           "Review lead";
+        const rawReason = p.why || p.fanout || "Artifact-derived lead";
+        const reason = humanizeLeadReason(rawReason);
         out.push({
           title,
-          detail: `${display} · ${p.why || p.fanout || "Artifact-derived lead"}`,
-          prompt: `Run this pivot.\n\nAction: ${title}\nTarget: ${p.value}\nType: ${p.type}\nReason: ${p.why || p.fanout || "Artifact-derived lead"}\n\nUse authorized public-source methods only. Return corroborating sources and how this changes the case.`,
+          detail: `${display} · ${reason}`,
+          prompt: `Run this pivot.\n\nAction: ${title}\nTarget: ${p.value}\nType: ${p.type}\nReason: ${reason}\n\nUse authorized public-source methods only. Return corroborating sources and how this changes the case.`,
           icon: "pivot",
           meta: `${p.type} verification`,
           priority: p.confidence >= 75 ? "high" : p.confidence >= 50 ? "medium" : "low",
+          target: p.value,
         });
       }
     }
@@ -1723,7 +1723,10 @@ function ChatWindowInner({
       seenLabels.add(g.title);
       out.push({ ...g, icon: "spark" });
     }
-    return out.slice(0, 4);
+    // Collapse cards that point at the same normalized target + action — e.g.
+    // "Review lead · Damien O Brien" and "Review lead · Damien O'Brien" surfaced
+    // from the same source are one lead, not two. Keep the first (highest-ranked).
+    return dedupeCards(out).slice(0, 4);
   }, [isLoading, messages, artifacts, seedValue, reportPivots]);
 
   return (

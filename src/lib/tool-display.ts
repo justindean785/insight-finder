@@ -83,6 +83,7 @@ const DISPLAY: Record<string, string> = {
 
   // ── Special lookups ──
   deepfind_ransomware_exposure: "Risk Signal Analyst — Checking ransomware exposure signals",
+  ransomwarelive_lookup: "Risk Signal Analyst — Checking ransomware-victim exposure",
   deepfind_vin_lookup:   "Data Hunter — Running vehicle identification lookup",
   deepfind_aircraft_lookup: "Data Hunter — Searching aircraft registry records",
   deepfind_vessel_lookup:"Data Hunter — Searching vessel registry records",
@@ -140,4 +141,52 @@ function fallbackDisplay(name: string): string {
     .replace(/_/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
   return `Analyst — ${action}`;
+}
+
+/**
+ * Short, plain-English source labels for primary card summaries (Next Steps,
+ * pivot details). Raw tool IDs must never appear in a card summary — only in an
+ * expandable provenance/detail pane. Concise on purpose, unlike the verbose
+ * role-prefixed `toolDisplayName` used in the Tools activity feed.
+ */
+const SHORT_SOURCE: Record<string, string> = {
+  oathnet_lookup: "breach/profile lookup",
+  breach_check: "breach lookup",
+  hibp_lookup: "breach lookup",
+  leakcheck_lookup: "credential-exposure lookup",
+  serus_darkweb_scan: "restricted-source scan",
+  bosint_email_lookup: "email correlation",
+  bosint_phone_lookup: "phone correlation",
+  deepfind_email_breach: "breach lookup",
+  username_sweep: "username sweep",
+  username_search: "username search",
+  jina_reader_scrape: "source page review",
+  minimax_web_search: "public-source search",
+  gemini_deep_dork: "AI deep search",
+  dork_harvest: "search-engine harvest",
+  hunter_email_verifier: "email verification",
+  whois_lookup: "domain registration lookup",
+  dns_records: "DNS lookup",
+  ip_intel: "IP intelligence",
+  multiple: "multiple sources",
+};
+
+/**
+ * Returns a concise, human-readable label for a (possibly compound) source
+ * string such as "oathnet_lookup+serus_darkweb_scan". Picks the primary token,
+ * notes when several tools agreed, and never emits a raw `snake_case` tool id.
+ */
+export function readableSourceLabel(rawSource: string | null | undefined): string {
+  if (!rawSource) return "tool";
+  const trimmed = rawSource.trim();
+  if (!trimmed) return "tool";
+  const tokens = trimmed.split(/[+,/]/).map((t) => t.trim()).filter(Boolean);
+  if (tokens.length === 0) return "tool";
+  const primary = tokens[0];
+  const readable = SHORT_SOURCE[primary]
+    ?? (DISPLAY[primary] ? toolActionLabel(primary).toLowerCase() : null)
+    ?? (/^[a-z0-9]+(?:_[a-z0-9]+)+$/i.test(primary)
+      ? primary.replace(/_/g, " ")
+      : primary);
+  return tokens.length > 1 ? `${readable} +${tokens.length - 1} more` : readable;
 }

@@ -1,6 +1,7 @@
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { detectSeed } from "@/lib/seed";
 import { toolActionLabel } from "@/lib/tool-display";
+import { humanizeSourceChain } from "@/lib/report-source-labels";
 import { deriveToolStatus, deriveToolReason } from "@/lib/tool-run";
 import {
   clusterDisplayId,
@@ -844,7 +845,7 @@ export function buildEvidenceMatrixMarkdown(artifacts: Artifact[]): string {
     // #8: a legal_record that is really a source/claim discrepancy displays as
     // source_conflict so a reporting disagreement isn't shown as a criminal record.
     const kind = reportDisplayKind(a) === a.kind ? displayKind(a) : "source_conflict";
-    return `| ${mdEscape(value)} | ${kind} | ${a.source ?? "—"} | ${label} | ${a.confidence ?? "—"} | ${new Date(a.created_at).toISOString()} |`;
+    return `| ${mdEscape(value)} | ${kind} | ${mdEscape(humanizeSourceChain(a.source, "—"))} | ${label} | ${a.confidence ?? "—"} | ${new Date(a.created_at).toISOString()} |`;
   });
   return [
     "| Value | Kind | Source | Label | Confidence | First seen |",
@@ -939,7 +940,7 @@ export function buildReportMarkdown(input: ReportInput): string {
   const keyFindings = (() => {
     if (confirmed.length) {
       return confirmed.slice(0, 10).map((a) =>
-        `- **${a.kind}** — \`${a.value}\` _(source indicates via ${a.source ?? "tool"}, confidence ${conf(a) ?? "—"})_`,
+        `- **${a.kind}** — \`${a.value}\` _(source indicates via ${humanizeSourceChain(a.source)}, confidence ${conf(a) ?? "—"})_`,
       ).join("\n");
     }
     const leads = artifacts
@@ -951,7 +952,7 @@ export function buildReportMarkdown(input: ReportInput): string {
       "_No fully-corroborated findings yet (none reach CONFIRMED — 2+ independent source classes or analyst review). Strongest uncorroborated leads:_",
       "",
       ...leads.map((a) =>
-        `- **${a.kind}** — \`${sanitizeValueForLabel(a.value, false)}\` _(${lbl(a)}, confidence ${conf(a) ?? "—"}, via ${a.source ?? "tool"})_`,
+        `- **${a.kind}** — \`${sanitizeValueForLabel(a.value, false)}\` _(${lbl(a)}, confidence ${conf(a) ?? "—"}, via ${humanizeSourceChain(a.source)})_`,
       ),
     ].join("\n");
   })();
@@ -988,7 +989,7 @@ export function buildReportMarkdown(input: ReportInput): string {
               "_These artifacts were flagged as namesakes / unrelated entities. They do NOT belong to the subject and do NOT strengthen the main network._",
               "",
               ...collisionArtifacts.map((a) =>
-                `- \`${sanitizeValueForLabel(a.value, false)}\` — ${reportDisplayKind(a) === a.kind ? displayKind(a) : "source_conflict"} _(${labelForArtifact(a)}, via ${a.source ?? "tool"})_`,
+                `- \`${sanitizeValueForLabel(a.value, false)}\` — ${reportDisplayKind(a) === a.kind ? displayKind(a) : "source_conflict"} _(${labelForArtifact(a)}, via ${humanizeSourceChain(a.source)})_`,
               ),
             ]
           : []),
@@ -998,7 +999,7 @@ export function buildReportMarkdown(input: ReportInput): string {
               "_Conflicts noted across sources — may indicate different people or data errors. Corroborate before merging; these rows are NOT auto-quarantined._",
               "",
               ...conflictNoted.map((a) =>
-                `- \`${sanitizeValueForLabel(a.value, false)}\` — ${conflictNote(a)} _(via ${a.source ?? "tool"})_`,
+                `- \`${sanitizeValueForLabel(a.value, false)}\` — ${conflictNote(a)} _(via ${humanizeSourceChain(a.source)})_`,
               ),
             ]
           : []),
@@ -1006,7 +1007,7 @@ export function buildReportMarkdown(input: ReportInput): string {
 
   const network = (() => {
     const sections: string[] = [];
-    const line = (a: Artifact) => `- \`${sanitizeValueForLabel(a.value, labelForArtifact(a) === "CONFIRMED")}\` _(observed via ${a.source ?? "tool"})_`;
+    const line = (a: Artifact) => `- \`${sanitizeValueForLabel(a.value, labelForArtifact(a) === "CONFIRMED")}\` _(observed via ${humanizeSourceChain(a.source)})_`;
     // Threat/reputation rows (VirusTotal, IPQS, EmailRep…) are pulled into their
     // own section regardless of which group they land in — they may be
     // mis-kinded as `breach` (→ breach group) OR correctly kinded as
@@ -1039,7 +1040,7 @@ export function buildReportMarkdown(input: ReportInput): string {
     // artifacts, report) carries real per-event timestamps, so render that.
     const chronology = items.filter((t) => t.type !== "tool_result");
     return (chronology.length ? chronology : items).slice(-15).map((t) =>
-      `- \`${new Date(t.time).toISOString()}\` — **${t.type}** — ${t.title}${t.source ? ` _(via ${t.source})_` : ""}`,
+      `- \`${new Date(t.time).toISOString()}\` — **${t.type}** — ${t.title}${t.source ? ` _(via ${humanizeSourceChain(t.source)})_` : ""}`,
     ).join("\n");
   })();
 
@@ -1145,7 +1146,7 @@ export function buildReportMarkdown(input: ReportInput): string {
           clusterReport.clusters.some((c) => c.matchesSeedLocation === true)
             ? clusterReport.clusters
                 .filter((c) => c.matchesSeedLocation === true)
-                .map((c) => `- ${c.label} — ${c.sources.join(", ") || "single source"}`)
+                .map((c) => `- ${c.label} — ${humanizeSourceChain(c.sources, "single source")}`)
                 .join("\n")
             : "_No cluster directly corroborates the seed location yet._",
           "",
@@ -1722,7 +1723,7 @@ export function buildClusterSection(
     if (c.addresses.length) parts.push(`- **Addresses:** ${c.addresses.join(" • ")}`);
     if (c.states.length) parts.push(`- **States observed:** ${c.states.join(", ")}`);
     if (c.ips.length) parts.push(`- **IPs:** ${c.ips.join(", ")}`);
-    if (c.sources.length) parts.push(`- **Source tools:** ${c.sources.join(", ")}`);
+    if (c.sources.length) parts.push(`- **Source tools:** ${humanizeSourceChain(c.sources)}`);
     if (c.mergeReasons.length) parts.push(`- **Merge reasons:** ${c.mergeReasons.join("; ")}`);
     if (c.warnings.length) parts.push(`- **Warnings:** ${c.warnings.join(" / ")}`);
     parts.push("");
