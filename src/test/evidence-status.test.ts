@@ -44,6 +44,16 @@ describe("evidenceStatus — never overstates, always textual", () => {
     expect(s.basis).toContain("Breach/exposure");
   });
 
+  it("threat_intel (ransomware-victim) reads as Threat intel manual review, not Breach", () => {
+    const s = evidenceStatus(art({
+      kind: "breach", value: "acme corp", confidence: 50, source: "ransomwarelive_lookup",
+      metadata: { sources: ["ransomwarelive_lookup"], source_category: ["threat_intel"] },
+    }));
+    expect(s.status).toBe("manual_review");
+    expect(s.basis).toMatch(/Threat intel/i);
+    expect(s.basis).not.toContain("Breach/exposure");
+  });
+
   it("infra-only multi-source reads as Verified infrastructure, not generic Verified (review #1)", () => {
     const s = evidenceStatus(art({
       kind: "domain", value: "doxbyte.net", confidence: 85, source: "whois_lookup",

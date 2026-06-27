@@ -197,8 +197,12 @@ export function evidenceStatus(a: Artifact, review?: ReviewAdjustment): Evidence
   const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
   const allSources = [a.source ?? null, ...metaSources].filter(Boolean) as string[];
   const reputation = isReputationArtifact(a);
+  // Threat-intel (ransomware-victim / org-was-hit) is review-only and must never
+  // read as a credential breach of the subject. Keyed on the backend's
+  // authoritative source_category so it can't be confused with breach/exposure.
+  const threatIntel = classes.includes("threat_intel");
   const breachRelated =
-    !reputation &&
+    !reputation && !threatIntel &&
     (kind === "breach" || kind === "breach_exposure" ||
       classes.includes("breach") ||
       (allSources.length > 0 && allSources.some((s) => isBreachSource(s))));
@@ -219,6 +223,10 @@ export function evidenceStatus(a: Artifact, review?: ReviewAdjustment): Evidence
     } else if (reputation && (base === "verified" || base === "probable" || base === "needs_corroboration" || base === "lead")) {
       // Threat/reputation signals are review-only — never auto-confirmed.
       base = "manual_review";
+    } else if (threatIntel && (base === "verified" || base === "probable" || base === "needs_corroboration" || base === "lead")) {
+      // Ransomware-victim / threat-intel exposure is review-only — it says an
+      // organization was hit, not that this is the subject. Never auto-confirmed.
+      base = "manual_review";
     } else if (breachRelated && (base === "probable" || base === "needs_corroboration" || base === "lead")) {
       base = "manual_review";
     } else if (infraOnly && (base === "verified" || base === "probable")) {
@@ -238,6 +246,8 @@ export function evidenceStatus(a: Artifact, review?: ReviewAdjustment): Evidence
     basis = "Infrastructure-only · not ownership proof";
   } else if (reputation && status === "manual_review") {
     basis = `Threat/reputation signal · ${multi ? "multi-source" : "single-source"}`;
+  } else if (threatIntel && status === "manual_review") {
+    basis = `Threat intel · not identity proof · ${multi ? "multi-source" : "single-source"}`;
   } else if (breachRelated && status === "manual_review") {
     basis = `Breach/exposure · ${multi ? "multi-source" : "single-source"}`;
   } else {
