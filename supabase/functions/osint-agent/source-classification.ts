@@ -228,7 +228,7 @@ export function classifySource(toolOrSource: string | null | undefined): SourceC
   }
 
   // Public-record aggregators (people-search / OSINT property+person providers) — #16.
-  if (/\b(oathnet|whitepages|thatsthem|fastpeoplesearch|truepeoplesearch|beenverified|radaris|spokeo|intelius|peoplefinders|public records?)\b/.test(s)) {
+  if (/\b(whitepages|thatsthem|fastpeoplesearch|truepeoplesearch|beenverified|radaris|spokeo|intelius|peoplefinders|public records?)\b/.test(s)) {
     return "public_record";
   }
 
@@ -243,7 +243,16 @@ export function classifySource(toolOrSource: string | null | undefined): SourceC
   if (/\b(virustotal|urlscan|malwarebytes|safe browsing|reputation|phishing|malware)\b/.test(s)) return "infra";
 
   // Breach / leak free-text — #16.
-  if (/\b(breach|hibp|have i been pwned|leak|paste|combolist|stealer log|dehashed)\b/.test(s)) return "breach";
+  // OathNet is a breach/leaked-data aggregator (TOOL_CLASS.oathnet_lookup = "breach",
+  // catalog "leaked-data … v2 breach search"). It was previously listed in the
+  // public_record people-search regex above and — because that branch runs first —
+  // any "oathnet"-containing free-text provenance mis-classified as public_record
+  // (cap 75) instead of breach (cap 60). Classify it as breach here. (The `oathnet`
+  // token alone is correct: the clean `oathnet_lookup` slug is already resolved by
+  // TOOL_CLASS, and inside a compound free-text string it is reached via splitting —
+  // adding `oathnet_lookup` to this regex would instead make the whole compound
+  // match here and suppress the split that the two-breach nudge depends on.)
+  if (/\b(breach|hibp|have i been pwned|leak|paste|combolist|stealer log|dehashed|oathnet)\b/.test(s)) return "breach";
 
   // Archive — #16.
   if (/\b(wayback|web archive|archive\.org|archive\.is|archive\.today|cachedview)\b/.test(s)) return "archive";
