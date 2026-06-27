@@ -4,7 +4,10 @@
  * source files directly (they're plain TS, Deno-compatible but also Node-readable).
  */
 import { describe, expect, it } from "vitest";
-import { classifySource } from "../../supabase/functions/osint-agent/artifact_types.ts";
+import {
+  classifySource,
+  classifySourceLabel,
+} from "../../supabase/functions/osint-agent/artifact_types.ts";
 import { applyEvidenceCaps } from "../../supabase/functions/osint-agent/confidence.ts";
 
 describe("infrastructure source sub-class classification", () => {
@@ -30,6 +33,33 @@ describe("infrastructure source sub-class classification", () => {
   it("still strips parenthetical qualifiers", () => {
     expect(classifySource("socialfetch_lookup (instagram)")).toBe("social_profile_passive");
     expect(classifySource("bosint_email_lookup (drizly.com breach)")).toBe("breach");
+  });
+});
+
+describe("OathNet classifies as breach, never public_record", () => {
+  // OathNet is a breach/leaked-data aggregator (TOOL_CLASS.oathnet_lookup = "breach").
+  // It used to be listed in the public_record people-search regex, which runs before
+  // the breach regex, so any "oathnet"-containing free-text provenance mis-classified
+  // as public_record (cap 75, an OFFICIAL class) instead of breach (cap 60). Regression
+  // guard for the de-inflation fix.
+  it("internal slug → breach (unchanged)", () => {
+    expect(classifySource("oathnet_lookup")).toBe("breach");
+  });
+  it("bare free-text label → breach (not public_record, not unknown)", () => {
+    expect(classifySource("OathNet")).toBe("breach");
+    expect(classifySourceLabel("OathNet")).toEqual(["breach"]);
+  });
+  it("free-text with breach keyword → breach", () => {
+    expect(classifySource("OathNet breach")).toBe("breach");
+  });
+  it("compound source string → includes breach, never public_record", () => {
+    const classes = classifySourceLabel("breach_check+oathnet");
+    expect(classes).toContain("breach");
+    expect(classes).not.toContain("public_record");
+  });
+  it("does not regress the public_record branch for legit people-search labels", () => {
+    expect(classifySource("public records search")).toBe("public_record");
+    expect(classifySource("whitepages")).toBe("public_record");
   });
 });
 
