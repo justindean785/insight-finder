@@ -103,6 +103,12 @@ interface ThreadState {
   calls: Map<string, CallRecord>;
   /** provider name → active suppression for this investigation */
   suppressions: Map<string, Suppression>;
+  /** Number of in-flight runs that have acquire()'d this thread. The shared
+   *  state is only torn down by release() once this returns to 0, so an
+   *  overlapping run (double-submit / retry — setupRequest verifies ownership
+   *  but does not lock out an active run) can't have its suppressions, premium
+   *  dedup, and capability disables wiped while it is still streaming. */
+  active: number;
 }
 
 // Upper bound on threads tracked in-memory. clearThread(threadId) is the
@@ -128,15 +134,22 @@ function state(threadId: string): ThreadState {
     THREADS.set(threadId, existing);
     return existing;
   }
-  const s: ThreadState = { breakers: new Map(), calls: new Map(), suppressions: new Map() };
+  const s: ThreadState = { breakers: new Map(), calls: new Map(), suppressions: new Map(), active: 0 };
   THREADS.set(threadId, s);
-  // Evict the least-recently-used thread(s) when over the cap. The just-inserted
-  // thread is at the end of the iteration order, so the first key is always an
-  // older entry — never the one we just added.
-  while (THREADS.size > MAX_TRACKED_THREADS) {
-    const oldest = THREADS.keys().next().value;
-    if (oldest === undefined || oldest === threadId) break;
-    THREADS.delete(oldest);
+  // Evict the least-recently-used thread(s) when over the cap. Iterate in LRU
+  // order (oldest first) and drop the oldest entries until back under the cap,
+  // but NEVER evict a thread with an in-flight run (active > 0) or the one we
+  // just inserted — pulling state out from under an active run would lose its
+  // suppressions/dedup/disables mid-investigation, the same hazard this
+  // refcount guards against on the clear path.
+  if (THREADS.size > MAX_TRACKED_THREADS) {
+    for (const key of THREADS.keys()) {
+      if (THREADS.size <= MAX_TRACKED_THREADS) break;
+      if (key === threadId) continue;
+      const st = THREADS.get(key);
+      if (st && st.active > 0) continue;
+      THREADS.delete(key);
+    }
   }
   return s;
 }
@@ -447,6 +460,27 @@ export function applyBaselineDisables(threadId: string): void {
   b4.disabledReason = "intelbase gated";
 }
 
+/** Register the start of a run for this thread, incrementing its active-run
+ *  count. Pair every acquire() with exactly one release() at end-of-run so the
+ *  shared ThreadState is only released once the LAST overlapping run finishes. */
+export function acquire(threadId: string): void {
+  state(threadId).active++;
+}
+
+/** End-of-run teardown for a thread acquired via acquire(): decrement the
+ *  active-run count and only delete the ThreadState once it hits 0. When two
+ *  runs for the same threadId overlap, the first run's release() leaves the
+ *  state intact for the still-running second run. */
+export function release(threadId: string): void {
+  const s = THREADS.get(threadId);
+  if (!s) return;
+  s.active = Math.max(0, s.active - 1);
+  if (s.active === 0) THREADS.delete(threadId);
+}
+
+/** Forcefully drop a thread's state regardless of active-run count. Reserved for
+ *  test cleanup; the production end-of-run path uses release() so it can't wipe
+ *  state shared by an overlapping run. */
 export function clearThread(threadId: string): void {
   THREADS.delete(threadId);
 }
