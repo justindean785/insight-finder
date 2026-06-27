@@ -17,6 +17,7 @@ import {
   extractSourceInfo, CACHE_LAYER_LABEL, CACHE_LAYER_CLASS,
 } from "@/lib/intel";
 import { evidenceStatus, EVIDENCE_STATUS_RANK } from "@/lib/evidence-status";
+import { readableSourceLabel } from "@/lib/tool-display";
 import { EvidenceStatusBadge, FilterChips } from "@/components/ui/workspace-primitives";
 import {
   useReviewStates, REVIEW_CLASS, REVIEW_SHORT,
@@ -269,7 +270,7 @@ function ArtifactsList({
                       <span className="text-data font-medium text-foreground/75">{kindHeading(kind, list.length)}</span>
                       <span className="text-data tabular-nums text-muted-foreground/70">· {list.length}</span>
                       {uniformProv && (
-                        <span className="truncate font-mono text-[9.5px] text-muted-foreground/60" title={uniformProv}>{uniformProv}</span>
+                        <span className="truncate font-mono text-[9.5px] text-muted-foreground/60" title={uniformProv}>{readableSourceLabel(uniformProv)}</span>
                       )}
                       {/* Singletons show their score on the row itself; only
                           show a subheader figure for multi-row clusters. */}
@@ -365,7 +366,7 @@ function ArtifactRow({
               </span>
               {!hideProv && prov && (
                 <span className="truncate font-mono text-data text-muted-foreground/55" title={prov}>
-                  · {prov}
+                  · {readableSourceLabel(prov)}
                 </span>
               )}
             </span>

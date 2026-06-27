@@ -70,6 +70,39 @@ describe("extractRecommendedPivots", () => {
     });
   });
 
+  it("does not leak <think> reasoning blocks into pivot cards", () => {
+    // Regression for the screenshot bug: the agent emitted a chain-of-thought
+    // block inside the report text. The chat renderer strips it, but the Next
+    // Steps parser used the raw text and turned reasoning lines into cards.
+    const text = `
+**Recommended next pivots:**
+- Investigate scero@me.com — same person
+<think>
+The detect_contradictions tool flagged 2 distinct names: Debra A. Cero vs Debra Cero.
+Let me also call detect_contradictions to check for any issues.
+</think>
+- Corroborate the Oakley PO Box with county records
+`;
+    const pivots = extractRecommendedPivots(text);
+    const serialized = JSON.stringify(pivots);
+    expect(serialized).not.toContain("<think>");
+    expect(serialized).not.toContain("</think>");
+    expect(serialized).not.toContain("detect_contradictions");
+    expect(serialized).not.toMatch(/Let me also call/i);
+    // The two genuine pivots still come through.
+    expect(pivots.map((p) => p.value)).toContain("scero@me.com");
+    expect(pivots.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("strips a surviving inline think fragment from an emitted field", () => {
+    const text = `
+## Recommended Next Pivots
+- Investigate scero@me.com — same person</think>
+`;
+    const pivots = extractRecommendedPivots(text);
+    expect(JSON.stringify(pivots)).not.toContain("</think>");
+  });
+
   it("turns collision recommendations into safe review actions", () => {
     const text = `
 ## Recommended Next Pivots
