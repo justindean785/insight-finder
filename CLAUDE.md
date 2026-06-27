@@ -1,6 +1,6 @@
 # CLAUDE.md — read first
 
-Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + React + TS + Tailwind/shadcn frontend; Supabase (Postgres/Auth/Storage + the `osint-agent` Deno edge function) backend.
+Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + React + TS + Tailwind/shadcn frontend; Supabase (Postgres/Auth/Storage + **3 Deno edge functions** — `osint-agent`, `evidence-export`, `security-test-lab` — sharing `supabase/functions/_shared/`) backend.
 
 ## ⚠️ Deploy topology — the #1 thing to get right
 
@@ -9,10 +9,10 @@ There is **ONE place to work: this repo, `justindean785/insight-finder`** (local
 ```
         WORK HERE → github.com/justindean785/insight-finder (main)
                        │                         │
-          merge PR ↓ (frontend)     sync osint-agent/ via PR ↓ (backend)
+          merge PR ↓ (frontend)     sync functions/ via PR ↓ (backend)
                   VERCEL                seeker-spark-search-5362c57c
                (the app UI)              → Lovable auto-deploys
-                       └──────────┬───────────────┘  the edge function
+                       └──────────┬───────────────┘  ALL edge functions
                                   ▼
                   ONE Supabase backend: skzqwbyvmwqarfgfvyky
 ```
@@ -22,10 +22,17 @@ There is **ONE place to work: this repo, `justindean785/insight-finder`** (local
 - **Netlify is NOT used** (a stray `netlify.toml` was removed). Don't re-add it.
 - The Lovable-hosted frontend (`*.lovable.app`) is **deprecated** — both frontends hit the same Supabase backend, so Vercel already works against live data.
 
-### Backend (`osint-agent` edge function) → via Lovable
-- The Supabase project `skzqwbyvmwqarfgfvyky` is **owned by Lovable Cloud**, not the user. Lovable deploys the edge function from **its** connected GitHub repo `justindean785/seeker-spark-search-5362c57c` (branch `main`).
+### Backend (3 edge functions) → via Lovable
+- The Supabase project `skzqwbyvmwqarfgfvyky` is **owned by Lovable Cloud**, not the user. Lovable deploys the edge functions from **its** connected GitHub repo `justindean785/seeker-spark-search-5362c57c` (branch `main`).
 - **Do NOT use `supabase functions deploy`** — the user's token 403s on that project (ownership wall). It is the wrong channel.
-- **To ship a backend change:** edit here in `insight-finder`, then sync `supabase/functions/osint-agent/` into `seeker-spark-search-5362c57c` via a PR (the `gh` token can push there), merge → Lovable auto-deploys. `insight-finder` is a strict superset of that repo's `osint-agent`, so `cp -R supabase/functions/osint-agent/. <clone>/supabase/functions/osint-agent/` + a `git diff` review is the safe sync.
+- **The backend is 3 functions + a shared module. A sync MUST cover all that changed — not just `osint-agent/`** (the old single-function recipe is why `evidence-export` drifted below):
+  - `supabase/functions/osint-agent/` — 72 files; live tool defs inline in `index.ts`
+  - `supabase/functions/evidence-export/` — PDF/zip export; `index.ts` + `text-sanitize.ts` (+ test)
+  - `supabase/functions/security-test-lab/` — admin-only red-team harness; `index.ts`
+  - `supabase/functions/_shared/ai-gateway.ts`
+- **To ship a backend change:** edit here in `insight-finder`, then sync the changed function(s) into `seeker-spark-search-5362c57c` via a PR (the `gh` token can push there), merge → Lovable auto-deploys. Per function: `cp -R supabase/functions/<fn>/. <clone>/supabase/functions/<fn>/` + a `git diff` review.
+- **Sync = true merge, NEVER `rsync --delete` / blanket overwrite.** The mirror has at times held Lovable-authored work not yet backported (e.g. the #16 source-classification rework — see `PR_BODY_backport-16.md` in the `pr2` worktree); a delete-sync would clobber it.
+- **Known parity/drift (verified 2026-06-17):** `osint-agent`, `security-test-lab`, and `_shared/ai-gateway.ts` are **byte-identical** between `insight-finder/main` and the mirror. **`evidence-export` HAS DRIFTED** — the mirror runs an older 273-line `index.ts` with no `text-sanitize.ts`, so the *deployed* export path lacks the WinAnsi-sanitizer refactor that's on `insight-finder/main`. Sync it deliberately (reviewed PR), not blindly. Further evidence-export 500 fixes also sit unmerged on the `fix/evidence-export-500` branch (`insight-finder-ee` worktree).
 - Edge-function secrets live in Supabase function settings (e.g. `IPQUALITYSCORE_API_KEY`, `SERUS_API_KEY`). Tools self-skip if their key is missing.
 
 ### Dead repos — ignore

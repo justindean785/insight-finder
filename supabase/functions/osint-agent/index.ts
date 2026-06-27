@@ -483,7 +483,11 @@ Deno.serve(async (req) => {
         const { error: statusErr } = await supabase
           .from("threads")
           .update({
-            status: "completed",
+            // "finished" is the allowed terminal status (threads_status_check =
+            // active|finished) AND the value the UI treats as complete
+            // (WorkspaceHeader/ThreadSidebar). The prior "completed" was rejected
+            // by the DB constraint, leaving successful runs stuck on "active".
+            status: "finished",
             updated_at: new Date().toISOString(),
             ...(detectedSeedKind ? { seed_type: detectedSeedKind } : {}),
           })
