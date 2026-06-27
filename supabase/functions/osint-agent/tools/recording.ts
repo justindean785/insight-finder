@@ -59,10 +59,15 @@ export const record_artifacts = tool({
       }
       // Apply conservative confidence caps based on source class.
       const aMeta = (a.metadata ?? {}) as Record<string, unknown>;
+      const effSources = [a.source ?? "", ...((aMeta.sources as unknown[]) ?? [])].filter(Boolean) as string[];
       const cap = applyEvidenceCaps({
         rawConfidence: a.confidence ?? 50,
-        sources: [a.source ?? "", ...((aMeta.sources as unknown[]) ?? [])].filter(Boolean) as string[],
+        sources: effSources,
       });
+      // Provenance guard (#131 follow-up): flag a bare-domain source nothing fetched
+      // (the menstoppingviolence.org incident). The LIVE path (tool-registry.ts)
+      // whitelists the seed domain via triageState; this mirror has no triageState.
+      const llmAssertedProvenance = effSources.some((s) => isLlmAssertedDomainSource(s));
       // Required-fields envelope. Status is DERIVED (deriveStatus) so it can never
       // contradict reason_not_confirmed — mirrors the live record_artifacts.
       const resolvedReasonNotConfirmed =
@@ -90,6 +95,7 @@ export const record_artifacts = tool({
         contradictions: aMeta.contradictions ?? [],
         next_verification_step: aMeta.next_verification_step ?? null,
         confidence_cap_applied: cap.cap,
+        ...(llmAssertedProvenance ? { provenance: LLM_ASSERTED_PROVENANCE, provenance_verified: false } : {}),
       };
       rows.push({
         thread_id: threadId,
@@ -231,11 +237,17 @@ export const record_artifacts = tool({
           meta.archived_url ||
           null;
         const snapshot = JSON.stringify(meta).slice(0, 1500);
+        // Chain-of-custody protection (#131 follow-up): an LLM-asserted unverified
+        // domain must not be recorded as the authoritative tool/source in the
+        // tamper-evident log. Value/kind stay intact; only provenance changes.
+        const llmAsserted = meta.provenance === LLM_ASSERTED_PROVENANCE;
+        const evToolName = llmAsserted ? LLM_ASSERTED_PROVENANCE : ((r.source as string) ?? "agent");
+        const evSource = llmAsserted ? LLM_ASSERTED_PROVENANCE : ((r.source as string) ?? null);
         const { error: evErr } = await supabase.rpc("append_evidence", {
           _thread_id: threadId,
           _artifact_id: null,
-          _tool_name: (r.source as string) ?? "agent",
-          _source: (r.source as string) ?? null,
+          _tool_name: evToolName,
+          _source: evSource,
           _source_url: typeof sourceUrl === "string" ? sourceUrl : null,
           _classification: classification,
           _confidence: conf,
@@ -302,10 +314,13 @@ export const record_artifact = tool({
     const v = validateArtifact(inferred.kind, value);
     if (!v.ok) return { ok: false, rejected: true, reason: v.reason };
     const inMeta = (metadata ?? {}) as Record<string, unknown>;
+    const effSources = [source ?? "", ...((inMeta.sources as unknown[]) ?? [])].filter(Boolean) as string[];
     const cap = applyEvidenceCaps({
       rawConfidence: confidence ?? 50,
-      sources: [source ?? "", ...((inMeta.sources as unknown[]) ?? [])].filter(Boolean) as string[],
+      sources: effSources,
     });
+    // Provenance guard (#131 follow-up) — mirrors record_artifacts.
+    const llmAssertedProvenance = effSources.some((s) => isLlmAssertedDomainSource(s));
     const resolvedReasonNotConfirmed =
       (typeof inMeta.reason_not_confirmed === "string" ? inMeta.reason_not_confirmed : null) ??
       cap.reason_not_confirmed ?? null;
@@ -331,6 +346,7 @@ export const record_artifact = tool({
       contradictions: inMeta.contradictions ?? [],
       next_verification_step: inMeta.next_verification_step ?? null,
       confidence_cap_applied: cap.cap,
+      ...(llmAssertedProvenance ? { provenance: LLM_ASSERTED_PROVENANCE, provenance_verified: false } : {}),
     };
     const row = scrubArtifactRow({
       thread_id: threadId,
@@ -357,11 +373,16 @@ export const record_artifact = tool({
         : "soft";
     const sourceUrl =
       meta.source_url || meta.url || meta.profile_url || meta.archived_url || null;
+    // Chain-of-custody protection (#131 follow-up): keep an LLM-asserted unverified
+    // domain out of the authoritative tool/source fields.
+    const llmAsserted = meta.provenance === LLM_ASSERTED_PROVENANCE;
+    const evToolName = llmAsserted ? LLM_ASSERTED_PROVENANCE : ((row.source as string) ?? "agent");
+    const evSource = llmAsserted ? LLM_ASSERTED_PROVENANCE : ((row.source as string) ?? null);
     await supabase.rpc("append_evidence", {
       _thread_id: threadId,
       _artifact_id: null,
-      _tool_name: (row.source as string) ?? "agent",
-      _source: (row.source as string) ?? null,
+      _tool_name: evToolName,
+      _source: evSource,
       _source_url: typeof sourceUrl === "string" ? sourceUrl : null,
       _classification: classification,
       _confidence: conf,

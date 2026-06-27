@@ -18,7 +18,7 @@ import { applyDateSanity } from "./date-sanity.ts";
 import { computeAxes, sourceConfidence, applyEvidenceCaps, isUnrelatedEntity, EXCLUDED_COLLISION_CONFIDENCE, isBioCrossLinkName, BIO_CROSS_LINK_NAME_CAP, deriveStatus, coerceCoherentStatus, looksDeadEnd } from "./confidence.ts";
 import { queryTypesOf } from "./query-type-router.ts";
 import { isSameSurnameOnlyLead, isListingAgentLead } from "./collision-policy.ts";
-import { STRICT_KINDS, inferKind, isStrictKind, classifySource } from "./artifact_types.ts";
+import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDomainSource, LLM_ASSERTED_PROVENANCE } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
 import { buildNodes } from "./graph.ts";
 import { selectPivots, type PivotCandidate } from "./graph_pivots.ts";
@@ -3203,10 +3203,19 @@ export function buildTools(ctx: ToolContext) {
             return;
           }
           // Apply conservative confidence caps based on source class.
+          const effSources = [a.source ?? "", ...((a.metadata?.sources ?? []) as Iterable<unknown>)].filter(Boolean) as string[];
           const cap = applyEvidenceCaps({
             rawConfidence: a.confidence ?? 50,
-            sources: [a.source ?? "", ...((a.metadata?.sources ?? []) as Iterable<unknown>)].filter(Boolean) as string[],
+            sources: effSources,
           });
+          // Provenance guard (#131 follow-up): flag an artifact whose effective
+          // source names a bare domain that is NOT a wired tool and NOT a recognized
+          // provider — i.e. an LLM-asserted citation nothing actually fetched (the
+          // menstoppingviolence.org incident). The seed domain (which whois/dns DO
+          // fetch) is whitelisted so the legitimate seed never trips it.
+          const seedRecognizedDomains = [triageState.seedDomain, triageState.seed]
+            .filter((d): d is string => typeof d === "string" && d.length > 0);
+          const llmAssertedProvenance = effSources.some((s) => isLlmAssertedDomainSource(s, seedRecognizedDomains));
           // Different-person / unrelated-entity gate: a namesake/collision that
           // does NOT belong to the seed is demoted to excluded_collision with a
           // hard-capped confidence so it can't roll up or read as a confirmed link.
@@ -3277,6 +3286,7 @@ export function buildTools(ctx: ToolContext) {
             ...(surnameOnly ? { excluded_reason: "same_surname_only" } : {}),
             ...(listingAgent ? { contact_type: "real_estate_listing_agent" } : {}),
             ...(bioName ? { bio_cross_link: true } : {}),
+            ...(llmAssertedProvenance ? { provenance: LLM_ASSERTED_PROVENANCE, provenance_verified: false } : {}),
             // Spread LAST so a corrected `note` overrides the model-supplied one.
             ...dateSanity.metaPatch,
           };
@@ -3426,11 +3436,18 @@ export function buildTools(ctx: ToolContext) {
               meta.archived_url ||
               null;
             const snapshot = JSON.stringify(meta).slice(0, 1500);
+            // Chain-of-custody protection (#131 follow-up): never record an
+            // LLM-asserted unverified domain as the authoritative tool/source — that
+            // would launder a fabricated citation into the tamper-evident log. The
+            // artifact value/kind stay intact; only the provenance label changes.
+            const llmAsserted = meta.provenance === LLM_ASSERTED_PROVENANCE;
+            const evToolName = llmAsserted ? LLM_ASSERTED_PROVENANCE : ((r.source as string) ?? "agent");
+            const evSource = llmAsserted ? LLM_ASSERTED_PROVENANCE : ((r.source as string) ?? null);
             const { error: evErr } = await supabase.rpc("append_evidence", {
               _thread_id: threadId,
               _artifact_id: null,
-              _tool_name: (r.source as string) ?? "agent",
-              _source: (r.source as string) ?? null,
+              _tool_name: evToolName,
+              _source: evSource,
               _source_url: typeof sourceUrl === "string" ? sourceUrl : null,
               _classification: classification,
               _confidence: conf,
@@ -3495,10 +3512,17 @@ export function buildTools(ctx: ToolContext) {
         const inferred = inferKind(kind, value);
         const v = validateArtifact(inferred.kind, value);
         if (!v.ok) return { ok: false, rejected: true, reason: v.reason };
+        const effSources = [source ?? "", ...((metadata?.sources ?? []) as Iterable<unknown>)].filter(Boolean) as string[];
         const cap = applyEvidenceCaps({
           rawConfidence: confidence ?? 50,
-          sources: [source ?? "", ...((metadata?.sources ?? []) as Iterable<unknown>)].filter(Boolean) as string[],
+          sources: effSources,
         });
+        // Provenance guard (#131 follow-up) — mirrors record_artifacts. Flags a
+        // bare-domain source that is neither a wired tool nor a known provider (the
+        // LLM-asserted menstoppingviolence.org citation); seed domain whitelisted.
+        const seedRecognizedDomains = [triageState.seedDomain, triageState.seed]
+          .filter((d): d is string => typeof d === "string" && d.length > 0);
+        const llmAssertedProvenance = effSources.some((s) => isLlmAssertedDomainSource(s, seedRecognizedDomains));
         // Gates mirror record_artifacts: unrelated / same-surname-only / listing
         // agent → excluded collision; bio-linked name → unverified claim.
         const unrelated = isUnrelatedEntity(metadata ?? null);
@@ -3554,6 +3578,7 @@ export function buildTools(ctx: ToolContext) {
           ...(surnameOnly ? { excluded_reason: "same_surname_only" } : {}),
           ...(listingAgent ? { contact_type: "real_estate_listing_agent" } : {}),
           ...(bioName ? { bio_cross_link: true } : {}),
+          ...(llmAssertedProvenance ? { provenance: LLM_ASSERTED_PROVENANCE, provenance_verified: false } : {}),
         };
         const row = scrubArtifactRow({
           thread_id: threadId,
@@ -3585,11 +3610,16 @@ export function buildTools(ctx: ToolContext) {
             : "soft";
         const sourceUrl =
           meta.source_url || meta.url || meta.profile_url || meta.archived_url || null;
+        // Chain-of-custody protection (#131 follow-up): keep an LLM-asserted
+        // unverified domain out of the authoritative tool/source fields.
+        const llmAsserted = meta.provenance === LLM_ASSERTED_PROVENANCE;
+        const evToolName = llmAsserted ? LLM_ASSERTED_PROVENANCE : ((row.source as string) ?? "agent");
+        const evSource = llmAsserted ? LLM_ASSERTED_PROVENANCE : ((row.source as string) ?? null);
         await supabase.rpc("append_evidence", {
           _thread_id: threadId,
           _artifact_id: null,
-          _tool_name: (row.source as string) ?? "agent",
-          _source: (row.source as string) ?? null,
+          _tool_name: evToolName,
+          _source: evSource,
           _source_url: typeof sourceUrl === "string" ? sourceUrl : null,
           _classification: classification,
           _confidence: conf,
