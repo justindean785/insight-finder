@@ -26,6 +26,8 @@
 // mapping replace #16's coarse single "infra". Where #16 and #56 disagreed on a
 // source's class, #56 WON — see the tier-disagreement log in the PR report.
 
+import { TOOL_CATALOG } from "./catalog.ts";
+
 /** Source-class taxonomy used for confidence caps and corroboration counting.
  *  Superset: post-#56 main's split internal-tool classes are preserved (so the
  *  caps + tests stay valid) PLUS the public-record / directory / listing classes
@@ -378,3 +380,91 @@ export const OFFICIAL_CLASSES: ReadonlySet<SourceClass> = new Set<SourceClass>([
 export function hasOfficialClass(classes: readonly SourceClass[]): boolean {
   return classes.some((c) => OFFICIAL_CLASSES.has(c));
 }
+
+// ── LLM-asserted unverified domain guard (minimal "option A" — #131 follow-up) ─
+//
+// An artifact's `source` is a free-text string the orchestrator LLM writes; nothing
+// validates it. In a live case 9 PII artifacts were attributed to
+// `menstoppingviolence.org` — a DV nonprofit that is NOT a wired tool and hosts no
+// such data: a fabricated/misattributed citation. It still polluted the case graph,
+// the export, and — worst — the tamper-evident chain-of-custody log, laundering a
+// hallucination into court-defensible-looking evidence.
+//
+// This helper detects a `source` that names a BARE DOMAIN component which is neither
+// a wired tool nor a provider the classifier recognizes — i.e. a domain the LLM
+// asserted as provenance but that no tool actually fetched.
+//
+// CONSERVATIVE BY DESIGN: it must never flag a real tool slug
+// (`oathnet_lookup`, `minimax_web_search`, …), a known provider already in the
+// people-search/breach/etc. regexes (whitepages, spokeo, realtor.com, …), or a
+// compound source whose every component is recognized. Only a genuinely
+// unrecognized bare domain (like `menstoppingviolence.org`) trips it.
+//
+// This is the MINIMAL string-level guard. The full fetched-domain ledger — which
+// would positively confirm a domain WAS fetched instead of inferring it from string
+// recognition — is tracked as issue #131. Until then callers may pass
+// `recognizedDomains` (e.g. the investigation seed domain, which whois/dns DO fetch)
+// to suppress false-positives on domains the case legitimately touched.
+
+// A single token that is *exactly* a bare domain: one or more dot-separated labels
+// followed by an alphabetic TLD of 2+ chars (foo.org, a.b.co.uk). Tool slugs use
+// underscores and contain no dot, so they never match this.
+const BARE_DOMAIN_RE = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/i;
+
+// Catalog tool slugs. None currently contain a dot (so none can match
+// BARE_DOMAIN_RE today), but a slug must never be mistaken for a fabricated domain
+// if one is ever added — checked explicitly per the spec.
+const CATALOG_TOOL_SLUGS: ReadonlySet<string> = new Set(
+  (TOOL_CATALOG?.tools ?? []).map((t) => t.name.toLowerCase()),
+);
+
+/** A source token is "recognized" when it is a wired tool slug (incl. dotted slugs
+ *  like `usphonesearch.net`), a catalog tool name, or a provider the classifier
+ *  maps to a real (non-"unknown") class (realtor.com, apollo.io, archive.org…). */
+function isRecognizedSourceToken(token: string): boolean {
+  const t = token.toLowerCase();
+  if (TOOL_CLASS[t]) return true;
+  if (CATALOG_TOOL_SLUGS.has(t)) return true;
+  if (classifySource(token) !== "unknown") return true;
+  return false;
+}
+
+/** True when `source` contains a bare-domain component that no wired tool or known
+ *  provider recognizes — i.e. a domain the orchestrator LLM asserted as provenance
+ *  but that nothing actually fetched. Pass `recognizedDomains` (e.g. the seed
+ *  domain, which whois/dns legitimately fetch) to whitelist trusted domains. See
+ *  issue #131 for the full fetched-domain ledger that supersedes this heuristic. */
+export function isLlmAssertedDomainSource(
+  source: string | null | undefined,
+  recognizedDomains?: Iterable<string>,
+): boolean {
+  const raw = (source ?? "").trim();
+  if (!raw) return false;
+  const recognized = new Set<string>();
+  if (recognizedDomains) {
+    for (const d of recognizedDomains) {
+      if (typeof d === "string" && d.trim()) recognized.add(d.trim().toLowerCase());
+    }
+  }
+  // Split on the same delimiters the cap/classifier code uses (MIXED_SOURCE_SPLIT_RE),
+  // plus whitespace, so both "a+b.org" and "data from foo.org" surface their tokens.
+  const tokens = raw
+    .split(MIXED_SOURCE_SPLIT_RE)
+    .flatMap((p) => p.split(/\s+/))
+    .map((p) => p.trim())
+    .filter(Boolean);
+  for (const tok of tokens) {
+    if (!BARE_DOMAIN_RE.test(tok)) continue; // not a domain component — ignore
+    const lower = tok.toLowerCase();
+    if (recognized.has(lower)) continue; // seed / legitimately-fetched domain — trusted
+    if (isRecognizedSourceToken(tok)) continue; // wired tool slug or known provider
+    return true; // unrecognized bare domain → LLM-asserted, unverified provenance
+  }
+  return false;
+}
+
+/** Provenance marker stamped on artifacts whose source trips
+ *  `isLlmAssertedDomainSource`, and substituted for the fabricated domain in the
+ *  chain-of-custody log so the tamper-evident record never launders it as a real
+ *  source. Kept as a shared constant so runtime + mirror stay in sync. */
+export const LLM_ASSERTED_PROVENANCE = "llm_asserted_unverified" as const;
