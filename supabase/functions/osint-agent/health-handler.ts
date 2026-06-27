@@ -166,8 +166,8 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   const body: Record<string, unknown> = {
     ok: r.ok,
     service: "osint-agent",
-    version: "1.2.1",
-    build: "2026-06-19-probe-hardening",
+    version: "1.2.2",
+    build: "2026-06-27-ransomwarelive-api-pro",
     checks: r.checks,
     intelbase_enabled: INTELBASE_ENABLED,
   };
