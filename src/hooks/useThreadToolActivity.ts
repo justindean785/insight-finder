@@ -47,7 +47,7 @@ export interface ToolEvent {
 export interface ThreadToolActivity {
   events: ToolEvent[];
   total: number;
-  failed: number;
+  hiddenFailed: number;
   ok: number;
   skipped: number;
   gated: number;
@@ -71,6 +71,7 @@ interface PartLike {
  */
 export function useThreadToolActivity(threadId: string): ThreadToolActivity {
   const [events, setEvents] = useState<ToolEvent[]>([]);
+  const [hiddenFailed, setHiddenFailed] = useState(0);
   const [loading, setLoading] = useState(true);
   const channelIdRef = useRef<number>();
   if (channelIdRef.current == null) channelIdRef.current = ++channelSeq;
@@ -105,7 +106,10 @@ export function useThreadToolActivity(threadId: string): ThreadToolActivity {
           });
         }
       }
-      setEvents(out);
+      // Keep raw failed calls in persisted data, but suppress them from the
+      // beta-facing activity feed so the workspace only reflects visible runs.
+      setHiddenFailed(out.filter((event) => event.status === "failed").length);
+      setEvents(out.filter((event) => event.status !== "failed"));
       setLoading(false);
     };
     load();
@@ -116,10 +120,14 @@ export function useThreadToolActivity(threadId: string): ThreadToolActivity {
     return () => { alive = false; supabase.removeChannel(ch); };
   }, [threadId]);
 
+  // `events` and `total` are VISIBLE activity only — failed calls are suppressed
+  // from the beta feed (see the filter above). `hiddenFailed` carries the
+  // suppressed count so consumers can acknowledge hidden activity (rather than
+  // showing an empty surface) without exposing failure noise.
   return {
     events,
     total: events.length,
-    failed: events.filter((e) => e.status === "failed").length,
+    hiddenFailed,
     ok: events.filter((e) => e.status === "succeeded").length,
     skipped: events.filter((e) => e.status === "skipped").length,
     gated: events.filter((e) => e.status === "gated").length,

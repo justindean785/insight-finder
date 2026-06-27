@@ -57,52 +57,54 @@ export function EvidenceMatrixTab({
   return (
     <TooltipProvider delayDuration={200}>
       <div className="text-xs">
-        <div className="sticky top-0 z-10 bg-card/95 backdrop-blur border-b border-border p-3 space-y-2">
-        <div className="flex items-start gap-2 rounded-md border border-border bg-secondary/30 px-2.5 py-2 text-data text-muted-foreground">
-          <Info className="w-3.5 h-3.5 mt-0.5 shrink-0 text-primary" />
-          <div className="leading-relaxed">
-            <span className="text-foreground font-medium">How review affects scoring:</span>{" "}
-            <span className="text-[hsl(var(--confidence-high))]">Confirm</span> +20,{" "}
-            <span className="text-primary">Key</span> +25 (both upgrade to CONFIRMED),{" "}
-            <span className="text-[hsl(var(--confidence-mid))]">Recheck</span> −20 (downgrades toward VERIFY/LOW),{" "}
-            <span className="text-destructive">Dismiss</span> marks as FAILED and hides it from clusters.
+        <div className="sticky top-0 z-10 border-b border-border bg-card/95 p-2.5 backdrop-blur sm:p-3">
+        <div className="mb-2 flex items-start gap-2 rounded-lg border border-border bg-secondary/25 px-2.5 py-2 text-data text-muted-foreground">
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+          <div className="leading-snug">
+            <span className="text-foreground font-medium">Review scoring:</span>{" "}
+            <span className="text-[hsl(var(--confidence-high))]">Confirm</span> +20 ·{" "}
+            <span className="text-primary">Key</span> +25 ·{" "}
+            <span className="text-[hsl(var(--confidence-mid))]">Recheck</span> -20 ·{" "}
+            <span className="text-destructive">Dismiss</span> excludes.
           </div>
         </div>
 
         {/* Status segmented control */}
-        <div className="flex items-center gap-1 flex-wrap">
-          <span className="chip-group-label">Status</span>
-          {STATUS_PRIMARY.map((f) => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              data-active={filter === f}
-              className="forensic-chip"
-            >
-              {f}
-            </button>
-          ))}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          <div className="flex shrink-0 items-center gap-1">
+            <span className="chip-group-label">Status</span>
+            {STATUS_PRIMARY.map((f) => (
               <button
-                data-active={filter === "FAILED"}
+                key={f}
+                onClick={() => setFilter(f)}
+                data-active={filter === f}
                 className="forensic-chip"
-                title="More status filters"
               >
-                <MoreHorizontal className="w-3 h-3" />
+                {f}
               </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="text-xs">
-              <DropdownMenuItem onClick={() => setFilter("FAILED")}>
-                FAILED — marked false / dismissed
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+            ))}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  data-active={filter === "FAILED"}
+                  className="forensic-chip"
+                  title="More status filters"
+                >
+                  <MoreHorizontal className="h-3 w-3" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="text-xs">
+                <DropdownMenuItem onClick={() => setFilter("FAILED")}>
+                  FAILED - marked false / dismissed
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
 
         {/* Review state segmented control */}
-        <div className="flex items-center gap-1 flex-wrap">
-          <span className="chip-group-label">Review</span>
+        <div className="mt-1 flex items-center gap-2 overflow-x-auto pb-1">
+          <span className="chip-group-label shrink-0">Review</span>
           {REVIEW_PRIMARY.map((f) => (
             <Tooltip key={f}>
               <TooltipTrigger asChild>
@@ -124,20 +126,20 @@ export function EvidenceMatrixTab({
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button className="forensic-chip" title="More review filters">
-                <MoreHorizontal className="w-3 h-3" />
+                <MoreHorizontal className="h-3 w-3" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="text-xs">
               <DropdownMenuItem onClick={() => setReviewFilter("wrong")}>
-                FALSE — marked wrong
+                FALSE - marked wrong
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => setReviewFilter("dismissed")}>
-                DISMISSED — hidden from clusters
+                DISMISSED - hidden from clusters
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
 
-          <span className="ml-auto flex items-center gap-2">
+          <span className="ml-auto flex shrink-0 items-center gap-2">
             <span className="font-mono text-data text-muted-foreground tabular-nums">
               {rows.length} / {artifacts.length}
             </span>

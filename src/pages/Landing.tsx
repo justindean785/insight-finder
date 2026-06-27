@@ -47,8 +47,17 @@ export default function Landing() {
       <div className="relative w-full max-w-3xl space-y-16">
         {/* Hero */}
         <div className="text-center space-y-5">
-          <div className="relative inline-flex items-center justify-center w-20 h-20 rounded-2xl glass-strong border border-white/10 mx-auto shadow-[0_8px_40px_-12px_hsl(var(--primary)/0.55)]">
-            <SwarmMark className="w-12 h-12" />
+          <div className="flex justify-center">
+            <span className="inline-flex items-center gap-1.5 h-6 px-2.5 rounded-full border border-white/10 bg-white/[0.035] text-eyebrow uppercase tracking-[0.16em] text-muted-foreground font-mono">
+              <span className="w-1.5 h-1.5 rounded-full bg-confidence-high shadow-[0_0_8px_hsl(var(--confidence-high)/0.7)]" aria-hidden />
+              Investigator beta
+            </span>
+          </div>
+          <div className="relative mx-auto w-20 h-20">
+            <span aria-hidden className="pointer-events-none absolute inset-0 -m-2.5 rounded-full bg-white/[0.05] blur-2xl" />
+            <div className="relative inline-flex items-center justify-center w-20 h-20 rounded-2xl glass-strong border border-white/[0.12] shadow-[0_8px_40px_-12px_rgba(0,0,0,0.7)]">
+              <SwarmMark className="w-12 h-12" />
+            </div>
           </div>
           <div className="space-y-3">
             <h1 className="font-display text-4xl sm:text-5xl leading-none font-semibold tracking-tight gradient-text">
@@ -61,13 +70,13 @@ export default function Landing() {
           <div className="flex items-center justify-center gap-3 pt-2">
             <Link
               to="/auth"
-              className="rounded-md border border-white/[0.08] bg-transparent px-5 py-2.5 text-sm text-foreground/90 hover:bg-white/[0.04] hover:border-white/[0.14] transition-colors"
+              className="rounded-md border border-white/10 bg-white/[0.035] px-5 py-2.5 text-sm text-foreground/90 hover:bg-white/[0.06] hover:border-white/[0.14] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
               Sign in
             </Link>
             <Link
               to="/auth?tab=signup"
-              className="rounded-md bg-gradient-to-r from-primary to-accent px-5 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 shadow-[0_8px_24px_-8px_hsl(var(--primary)/0.6)] transition-opacity"
+              className="rounded-md bg-white px-5 py-2.5 text-sm font-medium text-black hover:bg-white/90 shadow-[0_10px_28px_-12px_rgba(0,0,0,0.7)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
               Get started
             </Link>
@@ -79,9 +88,11 @@ export default function Landing() {
           {FEATURES.map(({ icon: Icon, title, desc }) => (
             <div
               key={title}
-              className="glass-card rounded-2xl border border-white/[0.07] p-6 space-y-3"
+              className="evidence-tile !rounded-2xl p-6 space-y-3"
             >
-              <Icon className="w-5 h-5 text-muted-foreground" strokeWidth={1.5} />
+              <div className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-white/10 bg-white/[0.04]">
+                <Icon className="w-4 h-4 text-foreground/80" strokeWidth={1.5} />
+              </div>
               <h2 className="text-sm font-medium text-foreground">{title}</h2>
               <p className="text-xs text-muted-foreground leading-relaxed">{desc}</p>
             </div>
@@ -90,9 +101,21 @@ export default function Landing() {
 
         {/* Footer */}
         <footer className="text-center text-eyebrow uppercase tracking-[0.16em] text-muted-foreground/60 font-mono">
-          <Link to="/terms" className="hover:text-muted-foreground transition-colors">Terms</Link>
-          <span className="mx-2">·</span>
-          <Link to="/privacy" className="hover:text-muted-foreground transition-colors">Privacy</Link>
+          <Link
+            to="/terms"
+            className="rounded-sm hover:text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          >
+            Terms
+          </Link>
+          <span className="mx-2" aria-hidden>·</span>
+          <Link
+            to="/privacy"
+            className="rounded-sm hover:text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          >
+            Privacy
+          </Link>
+          <span className="mx-2" aria-hidden>·</span>
+          <span className="text-muted-foreground/50">all activity logged</span>
         </footer>
       </div>
     </div>

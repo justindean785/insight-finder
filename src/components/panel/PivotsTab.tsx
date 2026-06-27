@@ -60,6 +60,13 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
     [artifacts, reportPivots, seedValue],
   );
   const visible = pivots.filter((p) => !skipped.has(pivotKey(p)));
+  const recommendationByKey = useMemo(() => {
+    const map = new Map<string, RecommendedPivot>();
+    for (const recommendation of reportPivots) {
+      map.set(`${recommendation.type}:${recommendation.value.toLowerCase()}`, recommendation);
+    }
+    return map;
+  }, [reportPivots]);
 
   // Heuristic: contradictions ≈ artifacts flagged as low-confidence or with conflicting kinds
   const contradictions = useMemo(() => {
@@ -217,12 +224,17 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
         </div>
       ) : (
         <ul className="space-y-2">
-          {visible.map((p, i) => (
-            <li
-              key={pivotKey(p)}
-              className="group relative overflow-hidden rounded-lg glass p-2.5 space-y-1.5 animate-pivot-in transition-all duration-300 hover:border-primary/60 hover:-translate-y-0.5 hover:ring-glow"
-              style={{ animationDelay: `${Math.min(i * 40, 320)}ms` }}
-            >
+          {visible.map((p, i) => {
+            const recommendation = recommendationByKey.get(pivotKey(p));
+            const headline = recommendation?.actionLabel ?? p.value;
+            const reason = recommendation?.reason ?? p.why;
+            const detail = recommendation?.detail ?? p.value;
+            return (
+              <li
+                key={pivotKey(p)}
+                className="group relative overflow-hidden rounded-lg glass p-2.5 space-y-1.5 animate-pivot-in transition-all duration-300 hover:border-primary/60 hover:-translate-y-0.5 hover:ring-glow"
+                style={{ animationDelay: `${Math.min(i * 40, 320)}ms` }}
+              >
               <div className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 bg-gradient-to-br from-primary/5 via-transparent to-accent/5" />
               {p.status === "new" && (
                 <span className="absolute -left-px top-3 bottom-3 w-0.5 rounded-full bg-gradient-to-b from-primary to-accent animate-pulse-ring" />
@@ -239,7 +251,10 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
                       : <Square className="w-3.5 h-3.5" />}
                   </button>
                   <div className="min-w-0">
-                  <div className="font-mono text-foreground break-all group-hover:text-primary transition-colors">{p.value}</div>
+                  <div className="text-sm font-semibold text-foreground break-words group-hover:text-primary transition-colors">{headline}</div>
+                  {detail !== headline && (
+                    <div className="font-mono text-foreground/88 break-all mt-1">{detail}</div>
+                  )}
                   <div className="text-eyebrow uppercase tracking-wider text-muted-foreground mt-0.5">
                     {p.type} · source: {p.source}
                   </div>
@@ -263,10 +278,10 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
                   })()}
                 </div>
               </div>
-              <div className="text-muted-foreground">{p.why}</div>
+              <div className="text-muted-foreground">{reason}</div>
               <div className="text-data text-muted-foreground flex items-center gap-1">
                 <ArrowRight className="w-3 h-3 text-primary/70 transition-transform group-hover:translate-x-0.5" />
-                Fan-out: <span className="text-foreground">{p.fanout}</span>
+                Action: <span className="text-foreground">{recommendation?.actionLabel ?? p.fanout}</span>
               </div>
               <div className="flex items-center justify-between gap-1">
                 <Button
@@ -277,16 +292,17 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
                   <Play className="w-3 h-3 fill-current" /> Run pivot <ArrowRight className="w-3 h-3" />
                 </Button>
                 <div className="flex items-center gap-1">
-                <Button size="sm" variant="ghost" className="h-6 px-2 gap-1 text-data hover:text-primary" onClick={() => copy(p.value)}>
-                  <Copy className="w-3 h-3" /> Copy
-                </Button>
-                <Button size="sm" variant="ghost" className="h-6 px-2 gap-1 text-data" onClick={() => skip(p)}>
-                  <EyeOff className="w-3 h-3" /> Skip
-                </Button>
+                  <Button size="sm" variant="ghost" className="h-6 px-2 gap-1 text-data hover:text-primary" onClick={() => copy(p.value)}>
+                    <Copy className="w-3 h-3" /> Copy
+                  </Button>
+                  <Button size="sm" variant="ghost" className="h-6 px-2 gap-1 text-data" onClick={() => skip(p)}>
+                    <EyeOff className="w-3 h-3" /> Skip
+                  </Button>
                 </div>
               </div>
-            </li>
-          ))}
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>

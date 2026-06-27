@@ -25,6 +25,7 @@ import { shouldFollowChatScroll } from "@/lib/chat-scroll";
 import {
   extractRecommendedPivots,
   recommendedPivotsStorageKey,
+  type RecommendedPivot,
 } from "@/lib/recommended-pivots";
 import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon } from "lucide-react";
 
@@ -39,6 +40,15 @@ const FUNCTIONS_URL = osintAgentUrl(SUPABASE_URL, SUPABASE_PROJECT_ID);
 const FAIL_PREFIX = "__STATUS__:failed:";
 const CACHE_BANNER_TYPE = "data-investigation-cache";
 const RETRYABLE_HTTP_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+type NextStepSuggestion = {
+  title: string;
+  detail?: string;
+  prompt: string;
+  icon: "pivot" | "spark";
+  meta: string;
+  priority?: RecommendedPivot["priority"];
+};
 
 // Cross-browser timeout helper. AbortSignal.timeout() is missing on
 // Safari ≤ 17.3, Firefox ESR, and Node 18 (used by Vitest), where the
@@ -525,6 +535,25 @@ function groupToolParts(parts: MessagePartShape[]): Array<ToolRunGroup | { part:
   return groups;
 }
 
+// Beta-facing cycle badges. Failed tool calls are intentionally NOT surfaced to
+// users — `group.failed` is still counted in the group data (and kept in state),
+// it is only hidden from this presentation. Exported solely for a regression
+// test; it is a pure helper, not a component.
+// eslint-disable-next-line react-refresh/only-export-components
+export function cycleSummaryBadges(group: {
+  cached: number;
+  stale: number;
+  skipped: number;
+  useful: number;
+}): string[] {
+  return [
+    group.cached > 0 ? `${group.cached} cached` : null,
+    group.stale > 0 ? `${group.stale} stale` : null,
+    group.skipped > 0 ? `${group.skipped} skipped` : null,
+    group.useful > 0 ? `${group.useful} completed` : null,
+  ].filter((bit): bit is string => Boolean(bit));
+}
+
 function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt?: string }) {
   const [expanded, setExpanded] = useState(false);
   const avgExpected = group.expectedValues.length
@@ -533,13 +562,11 @@ function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt
   const time = createdAt ? new Date(createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : null;
   const selectors = Array.from(new Set(group.selectors)).slice(0, 3);
   const extra = Math.max(0, new Set(group.selectors).size - selectors.length);
-  const summaryBits = [
-    group.cached > 0 ? `${group.cached} cached` : null,
-    group.stale > 0 ? `${group.stale} stale` : null,
-    group.skipped > 0 ? `${group.skipped} skipped` : null,
-    group.failed > 0 ? `${group.failed} failed` : null,
-    group.useful > 0 ? `${group.useful} completed` : null,
-  ].filter(Boolean);
+  const summaryBits = cycleSummaryBadges(group);
+  // Beta-facing: failed tool parts are hidden from the expanded list too. The
+  // underlying group.parts stays intact in state; only the rendered subset omits
+  // errors, so a user who expands a cycle never sees a red "failed" card.
+  const visibleParts = group.parts.filter((part) => deriveToolTone(part) !== "error");
   return (
     <div className="rounded-2xl border border-white/8 bg-white/[0.03] text-data text-muted-foreground">
       <button
@@ -574,9 +601,9 @@ function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt
           </div>
         )}
       </button>
-      {expanded && (
+      {expanded && visibleParts.length > 0 && (
         <div className="space-y-2 border-t border-white/8 px-3 py-3">
-          {group.parts.map((part, partIndex) => (
+          {visibleParts.map((part, partIndex) => (
             <ToolPart key={`${group.key}-${partIndex}`} part={part} createdAt={createdAt} />
           ))}
         </div>
@@ -1596,10 +1623,10 @@ function ChatWindowInner({
   // Memoized — without this the IIFE re-runs on every streamed token because
   // `messages` updates dozens of times per second during streaming.
   const suggestions = useMemo(() => {
-    if (isLoading || messages.length === 0) return [] as { label: string; prompt: string; icon: "pivot" | "spark" }[];
+    if (isLoading || messages.length === 0) return [] as NextStepSuggestion[];
     const hasAssistant = messages.some((m) => m.role === "assistant");
     if (!hasAssistant) return [];
-    const out: { label: string; prompt: string; icon: "pivot" | "spark" }[] = [];
+    const out: NextStepSuggestion[] = [];
     const seenLabels = new Set<string>();
     const seenTypes = new Map<string, number>();
     const shortValue = (v: string, type: string): string => {
@@ -1615,11 +1642,27 @@ function ChatWindowInner({
     if (reportPivots.length > 0) {
       for (const pivot of reportPivots.slice(0, 3)) {
         seenLabels.add(pivot.label);
-        out.push({ label: pivot.label, prompt: pivot.prompt, icon: "pivot" });
+        out.push({
+          title: pivot.actionLabel,
+          detail: pivot.detail,
+          prompt: pivot.prompt,
+          icon: "pivot",
+          meta: `${pivot.type} verification`,
+          priority: pivot.priority,
+        });
       }
     } else {
       // No explicit final-report recommendations: fall back to artifact-derived leads.
-      const allPivots = buildPivots(artifacts, seedValue).filter((p) => p.status === "new");
+      const artifactById = new Map(artifacts.map((candidate) => [candidate.id, candidate]));
+      const allPivots = buildPivots(artifacts, seedValue).filter((p) => {
+        if (p.status !== "new") return false;
+        const artifact = artifactById.get(p.sourceArtifactId);
+        const meta = (artifact?.metadata ?? {}) as Record<string, unknown>;
+        if (meta.false_positive === true || meta.collision === true || meta.excluded_collision === true) return false;
+        if (meta.possible_minor === true || meta.minor_warning === true || meta.auto_pivot_blocked === true) return false;
+        if (/\b(password|hash|secret|token|cookie|session|credential)\b/i.test(p.value)) return false;
+        return true;
+      });
       const nonUrl = allPivots.filter((p) => p.type !== "url");
       const urls = allPivots.filter((p) => p.type === "url");
       const ordered = [...nonUrl, ...urls];
@@ -1635,23 +1678,33 @@ function ChatWindowInner({
         if (seenLabels.has(label)) continue;
         seenLabels.add(label);
         seenTypes.set(p.type, typeCount + 1);
+        const title =
+          p.type === "email" ? "Verify email ownership" :
+          p.type === "phone" ? "Check phone association" :
+          p.type === "domain" || p.type === "url" ? "Review domain footprint" :
+          p.type === "ip" ? "Check IP attribution" :
+          p.type === "username" ? "Verify username linkage" :
+          "Review lead";
         out.push({
-          label,
-          prompt: `Pivot on "${p.value}" (${p.type}). Run the next investigation step on this specific lead.`,
+          title,
+          detail: `${display} · ${p.why || p.fanout || "Artifact-derived lead"}`,
+          prompt: `Run this pivot.\n\nAction: ${title}\nTarget: ${p.value}\nType: ${p.type}\nReason: ${p.why || p.fanout || "Artifact-derived lead"}\n\nUse authorized public-source methods only. Return corroborating sources and how this changes the case.`,
           icon: "pivot",
+          meta: `${p.type} verification`,
+          priority: p.confidence >= 75 ? "high" : p.confidence >= 50 ? "medium" : "low",
         });
       }
     }
     // Always include 1-2 generic next steps as fallback.
     const generic = [
-      { label: "Summarize findings", prompt: "Summarize the strongest findings so far and rate overall confidence." },
-      { label: "Check for breaches", prompt: "Run breach and credential-exposure checks on the strongest identifiers found so far." },
-      { label: "Find more pivots", prompt: "Suggest the next 3 highest-value pivots based on what's been discovered." },
+      { title: "Summarize findings", detail: "Rank strongest claims and confidence", prompt: "Summarize the strongest findings so far and rate overall confidence.", meta: "report" },
+      { title: "Check for breaches", detail: "Run credential exposure on strongest identifiers", prompt: "Run breach and credential-exposure checks on the strongest identifiers found so far.", meta: "verification" },
+      { title: "Find more pivots", detail: "Return the next 3 highest-value leads", prompt: "Suggest the next 3 highest-value pivots based on what's been discovered.", meta: "planning" },
     ] as const;
     for (const g of generic) {
       if (out.length >= 4) break;
-      if (seenLabels.has(g.label)) continue;
-      seenLabels.add(g.label);
+      if (seenLabels.has(g.title)) continue;
+      seenLabels.add(g.title);
       out.push({ ...g, icon: "spark" });
     }
     return out.slice(0, 4);
@@ -1808,17 +1861,26 @@ function ChatWindowInner({
               <div className="flex flex-wrap gap-2">
                 {suggestions.map((s, i) => (
                   <button
-                    key={`${s.label}-${i}`}
+                    key={`${s.title}-${i}`}
                     onClick={() => sendText(s.prompt)}
-                    className="action-chip animate-fade-up"
+                    className="action-chip action-chip--stacked animate-fade-up"
                     style={{ animationDelay: `${i * 60}ms` }}
                   >
-                    {s.icon === "pivot" ? (
-                      <GitBranch className="w-3.5 h-3.5 text-primary" />
-                    ) : (
-                      <Sparkles className="w-3.5 h-3.5 text-primary" />
-                    )}
-                    <span className="truncate max-w-[260px]">{s.label}</span>
+                    <span className="action-chip__icon">
+                      {s.icon === "pivot" ? (
+                        <GitBranch className="w-3.5 h-3.5" />
+                      ) : (
+                        <Sparkles className="w-3.5 h-3.5" />
+                      )}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-1.5">
+                        {s.priority && <span className={`pivot-priority pivot-priority--${s.priority}`}>{s.priority}</span>}
+                        <span className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground font-mono">{s.meta}</span>
+                      </span>
+                      <span className="mt-0.5 block text-left text-sm font-medium leading-snug text-foreground">{s.title}</span>
+                      {s.detail && <span className="mt-0.5 block text-left text-[11px] leading-snug text-muted-foreground line-clamp-2">{s.detail}</span>}
+                    </span>
                   </button>
                 ))}
               </div>

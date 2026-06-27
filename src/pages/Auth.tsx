@@ -101,8 +101,11 @@ export default function Auth() {
       <div className="relative w-full max-w-[400px] space-y-7">
         {/* Identity block */}
         <div className="text-center space-y-3.5">
-          <div className="relative inline-flex items-center justify-center w-16 h-16 rounded-2xl glass-strong border border-white/10 mx-auto shadow-[0_8px_40px_-12px_hsl(var(--primary)/0.55)]">
-            <SwarmMark className="w-10 h-10" />
+          <div className="relative mx-auto w-16 h-16">
+            <span aria-hidden className="pointer-events-none absolute inset-0 -m-2 rounded-full bg-white/[0.05] blur-xl" />
+            <div className="relative inline-flex items-center justify-center w-16 h-16 rounded-2xl glass-strong border border-white/[0.12] shadow-[0_8px_40px_-12px_rgba(0,0,0,0.7)]">
+              <SwarmMark className="w-10 h-10" />
+            </div>
           </div>
           <div className="space-y-1.5">
             <h1 className="font-display text-[28px] leading-none font-semibold tracking-tight gradient-text">
@@ -121,7 +124,8 @@ export default function Auth() {
         </div>
 
         {/* Card */}
-        <div className="rounded-2xl border border-white/[0.07] glass-card p-5 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.7)]">
+        <div className="relative overflow-hidden rounded-2xl intel-surface p-5">
+          <div className="live-seam" aria-hidden />
           <Tabs defaultValue={defaultTab} className="w-full">
             <TabsList className="grid grid-cols-2 w-full h-9 bg-surface-2/60 p-1">
               <TabsTrigger value="signin" className="text-meta">Sign in</TabsTrigger>
@@ -130,19 +134,19 @@ export default function Auth() {
             <TabsContent value="signin">
               {forgotMode ? (
                 <form onSubmit={resetPassword} className="space-y-3.5 mt-4">
-                  <p className="text-xs text-muted-foreground">Enter your email and we'll send a password reset link.</p>
+                  <p className="text-data text-muted-foreground">Enter your email and we'll send a password reset link.</p>
                   <div className="space-y-1.5">
                     <Label htmlFor="reset-email" className="text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">Email</Label>
                     <Input id="reset-email" type="email" autoComplete="email" required value={resetEmail} onChange={(e) => setResetEmail(e.target.value)} />
                   </div>
                   <Button
                     type="submit"
-                    className="w-full h-10 bg-gradient-to-r from-primary to-accent text-primary-foreground hover:opacity-90 shadow-[0_8px_24px_-8px_hsl(var(--primary)/0.6)] border-0 font-medium"
+                    className="w-full h-10 bg-white text-black hover:bg-white/90 shadow-[0_10px_28px_-12px_rgba(0,0,0,0.7)] border-0 font-medium"
                     disabled={loading}
                   >
                     {loading ? "Sending…" : "Send reset link"}
                   </Button>
-                  <button type="button" onClick={() => setForgotMode(false)} className="w-full text-data text-muted-foreground hover:text-foreground">
+                  <button type="button" onClick={() => setForgotMode(false)} className="w-full rounded-sm text-data text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background">
                     Back to sign in
                   </button>
                 </form>
@@ -153,15 +157,22 @@ export default function Auth() {
                     <Input id="signin-email" type="email" autoComplete="email" required value={siEmail} onChange={(e) => setSiEmail(e.target.value)} />
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="signin-password" className="text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">Password</Label>
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="signin-password" className="text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">Password</Label>
+                      <button
+                        type="button"
+                        onClick={() => setForgotMode(true)}
+                        aria-label="Forgot password?"
+                        className="rounded-sm text-eyebrow uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                      >
+                        Forgot?
+                      </button>
+                    </div>
                     <Input id="signin-password" type="password" autoComplete="current-password" required value={siPassword} onChange={(e) => setSiPassword(e.target.value)} />
-                    <button type="button" onClick={() => setForgotMode(true)} className="text-data text-muted-foreground hover:text-foreground">
-                      Forgot password?
-                    </button>
                   </div>
                   <Button
                     type="submit"
-                    className="w-full h-10 bg-gradient-to-r from-primary to-accent text-primary-foreground hover:opacity-90 shadow-[0_8px_24px_-8px_hsl(var(--primary)/0.6)] border-0 font-medium"
+                    className="w-full h-10 bg-white text-black hover:bg-white/90 shadow-[0_10px_28px_-12px_rgba(0,0,0,0.7)] border-0 font-medium"
                     disabled={loading}
                   >
                     {loading ? "Signing in…" : "Sign in"}
@@ -182,7 +193,7 @@ export default function Auth() {
                 </div>
                 <Button
                   type="submit"
-                  className="w-full h-10 bg-gradient-to-r from-primary to-accent text-primary-foreground hover:opacity-90 shadow-[0_8px_24px_-8px_hsl(var(--primary)/0.6)] border-0 font-medium"
+                  className="w-full h-10 bg-white text-black hover:bg-white/90 shadow-[0_10px_28px_-12px_rgba(0,0,0,0.7)] border-0 font-medium"
                   disabled={loading}
                 >
                   {loading ? "Creating…" : "Create account"}
@@ -203,7 +214,7 @@ export default function Auth() {
           <Button
             type="button"
             variant="outline"
-            className="w-full h-10 bg-transparent border-white/[0.08] hover:bg-white/[0.04] hover:border-white/[0.14] text-foreground/90"
+            className="w-full h-10 bg-white/[0.035] border-white/10 hover:bg-white/[0.06] hover:border-white/[0.14] text-foreground/90"
             onClick={google}
             disabled={loading}
           >
@@ -216,9 +227,9 @@ export default function Auth() {
 
         {/* Footnote */}
         <p className="text-center text-eyebrow uppercase tracking-[0.16em] text-muted-foreground/60 font-mono">
-          <Link to="/terms" className="hover:text-muted-foreground transition-colors">Terms</Link>
+          <Link to="/terms" className="rounded-sm hover:text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background">Terms</Link>
           {" · "}
-          <Link to="/privacy" className="hover:text-muted-foreground transition-colors">Privacy</Link>
+          <Link to="/privacy" className="rounded-sm hover:text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background">Privacy</Link>
           {" · all activity logged"}
         </p>
       </div>
