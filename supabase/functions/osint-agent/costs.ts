@@ -24,6 +24,16 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   github_code_search: 0, // unauth — rate-limited but free
   shodan_internetdb: 0,  // free tier endpoint
 
+  // ---- Phase 1 free / no-required-key tools ----
+  ransomwarelive_lookup: 0, // api.ransomware.live — free, unauth
+  wayback_cdx_search: 0,    // web.archive.org CDX — free, unauth
+  crtsh_lookup: 0,          // crt.sh — free, unauth
+  census_geocode: 0,        // US Census geocoder — free, unauth
+  nominatim_geocode: 0,     // OSM Nominatim — free, unauth (1 req/sec policy)
+  hibp_pwned_passwords_kanon: 0, // pwnedpasswords range API — free, no key
+  gleif_lei_search: 0,           // api.gleif.org LEI registry — free, no key
+  opencorporates_search: 50,     // registry search; now key-required (keyless 401s)
+
   // ---- Triage + smart reasoning (LLM costs) ----
   triage_seed: 800,           // 4 sub-tool calls bundled
   minimax_correlate: 4000,    // smart-tier LLM

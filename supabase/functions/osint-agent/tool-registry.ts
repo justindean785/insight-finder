@@ -18,7 +18,7 @@ import { applyDateSanity } from "./date-sanity.ts";
 import { computeAxes, sourceConfidence, applyEvidenceCaps, isUnrelatedEntity, EXCLUDED_COLLISION_CONFIDENCE, isBioCrossLinkName, BIO_CROSS_LINK_NAME_CAP, deriveStatus, coerceCoherentStatus, looksDeadEnd } from "./confidence.ts";
 import { queryTypesOf } from "./query-type-router.ts";
 import { isSameSurnameOnlyLead, isListingAgentLead } from "./collision-policy.ts";
-import { STRICT_KINDS, inferKind, isStrictKind, classifySource } from "./artifact_types.ts";
+import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDomainSource, LLM_ASSERTED_PROVENANCE } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
 import { buildNodes } from "./graph.ts";
 import { selectPivots, type PivotCandidate } from "./graph_pivots.ts";
@@ -30,6 +30,7 @@ import {
   CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED,
   HIBP_API_KEY, GITHUB_API_TOKEN, FIRECRAWL_API_KEY, EXA_API_KEY, JINA_API_KEY,
   GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY,
+  OPENCORPORATES_API_KEY,
   firecrawlCreditsLow, markFirecrawlCreditsLow, resetFirecrawlCreditsLow, degradedTools,
   markToolDegraded, isDegraded, fetchRetry, fetchT,
   deadHosts, markHostDead, isHostDead,
@@ -53,7 +54,8 @@ import {
   triageState, bumpArtifacts, skipStub,
 } from "./guard.ts";
 
-import { minimaxChat, minimaxChatWithFallback, safeJson, geminiGroundedSearch } from "./providers.ts";
+import { minimaxChat, minimaxChatWithFallback, safeJson, geminiGroundedSearch, perplexitySearch } from "./providers.ts";
+import { dorkToExaQuery } from "./dork-translate.ts";
 
 import { TOOL_CATALOG, CATALOG_CACHE, FINDING_LABELS } from "./catalog.ts";
 import { beginCycle, recordFindingSummary } from "./runtime-policy.ts";
@@ -404,9 +406,12 @@ export function buildTools(ctx: ToolContext) {
             // Email enrichment
             "hunter_domain_search","hunter_email_finder","hunter_email_verifier","hunter_combined",
             // Domain / infra / IP
-            "whois_lookup","dns_records","crtsh_subdomains","http_fingerprint",
+            "whois_lookup","dns_records","crtsh_subdomains","crtsh_lookup","http_fingerprint",
             "ip_intel","ipgeolocation_lookup","ipqualityscore_lookup","shodan_internetdb","hackertarget",
             "urlscan_search","virustotal_lookup","synapsint_lookup",
+            // Phase 1 free / no-key corroboration tools
+            "ransomwarelive_lookup","wayback_cdx_search","census_geocode","nominatim_geocode",
+            "hibp_pwned_passwords_kanon","gleif_lei_search","opencorporates_search",
             // Search + scrape (preferred order)
             "jina_reader_scrape","exa_search","exa_get_contents","exa_find_similar",
             "minimax_web_search","google_dorks","dork_harvest","gemini_deep_dork",
@@ -446,6 +451,10 @@ export function buildTools(ctx: ToolContext) {
             if (name === "serus_darkweb_scan" && !SERUS_API_KEY) return false;
             // IPQualityScore: same key-gating — only proposable when configured.
             if (name === "ipqualityscore_lookup" && !IPQUALITYSCORE_API_KEY) return false;
+            // OpenCorporates is now key-required (keyless = 401). Keep it off the
+            // planner menu until OPENCORPORATES_API_KEY is set — gleif_lei_search
+            // is the keyless company-registry alternative.
+            if (name === "opencorporates_search" && !OPENCORPORATES_API_KEY) return false;
             // Dead/degraded tools — stop re-proposing them this investigation.
             if (brokenTools.has(name) || isDegraded(name)) return false;
             return true;
@@ -1726,6 +1735,287 @@ export function buildTools(ctx: ToolContext) {
         } catch (e) { return { error: String(e) }; }
       },
     }),
+    // ── Phase 1 free / no-required-key OSINT tools ──────────────────────────
+    // Fetch-only corroboration sources. Each returns { error } on any failure
+    // (never throws) and trims its payload before returning.
+    ransomwarelive_lookup: tool({
+      description:
+        "Ransomware.live victim-exposure check — is a DOMAIN listed as a ransomware/extortion victim on a leak site? Input: { domain: string } (a registrable domain like 'acme.com', NOT a URL or email). Returns up to 25 victim entries (group, date, description). A 404 or empty result means NOT listed → { ok:true, listed:false, victims:[] }. No API key. Replaces the dead deepfind_ransomware_exposure.",
+      inputSchema: z.object({ domain: z.string().min(1).describe("registrable domain, e.g. acme.com") }),
+      execute: async ({ domain }) => {
+        try {
+          const d = domain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+          let r = await fetchRetry(`https://api.ransomware.live/v2/victims/${encodeURIComponent(d)}`, {}, { timeoutMs: 12_000 });
+          // The /victims/{domain} path 404s when the domain isn't a known victim;
+          // try the searchvictims fallback before treating 404 as "not listed".
+          if (r.status === 404) {
+            await r.body?.cancel().catch(() => {});
+            r = await fetchRetry(`https://api.ransomware.live/v2/searchvictims/${encodeURIComponent(d)}`, {}, { timeoutMs: 12_000 });
+          }
+          if (r.status === 404) { await r.body?.cancel().catch(() => {}); return { ok: true, domain: d, listed: false, count: 0, victims: [] }; }
+          if (!r.ok) return { ok: false, status: r.status, error: `ransomware.live ${r.status}`, domain: d };
+          const data = await r.json().catch(() => null);
+          const rows = Array.isArray(data)
+            ? data
+            : (Array.isArray((data as { victims?: unknown[] } | null)?.victims) ? (data as { victims: unknown[] }).victims : []);
+          const victims = rows.slice(0, 25).map((v) => {
+            const x = (v ?? {}) as Record<string, unknown>;
+            const desc = x.description;
+            return {
+              victim: (x.victim ?? x.post_title ?? null) as string | null,
+              group: (x.group_name ?? x.group ?? null) as string | null,
+              date: (x.discovered ?? x.published ?? x.attackdate ?? null) as string | null,
+              description: typeof desc === "string" ? desc.slice(0, 300) : null,
+            };
+          });
+          return { ok: true, domain: d, listed: victims.length > 0, count: victims.length, victims };
+        } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
+      },
+    }),
+    wayback_cdx_search: tool({
+      description:
+        "Wayback Machine CDX archive search — corroborate that a domain/URL existed and when. Input: { url: string } (a domain like 'acme.com' or a full URL). Returns ACCURATE earliest + latest capture timestamps (each queried separately so they are NOT understated by a capped page) and up to 25 sample capture rows (timestamp, original, statuscode). `sampled_count` is the number of SAMPLE rows returned (capped at 25) — it is NOT the total capture count; `capped:true` means more captures exist than were sampled. Empty archive → { ok:true, archived:false, captures:[] }. No API key.",
+      inputSchema: z.object({ url: z.string().min(1).describe("domain or URL to look up in the archive") }),
+      execute: async ({ url }) => {
+        try {
+          const base = `https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(url)}&output=json`;
+          // Accurate bookends, NOT derived from the capped sample page: CDX
+          // default order is chronological, so &limit=1 is the oldest capture and
+          // &limit=-1 is the newest. Each is failure-tolerant (null on any error).
+          const firstTs = async (limit: string): Promise<string | null> => {
+            try {
+              const r = await fetchT(`${base}&fl=timestamp&limit=${limit}`, {}, 15_000);
+              if (!r.ok) { await r.body?.cancel().catch(() => {}); return null; }
+              const data = await r.json().catch(() => null);
+              if (!Array.isArray(data) || data.length < 2) return null;
+              const hdr = data[0] as string[];
+              const idx = hdr.indexOf("timestamp");
+              const row = data[1] as string[];
+              return ((idx >= 0 ? row[idx] : row[0]) ?? null) as string | null;
+            } catch { return null; }
+          };
+          // Small sample page for context (collapsed to unique urlkeys).
+          const r = await fetchT(`${base}&limit=25&collapse=urlkey`, {}, 15_000);
+          if (!r.ok) return { ok: false, status: r.status, error: `wayback cdx ${r.status}`, url };
+          const data = await r.json().catch(() => null);
+          // CDX json: row[0] is the header (["urlkey","timestamp","original","statuscode",...]).
+          if (!Array.isArray(data) || data.length < 2) {
+            return { ok: true, url, archived: false, sampled_count: 0, capped: false, earliest: null, latest: null, captures: [] };
+          }
+          const header = data[0] as string[];
+          const ti = header.indexOf("timestamp"), oi = header.indexOf("original"), si = header.indexOf("statuscode");
+          const rows = (data.slice(1) as string[][]).map((row) => ({
+            timestamp: ti >= 0 ? row[ti] ?? null : null,
+            original: oi >= 0 ? row[oi] ?? null : null,
+            statuscode: si >= 0 ? row[si] ?? null : null,
+          }));
+          const [earliest, latest] = await Promise.all([firstTs("1"), firstTs("-1")]);
+          // Fall back to the sample's own min/max only if a bookend query failed.
+          const sampleTs = rows.map((x) => x.timestamp).filter((t): t is string => !!t).sort();
+          return {
+            ok: true, url, archived: true,
+            earliest: earliest ?? sampleTs[0] ?? null,
+            latest: latest ?? sampleTs[sampleTs.length - 1] ?? null,
+            sampled_count: rows.length,
+            capped: rows.length >= 25,
+            captures: rows.slice(0, 25),
+          };
+        } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
+      },
+    }),
+    crtsh_lookup: tool({
+      description:
+        "crt.sh certificate-transparency lookup — issued certs for a DOMAIN. Input: { domain: string }. Returns UNIQUE subdomains (parsed from name_value) and unique issuer names, each capped at 50, plus the total cert count. crt.sh is slow and can return a non-JSON error/overload page → that returns { error }. No API key. (crtsh_subdomains returns only the subdomain list; this also surfaces issuers + cert count.)",
+      inputSchema: z.object({ domain: z.string().min(1).describe("registrable domain, e.g. acme.com") }),
+      execute: async ({ domain }) => {
+        try {
+          const d = domain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+          const r = await fetchT(`https://crt.sh/?q=${encodeURIComponent(d)}&output=json`, {}, 15_000);
+          const data = (await r.json().catch(() => null)) as Array<{ name_value?: string; issuer_name?: string }> | null;
+          if (!isCrtshOk(r.ok, data)) {
+            return { ok: false, status: r.status, error: r.ok ? "crt.sh returned non-JSON (likely an error/overload page)" : `crt.sh ${r.status}`, domain: d };
+          }
+          const arr = data as Array<{ name_value?: string; issuer_name?: string }>;
+          const subdomains = Array.from(new Set(arr.flatMap((c) => (c.name_value ?? "").split("\n")).map((s) => s.trim().toLowerCase()).filter(Boolean))).slice(0, 50);
+          const issuers = Array.from(new Set(arr.map((c) => (c.issuer_name ?? "").trim()).filter(Boolean))).slice(0, 50);
+          return { ok: true, domain: d, cert_count: arr.length, subdomain_count: subdomains.length, subdomains, issuers };
+        } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
+      },
+    }),
+    census_geocode: tool({
+      description:
+        "US Census one-line address geocoder — does a US street ADDRESS exist, and where? Input: { address: string } (a one-line US street address). Returns the standardized matched address + coordinates (lon/lat) and matched:boolean. US addresses only. No API key.",
+      inputSchema: z.object({ address: z.string().min(1).describe("one-line US street address") }),
+      execute: async ({ address }) => {
+        try {
+          const r = await fetchT(`https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=${encodeURIComponent(address)}&benchmark=Public_AR_Current&format=json`, {}, 15_000);
+          if (!r.ok) return { ok: false, status: r.status, error: `census ${r.status}`, address };
+          const data = (await r.json().catch(() => null)) as { result?: { addressMatches?: Array<Record<string, unknown>> } } | null;
+          const matches = data?.result?.addressMatches;
+          if (!Array.isArray(matches) || matches.length === 0) return { ok: true, address, matched: false, count: 0, matches: [] };
+          const out = matches.slice(0, 5).map((m) => {
+            const coords = (m.coordinates ?? {}) as { x?: number; y?: number };
+            return { matchedAddress: (m.matchedAddress ?? null) as string | null, lon: coords.x ?? null, lat: coords.y ?? null };
+          });
+          return { ok: true, address, matched: true, count: out.length, matches: out };
+        } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
+      },
+    }),
+    nominatim_geocode: tool({
+      description:
+        "OpenStreetMap Nominatim geocoder — resolve any worldwide ADDRESS or place to coordinates. Input: { address: string }. Returns the top match: display_name, lat/lon, category/type, and a residential-vs-commercial hint when derivable. Rate-limited to 1 req/sec by OSM policy (sends a descriptive User-Agent). No API key.",
+      inputSchema: z.object({ address: z.string().min(1).describe("free-form address or place name") }),
+      execute: async ({ address }) => {
+        try {
+          const r = await fetchT(
+            `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=jsonv2&addressdetails=1&limit=3`,
+            { headers: { "User-Agent": "insight-finder-osint/1.0 (justindean785@gmail.com)" } },
+            15_000,
+          );
+          if (!r.ok) return { ok: false, status: r.status, error: `nominatim ${r.status}`, address };
+          const data = (await r.json().catch(() => null)) as Array<Record<string, unknown>> | null;
+          if (!Array.isArray(data) || data.length === 0) return { ok: true, address, matched: false };
+          const top = data[0];
+          const cat = String(top.category ?? top.class ?? "").toLowerCase();
+          const typ = String(top.type ?? top.addresstype ?? "").toLowerCase();
+          const blob = `${cat} ${typ}`;
+          const residential = /residential|house|apartment|dwelling|detached|terrace/.test(blob);
+          const commercial = /commercial|office|retail|\bshop\b|industrial|company|business/.test(blob);
+          const place_type = residential ? "residential" : (commercial ? "commercial" : null);
+          return {
+            ok: true, address, matched: true,
+            display_name: (top.display_name ?? null) as string | null,
+            lat: (top.lat ?? null) as string | null,
+            lon: (top.lon ?? null) as string | null,
+            category: (top.category ?? top.class ?? null) as string | null,
+            type: (top.type ?? null) as string | null,
+            place_type,
+          };
+        } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
+      },
+    }),
+    hibp_pwned_passwords_kanon: tool({
+      description:
+        "Have I Been Pwned k-anonymity password-exposure check (NO API key). Input: { password: string } OR { sha1: string } (a 40-hex SHA-1 of the password). PRIVACY GUARANTEE: only the first 5 chars of the SHA-1 hash ever leave this function — the password and the full hash are NEVER sent. Returns { ok, pwned:boolean, count:number } = how many breach corpora contain that password.",
+      inputSchema: z.object({
+        password: z.string().min(1).optional().describe("plaintext password (hashed locally with SHA-1; never transmitted)"),
+        sha1: z.string().regex(/^[0-9a-fA-F]{40}$/).optional().describe("precomputed 40-hex SHA-1 of the password"),
+      }),
+      execute: async ({ password, sha1 }) => {
+        try {
+          let hashHex: string;
+          if (sha1) {
+            hashHex = sha1.toUpperCase();
+          } else if (password) {
+            const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(password));
+            hashHex = Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+          } else {
+            return { error: "provide either password or sha1" };
+          }
+          const prefix = hashHex.slice(0, 5);
+          const suffix = hashHex.slice(5);
+          // k-anonymity: ONLY the 5-char prefix is sent. Add-Padding hides the
+          // real result-set size from the network.
+          const r = await fetchRetry(`https://api.pwnedpasswords.com/range/${prefix}`, { headers: { "Add-Padding": "true" } }, { timeoutMs: 12_000 });
+          if (!r.ok) return { ok: false, status: r.status, error: `pwnedpasswords ${r.status}` };
+          const text = await r.text();
+          let count = 0;
+          for (const line of text.split("\n")) {
+            const [suf, cnt] = line.trim().split(":");
+            if (suf && suf.toUpperCase() === suffix) { count = parseInt(cnt, 10) || 0; break; }
+          }
+          return { ok: true, pwned: count > 0, count };
+        } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
+      },
+    }),
+    gleif_lei_search: tool({
+      description:
+        "GLEIF Legal Entity Identifier registry search by NAME (NO API key). Input: { name: string } (org/company legal name). Returns up to 10 entities: lei, legalName, status, jurisdiction, legalAddress {city, country}, registrationStatus. COVERAGE CAVEAT: only entities that hold an LEI (financial-market participants — public companies, funds, many regulated/private orgs); small private companies may be ABSENT, so an EMPTY result does NOT mean the company doesn't exist. Falls back to fuzzy name suggestions when the exact filter returns nothing.",
+      inputSchema: z.object({ name: z.string().min(1).describe("org / company legal name") }),
+      execute: async ({ name }) => {
+        try {
+          const q = encodeURIComponent(name.trim());
+          const accept = { headers: { Accept: "application/vnd.api+json" } };
+          // The filter param keys contain `[`/`]` which MUST be percent-encoded.
+          const r = await fetchRetry(
+            `https://api.gleif.org/api/v1/lei-records?filter%5Bentity.legalName%5D=${q}&page%5Bsize%5D=10`,
+            accept,
+            { timeoutMs: 12_000 },
+          );
+          if (!r.ok) return { ok: false, status: r.status, error: `gleif ${r.status}`, name };
+          const data = (await r.json().catch(() => null)) as { data?: Array<Record<string, unknown>> } | null;
+          const rows = Array.isArray(data?.data) ? data!.data : [];
+          const records = rows.slice(0, 10).map((rec) => {
+            const a = (rec.attributes ?? {}) as Record<string, unknown>;
+            const entity = (a.entity ?? {}) as Record<string, unknown>;
+            const legalName = (entity.legalName ?? {}) as { name?: string };
+            const legalAddr = (entity.legalAddress ?? {}) as { city?: string; country?: string };
+            const reg = (a.registration ?? {}) as { status?: string };
+            return {
+              lei: (a.lei ?? rec.id ?? null) as string | null,
+              legalName: (legalName.name ?? null) as string | null,
+              status: (entity.status ?? null) as string | null,
+              jurisdiction: (entity.jurisdiction ?? null) as string | null,
+              legalAddress: { city: legalAddr.city ?? null, country: legalAddr.country ?? null },
+              registrationStatus: (reg.status ?? null) as string | null,
+            };
+          });
+          if (records.length > 0) return { ok: true, name, count: records.length, records };
+          // Fuzzy fallback — surfaces near-name suggestions (value + LEI) so the
+          // agent can refine, without claiming the entity does/doesn't exist.
+          const fr = await fetchRetry(
+            `https://api.gleif.org/api/v1/fuzzycompletions?field=entity.legalName&q=${q}`,
+            accept,
+            { timeoutMs: 12_000 },
+          );
+          if (fr.ok) {
+            const fdata = (await fr.json().catch(() => null)) as { data?: Array<Record<string, unknown>> } | null;
+            const suggestions = (Array.isArray(fdata?.data) ? fdata!.data : []).slice(0, 10).map((s) => {
+              const attrs = (s.attributes ?? {}) as { value?: string };
+              const rel = (s.relationships ?? {}) as { "lei-records"?: { data?: { id?: string } } };
+              return { legalName: (attrs.value ?? null) as string | null, lei: (rel["lei-records"]?.data?.id ?? null) as string | null };
+            }).filter((x) => x.legalName);
+            if (suggestions.length > 0) {
+              return { ok: true, name, count: 0, fuzzy: true, suggestions, note: "no exact legalName match — fuzzy name suggestions returned (entity may still exist without an LEI)" };
+            }
+          } else { await fr.body?.cancel().catch(() => {}); }
+          return { ok: true, name, count: 0, records: [], note: "no LEI record matched — the entity may simply not hold an LEI (small private cos often don't)" };
+        } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
+      },
+    }),
+    opencorporates_search: tool({
+      description:
+        "OpenCorporates company-registry search — find official company registrations by NAME. Input: { name: string } (company name). Returns up to 20 companies: name, jurisdiction_code, company_number, incorporation_date, current_status. REQUIRES OPENCORPORATES_API_KEY — the v0.4 endpoint now returns 401 'Invalid Api Token' for all keyless requests, so the tool self-skips when the key is unset. For keyless company-registry corroboration, use gleif_lei_search instead.",
+      inputSchema: z.object({ name: z.string().min(1).describe("company / organization name") }),
+      execute: async ({ name }) => {
+        // OpenCorporates retired keyless access — every anonymous request now
+        // 401s ("Invalid Api Token"). Self-skip BEFORE the doomed fetch, matching
+        // the codebase's "tool self-skips when its key is missing" convention.
+        if (!OPENCORPORATES_API_KEY) return { error: "OPENCORPORATES_API_KEY not configured", skipped: true };
+        try {
+          const url = `https://api.opencorporates.com/v0.4/companies/search?q=${encodeURIComponent(name)}&api_token=${encodeURIComponent(OPENCORPORATES_API_KEY)}`;
+          const r = await fetchRetry(url, {}, { timeoutMs: 15_000 });
+          if (!r.ok) {
+            const gated = r.status === 401 || r.status === 403 || r.status === 429;
+            return { ok: false, status: r.status, error: `opencorporates ${r.status}${gated ? " (rate-limited / invalid token)" : ""}`, name };
+          }
+          const data = (await r.json().catch(() => null)) as { results?: { companies?: Array<{ company?: Record<string, unknown> }> } } | null;
+          const companies = data?.results?.companies;
+          if (!Array.isArray(companies)) return { ok: true, name, count: 0, companies: [] };
+          const out = companies.slice(0, 20).map((c) => {
+            const co = (c.company ?? {}) as Record<string, unknown>;
+            return {
+              name: (co.name ?? null) as string | null,
+              jurisdiction_code: (co.jurisdiction_code ?? null) as string | null,
+              company_number: (co.company_number ?? null) as string | null,
+              incorporation_date: (co.incorporation_date ?? null) as string | null,
+              current_status: (co.current_status ?? null) as string | null,
+            };
+          });
+          return { ok: true, name, count: out.length, companies: out };
+        } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
+      },
+    }),
     http_fingerprint: tool({
       description: "Fetch a URL and return status, server/tech headers, title, and a short text excerpt. Use to investigate a website without leaving the agent.",
       inputSchema: z.object({ url: z.string().url() }),
@@ -2130,7 +2420,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     dork_harvest: tool({
       description:
-        "Execute the highest-yield document/leak dorks for a seed and AUTO-RECORD any PDFs, Office docs, CSV/SQL/log/env dumps, pastebin entries, and stealer-log URLs as artifacts (kind='document' for files, kind='leak_paste' for pastes). This is the way to turn google_dorks output into real evidence. Runs N targeted queries through MiniMax web_search, parses URLs from results, classifies them by extension/host, and inserts them directly into the case. Costs 1 MiniMax call per query.",
+        "Execute the highest-yield document/leak dorks for a seed and AUTO-RECORD any PDFs, Office docs, CSV/SQL/log/env dumps, pastebin entries, and stealer-log URLs as artifacts (kind='document' for files, kind='leak_paste' for pastes). This is the way to turn google_dorks output into real evidence. Runs N targeted queries through Perplexity Sonar web search (with an Exa keyword fallback that honors site: domains), parses URLs from results, classifies them by extension/host, and inserts them directly into the case. Costs 1 Perplexity call per query.",
       inputSchema: z.object({
         seed: z.string(),
         kind: z.enum(["email", "username", "phone", "name", "person", "domain", "ip", "hash", "crypto_wallet"]),
@@ -2214,7 +2504,7 @@ export function buildTools(ctx: ToolContext) {
           query: string;
           ok: boolean;
           hits: number;
-          provider?: "minimax_web_search" | "exa_search";
+          provider?: "perplexity_search" | "exa_search";
           status?: number;
           answer?: string;
           error?: string;
@@ -2223,16 +2513,24 @@ export function buildTools(ctx: ToolContext) {
         const extractUrls = (text: string): string[] =>
           Array.from(new Set((text.match(URL_RE) ?? []).map((u) => u.replace(/[).,;:]+$/, ""))));
 
-        const exaSearchUrls = async (q: string): Promise<{ ok: boolean; status: number; urls: string[]; note?: string }> => {
+        const exaSearchUrls = async (dork: string): Promise<{ ok: boolean; status: number; urls: string[]; note?: string }> => {
           if (!EXA_API_KEY) return { ok: false, status: 0, urls: [], note: "EXA_API_KEY not configured" };
+          // Exa keyword search ignores dork operators, so translate first:
+          // strip filetype:/ext:/intitle:/inurl:/quotes/OR-groups down to core
+          // terms and lift site: domains into the structured includeDomains
+          // filter Exa actually honors.
+          const { query: exaQuery, includeDomains } = dorkToExaQuery(dork);
+          const finalQuery = exaQuery || seed;
           try {
+            const exaBody: Record<string, unknown> = { query: finalQuery, type: "keyword", numResults: 10, contents: false };
+            if (includeDomains.length) exaBody.includeDomains = includeDomains;
             const r = await fetchRetry("https://api.exa.ai/search", {
               method: "POST",
               headers: {
                 "x-api-key": EXA_API_KEY,
                 "Content-Type": "application/json",
               },
-              body: JSON.stringify({ query: q, type: "keyword", numResults: 10, contents: false }),
+              body: JSON.stringify(exaBody),
             });
             interface ExaSearchResp {
               results?: Array<{ url?: unknown; [k: string]: unknown }>;
@@ -2253,23 +2551,27 @@ export function buildTools(ctx: ToolContext) {
 
         for (const q of queries) {
           try {
-            const r = await minimaxChatWithFallback({
+            // Route every dork through the working search path (Perplexity
+            // Sonar). MiniMax's chat API 400s on the web_search tool shape, so
+            // minimaxChat({webSearch:true}) is NOT usable here.
+            const r = await perplexitySearch({
+              query: q,
               system:
-                "You are an OSINT dork-harvester. Use the web_search tool. Run the user's query VERBATIM. Return ONLY a bullet list of every result URL you find (one URL per line, no commentary). Do not summarize. Do not editorialize. If nothing is found, reply with exactly: NONE.",
-              user: q,
-              webSearch: true,
+                "You are an OSINT dork-harvester. Run the user's query and return ONLY a bullet list of every result URL you find (one URL per line, no commentary). Do not summarize. Do not editorialize. If nothing is found, reply with exactly: NONE.",
               maxTokens: 1200,
             });
 
-            let provider: "minimax_web_search" | "exa_search" = "minimax_web_search";
+            let provider: "perplexity_search" | "exa_search" = "perplexity_search";
             let status = r.status;
-            let text = r.content ?? "";
-            let urls = extractUrls(text);
+            // Perplexity returns grounded source URLs as `citations`; also parse
+            // any URLs it listed in the answer body.
+            let text = r.ok ? [r.answer, ...r.citations].join("\n") : "";
+            let urls = r.ok ? Array.from(new Set([...r.citations, ...extractUrls(r.answer)])) : [];
             let providerError: string | undefined;
 
-            // MiniMax web_search occasionally returns upstream 5xx/timeout responses.
-            // Treat those as provider degradation, then fall back to Exa so
-            // Google Dorking remains available instead of surfacing as offline.
+            // Perplexity may fail (auth/rate/5xx) or return nothing usable.
+            // Fall back to Exa (with dork→keyword translation) so Google
+            // Dorking remains available instead of surfacing as offline.
             if (!r.ok || urls.length === 0) {
               const exa = await exaSearchUrls(q);
               if (exa.ok && exa.urls.length > 0) {
@@ -2279,8 +2581,8 @@ export function buildTools(ctx: ToolContext) {
                 text = `EXA_FALLBACK:${exa.urls.slice(0, 20).join("\n")}`;
               } else {
                 providerError = !r.ok
-                  ? `minimax_web_search HTTP ${r.status}`
-                  : (exa.note ? `fallback exa failed: ${exa.note}` : "no URLs returned by minimax or exa");
+                  ? (r.error ?? `perplexity_search HTTP ${r.status}`)
+                  : (exa.note ? `fallback exa failed: ${exa.note}` : "no URLs returned by perplexity or exa");
               }
             }
 
@@ -2313,14 +2615,14 @@ export function buildTools(ctx: ToolContext) {
         let inserted = 0;
         const providerStats = queryResults.reduce(
           (acc, q) => {
-            const p = q.provider ?? "minimax_web_search";
+            const p = q.provider ?? "perplexity_search";
             if (p === "exa_search") acc.exa++;
-            else acc.minimax++;
+            else acc.perplexity++;
             if (q.ok) acc.success++;
             else acc.failed++;
             return acc;
           },
-          { minimax: 0, exa: 0, success: 0, failed: 0 },
+          { perplexity: 0, exa: 0, success: 0, failed: 0 },
         );
         if (collected.length > 0) {
           const rows = collected.map((c) => ({
@@ -2334,7 +2636,7 @@ export function buildTools(ctx: ToolContext) {
               seed,
               seed_kind: kind,
               dork_query: c.via,
-              discovered_via: "google_dork → minimax web_search",
+              discovered_via: "google_dork → perplexity sonar (exa keyword fallback)",
             },
           }));
           const safeRows = scrubArtifactRows(rows);
@@ -3203,10 +3505,19 @@ export function buildTools(ctx: ToolContext) {
             return;
           }
           // Apply conservative confidence caps based on source class.
+          const effSources = [a.source ?? "", ...((a.metadata?.sources ?? []) as Iterable<unknown>)].filter(Boolean) as string[];
           const cap = applyEvidenceCaps({
             rawConfidence: a.confidence ?? 50,
-            sources: [a.source ?? "", ...((a.metadata?.sources ?? []) as Iterable<unknown>)].filter(Boolean) as string[],
+            sources: effSources,
           });
+          // Provenance guard (#131 follow-up): flag an artifact whose effective
+          // source names a bare domain that is NOT a wired tool and NOT a recognized
+          // provider — i.e. an LLM-asserted citation nothing actually fetched (the
+          // menstoppingviolence.org incident). The seed domain (which whois/dns DO
+          // fetch) is whitelisted so the legitimate seed never trips it.
+          const seedRecognizedDomains = [triageState.seedDomain, triageState.seed]
+            .filter((d): d is string => typeof d === "string" && d.length > 0);
+          const llmAssertedProvenance = effSources.some((s) => isLlmAssertedDomainSource(s, seedRecognizedDomains));
           // Different-person / unrelated-entity gate: a namesake/collision that
           // does NOT belong to the seed is demoted to excluded_collision with a
           // hard-capped confidence so it can't roll up or read as a confirmed link.
@@ -3277,6 +3588,7 @@ export function buildTools(ctx: ToolContext) {
             ...(surnameOnly ? { excluded_reason: "same_surname_only" } : {}),
             ...(listingAgent ? { contact_type: "real_estate_listing_agent" } : {}),
             ...(bioName ? { bio_cross_link: true } : {}),
+            ...(llmAssertedProvenance ? { provenance: LLM_ASSERTED_PROVENANCE, provenance_verified: false } : {}),
             // Spread LAST so a corrected `note` overrides the model-supplied one.
             ...dateSanity.metaPatch,
           };
@@ -3426,11 +3738,18 @@ export function buildTools(ctx: ToolContext) {
               meta.archived_url ||
               null;
             const snapshot = JSON.stringify(meta).slice(0, 1500);
+            // Chain-of-custody protection (#131 follow-up): never record an
+            // LLM-asserted unverified domain as the authoritative tool/source — that
+            // would launder a fabricated citation into the tamper-evident log. The
+            // artifact value/kind stay intact; only the provenance label changes.
+            const llmAsserted = meta.provenance === LLM_ASSERTED_PROVENANCE;
+            const evToolName = llmAsserted ? LLM_ASSERTED_PROVENANCE : ((r.source as string) ?? "agent");
+            const evSource = llmAsserted ? LLM_ASSERTED_PROVENANCE : ((r.source as string) ?? null);
             const { error: evErr } = await supabase.rpc("append_evidence", {
               _thread_id: threadId,
               _artifact_id: null,
-              _tool_name: (r.source as string) ?? "agent",
-              _source: (r.source as string) ?? null,
+              _tool_name: evToolName,
+              _source: evSource,
               _source_url: typeof sourceUrl === "string" ? sourceUrl : null,
               _classification: classification,
               _confidence: conf,
@@ -3495,10 +3814,17 @@ export function buildTools(ctx: ToolContext) {
         const inferred = inferKind(kind, value);
         const v = validateArtifact(inferred.kind, value);
         if (!v.ok) return { ok: false, rejected: true, reason: v.reason };
+        const effSources = [source ?? "", ...((metadata?.sources ?? []) as Iterable<unknown>)].filter(Boolean) as string[];
         const cap = applyEvidenceCaps({
           rawConfidence: confidence ?? 50,
-          sources: [source ?? "", ...((metadata?.sources ?? []) as Iterable<unknown>)].filter(Boolean) as string[],
+          sources: effSources,
         });
+        // Provenance guard (#131 follow-up) — mirrors record_artifacts. Flags a
+        // bare-domain source that is neither a wired tool nor a known provider (the
+        // LLM-asserted menstoppingviolence.org citation); seed domain whitelisted.
+        const seedRecognizedDomains = [triageState.seedDomain, triageState.seed]
+          .filter((d): d is string => typeof d === "string" && d.length > 0);
+        const llmAssertedProvenance = effSources.some((s) => isLlmAssertedDomainSource(s, seedRecognizedDomains));
         // Gates mirror record_artifacts: unrelated / same-surname-only / listing
         // agent → excluded collision; bio-linked name → unverified claim.
         const unrelated = isUnrelatedEntity(metadata ?? null);
@@ -3554,6 +3880,7 @@ export function buildTools(ctx: ToolContext) {
           ...(surnameOnly ? { excluded_reason: "same_surname_only" } : {}),
           ...(listingAgent ? { contact_type: "real_estate_listing_agent" } : {}),
           ...(bioName ? { bio_cross_link: true } : {}),
+          ...(llmAssertedProvenance ? { provenance: LLM_ASSERTED_PROVENANCE, provenance_verified: false } : {}),
         };
         const row = scrubArtifactRow({
           thread_id: threadId,
@@ -3585,11 +3912,16 @@ export function buildTools(ctx: ToolContext) {
             : "soft";
         const sourceUrl =
           meta.source_url || meta.url || meta.profile_url || meta.archived_url || null;
+        // Chain-of-custody protection (#131 follow-up): keep an LLM-asserted
+        // unverified domain out of the authoritative tool/source fields.
+        const llmAsserted = meta.provenance === LLM_ASSERTED_PROVENANCE;
+        const evToolName = llmAsserted ? LLM_ASSERTED_PROVENANCE : ((row.source as string) ?? "agent");
+        const evSource = llmAsserted ? LLM_ASSERTED_PROVENANCE : ((row.source as string) ?? null);
         await supabase.rpc("append_evidence", {
           _thread_id: threadId,
           _artifact_id: null,
-          _tool_name: (row.source as string) ?? "agent",
-          _source: (row.source as string) ?? null,
+          _tool_name: evToolName,
+          _source: evSource,
           _source_url: typeof sourceUrl === "string" ? sourceUrl : null,
           _classification: classification,
           _confidence: conf,

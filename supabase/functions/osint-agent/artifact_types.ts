@@ -91,6 +91,8 @@ export {
   splitSourceLabels,
   isWrapperLabel,
   isInfraClass,
+  isLlmAssertedDomainSource,
+  LLM_ASSERTED_PROVENANCE,
   countIndependentClasses,
   hasOfficialClass,
   NON_CORROBORATING_CLASSES,

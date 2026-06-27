@@ -6,7 +6,7 @@
 import { createOpenAICompatible } from "npm:@ai-sdk/openai-compatible@1";
 import { MODELS } from "./models.ts";
 import {
-  MINIMAX_API_KEY, GEMINI_API_KEY, fetchRetry,
+  MINIMAX_API_KEY, GEMINI_API_KEY, PERPLEXITY_API_KEY, fetchRetry,
   LOVABLE_API_KEY, XAI_API_KEY, GROK_ORCHESTRATOR_MODEL_ID,
 } from "./env.ts";
 import { selectFallbackProvider } from "./orchestrator_select.ts";
@@ -76,6 +76,65 @@ export async function minimaxChat(opts: {
   } finally {
     clearTimeout(timer);
     opts.signal?.removeEventListener("abort", onExternalAbort);
+  }
+}
+
+// ---- Perplexity Sonar live web search ---------------------------------------
+// The single working web-search path. MiniMax's chat API rejects the
+// `tools:[{type:"web_search"}]` shape with HTTP 400, so live web search must
+// NOT go through minimaxChat({webSearch:true}). Both the standalone
+// `minimax_web_search` tool (tools/minimax.ts) and `dork_harvest`
+// (tool-registry.ts) call this helper so there is one place that owns the
+// working request shape (Perplexity `sonar`, native grounded search).
+export async function perplexitySearch(opts: {
+  query: string;
+  /** Optional system-prompt override (e.g. dork_harvest's "return only URLs"). */
+  system?: string;
+  focus?: string;
+  maxTokens?: number;
+  /** Dependency injection for tests; defaults to the env-captured key. */
+  apiKey?: string;
+  signal?: AbortSignal;
+}): Promise<{ ok: boolean; status: number; answer: string; citations: string[]; error?: string }> {
+  const key = opts.apiKey ?? PERPLEXITY_API_KEY;
+  if (!key) {
+    return { ok: false, status: 0, answer: "", citations: [], error: "PERPLEXITY_API_KEY not configured" };
+  }
+  const system = opts.system ??
+    "You are an OSINT web-search worker. Return a concise factual answer in bullet points. Do not speculate. Prefer specific names, dates, URLs, and identifiers. If nothing relevant is found, say so explicitly.";
+  try {
+    const r = await fetchRetry("https://api.perplexity.ai/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "sonar",
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: `${opts.focus ? `Focus: ${opts.focus}\n\n` : ""}Query: ${opts.query}` },
+        ],
+        max_tokens: opts.maxTokens ?? 1200,
+      }),
+      signal: opts.signal,
+    });
+    if (!r.ok) {
+      const body = await r.text().catch(() => "");
+      return { ok: false, status: r.status, answer: "", citations: [], error: `perplexity ${r.status}: ${body.slice(0, 300)}` };
+    }
+    const data = await r.json() as {
+      choices?: { message?: { content?: string } }[];
+      citations?: string[];
+      search_results?: { url?: string }[];
+    };
+    const answer = (data.choices?.[0]?.message?.content ?? "").trim();
+    const citations = (data.citations ?? data.search_results?.map((s) => s.url ?? "").filter(Boolean) ?? [])
+      .filter((u) => typeof u === "string" && /^https?:\/\//i.test(u))
+      .slice(0, 25);
+    return { ok: true, status: r.status, answer, citations };
+  } catch (e) {
+    return { ok: false, status: 0, answer: "", citations: [], error: String(e) };
   }
 }
 

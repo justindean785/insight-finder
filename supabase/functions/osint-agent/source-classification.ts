@@ -26,6 +26,8 @@
 // mapping replace #16's coarse single "infra". Where #16 and #56 disagreed on a
 // source's class, #56 WON — see the tier-disagreement log in the PR report.
 
+import { TOOL_CATALOG } from "./catalog.ts";
+
 /** Source-class taxonomy used for confidence caps and corroboration counting.
  *  Superset: post-#56 main's split internal-tool classes are preserved (so the
  *  caps + tests stay valid) PLUS the public-record / directory / listing classes
@@ -86,6 +88,13 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   deepfind_ransomware_exposure: "breach",
   serus_darkweb_scan: "breach",
   leakcheck: "breach", // bare alias of leakcheck_lookup seen in compound source strings
+  // ── Phase 1 free tools — mapped to the closest EXISTING source class.
+  // TODO(integrity): no "threat_intel" class exists; ransomware-victim exposure
+  // is mapped to "breach" (same class as the dead deepfind_ransomware_exposure it
+  // replaces). Confirm whether a dedicated threat-intel class/cap is warranted.
+  ransomwarelive_lookup: "breach",
+  // k-anonymity password-exposure check — breach corpus by nature.
+  hibp_pwned_passwords_kanon: "breach",
   // username sweeps
   username_sweep: "username_sweep",
   socialfetch_lookup: "social_profile_passive",
@@ -114,9 +123,23 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   ipqualityscore_lookup: "infra_reputation",
   emailrep: "infra_reputation",
   emailrep_lookup: "infra_reputation",
+  // certificate transparency — DNS/infra perspective
+  crtsh_lookup: "infra_dns",
+  // geocoders — address-existence public records
+  census_geocode: "public_record",
+  nominatim_geocode: "public_record",
+  // corporate registry search. TODO(integrity): free-text "opencorporates" maps
+  // to "business_directory" (line ~214); the Phase-1 proposal classifies the
+  // slug as "public_record" (an OFFICIAL_CLASS). Mapped to public_record per the
+  // proposal — confirm the intended class for the slug vs the free-text label.
+  opencorporates_search: "public_record",
+  // GLEIF LEI registry — official corporate registry, same class as the other
+  // company-registry sources. (LEIs are issued by accredited LOUs.)
+  gleif_lei_search: "public_record",
   // passive / historical — observe the past, not the live asset
   urlscan_search: "infra_passive",
   wayback_snapshots: "infra_passive",
+  wayback_cdx_search: "archive",
   archive_url: "infra_passive",
   passive_dns: "infra_passive",
   gravatar_profile: "social_profile_passive",
@@ -228,7 +251,7 @@ export function classifySource(toolOrSource: string | null | undefined): SourceC
   }
 
   // Public-record aggregators (people-search / OSINT property+person providers) — #16.
-  if (/\b(oathnet|whitepages|thatsthem|fastpeoplesearch|truepeoplesearch|beenverified|radaris|spokeo|intelius|peoplefinders|public records?)\b/.test(s)) {
+  if (/\b(whitepages|thatsthem|fastpeoplesearch|truepeoplesearch|beenverified|radaris|spokeo|intelius|peoplefinders|public records?)\b/.test(s)) {
     return "public_record";
   }
 
@@ -243,7 +266,16 @@ export function classifySource(toolOrSource: string | null | undefined): SourceC
   if (/\b(virustotal|urlscan|malwarebytes|safe browsing|reputation|phishing|malware)\b/.test(s)) return "infra";
 
   // Breach / leak free-text — #16.
-  if (/\b(breach|hibp|have i been pwned|leak|paste|combolist|stealer log|dehashed)\b/.test(s)) return "breach";
+  // OathNet is a breach/leaked-data aggregator (TOOL_CLASS.oathnet_lookup = "breach",
+  // catalog "leaked-data … v2 breach search"). It was previously listed in the
+  // public_record people-search regex above and — because that branch runs first —
+  // any "oathnet"-containing free-text provenance mis-classified as public_record
+  // (cap 75) instead of breach (cap 60). Classify it as breach here. (The `oathnet`
+  // token alone is correct: the clean `oathnet_lookup` slug is already resolved by
+  // TOOL_CLASS, and inside a compound free-text string it is reached via splitting —
+  // adding `oathnet_lookup` to this regex would instead make the whole compound
+  // match here and suppress the split that the two-breach nudge depends on.)
+  if (/\b(breach|hibp|have i been pwned|leak|paste|combolist|stealer log|dehashed|oathnet)\b/.test(s)) return "breach";
 
   // Archive — #16.
   if (/\b(wayback|web archive|archive\.org|archive\.is|archive\.today|cachedview)\b/.test(s)) return "archive";
@@ -348,3 +380,91 @@ export const OFFICIAL_CLASSES: ReadonlySet<SourceClass> = new Set<SourceClass>([
 export function hasOfficialClass(classes: readonly SourceClass[]): boolean {
   return classes.some((c) => OFFICIAL_CLASSES.has(c));
 }
+
+// ── LLM-asserted unverified domain guard (minimal "option A" — #131 follow-up) ─
+//
+// An artifact's `source` is a free-text string the orchestrator LLM writes; nothing
+// validates it. In a live case 9 PII artifacts were attributed to
+// `menstoppingviolence.org` — a DV nonprofit that is NOT a wired tool and hosts no
+// such data: a fabricated/misattributed citation. It still polluted the case graph,
+// the export, and — worst — the tamper-evident chain-of-custody log, laundering a
+// hallucination into court-defensible-looking evidence.
+//
+// This helper detects a `source` that names a BARE DOMAIN component which is neither
+// a wired tool nor a provider the classifier recognizes — i.e. a domain the LLM
+// asserted as provenance but that no tool actually fetched.
+//
+// CONSERVATIVE BY DESIGN: it must never flag a real tool slug
+// (`oathnet_lookup`, `minimax_web_search`, …), a known provider already in the
+// people-search/breach/etc. regexes (whitepages, spokeo, realtor.com, …), or a
+// compound source whose every component is recognized. Only a genuinely
+// unrecognized bare domain (like `menstoppingviolence.org`) trips it.
+//
+// This is the MINIMAL string-level guard. The full fetched-domain ledger — which
+// would positively confirm a domain WAS fetched instead of inferring it from string
+// recognition — is tracked as issue #131. Until then callers may pass
+// `recognizedDomains` (e.g. the investigation seed domain, which whois/dns DO fetch)
+// to suppress false-positives on domains the case legitimately touched.
+
+// A single token that is *exactly* a bare domain: one or more dot-separated labels
+// followed by an alphabetic TLD of 2+ chars (foo.org, a.b.co.uk). Tool slugs use
+// underscores and contain no dot, so they never match this.
+const BARE_DOMAIN_RE = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/i;
+
+// Catalog tool slugs. None currently contain a dot (so none can match
+// BARE_DOMAIN_RE today), but a slug must never be mistaken for a fabricated domain
+// if one is ever added — checked explicitly per the spec.
+const CATALOG_TOOL_SLUGS: ReadonlySet<string> = new Set(
+  (TOOL_CATALOG?.tools ?? []).map((t) => t.name.toLowerCase()),
+);
+
+/** A source token is "recognized" when it is a wired tool slug (incl. dotted slugs
+ *  like `usphonesearch.net`), a catalog tool name, or a provider the classifier
+ *  maps to a real (non-"unknown") class (realtor.com, apollo.io, archive.org…). */
+function isRecognizedSourceToken(token: string): boolean {
+  const t = token.toLowerCase();
+  if (TOOL_CLASS[t]) return true;
+  if (CATALOG_TOOL_SLUGS.has(t)) return true;
+  if (classifySource(token) !== "unknown") return true;
+  return false;
+}
+
+/** True when `source` contains a bare-domain component that no wired tool or known
+ *  provider recognizes — i.e. a domain the orchestrator LLM asserted as provenance
+ *  but that nothing actually fetched. Pass `recognizedDomains` (e.g. the seed
+ *  domain, which whois/dns legitimately fetch) to whitelist trusted domains. See
+ *  issue #131 for the full fetched-domain ledger that supersedes this heuristic. */
+export function isLlmAssertedDomainSource(
+  source: string | null | undefined,
+  recognizedDomains?: Iterable<string>,
+): boolean {
+  const raw = (source ?? "").trim();
+  if (!raw) return false;
+  const recognized = new Set<string>();
+  if (recognizedDomains) {
+    for (const d of recognizedDomains) {
+      if (typeof d === "string" && d.trim()) recognized.add(d.trim().toLowerCase());
+    }
+  }
+  // Split on the same delimiters the cap/classifier code uses (MIXED_SOURCE_SPLIT_RE),
+  // plus whitespace, so both "a+b.org" and "data from foo.org" surface their tokens.
+  const tokens = raw
+    .split(MIXED_SOURCE_SPLIT_RE)
+    .flatMap((p) => p.split(/\s+/))
+    .map((p) => p.trim())
+    .filter(Boolean);
+  for (const tok of tokens) {
+    if (!BARE_DOMAIN_RE.test(tok)) continue; // not a domain component — ignore
+    const lower = tok.toLowerCase();
+    if (recognized.has(lower)) continue; // seed / legitimately-fetched domain — trusted
+    if (isRecognizedSourceToken(tok)) continue; // wired tool slug or known provider
+    return true; // unrecognized bare domain → LLM-asserted, unverified provenance
+  }
+  return false;
+}
+
+/** Provenance marker stamped on artifacts whose source trips
+ *  `isLlmAssertedDomainSource`, and substituted for the fabricated domain in the
+ *  chain-of-custody log so the tamper-evident record never launders it as a real
+ *  source. Kept as a shared constant so runtime + mirror stay in sync. */
+export const LLM_ASSERTED_PROVENANCE = "llm_asserted_unverified" as const;

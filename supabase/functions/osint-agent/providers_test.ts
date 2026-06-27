@@ -4,7 +4,7 @@ import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 // shouldFallbackOnStatus / shouldFallbackOnError — pure helpers, no env deps.
 // Static import is safe here.
 // ---------------------------------------------------------------------------
-import { shouldFallbackOnStatus, shouldFallbackOnError } from "./providers.ts";
+import { shouldFallbackOnStatus, shouldFallbackOnError, perplexitySearch } from "./providers.ts";
 
 Deno.test("shouldFallbackOnStatus: 200 → no fallback", () => {
   assertEquals(shouldFallbackOnStatus(200), false);
@@ -319,6 +319,66 @@ Deno.test("minimaxChatWithFallback does not call fallback when MiniMax succeeds"
     // Proof: only MiniMax was hit; the fallback provider was never called.
     assertEquals(calls.length, 1);
     assertEquals(calls[0].includes(MINIMAX_HOST), true);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// perplexitySearch — the single working web-search path. MiniMax's chat API
+// 400s on the web_search tool shape, so both minimax_web_search and
+// dork_harvest route through this Perplexity Sonar helper. apiKey DI lets us
+// exercise it without env capture (the keys are read at module load).
+// ---------------------------------------------------------------------------
+
+const PPLX_HOST = "api.perplexity.ai";
+
+Deno.test("perplexitySearch: missing key → not-configured error, no fetch", async () => {
+  const origFetch = globalThis.fetch;
+  let called = false;
+  try {
+    globalThis.fetch = (async () => { called = true; return new Response("{}"); }) as typeof globalThis.fetch;
+    // Explicit empty key (deterministic regardless of env capture): falsy → gate.
+    const r = await perplexitySearch({ query: "x", apiKey: "" });
+    assertEquals(r.ok, false);
+    assertEquals(r.error, "PERPLEXITY_API_KEY not configured");
+    assertEquals(called, false);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+Deno.test("perplexitySearch: 200 → parses answer + citations, hits Perplexity host", async () => {
+  const origFetch = globalThis.fetch;
+  const calls: string[] = [];
+  try {
+    globalThis.fetch = (async (input: Request | URL | string) => {
+      calls.push(input instanceof Request ? input.url : String(input));
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Found a leak at https://pastebin.com/abc123" } }],
+        citations: ["https://example.com/dump.pdf", "https://rentry.co/xyz"],
+      }), { status: 200 });
+    }) as typeof globalThis.fetch;
+    const r = await perplexitySearch({ query: "alice@example.com", apiKey: "pplx-test" });
+    assertEquals(r.ok, true);
+    assertEquals(r.status, 200);
+    assertEquals(r.citations, ["https://example.com/dump.pdf", "https://rentry.co/xyz"]);
+    assertEquals(r.answer.includes("pastebin.com/abc123"), true);
+    assertEquals(calls.length, 1);
+    assertEquals(calls[0].includes(PPLX_HOST), true);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+Deno.test("perplexitySearch: non-200 → ok:false with provider-named error", async () => {
+  const origFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async () => new Response("rate limited", { status: 429 })) as typeof globalThis.fetch;
+    const r = await perplexitySearch({ query: "x", apiKey: "pplx-test" });
+    assertEquals(r.ok, false);
+    assertEquals(r.status, 429);
+    assertEquals(r.error?.startsWith("perplexity 429"), true);
   } finally {
     globalThis.fetch = origFetch;
   }

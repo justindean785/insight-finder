@@ -9,7 +9,7 @@ import type { Tool } from "npm:ai@6";
 import { hashInput, normalizeForHash, sanitizeToolOutput, TOOL_CACHE_LRU } from "./safety.ts";
 import { tierForTool, modelForTool, type Tier } from "./models.ts";
 import { costForTool } from "./costs.ts";
-import { DEFAULT_TOOL_TTL_MS, NO_CACHE_TOOLS, TOOL_TTL_MS } from "./validation.ts";
+import { DEFAULT_TOOL_TTL_MS, NO_CACHE_TOOLS, redactSensitiveToolInput, TOOL_TTL_MS } from "./validation.ts";
 import { creditsCharged } from "./billing.ts";
 import * as circuit from "./circuit.ts";
 import {
@@ -361,7 +361,9 @@ export function wrapToolsWithCache(
           ? circuit.normalizeSelector(selectorType, ctx.manualOverrideSelector)
           : "";
         const manualOverride = overrideSelector.length > 0 && overrideSelector === sel;
-        const inputJson = normalizeForHash(input) as unknown as Record<string, unknown>;
+        // Redact sensitive inputs (e.g. HIBP password / full SHA-1) BEFORE this
+        // value can reach tool_usage_log.input_json or tool_call_cache.input_json.
+        const inputJson = redactSensitiveToolInput(name, normalizeForHash(input)) as unknown as Record<string, unknown>;
         const params = normalizedParams(inp);
         const signal = await loadSelectorEvidence(ctx.supabase, ctx.investigationId, selectorType, sel);
         const weakLead = analyzeWeakLead(signal);
