@@ -455,6 +455,9 @@ export function buildTools(ctx: ToolContext) {
             // planner menu until OPENCORPORATES_API_KEY is set — gleif_lei_search
             // is the keyless company-registry alternative.
             if (name === "opencorporates_search" && !OPENCORPORATES_API_KEY) return false;
+            // Ransomware.live free API is dead; tool only works with the api-pro
+            // key. Keep it off the planner menu until RANSOMWARELIVE_API_KEY is set.
+            if (name === "ransomwarelive_lookup" && !RANSOMWARELIVE_API_KEY) return false;
             // Dead/degraded tools — stop re-proposing them this investigation.
             if (brokenTools.has(name) || isDegraded(name)) return false;
             return true;
