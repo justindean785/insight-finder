@@ -35,6 +35,11 @@ import { TOOL_CATALOG } from "./catalog.ts";
 export type SourceClass =
   // ── original internal-tool classes (do not rename: TOOL_CLASS + tests rely on these)
   | "breach"
+  // Ransomware-victim / threat-intel exposure (ransomware.live etc.). Distinct
+  // from "breach": it reports that an ORGANIZATION was hit, which is weak as a
+  // signal about a PERSON's identity. Capped below breach + NEVER_HIGH so it can
+  // never read as a verified identity claim.
+  | "threat_intel"
   | "username_sweep"
   | "social_profile_passive"
   | "social_profile_active"
@@ -85,14 +90,16 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   deepfind_disposable_email: "breach",
   deepfind_email_breach: "breach",
   deepfind_dark_web_link: "breach",
-  deepfind_ransomware_exposure: "breach",
   serus_darkweb_scan: "breach",
   leakcheck: "breach", // bare alias of leakcheck_lookup seen in compound source strings
-  // ── Phase 1 free tools — mapped to the closest EXISTING source class.
-  // TODO(integrity): no "threat_intel" class exists; ransomware-victim exposure
-  // is mapped to "breach" (same class as the dead deepfind_ransomware_exposure it
-  // replaces). Confirm whether a dedicated threat-intel class/cap is warranted.
-  ransomwarelive_lookup: "breach",
+  // ── Threat-intel / ransomware-victim exposure ──
+  // ransomware.live and the dead deepfind_ransomware_exposure report that an
+  // ORGANIZATION was hit by ransomware — that is threat intelligence, not a
+  // credential breach of the subject. A dedicated `threat_intel` class (cap 50,
+  // NEVER_HIGH; see confidence.ts) keeps this weak identity signal from carrying
+  // breach-level weight or ever confirming an identity. (Resolved TODO.)
+  ransomwarelive_lookup: "threat_intel",
+  deepfind_ransomware_exposure: "threat_intel",
   // k-anonymity password-exposure check — breach corpus by nature.
   hibp_pwned_passwords_kanon: "breach",
   // username sweeps
@@ -360,6 +367,9 @@ export const NON_CORROBORATING_CLASSES: ReadonlySet<SourceClass> = new Set<Sourc
   "social_profile_passive",
   "social_review",
   "infra_shared_host",
+  // Threat-intel (org-was-ransomwared) does not independently corroborate that a
+  // PERSON is the subject — it must not count toward the ≥2-class confirm path.
+  "threat_intel",
 ]);
 
 /** Count distinct source classes that can independently corroborate. */
