@@ -35,7 +35,7 @@ jobs:
         with:
           name: coverage
           path: coverage/
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   edge:
     name: Edge functions (deno test)
