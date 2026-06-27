@@ -4,6 +4,7 @@ import {
   CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED,
   HIBP_API_KEY, EXA_API_KEY, FIRECRAWL_API_KEY, SERUS_API_KEY,
   GITHUB_API_TOKEN, PERPLEXITY_API_KEY, IPQUALITYSCORE_API_KEY,
+  OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
   XAI_API_KEY, GROK_ORCHESTRATOR_MODEL_ID,
   OSINT_AGENT_PROBE_SECRET,
 } from "./env.ts";
@@ -28,6 +29,8 @@ function deriveReadiness(env: {
   IPQUALITYSCORE_API_KEY?: string | null;
   GITHUB_API_TOKEN?: string | null;
   PERPLEXITY_API_KEY?: string | null;
+  OPENCORPORATES_API_KEY?: string | null;
+  RANSOMWARELIVE_API_KEY?: string | null;
 }): { ok: boolean; checks: Record<string, { ok: boolean; detail?: string }> } {
   const has = (v: string | null | undefined) => !!(v && v.length > 0);
   const orchestratorOk = has(env.MINIMAX_API_KEY) || has(env.LOVABLE_API_KEY);
@@ -47,6 +50,8 @@ function deriveReadiness(env: {
     ipqualityscore: has(env.IPQUALITYSCORE_API_KEY),
     github: has(env.GITHUB_API_TOKEN),
     perplexity: has(env.PERPLEXITY_API_KEY),
+    opencorporates: has(env.OPENCORPORATES_API_KEY),
+    ransomwarelive: has(env.RANSOMWARELIVE_API_KEY),
   };
   const enabledOptional = Object.values(tools).filter(Boolean).length;
   const checks: Record<string, { ok: boolean; detail?: string }> = {
@@ -80,6 +85,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
     CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, HIBP_API_KEY, EXA_API_KEY,
     FIRECRAWL_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY, GITHUB_API_TOKEN, PERPLEXITY_API_KEY,
+    OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
   });
   const u = new URL(req.url);
   const wantProbe = u.searchParams.get("probe") === "1";
@@ -160,8 +166,8 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   const body: Record<string, unknown> = {
     ok: r.ok,
     service: "osint-agent",
-    version: "1.2.1",
-    build: "2026-06-19-probe-hardening",
+    version: "1.2.2",
+    build: "2026-06-27-ransomwarelive-api-pro",
     checks: r.checks,
     intelbase_enabled: INTELBASE_ENABLED,
   };

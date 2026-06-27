@@ -30,7 +30,7 @@ import {
   CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED,
   HIBP_API_KEY, GITHUB_API_TOKEN, FIRECRAWL_API_KEY, EXA_API_KEY, JINA_API_KEY,
   GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY,
-  OPENCORPORATES_API_KEY,
+  OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
   firecrawlCreditsLow, markFirecrawlCreditsLow, resetFirecrawlCreditsLow, degradedTools,
   markToolDegraded, isDegraded, fetchRetry, fetchT,
   deadHosts, markHostDead, isHostDead,
@@ -455,6 +455,9 @@ export function buildTools(ctx: ToolContext) {
             // planner menu until OPENCORPORATES_API_KEY is set — gleif_lei_search
             // is the keyless company-registry alternative.
             if (name === "opencorporates_search" && !OPENCORPORATES_API_KEY) return false;
+            // Ransomware.live free API is dead; tool only works with the api-pro
+            // key. Keep it off the planner menu until RANSOMWARELIVE_API_KEY is set.
+            if (name === "ransomwarelive_lookup" && !RANSOMWARELIVE_API_KEY) return false;
             // Dead/degraded tools — stop re-proposing them this investigation.
             if (brokenTools.has(name) || isDegraded(name)) return false;
             return true;
@@ -1740,20 +1743,23 @@ export function buildTools(ctx: ToolContext) {
     // (never throws) and trims its payload before returning.
     ransomwarelive_lookup: tool({
       description:
-        "Ransomware.live victim-exposure check — is a DOMAIN listed as a ransomware/extortion victim on a leak site? Input: { domain: string } (a registrable domain like 'acme.com', NOT a URL or email). Returns up to 25 victim entries (group, date, description). A 404 or empty result means NOT listed → { ok:true, listed:false, victims:[] }. No API key. Replaces the dead deepfind_ransomware_exposure.",
+        "Ransomware.live victim-exposure check — is a DOMAIN listed as a ransomware/extortion victim on a leak site? Input: { domain: string } (a registrable domain like 'acme.com', NOT a URL or email). Returns up to 25 victim entries (group, date, description). Uses api-pro.ransomware.live when RANSOMWARELIVE_API_KEY is set; without a key the tool returns { ok:false, degraded:true } because the free api.ransomware.live API has been retired. A real empty result means NOT listed → { ok:true, listed:false, victims:[] }.",
       inputSchema: z.object({ domain: z.string().min(1).describe("registrable domain, e.g. acme.com") }),
       execute: async ({ domain }) => {
         try {
           const d = domain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-          let r = await fetchRetry(`https://api.ransomware.live/v2/victims/${encodeURIComponent(d)}`, {}, { timeoutMs: 12_000 });
-          // The /victims/{domain} path 404s when the domain isn't a known victim;
-          // try the searchvictims fallback before treating 404 as "not listed".
-          if (r.status === 404) {
-            await r.body?.cancel().catch(() => {});
-            r = await fetchRetry(`https://api.ransomware.live/v2/searchvictims/${encodeURIComponent(d)}`, {}, { timeoutMs: 12_000 });
+          if (!RANSOMWARELIVE_API_KEY) {
+            return { ok: false, degraded: true, domain: d, error: "ransomware.live free API retired; set RANSOMWARELIVE_API_KEY (api-pro.ransomware.live) to enable" };
           }
+          const r = await fetchRetry(
+            `https://api-pro.ransomware.live/victims/search?q=${encodeURIComponent(d)}`,
+            { headers: { "X-API-KEY": RANSOMWARELIVE_API_KEY, "Accept": "application/json" } },
+            { timeoutMs: 12_000 },
+          );
           if (r.status === 404) { await r.body?.cancel().catch(() => {}); return { ok: true, domain: d, listed: false, count: 0, victims: [] }; }
           if (!r.ok) return { ok: false, status: r.status, error: `ransomware.live ${r.status}`, domain: d };
+          const ct = r.headers.get("content-type") ?? "";
+          if (!ct.includes("json")) { await r.body?.cancel().catch(() => {}); return { ok: false, degraded: true, domain: d, error: `non-JSON response (${ct || "unknown"})` }; }
           const data = await r.json().catch(() => null);
           const rows = Array.isArray(data)
             ? data
