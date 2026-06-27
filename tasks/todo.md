@@ -429,6 +429,50 @@ Backend change → after merge, sync `osint-agent/` → `seeker-spark-search-536
 
 ---
 
+## 2026-06-27 — Live investigation run + UX audit (`fix/live-investigation-polish`)
+
+Run a REAL scan through the app (safe domain seed), observe the lifecycle, audit all tabs at
+4 widths, then fix ONLY clearly-observed issues. Excludes what #135/#136/#137 already fix
+(think-leak, Next Steps dedupe, board+report source labels, threat_intel).
+
+### Audit plan (checkable)
+- [ ] Run scan: seed `example.com` (cheap), observe timing / loading / phase / frozen / dup-submit / input-preserve / errors.
+- [ ] Screenshot the scanning state + each tab (Chat/Evidence/Tools/Graph/Report) at 1440 + 390.
+- [ ] Check console for errors/warnings during + after scan.
+- [ ] Verify tab counts refresh after completion (realtime).
+- [ ] Inspect duplicate-submit guard (button disabled? rapid double-click?).
+- [ ] Second seed if needed for evidence depth; use Damien case as regression fixture.
+- [ ] Severity-rank findings (P0–P3) below.
+- [ ] Implement the single clearest observed fix; TDD; verify live.
+
+### Live run findings (severity-ranked) — seeds: example.com, iana.org, cloudflare.com
+
+- **P0 — Duplicate scan submission.** Observed: a rapid double/triple-click on
+  "Start investigation" fired **3 separate `POST /functions/v1/osint-agent`** scans
+  (network-verified). Root cause: `send()` awaits an investigation-cache lookup + a
+  readiness probe BEFORE `sendMessage()`, so useChat's `status` never flips to
+  "submitted" within a synchronous click burst → the status-only guard passes every
+  click. Why it matters: each scan POST costs credits, concurrent writes to one thread,
+  and it generated **50× React "duplicate key" console warnings**. File: `ChatWindow.tsx`
+  `send()` / `sendText()`. FIXED (below).
+- **P3 — Aborted HEAD readiness probes** (`net::ERR_ABORTED` on `threads/artifacts/agent_memory`
+  HEAD requests). These are intentional timeout-aborted probes; harmless but add console
+  noise. Not fixed (by-design; would need probe-cancellation cleanup). Documented only.
+- Other audit items (CONFIRMED wording P1, on-screen SourceBadge raw IDs P1, mobile report
+  tables P2) remain as previously reported — separate PRs, untouched here.
+
+### Fix implemented (this PR) — duplicate scan submission
+- New `src/lib/submit-guard.ts` `isSubmitBlocked(status, locked)` — folds a synchronous
+  re-entrancy lock into the submit guard (covers the pre-"submitted" async window).
+- `ChatWindow.tsx`: `submitLockRef` set synchronously before any await in `send()` +
+  `sendText()`, released in `finally`; both guards routed through `isSubmitBlocked`.
+- Test `src/test/submit-guard.test.ts` (4): allow-first, block-on-lock-before-status-flips,
+  block-on-submitted/streaming, re-allow-after-unlock.
+
+### Verification (evidence)
+- `npx vitest run` → **59 files / 703 tests pass** (+4). typecheck / eslint / build clean.
+- **LIVE:** before — 3 clicks → 3 scan POSTs + 50 duplicate-key warnings; after — 4 rapid
+  clicks → **1** scan POST + **0** duplicate-key warnings (fetch + console instrumented).
 ## 2026-06-27 — P1-2: humanize report/export source labels (`fix/report-source-labels`)
 
 From the beta audit P1-2. `buildReportMarkdown` (src/lib/intel.ts) still emits raw tool
