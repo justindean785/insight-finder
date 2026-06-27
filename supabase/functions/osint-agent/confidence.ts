@@ -72,6 +72,9 @@ export function computeAxes(input: {
 // with #16's caps so the table is exhaustive over the merged SourceClass union.
 const CLASS_CAP: Record<SourceClass, number> = {
   breach: 60,
+  // Threat-intel (ransomware-victim exposure) is weaker than a breach as a
+  // signal about a PERSON: it says an organization was hit. Capped below breach.
+  threat_intel: 50,
   username_sweep: 45,
   social_profile_passive: 40,
   social_profile_active: 70,
@@ -149,6 +152,7 @@ const TRUSTED_NON_INFRA = new Set<SourceClass>([
 // (post-#56 main set, plus #16's weak free-text classes.)
 const NEVER_HIGH = new Set<SourceClass>([
   "breach",
+  "threat_intel",
   "username_sweep",
   "social_profile_passive",
   "ai_summary",
