@@ -1,6 +1,9 @@
 /**
  * wayback_cdx_test.ts — Deno tests for wayback_cdx_search (tool-registry.ts).
- * Happy path parses the CDX header + rows; error path (502) → { error }.
+ * The tool now fires THREE tiny queries: a 25-row sample page plus two bookend
+ * queries (&limit=1 = oldest, &limit=-1 = newest) so earliest/latest are
+ * accurate and NOT understated by the capped sample. `sampled_count` is the
+ * sample size, never the total. Error path (403) → { error }.
  */
 import { assertEquals, assert } from "jsr:@std/assert@^1";
 import { stub } from "jsr:@std/testing@^1/mock";
@@ -25,35 +28,45 @@ function resp(body: unknown, status = 200): Response {
   } as unknown as Response;
 }
 
-Deno.test("wayback_cdx_search: happy path returns earliest/latest + capped captures", async () => {
-  const header = ["urlkey", "timestamp", "original", "statuscode"];
-  const rows = Array.from({ length: 40 }, (_, i) => [
+Deno.test("wayback_cdx_search: bookends come from separate queries, not the capped sample", async () => {
+  const sampleHeader = ["urlkey", "timestamp", "original", "statuscode"];
+  // 25 sample rows all clustered in 2010 — if the tool derived bookends from
+  // THIS page it would report 2010 as both earliest and latest (the bug).
+  const sampleRows = Array.from({ length: 25 }, (_, i) => [
     "k", `2010010100000${i}`.slice(0, 14), `http://acme.com/${i}`, "200",
   ]);
-  const fetchStub = stub(globalThis, "fetch", () => Promise.resolve(resp([header, ...rows])));
+  const fetchStub = stub(globalThis, "fetch", (url: string | URL | Request) => {
+    const u = String(url);
+    if (u.includes("limit=-1")) return Promise.resolve(resp([["timestamp"], ["20230101000000"]]));
+    if (u.includes("limit=1")) return Promise.resolve(resp([["timestamp"], ["19990101000000"]]));
+    return Promise.resolve(resp([sampleHeader, ...sampleRows]));
+  });
   try {
     const r = await getTool("wayback_cdx_search").execute({ url: "acme.com" }, {});
     assertEquals(r.ok, true);
-    assertEquals(r.count, 40);
+    assertEquals(r.archived, true);
+    assertEquals(r.earliest, "19990101000000", "earliest from &limit=1 query, not the 2010 sample");
+    assertEquals(r.latest, "20230101000000", "latest from &limit=-1 query, not the 2010 sample");
+    assertEquals(r.sampled_count, 25, "sampled_count is the sample size");
+    assertEquals(r.capped, true, "capped flags that more captures exist than sampled");
+    assert(!("count" in r), "no field presents the sample size as a complete total");
     assertEquals((r.captures as unknown[]).length, 25, "captures capped at 25");
-    assert(typeof r.earliest === "string");
-    assert(typeof r.latest === "string");
-    const c0 = (r.captures as Array<Record<string, unknown>>)[0];
-    assertEquals(c0.statuscode, "200");
   } finally { fetchStub.restore(); }
 });
 
-Deno.test("wayback_cdx_search: empty archive → count 0, no error", async () => {
+Deno.test("wayback_cdx_search: empty archive → archived:false, no error", async () => {
   const fetchStub = stub(globalThis, "fetch", () => Promise.resolve(resp([])));
   try {
     const r = await getTool("wayback_cdx_search").execute({ url: "acme.com" }, {});
     assertEquals(r.ok, true);
-    assertEquals(r.count, 0);
+    assertEquals(r.archived, false);
+    assertEquals(r.sampled_count, 0);
+    assertEquals(r.earliest, null);
     assertEquals(r.captures, []);
   } finally { fetchStub.restore(); }
 });
 
-Deno.test("wayback_cdx_search: non-200 returns { error } and never throws", async () => {
+Deno.test("wayback_cdx_search: non-200 sample returns { error } and never throws", async () => {
   const fetchStub = stub(globalThis, "fetch", () => Promise.resolve(resp({}, 403)));
   try {
     const r = await getTool("wayback_cdx_search").execute({ url: "acme.com" }, {});

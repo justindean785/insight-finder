@@ -31,7 +31,8 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   census_geocode: 0,        // US Census geocoder — free, unauth
   nominatim_geocode: 0,     // OSM Nominatim — free, unauth (1 req/sec policy)
   hibp_pwned_passwords_kanon: 0, // pwnedpasswords range API — free, no key
-  opencorporates_search: 50,     // free-tier registry search, small floor (optional token)
+  gleif_lei_search: 0,           // api.gleif.org LEI registry — free, no key
+  opencorporates_search: 50,     // registry search; now key-required (keyless 401s)
 
   // ---- Triage + smart reasoning (LLM costs) ----
   triage_seed: 800,           // 4 sub-tool calls bundled

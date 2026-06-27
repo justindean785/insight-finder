@@ -1,11 +1,17 @@
 /**
- * opencorporates_test.ts — Deno tests for opencorporates_search
- * (tool-registry.ts). Happy path trims + caps companies; the common keyless
- * 401/403/429 path returns a clean { error, status } and never throws.
+ * opencorporates_test.ts — Deno tests for opencorporates_search (tool-registry.ts).
+ *
+ * OpenCorporates retired keyless access: the v0.4 search endpoint now returns
+ * 401 "Invalid Api Token" for every anonymous request. The tool is therefore
+ * key-gated — without OPENCORPORATES_API_KEY it self-skips BEFORE any fetch
+ * (matching the codebase's "tool self-skips when its key is missing" pattern),
+ * so no doomed 401 call is ever made. These tests run with the key unset (the
+ * default in CI), so they exercise that skip path.
  */
 import { assertEquals, assert, assertStringIncludes } from "jsr:@std/assert@^1";
 import { stub } from "jsr:@std/testing@^1/mock";
 import { buildTools, type ToolContext } from "./tool-registry.ts";
+import { OPENCORPORATES_API_KEY } from "./env.ts";
 
 function stubCtx(): ToolContext {
   return {
@@ -18,52 +24,20 @@ function getTool(name: string) {
   const { tools } = buildTools(stubCtx());
   return (tools as Record<string, { execute: (i: unknown, o: unknown) => Promise<Record<string, unknown>> }>)[name];
 }
-function resp(body: unknown, status = 200): Response {
-  return {
-    ok: status >= 200 && status < 300, status,
-    json: async () => body, text: async () => JSON.stringify(body),
-    body: { cancel: async () => {} },
-  } as unknown as Response;
-}
 
-Deno.test("opencorporates_search: happy path returns trimmed, capped companies", async () => {
-  const companies = Array.from({ length: 30 }, (_, i) => ({
-    company: {
-      name: `Acme ${i} Inc`, jurisdiction_code: "us_de", company_number: `${1000 + i}`,
-      incorporation_date: "2001-01-01", current_status: "Active",
-      registry_url: "drop-me", source: { huge: "x".repeat(1000) },
-    },
-  }));
-  const fetchStub = stub(globalThis, "fetch", () => Promise.resolve(resp({ results: { companies } })));
+Deno.test("opencorporates_search: no API key → self-skips with { error, skipped } and never fetches", {
+  ignore: !!OPENCORPORATES_API_KEY, // only meaningful when the key is unset (CI default)
+}, async () => {
+  let fetched = false;
+  const fetchStub = stub(globalThis, "fetch", () => {
+    fetched = true;
+    return Promise.reject(new Error("fetch must NOT be called when the key is missing"));
+  });
   try {
     const r = await getTool("opencorporates_search").execute({ name: "Acme" }, {});
-    assertEquals(r.ok, true);
-    assertEquals(r.count, 20, "capped at 20");
-    const c0 = (r.companies as Array<Record<string, unknown>>)[0];
-    assertEquals(c0.name, "Acme 0 Inc");
-    assertEquals(c0.jurisdiction_code, "us_de");
-    assert(!("registry_url" in c0), "heavy fields trimmed away");
-  } finally { fetchStub.restore(); }
-});
-
-Deno.test("opencorporates_search: 401 (no token) → clean { error, status }, no throw", async () => {
-  const fetchStub = stub(globalThis, "fetch", () => Promise.resolve(resp({}, 401)));
-  try {
-    const r = await getTool("opencorporates_search").execute({ name: "Acme" }, {});
-    assertEquals(r.ok, false);
-    assertEquals(r.status, 401);
-    assertStringIncludes(r.error as string, "token");
-  } finally { fetchStub.restore(); }
-});
-
-Deno.test("opencorporates_search: 429 rate-limit → clean { error, status }, no throw", async () => {
-  // fetchRetry retries 429; the stub returns 429 each attempt and the tool must
-  // ultimately surface a clean error object rather than throw.
-  const fetchStub = stub(globalThis, "fetch", () => Promise.resolve(resp({}, 429)));
-  try {
-    const r = await getTool("opencorporates_search").execute({ name: "Acme" }, {});
-    assertEquals(r.ok, false);
-    assertEquals(r.status, 429);
-    assert(typeof r.error === "string");
+    assertEquals(r.ok, undefined);
+    assertEquals(r.skipped, true);
+    assertStringIncludes(r.error as string, "OPENCORPORATES_API_KEY not configured");
+    assert(!fetched, "no network call is made on the keyless skip path");
   } finally { fetchStub.restore(); }
 });

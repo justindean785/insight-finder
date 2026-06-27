@@ -131,6 +131,9 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   // slug as "public_record" (an OFFICIAL_CLASS). Mapped to public_record per the
   // proposal — confirm the intended class for the slug vs the free-text label.
   opencorporates_search: "public_record",
+  // GLEIF LEI registry — official corporate registry, same class as the other
+  // company-registry sources. (LEIs are issued by accredited LOUs.)
+  gleif_lei_search: "public_record",
   // passive / historical — observe the past, not the live asset
   urlscan_search: "infra_passive",
   wayback_snapshots: "infra_passive",

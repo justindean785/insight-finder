@@ -47,14 +47,29 @@ export const ransomwarelive_lookup = tool({
 
 export const wayback_cdx_search = tool({
   description:
-    "Wayback Machine CDX archive search — corroborate that a domain/URL existed and when. Input: { url: string } (a domain like 'acme.com' or a full URL). Returns earliest + latest capture timestamps, total capture count, and up to 25 sample rows (timestamp, original, statuscode). Good for existence/first-seen corroboration. No API key.",
+    "Wayback Machine CDX archive search — corroborate that a domain/URL existed and when. Input: { url: string } (a domain like 'acme.com' or a full URL). Returns ACCURATE earliest + latest capture timestamps (each queried separately so they are NOT understated by a capped page) and up to 25 sample capture rows (timestamp, original, statuscode). `sampled_count` is the number of SAMPLE rows returned (capped at 25) — it is NOT the total capture count; `capped:true` means more captures exist than were sampled. Empty archive → { ok:true, archived:false, captures:[] }. No API key.",
   inputSchema: z.object({ url: z.string().min(1).describe("domain or URL to look up in the archive") }),
   execute: async ({ url }) => {
     try {
-      const r = await fetchT(`https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(url)}&output=json&limit=50&collapse=urlkey`, {}, 15_000);
+      const base = `https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(url)}&output=json`;
+      const firstTs = async (limit: string): Promise<string | null> => {
+        try {
+          const r = await fetchT(`${base}&fl=timestamp&limit=${limit}`, {}, 15_000);
+          if (!r.ok) { await r.body?.cancel().catch(() => {}); return null; }
+          const data = await r.json().catch(() => null);
+          if (!Array.isArray(data) || data.length < 2) return null;
+          const hdr = data[0] as string[];
+          const idx = hdr.indexOf("timestamp");
+          const row = data[1] as string[];
+          return ((idx >= 0 ? row[idx] : row[0]) ?? null) as string | null;
+        } catch { return null; }
+      };
+      const r = await fetchT(`${base}&limit=25&collapse=urlkey`, {}, 15_000);
       if (!r.ok) return { ok: false, status: r.status, error: `wayback cdx ${r.status}`, url };
       const data = await r.json().catch(() => null);
-      if (!Array.isArray(data) || data.length < 2) return { ok: true, url, count: 0, earliest: null, latest: null, captures: [] };
+      if (!Array.isArray(data) || data.length < 2) {
+        return { ok: true, url, archived: false, sampled_count: 0, capped: false, earliest: null, latest: null, captures: [] };
+      }
       const header = data[0] as string[];
       const ti = header.indexOf("timestamp"), oi = header.indexOf("original"), si = header.indexOf("statuscode");
       const rows = (data.slice(1) as string[][]).map((row) => ({
@@ -62,8 +77,16 @@ export const wayback_cdx_search = tool({
         original: oi >= 0 ? row[oi] ?? null : null,
         statuscode: si >= 0 ? row[si] ?? null : null,
       }));
-      const ts = rows.map((x) => x.timestamp).filter((t): t is string => !!t).sort();
-      return { ok: true, url, count: rows.length, earliest: ts[0] ?? null, latest: ts[ts.length - 1] ?? null, captures: rows.slice(0, 25) };
+      const [earliest, latest] = await Promise.all([firstTs("1"), firstTs("-1")]);
+      const sampleTs = rows.map((x) => x.timestamp).filter((t): t is string => !!t).sort();
+      return {
+        ok: true, url, archived: true,
+        earliest: earliest ?? sampleTs[0] ?? null,
+        latest: latest ?? sampleTs[sampleTs.length - 1] ?? null,
+        sampled_count: rows.length,
+        capped: rows.length >= 25,
+        captures: rows.slice(0, 25),
+      };
     } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
   },
 });
@@ -175,18 +198,71 @@ export const hibp_pwned_passwords_kanon = tool({
   },
 });
 
-export const opencorporates_search = tool({
+export const gleif_lei_search = tool({
   description:
-    "OpenCorporates company-registry search — find official company registrations by NAME. Input: { name: string } (company name). Returns up to 20 companies: name, jurisdiction_code, company_number, incorporation_date, current_status. The v0.4 search endpoint works key-free but is heavily rate-limited; a 401/403/429 returns { error, status } (no throw). OPENCORPORATES_API_KEY is appended automatically when configured.",
-  inputSchema: z.object({ name: z.string().min(1).describe("company / organization name") }),
+    "GLEIF Legal Entity Identifier registry search by NAME (NO API key). Input: { name: string } (org/company legal name). Returns up to 10 entities: lei, legalName, status, jurisdiction, legalAddress {city, country}, registrationStatus. COVERAGE CAVEAT: only entities that hold an LEI (financial-market participants — public companies, funds, many regulated/private orgs); small private companies may be ABSENT, so an EMPTY result does NOT mean the company doesn't exist. Falls back to fuzzy name suggestions when the exact filter returns nothing.",
+  inputSchema: z.object({ name: z.string().min(1).describe("org / company legal name") }),
   execute: async ({ name }) => {
     try {
-      let url = `https://api.opencorporates.com/v0.4/companies/search?q=${encodeURIComponent(name)}`;
-      if (OPENCORPORATES_API_KEY) url += `&api_token=${encodeURIComponent(OPENCORPORATES_API_KEY)}`;
+      const q = encodeURIComponent(name.trim());
+      const accept = { headers: { Accept: "application/vnd.api+json" } };
+      const r = await fetchRetry(
+        `https://api.gleif.org/api/v1/lei-records?filter%5Bentity.legalName%5D=${q}&page%5Bsize%5D=10`,
+        accept,
+        { timeoutMs: 12_000 },
+      );
+      if (!r.ok) return { ok: false, status: r.status, error: `gleif ${r.status}`, name };
+      const data = (await r.json().catch(() => null)) as { data?: Array<Record<string, unknown>> } | null;
+      const rows = Array.isArray(data?.data) ? data!.data : [];
+      const records = rows.slice(0, 10).map((rec) => {
+        const a = (rec.attributes ?? {}) as Record<string, unknown>;
+        const entity = (a.entity ?? {}) as Record<string, unknown>;
+        const legalName = (entity.legalName ?? {}) as { name?: string };
+        const legalAddr = (entity.legalAddress ?? {}) as { city?: string; country?: string };
+        const reg = (a.registration ?? {}) as { status?: string };
+        return {
+          lei: (a.lei ?? rec.id ?? null) as string | null,
+          legalName: (legalName.name ?? null) as string | null,
+          status: (entity.status ?? null) as string | null,
+          jurisdiction: (entity.jurisdiction ?? null) as string | null,
+          legalAddress: { city: legalAddr.city ?? null, country: legalAddr.country ?? null },
+          registrationStatus: (reg.status ?? null) as string | null,
+        };
+      });
+      if (records.length > 0) return { ok: true, name, count: records.length, records };
+      const fr = await fetchRetry(
+        `https://api.gleif.org/api/v1/fuzzycompletions?field=entity.legalName&q=${q}`,
+        accept,
+        { timeoutMs: 12_000 },
+      );
+      if (fr.ok) {
+        const fdata = (await fr.json().catch(() => null)) as { data?: Array<Record<string, unknown>> } | null;
+        const suggestions = (Array.isArray(fdata?.data) ? fdata!.data : []).slice(0, 10).map((s) => {
+          const attrs = (s.attributes ?? {}) as { value?: string };
+          const rel = (s.relationships ?? {}) as { "lei-records"?: { data?: { id?: string } } };
+          return { legalName: (attrs.value ?? null) as string | null, lei: (rel["lei-records"]?.data?.id ?? null) as string | null };
+        }).filter((x) => x.legalName);
+        if (suggestions.length > 0) {
+          return { ok: true, name, count: 0, fuzzy: true, suggestions, note: "no exact legalName match — fuzzy name suggestions returned (entity may still exist without an LEI)" };
+        }
+      } else { await fr.body?.cancel().catch(() => {}); }
+      return { ok: true, name, count: 0, records: [], note: "no LEI record matched — the entity may simply not hold an LEI (small private cos often don't)" };
+    } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
+  },
+});
+
+export const opencorporates_search = tool({
+  description:
+    "OpenCorporates company-registry search — find official company registrations by NAME. Input: { name: string } (company name). Returns up to 20 companies: name, jurisdiction_code, company_number, incorporation_date, current_status. REQUIRES OPENCORPORATES_API_KEY — the v0.4 endpoint now returns 401 'Invalid Api Token' for all keyless requests, so the tool self-skips when the key is unset. For keyless company-registry corroboration, use gleif_lei_search instead.",
+  inputSchema: z.object({ name: z.string().min(1).describe("company / organization name") }),
+  execute: async ({ name }) => {
+    if (!OPENCORPORATES_API_KEY) return { error: "OPENCORPORATES_API_KEY not configured", skipped: true };
+    try {
+      const url = `https://api.opencorporates.com/v0.4/companies/search?q=${encodeURIComponent(name)}&api_token=${encodeURIComponent(OPENCORPORATES_API_KEY)}`;
       const r = await fetchRetry(url, {}, { timeoutMs: 15_000 });
       if (!r.ok) {
         const gated = r.status === 401 || r.status === 403 || r.status === 429;
-        return { ok: false, status: r.status, error: `opencorporates ${r.status}${gated ? " (rate-limited / token required)" : ""}`, name };
+        return { ok: false, status: r.status, error: `opencorporates ${r.status}${gated ? " (rate-limited / invalid token)" : ""}`, name };
       }
       const data = (await r.json().catch(() => null)) as { results?: { companies?: Array<{ company?: Record<string, unknown> }> } } | null;
       const companies = data?.results?.companies;

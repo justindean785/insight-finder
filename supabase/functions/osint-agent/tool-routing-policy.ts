@@ -286,6 +286,17 @@ export const DEFAULT_TOOL_CATALOG: ToolRouteCandidate[] = [
     maxConcurrency: 2,
   },
   {
+    toolName: "gleif_lei_search",
+    toolGroup: "government_business_registry",
+    supportsQueryTypes: ["business"],
+    satisfiesPivotIds: ["sos_entity_registry", "business_directory_listing"],
+    sourceClasses: ["public_record"],
+    expectedValue: 47,
+    providerAvailable: true,
+    currentConcurrency: 0,
+    maxConcurrency: 2,
+  },
+  {
     toolName: "opencorporates_search",
     toolGroup: "government_business_registry",
     supportsQueryTypes: ["business"],
