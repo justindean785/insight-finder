@@ -59,3 +59,36 @@ Deno.test("standalone-breach compound (address style) unchanged at breach cap 60
   assertEquals(r.source_classes, ["breach"]);
   assertEquals(r.cap, 60);
 });
+
+Deno.test("slash-style breach slugs classify as breach, not unknown", () => {
+  for (const source of [
+    "breach_data/memory",
+    "breach_check/fling_com",
+    "breach_check/lastfm",
+    "breach_data",
+    "serus_darkweb_scan",
+    "username_sweep/breach_data",
+    "serus_darkweb_scan (reveal:true)",
+  ]) {
+    const r = applyEvidenceCaps({ rawConfidence: 90, sources: [source] });
+    assertEquals(r.source_classes, ["breach"], `${source} classified as ${r.source_classes.join(",")}`);
+    assert(!r.reason_for_confidence.includes("unknown"), r.reason_for_confidence);
+  }
+});
+
+Deno.test("breach metadata overrides public-record aggregator labels", () => {
+  const r = applyEvidenceCaps({
+    rawConfidence: 90,
+    sources: ["breach_check/oathnet/serus"],
+    metadata: {
+      breach_sources: ["Fling.com", "Last.fm"],
+      passwords_exposed: ["redacted-fixture"],
+      fling_username: "fixture-user",
+      total_breaches: 2,
+      source_category: ["public_record"],
+    },
+  });
+  assertEquals(r.source_classes, ["breach"]);
+  assertEquals(r.cap, 60);
+  assert(!r.reason_for_confidence.includes("public_record"), r.reason_for_confidence);
+});

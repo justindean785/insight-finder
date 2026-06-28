@@ -3631,6 +3631,7 @@ export function buildTools(ctx: ToolContext) {
           const cap = applyEvidenceCaps({
             rawConfidence: a.confidence ?? 50,
             sources: effSources,
+            metadata: a.metadata ?? null,
           });
           // Provenance guard (#131 follow-up): flag an artifact whose effective
           // source names a bare domain that is NOT a wired tool and NOT a recognized
@@ -3940,6 +3941,7 @@ export function buildTools(ctx: ToolContext) {
         const cap = applyEvidenceCaps({
           rawConfidence: confidence ?? 50,
           sources: effSources,
+          metadata: metadata ?? null,
         });
         // Provenance guard (#131 follow-up) — mirrors record_artifacts. Flags a
         // bare-domain source that is neither a wired tool nor a known provider (the
