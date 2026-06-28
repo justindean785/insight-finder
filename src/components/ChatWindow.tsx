@@ -1375,7 +1375,13 @@ function ChatWindowInner({
   };
 
   const onFilesPicked = async (files: FileList | null) => {
-    if (!files || !user) return;
+    if (!files) return;
+    if (!user) {
+      // Previously this returned silently, so picking a file before the session
+      // loaded looked like a broken upload. Surface it instead.
+      toast.error("Sign in to attach files — your session isn't ready yet.");
+      return;
+    }
     const list = Array.from(files);
     const MAX = 20 * 1024 * 1024; // 20MB
     const accepted = list.filter((f) => {
