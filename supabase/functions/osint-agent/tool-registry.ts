@@ -31,6 +31,7 @@ import {
   HIBP_API_KEY, GITHUB_API_TOKEN, FIRECRAWL_API_KEY, EXA_API_KEY, JINA_API_KEY,
   GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY,
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
+  URLSCANNER_API_KEY,
   firecrawlCreditsLow, markFirecrawlCreditsLow, resetFirecrawlCreditsLow, degradedTools,
   markToolDegraded, isDegraded, fetchRetry, fetchT,
   deadHosts, markHostDead, isHostDead,
@@ -409,6 +410,7 @@ export function buildTools(ctx: ToolContext) {
             "whois_lookup","dns_records","crtsh_subdomains","crtsh_lookup","http_fingerprint",
             "ip_intel","ipgeolocation_lookup","ipqualityscore_lookup","shodan_internetdb","hackertarget",
             "urlscan_search","virustotal_lookup","synapsint_lookup",
+            "urlscanner_scan",
             // Phase 1 free / no-key corroboration tools
             "ransomwarelive_lookup","wayback_cdx_search","census_geocode","nominatim_geocode",
             "hibp_pwned_passwords_kanon","gleif_lei_search","opencorporates_search",
@@ -458,6 +460,9 @@ export function buildTools(ctx: ToolContext) {
             // Ransomware.live free API is dead; tool only works with the api-pro
             // key. Keep it off the planner menu until RANSOMWARELIVE_API_KEY is set.
             if (name === "ransomwarelive_lookup" && !RANSOMWARELIVE_API_KEY) return false;
+            // URLScanner.online needs its API key — without it every call errors;
+            // keep it off the planner menu until URLSCANNER_API_KEY is set.
+            if (name === "urlscanner_scan" && !URLSCANNER_API_KEY) return false;
             // Dead/degraded tools — stop re-proposing them this investigation.
             if (brokenTools.has(name) || isDegraded(name)) return false;
             return true;
