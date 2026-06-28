@@ -131,7 +131,18 @@ Deno.serve(async (req) => {
         if ((m.role !== "tool" && m.role !== "assistant") || !Array.isArray(m.content)) continue;
         m.content = (m.content as TrimPart[]).map((part: TrimPart) => {
           if (part?.type === "tool-result" && part.output != null && JSON.stringify(part.output).length > 80) {
-            return { ...part, output: { value: "[older tool result elided to fit context budget]" } };
+            // Preserve the tool-result output's discriminator. The AI SDK validates
+            // each output against a typed union ({ type:'json'|'text'|…, value }); a
+            // bare { value } (no `type`) fails the ModelMessage[] schema and aborts
+            // the whole run with "messages do not match the ModelMessage[] schema".
+            // Spread the original output (keeps `type`) and only swap `value` —
+            // mirrors the per-message truncation path below.
+            const elided = "[older tool result elided to fit context budget]";
+            const nextOutput =
+              part.output && typeof part.output === "object" && "value" in part.output
+                ? { ...(part.output as Record<string, unknown>), value: elided }
+                : elided;
+            return { ...part, output: nextOutput };
           }
           if (part?.type === "text" && typeof part.text === "string" && part.text.length > 200) {
             return { ...part, text: part.text.slice(0, 200) + " …[elided]" };
