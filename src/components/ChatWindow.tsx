@@ -1508,6 +1508,7 @@ function ChatWindowInner({
               ref={fileInputRef}
               type="file"
               multiple
+              accept="image/*,application/pdf,.txt,.md,.csv,.json,.log,.xml,.yaml,.yml,.docx,.xlsx,.pptx"
               className="hidden"
               onChange={(e) => onFilesPicked(e.target.files)}
             />
