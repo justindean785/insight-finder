@@ -8,6 +8,7 @@ import {
   OSINT_AGENT_PROBE_SECRET,
 } from "./env.ts";
 import { minimaxChat } from "./providers.ts";
+import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
 
 function deriveReadiness(env: {
   MINIMAX_API_KEY?: string | null;
@@ -161,7 +162,11 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     ok: r.ok,
     service: "osint-agent",
     version: "1.2.1",
-    build: "2026-06-19-probe-hardening",
+    // Build marker derives from the git short SHA (scripts/stamp-build.mjs) so a
+    // deployed function is verifiable against source. Compare this to recent
+    // `git log` to detect deploy drift. build_committed_at gives the commit date.
+    build: BUILD_MARKER,
+    build_committed_at: BUILD_COMMITTED_AT,
     checks: r.checks,
     intelbase_enabled: INTELBASE_ENABLED,
   };
