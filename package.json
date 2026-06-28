@@ -13,7 +13,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:edge": "cd supabase/functions/osint-agent && deno test --no-check --allow-net --allow-env --allow-sys --allow-read *_test.ts"
+    "test:edge": "cd supabase/functions/osint-agent && deno test --no-check --allow-net --allow-env --allow-sys --allow-read *_test.ts",
+    "stamp:build": "node scripts/stamp-build.mjs"
   },
   "dependencies": {
     "@ai-sdk/google": "^3.0.79",
