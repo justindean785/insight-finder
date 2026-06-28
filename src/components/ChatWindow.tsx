@@ -31,6 +31,7 @@ import {
   type RecommendedPivot,
 } from "@/lib/recommended-pivots";
 import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon, Copy as CopyIcon } from "lucide-react";
+import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
 
 const SUPABASE_PROJECT_ID = (import.meta.env.VITE_SUPABASE_PROJECT_ID as string | undefined)?.trim();
 // Resolve from the client's SUPABASE_URL (which carries the baked-in default),
@@ -765,10 +766,17 @@ function formatAge(ms: number): string {
 function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean }) {
   if (m.role === "user") {
     const text = (m.parts as MessagePartShape[]).filter((p) => p.type === "text").map((p) => p.text).join("");
+    // Split the human text from the "Attached files:" block the composer appends,
+    // so we render image thumbnails / file chips instead of the raw Supabase
+    // signed URL (token and all). See src/lib/attachments.ts.
+    const { body, attachments } = parseUserMessage(text);
+    const images = attachments.filter(isImageAttachment);
+    const files = attachments.filter((a) => !isImageAttachment(a));
+    const sizeOf = (meta: string) => meta.split(",").pop()?.trim() || "";
     return (
       <div className="flex justify-end">
         <div
-          className="relative max-w-[78%] min-w-0 rounded-2xl rounded-br-md px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap break-words text-foreground/95 border border-primary/20 shadow-[0_8px_28px_-16px_hsl(0_0%_0%/0.7)]"
+          className="relative max-w-[78%] min-w-0 rounded-2xl rounded-br-md px-4 py-2.5 text-sm leading-relaxed break-words text-foreground/95 border border-primary/20 shadow-[0_8px_28px_-16px_hsl(0_0%_0%/0.7)]"
           style={{
             background:
               "linear-gradient(180deg, hsl(248 40% 12% / 0.55) 0%, hsl(230 14% 5% / 0.65) 100%)",
@@ -777,7 +785,46 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
             overflowWrap: "anywhere",
           }}
         >
-          {text}
+          {body && <div className="whitespace-pre-wrap">{body}</div>}
+          {images.length > 0 && (
+            <div className={`flex flex-wrap gap-2 ${body ? "mt-2.5" : ""}`}>
+              {images.map((a, i) => (
+                <a
+                  key={`img-${i}`}
+                  href={a.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={a.name}
+                  className="block rounded-lg overflow-hidden border border-border-subtle bg-surface-1/50 hover:border-white/25 transition-colors"
+                >
+                  <img
+                    src={a.url}
+                    alt={a.name}
+                    loading="lazy"
+                    className="block max-h-44 max-w-[220px] object-cover"
+                  />
+                </a>
+              ))}
+            </div>
+          )}
+          {files.length > 0 && (
+            <div className={`flex flex-wrap gap-1.5 ${(body || images.length) ? "mt-2.5" : ""}`}>
+              {files.map((a, i) => (
+                <a
+                  key={`file-${i}`}
+                  href={a.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={a.name}
+                  className="flex items-center gap-1.5 pl-2 pr-2.5 py-1 rounded-full border border-border-subtle bg-surface-1/50 text-xs max-w-[260px] hover:border-white/25 transition-colors"
+                >
+                  <FileText className="w-3 h-3 text-primary shrink-0" />
+                  <span className="truncate">{a.name}</span>
+                  {a.meta && <span className="text-muted-foreground text-data shrink-0">{sizeOf(a.meta)}</span>}
+                </a>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     );
