@@ -5,6 +5,7 @@ import {
   HIBP_API_KEY, EXA_API_KEY, FIRECRAWL_API_KEY, SERUS_API_KEY,
   GITHUB_API_TOKEN, PERPLEXITY_API_KEY, IPQUALITYSCORE_API_KEY,
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
+  URLSCANNER_API_KEY,
   XAI_API_KEY, GROK_ORCHESTRATOR_MODEL_ID,
   OSINT_AGENT_PROBE_SECRET,
 } from "./env.ts";
@@ -32,6 +33,7 @@ function deriveReadiness(env: {
   PERPLEXITY_API_KEY?: string | null;
   OPENCORPORATES_API_KEY?: string | null;
   RANSOMWARELIVE_API_KEY?: string | null;
+  URLSCANNER_API_KEY?: string | null;
 }): { ok: boolean; checks: Record<string, { ok: boolean; detail?: string }> } {
   const has = (v: string | null | undefined) => !!(v && v.length > 0);
   const orchestratorOk = has(env.MINIMAX_API_KEY) || has(env.LOVABLE_API_KEY);
@@ -88,6 +90,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, HIBP_API_KEY, EXA_API_KEY,
     FIRECRAWL_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY, GITHUB_API_TOKEN, PERPLEXITY_API_KEY,
     OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
+    URLSCANNER_API_KEY,
   });
   const u = new URL(req.url);
   const wantProbe = u.searchParams.get("probe") === "1";
