@@ -92,6 +92,7 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   osint_navigator_search: { requiresKey: "OSINT_NAVIGATOR_API_KEY" },
   serus_darkweb_scan: { requiresKey: "SERUS_API_KEY" },
   ipqualityscore_lookup: { requiresKey: "IPQUALITYSCORE_API_KEY" },
+  urlscanner_scan: { requiresKey: "URLSCANNER_API_KEY" },
 };
 
 /** Every env var name the requirements depend on — what the wiring must probe. */

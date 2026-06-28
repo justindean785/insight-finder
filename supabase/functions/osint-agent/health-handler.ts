@@ -53,6 +53,7 @@ function deriveReadiness(env: {
     perplexity: has(env.PERPLEXITY_API_KEY),
     opencorporates: has(env.OPENCORPORATES_API_KEY),
     ransomwarelive: has(env.RANSOMWARELIVE_API_KEY),
+    urlscanner: has(env.URLSCANNER_API_KEY),
   };
   const enabledOptional = Object.values(tools).filter(Boolean).length;
   const checks: Record<string, { ok: boolean; detail?: string }> = {
