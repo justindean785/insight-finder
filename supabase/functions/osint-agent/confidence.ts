@@ -165,6 +165,7 @@ const NEVER_HIGH = new Set<SourceClass>([
 export interface CapInput {
   rawConfidence: number;
   sources: string[]; // tool/source names
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface CapResult {
@@ -175,8 +176,70 @@ export interface CapResult {
   source_classes: SourceClass[];
 }
 
+// Breach-derived PII can arrive with a generic/aggregator `source` label (e.g.
+// "username_sweep", "Multiple sources") while the breach provenance lives only
+// in the artifact metadata. Without reading that metadata, a leaked email could
+// be classified `public_record` and laundered up to a high confidence. These
+// keys/labels signal the underlying evidence is breach/leak data regardless of
+// the surface source string.
+const BREACH_METADATA_KEYS = [
+  "breach",
+  "breaches",
+  "breach_count",
+  "breach_names",
+  "breach_source",
+  "breach_sources",
+  "breaches_with_passwords",
+  "data_classes",
+  "fling_dob",
+  "fling_ip",
+  "fling_location_id",
+  "fling_username",
+  "passwords_exposed",
+  "serus_darkweb_scan",
+  "total_breaches",
+];
+
+const INTERNAL_BREACH_TOOL_RE =
+  /^(?:breach_check|leakcheck_lookup|hibp_lookup|oathnet_lookup|intelbase_email_lookup|stolentax_footprint|deepfind_reverse_email|deepfind_disposable_email|deepfind_email_breach|deepfind_dark_web_link|deepfind_ransomware_exposure|serus_darkweb_scan|leakcheck)$/i;
+
+function hasBreachMetadata(meta: Record<string, unknown> | null | undefined): boolean {
+  if (!meta) return false;
+  for (const key of BREACH_METADATA_KEYS) {
+    const value = meta[key];
+    if (value == null) continue;
+    if (Array.isArray(value) && value.length === 0) continue;
+    if (typeof value === "string" && !value.trim()) continue;
+    return true;
+  }
+  const sourceText = [meta.source, meta.breach_source, meta.platform, meta.note, meta.notes]
+    .filter((v): v is string => typeof v === "string")
+    .join(" ");
+  return /\b(?:breach|leak|darkweb|dark web|fling\.com|last\.fm|passwords?)\b/i.test(sourceText);
+}
+
+// Pull only real source-NAME fields out of metadata (the provider chain that
+// records its provenance there rather than in the top-level source string).
+// We deliberately do NOT read `source_category` — it holds class labels
+// ("public_record"), not source names, so classifying it would inject a
+// spurious `unknown` class and misrepresent provenance.
+function metadataSourceLabels(meta: Record<string, unknown> | null | undefined): string[] {
+  if (!meta) return [];
+  const labels: string[] = [];
+  const direct = meta.source;
+  if (typeof direct === "string") labels.push(direct);
+  const sources = meta.sources;
+  if (Array.isArray(sources)) {
+    for (const source of sources) {
+      if (typeof source === "string") labels.push(source);
+    }
+  }
+  return labels;
+}
+
 /** Apply conservative caps. Breach-only ≤60, two breaches ≤65, etc. */
 export function applyEvidenceCaps(input: CapInput): CapResult {
+  const sourceLabels = [...(input.sources ?? []), ...metadataSourceLabels(input.metadata)];
   // A single source string can name several tools ("breach_check+leakcheck+…"
   // or "snusbase/ATT breach"). Classify the WHOLE label first — that already
   // resolves shared-host/reverse-IP, parenthetical, and standalone-"breach"
@@ -184,7 +247,7 @@ export function applyEvidenceCaps(input: CapInput): CapResult {
   // tokens when the whole label is unrecognised. This rescues compound
   // multi-tool breach labels that previously collapsed to `unknown` (cap 50)
   // without disturbing any label that already classifies.
-  const classes = (input.sources ?? []).flatMap((s) => {
+  const classes = sourceLabels.flatMap((s) => {
     const whole = classifySource(s);
     if (whole !== "unknown") return [whole];
     // Unrecognised whole label → split into component tokens. Keep the tokens
@@ -198,9 +261,26 @@ export function applyEvidenceCaps(input: CapInput): CapResult {
     const known = split.filter((c) => c !== "unknown");
     return known.length ? known : (["unknown"] as SourceClass[]);
   });
-  const uniqClasses = Array.from(new Set(classes));
+  if (hasBreachMetadata(input.metadata)) classes.push("breach");
+  const breachEvidenceCount = sourceLabels.reduce((count, label) => {
+    const parts = splitSourceLabels(label);
+    const tokens = parts.length ? parts : [label];
+    return count + tokens.filter((token) => INTERNAL_BREACH_TOOL_RE.test(token.trim())).length;
+  }, 0);
+  const uniqClasses = Array.from(new Set(classes)).filter((c) => {
+    // Breach-specific fields dominate generic aggregator/source labels. Without
+    // this, mixed strings such as breach_check/oathnet/serus can incorrectly
+    // present a breach-derived email as public_record. (We deliberately do NOT
+    // drop `unknown` when a known class is present — an unrecognised second
+    // source still corroborates via the cross-class boost, behaviour the
+    // existing audit tests rely on; the laundering guard only needs the
+    // public_record→breach demotion below.)
+    if (c === "public_record" && classes.includes("breach")) return false;
+    return true;
+  });
   const counts: Record<string, number> = {};
   for (const c of classes) counts[c] = (counts[c] ?? 0) + 1;
+  if (breachEvidenceCount > 0) counts.breach = breachEvidenceCount;
 
   // Base cap = the most permissive class present.
   let cap = uniqClasses.length === 0
