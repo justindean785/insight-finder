@@ -104,7 +104,44 @@ Deno.serve(async (req) => {
       text?: unknown;
       [k: string]: unknown;
     }
-    const trimmedMessages: ModelMessage[] = modelMessages.map((m: ModelMessage, idx: number) => {
+    // Hard total-prompt budget. The per-message truncation above caps each tool
+    // result, but a deep run accumulates dozens of messages and the cumulative
+    // prompt still grew unbounded (observed 78 msgs / 309K chars) — enough to
+    // make MiniMax's preflight/request TIME OUT (well under the 600k overflow
+    // gate) and fall back to the Lovable gateway. Bound the total by ELIDING
+    // old tool-result OUTPUTS (oldest first, outside the recent window). We
+    // never drop a message, so every tool-call keeps its matching tool-result
+    // and we cannot trigger the "tool result is missing for tool call" stream
+    // error. Recorded artifacts/findings live in the DB and are replayed via
+    // memory, so shedding old raw tool output is safe.
+    const TOTAL_PROMPT_CHAR_BUDGET = 220_000;
+    const approxMsgChars = (msgs: ModelMessage[]): number =>
+      msgs.reduce((n, m) => n + JSON.stringify(m).length, 0);
+    const capTotalToBudget = (
+      msgs: ModelMessage[],
+      budget: number,
+      keepRecent: number,
+    ): ModelMessage[] => {
+      if (approxMsgChars(msgs) <= budget) return msgs;
+      const out: ModelMessage[] = msgs.map((m) => ({ ...m }));
+      const cutoff = Math.max(0, out.length - keepRecent);
+      for (let i = 0; i < cutoff; i++) {
+        if (approxMsgChars(out) <= budget) break;
+        const m = out[i];
+        if ((m.role !== "tool" && m.role !== "assistant") || !Array.isArray(m.content)) continue;
+        m.content = (m.content as TrimPart[]).map((part: TrimPart) => {
+          if (part?.type === "tool-result" && part.output != null && JSON.stringify(part.output).length > 80) {
+            return { ...part, output: { value: "[older tool result elided to fit context budget]" } };
+          }
+          if (part?.type === "text" && typeof part.text === "string" && part.text.length > 200) {
+            return { ...part, text: part.text.slice(0, 200) + " …[elided]" };
+          }
+          return part;
+        }) as unknown as typeof m.content;
+      }
+      return out;
+    };
+    let trimmedMessages: ModelMessage[] = modelMessages.map((m: ModelMessage, idx: number) => {
       const isRecent = idx >= modelMessages.length - RECENT_WINDOW;
       const max = isRecent ? MAX_TOOL_RESULT_CHARS_RECENT : MAX_TOOL_RESULT_CHARS_OLD;
       if (m.role !== "tool" && m.role !== "assistant") return m;
@@ -123,6 +160,7 @@ Deno.serve(async (req) => {
       });
       return { ...m, content } as ModelMessage;
     });
+    trimmedMessages = capTotalToBudget(trimmedMessages, TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW);
 
     // Cumulative cost tracker for this run.
     let runCostMicroUsd = 0;
@@ -327,7 +365,7 @@ Deno.serve(async (req) => {
           });
           return { ...m, content } as ModelMessage;
         });
-        return { messages: trimmed };
+        return { messages: capTotalToBudget(trimmed, TOTAL_PROMPT_CHAR_BUDGET, STEP_RECENT_WINDOW) };
       };
 
     const result = streamText({
@@ -472,7 +510,12 @@ Deno.serve(async (req) => {
                 artifacts: cachedArts,
                 finished_at: new Date().toISOString(),
               };
-              await supabase.from("investigation_cache").upsert(
+              // investigation_cache RLS intentionally denies client (anon/authenticated)
+              // writes ("Deny client cache writes"); writes must go through the
+              // service-role admin client (bypasses RLS). Using the user-scoped
+              // `supabase` here is what left the cache permanently empty (0 rows,
+              // ~0% hit). The artifacts read above is fine on the user client.
+              await supabaseAdmin.from("investigation_cache").upsert(
                 {
                   user_id: userId,
                   seed_kind: detected.kind,
