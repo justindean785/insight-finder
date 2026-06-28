@@ -4,6 +4,7 @@ import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { buildReportMarkdown, buildEvidenceMatrixMarkdown } from "@/lib/intel";
 import { useReviewStates } from "@/lib/review";
 import { useThreadMessages } from "@/hooks/useThreadMessages";
+import { useThreadToolActivity } from "@/hooks/useThreadToolActivity";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -72,9 +73,21 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
     return m;
   }, [artifacts, review]);
 
+  // Authoritative tool activity from tool_usage_log (the message stream doesn't
+  // carry tool parts, so the report's "Tool invocations" read 0 without this).
+  const toolActivity = useThreadToolActivity(threadId);
+  const toolActivityList = useMemo(
+    () => toolActivity.events.map((e) => ({ toolName: e.toolName })),
+    [toolActivity.events],
+  );
+  const toolInvocations = toolActivity.total + toolActivity.hiddenFailed;
+
   const markdown = useMemo(
-    () => buildReportMarkdown({ seedValue: seed.value, seedType: seed.type, artifacts, messages, reviews, reportType }),
-    [seed, artifacts, messages, reviews, reportType],
+    () => buildReportMarkdown({
+      seedValue: seed.value, seedType: seed.type, artifacts, messages, reviews, reportType,
+      toolActivity: toolActivityList, toolInvocations,
+    }),
+    [seed, artifacts, messages, reviews, reportType, toolActivityList, toolInvocations],
   );
   const matrixMd = useMemo(() => buildEvidenceMatrixMarkdown(artifacts), [artifacts]);
 

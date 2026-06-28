@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { deriveToolTone, deriveToolStatus, deriveToolReason, type ToolTone, type ToolStatus } from "@/lib/tool-run";
+import { deriveToolReason, type ToolTone, type ToolStatus } from "@/lib/tool-run";
 import { toolDisplayName, toolActionLabel } from "@/lib/tool-display";
 
 /**
  * Best-effort short reason for a non-OK tool event, for the Activity feed.
  * Reads the error text first, then any structured `reason`/`error`/`message`
- * in the output. Truncated so the activity row stays compact.
+ * in the output. Truncated so the activity row stays compact. (Retained for the
+ * chat-part path; the thread feed now sources from tool_usage_log below.)
  */
 export function toolActivityReason(
   part: { state?: string; errorText?: unknown; output?: unknown },
@@ -31,7 +32,7 @@ let channelSeq = 0;
 
 export interface ToolEvent {
   id: string;
-  /** raw tool type, e.g. "tool-breach_check" → toolName "breach_check" */
+  /** runtime tool name, e.g. "breach_check" */
   toolName: string;
   displayName: string;
   actionLabel: string;
@@ -55,19 +56,53 @@ export interface ThreadToolActivity {
   loading: boolean;
 }
 
-interface PartLike {
-  type?: string;
-  state?: string;
-  errorText?: unknown;
-  output?: unknown;
-  [k: string]: unknown;
+/** One persisted tool_usage_log row (the authoritative per-call record). */
+interface ActivityRow {
+  id: string;
+  tool_name: string;
+  outcome: string | null;
+  ok: boolean | null;
+  error_msg: string | null;
+  created_at: string;
+}
+
+const GATED_RE = /gated|missing.?key|not configured|disabled|unavailable|provider disabled/i;
+const DEGRADED_RE = /degraded|suppressed|rate.?limit|burst|budget|concurrency|cycle limit|duplicate call/i;
+
+/**
+ * Map a tool_usage_log row to a display tone + operational status. The log's
+ * `outcome` (`ok`/`skipped`/`empty`/`failed`, written by classifyToolOutcome in
+ * the edge function) is the authoritative source; legacy rows with a null
+ * outcome fall back to the `ok` boolean. Pure — exported for tests.
+ */
+export function classifyActivityRow(
+  outcome: string | null,
+  ok: boolean | null,
+  errorMsg: string | null,
+): { tone: ToolTone; status: ToolStatus } {
+  const oc = (outcome ?? (ok ? "ok" : "failed")).toLowerCase();
+  if (oc === "ok" || oc === "empty") return { tone: "ok", status: "succeeded" };
+  if (oc === "skipped") {
+    const err = errorMsg ?? "";
+    if (GATED_RE.test(err)) return { tone: "skip", status: "gated" };
+    if (DEGRADED_RE.test(err)) return { tone: "skip", status: "degraded" };
+    return { tone: "skip", status: "skipped" };
+  }
+  return { tone: "error", status: "failed" };
+}
+
+function cleanReason(errorMsg: string | null): string | undefined {
+  if (!errorMsg) return undefined;
+  const clean = errorMsg.replace(/\s+/g, " ").trim();
+  if (!clean) return undefined;
+  return clean.length > 160 ? `${clean.slice(0, 159)}…` : clean;
 }
 
 /**
- * Reads the persisted message stream for a thread and projects it into a flat,
- * chronological list of tool-call events plus rollup counts. DB-backed (not the
- * live in-memory chat state) so it powers the workspace header and the Tools /
- * Activity tab from any tab, and stays fresh via a realtime subscription.
+ * Authoritative per-thread tool activity, read from `tool_usage_log` (the same
+ * source the Tool-Health panel uses) — NOT the chat message parts, which the
+ * osint-agent orchestrator does not populate, so the old message-derived feed
+ * always read empty. Stays fresh via a realtime subscription on the log.
  */
 export function useThreadToolActivity(threadId: string): ThreadToolActivity {
   const [events, setEvents] = useState<ToolEvent[]>([]);
@@ -80,34 +115,31 @@ export function useThreadToolActivity(threadId: string): ThreadToolActivity {
     let alive = true;
     const load = async () => {
       const { data } = await supabase
-        .from("messages")
-        .select("id,role,parts,created_at")
+        .from("tool_usage_log")
+        // `outcome` is not in the generated types yet (added by migration) —
+        // cast via unknown below to keep typecheck green.
+        .select("id,tool_name,outcome,ok,error_msg,created_at")
         .eq("thread_id", threadId)
-        .order("created_at");
+        .order("created_at", { ascending: true });
       if (!alive) return;
-      const out: ToolEvent[] = [];
-      for (const row of (data ?? []) as { id: string; role: string; parts: unknown; created_at: string }[]) {
-        if (row.role !== "assistant" || !Array.isArray(row.parts)) continue;
-        let i = 0;
-        for (const p of row.parts as PartLike[]) {
-          if (typeof p?.type !== "string" || !p.type.startsWith("tool-")) continue;
-          const toolName = p.type.slice("tool-".length);
-          const tone = deriveToolTone(p);
-          out.push({
-            id: `${row.id}:${i++}`,
-            toolName,
-            displayName: toolDisplayName(toolName),
-            actionLabel: toolActionLabel(toolName),
-            tone,
-            status: deriveToolStatus(p),
-            state: p.state,
-            at: row.created_at,
-            reason: toolActivityReason(p, tone),
-          });
-        }
-      }
-      // Keep raw failed calls in persisted data, but suppress them from the
-      // beta-facing activity feed so the workspace only reflects visible runs.
+      const rows = (data ?? []) as unknown as ActivityRow[];
+      const out: ToolEvent[] = rows.map((r) => {
+        const { tone, status } = classifyActivityRow(r.outcome, r.ok, r.error_msg);
+        return {
+          id: r.id,
+          toolName: r.tool_name,
+          displayName: toolDisplayName(r.tool_name),
+          actionLabel: toolActionLabel(r.tool_name),
+          tone,
+          status,
+          at: r.created_at,
+          reason: tone === "ok" ? undefined : cleanReason(r.error_msg),
+        };
+      });
+      // Failed calls stay in the log but are suppressed from the beta-facing
+      // feed (the Tool-Health panel surfaces failures explicitly); carry the
+      // count so the surface acknowledges hidden activity instead of reading
+      // empty.
       setHiddenFailed(out.filter((event) => event.status === "failed").length);
       setEvents(out.filter((event) => event.status !== "failed"));
       setLoading(false);
@@ -115,15 +147,11 @@ export function useThreadToolActivity(threadId: string): ThreadToolActivity {
     load();
     const ch = supabase
       .channel(`tool-activity-${threadId}-${channelIdRef.current}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "messages", filter: `thread_id=eq.${threadId}` }, load)
+      .on("postgres_changes", { event: "*", schema: "public", table: "tool_usage_log", filter: `thread_id=eq.${threadId}` }, load)
       .subscribe();
     return () => { alive = false; supabase.removeChannel(ch); };
   }, [threadId]);
 
-  // `events` and `total` are VISIBLE activity only — failed calls are suppressed
-  // from the beta feed (see the filter above). `hiddenFailed` carries the
-  // suppressed count so consumers can acknowledge hidden activity (rather than
-  // showing an empty surface) without exposing failure noise.
   return {
     events,
     total: events.length,
