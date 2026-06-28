@@ -6,6 +6,7 @@ import { isSharedInfrastructure } from "@/lib/evidence-status";
 import { captureError } from "@/lib/telemetry";
 import { AlertTriangle, MapPin, Mail, Phone, User as UserIcon, Network, Tag, ShieldCheck, ShieldQuestion, Server } from "lucide-react";
 import { EmptyState } from "./EmptyState";
+import { ConfidenceTag } from "@/components/ui/confidence";
 import { cn } from "@/lib/utils";
 
 export function ClustersTab({ threadId, artifacts }: { threadId: string; artifacts: Artifact[] }) {
@@ -119,7 +120,7 @@ function ClusterCard({ cluster: c, index }: { cluster: IdentityCluster; index: n
           <Tag className="w-2.5 h-2.5" />
           {c.artifacts.length} artifact{c.artifacts.length === 1 ? "" : "s"} · {c.sources.length} tool{c.sources.length === 1 ? "" : "s"}
         </span>
-        <span>conf {c.confidence}</span>
+        <ConfidenceTag score={c.confidence} />
       </div>
 
       {c.mergeReasons.length > 0 && (

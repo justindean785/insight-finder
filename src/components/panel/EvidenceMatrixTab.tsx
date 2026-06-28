@@ -17,6 +17,7 @@ import { toast } from "sonner";
 import { ConfidenceExplain } from "@/components/ConfidenceExplain";
 import { SourceBadge } from "@/components/SourceBadge";
 import { explainConfidence, BADGE_TONE_CLASS } from "@/lib/confidence";
+import { confidenceColor } from "@/lib/confidence-tier";
 import { sanitizeValueForLabel } from "@/lib/report-hygiene";
 
 // Primary segmented controls — 5 visible options each, anything else goes into the overflow.
@@ -172,10 +173,9 @@ export function EvidenceMatrixTab({
               const basePct = Math.max(0, Math.min(100, base));
               const deltaPct = Math.max(0, Math.min(100 - basePct, Math.abs(delta)));
               const deltaColor = delta > 0 ? "hsl(var(--confidence-high))" : "hsl(var(--confidence-mid))";
-              const scoreColor =
-                score >= 80 ? "hsl(var(--confidence-high))" :
-                score >= 50 ? "hsl(var(--confidence-mid))" :
-                "hsl(var(--confidence-low))";
+              // Score colour from the shared 5-tier ramp so the matrix agrees
+              // with the grid / cluster / radar everywhere a confidence shows.
+              const scoreColor = confidenceColor(score);
               return (
                 <li
                   key={a.id}
