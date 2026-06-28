@@ -34,6 +34,11 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   gleif_lei_search: 0,           // api.gleif.org LEI registry — free, no key
   opencorporates_search: 50,     // registry search; now key-required (keyless 401s)
 
+  // ---- URLScanner.online (private URL scanner — combined DNS/SSL/HTTP/WHOIS/threats/AI) ----
+  // Solo plan 100/day; treat each sync scan as ~$0.02 (peer of virustotal_lookup
+  // which bundles similar reputation+modules into one call).
+  urlscanner_scan: 2000,
+
   // ---- Triage + smart reasoning (LLM costs) ----
   triage_seed: 800,           // 4 sub-tool calls bundled
   minimax_correlate: 4000,    // smart-tier LLM

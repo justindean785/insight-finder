@@ -145,6 +145,13 @@ export const OPENCORPORATES_API_KEY = Deno.env.get("OPENCORPORATES_API_KEY");
 // silently returning listed:false for every domain.
 export const RANSOMWARELIVE_API_KEY = Deno.env.get("RANSOMWARELIVE_API_KEY");
 
+// URLScanner.online — private URL malware/phishing/threat scanner. Returns a
+// combined report (DNS + SSL + HTTP + WHOIS + threat-blocklists + AI summary)
+// in one /scan/sync call. Free 10/day, Solo 100/day, higher tiers via key.
+// Private: scans are NOT made public (unlike VirusTotal). Tool self-skips
+// when this is unset so missing-key never silently looks like "not flagged".
+export const URLSCANNER_API_KEY = Deno.env.get("URLSCANNER_API_KEY");
+
 // Health probe secret — gates the paid ?probe=1 path. Fail closed: if unset,
 // ?probe=1 is rejected. The lightweight ?health=1 path remains public.
 export const OSINT_AGENT_PROBE_SECRET = Deno.env.get("OSINT_AGENT_PROBE_SECRET") ?? "";
