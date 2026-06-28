@@ -1760,8 +1760,8 @@ function ChatWindowInner({
   return (
     <div className="relative flex-1 flex flex-col h-full min-w-0 overflow-hidden bg-background">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(255,255,255,0.05),transparent_34%),radial-gradient(circle_at_50%_100%,rgba(43,52,68,0.18),transparent_28%)]" />
-      <div className="pointer-events-none absolute inset-y-0 left-[calc(50%-23rem)] w-px bg-gradient-to-b from-transparent via-white/8 to-transparent hidden xl:block" />
-      <div className="pointer-events-none absolute inset-y-0 right-[calc(50%-23rem)] w-px bg-gradient-to-b from-transparent via-white/8 to-transparent hidden xl:block" />
+      <div className="pointer-events-none absolute inset-y-0 left-[calc(50%-20rem)] w-px bg-gradient-to-b from-transparent via-white/8 to-transparent hidden xl:block" />
+      <div className="pointer-events-none absolute inset-y-0 right-[calc(50%-20rem)] w-px bg-gradient-to-b from-transparent via-white/8 to-transparent hidden xl:block" />
       <div
         ref={scrollRef}
         onScroll={(event) => {
@@ -1779,11 +1779,11 @@ function ChatWindowInner({
         }}
         className="relative z-10 flex-1 overflow-y-auto overflow-x-hidden px-3 sm:px-6 py-4 sm:py-5"
       >
-        <div ref={contentRef} className="max-w-[46rem] mx-auto space-y-6 min-w-0">
+        <div ref={contentRef} className="max-w-[40rem] mx-auto space-y-6 min-w-0">
           <div className="h-2" aria-hidden />
           {messages.length === 0 && (
             <div className="py-3 sm:py-10">
-              <div className="w-full max-w-[54rem] mx-auto overflow-hidden rounded-[22px] border border-white/12 bg-[linear-gradient(180deg,rgba(19,22,27,0.99),rgba(6,7,9,0.99))] shadow-[0_42px_130px_-64px_rgba(0,0,0,0.96)] ring-1 ring-white/6">
+              <div className="w-full max-w-[44rem] mx-auto overflow-hidden rounded-[22px] border border-white/12 bg-[linear-gradient(180deg,rgba(19,22,27,0.99),rgba(6,7,9,0.99))] shadow-[0_42px_130px_-64px_rgba(0,0,0,0.96)] ring-1 ring-white/6">
                 <div className="grid border-b border-white/8 sm:grid-cols-[1fr_auto]">
                   <div className="px-4 sm:px-6 py-4 bg-white/[0.025]">
                     <div className="flex items-center gap-2 text-eyebrow font-mono uppercase tracking-[0.22em] text-muted-foreground">
@@ -1948,7 +1948,7 @@ function ChatWindowInner({
       </div>
 
       <div className="relative z-10 border-t border-border-subtle bg-background/95 backdrop-blur-xl px-3 sm:px-4 pt-3 sm:pt-5 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:pb-5">
-        <div className="max-w-[46rem] mx-auto">
+        <div className="max-w-[40rem] mx-auto">
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2">
               {attachments.map((a) => {
