@@ -96,3 +96,38 @@ Deno.test("multi-sentence note: only the future-date sentence is removed", () =>
   assertEquals(r.metaPatch.note, "Bond set at $2,500.");
   assertEquals(r.metaPatch.date_note_corrected, true);
 });
+
+// ── #9: scheduling (court) date must not flag a past event as future ──
+Deno.test("#9: arrest in past + court_date future → NOT flagged future", () => {
+  const r = applyDateSanity(
+    "legal_record",
+    "Eugene Horsch — June 19 2026 arrest",
+    { arrest_date: "2026-06-19", court_date: "2026-07-06" },
+    "2026-06-28T00:00:00Z",
+  );
+  assertEquals(r.metaPatch.future_date_detected, false);
+  assertEquals(r.metaPatch.date_sanity_status, "ok");
+});
+
+Deno.test("#9: only a future court_date + false future-note → corrected to ok/scheduled", () => {
+  const r = applyDateSanity(
+    "legal_record",
+    "arrest record",
+    { court_date: "2026-07-06", note: "Future date detected - possible synthetic data" },
+    "2026-06-28T00:00:00Z",
+  );
+  assertEquals(r.metaPatch.future_date_detected, false);
+  assertEquals(r.metaPatch.scheduled_future_date, true);
+  assertEquals(r.metaPatch.date_sanity_status, "ok");
+});
+
+Deno.test("#9: a genuinely future EVENT (arrest_date ahead) is still flagged", () => {
+  const r = applyDateSanity(
+    "legal_record",
+    "arrest record",
+    { arrest_date: "2026-12-31" },
+    "2026-06-28T00:00:00Z",
+  );
+  assertEquals(r.metaPatch.future_date_detected, true);
+  assertEquals(r.metaPatch.date_sanity_status, "future_date");
+});
