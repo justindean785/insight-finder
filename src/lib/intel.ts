@@ -869,10 +869,16 @@ export type ReportInput = {
   reviews?: Record<string, ReviewAdjustment>;
   /** Output shape: "full" dossier (default) or condensed "brief". */
   reportType?: "full" | "brief";
+  /** Authoritative tool-call activity (from tool_usage_log), one entry per call.
+   *  Supplied by the UI so the Activity Log reflects real tool invocations even
+   *  though the persisted message stream doesn't carry tool parts. */
+  toolActivity?: Array<{ toolName: string }>;
+  /** Total tool invocations incl. suppressed failures, when known. */
+  toolInvocations?: number;
 };
 
 export function buildReportMarkdown(input: ReportInput): string {
-  const { seedValue, seedType, messages, reviews, reportType } = input;
+  const { seedValue, seedType, messages, reviews, reportType, toolActivity, toolInvocations } = input;
   const display = extractDisplaySeed(seedValue, seedType);
   // Collapse breach datasets recorded twice under name variants from the same
   // source pair (conservative — see dedupeBreachDatasets) so the Artifact Table
@@ -1050,11 +1056,17 @@ export function buildReportMarkdown(input: ReportInput): string {
   const activityLog = (() => {
     if (!messages || messages.length === 0) return "_No message activity recorded._";
     const userQueries = messages.filter((m) => m.role === "user");
-    const toolCalls = messages.flatMap((m) => m.toolCalls.map((t) => ({ ...t, at: m.created_at })));
+    const msgToolCalls = messages.flatMap((m) => m.toolCalls.map((t) => ({ ...t, at: m.created_at })));
+    // Prefer the authoritative tool_usage_log activity supplied by the UI — the
+    // persisted message stream doesn't carry tool parts, so msgToolCalls is
+    // usually empty (which rendered "Tool invocations: 0").
+    const toolCalls = (toolActivity && toolActivity.length)
+      ? toolActivity.map((t) => ({ toolName: t.toolName, at: "" }))
+      : msgToolCalls;
     const reportMarkers = messages.filter((m) => m.role === "assistant" && /report/i.test(m.summary));
     const parts: string[] = [];
     parts.push(`- **User queries:** ${userQueries.length}`);
-    parts.push(`- **Tool invocations:** ${toolCalls.length}`);
+    parts.push(`- **Tool invocations:** ${toolInvocations ?? toolCalls.length}`);
     if (reportMarkers.length) parts.push(`- **Report markers:** ${reportMarkers.length}`);
     const toolCounts = new Map<string, number>();
     for (const tc of toolCalls) {
@@ -1343,6 +1355,29 @@ export function normalizeHandle(raw: string): string {
   return raw.trim().toLowerCase().replace(/^@+/, "").replace(/[_.-]/g, "");
 }
 
+/**
+ * Flatten metadata cross-link values (string or string[]) into trimmed,
+ * non-empty strings, for unioning clusters on concrete shared selectors a
+ * record carries about its owner (an email row's `metadata.phone`, etc.).
+ */
+function collectStrings(...vals: unknown[]): string[] {
+  const out: string[] = [];
+  for (const val of vals) {
+    if (typeof val === "string") {
+      const t = val.trim();
+      if (t) out.push(t);
+    } else if (Array.isArray(val)) {
+      for (const x of val) {
+        if (typeof x === "string") {
+          const t = x.trim();
+          if (t) out.push(t);
+        }
+      }
+    }
+  }
+  return out;
+}
+
 function normalizePersonName(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
@@ -1407,6 +1442,29 @@ export function buildIdentityClusters(
     }
     const parent = String(meta.parent ?? meta.parent_seed ?? meta.seed ?? "").trim().toLowerCase();
     if (parent) hits.push({ key: `parent:${parent}`, signal: "SHARED_INFRASTRUCTURE", raw: parent, platform });
+
+    // Cross-link selectors carried in metadata: a breach/profile row commonly
+    // names the OTHER concrete selectors of the same person (the email row lists
+    // the owner's phone + instagram_handle; the address row's email). Union on
+    // those shared CONCRETE selectors so one person's email / phone / handle /
+    // address rows merge into a single cluster instead of fragmenting into
+    // one-per-attribute clusters. Names and other free text are still NEVER
+    // consulted (T1-2 §8), and these keys reuse the same `email:` / `phone:` /
+    // `handle:` / `address:` namespace as the value-based keys above so a
+    // metadata reference and the standalone artifact converge.
+    for (const e of collectStrings(meta.email, meta.emails)) {
+      if (e.includes("@")) hits.push({ key: `email:${e.toLowerCase()}`, signal: "EMAIL_MATCH", raw: e, platform });
+    }
+    for (const p of collectStrings(meta.phone, meta.phones)) {
+      if (p.replace(/\D/g, "").length >= 7) hits.push({ key: `phone:${p.toLowerCase()}`, signal: "PHONE_MATCH", raw: p, platform });
+    }
+    for (const h of collectStrings(meta.instagram_handle, meta.instagram, meta.twitter, meta.username, meta.github, meta.tiktok)) {
+      const norm = normalizeHandle(h);
+      if (norm) hits.push({ key: `handle:${norm}`, signal: "HANDLE_MATCH", raw: h, platform });
+    }
+    for (const ad of collectStrings(meta.address)) {
+      if (ad.length >= 6) hits.push({ key: `address:${ad.toLowerCase()}`, signal: "SHARED_INFRASTRUCTURE", raw: ad, platform });
+    }
     return hits;
   };
   const strongKeysFor = (a: Artifact): string[] => signalsFor(a).map((h) => h.key);
