@@ -13,6 +13,7 @@ import {
 } from "recharts";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { SourceBadge } from "@/components/SourceBadge";
+import { breachSeverity, isAiSummaryArtifact, isDobPlaceholder, qualConfidence } from "@/lib/report-badges";
 import { EvidenceStatusBadge } from "@/components/ui/workspace-primitives";
 import { ConfidenceBar } from "@/components/ui/confidence";
 import { evidenceStatus } from "@/lib/evidence-status";
@@ -65,7 +66,7 @@ function ArtifactRow({ a }: { a: Artifact }) {
   // AI-asserted-but-unverified items (provenance guard) get the evidence-vs-
   // inference treatment: a faint amber wash + an "inferred" marker, so they look
   // distinct from a sourced observation.
-  const isInferred = m.provenance_verified === false || m.provenance === "llm_asserted_unverified";
+  const isInferred = m.provenance_verified === false || m.provenance === "llm_asserted_unverified" || isAiSummaryArtifact(a);
   return (
     <tr
       className={cn(
@@ -83,7 +84,7 @@ function ArtifactRow({ a }: { a: Artifact }) {
           </span>
         )}
       </td>
-      <td className="px-3 py-2 text-data text-muted-foreground break-words [overflow-wrap:anywhere]">
+      <td className="px-3 py-2 text-data text-muted-foreground break-words [overflow-wrap:anywhere]" title={a.source ?? undefined}>
         {a.source ? <SourceBadge source={a.source} size="xs" className="max-w-full whitespace-normal break-words [overflow-wrap:anywhere] text-left !rounded-md" /> : "—"}
       </td>
       <td className="px-3 py-2">
@@ -652,7 +653,7 @@ function buildSubjectProfile(artifacts: Artifact[]): ProfileField[] {
   return out;
 }
 
-type BreachRow = { site: string; date: string; classes: string; creds: string[] };
+type BreachRow = { site: string; date: string; classes: string; creds: string[]; severity: "CRITICAL" | "HIGH" | null };
 function buildBreachExposure(artifacts: Artifact[]): BreachRow[] {
   const rows = artifacts.filter((a) => a.kind === "breach_exposure").map((a) => {
     const m = (a.metadata ?? {}) as Record<string, unknown>;
@@ -664,7 +665,7 @@ function buildBreachExposure(artifacts: Artifact[]): BreachRow[] {
     if (m.password_exposed || m.passwords || m.password) creds.push("password ✓");
     if (m.password_hash_exposed || m.hash) creds.push("hash present");
     if (m.password_hint) creds.push("hint present");
-    return { site: a.value, date, classes, creds };
+    return { site: a.value, date, classes, creds, severity: breachSeverity(a) };
   });
   return rows.sort((a, b) => (a.date < b.date ? -1 : 1));
 }
@@ -779,7 +780,9 @@ export function CaseReport({
       <section className="mt-4 grid gap-3 rounded-xl border border-white/[0.08] bg-white/[0.025] p-3 sm:grid-cols-2">
         <div>
           <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">Analyst confidence</div>
-          <div className="mt-1 font-display text-2xl font-semibold text-[hsl(var(--info))]">{analystConf}%</div>
+          <div className="mt-1 font-display text-2xl font-semibold text-[hsl(var(--info))]">
+            {analystConf}% <span className="text-sm font-mono uppercase tracking-wider text-muted-foreground">· {qualConfidence(analystConf)}</span>
+          </div>
           <p className="mt-1 text-data leading-relaxed text-muted-foreground">Strongest identity-bearing artifact — reasoned read, not an auto-confirmation.</p>
         </div>
         <div>
@@ -794,12 +797,25 @@ export function CaseReport({
         <>
           <SectionHeader>Subject Profile</SectionHeader>
           <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-4 grid gap-2 sm:grid-cols-2">
-            {subjectProfile.map((f) => (
-              <div key={f.label} className="flex flex-col">
-                <span className="text-eyebrow font-mono uppercase tracking-[0.14em] text-muted-foreground">{f.label}</span>
-                <span className="font-mono text-foreground break-words [overflow-wrap:anywhere]">{f.value}</span>
-              </div>
-            ))}
+            {subjectProfile.map((f) => {
+              const dobSuspect = /date of birth|dob/i.test(f.label) && isDobPlaceholder(f.value);
+              return (
+                <div key={f.label} className="flex flex-col">
+                  <span className="text-eyebrow font-mono uppercase tracking-[0.14em] text-muted-foreground">{f.label}</span>
+                  <span className="font-mono text-foreground break-words [overflow-wrap:anywhere]">
+                    {f.value}
+                    {dobSuspect && (
+                      <span
+                        className="ml-2 align-middle rounded border border-[hsl(var(--warning))]/60 bg-[hsl(var(--warning))]/10 px-1.5 py-px text-[9px] font-mono uppercase tracking-wider text-[hsl(var(--warning))] no-underline"
+                        title="January 1 is a common placeholder DOB — verify before relying on it"
+                      >
+                        placeholder?
+                      </span>
+                    )}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </>
       )}
@@ -923,7 +939,22 @@ export function CaseReport({
               <tbody>
                 {breachRows.map((b, i) => (
                   <tr key={i} className="border-t border-border-subtle">
-                    <td className="px-3 py-2 break-words [overflow-wrap:anywhere]">{b.site}</td>
+                    <td className="px-3 py-2 break-words [overflow-wrap:anywhere]">
+                      {b.site}
+                      {b.severity && (
+                        <span
+                          className={cn(
+                            "ml-2 align-middle rounded border px-1.5 py-px text-[9px] font-mono uppercase tracking-wider",
+                            b.severity === "CRITICAL"
+                              ? "border-destructive/50 bg-destructive/15 text-destructive"
+                              : "border-[hsl(var(--warning))]/60 bg-[hsl(var(--warning))]/10 text-[hsl(var(--warning))]",
+                          )}
+                          title="Full-profile / high-impact breach exposure"
+                        >
+                          {b.severity}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-3 py-2 font-mono text-muted-foreground whitespace-nowrap">{b.date || "—"}</td>
                     <td className="px-3 py-2 text-muted-foreground break-words">{b.classes || "—"}</td>
                     <td className="px-3 py-2">
