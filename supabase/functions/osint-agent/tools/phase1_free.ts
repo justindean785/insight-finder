@@ -10,22 +10,28 @@ import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { fetchRetry, fetchT } from "../fetch_retry.ts";
 import { isCrtshOk } from "../tool_response.ts";
-import { OPENCORPORATES_API_KEY } from "../env.ts";
+import { OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY } from "../env.ts";
+import { URLSCANNER_API_KEY } from "../env.ts";
 
 export const ransomwarelive_lookup = tool({
   description:
-    "Ransomware.live victim-exposure check — is a DOMAIN listed as a ransomware/extortion victim on a leak site? Input: { domain: string } (a registrable domain like 'acme.com', NOT a URL or email). Returns up to 25 victim entries (group, date, description). A 404 or empty result means NOT listed → { ok:true, listed:false, victims:[] }. No API key. Replaces the dead deepfind_ransomware_exposure.",
+    "Ransomware.live victim-exposure check — is a DOMAIN listed as a ransomware/extortion victim on a leak site? Input: { domain: string } (a registrable domain like 'acme.com', NOT a URL or email). Returns up to 25 victim entries (group, date, description). Uses api-pro.ransomware.live when RANSOMWARELIVE_API_KEY is set; without a key the tool returns { ok:false, degraded:true } because the free api.ransomware.live API has been retired. A real empty result means NOT listed → { ok:true, listed:false, victims:[] }.",
   inputSchema: z.object({ domain: z.string().min(1).describe("registrable domain, e.g. acme.com") }),
   execute: async ({ domain }) => {
     try {
       const d = domain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-      let r = await fetchRetry(`https://api.ransomware.live/v2/victims/${encodeURIComponent(d)}`, {}, { timeoutMs: 12_000 });
-      if (r.status === 404) {
-        await r.body?.cancel().catch(() => {});
-        r = await fetchRetry(`https://api.ransomware.live/v2/searchvictims/${encodeURIComponent(d)}`, {}, { timeoutMs: 12_000 });
+      if (!RANSOMWARELIVE_API_KEY) {
+        return { ok: false, degraded: true, domain: d, error: "ransomware.live free API retired; set RANSOMWARELIVE_API_KEY (api-pro.ransomware.live) to enable" };
       }
+      const r = await fetchRetry(
+        `https://api-pro.ransomware.live/victims/search?q=${encodeURIComponent(d)}`,
+        { headers: { "X-API-KEY": RANSOMWARELIVE_API_KEY, "Accept": "application/json" } },
+        { timeoutMs: 12_000 },
+      );
       if (r.status === 404) { await r.body?.cancel().catch(() => {}); return { ok: true, domain: d, listed: false, count: 0, victims: [] }; }
       if (!r.ok) return { ok: false, status: r.status, error: `ransomware.live ${r.status}`, domain: d };
+      const ct = r.headers.get("content-type") ?? "";
+      if (!ct.includes("json")) { await r.body?.cancel().catch(() => {}); return { ok: false, degraded: true, domain: d, error: `non-JSON response (${ct || "unknown"})` }; }
       const data = await r.json().catch(() => null);
       const rows = Array.isArray(data)
         ? data
@@ -279,5 +285,39 @@ export const opencorporates_search = tool({
       });
       return { ok: true, name, count: out.length, companies: out };
     } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
+  },
+});
+
+export const urlscanner_scan = tool({
+  description:
+    "URLScanner.online PRIVATE URL/domain/IP security scanner (sync endpoint). One call returns score (0-100), verdict (clean|low|medium|high|critical), DNS records, SSL cert chain, HTTP security-header analysis, WHOIS (incl. domainAge / registrar / expiry), threat-blocklist hits (URLhaus, Spamhaus, SURBL), and an AI risk summary (knownDomain, domainReputation, riskLevel, briefSummary, recommendations). Input: { url: string } (URL, domain, or IP). Requires URLSCANNER_API_KEY (free 10/day, solo 100/day). Scans are PRIVATE (never published). Typical latency 15-20s; modules that time out return null for that field — the response is always returned. Reserve for high-value suspicious artifacts.",
+  inputSchema: z.object({
+    url: z.string().min(1).describe("URL, registrable domain, or IP to scan"),
+    rescan: z.boolean().optional().describe("Force a fresh scan, bypassing the 7-day cache"),
+  }),
+  execute: async ({ url, rescan }) => {
+    if (!URLSCANNER_API_KEY) return { error: "URLSCANNER_API_KEY not configured", degraded: true };
+    try {
+      const r = await fetchRetry(
+        "https://urlscanner.online/api/scan/sync",
+        {
+          method: "POST",
+          headers: {
+            "X-API-Key": URLSCANNER_API_KEY,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+          },
+          body: JSON.stringify(rescan ? { url, rescan: true } : { url }),
+        },
+        { timeoutMs: 45_000 },
+      );
+      if (!r.ok) {
+        const body = await r.text().catch(() => "");
+        return { ok: false, status: r.status, error: `urlscanner ${r.status}: ${body.slice(0, 300)}`, url };
+      }
+      const data = await r.json().catch(() => null) as Record<string, unknown> | null;
+      if (!data) return { ok: false, error: "urlscanner returned non-JSON body", url };
+      return { ok: true, url: (data.url ?? url) as string, score: data.score ?? null, verdict: data.verdict ?? null, raw: data };
+    } catch (e) { return { error: String(e instanceof Error ? e.message : e), url }; }
   },
 });

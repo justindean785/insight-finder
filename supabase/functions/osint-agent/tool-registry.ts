@@ -30,7 +30,8 @@ import {
   CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED,
   HIBP_API_KEY, GITHUB_API_TOKEN, FIRECRAWL_API_KEY, EXA_API_KEY, JINA_API_KEY,
   GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY,
-  OPENCORPORATES_API_KEY,
+  OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
+  URLSCANNER_API_KEY,
   firecrawlCreditsLow, markFirecrawlCreditsLow, resetFirecrawlCreditsLow, degradedTools,
   markToolDegraded, isDegraded, fetchRetry, fetchT,
   deadHosts, markHostDead, isHostDead,
@@ -409,6 +410,7 @@ export function buildTools(ctx: ToolContext) {
             "whois_lookup","dns_records","crtsh_subdomains","crtsh_lookup","http_fingerprint",
             "ip_intel","ipgeolocation_lookup","ipqualityscore_lookup","shodan_internetdb","hackertarget",
             "urlscan_search","virustotal_lookup","synapsint_lookup",
+            "urlscanner_scan",
             // Phase 1 free / no-key corroboration tools
             "ransomwarelive_lookup","wayback_cdx_search","census_geocode","nominatim_geocode",
             "hibp_pwned_passwords_kanon","gleif_lei_search","opencorporates_search",
@@ -455,6 +457,12 @@ export function buildTools(ctx: ToolContext) {
             // planner menu until OPENCORPORATES_API_KEY is set — gleif_lei_search
             // is the keyless company-registry alternative.
             if (name === "opencorporates_search" && !OPENCORPORATES_API_KEY) return false;
+            // Ransomware.live free API is dead; tool only works with the api-pro
+            // key. Keep it off the planner menu until RANSOMWARELIVE_API_KEY is set.
+            if (name === "ransomwarelive_lookup" && !RANSOMWARELIVE_API_KEY) return false;
+            // URLScanner.online needs its API key — without it every call errors;
+            // keep it off the planner menu until URLSCANNER_API_KEY is set.
+            if (name === "urlscanner_scan" && !URLSCANNER_API_KEY) return false;
             // Dead/degraded tools — stop re-proposing them this investigation.
             if (brokenTools.has(name) || isDegraded(name)) return false;
             return true;
@@ -1747,20 +1755,23 @@ export function buildTools(ctx: ToolContext) {
     // (never throws) and trims its payload before returning.
     ransomwarelive_lookup: tool({
       description:
-        "Ransomware.live victim-exposure check — is a DOMAIN listed as a ransomware/extortion victim on a leak site? Input: { domain: string } (a registrable domain like 'acme.com', NOT a URL or email). Returns up to 25 victim entries (group, date, description). A 404 or empty result means NOT listed → { ok:true, listed:false, victims:[] }. No API key. Replaces the dead deepfind_ransomware_exposure.",
+        "Ransomware.live victim-exposure check — is a DOMAIN listed as a ransomware/extortion victim on a leak site? Input: { domain: string } (a registrable domain like 'acme.com', NOT a URL or email). Returns up to 25 victim entries (group, date, description). Uses api-pro.ransomware.live when RANSOMWARELIVE_API_KEY is set; without a key the tool returns { ok:false, degraded:true } because the free api.ransomware.live API has been retired. A real empty result means NOT listed → { ok:true, listed:false, victims:[] }.",
       inputSchema: z.object({ domain: z.string().min(1).describe("registrable domain, e.g. acme.com") }),
       execute: async ({ domain }) => {
         try {
           const d = domain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-          let r = await fetchRetry(`https://api.ransomware.live/v2/victims/${encodeURIComponent(d)}`, {}, { timeoutMs: 12_000 });
-          // The /victims/{domain} path 404s when the domain isn't a known victim;
-          // try the searchvictims fallback before treating 404 as "not listed".
-          if (r.status === 404) {
-            await r.body?.cancel().catch(() => {});
-            r = await fetchRetry(`https://api.ransomware.live/v2/searchvictims/${encodeURIComponent(d)}`, {}, { timeoutMs: 12_000 });
+          if (!RANSOMWARELIVE_API_KEY) {
+            return { ok: false, degraded: true, domain: d, error: "ransomware.live free API retired; set RANSOMWARELIVE_API_KEY (api-pro.ransomware.live) to enable" };
           }
+          const r = await fetchRetry(
+            `https://api-pro.ransomware.live/victims/search?q=${encodeURIComponent(d)}`,
+            { headers: { "X-API-KEY": RANSOMWARELIVE_API_KEY, "Accept": "application/json" } },
+            { timeoutMs: 12_000 },
+          );
           if (r.status === 404) { await r.body?.cancel().catch(() => {}); return { ok: true, domain: d, listed: false, count: 0, victims: [] }; }
           if (!r.ok) return { ok: false, status: r.status, error: `ransomware.live ${r.status}`, domain: d };
+          const ct = r.headers.get("content-type") ?? "";
+          if (!ct.includes("json")) { await r.body?.cancel().catch(() => {}); return { ok: false, degraded: true, domain: d, error: `non-JSON response (${ct || "unknown"})` }; }
           const data = await r.json().catch(() => null);
           const rows = Array.isArray(data)
             ? data
@@ -1777,6 +1788,95 @@ export function buildTools(ctx: ToolContext) {
           });
           return { ok: true, domain: d, listed: victims.length > 0, count: victims.length, victims };
         } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
+      },
+    }),
+    urlscanner_scan: tool({
+      description:
+        "URLScanner.online PRIVATE URL/domain/IP security scanner (sync endpoint). One call returns score (0-100), verdict (clean|low|medium|high|critical), DNS records, SSL cert chain, HTTP security-header analysis, WHOIS (incl. domainAge / registrar / expiry), threat-blocklist hits (URLhaus, Spamhaus, SURBL), and an AI risk summary (knownDomain, domainReputation, riskLevel, briefSummary, recommendations). Input: { url: string } (URL, domain, or IP). Requires URLSCANNER_API_KEY (free 10/day, solo 100/day). Scans are PRIVATE (never published). Typical latency 15-20s; modules that time out return null for that field — the response is always returned. Reserve for high-value suspicious artifacts.",
+      inputSchema: z.object({
+        url: z.string().min(1).describe("URL, registrable domain, or IP to scan"),
+        rescan: z.boolean().optional().describe("Force a fresh scan, bypassing the 7-day cache"),
+      }),
+      execute: async ({ url, rescan }) => {
+        if (!URLSCANNER_API_KEY) return { error: "URLSCANNER_API_KEY not configured", degraded: true };
+        try {
+          const r = await fetchRetry(
+            "https://urlscanner.online/api/scan/sync",
+            {
+              method: "POST",
+              headers: {
+                "X-API-Key": URLSCANNER_API_KEY,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+              },
+              body: JSON.stringify(rescan ? { url, rescan: true } : { url }),
+            },
+            { timeoutMs: 45_000 },
+          );
+          if (!r.ok) {
+            const body = await r.text().catch(() => "");
+            return { ok: false, status: r.status, error: `urlscanner ${r.status}: ${body.slice(0, 300)}`, url };
+          }
+          const data = await r.json().catch(() => null) as Record<string, unknown> | null;
+          if (!data) return { ok: false, error: "urlscanner returned non-JSON body", url };
+          // Trim: drop heavy fields (screenshots are skipped server-side; raw
+          // header arrays + AI full text can still be large). Keep what the
+          // orchestrator can reason over without blowing the context window.
+          const ai = (data.aiAnalysis ?? null) as Record<string, unknown> | null;
+          const threats = (data.threats ?? null) as Record<string, unknown> | null;
+          const dns = (data.dns ?? null) as Record<string, unknown> | null;
+          const ssl = (data.ssl ?? null) as Record<string, unknown> | null;
+          const http = (data.http ?? null) as Record<string, unknown> | null;
+          const whois = (data.whois ?? null) as Record<string, unknown> | null;
+          const trimSummary = (s: unknown) => typeof s === "string" ? s.slice(0, 600) : s ?? null;
+          return {
+            ok: true,
+            url: (data.url ?? url) as string,
+            hostname: data.hostname ?? null,
+            cached: data.cached ?? false,
+            score: data.score ?? null,
+            verdict: data.verdict ?? null,
+            scannedAt: data.scannedAt ?? null,
+            scanDurationMs: data.scanDurationMs ?? null,
+            remaining: data.remaining ?? null,
+            dns: dns ? {
+              resolvedIp: dns.resolvedIp ?? null,
+              recordCount: Array.isArray(dns.records) ? (dns.records as unknown[]).length : null,
+              records: Array.isArray(dns.records) ? (dns.records as unknown[]).slice(0, 25) : null,
+            } : null,
+            ssl: ssl ? {
+              valid: ssl.valid ?? null,
+              issuer: ssl.issuer ?? null,
+              daysUntilExpiry: ssl.daysUntilExpiry ?? null,
+              protocol: ssl.protocol ?? null,
+              cipher: ssl.cipher ?? null,
+            } : null,
+            http: http ? {
+              statusCode: http.statusCode ?? null,
+              securityHeaders: Array.isArray(http.securityHeaders) ? (http.securityHeaders as unknown[]).slice(0, 30) : null,
+            } : null,
+            whois: whois ? {
+              registrar: whois.registrar ?? null,
+              domainAge: whois.domainAge ?? null,
+              createdDate: whois.createdDate ?? null,
+              expiryDate: whois.expiryDate ?? null,
+            } : null,
+            threats: threats ? {
+              urlhaus: threats.urlhaus ?? null,
+              dnsBlocklists: threats.dnsBlocklists ?? null,
+            } : null,
+            aiAnalysis: ai ? {
+              knownDomain: ai.knownDomain ?? null,
+              domainReputation: ai.domainReputation ?? null,
+              domainCategory: ai.domainCategory ?? null,
+              score: ai.score ?? null,
+              riskLevel: ai.riskLevel ?? null,
+              summary: trimSummary(ai.summary),
+              briefSummary: trimSummary(ai.briefSummary),
+              recommendations: Array.isArray(ai.recommendations) ? (ai.recommendations as unknown[]).slice(0, 10) : null,
+            } : null,
+          };
+        } catch (e) { return { error: String(e instanceof Error ? e.message : e), url }; }
       },
     }),
     wayback_cdx_search: tool({
