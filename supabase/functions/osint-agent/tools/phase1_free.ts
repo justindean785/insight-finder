@@ -11,6 +11,7 @@ import { z } from "npm:zod@3";
 import { fetchRetry, fetchT } from "../fetch_retry.ts";
 import { isCrtshOk } from "../tool_response.ts";
 import { OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY } from "../env.ts";
+import { URLSCANNER_API_KEY } from "../env.ts";
 
 export const ransomwarelive_lookup = tool({
   description:
@@ -284,5 +285,39 @@ export const opencorporates_search = tool({
       });
       return { ok: true, name, count: out.length, companies: out };
     } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
+  },
+});
+
+export const urlscanner_scan = tool({
+  description:
+    "URLScanner.online PRIVATE URL/domain/IP security scanner (sync endpoint). One call returns score (0-100), verdict (clean|low|medium|high|critical), DNS records, SSL cert chain, HTTP security-header analysis, WHOIS (incl. domainAge / registrar / expiry), threat-blocklist hits (URLhaus, Spamhaus, SURBL), and an AI risk summary (knownDomain, domainReputation, riskLevel, briefSummary, recommendations). Input: { url: string } (URL, domain, or IP). Requires URLSCANNER_API_KEY (free 10/day, solo 100/day). Scans are PRIVATE (never published). Typical latency 15-20s; modules that time out return null for that field — the response is always returned. Reserve for high-value suspicious artifacts.",
+  inputSchema: z.object({
+    url: z.string().min(1).describe("URL, registrable domain, or IP to scan"),
+    rescan: z.boolean().optional().describe("Force a fresh scan, bypassing the 7-day cache"),
+  }),
+  execute: async ({ url, rescan }) => {
+    if (!URLSCANNER_API_KEY) return { error: "URLSCANNER_API_KEY not configured", degraded: true };
+    try {
+      const r = await fetchRetry(
+        "https://urlscanner.online/api/scan/sync",
+        {
+          method: "POST",
+          headers: {
+            "X-API-Key": URLSCANNER_API_KEY,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+          },
+          body: JSON.stringify(rescan ? { url, rescan: true } : { url }),
+        },
+        { timeoutMs: 45_000 },
+      );
+      if (!r.ok) {
+        const body = await r.text().catch(() => "");
+        return { ok: false, status: r.status, error: `urlscanner ${r.status}: ${body.slice(0, 300)}`, url };
+      }
+      const data = await r.json().catch(() => null) as Record<string, unknown> | null;
+      if (!data) return { ok: false, error: "urlscanner returned non-JSON body", url };
+      return { ok: true, url: (data.url ?? url) as string, score: data.score ?? null, verdict: data.verdict ?? null, raw: data };
+    } catch (e) { return { error: String(e instanceof Error ? e.message : e), url }; }
   },
 });
