@@ -3,6 +3,8 @@
 // retries that are demonstrably wasteful (402/403/timeouts/3+ failures), and
 // surfaces dedup keys so the same tool+selector isn't re-run for free.
 
+import { classifyToolOutcome } from "./tool-outcome.ts";
+
 export type FailureKind =
   | "ok"
   | "http_400"
@@ -430,6 +432,10 @@ export function classifyResult(result: unknown, threw: unknown): FailureKind {
     const err = String(r.error ?? "").toLowerCase();
     if (err.includes("timeout")) return "timeout";
     if (err.includes("disabled") || err.includes("not configured")) return "ok"; // free-call
+    // Governance / gating / suppression / degraded skips are intentional no-ops,
+    // not provider failures — they must NOT increment the consecutive-failure
+    // counter (which would auto-disable an otherwise-healthy tool).
+    if (classifyToolOutcome(r.error as string, null) === "skipped") return "ok";
     return "other";
   }
   return "ok";
