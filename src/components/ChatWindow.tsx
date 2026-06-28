@@ -24,7 +24,7 @@ import { dedupeCards, humanizeLeadReason } from "@/lib/next-step-cards";
 import { stripReasoningMarkup } from "@/lib/sanitize-agent-text";
 import { scrollBehavior } from "@/lib/motion";
 import { deriveToolCharge, deriveToolPreview, deriveToolRuntime, deriveToolTone } from "@/lib/tool-run";
-import { shouldFollowChatScroll } from "@/lib/chat-scroll";
+import { shouldFollowChatScroll, shouldAdoptInitialMessages, CHAT_REENGAGE_THRESHOLD_PX } from "@/lib/chat-scroll";
 import {
   extractRecommendedPivots,
   recommendedPivotsStorageKey,
@@ -768,7 +768,7 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
     return (
       <div className="flex justify-end">
         <div
-          className="relative max-w-[78%] min-w-0 rounded-2xl rounded-br-md pl-4 pr-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap break-words text-foreground/95 border border-white/[0.06] shadow-[0_8px_28px_-16px_hsl(0_0%_0%/0.7)]"
+          className="relative max-w-[78%] min-w-0 rounded-2xl rounded-br-md px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap break-words text-foreground/95 border border-primary/20 shadow-[0_8px_28px_-16px_hsl(0_0%_0%/0.7)]"
           style={{
             background:
               "linear-gradient(180deg, hsl(248 40% 12% / 0.55) 0%, hsl(230 14% 5% / 0.65) 100%)",
@@ -777,15 +777,6 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
             overflowWrap: "anywhere",
           }}
         >
-          <span
-            aria-hidden
-            className="pointer-events-none absolute left-0 top-2 bottom-2 w-[2px] rounded-full"
-            style={{
-              background:
-                "linear-gradient(180deg, hsl(var(--primary)) 0%, hsl(var(--intel-violet)) 100%)",
-              boxShadow: "0 0 12px hsl(var(--primary) / 0.55)",
-            }}
-          />
           {text}
         </div>
       </div>
@@ -1006,6 +997,10 @@ function ChatWindowInner({
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const followLatestRef = useRef(true);
+  // Wall-clock of the last genuine upward user scroll. onScroll consults it so a
+  // streaming pin / trackpad inertia can't re-engage follow the instant after the
+  // analyst scrolls up — re-engagement waits until they SETTLE at the bottom.
+  const lastUserScrollUpRef = useRef(0);
   const [input, setInput] = useState("");
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [stopping, setStopping] = useState(false);
@@ -1109,11 +1104,25 @@ function ChatWindowInner({
   // also covers a run that finished while you were away (the realtime recovery
   // subscription only catches INSERTs that land after you're back). We skip
   // while THIS client is actively streaming so a live run is never clobbered.
+  //
+  // Two guards keep this from WIPING history (the "minimize → restore lost my
+  // whole chat" bug):
+  //   1. Apply each freshly-loaded `initial` snapshot AT MOST ONCE. A bare
+  //      `setMessages(initial)` re-fires whenever this effect re-runs against the
+  //      SAME mount-time `initial` — e.g. a re-render after a run (setMessages
+  //      identity churn) or a minimize→restore — resetting the store back to the
+  //      mount-time snapshot and erasing everything streamed since.
+  //   2. Never let a stale/shorter snapshot clobber a fuller live store. The
+  //      surviving useChat store can legitimately hold more than the DB load
+  //      (just-streamed reply not yet read back), so only adopt `initial` when it
+  //      is at least as long — the realtime subscription fills any remaining gap.
+  const seededInitialRef = useRef<UIMessage[] | null>(null);
   useEffect(() => {
     if (status === "streaming" || status === "submitted") return;
-    setMessages(initial);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initial, setMessages]);
+    if (seededInitialRef.current === initial) return;
+    seededInitialRef.current = initial;
+    setMessages((current) => (shouldAdoptInitialMessages(initial.length, current.length) ? initial : current));
+  }, [initial, status, setMessages]);
 
   useEffect(() => {
     const channel = supabase
@@ -1158,9 +1167,14 @@ function ChatWindowInner({
     };
   }, [setMessages, threadId]);
 
-  // Pin the viewport to the true bottom. Flags the write as programmatic so
-  // onScroll won't treat it as the user scrolling away.
+  // Pin the viewport to the true bottom. Internally gated on followLatestRef so a
+  // disengage (user scrolled up) STICKS: this is the single chokepoint every
+  // auto-scroll path funnels through, so once follow is off NOTHING can yank the
+  // analyst back down until they deliberately return to the bottom (or hit the
+  // Jump-to-latest pill). The call sites stay guarded too, but this is the
+  // authoritative guard.
   const pinToBottom = useCallback(() => {
+    if (!followLatestRef.current) return;
     const viewport = scrollRef.current;
     if (!viewport) return;
     viewport.scrollTop = viewport.scrollHeight;
@@ -1200,6 +1214,9 @@ function ChatWindowInner({
     const viewport = scrollRef.current;
     if (!viewport) return;
     const disengage = () => {
+      // Stamp BEFORE the early-return: a continued upward fling while already
+      // disengaged must keep refreshing the cooldown so onScroll stays inert.
+      lastUserScrollUpRef.current = Date.now();
       if (!followLatestRef.current) return;
       followLatestRef.current = false;
       setShowJumpToLatest(true);
@@ -1229,6 +1246,7 @@ function ChatWindowInner({
       .update({ status: "active", updated_at: new Date().toISOString() })
       .eq("id", threadId);
     if (statusError) throw statusError;
+    lastUserScrollUpRef.current = 0; // a new run is an implicit "follow the latest"
     followLatestRef.current = true;
     setShowJumpToLatest(false);
   }, [threadId]);
@@ -1266,6 +1284,7 @@ function ChatWindowInner({
   }, [stop, stopping, threadId]);
 
   const jumpToLatest = useCallback(() => {
+    lastUserScrollUpRef.current = 0; // clear the cooldown — this is a deliberate return
     followLatestRef.current = true;
     setShowJumpToLatest(false);
     const viewport = scrollRef.current;
@@ -1767,14 +1786,19 @@ function ChatWindowInner({
       <div
         ref={scrollRef}
         onScroll={(event) => {
-          // Re-engage follow ONLY when the viewport is actually at the bottom.
+          // Re-engage follow ONLY when the analyst has SETTLED at the very bottom.
           // Disengaging is driven exclusively by the user-intent listeners
           // (wheel/touch) above, so a programmatic pin that momentarily lands
           // short while streamed content is still growing can never be misread
-          // as the user scrolling away — the race that previously yanked the
-          // user back to the bottom mid-stream.
+          // as the user scrolling away. Two extra constraints stop a streaming
+          // pin or trackpad inertia from snapping a scrolled-up analyst back down:
+          //   • a tight re-engage band (must be essentially at the bottom), and
+          //   • a short cooldown after the last upward scroll, so the burst of
+          //     onScroll events from an inertial fling can't re-engage mid-flight.
+          const COOLDOWN_MS = 450;
           const viewport = event.currentTarget;
-          if (shouldFollowChatScroll(viewport.scrollHeight, viewport.scrollTop, viewport.clientHeight)) {
+          const settled = Date.now() - lastUserScrollUpRef.current > COOLDOWN_MS;
+          if (settled && shouldFollowChatScroll(viewport.scrollHeight, viewport.scrollTop, viewport.clientHeight, CHAT_REENGAGE_THRESHOLD_PX)) {
             followLatestRef.current = true;
             setShowJumpToLatest(false);
           }
@@ -1890,7 +1914,7 @@ function ChatWindowInner({
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60 opacity-75" />
                 <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
               </span>
-              <span className="bg-gradient-to-r from-foreground/40 via-foreground to-foreground/40 bg-[length:200%_100%] bg-clip-text text-transparent animate-shimmer font-medium">
+              <span className="font-medium text-foreground/85">
                 Investigating…
               </span>
             </div>

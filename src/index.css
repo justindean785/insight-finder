@@ -30,7 +30,7 @@ All colors MUST be HSL.
     --secondary-foreground: 0 0% 95%;
 
     --muted: 0 0% 5%;
-    --muted-foreground: 0 0% 70%;    /* neutral grey body — 70% so /0.7 opacity variants still clear WCAG AA */
+    --muted-foreground: 0 0% 74%;    /* neutral grey body — bumped 70→74 so the many /0.7 & /0.6 opacity variants on tinted glass still clear WCAG AA */
 
     --accent: 0 0% 95%;
     --accent-foreground: 0 0% 5%;
@@ -430,6 +430,21 @@ All colors MUST be HSL.
   }
   @media (prefers-reduced-motion: reduce) {
     .live-seam::after { animation: none; opacity: 0.45; }
+    /* Honor the OS reduced-motion preference: pause the decorative / looping
+       animations while leaving genuinely informative motion (the loading
+       spinner) intact. Content that "enters" with fade-up simply appears. */
+    .animate-shimmer,
+    .animate-fade-up,
+    .animate-red-edge,
+    .animate-warning-pulse,
+    .animate-float-slow,
+    .animate-gradient-shift,
+    .animate-scan-line,
+    .animate-brain-grow,
+    .animate-blink-cursor,
+    .animate-crt-flicker {
+      animation: none !important;
+    }
   }
 
   /* Premium red alert panel */
