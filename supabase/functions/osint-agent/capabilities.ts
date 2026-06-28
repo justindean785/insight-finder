@@ -60,7 +60,10 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   socialfetch_lookup: { requiresKey: "SOCIALFETCH_API_KEY" },
   cordcat_discord_lookup: { requiresKey: "CORDCAT_API_KEY" },
   bosint_email_lookup: { requiresKey: "OSINTNOVA_API_KEY" },
-  bosint_phone_lookup: { requiresKey: "OSINTNOVA_API_KEY" },
+  // Disabled 2026-06-28: timed out on ~93% of calls in production traces
+  // (bosint_phone_timeout ×34, avg 35.7s) — pure latency tax on phone seeds.
+  // Re-enable by removing `disabled` once the OSINTNova phone endpoint is healthy.
+  bosint_phone_lookup: { requiresKey: "OSINTNOVA_API_KEY", disabled: true },
   leakcheck_lookup: { requiresKey: "LEAKCHECK_API_KEY" },
   stolentax_footprint: { requiresKey: "STOLENTAX_API_KEY" },
   // DeepFind re-verified 2026-06-13 against the live API with a valid key: the

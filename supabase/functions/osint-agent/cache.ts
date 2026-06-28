@@ -11,6 +11,7 @@ import { tierForTool, modelForTool, type Tier } from "./models.ts";
 import { costForTool } from "./costs.ts";
 import { DEFAULT_TOOL_TTL_MS, NO_CACHE_TOOLS, redactSensitiveToolInput, TOOL_TTL_MS } from "./validation.ts";
 import { creditsCharged } from "./billing.ts";
+import { classifyToolOutcome } from "./tool-outcome.ts";
 import * as circuit from "./circuit.ts";
 import {
   analyzeWeakLead,
@@ -230,6 +231,7 @@ export function wrapToolsWithCache(
       if (e.includes("disabled")) return true;
       if (e.includes("not configured")) return true;
       if (e.includes("degraded")) return true;
+      if (e.includes("gated")) return true;
     }
     return false;
   };
@@ -297,23 +299,40 @@ export function wrapToolsWithCache(
       //    "what did this run cost me" number; cost_micro_usd is NOT.
       // Keeping them separate is what stops a failed-call list price from being
       // misread as a real charge (the tool_usage_log accounting ambiguity).
+      // `ok` from the caller is GENUINE success (deriveOk / explicit) — billing
+      // keys off it, unchanged. For telemetry we additionally classify the
+      // non-success outcome so governance skips and empty (no-record) results
+      // stop being counted as provider failures: they inflated the beta failure
+      // rate AND falsely tripped the circuit breaker's consecutive-failure guard.
+      // The logged `ok` column is relaxed to "not a hard failure" (skipped/empty
+      // → true); the new `outcome` column keeps the ok/skipped/empty/failed split.
+      const outcome = ok ? "ok" : classifyToolOutcome(errorMsg, statusCode);
+      const okStored = outcome !== "failed";
       const cost = (cached || freeCall) ? 0 : baseCost;
       const charged = creditsCharged({ ok, cached, free: freeCall, baseCost });
       if (charged > 0) ctx.onCost?.(charged);
+      const row: Record<string, unknown> = {
+        user_id: ctx.userId,
+        thread_id: ctx.investigationId,
+        tool_name: name,
+        cost_micro_usd: cost,
+        charged_micro_usd: charged,
+        cached,
+        ok: okStored,
+        outcome,
+        duration_ms: durationMs,
+        error_msg: outcome === "ok" ? null : errorMsg,
+        status_code: outcome === "ok" ? null : statusCode,
+        input_json: inputJson,
+      };
       try {
-        const { error } = await adminDb.from("tool_usage_log").insert({
-          user_id: ctx.userId,
-          thread_id: ctx.investigationId,
-          tool_name: name,
-          cost_micro_usd: cost,
-          charged_micro_usd: charged,
-          cached,
-          ok,
-          duration_ms: durationMs,
-          error_msg: ok ? null : errorMsg,
-          status_code: ok ? null : statusCode,
-          input_json: inputJson,
-        });
+        let { error } = await adminDb.from("tool_usage_log").insert(row);
+        // Deploy-ordering safety: if this ships before the `outcome` column
+        // migration is applied, retry without it so telemetry is never lost.
+        if (error && /outcome/i.test(error.message ?? "")) {
+          const { outcome: _omit, ...legacy } = row;
+          ({ error } = await adminDb.from("tool_usage_log").insert(legacy));
+        }
         if (error) console.warn(`[tool_usage_log] insert failed for ${name}: ${error.message}`);
       } catch (e) {
         console.warn(`[tool_usage_log] insert threw for ${name}:`, e);
@@ -686,7 +705,7 @@ export function tagTier(output: unknown, tier: Tier, model: string) {
 // (e.g. synapsint_lookup 7/7 disabled, ipqualityscore/deepfind missing-key).
 // This is the single source of truth, shared by deriveOk (the logged ok flag) and
 // tagSkipState (the UI taxonomy flag). Genuine 4xx/5xx/parse errors do NOT match.
-const SKIP_REASON_RE = /not configured|provider disabled in config|unavailable:\s*(?:disabled|missing_key)/i;
+const SKIP_REASON_RE = /not configured|provider disabled in config|unavailable:\s*(?:disabled|missing_key|gated)|\bgated\b/i;
 export function isIntentionalSkip(output: unknown): boolean {
   if (!output || typeof output !== "object") return false;
   const o = output as Record<string, unknown>;
