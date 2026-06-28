@@ -485,6 +485,7 @@ export type Database = {
           id: string
           input_json: Json | null
           ok: boolean
+          outcome: string | null
           status_code: number | null
           thread_id: string
           tool_name: string
@@ -500,6 +501,7 @@ export type Database = {
           id?: string
           input_json?: Json | null
           ok?: boolean
+          outcome?: string | null
           status_code?: number | null
           thread_id: string
           tool_name: string
@@ -515,6 +517,7 @@ export type Database = {
           id?: string
           input_json?: Json | null
           ok?: boolean
+          outcome?: string | null
           status_code?: number | null
           thread_id?: string
           tool_name?: string
