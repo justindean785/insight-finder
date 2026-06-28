@@ -104,7 +104,11 @@ export function useThreadToolHealth(threadId: string): ThreadToolHealth {
         setState((s) => ({ ...s, loading: false, error: error.message }));
         return;
       }
-      setState({ ...aggregateToolHealth((data ?? []) as RawRow[]), loading: false, error: null });
+      // Supabase generated types lag the live schema (the `outcome` column was
+      // added by migration but types.ts isn't regenerated yet), so the typed
+      // select widens to SelectQueryError. Runtime data is correct — cast via
+      // unknown until types.ts is regenerated.
+      setState({ ...aggregateToolHealth((data ?? []) as unknown as RawRow[]), loading: false, error: null });
     };
     load();
     const ch = supabase
