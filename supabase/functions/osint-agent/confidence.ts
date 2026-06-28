@@ -165,6 +165,8 @@ const NEVER_HIGH = new Set<SourceClass>([
 export interface CapInput {
   rawConfidence: number;
   sources: string[]; // tool/source names
+  /** Artifact kind — lets the cap treat a name-from-news as a lead, not a confirmation (#17). */
+  kind?: string;
 }
 
 export interface CapResult {
@@ -202,10 +204,21 @@ export function applyEvidenceCaps(input: CapInput): CapResult {
   const counts: Record<string, number> = {};
   for (const c of classes) counts[c] = (counts[c] ?? 0) + 1;
 
+  // #17 — a NAME sourced only from NEWS is a lead, not a confirmation: news can
+  // misidentify, use partial names, or conflate people ("Chris Nanos" could be
+  // the sheriff, the Nestlé exec, or someone else). Downgrade the news class cap
+  // for a name to ai_summary's tier (55); other news-sourced facts
+  // (address/phone/legal_record) stay at 65. Applied as a per-class cap so a
+  // stronger corroborating class (court_record, independent_public) still wins.
+  const kind = (input.kind ?? "").toLowerCase().trim();
+  const isNameKind = kind === "name";
+  const effClassCap = (c: SourceClass): number =>
+    c === "news" ? (isNameKind ? 55 : 65) : CLASS_CAP[c];
+
   // Base cap = the most permissive class present.
   let cap = uniqClasses.length === 0
     ? CLASS_CAP.unknown
-    : Math.max(...uniqClasses.map((c) => CLASS_CAP[c]));
+    : Math.max(...uniqClasses.map((c) => effClassCap(c)));
 
   // Breach-only nudge: two distinct breach sources → 65 (vs 60).
   if (uniqClasses.length === 1 && uniqClasses[0] === "breach" && (counts.breach ?? 0) >= 2) {
@@ -264,6 +277,8 @@ export function applyEvidenceCaps(input: CapInput): CapResult {
     reason_for_confidence = `infrastructure corroborated across ${infraCount} sub-classes: ${infraCorroborationClasses.join(", ")}`;
   } else if (totalDistinct >= 2) {
     reason_for_confidence = `corroborated across ${totalDistinct} source classes: ${uniqClasses.join(", ")}`;
+  } else if (uniqClasses[0] === "news" && isNameKind) {
+    reason_for_confidence = "single source class: news (name-from-news treated as lead, not confirmation)";
   } else {
     reason_for_confidence = `single source class: ${uniqClasses[0] ?? "unknown"}`;
   }
