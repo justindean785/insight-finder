@@ -3,21 +3,23 @@ import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadToolActivity, type ToolEvent } from "@/hooks/useThreadToolActivity";
 import { AuditTab } from "@/components/panel/AuditTab";
 import { CustodyTab } from "@/components/panel/CustodyTab";
+import { ToolHealthPanel } from "@/components/panel/ToolHealthPanel";
 import { EmptyState } from "@/components/panel/EmptyState";
 import {
   MetricCard, FilterChips, ToolStatusBadge, ExpandableRow, TabHeader,
   type FilterChip,
 } from "@/components/ui/workspace-primitives";
-import { Activity, Gauge, Lock, CheckCircle2, MinusCircle, ListChecks, Clock, type LucideIcon } from "lucide-react";
+import { Activity, Gauge, Lock, HeartPulse, CheckCircle2, MinusCircle, ListChecks, Clock, type LucideIcon } from "lucide-react";
 import { timeAgo } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
 type ActivityFilter = "all" | "succeeded" | "skipped" | "gated" | "degraded" | "pending";
 
-type View = "activity" | "audit" | "custody";
+type View = "activity" | "health" | "audit" | "custody";
 
 const VIEWS: { key: View; label: string; icon: LucideIcon }[] = [
   { key: "activity", label: "Activity", icon: Activity },
+  { key: "health", label: "Health", icon: HeartPulse },
   { key: "audit", label: "Audit", icon: Gauge },
   { key: "custody", label: "Custody", icon: Lock },
 ];
@@ -79,6 +81,7 @@ export function ToolsTab({ threadId }: { threadId: string }) {
             loading={activity.loading}
           />
         )}
+        {view === "health" && <div className="mx-auto max-w-5xl"><ToolHealthPanel threadId={threadId} /></div>}
         {view === "audit" && <div className="mx-auto max-w-5xl"><AuditTab threadId={threadId} artifacts={items} /></div>}
         {view === "custody" && <div className="mx-auto max-w-5xl"><CustodyTab threadId={threadId} /></div>}
       </div>
