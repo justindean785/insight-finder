@@ -43,8 +43,8 @@ export const PLAYBOOKS: Record<SeedType, Playbook> = {
     pivots: EMAIL_PIVOTS,
   },
   username: {
-    required: ["socialfetch_lookup", "username_sweep", "github_user", "stolentax_footprint", "deepfind_reverse_email", "oathnet_lookup"],
-    recommended: ["reddit_user", "hackernews_user", "exa_search", "exa_find_similar", "gemini_deep_dork", "google_dorks", "leakcheck_lookup"],
+    required: ["socialfetch_lookup", "username_sweep", "github_user", "stolentax_footprint", "deepfind_reverse_email", "oathnet_lookup", "leakcheck_lookup", "breach_check"],
+    recommended: ["reddit_user", "hackernews_user", "exa_search", "exa_find_similar", "gemini_deep_dork", "google_dorks"],
     coverage: ["identity", "username", "social", "breach"],
     pivots: EMAIL_PIVOTS,
   },
@@ -55,14 +55,14 @@ export const PLAYBOOKS: Record<SeedType, Playbook> = {
     pivots: EMAIL_PIVOTS,
   },
   domain: {
-    required: ["whois_lookup", "dns_records", "crtsh_subdomains", "virustotal_lookup", "urlscan_search", "wayback_snapshots", "hunter_domain_search", "http_fingerprint"],
+    required: ["whois_lookup", "dns_records", "crtsh_subdomains", "virustotal_lookup", "urlscan_search", "wayback_snapshots", "hunter_domain_search", "http_fingerprint", "oathnet_lookup", "leakcheck_lookup"],
     recommended: ["shodan_internetdb", "deepfind_ssl_inspect", "deepfind_tech_stack", "hackertarget", "synapsint_lookup", "exa_search"],
     coverage: ["domain", "infrastructure", "email"],
     pivots: EMAIL_PIVOTS,
   },
   ip: {
-    required: ["ip_intel", "ipgeolocation_lookup", "shodan_internetdb", "virustotal_lookup", "urlscan_search"],
-    recommended: ["oathnet_lookup", "synapsint_lookup", "hackertarget"],
+    required: ["ip_intel", "ipgeolocation_lookup", "shodan_internetdb", "virustotal_lookup", "urlscan_search", "oathnet_lookup"],
+    recommended: ["synapsint_lookup", "hackertarget"],
     coverage: ["infrastructure", "location"],
     pivots: EMAIL_PIVOTS,
   },
