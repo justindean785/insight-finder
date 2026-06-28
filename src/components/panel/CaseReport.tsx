@@ -14,6 +14,7 @@ import {
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { SourceBadge } from "@/components/SourceBadge";
 import { EvidenceStatusBadge } from "@/components/ui/workspace-primitives";
+import { ConfidenceBar } from "@/components/ui/confidence";
 import { evidenceStatus } from "@/lib/evidence-status";
 import {
   labelForArtifact,
@@ -65,7 +66,9 @@ function ArtifactRow({ a }: { a: Artifact }) {
         <EvidenceStatusBadge status={status.status} label={status.label} tone={status.tone} hint={status.hint} />
         <div className="mt-1 text-[10px] leading-snug text-muted-foreground">{status.basis}</div>
       </td>
-      <td className="px-3 py-2 text-data font-mono tabular-nums">{a.confidence ?? "—"}</td>
+      <td className="px-3 py-2 text-data">
+        <ConfidenceBar score={a.confidence} showValue className="min-w-[5.5rem]" />
+      </td>
       <td className="px-3 py-2 text-data text-muted-foreground whitespace-nowrap">
         {new Date(a.created_at).toLocaleDateString()}
       </td>
