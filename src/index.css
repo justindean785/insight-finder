@@ -93,13 +93,13 @@ All colors MUST be HSL.
     --brain-card:         0 0% 8%;
     --brain-border:       0 0% 14%;
     --brain-text:         0 0% 92%;
-    --brain-muted:        0 0% 58%;
+    --brain-muted:        0 0% 64%;  /* raised 58→64 for WCAG-AA body on brain-card */
     --brain-cyan:         192 100% 61%;
     --brain-status-ok:    143 60% 57%;
     --brain-status-warn:   33 85% 67%;
     --brain-status-bad:   0 84% 64%;
 
-    --radius: 0.5rem;
+    --radius: 0.75rem;          /* 12px cards (lg); inputs/buttons (md) 10px, sm 8px */
 
     --sidebar-background: 0 0% 3%;
     --sidebar-foreground: 0 0% 70%;
@@ -150,19 +150,26 @@ All colors MUST be HSL.
     background-size: 220px 220px;
   }
 
-  /* Display serif (Cinzel) is reserved for hero titles only — big case names,
-     "Agent Brain", "Chain of Custody". UI sub-headings stay in IBM Plex Sans
-     so dashboard density remains legible. */
+  /* Display face (Sora) carries hero/case titles and top-level section headings:
+     big case names, "Agent Brain", "Chain of Custody". UI sub-headings stay in
+     IBM Plex Sans so dashboard density remains legible. Confident, tight tracking
+     (a hair negative, not the old loose +0.02em) reads as designed, not default. */
   h1, h2 {
     @apply font-display;
-    letter-spacing: 0.02em;
-    font-feature-settings: "ss01";
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
   }
+  h1 { letter-spacing: -0.025em; }
   h3, h4, h5, h6 {
     @apply font-sans;
     letter-spacing: -0.012em;
     font-weight: 600;
+    text-wrap: balance;
   }
+
+  /* Long-form prose (report bodies, chat) reads cleaner with orphan control. */
+  p, li { text-wrap: pretty; }
 
   /* Section labels — eyebrows / micro-headings used across panels */
   .label-eyebrow {
@@ -202,14 +209,14 @@ All colors MUST be HSL.
   .glass-interactive,
   .glass-hover-shine {
     background:
-      linear-gradient(180deg, hsl(0 0% 7% / 0.82) 0%, hsl(0 0% 5% / 0.82) 100%);
-    backdrop-filter: blur(18px) saturate(160%);
-    -webkit-backdrop-filter: blur(18px) saturate(160%);
-    border: 1px solid hsl(0 0% 100% / 0.05);
-    border-top-color: hsl(0 0% 100% / 0.07);
+      linear-gradient(180deg, hsl(0 0% 8% / 0.9) 0%, hsl(0 0% 5.5% / 0.9) 100%);
+    backdrop-filter: blur(20px) saturate(150%);
+    -webkit-backdrop-filter: blur(20px) saturate(150%);
+    border: 1px solid hsl(0 0% 100% / 0.055);
+    border-top-color: hsl(0 0% 100% / 0.08);
     box-shadow:
-      0 1px 0 hsl(0 0% 100% / 0.04) inset,
-      0 8px 28px -16px hsl(0 0% 0% / 0.55);
+      0 1px 0 hsl(0 0% 100% / 0.045) inset,
+      0 10px 30px -18px hsl(0 0% 0% / 0.6);
   }
   .glass-interactive {
     transition: background-color 160ms ease, border-color 160ms ease;
@@ -804,6 +811,18 @@ All colors MUST be HSL.
     background-position: 0 0;
     mask-image: linear-gradient(180deg, hsl(0 0% 0% / 0.5) 0%, transparent 35%, transparent 65%, hsl(0 0% 0% / 0.5) 100%);
     opacity: 0.55;
+  }
+}
+
+/* Global reduced-motion safety net. Individual effects keep their own tuned
+   fallbacks; this guarantees nothing animates for users who opt out, without
+   gating content visibility (durations collapse, content stays shown). */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
   }
 }
 

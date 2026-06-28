@@ -18,7 +18,10 @@ export default {
         sans: ['"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', '-apple-system', 'sans-serif'],
         chat: ['"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', '-apple-system', 'sans-serif'],
         condensed: ['"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-        display: ['"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        // Display face — Sora (geometric) against the humanist IBM Plex Sans body:
+        // a real contrast axis rather than two near-identical sans-serifs. Reserved
+        // for hero/case titles and top-level section headings.
+        display: ['"Sora"', '"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
         serif: ['ui-serif', 'Georgia', 'serif'],
         mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
       },
@@ -38,6 +41,13 @@ export default {
       },
       boxShadow: {
         cta: "0 10px 28px -12px rgba(0,0,0,0.7)",
+        // Elevation ladder — deliberate depth steps for the surface hierarchy
+        // (raised panel → floating control → overlay). Defined, contained blur
+        // with a top inner hairline, not the wide soft "ghost-card" halo.
+        "e1": "inset 0 1px 0 hsl(0 0% 100% / 0.035), 0 1px 2px hsl(0 0% 0% / 0.4)",
+        "e2": "inset 0 1px 0 hsl(0 0% 100% / 0.045), 0 4px 10px -4px hsl(0 0% 0% / 0.5)",
+        "e3": "inset 0 1px 0 hsl(0 0% 100% / 0.05), 0 12px 28px -12px hsl(0 0% 0% / 0.6)",
+        "overlay": "inset 0 1px 0 hsl(0 0% 100% / 0.06), 0 24px 64px -28px hsl(0 0% 0% / 0.8)",
       },
       colors: {
         border: "hsl(var(--border))",

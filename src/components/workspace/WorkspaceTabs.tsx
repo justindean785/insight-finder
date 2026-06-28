@@ -124,7 +124,7 @@ export function WorkspaceTabs({
                 onKeyDown={(e) => onKeyDown(e, idx)}
                 onClick={() => { setMoreOpen(false); onChange(t.key); }}
                 className={cn(
-                  "relative min-w-0 flex-1 inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-2 text-[12px] font-medium transition-all duration-500 ease-premium active:scale-[0.98]",
+                  "relative min-w-0 flex-1 inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-2 text-[12px] font-medium transition-all duration-200 ease-premium active:scale-[0.98]",
                   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                   isActive ? "bg-white text-black shadow-sm" : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
                 )}
@@ -155,7 +155,7 @@ export function WorkspaceTabs({
             aria-expanded={moreOpen}
             onClick={() => setMoreOpen((open) => !open)}
             className={cn(
-              "relative inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-lg px-2 text-[12px] font-medium transition-all duration-500 ease-premium active:scale-[0.98]",
+              "relative inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-lg px-2 text-[12px] font-medium transition-all duration-200 ease-premium active:scale-[0.98]",
               moreActive ? "bg-[hsl(var(--info-muted))] text-[hsl(var(--info))]" : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
             )}
           >
@@ -183,7 +183,7 @@ export function WorkspaceTabs({
                   type="button"
                   onClick={() => { setMoreOpen(false); onChange(t.key); }}
                   className={cn(
-                    "flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-sm transition-all duration-500 ease-premium",
+                    "flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-sm transition-all duration-200 ease-premium",
                     active === t.key ? "bg-surface-2 text-foreground" : "text-muted-foreground hover:bg-surface-1 hover:text-foreground",
                   )}
                 >
@@ -230,7 +230,7 @@ export function WorkspaceTabs({
               onKeyDown={(e) => onKeyDown(e, idx)}
               onClick={() => onChange(t.key)}
               className={cn(
-                "relative inline-flex h-9 items-center gap-2 rounded-lg px-3.5 text-meta font-medium transition-all duration-300 ease-premium active:scale-[0.98]",
+                "relative inline-flex h-9 items-center gap-2 rounded-lg px-3.5 text-meta font-medium transition-all duration-200 ease-premium active:scale-[0.98]",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                 isActive
                   ? "bg-white text-black shadow-[0_1px_2px_rgba(0,0,0,0.4)]"
