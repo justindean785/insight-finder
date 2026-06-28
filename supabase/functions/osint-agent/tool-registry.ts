@@ -1790,6 +1790,95 @@ export function buildTools(ctx: ToolContext) {
         } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
       },
     }),
+    urlscanner_scan: tool({
+      description:
+        "URLScanner.online PRIVATE URL/domain/IP security scanner (sync endpoint). One call returns score (0-100), verdict (clean|low|medium|high|critical), DNS records, SSL cert chain, HTTP security-header analysis, WHOIS (incl. domainAge / registrar / expiry), threat-blocklist hits (URLhaus, Spamhaus, SURBL), and an AI risk summary (knownDomain, domainReputation, riskLevel, briefSummary, recommendations). Input: { url: string } (URL, domain, or IP). Requires URLSCANNER_API_KEY (free 10/day, solo 100/day). Scans are PRIVATE (never published). Typical latency 15-20s; modules that time out return null for that field — the response is always returned. Reserve for high-value suspicious artifacts.",
+      inputSchema: z.object({
+        url: z.string().min(1).describe("URL, registrable domain, or IP to scan"),
+        rescan: z.boolean().optional().describe("Force a fresh scan, bypassing the 7-day cache"),
+      }),
+      execute: async ({ url, rescan }) => {
+        if (!URLSCANNER_API_KEY) return { error: "URLSCANNER_API_KEY not configured", degraded: true };
+        try {
+          const r = await fetchRetry(
+            "https://urlscanner.online/api/scan/sync",
+            {
+              method: "POST",
+              headers: {
+                "X-API-Key": URLSCANNER_API_KEY,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+              },
+              body: JSON.stringify(rescan ? { url, rescan: true } : { url }),
+            },
+            { timeoutMs: 45_000 },
+          );
+          if (!r.ok) {
+            const body = await r.text().catch(() => "");
+            return { ok: false, status: r.status, error: `urlscanner ${r.status}: ${body.slice(0, 300)}`, url };
+          }
+          const data = await r.json().catch(() => null) as Record<string, unknown> | null;
+          if (!data) return { ok: false, error: "urlscanner returned non-JSON body", url };
+          // Trim: drop heavy fields (screenshots are skipped server-side; raw
+          // header arrays + AI full text can still be large). Keep what the
+          // orchestrator can reason over without blowing the context window.
+          const ai = (data.aiAnalysis ?? null) as Record<string, unknown> | null;
+          const threats = (data.threats ?? null) as Record<string, unknown> | null;
+          const dns = (data.dns ?? null) as Record<string, unknown> | null;
+          const ssl = (data.ssl ?? null) as Record<string, unknown> | null;
+          const http = (data.http ?? null) as Record<string, unknown> | null;
+          const whois = (data.whois ?? null) as Record<string, unknown> | null;
+          const trimSummary = (s: unknown) => typeof s === "string" ? s.slice(0, 600) : s ?? null;
+          return {
+            ok: true,
+            url: (data.url ?? url) as string,
+            hostname: data.hostname ?? null,
+            cached: data.cached ?? false,
+            score: data.score ?? null,
+            verdict: data.verdict ?? null,
+            scannedAt: data.scannedAt ?? null,
+            scanDurationMs: data.scanDurationMs ?? null,
+            remaining: data.remaining ?? null,
+            dns: dns ? {
+              resolvedIp: dns.resolvedIp ?? null,
+              recordCount: Array.isArray(dns.records) ? (dns.records as unknown[]).length : null,
+              records: Array.isArray(dns.records) ? (dns.records as unknown[]).slice(0, 25) : null,
+            } : null,
+            ssl: ssl ? {
+              valid: ssl.valid ?? null,
+              issuer: ssl.issuer ?? null,
+              daysUntilExpiry: ssl.daysUntilExpiry ?? null,
+              protocol: ssl.protocol ?? null,
+              cipher: ssl.cipher ?? null,
+            } : null,
+            http: http ? {
+              statusCode: http.statusCode ?? null,
+              securityHeaders: Array.isArray(http.securityHeaders) ? (http.securityHeaders as unknown[]).slice(0, 30) : null,
+            } : null,
+            whois: whois ? {
+              registrar: whois.registrar ?? null,
+              domainAge: whois.domainAge ?? null,
+              createdDate: whois.createdDate ?? null,
+              expiryDate: whois.expiryDate ?? null,
+            } : null,
+            threats: threats ? {
+              urlhaus: threats.urlhaus ?? null,
+              dnsBlocklists: threats.dnsBlocklists ?? null,
+            } : null,
+            aiAnalysis: ai ? {
+              knownDomain: ai.knownDomain ?? null,
+              domainReputation: ai.domainReputation ?? null,
+              domainCategory: ai.domainCategory ?? null,
+              score: ai.score ?? null,
+              riskLevel: ai.riskLevel ?? null,
+              summary: trimSummary(ai.summary),
+              briefSummary: trimSummary(ai.briefSummary),
+              recommendations: Array.isArray(ai.recommendations) ? (ai.recommendations as unknown[]).slice(0, 10) : null,
+            } : null,
+          };
+        } catch (e) { return { error: String(e instanceof Error ? e.message : e), url }; }
+      },
+    }),
     wayback_cdx_search: tool({
       description:
         "Wayback Machine CDX archive search — corroborate that a domain/URL existed and when. Input: { url: string } (a domain like 'acme.com' or a full URL). Returns ACCURATE earliest + latest capture timestamps (each queried separately so they are NOT understated by a capped page) and up to 25 sample capture rows (timestamp, original, statuscode). `sampled_count` is the number of SAMPLE rows returned (capped at 25) — it is NOT the total capture count; `capped:true` means more captures exist than were sampled. Empty archive → { ok:true, archived:false, captures:[] }. No API key.",
