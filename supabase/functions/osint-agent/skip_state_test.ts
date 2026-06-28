@@ -1,5 +1,5 @@
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { tagSkipState } from "./cache.ts";
+import { tagSkipState, isIntentionalSkip } from "./cache.ts";
 
 // tagSkipState bridges backend self-skips to the UI tool-status taxonomy
 // (src/lib/tool-run.ts → deriveToolStatus), which renders "skipped" off
@@ -51,4 +51,39 @@ Deno.test("tagSkipState: non-object inputs pass through unchanged", () => {
   assertEquals(tagSkipState(null), null);
   assertEquals(tagSkipState(undefined), undefined);
   assert(Array.isArray(tagSkipState([1, 2, 3])));
+});
+
+// --- isIntentionalSkip: shared classification used by deriveOk (the logged ok
+// flag) AND tagSkipState. 2026-06-27 audit: intentional skips were being counted
+// as failures in tool_usage_log, inflating the beta failure-rate dashboard.
+
+Deno.test("isIntentionalSkip: missing-key bail → true (not a failure)", () => {
+  assert(isIntentionalSkip({ error: "IPQUALITYSCORE_API_KEY not configured" }));
+  assert(isIntentionalSkip({ ok: false, note: "EXA_API_KEY not configured" }));
+});
+
+Deno.test("isIntentionalSkip: provider disabled in config → true (synapsint 7/7 case)", () => {
+  assert(isIntentionalSkip({ ok: false, error: "unavailable: disabled (provider disabled in config)" }));
+  assert(isIntentionalSkip({ reason: "provider disabled in config" }));
+});
+
+Deno.test("isIntentionalSkip: capability missing_key gate → true", () => {
+  assert(isIntentionalSkip({ ok: false, reason: "unavailable: missing_key (DEEPFIND_API_KEY not set)" }));
+});
+
+Deno.test("isIntentionalSkip: explicit skipped flag → true", () => {
+  assert(isIntentionalSkip({ ok: false, skipped: true, reason: "bosint_phone_timeout" }));
+});
+
+Deno.test("isIntentionalSkip: genuine errors → false (stay in failure metric)", () => {
+  assertEquals(isIntentionalSkip({ ok: false, error: "HTTP 502 from upstream" }), false);
+  assertEquals(isIntentionalSkip({ ok: false, status: 400, error: "bad request" }), false);
+  assertEquals(isIntentionalSkip({ ok: true, data: {} }), false);
+  assertEquals(isIntentionalSkip("nope"), false);
+  assertEquals(isIntentionalSkip(null), false);
+});
+
+Deno.test("tagSkipState: provider-disabled now reads as skipped (broadened)", () => {
+  const out = tagSkipState({ ok: false, error: "unavailable: disabled (provider disabled in config)" }) as Record<string, unknown>;
+  assertEquals(out.skipped, true);
 });

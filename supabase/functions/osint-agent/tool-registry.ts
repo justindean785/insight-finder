@@ -734,7 +734,14 @@ export function buildTools(ctx: ToolContext) {
           // SocialFetch returns {error:{code}} on 4xx/5xx; a 200 may still carry a
           // "not found"/"private" outcome in data (a legitimate negative).
           const err = socialfetchError(data);
-          return { ok: r.ok && !err, status: r.status, ...(err ? { error_code: err.code } : {}), data };
+          // A 404 means the handle has no profile on this platform — a legitimate
+          // negative, not a tool failure. Mark it ok with found:false so it doesn't
+          // inflate the failure rate (the live API + key are healthy).
+          if (r.status === 404 && !err) {
+            return { ok: true, status: 404, found: false, data };
+          }
+          const found = r.ok && !err;
+          return { ok: found, status: r.status, found, ...(err ? { error_code: err.code } : {}), data };
         } catch (e) {
           return { error: String(e) };
         }
@@ -1097,7 +1104,7 @@ export function buildTools(ctx: ToolContext) {
         const KEY = Deno.env.get("DEEPFIND_API_KEY");
         if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
         try {
-          const r = await fetchT(`https://deepfind.me/api/tools/reverse-email-check?email=${encodeURIComponent(email)}`, {
+          const r = await fetchRetry(`https://deepfind.me/api/tools/reverse-email-check?email=${encodeURIComponent(email)}`, {
             headers: { "X-DFME-API-KEY": KEY, "Accept": "application/json" },
           });
           const data = await r.json().catch(() => ({}));
@@ -1594,7 +1601,7 @@ export function buildTools(ctx: ToolContext) {
       inputSchema: z.object({ domain: z.string() }),
       execute: async ({ domain }) => {
         try {
-          const r = await fetchT(`https://rdap.org/domain/${encodeURIComponent(domain)}`);
+          const r = await fetchRetry(`https://rdap.org/domain/${encodeURIComponent(domain)}`, {});
           const data = await r.json().catch(() => ({}));
           return { ok: r.ok, data };
         } catch (e) {
@@ -1639,7 +1646,7 @@ export function buildTools(ctx: ToolContext) {
       inputSchema: z.object({ domain: z.string() }),
       execute: async ({ domain }) => {
         try {
-          const r = await fetchT(`https://crt.sh/?q=%25.${encodeURIComponent(domain)}&output=json`, {}, 12_000);
+          const r = await fetchRetry(`https://crt.sh/?q=%25.${encodeURIComponent(domain)}&output=json`, {}, { timeoutMs: 12_000 });
           const data = (await r.json().catch(() => null)) as Array<{ name_value?: string }> | null;
           if (!isCrtshOk(r.ok, data)) return { ok: false, status: r.status, error: r.ok ? "crt.sh returned non-JSON (likely an error/overload page)" : `crt.sh ${r.status}`, domain };
           const arr = data as Array<{ name_value?: string }>;
@@ -1730,7 +1737,7 @@ export function buildTools(ctx: ToolContext) {
         try {
           const [closest, cdx] = await Promise.all([
             fetchT(`https://archive.org/wayback/available?url=${encodeURIComponent(url)}`, {}, 12_000).then((r) => r.ok ? r.json() : { error: `available ${r.status}` }).catch((e) => ({ error: String(e) })),
-            fetchT(`https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(url)}&output=json&limit=10&from=20000101`, {}, 12_000).then((r) => r.ok ? r.json() : { error: `cdx ${r.status}` }).catch((e) => ({ error: String(e) })),
+            fetchRetry(`https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(url)}&output=json&limit=10&from=20000101`, {}, { timeoutMs: 12_000 }).then((r) => r.ok ? r.json() : { error: `cdx ${r.status}` }).catch((e) => ({ error: String(e) })),
           ]);
           // archive.org is reliably flaky; a 5xx/timeout must not read as "no snapshots".
           const cdxOk = Array.isArray(cdx);
@@ -1790,7 +1797,7 @@ export function buildTools(ctx: ToolContext) {
           // &limit=-1 is the newest. Each is failure-tolerant (null on any error).
           const firstTs = async (limit: string): Promise<string | null> => {
             try {
-              const r = await fetchT(`${base}&fl=timestamp&limit=${limit}`, {}, 15_000);
+              const r = await fetchRetry(`${base}&fl=timestamp&limit=${limit}`, {}, { timeoutMs: 15_000 });
               if (!r.ok) { await r.body?.cancel().catch(() => {}); return null; }
               const data = await r.json().catch(() => null);
               if (!Array.isArray(data) || data.length < 2) return null;
@@ -1801,7 +1808,7 @@ export function buildTools(ctx: ToolContext) {
             } catch { return null; }
           };
           // Small sample page for context (collapsed to unique urlkeys).
-          const r = await fetchT(`${base}&limit=25&collapse=urlkey`, {}, 15_000);
+          const r = await fetchRetry(`${base}&limit=25&collapse=urlkey`, {}, { timeoutMs: 15_000 });
           if (!r.ok) return { ok: false, status: r.status, error: `wayback cdx ${r.status}`, url };
           const data = await r.json().catch(() => null);
           // CDX json: row[0] is the header (["urlkey","timestamp","original","statuscode",...]).
@@ -1836,7 +1843,7 @@ export function buildTools(ctx: ToolContext) {
       execute: async ({ domain }) => {
         try {
           const d = domain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-          const r = await fetchT(`https://crt.sh/?q=${encodeURIComponent(d)}&output=json`, {}, 15_000);
+          const r = await fetchRetry(`https://crt.sh/?q=${encodeURIComponent(d)}&output=json`, {}, { timeoutMs: 15_000 });
           const data = (await r.json().catch(() => null)) as Array<{ name_value?: string; issuer_name?: string }> | null;
           if (!isCrtshOk(r.ok, data)) {
             return { ok: false, status: r.status, error: r.ok ? "crt.sh returned non-JSON (likely an error/overload page)" : `crt.sh ${r.status}`, domain: d };
@@ -2975,10 +2982,21 @@ export function buildTools(ctx: ToolContext) {
         "Free EmailRep.io reputation lookup. Returns reputation (high/medium/low/none), suspicious flag, deliverability, breach count, domain age, and which sites the email is registered on. Great corroboration for any email seed.",
       inputSchema: z.object({ email: z.string().email() }),
       execute: async ({ email }) => {
+        // emailrep.io disabled its unauthenticated API in 2025 — keyless calls now
+        // 429 with "the unauthenticated API is currently disabled; use an API key".
+        // Without EMAILREP_API_KEY this is a config skip, not a tool failure.
+        const KEY = Deno.env.get("EMAILREP_API_KEY");
         try {
-          const r = await fetchT(`https://emailrep.io/${encodeURIComponent(email)}`, {
-            headers: { "User-Agent": "Proximity-OSINT", Accept: "application/json" },
-          });
+          const headers: Record<string, string> = { "User-Agent": "Proximity-OSINT", Accept: "application/json" };
+          if (KEY) headers["Key"] = KEY;
+          const r = await fetchT(`https://emailrep.io/${encodeURIComponent(email)}`, { headers });
+          if (!KEY && (r.status === 429 || r.status === 401)) {
+            return {
+              skipped: true,
+              status: r.status,
+              note: "EMAILREP_API_KEY not configured — emailrep.io disabled its unauthenticated API. Set the key to enable, or corroborate via gravatar_profile / hunter_* / breach_check.",
+            };
+          }
           const data = await r.json().catch(() => ({}));
           return { ok: r.ok, status: r.status, data };
         } catch (e) { return { error: String(e) }; }
@@ -2997,7 +3015,11 @@ export function buildTools(ctx: ToolContext) {
             headers: { Accept: "application/json", "User-Agent": "Proximity-OSINT" },
           });
           const data = await r.json().catch(() => ({}));
-          return { ok: r.ok, status: r.status, hash, avatar_url: `https://gravatar.com/avatar/${hash}`, data };
+          // Gravatar v3 returns 404 ("Profile not found") for any email without a
+          // profile — a legitimate negative, not a tool failure. Mark it ok with
+          // found:false so it doesn't inflate the failure rate.
+          const found = r.ok;
+          return { ok: r.ok || r.status === 404, status: r.status, found, hash, avatar_url: `https://gravatar.com/avatar/${hash}`, data };
         } catch (e) { return { error: String(e) }; }
       },
     }),

@@ -113,6 +113,35 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   record_artifact: 0,
   record_artifacts: 0,
   record_evidence: 0,
+
+  // ---- Previously-uncosted registered tools (2026-06-27 audit) ----
+  // These 21 tools were registered in tool-registry.ts but absent from this
+  // map, so every call silently billed the $0.0002 default floor instead of an
+  // honest figure. Free/public unauthenticated endpoints → 0; paid/keyed
+  // providers priced in line with their peers above.
+  archive_url: 0,              // web.archive.org/save — free
+  crtsh_subdomains: 0,         // crt.sh — free, unauth (peer of crtsh_lookup)
+  crypto_wallet: 0,            // blockstream.info public explorer — free
+  github_user: 0,              // api.github.com unauth — free (peer of github_code_search)
+  hackernews_user: 0,          // HN firebase API — free
+  hackertarget: 0,             // api.hackertarget.com — free tier
+  ipqualityscore_lookup: 1000, // IPQualityScore — paid (peer of ip_intel/urlscan)
+  // DeepFind (deepfind.me, DEEPFIND_API_KEY) — single paid provider, priced to
+  // match the already-listed deepfind_reverse_email / deepfind_telegram_channel (2000).
+  deepfind_aircraft_lookup: 2000,
+  deepfind_dark_web_link: 2000,
+  deepfind_disposable_email: 2000,
+  deepfind_email_breach: 2000,
+  deepfind_mac_lookup: 2000,
+  deepfind_profile_analyzer: 2000,
+  deepfind_ransomware_exposure: 2000,
+  deepfind_ssl_inspect: 2000,
+  deepfind_tech_stack: 2000,
+  deepfind_telegram_search: 2000,
+  deepfind_transaction_viewer: 2000,
+  deepfind_url_unshorten: 2000,
+  deepfind_vessel_lookup: 2000,
+  deepfind_vin_lookup: 2000,
 };
 
 export function costForTool(name: string): number {
