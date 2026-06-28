@@ -100,6 +100,10 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   // breach-level weight or ever confirming an identity. (Resolved TODO.)
   ransomwarelive_lookup: "threat_intel",
   deepfind_ransomware_exposure: "threat_intel",
+  // URLScanner.online combines threat-blocklist (URLhaus/Spamhaus/SURBL) +
+  // infra checks + an AI risk summary. Treat as infra_reputation (peer of
+  // virustotal_lookup / urlscan_search) — strong corroboration, not identity.
+  urlscanner_scan: "infra_reputation",
   // k-anonymity password-exposure check — breach corpus by nature.
   hibp_pwned_passwords_kanon: "breach",
   // username sweeps
