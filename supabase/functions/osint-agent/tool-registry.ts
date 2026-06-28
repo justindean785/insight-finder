@@ -58,6 +58,7 @@ import {
 
 import { minimaxChat, minimaxChatWithFallback, safeJson, geminiGroundedSearch, perplexitySearch } from "./providers.ts";
 import { dorkToExaQuery } from "./dork-translate.ts";
+import { augmentDorkQuery } from "./dork-relevance.ts";
 
 import { TOOL_CATALOG, CATALOG_CACHE, FINDING_LABELS } from "./catalog.ts";
 import { beginCycle, recordFindingSummary } from "./runtime-policy.ts";
@@ -2593,7 +2594,12 @@ export function buildTools(ctx: ToolContext) {
           ],
         };
 
-        const queries = (QUERIES[kind] ?? []).slice(0, max_queries);
+        // #8: append negative keywords (-"sample" -"template" -"example" …) so
+        // resume/CV templates, sample directories, and example docs stop matching
+        // `"<seed>" filetype:pdf` — the #1 source of the 78-100% dork false-positive
+        // rate. (Per-URL content-relevance scoring via scoreDorkRelevance is the
+        // remaining lever; it needs a fetch per hit + subject name/city plumbing.)
+        const queries = (QUERIES[kind] ?? []).slice(0, max_queries).map(augmentDorkQuery);
         if (queries.length === 0) return { ok: false, error: `no dork_harvest queries for kind=${kind}` };
 
         const DOC_EXT_RE = /\.(pdf|docx?|pptx?|xlsx?|csv|txt|log|sql|bak|env|json|xml|ya?ml|zip|tar|gz|7z|rar|pcap|map|dump|sqlite|db)(?:[?#]|$)/i;
