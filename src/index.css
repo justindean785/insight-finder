@@ -58,6 +58,19 @@ All colors MUST be HSL.
     --confidence-low: 0 84% 62%;
     --highconf: 147 56% 56%;
 
+    /* Confidence TIERS — single semantic 5-step ramp mapped to JD's bands
+       (Confirmed >=90 / Likely 75-89 / Possible 55-74 / Weak 35-54 /
+       Unverified <35). One color per tier, used everywhere a confidence renders
+       (number, bar fill, tag, graph node, radar vertex) so the product reads as
+       one system. Confirmed (emerald hue 160) and Likely (grass-green hue 142)
+       are hue-separated so banding triages at a glance. */
+    --conf-confirmed: 160 84% 41%;
+    --conf-confirmed-glow: 160 84% 52%;
+    --conf-likely: 142 69% 48%;
+    --conf-possible: 38 92% 50%;
+    --conf-weak: 27 95% 60%;
+    --conf-unverified: 215 16% 52%;
+
     /* Layered surfaces — neutral greyscale ramp (#080808 → #242424) */
     --surface-0: 0 0% 3%;            /* #080808 */
     --surface-1: 0 0% 6%;            /* #0f0f0f */

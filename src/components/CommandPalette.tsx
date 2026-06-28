@@ -124,7 +124,7 @@ export function CommandPalette() {
           />
           <PaletteItem
             icon={Search}
-            label="Re-run Swarmbot on current seed"
+            label="Re-run Insight Finder on current seed"
             hint="Sends a fresh run prompt"
             onSelect={() => {
               setOpen(false);

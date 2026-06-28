@@ -123,7 +123,7 @@ export default function ChatPage() {
             aria-label="Home"
             className="hidden min-[430px]:inline shrink-0 font-display font-semibold text-sm tracking-tight text-foreground select-none hover:text-foreground/80 transition-colors"
           >
-            Swarmbot
+            Insight Finder
           </Link>
           <WorkspaceTabs active={tab} onChange={setTab} counts={tabCounts} variant="inline" />
           <button onClick={createNew} disabled={creating} className="shrink-0 w-9 h-9 rounded-xl grid place-items-center border border-white/10 bg-white text-black transition-all duration-500 ease-premium hover:bg-white/90 active:scale-[0.97] disabled:opacity-60" aria-label="New investigation">

@@ -61,7 +61,7 @@ export default function Landing() {
           </div>
           <div className="space-y-3">
             <h1 className="font-display text-4xl sm:text-5xl leading-none font-semibold tracking-tight gradient-text">
-              Swarmbot
+              Insight Finder
             </h1>
             <p className="text-muted-foreground text-base max-w-lg mx-auto">
               Chat-driven OSINT investigator. Seed an identifier, get actionable intelligence, export auditable reports.

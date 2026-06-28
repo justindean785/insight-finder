@@ -510,7 +510,7 @@ function MemoriesTab({
           </div>
           <div className="text-sm text-foreground">No memories yet.</div>
           <div className="text-xs text-muted-foreground mt-1 max-w-md mx-auto">
-            Run Swarmbot on a case to start building the agent's knowledge base.
+            Run Insight Finder on a case to start building the agent's knowledge base.
           </div>
         </div>
       ) : (
@@ -1251,7 +1251,7 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
 
       <p className="text-data text-muted-foreground leading-relaxed">
         API costs are driven by tool count and data volume per run. Pivot-heavy investigations cost more.
-        Use Cost-Aware Mode in Swarmbot settings to cap per-run spend.
+        Use Cost-Aware Mode in Insight Finder settings to cap per-run spend.
       </p>
     </div>
   );

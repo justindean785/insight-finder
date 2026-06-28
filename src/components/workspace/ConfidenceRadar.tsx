@@ -4,18 +4,21 @@ import type { ReviewAdjustment } from "@/lib/intel";
 import { buildConfidenceProfile, type ConfidenceDimension } from "@/lib/confidence-dimensions";
 import { Radar, Info, ShieldCheck, ShieldAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { confidenceColor, tierInfo } from "@/lib/confidence-tier";
 
-/** Value → confidence band colour (shared with the rest of the app). */
+/** Value → tier colour (the one shared confidence ramp). Insufficient axes read
+ *  as the neutral "unverified" slate rather than implying a low score. */
 function bandColor(d: ConfidenceDimension): string {
-  if (!d.sufficient) return "hsl(var(--muted-foreground))";
-  if (d.value >= 70) return "hsl(var(--confidence-high))";
-  if (d.value >= 40) return "hsl(var(--confidence-mid))";
-  return "hsl(var(--muted-foreground))";
+  if (!d.sufficient) return "hsl(var(--conf-unverified))";
+  return confidenceColor(d.value);
 }
 
-const R = 92;
-const CX = 130;
-const CY = 118;
+// Plot radius kept well inside the viewBox so axis labels (e.g. "Corroboration")
+// have a gutter and never clip — the old R=92 in a 260-wide box ran long labels
+// off the edge.
+const R = 62;
+const CX = 140;
+const CY = 116;
 
 function pointAt(i: number, n: number, frac: number): [number, number] {
   const angle = -Math.PI / 2 + (i / n) * Math.PI * 2;
@@ -86,7 +89,7 @@ export function ConfidenceRadar({
 
       <div className="mt-3 grid gap-4 sm:grid-cols-[minmax(0,260px)_1fr] items-center">
         {/* Radar (decorative; the list below is the accessible source of truth). */}
-        <svg viewBox="0 0 260 236" className="w-full max-w-[260px] mx-auto" role="img" aria-label={a11ySummary} preserveAspectRatio="xMidYMid meet">
+        <svg viewBox="0 0 280 236" className="w-full max-w-[280px] mx-auto" role="img" aria-label={a11ySummary} preserveAspectRatio="xMidYMid meet">
           {[0.25, 0.5, 0.75, 1].map((f) => (
             <polygon
               key={f}
@@ -98,18 +101,26 @@ export function ConfidenceRadar({
           ))}
           {dims.map((d, i) => {
             const [ex, ey] = pointAt(i, n, 1);
-            const [lx, ly] = pointAt(i, n, 1.18);
+            const [lx, ly] = pointAt(i, n, 1.24);
             const anchor = Math.abs(lx - CX) < 8 ? "middle" : lx > CX ? "start" : "end";
             return (
               <g key={d.key}>
                 <line x1={CX} y1={CY} x2={ex} y2={ey} stroke="hsl(var(--border-subtle))" strokeWidth={1} />
-                <text x={lx} y={ly} textAnchor={anchor} dominantBaseline="middle" fontSize={8.5} className="font-mono" fill="hsl(var(--muted-foreground))">
+                <text x={lx} y={ly} textAnchor={anchor} dominantBaseline="middle" fontSize={9} className="font-mono" fill="hsl(var(--muted-foreground))">
                   {d.label}
                 </text>
               </g>
             );
           })}
-          <polygon points={polygon} fill="hsl(var(--foreground)/0.12)" stroke="hsl(var(--foreground))" strokeWidth={1.5} strokeLinejoin="round" />
+          {/* Polygon tinted by the OVERALL tier so the shape's colour matches the
+              headline read; vertices below carry each axis's own tier colour. */}
+          <polygon
+            points={polygon}
+            style={{ fill: `hsl(var(${tierInfo(profile.overall).varName}) / 0.14)` }}
+            stroke={confidenceColor(profile.overall)}
+            strokeWidth={1.5}
+            strokeLinejoin="round"
+          />
           {dims.map((d, i) => {
             const [px, py] = pointAt(i, n, d.value / 100);
             return <circle key={d.key} cx={px} cy={py} r={2.4} fill={bandColor(d)} />;

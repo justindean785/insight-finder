@@ -146,7 +146,7 @@ export default function HomeHub() {
           <div className="w-9 h-9 rounded-xl glass-strong border border-white/10 grid place-items-center shadow-cta">
             <SwarmMark className="w-5 h-5" />
           </div>
-          <div className="font-display text-base font-semibold tracking-tight">Swarmbot</div>
+          <div className="font-display text-base font-semibold tracking-tight">Insight Finder</div>
         </Link>
         <div className="ml-auto flex items-center gap-2">
           <Link
