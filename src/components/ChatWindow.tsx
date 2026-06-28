@@ -30,7 +30,7 @@ import {
   recommendedPivotsStorageKey,
   type RecommendedPivot,
 } from "@/lib/recommended-pivots";
-import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon } from "lucide-react";
+import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon, Copy as CopyIcon } from "lucide-react";
 
 const SUPABASE_PROJECT_ID = (import.meta.env.VITE_SUPABASE_PROJECT_ID as string | undefined)?.trim();
 // Resolve from the client's SUPABASE_URL (which carries the baked-in default),
@@ -880,6 +880,28 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
         }
         return null;
       })}
+      {(() => {
+        // Copy the full assistant message text (all text parts, think-tags stripped).
+        const copyText = parts
+          .filter((p) => p.type === "text")
+          .map((p) => stripThinkTags(p.text ?? ""))
+          .join("\n")
+          .trim();
+        if (!copyText) return null;
+        return (
+          <div className="flex justify-start pt-0.5">
+            <button
+              type="button"
+              onClick={() => copyToClipboard(copyText, "Message copied")}
+              className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground/70 hover:text-foreground hover:bg-surface-2 transition-colors"
+              aria-label="Copy message"
+              title="Copy message"
+            >
+              <CopyIcon className="w-3 h-3" /> Copy
+            </button>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -1353,7 +1375,13 @@ function ChatWindowInner({
   };
 
   const onFilesPicked = async (files: FileList | null) => {
-    if (!files || !user) return;
+    if (!files) return;
+    if (!user) {
+      // Previously this returned silently, so picking a file before the session
+      // loaded looked like a broken upload. Surface it instead.
+      toast.error("Sign in to attach files — your session isn't ready yet.");
+      return;
+    }
     const list = Array.from(files);
     const MAX = 20 * 1024 * 1024; // 20MB
     const accepted = list.filter((f) => {
@@ -1732,8 +1760,8 @@ function ChatWindowInner({
   return (
     <div className="relative flex-1 flex flex-col h-full min-w-0 overflow-hidden bg-background">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(255,255,255,0.05),transparent_34%),radial-gradient(circle_at_50%_100%,rgba(43,52,68,0.18),transparent_28%)]" />
-      <div className="pointer-events-none absolute inset-y-0 left-[calc(50%-23rem)] w-px bg-gradient-to-b from-transparent via-white/8 to-transparent hidden xl:block" />
-      <div className="pointer-events-none absolute inset-y-0 right-[calc(50%-23rem)] w-px bg-gradient-to-b from-transparent via-white/8 to-transparent hidden xl:block" />
+      <div className="pointer-events-none absolute inset-y-0 left-[calc(50%-20rem)] w-px bg-gradient-to-b from-transparent via-white/8 to-transparent hidden xl:block" />
+      <div className="pointer-events-none absolute inset-y-0 right-[calc(50%-20rem)] w-px bg-gradient-to-b from-transparent via-white/8 to-transparent hidden xl:block" />
       <div
         ref={scrollRef}
         onScroll={(event) => {
@@ -1751,11 +1779,11 @@ function ChatWindowInner({
         }}
         className="relative z-10 flex-1 overflow-y-auto overflow-x-hidden px-3 sm:px-6 py-4 sm:py-5"
       >
-        <div ref={contentRef} className="max-w-[46rem] mx-auto space-y-6 min-w-0">
+        <div ref={contentRef} className="max-w-[40rem] mx-auto space-y-6 min-w-0">
           <div className="h-2" aria-hidden />
           {messages.length === 0 && (
             <div className="py-3 sm:py-10">
-              <div className="w-full max-w-[54rem] mx-auto overflow-hidden rounded-[22px] border border-white/12 bg-[linear-gradient(180deg,rgba(19,22,27,0.99),rgba(6,7,9,0.99))] shadow-[0_42px_130px_-64px_rgba(0,0,0,0.96)] ring-1 ring-white/6">
+              <div className="w-full max-w-[44rem] mx-auto overflow-hidden rounded-[22px] border border-white/12 bg-[linear-gradient(180deg,rgba(19,22,27,0.99),rgba(6,7,9,0.99))] shadow-[0_42px_130px_-64px_rgba(0,0,0,0.96)] ring-1 ring-white/6">
                 <div className="grid border-b border-white/8 sm:grid-cols-[1fr_auto]">
                   <div className="px-4 sm:px-6 py-4 bg-white/[0.025]">
                     <div className="flex items-center gap-2 text-eyebrow font-mono uppercase tracking-[0.22em] text-muted-foreground">
@@ -1920,7 +1948,7 @@ function ChatWindowInner({
       </div>
 
       <div className="relative z-10 border-t border-border-subtle bg-background/95 backdrop-blur-xl px-3 sm:px-4 pt-3 sm:pt-5 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:pb-5">
-        <div className="max-w-[46rem] mx-auto">
+        <div className="max-w-[40rem] mx-auto">
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2">
               {attachments.map((a) => {
@@ -1957,6 +1985,7 @@ function ChatWindowInner({
                 ref={fileInputRef}
                 type="file"
                 multiple
+                accept="image/*,.pdf,.txt,.csv,.json,.eml,.html,.md"
                 className="hidden"
                 onChange={(e) => onFilesPicked(e.target.files)}
               />

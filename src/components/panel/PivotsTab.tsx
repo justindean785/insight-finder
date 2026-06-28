@@ -55,10 +55,31 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
     return () => window.removeEventListener("swarmbot:report-pivots", onReportPivots as EventListener);
   }, [threadId]);
 
-  const pivots = useMemo(
-    () => reportPivots.length > 0 ? toDisplayPivots(reportPivots) : buildPivots(artifacts, seedValue),
-    [artifacts, reportPivots, seedValue],
-  );
+  // Pivots must track the LATEST findings + the LATEST chat on every turn, not
+  // lock to the last report. We MERGE both sources (deduped) instead of letting
+  // report pivots short-circuit the live, artifact-driven ones:
+  //   • buildPivots(artifacts) — findings-driven, refreshes in realtime as new
+  //     artifacts arrive (so the list reflects the newest discoveries each turn);
+  //   • toDisplayPivots(reportPivots) — the analyst-recommended follow-ups from
+  //     the most recent assistant message (refreshes per message via the
+  //     swarmbot:report-pivots event).
+  // The latest analyst recommendations lead; fresh findings fill in behind them.
+  // Already-searched leads (buildPivots marks status:"searched") sort last so the
+  // surface always foregrounds the next unexplored step.
+  const pivots = useMemo(() => {
+    const recommended = toDisplayPivots(reportPivots);
+    const findings = buildPivots(artifacts, seedValue);
+    const seen = new Set<string>();
+    const merged: Pivot[] = [];
+    for (const p of [...recommended, ...findings]) {
+      const k = pivotKey(p);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      merged.push(p);
+    }
+    // Unsearched ("new") leads first, preserving each source's internal order.
+    return merged.sort((a, b) => (a.status === "searched" ? 1 : 0) - (b.status === "searched" ? 1 : 0));
+  }, [artifacts, reportPivots, seedValue]);
   const visible = pivots.filter((p) => !skipped.has(pivotKey(p)));
   const recommendationByKey = useMemo(() => {
     const map = new Map<string, RecommendedPivot>();

@@ -324,7 +324,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
             <SwarmMark className="w-4 h-4 text-foreground/90" />
           </div>
           <div className="min-w-0">
-            <div className="font-display font-semibold tracking-tight text-sm text-foreground leading-none">Swarmbot</div>
+            <div className="font-display font-semibold tracking-tight text-sm text-foreground leading-none">Insight Finder</div>
             <div className="mt-0.5 text-[10px] text-muted-foreground leading-none">Cases</div>
           </div>
         </Link>

@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils";
 
 /**
- * SwarmMark — the Swarmbot identity mark.
+ * SwarmMark — the Insight Finder identity mark.
  *
  * Concentric scan rings with a single bright signal node off-axis. Reads as
  * radar / OSINT / cross-source convergence and replaces the generic "P"
@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 export function SwarmMark({
   className,
   glow = true,
-  title = "Swarmbot",
+  title = "Insight Finder",
 }: {
   className?: string;
   glow?: boolean;

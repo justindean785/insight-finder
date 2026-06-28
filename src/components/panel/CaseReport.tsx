@@ -14,6 +14,7 @@ import {
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { SourceBadge } from "@/components/SourceBadge";
 import { EvidenceStatusBadge } from "@/components/ui/workspace-primitives";
+import { ConfidenceBar } from "@/components/ui/confidence";
 import { evidenceStatus } from "@/lib/evidence-status";
 import {
   labelForArtifact,
@@ -54,10 +55,30 @@ function bucket(a: Artifact): "confirmed" | "probable" | "lead" | "contradiction
 function ArtifactRow({ a }: { a: Artifact }) {
   const m = (a.metadata ?? {}) as Record<string, unknown>;
   const status = evidenceStatus(a);
+  // Excluded namesakes/collisions are not part of the subject's network — render
+  // them de-emphasised (dimmed + struck value) so they never read as live leads.
+  const isExcluded = bucket(a) === "excluded";
+  // AI-asserted-but-unverified items (provenance guard) get the evidence-vs-
+  // inference treatment: a faint amber wash + an "inferred" marker, so they look
+  // distinct from a sourced observation.
+  const isInferred = m.provenance_verified === false || m.provenance === "llm_asserted_unverified";
   return (
-    <tr className="border-t border-white/[0.06] align-top">
+    <tr
+      className={cn(
+        "border-t border-white/[0.06] align-top",
+        isExcluded && "opacity-55",
+      )}
+      style={isInferred && !isExcluded ? { backgroundColor: "hsl(var(--conf-possible) / 0.05)" } : undefined}
+    >
       <td className="px-3 py-2 text-muted-foreground text-eyebrow uppercase tracking-wider">{displayKind(a)}</td>
-      <td className="px-3 py-2 font-mono break-all">{a.value}</td>
+      <td className={cn("px-3 py-2 font-mono break-all", isExcluded && "line-through decoration-muted-foreground/50")}>
+        {a.value}
+        {isInferred && !isExcluded && (
+          <span className="ml-2 align-middle rounded border border-conf-possible/40 bg-conf-possible/10 px-1 py-px text-[9px] font-mono uppercase tracking-wider text-conf-possible no-underline">
+            inferred · unverified
+          </span>
+        )}
+      </td>
       <td className="px-3 py-2 text-data text-muted-foreground">
         {a.source ? <SourceBadge source={a.source} size="xs" /> : "—"}
       </td>
@@ -65,7 +86,9 @@ function ArtifactRow({ a }: { a: Artifact }) {
         <EvidenceStatusBadge status={status.status} label={status.label} tone={status.tone} hint={status.hint} />
         <div className="mt-1 text-[10px] leading-snug text-muted-foreground">{status.basis}</div>
       </td>
-      <td className="px-3 py-2 text-data font-mono tabular-nums">{a.confidence ?? "—"}</td>
+      <td className="px-3 py-2 text-data">
+        <ConfidenceBar score={a.confidence} showValue className="min-w-[5.5rem]" />
+      </td>
       <td className="px-3 py-2 text-data text-muted-foreground whitespace-nowrap">
         {new Date(a.created_at).toLocaleDateString()}
       </td>

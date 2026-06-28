@@ -141,7 +141,7 @@ export default function Insights() {
             <div className="w-8 h-8 rounded-lg border border-white/10 bg-white/[0.035] grid place-items-center">
               <SwarmMark className="w-4 h-4" />
             </div>
-            <div className="font-display text-sm font-semibold tracking-tight">Swarmbot</div>
+            <div className="font-display text-sm font-semibold tracking-tight">Insight Finder</div>
           </Link>
           <nav className="ml-6 hidden sm:flex items-center gap-1 text-xs">
             <NavLink to="/" icon={Home} label="Home" />
