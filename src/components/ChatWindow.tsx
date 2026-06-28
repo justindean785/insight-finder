@@ -1170,7 +1170,9 @@ function ChatWindowInner({
   // rAF isn't enough because streamed markdown lays out across several frames;
   // the ResizeObserver below catches that continuous growth.
   useEffect(() => {
-    if (!followLatestRef.current) return;
+    // Don't auto-pin an empty thread — the pre-investigation hero card is tall,
+    // and scrolling to the bottom clips its header above the fold.
+    if (!followLatestRef.current || messages.length === 0) return;
     const frame = requestAnimationFrame(pinToBottom);
     return () => cancelAnimationFrame(frame);
   }, [messages, pinToBottom]);
@@ -1182,11 +1184,11 @@ function ChatWindowInner({
     const content = contentRef.current;
     if (!content || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(() => {
-      if (followLatestRef.current) pinToBottom();
+      if (followLatestRef.current && messages.length > 0) pinToBottom();
     });
     ro.observe(content);
     return () => ro.disconnect();
-  }, [pinToBottom]);
+  }, [pinToBottom, messages.length]);
 
   // Disengage follow on genuine user-intent scrolling (wheel up / touch drag
   // down). These events NEVER fire from a programmatic pin, so — unlike the
