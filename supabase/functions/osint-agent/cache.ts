@@ -208,9 +208,14 @@ export function wrapToolsWithCache(
   const deriveOk = (result: unknown): boolean => {
     if (!result || typeof result !== "object") return true;
     const r = result as Record<string, unknown>;
+    // Intentional skips (missing required key, provider disabled in config, or an
+    // explicit `skipped` flag) are NOT failures. Keep them out of the
+    // tool_usage_log failure metric so the beta dashboard reflects real errors
+    // instead of intentional no-ops. The UI still renders them as "skipped" via
+    // tagSkipState / output.skipped. (Distinct from genuine 4xx/5xx/parse errors.)
+    if (isIntentionalSkip(r)) return true;
     if (typeof r.ok === "boolean") return r.ok;
     if (typeof r.error === "string" && r.error.length > 0) return false;
-    if (r.skipped === true) return false;
     return true;
   };
   // Detect calls that didn't actually consume provider quota / credits so we
@@ -670,26 +675,40 @@ export function tagTier(output: unknown, tier: Tier, model: string) {
   return { value: output, _tier: tier, _model: model };
 }
 
+// ---- Skip classification -------------------------------------------------------
+// An "intentional skip" is a non-failure outcome the runtime chose on purpose:
+//   • a missing-required-key bail   ("X_API_KEY not configured")
+//   • a provider disabled in config ("unavailable: disabled (provider disabled in config)")
+//   • a capability missing-key gate ("unavailable: missing_key (...)")
+//   • an explicit `skipped: true` flag (skipStub, dead-host, gates, timeouts)
+// These must NOT count as failures in tool_usage_log — they're intentional no-ops,
+// and counting them inflated the beta failure-rate dashboard with non-errors
+// (e.g. synapsint_lookup 7/7 disabled, ipqualityscore/deepfind missing-key).
+// This is the single source of truth, shared by deriveOk (the logged ok flag) and
+// tagSkipState (the UI taxonomy flag). Genuine 4xx/5xx/parse errors do NOT match.
+const SKIP_REASON_RE = /not configured|provider disabled in config|unavailable:\s*(?:disabled|missing_key)/i;
+export function isIntentionalSkip(output: unknown): boolean {
+  if (!output || typeof output !== "object") return false;
+  const o = output as Record<string, unknown>;
+  if (o.skipped === true) return true;
+  const text = [o.error, o.note, o.reason, o.detail]
+    .filter((v): v is string => typeof v === "string")
+    .join(" ");
+  return SKIP_REASON_RE.test(text);
+}
+
 // ---- Skip-state tagging --------------------------------------------------------
 // The UI tool-status taxonomy (src/lib/tool-run.ts → deriveToolStatus) renders a
-// call as "skipped" when output.skipped === true. Most self-skips already set it
-// (skipStub → guard/dedup, dead-host, intelbase gate, bosint timeout) or carry
-// reason text the UI regexes match (circuit/5xx/disabled → degraded; budget/quota
-// → gated). The one class that does NOT is a missing-key bail: a bare
-// { error: "X_API_KEY not configured" } with no flag, matching no regex — so the
-// Tools tab mis-renders it. Tag exactly that case so it reads as Skipped.
-// Additive only: deriveOk already treats an error/skip as not-ok and isFreeCall
-// already treats "not configured" as a free (unbilled) call, so ok / billing /
-// caching are unchanged.
+// call as "skipped" when output.skipped === true. Tag every intentional skip
+// (per isIntentionalSkip) so the Tools tab reads it as Skipped rather than a hard
+// error. Additive only — billing (isFreeCall) and the logged ok flag (deriveOk,
+// which also uses isIntentionalSkip) already treat these as free non-failures.
 export function tagSkipState(output: unknown): unknown {
   if (!output || typeof output !== "object") return output;
   const o = output as Record<string, unknown>;
   if (o.ok === true) return output;
   if (o.skipped === true || o.gated === true || o.degraded === true || o.partial === true) return output;
-  const text = [o.error, o.note, o.reason, o.detail]
-    .filter((v): v is string => typeof v === "string")
-    .join(" ");
-  if (/not configured/i.test(text)) o.skipped = true;
+  if (isIntentionalSkip(o)) o.skipped = true;
   return output;
 }
 
