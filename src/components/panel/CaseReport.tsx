@@ -71,7 +71,7 @@ function ArtifactRow({ a }: { a: Artifact }) {
       style={isInferred && !isExcluded ? { backgroundColor: "hsl(var(--conf-possible) / 0.05)" } : undefined}
     >
       <td className="px-3 py-2 text-muted-foreground text-eyebrow uppercase tracking-wider">{displayKind(a)}</td>
-      <td className={cn("px-3 py-2 font-mono break-all", isExcluded && "line-through decoration-muted-foreground/50")}>
+      <td className={cn("px-3 py-2 font-mono break-words [overflow-wrap:anywhere]", isExcluded && "line-through decoration-muted-foreground/50")}>
         {a.value}
         {isInferred && !isExcluded && (
           <span className="ml-2 align-middle rounded border border-conf-possible/40 bg-conf-possible/10 px-1 py-px text-[9px] font-mono uppercase tracking-wider text-conf-possible no-underline">
@@ -79,8 +79,8 @@ function ArtifactRow({ a }: { a: Artifact }) {
           </span>
         )}
       </td>
-      <td className="px-3 py-2 text-data text-muted-foreground">
-        {a.source ? <SourceBadge source={a.source} size="xs" /> : "—"}
+      <td className="px-3 py-2 text-data text-muted-foreground break-words [overflow-wrap:anywhere]">
+        {a.source ? <SourceBadge source={a.source} size="xs" className="max-w-full whitespace-normal break-words [overflow-wrap:anywhere] text-left !rounded-md" /> : "—"}
       </td>
       <td className="px-3 py-2">
         <EvidenceStatusBadge status={status.status} label={status.label} tone={status.tone} hint={status.hint} />
@@ -103,16 +103,16 @@ function ArtifactRow({ a }: { a: Artifact }) {
 function BucketTable({ rows, empty }: { rows: Artifact[]; empty: string }) {
   if (!rows.length) return <p className="text-muted-foreground italic text-data mt-2">{empty}</p>;
   return (
-    <div className="rounded-xl border border-white/[0.08] overflow-hidden mt-2 bg-[hsl(var(--surface-1))/0.42]">
-      <table className="w-full text-data">
+    <div className="rounded-xl border border-white/[0.08] overflow-x-auto mt-2 bg-[hsl(var(--surface-1))/0.42] [scrollbar-width:thin]">
+      <table className="w-full min-w-[1024px] table-fixed [&_td]:align-top text-data">
         <thead>
           <tr className="bg-white/[0.035] text-eyebrow uppercase tracking-[0.15em] text-muted-foreground">
-            <th className="text-left font-normal px-3 py-2 w-[110px]">Kind</th>
-            <th className="text-left font-normal px-3 py-2">Value</th>
-            <th className="text-left font-normal px-3 py-2 w-[140px]">Source</th>
-            <th className="text-left font-normal px-3 py-2 w-[170px]">Status</th>
-            <th className="text-left font-normal px-3 py-2 w-[60px]">Score</th>
-            <th className="text-left font-normal px-3 py-2 w-[88px]">Captured</th>
+            <th className="text-left font-normal px-3 py-2 w-[104px]">Kind</th>
+            <th className="text-left font-normal px-3 py-2 w-[22%]">Value</th>
+            <th className="text-left font-normal px-3 py-2 w-[168px]">Source</th>
+            <th className="text-left font-normal px-3 py-2 w-[168px]">Status</th>
+            <th className="text-left font-normal px-3 py-2 w-[96px]">Score</th>
+            <th className="text-left font-normal px-3 py-2 w-[92px]">Captured</th>
             <th className="text-left font-normal px-3 py-2">Reasoning</th>
           </tr>
         </thead>
