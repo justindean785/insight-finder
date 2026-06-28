@@ -1101,7 +1101,7 @@ export function buildTools(ctx: ToolContext) {
         const KEY = Deno.env.get("DEEPFIND_API_KEY");
         if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
         try {
-          const r = await fetchT(`https://deepfind.me/api/tools/reverse-email-check?email=${encodeURIComponent(email)}`, {
+          const r = await fetchRetry(`https://deepfind.me/api/tools/reverse-email-check?email=${encodeURIComponent(email)}`, {
             headers: { "X-DFME-API-KEY": KEY, "Accept": "application/json" },
           });
           const data = await r.json().catch(() => ({}));
@@ -1598,7 +1598,7 @@ export function buildTools(ctx: ToolContext) {
       inputSchema: z.object({ domain: z.string() }),
       execute: async ({ domain }) => {
         try {
-          const r = await fetchT(`https://rdap.org/domain/${encodeURIComponent(domain)}`);
+          const r = await fetchRetry(`https://rdap.org/domain/${encodeURIComponent(domain)}`, {});
           const data = await r.json().catch(() => ({}));
           return { ok: r.ok, data };
         } catch (e) {
@@ -1643,7 +1643,7 @@ export function buildTools(ctx: ToolContext) {
       inputSchema: z.object({ domain: z.string() }),
       execute: async ({ domain }) => {
         try {
-          const r = await fetchT(`https://crt.sh/?q=%25.${encodeURIComponent(domain)}&output=json`, {}, 12_000);
+          const r = await fetchRetry(`https://crt.sh/?q=%25.${encodeURIComponent(domain)}&output=json`, {}, { timeoutMs: 12_000 });
           const data = (await r.json().catch(() => null)) as Array<{ name_value?: string }> | null;
           if (!isCrtshOk(r.ok, data)) return { ok: false, status: r.status, error: r.ok ? "crt.sh returned non-JSON (likely an error/overload page)" : `crt.sh ${r.status}`, domain };
           const arr = data as Array<{ name_value?: string }>;
@@ -1734,7 +1734,7 @@ export function buildTools(ctx: ToolContext) {
         try {
           const [closest, cdx] = await Promise.all([
             fetchT(`https://archive.org/wayback/available?url=${encodeURIComponent(url)}`, {}, 12_000).then((r) => r.ok ? r.json() : { error: `available ${r.status}` }).catch((e) => ({ error: String(e) })),
-            fetchT(`https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(url)}&output=json&limit=10&from=20000101`, {}, 12_000).then((r) => r.ok ? r.json() : { error: `cdx ${r.status}` }).catch((e) => ({ error: String(e) })),
+            fetchRetry(`https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(url)}&output=json&limit=10&from=20000101`, {}, { timeoutMs: 12_000 }).then((r) => r.ok ? r.json() : { error: `cdx ${r.status}` }).catch((e) => ({ error: String(e) })),
           ]);
           // archive.org is reliably flaky; a 5xx/timeout must not read as "no snapshots".
           const cdxOk = Array.isArray(cdx);
@@ -1791,7 +1791,7 @@ export function buildTools(ctx: ToolContext) {
           // &limit=-1 is the newest. Each is failure-tolerant (null on any error).
           const firstTs = async (limit: string): Promise<string | null> => {
             try {
-              const r = await fetchT(`${base}&fl=timestamp&limit=${limit}`, {}, 15_000);
+              const r = await fetchRetry(`${base}&fl=timestamp&limit=${limit}`, {}, { timeoutMs: 15_000 });
               if (!r.ok) { await r.body?.cancel().catch(() => {}); return null; }
               const data = await r.json().catch(() => null);
               if (!Array.isArray(data) || data.length < 2) return null;
@@ -1802,7 +1802,7 @@ export function buildTools(ctx: ToolContext) {
             } catch { return null; }
           };
           // Small sample page for context (collapsed to unique urlkeys).
-          const r = await fetchT(`${base}&limit=25&collapse=urlkey`, {}, 15_000);
+          const r = await fetchRetry(`${base}&limit=25&collapse=urlkey`, {}, { timeoutMs: 15_000 });
           if (!r.ok) return { ok: false, status: r.status, error: `wayback cdx ${r.status}`, url };
           const data = await r.json().catch(() => null);
           // CDX json: row[0] is the header (["urlkey","timestamp","original","statuscode",...]).
@@ -1837,7 +1837,7 @@ export function buildTools(ctx: ToolContext) {
       execute: async ({ domain }) => {
         try {
           const d = domain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-          const r = await fetchT(`https://crt.sh/?q=${encodeURIComponent(d)}&output=json`, {}, 15_000);
+          const r = await fetchRetry(`https://crt.sh/?q=${encodeURIComponent(d)}&output=json`, {}, { timeoutMs: 15_000 });
           const data = (await r.json().catch(() => null)) as Array<{ name_value?: string; issuer_name?: string }> | null;
           if (!isCrtshOk(r.ok, data)) {
             return { ok: false, status: r.status, error: r.ok ? "crt.sh returned non-JSON (likely an error/overload page)" : `crt.sh ${r.status}`, domain: d };
