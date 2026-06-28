@@ -30,7 +30,7 @@ import {
   recommendedPivotsStorageKey,
   type RecommendedPivot,
 } from "@/lib/recommended-pivots";
-import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon } from "lucide-react";
+import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon, Copy as CopyIcon } from "lucide-react";
 
 const SUPABASE_PROJECT_ID = (import.meta.env.VITE_SUPABASE_PROJECT_ID as string | undefined)?.trim();
 // Resolve from the client's SUPABASE_URL (which carries the baked-in default),
@@ -880,6 +880,28 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
         }
         return null;
       })}
+      {(() => {
+        // Copy the full assistant message text (all text parts, think-tags stripped).
+        const copyText = parts
+          .filter((p) => p.type === "text")
+          .map((p) => stripThinkTags(p.text ?? ""))
+          .join("\n")
+          .trim();
+        if (!copyText) return null;
+        return (
+          <div className="flex justify-start pt-0.5">
+            <button
+              type="button"
+              onClick={() => copyToClipboard(copyText, "Message copied")}
+              className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground/70 hover:text-foreground hover:bg-surface-2 transition-colors"
+              aria-label="Copy message"
+              title="Copy message"
+            >
+              <CopyIcon className="w-3 h-3" /> Copy
+            </button>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -1957,6 +1979,7 @@ function ChatWindowInner({
                 ref={fileInputRef}
                 type="file"
                 multiple
+                accept="image/*,.pdf,.txt,.csv,.json,.eml,.html,.md"
                 className="hidden"
                 onChange={(e) => onFilesPicked(e.target.files)}
               />
