@@ -36,6 +36,7 @@ import {
   markToolDegraded, isDegraded, fetchRetry, fetchT,
   deadHosts, markHostDead, isHostDead,
 } from "./env.ts";
+import { buildLeakcheckUrl, buildOathnetUrl } from "./breach-request.ts";
 
 import {
   validateArtifact, TTL_24H_MS, TOOL_TTL_MS, NO_CACHE_TOOLS,
@@ -643,19 +644,13 @@ export function buildTools(ctx: ToolContext) {
       execute: async ({ type, value }) => {
         if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
         try {
-          let url: string;
-          if (type === "ip") {
-            url = `https://oathnet.org/api/service/ip-info?ip=${encodeURIComponent(value)}`;
-          } else {
-            const params = new URLSearchParams();
-            if (type === "domain") params.set("email_domain", value);
-            else params.set("q", value);
-            params.set("limit", "50");
-            url = `https://oathnet.org/api/service/v2/breach/search?${params.toString()}`;
-          }
-          const r = await fetchT(url, {
+          const url = buildOathnetUrl(type, value);
+          // OathNet upstream intermittently 502s; fetchRetry retries transient
+          // 5xx/network with backoff so a flaky gateway doesn't hard-fail a
+          // mandatory breach-fan-out call on the first blip.
+          const r = await fetchRetry(url, {
             headers: { "x-api-key": OATHNET_API_KEY },
-          }, 20_000);
+          }, { retries: 1, timeoutMs: 20_000 });
           const text = await r.text();
           let data: unknown;
           try {
@@ -1032,7 +1027,7 @@ export function buildTools(ctx: ToolContext) {
         const q = value.trim();
         if (!q) return { error: "missing value" };
         try {
-          const url = `https://leakcheck.io/api/v2/query/${encodeURIComponent(q)}?type=${encodeURIComponent(type ?? "auto")}`;
+          const url = buildLeakcheckUrl(q, type);
           const r = await fetchT(url, { headers: { "X-API-Key": LEAKCHECK_API_KEY, "Accept": "application/json" } }, 20_000);
           const text = await r.text();
           interface LeakCheckResult {
