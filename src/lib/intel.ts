@@ -1,5 +1,5 @@
 import type { Artifact } from "@/hooks/useThreadArtifacts";
-import { detectSeed } from "@/lib/seed";
+import { detectSeed, extractDisplaySeed } from "@/lib/seed";
 import { toolActionLabel } from "@/lib/tool-display";
 import { humanizeSourceChain } from "@/lib/report-source-labels";
 import { deriveToolStatus, deriveToolReason } from "@/lib/tool-run";
@@ -867,10 +867,13 @@ export type ReportInput = {
   }>;
   /** Analyst review verdicts by artifact id (Verified/Rejected/Key/Recheck). */
   reviews?: Record<string, ReviewAdjustment>;
+  /** Output shape: "full" dossier (default) or condensed "brief". */
+  reportType?: "full" | "brief";
 };
 
 export function buildReportMarkdown(input: ReportInput): string {
-  const { seedValue, seedType, messages, reviews } = input;
+  const { seedValue, seedType, messages, reviews, reportType } = input;
+  const display = extractDisplaySeed(seedValue, seedType);
   // Collapse breach datasets recorded twice under name variants from the same
   // source pair (conservative — see dedupeBreachDatasets) so the Artifact Table
   // and Network Connections don't double-list one breach.
@@ -1105,6 +1108,26 @@ export function buildReportMarkdown(input: ReportInput): string {
     ? "_None._"
     : audit.tools.map((t) => `- ${toolActionLabel(t.tool)} — produced ${t.kinds.join(", ") || "—"}`).join("\n");
 
+  if (reportType === "brief") {
+    return [
+      `# OSINT Investigation Brief`,
+      "",
+      `**Subject:** \`${display.selector}\` (${display.kind})`,
+      "",
+      `## Executive Summary`,
+      exec,
+      "",
+      `## Key Findings`,
+      keyFindings,
+      "",
+      `## Recommended Next Steps`,
+      nextSteps,
+      "",
+      `---`,
+      `_Condensed brief — switch to the Full Dossier report type for the complete analysis. Observations from named sources; no identity claim is confirmed without independent corroboration._`,
+    ].join("\n");
+  }
+
   return [
     `# OSINT Investigation Report`,
     "",
@@ -1119,8 +1142,8 @@ export function buildReportMarkdown(input: ReportInput): string {
     exec,
     "",
     `## Seed Details`,
-    `- **Value:** \`${seedValue ?? "—"}\``,
-    `- **Type:** ${seedType ?? "unknown"}`,
+    `- **Selector:** \`${display.selector}\``,
+    `- **Type:** ${display.kind}`,
     ...(clusterReport.seedName ? [`- **Detected subject:** ${clusterReport.seedName}`] : []),
     ...(clusterReport.seedState ? [`- **Detected location target:** ${clusterReport.seedState}`] : []),
     `- **Artifacts recorded:** ${total}`,

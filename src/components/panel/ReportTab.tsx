@@ -19,12 +19,25 @@ import { toast } from "sonner";
 import { TabHeader } from "@/components/ui/workspace-primitives";
 import { ConfidenceRadar } from "@/components/workspace/ConfidenceRadar";
 import { EmptyState } from "./EmptyState";
-import { CaseReport } from "./CaseReport";
+import { CaseReport, type ReportType } from "./CaseReport";
+import { extractDisplaySeed } from "@/lib/seed";
+import { cn } from "@/lib/utils";
+
+const REPORT_TYPES: { id: ReportType; label: string; soon?: boolean }[] = [
+  { id: "full", label: "Full Dossier" },
+  { id: "brief", label: "Executive Brief" },
+];
+const REPORT_TYPES_SOON: { label: string }[] = [
+  { label: "LE / Court" },
+  { label: "OSINT Technical" },
+  { label: "Lead Brief" },
+];
 
 export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts: Artifact[] }) {
   const [seed, setSeed] = useState<{ value: string | null; type: string | null }>({ value: null, type: null });
   const [jsonGateOpen, setJsonGateOpen] = useState(false);
   const [jsonGateAck, setJsonGateAck] = useState(false);
+  const [reportType, setReportType] = useState<ReportType>("full");
 
   useEffect(() => {
     // Guard against a late response from a previous thread overwriting the
@@ -60,15 +73,15 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
   }, [artifacts, review]);
 
   const markdown = useMemo(
-    () => buildReportMarkdown({ seedValue: seed.value, seedType: seed.type, artifacts, messages, reviews }),
-    [seed, artifacts, messages, reviews],
+    () => buildReportMarkdown({ seedValue: seed.value, seedType: seed.type, artifacts, messages, reviews, reportType }),
+    [seed, artifacts, messages, reviews, reportType],
   );
   const matrixMd = useMemo(() => buildEvidenceMatrixMarkdown(artifacts), [artifacts]);
 
   const copy = (text: string, label: string) =>
     navigator.clipboard.writeText(text).then(() => toast.success(label), () => toast.error("Copy failed"));
 
-  const slug = (seed.value || threadId).replace(/[^a-z0-9._-]+/gi, "_").slice(0, 60);
+  const slug = (extractDisplaySeed(seed.value, seed.type).selector || threadId).replace(/[^a-z0-9._-]+/gi, "_").slice(0, 60);
   const downloadMd = () => {
     const blob = new Blob([markdown], { type: "text/markdown" });
     const url = URL.createObjectURL(blob);
@@ -175,12 +188,41 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
       </TabHeader>
 
       <div className="p-3 space-y-3">
+      {/* Report-type selector — changes the rendered dossier AND every export. */}
+      <div className="no-print flex flex-wrap items-center gap-1.5" role="group" aria-label="Report type">
+        <span className="text-eyebrow font-mono uppercase tracking-[0.16em] text-muted-foreground mr-1">Report</span>
+        {REPORT_TYPES.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setReportType(t.id)}
+            aria-pressed={reportType === t.id}
+            className={cn(
+              "h-7 rounded-lg border px-2.5 text-data transition-colors",
+              reportType === t.id
+                ? "border-[hsl(var(--info)/0.5)] bg-[hsl(var(--info)/0.12)] text-foreground"
+                : "border-border-subtle bg-surface-1 text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {t.label}
+          </button>
+        ))}
+        {REPORT_TYPES_SOON.map((t) => (
+          <button
+            key={t.label}
+            disabled
+            title="Coming soon"
+            className="h-7 rounded-lg border border-border-subtle bg-surface-1/50 px-2.5 text-data text-muted-foreground/50 cursor-not-allowed"
+          >
+            {t.label} · soon
+          </button>
+        ))}
+      </div>
       {/* Evidence-signal summary — UI-only, kept out of the printed report. */}
       <div className="no-print">
         <ConfidenceRadar artifacts={artifacts} seedValue={seed.value} reviews={reviews} />
       </div>
       <div className="rounded-lg border border-border-subtle bg-surface-1 px-4 py-5 max-h-[78vh] overflow-y-auto [scrollbar-width:thin]">
-        <CaseReport seedValue={seed.value} seedType={seed.type} artifacts={artifacts} reviews={reviews} />
+        <CaseReport seedValue={seed.value} seedType={seed.type} artifacts={artifacts} reviews={reviews} messages={messages} reportType={reportType} />
       </div>
 
       <details className="rounded-lg border border-border-subtle bg-surface-2 no-print">
