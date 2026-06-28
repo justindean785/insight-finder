@@ -30,6 +30,10 @@ import {
 import { toolActionLabel } from "@/lib/tool-display";
 import { cn } from "@/lib/utils";
 import type { ReviewState } from "@/lib/review";
+import { extractDisplaySeed } from "@/lib/seed";
+import type { MessageSummary } from "@/hooks/useThreadMessages";
+
+export type ReportType = "full" | "brief";
 
 /* ------------------------------------------------------------------ */
 /* Evidence-strength bucketing                                         */
@@ -447,55 +451,76 @@ function uniqueSources(artifacts: Artifact[]): string[] {
   return Array.from(sources).sort((a, b) => a.localeCompare(b));
 }
 
-function buildAnalyticRadar(artifacts: Artifact[], riskLevel: RiskLevel): ReportMetric[] {
+// Expected independent source categories used by the classifier — Coverage and
+// Corroboration measure against these, NOT raw tool/source-label counts.
+const EXPECTED_SOURCE_CATEGORIES = [
+  "breach", "public_record", "social_profile_passive", "news",
+  "court_record", "infra", "username_sweep", "threat_intel",
+];
+
+/** Distinct independent source CLASSES for one artifact (metadata.source_category). */
+function artifactSourceClasses(a: Artifact): Set<string> {
+  const m = (a.metadata ?? {}) as Record<string, unknown>;
+  const cats = m.source_category;
+  const set = new Set<string>();
+  if (Array.isArray(cats)) {
+    for (const c of cats) if (typeof c === "string" && c.trim()) set.add(c.trim().toLowerCase());
+  } else if (typeof cats === "string" && cats.trim()) {
+    set.add(cats.trim().toLowerCase());
+  }
+  return set;
+}
+
+// DISPLAY-METRIC ONLY: these functions change what the radar axes COUNT. They do
+// NOT touch confidence caps, source classification, or status derivation — Signal
+// reuses the same bucket() the Confirmed/Probable counters use.
+export function buildAnalyticRadar(artifacts: Artifact[], riskLevel: RiskLevel): ReportMetric[] {
   const kinds = new Set(artifacts.map((a) => a.kind.toLowerCase()));
-  const sources = uniqueSources(artifacts);
   const avg = averageConfidence(artifacts);
-  const audit = buildToolAudit(artifacts);
-  const confirmed = artifacts.filter((a) => labelForArtifact(a) === "CONFIRMED").length;
-  const probable = artifacts.filter((a) => labelForArtifact(a) === "CORRELATED" || labelForArtifact(a) === "INFERRED").length;
+  const total = Math.max(artifacts.length, 1);
+
   const identityHits = ["name", "person", "phone", "email", "address", "dob", "age", "location"]
     .filter((kind) => kinds.has(kind)).length;
-  const exposureHits = ["breach", "password", "hash", "credential", "leak"]
-    .filter((kind) => kinds.has(kind)).length;
+
+  // Exposure (BUG-1): the kind is `breach_exposure`; the old kind-category check
+  // missed it and read 0 despite many breaches. Count exposure ARTIFACTS,
+  // weighted by metadata.severity when present, else confidence.
+  const exposureArts = artifacts.filter((a) =>
+    ["breach_exposure", "credential_exposure", "leak_paste"].includes(a.kind));
+  const exposureStrength = exposureArts.reduce((s, a) => {
+    const m = (a.metadata ?? {}) as Record<string, unknown>;
+    const sev = typeof m.severity === "number" ? m.severity : null;
+    return s + (sev != null ? sev / 100 : (a.confidence ?? 50) / 100);
+  }, 0);
+  const exposureValue = exposureArts.length === 0 ? 0 : clampScore(Math.min(100, exposureStrength * 18));
+
+  // Corroboration (BUG-3): findings backed by >=2 INDEPENDENT source classes,
+  // NOT distinct source-label count (52 labels incl. 4x minimax != corroboration).
+  const corroborated = artifacts.filter((a) => artifactSourceClasses(a).size >= 2).length;
+  const corroborationValue = clampScore((corroborated / total) * 100);
+
+  // Coverage (BUG-4): observed source CATEGORIES vs the expected set, not tool count.
+  const observedCats = new Set<string>();
+  for (const a of artifacts) for (const c of artifactSourceClasses(a)) observedCats.add(c);
+  const coveredExpected = EXPECTED_SOURCE_CATEGORIES.filter((c) => observedCats.has(c)).length;
+  const coverageValue = clampScore((coveredExpected / EXPECTED_SOURCE_CATEGORIES.length) * 100);
+
+  // Signal (BUG-2): reuse the SAME bucket() the Confirmed/Probable counters use,
+  // so the axis can never contradict the counters.
+  const sigConfirmed = artifacts.filter((a) => bucket(a) === "confirmed").length;
+  const sigProbable = artifacts.filter((a) => bucket(a) === "probable").length;
+  const signalValue = clampScore(((sigConfirmed + sigProbable) / total) * 100);
+
   const riskScore: Record<RiskLevel, number> = { LOW: 22, MEDIUM: 48, HIGH: 74, CRITICAL: 94 };
 
   return [
-    {
-      label: "Identity",
-      value: clampScore((identityHits / 8) * 100),
-      detail: `${identityHits}/8 identity categories observed`,
-    },
-    {
-      label: "Corroboration",
-      value: clampScore((sources.length / 8) * 100 + confirmed * 4),
-      detail: `${sources.length} distinct sources; ${confirmed} confirmed findings`,
-    },
-    {
-      label: "Confidence",
-      value: clampScore(avg),
-      detail: `${avg}% average artifact confidence`,
-    },
-    {
-      label: "Exposure",
-      value: clampScore((exposureHits / 5) * 100),
-      detail: `${exposureHits}/5 breach or credential-exposure categories`,
-    },
-    {
-      label: "Coverage",
-      value: clampScore((audit.tools.length / 12) * 100),
-      detail: `${audit.tools.length} tools represented in artifacts`,
-    },
-    {
-      label: "Risk",
-      value: riskScore[riskLevel],
-      detail: `${riskLevel.toLowerCase()} current risk classification`,
-    },
-    {
-      label: "Signal",
-      value: clampScore(((confirmed + probable) / Math.max(artifacts.length, 1)) * 100),
-      detail: `${confirmed + probable}/${artifacts.length} findings are confirmed/probable`,
-    },
+    { label: "Identity", value: clampScore((identityHits / 8) * 100), detail: `${identityHits}/8 identity categories observed` },
+    { label: "Corroboration", value: corroborationValue, detail: `${corroborated}/${artifacts.length} finding${artifacts.length === 1 ? "" : "s"} across ≥2 independent source classes` },
+    { label: "Confidence", value: clampScore(avg), detail: `${avg}% average artifact confidence` },
+    { label: "Exposure", value: exposureValue, detail: `${exposureArts.length} breach / credential-exposure finding${exposureArts.length === 1 ? "" : "s"}` },
+    { label: "Coverage", value: coverageValue, detail: `${coveredExpected}/${EXPECTED_SOURCE_CATEGORIES.length} source categories represented` },
+    { label: "Risk", value: riskScore[riskLevel], detail: `${riskLevel.toLowerCase()} current risk classification` },
+    { label: "Signal", value: signalValue, detail: `${sigConfirmed + sigProbable}/${artifacts.length} findings confirmed or probable` },
   ];
 }
 
@@ -599,16 +624,81 @@ function CompactBarChart({ data, color = "hsl(var(--info))" }: { data: ChartDatu
 /* Render                                                              */
 /* ------------------------------------------------------------------ */
 
+/* ---------- narrative / dossier helpers ---------- */
+
+function topByConfidence(artifacts: Artifact[], kinds: string[]): Artifact | null {
+  const pool = artifacts.filter((a) => kinds.includes(a.kind));
+  if (!pool.length) return null;
+  return pool.slice().sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))[0];
+}
+
+type ProfileField = { label: string; value: string };
+function buildSubjectProfile(artifacts: Artifact[]): ProfileField[] {
+  const out: ProfileField[] = [];
+  const name = topByConfidence(artifacts, ["name"]);
+  if (name) {
+    out.push({ label: "Name", value: name.value });
+    const m = (name.metadata ?? {}) as Record<string, unknown>;
+    const dob = m.dob ? String(m.dob) : "";
+    const age = m.age != null ? String(m.age) : "";
+    if (dob || age) out.push({ label: "DOB / Age", value: [dob, age && `age ${age}`].filter(Boolean).join(" · ") });
+  }
+  const email = topByConfidence(artifacts, ["email"]);
+  if (email) out.push({ label: "Email", value: email.value });
+  const phone = topByConfidence(artifacts, ["phone"]);
+  if (phone) out.push({ label: "Phone", value: phone.value });
+  const addr = topByConfidence(artifacts, ["address"]);
+  if (addr) out.push({ label: "Address", value: addr.value });
+  return out;
+}
+
+type BreachRow = { site: string; date: string; classes: string; creds: string[] };
+function buildBreachExposure(artifacts: Artifact[]): BreachRow[] {
+  const rows = artifacts.filter((a) => a.kind === "breach_exposure").map((a) => {
+    const m = (a.metadata ?? {}) as Record<string, unknown>;
+    const dc = m.data_classes;
+    const classes = Array.isArray(dc) ? dc.map(String).join(", ") : "";
+    const date = String(m.breach_date ?? "");
+    // MASK credentials — never surface plaintext / hash / hint VALUES.
+    const creds: string[] = [];
+    if (m.password_exposed || m.passwords || m.password) creds.push("password ✓");
+    if (m.password_hash_exposed || m.hash) creds.push("hash present");
+    if (m.password_hint) creds.push("hint present");
+    return { site: a.value, date, classes, creds };
+  });
+  return rows.sort((a, b) => (a.date < b.date ? -1 : 1));
+}
+
+/** Strongest identity-bearing artifact confidence — the reasoned read, distinct
+ *  from the strict ≥2-independent-class auto-corroboration count. */
+function analystConfidence(artifacts: Artifact[]): number {
+  const pool = artifacts.filter((a) => ["name", "email", "phone", "address"].includes(a.kind));
+  return pool.reduce((mx, a) => Math.max(mx, a.confidence ?? 0), 0);
+}
+
 export function CaseReport({
   seedValue,
   seedType,
   artifacts,
+  messages,
+  reportType = "full",
 }: {
   seedValue: string | null;
   seedType: string | null;
   artifacts: Artifact[];
   reviews?: Record<string, ReviewState>;
+  messages?: MessageSummary[];
+  reportType?: ReportType;
 }) {
+  const display = useMemo(() => extractDisplaySeed(seedValue, seedType), [seedValue, seedType]);
+  const subjectProfile = useMemo(() => buildSubjectProfile(artifacts), [artifacts]);
+  const breachRows = useMemo(() => buildBreachExposure(artifacts), [artifacts]);
+  const analystConf = useMemo(() => analystConfidence(artifacts), [artifacts]);
+  const narrative = useMemo(() => {
+    const last = (messages ?? []).filter((m) => m.role === "assistant" && m.summary?.trim()).slice(-1)[0];
+    return last?.summary?.trim() ?? "";
+  }, [messages]);
+  const isBrief = reportType === "brief";
   const identity = useMemo(() => buildIdentityRows(artifacts), [artifacts]);
   const registrations = useMemo(() => buildRegistrationRows(artifacts), [artifacts]);
   const hunterNotes = useMemo(() => buildHunterNotes(artifacts, seedValue), [artifacts, seedValue]);
@@ -657,11 +747,12 @@ export function CaseReport({
             <div className="text-eyebrow uppercase tracking-[0.22em] text-[hsl(var(--info))]">
               Case file / analytical report
             </div>
-            <h2 className="mt-2 text-xl sm:text-2xl font-display font-semibold tracking-normal break-all">
-              {seedValue ?? "—"}
+            <h2 className="mt-2 text-xl sm:text-2xl font-display font-semibold tracking-normal break-words [overflow-wrap:anywhere]">
+              {display.title}
             </h2>
             <div className="mt-2 flex flex-wrap gap-1.5 text-eyebrow font-mono uppercase tracking-wider text-muted-foreground">
-              <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{seedType ?? "unknown"}</span>
+              <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{display.kind}</span>
+              <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{reportType === "brief" ? "executive brief" : "full dossier"}</span>
               <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{artifacts.length} artifacts</span>
               <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{audit.tools.length} tools</span>
               <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{sources.length} sources</span>
@@ -682,6 +773,48 @@ export function CaseReport({
         <ReportKpi label="Contradictions" value={buckets.contradiction.length} detail="quality or conflict flags" tone={buckets.contradiction.length > 0 ? "danger" : "neutral"} />
       </section>
 
+      {/* Analyst confidence vs strict auto-corroboration — reconciles the
+          "0 confirmed" metric with the reasoned identity read so they don't read
+          as a contradiction. Display only; no scoring changed. */}
+      <section className="mt-4 grid gap-3 rounded-xl border border-white/[0.08] bg-white/[0.025] p-3 sm:grid-cols-2">
+        <div>
+          <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">Analyst confidence</div>
+          <div className="mt-1 font-display text-2xl font-semibold text-[hsl(var(--info))]">{analystConf}%</div>
+          <p className="mt-1 text-data leading-relaxed text-muted-foreground">Strongest identity-bearing artifact — reasoned read, not an auto-confirmation.</p>
+        </div>
+        <div>
+          <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">Auto-corroboration</div>
+          <div className="mt-1 font-display text-2xl font-semibold text-foreground">{buckets.confirmed.length} / {artifacts.length}</div>
+          <p className="mt-1 text-data leading-relaxed text-muted-foreground">Findings backed by ≥2 independent source classes. Breach-only / single-class evidence stays a lead by design.</p>
+        </div>
+      </section>
+
+      {/* Subject profile */}
+      {subjectProfile.length > 0 && (
+        <>
+          <SectionHeader>Subject Profile</SectionHeader>
+          <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-4 grid gap-2 sm:grid-cols-2">
+            {subjectProfile.map((f) => (
+              <div key={f.label} className="flex flex-col">
+                <span className="text-eyebrow font-mono uppercase tracking-[0.14em] text-muted-foreground">{f.label}</span>
+                <span className="font-mono text-foreground break-words [overflow-wrap:anywhere]">{f.value}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* Analyst narrative — latest assistant summary, ported from chat */}
+      {narrative && (
+        <>
+          <SectionHeader>Analyst Narrative</SectionHeader>
+          <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-4 whitespace-pre-wrap leading-relaxed text-foreground/90">
+            {narrative}
+          </div>
+        </>
+      )}
+
+      {!isBrief && (<>
       <section className="mt-4 grid gap-3 xl:grid-cols-[1.05fr_0.95fr]">
         <ReportChartCard title="Analytic Radar" subtitle="Composite profile from evidence, source, risk, and coverage signals.">
           <AnalyticRadar data={radar} />
@@ -738,12 +871,13 @@ export function CaseReport({
           />
         </div>
       </section>
+      </>)}
 
       {/* 1. Executive summary */}
       <SectionHeader>Executive Summary</SectionHeader>
       <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-4">
         <p className="text-foreground/90">
-          Investigation of <span className="font-mono">{seedValue ?? "—"}</span> produced{" "}
+          Investigation of <span className="font-mono">{display.selector}</span> produced{" "}
           {buckets.confirmed.length} confirmed, {buckets.probable.length} probable, and{" "}
           {buckets.lead.length} unverified leads across {sources.length} distinct source
           {sources.length === 1 ? "" : "s"}. {buckets.contradiction.length} contradiction
@@ -769,8 +903,46 @@ export function CaseReport({
       {/* 3. Seed details */}
       <SectionHeader>Seed Details</SectionHeader>
       <div className="text-foreground/90 font-mono text-data">
-        {seedType ?? "unknown"} · {seedValue ?? "—"}
+        {display.kind} · {display.selector}
       </div>
+
+      {/* Breach Exposure — masked credential indicators only (full dossier) */}
+      {!isBrief && breachRows.length > 0 && (
+        <>
+          <SectionHeader>Breach Exposure</SectionHeader>
+          <div className="rounded-md border border-border-subtle overflow-x-auto [scrollbar-width:thin]">
+            <table className="w-full min-w-[640px] table-fixed [&_td]:align-top text-data">
+              <thead>
+                <tr className="bg-surface-2 text-eyebrow uppercase tracking-[0.15em] text-muted-foreground">
+                  <th className="text-left font-normal px-3 py-2 w-[28%]">Breach</th>
+                  <th className="text-left font-normal px-3 py-2 w-[110px]">Date</th>
+                  <th className="text-left font-normal px-3 py-2">Data classes</th>
+                  <th className="text-left font-normal px-3 py-2 w-[180px]">Credentials</th>
+                </tr>
+              </thead>
+              <tbody>
+                {breachRows.map((b, i) => (
+                  <tr key={i} className="border-t border-border-subtle">
+                    <td className="px-3 py-2 break-words [overflow-wrap:anywhere]">{b.site}</td>
+                    <td className="px-3 py-2 font-mono text-muted-foreground whitespace-nowrap">{b.date || "—"}</td>
+                    <td className="px-3 py-2 text-muted-foreground break-words">{b.classes || "—"}</td>
+                    <td className="px-3 py-2">
+                      {b.creds.length ? (
+                        <span className="flex flex-wrap gap-1">
+                          {b.creds.map((c) => (
+                            <span key={c} className="rounded border border-destructive/40 bg-destructive/10 px-1.5 py-px text-[10px] font-mono text-destructive">{c}</span>
+                          ))}
+                        </span>
+                      ) : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-1 text-data text-muted-foreground">Credential values are masked by policy — presence is indicated, never the plaintext, hash, or hint.</p>
+        </>
+      )}
 
       {/* 4. Confirmed findings */}
       <SectionHeader>Confirmed Findings</SectionHeader>
@@ -905,21 +1077,25 @@ export function CaseReport({
         )}
       </div>
 
-      <SectionHeader>Methodology & Confidence Controls</SectionHeader>
-      <div className="grid gap-3 lg:grid-cols-3">
-        <MethodCard
-          title="Evidence handling"
-          body="Artifacts are separated with the conservative evidence-status layer used by the analyst UI. Confirmation requires strong source quality or corroboration."
-        />
-        <MethodCard
-          title="Source weighting"
-          body="Radar and charts are descriptive analytics. Shared-source dashed links, breach-only hits, and aggregator records should not be promoted without independent support."
-        />
-        <MethodCard
-          title="Analyst action"
-          body="Use recommended pivots and unknowns to close coverage gaps. Treat the chart scores as prioritization aids, not final attribution."
-        />
-      </div>
+      {!isBrief && (
+        <>
+          <SectionHeader>Methodology & Confidence Controls</SectionHeader>
+          <div className="grid gap-3 lg:grid-cols-3">
+            <MethodCard
+              title="Evidence handling"
+              body="Artifacts are separated with the conservative evidence-status layer used by the analyst UI. Confirmation requires strong source quality or corroboration."
+            />
+            <MethodCard
+              title="Source weighting"
+              body="Radar and charts are descriptive analytics. Shared-source dashed links, breach-only hits, and aggregator records should not be promoted without independent support."
+            />
+            <MethodCard
+              title="Analyst action"
+              body="Use recommended pivots and unknowns to close coverage gaps. Treat the chart scores as prioritization aids, not final attribution."
+            />
+          </div>
+        </>
+      )}
     </article>
   );
 }

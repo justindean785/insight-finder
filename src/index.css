@@ -794,16 +794,47 @@ All colors MUST be HSL.
 
 /* Print: when body has .printing-report, hide everything except the case report. */
 @media print {
+  /* The report sits inside scroll containers (max-h-[78vh] overflow-y-auto) and
+     was pinned position:absolute; inset:0 — so print captured only one viewport
+     (radar + counts) and clipped the rest. Unclamp every height/overflow ancestor
+     and anchor the root at the top with auto height so the full dossier paginates. */
+  html, body { height: auto !important; overflow: visible !important; }
   body.printing-report * { visibility: hidden !important; }
+  body.printing-report *,
+  body.printing-report *::before,
+  body.printing-report *::after {
+    max-height: none !important;
+    overflow: visible !important;
+  }
   body.printing-report #case-report-print-root,
   body.printing-report #case-report-print-root * { visibility: visible !important; }
   body.printing-report #case-report-print-root {
     position: absolute !important;
-    inset: 0 !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    width: 100% !important;
+    height: auto !important;
     padding: 24px !important;
     background: white !important;
     color: black !important;
     font-size: 11pt !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  body.printing-report #case-report-print-root * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  /* Keep logical blocks intact across page breaks. */
+  body.printing-report #case-report-print-root section,
+  body.printing-report #case-report-print-root .report-kpi,
+  body.printing-report #case-report-print-root .report-cover,
+  body.printing-report #case-report-print-root table,
+  body.printing-report #case-report-print-root tr,
+  body.printing-report #case-report-print-root li {
+    break-inside: avoid;
+    page-break-inside: avoid;
   }
   body.printing-report #case-report-print-root table,
   body.printing-report #case-report-print-root th,
