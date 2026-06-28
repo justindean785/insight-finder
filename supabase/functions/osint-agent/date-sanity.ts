@@ -28,11 +28,22 @@ export const HARM_BEARING_KINDS = new Set([
 const HARM_BEARING_VALUE_RE =
   /\b(arrest(ed)?|charge[ds]?|indict(ed|ment)?|conviction|convicted|criminal|felony|misdemeanor|warrant|booking|robbery|assault|burglary|homicide|court|docket|case\s*no\.?|bond)\b/i;
 
-// Metadata keys that may carry the record's own event/report date.
+// EVENT date keys — the record's OWN event/report date. Only these feed the
+// future-suspect check: an event dated after "now" is genuinely anomalous.
 const DATE_META_KEYS = [
   "date_reported", "date", "incident_date", "arrest_date", "report_date",
-  "charge_date", "court_date", "filed_date", "offense_date", "booking_date",
+  "charge_date", "filed_date", "offense_date", "booking_date",
 ];
+
+// SCHEDULING date keys (#9 fix) — forward-looking hearing/trial dates that are
+// SUPPOSED to be in the future for an active case. A future court_date must NOT
+// flag the whole arrest/legal record as "future date / synthetic". These are
+// deliberately excluded from the future-suspect comparison. The earlier guard
+// included "court_date" in the event set, so a past arrest with an upcoming
+// hearing (e.g. arrest 2026-06-19, court_date 2026-07-06) was wrongly flagged.
+const SCHEDULING_DATE_KEYS = new Set([
+  "court_date", "hearing_date", "trial_date", "next_court_date", "arraignment_date",
+]);
 
 const FUTURE_NOTE_RE = /future[\s-]?date/i;
 
@@ -89,12 +100,32 @@ export function applyDateSanity(
     }
   }
 
-  // No usable date → ambiguity. Stay conservative: do not change status or
-  // confidence, and do not assert past/future. Only annotate ambiguity.
+  // No usable EVENT date. Before falling back to "unknown", check whether the
+  // only future-dated field is a SCHEDULING date (court/hearing/trial) — those
+  // are SUPPOSED to be in the future for an active case, so a model-authored
+  // "future date detected" note on such a record is a false positive. (#9: this
+  // is the real cause of the "June-19 arrest flagged future" bug — its only
+  // forward date was court_date 2026-07-06.)
   if (!dateVal) {
-    return hasFutureNote
-      ? { metaPatch: { date_sanity_status: "unknown" }, changed: true }
-      : { metaPatch: {}, changed: false };
+    if (!hasFutureNote) return { metaPatch: {}, changed: false };
+    const nowDay0 = toUtcDay(nowIso);
+    const hasFutureScheduled = [...SCHEDULING_DATE_KEYS].some((k) => {
+      const raw = meta[k];
+      if (typeof raw !== "string" || !raw.trim()) return false;
+      const d = toUtcDay(raw);
+      return d !== null && nowDay0 !== null && d > nowDay0;
+    });
+    return hasFutureScheduled
+      ? {
+          metaPatch: {
+            date_sanity_status: "ok",
+            future_date_detected: false,
+            scheduled_future_date: true,
+            date_note_corrected: true,
+          },
+          changed: true,
+        }
+      : { metaPatch: { date_sanity_status: "unknown" }, changed: true };
   }
 
   const recDay = toUtcDay(dateVal);
