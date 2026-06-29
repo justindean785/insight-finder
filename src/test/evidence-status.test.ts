@@ -54,6 +54,21 @@ describe("evidenceStatus — never overstates, always textual", () => {
     expect(s.basis).not.toContain("Breach/exposure");
   });
 
+  it("rapidapi_breach_search hit reads as Breach/exposure manual review (primary breach source)", () => {
+    // The backend classifies rapidapi_breach_search as the `breach` source class
+    // (source-classification.ts) and writes metadata.source_category:["breach"].
+    // The Evidence board must surface it like every other breach source — manual
+    // review, never auto-confirmed identity off a single exposure hit.
+    const s = evidenceStatus(art({
+      kind: "breach", value: "justindean785@gmail.com", confidence: 55,
+      source: "rapidapi_breach_search",
+      metadata: { sources: ["rapidapi_breach_search"], source_category: ["breach"] },
+    }));
+    expect(s.status).toBe("manual_review");
+    expect(s.basis).toContain("Breach/exposure");
+    expect(["verified", "verified_infrastructure", "probable"]).not.toContain(s.status);
+  });
+
   it("infra-only multi-source reads as Verified infrastructure, not generic Verified (review #1)", () => {
     const s = evidenceStatus(art({
       kind: "domain", value: "doxbyte.net", confidence: 85, source: "whois_lookup",

@@ -50,6 +50,8 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   memory_save: 200,
 
   // ---- Breach / leak sources ----
+  rapidapi_breach_search: 1250, // RapidAPI Email Breach Search — ~8000/mo plan
+  rapidapi_all_breaches: 1000,  // RapidAPI corpus catalog (reference, same plan)
   breach_check: 3000,         // 3 stolen.tax calls in parallel
   stolentax_footprint: 1500,
   leakcheck_lookup: 5000,     // 200/day → ~$0.005/call equiv

@@ -266,3 +266,85 @@ export const hibp_lookup = tool({
     }
   },
 }),
+
+// PRIMARY breach source — RapidAPI Email Breach Search (DataBreach.com, ~8000/mo).
+// Email goes in the PATH: GET /rapidapi/search-email/<email>. The authoritative
+// definition is inline in ../tool-registry.ts; this static export mirrors it so
+// the catalog↔runtime contract test (which greps tools/*.ts) stays in sync.
+export const rapidapi_breach_search = tool({
+  description:
+    "PRIMARY breach source — RapidAPI Email Breach Search (~8000 lookups/month). For an email, returns the breach corpus it appears in: per-breach id/name, breach date, exposed field set with `sensitive` flags, rows, hibp_id. A hit is an EXPOSURE association, not confirmed identity. Requires RAPIDAPI_KEY; self-skips when absent.",
+  inputSchema: z.object({ email: z.string().email() }),
+  execute: async ({ email }: { email: string }) => {
+    const RAPIDAPI_KEY = Deno.env.get("RAPIDAPI_KEY");
+    if (!RAPIDAPI_KEY) return { error: "RAPIDAPI_KEY not configured", skipped: true };
+    const host = (Deno.env.get("RAPIDAPI_BREACH_HOST") ?? "email-breach-search.p.rapidapi.com").trim();
+    const pathPrefix = (Deno.env.get("RAPIDAPI_BREACH_PATH") ?? "/rapidapi/search-email/").trim();
+    const q = email.trim();
+    if (!q) return { error: "missing email" };
+    try {
+      const url = `https://${host}${pathPrefix}${encodeURIComponent(q)}`;
+      const r = await fetchT(url, {
+        headers: { "X-RapidAPI-Key": RAPIDAPI_KEY, "X-RapidAPI-Host": host, "Accept": "application/json" },
+      }, 20_000);
+      const text = await r.text();
+      let data: unknown;
+      try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 4000) }; }
+      interface BreachField { field?: string; label?: string; sensitive?: boolean; [k: string]: unknown }
+      interface BreachEntry { id?: string; name?: string; found?: BreachField[]; breach_date?: string; rows?: number; hibp_id?: string; [k: string]: unknown }
+      const entries: BreachEntry[] = Array.isArray(data) ? data as BreachEntry[] : [];
+      const breaches = entries.map((e) => ({
+        id: e.id ?? null,
+        name: e.name ?? e.id ?? null,
+        breach_date: e.breach_date ?? null,
+        rows: typeof e.rows === "number" ? e.rows : null,
+        hibp_id: e.hibp_id ?? null,
+        exposed_fields: Array.isArray(e.found) ? Array.from(new Set(e.found.map((f) => f.label ?? f.field).filter(Boolean))) : [],
+        has_sensitive: Array.isArray(e.found) ? e.found.some((f) => f.sensitive === true) : false,
+      }));
+      return {
+        ok: r.ok, status: r.status, source: "rapidapi.breach_search",
+        data: { email: q, breaches_found: breaches.length, breach_names: breaches.map((b) => b.name).filter(Boolean).slice(0, 50), has_sensitive_exposure: breaches.some((b) => b.has_sensitive), breaches, raw: data },
+      };
+    } catch (e) {
+      return { error: String(e) };
+    }
+  },
+}),
+
+// REFERENCE catalog — GET /rapidapi/all-breaches. Whole-corpus metadata, no PII.
+export const rapidapi_all_breaches = tool({
+  description:
+    "RapidAPI Email Breach Search — All Breaches catalog. Reference list of the entire DataBreach.com corpus (name, id, row count, exposed field types, dates, summary, hibp_id). No PII / not email-specific. Use only to contextualize a breach id. Requires RAPIDAPI_KEY; self-skips when absent.",
+  inputSchema: z.object({ filter: z.string().optional(), limit: z.number().int().min(1).max(500).optional().default(100) }),
+  execute: async ({ filter, limit }: { filter?: string; limit?: number }) => {
+    const RAPIDAPI_KEY = Deno.env.get("RAPIDAPI_KEY");
+    if (!RAPIDAPI_KEY) return { error: "RAPIDAPI_KEY not configured", skipped: true };
+    const host = (Deno.env.get("RAPIDAPI_BREACH_HOST") ?? "email-breach-search.p.rapidapi.com").trim();
+    const path = (Deno.env.get("RAPIDAPI_ALL_BREACHES_PATH") ?? "/rapidapi/all-breaches").trim();
+    try {
+      const r = await fetchT(`https://${host}${path}`, {
+        headers: { "X-RapidAPI-Key": RAPIDAPI_KEY, "X-RapidAPI-Host": host, "Accept": "application/json" },
+      }, 20_000);
+      const text = await r.text();
+      let data: unknown;
+      try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 4000) }; }
+      interface CatalogField { field?: string; label?: string; sensitive?: boolean; [k: string]: unknown }
+      interface CatalogEntry { name?: string; id?: string; rows?: number; breach_date?: string; hibp_id?: string; fields?: CatalogField[]; field_counts?: Record<string, number>; [k: string]: unknown }
+      const all: CatalogEntry[] = Array.isArray((data as { breaches?: unknown })?.breaches)
+        ? (data as { breaches: CatalogEntry[] }).breaches
+        : Array.isArray(data) ? data as CatalogEntry[] : [];
+      const f = (filter ?? "").trim().toLowerCase();
+      const matched = f ? all.filter((b) => `${b.name ?? ""} ${b.id ?? ""}`.toLowerCase().includes(f)) : all;
+      const slice = matched.slice(0, limit ?? 100).map((b) => ({
+        name: b.name ?? b.id ?? null, id: b.id ?? null,
+        rows: typeof b.rows === "number" ? b.rows : null, breach_date: b.breach_date ?? null, hibp_id: b.hibp_id ?? null,
+        fields: Array.isArray(b.fields) ? Array.from(new Set(b.fields.map((x) => x.label ?? x.field).filter(Boolean))) : (b.field_counts ? Object.keys(b.field_counts) : []),
+        has_sensitive: Array.isArray(b.fields) ? b.fields.some((x) => x.sensitive === true) : false,
+      }));
+      return { ok: r.ok, status: r.status, source: "rapidapi.all_breaches", data: { total_in_corpus: all.length, matched: matched.length, returned: slice.length, filter: f || null, breaches: slice } };
+    } catch (e) {
+      return { error: String(e) };
+    }
+  },
+}),
