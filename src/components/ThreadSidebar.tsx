@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { detectSeed } from "@/lib/seed";
+import { isActiveThreadStatus } from "@/lib/thread-status";
 
 // Icon per seed type for the collapsed rail — far cleaner than showing the
 // first two characters of each title (which rendered as a stack of "+1", "8.",
@@ -46,7 +47,9 @@ type Thread = {
   updated_at: string;
   credits_used: number;
   cost_micro_usd: number | null;
-  status: "active" | "finished" | "stopped" | null;
+  // Open string, not a closed enum: the backend can write statuses the UI
+  // doesn't enumerate (e.g. "failed_context_limit") and they must still render.
+  status: string | null;
   seed_type: string | null;
 };
 
@@ -297,8 +300,12 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   const filtered = typeFilter === "all"
     ? byQuery
     : byQuery.filter((t) => (t.seed_type ?? "other").toLowerCase() === typeFilter);
-  const active = filtered.filter((t) => (t.status ?? "active") === "active");
-  const finished = filtered.filter((t) => t.status === "finished" || t.status === "stopped");
+  const active = filtered.filter((t) => isActiveThreadStatus(t.status));
+  // EXACT complement of `active` so no thread can fall through both filters and
+  // render nowhere. Previously this only matched finished|stopped, so any other
+  // status (e.g. "failed_context_limit", legacy "completed", or any future
+  // value) made the case vanish from the sidebar entirely.
+  const finished = filtered.filter((t) => !isActiveThreadStatus(t.status));
   const activeGroups: Record<string, Thread[]> = { Today: [], "This week": [], Older: [] };
   for (const t of active) activeGroups[bucketOf(t.updated_at)].push(t);
   const totalCost = threads.reduce((s, t) => s + Number(t.cost_micro_usd ?? 0), 0);
