@@ -30,6 +30,7 @@ import {
   CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED,
   HIBP_API_KEY, GITHUB_API_TOKEN, FIRECRAWL_API_KEY, EXA_API_KEY, JINA_API_KEY,
   GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY,
+  RAPIDAPI_KEY,
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
   URLSCANNER_API_KEY,
   firecrawlCreditsLow, markFirecrawlCreditsLow, resetFirecrawlCreditsLow, degradedTools,
@@ -456,6 +457,11 @@ export function buildTools(ctx: ToolContext) {
             if (name === "serus_darkweb_scan" && !SERUS_API_KEY) return false;
             // IPQualityScore: same key-gating — only proposable when configured.
             if (name === "ipqualityscore_lookup" && !IPQUALITYSCORE_API_KEY) return false;
+            // RapidAPI breach tools are the PRIMARY email breach source but only
+            // work with RAPIDAPI_KEY — both self-skip without it. Keep them off the
+            // planner menu when unkeyed so an un-keyed deploy doesn't burn a planner
+            // slot on a tool that can only return { skipped:true }.
+            if ((name === "rapidapi_breach_search" || name === "rapidapi_all_breaches") && !RAPIDAPI_KEY) return false;
             // OpenCorporates is now key-required (keyless = 401). Keep it off the
             // planner menu until OPENCORPORATES_API_KEY is set — gleif_lei_search
             // is the keyless company-registry alternative.
@@ -4380,6 +4386,7 @@ export function buildTools(ctx: ToolContext) {
     ...(Deno.env.get("VIRUSTOTAL_API_KEY") ? ["virustotal_lookup"] : []),
     ...(Deno.env.get("IPGEOLOCATION_API_KEY") ? ["ipgeolocation_lookup"] : []),
     ...(IPQUALITYSCORE_API_KEY ? ["ipqualityscore_lookup"] : []),
+    ...(RAPIDAPI_KEY ? ["rapidapi_breach_search", "rapidapi_all_breaches"] : []),
     ...(Deno.env.get("EXA_API_KEY") ? ["exa_search","exa_get_contents","exa_find_similar"] : []),
     ...(Deno.env.get("GEMINI_API_KEY") ? ["gemini_deep_dork"] : []),
     // Free / always-on tools
