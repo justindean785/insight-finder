@@ -356,14 +356,14 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   const filtered = typeFilter === "all"
     ? byQuery
     : byQuery.filter((t) => (t.seed_type ?? "other").toLowerCase() === typeFilter);
-  const active = filtered.filter((t) => isActiveThreadStatus(t.status));
-  // EXACT complement of `active` so no thread can fall through both filters and
-  // render nowhere. Previously this only matched finished|stopped, so any other
-  // status (e.g. "failed_context_limit", legacy "completed", or any future
-  // value) made the case vanish from the sidebar entirely.
-  const finished = filtered.filter((t) => !isActiveThreadStatus(t.status));
-  const activeGroups: Record<string, Thread[]> = { Today: [], "This week": [], Older: [] };
-  for (const t of active) activeGroups[bucketOf(t.updated_at)].push(t);
+  // Group ALL cases by recency (updated_at), regardless of run status. Splitting
+  // active vs finished into separate sections pushed recently-completed scans
+  // below a long "Older" pile of cases still stuck in "active" (runs that never
+  // finalized their status), so the newest scans looked lost. One recency-ordered
+  // list keeps them at the top; completed runs are shown dimmed with a ✓ in their
+  // own bucket rather than banished to a section below the fold.
+  const groups: Record<string, Thread[]> = { Today: [], "This week": [], Older: [] };
+  for (const t of filtered) groups[bucketOf(t.updated_at)].push(t);
   const totalCost = threads.reduce((s, t) => s + Number(t.cost_micro_usd ?? 0), 0);
 
   const TYPES: { key: string; label: string }[] = [
@@ -480,31 +480,25 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
           </div>
         )}
         {(["Today", "This week", "Older"] as const).map((bucket) =>
-          activeGroups[bucket].length === 0 ? null : (
+          groups[bucket].length === 0 ? null : (
             <div key={bucket} className="mb-2.5">
               <div className="px-2 py-1 text-[10px] uppercase tracking-[0.08em] text-muted-foreground flex items-center gap-1.5">
                 <span className="w-1 h-1 rounded-full bg-muted-foreground/50" />
                 {bucket}
-                <span className="ml-1 font-mono opacity-50">{activeGroups[bucket].length}</span>
+                <span className="ml-1 font-mono opacity-50">{groups[bucket].length}</span>
               </div>
-              {activeGroups[bucket].map((t) => (
-                <ThreadRow key={t.id} t={t} active={t.id === threadId} onDelete={deleteThread} m={metrics[t.id]} />
+              {groups[bucket].map((t) => (
+                <ThreadRow
+                  key={t.id}
+                  t={t}
+                  active={t.id === threadId}
+                  onDelete={deleteThread}
+                  dim={!isActiveThreadStatus(t.status)}
+                  m={metrics[t.id]}
+                />
               ))}
             </div>
           )
-        )}
-
-        {finished.length > 0 && (
-          <div className="mb-2 mt-3">
-            <div className="px-2 py-1 text-[10px] uppercase tracking-[0.08em] text-muted-foreground flex items-center gap-1.5 border-t border-border-subtle/60 pt-2">
-              <CheckCircle2 className="w-3 h-3 text-confidence-glow" />
-              Finished
-              <span className="ml-1 font-mono opacity-60">{finished.length}</span>
-            </div>
-            {finished.map((t) => (
-              <ThreadRow key={t.id} t={t} active={t.id === threadId} onDelete={deleteThread} dim m={metrics[t.id]} />
-            ))}
-          </div>
         )}
 
         {filtered.length === 0 && (
