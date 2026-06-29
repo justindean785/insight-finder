@@ -20,7 +20,7 @@ import {
 
 import { detectSeedServer } from "./validation.ts";
 import { sanitizeToolOutput, capPartsSize } from "./safety.ts";
-import { guard, routingGuard, triageState } from "./guard.ts";
+import { guard, routingGuard, triageState, countRecordArtifactCalls } from "./guard.ts";
 import { setupRequest } from "./auth.ts";
 import { minimax, minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider } from "./orchestrator_select.ts";
@@ -436,18 +436,25 @@ Deno.serve(async (req) => {
             message: msg.slice(0, 600),
           }),
         );
-        if (isCtxOverflow) {
-          // Await the status write so it actually persists before the isolate
-          // potentially dies. Otherwise the UI is stuck on "running".
-          try {
-            const { error: updErr } = await supabase
-              .from("threads")
-              .update({ status: "failed_context_limit" })
-              .eq("id", threadId);
-            if (updErr) console.warn("[thread status] update failed:", updErr.message);
-          } catch (e) {
-            console.warn("[thread status] update threw:", e);
-          }
+        // A terminal stream error means onFinish never fires, so without this the
+        // thread row stays "active" forever (UI stuck on "running"). Write the
+        // ALLOWED terminal value "finished" — threads_status_check rejects
+        // "failed_context_limit" (0 such rows in prod, it silently failed and
+        // left runs stuck "active"), and the UI derives an empty/failed state
+        // from artifacts=0 anyway. The context-overflow distinction is preserved
+        // in the structured log above (context_overflow flag). Guard on
+        // status="active" so a sibling run that already finished/stopped isn't
+        // clobbered. Artifacts are committed incrementally inside each tool, so
+        // none are lost on a tail-end throw.
+        try {
+          const { error: updErr } = await supabase
+            .from("threads")
+            .update({ status: "finished", updated_at: new Date().toISOString() })
+            .eq("id", threadId)
+            .eq("status", "active");
+          if (updErr) console.warn("[thread status] error-path update failed:", updErr.message);
+        } catch (e) {
+          console.warn("[thread status] error-path update threw:", e);
         }
       },
     });
@@ -541,6 +548,33 @@ Deno.serve(async (req) => {
           } catch (e) {
             console.error(JSON.stringify({ event: "investigation_cache_fail", thread_id: threadId, error: String(e) }));
           }
+        }
+        // Safety-net telemetry: a run that finishes with ZERO artifact rows
+        // either genuinely found nothing OR ran lookups and never called
+        // record_artifacts (the domain-seed record gap). Emit a loud, queryable
+        // event so we can tell the two apart without re-reading transcripts.
+        // Additive only — never blocks completion; failure is swallowed.
+        try {
+          const { toolCalls, recordCalls } = countRecordArtifactCalls(finalMessages);
+          const { count: artifactRows } = await supabase
+            .from("artifacts")
+            .select("id", { count: "exact", head: true })
+            .eq("thread_id", threadId);
+          if ((artifactRows ?? 0) === 0) {
+            console.error(JSON.stringify({
+              event: "zero_artifacts_at_completion",
+              thread_id: threadId,
+              record_artifact_calls: recordCalls,
+              tool_calls: toolCalls,
+              in_memory_artifacts: routingGuard.artifactsTotal,
+              seed: seedValueRaw.slice(0, 120),
+              // ran lookups but never recorded → almost certainly the record gap,
+              // not a genuinely empty case.
+              findings_likely: toolCalls > 3 && recordCalls === 0,
+            }));
+          }
+        } catch (e) {
+          console.warn("[safety-net] zero-artifact check failed:", e);
         }
         const { error: statusErr } = await supabase
           .from("threads")
