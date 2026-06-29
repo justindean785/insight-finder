@@ -18,7 +18,7 @@ let n = 0;
 let thread = "";
 beforeEach(() => { thread = `inv-${++n}-${Math.random()}`; clearThread(thread); });
 
-const EMAIL = normalizeSelector("email", "officialhardeyghold@gmail.com");
+const EMAIL = normalizeSelector("email", "taylorquinn@example.com");
 
 describe("premium-once-per-entity", () => {
   it("runs a premium tool once per entity, then skips the repeat", () => {
@@ -32,8 +32,8 @@ describe("premium-once-per-entity", () => {
   });
 
   it("dedups across case/whitespace variants of the same entity", () => {
-    const a = normalizeSelector("email", "Official@Gmail.com");
-    const b = normalizeSelector("email", "  official@gmail.com ");
+    const a = normalizeSelector("email", "Taylor@Example.com");
+    const b = normalizeSelector("email", "  taylor@example.com ");
     expect(a).toBe(b);
     recordResult(thread, "leakcheck_lookup", a, "default", { status: "ok", artifactCount: 0 });
     expect(shouldRun(thread, "leakcheck_lookup", b).allow).toBe(false);

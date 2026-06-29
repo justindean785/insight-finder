@@ -26,12 +26,12 @@ const artifact = (over: Partial<{ id: string; kind: string; value: string; sourc
 // never turning the collision into a confirmed identity link.
 function damienMarkdown(): string {
   return buildReportMarkdown({
-    seedValue: "damienbunnyobrien@gmail.com",
+    seedValue: "drew.barber@example.com",
     seedType: "email",
     artifacts: [
       artifact({
         id: "breach", kind: "breach", confidence: 65,
-        value: "damienbunnyobrien@gmail.com in Mindjolt breach (2019, 28.4M records)",
+        value: "drew.barber@example.com in Mindjolt breach (2019, 28.4M records)",
         source: "breach_check+oathnet_lookup+serus_darkweb_scan+bosint_email_lookup+deepfind_email_breach",
       }),
       artifact({

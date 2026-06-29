@@ -1895,7 +1895,7 @@ function ChatWindowInner({
               </p>
 
               <div className="mt-7 flex flex-wrap items-center justify-center gap-2">
-                {["taciocero@icloud.com", "elonmusk", "8.8.8.8", "lovable.app"].map((s) => (
+                {["jordan.sample@example.com", "elonmusk", "8.8.8.8", "lovable.app"].map((s) => (
                   <button
                     key={s}
                     onClick={() => setInput(s)}

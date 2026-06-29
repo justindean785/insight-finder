@@ -3,18 +3,18 @@ import { extractDisplaySeed } from "@/lib/seed";
 
 describe("extractDisplaySeed", () => {
   it("passes through a clean email", () => {
-    const d = extractDisplaySeed("ehorsch@gmail.com", "email");
+    const d = extractDisplaySeed("casey.rivera@example.com", "email");
     expect(d.kind).toBe("email");
-    expect(d.selector).toBe("ehorsch@gmail.com");
+    expect(d.selector).toBe("casey.rivera@example.com");
   });
 
   it("extracts the email from a raw OATHNET blob", () => {
     const blob =
       "=== OATHNET INTELLIGENCE === Found via oathnet.org Date: 2026-06-28T07:52:39.653Z " +
-      "Database: zenbusiness.com Source: Security Breaches email: ehorsch@gmail.com " +
+      "Database: zenbusiness.com Source: Security Breaches email: casey.rivera@example.com " +
       "phone national: 2674378035 phone number";
     const d = extractDisplaySeed(blob, "other");
-    expect(d.selector).toBe("ehorsch@gmail.com");
+    expect(d.selector).toBe("casey.rivera@example.com");
     expect(d.kind).toBe("email");
     expect(d.title).not.toContain("OATHNET");
   });

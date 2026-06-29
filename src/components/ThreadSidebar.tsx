@@ -5,12 +5,13 @@ import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import {
   Plus, LogOut, Trash2, PanelLeftOpen, PanelLeftClose, Search, Brain, CheckCircle2,
-  ShieldAlert, Database, Activity, BarChart3,
+  ShieldAlert, Database, Activity, BarChart3, Wallet,
   Mail, Phone, Globe, Network, User, Hash, FileSearch, type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { detectSeed } from "@/lib/seed";
 import { isActiveThreadStatus } from "@/lib/thread-status";
+import { SUPPORT_MAILTO } from "@/lib/contact";
 
 // Icon per seed type for the collapsed rail — far cleaner than showing the
 // first two characters of each title (which rendered as a stack of "+1", "8.",
@@ -59,6 +60,51 @@ type ThreadMetrics = {
   lowConf: number;
 };
 
+// Beta credit balance for the signed-in user. The `user_credits` table was
+// added via a DDL migration and is not in the generated Supabase types yet, so
+// it's queried untyped (RLS allows SELECT of the caller's own row only).
+type UserCredits = {
+  balance_micro_usd: number;
+  spent: number;
+  unlimited: boolean;
+  blocked: boolean;
+};
+
+/** Remaining-beta-credits chip for the sidebar footer. Renders nothing until a
+ *  row is loaded; "Unlimited" for exempt accounts; amber when low, red when
+ *  depleted or blocked. */
+function CreditChip({ credits }: { credits: UserCredits | null }) {
+  if (!credits) return null;
+  if (credits.unlimited) {
+    return (
+      <div
+        className="flex items-center gap-1.5 text-xs text-muted-foreground"
+        title="Your account has unlimited credits"
+      >
+        <Wallet className="w-3.5 h-3.5" strokeWidth={1.5} />
+        <span>Credits</span>
+        <span className="ml-auto font-mono tabular-nums text-foreground/80">Unlimited</span>
+      </div>
+    );
+  }
+  const remaining = Number(credits.balance_micro_usd ?? 0);
+  const depleted = credits.blocked || remaining <= 0;
+  const low = !depleted && remaining <= 50_000; // under ~$0.05 left
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-1.5 text-xs",
+        depleted ? "text-destructive" : low ? "text-amber-400" : "text-muted-foreground",
+      )}
+      title={depleted ? "Out of beta credits" : "Remaining beta credits"}
+    >
+      <Wallet className="w-3.5 h-3.5" strokeWidth={1.5} />
+      <span>Beta credits</span>
+      <span className="ml-auto font-mono tabular-nums">{formatUsd(remaining)}</span>
+    </div>
+  );
+}
+
 function formatUsd(micro: number | null | undefined): string {
   const m = Number(micro ?? 0);
   const usd = m / 1_000_000;
@@ -92,6 +138,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   const [query, setQuery] = useState("");
   const [newPatternCount, setNewPatternCount] = useState<number>(0);
   const [typeFilter, setTypeFilter] = useState<string>("all");
+  const [credits, setCredits] = useState<UserCredits | null>(null);
 
   useEffect(() => {
     if (!user) return;
@@ -104,6 +151,15 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         .select("id,title,updated_at,credits_used,cost_micro_usd,status,seed_type")
         .order("updated_at", { ascending: false });
       setThreads((data as Thread[] | null) ?? []);
+
+      // Beta credit balance (own row only via RLS). Untyped: see UserCredits.
+      const { data: creditRow } = await (supabase as any)
+        .from("user_credits")
+        .select("balance_micro_usd,spent,unlimited,blocked")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      setCredits((creditRow as UserCredits | null) ?? null);
+
       const { count } = await supabase
         .from("agent_memory")
         .select("id", { count: "exact", head: true });
@@ -460,6 +516,14 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
 
       <div className="p-3 border-t border-border-subtle space-y-2.5">
         <SpendTrend threads={threads} totalCost={totalCost} />
+        <CreditChip credits={credits} />
+        <a
+          href={SUPPORT_MAILTO}
+          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <Mail className="w-3.5 h-3.5" strokeWidth={1.5} />
+          <span>Send feedback</span>
+        </a>
         <div className="flex items-center justify-between gap-2 text-xs">
           <div className="truncate text-muted-foreground" title={user?.email}>{user?.email}</div>
           <button onClick={signOut} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors" aria-label="Sign out" title="Sign out">

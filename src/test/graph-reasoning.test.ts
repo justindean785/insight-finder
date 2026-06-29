@@ -12,7 +12,7 @@ import {
 // the boobz_sexy (sexy_boobz) persona vs the Aladewura Adegboyega entrepreneur
 // sharing one email selector.
 
-const EMAIL = "officialhardeyghold@gmail.com";
+const EMAIL = "taylorquinn@example.com";
 
 const aladewura: ArtifactInput = {
   kind: "name", value: "Aladewura Adegboyega", source: "minimax_web_search (news)",
@@ -121,8 +121,8 @@ describe("6. dead-end / exhausted nodes do not strengthen neighbors", () => {
     const nodes = buildNodes([aladewura]);
     const person = nodes[0];
     const deadDomain = {
-      id: "domain:hardeyghold.com", type: "domain" as const, value: "hardeyghold.com",
-      raw: "hardeyghold.com", evidence: [], metadata: { status: "exhausted", note: "defunct or parked domain" },
+      id: "domain:example.com", type: "domain" as const, value: "example.com",
+      raw: "example.com", evidence: [], metadata: { status: "exhausted", note: "defunct or parked domain" },
     };
     const liveDomain = {
       id: "domain:live.com", type: "domain" as const, value: "live.com",

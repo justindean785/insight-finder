@@ -6,6 +6,7 @@ import { SwarmMark } from "@/components/ui/swarm-mark";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SUPPORT_MAILTO } from "@/lib/contact";
 import { toast } from "sonner";
 
 export default function Settings() {
@@ -104,6 +105,17 @@ export default function Settings() {
               {saving ? "Updating…" : "Update password"}
             </Button>
           </form>
+        </div>
+
+        {/* Help & feedback */}
+        <div className="glass-card rounded-2xl border border-white/[0.07] p-6">
+          <h2 className="text-eyebrow uppercase tracking-[0.16em] text-muted-foreground/80 font-mono mb-2">Help &amp; feedback</h2>
+          <p className="text-sm text-muted-foreground mb-4">
+            Questions, bug reports, or need more beta credits? Reach the team and we&apos;ll get back to you.
+          </p>
+          <Button asChild variant="outline" className="h-9 text-xs">
+            <a href={SUPPORT_MAILTO}>Contact support</a>
+          </Button>
         </div>
 
         {/* Sign out */}

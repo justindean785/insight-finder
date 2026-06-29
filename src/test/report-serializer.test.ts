@@ -3,7 +3,7 @@ import { serializeReport, type ReportInput } from "@/lib/audit/report-serializer
 import { hashSourceNode } from "@/lib/audit/report-hash";
 
 const fixture: ReportInput = {
-  seed: { value: "theproblem20@gmail.com", type: "email" },
+  seed: { value: "morgan.reed@example.com", type: "email" },
   clusters: [
     {
       name: "Cluster A — Adrien Broner",
@@ -11,7 +11,7 @@ const fixture: ReportInput = {
       cells: [
         { claim: "Full Name", value: "ADRIEN BRONER", source: "MyDriveSure breach", confidence: 80 },
         { claim: "Address", value: "2480 Scully St", source: "MyDriveSure breach", confidence: 55 },
-        { claim: "Email link", value: "theproblem20@gmail", source: "MyDriveSure + Scribd mirror", confidence: 60 },
+        { claim: "Email link", value: "morgan.reed@example", source: "MyDriveSure + Scribd mirror", confidence: 60 },
       ],
     },
   ],
@@ -45,7 +45,7 @@ describe("serializeReport", () => {
   });
 
   it("includes the seed value", async () => {
-    expect(await render()).toContain("`theproblem20@gmail.com`");
+    expect(await render()).toContain("`morgan.reed@example.com`");
   });
 
   it("flags declared/effective tier drift", async () => {
