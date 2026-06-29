@@ -28,9 +28,9 @@ export interface Playbook {
 }
 
 const EMAIL_PIVOTS: Record<string, string[]> = {
-  email: ["rapidapi_breach_search", "breach_check", "deepfind_reverse_email", "hibp_lookup", "leakcheck_lookup", "oathnet_lookup", "gravatar_profile", "hunter_email_verifier", "deepfind_disposable_email"],
+  email: ["rapidapi_breach_search", "breach_check", "deepfind_reverse_email", "hibp_lookup", "leakcheck_lookup", "oathnet_lookup", "hunter_email_verifier", "deepfind_disposable_email"],
   domain: ["whois_lookup", "dns_records", "virustotal_lookup", "urlscan_search", "crtsh_subdomains", "hunter_domain_search", "deepfind_ssl_inspect"],
-  username: ["socialfetch_lookup", "github_user", "reddit_user", "hackernews_user", "username_sweep", "stolentax_footprint", "deepfind_reverse_email"],
+  username: ["socialfetch_lookup", "github_user", "reddit_user", "username_sweep", "deepfind_reverse_email"],
   phone: ["oathnet_lookup", "osintnova_phone_lookup", "leakcheck_lookup"],
   ip: ["ip_intel", "ipgeolocation_lookup", "shodan_internetdb", "virustotal_lookup", "urlscan_search"],
 };
@@ -43,13 +43,13 @@ export const PLAYBOOKS: Record<SeedType, Playbook> = {
     // so they are never the opening breach move. emailrep + gravatar_profile (~85%
     // no-value in prod) are likewise demoted out of the required fan-out.
     required: ["rapidapi_breach_search", "breach_check", "hibp_lookup", "deepfind_reverse_email", "hunter_email_verifier"],
-    recommended: ["leakcheck_lookup", "oathnet_lookup", "emailrep", "gravatar_profile", "stolentax_footprint", "socialfetch_lookup", "gemini_deep_dork", "exa_search", "google_dorks", "dork_harvest"],
+    recommended: ["leakcheck_lookup", "oathnet_lookup", "socialfetch_lookup", "gemini_deep_dork", "exa_search", "google_dorks", "dork_harvest"],
     coverage: ["identity", "email", "username", "breach", "social"],
     pivots: EMAIL_PIVOTS,
   },
   username: {
-    required: ["socialfetch_lookup", "username_sweep", "github_user", "stolentax_footprint", "deepfind_reverse_email", "oathnet_lookup", "leakcheck_lookup", "breach_check"],
-    recommended: ["reddit_user", "hackernews_user", "exa_search", "exa_find_similar", "gemini_deep_dork", "google_dorks"],
+    required: ["socialfetch_lookup", "username_sweep", "github_user", "deepfind_reverse_email", "oathnet_lookup", "leakcheck_lookup", "breach_check"],
+    recommended: ["reddit_user", "exa_search", "exa_find_similar", "gemini_deep_dork", "google_dorks"],
     coverage: ["identity", "username", "social", "breach"],
     pivots: EMAIL_PIVOTS,
   },
@@ -61,13 +61,13 @@ export const PLAYBOOKS: Record<SeedType, Playbook> = {
   },
   domain: {
     required: ["whois_lookup", "dns_records", "crtsh_subdomains", "virustotal_lookup", "urlscan_search", "wayback_snapshots", "hunter_domain_search", "http_fingerprint", "oathnet_lookup", "leakcheck_lookup"],
-    recommended: ["shodan_internetdb", "deepfind_ssl_inspect", "deepfind_tech_stack", "hackertarget", "synapsint_lookup", "exa_search"],
+    recommended: ["shodan_internetdb", "deepfind_ssl_inspect", "deepfind_tech_stack", "hackertarget", "exa_search"],
     coverage: ["domain", "infrastructure", "email"],
     pivots: EMAIL_PIVOTS,
   },
   ip: {
     required: ["ip_intel", "ipgeolocation_lookup", "shodan_internetdb", "virustotal_lookup", "urlscan_search", "oathnet_lookup"],
-    recommended: ["synapsint_lookup", "hackertarget"],
+    recommended: ["hackertarget"],
     coverage: ["infrastructure", "location"],
     pivots: EMAIL_PIVOTS,
   },

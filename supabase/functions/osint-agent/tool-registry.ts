@@ -442,10 +442,25 @@ export function buildTools(ctx: ToolContext) {
           // Intelbase: gated due to instability (ENABLE_INTELBASE=false).
           // deepfind_ransomware_exposure / deepfind_profile_analyzer: 404'd
           // DISABLED STUBS upstream — use ransomwarelive_lookup / username_sweep.
+          // Additionally blocked from production telemetry (tool_usage_log over
+          // ~106 investigations): these burned planner slots, latency, and cost
+          // for ~0 yield. Runtime defs + catalog entries are kept (contract test
+          // stays green) and they're decoupled from playbooks; re-add here only
+          // after the underlying integration/key is repaired.
+          //   synapsint_lookup     10% ok — self-disables ("provider disabled in config")
+          //   stolentax_footprint  22% ok, ~10s latency (401 bad key + aborts)
+          //   hackernews_user       0% ok
+          //   gravatar_profile     14% ok (404s; already demoted in #171)
+          //   emailrep             19% ok (429 rate-limited; low value)
+          // NB: hibp_lookup (0%) and ipqualityscore_lookup (0%) are NOT hard-blocked
+          // — they stay on their API-key gates (valuable once the key/integration
+          // is fixed; ipqs key replacement is an owner/config action).
           const PERMANENT_BLOCK = new Set([
             "firecrawl_search","firecrawl_scrape","firecrawl_map",
             "intelbase_email_lookup",
             "deepfind_ransomware_exposure","deepfind_profile_analyzer",
+            "synapsint_lookup","stolentax_footprint","hackernews_user",
+            "gravatar_profile","emailrep",
           ]);
           // Tools the circuit breaker has disabled this investigation (e.g.
           // synapsint after 3 consecutive HTTP 500s). Without this the planner
