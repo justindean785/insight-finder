@@ -139,6 +139,11 @@ export function extractRecommendedPivots(text: string): RecommendedPivot[] {
     const line = cleanLine(rawLine);
     if (!line) continue;
     if (NEXT_HEADING_RE.test(line)) break;
+    // Skip markdown table delimiter rows (|---|---|…), column-separator rows, and
+    // horizontal rules — they are table formatting, not pivot data. When the
+    // report renders recommended pivots as a table, the separator row otherwise
+    // leaks through as a bogus pivot whose Target/Reason render as "|---|---|---|".
+    if (/^[\s|:_-]*-[\s|:_-]*$/.test(line)) continue;
     // Defense-in-depth: drop any first-person reasoning line that survived
     // block stripping (e.g. a malformed/unterminated think block).
     if (looksLikeReasoning(line)) continue;

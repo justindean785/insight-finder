@@ -103,6 +103,23 @@ Let me also call detect_contradictions to check for any issues.
     expect(JSON.stringify(pivots)).not.toContain("</think>");
   });
 
+  it("ignores markdown table separator rows (no |---| pivots)", () => {
+    // Regression: when the report renders pivots as a markdown table, the
+    // separator row leaked through as a pivot with Target/Reason = "|---|---|---|".
+    const text = `
+## Recommended Next Pivots
+| Action | Target | Type | Reason |
+|---|---|---|---|
+| Corroborate address | 526 Coconut Pl Brentwood CA | address | confirm ownership of record |
+`;
+    const pivots = extractRecommendedPivots(text);
+    for (const p of pivots) {
+      expect(p.value).not.toMatch(/^[\s|:_-]+$/);
+      expect(p.prompt).not.toContain("|---|");
+    }
+    expect(pivots.some((p) => /^[\s|:_-]+$/.test(p.value))).toBe(false);
+  });
+
   it("turns collision recommendations into safe review actions", () => {
     const text = `
 ## Recommended Next Pivots
