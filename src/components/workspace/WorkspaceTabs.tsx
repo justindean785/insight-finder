@@ -50,7 +50,7 @@ function CountPill({ value, active }: { value: number; active: boolean }) {
         value === 0
           ? "opacity-0"
           : active
-            ? "bg-black/10 text-black/65"
+            ? "bg-[hsl(var(--intel-blue)/0.22)] text-[hsl(var(--intel-blue))]"
             : "bg-surface-3 text-muted-foreground",
       )}
     >
@@ -208,11 +208,11 @@ export function WorkspaceTabs({
   // active tab a surface to sit against, so the bar reads as navigation and
   // separates from the identity header above it.
   return (
-    <div className="border-b border-border-subtle bg-background px-3 sm:px-4 py-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    <div className="relative flex justify-center overflow-x-auto border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(220_22%_6.5%/0.6),hsl(222_20%_4.5%/0.46))] px-3 py-2.5 backdrop-blur-xl [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       <div
         role="tablist"
         aria-label="Investigation workspace"
-        className="inline-flex w-max items-center gap-1 rounded-xl border border-white/10 bg-white/[0.04] p-1"
+        className="inline-flex w-max items-center gap-1 rounded-2xl border border-white/[0.08] bg-[hsl(220_26%_9%/0.6)] p-1 shadow-[inset_0_1px_0_hsl(0_0%_100%/0.05),0_10px_34px_-22px_hsl(var(--intel-blue)/0.7)]"
       >
         {TABS.map((t, idx) => {
           const Icon = t.icon;
@@ -233,12 +233,12 @@ export function WorkspaceTabs({
                 "relative inline-flex h-9 items-center gap-2 rounded-lg px-3.5 text-meta font-medium transition-all duration-200 ease-premium active:scale-[0.98]",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                 isActive
-                  ? "bg-white text-black shadow-[0_1px_2px_rgba(0,0,0,0.4)]"
+                  ? "bg-[hsl(var(--intel-blue)/0.16)] text-foreground shadow-[inset_0_0_0_1px_hsl(var(--intel-blue)/0.34),0_0_20px_-7px_hsl(var(--intel-blue)/0.85)]"
                   : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
               )}
             >
               <Icon
-                className={cn("h-4 w-4 shrink-0 transition-colors", isActive ? "text-black" : "text-current")}
+                className={cn("h-4 w-4 shrink-0 transition-colors", isActive ? "text-[hsl(var(--intel-blue))]" : "text-current")}
                 strokeWidth={1.8}
               />
               <span className="leading-none tracking-tight">{t.label}</span>
