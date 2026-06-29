@@ -21,7 +21,10 @@ import { isSameSurnameOnlyLead, isListingAgentLead } from "./collision-policy.ts
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDomainSource, LLM_ASSERTED_PROVENANCE } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
 import { buildNodes } from "./graph.ts";
+import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
 import { selectPivots, proposedCallToCandidate, type PivotCandidate, type ProposedCall } from "./graph_pivots.ts";
+import { renderPivotChecklistForPrompt } from "./pivot-checklists.ts";
+import type { QueryType } from "./query-type-router.ts";
 import { DNS_TYPES, VIRTUAL_TYPE_MAP, isVirtualType, resolveVirtualHost, filterTxtByPrefix } from "./tools/dns-virtual.ts";
 
 import {
@@ -520,11 +523,101 @@ export function buildTools(ctx: ToolContext) {
             console.warn("[planner] memory hint lookup failed (non-fatal):", e);
           }
 
+          // Slice 2 / Phase A (item 2) — wire the (previously unwired)
+          // graph_reasoning engine into the planner: infer relationship EDGES +
+          // identity CLUSTERS from the thread's recorded artifacts and feed a
+          // compact summary into the prompt so the planner pivots on CONNECTIONS
+          // (who works for whom, aliases, contradictions), not just isolated
+          // selectors. Reads the artifacts TABLE (not the thin {kind,value} input)
+          // because edge inference needs node metadata (display_name/founder/
+          // parent). Summary/advisory ONLY — no confidence mutation (propagate-
+          // Confidence stays unwired; scoring it would be an integrity change).
+          // Best-effort; failure never blocks planning.
+          let relationshipHint = "";
+          try {
+            const { data: fullArts } = await supabase
+              .from("artifacts")
+              .select("kind,value,confidence,source,metadata")
+              .eq("thread_id", threadId)
+              .order("created_at", { ascending: true });
+            const arts = (fullArts ?? []) as Parameters<typeof buildNodes>[0];
+            if (arts.length) {
+              const nodes = buildNodes(arts);
+              const edges = inferEdges(nodes);
+              const { clusters, contradictions } = clusterGraph(nodes, edges);
+              const valOf = new Map(nodes.map((n) => [n.id, n.raw || n.value]));
+              const lines: string[] = [];
+              const multi = clusters.filter((c) => c.nodeIds.length > 1 || c.label);
+              if (multi.length) {
+                lines.push("Connected identity clusters:");
+                for (const c of multi.slice(0, 10)) {
+                  const members = c.nodeIds.map((id) => valOf.get(id) ?? id).filter(Boolean).slice(0, 8);
+                  lines.push(`  - ${c.label ? `[${c.label}] ` : ""}${members.join(" ↔ ")}${c.conflicted ? " (CONFLICTED — ≥2 distinct identities; do not merge, corroborate)" : ""}`);
+                }
+              }
+              const rel = edges.filter((e) => e.type !== "same_selector").slice(0, 15);
+              if (rel.length) {
+                lines.push("Relationship edges:");
+                for (const e of rel) lines.push(`  - ${valOf.get(e.from) ?? e.from} --${e.type}--> ${valOf.get(e.to) ?? e.to}`);
+              }
+              if (contradictions.length) {
+                lines.push(`Contradictions: ${contradictions.length} (a selector resolves to multiple people — corroborate before asserting identity).`);
+              }
+              if (lines.length) {
+                relationshipHint =
+                  `\n\nRELATIONSHIP GRAPH (pivot on these connections — expand outward from connected entities, corroborate across clusters):\n` +
+                  lines.join("\n");
+              }
+            }
+          } catch (e) {
+            console.warn("[planner] relationship graph lookup failed (non-fatal):", e);
+          }
+
+          // Slice 2 / Phase A (item 3) — per-data-point expansion: for each KIND
+          // of artifact discovered so far, surface recipe-grounded next pivots so
+          // the planner runs the right tool for each new data point and expands
+          // outward (the recursive email→name→email→address chain). Exact tools
+          // come from playbook.pivots[kind] (email/domain/username/phone/ip);
+          // person/address/business get the pivot-checklist required cross-checks
+          // (tool-group hints). Advisory — the planner still picks from toolList.
+          let pivotHint = "";
+          try {
+            const kinds = new Set<string>();
+            for (const a of (artifacts as Array<{ kind?: string }>)) {
+              if (a && typeof a.kind === "string" && a.kind.trim()) kinds.add(a.kind.trim().toLowerCase());
+            }
+            if (kinds.size) {
+              const pivots = playbookFor(detectedSeedType).pivots;
+              const KIND_TO_QT: Record<string, QueryType> = {
+                person: "person", name: "person", address: "address", location: "address",
+                organization: "business", company: "business", url: "url", image: "image",
+              };
+              const perKind: string[] = [];
+              const qts = new Set<QueryType>();
+              for (const k of kinds) {
+                const tools = pivots[k];
+                if (Array.isArray(tools) && tools.length) {
+                  const allowed = tools.filter((t) => toolList.includes(t)).slice(0, 6);
+                  if (allowed.length) perKind.push(`  - ${k} → ${allowed.join(", ")}`);
+                }
+                const qt = KIND_TO_QT[k];
+                if (qt) qts.add(qt);
+              }
+              const checklist = qts.size ? renderPivotChecklistForPrompt([...qts]) : "";
+              const parts: string[] = [];
+              if (perKind.length) parts.push("NEXT PIVOTS PER DISCOVERED DATA POINT (run the right tool for each new kind, then expand on its results):\n" + perKind.join("\n"));
+              if (checklist) parts.push(checklist);
+              if (parts.length) pivotHint = `\n\n${parts.join("\n\n")}`;
+            }
+          } catch (e) {
+            console.warn("[planner] pivot hint build failed (non-fatal):", e);
+          }
+
           const r = await minimaxChatWithFallback({
             model: MODELS.smart,
             system:
               `You are the execution planner for a forensic OSINT runtime. ONLY propose tools from this EXACT list (names must match verbatim — do not invent or rename): ${toolList.join(", ")}.\n\n${NAME_SEED_PLANNER_RULES}\n\nPERMANENTLY DISABLED TOOLS — NEVER PROPOSE: firecrawl_search, firecrawl_scrape, firecrawl_map (credits exhausted — use jina_reader_scrape + exa_search + minimax_web_search), intelbase_email_lookup (gated due to instability — use oathnet_lookup + leakcheck_lookup + bosint_email_lookup instead).\n\nRUNTIME RULES:\n- Stage choices: TRIAGE, REVIEW, TARGETED_PIVOT, VERIFY, REPORT.\n- Propose the SMALLEST high-value batch, not a fan-out burst.\n- Respect the hard total-call and concurrency ceilings enforced by the runtime.\n- Weak-lead and expected-value signals are advisory. Do not turn them into prerequisites or retry loops.\n- Prefer the cheapest tool that can answer the current question: run FREE/LOW-cost validation before spending on EXPENSIVE/premium tools (see TOOL COST TIERS in the context below). Cost is advisory — never drop a uniquely high-value lead just because it is expensive.\n- When a finding is breach-derived or otherwise confidence-capped, propose ONE independent, trusted NON-infrastructure source to corroborate it and lift the cap, rather than re-running the same breach source.\n- Cached results NEVER count as corroboration. If a fresh cache hit would satisfy the question, prefer it over a live call.\n- If evidence is weak, explain that in the reason and keep the result [VERIFY].\n\nReply ONLY with JSON matching this exact shape:\n{\n  "stage":"TRIAGE|REVIEW|TARGETED_PIVOT|VERIFY|REPORT",\n  "goal":"string",\n  "current_findings":["string"],\n  "proposed_calls":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "params_preview":{},\n    "expected_value":0,\n    "cost_tier":"free|low|expensive",\n    "reason":"string",\n    "stop_condition":"string",\n    "cache_status":"thread|user|stale|miss"\n  }],\n  "calls_rejected":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "expected_value":0,\n    "reason":"string",\n    "cost_tier":"free|low|expensive",\n    "weak_lead":true,\n    "stale_cache":false,\n    "manual_override":false\n  }]\n}\nOrder proposed_calls by expected_value descending. Respect budget_remaining as the max number of proposed_calls.`,
-            user: `Seed: ${seed}\nBudget remaining: ${budget_remaining}\nAlready queried: ${JSON.stringify(already_queried).slice(0,4000)}\nArtifacts so far: ${JSON.stringify(artifacts).slice(0,8000)}\n\n${costGuide}${memoryHint}`,
+            user: `Seed: ${seed}\nBudget remaining: ${budget_remaining}\nAlready queried: ${JSON.stringify(already_queried).slice(0,4000)}\nArtifacts so far: ${JSON.stringify(artifacts).slice(0,8000)}\n\n${costGuide}${relationshipHint}${pivotHint}${memoryHint}`,
             json: true,
             maxTokens: 1500,
           });
