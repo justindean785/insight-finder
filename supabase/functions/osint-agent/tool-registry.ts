@@ -398,12 +398,14 @@ export function buildTools(ctx: ToolContext) {
             // Breach + identity
             "rapidapi_breach_search","rapidapi_all_breaches",
             "breach_check","leakcheck_lookup","hibp_lookup","oathnet_lookup",
-            "intelbase_email_lookup","bosint_email_lookup","bosint_phone_lookup",
+            "bosint_email_lookup","bosint_phone_lookup",
             "stolentax_footprint","serus_darkweb_scan",
-            // DeepFind suite (shared 1000/day pool)
-            "deepfind_reverse_email","deepfind_disposable_email","deepfind_ransomware_exposure",
+            // DeepFind suite (shared 1000/day pool). deepfind_ransomware_exposure
+            // and deepfind_profile_analyzer are 404'd DISABLED STUBS — culled from
+            // the allow-list (use ransomwarelive_lookup / username_sweep instead).
+            "deepfind_reverse_email","deepfind_disposable_email",
             "deepfind_ssl_inspect","deepfind_tech_stack","deepfind_url_unshorten",
-            "deepfind_profile_analyzer","deepfind_telegram_channel","deepfind_telegram_search",
+            "deepfind_telegram_channel","deepfind_telegram_search",
             "deepfind_vin_lookup","deepfind_aircraft_lookup","deepfind_vessel_lookup",
             "deepfind_mac_lookup","deepfind_dark_web_link",
             "deepfind_email_breach","deepfind_transaction_viewer",
@@ -438,9 +440,12 @@ export function buildTools(ctx: ToolContext) {
           // Permanently blocked tools — never let the planner pick them.
           // Firecrawl: credits exhausted, stubs return immediate error.
           // Intelbase: gated due to instability (ENABLE_INTELBASE=false).
+          // deepfind_ransomware_exposure / deepfind_profile_analyzer: 404'd
+          // DISABLED STUBS upstream — use ransomwarelive_lookup / username_sweep.
           const PERMANENT_BLOCK = new Set([
             "firecrawl_search","firecrawl_scrape","firecrawl_map",
             "intelbase_email_lookup",
+            "deepfind_ransomware_exposure","deepfind_profile_analyzer",
           ]);
           // Tools the circuit breaker has disabled this investigation (e.g.
           // synapsint after 3 consecutive HTTP 500s). Without this the planner
