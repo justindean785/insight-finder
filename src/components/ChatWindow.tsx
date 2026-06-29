@@ -83,6 +83,8 @@ function describeTransportError(err: unknown): string {
   const msg = String((err as { message?: unknown })?.message ?? err ?? "").toLowerCase();
   const status = parseHttpStatusFromError(err);
   if (status === 401) return "Session expired — your login has timed out. Sign in again to continue.";
+  if (status === 402 || msg.includes("insufficient_credits") || msg.includes("out of credits"))
+    return "Out of beta credits — you've used your investigation allowance for now. Contact us to top up your account.";
   if (status === 403) return "Access denied — this thread doesn't belong to your account. Open your own thread or create a new one.";
   if (status === 404) return "Edge function not deployed — the OSINT agent backend wasn't found. Deploy the Supabase function and retry.";
   if (status === 429) return "Rate limited by the scan backend — too many requests. Wait ~30 seconds and try again.";
