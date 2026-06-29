@@ -73,6 +73,41 @@ Deno.serve(async (req) => {
     const { supabase, supabaseAdmin, user, userId, threadId, archiveEnabled, detectedSeedType, messages } = ctx;
     const manualOverrideSelector = extractManualOverrideSelector(messages);
 
+    // ---- Per-user credit gate (beta budget protection) ----------------------
+    // The OWNER and any ADMIN are UNLIMITED — never gated, never debited. Only
+    // non-admin beta users are checked. Belt-and-suspenders: a true `unlimited`
+    // ledger flag OR the 'admin' role both exempt the user, so the owner can
+    // never be locked out. On any bookkeeping error we fail OPEN for this run
+    // (allow it) but stay non-exempt so the debit/accounting still applies.
+    const CREDIT_RUN_RESERVE_MICRO_USD = 20000; // ~$0.02 — enough for one paid call
+    let creditsExempt = false;
+    try {
+      const [creditRes, adminRes] = await Promise.all([
+        supabaseAdmin.from("user_credits").select("balance_micro_usd,unlimited,blocked").eq("user_id", userId).maybeSingle(),
+        supabaseAdmin.rpc("has_role", { _user_id: userId, _role: "admin" }),
+      ]);
+      const creditRow = creditRes.data as { balance_micro_usd?: number; unlimited?: boolean; blocked?: boolean } | null;
+      const isAdmin = adminRes.data === true;
+      creditsExempt = !!creditRow?.unlimited || isAdmin;
+      if (!creditsExempt) {
+        const balance = Number(creditRow?.balance_micro_usd ?? 0);
+        const blocked = !!creditRow?.blocked;
+        if (!creditRow || blocked || balance < CREDIT_RUN_RESERVE_MICRO_USD) {
+          return new Response(JSON.stringify({
+            error: "Out of credits",
+            code: "INSUFFICIENT_CREDITS",
+            detail: blocked
+              ? "Your account is paused. Contact us to restore access."
+              : "You've used your beta credit allowance — contact us to top up.",
+            balance_micro_usd: balance,
+          }), { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+      }
+    } catch (e) {
+      // Never hard-fail a run on credit bookkeeping; allow it (debit still runs).
+      console.warn("[credits] pre-gate check failed (allowing run):", e);
+    }
+
     const { tools, availableToolsForAudit } = buildTools({
       supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, messages, manualOverrideSelector,
     });
@@ -221,6 +256,14 @@ Deno.serve(async (req) => {
     let lastCheckpointMicroUsd = 0;
     const onCost = (m: number) => {
       runCostMicroUsd += m;
+      // Debit the per-user credit ledger as spend happens (non-exempt users
+      // only — owner/admins are unlimited). Best-effort + atomic via the RPC;
+      // a failed debit never interrupts the run. As the balance falls, the
+      // pre-gate above blocks the user's NEXT run once they're out.
+      if (m > 0 && !creditsExempt) {
+        supabaseAdmin.rpc("debit_user_credits", { _user_id: userId, _amount_micro_usd: m })
+          .then(() => {}, (e: unknown) => console.warn("[credits] debit failed:", e));
+      }
       // Checkpoint the running cost to threads every 5 paid tool calls so
       // mid-run crashes (context overflow, network errors) don't wipe the
       // entire spend accounting. onFinish does the final exact write.
