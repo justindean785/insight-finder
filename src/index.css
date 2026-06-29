@@ -994,6 +994,17 @@ All colors MUST be HSL.
   animation: scan-sweep 1.4s linear infinite;
 }
 
+/* Radar/sonar ping — concentric rings expanding from an empty-state glyph
+   ("awaiting signal"). Used by EmptyState + the Evidence board empty header. */
+@keyframes radar-ping {
+  0%   { transform: scale(0.5);  opacity: 0.55; }
+  70%  { opacity: 0; }
+  100% { transform: scale(2.4);  opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .radar-ring { animation: none !important; opacity: 0.25 !important; }
+}
+
 /* Tab underline glide — used by segmented tab strips with an .tab-underline child */
 .tab-underline {
   position: absolute;
