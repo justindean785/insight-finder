@@ -9,12 +9,12 @@ import {
 // Phase 9 — pure graph-driven pivot selection. Exercised with rich nodes from
 // the audited trace; wired in index.ts behind a default-off flag.
 
-const EMAIL = "officialhardeyghold@gmail.com";
+const EMAIL = "taylorquinn@example.com";
 
 const nodesFrom = (arts: ArtifactInput[]) => buildNodes(arts);
 
 const deadDomain: ArtifactInput = {
-  kind: "domain", value: "hardeyghold.com", source: "whois_lookup", confidence: 30,
+  kind: "domain", value: "example.com", source: "whois_lookup", confidence: 30,
   metadata: { status: "exhausted", note: "defunct or parked domain", source_category: ["infra"] },
 };
 const genericHandle: ArtifactInput = {
@@ -29,7 +29,7 @@ const verifiedPerson: ArtifactInput[] = [
 describe("pivotTargetNode", () => {
   it("matches a pivot's args to the right entity node", () => {
     const nodes = nodesFrom([{ kind: "email", value: EMAIL, source: "leakcheck", metadata: { source_category: ["breach"] } }]);
-    expect(pivotTargetNode({ email: "OfficialHardeyghold@Gmail.com" }, nodes)?.id).toBe(`email:${EMAIL}`);
+    expect(pivotTargetNode({ email: "TaylorQuinn@Example.com" }, nodes)?.id).toBe(`email:${EMAIL}`);
     expect(pivotTargetNode({ email: "nobody@x.com" }, nodes)).toBeNull();
   });
 });
@@ -37,7 +37,7 @@ describe("pivotTargetNode", () => {
 describe("selectPivots — drops", () => {
   it("drops a pivot targeting a dead-end node", () => {
     const nodes = nodesFrom([deadDomain]);
-    const { selected, dropped } = selectPivots([{ tool: "whois_lookup", args: { domain: "hardeyghold.com" } }], nodes);
+    const { selected, dropped } = selectPivots([{ tool: "whois_lookup", args: { domain: "example.com" } }], nodes);
     expect(selected).toHaveLength(0);
     expect(dropped[0]).toMatchObject({ tool: "whois_lookup", reason: "dead_end" });
   });

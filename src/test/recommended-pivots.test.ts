@@ -5,21 +5,21 @@ describe("extractRecommendedPivots", () => {
   it("extracts the final report recommendations in display order", () => {
     const text = `
 **Recommended next pivots:**
-- Investigate scero@me.com — same person, 3-breach corroboration
+- Investigate sam.cole@example.com — same person, 3-breach corroboration
 - Investigate Exavier Hill-Larot — independent identity check
 - Cross-reference Exavier Hill-Larot's Oakley PO Box with public records
 `;
     const pivots = extractRecommendedPivots(text);
     expect(pivots.map((pivot) => pivot.label)).toEqual([
-      "Investigate scero@me.com — same person, 3-breach corroboration",
+      "Investigate sam.cole@example.com — same person, 3-breach corroboration",
       "Investigate Exavier Hill-Larot — independent identity check",
       "Cross-reference Exavier Hill-Larot's Oakley PO Box with public records",
     ]);
     expect(pivots[0]).toMatchObject({
-      value: "scero@me.com",
+      value: "sam.cole@example.com",
       type: "email",
       actionLabel: "Verify email ownership",
-      detail: "scero@me.com · same person, 3-breach corroboration",
+      detail: "sam.cole@example.com · same person, 3-breach corroboration",
     });
     expect(pivots[1]).toMatchObject({
       value: "Exavier Hill-Larot",
@@ -44,7 +44,7 @@ describe("extractRecommendedPivots", () => {
     // line was misread as a heading and stopped extraction after the first pivot.
     const text = `
 **Recommended next pivots:**
-- Investigate scero@me.com — same person
+- Investigate sam.cole@example.com — same person
 - Corroborate the Oakley PO Box with county records:
 - Confirm Exavier Hill-Larot via independent identity check
 `;
@@ -76,7 +76,7 @@ describe("extractRecommendedPivots", () => {
     // Steps parser used the raw text and turned reasoning lines into cards.
     const text = `
 **Recommended next pivots:**
-- Investigate scero@me.com — same person
+- Investigate sam.cole@example.com — same person
 <think>
 The detect_contradictions tool flagged 2 distinct names: Debra A. Cero vs Debra Cero.
 Let me also call detect_contradictions to check for any issues.
@@ -90,14 +90,14 @@ Let me also call detect_contradictions to check for any issues.
     expect(serialized).not.toContain("detect_contradictions");
     expect(serialized).not.toMatch(/Let me also call/i);
     // The two genuine pivots still come through.
-    expect(pivots.map((p) => p.value)).toContain("scero@me.com");
+    expect(pivots.map((p) => p.value)).toContain("sam.cole@example.com");
     expect(pivots.length).toBeGreaterThanOrEqual(2);
   });
 
   it("strips a surviving inline think fragment from an emitted field", () => {
     const text = `
 ## Recommended Next Pivots
-- Investigate scero@me.com — same person</think>
+- Investigate sam.cole@example.com — same person</think>
 `;
     const pivots = extractRecommendedPivots(text);
     expect(JSON.stringify(pivots)).not.toContain("</think>");

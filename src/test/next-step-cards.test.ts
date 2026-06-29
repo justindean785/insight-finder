@@ -19,7 +19,7 @@ describe("dedupeCards", () => {
     const cards = [
       { title: "Review lead", target: "Damien O Brien", id: 1 },
       { title: "Review lead", target: "Damien O'Brien", id: 2 },
-      { title: "Verify email ownership", target: "damienbunnyobrien@gmail.com", id: 3 },
+      { title: "Verify email ownership", target: "drew.barber@example.com", id: 3 },
     ];
     const out = dedupeCards(cards);
     expect(out).toHaveLength(2);

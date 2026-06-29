@@ -21,7 +21,7 @@ const BTC_RE = /^(?:bc1|[13])[a-z0-9]{25,62}$/i;
 const USERNAME_RE = /^[a-z0-9_.-]{2,40}$/i;
 
 // --- Display-seed extraction --------------------------------------------
-// A thread's seed_value can be a clean selector ("ehorsch@gmail.com") OR a
+// A thread's seed_value can be a clean selector ("casey.rivera@example.com") OR a
 // pasted blob (e.g. raw OATHNET output). detectSeed() only classifies a clean
 // single token; this pulls the strongest real selector out of a messy blob so
 // the report title / exec summary / filename never show the whole dump.

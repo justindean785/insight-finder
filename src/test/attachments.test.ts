@@ -6,8 +6,8 @@ const SIGNED = "https://skzqwbyvmwqarfgfvyky.supabase.co/storage/v1/object/sign/
 
 describe("parseUserMessage", () => {
   it("returns plain text unchanged when there are no attachments", () => {
-    expect(parseUserMessage("kylanextdoor@gmail.com")).toEqual({
-      body: "kylanextdoor@gmail.com",
+    expect(parseUserMessage("riley.brooks@example.com")).toEqual({
+      body: "riley.brooks@example.com",
       attachments: [],
     });
   });

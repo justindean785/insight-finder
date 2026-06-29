@@ -53,8 +53,8 @@ describe("4. first 502/504 blocks retry spam for the same provider", () => {
   });
 
   it("disables the tool for the run after the FIRST 502", () => {
-    expect(shouldRun(thread, "oathnet_lookup", "johnd@gmail.com").allow).toBe(true);
-    recordResult(thread, "oathnet_lookup", "johnd@gmail.com", "default", { status: "http_502" });
+    expect(shouldRun(thread, "oathnet_lookup", "johnd@example.com").allow).toBe(true);
+    recordResult(thread, "oathnet_lookup", "johnd@example.com", "default", { status: "http_502" });
     const d = shouldRun(thread, "oathnet_lookup", "another-selector");
     expect(d.allow).toBe(false);
     expect((d as { reason?: string }).reason).toMatch(/502/);
@@ -67,7 +67,7 @@ describe("4. first 502/504 blocks retry spam for the same provider", () => {
 });
 
 describe("6. run summary separates charged vs avoided failed-call cost", () => {
-  it("reproduces the johnd@gmail.com run shape", () => {
+  it("reproduces the johnd@example.com run shape", () => {
     // Rows mirror current tool_usage_log: cost_micro_usd is the attributed list
     // price while charged_micro_usd is actual billed credits.
     const rows = [

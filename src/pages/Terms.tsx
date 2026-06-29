@@ -12,12 +12,12 @@ export default function Terms() {
           <div className="mt-8 space-y-6 text-sm text-muted-foreground leading-relaxed">
             <section>
               <h2 className="text-xs font-medium uppercase tracking-wider text-foreground/80 mb-2">Acceptance of Terms</h2>
-              <p>By accessing or using Swarmbot ("the Service"), you agree to be bound by these Terms of Service. If you do not agree, do not use the Service.</p>
+              <p>By accessing or using Insight Finder ("the Service"), you agree to be bound by these Terms of Service. If you do not agree, do not use the Service.</p>
             </section>
 
             <section>
               <h2 className="text-xs font-medium uppercase tracking-wider text-foreground/80 mb-2">Description of Service</h2>
-              <p>Swarmbot is an OSINT (Open Source Intelligence) research tool that aggregates publicly available information. The Service is provided for lawful investigative, journalistic, and research purposes only.</p>
+              <p>Insight Finder is an OSINT (Open Source Intelligence) research tool that aggregates publicly available information. The Service is provided for lawful investigative, journalistic, and research purposes only.</p>
             </section>
 
             <section>
@@ -32,7 +32,7 @@ export default function Terms() {
 
             <section>
               <h2 className="text-xs font-medium uppercase tracking-wider text-foreground/80 mb-2">Limitation of Liability</h2>
-              <p>To the maximum extent permitted by law, Swarmbot and its operators shall not be liable for any indirect, incidental, special, or consequential damages arising from your use of the Service.</p>
+              <p>To the maximum extent permitted by law, Insight Finder and its operators shall not be liable for any indirect, incidental, special, or consequential damages arising from your use of the Service.</p>
             </section>
 
             <section>

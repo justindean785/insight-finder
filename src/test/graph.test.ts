@@ -61,9 +61,9 @@ describe("normalization & node typing (Phase 1)", () => {
     expect(normalizeSelector("username", "@AladewuraAdegboyega")).toBe("aladewuraadegboyega");
   });
   it("normalizes email, phone, domain", () => {
-    expect(normalizeSelector("email", " Official@Gmail.com ")).toBe("official@gmail.com");
+    expect(normalizeSelector("email", " Taylor@Example.com ")).toBe("taylor@example.com");
     expect(normalizeSelector("phone", "+1 (813) 119-8511")).toBe("+18131198511");
-    expect(normalizeSelector("domain", "HTTPS://Hardeyghold.com/path")).toBe("hardeyghold.com");
+    expect(normalizeSelector("domain", "HTTPS://Example.com/path")).toBe("example.com");
   });
   it("infers node types incl. loose engine kinds", () => {
     expect(inferNodeType("name", "Aladewura Adegboyega")).toBe("person");
@@ -77,12 +77,12 @@ describe("buildNodes — dedup is the structural fix (Phase 1)", () => {
   it("collapses repeated lookups of one selector into a single node", () => {
     // The trace billed leakcheck twice and oathnet twice on the same email.
     const arts: ArtifactInput[] = [
-      { kind: "email", value: "officialhardeyghold@gmail.com", source: "leakcheck_lookup", confidence: 60, metadata: { source_category: ["breach"] } },
-      { kind: "email", value: "OfficialHardeyghold@gmail.com", source: "oathnet_lookup", confidence: 60, metadata: { source_category: ["breach"] } },
+      { kind: "email", value: "taylorquinn@example.com", source: "leakcheck_lookup", confidence: 60, metadata: { source_category: ["breach"] } },
+      { kind: "email", value: "TaylorQuinn@example.com", source: "oathnet_lookup", confidence: 60, metadata: { source_category: ["breach"] } },
     ];
     const nodes = buildNodes(arts);
     expect(nodes).toHaveLength(1);
-    expect(nodes[0].id).toBe("email:officialhardeyghold@gmail.com");
+    expect(nodes[0].id).toBe("email:taylorquinn@example.com");
     expect(nodes[0].evidence).toHaveLength(2);
   });
 });
@@ -134,7 +134,7 @@ describe("confidence grading (Phase 10)", () => {
 
   it("keeps a breach-only identity below verified", () => {
     const g = gradeConfidence(nodeFrom([
-      { kind: "username", value: "hardeyghold", source: "breach_check (000webhost)", confidence: 50, metadata: { source_category: ["breach"] } },
+      { kind: "username", value: "taylorquinn", source: "breach_check (000webhost)", confidence: 50, metadata: { source_category: ["breach"] } },
     ]));
     expect(g.status).not.toBe("verified");
     expect(g.score).toBeLessThanOrEqual(SOURCE_CLASS_WEIGHT.breach + 10);
@@ -168,7 +168,7 @@ describe("confidence grading (Phase 10)", () => {
 
   it("marks dead-end nodes exhausted", () => {
     const g = gradeConfidence(nodeFrom([
-      { kind: "domain", value: "hardeyghold.com", source: "whois_lookup", confidence: 30, metadata: { status: "exhausted", note: "defunct or parked domain", source_category: ["infra"] } },
+      { kind: "domain", value: "example.com", source: "whois_lookup", confidence: 30, metadata: { status: "exhausted", note: "defunct or parked domain", source_category: ["infra"] } },
     ]));
     expect(g.status).toBe("exhausted");
   });

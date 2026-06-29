@@ -16,11 +16,11 @@ function mk(p: { id: string; kind: string; value: string; metadata?: Record<stri
 
 describe("buildIdentityClusters metadata cross-links (#21)", () => {
   it("merges email + phone rows when the email's metadata names that phone", () => {
-    const email = mk({ id: "e1", kind: "email", value: "jc14beast@yahoo.com", metadata: { phone: "+19167356524", instagram_handle: "jc.tha.barber" } });
+    const email = mk({ id: "e1", kind: "email", value: "jc.rivera14@example.com", metadata: { phone: "+19167356524", instagram_handle: "jc.synth.barber" } });
     const phone = mk({ id: "p1", kind: "phone", value: "+19167356524", metadata: { owner: "Jack Cordrey" } });
-    const ig = mk({ id: "i1", kind: "account_id", value: "jc.tha.barber Instagram", metadata: { handle: "jc.tha.barber", full_name: "Jack Cordrey" } });
+    const ig = mk({ id: "i1", kind: "account_id", value: "jc.synth.barber Instagram", metadata: { handle: "jc.synth.barber", full_name: "Jack Cordrey" } });
 
-    const { clusters } = buildIdentityClusters([email, phone, ig], "jcthabarber");
+    const { clusters } = buildIdentityClusters([email, phone, ig], "jcsynthbarber");
     // the email (shared phone) + phone, and the email (shared handle) + IG, all
     // converge into a single cluster instead of three single-attribute ones.
     const merged = clusters.find(
@@ -34,11 +34,11 @@ describe("buildIdentityClusters metadata cross-links (#21)", () => {
 
   it("keeps two different people separate when they share no concrete selector", () => {
     // Jack Cordrey vs JC Hammons: same username seed, different email/phone/addr.
-    const jackEmail = mk({ id: "a", kind: "email", value: "jc14beast@yahoo.com", metadata: { phone: "+19167356524" } });
-    const hammonsEmail = mk({ id: "b", kind: "email", value: "jc_thabarber@hotmail.com", metadata: { address: "20366 Via Galileo Northridge CA 91326" } });
+    const jackEmail = mk({ id: "a", kind: "email", value: "jc.rivera14@example.com", metadata: { phone: "+19167356524" } });
+    const hammonsEmail = mk({ id: "b", kind: "email", value: "jc.barber@example.net", metadata: { address: "20366 Via Galileo Northridge CA 91326" } });
     const hammonsAddr = mk({ id: "c", kind: "address", value: "20366 Via Galileo Northridge CA 91326", metadata: { owner: "Jc Hammons" } });
 
-    const { clusters } = buildIdentityClusters([jackEmail, hammonsEmail, hammonsAddr], "jcthabarber");
+    const { clusters } = buildIdentityClusters([jackEmail, hammonsEmail, hammonsAddr], "jcsynthbarber");
     // Hammons' email + address merge (shared address); Jack's email stays apart.
     const both = clusters.find(
       (c) => c.artifacts.some((x) => x.id === "a") && c.artifacts.some((x) => x.id === "b"),

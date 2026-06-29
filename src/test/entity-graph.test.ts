@@ -18,13 +18,13 @@ const edgeBetween = (g: EntityGraph, a: string, b: string) =>
 describe("buildEntityGraph — honest, deterministic edge derivation", () => {
   it("is deterministic: identical input → identical output (incl. positions)", () => {
     const arts = [
-      A({ id: "a1", kind: "email", value: "scero@me.com", confidence: 80 }),
+      A({ id: "a1", kind: "email", value: "sam.cole@example.com", confidence: 80 }),
       A({ id: "a2", kind: "username", value: "nuhdeem", confidence: 60 }),
       A({ id: "a3", kind: "phone", value: "925-813-9324", confidence: 55 }),
       A({ id: "a4", kind: "ip", value: "98.207.141.88", confidence: 40 }),
     ];
-    const g1 = buildEntityGraph(arts, "scero@me.com", "email");
-    const g2 = buildEntityGraph(arts, "scero@me.com", "email");
+    const g1 = buildEntityGraph(arts, "sam.cole@example.com", "email");
+    const g2 = buildEntityGraph(arts, "sam.cole@example.com", "email");
     expect(JSON.stringify(g1)).toEqual(JSON.stringify(g2));
   });
 
@@ -125,10 +125,10 @@ describe("buildEntityGraph — honest, deterministic edge derivation", () => {
     // with zero real edges does not.
     const g = buildEntityGraph(
       [
-        A({ id: "m", kind: "phone", value: "555-0001", confidence: 70, metadata: { parent: "scero@me.com" } }),
+        A({ id: "m", kind: "phone", value: "555-0001", confidence: 70, metadata: { parent: "sam.cole@example.com" } }),
         A({ id: "p", kind: "phone", value: "555-0001", confidence: 60 }),
       ],
-      "scero@me.com",
+      "sam.cole@example.com",
       "email",
     );
     expect(edgeBetween(g, "m", "p")!.type).toBe("identity");
@@ -136,7 +136,7 @@ describe("buildEntityGraph — honest, deterministic edge derivation", () => {
   });
 
   it("the seed-discovery fallback ties an isolated node to the seed (faint, not a real edge)", () => {
-    const g = buildEntityGraph([A({ id: "n1", kind: "name", value: "Bob", confidence: 30 })], "scero@me.com", "email");
+    const g = buildEntityGraph([A({ id: "n1", kind: "name", value: "Bob", confidence: 30 })], "sam.cole@example.com", "email");
     const e = edgeBetween(g, SEED_ID, "n1");
     expect(e!.type).toBe("seed-discovery");
     expect(g.stats.realEdgeCount).toBe(0);

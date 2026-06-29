@@ -4,7 +4,7 @@ import { detectContradictions } from "../../supabase/functions/osint-agent/contr
 type A = Parameters<typeof detectContradictions>[0][number];
 const art = (over: Partial<A>): A => ({ kind: "other", value: "v", ...over });
 
-// These reproduce the false-positives observed in a real run on johnd@gmail.com:
+// These reproduce the false-positives observed in a real run on johnd@example.com:
 // the same handle resolved to "John Daniels" (GitHub) and "John Demos" (Twitter),
 // and username_sweep "confirmed" the handle on 55 platforms — yet
 // detect_contradictions returned []. Both should now be flagged.

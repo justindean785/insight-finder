@@ -40,7 +40,7 @@ describe("stripReasoningMarkup", () => {
   });
 
   it("leaves clean report text untouched", () => {
-    const text = "**Recommended next pivots:**\n- Investigate scero@me.com — same person";
+    const text = "**Recommended next pivots:**\n- Investigate sam.cole@example.com — same person";
     expect(stripReasoningMarkup(text)).toBe(text);
   });
 });
@@ -68,7 +68,7 @@ describe("looksLikeReasoning", () => {
   });
 
   it("does not flag real recommendation lines", () => {
-    expect(looksLikeReasoning("Investigate scero@me.com — same person")).toBe(false);
+    expect(looksLikeReasoning("Investigate sam.cole@example.com — same person")).toBe(false);
     expect(looksLikeReasoning("Corroborate address with county records")).toBe(false);
   });
 });

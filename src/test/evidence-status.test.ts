@@ -60,7 +60,7 @@ describe("evidenceStatus — never overstates, always textual", () => {
     // The Evidence board must surface it like every other breach source — manual
     // review, never auto-confirmed identity off a single exposure hit.
     const s = evidenceStatus(art({
-      kind: "breach", value: "justindean785@gmail.com", confidence: 55,
+      kind: "breach", value: "owner@example.com", confidence: 55,
       source: "rapidapi_breach_search",
       metadata: { sources: ["rapidapi_breach_search"], source_category: ["breach"] },
     }));
