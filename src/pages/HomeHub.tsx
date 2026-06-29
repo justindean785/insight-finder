@@ -120,24 +120,25 @@ export default function HomeHub() {
 
   return (
     <div className="relative min-h-screen bg-background text-foreground overflow-hidden">
-      {/* Ambient backdrop */}
+      {/* Ambient backdrop — intel-blue overhead light + a masked halftone signal
+          field, cohesive with the chat hero. Luminance + one accent, no orbs. */}
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0"
         style={{
           background:
-            "radial-gradient(60% 50% at 50% 18%, hsl(var(--primary) / 0.16) 0%, transparent 60%), radial-gradient(50% 50% at 80% 95%, hsl(var(--accent) / 0.10) 0%, transparent 60%)",
+            "radial-gradient(70% 55% at 50% 0%, hsl(var(--intel-blue) / 0.12) 0%, transparent 58%), radial-gradient(60% 50% at 50% 100%, hsl(0 0% 0% / 0.5) 0%, transparent 60%)",
         }}
       />
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-0 opacity-[0.04]"
+        className="pointer-events-none absolute inset-0 opacity-[0.5]"
         style={{
           backgroundImage:
-            "linear-gradient(hsl(var(--foreground)) 1px, transparent 1px), linear-gradient(90deg, hsl(var(--foreground)) 1px, transparent 1px)",
-          backgroundSize: "44px 44px",
-          maskImage: "radial-gradient(ellipse at center, black 30%, transparent 75%)",
-          WebkitMaskImage: "radial-gradient(ellipse at center, black 30%, transparent 75%)",
+            "radial-gradient(circle, hsl(var(--intel-blue) / 0.5) 1px, transparent 1.4px)",
+          backgroundSize: "22px 22px",
+          maskImage: "radial-gradient(80% 60% at 50% 8%, black 0%, transparent 60%)",
+          WebkitMaskImage: "radial-gradient(80% 60% at 50% 8%, black 0%, transparent 60%)",
         }}
       />
 
@@ -161,7 +162,10 @@ export default function HomeHub() {
 
       <main className="relative z-10 mx-auto max-w-6xl px-6 sm:px-10 pb-16">
         <section className="pt-6 sm:pt-10 pb-10">
-          <div className="text-eyebrow uppercase tracking-[0.26em] text-primary/80">Workspace</div>
+          <div className="flex items-center gap-2 text-eyebrow font-mono uppercase tracking-[0.26em] text-[hsl(var(--intel-blue))]">
+            <span className="h-1 w-1 animate-pulse rounded-full bg-[hsl(var(--intel-blue))]" />
+            Workspace
+          </div>
           <h1 className="mt-2 font-display text-3xl sm:text-4xl font-semibold tracking-tight">
             Where do you want to go?
           </h1>
@@ -289,15 +293,20 @@ function HubCard({
   return (
     <Link
       to={to}
-      className="group relative rounded-2xl border border-border-subtle/80 glass-card p-5 hover:border-white/20 transition-colors flex flex-col focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+      className="group relative flex flex-col overflow-hidden rounded-2xl border border-white/[0.07] glass-card p-5 transition-all duration-300 ease-premium hover:-translate-y-0.5 hover:border-[hsl(var(--intel-blue)/0.4)] hover:shadow-[0_18px_50px_-24px_hsl(var(--intel-blue)/0.6)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--intel-blue)/0.5)]"
     >
-      <div className="w-10 h-10 rounded-xl border border-white/10 bg-white/[0.035] grid place-items-center mb-4">
-        <Icon className="w-5 h-5 text-primary" strokeWidth={1.5} />
+      {/* hover sheen — intel-blue wash that fades in on the top edge */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[hsl(var(--intel-blue)/0.55)] to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+      />
+      <div className="mb-4 grid h-10 w-10 place-items-center rounded-xl border border-[hsl(var(--intel-blue)/0.28)] bg-[hsl(var(--intel-blue)/0.1)] text-[hsl(var(--intel-blue))] shadow-[0_0_24px_-10px_hsl(var(--intel-blue)/0.7)] transition-transform duration-300 group-hover:scale-105">
+        <Icon className="h-5 w-5" strokeWidth={1.6} />
       </div>
       <div className="font-display text-base font-semibold tracking-tight">{title}</div>
-      <div className="mt-1.5 text-xs text-muted-foreground leading-relaxed flex-1">{blurb}</div>
-      <div className="mt-4 inline-flex items-center gap-1.5 text-xs font-medium text-foreground/90 group-hover:text-foreground">
-        {cta} <ArrowRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-0.5" />
+      <div className="mt-1.5 flex-1 text-xs leading-relaxed text-muted-foreground">{blurb}</div>
+      <div className="mt-4 inline-flex items-center gap-1.5 text-xs font-medium text-[hsl(var(--intel-blue))]">
+        {cta} <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-1" />
       </div>
     </Link>
   );
@@ -317,15 +326,19 @@ function StatTile({
   sub?: string;
 }) {
   return (
-    <div className="rounded-2xl border border-border-subtle/80 glass-card p-5">
-      <div className="flex items-center gap-2 text-eyebrow uppercase tracking-wider text-muted-foreground">
-        <Icon className="w-3.5 h-3.5" />
+    <div className="group relative overflow-hidden rounded-2xl border border-white/[0.07] glass-card p-5 transition-colors duration-300 hover:border-[hsl(var(--intel-blue)/0.3)]">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-5 top-0 h-px bg-gradient-to-r from-[hsl(var(--intel-blue)/0.5)] to-transparent"
+      />
+      <div className="flex items-center gap-2 text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">
+        <Icon className="h-3.5 w-3.5 text-[hsl(var(--intel-blue))]" />
         {label}
       </div>
-      <div className="mt-2 font-display text-3xl font-semibold tracking-tight">
-        {loading ? <Skeleton className="h-9 w-20" /> : value.toLocaleString()}
+      <div className="mt-2 font-display text-4xl font-semibold tabular-nums tracking-tight">
+        {loading ? <Skeleton className="h-10 w-24" /> : value.toLocaleString()}
       </div>
-      {sub && <div className="mt-1 text-[11px] text-muted-foreground">{sub}</div>}
+      {sub && <div className="mt-1 text-[11px] font-mono text-muted-foreground">{sub}</div>}
     </div>
   );
 }
