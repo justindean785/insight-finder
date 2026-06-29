@@ -168,7 +168,7 @@ export function extractRecommendedPivots(text: string): RecommendedPivot[] {
       detail,
       reason,
       priority,
-      prompt: `Run this ${priority}-priority pivot.\n\nAction: ${actionLabel}\nTarget: ${value}\nType: ${type}\nReason: ${reason}\n\nUse authorized public-source methods only. Corroborate with independent sources when possible. Return source URLs, confidence tier, and what changed in the case graph.`,
+      prompt: `Run this ${priority}-priority pivot.\n\nAction: ${actionLabel}\nTarget: ${value}\nType: ${type}\nReason: ${reason}\n\nUse authorized public-source methods only. Corroborate with independent sources when possible. RECORD every confirmed or observed finding via record_artifacts BEFORE you summarize — never report a case-graph change you have not recorded. Then give source URLs and a confidence tier for each finding.`,
       value,
       type,
     });
