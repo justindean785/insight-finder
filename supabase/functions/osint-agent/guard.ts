@@ -10,6 +10,28 @@ export const guard = {
   artifactsSinceCorrelate: 0,
 };
 
+/**
+ * Count tool calls and record_artifacts calls across a set of UI messages, by
+ * inspecting message part types. The AI SDK encodes a call to the tool
+ * registered as `record_artifacts` as a part of type `tool-record_artifacts`
+ * (and the singular `tool-record_artifact`); generic tool parts are
+ * `tool-<name>` or `dynamic-tool`. Pure + dependency-free so the zero-artifact
+ * completion safety-net is unit-testable. */
+export function countRecordArtifactCalls(
+  messages: Array<{ parts?: Array<{ type?: string }> }>,
+): { toolCalls: number; recordCalls: number } {
+  let toolCalls = 0;
+  let recordCalls = 0;
+  for (const m of messages ?? []) {
+    for (const p of (m?.parts ?? [])) {
+      const t = p?.type ?? "";
+      if (t.startsWith("tool-") || t === "dynamic-tool") toolCalls++;
+      if (t === "tool-record_artifacts" || t === "tool-record_artifact") recordCalls++;
+    }
+  }
+  return { toolCalls, recordCalls };
+}
+
 // ---- Routing guard: memory_recall rate limit -----------------------------------
 // memory_recall: max 2 calls per 30s window across the run, and never
 //                repeat the same normalized subject in a single reasoning
