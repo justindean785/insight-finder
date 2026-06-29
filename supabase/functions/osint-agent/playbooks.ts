@@ -28,7 +28,7 @@ export interface Playbook {
 }
 
 const EMAIL_PIVOTS: Record<string, string[]> = {
-  email: ["deepfind_reverse_email", "leakcheck_lookup", "hibp_lookup", "intelbase_email_lookup", "oathnet_lookup", "gravatar_profile", "hunter_email_verifier", "deepfind_disposable_email"],
+  email: ["rapidapi_breach_search", "deepfind_reverse_email", "leakcheck_lookup", "hibp_lookup", "intelbase_email_lookup", "oathnet_lookup", "gravatar_profile", "hunter_email_verifier", "deepfind_disposable_email"],
   domain: ["whois_lookup", "dns_records", "virustotal_lookup", "urlscan_search", "crtsh_subdomains", "hunter_domain_search", "deepfind_ssl_inspect"],
   username: ["socialfetch_lookup", "github_user", "reddit_user", "hackernews_user", "username_sweep", "stolentax_footprint", "deepfind_reverse_email"],
   phone: ["oathnet_lookup", "osintnova_phone_lookup", "leakcheck_lookup", "intelbase_email_lookup"],
@@ -37,7 +37,7 @@ const EMAIL_PIVOTS: Record<string, string[]> = {
 
 export const PLAYBOOKS: Record<SeedType, Playbook> = {
   email: {
-    required: ["breach_check", "leakcheck_lookup", "hibp_lookup", "deepfind_reverse_email", "oathnet_lookup", "emailrep", "gravatar_profile", "hunter_email_verifier"],
+    required: ["rapidapi_breach_search", "breach_check", "leakcheck_lookup", "hibp_lookup", "deepfind_reverse_email", "oathnet_lookup", "emailrep", "gravatar_profile", "hunter_email_verifier"],
     recommended: ["intelbase_email_lookup", "stolentax_footprint", "socialfetch_lookup", "gemini_deep_dork", "exa_search", "google_dorks", "dork_harvest"],
     coverage: ["identity", "email", "username", "breach", "social"],
     pivots: EMAIL_PIVOTS,

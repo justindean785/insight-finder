@@ -31,6 +31,7 @@ function deriveReadiness(env: {
   IPQUALITYSCORE_API_KEY?: string | null;
   GITHUB_API_TOKEN?: string | null;
   PERPLEXITY_API_KEY?: string | null;
+  RAPIDAPI_KEY?: string | null;
   OPENCORPORATES_API_KEY?: string | null;
   RANSOMWARELIVE_API_KEY?: string | null;
   URLSCANNER_API_KEY?: string | null;
@@ -53,6 +54,7 @@ function deriveReadiness(env: {
     ipqualityscore: has(env.IPQUALITYSCORE_API_KEY),
     github: has(env.GITHUB_API_TOKEN),
     perplexity: has(env.PERPLEXITY_API_KEY),
+    rapidapi_breach: has(env.RAPIDAPI_KEY),
     opencorporates: has(env.OPENCORPORATES_API_KEY),
     ransomwarelive: has(env.RANSOMWARELIVE_API_KEY),
     urlscanner: has(env.URLSCANNER_API_KEY),
@@ -91,6 +93,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     FIRECRAWL_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY, GITHUB_API_TOKEN, PERPLEXITY_API_KEY,
     OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
     URLSCANNER_API_KEY,
+    RAPIDAPI_KEY: Deno.env.get("RAPIDAPI_KEY"),
   });
   const u = new URL(req.url);
   const wantProbe = u.searchParams.get("probe") === "1";

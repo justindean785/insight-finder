@@ -81,6 +81,7 @@ export type SourceClass =
 const TOOL_CLASS: Record<string, SourceClass> = {
   // breach / leak
   breach_check: "breach",
+  rapidapi_breach_search: "breach",
   leakcheck_lookup: "breach",
   hibp_lookup: "breach",
   oathnet_lookup: "breach",
