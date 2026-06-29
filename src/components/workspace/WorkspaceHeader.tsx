@@ -104,7 +104,8 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
   };
 
   return (
-    <header className="border-b border-border-subtle bg-background">
+    <header className="relative border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(220_24%_7%/0.72),hsl(222_22%_4.5%/0.62))] backdrop-blur-xl">
+      <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[hsl(var(--intel-blue)/0.45)] to-transparent" />
       <div className="h-14 px-4 sm:px-5 flex items-center gap-3 min-w-0">
         <span
           className={cn("h-2 w-2 shrink-0 rounded-full", dotColor)}

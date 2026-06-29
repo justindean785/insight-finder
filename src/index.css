@@ -10,14 +10,16 @@ All colors MUST be HSL.
   :root {
     /* Swarmbot design tokens — calm, investigative, restrained accent.
        Each token has one meaning; do not alias across roles. */
-    /* Tiered near-black system — base / panel / card / interactive */
-    --background: 0 0% 3%;           /* #080808 — Proximity neutral base */
+    /* Glassy blue-black: a near-black base with a faint cool intel-blue cast
+       (hue 220, low saturation) so surfaces read as tinted glass, not flat black.
+       Lightness is preserved so contrast is unchanged — just a little mix. */
+    --background: 222 24% 3.5%;      /* cool near-black base */
     --foreground: 0 0% 97%;          /* #fafafa */
 
-    --card: 0 0% 8%;                 /* #141414 */
+    --card: 220 18% 8%;
     --card-foreground: 0 0% 97%;
 
-    --popover: 0 0% 6%;              /* #0f0f0f */
+    --popover: 221 20% 6%;
     --popover-foreground: 0 0% 97%;
 
     /* Primary — near-white CTAs / active state (Proximity-style monochrome).
@@ -26,7 +28,7 @@ All colors MUST be HSL.
     --primary-foreground: 0 0% 5%;
     --primary-glow: 0 0% 100%;
 
-    --secondary: 0 0% 6%;
+    --secondary: 221 18% 6.5%;
     --secondary-foreground: 0 0% 95%;
 
     --muted: 0 0% 5%;
@@ -71,17 +73,17 @@ All colors MUST be HSL.
     --conf-weak: 27 95% 60%;
     --conf-unverified: 215 16% 52%;
 
-    /* Layered surfaces — neutral greyscale ramp (#080808 → #242424) */
-    --surface-0: 0 0% 3%;            /* #080808 */
-    --surface-1: 0 0% 6%;            /* #0f0f0f */
-    --surface-2: 0 0% 8%;            /* #141414 */
-    --surface-3: 0 0% 11%;           /* #1a1a1a — selected / hover */
-    --surface-4: 0 0% 14%;           /* #242424 */
+    /* Layered surfaces — cool blue-black ramp (faint hue-220 cast, not heavy) */
+    --surface-0: 222 24% 3.5%;
+    --surface-1: 221 20% 6%;
+    --surface-2: 220 18% 8%;
+    --surface-3: 220 16% 11%;        /* selected / hover */
+    --surface-4: 219 14% 14.5%;
 
     --border: 0 0% 16%;              /* #2a2a2a */
     --border-subtle: 0 0% 10%;       /* #1a1a1a */
     --border-strong: 0 0% 24%;       /* #3d3d3d */
-    --input: 0 0% 8%;
+    --input: 220 18% 8%;
     --ring: 0 0% 72%;
 
     /* Intel tokens — ONE signature accent. The former violet co-accent is
@@ -220,7 +222,7 @@ All colors MUST be HSL.
        top-highlight catch-light, and a directional, mostly-downward 2-layer
        shadow. Depth reads as engineered, not decorative. */
     background:
-      linear-gradient(180deg, hsl(0 0% 8.5% / 0.92) 0%, hsl(0 0% 5.5% / 0.92) 100%);
+      linear-gradient(180deg, hsl(220 22% 9% / 0.92) 0%, hsl(222 20% 6% / 0.92) 100%);
     backdrop-filter: blur(12px) saturate(140%);
     -webkit-backdrop-filter: blur(12px) saturate(140%);
     border: 1px solid hsl(0 0% 100% / 0.06);
