@@ -398,12 +398,14 @@ export function buildTools(ctx: ToolContext) {
             // Breach + identity
             "rapidapi_breach_search","rapidapi_all_breaches",
             "breach_check","leakcheck_lookup","hibp_lookup","oathnet_lookup",
-            "intelbase_email_lookup","bosint_email_lookup","bosint_phone_lookup",
+            "bosint_email_lookup","bosint_phone_lookup",
             "stolentax_footprint","serus_darkweb_scan",
-            // DeepFind suite (shared 1000/day pool)
-            "deepfind_reverse_email","deepfind_disposable_email","deepfind_ransomware_exposure",
+            // DeepFind suite (shared 1000/day pool). deepfind_ransomware_exposure
+            // and deepfind_profile_analyzer are 404'd DISABLED STUBS — culled from
+            // the allow-list (use ransomwarelive_lookup / username_sweep instead).
+            "deepfind_reverse_email","deepfind_disposable_email",
             "deepfind_ssl_inspect","deepfind_tech_stack","deepfind_url_unshorten",
-            "deepfind_profile_analyzer","deepfind_telegram_channel","deepfind_telegram_search",
+            "deepfind_telegram_channel","deepfind_telegram_search",
             "deepfind_vin_lookup","deepfind_aircraft_lookup","deepfind_vessel_lookup",
             "deepfind_mac_lookup","deepfind_dark_web_link",
             "deepfind_email_breach","deepfind_transaction_viewer",
@@ -438,9 +440,12 @@ export function buildTools(ctx: ToolContext) {
           // Permanently blocked tools — never let the planner pick them.
           // Firecrawl: credits exhausted, stubs return immediate error.
           // Intelbase: gated due to instability (ENABLE_INTELBASE=false).
+          // deepfind_ransomware_exposure / deepfind_profile_analyzer: 404'd
+          // DISABLED STUBS upstream — use ransomwarelive_lookup / username_sweep.
           const PERMANENT_BLOCK = new Set([
             "firecrawl_search","firecrawl_scrape","firecrawl_map",
             "intelbase_email_lookup",
+            "deepfind_ransomware_exposure","deepfind_profile_analyzer",
           ]);
           // Tools the circuit breaker has disabled this investigation (e.g.
           // synapsint after 3 consecutive HTTP 500s). Without this the planner
@@ -616,7 +621,7 @@ export function buildTools(ctx: ToolContext) {
           const r = await minimaxChatWithFallback({
             model: MODELS.smart,
             system:
-              `You are the execution planner for a forensic OSINT runtime. ONLY propose tools from this EXACT list (names must match verbatim — do not invent or rename): ${toolList.join(", ")}.\n\n${NAME_SEED_PLANNER_RULES}\n\nPERMANENTLY DISABLED TOOLS — NEVER PROPOSE: firecrawl_search, firecrawl_scrape, firecrawl_map (credits exhausted — use jina_reader_scrape + exa_search + minimax_web_search), intelbase_email_lookup (gated due to instability — use oathnet_lookup + leakcheck_lookup + bosint_email_lookup instead).\n\nRUNTIME RULES:\n- Stage choices: TRIAGE, REVIEW, TARGETED_PIVOT, VERIFY, REPORT.\n- Propose ALL independent, non-redundant pivots that can run in PARALLEL this cycle (free/low-cost especially) so the investigation finishes in FEWER cycles. Only serialize a pivot when it depends on a prior pivot result.\n- Respect the hard total-call and concurrency ceilings enforced by the runtime.\n- Weak-lead and expected-value signals are advisory. Do not turn them into prerequisites or retry loops.\n- Prefer the cheapest tool that can answer the current question: run FREE/LOW-cost validation before spending on EXPENSIVE/premium tools (see TOOL COST TIERS in the context below). Cost is advisory — never drop a uniquely high-value lead just because it is expensive.\n- When a finding is breach-derived or otherwise confidence-capped, propose ONE independent, trusted NON-infrastructure source to corroborate it and lift the cap, rather than re-running the same breach source.\n- Cached results NEVER count as corroboration. If a fresh cache hit would satisfy the question, prefer it over a live call.\n- If evidence is weak, explain that in the reason and keep the result [VERIFY].\n\nReply ONLY with JSON matching this exact shape:\n{\n  "stage":"TRIAGE|REVIEW|TARGETED_PIVOT|VERIFY|REPORT",\n  "goal":"string",\n  "current_findings":["string"],\n  "proposed_calls":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "params_preview":{},\n    "expected_value":0,\n    "cost_tier":"free|low|expensive",\n    "reason":"string",\n    "stop_condition":"string",\n    "cache_status":"thread|user|stale|miss"\n  }],\n  "calls_rejected":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "expected_value":0,\n    "reason":"string",\n    "cost_tier":"free|low|expensive",\n    "weak_lead":true,\n    "stale_cache":false,\n    "manual_override":false\n  }]\n}\nOrder proposed_calls by expected_value descending. Respect budget_remaining as the max number of proposed_calls.`,
+              `You are the execution planner for a forensic OSINT runtime. ONLY propose tools from this EXACT list (names must match verbatim — do not invent or rename): ${toolList.join(", ")}.\n\n${NAME_SEED_PLANNER_RULES}\n\nPERMANENTLY DISABLED TOOLS — NEVER PROPOSE: firecrawl_search, firecrawl_scrape, firecrawl_map (credits exhausted — use jina_reader_scrape + exa_search + minimax_web_search), intelbase_email_lookup (gated due to instability — use oathnet_lookup + leakcheck_lookup + bosint_email_lookup instead).\n\nRUNTIME RULES:\n- Stage choices: TRIAGE, REVIEW, TARGETED_PIVOT, VERIFY, REPORT.\n- Propose ALL independent, non-redundant pivots that can run in PARALLEL this cycle (free/low-cost especially) so the investigation finishes in FEWER cycles. Only serialize a pivot when it depends on a prior pivot's result.\n- Respect the hard total-call and concurrency ceilings enforced by the runtime.\n- Weak-lead and expected-value signals are advisory. Do not turn them into prerequisites or retry loops.\n- Prefer the cheapest tool that can answer the current question: run FREE/LOW-cost validation before spending on EXPENSIVE/premium tools (see TOOL COST TIERS in the context below). Cost is advisory — never drop a uniquely high-value lead just because it is expensive.\n- When a finding is breach-derived or otherwise confidence-capped, propose ONE independent, trusted NON-infrastructure source to corroborate it and lift the cap, rather than re-running the same breach source.\n- Cached results NEVER count as corroboration. If a fresh cache hit would satisfy the question, prefer it over a live call.\n- If evidence is weak, explain that in the reason and keep the result [VERIFY].\n\nReply ONLY with JSON matching this exact shape:\n{\n  "stage":"TRIAGE|REVIEW|TARGETED_PIVOT|VERIFY|REPORT",\n  "goal":"string",\n  "current_findings":["string"],\n  "proposed_calls":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "params_preview":{},\n    "expected_value":0,\n    "cost_tier":"free|low|expensive",\n    "reason":"string",\n    "stop_condition":"string",\n    "cache_status":"thread|user|stale|miss"\n  }],\n  "calls_rejected":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "expected_value":0,\n    "reason":"string",\n    "cost_tier":"free|low|expensive",\n    "weak_lead":true,\n    "stale_cache":false,\n    "manual_override":false\n  }]\n}\nOrder proposed_calls by expected_value descending. Respect budget_remaining as the max number of proposed_calls.`,
             user: `Seed: ${seed}\nBudget remaining: ${budget_remaining}\nAlready queried: ${JSON.stringify(already_queried).slice(0,4000)}\nArtifacts so far: ${JSON.stringify(artifacts).slice(0,8000)}\n\n${costGuide}${relationshipHint}${pivotHint}${memoryHint}`,
             json: true,
             maxTokens: 1500,
