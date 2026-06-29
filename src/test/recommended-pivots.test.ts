@@ -120,6 +120,23 @@ Let me also call detect_contradictions to check for any issues.
     expect(pivots.some((p) => /^[\s|:_-]+$/.test(p.value))).toBe(false);
   });
 
+  it("pivot prompt mandates recording findings (not just narrating the graph delta)", () => {
+    // Regression: the old composer said "Return ... what changed in the case
+    // graph", which made the agent NARRATE findings in chat and never call
+    // record_artifacts → Evidence board stayed at 0 artifacts. The prompt must
+    // instead require persistence before summarizing.
+    const text = `
+## Recommended Next Pivots
+- Corroborate username pulsiveontop across platforms
+`;
+    const pivots = extractRecommendedPivots(text);
+    expect(pivots.length).toBeGreaterThan(0);
+    for (const p of pivots) {
+      expect(p.prompt).toContain("record_artifacts");
+      expect(p.prompt).not.toContain("what changed in the case graph");
+    }
+  });
+
   it("turns collision recommendations into safe review actions", () => {
     const text = `
 ## Recommended Next Pivots
