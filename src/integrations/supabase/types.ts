@@ -522,6 +522,42 @@ export type Database = {
         }
         Relationships: []
       }
+      user_credits: {
+        Row: {
+          balance_micro_usd: number
+          blocked: boolean
+          created_at: string
+          daily_spent_micro_usd: number
+          daily_window_start: string
+          spent_micro_usd: number
+          unlimited: boolean
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          balance_micro_usd?: number
+          blocked?: boolean
+          created_at?: string
+          daily_spent_micro_usd?: number
+          daily_window_start?: string
+          spent_micro_usd?: number
+          unlimited?: boolean
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          balance_micro_usd?: number
+          blocked?: boolean
+          created_at?: string
+          daily_spent_micro_usd?: number
+          daily_window_start?: string
+          spent_micro_usd?: number
+          unlimited?: boolean
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       user_roles: {
         Row: {
           created_at: string
