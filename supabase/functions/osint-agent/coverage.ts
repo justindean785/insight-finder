@@ -16,13 +16,13 @@ export interface CoverageReport {
 
 const CATEGORY_TOOLS: Record<string, string[]> = {
   identity: ["oathnet_lookup", "osintnova_lookup", "deepfind_reverse_email", "intelbase_email_lookup", "socialfetch_lookup", "exa_search"],
-  email: ["breach_check", "leakcheck_lookup", "hibp_lookup", "intelbase_email_lookup", "hunter_email_verifier", "emailrep", "gravatar_profile"],
+  email: ["rapidapi_breach_search", "breach_check", "leakcheck_lookup", "hibp_lookup", "intelbase_email_lookup", "hunter_email_verifier", "emailrep", "gravatar_profile"],
   username: ["socialfetch_lookup", "username_sweep", "github_user", "stolentax_footprint", "deepfind_reverse_email"],
   phone: ["oathnet_lookup", "osintnova_phone_lookup", "leakcheck_lookup"],
   domain: ["whois_lookup", "dns_records", "crtsh_subdomains", "hunter_domain_search", "deepfind_ssl_inspect"],
   infrastructure: ["ip_intel", "ipgeolocation_lookup", "shodan_internetdb", "virustotal_lookup", "urlscan_search", "http_fingerprint"],
   social: ["socialfetch_lookup", "github_user", "reddit_user", "hackernews_user", "exa_find_similar"],
-  breach: ["breach_check", "leakcheck_lookup", "hibp_lookup", "oathnet_lookup", "intelbase_email_lookup", "deepfind_ransomware_exposure"],
+  breach: ["rapidapi_breach_search", "breach_check", "leakcheck_lookup", "hibp_lookup", "oathnet_lookup", "intelbase_email_lookup", "deepfind_ransomware_exposure"],
   location: ["ipgeolocation_lookup", "oathnet_lookup", "exa_search"],
   employment: ["hunter_domain_search", "exa_search", "gemini_deep_dork"],
   relationships: ["socialfetch_lookup", "exa_find_similar", "gemini_deep_dork"],
