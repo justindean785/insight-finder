@@ -20,6 +20,7 @@ import {
 
 import { detectSeedServer } from "./validation.ts";
 import { sanitizeToolOutput, capPartsSize } from "./safety.ts";
+import { sanitizeModelMessages, capToolResultOutputs } from "./message-sanitize.ts";
 import { guard, routingGuard, triageState, countRecordArtifactCalls } from "./guard.ts";
 import { setupRequest } from "./auth.ts";
 import { minimax, minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
@@ -207,6 +208,20 @@ Deno.serve(async (req) => {
       return { ...m, content } as ModelMessage;
     });
     trimmedMessages = capTotalToBudget(trimmedMessages, TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW);
+    // Bound individual tool-result outputs (a few giant results were holding the
+    // prompt at the ~250k schema/length ceiling) and then HARD-GUARANTEE the
+    // array is structurally valid for the AI SDK: every tool-result has a
+    // `{type,value}` output, every assistant tool-call has a matching tool-result
+    // (synthesize a placeholder if truncation/a crashed prior cycle severed the
+    // pair), and no message has empty/undefined content. Without this, one
+    // malformed message (orphaned tool-call or bare-string elided output) makes
+    // streamText throw InvalidPromptError/MissingToolResults EVERY cycle and the
+    // run wedges until the analyst stops it. Resilience-only — touches no
+    // evidence/confidence logic. See message-sanitize.ts.
+    const MAX_TOOL_RESULT_CHARS = 8000;
+    trimmedMessages = sanitizeModelMessages(
+      capToolResultOutputs(trimmedMessages, MAX_TOOL_RESULT_CHARS),
+    );
 
     // Cumulative cost tracker for this run.
     let runCostMicroUsd = 0;
@@ -419,7 +434,15 @@ Deno.serve(async (req) => {
           });
           return { ...m, content } as ModelMessage;
         });
-        return { messages: capTotalToBudget(trimmed, TOTAL_PROMPT_CHAR_BUDGET, STEP_RECENT_WINDOW) };
+        // Same hardening as the initial prompt: cap oversized tool results and
+        // guarantee a schema-valid, tool-paired array on every in-stream step so
+        // a mid-run trim can't sever a tool-call/result pair and wedge the run.
+        const budgeted = capTotalToBudget(trimmed, TOTAL_PROMPT_CHAR_BUDGET, STEP_RECENT_WINDOW);
+        return {
+          messages: sanitizeModelMessages(
+            capToolResultOutputs(budgeted, MAX_TOOL_RESULT_CHARS),
+          ),
+        };
       };
 
     const result = streamText({
@@ -466,8 +489,17 @@ Deno.serve(async (req) => {
       // they come in, and save the final assistant message via onFinish.
       onError: async ({ error }) => {
         const msg = error instanceof Error ? error.message : String(error);
+        const errName = error instanceof Error ? error.name : "";
         const isCtxOverflow =
           /context window|context length|2013|invalid params.*context|exceeds limit/i.test(msg);
+        // Distinguish the CLIENT-SIDE message-builder schema failures from a
+        // genuine provider/length problem. These should now be impossible
+        // (sanitizeModelMessages runs before every model call) — if one is ever
+        // logged, the builder produced a shape the sanitizer doesn't cover, and
+        // this flag makes it queryable instead of silently looking like overflow.
+        const isSchemaError =
+          /AI_InvalidPromptError|InvalidPromptError|do not match the ModelMessage|AI_MissingToolResultsError|Tool result is missing/i
+            .test(msg) || /InvalidPrompt|MissingToolResults/i.test(errName);
         console.warn(
           "[orchestrator] stream error:",
           JSON.stringify({
@@ -476,6 +508,10 @@ Deno.serve(async (req) => {
             model: useFallback ? FALLBACK_MODEL_ID : MODELS[ORCHESTRATOR_TIER],
             approx_prompt_chars: approxPromptChars,
             context_overflow: isCtxOverflow,
+            // A schema/pairing fault is a builder bug, NOT context overflow —
+            // never let the (now correctly-false) overflow flag mask it.
+            message_schema_invalid: isSchemaError,
+            error_name: errName,
             message: msg.slice(0, 600),
           }),
         );
