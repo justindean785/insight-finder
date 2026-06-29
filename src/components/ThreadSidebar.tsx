@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import { detectSeed } from "@/lib/seed";
 import { isActiveThreadStatus } from "@/lib/thread-status";
 import { SUPPORT_MAILTO } from "@/lib/contact";
+import type { Database as SupabaseDatabase } from "@/integrations/supabase/types";
 
 // Icon per seed type for the collapsed rail — far cleaner than showing the
 // first two characters of each title (which rendered as a stack of "+1", "8.",
@@ -60,15 +61,10 @@ type ThreadMetrics = {
   lowConf: number;
 };
 
-// Beta credit balance for the signed-in user. The `user_credits` table was
-// added via a DDL migration and is not in the generated Supabase types yet, so
-// it's queried untyped (RLS allows SELECT of the caller's own row only).
-type UserCredits = {
-  balance_micro_usd: number;
-  spent: number;
-  unlimited: boolean;
-  blocked: boolean;
-};
+type UserCredits = Pick<
+  SupabaseDatabase["public"]["Tables"]["user_credits"]["Row"],
+  "balance_micro_usd" | "spent_micro_usd" | "unlimited" | "blocked"
+>;
 
 /** Remaining-beta-credits chip for the sidebar footer. Renders nothing until a
  *  row is loaded; "Unlimited" for exempt accounts; amber when low, red when
@@ -152,13 +148,13 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         .order("updated_at", { ascending: false });
       setThreads((data as Thread[] | null) ?? []);
 
-      // Beta credit balance (own row only via RLS). Untyped: see UserCredits.
-      const { data: creditRow } = await (supabase as any)
+      // Beta credit balance (own row only via RLS).
+      const { data: creditRow } = await supabase
         .from("user_credits")
-        .select("balance_micro_usd,spent,unlimited,blocked")
+        .select("balance_micro_usd,spent_micro_usd,unlimited,blocked")
         .eq("user_id", user.id)
         .maybeSingle();
-      setCredits((creditRow as UserCredits | null) ?? null);
+      setCredits(creditRow ?? null);
 
       const { count } = await supabase
         .from("agent_memory")
