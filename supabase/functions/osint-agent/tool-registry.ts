@@ -21,7 +21,7 @@ import { isSameSurnameOnlyLead, isListingAgentLead } from "./collision-policy.ts
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDomainSource, LLM_ASSERTED_PROVENANCE } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
 import { buildNodes } from "./graph.ts";
-import { selectPivots, type PivotCandidate } from "./graph_pivots.ts";
+import { selectPivots, proposedCallToCandidate, type PivotCandidate, type ProposedCall } from "./graph_pivots.ts";
 import { DNS_TYPES, VIRTUAL_TYPE_MAP, isVirtualType, resolveVirtualHost, filterTxtByPrefix } from "./tools/dns-virtual.ts";
 
 import {
@@ -476,11 +476,55 @@ export function buildTools(ctx: ToolContext) {
             if (brokenTools.has(name) || isDegraded(name)) return false;
             return true;
           });
+
+          // Slice 2 / Phase A1 — cost-tier guide so the planner prefers the
+          // cheapest tool that can answer (free/low validation before paid
+          // confirmation). Advisory only; mirrors the cost_tier field the
+          // planner already emits per proposed call.
+          const costBucket = (n: string): "free" | "low" | "expensive" => {
+            const c = costForTool(n);
+            return c === 0 ? "free" : c <= 1500 ? "low" : "expensive";
+          };
+          const tierBuckets: Record<"free" | "low" | "expensive", string[]> = { free: [], low: [], expensive: [] };
+          for (const n of toolList) tierBuckets[costBucket(n)].push(n);
+          const costGuide =
+            `TOOL COST TIERS (prefer the cheapest tool that can answer; run FREE/LOW validation before spending on EXPENSIVE/premium confirmation):\n` +
+            `- FREE: ${tierBuckets.free.join(", ") || "(none)"}\n` +
+            `- LOW: ${tierBuckets.low.join(", ") || "(none)"}\n` +
+            `- EXPENSIVE: ${tierBuckets.expensive.join(", ") || "(none)"}`;
+
+          // Slice 2 / Phase A2 — feed prior cross-investigation memory (lessons,
+          // known false-positives, identity links) into the planner so it learns
+          // from past scans. Best-effort + read-only: a failure never blocks
+          // planning. No hit_count bump here — that stays the memory_recall tool's
+          // job so its rate-limit/dedup semantics are unaffected.
+          let memoryHint = "";
+          try {
+            const seedNorm = String(seed ?? "").trim().toLowerCase();
+            if (seedNorm) {
+              const { data: mem } = await supabase
+                .from("agent_memory")
+                .select("kind,content,confidence")
+                .eq("user_id", userId)
+                .or(`subject.eq.${seedNorm},related_values.cs.{${seedNorm}}`)
+                .order("confidence", { ascending: false })
+                .limit(8);
+              const rows = (mem ?? []) as Array<{ kind?: string; content?: string; confidence?: number }>;
+              if (rows.length) {
+                memoryHint =
+                  `\n\nPRIOR MEMORY for this subject (weight these — lessons / known false-positives / confirmed links from earlier investigations):\n` +
+                  rows.map((m) => `- [${m.kind ?? "note"}${m.confidence != null ? ` ${m.confidence}` : ""}] ${String(m.content ?? "").slice(0, 240)}`).join("\n");
+              }
+            }
+          } catch (e) {
+            console.warn("[planner] memory hint lookup failed (non-fatal):", e);
+          }
+
           const r = await minimaxChatWithFallback({
             model: MODELS.smart,
             system:
-              `You are the execution planner for a forensic OSINT runtime. ONLY propose tools from this EXACT list (names must match verbatim — do not invent or rename): ${toolList.join(", ")}.\n\n${NAME_SEED_PLANNER_RULES}\n\nPERMANENTLY DISABLED TOOLS — NEVER PROPOSE: firecrawl_search, firecrawl_scrape, firecrawl_map (credits exhausted — use jina_reader_scrape + exa_search + minimax_web_search), intelbase_email_lookup (gated due to instability — use oathnet_lookup + leakcheck_lookup + bosint_email_lookup instead).\n\nRUNTIME RULES:\n- Stage choices: TRIAGE, REVIEW, TARGETED_PIVOT, VERIFY, REPORT.\n- Propose the SMALLEST high-value batch, not a fan-out burst.\n- Respect the hard total-call and concurrency ceilings enforced by the runtime.\n- Weak-lead and expected-value signals are advisory. Do not turn them into prerequisites or retry loops.\n- Cached results NEVER count as corroboration. If a fresh cache hit would satisfy the question, prefer it over a live call.\n- If evidence is weak, explain that in the reason and keep the result [VERIFY].\n\nReply ONLY with JSON matching this exact shape:\n{\n  "stage":"TRIAGE|REVIEW|TARGETED_PIVOT|VERIFY|REPORT",\n  "goal":"string",\n  "current_findings":["string"],\n  "proposed_calls":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "params_preview":{},\n    "expected_value":0,\n    "cost_tier":"free|low|expensive",\n    "reason":"string",\n    "stop_condition":"string",\n    "cache_status":"thread|user|stale|miss"\n  }],\n  "calls_rejected":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "expected_value":0,\n    "reason":"string",\n    "cost_tier":"free|low|expensive",\n    "weak_lead":true,\n    "stale_cache":false,\n    "manual_override":false\n  }]\n}\nOrder proposed_calls by expected_value descending. Respect budget_remaining as the max number of proposed_calls.`,
-            user: `Seed: ${seed}\nBudget remaining: ${budget_remaining}\nAlready queried: ${JSON.stringify(already_queried).slice(0,4000)}\nArtifacts so far: ${JSON.stringify(artifacts).slice(0,8000)}`,
+              `You are the execution planner for a forensic OSINT runtime. ONLY propose tools from this EXACT list (names must match verbatim — do not invent or rename): ${toolList.join(", ")}.\n\n${NAME_SEED_PLANNER_RULES}\n\nPERMANENTLY DISABLED TOOLS — NEVER PROPOSE: firecrawl_search, firecrawl_scrape, firecrawl_map (credits exhausted — use jina_reader_scrape + exa_search + minimax_web_search), intelbase_email_lookup (gated due to instability — use oathnet_lookup + leakcheck_lookup + bosint_email_lookup instead).\n\nRUNTIME RULES:\n- Stage choices: TRIAGE, REVIEW, TARGETED_PIVOT, VERIFY, REPORT.\n- Propose the SMALLEST high-value batch, not a fan-out burst.\n- Respect the hard total-call and concurrency ceilings enforced by the runtime.\n- Weak-lead and expected-value signals are advisory. Do not turn them into prerequisites or retry loops.\n- Prefer the cheapest tool that can answer the current question: run FREE/LOW-cost validation before spending on EXPENSIVE/premium tools (see TOOL COST TIERS in the context below). Cost is advisory — never drop a uniquely high-value lead just because it is expensive.\n- When a finding is breach-derived or otherwise confidence-capped, propose ONE independent, trusted NON-infrastructure source to corroborate it and lift the cap, rather than re-running the same breach source.\n- Cached results NEVER count as corroboration. If a fresh cache hit would satisfy the question, prefer it over a live call.\n- If evidence is weak, explain that in the reason and keep the result [VERIFY].\n\nReply ONLY with JSON matching this exact shape:\n{\n  "stage":"TRIAGE|REVIEW|TARGETED_PIVOT|VERIFY|REPORT",\n  "goal":"string",\n  "current_findings":["string"],\n  "proposed_calls":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "params_preview":{},\n    "expected_value":0,\n    "cost_tier":"free|low|expensive",\n    "reason":"string",\n    "stop_condition":"string",\n    "cache_status":"thread|user|stale|miss"\n  }],\n  "calls_rejected":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "expected_value":0,\n    "reason":"string",\n    "cost_tier":"free|low|expensive",\n    "weak_lead":true,\n    "stale_cache":false,\n    "manual_override":false\n  }]\n}\nOrder proposed_calls by expected_value descending. Respect budget_remaining as the max number of proposed_calls.`,
+            user: `Seed: ${seed}\nBudget remaining: ${budget_remaining}\nAlready queried: ${JSON.stringify(already_queried).slice(0,4000)}\nArtifacts so far: ${JSON.stringify(artifacts).slice(0,8000)}\n\n${costGuide}${memoryHint}`,
             json: true,
             maxTokens: 1500,
           });
@@ -488,22 +532,27 @@ export function buildTools(ctx: ToolContext) {
             safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content },
             { seedType: detectedSeedType, alreadyQueried: already_queried },
           );
-          // Phase 9 — dark-launched behind GRAPH_PIVOTS_ENABLED (default off):
-          // re-rank/filter the planned pivots through the entity graph (drop
-          // dead-end / over-broad / already-confirmed targets, cheapest
-          // justified first). Off → byte-for-byte the existing behavior; any
-          // error falls back to the planner's raw output.
-          if (Deno.env.get("GRAPH_PIVOTS_ENABLED") === "true" && Array.isArray((parsed as { pivots?: unknown }).pivots)) {
+          // Slice 2 / Phase B1 — re-rank & filter the planned pivots through the
+          // entity graph: drop dead-end / over-broad-unconfirmed / already-
+          // confirmed targets and order the rest cheapest-justified-first.
+          // NOTE: the planner emits `proposed_calls` (NOT `pivots` — the prior
+          // dark-launched block read the wrong field, so it never fired even when
+          // enabled). Map proposed_calls → PivotCandidate, run the pure selector,
+          // then rewrite proposed_calls in the chosen order. Off (default) →
+          // byte-for-byte the existing behavior; any error falls back to the
+          // planner's raw output.
+          if (Deno.env.get("GRAPH_PIVOTS_ENABLED") === "true") {
             try {
-              const nodes = buildNodes(artifacts as Array<{ kind: string; value: string }>);
-              const { selected, dropped } = selectPivots(
-                (parsed as { pivots: PivotCandidate[] }).pivots,
-                nodes,
-                { budget: budget_remaining },
-              );
-              (parsed as { pivots: unknown }).pivots = selected;
-              if (dropped.length) {
-                console.log(`[graph-pivots] dropped ${dropped.length} pivot(s): ${dropped.map((d) => `${d.tool}:${d.reason}`).join(", ")}`);
+              const calls = (parsed as { proposed_calls?: unknown }).proposed_calls;
+              if (Array.isArray(calls) && calls.length) {
+                const nodes = buildNodes(artifacts as Array<{ kind: string; value: string }>);
+                const candidates = (calls as ProposedCall[]).map(proposedCallToCandidate);
+                const { selected, dropped } = selectPivots(candidates, nodes, { budget: budget_remaining });
+                (parsed as { proposed_calls: unknown }).proposed_calls =
+                  (selected as Array<PivotCandidate & { _orig: ProposedCall }>).map((c) => c._orig);
+                if (dropped.length) {
+                  console.log(`[graph-pivots] dropped ${dropped.length} pivot(s): ${dropped.map((d) => `${d.tool}:${d.reason}`).join(", ")}`);
+                }
               }
             } catch (e) {
               console.warn("[graph-pivots] selection failed, using planner output:", e);
