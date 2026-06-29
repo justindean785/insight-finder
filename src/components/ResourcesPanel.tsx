@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Mail, Globe, User as UserIcon, Network, ShieldAlert, Image as ImgIcon, Tag,
-  Copy, CheckCircle2, XCircle, Star, ShieldQuestion, EyeOff, ChevronRight,
+  Copy, CheckCircle2, XCircle, Star, ShieldQuestion, EyeOff, ChevronRight, Radar,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -124,17 +124,35 @@ function ArtifactsList({
       <div className="p-3 sm:p-5">
         <div className="overflow-hidden rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(17,19,23,0.98),rgba(5,6,8,0.98))] shadow-[0_34px_110px_-70px_rgba(0,0,0,0.95)]">
           <div className="border-b border-white/8 px-4 sm:px-5 py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="min-w-0">
-              <div className="text-eyebrow font-mono uppercase tracking-[0.22em] text-muted-foreground">
-                Evidence board
+            <div className="flex min-w-0 items-center gap-3.5">
+              {/* radar node — "sensor acquiring contact" */}
+              <div className="relative grid h-11 w-11 shrink-0 place-items-center">
+                <span
+                  aria-hidden
+                  className="radar-ring absolute h-11 w-11 rounded-full border border-[hsl(var(--intel-blue)/0.5)]"
+                  style={{ animation: "radar-ping 3.4s ease-out infinite" }}
+                />
+                <span
+                  aria-hidden
+                  className="radar-ring absolute h-11 w-11 rounded-full border border-[hsl(var(--intel-blue)/0.5)]"
+                  style={{ animation: "radar-ping 3.4s ease-out infinite", animationDelay: "1.7s" }}
+                />
+                <div className="relative grid h-11 w-11 place-items-center rounded-xl border border-[hsl(var(--intel-blue)/0.35)] bg-[linear-gradient(180deg,hsl(var(--surface-3)),hsl(var(--surface-1)))] text-[hsl(var(--intel-blue))] shadow-[0_0_26px_-10px_hsl(var(--intel-blue)/0.7)]">
+                  <Radar className="h-[18px] w-[18px]" strokeWidth={1.6} />
+                </div>
               </div>
-              <div className="mt-1 text-lg sm:text-xl font-semibold text-foreground">
-                Awaiting first artifact
+              <div className="min-w-0">
+                <div className="text-eyebrow font-mono uppercase tracking-[0.22em] text-[hsl(var(--intel-blue))]">
+                  Evidence board
+                </div>
+                <div className="mt-1 font-display text-lg sm:text-xl font-semibold tracking-tight text-foreground">
+                  Awaiting first artifact
+                </div>
               </div>
             </div>
-            <div className="inline-flex w-fit items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-data font-mono text-muted-foreground">
-              <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/70" />
-              0 captured
+            <div className="inline-flex w-fit items-center gap-2 rounded-full border border-[hsl(var(--intel-blue)/0.25)] bg-[hsl(var(--intel-blue)/0.06)] px-3 py-1.5 text-data font-mono text-[hsl(var(--intel-blue))]">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[hsl(var(--intel-blue))]" />
+              Scanning · 0 captured
             </div>
           </div>
 
