@@ -132,7 +132,12 @@ const THREADS = new Map<string, RuntimeThreadState>();
 // provider limits (e.g. stolen.tax = 2 req/s); tighter budgets stop the agent
 // grinding low-value fan-out on a no-match seed.
 export const MAX_TOTAL_CALLS = 30;
-export const MAX_CONCURRENT_CALLS = 3;
+// Speed pass: raised 3→6 to cut wall-clock (fewer, wider cycles). This is the
+// default for runtimeLimits.maxParallelTools (env MAX_PARALLEL_TOOLS overrides)
+// AND the concurrency figure quoted in the system prompt. The queue still spaces
+// starts (MIN_START_GAP_MS) and backs off on real 429s — wider just means more
+// in flight at once, never hard-failed.
+export const MAX_CONCURRENT_CALLS = 6;
 export const MAX_PAID_CALLS = 12;
 
 // ---- Configurable runtime limits ---------------------------------------------
@@ -210,7 +215,10 @@ export const MAX_CONCURRENCY_BACKOFF_MS = 5000;
 export const SAME_TOOL_SOFT_LIMIT = 6;
 export const SAME_TOOL_COOLDOWN_MS = 400;
 export const MAX_SAME_TOOL_CALLS = 16;
-export const MIN_START_GAP_MS = 600;
+// Speed pass: env-tunable, default lowered 600→200ms so cycles start faster.
+// Still a real gap between call starts (queue spacing); raise via MIN_START_GAP_MS
+// if a provider's per-second limit needs more breathing room.
+export const MIN_START_GAP_MS = envNumber("MIN_START_GAP_MS", 200);
 
 function getThread(threadId: string): RuntimeThreadState {
   let state = THREADS.get(threadId);
