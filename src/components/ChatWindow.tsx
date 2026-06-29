@@ -1855,15 +1855,43 @@ function ChatWindowInner({
         <div ref={contentRef} className="max-w-[40rem] mx-auto space-y-6 min-w-0">
           <div className="h-2" aria-hidden />
           {messages.length === 0 && (
-            <div className="flex flex-col items-center justify-center px-4 py-20 text-center sm:py-28">
+            <div className="flex flex-col items-center px-4 py-14 text-center sm:py-16">
+              {/* halftone signal-field hero — a dotted intel field with a slow
+                  radar sweep passing over it. Distinctive + on-brand; no asset. */}
+              <div className="relative mb-9 h-36 w-full max-w-[280px] select-none" aria-hidden>
+                <div
+                  className="absolute inset-0"
+                  style={{
+                    backgroundImage:
+                      "radial-gradient(circle, hsl(var(--intel-blue) / 0.7) 1px, transparent 1.5px)",
+                    backgroundSize: "9px 9px",
+                    WebkitMaskImage:
+                      "radial-gradient(58% 78% at 50% 50%, #000 0%, rgba(0,0,0,0.45) 46%, transparent 72%)",
+                    maskImage:
+                      "radial-gradient(58% 78% at 50% 50%, #000 0%, rgba(0,0,0,0.45) 46%, transparent 72%)",
+                  }}
+                />
+                <div
+                  className="absolute left-1/2 top-1/2 h-36 w-36 -translate-x-1/2 -translate-y-1/2 animate-[spin_7s_linear_infinite] rounded-full motion-reduce:animate-none"
+                  style={{
+                    background:
+                      "conic-gradient(from 0deg, transparent 0deg, transparent 308deg, hsl(var(--intel-blue) / 0.32) 350deg, hsl(var(--intel-blue) / 0.7) 360deg)",
+                    WebkitMaskImage: "radial-gradient(circle, #000 0%, transparent 70%)",
+                    maskImage: "radial-gradient(circle, #000 0%, transparent 70%)",
+                  }}
+                />
+                <span className="absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[hsl(var(--intel-blue))] shadow-[0_0_12px_3px_hsl(var(--intel-blue)/0.7)]" />
+              </div>
+
               <h1 className="font-display text-2xl font-semibold leading-tight tracking-[-0.02em] text-foreground sm:text-[2rem]">
                 What are we investigating?
               </h1>
               <p className="mt-3 max-w-md text-sm leading-relaxed text-muted-foreground">
-                Drop an email, username, phone, IP, domain, or wallet below — the
-                agent routes providers, pivots across what it finds, and lands
-                evidence with confidence tiers.
+                Drop an email, username, phone, IP, domain, or wallet — the agent
+                routes providers, pivots across what it finds, and lands evidence
+                with confidence tiers.
               </p>
+
               <div className="mt-7 flex flex-wrap items-center justify-center gap-2">
                 {["taciocero@icloud.com", "elonmusk", "8.8.8.8", "lovable.app"].map((s) => (
                   <button
@@ -1873,6 +1901,23 @@ function ChatWindowInner({
                   >
                     {s}
                   </button>
+                ))}
+              </div>
+
+              {/* clean hairline steps (à la the references) — understated, no boxes */}
+              <div className="mt-12 w-full max-w-md border-t border-white/[0.06] text-left">
+                {[
+                  ["01", "Seed", "Email, username, phone, IP, domain, or wallet."],
+                  ["02", "Route", "The agent selects providers and pivots on what it finds."],
+                  ["03", "Reveal", "Evidence lands on the board with confidence tiers."],
+                ].map(([n, t, d]) => (
+                  <div key={n} className="flex gap-4 border-b border-white/[0.06] py-3.5">
+                    <span className="font-mono text-data tabular-nums text-[hsl(var(--intel-blue)/0.85)]">{n}</span>
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-foreground">{t}</div>
+                      <div className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{d}</div>
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>
