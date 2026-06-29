@@ -84,9 +84,11 @@ All colors MUST be HSL.
     --input: 0 0% 8%;
     --ring: 0 0% 72%;
 
-    /* Intel tokens — info-blue (system) and brand iris (selection) */
+    /* Intel tokens — ONE signature accent. The former violet co-accent is
+       collapsed onto intel-blue so the product speaks with a single voice
+       (Proximity-style restraint); kept as a token name for existing markup. */
     --intel-blue: 220 90% 62%;
-    --intel-violet: 268 80% 66%;
+    --intel-violet: 220 90% 62%;
 
     /* Brain (Global Brain tab) palette — neutralized greyscale + accents. */
     --brain-surface-base: 0 0% 6%;
