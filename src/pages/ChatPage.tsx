@@ -85,7 +85,7 @@ export default function ChatPage() {
   };
 
   const content = (
-    <div className="flex-1 min-h-0 relative">
+    <div key="workspace-content" className="flex-1 min-h-0 relative">
       {/* Chat stays mounted so streaming survives tab switches. */}
       <div
         role="tabpanel"
@@ -110,47 +110,63 @@ export default function ChatPage() {
     </div>
   );
 
-  if (isMobile) {
-    return (
-      <div key={threadId} className="flex flex-col h-[100dvh] w-full bg-background overflow-hidden">
-        <CommandPalette />
-        <header className="shrink-0 h-14 px-2 flex items-center gap-2 border-b border-border-subtle bg-surface-0">
-          <button onClick={() => setMLeft(true)} className="shrink-0 w-9 h-9 rounded-xl grid place-items-center border border-white/10 bg-white/[0.035] text-muted-foreground transition-all duration-500 ease-premium hover:text-foreground hover:bg-white/[0.06] active:scale-[0.97]" aria-label="Open cases">
-            <PanelLeftOpen className="w-4 h-4 text-foreground/80" />
-          </button>
-          <Link
-            to="/"
-            aria-label="Home"
-            className="hidden min-[430px]:inline shrink-0 font-display font-semibold text-sm tracking-tight text-foreground select-none hover:text-foreground/80 transition-colors"
-          >
-            Insight Finder
-          </Link>
-          <WorkspaceTabs active={tab} onChange={setTab} counts={tabCounts} variant="inline" />
-          <button onClick={createNew} disabled={creating} className="shrink-0 w-9 h-9 rounded-xl grid place-items-center border border-white/10 bg-white text-black transition-all duration-500 ease-premium hover:bg-white/90 active:scale-[0.97] disabled:opacity-60" aria-label="New investigation">
-            <Plus className="w-4 h-4 text-black" />
-          </button>
-        </header>
+  // ONE layout tree for both breakpoints. Switching between the mobile and
+  // desktop chrome must NOT remount {content} (and the <ChatWindow> inside it):
+  // a remount aborts the in-flight useChat stream and drops streamed messages.
+  // This previously happened whenever `isMobile` flipped — e.g. resizing across
+  // 768px or exiting fullscreen into a sub-768px window — because the mobile and
+  // desktop branches were separate return trees. Here {content} keeps a stable
+  // position (last child of <main>) and a stable key across the flip, so React
+  // preserves the ChatWindow fiber and the live run survives.
+  return (
+    <div key={threadId} className="flex h-[100dvh] w-full bg-background overflow-hidden">
+      <CommandPalette />
+
+      {/* Desktop: persistent sidebar rail. Mobile uses the off-canvas Sheet below. */}
+      {!isMobile && (
+        <aside className={cn("shrink-0 h-full border-r border-border-subtle glass-card", leftCollapsed ? "w-14" : "w-72")}>
+          <ThreadSidebar collapsed={leftCollapsed} onToggleCollapse={() => setLeftCollapsed((c) => !c)} />
+        </aside>
+      )}
+
+      <main className="flex-1 min-w-0 h-full flex flex-col">
+        {/* Chrome differs by breakpoint but is always exactly ONE slot, so
+            {content} stays at a stable index and is never remounted. */}
+        {isMobile ? (
+          <header key="chrome" className="shrink-0 h-14 px-2 flex items-center gap-2 border-b border-border-subtle bg-surface-0">
+            <button onClick={() => setMLeft(true)} className="shrink-0 w-9 h-9 rounded-xl grid place-items-center border border-white/10 bg-white/[0.035] text-muted-foreground transition-all duration-500 ease-premium hover:text-foreground hover:bg-white/[0.06] active:scale-[0.97]" aria-label="Open cases">
+              <PanelLeftOpen className="w-4 h-4 text-foreground/80" />
+            </button>
+            <Link
+              to="/"
+              aria-label="Home"
+              className="hidden min-[430px]:inline shrink-0 font-display font-semibold text-sm tracking-tight text-foreground select-none hover:text-foreground/80 transition-colors"
+            >
+              Insight Finder
+            </Link>
+            <WorkspaceTabs active={tab} onChange={setTab} counts={tabCounts} variant="inline" />
+            <button onClick={createNew} disabled={creating} className="shrink-0 w-9 h-9 rounded-xl grid place-items-center border border-white/10 bg-white text-black transition-all duration-500 ease-premium hover:bg-white/90 active:scale-[0.97] disabled:opacity-60" aria-label="New investigation">
+              <Plus className="w-4 h-4 text-black" />
+            </button>
+          </header>
+        ) : (
+          <div key="chrome" className="shrink-0">
+            <WorkspaceHeader threadId={threadId} />
+            <WorkspaceTabs active={tab} onChange={setTab} counts={tabCounts} />
+          </div>
+        )}
+
         {content}
+      </main>
+
+      {/* Mobile: cases live in an off-canvas overlay (does not affect layout flow). */}
+      {isMobile && (
         <Sheet open={mLeft} onOpenChange={setMLeft}>
           <SheetContent side="left" className="p-0 w-[82vw] max-w-[300px] sm:max-w-[300px] border-r border-white/8 bg-[hsl(var(--surface-0))] [&>button]:hidden overflow-hidden">
             <ThreadSidebar />
           </SheetContent>
         </Sheet>
-      </div>
-    );
-  }
-
-  return (
-    <div key={threadId} className="flex h-screen w-full bg-background overflow-hidden">
-      <CommandPalette />
-      <aside className={cn("shrink-0 h-screen border-r border-border-subtle glass-card", leftCollapsed ? "w-14" : "w-72")}>
-        <ThreadSidebar collapsed={leftCollapsed} onToggleCollapse={() => setLeftCollapsed((c) => !c)} />
-      </aside>
-      <main className="flex-1 min-w-0 h-screen flex flex-col">
-        <WorkspaceHeader threadId={threadId} />
-        <WorkspaceTabs active={tab} onChange={setTab} counts={tabCounts} />
-        {content}
-      </main>
+      )}
     </div>
   );
 }
