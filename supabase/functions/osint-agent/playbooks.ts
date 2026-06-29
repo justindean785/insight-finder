@@ -28,17 +28,22 @@ export interface Playbook {
 }
 
 const EMAIL_PIVOTS: Record<string, string[]> = {
-  email: ["rapidapi_breach_search", "deepfind_reverse_email", "leakcheck_lookup", "hibp_lookup", "intelbase_email_lookup", "oathnet_lookup", "gravatar_profile", "hunter_email_verifier", "deepfind_disposable_email"],
+  email: ["rapidapi_breach_search", "breach_check", "deepfind_reverse_email", "hibp_lookup", "leakcheck_lookup", "oathnet_lookup", "gravatar_profile", "hunter_email_verifier", "deepfind_disposable_email"],
   domain: ["whois_lookup", "dns_records", "virustotal_lookup", "urlscan_search", "crtsh_subdomains", "hunter_domain_search", "deepfind_ssl_inspect"],
   username: ["socialfetch_lookup", "github_user", "reddit_user", "hackernews_user", "username_sweep", "stolentax_footprint", "deepfind_reverse_email"],
-  phone: ["oathnet_lookup", "osintnova_phone_lookup", "leakcheck_lookup", "intelbase_email_lookup"],
+  phone: ["oathnet_lookup", "osintnova_phone_lookup", "leakcheck_lookup"],
   ip: ["ip_intel", "ipgeolocation_lookup", "shodan_internetdb", "virustotal_lookup", "urlscan_search"],
 };
 
 export const PLAYBOOKS: Record<SeedType, Playbook> = {
   email: {
-    required: ["rapidapi_breach_search", "breach_check", "leakcheck_lookup", "hibp_lookup", "deepfind_reverse_email", "oathnet_lookup", "emailrep", "gravatar_profile", "hunter_email_verifier"],
-    recommended: ["intelbase_email_lookup", "stolentax_footprint", "socialfetch_lookup", "gemini_deep_dork", "exa_search", "google_dorks", "dork_harvest"],
+    // rapidapi_breach_search is the PRIMARY/FIRST breach call. breach_check is the
+    // fallback when RAPIDAPI_KEY is absent. leakcheck_lookup + oathnet_lookup are
+    // CORROBORATION-ONLY (scarce 200/day & 100/day budgets) — demoted to recommended
+    // so they are never the opening breach move. emailrep + gravatar_profile (~85%
+    // no-value in prod) are likewise demoted out of the required fan-out.
+    required: ["rapidapi_breach_search", "breach_check", "hibp_lookup", "deepfind_reverse_email", "hunter_email_verifier"],
+    recommended: ["leakcheck_lookup", "oathnet_lookup", "emailrep", "gravatar_profile", "stolentax_footprint", "socialfetch_lookup", "gemini_deep_dork", "exa_search", "google_dorks", "dork_harvest"],
     coverage: ["identity", "email", "username", "breach", "social"],
     pivots: EMAIL_PIVOTS,
   },
@@ -50,7 +55,7 @@ export const PLAYBOOKS: Record<SeedType, Playbook> = {
   },
   phone: {
     required: ["oathnet_lookup", "osintnova_phone_lookup", "leakcheck_lookup", "breach_check"],
-    recommended: ["intelbase_email_lookup", "deepfind_reverse_email", "gemini_deep_dork", "google_dorks"],
+    recommended: ["deepfind_reverse_email", "gemini_deep_dork", "google_dorks"],
     coverage: ["identity", "phone", "breach", "location"],
     pivots: EMAIL_PIVOTS,
   },
