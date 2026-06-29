@@ -133,8 +133,13 @@ All colors MUST be HSL.
     inset: 0;
     pointer-events: none;
     z-index: 0;
+    /* Luminance vignette — depth from LIGHT, never color (audit: "gradients that
+       feel like light itself"). A soft overhead spotlight, a deepened far
+       corner, and a grounded bottom edge. No accent orbs. */
     background:
-      radial-gradient(90% 70% at 100% 100%, hsl(0 0% 1% / 0.6) 0%, transparent 60%);
+      radial-gradient(125% 80% at 50% -12%, hsl(0 0% 100% / 0.028) 0%, transparent 56%),
+      radial-gradient(90% 70% at 100% 100%, hsl(0 0% 0% / 0.55) 0%, transparent 60%),
+      linear-gradient(180deg, transparent 58%, hsl(0 0% 0% / 0.42) 100%);
   }
 
   /* App-wide film grain — barely-there */
@@ -208,15 +213,20 @@ All colors MUST be HSL.
   .glass-card,
   .glass-interactive,
   .glass-hover-shine {
+    /* Matte instrument panel, not glass: a light blur (floating layers re-raise
+       it), a crisp hairline brightest at the top edge, a machined inner
+       top-highlight catch-light, and a directional, mostly-downward 2-layer
+       shadow. Depth reads as engineered, not decorative. */
     background:
-      linear-gradient(180deg, hsl(0 0% 8% / 0.9) 0%, hsl(0 0% 5.5% / 0.9) 100%);
-    backdrop-filter: blur(20px) saturate(150%);
-    -webkit-backdrop-filter: blur(20px) saturate(150%);
-    border: 1px solid hsl(0 0% 100% / 0.055);
-    border-top-color: hsl(0 0% 100% / 0.08);
+      linear-gradient(180deg, hsl(0 0% 8.5% / 0.92) 0%, hsl(0 0% 5.5% / 0.92) 100%);
+    backdrop-filter: blur(12px) saturate(140%);
+    -webkit-backdrop-filter: blur(12px) saturate(140%);
+    border: 1px solid hsl(0 0% 100% / 0.06);
+    border-top-color: hsl(0 0% 100% / 0.1);
     box-shadow:
-      0 1px 0 hsl(0 0% 100% / 0.045) inset,
-      0 10px 30px -18px hsl(0 0% 0% / 0.6);
+      inset 0 1px 0 hsl(0 0% 100% / 0.06),
+      0 1px 2px hsl(0 0% 0% / 0.45),
+      0 12px 32px -16px hsl(0 0% 0% / 0.7);
   }
   .glass-interactive {
     transition: background-color 160ms ease, border-color 160ms ease;
