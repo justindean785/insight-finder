@@ -46,6 +46,42 @@ const ARG_KEYS: Array<[string, NodeType]> = [
   ["url", "url"],
 ];
 
+/** A planner `proposed_calls[]` entry. The planner LLM emits this shape; it
+ *  differs from PivotCandidate (which selectPivots consumes). */
+export interface ProposedCall {
+  tool_name?: unknown;
+  selector?: unknown;
+  selector_type?: unknown;
+  params_preview?: unknown;
+  expected_value?: unknown;
+  [k: string]: unknown;
+}
+
+/** Map a planner proposed_call → PivotCandidate, carrying the original call
+ *  under `_orig` so the caller can restore the full planner payload after
+ *  selection (selectPivots preserves object identity). The planner emits
+ *  {tool_name, selector, selector_type, params_preview, expected_value, ...};
+ *  selectPivots needs {tool, args, priority}. `selector` is mapped both to a
+ *  generic `value` arg and (when selector_type is known) to its typed key, so
+ *  pivotTargetNode can resolve the target node either way. */
+export function proposedCallToCandidate(pc: ProposedCall): PivotCandidate & { _orig: ProposedCall } {
+  const args: Record<string, unknown> = {
+    ...(pc.params_preview && typeof pc.params_preview === "object" ? pc.params_preview as Record<string, unknown> : {}),
+  };
+  const selector = typeof pc.selector === "string" ? pc.selector.trim() : "";
+  if (selector) {
+    args.value = selector;
+    const st = typeof pc.selector_type === "string" ? pc.selector_type.trim() : "";
+    if (st) args[st] = selector;
+  }
+  return {
+    tool: String(pc.tool_name ?? ""),
+    args,
+    priority: typeof pc.expected_value === "number" ? pc.expected_value : 0,
+    _orig: pc,
+  };
+}
+
 /** Find the graph node a pivot targets, by inspecting its args. */
 export function pivotTargetNode(args: Record<string, unknown> | null | undefined, nodes: GraphNode[]): GraphNode | null {
   if (!args) return null;
