@@ -310,6 +310,8 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
           <BarChart3 className="w-4 h-4" strokeWidth={1.5} />
         </Link>
 
+        <div className="w-8 h-px bg-border-subtle mx-auto" />
+
         <div className="flex-1 overflow-y-auto w-full flex flex-col items-center gap-1 px-1">
           {threads.map((t) => {
             const Icon = seedIcon(t.seed_type, t.title);
@@ -321,8 +323,8 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
                 className={cn(
                   "w-8 h-8 rounded-md grid place-items-center transition-colors",
                   active
-                    ? "glass-interactive text-foreground"
-                    : "text-muted-foreground hover:text-foreground hover:bg-white/5",
+                    ? "bg-white text-black shadow-[0_0_16px_-4px_hsl(0_0%_100%/0.5)]"
+                    : "text-muted-foreground hover:text-foreground hover:bg-white/[0.07]",
                 )}
                 title={`${t.title} · ${formatUsd(t.cost_micro_usd)}`}
                 aria-label={t.title}

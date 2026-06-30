@@ -1940,18 +1940,21 @@ function ChatWindowInner({
           })}
           {isLoading && (
             <div
-              className="flex items-center gap-2.5 text-sm"
+              className="my-1 rounded-lg border border-white/[0.07] bg-surface-1/60 overflow-hidden"
               role="status"
               aria-live="polite"
               aria-label="Investigation in progress"
             >
-              <span className="relative flex h-2 w-2 shrink-0">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60 opacity-75" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
-              </span>
-              <span className="font-medium text-foreground/85">
-                Investigating…
-              </span>
+              <div className="scan-line" />
+              <div className="flex items-center gap-2.5 px-3 py-2">
+                <span className="relative flex h-2 w-2 shrink-0">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60 opacity-75" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
+                </span>
+                <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                  Investigating
+                </span>
+              </div>
             </div>
           )}
           {error && !isLoading && (
@@ -1966,32 +1969,61 @@ function ChatWindowInner({
                 </span>
                 <div className="h-px flex-1 bg-gradient-to-r from-white/10 to-transparent" />
               </div>
-              <div className="flex flex-wrap gap-2">
-                {suggestions.map((s, i) => (
-                  <button
-                    key={`${s.title}-${i}`}
-                    onClick={() => sendText(s.prompt)}
-                    className="action-chip action-chip--stacked animate-fade-up"
-                    style={{ animationDelay: `${i * 60}ms` }}
-                  >
-                    <span className="action-chip__icon">
-                      {s.icon === "pivot" ? (
-                        <GitBranch className="w-3.5 h-3.5" />
-                      ) : (
-                        <Sparkles className="w-3.5 h-3.5" />
-                      )}
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="flex items-center gap-1.5">
-                        {s.priority && <span className={`pivot-priority pivot-priority--${s.priority}`}>{s.priority}</span>}
-                        <span className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground font-mono">{s.meta}</span>
-                      </span>
-                      <span className="mt-0.5 block text-left text-sm font-medium leading-snug text-foreground">{s.title}</span>
-                      {s.detail && <span className="mt-0.5 block text-left text-[11px] leading-snug text-muted-foreground line-clamp-2">{s.detail}</span>}
-                    </span>
-                  </button>
-                ))}
-              </div>
+              {/* HIGH priority suggestions — full-width compact rows */}
+              {suggestions.filter(s => s.priority === "high").length > 0 && (
+                <div className="flex flex-col gap-1.5 mb-2">
+                  {suggestions
+                    .filter(s => s.priority === "high")
+                    .map((s, i) => (
+                      <button
+                        key={`high-${s.title}-${i}`}
+                        onClick={() => sendText(s.prompt)}
+                        className="action-chip action-chip--stacked action-chip--high animate-fade-up"
+                        style={{ animationDelay: `${i * 50}ms` }}
+                      >
+                        <span className="action-chip__icon action-chip__icon--high">
+                          {s.icon === "pivot" ? <GitBranch className="w-3.5 h-3.5" /> : <Sparkles className="w-3.5 h-3.5" />}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="flex items-center gap-1.5">
+                            <span className="pivot-priority pivot-priority--high">HIGH</span>
+                            <span className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground font-mono">{s.meta}</span>
+                          </span>
+                          <span className="mt-0.5 block text-left text-sm font-medium leading-snug text-foreground">{s.title}</span>
+                          {s.detail && <span className="mt-0.5 block text-left text-[11px] leading-snug text-muted-foreground line-clamp-2">{s.detail}</span>}
+                        </span>
+                      </button>
+                    ))}
+                </div>
+              )}
+
+              {/* MEDIUM + LOW suggestions — smaller pill-style chips in a wrap row */}
+              {suggestions.filter(s => s.priority !== "high").length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {suggestions
+                    .filter(s => s.priority !== "high")
+                    .map((s, i) => (
+                      <button
+                        key={`other-${s.title}-${i}`}
+                        onClick={() => sendText(s.prompt)}
+                        className="action-chip action-chip--stacked animate-fade-up"
+                        style={{ animationDelay: `${i * 60}ms` }}
+                      >
+                        <span className="action-chip__icon">
+                          {s.icon === "pivot" ? <GitBranch className="w-3.5 h-3.5" /> : <Sparkles className="w-3.5 h-3.5" />}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="flex items-center gap-1.5">
+                            {s.priority && <span className={`pivot-priority pivot-priority--${s.priority}`}>{s.priority}</span>}
+                            <span className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground font-mono">{s.meta}</span>
+                          </span>
+                          <span className="mt-0.5 block text-left text-sm font-medium leading-snug text-foreground">{s.title}</span>
+                          {s.detail && <span className="mt-0.5 block text-left text-[11px] leading-snug text-muted-foreground line-clamp-2">{s.detail}</span>}
+                        </span>
+                      </button>
+                    ))}
+                </div>
+              )}
             </div>
           )}
           <div ref={endRef} />
@@ -2055,7 +2087,7 @@ function ChatWindowInner({
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-                placeholder="Investigate an email, username, phone, IP, or domain…"
+                placeholder="Email, username, phone, IP, or domain…"
                 rows={2}
                 className="min-h-[72px] max-h-32 font-chat bg-transparent border-0 resize-none overflow-y-auto focus-visible:ring-0 focus-visible:ring-offset-0 pl-[3.25rem] sm:pl-14 pr-14 sm:pr-16 py-3 sm:py-4 text-[15px] leading-6 tracking-[-0.01em] placeholder:text-muted-foreground/70"
               />
@@ -2079,7 +2111,7 @@ function ChatWindowInner({
                   "absolute bottom-3 right-2.5 rounded-2xl h-10 w-10 border-0",
                   isLoading
                     ? "bg-destructive text-destructive-foreground hover:bg-destructive/90 shadow-[0_8px_24px_-10px_hsl(var(--danger)/0.65)]"
-                    : "bg-gradient-to-br from-primary to-[hsl(var(--intel-violet))] hover:opacity-95 text-primary-foreground shadow-[0_8px_24px_-8px_hsl(var(--intel-blue)/0.7)]",
+                    : "bg-[hsl(var(--intel-blue))] text-white hover:bg-[hsl(220_90%_55%)] shadow-[0_4px_14px_-6px_hsl(var(--intel-blue)/0.6)]",
                 )}
                 aria-label={isLoading ? "Stop investigation" : "Start investigation"}
                 title={isLoading ? "Stop investigation" : "Start investigation"}
