@@ -71,7 +71,10 @@ All colors MUST be HSL.
     --conf-likely: 142 69% 48%;
     --conf-possible: 38 92% 50%;
     --conf-weak: 27 95% 60%;
-    --conf-unverified: 215 16% 52%;
+    /* L raised 52→64 so the Unverified tier reads as TEXT (ConfidenceTag label,
+       bar value, radar value) at ≥4.5:1 on tinted/dark surfaces. Hue/sat kept
+       so it still reads as the neutral slate "unknown" tier vs the saturated ones. */
+    --conf-unverified: 215 16% 64%;
 
     /* Layered surfaces — cool blue-black ramp (faint hue-220 cast, not heavy) */
     --surface-0: 222 24% 3.5%;
