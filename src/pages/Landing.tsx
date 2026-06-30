@@ -6,7 +6,7 @@ const FEATURES = [
   {
     icon: Search,
     title: "Multi-source intelligence",
-    desc: "Seed any identifier — name, email, domain, phone, IP — and the swarm harvests OSINT from dozens of sources simultaneously.",
+    desc: "Seed any identifier (name, email, domain, phone, IP). The swarm harvests OSINT from dozens of sources simultaneously.",
   },
   {
     icon: GitFork,

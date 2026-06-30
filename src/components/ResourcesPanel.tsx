@@ -383,7 +383,7 @@ function ArtifactRow({
                 {status.basis}
               </span>
               {!hideProv && prov && (
-                <span className="truncate font-mono text-data text-muted-foreground/55" title={prov}>
+                <span className="truncate font-mono text-data text-muted-foreground/75" title={prov}>
                   · {readableSourceLabel(prov)}
                 </span>
               )}
@@ -497,7 +497,7 @@ function ArtifactDrawerInner({
     <Sheet open onOpenChange={(o) => !o && onClose()}>
       <SheetContent
         side="right"
-        className="w-[min(92vw,460px)] overflow-y-auto border-l border-white/[0.08] bg-[hsl(var(--surface-0))] p-0 sm:max-w-[460px]"
+        className="w-[min(92vw,460px)] overflow-y-auto border-l border-white/[0.08] bg-surface-0 p-0 sm:max-w-[460px]"
       >
         <SheetHeader className="border-b border-white/[0.08] px-5 py-5 text-left">
           <SheetDescription className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">

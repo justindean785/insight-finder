@@ -248,7 +248,7 @@ export function CustodyTab({ threadId }: { threadId: string }) {
                           boxShadow:
                             "0 0 0 3px hsl(var(--surface-0)), 0 0 10px -1px hsl(var(--confidence-high) / 0.7)",
                         }}
-                        title="HARD — immutably anchored"
+                        title="HARD: immutably anchored"
                       >
                         <Lock className="w-2.5 h-2.5 text-[hsl(var(--surface-0))]" strokeWidth={2.5} />
                       </span>
@@ -260,7 +260,7 @@ export function CustodyTab({ threadId }: { threadId: string }) {
                           boxShadow:
                             "0 0 0 3px hsl(var(--surface-0)), inset 0 0 0 2px hsl(var(--confidence-mid) / 0.85)",
                         }}
-                        title="SOFT — inferred / soft state"
+                        title="SOFT: inferred / soft state"
                       />
                     )}
                   </div>

@@ -82,16 +82,16 @@ function parseHttpStatusFromError(err: unknown): number | null {
 function describeTransportError(err: unknown): string {
   const msg = String((err as { message?: unknown })?.message ?? err ?? "").toLowerCase();
   const status = parseHttpStatusFromError(err);
-  if (status === 401) return "Session expired — your login has timed out. Sign in again to continue.";
+  if (status === 401) return "Session expired. Sign in again to continue.";
   if (status === 402 || msg.includes("insufficient_credits") || msg.includes("out of credits"))
-    return "Out of beta credits — you've used your investigation allowance for now. Contact us to top up your account.";
-  if (status === 403) return "Access denied — this thread doesn't belong to your account. Open your own thread or create a new one.";
-  if (status === 404) return "Edge function not deployed — the OSINT agent backend wasn't found. Deploy the Supabase function and retry.";
-  if (status === 429) return "Rate limited by the scan backend — too many requests. Wait ~30 seconds and try again.";
-  if (status === 502 || status === 503 || status === 504) return "Scan backend temporarily unavailable — upstream provider or dependency is down. Retry in a minute.";
-  if (status && status >= 500) return `Backend error (HTTP ${status}) — the OSINT agent encountered a server fault. Check Supabase function logs for details.`;
-  if (/failed to fetch|networkerror|network request failed|load failed|dns/i.test(msg)) return "Network failure — cannot reach the scan backend. Verify your Supabase project is running and the function URL is correct.";
-  return "Scan request failed before the stream started — check the browser console for transport details.";
+    return "Out of beta credits. You've used your investigation allowance for now. Contact us to top up your account.";
+  if (status === 403) return "Access denied. This thread doesn't belong to your account. Open your own thread or create a new one.";
+  if (status === 404) return "Edge function not deployed. The OSINT agent backend wasn't found. Deploy the Supabase function and retry.";
+  if (status === 429) return "Rate limited by the scan backend. Wait ~30 seconds and try again.";
+  if (status === 502 || status === 503 || status === 504) return "Scan backend temporarily unavailable. An upstream provider or dependency is down. Retry in a minute.";
+  if (status && status >= 500) return `Backend error (HTTP ${status}). The OSINT agent encountered a server fault. Check Supabase function logs for details.`;
+  if (/failed to fetch|networkerror|network request failed|load failed|dns/i.test(msg)) return "Network failure. Cannot reach the scan backend. Verify your Supabase project is running and the function URL is correct.";
+  return "Scan request failed before the stream started. Check the browser console for transport details.";
 }
 
 async function fetchWithRetry(url: RequestInfo | URL, init?: RequestInit): Promise<Response> {
@@ -1326,7 +1326,7 @@ function ChatWindowInner({
       console.error("stopInvestigation status update failed:", statusErr);
       // The browser stream was aborted, but without the persisted "stopped"
       // status the server-side worker can keep running — so this is a real error.
-      toast.error("Could not fully stop the investigation — the server run may still be active. Retry.");
+      toast.error("Could not fully stop the investigation. The server run may still be active. Retry.");
     } finally {
       setStopping(false);
     }
@@ -1418,7 +1418,7 @@ function ChatWindowInner({
         }
       } catch (probeErr) {
         if ((probeErr as Error)?.name === "TimeoutError" || (probeErr as Error)?.name === "AbortError") {
-          toast.error("Scan backend timed out — Supabase function may be cold-starting. Retry in a few seconds.");
+          toast.error("Scan backend timed out. The Supabase function may be cold-starting. Retry in a few seconds.");
           readyProbedOnceRef.current = false; // allow retry
           return;
         }
@@ -1449,7 +1449,7 @@ function ChatWindowInner({
     if (!user) {
       // Previously this returned silently, so picking a file before the session
       // loaded looked like a broken upload. Surface it instead.
-      toast.error("Sign in to attach files — your session isn't ready yet.");
+      toast.error("Sign in to attach files. Your session isn't ready yet.");
       return;
     }
     const list = Array.from(files);
@@ -1889,7 +1889,7 @@ function ChatWindowInner({
                 What are we investigating?
               </h1>
               <p className="mt-3 max-w-md text-sm leading-relaxed text-muted-foreground">
-                Drop an email, username, phone, IP, domain, or wallet — the agent
+                Drop an email, username, phone, IP, domain, or wallet. The agent
                 routes providers, pivots across what it finds, and lands evidence
                 with confidence tiers.
               </p>

@@ -241,7 +241,7 @@ export function BrainPanel({
                             </div>
                             <div className="h-1 rounded-full bg-white/5 overflow-hidden">
                               <div
-                                className="h-full bg-gradient-to-r from-primary to-accent"
+                                className="h-full bg-primary"
                                 style={{ width: `${pct}%` }}
                               />
                             </div>

@@ -143,7 +143,7 @@ export default function Insights() {
             </div>
             <div className="font-display text-sm font-semibold tracking-tight">Insight Finder</div>
           </Link>
-          <nav className="ml-6 hidden sm:flex items-center gap-1 text-xs">
+          <nav className="ml-3 sm:ml-6 flex items-center gap-0.5 sm:gap-1 text-xs">
             <NavLink to="/" icon={Home} label="Home" />
             <NavLink to="/chat" icon={MessageSquare} label="Chat" />
             <NavLink to="/insights" icon={BarChart3} label="Insights" active />
@@ -198,7 +198,7 @@ export default function Insights() {
             label="Avg source confidence"
             value={derived?.totals.avgConfidence ?? 0}
             suffix="%"
-            sub="Tool/source score — not analyst review"
+            sub="Tool/source score (not analyst review)"
           />
         </section>
 
@@ -422,15 +422,16 @@ function NavLink({
   return (
     <Link
       to={to}
+      aria-label={label}
       className={
-        "inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background " +
+        "inline-flex items-center gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background " +
         (active
           ? "bg-white/[0.06] text-foreground"
           : "text-muted-foreground hover:text-foreground hover:bg-white/[0.04]")
       }
     >
-      <Icon className="w-3.5 h-3.5" />
-      {label}
+      <Icon className="w-3.5 h-3.5 shrink-0" />
+      <span className="hidden sm:inline">{label}</span>
     </Link>
   );
 }

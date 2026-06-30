@@ -63,14 +63,14 @@ export function FailedSkippedTab({ threadId }: { threadId: string }) {
         </Section>
       )}
       {gated.length > 0 && (
-        <Section title="Gated — budget / policy / triage (not a fault)" count={gated.length} icon={<Ban className="w-3 h-3 text-[hsl(var(--confidence-mid))]" />}>
+        <Section title="Gated: budget / policy / triage (not a fault)" count={gated.length} icon={<Ban className="w-3 h-3 text-[hsl(var(--confidence-mid))]" />}>
           {gated.map((e) => (
             <EntryCard key={e.id} entry={e} onCopy={copy} onScroll={scrollToCard} />
           ))}
         </Section>
       )}
       {degraded.length > 0 && (
-        <Section title="Degraded — provider unavailable / partial" count={degraded.length} icon={<Activity className="w-3 h-3 text-[hsl(var(--confidence-mid))]" />}>
+        <Section title="Degraded: provider unavailable / partial" count={degraded.length} icon={<Activity className="w-3 h-3 text-[hsl(var(--confidence-mid))]" />}>
           {degraded.map((e) => (
             <EntryCard key={e.id} entry={e} onCopy={copy} onScroll={scrollToCard} />
           ))}

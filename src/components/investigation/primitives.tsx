@@ -44,7 +44,7 @@ export function TierBadge({
           pad,
         )}
         style={{ color: "hsl(var(--muted-foreground))", border: "1px solid hsl(var(--border-subtle))" }}
-        title="Declared tier — not supported by the evidence"
+        title="Declared tier, not supported by the evidence"
       >
         {tier}
       </span>

@@ -799,7 +799,7 @@ export function CaseReport({
           <div className="mt-1 font-display text-2xl font-semibold text-[hsl(var(--info))]">
             {analystConf}% <span className="text-sm font-mono uppercase tracking-wider text-muted-foreground">· {qualConfidence(analystConf)}</span>
           </div>
-          <p className="mt-1 text-data leading-relaxed text-muted-foreground">Strongest identity-bearing artifact — reasoned read, not an auto-confirmation.</p>
+          <p className="mt-1 text-data leading-relaxed text-muted-foreground">Strongest identity-bearing artifact: a reasoned read, not an auto-confirmation.</p>
         </div>
         <div>
           <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">Auto-corroboration</div>
@@ -823,7 +823,7 @@ export function CaseReport({
                     {dobSuspect && (
                       <span
                         className="ml-2 align-middle rounded border border-[hsl(var(--warning))]/60 bg-[hsl(var(--warning))]/10 px-1.5 py-px text-[9px] font-mono uppercase tracking-wider text-[hsl(var(--warning))] no-underline"
-                        title="January 1 is a common placeholder DOB — verify before relying on it"
+                        title="January 1 is a common placeholder DOB; verify before relying on it"
                       >
                         placeholder?
                       </span>
@@ -1024,7 +1024,7 @@ export function CaseReport({
               </tbody>
             </table>
           </div>
-          <p className="mt-1 text-data text-muted-foreground">Credential values are masked by policy — presence is indicated, never the plaintext, hash, or hint.</p>
+          <p className="mt-1 text-data text-muted-foreground">Credential values are masked by policy; presence is indicated, never the plaintext, hash, or hint.</p>
         </>
       )}
 

@@ -54,7 +54,7 @@ export function TabHeader({
       <div className="flex min-w-0 items-center gap-2.5">
         {Icon && <Icon className="w-4 h-4 shrink-0 text-muted-foreground" strokeWidth={1.75} aria-hidden />}
         <div className="min-w-0">
-          <h2 className="text-[13px] font-semibold leading-tight tracking-tight text-foreground">{title}</h2>
+          <h2 className="text-meta font-semibold leading-tight tracking-tight text-foreground">{title}</h2>
           {subtitle != null && (
             <div className="mt-0.5 text-[11px] leading-tight text-muted-foreground">{subtitle}</div>
           )}

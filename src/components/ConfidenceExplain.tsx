@@ -19,9 +19,9 @@ export function ConfidenceExplain({
 }) {
   const exp = explainConfidence(artifact, review);
   const verdictColor =
-    exp.final >= 80 ? "text-[hsl(var(--confidence-high))]" :
-    exp.final >= 50 ? "text-[hsl(var(--confidence-mid))]" :
-    "text-[hsl(var(--confidence-low))]";
+    exp.final >= 80 ? "text-confidence-high" :
+    exp.final >= 50 ? "text-confidence-mid" :
+    "text-confidence-low";
 
   return (
     <Popover>
@@ -61,8 +61,8 @@ export function ConfidenceExplain({
               <span
                 className={cn(
                   "font-mono text-data tabular-nums shrink-0 mt-0.5",
-                  c.delta > 0 ? "text-[hsl(var(--confidence-high))]" :
-                  c.delta < 0 ? "text-[hsl(var(--confidence-low))]" :
+                  c.delta > 0 ? "text-confidence-high" :
+                  c.delta < 0 ? "text-confidence-low" :
                   "text-muted-foreground",
                 )}
               >

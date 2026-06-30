@@ -168,7 +168,7 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
         <Download className="w-3 h-3" /> Download .md
       </Button>
       <Button size="sm" variant="outline" className="h-7 gap-1 text-data"
-        onClick={printPdf} title="Opens the print dialog — choose 'Save as PDF'">
+        onClick={printPdf} title="Opens the print dialog, then choose 'Save as PDF'">
         <Printer className="w-3 h-3" /> Download PDF
       </Button>
       <span aria-hidden className="hidden sm:block h-5 w-px bg-border-subtle mx-0.5" />
@@ -179,7 +179,7 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
       </Button>
       <Button size="sm" variant="ghost" className="h-7 gap-1 text-data text-muted-foreground"
         onClick={openJsonGate}
-        title="Raw JSON export — requires confirmation">
+        title="Raw JSON export; requires confirmation">
         <Braces className="w-3 h-3" /> JSON
       </Button>
     </div>
@@ -212,7 +212,7 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
             className={cn(
               "h-7 rounded-lg border px-2.5 text-data transition-colors",
               reportType === t.id
-                ? "border-[hsl(var(--info)/0.5)] bg-[hsl(var(--info)/0.12)] text-foreground"
+                ? "border-[hsl(var(--intel-blue)/0.5)] bg-[hsl(var(--intel-blue)/0.12)] text-foreground"
                 : "border-border-subtle bg-surface-1 text-muted-foreground hover:text-foreground",
             )}
           >

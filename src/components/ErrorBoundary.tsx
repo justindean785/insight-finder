@@ -46,7 +46,7 @@ export class ErrorBoundary extends Component<Props, State> {
               The app hit an unexpected error
             </h1>
             <p className="mt-3 max-w-xl text-sm text-muted-foreground">
-              Your data is safe — this is a display error. Reloading usually fixes it.
+              Your data is safe. This is a display error, and reloading usually fixes it.
               If it keeps happening, copy the diagnostics and send them over.
             </p>
 

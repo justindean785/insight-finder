@@ -248,7 +248,7 @@ export default function HomeHub() {
               </div>
             ) : counts.recentCases.length === 0 ? (
               <div className="p-6 text-sm text-muted-foreground">
-                No cases yet — start a new one to seed your first investigation.
+                No cases yet. Start a new one to seed your first investigation.
               </div>
             ) : (
               counts.recentCases.map((c) => (

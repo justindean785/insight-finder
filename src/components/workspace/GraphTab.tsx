@@ -16,6 +16,7 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import { supabase } from "@/integrations/supabase/client";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
+import { prefersReducedMotion } from "@/lib/motion";
 import { GROUP_LABEL, type Group } from "@/lib/intel";
 import {
   buildEntityGraph,
@@ -244,7 +245,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
     if (!rfRef.current || rfNodes.length === 0) return;
     if (fittedThread.current === threadId) return;
     fittedThread.current = threadId;
-    const raf = requestAnimationFrame(() => rfRef.current?.fitView({ padding: 0.2, duration: 250 }));
+    const raf = requestAnimationFrame(() => rfRef.current?.fitView({ padding: 0.2, duration: prefersReducedMotion() ? 0 : 250 }));
     return () => cancelAnimationFrame(raf);
   }, [rfNodes, threadId]);
 

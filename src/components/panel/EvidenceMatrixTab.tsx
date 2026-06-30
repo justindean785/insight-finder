@@ -274,7 +274,7 @@ export function EvidenceMatrixTab({
                   {delta !== 0 && (
                     <div
                       className="mt-1 inline-flex items-center gap-1 text-data text-muted-foreground font-mono"
-                      title="Raw source/tool confidence — not affected by analyst review actions."
+                      title="Raw source/tool confidence, not affected by analyst review actions."
                     >
                       <span className="uppercase tracking-wider text-eyebrow">raw</span>
                       <span>{base}/100</span>

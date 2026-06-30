@@ -51,7 +51,7 @@ export function ConfidenceRadar({
   const n = dims.length;
 
   const polygon = dims.map((d, i) => pointAt(i, n, d.value / 100).join(",")).join(" ");
-  const a11ySummary = `Confidence signals — overall ${profile.overall} percent. ` +
+  const a11ySummary = `Confidence signals. Overall ${profile.overall} percent. ` +
     dims.map((d) => `${d.label} ${d.sufficient ? `${d.value} percent` : "insufficient data"}`).join(", ") + ".";
 
   return (
@@ -83,7 +83,7 @@ export function ConfidenceRadar({
 
       {profile.limited && (
         <p className="mt-2 rounded-md border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-data text-muted-foreground">
-          Not enough evidence for a confidence chart yet — these axes are preliminary and will sharpen as the case grows.
+          Not enough evidence for a confidence chart yet. These axes are preliminary and will sharpen as the case grows.
         </p>
       )}
 
@@ -140,8 +140,8 @@ export function ConfidenceRadar({
               <div className="mt-0.5 h-1 rounded-full bg-surface-3 overflow-hidden" aria-hidden>
                 <div className="h-full rounded-full" style={{ width: `${d.sufficient ? d.value : 0}%`, backgroundColor: bandColor(d) }} />
               </div>
-              <p className="mt-0.5 text-[10px] leading-snug text-muted-foreground/80">
-                {!d.sufficient && <span className="text-muted-foreground">Insufficient data — </span>}
+              <p className="mt-0.5 text-xs leading-snug text-muted-foreground/80">
+                {!d.sufficient && <span className="text-muted-foreground">Insufficient data: </span>}
                 {d.reason}
               </p>
             </li>

@@ -233,7 +233,7 @@ export default function BrainGlobalPage() {
               Patterns, lessons and source weighting the agent has accumulated across investigations.
             </p>
             <p className="mt-1.5 text-[11px] text-muted-foreground/80">
-              Pin / mute / hide actions on this screen are local view controls — they do not modify
+              Pin / mute / hide actions on this screen are local view controls. They do not modify
               the source memory or create an audited governance record.
             </p>
           </div>
@@ -604,7 +604,7 @@ function MemoryRichCard({
           <button
             onClick={onSuppress}
             aria-label={suppressed ? "Unmute memory (local)" : "Mute memory (local)"}
-            title={suppressed ? "Unmute in your local view — no audited change" : "Mute in your local view — no audited change"}
+            title={suppressed ? "Unmute in your local view. No audited change" : "Mute in your local view. No audited change"}
             className={cn(
               "w-6 h-6 grid place-items-center rounded hover:bg-white/5",
               suppressed ? "text-primary" : "text-muted-foreground/60 hover:text-foreground",
@@ -615,7 +615,7 @@ function MemoryRichCard({
           <button
             onClick={onDelete}
             aria-label="Hide memory from your local view"
-            title="Hide in your local view — no audited deletion"
+            title="Hide in your local view. No audited deletion"
             className="w-6 h-6 grid place-items-center rounded text-muted-foreground/60 hover:text-foreground hover:bg-white/5"
           >
             <Trash2 className="w-3 h-3" strokeWidth={1.75} />
@@ -832,7 +832,7 @@ function PatternCard({
       <div className="flex items-center gap-1 mt-auto pt-1 border-t border-border-subtle/40">
         <button
           onClick={onPromote}
-          title="Pin in your local view — no audited change to source priority"
+          title="Pin in your local view. No audited change to source priority"
           className={cn(
             "inline-flex items-center gap-1 px-2 py-1 rounded text-eyebrow uppercase tracking-wider font-mono transition-colors hover:bg-white/5",
             promoted ? "text-primary" : "text-muted-foreground/70 hover:text-foreground",
@@ -843,7 +843,7 @@ function PatternCard({
         </button>
         <button
           onClick={onSuppress}
-          title="Mute in your local view — no audited change to source memory"
+          title="Mute in your local view. No audited change to source memory"
           className={cn(
             "inline-flex items-center gap-1 px-2 py-1 rounded text-eyebrow uppercase tracking-wider font-mono transition-colors hover:bg-white/5",
             suppressed ? "text-primary" : "text-muted-foreground/70 hover:text-foreground",
@@ -854,7 +854,7 @@ function PatternCard({
         </button>
         <button
           onClick={onDelete}
-          title="Hide in your local view — no audited deletion"
+          title="Hide in your local view. No audited deletion"
           className="inline-flex items-center gap-1 px-2 py-1 rounded text-eyebrow uppercase tracking-wider font-mono text-muted-foreground/70 hover:text-foreground hover:bg-white/5"
         >
           <Trash2 className="w-3 h-3" strokeWidth={1.75} />
