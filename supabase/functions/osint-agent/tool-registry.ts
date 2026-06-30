@@ -4519,8 +4519,16 @@ export function buildTools(ctx: ToolContext) {
           _scope: scope ?? "global",
         });
         if (error) {
-          console.warn("[memory_save] rpc error:", error.message);
-          return { ok: false, error: error.message, scope: scope ?? "global" };
+          // A dedup-index collision is the EXPECTED no-op when the agent
+          // re-saves a memory it already knows — the row exists, hit_count is
+          // the only thing that would change. Report it as a benign success so
+          // it never surfaces as a failed tool card in chat.
+          const msg = error.message ?? "";
+          if (/duplicate key|agent_memory_dedup_idx|already exists/i.test(msg)) {
+            return { ok: true, deduped: true, scope: scope ?? "global", saved: 0, entries: [] };
+          }
+          console.warn("[memory_save] rpc error:", msg);
+          return { ok: false, error: msg, scope: scope ?? "global" };
         }
         return { ok: true, scope: scope ?? "global", saved: data?.length ?? 0, entries: data ?? [] };
       } catch (e) {

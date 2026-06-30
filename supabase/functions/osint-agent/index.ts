@@ -33,6 +33,12 @@ import { beginCycle, clearRuntime } from "./runtime-policy.ts";
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { buildTools } from "./tool-registry.ts";
 
+// Quiet the AI SDK's per-turn warning spam (MiniMax "specificationVersion
+// compatibility mode" + the warning-system notice). We knowingly run MiniMax in
+// v2 compat mode; the warning fires on every orchestrator turn and drowns the
+// function logs. The SDK reads this global at call time.
+(globalThis as Record<string, unknown>).AI_SDK_LOG_WARNINGS = false;
+
 function extractManualOverrideSelector(messages: UIMessage[]): string | null {
   const latestUser = [...messages].reverse().find((message) => message.role === "user");
   if (!latestUser || !Array.isArray(latestUser.parts)) return null;
