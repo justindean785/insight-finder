@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { StickyNote, Save, Loader2, Check } from "lucide-react";
 import { toast } from "sonner";
 
@@ -92,7 +96,7 @@ export function NotesTab({ threadId }: { threadId: string }) {
     <div className="p-3 space-y-3 text-xs">
       <div className="flex items-center gap-1.5 text-muted-foreground">
         <StickyNote className="w-3.5 h-3.5 text-primary" />
-        <span>Investigator notes — markdown, scoped to this thread.</span>
+        <span>Investigator notes. Markdown, scoped to this thread.</span>
       </div>
       <div className="space-y-1.5">
         <textarea
@@ -127,7 +131,7 @@ export function NotesTab({ threadId }: { threadId: string }) {
           <div className="text-muted-foreground">Loading…</div>
         ) : loadError ? (
           <div className="rounded-md border border-destructive/40 bg-destructive/10 p-2 space-y-1.5">
-            <div className="text-destructive">Couldn't load notes — {loadError}</div>
+            <div className="text-destructive">Couldn't load notes: {loadError}</div>
             <Button
               size="sm"
               variant="ghost"
@@ -147,7 +151,28 @@ export function NotesTab({ threadId }: { threadId: string }) {
                   <span className="font-mono">{new Date(n.updated_at).toLocaleString()}</span>
                   <div className="flex items-center gap-1">
                     <Button size="sm" variant="ghost" className="h-6 px-1.5 text-data" onClick={() => edit(n)}>Edit</Button>
-                    <Button size="sm" variant="ghost" className="h-6 px-1.5 text-data text-destructive hover:text-destructive" onClick={() => void del(n.id)}>Delete</Button>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button size="sm" variant="ghost" className="h-6 px-1.5 text-data text-destructive hover:text-destructive">Delete</Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Delete note?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            This permanently removes this investigator note. It cannot be undone.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction
+                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                            onClick={() => void del(n.id)}
+                          >
+                            Delete note
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
                   </div>
                 </div>
                 <pre className="whitespace-pre-wrap break-words font-mono text-data text-foreground">{n.body}</pre>

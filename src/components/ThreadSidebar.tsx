@@ -4,6 +4,10 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
   Plus, LogOut, Trash2, PanelLeftOpen, PanelLeftClose, Search, Brain, CheckCircle2,
   ShieldAlert, Database, Activity, BarChart3, Wallet,
   Mail, Phone, Globe, Network, User, Hash, FileSearch, type LucideIcon,
@@ -245,7 +249,9 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   const deleteThread = async (id: string, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    await supabase.from("threads").delete().eq("id", id);
+    const { error } = await supabase.from("threads").delete().eq("id", id);
+    if (error) { toast.error(error.message); return; }
+    toast.success("Investigation deleted");
     if (id === threadId) navigate("/");
   };
 
@@ -374,7 +380,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   ];
 
   return (
-    <div className="w-full h-full flex flex-col bg-[hsl(var(--surface-0))]">
+    <div className="w-full h-full flex flex-col bg-surface-0">
       <div className="px-3 py-3 border-b border-border-subtle flex items-center gap-2">
         <Link
           to="/"
@@ -598,13 +604,38 @@ function ThreadRow({
           )}
         </div>
       </div>
-      <button
-        onClick={(e) => onDelete(t.id, e)}
-        className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity"
-        aria-label="Delete"
-      >
-        <Trash2 className="w-3.5 h-3.5" />
-      </button>
+      <AlertDialog>
+        <AlertDialogTrigger asChild>
+          <button
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
+            className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity"
+            aria-label="Delete investigation"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </AlertDialogTrigger>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <Trash2 className="w-4 h-4 text-destructive" />
+              Delete investigation?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently deletes <span className="text-foreground font-medium">{t.title}</span> and all of its
+              evidence, custody chain, notes, and tool history. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={(e) => onDelete(t.id, e)}
+            >
+              Delete investigation
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Link>
   );
 }
