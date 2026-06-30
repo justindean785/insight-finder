@@ -12,8 +12,9 @@ import {
   YAxis,
 } from "recharts";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
-import { artifactsToSources } from "@/lib/audit/from-artifacts";
+import { artifactsToSources, artifactsToClusterAudit, reportVerdict, type ReportVerdict } from "@/lib/audit/from-artifacts";
 import { checkIndependence, computeEffectiveSourceCount } from "@/lib/audit/source-independence";
+import { lintReport } from "@/lib/audit/confidence-linter";
 import { SourceBadge } from "@/components/SourceBadge";
 import { breachSeverity, isAiSummaryArtifact, isDobPlaceholder, qualConfidence } from "@/lib/report-badges";
 import { EvidenceStatusBadge } from "@/components/ui/workspace-primitives";
@@ -718,6 +719,12 @@ export function CaseReport({
   const auditSources = useMemo(() => artifactsToSources(artifacts), [artifacts]);
   const effectiveSources = useMemo(() => computeEffectiveSourceCount(auditSources), [auditSources]);
   const independenceFindings = useMemo(() => checkIndependence(auditSources), [auditSources]);
+  // Honest confidence verdict: lint identity clusters for tier-over-statement /
+  // unmet "Verified" gate, then roll lint + independence findings into one
+  // CLEAN/ADVISORY/BLOCKED verdict. Integrity-critical (changes shown confidence).
+  const clusterAudits = useMemo(() => artifactsToClusterAudit(artifacts, seedValue), [artifacts, seedValue]);
+  const confidenceFindings = useMemo(() => lintReport(clusterAudits), [clusterAudits]);
+  const verdict = useMemo(() => reportVerdict(confidenceFindings, independenceFindings), [confidenceFindings, independenceFindings]);
   const avgConfidence = useMemo(() => averageConfidence(artifacts), [artifacts]);
 
   const audit = buildToolAudit(artifacts);
@@ -749,6 +756,7 @@ export function CaseReport({
 
   return (
     <article id="case-report-print-root" className="case-report-doc text-[12.5px] leading-relaxed text-foreground/95">
+      <VerdictBanner verdict={verdict} confCount={confidenceFindings.length} indepCount={independenceFindings.length} />
       {/* Header */}
       <header className="report-cover relative overflow-hidden rounded-2xl border border-white/[0.08] bg-[hsl(var(--surface-1))/0.72] p-4 sm:p-5">
         <div className="relative z-10 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
@@ -894,11 +902,30 @@ export function CaseReport({
             body="Each table row includes source class, status basis, score, capture date, and backend reasoning where available."
           />
         </div>
-        {independenceFindings.length > 0 && (
+        {(confidenceFindings.length > 0 || independenceFindings.length > 0) && (
           <ul className="mt-2.5 space-y-1.5 border-t border-[hsl(var(--info)/0.18)] pt-2.5">
+            {confidenceFindings.map((f, i) => (
+              <li
+                key={`c${i}`}
+                className={cn(
+                  "flex items-start gap-1.5 text-data leading-relaxed",
+                  f.severity === "error"
+                    ? "text-[hsl(var(--danger))]"
+                    : f.severity === "warn"
+                      ? "text-[hsl(var(--warning))]"
+                      : "text-muted-foreground",
+                )}
+              >
+                <span aria-hidden className="mt-px shrink-0">{f.severity === "error" ? "⛔" : f.severity === "warn" ? "⚠" : "ℹ"}</span>
+                <span>
+                  <span className="font-medium">{f.cluster}:</span> {f.message}
+                  {f.suggestion ? <span className="text-muted-foreground"> {f.suggestion}</span> : null}
+                </span>
+              </li>
+            ))}
             {independenceFindings.map((f, i) => (
               <li
-                key={i}
+                key={`i${i}`}
                 className={cn(
                   "flex items-start gap-1.5 text-data leading-relaxed",
                   f.severity === "warn" ? "text-[hsl(var(--warning))]" : "text-muted-foreground",
@@ -1162,6 +1189,45 @@ function GuardrailCard({ label, body }: { label: string; body: string }) {
     <div className="rounded-lg border border-white/[0.07] bg-black/15 p-2">
       <div className="text-data font-semibold text-foreground">{label}</div>
       <p className="mt-1 text-data leading-relaxed text-muted-foreground">{body}</p>
+    </div>
+  );
+}
+
+const VERDICT_CFG: Record<ReportVerdict, { label: string; cls: string; note: string }> = {
+  clean: {
+    label: "CLEAN",
+    cls: "border-[hsl(var(--confidence-high)/0.4)] bg-[hsl(var(--confidence-high)/0.08)] text-[hsl(var(--confidence-high))]",
+    note: "No confidence over-statements or source-independence issues detected.",
+  },
+  advisory: {
+    label: "ADVISORY",
+    cls: "border-[hsl(var(--warning)/0.4)] bg-[hsl(var(--warning)/0.08)] text-[hsl(var(--warning))]",
+    note: "Some findings read stronger than their evidence, or sources overlap — weigh the flags below before relying on the headline.",
+  },
+  blocked: {
+    label: "BLOCKED",
+    cls: "border-[hsl(var(--danger)/0.45)] bg-[hsl(var(--danger)/0.09)] text-[hsl(var(--danger))]",
+    note: "A cluster declares a tier its evidence does not support (or claims “Verified” without ≥2 independent strong sources). Downgrade before relying on it.",
+  },
+};
+
+/** Honest confidence verdict banner — CLEAN / ADVISORY / BLOCKED — driven by the
+ *  confidence linter + source-independence findings. */
+function VerdictBanner({ verdict, confCount, indepCount }: { verdict: ReportVerdict; confCount: number; indepCount: number }) {
+  const cfg = VERDICT_CFG[verdict];
+  const total = confCount + indepCount;
+  return (
+    <div className={cn("mb-3 flex items-start gap-2.5 rounded-xl border px-3.5 py-2.5", cfg.cls)}>
+      <span className="mt-0.5 inline-flex shrink-0 items-center rounded-md border border-current px-1.5 py-0.5 text-eyebrow font-mono font-bold uppercase tracking-[0.16em]">
+        {cfg.label}
+      </span>
+      <div className="min-w-0">
+        <div className="text-eyebrow uppercase tracking-[0.16em] opacity-80">Confidence verdict</div>
+        <p className="mt-0.5 text-data leading-relaxed text-foreground/85">
+          {cfg.note}
+          {total > 0 ? ` ${total} flag${total === 1 ? "" : "s"} in Accuracy Guardrails.` : ""}
+        </p>
+      </div>
     </div>
   );
 }
