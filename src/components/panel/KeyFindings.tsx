@@ -54,7 +54,7 @@ export function KeyFindings({ threadId, artifacts }: { threadId: string; artifac
                   />
                   <div className="min-w-0">
                     <div className="font-mono text-foreground break-all">{a.value}</div>
-                    <div className="text-[9px] uppercase tracking-wider text-muted-foreground mt-0.5">
+                    <div className="text-[10px] uppercase tracking-wider text-muted-foreground mt-0.5">
                       {a.kind} {a.source ? `· ${a.source}` : ""}
                     </div>
                     {note && (

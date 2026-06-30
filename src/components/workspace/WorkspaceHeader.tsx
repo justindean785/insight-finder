@@ -70,17 +70,23 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
     return () => { supabase.removeChannel(ch); };
   }, [threadId, loadIntegrity]);
 
-  const status: "idle" | "active" | "completed" =
-    thread?.status === "finished" || thread?.status === "stopped" ? "completed"
+  const statusLabel =
+    thread?.status === "finished" ? "complete"
+    : thread?.status === "stopped" ? "stopped"
     : artifactCount > 0 || activity.total > 0 ? "active"
     : "idle";
   const statusColor =
-    status === "completed" ? "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high)/0.4)] bg-[hsl(var(--confidence-high)/0.1)]"
-    : status === "active" ? "text-primary border-primary/40 bg-primary/10"
-    : "text-muted-foreground border-border bg-secondary/40";
+    statusLabel === "complete"
+      ? "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high)/0.4)] bg-[hsl(var(--confidence-high)/0.1)]"
+      : statusLabel === "stopped"
+      ? "text-[hsl(var(--warning))] border-[hsl(var(--warning)/0.4)] bg-[hsl(var(--warning-muted))]"
+      : statusLabel === "active"
+      ? "text-primary border-primary/40 bg-primary/10"
+      : "text-muted-foreground border-border bg-secondary/40";
   const dotColor =
-    status === "completed" ? "bg-[hsl(var(--confidence-high))] shadow-[0_0_8px_hsl(var(--confidence-high)/0.7)]"
-    : status === "active" ? "bg-primary shadow-[0_0_8px_hsl(var(--primary)/0.5)] animate-pulse"
+    statusLabel === "complete" ? "bg-[hsl(var(--confidence-high))] shadow-[0_0_8px_hsl(var(--confidence-high)/0.7)]"
+    : statusLabel === "stopped" ? "bg-[hsl(var(--warning))] shadow-[0_0_8px_hsl(var(--warning)/0.6)]"
+    : statusLabel === "active" ? "bg-primary shadow-[0_0_8px_hsl(var(--primary)/0.5)] animate-pulse"
     : "bg-muted-foreground";
 
   const integrityPct = integrity && integrity.total > 0
@@ -112,11 +118,14 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
           aria-hidden
         />
         <button onClick={copySeed} className="group flex items-center gap-1.5 min-w-0 shrink text-left" title={thread?.seed_value ?? ""}>
-          <span className="font-mono text-meta text-foreground truncate max-w-[58vw] sm:max-w-[42vw]">{thread?.seed_value || "—"}</span>
+          <span className="font-mono text-meta text-foreground truncate max-w-[58vw] sm:max-w-[42vw]">{thread?.seed_value || <span className="text-muted-foreground/50 italic">no seed yet</span>}</span>
           {thread?.seed_value && <Copy className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />}
         </button>
-        <span className={cn("shrink-0 rounded-full border px-2.5 py-1 text-eyebrow font-mono uppercase tracking-[0.16em]", statusColor)}>
-          {status}
+        <span
+          title={thread?.seed_value ? `${thread.seed_value} · ${statusLabel}` : statusLabel}
+          className={cn("shrink-0 rounded-full border px-2.5 py-1 text-eyebrow font-mono uppercase tracking-[0.16em]", statusColor)}
+        >
+          {statusLabel}
         </span>
 
         <div className="ml-auto flex items-center gap-3 sm:gap-4 text-data shrink-0">

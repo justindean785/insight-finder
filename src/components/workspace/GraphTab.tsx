@@ -107,7 +107,7 @@ const EntityNode = memo(function EntityNode({ data, selected }: NodeProps<Entity
       <span className="h-2 w-2 shrink-0 rounded-[3px]" style={{ backgroundColor: color }} />
       <span className="max-w-[140px] truncate font-mono text-[11px] text-foreground/90">{data.label}</span>
       {data.confidence > 0 && (
-        <span className="font-mono text-[9px] tabular-nums text-muted-foreground">{data.confidence}</span>
+        <span className="font-mono text-[10px] tabular-nums text-muted-foreground">{data.confidence}</span>
       )}
       <Handle type="source" position={Position.Bottom} className="!h-1 !w-1 !border-0 !bg-transparent !opacity-0" isConnectable={false} />
     </div>

@@ -329,7 +329,7 @@ export default function BrainGlobalPage() {
           <Link
             to="/"
             aria-label="Home"
-            className="font-display font-semibold text-sm tracking-tight gradient-text select-none hover:opacity-80 transition-opacity"
+            className="font-display font-semibold text-sm tracking-tight text-foreground select-none hover:opacity-80 transition-opacity"
           >
             Brain
           </Link>

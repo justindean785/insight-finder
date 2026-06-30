@@ -108,7 +108,7 @@ export default function Auth() {
             </div>
           </div>
           <div className="space-y-1.5">
-            <h1 className="font-display text-[28px] leading-none font-semibold tracking-tight gradient-text">
+            <h1 className="font-display text-[28px] leading-none font-semibold tracking-tight text-foreground">
               Insight Finder
             </h1>
             <p className="text-muted-foreground text-meta">

@@ -299,10 +299,10 @@ export function MapTab({ artifacts }: { artifacts: Artifact[] }) {
                     {p.label && p.label !== p.value && (
                       <div className="opacity-70">{p.label}</div>
                     )}
-                    <div className="opacity-50 text-[9px]">
+                    <div className="opacity-50 text-[10px]">
                       {p.lat.toFixed(4)}, {p.lon.toFixed(4)}
                     </div>
-                    {p.source && <div className="opacity-50 text-[9px]">via {p.source}</div>}
+                    {p.source && <div className="opacity-50 text-[10px]">via {p.source}</div>}
                   </div>
                 </Popup>
               </CircleMarker>

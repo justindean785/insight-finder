@@ -294,7 +294,7 @@ function AnalystSummary({
           <div className="flex items-center gap-1.5 text-eyebrow uppercase tracking-[0.12em] text-primary">
             <Sparkles className="w-3 h-3" /> Analyst-ready summary
           </div>
-          <span className="text-[9px] font-mono uppercase tracking-wider text-muted-foreground">auto · derived</span>
+          <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">auto · derived</span>
         </div>
         <p className="text-data leading-relaxed text-foreground/90">
           {narrative.join(" ")}
