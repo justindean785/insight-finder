@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactFlow, {
   Background,
   BackgroundVariant,
@@ -8,6 +8,7 @@ import ReactFlow, {
   Position,
   useEdgesState,
   useNodesState,
+  type ReactFlowInstance,
   type Edge,
   type Node,
   type NodeProps,
@@ -213,10 +214,39 @@ export function GraphTab({ threadId }: { threadId: string }) {
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState<EntityNodeData>([]);
   const [rfEdges, setRfEdges] = useEdgesState([]);
 
+  // React Flow's `fitView` prop only fits on the FIRST render — but nodes are
+  // populated asynchronously (after artifacts load), so that initial fit runs on
+  // an empty set and leaves the viewport off the nodes (blank canvas). Frame the
+  // graph imperatively once nodes exist, once per case.
+  const rfRef = useRef<ReactFlowInstance | null>(null);
+  const fittedThread = useRef<string | null>(null);
+  const onRfInit = useCallback(
+    (inst: ReactFlowInstance) => {
+      rfRef.current = inst;
+      requestAnimationFrame(() => {
+        if (rfNodes.length > 0) {
+          fittedThread.current = threadId;
+          inst.fitView({ padding: 0.2 });
+        }
+      });
+    },
+    [rfNodes.length, threadId],
+  );
+
   // Node positions resync on graph/hidden only — so selecting a node (which only
   // restyles edges) never resets a manual drag arrangement.
   useEffect(() => { setRfNodes(toRfNodes(graph, hidden)); }, [graph, hidden, setRfNodes]);
   useEffect(() => { setRfEdges(toRfEdges(graph, hidden, selected)); }, [graph, hidden, selected, setRfEdges]);
+
+  // Fit once the (async) nodes for a case are present; re-fits when the case
+  // changes. Group-filter toggles keep the same threadId so they don't re-fit.
+  useEffect(() => {
+    if (!rfRef.current || rfNodes.length === 0) return;
+    if (fittedThread.current === threadId) return;
+    fittedThread.current = threadId;
+    const raf = requestAnimationFrame(() => rfRef.current?.fitView({ padding: 0.2, duration: 250 }));
+    return () => cancelAnimationFrame(raf);
+  }, [rfNodes, threadId]);
 
   const toggleGroup = (g: Group) =>
     setHidden((prev) => {
@@ -286,6 +316,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
         <ReactFlow
           nodes={rfNodes}
           edges={rfEdges}
+          onInit={onRfInit}
           onNodesChange={onNodesChange}
           nodeTypes={nodeTypes}
           onNodeClick={(_, n) => setSelected(n.id)}
