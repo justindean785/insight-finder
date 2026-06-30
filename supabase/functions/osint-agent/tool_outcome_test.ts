@@ -65,3 +65,11 @@ Deno.test("failed: genuine provider errors", () => {
   ];
   for (const [msg, code] of fails) assertEquals(classifyToolOutcome(msg, code), "failed", String(msg));
 });
+
+Deno.test("robust: non-string errorMsg is coerced, never throws (serus regression)", () => {
+  // serus_darkweb_scan passed an object as errorMsg, crashing classification
+  // with "(errorMsg ?? '').trim is not a function". Coerce instead of throwing.
+  const obj = { code: 500, body: "boom" } as unknown as string;
+  assertEquals(classifyToolOutcome(obj, 500), "failed");
+  assertEquals(classifyToolOutcome(undefined, null), "ok");
+});
