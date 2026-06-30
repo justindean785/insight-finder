@@ -15,7 +15,9 @@
  *  - Known mirror/aggregator URLs are left to the audit lib's domain logic.
  */
 import type { Artifact } from "@/hooks/useThreadArtifacts";
-import type { Source, SourceType } from "./source-independence";
+import { buildIdentityClusters, displayKind } from "@/lib/intel";
+import { tierOf, type ClusterAudit, type ConfidenceFinding } from "./confidence-linter";
+import type { IndependenceFinding, Source, SourceType } from "./source-independence";
 
 function meta(a: Artifact): Record<string, unknown> {
   return a.metadata && typeof a.metadata === "object" && !Array.isArray(a.metadata)
@@ -93,4 +95,45 @@ export function artifactsToSources(artifacts: Artifact[]): Source[] {
     retrievedAt: a.created_at,
     confidence: a.confidence ?? 0,
   }));
+}
+
+/** Build audit clusters from the report's identity clusters. A cluster's derived
+ *  headline confidence is its "declared" tier; the linter flags when that tier
+ *  outruns the mean of its evidence cells (honest over-statement / drift) and
+ *  blocks "Verified" without ≥2 independent ≥85 sources. */
+export function artifactsToClusterAudit(
+  artifacts: Artifact[],
+  seedValue: string | null,
+): ClusterAudit[] {
+  const { clusters } = buildIdentityClusters(artifacts, seedValue);
+  return clusters
+    .filter((c) => c.artifacts.length > 0)
+    .map((c) => ({
+      name: c.label,
+      declaredTier: tierOf(c.confidence),
+      cells: c.artifacts.map((a) => ({
+        claim: displayKind(a),
+        value: a.value,
+        source: a.source ?? "unknown",
+        confidence: a.confidence ?? 0,
+      })),
+    }));
+}
+
+export type ReportVerdict = "clean" | "advisory" | "blocked";
+
+/** Roll the confidence-linter + source-independence findings into one honest
+ *  report verdict: any linter error → BLOCKED; any warning → ADVISORY; else CLEAN. */
+export function reportVerdict(
+  confidenceFindings: ConfidenceFinding[],
+  independenceFindings: IndependenceFinding[],
+): ReportVerdict {
+  if (confidenceFindings.some((f) => f.severity === "error")) return "blocked";
+  if (
+    confidenceFindings.some((f) => f.severity === "warn") ||
+    independenceFindings.some((f) => f.severity === "warn")
+  ) {
+    return "advisory";
+  }
+  return "clean";
 }

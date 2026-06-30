@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
-import { artifactsToSources, classifySourceType, originOf } from "@/lib/audit/from-artifacts";
+import { artifactsToSources, classifySourceType, originOf, artifactsToClusterAudit, reportVerdict } from "@/lib/audit/from-artifacts";
 import { computeEffectiveSourceCount, checkIndependence } from "@/lib/audit/source-independence";
 
 let n = 0;
@@ -82,5 +82,36 @@ describe("audit adapter — honest source collapsing", () => {
     ];
     const findings = checkIndependence(artifactsToSources(arts));
     expect(findings.some((f) => f.effectiveCount < f.declaredCount)).toBe(true);
+  });
+});
+
+describe("audit verdict roll-up", () => {
+  it("error → blocked, warn → advisory, none → clean", () => {
+    expect(reportVerdict([{ severity: "error", cluster: "c", message: "m" }], [])).toBe("blocked");
+    expect(reportVerdict([{ severity: "warn", cluster: "c", message: "m" }], [])).toBe("advisory");
+    expect(
+      reportVerdict([], [{ severity: "warn", message: "m", sources: [], effectiveCount: 1, declaredCount: 2 }]),
+    ).toBe("advisory");
+    expect(reportVerdict([], [])).toBe("clean");
+    // info-only independence (declared→effective note) is not a warning → clean
+    expect(
+      reportVerdict([{ severity: "info", cluster: "c", message: "m" }], [
+        { severity: "info", message: "m", sources: [], effectiveCount: 1, declaredCount: 2 },
+      ]),
+    ).toBe("clean");
+  });
+
+  it("artifactsToClusterAudit produces well-formed ClusterAudit (no throw)", () => {
+    const arts = [
+      art({ kind: "email", value: "a@example.com", confidence: 80 }),
+      art({ kind: "username", value: "alice", confidence: 70 }),
+    ];
+    const ca = artifactsToClusterAudit(arts, "a@example.com");
+    expect(Array.isArray(ca)).toBe(true);
+    for (const c of ca) {
+      expect(typeof c.name).toBe("string");
+      expect(["Low", "Medium", "High", "Verified"]).toContain(c.declaredTier);
+      expect(Array.isArray(c.cells)).toBe(true);
+    }
   });
 });
