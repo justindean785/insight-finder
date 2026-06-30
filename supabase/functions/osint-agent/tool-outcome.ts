@@ -37,7 +37,10 @@ export function classifyToolOutcome(
   errorMsg: string | null | undefined,
   statusCode: number | null | undefined,
 ): ToolOutcome {
-  const msg = (errorMsg ?? "").trim();
+  // Coerce defensively: some tools (e.g. serus_darkweb_scan) pass a non-string
+  // error payload (an object) despite the string type, which made `.trim()`
+  // throw `(errorMsg ?? "").trim is not a function` and crash classification.
+  const msg = String(errorMsg ?? "").trim();
   // No error and no status → the call succeeded.
   if (!msg && (statusCode == null)) return "ok";
 
