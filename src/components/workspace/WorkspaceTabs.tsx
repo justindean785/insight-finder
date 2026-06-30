@@ -156,7 +156,7 @@ export function WorkspaceTabs({
             onClick={() => setMoreOpen((open) => !open)}
             className={cn(
               "relative inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-lg px-2 text-[12px] font-medium transition-all duration-200 ease-premium active:scale-[0.98]",
-              moreActive ? "bg-[hsl(var(--info-muted))] text-[hsl(var(--info))]" : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
+              moreActive ? "bg-white text-black shadow-sm" : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
             )}
           >
             {activeMore && ActiveMoreIcon ? (

@@ -925,10 +925,11 @@ All colors MUST be HSL.
   50% { opacity: 0.55; }
 }
 .cyber-map-overlay {
+  /* Map graticule — two faint coordinate grid lines (spatial reference, load-bearing).
+     The decorative 1px-every-3px CRT scanline layer was removed (cyber cosplay, not signal). */
   background:
     repeating-linear-gradient(0deg, hsl(170 90% 55% / 0.04) 0px, transparent 1px, transparent 32px),
-    repeating-linear-gradient(90deg, hsl(170 90% 55% / 0.04) 0px, transparent 1px, transparent 32px),
-    repeating-linear-gradient(0deg, hsl(170 90% 55% / 0.05) 0px, hsl(170 90% 55% / 0.05) 1px, transparent 1px, transparent 3px);
+    repeating-linear-gradient(90deg, hsl(170 90% 55% / 0.04) 0px, transparent 1px, transparent 32px);
   mix-blend-mode: screen;
 }
 .leaflet-tooltip.cyber-tip {

@@ -118,7 +118,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
           aria-hidden
         />
         <button onClick={copySeed} className="group flex items-center gap-1.5 min-w-0 shrink text-left" title={thread?.seed_value ?? ""}>
-          <span className="font-mono text-meta text-foreground truncate max-w-[58vw] sm:max-w-[42vw]">{thread?.seed_value || <span className="text-muted-foreground/50 italic">no seed yet</span>}</span>
+          <span className="font-mono text-meta text-foreground truncate max-w-[58vw] sm:max-w-[42vw]">{thread?.seed_value || <span className="text-muted-foreground/70 italic">no seed yet</span>}</span>
           {thread?.seed_value && <Copy className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />}
         </button>
         <span

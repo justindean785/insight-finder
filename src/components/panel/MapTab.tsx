@@ -299,10 +299,10 @@ export function MapTab({ artifacts }: { artifacts: Artifact[] }) {
                     {p.label && p.label !== p.value && (
                       <div className="opacity-70">{p.label}</div>
                     )}
-                    <div className="opacity-50 text-[10px]">
+                    <div className="text-xs">
                       {p.lat.toFixed(4)}, {p.lon.toFixed(4)}
                     </div>
-                    {p.source && <div className="opacity-50 text-[10px]">via {p.source}</div>}
+                    {p.source && <div className="text-xs">via {p.source}</div>}
                   </div>
                 </Popup>
               </CircleMarker>
@@ -315,7 +315,7 @@ export function MapTab({ artifacts }: { artifacts: Artifact[] }) {
         <div className="pointer-events-none absolute top-2 left-2 font-mono text-[9px] text-primary/70 uppercase tracking-[0.2em]">
           ◉ Live
         </div>
-        <div className="pointer-events-none absolute bottom-2 right-2 font-mono text-[8px] text-muted-foreground/70">
+        <div className="pointer-events-none absolute bottom-2 right-2 font-mono text-[10px] text-muted-foreground/70">
           © OpenStreetMap · CARTO
         </div>
       </div>

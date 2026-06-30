@@ -9,6 +9,8 @@ import {
   type Source,
 } from "@/lib/audit/source-independence";
 import { ConfidenceMeter, FindingPill, SectionLabel, Stat, TierBadge } from "./primitives";
+import { CheckCircle2, XCircle, Loader2 } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 export interface Hypothesis {
   id: string;
@@ -142,16 +144,22 @@ function Hero({
 }
 
 function StatusPip({ status }: { status: "running" | "complete" | "blocked" }) {
-  const c =
-    status === "running" ? "var(--confidence-mid)" :
-    status === "complete" ? "var(--confidence-high)" :
-    "var(--danger)";
+  // Each lifecycle state carries a distinct icon SHAPE (not just hue) so the
+  // running/complete/blocked distinction survives red/green color blindness,
+  // plus an accessible label for screen readers.
+  const meta =
+    status === "running"
+      ? { Icon: Loader2, color: "var(--confidence-mid)", label: "Running", spin: true }
+      : status === "complete"
+      ? { Icon: CheckCircle2, color: "var(--confidence-high)", label: "Complete", spin: false }
+      : { Icon: XCircle, color: "var(--danger)", label: "Blocked", spin: false };
+  const { Icon, color, label, spin } = meta;
   return (
-    <span className="relative inline-flex h-2 w-2">
-      {status === "running" && (
-        <span className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-40" style={{ background: `hsl(${c})` }} />
-      )}
-      <span className="relative inline-flex h-2 w-2 rounded-full" style={{ background: `hsl(${c})`, boxShadow: `0 0 8px hsl(${c})` }} />
+    <span className="inline-flex items-center" role="img" aria-label={`Status: ${label}`} title={label}>
+      <Icon
+        className={cn("h-3.5 w-3.5", spin && "animate-spin")}
+        style={{ color: `hsl(${color})`, filter: `drop-shadow(0 0 6px hsl(${color} / 0.6))` }}
+      />
     </span>
   );
 }
