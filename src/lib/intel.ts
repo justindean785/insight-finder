@@ -386,6 +386,39 @@ const KIND_TO_PIVOT: Record<string, PivotType> = {
   phone: "phone",
 };
 
+// Domains that are data sources / search infrastructure, not subject
+// identifiers. Pivoting on "opencorporates.com" or "bizfile.ca.gov" wastes a
+// tool cycle and clutters the lead list — these are HOW evidence was gathered,
+// never WHO the subject is.
+const INFRA_DOMAINS = new Set([
+  "bizfile.com", "bizfile.ca.gov", "bizfileonline.sos.ca.gov", "opencorporates.com", "bizapedia.com",
+  "buildzoom.com", "builderzoom.com", "manta.com", "dnb.com", "bbb.org",
+  "yelp.com", "google.com", "facebook.com", "linkedin.com", "twitter.com",
+  "x.com", "instagram.com", "reddit.com", "wikipedia.org", "wikimedia.org",
+  "archive.org", "web.archive.org", "pacer.gov", "courtlistener.com",
+  "sec.gov", "ftc.gov", "fbi.gov", "irs.gov", "usa.gov", "ca.gov",
+  "lacounty.gov", "dpw.lacounty.gov", "placer.ca.gov", "sos.ca.gov",
+  "nationalpublicdata.com", "spokeo.com", "whitepages.com", "intelius.com",
+  "beenverified.com", "instantcheckmate.com", "truthfinder.com",
+  "rapidapi.com", "apis.guru", "hunter.io", "leakcheck.io",
+  "haveibeenpwned.com", "dehashed.com", "intelx.io",
+  "urlscan.io", "virustotal.com", "shodan.io", "censys.io",
+  "domaintools.com", "whois.com", "icann.org", "iana.org",
+  "homes.com", "zillow.com", "redfin.com", "trulia.com", "realtor.com",
+  "peoplefinders.com", "radaris.com", "fastpeoplesearch.com",
+  "numbuster.ru", "yandex.ru", "vk.com",
+]);
+
+/** True when a domain/URL value is OSINT source infrastructure, not a subject identifier. */
+export function isInfraDomain(value: string): boolean {
+  try {
+    const host = value.toLowerCase().replace(/^https?:\/\//, "").split("/")[0].replace(/^www\./, "");
+    return INFRA_DOMAINS.has(host);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Build a deduped pivot queue from current artifacts. A pivot is "searched"
  * when another artifact already references it as a parent/source seed.
@@ -410,6 +443,10 @@ export function buildPivots(artifacts: Artifact[], seedValue: string | null): Pi
     const key = `${pType}:${v.toLowerCase()}`;
     if (seen.has(key)) continue;
     if (v.toLowerCase() === seedNorm) continue; // skip the seed itself
+    // Skip source-infrastructure domains — these are OSINT tool sources
+    // (bizfile.com, opencorporates.com, bbb.org…), not subject identifiers.
+    // Pivoting on them produces nothing actionable.
+    if ((pType === "domain" || pType === "url") && isInfraDomain(v)) continue;
     const meta = (a.metadata ?? {}) as Record<string, unknown>;
     if (meta.false_positive === true) continue;
 

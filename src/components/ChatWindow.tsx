@@ -562,6 +562,20 @@ export function cycleSummaryBadges(group: {
   ].filter((bit): bit is string => Boolean(bit));
 }
 
+// A cycle that produced nothing — only skips, with no useful output, no cache
+// hits, no real failures, and no stale results — is pure noise (e.g. a provider
+// disabled in config surfacing as "1 skipped · unavailable: disabled"). The
+// analyst gets zero actionable signal from it, so suppress it from chat.
+function isNoiseToolGroup(group: ToolRunGroup): boolean {
+  return (
+    group.useful === 0 &&
+    group.failed === 0 &&
+    group.cached === 0 &&
+    group.stale === 0 &&
+    group.skipped > 0
+  );
+}
+
 function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt?: string }) {
   const [expanded, setExpanded] = useState(false);
   const avgExpected = group.expectedValues.length
@@ -837,13 +851,16 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
     | { cachedAt: string }
     | undefined;
   const toolGroups = groupToolParts(parts);
+  // Drop do-nothing cycles (all-skipped, no useful/cache/fail/stale) from chat —
+  // single ToolParts always pass through; only noise ToolRunGroups are removed.
+  const visibleToolGroups = toolGroups.filter((entry) => "part" in entry || !isNoiseToolGroup(entry));
   // Detect failed run sentinel
   const firstText = parts.find((p) => p.type === "text");
   if (firstText?.text?.startsWith?.(FAIL_PREFIX)) {
     const reason = firstText.text.slice(FAIL_PREFIX.length);
     return (
       <div className="space-y-2">
-        {toolGroups.map((entry, i) => "part" in entry ? (
+        {visibleToolGroups.map((entry, i) => "part" in entry ? (
           <ToolPart key={`failed-tool-${i}`} part={entry.part} createdAt={createdAt} />
         ) : (
           <ToolGroupSummary key={`failed-group-${entry.key}-${i}`} group={entry} createdAt={createdAt} />
@@ -857,9 +874,9 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
       {cacheMeta && onRerun && (
         <CacheBanner cachedAt={cacheMeta.cachedAt} onRerun={onRerun} busy={!!rerunBusy} />
       )}
-      {toolGroups.length > 0 && (
+      {visibleToolGroups.length > 0 && (
         <div className="space-y-2">
-          {toolGroups.map((entry, i) => "part" in entry ? (
+          {visibleToolGroups.map((entry, i) => "part" in entry ? (
             <ToolPart key={`tool-${i}`} part={entry.part} createdAt={createdAt} />
           ) : (
             <ToolGroupSummary key={`${entry.key}-${i}`} group={entry} createdAt={createdAt} />
@@ -1770,6 +1787,11 @@ function ChatWindowInner({
         const artifact = artifactById.get(p.sourceArtifactId);
         const meta = (artifact?.metadata ?? {}) as Record<string, unknown>;
         if (meta.false_positive === true || meta.collision === true || meta.excluded_collision === true) return false;
+        // Low-confidence and path-bearing domains are weak leads, not pivots:
+        // a sub-40% domain is barely-observed, and a value with a "/" is a
+        // specific page discovered during research, not a pivotable domain.
+        if ((p.type === "domain" || p.type === "url") && p.confidence < 40) return false;
+        if ((p.type === "domain" || p.type === "url") && p.value.includes("/")) return false;
         if (meta.possible_minor === true || meta.minor_warning === true || meta.auto_pivot_blocked === true) return false;
         if (/\b(password|hash|secret|token|cookie|session|credential)\b/i.test(p.value)) return false;
         return true;
@@ -1804,7 +1826,10 @@ function ChatWindowInner({
           prompt: `Run this pivot.\n\nAction: ${title}\nTarget: ${p.value}\nType: ${p.type}\nReason: ${reason}\n\nUse authorized public-source methods only. Return corroborating sources and how this changes the case.`,
           icon: "pivot",
           meta: `${p.type} verification`,
-          priority: p.confidence >= 75 ? "high" : p.confidence >= 50 ? "medium" : "low",
+          priority:
+            (p.type === "domain" || p.type === "url")
+              ? (p.confidence >= 75 ? "medium" : "low")   // domains never HIGH from artifact-fallback
+              : p.confidence >= 75 ? "high" : p.confidence >= 50 ? "medium" : "low",
           target: p.value,
         });
       }
