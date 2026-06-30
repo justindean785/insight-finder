@@ -1,5 +1,5 @@
 import { detectSeed } from "@/lib/seed";
-import type { Pivot, PivotType } from "@/lib/intel";
+import { isInfraDomain, type Pivot, type PivotType } from "@/lib/intel";
 import { looksLikeReasoning, stripInlineTags, stripReasoningMarkup } from "@/lib/sanitize-agent-text";
 
 export type RecommendedPivot = {
@@ -158,6 +158,11 @@ export function extractRecommendedPivots(text: string): RecommendedPivot[] {
     seen.add(key);
     const split = splitReason(line);
     const type = pivotType(value);
+    // Report-recommended domains that are OSINT source infrastructure
+    // (linkedin.com, bizfileonline.sos.ca.gov, opencorporates.com…) bypass
+    // buildPivots' filter, so drop them here too — they are never actionable
+    // "Review domain footprint" pivots.
+    if ((type === "domain" || type === "url") && isInfraDomain(value)) continue;
     const priority = priorityForRecommendation(line, value, type);
     const actionLabel = actionLabelForRecommendation(line, value, type);
     const reason = stripInlineTags(split.reason);
