@@ -12,6 +12,8 @@ import {
   YAxis,
 } from "recharts";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
+import { artifactsToSources } from "@/lib/audit/from-artifacts";
+import { checkIndependence, computeEffectiveSourceCount } from "@/lib/audit/source-independence";
 import { SourceBadge } from "@/components/SourceBadge";
 import { breachSeverity, isAiSummaryArtifact, isDobPlaceholder, qualConfidence } from "@/lib/report-badges";
 import { EvidenceStatusBadge } from "@/components/ui/workspace-primitives";
@@ -710,6 +712,12 @@ export function CaseReport({
   const sourceDistribution = useMemo(() => buildSourceDistribution(artifacts), [artifacts]);
   const confidenceDistribution = useMemo(() => buildConfidenceDistribution(artifacts), [artifacts]);
   const sources = useMemo(() => uniqueSources(artifacts), [artifacts]);
+  // Honest source depth: collapse mirrors/aggregators and same-corpus breach
+  // fields so "3 copies of one leak" reads as ONE source, not three. See
+  // src/lib/audit/from-artifacts.ts (unit-tested) + source-independence.ts.
+  const auditSources = useMemo(() => artifactsToSources(artifacts), [artifacts]);
+  const effectiveSources = useMemo(() => computeEffectiveSourceCount(auditSources), [auditSources]);
+  const independenceFindings = useMemo(() => checkIndependence(auditSources), [auditSources]);
   const avgConfidence = useMemo(() => averageConfidence(artifacts), [artifacts]);
 
   const audit = buildToolAudit(artifacts);
@@ -886,6 +894,22 @@ export function CaseReport({
             body="Each table row includes source class, status basis, score, capture date, and backend reasoning where available."
           />
         </div>
+        {independenceFindings.length > 0 && (
+          <ul className="mt-2.5 space-y-1.5 border-t border-[hsl(var(--info)/0.18)] pt-2.5">
+            {independenceFindings.map((f, i) => (
+              <li
+                key={i}
+                className={cn(
+                  "flex items-start gap-1.5 text-data leading-relaxed",
+                  f.severity === "warn" ? "text-[hsl(var(--warning))]" : "text-muted-foreground",
+                )}
+              >
+                <span aria-hidden className="mt-px shrink-0">{f.severity === "warn" ? "⚠" : "ℹ"}</span>
+                <span>{f.message}</span>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
       </>)}
 
@@ -895,15 +919,17 @@ export function CaseReport({
         <p className="text-foreground/90">
           Investigation of <span className="font-mono">{display.selector}</span> produced{" "}
           {buckets.confirmed.length} confirmed, {buckets.probable.length} probable, and{" "}
-          {buckets.lead.length} unverified leads across {sources.length} distinct source
-          {sources.length === 1 ? "" : "s"}. {buckets.contradiction.length} contradiction
+          {buckets.lead.length} unverified leads across {effectiveSources} independent source
+          {effectiveSources === 1 ? "" : "s"} (from {sources.length} raw source label
+          {sources.length === 1 ? "" : "s"} after collapsing mirrors and duplicate datasets).{" "}
+          {buckets.contradiction.length} contradiction
           {buckets.contradiction.length === 1 ? "" : "s"} were detected. Source-based confidence caps
           are applied conservatively: breach-only or aggregator-only evidence remains unconfirmed until
           independently corroborated.
         </p>
         <div className="mt-3 grid gap-2 sm:grid-cols-3">
           <MiniAssessment label="Evidence volume" value={`${artifacts.length}`} hint="raw artifacts retained after client-side grouping" />
-          <MiniAssessment label="Source depth" value={`${sources.length}`} hint="distinct artifact source labels observed" />
+          <MiniAssessment label="Independent sources" value={`${effectiveSources}`} hint={`${sources.length} source label${sources.length === 1 ? "" : "s"} → ${effectiveSources} independent (mirrors & duplicate datasets collapsed)`} />
           <MiniAssessment label="Tool coverage" value={`${audit.tools.length}`} hint="tools represented in this case artifact set" />
         </div>
       </div>
