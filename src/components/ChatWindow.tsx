@@ -1766,6 +1766,21 @@ function ChatWindowInner({
     }));
   }, [reportPivots, threadId]);
 
+  // Answer a late-mounting surface (e.g. the Pivots tab opened after the last
+  // turn) that asks for the current report pivots. Without this replay, that
+  // surface would show only artifact-derived pivots until the next turn.
+  useEffect(() => {
+    const onRequest = (event: Event) => {
+      const detail = (event as CustomEvent<{ threadId: string }>).detail;
+      if (detail?.threadId !== threadId) return;
+      window.dispatchEvent(new CustomEvent("swarmbot:report-pivots", {
+        detail: { threadId, pivots: reportPivots },
+      }));
+    };
+    window.addEventListener("swarmbot:request-report-pivots", onRequest as EventListener);
+    return () => window.removeEventListener("swarmbot:request-report-pivots", onRequest as EventListener);
+  }, [reportPivots, threadId]);
+
   // Build suggested next-step replies after the agent stops streaming.
   // Memoized — without this the IIFE re-runs on every streamed token because
   // `messages` updates dozens of times per second during streaming.

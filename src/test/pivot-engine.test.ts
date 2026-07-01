@@ -108,15 +108,16 @@ describe("computePivots — ranking", () => {
     const artifacts = [
       // High-value email, but searched (a child links it) → must sink.
       art({ kind: "email", value: "old@example.com", confidence: 99 }),
-      art({ kind: "url", value: "https://tiny.example/x", confidence: 30, metadata: {} }),
+      // A low-value but still-new lead must outrank it purely on status.
+      art({ kind: "username", value: "fresh_handle", confidence: 30, metadata: {} }),
       art({ kind: "username", value: "kid", metadata: { parent: "old@example.com" } }),
     ];
     const out = computePivots({ artifacts, seedValue: null, reportPivots: [], skipSet: NONE });
     const emailIdx = out.findIndex((p) => p.value === "old@example.com");
-    const urlIdx = out.findIndex((p) => p.value === "https://tiny.example/x");
+    const freshIdx = out.findIndex((p) => p.value === "fresh_handle");
     expect(out[emailIdx].status).toBe("searched");
-    expect(out[urlIdx].status).toBe("new");
-    expect(urlIdx).toBeLessThan(emailIdx);
+    expect(out[freshIdx].status).toBe("new");
+    expect(freshIdx).toBeLessThan(emailIdx);
   });
 
   it("breaks ties between equal-priority new pivots by recency (newer artifact wins)", () => {
@@ -148,6 +149,30 @@ describe("computePivots — #185 infra-domain filtering (end-to-end)", () => {
     expect(values).toContain("ceroconstruction.com");
     expect(values).not.toContain("bizfile.com");
     expect(values).not.toContain("linkedin.com");
+  });
+});
+
+describe("computePivots — weak/path-bearing domain-url noise guard (#185 fallback parity)", () => {
+  it("drops a sub-40-confidence domain but keeps a confident subject domain", () => {
+    const artifacts = [
+      art({ kind: "domain", value: "weaklead.com", confidence: 30 }),
+      art({ kind: "domain", value: "strongsubject.com", confidence: 70 }),
+    ];
+    const out = computePivots({ artifacts, seedValue: null, reportPivots: [], skipSet: NONE });
+    const values = out.map((p) => p.value);
+    expect(values).toContain("strongsubject.com");
+    expect(values).not.toContain("weaklead.com");
+  });
+
+  it("drops a path-bearing domain/url even at high confidence", () => {
+    const artifacts = [
+      art({ kind: "domain", value: "subject.com/some/path", confidence: 95 }),
+      art({ kind: "domain", value: "subject.com", confidence: 95 }),
+    ];
+    const out = computePivots({ artifacts, seedValue: null, reportPivots: [], skipSet: NONE });
+    const values = out.map((p) => p.value);
+    expect(values).toContain("subject.com");
+    expect(values).not.toContain("subject.com/some/path");
   });
 });
 

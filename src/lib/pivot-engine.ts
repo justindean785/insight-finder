@@ -212,6 +212,14 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
     // infra domain artifact should still never surface (buildPivots drops them,
     // extractRecommendedPivots drops them; this backstops any survivor).
     if ((c.type === "domain" || c.type === "url") && isInfraDomain(c.value)) continue;
+    // Weak or path-bearing hosts are noise, not actionable subject identifiers
+    // (carried over verbatim from the former ChatWindow fallback, #185
+    // ChatWindow.tsx:1793-1794): a sub-40-confidence or path-bearing domain/url
+    // was previously suppressed and must stay suppressed here.
+    if (
+      (c.type === "domain" || c.type === "url") &&
+      (clamp(c.confidence ?? 0, 0, 100) < 40 || c.value.includes("/"))
+    ) continue;
     // Safety guards carried over from the former ChatWindow artifact-fallback so
     // sensitive leads never surface: never pivot on a secret-bearing value, and
     // drop finding-origin candidates flagged as a collision or possible-minor.

@@ -49,6 +49,10 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
       if (detail?.threadId === threadId) setReportPivots(detail.pivots);
     };
     window.addEventListener("swarmbot:report-pivots", onReportPivots as EventListener);
+    // Ask ChatWindow to replay the current report pivots now that we're listening,
+    // so opening this tab on a settled thread shows report-only leads immediately
+    // instead of waiting for the next assistant turn.
+    window.dispatchEvent(new CustomEvent("swarmbot:request-report-pivots", { detail: { threadId } }));
     return () => window.removeEventListener("swarmbot:report-pivots", onReportPivots as EventListener);
   }, [threadId]);
 
