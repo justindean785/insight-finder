@@ -251,6 +251,70 @@ export function adjustedConfidence(a: Artifact, review?: ReviewAdjustment): numb
   return Math.max(0, Math.min(100, base + d + bonus));
 }
 
+// Source classes that do NOT, on their own, constitute independent corroboration
+// of an identity/association claim (discovery, low-trust aggregators, single AI
+// summaries, shared-host, ransomware-victim threat-intel). Mirrors the backend
+// taxonomy in supabase/functions/osint-agent/source-classification.ts
+// (NON_CORROBORATING_CLASSES) so two sources in the SAME non-corroborating class
+// can never masquerade as independent corroboration.
+const NON_CORROBORATING_CLASSES = new Set<string>([
+  "unknown",
+  "web_search",
+  "ai_summary",
+  "username_sweep",
+  "social_profile_passive",
+  "social_review",
+  "infra_shared_host",
+  "threat_intel",
+]);
+
+/**
+ * Distinct source CLASSES backing an artifact. Prefers the backend's
+ * authoritative `metadata.source_category` (written by the source-classification
+ * layer), which already collapses same-class providers — census + nominatim both
+ * classify to `public_record`, exa + gemini both to `ai_summary` — so they can
+ * never present as two independent classes. Falls back to a coarse split of the
+ * raw source strings only for legacy rows that predate `source_category`.
+ */
+function artifactSourceClasses(a: Artifact): string[] {
+  const meta = (a.metadata ?? {}) as Record<string, unknown>;
+  const sc = meta.source_category;
+  if (Array.isArray(sc)) {
+    const cats = sc.map((c) => String(c).trim().toLowerCase()).filter(Boolean);
+    if (cats.length) return Array.from(new Set(cats));
+  } else if (typeof sc === "string" && sc.trim()) {
+    return [sc.trim().toLowerCase()];
+  }
+  const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
+  const all = [a.source ?? null, ...metaSources].filter(Boolean) as string[];
+  return Array.from(
+    new Set(
+      all.map((s) =>
+        isBreachSource(s)
+          ? "breach"
+          : isUsernameSweepSource(s)
+          ? "username_sweep"
+          : s.toLowerCase().split(/[_:.]/)[0],
+      ),
+    ),
+  );
+}
+
+/** Count of distinct source classes that can INDEPENDENTLY corroborate a claim.
+ *  Non-corroborating classes (discovery / low-trust / single-AI-summary) are
+ *  excluded, so census+nominatim (one `public_record` class) count once and
+ *  exa+gemini (`ai_summary` only) count zero. */
+function independentSourceClassCount(a: Artifact): number {
+  return artifactSourceClasses(a).filter((c) => !NON_CORROBORATING_CLASSES.has(c)).length;
+}
+
+/** Distinct independent source strings ("corpora") after case-insensitive dedup.
+ *  `meta.sources` frequently repeats `a.source`, so a single corpus otherwise
+ *  reads as two sources. Used to gate breach-email corroboration. */
+function distinctSourceCount(sources: string[]): number {
+  return new Set(sources.map((s) => s.trim().toLowerCase()).filter(Boolean)).size;
+}
+
 export function labelForArtifact(a: Artifact, review?: ReviewAdjustment): ConfLabel {
   const meta = (a.metadata ?? {}) as Record<string, unknown>;
   if (review === "dismissed" || review === "wrong" || meta.false_positive === true) return "FAILED";
@@ -260,15 +324,10 @@ export function labelForArtifact(a: Artifact, review?: ReviewAdjustment): ConfLa
 
   const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
   const allSources = [a.source ?? null, ...metaSources].filter(Boolean) as string[];
-  const distinctSourceClasses = new Set(
-    allSources.map((s) =>
-      isBreachSource(s)
-        ? "breach"
-        : isUsernameSweepSource(s)
-        ? "sweep"
-        : s.toLowerCase().split(/[_:.]/)[0],
-    ),
-  );
+  // Independent corroboration is counted from the backend's authoritative
+  // source_category (which already collapses same-class providers), NOT a naive
+  // first-token split of the raw source strings — see independentSourceClassCount.
+  const independentClasses = independentSourceClassCount(a);
   const breachOnly =
     allSources.length > 0 && allSources.every((s) => isBreachSource(s));
   const sweepOnly =
@@ -297,19 +356,22 @@ export function labelForArtifact(a: Artifact, review?: ReviewAdjustment): ConfLa
   // Breach-only non-sensitive data → max INFERRED. Email seen in ≥2 breach
   // sources can rise to CORRELATED (still not CONFIRMED).
   if (breachOnly) {
-    if (kind === "email" && allSources.length >= 2) return "CORRELATED";
+    // Email seen in ≥2 DISTINCT breach corpora can rise to CORRELATED. Dedup
+    // first: meta.sources often repeats a.source, so a single corpus otherwise
+    // reads as length 2 and over-promotes the most sensitive PII class.
+    if (kind === "email" && distinctSourceCount(allSources) >= 2) return "CORRELATED";
     return c >= 70 ? "INFERRED" : c >= 40 ? "VERIFY" : "LOW";
   }
   // Username / social handle can only be CONFIRMED when a direct profile
   // source actually observed it on the platform.
   if (isIdentity && !hasDirectProfile) {
-    if (c >= 70 && distinctSourceClasses.size >= 2) return "CORRELATED";
+    if (c >= 70 && independentClasses >= 2) return "CORRELATED";
     return c >= 50 ? "INFERRED" : "VERIFY";
   }
 
   // Multi-source-class corroboration → CONFIRMED / CORRELATED.
-  if (c >= 85 && distinctSourceClasses.size >= 2) return "CONFIRMED";
-  if (c >= 70 && distinctSourceClasses.size >= 2) return "CORRELATED";
+  if (c >= 85 && independentClasses >= 2) return "CONFIRMED";
+  if (c >= 70 && independentClasses >= 2) return "CORRELATED";
   if (c >= 85) return "INFERRED"; // single source class, even if high confidence
   if (c >= 65) return "INFERRED";
   if (c >= 40) return "VERIFY";
