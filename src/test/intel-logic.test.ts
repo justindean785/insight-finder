@@ -198,4 +198,98 @@ describe("labelForArtifact", () => {
     expect(labelForArtifact(art({ kind: "email", source: "whois", confidence: 90 }))).toBe("INFERRED");
     expect(labelForArtifact(art({ kind: "email", source: "whois", confidence: 30 }))).toBe("LOW");
   });
+
+  // ---- Source independence (over-counting fix) ----------------------------
+  // The backend collapses same-class geocoders/discovery tools into ONE
+  // source_category; the label engine must count independence from that, not
+  // from a naive first-token split that reads census+nominatim as 2 classes.
+  describe("independent source-class counting", () => {
+    it("does NOT promote census+nominatim (same public_record class) to CONFIRMED", () => {
+      // Two geocoders backing one address = ONE independent class. Before the
+      // fix the naive split ("census", "nominatim") read as 2 → CONFIRMED.
+      const a = art({
+        kind: "location",
+        value: "1600 Pennsylvania Ave",
+        source: "census_geocode",
+        confidence: 90,
+        metadata: { sources: ["census_geocode", "nominatim_geocode"], source_category: ["public_record"] },
+      });
+      expect(labelForArtifact(a)).toBe("INFERRED");
+      expect(labelForArtifact(a)).not.toBe("CONFIRMED");
+      expect(labelForArtifact(a)).not.toBe("CORRELATED");
+    });
+
+    it("does NOT promote exa+gemini (discovery-only ai_summary) to CORRELATED", () => {
+      // Discovery/search sources never independently corroborate → 0 independent
+      // classes. Naive split ("exa", "gemini") previously read as 2.
+      const a = art({
+        kind: "email",
+        value: "lead@example.com",
+        source: "exa_search",
+        confidence: 90,
+        metadata: { sources: ["exa_search", "gemini_deep_dork"], source_category: ["ai_summary"] },
+      });
+      expect(labelForArtifact(a)).toBe("INFERRED");
+      expect(labelForArtifact(a)).not.toBe("CONFIRMED");
+      expect(labelForArtifact(a)).not.toBe("CORRELATED");
+    });
+
+    it("STILL confirms two genuinely-independent source classes", () => {
+      // A registry hit AND an independent public page = 2 real classes → the
+      // corroboration path must still fire (no under-counting).
+      const a = art({
+        kind: "email",
+        value: "owner@example.com",
+        source: "whois_lookup",
+        confidence: 80,
+        metadata: {
+          sources: ["whois_lookup", "jina_reader_scrape"],
+          source_category: ["infra_registry", "independent_public"],
+        },
+      });
+      expect(labelForArtifact(a)).toBe("CONFIRMED");
+    });
+
+    it("STILL correlates two genuinely-independent classes below the CONFIRMED bar", () => {
+      const a = art({
+        kind: "email",
+        value: "owner@example.com",
+        source: "whois_lookup",
+        confidence: 70,
+        metadata: {
+          sources: ["whois_lookup", "news_article"],
+          source_category: ["infra_registry", "news"],
+        },
+      });
+      expect(labelForArtifact(a)).toBe("CORRELATED");
+    });
+  });
+
+  // ---- Breach-email corroboration must be DISTINCT corpora (FIX #20) -------
+  describe("breach-email distinct-corpus gate", () => {
+    it("does NOT correlate a single breach corpus that repeats a.source in meta.sources", () => {
+      // allSources = ["breach_check", "breach_check"] → one distinct corpus.
+      // Before the fix the raw length (2) promoted this to CORRELATED.
+      const a = art({
+        kind: "email",
+        value: "victim@example.com",
+        source: "breach_check",
+        confidence: 80,
+        metadata: { sources: ["breach_check"], source_category: ["breach"] },
+      });
+      expect(labelForArtifact(a)).toBe("INFERRED");
+      expect(labelForArtifact(a)).not.toBe("CORRELATED");
+    });
+
+    it("STILL correlates an email seen across two DISTINCT breach corpora", () => {
+      const a = art({
+        kind: "email",
+        value: "victim@example.com",
+        source: "breach_check",
+        confidence: 80,
+        metadata: { sources: ["breach_check", "leakcheck_lookup"], source_category: ["breach"] },
+      });
+      expect(labelForArtifact(a)).toBe("CORRELATED");
+    });
+  });
 });
