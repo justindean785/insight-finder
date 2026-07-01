@@ -182,18 +182,23 @@ Deno.serve(async (req) => {
     // error. Recorded artifacts/findings live in the DB and are replayed via
     // memory, so shedding old raw tool output is safe.
     const TOTAL_PROMPT_CHAR_BUDGET = 220_000;
-    const approxMsgChars = (msgs: ModelMessage[]): number =>
-      msgs.reduce((n, m) => n + JSON.stringify(m).length, 0);
     const capTotalToBudget = (
       msgs: ModelMessage[],
       budget: number,
       keepRecent: number,
     ): ModelMessage[] => {
-      if (approxMsgChars(msgs) <= budget) return msgs;
+      // Serialize each message's length ONCE and keep a running total, updating it
+      // incrementally as messages are elided below. Re-summing the whole array
+      // inside the elision loop (and re-running this every prepareStep step) was
+      // O(n^2); this makes it O(n). Behavior is unchanged — the running total is
+      // kept exactly in sync with what a full re-serialization would yield.
+      const lengths = msgs.map((m) => JSON.stringify(m).length);
+      let total = lengths.reduce((n, l) => n + l, 0);
+      if (total <= budget) return msgs;
       const out: ModelMessage[] = msgs.map((m) => ({ ...m }));
       const cutoff = Math.max(0, out.length - keepRecent);
       for (let i = 0; i < cutoff; i++) {
-        if (approxMsgChars(out) <= budget) break;
+        if (total <= budget) break;
         const m = out[i];
         if ((m.role !== "tool" && m.role !== "assistant") || !Array.isArray(m.content)) continue;
         m.content = (m.content as TrimPart[]).map((part: TrimPart) => {
@@ -216,6 +221,11 @@ Deno.serve(async (req) => {
           }
           return part;
         }) as unknown as typeof m.content;
+        // Reprice only the message we just elided and fold the delta into the
+        // running total (subtract its old length, add the new one).
+        const newLen = JSON.stringify(m).length;
+        total += newLen - lengths[i];
+        lengths[i] = newLen;
       }
       return out;
     };
