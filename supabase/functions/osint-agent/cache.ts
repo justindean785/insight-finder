@@ -14,6 +14,7 @@ import { creditsCharged } from "./billing.ts";
 import { classifyToolOutcome } from "./tool-outcome.ts";
 import * as circuit from "./circuit.ts";
 import {
+  ALWAYS_ALLOW_TOOLS,
   analyzeWeakLead,
   currentStage,
   ensureCycle,
@@ -27,6 +28,65 @@ import {
 } from "./runtime-policy.ts";
 
 const SELECTOR_SIGNAL_CACHE = new Map<string, SelectorEvidenceSignal>();
+
+// ---- Per-tool hard timeout (Phase 2) ------------------------------------------
+// A wall-clock cap around each LIVE tool execution so a single latency-bomb
+// provider (audit: bosint_phone p95 60s, archive_url 49s, crtsh 121s, oathnet 68s,
+// wayback 60s) can't hold the whole run hostage. On timeout we RESOLVE (never
+// throw) with a schema-safe error result — same pairing guarantee as the catch
+// paths — so the orchestrator step keeps a valid tool-call/result pair. The
+// scorer's latency penalty does the gradual demotion; this cap is the hard
+// backstop for the catastrophic tail. Recording tools (ALWAYS_ALLOW_TOOLS) are
+// exempt — evidence writes must never be cut off.
+export const DEFAULT_TOOL_TIMEOUT_MS = 12_000;
+// Legit-slow tools whose p95 genuinely exceeds the default but still yield value.
+// Everything else uses the default cap.
+export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
+  gemini_deep_dork: 30_000, // Gemini grounded search — p95 ~46s
+  dork_harvest: 25_000,     // wraps several web searches — p95 ~17s
+  exa_search: 20_000,       // neural search + contents — p95 ~12s
+  exa_find_similar: 20_000,
+  exa_get_contents: 20_000,
+};
+export function toolTimeoutMs(name: string): number {
+  return TOOL_TIMEOUT_OVERRIDE_MS[name] ?? DEFAULT_TOOL_TIMEOUT_MS;
+}
+
+export interface ToolTimeoutResult {
+  ok: false;
+  error: string;
+  _tool_error: true;
+  _tool_timeout: true;
+}
+
+// Race a tool execution against a hard timeout. On timeout, RESOLVE (never
+// reject/throw) with a schema-safe error result so the step keeps a valid pair;
+// classifyToolOutcome buckets a "timeout" as `failed` (its documented behavior),
+// and ok:false keeps the result out of the cache. A late resolution/rejection
+// after the cap fired is swallowed (no unhandled rejection).
+export function runWithToolTimeout<T>(
+  name: string,
+  factory: () => Promise<T>,
+  ms: number,
+): Promise<T | ToolTimeoutResult> {
+  return new Promise<T | ToolTimeoutResult>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve({
+        ok: false,
+        error: `${name} exceeded ${ms}ms tool timeout`,
+        _tool_error: true,
+        _tool_timeout: true,
+      });
+    }, ms);
+    factory().then(
+      (v) => { if (!settled) { settled = true; clearTimeout(timer); resolve(v); } },
+      (e) => { if (settled) return; settled = true; clearTimeout(timer); reject(e); },
+    );
+  });
+}
 
 function detectSelectorType(input: Record<string, unknown>): string {
   const hinted = String(input.kind ?? input.selector_type ?? "").trim().toLowerCase();
@@ -202,6 +262,37 @@ export function wrapToolsWithCache(
 ) {
   const wrapped: Record<string, Tool> = {};
   const adminDb = ctx.supabaseAdmin ?? ctx.supabase;
+  // Per-run tool_health cache (Phase 2): load the rolling reliability + latency
+  // signal ONCE and reuse it across every wrapped tool call this run. Best-effort —
+  // if the view is missing (deploy ordering) or the query fails, scoring simply
+  // proceeds without the prior (no penalty), exactly as before this feature.
+  interface ToolHealth { okPct: number | null; p95: number | null; sampleSize: number }
+  let toolHealthPromise: Promise<Map<string, ToolHealth>> | null = null;
+  const loadToolHealth = (): Promise<Map<string, ToolHealth>> => {
+    if (!toolHealthPromise) {
+      toolHealthPromise = (async () => {
+        const map = new Map<string, ToolHealth>();
+        try {
+          const { data } = await adminDb
+            .from("tool_health")
+            .select("tool_name,ok_pct,p95_duration_ms,sample_size");
+          for (const row of (data ?? []) as Array<Record<string, unknown>>) {
+            const tn = typeof row.tool_name === "string" ? row.tool_name : null;
+            if (!tn) continue;
+            map.set(tn, {
+              okPct: row.ok_pct == null ? null : Number(row.ok_pct),
+              p95: row.p95_duration_ms == null ? null : Number(row.p95_duration_ms),
+              sampleSize: Number(row.sample_size ?? 0),
+            });
+          }
+        } catch (e) {
+          console.warn("[tool_health] load failed (scoring without prior):", e);
+        }
+        return map;
+      })();
+    }
+    return toolHealthPromise;
+  };
   // Derive a real success flag from a tool's return value. A tool can return
   // without throwing yet still represent a failure (HTTP non-2xx wrapped into
   // { ok:false }, an `error` field, or a stub). The wrapper must NOT log such
@@ -350,14 +441,27 @@ export function wrapToolsWithCache(
             let out: unknown;
             let errInfo: { errorMsg: string | null; statusCode: number | null } = { errorMsg: null, statusCode: null };
             try {
-              out = await orig(input, opts);
+              // Phase 2: per-tool hard timeout (schema-safe on timeout, no throw);
+              // recording/evidence tools (ALWAYS_ALLOW) are exempt. Single thunk so
+              // the underlying call isn't duplicated.
+              const runOrig = () => orig(input, opts) as Promise<unknown>;
+              out = ALWAYS_ALLOW_TOOLS.has(name)
+                ? await runOrig()
+                : await runWithToolTimeout(name, runOrig, toolTimeoutMs(name));
               ok = deriveOk(out);
               if (!ok) errInfo = extractToolError(out);
               return tagSkipState(tagTier(scrub(out), tier, model));
             } catch (e) {
               ok = false;
-              errInfo = { errorMsg: redactSecrets(String((e as Error)?.message ?? e)).slice(0, 500), statusCode: null };
-              throw e;
+              const redacted = redactSecrets(String((e as Error)?.message ?? e)).slice(0, 500);
+              errInfo = { errorMsg: redacted, statusCode: null };
+              // Resilience (Phase 1): RETURN a schema-safe error result instead of
+              // throwing. A throw here escapes into the live AI-SDK step; when the
+              // model emitted sibling tool calls in the same step, the orphaned
+              // pair triggers the "Tool results are missing for tool calls" crash.
+              // Returning keeps the tool-call/result pair intact. The `finally`
+              // below still records tool_usage_log truthfully (ok=false).
+              return tagTier({ ok: false, error: redacted, _tool_error: true }, tier, model);
             }
             finally { logUsage(false, ok, Date.now() - t0, errInfo.errorMsg, errInfo.statusCode, isFreeCall(out)); }
           },
@@ -391,11 +495,19 @@ export function wrapToolsWithCache(
         const params = normalizedParams(inp);
         const signal = await loadSelectorEvidence(ctx.supabase, ctx.investigationId, selectorType, sel);
         const weakLead = analyzeWeakLead(signal);
+        // Persistent tool-health prior (Phase 2): latency + reliability from the
+        // tool_health view, sample-gated inside scoreExpectedValue so a low-sample
+        // tool stays neutral. manual_override bypasses the reliability suppression.
+        const health = (await loadToolHealth()).get(name);
         const expectedValue = scoreExpectedValue({
           selectorConfidence: signal.confidence,
           sourceIndependenceBonus: signal.sourceCount >= 2 ? 18 : 0,
           corroborationPotential: ["email", "phone", "domain", "username"].includes(selectorType) ? 12 : 6,
           freshnessNeed: name === "wayback_snapshots" || name === "archive_url" ? 10 : 0,
+          p95DurationMs: health?.p95 ?? null,
+          reliability: health?.okPct ?? null,
+          healthSampleSize: health?.sampleSize ?? 0,
+          manualOverride,
           // First call on a zero-evidence seed: any data is high-value. Without
           // this bonus, all paid breach/identity tools score 37-49 against
           // thresholds of 50-70 and get EV-blocked before a single artifact
@@ -600,7 +712,14 @@ export function wrapToolsWithCache(
         let result: unknown;
         let errInfo: { errorMsg: string | null; statusCode: number | null } = { errorMsg: null, statusCode: null };
         try {
-          result = attachRuntimeMeta(tagSkipState(tagTier(scrub(await originalExecute(input, opts)), tier, model)), {
+          // Phase 2: bound the live call with a per-tool hard timeout (returns a
+          // schema-safe result on timeout, never throws). Recording/evidence tools
+          // are exempt — they must never be cut off.
+          const runLive = () => originalExecute(input, opts) as Promise<unknown>;
+          const rawResult = ALWAYS_ALLOW_TOOLS.has(name)
+            ? await runLive()
+            : await runWithToolTimeout(name, runLive, toolTimeoutMs(name));
+          result = attachRuntimeMeta(tagSkipState(tagTier(scrub(rawResult), tier, model)), {
             ...runtimeMetaBase,
             stage: runtimeDecision.stage,
             cycle_id: runtimeDecision.cycleId,
@@ -626,7 +745,22 @@ export function wrapToolsWithCache(
             status: circuit.classifyResult(null, e),
             artifactCount: 0,
           });
-          throw e;
+          // Resilience (Phase 1): RETURN a schema-safe error result instead of
+          // throwing (see the NO_CACHE path above). All bookkeeping — finishCall,
+          // tool_usage_log write, circuit.recordResult, billing (via logUsage) —
+          // has already run with the real failure recorded; only the throw that
+          // orphaned sibling tool calls and crashed the run is replaced. The
+          // result carries the same _runtime metadata as a successful live call.
+          return attachRuntimeMeta(
+            tagTier({ ok: false, error: msg, _tool_error: true }, tier, model),
+            {
+              ...runtimeMetaBase,
+              stage: runtimeDecision.stage,
+              cycle_id: runtimeDecision.cycleId,
+              cache_layer: "miss",
+              stale_cache: !!staleRecord,
+            },
+          );
         }
         const createdAtIso = new Date().toISOString();
         // Only cache successful results — caching a failure would poison

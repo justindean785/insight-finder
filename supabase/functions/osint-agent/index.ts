@@ -32,6 +32,37 @@ import { beginCycle, clearRuntime } from "./runtime-policy.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { buildTools } from "./tool-registry.ts";
+import { isMessageSchemaError } from "./stream-error-classify.ts";
+
+// ---- Orchestrator resilience knobs (Phase 1: MissingToolResults crash) --------
+// Explicit per-step output-token ceiling. Root cause of the crash: MiniMax emits
+// PARALLEL tool calls and, when a step's generation runs long, the trailing calls
+// get truncated mid-stream so their results never arrive — the run then dies with
+// "Tool results are missing for tool calls <id>". Bounding each step's output makes
+// that truncation far less likely while still leaving room for a full synthesis
+// report (~8k tokens ≈ 6k words). Verified lever: streamText `maxOutputTokens` is
+// forwarded as `max_tokens` by @ai-sdk/openai-compatible@1 (getArgs).
+const ORCHESTRATOR_MAX_OUTPUT_TOKENS = 8192;
+// Force the MiniMax orchestrator to SERIAL tool calls (one per step). This removes
+// the truncated-trailing-parallel-call crash at the source. Verified lever for
+// ai@6 + @ai-sdk/openai-compatible@1: the chat model's getArgs spreads
+// `providerOptions[providerName]` into the request body, stripping only its three
+// recognised keys (user/reasoningEffort/textVerbosity), so an unrecognised key
+// like `parallel_tool_calls` reaches MiniMax's OpenAI-compatible /chat/completions
+// verbatim. `providerName` = the `name` passed to createOpenAICompatible ("minimax").
+// Set false = disable parallelism. (cache.ts return-on-throw + the message
+// sanitizer are the defense-in-depth net if a provider ever ignores this flag.)
+const ORCHESTRATOR_PARALLEL_TOOL_CALLS = false;
+// Max orchestrator steps per run (was stepCountIs(50)). A lower ceiling plus the
+// wall-clock deadline below cut the p95 ~15-min tool-time tail (audit §5 Play 1).
+const MAX_ORCHESTRATOR_STEPS = 30;
+// Hard wall-clock deadline for a single run. streamText `stopWhen` also accepts a
+// StopCondition ((opts)=>boolean|Promise<boolean>); we add one that trips once
+// elapsed time exceeds this, ending the run CLEANLY (onFinish persists the partial
+// assistant + artifacts and marks the thread finished) instead of grinding to the
+// step cap. A backstop, not a routine limiter — sized to collapse the catastrophic
+// tail (audit observed max 17.6 min).
+const ORCHESTRATOR_WALL_CLOCK_MS = 6 * 60_000;
 
 function extractManualOverrideSelector(messages: UIMessage[]): string | null {
   const latestUser = [...messages].reverse().find((message) => message.role === "user");
@@ -445,11 +476,27 @@ Deno.serve(async (req) => {
         };
       };
 
+    const runStartedAt = Date.now();
+    // Ends the run cleanly once the wall-clock deadline passes (see constant). The
+    // StopCondition receives { steps }; we only need elapsed time, so it's ignored.
+    const orchestratorDeadlineReached = () =>
+      Date.now() - runStartedAt > ORCHESTRATOR_WALL_CLOCK_MS;
+
     const result = streamText({
       // Top-level orchestrator runs on the smart tier — it's the multi-source
       // synthesis step that produces the final report. Per-tool sub-calls use
       // their own tier (see ./models.ts) via wrapToolsWithCache.
       model: orchestratorModel,
+      // Bound each step's generation so a long step can't truncate trailing
+      // parallel tool calls and orphan their results (the MissingToolResults crash).
+      maxOutputTokens: ORCHESTRATOR_MAX_OUTPUT_TOKENS,
+      // Serial tool calls on the MiniMax orchestrator (see ORCHESTRATOR_PARALLEL_TOOL_CALLS).
+      // Attached ONLY when MiniMax is the live provider — the Gemini fallback / Grok /
+      // OpenAdapter paths ignore a foreign provider-option key and shape tool calls
+      // themselves, so scoping by the "minimax" key keeps their behavior unchanged.
+      providerOptions: (minimaxIsPrimary && !useFallback)
+        ? { minimax: { parallel_tool_calls: ORCHESTRATOR_PARALLEL_TOOL_CALLS } }
+        : undefined,
       system: SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType),
       messages: trimmedMessages,
       tools: wrapToolsWithCache(tools, {
@@ -460,7 +507,9 @@ Deno.serve(async (req) => {
         onCost,
         manualOverrideSelector,
       }),
-      stopWhen: stepCountIs(50),
+      // Named step cap + wall-clock deadline (Phase 2, Play 1). Either stops the
+      // agent loop cleanly; onFinish then persists partials and marks finished.
+      stopWhen: [stepCountIs(MAX_ORCHESTRATOR_STEPS), orchestratorDeadlineReached],
       prepareStep,
       // Meter orchestrator LLM token spend per step so threads.cost_micro_usd
       // reflects the actual model cost, not just tool fan-out cost.
@@ -494,12 +543,12 @@ Deno.serve(async (req) => {
           /context window|context length|2013|invalid params.*context|exceeds limit/i.test(msg);
         // Distinguish the CLIENT-SIDE message-builder schema failures from a
         // genuine provider/length problem. These should now be impossible
-        // (sanitizeModelMessages runs before every model call) — if one is ever
-        // logged, the builder produced a shape the sanitizer doesn't cover, and
-        // this flag makes it queryable instead of silently looking like overflow.
-        const isSchemaError =
-          /AI_InvalidPromptError|InvalidPromptError|do not match the ModelMessage|AI_MissingToolResultsError|Tool result is missing/i
-            .test(msg) || /InvalidPrompt|MissingToolResults/i.test(errName);
+        // (serial tool calls + return-on-throw + sanitizeModelMessages before every
+        // model call) — if one is ever logged, the builder produced a shape the
+        // sanitizer doesn't cover, and this flag makes it queryable instead of
+        // silently looking like overflow. Matches the SINGULAR and PLURAL stock
+        // MissingToolResults messages (see stream-error-classify.ts).
+        const isSchemaError = isMessageSchemaError(msg, errName);
         console.warn(
           "[orchestrator] stream error:",
           JSON.stringify({
@@ -717,6 +766,18 @@ Deno.serve(async (req) => {
       // distinguishable. Strip anything that looks like a credential first.
       onError: (error) => {
         const m = error instanceof Error ? error.message : String(error);
+        const name = error instanceof Error ? error.name : "";
+        // Phase 1 graceful escape: a MissingToolResults / InvalidPrompt schema fault
+        // is an internal message-builder hiccup, NOT a provider failure. With serial
+        // tool calls + return-on-throw + the sanitizer this should be unreachable,
+        // but if one still escapes we end the run cleanly: artifacts are persisted
+        // incrementally and the stream onError above already marked the thread
+        // "finished", so surface a soft, non-alarming note instead of a red
+        // provider-error card. Genuine provider/context errors fall through below
+        // and keep their real (redacted) message — we do NOT mask those.
+        if (isMessageSchemaError(m, name)) {
+          return "Investigation ended early — partial results were saved.";
+        }
         const redacted = m
           .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
           .replace(/sk-[A-Za-z0-9._-]+/g, "sk-[REDACTED]")

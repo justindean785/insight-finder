@@ -61,7 +61,21 @@ export const lovableGateway = LOVABLE_API_KEY
 
 // Primary orchestrator model: MiniMax-M2.7 (user's Max token plan, 15k req/5h).
 // Context overflows are mitigated by the aggressive per-step trimmer below.
-export const PRIMARY_ORCHESTRATOR_MODEL_ID = "MiniMax-M2.7";
+//
+// Phase 3 (speed): the model id is env-overridable so an operator can switch to
+// MiniMax's HighSpeed variant (~2× tok/s, identical output — audit §6) WITHOUT a
+// code change. The DEFAULT is UNCHANGED ("MiniMax-M2.7"): with nothing set this is
+// byte-for-byte the prior behavior.
+//
+// TODO(verify before enabling): third-party aggregators (AI/ML API, ofox) list the
+// HighSpeed model id as "MiniMax-M2.7-highspeed", but this was NOT confirmed against
+// the official platform.minimax.io docs (they returned HTTP 403 from the build
+// environment). A wrong model id 400s every run, so DO NOT hardcode it as the
+// default. To enable: confirm the exact case-sensitive string on the live MiniMax
+// account, then set the Supabase function secret
+//   MINIMAX_ORCHESTRATOR_MODEL_ID=<verified-highspeed-id>
+export const PRIMARY_ORCHESTRATOR_MODEL_ID =
+  Deno.env.get("MINIMAX_ORCHESTRATOR_MODEL_ID") ?? "MiniMax-M2.7";
 // Lovable Gateway model used only if MiniMax key is missing.
 export const FALLBACK_MODEL_ID = "google/gemini-2.5-pro";
 
