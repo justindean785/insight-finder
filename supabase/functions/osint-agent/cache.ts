@@ -42,11 +42,18 @@ export const DEFAULT_TOOL_TIMEOUT_MS = 12_000;
 // Legit-slow tools whose p95 genuinely exceeds the default but still yield value.
 // Everything else uses the default cap.
 export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
-  gemini_deep_dork: 30_000, // Gemini grounded search — p95 ~46s
+  gemini_deep_dork: 45_000, // Gemini grounded search — p95 ~46s (was 30s; observed timing out mid-run)
   dork_harvest: 25_000,     // wraps several web searches — p95 ~17s
   exa_search: 20_000,       // neural search + contents — p95 ~12s
   exa_find_similar: 20_000,
   exa_get_contents: 20_000,
+  // Legit-slow-but-valuable tools observed hitting the 12s default and losing
+  // real coverage (cert transparency, archives, whois). Balanced against the
+  // 6m wall-clock deadline, which remains the ultimate backstop for the tail.
+  crtsh_lookup: 25_000,       // crt.sh cert transparency — notoriously slow (p95 ~120s tail); 25s recovers the common case
+  crtsh_subdomains: 25_000,   // same crt.sh backend
+  wayback_cdx_search: 25_000, // Wayback CDX archive scan — p95 ~60s
+  whois_lookup: 20_000,       // registrar WHOIS — observed timing out at 12s
 };
 export function toolTimeoutMs(name: string): number {
   return TOOL_TIMEOUT_OVERRIDE_MS[name] ?? DEFAULT_TOOL_TIMEOUT_MS;
@@ -273,9 +280,18 @@ export function wrapToolsWithCache(
       toolHealthPromise = (async () => {
         const map = new Map<string, ToolHealth>();
         try {
-          const { data } = await adminDb
+          const { data, error } = await adminDb
             .from("tool_health")
             .select("tool_name,ok_pct,p95_duration_ms,sample_size");
+          // Supabase returns { data, error } WITHOUT throwing on a query-level
+          // failure (missing view / permission denied), so surface it here — the
+          // catch below only fires on network/thrown errors. Degradation is
+          // unchanged (empty map → neutral scoring); this just makes the
+          // "view missing" case observable instead of silent.
+          if (error) {
+            console.warn("[tool_health] load failed (scoring without prior):", error.message);
+            return map;
+          }
           for (const row of (data ?? []) as Array<Record<string, unknown>>) {
             const tn = typeof row.tool_name === "string" ? row.tool_name : null;
             if (!tn) continue;
