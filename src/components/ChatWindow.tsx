@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
@@ -32,6 +32,7 @@ import {
 } from "@/lib/recommended-pivots";
 import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon, Copy as CopyIcon } from "lucide-react";
 import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
+import { toolDisplayName } from "@/lib/tool-display";
 
 const SUPABASE_PROJECT_ID = (import.meta.env.VITE_SUPABASE_PROJECT_ID as string | undefined)?.trim();
 // Resolve from the client's SUPABASE_URL (which carries the baked-in default),
@@ -234,15 +235,20 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
   const done = tone === "ok";
   const ts = createdAt ? new Date(createdAt) : null;
 
-  // Duration: capture wall-clock when the call resolves so we can show
-  // "2.3s" / "412ms" inline. Falls back to elapsed-since-mount when
-  // createdAt is missing on legacy messages.
-  const startRef = useRef<number>(ts ? ts.getTime() : Date.now());
+  // Duration: measured as true wall-clock, but ONLY for parts that were still
+  // pending on first render — i.e. calls that resolve live in this session. A
+  // history-loaded card arrives already-resolved, so `now - messageCreatedAt`
+  // would print a nonsense duration (e.g. "1440m00s" for a day-old message);
+  // for those we suppress the duration entirely.
+  const pendingAtMountRef = useRef(!(done || failed));
+  const startRef = useRef<number>(Date.now());
   const [doneAt, setDoneAt] = useState<number | null>(null);
   useEffect(() => {
     if ((done || failed) && doneAt == null) setDoneAt(Date.now());
   }, [done, failed, doneAt]);
-  const durationMs = doneAt != null ? Math.max(0, doneAt - startRef.current) : null;
+  const durationMs = pendingAtMountRef.current && doneAt != null
+    ? Math.max(0, doneAt - startRef.current)
+    : null;
   const durationLabel = durationMs == null
     ? null
     : durationMs < 1000
@@ -493,7 +499,21 @@ type ToolRunGroup = {
   reasons: string[];
 };
 
+// Per-message memoization: useChat replaces the messages array reference on
+// every streamed token, so unchanged prior messages would otherwise re-run this
+// grouping on each tick. Keyed on the (stable, for settled messages) parts array
+// reference, so a message only re-groups when its own parts actually change.
+const toolGroupCache = new WeakMap<MessagePartShape[], Array<ToolRunGroup | { part: ToolPartShape }>>();
+
 function groupToolParts(parts: MessagePartShape[]): Array<ToolRunGroup | { part: ToolPartShape }> {
+  const cached = toolGroupCache.get(parts);
+  if (cached) return cached;
+  const result = computeToolGroups(parts);
+  toolGroupCache.set(parts, result);
+  return result;
+}
+
+function computeToolGroups(parts: MessagePartShape[]): Array<ToolRunGroup | { part: ToolPartShape }> {
   const groups: Array<ToolRunGroup | { part: ToolPartShape }> = [];
   let current: ToolRunGroup | null = null;
   for (const candidate of parts) {
@@ -765,7 +785,57 @@ function formatAge(ms: number): string {
   return `${d}d`;
 }
 
-function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean }) {
+// Stable ReactMarkdown component map — hoisted so it isn't re-allocated on every
+// render (a fresh `components` object would force ReactMarkdown to treat itself
+// as changed). Combined with <MarkdownBlock> below, unchanged prior messages no
+// longer re-parse their markdown on each streamed token.
+const chatMarkdownComponents: Components = {
+  // Replace plain text nodes containing [LABEL] tokens with badges
+  p: ({ node, children, ...rest }) => <p {...rest}>{wrapChildren(children)}</p>,
+  li: ({ node, children, ...rest }) => <li {...rest}>{wrapChildren(children)}</li>,
+  pre: ({ node, children, ...rest }) => (
+    <div className="my-2 -mx-1 sm:mx-0 rounded-lg border border-border-subtle bg-secondary/40 overflow-hidden">
+      <pre
+        {...rest}
+        className="overflow-x-auto whitespace-pre p-3 text-data leading-[1.55] font-mono text-foreground/90 [scrollbar-width:thin]"
+      >
+        {children}
+      </pre>
+    </div>
+  ),
+  table: ({ node, children, ...rest }) => (
+    <div className="my-2 -mx-1 sm:mx-0 rounded-lg border border-border-subtle bg-secondary/30 overflow-x-auto [scrollbar-width:thin]">
+      <table {...rest} className="w-full text-data border-collapse">
+        {children}
+      </table>
+    </div>
+  ),
+  th: ({ node, children, ...rest }) => (
+    <th {...rest} className="text-left font-semibold text-foreground px-2.5 py-1.5 border-b border-border-subtle bg-secondary/40 whitespace-nowrap">
+      {children}
+    </th>
+  ),
+  td: ({ node, children, ...rest }) => (
+    <td {...rest} className="align-top px-2.5 py-1.5 border-b border-border-subtle/60 text-foreground/90">
+      {wrapChildren(children)}
+    </td>
+  ),
+};
+
+const CHAT_REMARK_PLUGINS = [remarkGfm];
+
+// Memoized on the raw markdown string: a re-render of the parent (e.g. a
+// streamed token landing on the LAST message) no longer re-parses the markdown
+// of unchanged earlier messages.
+const MarkdownBlock = memo(function MarkdownBlock({ content }: { content: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} components={chatMarkdownComponents}>
+      {content}
+    </ReactMarkdown>
+  );
+});
+
+function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean }) {
   if (m.role === "user") {
     const text = (m.parts as MessagePartShape[]).filter((p) => p.type === "text").map((p) => p.text).join("");
     // Split the human text from the "Attached files:" block the composer appends,
@@ -877,41 +947,7 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
               key={i}
               className="prose prose-sm prose-invert font-chat max-w-none min-w-0 break-words prose-headings:font-display prose-headings:tracking-tight prose-h1:text-base prose-h2:text-sm prose-h2:mt-4 prose-h2:mb-2 prose-h2:pb-1 prose-h2:border-b prose-h2:border-border-subtle prose-h3:text-meta prose-h3:mt-3 prose-h3:mb-1.5 prose-p:leading-7 prose-p:my-2 prose-li:my-0.5 prose-strong:text-foreground prose-strong:font-semibold prose-code:text-[hsl(var(--info))] prose-code:px-1 prose-code:py-px prose-code:rounded prose-code:before:content-none prose-code:after:content-none prose-a:text-[hsl(var(--info))] prose-a:no-underline hover:prose-a:underline prose-hr:border-border-subtle"
             >
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={{
-                  // Replace plain text nodes containing [LABEL] tokens with badges
-                  p: ({ node, children, ...rest }) => <p {...rest}>{wrapChildren(children)}</p>,
-                  li: ({ node, children, ...rest }) => <li {...rest}>{wrapChildren(children)}</li>,
-                  pre: ({ node, children, ...rest }) => (
-                    <div className="my-2 -mx-1 sm:mx-0 rounded-lg border border-border-subtle bg-secondary/40 overflow-hidden">
-                      <pre
-                        {...rest}
-                        className="overflow-x-auto whitespace-pre p-3 text-data leading-[1.55] font-mono text-foreground/90 [scrollbar-width:thin]"
-                      >
-                        {children}
-                      </pre>
-                    </div>
-                  ),
-                  table: ({ node, children, ...rest }) => (
-                    <div className="my-2 -mx-1 sm:mx-0 rounded-lg border border-border-subtle bg-secondary/30 overflow-x-auto [scrollbar-width:thin]">
-                      <table {...rest} className="w-full text-data border-collapse">
-                        {children}
-                      </table>
-                    </div>
-                  ),
-                  th: ({ node, children, ...rest }) => (
-                    <th {...rest} className="text-left font-semibold text-foreground px-2.5 py-1.5 border-b border-border-subtle bg-secondary/40 whitespace-nowrap">
-                      {children}
-                    </th>
-                  ),
-                  td: ({ node, children, ...rest }) => (
-                    <td {...rest} className="align-top px-2.5 py-1.5 border-b border-border-subtle/60 text-foreground/90">
-                      {wrapChildren(children)}
-                    </td>
-                  ),
-                } satisfies Components}
-              >{cleaned}</ReactMarkdown>
+              <MarkdownBlock content={cleaned} />
             </div>
           );
         }
@@ -945,6 +981,29 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
     </div>
   );
 }
+
+// useChat swaps the whole messages array (and often each message object) per
+// streamed token. This comparator lets an already-rendered message skip
+// re-rendering unless something it actually displays changed: its content
+// (identity of the message object, which for settled messages stays stable),
+// its timestamp, the rerun-busy flag, or whether its retry/rerun affordances
+// are present. Callback identity is intentionally ignored — retryLastUser is
+// only ever passed to the streaming last message (whose object changes anyway),
+// and the rerun handler is presence-stable for a given cached-run message.
+function messagePropsEqual(
+  prev: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean },
+  next: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean },
+): boolean {
+  return (
+    prev.m === next.m &&
+    prev.createdAt === next.createdAt &&
+    prev.rerunBusy === next.rerunBusy &&
+    !!prev.onRetry === !!next.onRetry &&
+    !!prev.onRerun === !!next.onRerun
+  );
+}
+
+const MessageView = memo(MessageViewImpl, messagePropsEqual);
 
 function wrapChildren(children: React.ReactNode): React.ReactNode {
   if (typeof children === "string") return renderTextWithBadges(children);
@@ -1684,6 +1743,18 @@ function ChatWindowInner({
     }
   };
 
+  // The command palette's "Re-run Insight Finder on current seed" action lives in
+  // a sibling component, so it reaches the run lifecycle through this window
+  // event. A ref keeps the closure fresh without re-binding the listener on every
+  // streamed-token re-render.
+  const rerunRef = useRef(rerunInvestigation);
+  rerunRef.current = rerunInvestigation;
+  useEffect(() => {
+    const onRerun = () => { void rerunRef.current(); };
+    window.addEventListener("swarmbot:rerun", onRerun);
+    return () => window.removeEventListener("swarmbot:rerun", onRerun);
+  }, []);
+
   const retryLastUser = async () => {
     const lastUser = [...messages].reverse().find((m) => m.role === "user") as UIMessage | undefined;
     if (!lastUser) return toast.error("No previous message to retry");
@@ -1706,6 +1777,45 @@ function ChatWindowInner({
   };
 
   const isLoading = status === "submitted" || status === "streaming";
+
+  // Run progress readout for the "Investigating…" indicator: an elapsed timer
+  // (plus the current tool step) so an analyst can distinguish a working run
+  // from a wedged one instead of staring at a bare pulsing dot.
+  const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
+  const [runElapsedMs, setRunElapsedMs] = useState(0);
+  useEffect(() => {
+    if (isLoading) {
+      setRunStartedAt((prev) => prev ?? Date.now());
+    } else {
+      setRunStartedAt(null);
+      setRunElapsedMs(0);
+    }
+  }, [isLoading]);
+  useEffect(() => {
+    if (!isLoading || runStartedAt == null) return;
+    const tick = () => setRunElapsedMs(Date.now() - runStartedAt);
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [isLoading, runStartedAt]);
+  const runElapsedLabel = (() => {
+    const s = Math.floor(runElapsedMs / 1000);
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  })();
+  const currentStep = useMemo(() => {
+    if (!isLoading) return null;
+    const lastAsst = [...messages].reverse().find((mm) => mm.role === "assistant");
+    if (!lastAsst) return null;
+    const toolParts = (lastAsst.parts as MessagePartShape[]).filter(
+      (p) => typeof p.type === "string" && p.type.startsWith("tool-"),
+    );
+    const inFlight = [...toolParts].reverse().find(
+      (p) => p.state !== "output-available" && p.state !== "output-error",
+    );
+    const chosen = inFlight ?? toolParts[toolParts.length - 1];
+    if (!chosen || typeof chosen.type !== "string") return null;
+    return toolDisplayName(chosen.type.replace(/^tool-/, ""));
+  }, [isLoading, messages]);
 
   const reportPivots = useMemo(() => {
     const latestAssistant = [...messages].reverse().find((message) => message.role === "assistant");
@@ -1950,7 +2060,10 @@ function ChatWindowInner({
                 <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
               </span>
               <span className="font-medium text-foreground/85">
-                Investigating…
+                {currentStep ? `Investigating · ${currentStep}` : "Investigating…"}
+              </span>
+              <span className="font-mono text-data tabular-nums text-muted-foreground/70">
+                {runElapsedLabel}
               </span>
             </div>
           )}
