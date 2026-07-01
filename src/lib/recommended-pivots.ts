@@ -182,8 +182,14 @@ export function extractRecommendedPivots(text: string): RecommendedPivot[] {
   return pivots;
 }
 
-export function recommendedPivotsStorageKey(threadId: string): string {
-  return `swarmbot:recommended-pivots:${threadId}`;
+/**
+ * Per-thread localStorage key for pivots the user explicitly skipped. This is
+ * the ONLY pivot persistence: report recommendations are NEVER cached (they are
+ * recomputed live from the latest assistant message via the
+ * `swarmbot:report-pivots` event) so the Next-steps surface can never freeze.
+ */
+export function pivotSkipStorageKey(threadId: string): string {
+  return `proximity:pivot-skip:${threadId}`;
 }
 
 export function toDisplayPivots(recommendations: RecommendedPivot[]): Pivot[] {

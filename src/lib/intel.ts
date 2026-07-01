@@ -370,7 +370,7 @@ const PIVOT_FANOUT: Record<PivotType, string> = {
   phone: "Carrier lookup, social reverse lookup",
 };
 
-const KIND_TO_PIVOT: Record<string, PivotType> = {
+export const KIND_TO_PIVOT: Record<string, PivotType> = {
   email: "email",
   username: "username",
   handle: "username",
