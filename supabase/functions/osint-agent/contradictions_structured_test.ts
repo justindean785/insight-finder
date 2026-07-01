@@ -3,9 +3,11 @@ import {
   detectContradictions,
   structuredContradictionPatches,
   clusterScopedContradictionPatches,
+  artifactsForFinding,
   mergeStructuredContradictions,
   type StructuredContradiction,
 } from "./contradictions.ts";
+import { computeAxes } from "./confidence.ts";
 
 const NOW = "2026-06-19T00:00:00.000Z";
 
@@ -172,6 +174,93 @@ Deno.test("cluster-scoped: unclustered artifacts (no cluster_id) are NOT auto-pe
     { kind: "address", value: "Los Angeles, CA", source: "B", metadata: { residence: "Los Angeles, CA" } },
   ];
   assertEquals(clusterScopedContradictionPatches(artifacts, NOW).length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Finding-scoped contradictions — record_finding must dock a finding's
+// confidence only for contradictions belonging to its OWN identity candidate,
+// never for an unrelated candidate that happens to share the thread. This
+// mirrors the exact scope→detect→computeAxes path record_finding runs.
+// ---------------------------------------------------------------------------
+
+/** Reproduce record_finding's penalty computation for a single finding. */
+function findingIdentity(
+  allRows: Parameters<typeof detectContradictions>[0],
+  supportingValues: string[],
+  sources: string[],
+): number {
+  const scoped = artifactsForFinding(allRows, supportingValues);
+  const contras = detectContradictions(scoped.length > 0 ? scoped : allRows);
+  return computeAxes({
+    sources,
+    corroborationCount: 1,
+    contradictions: contras,
+    identityEvidenceStrength: 60,
+    relationshipEvidenceStrength: 60,
+  }).identity;
+}
+
+Deno.test("scope: artifactsForFinding keeps the cited cluster, drops the other candidate", () => {
+  const artifacts = [
+    { kind: "address", value: "Rocklin, CA", source: "A", metadata: { cluster_id: "c1", residence: "Rocklin, CA" } },
+    { kind: "email", value: "ca@example.com", source: "A2", metadata: { cluster_id: "c1" } },
+    { kind: "address", value: "Austin, TX", source: "B", metadata: { cluster_id: "c2", residence: "Austin, TX" } },
+  ];
+  // A CA finding cites only its own address — scope expands to its cluster (c1)
+  // but never reaches the TX (c2) artifact.
+  const scoped = artifactsForFinding(artifacts, ["Rocklin, CA"]);
+  const values = scoped.map((a) => a.value).sort();
+  assertEquals(values, ["Rocklin, CA", "ca@example.com"]);
+});
+
+Deno.test("false-positive fixed: a CA finding is NOT docked for a TX candidate's location conflict", () => {
+  const artifacts = [
+    { kind: "address", value: "Rocklin, CA", source: "A", metadata: { cluster_id: "c1", residence: "Rocklin, CA" } },
+    { kind: "address", value: "Austin, TX", source: "B", metadata: { cluster_id: "c2", residence: "Austin, TX" } },
+  ];
+  // Thread-wide, the two distinct locations look like a high-severity conflict…
+  assertEquals(detectContradictions(artifacts).some((c) => c.kind === "location_conflict"), true);
+  // …but that conflict belongs to two DIFFERENT candidates. The CA finding must
+  // keep its full identity strength (60), not eat the -25 high-severity dock.
+  assertEquals(findingIdentity(artifacts, ["Rocklin, CA"], ["linkedin"]), 60);
+});
+
+Deno.test("advisory scoping: a CA finding is NOT docked for a TX candidate's thin_name / over_broad_username", () => {
+  const artifacts = [
+    { kind: "email", value: "ca@example.com", source: "A", metadata: { cluster_id: "c1" } },
+    { kind: "name", value: "Bob", source: "B", metadata: { cluster_id: "c2" } }, // thin_name (unrelated candidate)
+    { kind: "username", value: "shadow", source: "C", metadata: { cluster_id: "c2", platforms_confirmed: 40 } }, // over_broad (unrelated)
+  ];
+  // Those advisory signals exist thread-wide…
+  const wide = detectContradictions(artifacts);
+  assertEquals(wide.some((c) => c.kind === "thin_name"), true);
+  assertEquals(wide.some((c) => c.kind === "over_broad_username"), true);
+  // …but they belong to c2, so the c1 finding is untouched.
+  assertEquals(findingIdentity(artifacts, ["ca@example.com"], ["linkedin"]), 60);
+});
+
+Deno.test("genuine conflict still fires: a self-contradiction WITHIN the finding's cluster still docks", () => {
+  const artifacts = [
+    { kind: "address", value: "Rocklin, CA", source: "A", metadata: { cluster_id: "c1", residence: "Rocklin, CA" } },
+    { kind: "employer", value: "Acme", source: "B", metadata: { cluster_id: "c1", based: "Sacramento, CA" } },
+    { kind: "address", value: "Austin, TX", source: "C", metadata: { cluster_id: "c2", residence: "Austin, TX" } },
+  ];
+  // The finding cites the CA address; scope pulls in its c1 sibling, which
+  // carries a CONFLICTING within-candidate location. That real self-conflict
+  // must still dock identity by the high-severity 25 (60 → 35) — and only once
+  // (the c2 Austin location must not add a second dock).
+  assertEquals(findingIdentity(artifacts, ["Rocklin, CA"], ["linkedin"]), 35);
+});
+
+Deno.test("conservative fallback: an unresolvable finding keeps the thread-wide penalty", () => {
+  const artifacts = [
+    { kind: "address", value: "Rocklin, CA", source: "A", metadata: { cluster_id: "c1", residence: "Rocklin, CA" } },
+    { kind: "address", value: "Austin, TX", source: "B", metadata: { cluster_id: "c2", residence: "Austin, TX" } },
+  ];
+  // Finding cites nothing that resolves → we can't attribute a cluster, so we
+  // must NOT silently inflate confidence: the thread-wide dock still applies.
+  assertEquals(findingIdentity(artifacts, [], ["linkedin"]), 35);
+  assertEquals(findingIdentity(artifacts, ["no-such-value"], ["linkedin"]), 35);
 });
 
 Deno.test("merge preserves prior entries (including legacy string contradictions)", () => {
