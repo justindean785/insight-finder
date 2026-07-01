@@ -263,6 +263,30 @@ Deno.test("conservative fallback: an unresolvable finding keeps the thread-wide 
   assertEquals(findingIdentity(artifacts, ["no-such-value"], ["linkedin"]), 35);
 });
 
+Deno.test("unclustered thread: a genuine self-conflict is retained (thread-wide fallback, no inflation)", () => {
+  const artifacts = [
+    { kind: "address", value: "Rocklin, CA", source: "A", metadata: { residence: "Rocklin, CA" } },
+    { kind: "address", value: "Austin, TX", source: "B", metadata: { residence: "Austin, TX" } },
+  ];
+  // Cited artifact carries NO cluster_id → we cannot attribute candidates, so the
+  // scope must fall back to the FULL thread set (both rows). Narrowing to the
+  // cited row alone would silently drop the Rocklin/Austin conflict and inflate.
+  const scoped = artifactsForFinding(artifacts, ["Rocklin, CA"]);
+  assertEquals(scoped.length, 2);
+});
+
+Deno.test("clustered finding: excludes a DIFFERENT candidate cluster but keeps unclustered siblings", () => {
+  const artifacts = [
+    { kind: "address", value: "Rocklin, CA", source: "A", metadata: { cluster_id: "c1", residence: "Rocklin, CA" } },
+    { kind: "email", value: "sib@example.com", source: "S", metadata: {} }, // unclustered sibling
+    { kind: "address", value: "Austin, TX", source: "B", metadata: { cluster_id: "c2", residence: "Austin, TX" } }, // different candidate
+  ];
+  const scoped = artifactsForFinding(artifacts, ["Rocklin, CA"]);
+  const vals = scoped.map((a) => a.value).sort();
+  // c1 cited + unclustered sibling kept; the c2 candidate is excluded.
+  assertEquals(vals, ["Rocklin, CA", "sib@example.com"]);
+});
+
 Deno.test("merge preserves prior entries (including legacy string contradictions)", () => {
   const legacy = "location_conflict: noted earlier in prose";
   const entry: StructuredContradiction = {
