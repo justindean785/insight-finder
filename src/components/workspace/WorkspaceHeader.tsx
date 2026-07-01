@@ -115,9 +115,11 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
           <span className="font-mono text-meta text-foreground truncate max-w-[58vw] sm:max-w-[42vw]">{thread?.seed_value || "—"}</span>
           {thread?.seed_value && <Copy className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />}
         </button>
-        <span className={cn("shrink-0 rounded-full border px-2.5 py-1 text-eyebrow font-mono uppercase tracking-[0.16em]", statusColor)}>
-          {status}
-        </span>
+        {status !== "idle" && (
+          <span className={cn("shrink-0 rounded-full border px-2.5 py-1 text-eyebrow font-mono uppercase tracking-[0.16em]", statusColor)}>
+            {status}
+          </span>
+        )}
 
         <div className="ml-auto flex items-center gap-3 sm:gap-4 text-data shrink-0">
           {integrityPct != null && (
