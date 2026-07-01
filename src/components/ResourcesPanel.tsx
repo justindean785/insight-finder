@@ -3,6 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import {
   Mail, Globe, User as UserIcon, Network, ShieldAlert, Image as ImgIcon, Tag,
   Copy, CheckCircle2, XCircle, Star, ShieldQuestion, EyeOff, ChevronRight, Radar,
+  AlertTriangle, RotateCcw, Loader2,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -70,13 +71,16 @@ const STATUS_FILTER_GROUPS: Record<EvidenceStatusFilter, Set<string> | null> = {
 };
 
 function ArtifactsList({
-  items, onSelect, review, statusFilter, sortMode,
+  items, onSelect, review, statusFilter, sortMode, loading, error, onRetry,
 }: {
   items: Artifact[];
   onSelect: (a: Artifact) => void;
   review: ReturnType<typeof useReviewStates>;
   statusFilter: EvidenceStatusFilter;
   sortMode: EvidenceSortMode;
+  loading?: boolean;
+  error?: boolean;
+  onRetry?: () => void;
 }) {
   // Track which kind-clusters the user has manually toggled open/closed.
   // Keyed by `${group}:${kind}`; undefined = use the default (collapsed when big).
@@ -118,6 +122,45 @@ function ArtifactsList({
     return byGroup;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtered, sortMode, statusFilter]);
+
+  // A failed SELECT (transient DB/network) must be visibly distinct from an
+  // empty case, with a retry — otherwise a dropped query reads as "nothing found".
+  if (error && items.length === 0) {
+    return (
+      <div className="p-3 sm:p-5">
+        <div className="flex flex-col items-center gap-4 rounded-2xl border border-destructive/25 bg-[linear-gradient(180deg,rgba(70,20,20,0.22),rgba(12,8,8,0.9))] px-6 py-12 text-center shadow-[0_34px_110px_-70px_rgba(0,0,0,0.95)]">
+          <div className="grid h-11 w-11 place-items-center rounded-xl border border-destructive/35 bg-destructive/10 text-destructive">
+            <AlertTriangle className="h-[18px] w-[18px]" strokeWidth={1.75} />
+          </div>
+          <div>
+            <div className="font-display text-lg font-semibold tracking-tight text-foreground">Couldn't load evidence</div>
+            <div className="mt-1 text-sm text-muted-foreground">
+              The artifact query failed — this may be a transient network or database issue.
+            </div>
+          </div>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.05] px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-white/[0.09] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <RotateCcw className="h-3.5 w-3.5" /> Retry
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Still fetching the first page — a quiet skeleton, not the empty state.
+  if (loading && items.length === 0) {
+    return (
+      <div className="flex flex-col items-center gap-3 px-6 py-16 text-center text-sm text-muted-foreground">
+        <Loader2 className="h-5 w-5 animate-spin text-[hsl(var(--intel-blue))]" />
+        Loading evidence…
+      </div>
+    );
+  }
 
   if (items.length === 0) {
     return (
@@ -738,7 +781,7 @@ function PeekField({ label, children }: { label: string; children: React.ReactNo
  * it reuses the same ArtifactsList/ArtifactDrawer the rail used to render.
  */
 export function EvidenceBoard({ threadId }: { threadId: string }) {
-  const { items, updateLocal } = useThreadArtifacts(threadId);
+  const { items, updateLocal, loading, error, retry } = useThreadArtifacts(threadId);
   const review = useReviewStates(threadId);
   const [selected, setSelected] = useState<Artifact | null>(null);
   const [statusFilter, setStatusFilter] = useState<EvidenceStatusFilter>("all");
@@ -795,6 +838,9 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
         review={review}
         statusFilter={statusFilter}
         sortMode={sortMode}
+        loading={loading}
+        error={error}
+        onRetry={retry}
       />
       <ArtifactDrawer
         artifact={selected}
