@@ -341,14 +341,23 @@ export function artifactsForFinding(
       .filter((c): c is string => typeof c === "string" && !!c.trim())
       .map((c) => c.trim()),
   );
-  // No cluster assigned → the finding's own set is exactly the cited artifacts.
-  if (clusterIds.size === 0) return cited;
-  // Otherwise expand to the whole candidate cluster(s) so a genuine
-  // self-contradiction among sibling artifacts still docks.
+  // No cluster assigned → we cannot attribute artifacts to distinct candidates,
+  // so fall back to the FULL thread-wide set. Narrowing to cited-only here would
+  // silently DROP genuine self-contradictions on an unclustered single-subject
+  // thread and dishonestly inflate confidence (the exact overshoot this scoping
+  // must avoid).
+  if (clusterIds.size === 0) return artifacts;
+  // Otherwise scope to the finding's own candidate cluster(s) PLUS any
+  // UNCLUSTERED siblings (not proven to belong to a different candidate), and
+  // EXCLUDE only artifacts KNOWN to belong to a DIFFERENT candidate cluster —
+  // that exclusion is the actual #6 fix (a CA finding must not eat a TX
+  // candidate's contradiction). Keeping unclustered rows avoids dropping real
+  // conflicts when clustering is incomplete.
   const scoped = new Set<ArtifactLike>(cited);
   for (const a of artifacts) {
     const cid = a.metadata?.cluster_id;
-    if (typeof cid === "string" && clusterIds.has(cid.trim())) scoped.add(a);
+    const cidStr = typeof cid === "string" ? cid.trim() : "";
+    if (!cidStr || clusterIds.has(cidStr)) scoped.add(a);
   }
   return [...scoped];
 }
