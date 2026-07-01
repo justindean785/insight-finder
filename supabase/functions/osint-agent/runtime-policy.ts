@@ -75,6 +75,19 @@ export interface ExpectedValueInput {
   collisionPenalty?: number;
   weakLeadPenalty?: number;
   repeatedToolPenalty?: number;
+  // ---- Persistent tool-health signals (from the tool_health view) -------------
+  // All optional: with no telemetry these are absent and scoring is byte-for-byte
+  // the prior behavior. Fed from tool_usage_log so the scheduler self-prunes slow
+  // and unreliable tools by DATA rather than a hand-maintained blocklist (§3.5).
+  /** Rolling p95 LIVE latency (ms). Drives the latency penalty. null = unknown. */
+  p95DurationMs?: number | null;
+  /** Rolling success rate 0..1 (ok_pct). Drives the reliability prior. null = unknown. */
+  reliability?: number | null;
+  /** #live samples behind the health stats — the reliability prior only applies
+   *  with enough data, so one unlucky call can't demote a tool. */
+  healthSampleSize?: number | null;
+  /** Manual override bypasses the reliability suppression (analyst forced it). */
+  manualOverride?: boolean;
 }
 
 export interface RuntimeDecisionInput {
@@ -132,6 +145,11 @@ const THREADS = new Map<string, RuntimeThreadState>();
 // provider limits (e.g. stolen.tax = 2 req/s); tighter budgets stop the agent
 // grinding low-value fan-out on a no-match seed.
 export const MAX_TOTAL_CALLS = 30;
+// Speed pass: raised 3→6 to cut wall-clock (fewer, wider cycles). This is the
+// default for runtimeLimits.maxParallelTools (env MAX_PARALLEL_TOOLS overrides)
+// AND the concurrency figure quoted in the system prompt. The queue still spaces
+// starts (MIN_START_GAP_MS) and backs off on real 429s — wider just means more
+// in flight at once, never hard-failed.
 export const MAX_CONCURRENT_CALLS = 6;
 export const MAX_PAID_CALLS = 12;
 
@@ -210,6 +228,9 @@ export const MAX_CONCURRENCY_BACKOFF_MS = 5000;
 export const SAME_TOOL_SOFT_LIMIT = 6;
 export const SAME_TOOL_COOLDOWN_MS = 400;
 export const MAX_SAME_TOOL_CALLS = 16;
+// Speed pass: env-tunable, default lowered 600→200ms so cycles start faster.
+// Still a real gap between call starts (queue spacing); raise via MIN_START_GAP_MS
+// if a provider's per-second limit needs more breathing room.
 export const MIN_START_GAP_MS = envNumber("MIN_START_GAP_MS", 200);
 
 function getThread(threadId: string): RuntimeThreadState {
@@ -269,8 +290,37 @@ export function currentStage(threadId: string): InvestigationStage {
   return getThread(threadId).stage;
 }
 
+// Minimum LIVE samples before EITHER health-derived penalty applies. Below this,
+// both p95 and ok_pct are noise: a 2-call/1-fail tool is not "50% reliable", and a
+// brand-new tool must not be penalized on a handful of samples. Below the floor the
+// prior degrades to NEUTRAL (no penalty). Verified against live telemetry (2026-06-30).
+export const HEALTH_MIN_SAMPLES = 20;
+
 export function scoreExpectedValue(input: ExpectedValueInput): number {
   const confidenceBase = input.selectorConfidence ?? 45;
+  // Both health penalties require the sample floor — otherwise a slow/failed tail
+  // computed from a handful of calls would demote a tool on pure noise.
+  const samples = input.healthSampleSize ?? 0;
+  const haveEnoughSamples = samples >= HEALTH_MIN_SAMPLES;
+  // Latency penalty from the tool's rolling p95 (audit §3.5 buckets): <1s none,
+  // 1–5s small, 5–15s medium, >15s large. Neutral below the sample floor.
+  const p95 = input.p95DurationMs;
+  let latencyPenalty = 0;
+  if (haveEnoughSamples && typeof p95 === "number" && p95 > 0) {
+    if (p95 > 15_000) latencyPenalty = 25;
+    else if (p95 > 5_000) latencyPenalty = 15;
+    else if (p95 > 1_000) latencyPenalty = 6;
+  }
+  // Reliability prior from the tool's rolling ok_pct: a <40% tool is strongly
+  // EV-suppressed, 40–70% moderately, 70–85% mildly. Skipped on a manual override
+  // (analyst forced it) or below the sample floor (too little data → neutral).
+  const rel = input.reliability;
+  let reliabilityPenalty = 0;
+  if (!input.manualOverride && haveEnoughSamples && typeof rel === "number") {
+    if (rel < 0.40) reliabilityPenalty = 45;
+    else if (rel < 0.70) reliabilityPenalty = 18;
+    else if (rel < 0.85) reliabilityPenalty = 8;
+  }
   const score = confidenceBase
     + (input.sourceIndependenceBonus ?? 0)
     + (input.corroborationPotential ?? 0)
@@ -281,7 +331,9 @@ export function scoreExpectedValue(input: ExpectedValueInput): number {
     - (input.priorFailurePenalty ?? 0)
     - (input.collisionPenalty ?? 0)
     - (input.weakLeadPenalty ?? 0)
-    - (input.repeatedToolPenalty ?? 0);
+    - (input.repeatedToolPenalty ?? 0)
+    - latencyPenalty
+    - reliabilityPenalty;
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
