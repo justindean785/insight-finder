@@ -207,7 +207,7 @@ interface ParsedLoc {
 
 function parseLoc(raw: string): ParsedLoc {
   const cleaned = raw.toLowerCase().replace(/[.]/g, "").replace(/\s+/g, " ").trim();
-  let parts = cleaned.split(",").map((p) => p.trim()).filter(Boolean);
+  const parts = cleaned.split(",").map((p) => p.trim()).filter(Boolean);
   // Drop trailing country tokens ("Los Angeles, CA, USA").
   while (parts.length > 1 && COUNTRY_TOKENS.has(parts[parts.length - 1])) parts.pop();
   const tokens = cleaned.replace(/,/g, " ").split(" ").filter(Boolean);
