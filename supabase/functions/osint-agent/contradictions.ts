@@ -584,6 +584,52 @@ export function clusterScopedContradictionPatches(
   return out;
 }
 
+/**
+ * Restrict a thread's artifacts to the ones that belong to a SINGLE finding's
+ * identity candidate, so its confidence penalty reflects only its OWN
+ * contradictions / advisory signals — not those of an unrelated candidate that
+ * happens to share the thread (a CA person must not be docked for a TX person's
+ * location conflict).
+ *
+ * "Belongs to the finding" =
+ *   • the artifact is one the finding explicitly cites (its value is in
+ *     `supportingValues`), OR
+ *   • it shares a `metadata.cluster_id` with a cited artifact (same candidate).
+ *
+ * When no cited artifact can be resolved (the finding supplied no
+ * `supporting_artifact_values`, or none match a thread row) we can't scope
+ * safely, so this returns an EMPTY list and the caller should fall back to the
+ * thread-wide set — conservative: keep the penalty rather than silently inflate
+ * confidence by dropping contradictions we can't attribute.
+ */
+export function artifactsForFinding(
+  artifacts: ArtifactLike[],
+  supportingValues: string[],
+): ArtifactLike[] {
+  const wanted = new Set(
+    (supportingValues ?? []).map((v) => v.trim().toLowerCase()).filter(Boolean),
+  );
+  if (wanted.size === 0) return [];
+  const cited = artifacts.filter((a) => wanted.has(a.value.trim().toLowerCase()));
+  if (cited.length === 0) return [];
+  const clusterIds = new Set(
+    cited
+      .map((a) => a.metadata?.cluster_id)
+      .filter((c): c is string => typeof c === "string" && !!c.trim())
+      .map((c) => c.trim()),
+  );
+  // No cluster assigned → the finding's own set is exactly the cited artifacts.
+  if (clusterIds.size === 0) return cited;
+  // Otherwise expand to the whole candidate cluster(s) so a genuine
+  // self-contradiction among sibling artifacts still docks.
+  const scoped = new Set<ArtifactLike>(cited);
+  for (const a of artifacts) {
+    const cid = a.metadata?.cluster_id;
+    if (typeof cid === "string" && clusterIds.has(cid.trim())) scoped.add(a);
+  }
+  return [...scoped];
+}
+
 /** True when two structured contradictions describe the same conflict
  *  (same finding kind + same attribute). Used for idempotent merging. */
 function sameContradiction(a: unknown, b: StructuredContradiction): boolean {
