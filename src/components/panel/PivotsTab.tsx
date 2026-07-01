@@ -1,19 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
-import { buildPivots, type Pivot } from "@/lib/intel";
-import { useReviewStates, REVIEW_CLASS, REVIEW_SHORT } from "@/lib/review";
 import { supabase } from "@/integrations/supabase/client";
-import { Copy, EyeOff, ArrowRight, Sparkles, CheckSquare, Square, Play, Wallet, GitCompare, Zap } from "lucide-react";
+import { Copy, EyeOff, CheckSquare, Square, Sparkles, Wallet, GitCompare, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import {
-  recommendedPivotsStorageKey,
-  toDisplayPivots,
-  type RecommendedPivot,
-} from "@/lib/recommended-pivots";
+import { normalizeTarget } from "@/lib/next-step-cards";
+import { computePivots, canonicalKey, type DisplayPivot } from "@/lib/pivot-engine";
+import { pivotSkipStorageKey, type RecommendedPivot } from "@/lib/recommended-pivots";
+import { PivotCard } from "@/components/pivots/PivotCard";
 
-const SKIP_KEY = (threadId: string) => `proximity:pivot-skip:${threadId}`;
-
+/**
+ * Pivots surface (Evidence → Pivots). Shares ONE engine with the chat "Next
+ * steps" rail (computePivots) so the two never disagree, and NEVER reads a
+ * frozen report cache: report recommendations arrive live via the
+ * `swarmbot:report-pivots` event, so on reload the tab shows artifact-derived
+ * pivots until the next assistant turn re-emits report pivots.
+ */
 export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts: Artifact[] }) {
   const [seedValue, setSeedValue] = useState<string | null>(null);
   const [skipped, setSkipped] = useState<Set<string>>(new Set());
@@ -21,7 +23,6 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
   const [costMicro, setCostMicro] = useState<number>(0);
   const [reportPivots, setReportPivots] = useState<RecommendedPivot[]>([]);
   const [statusMsg, setStatusMsg] = useState("");
-  const review = useReviewStates(threadId);
 
   useEffect(() => {
     supabase
@@ -34,16 +35,12 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
         setSeedValue(d?.seed_value ?? null);
         setCostMicro(Number(d?.cost_micro_usd ?? 0));
       });
+    // Skip set only — report pivots are NEVER cached (no more frozen list).
     try {
-      const raw = localStorage.getItem(SKIP_KEY(threadId));
-      if (raw) setSkipped(new Set(JSON.parse(raw)));
+      const raw = localStorage.getItem(pivotSkipStorageKey(threadId));
+      setSkipped(new Set(raw ? (JSON.parse(raw) as string[]) : []));
     } catch { /* ignore */ }
-    try {
-      const raw = localStorage.getItem(recommendedPivotsStorageKey(threadId));
-      setReportPivots(raw ? JSON.parse(raw) as RecommendedPivot[] : []);
-    } catch {
-      setReportPivots([]);
-    }
+    setReportPivots([]);
   }, [threadId]);
 
   useEffect(() => {
@@ -52,39 +49,25 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
       if (detail?.threadId === threadId) setReportPivots(detail.pivots);
     };
     window.addEventListener("swarmbot:report-pivots", onReportPivots as EventListener);
+    // Ask ChatWindow to replay the current report pivots now that we're listening,
+    // so opening this tab on a settled thread shows report-only leads immediately
+    // instead of waiting for the next assistant turn.
+    window.dispatchEvent(new CustomEvent("swarmbot:request-report-pivots", { detail: { threadId } }));
     return () => window.removeEventListener("swarmbot:report-pivots", onReportPivots as EventListener);
   }, [threadId]);
 
-  // Pivots must track the LATEST findings + the LATEST chat on every turn, not
-  // lock to the last report. We MERGE both sources (deduped) instead of letting
-  // report pivots short-circuit the live, artifact-driven ones:
-  //   • buildPivots(artifacts) — findings-driven, refreshes in realtime as new
-  //     artifacts arrive (so the list reflects the newest discoveries each turn);
-  //   • toDisplayPivots(reportPivots) — the analyst-recommended follow-ups from
-  //     the most recent assistant message (refreshes per message via the
-  //     swarmbot:report-pivots event).
-  // The latest analyst recommendations lead; fresh findings fill in behind them.
-  // Already-searched leads (buildPivots marks status:"searched") sort last so the
-  // surface always foregrounds the next unexplored step.
-  const pivots = useMemo(() => {
-    const recommended = toDisplayPivots(reportPivots);
-    const findings = buildPivots(artifacts, seedValue);
-    const seen = new Set<string>();
-    const merged: Pivot[] = [];
-    for (const p of [...recommended, ...findings]) {
-      const k = pivotKey(p);
-      if (seen.has(k)) continue;
-      seen.add(k);
-      merged.push(p);
-    }
-    // Unsearched ("new") leads first, preserving each source's internal order.
-    return merged.sort((a, b) => (a.status === "searched" ? 1 : 0) - (b.status === "searched" ? 1 : 0));
-  }, [artifacts, reportPivots, seedValue]);
-  const visible = pivots.filter((p) => !skipped.has(pivotKey(p)));
+  // Live pivots: recomputed whenever artifacts stream in, a new report turn
+  // lands, or the skip set changes. computePivots already hard-hides skipped
+  // targets, so this list IS the visible list.
+  const visible = useMemo(
+    () => computePivots({ artifacts, seedValue, reportPivots, skipSet: skipped }),
+    [artifacts, seedValue, reportPivots, skipped],
+  );
+
   const recommendationByKey = useMemo(() => {
     const map = new Map<string, RecommendedPivot>();
     for (const recommendation of reportPivots) {
-      map.set(`${recommendation.type}:${recommendation.value.toLowerCase()}`, recommendation);
+      map.set(`${recommendation.type}:${normalizeTarget(recommendation.value)}`, recommendation);
     }
     return map;
   }, [reportPivots]);
@@ -100,7 +83,6 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
       set.add(String(a.value));
       byKind.set(k, set);
     }
-    // count kinds with conflicting unique values for identity-like signals
     for (const k of ["dob", "city", "employer", "location"]) {
       const s = byKind.get(k);
       if (s && s.size > 1) n += s.size - 1;
@@ -111,19 +93,28 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
   const costUsd = costMicro / 1_000_000;
   const fmtCost = costUsd <= 0 ? "$0" : costUsd < 0.01 ? `$${costUsd.toFixed(4)}` : `$${costUsd.toFixed(3)}`;
 
-  const toggleSelect = (p: Pivot) => {
-    const k = pivotKey(p);
+  const persistSkip = (next: Set<string>) => {
+    setSkipped(next);
+    try {
+      localStorage.setItem(pivotSkipStorageKey(threadId), JSON.stringify(Array.from(next)));
+    } catch { /* ignore */ }
+    // Sync the chat rail so a skipped lead never reappears there either.
+    window.dispatchEvent(new CustomEvent("swarmbot:pivot-skip-changed", { detail: { threadId } }));
+  };
+
+  const toggleSelect = (p: DisplayPivot) => {
+    const k = canonicalKey(p);
     const next = new Set(selected);
     if (next.has(k)) next.delete(k);
     else next.add(k);
     setSelected(next);
   };
-  const allSelected = visible.length > 0 && visible.every((p) => selected.has(pivotKey(p)));
+  const allSelected = visible.length > 0 && visible.every((p) => selected.has(canonicalKey(p)));
   const toggleAll = () => {
     if (allSelected) { setSelected(new Set()); return; }
-    setSelected(new Set(visible.map(pivotKey)));
+    setSelected(new Set(visible.map(canonicalKey)));
   };
-  const selectedPivots = visible.filter((p) => selected.has(pivotKey(p)));
+  const selectedPivots = visible.filter((p) => selected.has(canonicalKey(p)));
   const copySelected = () => {
     if (selectedPivots.length === 0) return;
     const text = selectedPivots.map((p) => p.value).join("\n");
@@ -135,31 +126,27 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
   const skipSelected = () => {
     if (selectedPivots.length === 0) return;
     const next = new Set(skipped);
-    for (const p of selectedPivots) next.add(pivotKey(p));
-    setSkipped(next);
+    for (const p of selectedPivots) next.add(normalizeTarget(p.value));
+    persistSkip(next);
     setSelected(new Set());
-    localStorage.setItem(SKIP_KEY(threadId), JSON.stringify(Array.from(next)));
     toast.success(`Skipped ${selectedPivots.length} pivots`);
     setStatusMsg(`Skipped ${selectedPivots.length} pivots`);
   };
 
-  const skip = (p: Pivot) => {
+  const skip = (p: DisplayPivot) => {
     const next = new Set(skipped);
-    next.add(pivotKey(p));
-    setSkipped(next);
-    localStorage.setItem(SKIP_KEY(threadId), JSON.stringify(Array.from(next)));
+    next.add(normalizeTarget(p.value));
+    persistSkip(next);
     setStatusMsg(`Pivot ${p.value} skipped`);
   };
 
   const copy = (text: string) =>
     navigator.clipboard.writeText(text).then(() => toast.success("Pivot copied"), () => toast.error("Copy failed"));
 
-  const runPivot = (p: Pivot) => {
-    const recommendation = reportPivots.find((candidate) =>
-      candidate.value.toLowerCase() === p.value.toLowerCase() && candidate.type === p.type
-    );
+  const runPivot = (p: DisplayPivot) => {
+    const recommendation = recommendationByKey.get(`${p.type}:${normalizeTarget(p.value)}`);
     window.dispatchEvent(new CustomEvent("proximity:run-pivot", {
-      detail: { threadId, value: p.value, type: p.type, prompt: recommendation?.prompt },
+      detail: { threadId, value: p.value, type: p.type, prompt: recommendation?.prompt ?? p.prompt },
     }));
     // Auto-skip so it doesn't keep appearing as "new"
     skip(p);
@@ -244,92 +231,21 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
           <div className="text-data">Pivots appear automatically as the agent records emails, usernames, domains, IPs, or wallets.</div>
         </div>
       ) : (
-        <ul className="space-y-2">
-          {visible.map((p, i) => {
-            const recommendation = recommendationByKey.get(pivotKey(p));
-            const headline = recommendation?.actionLabel ?? p.value;
-            const reason = recommendation?.reason ?? p.why;
-            const detail = recommendation?.detail ?? p.value;
-            return (
-              <li
-                key={pivotKey(p)}
-                className="group relative overflow-hidden rounded-lg glass p-2.5 space-y-1.5 animate-pivot-in transition-all duration-300 hover:border-primary/60 hover:-translate-y-0.5 hover:ring-glow"
-                style={{ animationDelay: `${Math.min(i * 40, 320)}ms` }}
-              >
-              <div className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 bg-gradient-to-br from-primary/5 via-transparent to-accent/5" />
-              {p.status === "new" && (
-                <span className="absolute -left-px top-3 bottom-3 w-0.5 rounded-full bg-gradient-to-b from-primary to-accent animate-pulse-ring" />
-              )}
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0 flex items-start gap-2">
-                  <button
-                    onClick={() => toggleSelect(p)}
-                    aria-label="Select pivot"
-                    className="mt-0.5 shrink-0 text-muted-foreground hover:text-primary"
-                  >
-                    {selected.has(pivotKey(p))
-                      ? <CheckSquare className="w-3.5 h-3.5 text-primary" />
-                      : <Square className="w-3.5 h-3.5" />}
-                  </button>
-                  <div className="min-w-0">
-                  <div className="text-sm font-semibold text-foreground break-words group-hover:text-primary transition-colors">{headline}</div>
-                  {detail !== headline && (
-                    <div className="font-mono text-foreground/88 break-all mt-1">{detail}</div>
-                  )}
-                  <div className="text-eyebrow uppercase tracking-wider text-muted-foreground mt-0.5">
-                    {p.type} · source: {p.source}
-                  </div>
-                  </div>
-                </div>
-                <div className="shrink-0 flex flex-col items-end gap-1">
-                  <span className={
-                    "px-1.5 py-0.5 rounded border font-mono text-eyebrow uppercase tracking-wider " +
-                    (p.status === "new"
-                      ? "text-primary border-primary/40 bg-primary/10 shadow-[0_0_12px_-4px_hsl(var(--primary)/0.6)]"
-                      : "text-muted-foreground border-border bg-secondary/40")
-                  }>{p.status}</span>
-                  {(() => {
-                    const r = review.get(p.sourceArtifactId);
-                    if (r === "new") return null;
-                    return (
-                      <span className={"px-1.5 py-0.5 rounded border font-mono text-eyebrow uppercase tracking-wider " + REVIEW_CLASS[r]}>
-                        {REVIEW_SHORT[r]}
-                      </span>
-                    );
-                  })()}
-                </div>
-              </div>
-              <div className="text-muted-foreground">{reason}</div>
-              <div className="text-data text-muted-foreground flex items-center gap-1">
-                <ArrowRight className="w-3 h-3 text-primary/70 transition-transform group-hover:translate-x-0.5" />
-                Action: <span className="text-foreground">{recommendation?.actionLabel ?? p.fanout}</span>
-              </div>
-              <div className="flex items-center justify-between gap-1">
-                <Button
-                  size="sm"
-                  onClick={() => runPivot(p)}
-                  className="h-7 px-2.5 gap-1 text-data bg-primary text-primary-foreground hover:bg-primary/90"
-                >
-                  <Play className="w-3 h-3 fill-current" /> Run pivot <ArrowRight className="w-3 h-3" />
-                </Button>
-                <div className="flex items-center gap-1">
-                  <Button size="sm" variant="ghost" className="h-6 px-2 gap-1 text-data hover:text-primary" onClick={() => copy(p.value)}>
-                    <Copy className="w-3 h-3" /> Copy
-                  </Button>
-                  <Button size="sm" variant="ghost" className="h-6 px-2 gap-1 text-data" onClick={() => skip(p)}>
-                    <EyeOff className="w-3 h-3" /> Skip
-                  </Button>
-                </div>
-              </div>
-              </li>
-            );
-          })}
-        </ul>
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+          {visible.map((p, i) => (
+            <PivotCard
+              key={canonicalKey(p)}
+              pivot={p}
+              index={i}
+              selected={selected.has(canonicalKey(p))}
+              onSelect={() => toggleSelect(p)}
+              onRun={() => runPivot(p)}
+              onCopy={() => copy(p.value)}
+              onSkip={() => skip(p)}
+            />
+          ))}
+        </div>
       )}
     </div>
   );
-}
-
-function pivotKey(p: Pivot) {
-  return `${p.type}:${p.value.toLowerCase()}`;
 }

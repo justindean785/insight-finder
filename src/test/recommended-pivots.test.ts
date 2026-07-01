@@ -70,6 +70,26 @@ describe("extractRecommendedPivots", () => {
     });
   });
 
+  it("drops source-infrastructure domains but keeps genuine subject domains", () => {
+    // Regression: report-recommended domains like the CA SOS bizfile portal,
+    // linkedin.com, and opencorporates.com are OSINT *sources*, not subject
+    // identifiers — they must never become "Review domain footprint" pivots.
+    const text = `
+## Recommended Next Pivots
+- Review domain footprint linkedin.com — fingerprinted on archived site
+- Review domain footprint bizfileonline.sos.ca.gov — business registry source
+- Review domain footprint opencorporates.com — registry source
+- Review domain footprint ceroconstruction.com — subject's own domain
+`;
+    const pivots = extractRecommendedPivots(text);
+    const values = pivots.map((p) => p.value);
+    expect(values).toContain("ceroconstruction.com");
+    expect(values).not.toContain("linkedin.com");
+    expect(values).not.toContain("bizfileonline.sos.ca.gov");
+    expect(values).not.toContain("opencorporates.com");
+    expect(pivots).toHaveLength(1);
+  });
+
   it("does not leak <think> reasoning blocks into pivot cards", () => {
     // Regression for the screenshot bug: the agent emitted a chain-of-thought
     // block inside the report text. The chat renderer strips it, but the Next

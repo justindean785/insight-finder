@@ -483,57 +483,9 @@ All colors MUST be HSL.
       0 24px 64px -24px hsl(var(--danger) / 0.35);
   }
 
-  /* Action chip — Next steps pills */
-  .action-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.55rem 0.95rem;
-    border-radius: 999px;
-    background: linear-gradient(180deg, hsl(0 0% 100% / 0.05), hsl(0 0% 100% / 0.02));
-    border: 1px solid hsl(0 0% 100% / 0.08);
-    color: hsl(var(--foreground) / 0.85);
-    font-size: 0.78rem;
-    transition: all 220ms ease;
-    backdrop-filter: blur(12px);
-  }
-  .action-chip:hover {
-    transform: translateY(-1px);
-    border-color: hsl(var(--intel-blue) / 0.45);
-    background: linear-gradient(180deg, hsl(var(--intel-blue) / 0.12), hsl(var(--intel-violet) / 0.08));
-    color: hsl(var(--foreground));
-    box-shadow: 0 8px 24px -10px hsl(var(--intel-blue) / 0.45);
-  }
-  .action-chip--stacked {
-    width: min(100%, 340px);
-    min-height: 78px;
-    align-items: flex-start;
-    gap: 0.7rem;
-    padding: 0.72rem 0.82rem;
-    border-radius: 16px;
-    text-align: left;
-    background:
-      radial-gradient(90% 120% at 10% 0%, hsl(var(--info) / 0.12), transparent 55%),
-      linear-gradient(180deg, hsl(var(--surface-2) / 0.92), hsl(var(--surface-1) / 0.86));
-    border-color: hsl(var(--border));
-    box-shadow:
-      inset 0 1px 0 hsl(0 0% 100% / 0.05),
-      0 12px 32px -26px hsl(var(--info) / 0.65);
-  }
-  .action-chip--stacked:hover {
-    transform: translateY(-2px);
-  }
-  .action-chip__icon {
-    display: grid;
-    width: 30px;
-    height: 30px;
-    place-items: center;
-    flex: 0 0 auto;
-    border-radius: 10px;
-    color: hsl(var(--info));
-    background: hsl(var(--info) / 0.1);
-    border: 1px solid hsl(var(--info) / 0.28);
-  }
+  /* Next-steps pivot cards use the shared PivotCard styling (glass + confidence
+     accent). The former .action-chip / .action-chip--stacked pills were removed
+     when the chat rail became a horizontal PivotCard-style snap rail. */
   .pivot-priority {
     display: inline-flex;
     align-items: center;
@@ -558,13 +510,6 @@ All colors MUST be HSL.
   .pivot-priority--low {
     color: hsl(var(--muted-foreground));
     background: hsl(var(--surface-2));
-  }
-
-  @media (max-width: 640px) {
-    .action-chip--stacked {
-      width: 100%;
-      min-height: 72px;
-    }
   }
 
   /* === 8px grid density presets ===

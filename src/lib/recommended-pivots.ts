@@ -1,5 +1,5 @@
 import { detectSeed } from "@/lib/seed";
-import type { Pivot, PivotType } from "@/lib/intel";
+import { isInfraDomain, type Pivot, type PivotType } from "@/lib/intel";
 import { looksLikeReasoning, stripInlineTags, stripReasoningMarkup } from "@/lib/sanitize-agent-text";
 
 export type RecommendedPivot = {
@@ -158,6 +158,11 @@ export function extractRecommendedPivots(text: string): RecommendedPivot[] {
     seen.add(key);
     const split = splitReason(line);
     const type = pivotType(value);
+    // Report-recommended domains that are OSINT source infrastructure
+    // (linkedin.com, bizfileonline.sos.ca.gov, opencorporates.com…) bypass
+    // buildPivots' filter, so drop them here too — they are never actionable
+    // "Review domain footprint" pivots.
+    if ((type === "domain" || type === "url") && isInfraDomain(value)) continue;
     const priority = priorityForRecommendation(line, value, type);
     const actionLabel = actionLabelForRecommendation(line, value, type);
     const reason = stripInlineTags(split.reason);
@@ -177,8 +182,14 @@ export function extractRecommendedPivots(text: string): RecommendedPivot[] {
   return pivots;
 }
 
-export function recommendedPivotsStorageKey(threadId: string): string {
-  return `swarmbot:recommended-pivots:${threadId}`;
+/**
+ * Per-thread localStorage key for pivots the user explicitly skipped. This is
+ * the ONLY pivot persistence: report recommendations are NEVER cached (they are
+ * recomputed live from the latest assistant message via the
+ * `swarmbot:report-pivots` event) so the Next-steps surface can never freeze.
+ */
+export function pivotSkipStorageKey(threadId: string): string {
+  return `proximity:pivot-skip:${threadId}`;
 }
 
 export function toDisplayPivots(recommendations: RecommendedPivot[]): Pivot[] {
