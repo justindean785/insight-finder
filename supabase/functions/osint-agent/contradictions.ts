@@ -96,12 +96,12 @@ const NICKNAME_GROUPS: string[][] = [
   ["nicholas", "nick", "nicky"],
   ["benjamin", "ben", "benji"],
   ["samuel", "sam", "sammy"],
-  ["alexander", "alex", "al", "xander", "sasha"],
+  ["alexander", "alex", "al", "xander"],
   ["nathaniel", "nathan", "nate"],
   ["timothy", "tim", "timmy"],
   ["ronald", "ron", "ronnie"],
   ["donald", "don", "donnie"],
-  ["stephen", "steven", "steve", "steph"],
+  ["stephen", "steven", "steve"],
   ["joshua", "josh"],
   ["zachary", "zach", "zack"],
   ["elizabeth", "liz", "beth", "betsy", "eliza", "lizzie"],
@@ -126,14 +126,17 @@ interface ParsedName {
   given: string;
   middles: string[];
   surname: string; // "" when the name is a single token
+  suffix: string;  // "" when no generational suffix (jr/sr/ii/iii/...)
 }
 
 function parseName(raw: string): ParsedName {
   const cleaned = raw.toLowerCase().replace(/[.,'’]/g, " ").replace(/\s+/g, " ").trim();
-  const toks = cleaned.split(" ").filter((t) => t && !NAME_SUFFIXES.has(t));
-  if (toks.length === 0) return { given: "", middles: [], surname: "" };
-  if (toks.length === 1) return { given: toks[0], middles: [], surname: "" };
-  return { given: toks[0], middles: toks.slice(1, -1), surname: toks[toks.length - 1] };
+  const all = cleaned.split(" ").filter(Boolean);
+  const suffix = all.find((t) => NAME_SUFFIXES.has(t)) ?? "";
+  const toks = all.filter((t) => !NAME_SUFFIXES.has(t));
+  if (toks.length === 0) return { given: "", middles: [], surname: "", suffix };
+  if (toks.length === 1) return { given: toks[0], middles: [], surname: "", suffix };
+  return { given: toks[0], middles: toks.slice(1, -1), surname: toks[toks.length - 1], suffix };
 }
 
 /** True when two given names could belong to the same person: identical, a
@@ -158,6 +161,10 @@ export function namesCompatible(a: string, b: string): boolean {
   const pb = parseName(b);
   // Different surnames → genuinely different people.
   if (pa.surname && pb.surname && pa.surname !== pb.surname) return false;
+  // Differing generational suffixes (Jr vs Sr, II vs III) signal potentially
+  // DIFFERENT people (father/son), so don't fold them together. A suffix on only
+  // ONE side is still a granularity variance and remains compatible.
+  if (pa.suffix && pb.suffix && pa.suffix !== pb.suffix) return false;
   return givenNamesCompatible(pa.given, pb.given);
 }
 

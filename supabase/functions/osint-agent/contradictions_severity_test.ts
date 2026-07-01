@@ -122,3 +122,21 @@ Deno.test("location_conflict: same state, different city is NOT a HIGH conflict"
   // Per spec, only different-state (or otherwise irreconcilable) locations fire.
   assertEquals(locationsCompatible("Los Angeles, CA", "San Diego, CA"), true);
 });
+
+Deno.test("name_conflict: differing generational suffixes (father/son) are NOT folded", () => {
+  // Jr vs Sr and II vs III mark potentially different people; must not fold.
+  assertEquals(namesCompatible("John Smith Jr.", "John Smith Sr."), false);
+  assertEquals(namesCompatible("John Smith II", "John Smith III"), false);
+  // Same suffix or suffix on only one side stays compatible (granularity).
+  assertEquals(namesCompatible("John Smith Jr.", "John Smith Jr."), true);
+  assertEquals(namesCompatible("John Smith Jr.", "John Smith"), true);
+});
+
+Deno.test("name_conflict: cross-gender-ambiguous nicknames are NOT auto-folded", () => {
+  // 'steph' (Stephen vs Stephanie) and 'sasha' (Alexander vs Alexandra) are
+  // ambiguous and were removed from the nickname groups — don't fold them.
+  assertEquals(namesCompatible("Steph Jones", "Stephen Jones"), false);
+  assertEquals(namesCompatible("Sasha Rivera", "Alexander Rivera"), false);
+  // Unambiguous nickname pairs still fold.
+  assertEquals(namesCompatible("Steve Jones", "Stephen Jones"), true);
+});
