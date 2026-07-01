@@ -525,6 +525,42 @@ export type Database = {
         }
         Relationships: []
       }
+      user_credits: {
+        Row: {
+          balance_micro_usd: number
+          blocked: boolean
+          created_at: string
+          daily_spent_micro_usd: number
+          daily_window_start: string
+          spent_micro_usd: number
+          unlimited: boolean
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          balance_micro_usd?: number
+          blocked?: boolean
+          created_at?: string
+          daily_spent_micro_usd?: number
+          daily_window_start?: string
+          spent_micro_usd?: number
+          unlimited?: boolean
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          balance_micro_usd?: number
+          blocked?: boolean
+          created_at?: string
+          daily_spent_micro_usd?: number
+          daily_window_start?: string
+          spent_micro_usd?: number
+          unlimited?: boolean
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       user_roles: {
         Row: {
           created_at: string
@@ -588,6 +624,20 @@ export type Database = {
         }[]
       }
       bump_memory_hits: { Args: { _ids: string[] }; Returns: undefined }
+      debit_user_credits: {
+        Args: {
+          _amount_micro_usd: number
+          _daily_cap_micro_usd?: number
+          _user_id: string
+        }
+        Returns: {
+          balance: number
+          daily_spent: number
+          ok: boolean
+          reason: string
+          unlimited: boolean
+        }[]
+      }
       has_role: {
         Args: {
           _role: Database["public"]["Enums"]["app_role"]
