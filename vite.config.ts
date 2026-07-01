@@ -20,4 +20,21 @@ export default defineConfig(({ mode }) => ({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Split heavy, independently-cacheable vendors out of the main bundle so
+        // the >500kb single-chunk warning clears and first paint doesn't pull in
+        // the graph/chart/map libs (which only mount behind lazy workspace tabs).
+        manualChunks: {
+          "vendor-react": ["react", "react-dom", "react-router-dom"],
+          "vendor-supabase": ["@supabase/supabase-js"],
+          "vendor-markdown": ["react-markdown", "remark-gfm"],
+          "vendor-charts": ["recharts"],
+          "vendor-graph": ["reactflow"],
+          "vendor-map": ["leaflet", "react-leaflet"],
+        },
+      },
+    },
+  },
 }));
