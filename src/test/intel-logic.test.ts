@@ -121,6 +121,53 @@ describe("adjustedConfidence", () => {
     ).toBe(55);
   });
 
+  // Audit finding F11: the bonus previously counted classes via a naive
+  // first-token split of raw source strings, so two SAME-CLASS providers
+  // (census_geocode + nominatim_geocode, both public-record lookups; or
+  // exa_search + gemini_deep_dork, both AI-summary discovery) each counted as
+  // a separate "source class" and inflated the bonus — even though
+  // labelForArtifact's independently-derived class count correctly saw only
+  // one (or zero). These use metadata.source_category, the same authoritative
+  // field labelForArtifact reads, to prove the two functions now agree.
+  it("does NOT bonus two same-class providers reported via source_category (public_record)", () => {
+    const bonused = adjustedConfidence(
+      art({ source: "whois", confidence: 50, metadata: { sources: ["whois", "virustotal"] } }),
+    );
+    const sameClass = adjustedConfidence(
+      art({
+        source: "census_geocode",
+        confidence: 50,
+        metadata: { sources: ["census_geocode", "nominatim_geocode"], source_category: ["public_record", "public_record"] },
+      }),
+    );
+    expect(sameClass).toBe(50); // no bonus — one independent class, not two
+    expect(sameClass).toBeLessThan(bonused);
+  });
+
+  it("does NOT bonus two discovery-only (ai_summary) providers — non-corroborating class excluded entirely", () => {
+    expect(
+      adjustedConfidence(
+        art({
+          source: "exa_search",
+          confidence: 50,
+          metadata: { sources: ["exa_search", "gemini_deep_dork"], source_category: ["ai_summary", "ai_summary"] },
+        }),
+      ),
+    ).toBe(50); // zero independent classes — ai_summary never corroborates alone
+  });
+
+  it("DOES bonus two genuinely distinct source_category classes", () => {
+    expect(
+      adjustedConfidence(
+        art({
+          source: "breach_check",
+          confidence: 50,
+          metadata: { sources: ["breach_check", "whois"], source_category: ["breach", "public_record"] },
+        }),
+      ),
+    ).toBe(55);
+  });
+
   it("rewards a direct-profile observation", () => {
     expect(adjustedConfidence(art({ kind: "username", source: "github_user", confidence: 60 }))).toBe(65);
   });

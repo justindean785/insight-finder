@@ -217,25 +217,81 @@ const REVIEW_DELTA: Record<string, number> = {
   wrong: -40,
 };
 
+// Source classes that do NOT, on their own, constitute independent corroboration
+// of an identity/association claim (discovery, low-trust aggregators, single AI
+// summaries, shared-host, ransomware-victim threat-intel). Mirrors the backend
+// taxonomy in supabase/functions/osint-agent/source-classification.ts, so two
+// sources in the SAME non-corroborating class can never masquerade as
+// independent corroboration (e.g. exa_search + gemini_deep_dork, both
+// discovery-only, must not read as "2 independent classes").
+const NON_CORROBORATING_CLASSES = new Set<string>([
+  "unknown",
+  "web_search",
+  "ai_summary",
+  "username_sweep",
+  "social_profile_passive",
+  "social_review",
+  "infra_shared_host",
+  "threat_intel",
+]);
+
+/**
+ * Distinct source CLASSES backing an artifact. Prefers the backend's
+ * authoritative `metadata.source_category` (already collapses same-class
+ * providers — census + nominatim both classify to `public_record`, so they
+ * can never present as two independent classes) and falls back to a coarse
+ * split of the raw source strings only for legacy rows that predate
+ * `source_category`.
+ */
+function artifactSourceClasses(a: Artifact): string[] {
+  const meta = (a.metadata ?? {}) as Record<string, unknown>;
+  const sc = meta.source_category;
+  if (Array.isArray(sc)) {
+    const cats = sc.map((c) => String(c).trim().toLowerCase()).filter(Boolean);
+    if (cats.length) return Array.from(new Set(cats));
+  } else if (typeof sc === "string" && sc.trim()) {
+    return [sc.trim().toLowerCase()];
+  }
+  const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
+  const all = [a.source ?? null, ...metaSources].filter(Boolean) as string[];
+  return Array.from(
+    new Set(
+      all.map((s) =>
+        isBreachSource(s)
+          ? "breach"
+          : isUsernameSweepSource(s)
+          ? "username_sweep"
+          : s.toLowerCase().split(/[_:.]/)[0],
+      ),
+    ),
+  );
+}
+
+/** Count of distinct source classes that can INDEPENDENTLY corroborate a claim —
+ *  non-corroborating classes (discovery / low-trust / single-AI-summary) are
+ *  excluded, so census+nominatim (one `public_record` class) count once and
+ *  exa+gemini (`ai_summary` only) count zero. */
+function independentSourceClassCount(a: Artifact): number {
+  return artifactSourceClasses(a).filter((c) => !NON_CORROBORATING_CLASSES.has(c)).length;
+}
+
 export function adjustedConfidence(a: Artifact, review?: ReviewAdjustment): number {
   const base = a.confidence ?? 0;
   const d = review ? REVIEW_DELTA[review] ?? 0 : 0;
   const meta = (a.metadata ?? {}) as Record<string, unknown>;
   const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
   const allSources = [a.source ?? null, ...metaSources].filter(Boolean) as string[];
-  // Corroboration bonus: more distinct source classes = more trustworthy.
-  const classes = new Set(
-    allSources.map((s) =>
-      isBreachSource(s)
-        ? "breach"
-        : isUsernameSweepSource(s)
-        ? "sweep"
-        : s.toLowerCase().split(/[_:.]/)[0],
-    ),
-  );
+  // Corroboration bonus: more distinct INDEPENDENT source classes = more
+  // trustworthy. Routed through independentSourceClassCount (authoritative
+  // metadata.source_category, non-corroborating classes excluded) rather than
+  // a naive first-token split of the raw source strings — the prior version
+  // let same-class providers (census+nominatim; exa+gemini) each count as a
+  // separate class, inflating this bonus even when labelForArtifact's own
+  // class count (independently derived) correctly saw only one.
+  const independentClasses = independentSourceClassCount(a);
   let bonus = 0;
-  if (classes.size >= 3) bonus += 10;
-  else if (classes.size >= 2) bonus += 5;
+  if (independentClasses >= 3) bonus += 10;
+  else if (independentClasses >= 2) bonus += 5;
   // Direct profile observation is the strongest single signal.
   if (allSources.some((s) => isDirectProfileSource(s))) bonus += 5;
   // Breach-only signals get pulled down a hair to fight false certainty.
