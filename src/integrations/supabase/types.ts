@@ -621,6 +621,7 @@ export type Database = {
         }[]
       }
       bump_memory_hits: { Args: { _ids: string[] }; Returns: undefined }
+      delete_own_account: { Args: Record<PropertyKey, never>; Returns: undefined }
       has_role: {
         Args: {
           _role: Database["public"]["Enums"]["app_role"]
