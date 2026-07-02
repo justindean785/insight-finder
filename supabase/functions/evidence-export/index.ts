@@ -196,6 +196,15 @@ Deno.serve(async (req) => {
     if (!authHeader?.startsWith("Bearer ")) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
+    // Fail closed (not just incidentally) if SUPABASE_ANON_KEY is unset —
+    // mirrors osint-agent/auth.ts. Without this, createClient(URL, undefined)
+    // only fails later, by accident, when auth.getUser() errors — audit F19.
+    if (!SUPABASE_ANON_KEY) {
+      return new Response(
+        JSON.stringify({ error: "Service Misconfigured", code: "ANON_KEY_MISSING" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
     const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
       global: { headers: { Authorization: authHeader } },
     });
