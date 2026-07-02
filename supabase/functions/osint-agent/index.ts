@@ -33,6 +33,7 @@ import { beginCycle, clearRuntime } from "./runtime-policy.ts";
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { buildTools } from "./tool-registry.ts";
 import { isMessageSchemaError } from "./stream-error-classify.ts";
+import { evaluateCreditGate, evaluateDailyCapGate, reasonToAbortForCredits } from "./credits.ts";
 
 // ---- Orchestrator resilience knobs (Phase 1: MissingToolResults crash) --------
 // Explicit per-step output-token ceiling. Root cause of the crash: MiniMax emits
@@ -120,18 +121,37 @@ Deno.serve(async (req) => {
       ]);
       const creditRow = creditRes.data as { balance_micro_usd?: number; unlimited?: boolean; blocked?: boolean } | null;
       const isAdmin = adminRes.data === true;
-      creditsExempt = !!creditRow?.unlimited || isAdmin;
+      const gate = evaluateCreditGate(creditRow, isAdmin, CREDIT_RUN_RESERVE_MICRO_USD);
+      creditsExempt = gate.exempt;
+      if (!gate.allow) {
+        return new Response(JSON.stringify({
+          error: "Out of credits",
+          code: gate.code,
+          detail: gate.detail,
+          balance_micro_usd: Number(creditRow?.balance_micro_usd ?? 0),
+        }), { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+      // Daily-cap gate (audit F04): a balance check alone lets a capped user
+      // keep starting new runs all day. Read the current day's spend via the
+      // atomic debit RPC with a zero amount — a pure read that still applies
+      // the RPC's own UTC-day rollover correction (20260629_user_credits.sql:94-96),
+      // so a fresh calendar day is recognized even if daily_window_start on a
+      // raw SELECT hasn't been reset by a real debit yet today.
       if (!creditsExempt) {
-        const balance = Number(creditRow?.balance_micro_usd ?? 0);
-        const blocked = !!creditRow?.blocked;
-        if (!creditRow || blocked || balance < CREDIT_RUN_RESERVE_MICRO_USD) {
+        const { data: dailyData } = await supabaseAdmin.rpc("debit_user_credits", {
+          _user_id: userId,
+          _amount_micro_usd: 0,
+        });
+        const dailyRow = (Array.isArray(dailyData) ? dailyData[0] : dailyData) as
+          | { daily_spent?: number; unlimited?: boolean }
+          | null;
+        const dailyGate = evaluateDailyCapGate(dailyRow);
+        if (!dailyGate.allow) {
           return new Response(JSON.stringify({
-            error: "Out of credits",
-            code: "INSUFFICIENT_CREDITS",
-            detail: blocked
-              ? "Your account is paused. Contact us to restore access."
-              : "You've used your beta credit allowance — contact us to top up.",
-            balance_micro_usd: balance,
+            error: "Daily credit cap reached",
+            code: dailyGate.code,
+            detail: dailyGate.detail,
+            daily_spent_micro_usd: Number(dailyRow?.daily_spent ?? 0),
           }), { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
       }
@@ -257,6 +277,12 @@ Deno.serve(async (req) => {
     // Cumulative cost tracker for this run.
     let runCostMicroUsd = 0;
     let costCheckpointCounter = 0;
+    // Mid-run credit hard-stop (audit F02): set by the debit callback below
+    // when the ledger RPC comes back ok:false (insufficient_balance /
+    // daily_cap / blocked). prepareStep aborts the loop at the next step
+    // boundary — same mechanism as the analyst Stop button — instead of the
+    // debit failure being silently discarded while paid tool calls continue.
+    let creditExhaustReason: string | null = null;
     clearRuntime(threadId);
     // Seed breadcrumb for the cycle log — the first user message's text.
     const seedValueRaw = (() => {
@@ -308,7 +334,18 @@ Deno.serve(async (req) => {
       // pre-gate above blocks the user's NEXT run once they're out.
       if (m > 0 && !creditsExempt) {
         supabaseAdmin.rpc("debit_user_credits", { _user_id: userId, _amount_micro_usd: m })
-          .then(() => {}, (e: unknown) => console.warn("[credits] debit failed:", e));
+          .then(
+            ({ data, error }: { data: unknown; error: unknown }) => {
+              if (error) { console.warn("[credits] debit failed:", error); return; }
+              const row = (Array.isArray(data) ? data[0] : data) as { ok?: boolean; reason?: string } | null;
+              const abortReason = reasonToAbortForCredits(row);
+              if (abortReason && !creditExhaustReason) {
+                creditExhaustReason = abortReason;
+                console.warn(`[credits] mid-run exhaustion (${abortReason}) — aborting at next step boundary`);
+              }
+            },
+            (e: unknown) => console.warn("[credits] debit failed:", e),
+          );
       }
       // Checkpoint the running cost to threads every 5 paid tool calls so
       // mid-run crashes (context overflow, network errors) don't wipe the
@@ -439,6 +476,9 @@ Deno.serve(async (req) => {
           .maybeSingle();
         if ((threadState as { status?: string } | null)?.status === "stopped") {
           throw new DOMException("Investigation stopped by analyst", "AbortError");
+        }
+        if (creditExhaustReason) {
+          throw new DOMException(`Run stopped: credit ${creditExhaustReason}`, "AbortError");
         }
         // Clear per-step dedup set at the *start* of every step. Doing this
         // only inside bumpArtifacts() means steps that find zero artifacts
