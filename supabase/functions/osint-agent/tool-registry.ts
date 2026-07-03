@@ -321,14 +321,16 @@ export function buildTools(ctx: ToolContext) {
         text: z.string().min(1).max(20000),
         context: z.string().optional().describe("What the blob is, e.g. 'github bio for handle xyz'"),
       }),
-      execute: async ({ text, context }) => {
+      execute: async ({ text, context }, opts) => {
         try {
+          const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
           const r = await minimaxChatWithFallback({
             system:
               "You extract OSINT entities. Reply ONLY with JSON matching: {emails:string[],usernames:string[],phones:string[],urls:string[],ips:string[],domains:string[],names:string[],employers:string[],locations:string[],crypto:{chain:string,address:string}[],notes:string}. Dedupe. Lowercase emails/domains. Empty arrays if none.",
             user: `${context ? "Context: " + context + "\n\n" : ""}Text:\n${text.slice(0, 18000)}`,
             json: true,
             maxTokens: 1200,
+            signal,
           });
           const parsed = safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content };
           return { ok: r.ok, status: r.status, entities: parsed };
@@ -811,15 +813,18 @@ export function buildTools(ctx: ToolContext) {
         type: z.enum(["email", "username", "phone", "ip", "domain"]),
         value: z.string(),
       }),
-      execute: async ({ type, value }) => {
+      execute: async ({ type, value }, opts) => {
         if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
         try {
           const url = buildOathnetUrl(type, value);
+          const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
           // OathNet upstream intermittently 502s; fetchRetry retries transient
           // 5xx/network with backoff so a flaky gateway doesn't hard-fail a
-          // mandatory breach-fan-out call on the first blip.
+          // mandatory breach-fan-out call on the first blip. The per-tool timeout
+          // signal aborts the in-flight request instead of leaking the paid call.
           const r = await fetchRetry(url, {
             headers: { "x-api-key": OATHNET_API_KEY },
+            signal,
           }, { retries: 1, timeoutMs: 20_000 });
           const text = await r.text();
           let data: unknown;
@@ -3076,7 +3081,7 @@ export function buildTools(ctx: ToolContext) {
         kind: z.enum(["email","username","phone","name","person","domain","ip","hash","crypto_wallet","url","other"]),
         focus: z.string().optional().describe("Optional angle, e.g. 'breach exposure', 'resume/CV leaks', 'social handles', 'pastebin dumps', 'forum posts', 'court records'."),
       }),
-      execute: async ({ seed, kind, focus }) => {
+      execute: async ({ seed, kind, focus }, opts) => {
         if (!GEMINI_API_KEY) return { ok: false, error: "GEMINI_API_KEY not configured" };
         const system =
           "You are an elite OSINT dork operator. For the given seed, design 5-8 high-yield Google dork queries (use site:, filetype:, intitle:, inurl:, exact-phrase quoting, boolean OR groups). EXECUTE them with the google_search tool. Then write a concise bulletized intelligence summary citing ONLY what your searches actually found. Be specific: name the platforms/leak sites/forums/document types you surfaced and quote any usernames, emails, phone fragments, or filenames discovered. If nothing material is found, say so plainly. Do not fabricate.";
@@ -3084,7 +3089,8 @@ export function buildTools(ctx: ToolContext) {
           `Seed (${kind}): ${seed}\n` +
           (focus ? `Focus: ${focus}\n` : "") +
           `Goal: deep-dork this seed across Google. Surface breach/leak exposure, document/file leaks (PDFs, CVs, dumps), pastebin/rentry/ghostbin pastes, forum mentions, social/profile traces, and any public-records or news hits. Prefer recent + high-signal results.`;
-        const res = await geminiGroundedSearch({ prompt: user, system });
+        const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
+        const res = await geminiGroundedSearch({ prompt: user, system, signal });
         if (!res.ok) return { ok: false, status: res.status, error: "gemini_grounded_search_failed", detail: String((res.raw as { error?: { message?: unknown } })?.error?.message ?? "").slice(0, 400) };
 
         // Classify + dedupe citations, then auto-record.

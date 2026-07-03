@@ -275,6 +275,9 @@ export async function geminiGroundedSearch(opts: {
   model?: string;
   system?: string;
   temperature?: number;
+  /** Optional external abort signal (e.g. a per-tool timeout). When it fires,
+   *  the underlying fetch is aborted instead of running to the internal 60s cap. */
+  signal?: AbortSignal;
 }): Promise<{
   ok: boolean;
   status: number;
@@ -298,6 +301,13 @@ export async function geminiGroundedSearch(opts: {
   }
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 60000);
+  // Chain an external signal (per-tool timeout) onto our controller so it aborts
+  // the in-flight fetch, not just the await.
+  const onExternalAbort = () => ctrl.abort();
+  if (opts.signal) {
+    if (opts.signal.aborted) ctrl.abort();
+    else opts.signal.addEventListener("abort", onExternalAbort, { once: true });
+  }
   try {
     const r = await fetchRetry(url, {
       method: "POST",
@@ -333,5 +343,6 @@ export async function geminiGroundedSearch(opts: {
     return { ok: r.ok, status: r.status, text, citations, queries, raw };
   } finally {
     clearTimeout(timer);
+    opts.signal?.removeEventListener("abort", onExternalAbort);
   }
 }
