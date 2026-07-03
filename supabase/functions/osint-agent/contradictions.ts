@@ -224,6 +224,30 @@ interface ParsedLoc {
   tokens: string[];
 }
 
+// Longest COUNTRY_TOKENS phrase, in words ("united states of america" = 4).
+const COUNTRY_TOKEN_MAX_WORDS = 4;
+
+/** Strip a trailing COUNTRY_TOKENS phrase (possibly several, e.g. a stray
+ *  "USA USA") off a token list — mirrors the comma-separated path's country
+ *  stripping so a no-comma run-on ("Tampa Florida USA") doesn't have its
+ *  trailing country block state recognition. Tries the longest phrase first
+ *  so multi-word country names ("united states") match before single words. */
+function stripTrailingCountryTokens(toks: string[]): string[] {
+  let out = toks;
+  for (let guard = 0; guard < 4; guard++) {
+    let stripped = false;
+    for (let n = Math.min(COUNTRY_TOKEN_MAX_WORDS, out.length - 1); n >= 1; n--) {
+      if (COUNTRY_TOKENS.has(out.slice(-n).join(" "))) {
+        out = out.slice(0, -n);
+        stripped = true;
+        break;
+      }
+    }
+    if (!stripped) break;
+  }
+  return out;
+}
+
 /** Split a trailing US state name/abbreviation off a run-on "City State"
  *  string with NO comma ("Tampa Florida", "Rocklin CA") — a common provider/
  *  LLM location format. Tries a 2-token trailing state name first (so
@@ -232,8 +256,8 @@ interface ParsedLoc {
  *  nothing recognizable is found, so the caller falls back to the whole
  *  string as an unparsed city (unchanged prior behavior). */
 function splitTrailingState(str: string): { rest: string; state: string | null } {
-  const toks = str.split(" ").filter(Boolean);
-  if (toks.length < 2) return { rest: str, state: null };
+  const toks = stripTrailingCountryTokens(str.split(" ").filter(Boolean));
+  if (toks.length < 2) return { rest: toks.join(" ") || str, state: null };
   const last2 = toks.slice(-2).join(" ");
   const st2 = normState(last2);
   if (st2 && toks.length > 2) return { rest: toks.slice(0, -2).join(" "), state: st2 };
@@ -558,61 +582,6 @@ export function clusterScopedContradictionPatches(
     out.push(...structuredContradictionPatches(group, nowIso));
   }
   return out;
-}
-
-/**
- * Restrict a thread's artifacts to the ones that belong to a SINGLE finding's
- * identity candidate, so its confidence penalty reflects only its OWN
- * contradictions / advisory signals — not those of an unrelated candidate that
- * happens to share the thread (a CA person must not be docked for a TX person's
- * location conflict).
- *
- * "Belongs to the finding" =
- *   • the artifact is one the finding explicitly cites (its value is in
- *     `supportingValues`), OR
- *   • it shares a `metadata.cluster_id` with a cited artifact (same candidate).
- *
- * When no cited artifact can be resolved (the finding supplied no
- * `supporting_artifact_values`, or none match a thread row) we can't scope
- * safely, so this returns an EMPTY list and the caller should fall back to the
- * thread-wide set — conservative: keep the penalty rather than silently inflate
- * confidence by dropping contradictions we can't attribute.
- */
-export function artifactsForFinding(
-  artifacts: ArtifactLike[],
-  supportingValues: string[],
-): ArtifactLike[] {
-  const wanted = new Set(
-    (supportingValues ?? []).map((v) => v.trim().toLowerCase()).filter(Boolean),
-  );
-  if (wanted.size === 0) return [];
-  const cited = artifacts.filter((a) => wanted.has(a.value.trim().toLowerCase()));
-  if (cited.length === 0) return [];
-  const clusterIds = new Set(
-    cited
-      .map((a) => a.metadata?.cluster_id)
-      .filter((c): c is string => typeof c === "string" && !!c.trim())
-      .map((c) => c.trim()),
-  );
-  // No cluster assigned → we cannot attribute artifacts to distinct candidates,
-  // so fall back to the FULL thread-wide set. Narrowing to cited-only here would
-  // silently DROP genuine self-contradictions on an unclustered single-subject
-  // thread and dishonestly inflate confidence (the exact overshoot this scoping
-  // must avoid).
-  if (clusterIds.size === 0) return artifacts;
-  // Otherwise scope to the finding's own candidate cluster(s) PLUS any
-  // UNCLUSTERED siblings (not proven to belong to a different candidate), and
-  // EXCLUDE only artifacts KNOWN to belong to a DIFFERENT candidate cluster —
-  // that exclusion is the actual #6 fix (a CA finding must not eat a TX
-  // candidate's contradiction). Keeping unclustered rows avoids dropping real
-  // conflicts when clustering is incomplete.
-  const scoped = new Set<ArtifactLike>(cited);
-  for (const a of artifacts) {
-    const cid = a.metadata?.cluster_id;
-    const cidStr = typeof cid === "string" ? cid.trim() : "";
-    if (!cidStr || clusterIds.has(cidStr)) scoped.add(a);
-  }
-  return [...scoped];
 }
 
 /** True when two structured contradictions describe the same conflict
