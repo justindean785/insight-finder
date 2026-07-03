@@ -11,6 +11,7 @@ import { auditCoverage } from "./coverage.ts";
 import {
   detectContradictions,
   clusterScopedContradictionPatches,
+  artifactsForFinding,
   mergeStructuredContradictions,
   type StructuredContradiction,
 } from "./contradictions.ts";
@@ -4491,7 +4492,17 @@ export function buildTools(ctx: ToolContext) {
         .from("artifacts")
         .select("kind,value,source,metadata,created_at")
         .eq("thread_id", threadId);
-      const contras = detectContradictions((contraRows ?? []) as Parameters<typeof detectContradictions>[0]);
+      // Scope the contradiction / advisory penalty to the artifacts that
+      // actually belong to THIS finding's identity candidate — its cited
+      // artifacts plus their cluster(s) — so a finding for one candidate is not
+      // docked for an UNRELATED candidate's location conflict / thin_name /
+      // over_broad_username sitting elsewhere in the same multi-hypothesis
+      // thread. When the finding cites nothing resolvable we can't attribute a
+      // cluster, so fall back to the thread-wide set (conservative: keep the
+      // penalty rather than inflate confidence).
+      const allRows = (contraRows ?? []) as Parameters<typeof detectContradictions>[0];
+      const scopedRows = artifactsForFinding(allRows, i.supporting_artifact_values ?? []);
+      const contras = detectContradictions(scopedRows.length > 0 ? scopedRows : allRows);
       const axes = computeAxes({
         sources: i.supporting_sources,
         corroborationCount: i.corroboration_count,
