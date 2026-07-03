@@ -321,14 +321,16 @@ export function buildTools(ctx: ToolContext) {
         text: z.string().min(1).max(20000),
         context: z.string().optional().describe("What the blob is, e.g. 'github bio for handle xyz'"),
       }),
-      execute: async ({ text, context }) => {
+      execute: async ({ text, context }, opts) => {
         try {
+          const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
           const r = await minimaxChatWithFallback({
             system:
               "You extract OSINT entities. Reply ONLY with JSON matching: {emails:string[],usernames:string[],phones:string[],urls:string[],ips:string[],domains:string[],names:string[],employers:string[],locations:string[],crypto:{chain:string,address:string}[],notes:string}. Dedupe. Lowercase emails/domains. Empty arrays if none.",
             user: `${context ? "Context: " + context + "\n\n" : ""}Text:\n${text.slice(0, 18000)}`,
             json: true,
             maxTokens: 1200,
+            signal,
           });
           const parsed = safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content };
           return { ok: r.ok, status: r.status, entities: parsed };
@@ -806,20 +808,23 @@ export function buildTools(ctx: ToolContext) {
     }),
     oathnet_lookup: tool({
      description:
-       "Query OathNet v2 for breach correlation on a high-value email/username/phone/domain, or geo+ASN on an IP. Use once when the planner identifies corroboration or contradiction-resolution value. Do not run on weak leads or as an automatic companion call.",
+       "Query OathNet v2 for breach correlation on a high-value email/username/phone/domain/NAME, or geo+ASN on an IP. For a person's full NAME pass type:'name' (searched as a free-text query across the breach corpus — expect same-name collisions, so treat name-only hits as [VERIFY] until a selector overlaps). A first-class breach source: run it on the seed AND on high-value selectors/names discovered mid-investigation.",
       inputSchema: z.object({
-        type: z.enum(["email", "username", "phone", "ip", "domain"]),
+        type: z.enum(["email", "username", "phone", "ip", "domain", "name"]),
         value: z.string(),
       }),
-      execute: async ({ type, value }) => {
+      execute: async ({ type, value }, opts) => {
         if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
         try {
           const url = buildOathnetUrl(type, value);
+          const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
           // OathNet upstream intermittently 502s; fetchRetry retries transient
           // 5xx/network with backoff so a flaky gateway doesn't hard-fail a
-          // mandatory breach-fan-out call on the first blip.
+          // mandatory breach-fan-out call on the first blip. The per-tool timeout
+          // signal aborts the in-flight request instead of leaking the paid call.
           const r = await fetchRetry(url, {
             headers: { "x-api-key": OATHNET_API_KEY },
+            signal,
           }, { retries: 1, timeoutMs: 20_000 });
           const text = await r.text();
           let data: unknown;
@@ -1001,7 +1006,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     breach_check: tool({
       description:
-        "Check whether an email or username appears in public breach datasets. Primary source: stolen.tax — fans out in parallel to (a) OsintCat `database-search` (returns site+password combos), (b) Snusbase (returns identity records: name/phone/address/DOB), and (c) OsintCat plain `breach` mode. Returns combined hit count + per-source raw data. Falls back to the leakcheck public endpoint if stolen.tax is unavailable. Pass `email` for email seeds or `value` for usernames/other identifiers.",
+        "Check whether an email, username, or PERSON NAME appears in public breach datasets. Primary source: stolen.tax — fans out in parallel to (a) OsintCat `database-search` (returns site+password combos), (b) Snusbase (returns identity records: name/phone/address/DOB — so a full NAME is a valid query here), and (c) OsintCat plain `breach` mode. Returns combined hit count + per-source raw data. Falls back to the leakcheck public endpoint if stolen.tax is unavailable. Pass `email` for email seeds, or `value` for a username, phone, or a person's full NAME (name hits carry same-name collision risk — treat as [VERIFY] until a selector overlaps).",
       inputSchema: z.object({
         email: z.string().min(1).optional(),
         value: z.string().min(1).optional(),
@@ -1186,7 +1191,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     leakcheck_lookup: tool({
       description:
-        "LeakCheck Pro v2 breach lookup (https://leakcheck.io/api/v2). SECONDARY breach source — 200 calls/day. Returns leak sources, breach dates, and (where present) passwords/usernames for an email, username, phone, hash, or domain. Use to corroborate breach_check and to surface password/source detail. Do NOT spam on low-value handles.",
+        "LeakCheck Pro v2 breach lookup (https://leakcheck.io/api/v2). SECONDARY breach source — 200 calls/day. Returns leak sources, breach dates, and (where present) passwords/usernames for an email, username, phone, hash, or domain. For a person's full NAME, pass type:'keyword' (free-text corpus search — same-name collisions apply). Use to corroborate breach_check and to surface password/source detail. Do NOT spam on low-value handles.",
       inputSchema: z.object({
         value: z.string().min(1),
         type: z.enum(["auto","email","username","phone","hash","domain","keyword"]).optional().default("auto"),
@@ -3076,7 +3081,7 @@ export function buildTools(ctx: ToolContext) {
         kind: z.enum(["email","username","phone","name","person","domain","ip","hash","crypto_wallet","url","other"]),
         focus: z.string().optional().describe("Optional angle, e.g. 'breach exposure', 'resume/CV leaks', 'social handles', 'pastebin dumps', 'forum posts', 'court records'."),
       }),
-      execute: async ({ seed, kind, focus }) => {
+      execute: async ({ seed, kind, focus }, opts) => {
         if (!GEMINI_API_KEY) return { ok: false, error: "GEMINI_API_KEY not configured" };
         const system =
           "You are an elite OSINT dork operator. For the given seed, design 5-8 high-yield Google dork queries (use site:, filetype:, intitle:, inurl:, exact-phrase quoting, boolean OR groups). EXECUTE them with the google_search tool. Then write a concise bulletized intelligence summary citing ONLY what your searches actually found. Be specific: name the platforms/leak sites/forums/document types you surfaced and quote any usernames, emails, phone fragments, or filenames discovered. If nothing material is found, say so plainly. Do not fabricate.";
@@ -3084,7 +3089,8 @@ export function buildTools(ctx: ToolContext) {
           `Seed (${kind}): ${seed}\n` +
           (focus ? `Focus: ${focus}\n` : "") +
           `Goal: deep-dork this seed across Google. Surface breach/leak exposure, document/file leaks (PDFs, CVs, dumps), pastebin/rentry/ghostbin pastes, forum mentions, social/profile traces, and any public-records or news hits. Prefer recent + high-signal results.`;
-        const res = await geminiGroundedSearch({ prompt: user, system });
+        const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
+        const res = await geminiGroundedSearch({ prompt: user, system, signal });
         if (!res.ok) return { ok: false, status: res.status, error: "gemini_grounded_search_failed", detail: String((res.raw as { error?: { message?: unknown } })?.error?.message ?? "").slice(0, 400) };
 
         // Classify + dedupe citations, then auto-record.

@@ -66,14 +66,21 @@ export interface ToolTimeoutResult {
 // after the cap fired is swallowed (no unhandled rejection).
 export function runWithToolTimeout<T>(
   name: string,
-  factory: () => Promise<T>,
+  factory: (signal: AbortSignal) => Promise<T>,
   ms: number,
 ): Promise<T | ToolTimeoutResult> {
   return new Promise<T | ToolTimeoutResult>((resolve, reject) => {
     let settled = false;
+    // Own an AbortController so a timeout doesn't just ABANDON the promise while
+    // the underlying (often paid) fetch keeps running to its own internal cap —
+    // aborting it cancels the in-flight request and stops wasting cost/quota.
+    // Tools that forward this signal into fetch/fetchRetry get real cancellation;
+    // tools that ignore it degrade to the old abandon-the-promise behavior.
+    const ctrl = new AbortController();
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      ctrl.abort();
       resolve({
         ok: false,
         error: `${name} exceeded ${ms}ms tool timeout`,
@@ -81,11 +88,26 @@ export function runWithToolTimeout<T>(
         _tool_timeout: true,
       });
     }, ms);
-    factory().then(
+    factory(ctrl.signal).then(
       (v) => { if (!settled) { settled = true; clearTimeout(timer); resolve(v); } },
+      // If the factory rejects AFTER we already resolved a timeout (e.g. the
+      // AbortError from our own ctrl.abort()), swallow it — the timeout result
+      // already went out.
       (e) => { if (settled) return; settled = true; clearTimeout(timer); reject(e); },
     );
   });
+}
+
+/**
+ * Merge our per-tool timeout AbortSignal into the AI-SDK tool-execution options
+ * so a tool's `execute(args, opts)` can read `opts.abortSignal` and forward it
+ * to fetch. If the SDK already supplied its own abortSignal (top-level request
+ * cancellation), combine both so EITHER firing aborts the call.
+ */
+export function withTimeoutSignal(opts: unknown, signal: AbortSignal): unknown {
+  const existing = (opts as { abortSignal?: AbortSignal } | null | undefined)?.abortSignal;
+  const merged = existing ? AbortSignal.any([existing, signal]) : signal;
+  return { ...((opts as Record<string, unknown>) ?? {}), abortSignal: merged };
 }
 
 function detectSelectorType(input: Record<string, unknown>): string {
@@ -444,10 +466,13 @@ export function wrapToolsWithCache(
               // Phase 2: per-tool hard timeout (schema-safe on timeout, no throw);
               // recording/evidence tools (ALWAYS_ALLOW) are exempt. Single thunk so
               // the underlying call isn't duplicated.
-              const runOrig = () => orig(input, opts) as Promise<unknown>;
               out = ALWAYS_ALLOW_TOOLS.has(name)
-                ? await runOrig()
-                : await runWithToolTimeout(name, runOrig, toolTimeoutMs(name));
+                ? await (orig(input, opts) as Promise<unknown>)
+                : await runWithToolTimeout(
+                    name,
+                    (signal) => orig(input, withTimeoutSignal(opts, signal)) as Promise<unknown>,
+                    toolTimeoutMs(name),
+                  );
               ok = deriveOk(out);
               if (!ok) errInfo = extractToolError(out);
               return tagSkipState(tagTier(scrub(out), tier, model));
@@ -715,10 +740,13 @@ export function wrapToolsWithCache(
           // Phase 2: bound the live call with a per-tool hard timeout (returns a
           // schema-safe result on timeout, never throws). Recording/evidence tools
           // are exempt — they must never be cut off.
-          const runLive = () => originalExecute(input, opts) as Promise<unknown>;
           const rawResult = ALWAYS_ALLOW_TOOLS.has(name)
-            ? await runLive()
-            : await runWithToolTimeout(name, runLive, toolTimeoutMs(name));
+            ? await (originalExecute(input, opts) as Promise<unknown>)
+            : await runWithToolTimeout(
+                name,
+                (signal) => originalExecute(input, withTimeoutSignal(opts, signal)) as Promise<unknown>,
+                toolTimeoutMs(name),
+              );
           result = attachRuntimeMeta(tagSkipState(tagTier(scrub(rawResult), tier, model)), {
             ...runtimeMetaBase,
             stage: runtimeDecision.stage,
