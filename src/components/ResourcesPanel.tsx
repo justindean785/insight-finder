@@ -646,6 +646,7 @@ function ArtifactDrawerInner({
             <textarea
               value={noteDraft}
               onChange={(e) => setNoteDraft(e.target.value)}
+              aria-label="Note — justification or context for this artifact"
               placeholder="Why is this key? Add justification, link, or context…"
               rows={3}
               className="w-full text-xs font-mono bg-secondary/40 border border-border rounded p-2 outline-none focus:border-primary/60 resize-y"

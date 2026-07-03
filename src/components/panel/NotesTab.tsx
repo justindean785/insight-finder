@@ -99,6 +99,7 @@ export function NotesTab({ threadId }: { threadId: string }) {
           ref={taRef}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
+          aria-label="Investigator note (markdown)"
           placeholder={editingId ? "Editing note…" : "Write a note (markdown). Cmd/Ctrl+Enter to save."}
           onKeyDown={(e) => {
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); void save(); }
