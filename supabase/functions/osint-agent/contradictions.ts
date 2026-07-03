@@ -63,6 +63,206 @@ const LOCATION_META_KEYS = [
 ];
 const EMPLOYER_META_KEYS = ["employer", "company"];
 
+// ---------------------------------------------------------------------------
+// Name compatibility — before flagging a HIGH "different people" name_conflict
+// we normalize and test whether two name strings can describe the SAME person.
+// "John Smith" / "John A. Smith" / "Johnny Smith" are compatible variants of one
+// identity and must NOT trigger the -25 identity hit; only genuinely
+// incompatible names (different surnames, or incompatible given names) do.
+// ---------------------------------------------------------------------------
+
+const NAME_SUFFIXES = new Set(["jr", "sr", "ii", "iii", "iv", "v"]);
+
+// Bidirectional nickname <-> formal given-name equivalence groups. Any two names
+// in the same group are considered a compatible given-name variance.
+const NICKNAME_GROUPS: string[][] = [
+  ["john", "johnny", "jon", "jonathan", "jack"],
+  ["robert", "rob", "bob", "bobby", "robbie"],
+  ["william", "will", "bill", "billy", "willy", "liam"],
+  ["michael", "mike", "mikey", "mick"],
+  ["james", "jim", "jimmy", "jamie"],
+  ["richard", "rick", "rich", "dick", "richie"],
+  ["charles", "charlie", "chuck", "chas"],
+  ["thomas", "tom", "tommy"],
+  ["joseph", "joe", "joey"],
+  ["daniel", "dan", "danny"],
+  ["david", "dave", "davey"],
+  ["christopher", "chris"],
+  ["matthew", "matt"],
+  ["anthony", "tony"],
+  ["andrew", "andy", "drew"],
+  ["edward", "ed", "eddie", "ted", "ned"],
+  ["kenneth", "ken", "kenny"],
+  ["nicholas", "nick", "nicky"],
+  ["benjamin", "ben", "benji"],
+  ["samuel", "sam", "sammy"],
+  ["alexander", "alex", "al", "xander"],
+  ["nathaniel", "nathan", "nate"],
+  ["timothy", "tim", "timmy"],
+  ["ronald", "ron", "ronnie"],
+  ["donald", "don", "donnie"],
+  ["stephen", "steven", "steve"],
+  ["joshua", "josh"],
+  ["zachary", "zach", "zack"],
+  ["elizabeth", "liz", "beth", "betsy", "eliza", "lizzie"],
+  ["katherine", "catherine", "kathryn", "kate", "katie", "kathy", "cathy", "kat"],
+  ["margaret", "maggie", "meg", "peggy", "marge"],
+  ["jennifer", "jen", "jenny"],
+  ["patricia", "pat", "patty", "tricia"],
+  ["deborah", "deb", "debbie"],
+  ["susan", "sue", "susie"],
+  ["jessica", "jess"],
+  ["rebecca", "becca", "becky"],
+  ["victoria", "vicky", "tori"],
+  ["kimberly", "kim"],
+];
+
+const NICK_TO_GROUP = new Map<string, number>();
+for (let i = 0; i < NICKNAME_GROUPS.length; i++) {
+  for (const n of NICKNAME_GROUPS[i]) NICK_TO_GROUP.set(n, i);
+}
+
+interface ParsedName {
+  given: string;
+  middles: string[];
+  surname: string; // "" when the name is a single token
+  suffix: string;  // "" when no generational suffix (jr/sr/ii/iii/...)
+}
+
+function parseName(raw: string): ParsedName {
+  const cleaned = raw.toLowerCase().replace(/[.,'’]/g, " ").replace(/\s+/g, " ").trim();
+  const all = cleaned.split(" ").filter(Boolean);
+  const suffix = all.find((t) => NAME_SUFFIXES.has(t)) ?? "";
+  const toks = all.filter((t) => !NAME_SUFFIXES.has(t));
+  if (toks.length === 0) return { given: "", middles: [], surname: "", suffix };
+  if (toks.length === 1) return { given: toks[0], middles: [], surname: "", suffix };
+  return { given: toks[0], middles: toks.slice(1, -1), surname: toks[toks.length - 1], suffix };
+}
+
+/** True when two given names could belong to the same person: identical, a
+ *  shared nickname<->formal pair, or one is an initial of the other. */
+function givenNamesCompatible(a: string, b: string): boolean {
+  if (!a || !b) return true; // a missing given name can't contradict
+  if (a === b) return true;
+  const ga = NICK_TO_GROUP.get(a);
+  const gb = NICK_TO_GROUP.get(b);
+  if (ga !== undefined && ga === gb) return true;
+  // Initial vs full: "j" vs "john".
+  if (a.length === 1 && b.startsWith(a)) return true;
+  if (b.length === 1 && a.startsWith(b)) return true;
+  return false;
+}
+
+/** True when two full-name strings can describe the SAME person. Surnames must
+ *  match (case/punctuation/suffix-insensitive); given names must be compatible;
+ *  middle names/initials are folded (ignored). */
+export function namesCompatible(a: string, b: string): boolean {
+  const pa = parseName(a);
+  const pb = parseName(b);
+  // Different surnames → genuinely different people.
+  if (pa.surname && pb.surname && pa.surname !== pb.surname) return false;
+  // Differing generational suffixes (Jr vs Sr, II vs III) signal potentially
+  // DIFFERENT people (father/son), so don't fold them together. A suffix on only
+  // ONE side is still a granularity variance and remains compatible.
+  if (pa.suffix && pb.suffix && pa.suffix !== pb.suffix) return false;
+  return givenNamesCompatible(pa.given, pb.given);
+}
+
+// ---------------------------------------------------------------------------
+// Location compatibility — before flagging a HIGH location_conflict we fold
+// containment / granularity. "Los Angeles" / "CA" / "Los Angeles, CA" all
+// describe one place and must NOT trigger the -25 hit; only genuinely
+// incompatible locations (different states, or different cities that can't be
+// reconciled) do.
+// ---------------------------------------------------------------------------
+
+const US_STATES: Record<string, string> = {
+  alabama: "al", alaska: "ak", arizona: "az", arkansas: "ar", california: "ca",
+  colorado: "co", connecticut: "ct", delaware: "de", florida: "fl", georgia: "ga",
+  hawaii: "hi", idaho: "id", illinois: "il", indiana: "in", iowa: "ia",
+  kansas: "ks", kentucky: "ky", louisiana: "la", maine: "me", maryland: "md",
+  massachusetts: "ma", michigan: "mi", minnesota: "mn", mississippi: "ms", missouri: "mo",
+  montana: "mt", nebraska: "ne", nevada: "nv", "new hampshire": "nh", "new jersey": "nj",
+  "new mexico": "nm", "new york": "ny", "north carolina": "nc", "north dakota": "nd", ohio: "oh",
+  oklahoma: "ok", oregon: "or", pennsylvania: "pa", "rhode island": "ri", "south carolina": "sc",
+  "south dakota": "sd", tennessee: "tn", texas: "tx", utah: "ut", vermont: "vt",
+  virginia: "va", washington: "wa", "west virginia": "wv", wisconsin: "wi", wyoming: "wy",
+  "district of columbia": "dc",
+};
+const STATE_ABBREVS = new Set(Object.values(US_STATES));
+const COUNTRY_TOKENS = new Set(["usa", "us", "u s a", "united states", "united states of america", "america"]);
+
+function normState(token: string): string | null {
+  const t = token.trim().toLowerCase().replace(/\./g, "");
+  if (STATE_ABBREVS.has(t)) return t;
+  if (US_STATES[t]) return US_STATES[t];
+  return null;
+}
+
+interface ParsedLoc {
+  city: string | null;
+  state: string | null;
+  tokens: string[];
+}
+
+function parseLoc(raw: string): ParsedLoc {
+  const cleaned = raw.toLowerCase().replace(/[.]/g, "").replace(/\s+/g, " ").trim();
+  const parts = cleaned.split(",").map((p) => p.trim()).filter(Boolean);
+  // Drop trailing country tokens ("Los Angeles, CA, USA").
+  while (parts.length > 1 && COUNTRY_TOKENS.has(parts[parts.length - 1])) parts.pop();
+  const tokens = cleaned.replace(/,/g, " ").split(" ").filter(Boolean);
+  if (parts.length === 0) return { city: null, state: null, tokens };
+  if (parts.length === 1) {
+    const st = normState(parts[0]);
+    if (st) return { city: null, state: st, tokens };
+    return { city: parts[0], state: null, tokens };
+  }
+  const last = parts[parts.length - 1];
+  const st = normState(last);
+  if (st) {
+    const city = parts.slice(0, -1).join(" ").trim();
+    return { city: city || null, state: st, tokens };
+  }
+  // No recognizable state → treat first part as city.
+  return { city: parts[0], state: null, tokens };
+}
+
+function isSubset(a: string[], b: string[]): boolean {
+  const setB = new Set(b);
+  return a.length > 0 && a.every((t) => setB.has(t));
+}
+
+/** True when two location strings can describe the SAME place (containment /
+ *  granularity folding). Only genuinely incompatible pairs return false. */
+export function locationsCompatible(a: string, b: string): boolean {
+  const pa = parseLoc(a);
+  const pb = parseLoc(b);
+  // Both resolve to a known state and the states differ → genuine conflict.
+  if (pa.state && pb.state && pa.state !== pb.state) return false;
+  // One string's tokens contain the other's ("Los Angeles" ⊂ "Los Angeles, CA",
+  // "CA" ⊂ "Los Angeles, CA") → same place at coarser/finer granularity.
+  if (isSubset(pa.tokens, pb.tokens) || isSubset(pb.tokens, pa.tokens)) return true;
+  // Same known state → compatible (city-level differences within one state are
+  // not treated as a HIGH conflict).
+  if (pa.state && pb.state && pa.state === pb.state) return true;
+  // Both name a city and the cities differ (no containment, states not proven
+  // equal) → different, irreconcilable places.
+  if (pa.city && pb.city && pa.city !== pb.city) return false;
+  // Otherwise one side is city-only vs state-only (or ambiguous) with no
+  // provable conflict → treat as compatible.
+  return true;
+}
+
+/** True when every distinct value in `values` is pairwise compatible. */
+function allMutuallyCompatible(values: string[], compat: (a: string, b: string) => boolean): boolean {
+  for (let i = 0; i < values.length; i++) {
+    for (let j = i + 1; j < values.length; j++) {
+      if (!compat(values[i], values[j])) return false;
+    }
+  }
+  return true;
+}
+
 export function detectContradictions(artifacts: ArtifactLike[]): ContradictionFinding[] {
   const out: ContradictionFinding[] = [];
 
@@ -73,7 +273,11 @@ export function detectContradictions(artifacts: ArtifactLike[]): ContradictionFi
     .map((a) => ({ a, loc: rawMetaStr(a, LOCATION_META_KEYS) }))
     .filter((x): x is { a: ArtifactLike; loc: string } => !!x.loc);
   const distinctLocs = new Set(locClaims.map((x) => x.loc.toLowerCase()));
-  if (distinctLocs.size > 1) {
+  const distinctRawLocs = [...new Set(locClaims.map((x) => x.loc))];
+  // Only fire HIGH when the distinct locations are GENUINELY incompatible.
+  // Containment/granularity variants ("Los Angeles" vs "CA" vs "Los Angeles, CA")
+  // fold to one place and must not trigger the -25 identity hit.
+  if (distinctLocs.size > 1 && !allMutuallyCompatible(distinctRawLocs, locationsCompatible)) {
     out.push({
       kind: "location_conflict",
       field: "location",
@@ -129,7 +333,12 @@ export function detectContradictions(artifacts: ArtifactLike[]): ContradictionFi
   // strong evidence two different people share the selector.
   const names = artifacts.filter((a) => a.kind === "name" && a.value.trim());
   const distinctNames = new Set(names.map((a) => a.value.trim().toLowerCase()));
-  if (distinctNames.size > 1) {
+  const distinctRawNames = [...new Set(names.map((a) => a.value.trim()))];
+  // Only fire HIGH when the distinct names are GENUINELY incompatible. Compatible
+  // variants of one person ("John Smith" vs "John A. Smith" vs "Johnny Smith")
+  // are folded (nicknames, initials, middle names, suffixes, case/punctuation) so
+  // they no longer manufacture a bogus "different people" conflict + -25 hit.
+  if (distinctNames.size > 1 && !allMutuallyCompatible(distinctRawNames, namesCompatible)) {
     out.push({
       kind: "name_conflict",
       field: "name",
