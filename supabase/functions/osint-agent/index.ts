@@ -8,7 +8,7 @@ import { convertToModelMessages, streamText, stepCountIs, type UIMessage, type M
 import { MODELS, ORCHESTRATOR_TIER } from "./models.ts";
 import { buildWorkflowAddendum } from "./workflow_prompt.ts";
 import * as circuit from "./circuit.ts";
-import { discoverCapabilities, capabilityEnvKeys } from "./capabilities.ts";
+import { discoverCapabilities, capabilityEnvKeys, gatedToolNames } from "./capabilities.ts";
 
 import {
   corsHeaders, MINIMAX_API_KEY, LOVABLE_API_KEY,
@@ -29,6 +29,12 @@ import { FINDING_LABELS } from "./catalog.ts";
 import { SYSTEM_PROMPT_FULL } from "./system-prompt.ts";
 import { wrapToolsWithCache } from "./cache.ts";
 import { beginCycle, clearRuntime } from "./runtime-policy.ts";
+import {
+  TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW,
+  MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS,
+  capTotalToBudget, deadlineReached,
+} from "./orchestrator-budget.ts";
+import { repairUnknownTool } from "./unknown-tool-guard.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { buildTools } from "./tool-registry.ts";
@@ -54,16 +60,9 @@ const ORCHESTRATOR_MAX_OUTPUT_TOKENS = 8192;
 // Set false = disable parallelism. (cache.ts return-on-throw + the message
 // sanitizer are the defense-in-depth net if a provider ever ignores this flag.)
 const ORCHESTRATOR_PARALLEL_TOOL_CALLS = false;
-// Max orchestrator steps per run (was stepCountIs(50)). A lower ceiling plus the
-// wall-clock deadline below cut the p95 ~15-min tool-time tail (audit §5 Play 1).
-const MAX_ORCHESTRATOR_STEPS = 30;
-// Hard wall-clock deadline for a single run. streamText `stopWhen` also accepts a
-// StopCondition ((opts)=>boolean|Promise<boolean>); we add one that trips once
-// elapsed time exceeds this, ending the run CLEANLY (onFinish persists the partial
-// assistant + artifacts and marks the thread finished) instead of grinding to the
-// step cap. A backstop, not a routine limiter — sized to collapse the catastrophic
-// tail (audit observed max 17.6 min).
-const ORCHESTRATOR_WALL_CLOCK_MS = 6 * 60_000;
+// MAX_ORCHESTRATOR_STEPS (named ~30 step cap) + ORCHESTRATOR_WALL_CLOCK_MS (clean
+// wall-clock deadline) now live in ./orchestrator-budget.ts alongside the context
+// budget, so all of the orchestrator's step/size knobs share one testable source.
 
 function extractManualOverrideSelector(messages: UIMessage[]): string | null {
   const latestUser = [...messages].reverse().find((message) => message.role === "user");
@@ -195,7 +194,8 @@ Deno.serve(async (req) => {
 
     const MAX_TOOL_RESULT_CHARS_OLD = 4000;
     const MAX_TOOL_RESULT_CHARS_RECENT = 16000;
-    const RECENT_WINDOW = 10;
+    // RECENT_WINDOW, TOTAL_PROMPT_CHAR_BUDGET, approxMsgChars + capTotalToBudget are
+    // imported from ./orchestrator-budget.ts (pure + unit-tested).
     const truncateStr = (s: string, max: number) =>
       s.length <= max ? s : s.slice(0, max) + `\n…[truncated ${s.length - max} chars]`;
     const truncateValue = (val: unknown, max: number): unknown => {
@@ -218,54 +218,13 @@ Deno.serve(async (req) => {
       text?: unknown;
       [k: string]: unknown;
     }
-    // Hard total-prompt budget. The per-message truncation above caps each tool
-    // result, but a deep run accumulates dozens of messages and the cumulative
-    // prompt still grew unbounded (observed 78 msgs / 309K chars) — enough to
-    // make MiniMax's preflight/request TIME OUT (well under the 600k overflow
-    // gate) and fall back to the Lovable gateway. Bound the total by ELIDING
-    // old tool-result OUTPUTS (oldest first, outside the recent window). We
-    // never drop a message, so every tool-call keeps its matching tool-result
-    // and we cannot trigger the "tool result is missing for tool call" stream
-    // error. Recorded artifacts/findings live in the DB and are replayed via
-    // memory, so shedding old raw tool output is safe.
-    const TOTAL_PROMPT_CHAR_BUDGET = 220_000;
-    const approxMsgChars = (msgs: ModelMessage[]): number =>
-      msgs.reduce((n, m) => n + JSON.stringify(m).length, 0);
-    const capTotalToBudget = (
-      msgs: ModelMessage[],
-      budget: number,
-      keepRecent: number,
-    ): ModelMessage[] => {
-      if (approxMsgChars(msgs) <= budget) return msgs;
-      const out: ModelMessage[] = msgs.map((m) => ({ ...m }));
-      const cutoff = Math.max(0, out.length - keepRecent);
-      for (let i = 0; i < cutoff; i++) {
-        if (approxMsgChars(out) <= budget) break;
-        const m = out[i];
-        if ((m.role !== "tool" && m.role !== "assistant") || !Array.isArray(m.content)) continue;
-        m.content = (m.content as TrimPart[]).map((part: TrimPart) => {
-          if (part?.type === "tool-result" && part.output != null && JSON.stringify(part.output).length > 80) {
-            // Preserve the tool-result output's discriminator. The AI SDK validates
-            // each output against a typed union ({ type:'json'|'text'|…, value }); a
-            // bare { value } (no `type`) fails the ModelMessage[] schema and aborts
-            // the whole run with "messages do not match the ModelMessage[] schema".
-            // Spread the original output (keeps `type`) and only swap `value` —
-            // mirrors the per-message truncation path below.
-            const elided = "[older tool result elided to fit context budget]";
-            const nextOutput =
-              part.output && typeof part.output === "object" && "value" in part.output
-                ? { ...(part.output as Record<string, unknown>), value: elided }
-                : elided;
-            return { ...part, output: nextOutput };
-          }
-          if (part?.type === "text" && typeof part.text === "string" && part.text.length > 200) {
-            return { ...part, text: part.text.slice(0, 200) + " …[elided]" };
-          }
-          return part;
-        }) as unknown as typeof m.content;
-      }
-      return out;
-    };
+    // Hard total-prompt budget + reference-summary elision now live in
+    // ./orchestrator-budget.ts (TOTAL_PROMPT_CHAR_BUDGET, capTotalToBudget,
+    // approxMsgChars). The per-message truncation above caps each tool result;
+    // capTotalToBudget then bounds the cumulative array by eliding the oldest
+    // tool-result OUTPUTS into a reference+summary (the full payload is already
+    // persisted in the artifact store and replayed via memory_recall), never
+    // dropping a message so tool-call/result pairing stays intact.
     let trimmedMessages: ModelMessage[] = modelMessages.map((m: ModelMessage, idx: number) => {
       const isRecent = idx >= modelMessages.length - RECENT_WINDOW;
       const max = isRecent ? MAX_TOOL_RESULT_CHARS_RECENT : MAX_TOOL_RESULT_CHARS_OLD;
@@ -336,18 +295,38 @@ Deno.serve(async (req) => {
     circuit.acquire(threadId);
     // Bootstrap per-thread circuit breakers (firecrawl/intelbase pre-disabled).
     circuit.applyBaselineDisables(threadId);
-    // Capability discovery: gate providers that can't run (missing key / gated /
-    // disabled / unsupported seed) BEFORE the execution loop, so they never
-    // become attempted live calls or consume credits. Pure evaluation over key
-    // PRESENCE booleans (no secret values); unavailable tools are disabled via
-    // the breaker, which cache.ts skips without billing.
+    // Startup provider-readiness gate (Phase B1): gate providers that can't run
+    // (missing key / unsupported seed) BEFORE the execution loop. Two layers:
+    //   (1) circuit.disableTool → removes them from the SCHEDULABLE set (cache.ts
+    //       treats a disabled tool as a free, un-billed skip), and
+    //   (2) delete them from the `tools` object → removes them from the tool
+    //       SCHEMA the model ever sees, so it can't hallucinate a call to a
+    //       provider that would only return "not configured" and waste a step.
+    // Pure evaluation over key-PRESENCE booleans (no secret values). Logged ONCE
+    // here at boot (never per-run/per-step). Note: a key that is PRESENT but
+    // INVALID (e.g. an expired ipqualityscore key) passes this presence gate and
+    // is instead caught by the run-level suppression on its first 401/403/429
+    // (circuit.recordResult → suppressProvider, Phase B2).
     {
       const envPresence: Record<string, boolean> = {};
       for (const k of capabilityEnvKeys()) envPresence[k] = !!Deno.env.get(k);
-      for (const cap of discoverCapabilities(envPresence, null)) {
+      const caps = discoverCapabilities(envPresence, null);
+      for (const cap of caps) {
         if (!cap.available) {
           circuit.disableTool(threadId, cap.tool, `unavailable: ${cap.reason}${cap.detail ? ` (${cap.detail})` : ""}`);
         }
+      }
+      const removed: string[] = [];
+      for (const name of gatedToolNames(caps)) {
+        if (name in (tools as Record<string, unknown>)) {
+          delete (tools as Record<string, unknown>)[name];
+          removed.push(name);
+        }
+      }
+      if (removed.length > 0) {
+        console.log(
+          `[readiness-gate] removed ${removed.length} unavailable tool(s) from schema (missing key/unsupported seed): ${removed.sort().join(", ")}`,
+        );
       }
     }
     // Tracks the cost amount already written to the DB via mid-run
@@ -547,7 +526,7 @@ Deno.serve(async (req) => {
     // Ends the run cleanly once the wall-clock deadline passes (see constant). The
     // StopCondition receives { steps }; we only need elapsed time, so it's ignored.
     const orchestratorDeadlineReached = () =>
-      Date.now() - runStartedAt > ORCHESTRATOR_WALL_CLOCK_MS;
+      deadlineReached(Date.now(), runStartedAt, ORCHESTRATOR_WALL_CLOCK_MS);
 
     const result = streamText({
       // Top-level orchestrator runs on the smart tier — it's the multi-source
@@ -574,6 +553,19 @@ Deno.serve(async (req) => {
         onCost,
         manualOverrideSelector,
       }),
+      // Unknown-tool guard (Phase B4): the model occasionally emits a tool call
+      // for a name that is NOT in the live registry (hallucinations like exify /
+      // hackerone_lookup). Validate the emitted name against the wrapped tool set
+      // BEFORE execution; an unknown name is redirected to the internal sink
+      // (unknown_tool_ignored) so it drops silently — never executes the invented
+      // tool, never surfaces the invented name — and the model gets a terse nudge.
+      // A KNOWN tool with bad input returns null here (SDK handles it normally).
+      experimental_repairToolCall: async ({ toolCall, tools: liveTools }) => {
+        const decision = repairUnknownTool(toolCall.toolName, Object.keys(liveTools ?? {}));
+        if (!decision.redirect) return null;
+        console.warn(`[unknown-tool-guard] dropped hallucinated tool "${toolCall.toolName}"`);
+        return { ...toolCall, toolName: decision.toolName, input: JSON.stringify({ requested: decision.requested }) };
+      },
       // Named step cap + wall-clock deadline (Phase 2, Play 1). Either stops the
       // agent loop cleanly; onFinish then persists partials and marks finished.
       stopWhen: [stepCountIs(MAX_ORCHESTRATOR_STEPS), orchestratorDeadlineReached],
@@ -581,8 +573,12 @@ Deno.serve(async (req) => {
       // Meter orchestrator LLM token spend per step so threads.cost_micro_usd
       // reflects the actual model cost, not just tool fan-out cost.
       // Rates (micro-USD per token):
-      //   MiniMax-M2.7:    in $0.30/M  out $1.20/M  → 0.30, 1.20
-      //   Gemini 2.5 Pro:  in $1.25/M  out $10.00/M → 1.25, 10.00
+      //   MiniMax-M2.7:      in $0.30/M  out $1.20/M  → 0.30, 1.20
+      //   Gemini 2.5 Flash:  in $0.30/M  out $2.50/M  → 0.30, 2.50
+      // Fallback rate tracks the DEFAULT fallback model (gemini-2.5-flash, B5);
+      // the old Gemini 2.5 Pro rate ($1.25/$10) over-debited the ledger ~4x on the
+      // fallback path. An operator LOVABLE_FALLBACK_MODEL_ID override is best-effort
+      // metered at the Flash rate.
       onStepFinish: ({ usage }) => {
         // A completed step on the primary provider proves MiniMax is alive —
         // record it so the NEXT turn's preflight probe can be skipped.
@@ -592,7 +588,7 @@ Deno.serve(async (req) => {
           const inTok = Number(u?.inputTokens ?? u?.promptTokens ?? 0);
           const outTok = Number(u?.outputTokens ?? u?.completionTokens ?? 0);
           if (!inTok && !outTok) return;
-          const [inRate, outRate] = useFallback ? [1.25, 10] : [0.3, 1.2];
+          const [inRate, outRate] = useFallback ? [0.3, 2.5] : [0.3, 1.2];
           const micro = Math.round(inTok * inRate + outTok * outRate);
           if (micro > 0) onCost(micro);
         } catch (e) {

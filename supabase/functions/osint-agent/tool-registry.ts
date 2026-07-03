@@ -24,6 +24,7 @@ import { buildNodes } from "./graph.ts";
 import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
 import { selectPivots, proposedCallToCandidate, type PivotCandidate, type ProposedCall } from "./graph_pivots.ts";
 import { renderPivotChecklistForPrompt } from "./pivot-checklists.ts";
+import { unknownToolNudge } from "./unknown-tool-guard.ts";
 import type { QueryType } from "./query-type-router.ts";
 import { DNS_TYPES, VIRTUAL_TYPE_MAP, isVirtualType, resolveVirtualHost, filterTxtByPrefix } from "./tools/dns-virtual.ts";
 
@@ -1265,16 +1266,25 @@ export function buildTools(ctx: ToolContext) {
       description:
         "DeepFind.Me reverse-email account discovery (https://deepfind.me) — checks ~120 services for accounts registered to an email address. Returns service hits plus partial email/phone recovery hints. Shared DeepFind budget: 1000 calls/day.",
       inputSchema: z.object({ email: z.string().email() }),
-      execute: async ({ email }) => {
+      // opts carries the per-tool timeout AbortSignal (Phase B3): forwarding it to
+      // fetchRetry makes the 8s cap actually cancel the in-flight request instead
+      // of abandoning the promise while the paid call runs on to fetchRetry's cap.
+      execute: async ({ email }, opts) => {
         const KEY = Deno.env.get("DEEPFIND_API_KEY");
         if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
+        const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
         try {
           const r = await fetchRetry(`https://deepfind.me/api/tools/reverse-email-check?email=${encodeURIComponent(email)}`, {
             headers: { "X-DFME-API-KEY": KEY, "Accept": "application/json" },
+            signal,
           });
           const data = await r.json().catch(() => ({}));
           return { ok: r.ok, status: r.status, source: "deepfind.reverse_email", data };
-        } catch (e) { return { error: String(e) }; }
+        } catch (e) {
+          const msg = String(e);
+          const aborted = e instanceof Error && (e.name === "AbortError" || /abort/i.test(msg));
+          return { error: msg, ...(aborted ? { aborted: true } : {}) };
+        }
       },
     }),
     deepfind_disposable_email: tool({
@@ -2968,7 +2978,11 @@ export function buildTools(ctx: ToolContext) {
         url: z.string().url(),
         maxChars: z.number().int().min(500).max(40000).default(18000),
       }),
-      execute: async ({ url, maxChars }) => {
+      // opts carries the per-tool timeout AbortSignal (Phase B3): forwarding it to
+      // fetchRetry makes the 8s cap truly cancel the scrape mid-flight rather than
+      // abandon the promise while r.jina.ai keeps streaming.
+      execute: async ({ url, maxChars }, opts) => {
+        const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
         // Preflight: trim whitespace, drop fragment, drop non-http(s),
         // reject relative paths, snippets, and IDN/odd schemes that 422 on Jina.
         const raw = (url ?? "").trim();
@@ -2987,7 +3001,7 @@ export function buildTools(ctx: ToolContext) {
           const headers: Record<string, string> = { Accept: "text/plain" };
           if (JINA_API_KEY) headers.Authorization = `Bearer ${JINA_API_KEY}`;
           const target = `https://r.jina.ai/${clean}`;
-          const r = await fetchRetry(target, { headers }, { retries: 2 });
+          const r = await fetchRetry(target, { headers, signal }, { retries: 2 });
           if (!r.ok) {
             // 422 = unprocessable URL (paywall, JS app, binary, login wall, etc.)
             // 451/403 = blocked by origin. Do NOT retry — signal the agent to pivot.
@@ -4316,6 +4330,25 @@ export function buildTools(ctx: ToolContext) {
       .eq("ok", true);
     return [...new Set((data ?? []).map((r: { tool_name: string }) => r.tool_name))];
   }
+
+  // Internal sink for the unknown-tool guard (Phase B4). streamText's
+  // experimental_repairToolCall redirects any hallucinated / non-registry tool
+  // name (e.g. exify, hackerone_lookup) here so it drops without executing the
+  // invented tool and without surfacing the invented name. Not counted by the
+  // coverage audit (absent from availableToolsForAudit). Do NOT call directly.
+  // NB: the literal key MUST equal UNKNOWN_TOOL_SINK ("unknown_tool_ignored") in
+  // unknown-tool-guard.ts — a literal (not a computed key) so the catalog↔runtime
+  // contract parser can see it; unknown_tool_guard_test pins the constant.
+  (tools as ToolRegistry).unknown_tool_ignored = tool({
+    description:
+      "Internal runtime sink — do NOT call. Hallucinated/unknown tool names are " +
+      "redirected here and dropped. Use only the other tools listed in your schema.",
+    inputSchema: z.object({
+      requested: z.string().optional().describe("The unknown tool name that was dropped."),
+    }),
+    execute: ({ requested }: { requested?: string }) =>
+      Promise.resolve({ ok: true, dropped: true, ignored_tool: requested ?? null, note: unknownToolNudge(requested) }),
+  });
 
   (tools as ToolRegistry).coverage_audit = tool({
     description:

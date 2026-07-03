@@ -84,6 +84,15 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   firecrawl_search: { disabled: true },
   firecrawl_scrape: { disabled: true },
   firecrawl_map: { disabled: true },
+  // RapidAPI breach tools are keyed but were historically only self-skipping
+  // (missing from this map), so a keyless deploy still advertised them to the
+  // model and burned a step on a guaranteed-empty call. The readiness gate now
+  // drops them from the schema when RAPIDAPI_KEY is absent. NOTE: breach_check is
+  // deliberately NOT listed here — despite using STOLENTAX_API_KEY when present,
+  // it falls back to the keyless leakcheck.io/api/public endpoint (tool-registry.ts),
+  // so it returns real breach data on a keyless deploy and must NOT be gated.
+  rapidapi_breach_search: { requiresKey: "RAPIDAPI_KEY" },
+  rapidapi_all_breaches: { requiresKey: "RAPIDAPI_KEY" },
 };
 
 /** Every env var name the requirements depend on — what the wiring must probe. */
@@ -125,4 +134,21 @@ export function discoverCapabilities(
 /** Just the providers that should be gated before the run. */
 export function unavailableProviders(caps: CapabilityStatus[]): CapabilityStatus[] {
   return caps.filter((c) => !c.available);
+}
+
+/** Tool names to REMOVE from the model's schedulable set AND the tool schema it
+ *  sees (missing key / disabled / gated / unsupported seed). Pure — the readiness
+ *  gate in index.ts deletes exactly these from the `tools` object before streamText,
+ *  so a keyless tool is never advertised and never wastes a step returning
+ *  "not configured". */
+export function gatedToolNames(caps: CapabilityStatus[]): string[] {
+  return caps.filter((c) => !c.available).map((c) => c.tool);
+}
+
+/** The subset of `allNames` that survives the readiness gate (available tools).
+ *  Pure helper so the "keyless tool is absent from the schedulable set + schema"
+ *  invariant is unit-testable without booting the orchestrator. */
+export function schedulableTools(allNames: string[], caps: CapabilityStatus[]): string[] {
+  const gated = new Set(gatedToolNames(caps));
+  return allNames.filter((n) => !gated.has(n));
 }
