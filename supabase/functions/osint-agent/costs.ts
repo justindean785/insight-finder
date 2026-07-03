@@ -111,6 +111,16 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   record_artifacts: 0,
   record_evidence: 0,
 
+  // ---- Analytical / bookkeeping tools (no external API — free) ----
+  // These operate purely over already-recorded artifacts/DB state, so a call
+  // makes no billable provider request. Explicit 0 (not the default floor) so
+  // an in-run audit/finding never inflates the honest $-per-investigation figure.
+  coverage_audit: 0,        // advisory coverage-gap audit over recorded artifacts
+  detect_contradictions: 0, // examines recorded artifacts for identity/infra conflicts
+  tool_audit: 0,            // advisory tool health/utilization summary
+  record_finding: 0,        // persists a source-backed finding (bookkeeping)
+  unknown_tool_ignored: 0,  // internal sink for hallucinated tool names (#211) — no external call
+
   // ---- Previously-uncosted registered tools (2026-06-27 audit) ----
   // These 21 tools were registered in tool-registry.ts but absent from this
   // map, so every call silently billed the $0.0002 default floor instead of an

@@ -99,11 +99,17 @@ export function capTotalToBudget(
   budget: number,
   keepRecent: number,
 ): ModelMessage[] {
-  if (approxMsgChars(msgs) <= budget) return msgs;
+  // O(n), not O(n^2): serialize each message's length ONCE and keep a running
+  // total, folding in the delta as each message is elided below — instead of
+  // re-summing the whole array every iteration (and again every prepareStep
+  // step). Behavior is identical to a full re-serialization each pass (PR #193).
+  const lengths = msgs.map((m) => JSON.stringify(m).length);
+  let total = lengths.reduce((n, l) => n + l, 0);
+  if (total <= budget) return msgs;
   const out: ModelMessage[] = msgs.map((m) => ({ ...m }));
   const cutoff = Math.max(0, out.length - keepRecent);
   for (let i = 0; i < cutoff; i++) {
-    if (approxMsgChars(out) <= budget) break;
+    if (total <= budget) break;
     const m = out[i];
     if ((m.role !== "tool" && m.role !== "assistant") || !Array.isArray(m.content)) continue;
     m.content = (m.content as TrimPart[]).map((part: TrimPart) => {
@@ -127,6 +133,11 @@ export function capTotalToBudget(
       }
       return part;
     }) as unknown as typeof m.content;
+    // Reprice only the message we just elided and fold the delta into the
+    // running total (subtract its old serialized length, add the new one).
+    const newLen = JSON.stringify(m).length;
+    total += newLen - lengths[i];
+    lengths[i] = newLen;
   }
   return out;
 }
