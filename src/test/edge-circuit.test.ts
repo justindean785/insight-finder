@@ -153,10 +153,14 @@ describe("snapshot / applyBaselineDisables / clearThread", () => {
     expect(entry).toMatchObject({ tool: "tool", total: 1, dead: 1 });
   });
 
-  it("pre-disables known-bad tools", () => {
+  it("applyBaselineDisables is a no-op hook (no baseline disables at present)", () => {
+    // The firecrawl_* / intelbase_email_lookup tools it used to pre-disable have
+    // been removed from the runtime, so it disables nothing: the snapshot stays
+    // empty right after the call, and a normal tool is still runnable. Kept as a
+    // per-thread bootstrap hook.
     applyBaselineDisables(thread);
-    expect(shouldRun(thread, "firecrawl_search", "x").allow).toBe(false);
-    expect(shouldRun(thread, "intelbase_email_lookup", "x").allow).toBe(false);
+    expect(snapshot(thread)).toEqual([]);
+    expect(shouldRun(thread, "exa_search", "x").allow).toBe(true);
   });
 
   it("clearThread wipes state", () => {
