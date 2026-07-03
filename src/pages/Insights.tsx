@@ -521,12 +521,17 @@ function BarList({
 
 function SparkBars({ data }: { data: Array<{ day: string; count: number }> }) {
   const max = Math.max(1, ...data.map((d) => d.count));
+  const total = data.reduce((n, d) => n + d.count, 0);
+  const peak = data.reduce((best, d) => (d.count > best.count ? d : best), data[0] ?? { day: "", count: 0 });
+  const summary = data.length
+    ? `Activity over the last ${data.length} days: ${total} total, peak ${peak.count} on ${peak.day}.`
+    : "No activity data.";
   return (
-    <div className="flex items-end gap-1 h-24">
+    <div className="flex items-end gap-1 h-24" role="img" aria-label={summary}>
       {data.map((d) => {
         const h = Math.max(2, Math.round((d.count / max) * 100));
         return (
-          <div key={d.day} className="flex-1 flex flex-col items-center gap-1" title={`${d.day}: ${d.count}`}>
+          <div key={d.day} aria-hidden="true" className="flex-1 flex flex-col items-center gap-1" title={`${d.day}: ${d.count}`}>
             <div
               className="w-full rounded-sm"
               style={{

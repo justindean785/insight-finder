@@ -103,10 +103,11 @@ export function CopyButton({
       )}
     >
       {copied ? (
-        <Check className="w-3.5 h-3.5 text-[hsl(var(--confidence-high))]" />
+        <Check className="w-3.5 h-3.5 text-[hsl(var(--confidence-high))]" aria-hidden="true" />
       ) : (
-        <Copy className="w-3.5 h-3.5" />
+        <Copy className="w-3.5 h-3.5" aria-hidden="true" />
       )}
+      <span className="sr-only" role="status" aria-live="polite">{copied ? "Copied" : ""}</span>
     </button>
   );
 }

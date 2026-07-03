@@ -210,7 +210,7 @@ export function CustodyTab({ threadId }: { threadId: string }) {
             </div>
           </div>
         </div>
-        <Switch checked={archiveEnabled} onCheckedChange={toggleArchive} />
+        <Switch checked={archiveEnabled} onCheckedChange={toggleArchive} aria-label="Archive attachments to private vault" />
       </div>
 
       {loading ? (
