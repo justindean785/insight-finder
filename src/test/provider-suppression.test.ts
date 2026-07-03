@@ -35,12 +35,12 @@ describe("429 suppresses the provider for the same investigation", () => {
 });
 
 describe("timeout suppresses the provider for the same investigation", () => {
-  it("blocks the next call, and suppression spans all tools of that provider", () => {
-    recordResult(thread, "bosint_phone_lookup", "sel", "default", { status: "timeout" });
-    expect(shouldRun(thread, "bosint_phone_lookup", "sel").allow).toBe(false);
-    // bosint_email_lookup shares the 'bosint' provider → also suppressed
+  it("blocks the next call, and suppression is keyed to the provider", () => {
+    // bosint_email_lookup maps to the 'bosint' provider group.
     expect(providerForTool("bosint_email_lookup")).toBe("bosint");
-    expect(shouldRun(thread, "bosint_email_lookup", "x").allow).toBe(false);
+    recordResult(thread, "bosint_email_lookup", "sel", "default", { status: "timeout" });
+    expect(shouldRun(thread, "bosint_email_lookup", "sel").allow).toBe(false);
+    expect(isProviderSuppressed(thread, "bosint_email_lookup").suppressed).toBe(true);
   });
 });
 
@@ -95,7 +95,7 @@ describe("suppression resets at the run boundary / has a finite cooldown", () =>
 describe("observability", () => {
   it("exposes active suppressions in a snapshot", () => {
     recordResult(thread, "stolentax_footprint", "sel", "default", { status: "http_429" });
-    recordResult(thread, "bosint_phone_lookup", "sel", "default", { status: "timeout" });
+    recordResult(thread, "bosint_email_lookup", "sel", "default", { status: "timeout" });
     const snap = suppressionSnapshot(thread);
     const providers = snap.map((x) => x.provider).sort();
     expect(providers).toContain("stolentax_footprint");

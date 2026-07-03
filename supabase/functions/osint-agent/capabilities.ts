@@ -42,10 +42,6 @@ export interface ProviderRequirement {
  *  provider whose key IS set in prod is a no-op. */
 export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   hibp_lookup: { requiresKey: "HIBP_API_KEY" },
-  intelbase_email_lookup: { requiresKey: "INTELBASE_API_KEY", gatedUnless: "INTELBASE_ENABLED" },
-  firecrawl_search: { disabled: true },
-  firecrawl_scrape: { disabled: true },
-  firecrawl_map: { disabled: true },
   exa_search: { requiresKey: "EXA_API_KEY" },
   exa_find_similar: { requiresKey: "EXA_API_KEY" },
   exa_get_contents: { requiresKey: "EXA_API_KEY" },
@@ -54,22 +50,14 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   hunter_email_verifier: { requiresKey: "HUNTER_API_KEY" },
   hunter_combined: { requiresKey: "HUNTER_API_KEY" },
   oathnet_lookup: { requiresKey: "OATHNET_API_KEY" },
-  // Disabled 2026-06-13: returned HTTP 500 on every call in production traces
-  // (5/5). Re-enable by removing `disabled` once the upstream is healthy.
-  synapsint_lookup: { requiresKey: "SYNAPSINT_API_KEY", disabled: true },
   socialfetch_lookup: { requiresKey: "SOCIALFETCH_API_KEY" },
   cordcat_discord_lookup: { requiresKey: "CORDCAT_API_KEY" },
   bosint_email_lookup: { requiresKey: "OSINTNOVA_API_KEY" },
-  // Disabled 2026-06-28: timed out on ~93% of calls in production traces
-  // (bosint_phone_timeout ×34, avg 35.7s) — pure latency tax on phone seeds.
-  // Re-enable by removing `disabled` once the OSINTNova phone endpoint is healthy.
-  bosint_phone_lookup: { requiresKey: "OSINTNOVA_API_KEY", disabled: true },
   leakcheck_lookup: { requiresKey: "LEAKCHECK_API_KEY" },
   stolentax_footprint: { requiresKey: "STOLENTAX_API_KEY" },
   // DeepFind re-verified 2026-06-13 against the live API with a valid key: the
   // ONLY problem was the expired key (403). Our code already uses the correct
-  // HTTP methods (POST+body / path-param). 12 of 14 endpoints return 200/201;
-  // only ransomware-exposure and analyzer genuinely 404 (gone/changed upstream).
+  // HTTP methods (POST+body / path-param). These 12 endpoints return 200/201.
   // Requires DEEPFIND_API_KEY set to the current key in Supabase function secrets.
   deepfind_reverse_email: { requiresKey: "DEEPFIND_API_KEY" },
   deepfind_disposable_email: { requiresKey: "DEEPFIND_API_KEY" },
@@ -85,9 +73,6 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   deepfind_dark_web_link: { requiresKey: "DEEPFIND_API_KEY" },
   deepfind_email_breach: { requiresKey: "DEEPFIND_API_KEY" },
   deepfind_transaction_viewer: { requiresKey: "DEEPFIND_API_KEY" },
-  // These two 404 with a valid key + correct method — genuinely gone upstream:
-  deepfind_ransomware_exposure: { requiresKey: "DEEPFIND_API_KEY", disabled: true }, // 404: endpoint gone
-  deepfind_profile_analyzer: { requiresKey: "DEEPFIND_API_KEY", disabled: true },    // 404: endpoint gone
   virustotal_lookup: { requiresKey: "VIRUSTOTAL_API_KEY" },
   ipgeolocation_lookup: { requiresKey: "IPGEOLOCATION_API_KEY" },
   gemini_deep_dork: { requiresKey: "GEMINI_API_KEY" },

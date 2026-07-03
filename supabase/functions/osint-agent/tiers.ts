@@ -10,12 +10,10 @@ export const TIER_A: ReadonlyArray<string> = [
   "osintnova_phone_lookup",
   "deepfind_reverse_email",
   "deepfind_disposable_email",
-  "deepfind_ransomware_exposure",
   "deepfind_telegram_channel",
   "deepfind_telegram_search",
   "leakcheck_lookup",
   "hibp_lookup",
-  "intelbase_email_lookup",
   "socialfetch_lookup",
   "exa_search",
   "exa_get_contents",
@@ -29,7 +27,6 @@ export const TIER_A: ReadonlyArray<string> = [
 
 export const TIER_B: ReadonlyArray<string> = [
   "virustotal_lookup",
-  "synapsint_lookup",
   "stolentax_footprint",
   "cordcat_lookup",
   "parallax_lookup",
@@ -58,9 +55,6 @@ export const TIER_C: ReadonlyArray<string> = [
   "github_code_search",
   "reddit_user",
   "hackernews_user",
-  "firecrawl_search",
-  "firecrawl_scrape",
-  "firecrawl_map",
   "jina_reader_scrape",
   "minimax_web_search",
 ];

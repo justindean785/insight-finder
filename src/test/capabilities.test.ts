@@ -17,12 +17,11 @@ import { creditsCharged } from "../../supabase/functions/osint-agent/billing.ts"
 // Phase 6 — startup capability discovery. Pure evaluation + the circuit
 // integration that turns "unavailable" into a pre-invocation, un-billed skip.
 
-// A realistic prod-ish env: most keys present, but HIBP missing and INTELBASE
-// gated (key present, feature flag off) — mirrors the audited trace.
+// A realistic prod-ish env: most keys present, but HIBP missing (missing-key
+// skip) — mirrors the audited trace.
 const PROD_ENV: Record<string, boolean> = {};
 for (const k of capabilityEnvKeys()) PROD_ENV[k] = true;
 PROD_ENV.HIBP_API_KEY = false;       // missing key
-PROD_ENV.INTELBASE_ENABLED = false;  // gated (key present, flag off)
 
 const statusOf = (caps: ReturnType<typeof discoverCapabilities>, tool: string) =>
   caps.find((c) => c.tool === tool)!;
@@ -35,17 +34,6 @@ describe("discoverCapabilities — pure evaluation", () => {
     expect(h.available).toBe(false);
     expect(h.reason).toBe("missing_key");
     expect(h.detail).toContain("HIBP_API_KEY");
-  });
-
-  it("skips a gated provider (intelbase)", () => {
-    const i = statusOf(caps, "intelbase_email_lookup");
-    expect(i.available).toBe(false);
-    expect(i.reason).toBe("gated");
-    expect(i.detail).toContain("INTELBASE_ENABLED");
-  });
-
-  it("skips an explicitly disabled provider (firecrawl)", () => {
-    expect(statusOf(caps, "firecrawl_search").reason).toBe("disabled");
   });
 
   it("keeps available providers available (exa, oathnet with keys present)", () => {
@@ -71,7 +59,7 @@ describe("discoverCapabilities — pure evaluation", () => {
   });
 
   it("capabilityEnvKeys lists the probed vars", () => {
-    expect(capabilityEnvKeys()).toEqual(expect.arrayContaining(["HIBP_API_KEY", "INTELBASE_ENABLED", "EXA_API_KEY"]));
+    expect(capabilityEnvKeys()).toEqual(expect.arrayContaining(["HIBP_API_KEY", "EXA_API_KEY"]));
   });
 });
 
@@ -87,11 +75,9 @@ describe("capability gating wired through the breaker", () => {
     }
   };
 
-  it("skips missing-key, gated, and disabled providers before invocation", () => {
+  it("skips a missing-key provider before invocation", () => {
     applyGates(thread, PROD_ENV);
     expect(shouldRun(thread, "hibp_lookup", "a@b.com").allow).toBe(false);            // missing_key
-    expect(shouldRun(thread, "intelbase_email_lookup", "a@b.com").allow).toBe(false); // gated
-    expect(shouldRun(thread, "firecrawl_search", "x").allow).toBe(false);             // disabled
   });
 
   it("lets available providers run", () => {
@@ -125,15 +111,13 @@ describe("capability gating wired through the breaker", () => {
 });
 
 describe("unavailableProviders / map sanity", () => {
-  it("returns only the gated providers", () => {
+  it("returns only the unavailable providers", () => {
     const unavail = unavailableProviders(discoverCapabilities(PROD_ENV, null)).map((c) => c.tool);
     expect(unavail).toContain("hibp_lookup");
-    expect(unavail).toContain("intelbase_email_lookup");
     expect(unavail).not.toContain("exa_search");
   });
 
-  it("hibp and intelbase are represented in the requirements", () => {
+  it("hibp is represented in the requirements", () => {
     expect(PROVIDER_REQUIREMENTS.hibp_lookup.requiresKey).toBe("HIBP_API_KEY");
-    expect(PROVIDER_REQUIREMENTS.intelbase_email_lookup.gatedUnless).toBe("INTELBASE_ENABLED");
   });
 });

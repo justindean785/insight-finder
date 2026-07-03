@@ -54,7 +54,6 @@ export const CONSUMER_DOMAINS = new Set<string>([
 ]);
 
 export const STAGE2_TOOLS = new Set<string>([
-  "intelbase_email_lookup",
   "oathnet_lookup",
   "github_code_search",
   "google_dorks",

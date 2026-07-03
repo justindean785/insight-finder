@@ -7,15 +7,22 @@ import * as path from "path";
  * Catalog ↔ runtime contract test.
  *
  * The catalog (`supabase/functions/osint-agent/catalog.ts`) is what the
- * LLM sees via `list_tools`. The runtime comes from two sources:
- *   1. Static exports: `export const foo = tool({...})` in tools/*.ts
- *   2. Late-injected:   `(tools as ToolRegistry).foo = tool({...})` in index.ts
+ * LLM sees via `list_tools`. The runtime lives in `tool-registry.ts`
+ * (buildTools), where tools come from three shapes:
+ *   1. Inline defs:      `foo: tool({...})` object properties in buildTools
+ *   2. Late-injected:    `(tools as ToolRegistry).foo = tool({...})`
+ *   3. Imported+injected:`(tools as ToolRegistry).foo = foo;` (e.g. serus)
  *
  * This test enforces: every tool the LLM can read about actually
  * exists at runtime, and every runtime tool is documented for the LLM.
  * Catches the class of bug that left 4 audit tools (coverage_audit,
  * detect_contradictions, tool_audit, record_finding) invisible to the
  * agent for an entire release.
+ *
+ * NOTE: "runtime" is `tool-registry.ts` (the source `buildTools` uses), NOT
+ * the `tools/*.ts` files — those are stale mirrors imported by nobody in the
+ * runtime. The Deno-side `catalog_contract_test.ts` proves the same contract
+ * authoritatively by calling `buildTools()` and reading `Object.keys(tools)`.
  */
 
 const ROOT = path.resolve(process.cwd(), "supabase/functions/osint-agent");
@@ -25,20 +32,20 @@ function bash(cmd: string): string {
 }
 
 function staticToolNames(): Set<string> {
-  // Match both "export const name = tool({" (with space) and "= tool({"
-  // (no space, used by disabled.ts). Negative-lookahead excludes
-  // "ALL_STATIC_TOOLS = {" which is the barrel object, not a tool.
+  // Inline `name: tool({` object-property defs in buildTools (any indentation).
   const out = bash(
-    `grep -hE '^export const [a-z_]+ *= *tool' "${ROOT}/tools"/*.ts | ` +
-      `sed -E 's/^export const ([a-z_]+) *= *tool.*/\\1/'`,
+    `grep -hoE '^[[:space:]]+[a-z_]+: tool\\(\\{' "${ROOT}/tool-registry.ts" | ` +
+      `sed -E 's/^[[:space:]]+([a-z_]+): tool.*/\\1/'`,
   );
   return new Set(out.split("\n").map((s) => s.trim()).filter(Boolean));
 }
 
 function lateInjectedNames(): Set<string> {
+  // `(tools as ToolRegistry).foo = tool({...})` AND the imported-and-assigned
+  // form `(tools as ToolRegistry).foo = bar;` (e.g. serus_darkweb_scan).
   const out = bash(
-    `grep -oE '\\(tools as (any|ToolRegistry)\\)\\.([a-z_]+) *= *tool' "${ROOT}/tool-registry.ts" "${ROOT}/index.ts" 2>/dev/null | ` +
-      `sed -E 's/.+\\.([a-z_]+) *= *tool/\\1/'`,
+    `grep -oE '\\(tools as (any|ToolRegistry)\\)\\.([a-z_]+) *=' "${ROOT}/tool-registry.ts" "${ROOT}/index.ts" 2>/dev/null | ` +
+      `sed -E 's/.+\\.([a-z_]+) *=.*/\\1/'`,
   );
   return new Set(out.split("\n").map((s) => s.trim()).filter(Boolean));
 }

@@ -58,10 +58,9 @@ const PROVIDER_TOOLS: Record<string, string[]> = {
     "deepfind_mac_lookup",
     "deepfind_dark_web_link",
   ],
-  bosint: ["bosint_email_lookup", "bosint_phone_lookup"],
+  bosint: ["bosint_email_lookup"],
   hunter: ["hunter_domain_search", "hunter_email_finder", "hunter_email_verifier", "hunter_combined"],
   exa: ["exa_search", "exa_find_similar", "exa_get_contents"],
-  firecrawl: ["firecrawl_search", "firecrawl_scrape", "firecrawl_map"],
   minimax: ["minimax_web_search", "minimax_correlate", "minimax_plan_pivots", "minimax_extract"],
 };
 const TOOL_PROVIDER = new Map<string, string>();
@@ -454,16 +453,11 @@ export function snapshot(threadId: string): Array<{ tool: string; consecutive: n
 }
 
 /** Bootstrap tool-specific defaults at thread start. */
-export function applyBaselineDisables(threadId: string): void {
-  // Pre-disable tools known to be unreliable / out-of-budget from past audits.
-  const b1 = breakerFor(threadId, "firecrawl_search");
-  b1.disabledReason = "firecrawl credits exhausted";
-  const b2 = breakerFor(threadId, "firecrawl_scrape");
-  b2.disabledReason = "firecrawl credits exhausted";
-  const b3 = breakerFor(threadId, "firecrawl_map");
-  b3.disabledReason = "firecrawl credits exhausted";
-  const b4 = breakerFor(threadId, "intelbase_email_lookup");
-  b4.disabledReason = "intelbase gated";
+export function applyBaselineDisables(_threadId: string): void {
+  // No baseline disables at present. The firecrawl_* and intelbase_email_lookup
+  // tools that used to be pre-disabled here have been removed from the runtime
+  // entirely, so there is nothing to pre-disable. Kept as a hook for future
+  // baseline circuit-breaker defaults (called once per thread in index.ts).
 }
 
 /** Register the start of a run for this thread, incrementing its active-run
