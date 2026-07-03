@@ -13,6 +13,7 @@ import NotFound from "./pages/NotFound";
 const ChatPage = lazy(() => import("./pages/ChatPage"));
 const AdminSecurity = lazy(() => import("./pages/AdminSecurity"));
 const BrainGlobalPage = lazy(() => import("./pages/BrainGlobalPage"));
+const OAuthConsent = lazy(() => import("./pages/OAuthConsent"));
 import { hasSupabaseEnv, supabaseConfigError } from "./integrations/supabase/client";
 import { BackendVersionBadge } from "./components/BackendVersionBadge";
 
@@ -41,6 +42,7 @@ const App = () => (
           <Routes>
             <Route path="/" element={<IndexRedirect />} />
             <Route path="/auth" element={<Auth />} />
+            <Route path="/.lovable/oauth/consent" element={<OAuthConsent />} />
             <Route path="/chat/:threadId" element={<ChatPage />} />
             <Route path="/brain" element={<BrainGlobalPage />} />
             <Route path="/admin/security" element={<AdminSecurity />} />
