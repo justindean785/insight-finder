@@ -5,17 +5,19 @@ import { EvidenceBoard } from "@/components/ResourcesPanel";
 import { EvidenceMatrixTab } from "@/components/panel/EvidenceMatrixTab";
 import { ClustersTab } from "@/components/panel/ClustersTab";
 import { TimelineTab } from "@/components/panel/TimelineTab";
+import { PivotsTab } from "@/components/panel/PivotsTab";
 import { TabHeader } from "@/components/ui/workspace-primitives";
-import { LayoutGrid, Table2, Network, Clock, Database, type LucideIcon } from "lucide-react";
+import { LayoutGrid, Table2, Network, Clock, GitBranch, Database, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-type View = "board" | "table" | "clusters" | "timeline";
+type View = "board" | "table" | "clusters" | "timeline" | "pivots";
 
 const VIEWS: { key: View; label: string; icon: LucideIcon }[] = [
   { key: "board", label: "Board", icon: LayoutGrid },
   { key: "table", label: "Table", icon: Table2 },
   { key: "clusters", label: "Clusters", icon: Network },
   { key: "timeline", label: "Timeline", icon: Clock },
+  { key: "pivots", label: "Pivots", icon: GitBranch },
 ];
 
 /**
@@ -117,6 +119,11 @@ export function EvidenceTab({ threadId }: { threadId: string }) {
         {view === "timeline" && (
           <div className="mx-auto max-w-4xl">
             <TimelineTab threadId={threadId} artifacts={items} />
+          </div>
+        )}
+        {view === "pivots" && (
+          <div className="mx-auto max-w-5xl">
+            <PivotsTab threadId={threadId} artifacts={items} />
           </div>
         )}
       </div>

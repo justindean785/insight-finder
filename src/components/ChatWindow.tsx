@@ -18,16 +18,16 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { detectSeed } from "@/lib/seed";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
-import { buildPivots } from "@/lib/intel";
 import { isSubmitBlocked } from "@/lib/submit-guard";
-import { dedupeCards, humanizeLeadReason } from "@/lib/next-step-cards";
+import { dedupeCards } from "@/lib/next-step-cards";
+import { computePivots } from "@/lib/pivot-engine";
 import { stripReasoningMarkup } from "@/lib/sanitize-agent-text";
 import { scrollBehavior } from "@/lib/motion";
 import { deriveToolCharge, deriveToolPreview, deriveToolRuntime, deriveToolTone } from "@/lib/tool-run";
 import { shouldFollowChatScroll, shouldAdoptInitialMessages, CHAT_REENGAGE_THRESHOLD_PX } from "@/lib/chat-scroll";
 import {
   extractRecommendedPivots,
-  recommendedPivotsStorageKey,
+  pivotSkipStorageKey,
   type RecommendedPivot,
 } from "@/lib/recommended-pivots";
 import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon, Copy as CopyIcon } from "lucide-react";
@@ -562,6 +562,20 @@ export function cycleSummaryBadges(group: {
   ].filter((bit): bit is string => Boolean(bit));
 }
 
+// A cycle that produced nothing — only skips, with no useful output, no cache
+// hits, no real failures, and no stale results — is pure noise (e.g. a provider
+// disabled in config surfacing as "1 skipped · unavailable: disabled"). The
+// analyst gets zero actionable signal from it, so suppress it from chat.
+function isNoiseToolGroup(group: ToolRunGroup): boolean {
+  return (
+    group.useful === 0 &&
+    group.failed === 0 &&
+    group.cached === 0 &&
+    group.stale === 0 &&
+    group.skipped > 0
+  );
+}
+
 function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt?: string }) {
   const [expanded, setExpanded] = useState(false);
   const avgExpected = group.expectedValues.length
@@ -837,13 +851,16 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
     | { cachedAt: string }
     | undefined;
   const toolGroups = groupToolParts(parts);
+  // Drop do-nothing cycles (all-skipped, no useful/cache/fail/stale) from chat —
+  // single ToolParts always pass through; only noise ToolRunGroups are removed.
+  const visibleToolGroups = toolGroups.filter((entry) => "part" in entry || !isNoiseToolGroup(entry));
   // Detect failed run sentinel
   const firstText = parts.find((p) => p.type === "text");
   if (firstText?.text?.startsWith?.(FAIL_PREFIX)) {
     const reason = firstText.text.slice(FAIL_PREFIX.length);
     return (
       <div className="space-y-2">
-        {toolGroups.map((entry, i) => "part" in entry ? (
+        {visibleToolGroups.map((entry, i) => "part" in entry ? (
           <ToolPart key={`failed-tool-${i}`} part={entry.part} createdAt={createdAt} />
         ) : (
           <ToolGroupSummary key={`failed-group-${entry.key}-${i}`} group={entry} createdAt={createdAt} />
@@ -857,9 +874,9 @@ function MessageView({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessa
       {cacheMeta && onRerun && (
         <CacheBanner cachedAt={cacheMeta.cachedAt} onRerun={onRerun} busy={!!rerunBusy} />
       )}
-      {toolGroups.length > 0 && (
+      {visibleToolGroups.length > 0 && (
         <div className="space-y-2">
-          {toolGroups.map((entry, i) => "part" in entry ? (
+          {visibleToolGroups.map((entry, i) => "part" in entry ? (
             <ToolPart key={`tool-${i}`} part={entry.part} createdAt={createdAt} />
           ) : (
             <ToolGroupSummary key={`${entry.key}-${i}`} group={entry} createdAt={createdAt} />
@@ -1066,6 +1083,10 @@ function ChatWindowInner({
   const [rerunBusy, setRerunBusy] = useState(false);
   const { items: artifacts } = useThreadArtifacts(threadId);
   const [seedValue, setSeedValue] = useState<string | null>(null);
+  // Skipped pivots (normalized-target keys) so a lead the analyst dismissed in
+  // the Pivots tab never reappears in the chat rail. Hydrated from localStorage
+  // and kept in sync via the skip-changed event other surfaces dispatch.
+  const [pivotSkip, setPivotSkip] = useState<Set<string>>(new Set());
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [attachments, setAttachments] = useState<
     Array<{ id: string; name: string; size: number; type: string; path: string; url: string; uploading?: boolean }>
@@ -1083,6 +1104,24 @@ function ChatWindowInner({
         if (alive) setSeedValue((data as { seed_value: string | null } | null)?.seed_value ?? null);
       });
     return () => { alive = false; };
+  }, [threadId]);
+
+  useEffect(() => {
+    const load = () => {
+      try {
+        const raw = localStorage.getItem(pivotSkipStorageKey(threadId));
+        setPivotSkip(new Set(raw ? (JSON.parse(raw) as string[]) : []));
+      } catch {
+        setPivotSkip(new Set());
+      }
+    };
+    load();
+    const onSkipChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ threadId: string }>).detail;
+      if (!detail || detail.threadId === threadId) load();
+    };
+    window.addEventListener("swarmbot:pivot-skip-changed", onSkipChanged as EventListener);
+    return () => window.removeEventListener("swarmbot:pivot-skip-changed", onSkipChanged as EventListener);
   }, [threadId]);
 
   // Track unmount so we can ignore the fetch-abort error that fires when the
@@ -1717,16 +1756,29 @@ function ChatWindowInner({
     return extractRecommendedPivots(text);
   }, [messages]);
 
+  // Broadcast the LIVE report pivots for the current thread. Deliberately NOT
+  // persisted and NOT gated on a non-empty array: a report-less turn dispatches
+  // [] so downstream surfaces CLEAR instead of holding a stale, frozen cache
+  // (the recurring "same pivots forever" bug). The Pivots tab listens for this.
   useEffect(() => {
-    if (reportPivots.length === 0) return;
-    try {
-      localStorage.setItem(recommendedPivotsStorageKey(threadId), JSON.stringify(reportPivots));
-    } catch {
-      // Storage may be unavailable in private browsing; the event still syncs this tab.
-    }
     window.dispatchEvent(new CustomEvent("swarmbot:report-pivots", {
       detail: { threadId, pivots: reportPivots },
     }));
+  }, [reportPivots, threadId]);
+
+  // Answer a late-mounting surface (e.g. the Pivots tab opened after the last
+  // turn) that asks for the current report pivots. Without this replay, that
+  // surface would show only artifact-derived pivots until the next turn.
+  useEffect(() => {
+    const onRequest = (event: Event) => {
+      const detail = (event as CustomEvent<{ threadId: string }>).detail;
+      if (detail?.threadId !== threadId) return;
+      window.dispatchEvent(new CustomEvent("swarmbot:report-pivots", {
+        detail: { threadId, pivots: reportPivots },
+      }));
+    };
+    window.addEventListener("swarmbot:request-report-pivots", onRequest as EventListener);
+    return () => window.removeEventListener("swarmbot:request-report-pivots", onRequest as EventListener);
   }, [reportPivots, threadId]);
 
   // Build suggested next-step replies after the agent stops streaming.
@@ -1738,76 +1790,22 @@ function ChatWindowInner({
     if (!hasAssistant) return [];
     const out: NextStepSuggestion[] = [];
     const seenLabels = new Set<string>();
-    const seenTypes = new Map<string, number>();
-    const shortValue = (v: string, type: string): string => {
-      if (type === "url") {
-        try {
-          const u = new URL(v.startsWith("http") ? v : `https://${v}`);
-          const path = u.pathname && u.pathname !== "/" ? u.pathname.slice(0, 18) : "";
-          return `${u.hostname}${path}`;
-        } catch { /* fall through */ }
-      }
-      return v.length > 36 ? v.slice(0, 34) + "…" : v;
-    };
-    if (reportPivots.length > 0) {
-      for (const pivot of reportPivots.slice(0, 3)) {
-        seenLabels.add(pivot.label);
-        out.push({
-          title: pivot.actionLabel,
-          detail: pivot.detail,
-          prompt: pivot.prompt,
-          icon: "pivot",
-          meta: `${pivot.type} verification`,
-          priority: pivot.priority,
-          target: pivot.value,
-        });
-      }
-    } else {
-      // No explicit final-report recommendations: fall back to artifact-derived leads.
-      const artifactById = new Map(artifacts.map((candidate) => [candidate.id, candidate]));
-      const allPivots = buildPivots(artifacts, seedValue).filter((p) => {
-        if (p.status !== "new") return false;
-        const artifact = artifactById.get(p.sourceArtifactId);
-        const meta = (artifact?.metadata ?? {}) as Record<string, unknown>;
-        if (meta.false_positive === true || meta.collision === true || meta.excluded_collision === true) return false;
-        if (meta.possible_minor === true || meta.minor_warning === true || meta.auto_pivot_blocked === true) return false;
-        if (/\b(password|hash|secret|token|cookie|session|credential)\b/i.test(p.value)) return false;
-        return true;
+    // ONE engine over LIVE state: report recommendations + artifact findings,
+    // deduped, already-run-filtered and ranked. Chat only takes the top 3
+    // still-actionable ("new") pivots; already-searched ones sink to the Pivots
+    // tab. Recomputes whenever artifacts stream in or a new turn lands.
+    const ranked = computePivots({ artifacts, seedValue, reportPivots, skipSet: pivotSkip });
+    for (const p of ranked.filter((candidate) => candidate.status === "new").slice(0, 3)) {
+      seenLabels.add(p.actionLabel);
+      out.push({
+        title: p.actionLabel,
+        detail: p.detail,
+        prompt: p.prompt,
+        icon: "pivot",
+        meta: `${p.type} verification`,
+        priority: p.priority,
+        target: p.value,
       });
-      const nonUrl = allPivots.filter((p) => p.type !== "url");
-      const urls = allPivots.filter((p) => p.type === "url");
-      const ordered = [...nonUrl, ...urls];
-      for (const p of ordered) {
-        if (out.length >= 3) break;
-        const typeCount = seenTypes.get(p.type) ?? 0;
-        if (typeCount >= 1 && out.length < Math.min(3, ordered.length)) {
-          const distinctTypes = new Set(ordered.map((x) => x.type)).size;
-          if (seenTypes.size < distinctTypes) continue;
-        }
-        const display = shortValue(p.value, p.type);
-        const label = `Pivot on ${display}`;
-        if (seenLabels.has(label)) continue;
-        seenLabels.add(label);
-        seenTypes.set(p.type, typeCount + 1);
-        const title =
-          p.type === "email" ? "Verify email ownership" :
-          p.type === "phone" ? "Check phone association" :
-          p.type === "domain" || p.type === "url" ? "Review domain footprint" :
-          p.type === "ip" ? "Check IP attribution" :
-          p.type === "username" ? "Verify username linkage" :
-          "Review lead";
-        const rawReason = p.why || p.fanout || "Artifact-derived lead";
-        const reason = humanizeLeadReason(rawReason);
-        out.push({
-          title,
-          detail: `${display} · ${reason}`,
-          prompt: `Run this pivot.\n\nAction: ${title}\nTarget: ${p.value}\nType: ${p.type}\nReason: ${reason}\n\nUse authorized public-source methods only. Return corroborating sources and how this changes the case.`,
-          icon: "pivot",
-          meta: `${p.type} verification`,
-          priority: p.confidence >= 75 ? "high" : p.confidence >= 50 ? "medium" : "low",
-          target: p.value,
-        });
-      }
     }
     // Always include 1-2 generic next steps as fallback.
     const generic = [
@@ -1825,7 +1823,7 @@ function ChatWindowInner({
     // "Review lead · Damien O Brien" and "Review lead · Damien O'Brien" surfaced
     // from the same source are one lead, not two. Keep the first (highest-ranked).
     return dedupeCards(out).slice(0, 4);
-  }, [isLoading, messages, artifacts, seedValue, reportPivots]);
+  }, [isLoading, messages, artifacts, seedValue, reportPivots, pivotSkip]);
 
   return (
     <div className="relative flex-1 flex flex-col h-full min-w-0 overflow-hidden bg-background">
@@ -1966,28 +1964,42 @@ function ChatWindowInner({
                 </span>
                 <div className="h-px flex-1 bg-gradient-to-r from-white/10 to-transparent" />
               </div>
-              <div className="flex flex-wrap gap-2">
+              {/* Horizontal scroll-snap rail: swipes on narrow screens, settles
+                  into a tidy 3-up grid on md+. Replaces the ragged flex-wrap of
+                  stacked chips. */}
+              <div className="flex gap-3 overflow-x-auto snap-x snap-mandatory pb-2 -mx-4 px-4 [scrollbar-width:thin] [scrollbar-color:hsl(var(--border))_transparent] md:grid md:grid-cols-3 md:gap-2 md:overflow-visible md:mx-0 md:px-0">
                 {suggestions.map((s, i) => (
                   <button
                     key={`${s.title}-${i}`}
                     onClick={() => sendText(s.prompt)}
-                    className="action-chip action-chip--stacked animate-fade-up"
-                    style={{ animationDelay: `${i * 60}ms` }}
+                    className="group relative w-[240px] md:w-auto shrink-0 snap-start overflow-hidden rounded-xl glass border border-border-subtle p-3 text-left transition-all duration-300 hover:-translate-y-0.5 hover:border-primary/50 hover:ring-glow animate-pivot-in"
+                    style={{ animationDelay: `${Math.min(i * 40, 320)}ms` }}
                   >
-                    <span className="action-chip__icon">
-                      {s.icon === "pivot" ? (
-                        <GitBranch className="w-3.5 h-3.5" />
-                      ) : (
-                        <Sparkles className="w-3.5 h-3.5" />
-                      )}
-                    </span>
-                    <span className="min-w-0 flex-1">
+                    {s.priority && (
+                      <span
+                        className={
+                          "absolute left-0 inset-y-2 w-0.5 rounded-full " +
+                          (s.priority === "high"
+                            ? "bg-[hsl(var(--confidence-high))]"
+                            : s.priority === "medium"
+                              ? "bg-[hsl(var(--confidence-mid))]"
+                              : "bg-muted")
+                        }
+                        aria-hidden
+                      />
+                    )}
+                    <span className="block pl-2 space-y-1">
                       <span className="flex items-center gap-1.5">
+                        {s.icon === "pivot" ? (
+                          <GitBranch className="w-3 h-3 text-primary" />
+                        ) : (
+                          <Sparkles className="w-3 h-3 text-primary" />
+                        )}
                         {s.priority && <span className={`pivot-priority pivot-priority--${s.priority}`}>{s.priority}</span>}
-                        <span className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground font-mono">{s.meta}</span>
+                        <span className="truncate text-[10px] uppercase tracking-[0.14em] text-muted-foreground font-mono">{s.meta}</span>
                       </span>
-                      <span className="mt-0.5 block text-left text-sm font-medium leading-snug text-foreground">{s.title}</span>
-                      {s.detail && <span className="mt-0.5 block text-left text-[11px] leading-snug text-muted-foreground line-clamp-2">{s.detail}</span>}
+                      <span className="block text-sm font-semibold leading-snug text-foreground group-hover:text-primary transition-colors">{s.title}</span>
+                      {s.detail && <span className="block text-[11px] leading-snug text-muted-foreground line-clamp-2">{s.detail}</span>}
                     </span>
                   </button>
                 ))}
