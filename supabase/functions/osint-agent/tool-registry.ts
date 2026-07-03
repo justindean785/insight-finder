@@ -29,14 +29,14 @@ import { DNS_TYPES, VIRTUAL_TYPE_MAP, isVirtualType, resolveVirtualHost, filterT
 
 import {
   MINIMAX_API_KEY, LOVABLE_API_KEY,
-  OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
-  CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED,
-  HIBP_API_KEY, GITHUB_API_TOKEN, FIRECRAWL_API_KEY, EXA_API_KEY, JINA_API_KEY,
+  OATHNET_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
+  CORDCAT_API_KEY, HUNTER_API_KEY,
+  HIBP_API_KEY, GITHUB_API_TOKEN, EXA_API_KEY, JINA_API_KEY,
   GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY,
   RAPIDAPI_KEY,
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
   URLSCANNER_API_KEY,
-  firecrawlCreditsLow, markFirecrawlCreditsLow, resetFirecrawlCreditsLow, degradedTools,
+  degradedTools,
   markToolDegraded, isDegraded, fetchRetry, fetchT,
   deadHosts, markHostDead, isHostDead,
 } from "./env.ts";
@@ -98,14 +98,6 @@ export function buildTools(ctx: ToolContext) {
       inputSchema: z.object({}).strict(),
       execute: async () => {
         const disabled: Array<{ name: string; reason: string }> = [];
-        // IntelBase is hard-gated at the planner level when the feature flag
-        // is off — it must never be selected, regardless of triage outcome.
-        if (!INTELBASE_ENABLED) {
-          disabled.push({
-            name: "intelbase_email_lookup",
-            reason: "IntelBase gated — provider instability (feature flag off). Use breach_check / leakcheck_lookup / oathnet_lookup / bosint_email_lookup instead.",
-          });
-        }
         // HIBP needs a paid key; hide it entirely when unset so the agent
         // doesn't burn a fan-out slot on a tool that can only return
         // "not configured" on every email seed.
@@ -400,11 +392,9 @@ export function buildTools(ctx: ToolContext) {
             // Breach + identity
             "rapidapi_breach_search","rapidapi_all_breaches",
             "breach_check","leakcheck_lookup","hibp_lookup","oathnet_lookup",
-            "bosint_email_lookup","bosint_phone_lookup",
+            "bosint_email_lookup",
             "stolentax_footprint","serus_darkweb_scan",
-            // DeepFind suite (shared 1000/day pool). deepfind_ransomware_exposure
-            // and deepfind_profile_analyzer are 404'd DISABLED STUBS — culled from
-            // the allow-list (use ransomwarelive_lookup / username_sweep instead).
+            // DeepFind suite (shared 1000/day pool).
             "deepfind_reverse_email","deepfind_disposable_email",
             "deepfind_ssl_inspect","deepfind_tech_stack","deepfind_url_unshorten",
             "deepfind_telegram_channel","deepfind_telegram_search",
@@ -420,7 +410,7 @@ export function buildTools(ctx: ToolContext) {
             // Domain / infra / IP
             "whois_lookup","dns_records","crtsh_subdomains","crtsh_lookup","http_fingerprint",
             "ip_intel","ipgeolocation_lookup","ipqualityscore_lookup","shodan_internetdb","hackertarget",
-            "urlscan_search","virustotal_lookup","synapsint_lookup",
+            "urlscan_search","virustotal_lookup",
             "urlscanner_scan",
             // Phase 1 free / no-key corroboration tools
             "ransomwarelive_lookup","wayback_cdx_search","census_geocode","nominatim_geocode",
@@ -440,16 +430,11 @@ export function buildTools(ctx: ToolContext) {
             // firecrawl_* are disabled — intentionally omitted from pivot planner
           ];
           // Permanently blocked tools — never let the planner pick them.
-          // Firecrawl: credits exhausted, stubs return immediate error.
-          // Intelbase: gated due to instability (ENABLE_INTELBASE=false).
-          // deepfind_ransomware_exposure / deepfind_profile_analyzer: 404'd
-          // DISABLED STUBS upstream — use ransomwarelive_lookup / username_sweep.
-          // Additionally blocked from production telemetry (tool_usage_log over
-          // ~106 investigations): these burned planner slots, latency, and cost
-          // for ~0 yield. Runtime defs + catalog entries are kept (contract test
-          // stays green) and they're decoupled from playbooks; re-add here only
-          // after the underlying integration/key is repaired.
-          //   synapsint_lookup     10% ok — self-disables ("provider disabled in config")
+          // Blocked from production telemetry (tool_usage_log over ~106
+          // investigations): these burned planner slots, latency, and cost
+          // for ~0 yield. Runtime defs + catalog entries are kept (contract
+          // test stays green) and they're decoupled from playbooks; re-add
+          // here only after the underlying integration/key is repaired.
           //   stolentax_footprint  22% ok, ~10s latency (401 bad key + aborts)
           //   hackernews_user       0% ok
           //   gravatar_profile     14% ok (404s; already demoted in #171)
@@ -458,17 +443,14 @@ export function buildTools(ctx: ToolContext) {
           // — they stay on their API-key gates (valuable once the key/integration
           // is fixed; ipqs key replacement is an owner/config action).
           const PERMANENT_BLOCK = new Set([
-            "firecrawl_search","firecrawl_scrape","firecrawl_map",
-            "intelbase_email_lookup",
-            "deepfind_ransomware_exposure","deepfind_profile_analyzer",
-            "synapsint_lookup","stolentax_footprint","hackernews_user",
+            "stolentax_footprint","hackernews_user",
             "gravatar_profile","emailrep",
           ]);
           // Tools the circuit breaker has disabled this investigation (e.g.
-          // synapsint after 3 consecutive HTTP 500s). Without this the planner
-          // re-proposes a known-dead tool every round — observed firing
-          // synapsint 7x for zero value. degradedTools covers the parallel
-          // self-degrade path (markToolDegraded on 5xx).
+          // a provider after consecutive HTTP 500s). Without this the planner
+          // re-proposes a known-dead tool every round for zero value.
+          // degradedTools covers the parallel self-degrade path
+          // (markToolDegraded on 5xx).
           const brokenTools = new Set<string>(
             circuit.snapshot(threadId).filter((s) => s.disabledReason).map((s) => s.tool),
           );
@@ -638,7 +620,7 @@ export function buildTools(ctx: ToolContext) {
           const r = await minimaxChatWithFallback({
             model: MODELS.smart,
             system:
-              `You are the execution planner for a forensic OSINT runtime. ONLY propose tools from this EXACT list (names must match verbatim — do not invent or rename): ${toolList.join(", ")}.\n\n${NAME_SEED_PLANNER_RULES}\n\nPERMANENTLY DISABLED TOOLS — NEVER PROPOSE: firecrawl_search, firecrawl_scrape, firecrawl_map (credits exhausted — use jina_reader_scrape + exa_search + minimax_web_search), intelbase_email_lookup (gated due to instability — use oathnet_lookup + leakcheck_lookup + bosint_email_lookup instead).\n\nRUNTIME RULES:\n- Stage choices: TRIAGE, REVIEW, TARGETED_PIVOT, VERIFY, REPORT.\n- Propose ALL independent, non-redundant pivots that can run in PARALLEL this cycle (free/low-cost especially) so the investigation finishes in FEWER cycles. Only serialize a pivot when it depends on a prior pivot's result.\n- Respect the hard total-call and concurrency ceilings enforced by the runtime.\n- Weak-lead and expected-value signals are advisory. Do not turn them into prerequisites or retry loops.\n- Prefer the cheapest tool that can answer the current question: run FREE/LOW-cost validation before spending on EXPENSIVE/premium tools (see TOOL COST TIERS in the context below). Cost is advisory — never drop a uniquely high-value lead just because it is expensive.\n- When a finding is breach-derived or otherwise confidence-capped, propose ONE independent, trusted NON-infrastructure source to corroborate it and lift the cap, rather than re-running the same breach source.\n- Cached results NEVER count as corroboration. If a fresh cache hit would satisfy the question, prefer it over a live call.\n- If evidence is weak, explain that in the reason and keep the result [VERIFY].\n\nReply ONLY with JSON matching this exact shape:\n{\n  "stage":"TRIAGE|REVIEW|TARGETED_PIVOT|VERIFY|REPORT",\n  "goal":"string",\n  "current_findings":["string"],\n  "proposed_calls":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "params_preview":{},\n    "expected_value":0,\n    "cost_tier":"free|low|expensive",\n    "reason":"string",\n    "stop_condition":"string",\n    "cache_status":"thread|user|stale|miss"\n  }],\n  "calls_rejected":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "expected_value":0,\n    "reason":"string",\n    "cost_tier":"free|low|expensive",\n    "weak_lead":true,\n    "stale_cache":false,\n    "manual_override":false\n  }]\n}\nOrder proposed_calls by expected_value descending. Respect budget_remaining as the max number of proposed_calls.`,
+              `You are the execution planner for a forensic OSINT runtime. ONLY propose tools from this EXACT list (names must match verbatim — do not invent or rename): ${toolList.join(", ")}.\n\n${NAME_SEED_PLANNER_RULES}\n\nRUNTIME RULES:\n- Stage choices: TRIAGE, REVIEW, TARGETED_PIVOT, VERIFY, REPORT.\n- Propose ALL independent, non-redundant pivots that can run in PARALLEL this cycle (free/low-cost especially) so the investigation finishes in FEWER cycles. Only serialize a pivot when it depends on a prior pivot's result.\n- Respect the hard total-call and concurrency ceilings enforced by the runtime.\n- Weak-lead and expected-value signals are advisory. Do not turn them into prerequisites or retry loops.\n- Prefer the cheapest tool that can answer the current question: run FREE/LOW-cost validation before spending on EXPENSIVE/premium tools (see TOOL COST TIERS in the context below). Cost is advisory — never drop a uniquely high-value lead just because it is expensive.\n- When a finding is breach-derived or otherwise confidence-capped, propose ONE independent, trusted NON-infrastructure source to corroborate it and lift the cap, rather than re-running the same breach source.\n- Cached results NEVER count as corroboration. If a fresh cache hit would satisfy the question, prefer it over a live call.\n- If evidence is weak, explain that in the reason and keep the result [VERIFY].\n\nReply ONLY with JSON matching this exact shape:\n{\n  "stage":"TRIAGE|REVIEW|TARGETED_PIVOT|VERIFY|REPORT",\n  "goal":"string",\n  "current_findings":["string"],\n  "proposed_calls":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "params_preview":{},\n    "expected_value":0,\n    "cost_tier":"free|low|expensive",\n    "reason":"string",\n    "stop_condition":"string",\n    "cache_status":"thread|user|stale|miss"\n  }],\n  "calls_rejected":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "expected_value":0,\n    "reason":"string",\n    "cost_tier":"free|low|expensive",\n    "weak_lead":true,\n    "stale_cache":false,\n    "manual_override":false\n  }]\n}\nOrder proposed_calls by expected_value descending. Respect budget_remaining as the max number of proposed_calls.`,
             user: `Seed: ${seed}\nBudget remaining: ${budget_remaining}\nAlready queried: ${JSON.stringify(already_queried).slice(0,4000)}\nArtifacts so far: ${JSON.stringify(artifacts).slice(0,8000)}\n\n${costGuide}${relationshipHint}${pivotHint}${memoryHint}`,
             json: true,
             maxTokens: 1500,
@@ -675,54 +657,6 @@ export function buildTools(ctx: ToolContext) {
           }
           return { ok: r.ok, status: r.status, plan: parsed };
         } catch (e) { return { error: String(e) }; }
-      },
-    }),
-    intelbase_email_lookup: tool({
-      description:
-        "IntelBase email lookup (https://api.intelbase.is/lookup/email). Aggregated breach + profile modules. Use as the PRIMARY email enrichment source — unlimited daily lookups on current plan. Run BEFORE oathnet_lookup. Note: breach_check (stolen.tax, 1000/day) is the main breach source and should already have fired via triage_seed.",
-      inputSchema: z.object({
-        email: z.string(),
-        include_data_breaches: z.boolean().optional().default(true),
-        timeout_ms: z.number().int().min(1000).max(60000).optional(),
-        exclude_modules: z.array(z.string()).optional(),
-      }),
-      execute: async ({ email, include_data_breaches, timeout_ms, exclude_modules }) => {
-        if (!INTELBASE_ENABLED) {
-          console.warn("IntelBase skipped — gated due to instability");
-          return {
-            ok: false,
-            skipped: true,
-            gated: true,
-            reason: "intelbase disabled (provider unhealthy ~33% success). Use breach_check / leakcheck_lookup / oathnet_lookup / bosint_email_lookup instead.",
-          };
-        }
-        if (!INTELBASE_API_KEY) return { error: "INTELBASE_API_KEY not configured" };
-        try {
-          const body: Record<string, unknown> = { email, include_data_breaches };
-          if (typeof timeout_ms === "number") body.timeout_ms = timeout_ms;
-          if (exclude_modules && exclude_modules.length) body.exclude_modules = exclude_modules;
-          // Client-side cap honors the caller's requested upstream timeout_ms
-          // (also sent in the body) plus a network buffer, so the fetch never
-          // aborts a still-pending server-side lookup.
-          const r = await fetchT("https://api.intelbase.is/lookup/email", {
-            method: "POST",
-            headers: {
-              "x-api-key": INTELBASE_API_KEY,
-              "content-type": "application/json",
-            },
-            body: JSON.stringify(body),
-          }, (typeof timeout_ms === "number" ? timeout_ms : 30_000) + 5_000);
-          const text = await r.text();
-          let data: unknown;
-          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 8000) }; }
-          if (!r.ok) {
-            console.warn(`[intelbase_email_lookup] HTTP ${r.status} snippet=${text.slice(0, 300)}`);
-            return { error: `intelbase ${r.status}`, status: r.status, snippet: text.slice(0, 300), data };
-          }
-          return { ok: true, status: r.status, data };
-        } catch (e) {
-          return { error: String(e) };
-        }
       },
     }),
     osint_navigator_query: tool({
@@ -839,40 +773,6 @@ export function buildTools(ctx: ToolContext) {
         }
       },
     }),
-    synapsint_lookup: tool({
-      description:
-        "Synapsint multi-endpoint OSINT aggregator (synapsint.pythonanywhere.com). One tool, many endpoints — pick the right `endpoint` for the seed type. " +
-        "Domain endpoints: links, subdomains, dns, waf, tenant (Microsoft), leaks (emails leaked from this domain), whoisd, dmarc, sh (security headers), tls, ranking, pastes (pastebin mentions), dnssec. " +
-        "IP endpoints: check (IP info + open ports), rip (reverse-IP shared-hosting neighbors), whoiss. " +
-        "ASN endpoint: asn. Email endpoint: email (leaked credentials). CVE endpoint: cve. " +
-        "Use as a fast secondary corroboration source for domain/IP/email/CVE/ASN seeds — especially valuable for `rip` (shared hosting), `tenant` (M365 enumeration), `pastes`, and `leaks` which other tools don't cover. Free tier API key; treat quota as generous but not unlimited.",
-      inputSchema: z.object({
-        endpoint: z.enum([
-          "links","asn","check","waf","subdomains","dns","tenant","rip",
-          "email","leaks","whoisd","whoiss","cve","dmarc","sh","tls",
-          "ranking","pastes","dnssec",
-        ]).describe("Which Synapsint endpoint to call."),
-        value: z.string().describe("Parameter for the endpoint — domain, ip, asn, email, or CVE id as appropriate."),
-      }),
-      execute: async ({ endpoint, value }) => {
-        if (!SYNAPSINT_API_KEY) return { error: "SYNAPSINT_API_KEY not configured" };
-        const deg = isDegraded("synapsint_lookup"); if (deg) return deg;
-        try {
-          const url = `https://synapsint.pythonanywhere.com/${endpoint}/${encodeURIComponent(value)}`;
-          const r = await fetchRetry(url, {
-            headers: { "X-API-KEY": SYNAPSINT_API_KEY, "accept": "application/json" },
-          }, { retries: 1 });
-          const text = await r.text();
-          let data: unknown;
-          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 4000) }; }
-          if (r.status >= 500) markToolDegraded("synapsint_lookup", `HTTP ${r.status}`);
-          return { ok: r.ok, status: r.status, endpoint, value, data };
-        } catch (e) {
-          markToolDegraded("synapsint_lookup", `network error`);
-          return { error: String(e) };
-        }
-      },
-    }),
     socialfetch_lookup: tool({
       description:
         "Query SocialFetch for normalized public social profiles. SUPPORTED platforms ONLY: 'tiktok' | 'instagram' | 'twitter' | 'facebook'. For ANY OTHER platform (youtube, twitch, soundcloud, bandcamp, roblox, github, reddit, linkedin, mastodon, etc.) DO NOT call this tool — prefer `jina_reader_scrape` on the profile URL (cleanest fallback), then `http_fingerprint`, `wayback_snapshots`, or `minimax_web_search`. SocialFetch quota is LOW — if it errors or returns nothing, retry the same profile URL via `jina_reader_scrape` instead of burning more SocialFetch calls. Unsupported platforms return an informative no-op instead of crashing. Use platform='facebook' with a full profile URL; otherwise pass a bare handle. kind='profile' for profile metadata, kind='videos' (TikTok only) for paginated videos.",
@@ -938,41 +838,6 @@ export function buildTools(ctx: ToolContext) {
           return { ok: okWithSuccessFlag(r.ok, data), status: r.status, data };
         } catch (e) {
           return { error: String(e) };
-        }
-      },
-    }),
-    bosint_phone_lookup: tool({
-      description:
-        "OSINTNova (Bosint) phone intelligence. Carrier, location, line type, timezone, and associated names when available. Pass full E.164 number with country code (e.g. '+12025551234'). Shared 1000 calls/day quota across Bosint endpoints, 120/min. Use as the planned primary phone enrichment call; add corroboration only when justified. SLOW upstream — capped at a single 25s attempt; returns a timeout marker if it hangs.",
-      inputSchema: z.object({ phone: z.string().describe("Phone number in E.164 format, e.g. +12025551234") }),
-      execute: async ({ phone }) => {
-        if (!OSINTNOVA_API_KEY) return { error: "OSINTNOVA_API_KEY not configured" };
-        const cleaned = phone.trim();
-        const url = `https://app.osintnova.com/bosintapi/${OSINTNOVA_API_KEY}/phone/${encodeURIComponent(cleaned)}`;
-        // Single strict 25s attempt — no retry. The old 25s + 10s backoff +
-        // 25s retry pushed the worst case to 60s and stalled interactive
-        // scans for a full minute (observed in prod). The phone is already
-        // covered by leakcheck_lookup + oathnet_lookup, so a hung OSINTNova
-        // isn't worth the wait.
-        const attemptOnce = async (signal: AbortSignal) => {
-          const r = await fetch(url, { headers: { accept: "application/json" }, signal });
-          const text = await r.text();
-          let data: unknown;
-          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 4000) }; }
-          // Same OSINTNova {success:false}-at-200 contract as the email endpoint.
-          return { ok: okWithSuccessFlag(r.ok, data), status: r.status, data };
-        };
-        const runWithTimeout = async (ms: number) => {
-          const ctrl = new AbortController();
-          const tid = setTimeout(() => ctrl.abort(), ms);
-          try { return await attemptOnce(ctrl.signal); }
-          finally { clearTimeout(tid); }
-        };
-        try {
-          return await runWithTimeout(25_000);
-        } catch {
-          console.warn("bosint_phone_lookup timed out — using fallback sources only");
-          return { error: "bosint_phone_timeout", skipped: true, hint: "leakcheck_lookup + oathnet_lookup cover this phone." };
         }
       },
     }),
@@ -1428,24 +1293,6 @@ export function buildTools(ctx: ToolContext) {
         } catch (e) { return { error: String(e) }; }
       },
     }),
-    deepfind_ransomware_exposure: tool({
-      description:
-        "DeepFind.Me ransomware leak-site exposure check. Searches ransomware group leak sites for a domain, email, or identifier. High-signal for breach/extortion context.",
-      inputSchema: z.object({ query: z.string().min(3) }),
-      execute: async ({ query }) => {
-        const KEY = Deno.env.get("DEEPFIND_API_KEY");
-        if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
-        try {
-          const r = await fetchT(`https://deepfind.me/api/ransomware-exposure`, {
-            method: "POST",
-            headers: { "X-DFME-API-KEY": KEY, "Content-Type": "application/json", "Accept": "application/json" },
-            body: JSON.stringify({ query }),
-          });
-          const data = await r.json().catch(() => ({}));
-          return { ok: r.ok, status: r.status, source: "deepfind.ransomware", data };
-        } catch (e) { return { error: String(e) }; }
-      },
-    }),
     deepfind_ssl_inspect: tool({
       description:
         "DeepFind.Me SSL/TLS certificate inspector. Returns issuer, validity window, SANs, key size, protocol, cipher, and misconfig warnings for a domain.",
@@ -1501,59 +1348,6 @@ export function buildTools(ctx: ToolContext) {
           });
           const data = await r.json().catch(() => ({}));
           return { ok: r.ok, status: r.status, source: "deepfind.unshorten", data };
-        } catch (e) { return { error: String(e) }; }
-      },
-    }),
-    deepfind_profile_analyzer: tool({
-      description:
-        "DeepFind.Me deep profile analyzer — scans ~350 sites for a username (much wider than the local username_sweep's ~95). Use when the local sweep returns weak coverage or for high-value handles. Slow; one call burns ~1 minute on DeepFind's side.",
-      inputSchema: z.object({ username: z.string().min(1) }),
-      execute: async ({ username }) => {
-        const KEY = Deno.env.get("DEEPFIND_API_KEY");
-        if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
-        try {
-          const r = await fetchT(`https://deepfind.me/api/analyzer/${encodeURIComponent(username)}`, {
-            headers: { "X-DFME-API-KEY": KEY, "Accept": "application/json" },
-          });
-          interface DeepFindSite {
-            status?: string;
-            site?: string;
-            name?: string;
-            url?: string;
-            profile_url?: string;
-            username?: string;
-            [k: string]: unknown;
-          }
-          interface DeepFindAnalyzerResponse {
-            sites?: DeepFindSite[];
-            summary?: unknown;
-            [k: string]: unknown;
-          }
-          const data = await r.json().catch(() => ({}));
-          const d = data as DeepFindAnalyzerResponse;
-          // Drop the long tail of "not found" sites (most of the ~350) — they
-          // burn tokens without adding signal. Keep only confirmed hits.
-          const allSites: DeepFindSite[] = Array.isArray(d?.sites) ? d.sites : [];
-          const foundSites = allSites
-            .filter((s: DeepFindSite) => s?.status === "found")
-            .slice(0, 120)
-            .map((s: DeepFindSite) => ({
-              site: s?.site ?? s?.name,
-              url: s?.url ?? s?.profile_url,
-              username: s?.username,
-            }));
-          return {
-            ok: r.ok,
-            status: r.status,
-            source: "deepfind.analyzer",
-            data: {
-              hits: allSites.filter((s: DeepFindSite) => s?.status === "found").length,
-              scanned: allSites.length,
-              summary: d?.summary,
-              sites: foundSites,
-              truncated_not_found: true,
-            },
-          };
         } catch (e) { return { error: String(e) }; }
       },
     }),
@@ -3167,54 +2961,6 @@ export function buildTools(ctx: ToolContext) {
         } catch (e) { return { error: String(e) }; }
       },
     }),
-    firecrawl_search: tool({
-      description:
-        "DISABLED. Use exa_search + minimax_web_search instead. Calling this tool wastes a step and returns an immediate error.",
-      inputSchema: z.object({
-        query: z.string().min(2),
-        limit: z.number().int().min(1).max(20).default(10),
-        tbs: z.string().optional().describe("Time filter: qdr:h | qdr:d | qdr:w | qdr:m | qdr:y"),
-        country: z.string().optional(),
-        lang: z.string().optional(),
-        sources: z.array(z.enum(["web", "news", "images"])).optional(),
-        scrape: z.boolean().default(false).describe("If true, also scrape markdown for each result."),
-      }),
-      execute: async () => ({
-        error: "firecrawl_disabled",
-        skipped: true,
-        hint: "Firecrawl is permanently disabled. Let the planner choose the highest-value eligible search provider instead. Do NOT retry firecrawl_search.",
-      }),
-    }),
-    firecrawl_scrape: tool({
-      description:
-        "DISABLED. Use jina_reader_scrape instead. Calling this tool wastes a step and returns an immediate error.",
-      inputSchema: z.object({
-        url: z.string().url(),
-        formats: z.array(z.enum(["markdown", "html", "links", "screenshot", "summary"])).default(["markdown"]),
-        onlyMainContent: z.boolean().default(true),
-        waitFor: z.number().int().min(0).max(15000).optional(),
-      }),
-      execute: async ({ url }) => ({
-        error: "firecrawl_disabled",
-        skipped: true,
-        hint: `Firecrawl is permanently disabled. Call jina_reader_scrape({ url: "${url}" }) instead.`,
-      }),
-    }),
-    firecrawl_map: tool({
-      description:
-        "DISABLED. Use crtsh_subdomains + dns_records instead. Calling this tool wastes a step and returns an immediate error.",
-      inputSchema: z.object({
-        url: z.string().url(),
-        search: z.string().optional(),
-        limit: z.number().int().min(1).max(5000).default(500),
-        includeSubdomains: z.boolean().default(false),
-      }),
-      execute: async () => ({
-        error: "firecrawl_disabled",
-        skipped: true,
-        hint: "Firecrawl is permanently disabled. Call crtsh_subdomains + dns_records for domain enumeration instead.",
-      }),
-    }),
     jina_reader_scrape: tool({
       description:
         "#1 PRIMARY scraper for ANY URL — free, unlimited, returns clean LLM-ready markdown. Always prefer this over firecrawl/exa_contents for single-page extraction. Use https://r.jina.ai/{url} under the hood. Works on articles, profile pages, forums, leak listings, dorks hits, Discord/Telegram links, PDFs (best-effort), etc. Pass a fully-qualified http(s) URL — do NOT pass relative paths or text snippets.",
@@ -4545,12 +4291,10 @@ export function buildTools(ctx: ToolContext) {
     ...(SERUS_API_KEY ? ["serus_darkweb_scan"] : []),
     ...(OSINTNOVA_API_KEY ? ["osintnova_lookup", "osintnova_email_lookup", "osintnova_phone_lookup"] : []),
     ...(SOCIALFETCH_API_KEY ? ["socialfetch_lookup"] : []),
-    ...(SYNAPSINT_API_KEY ? ["synapsint_lookup"] : []),
     ...(HUNTER_API_KEY ? ["hunter_combined", "hunter_email_verifier", "hunter_domain_search"] : []),
     ...(Deno.env.get("LEAKCHECK_API_KEY") ? ["leakcheck_lookup"] : []),
     ...(Deno.env.get("STOLENTAX_API_KEY") ? ["breach_check", "stolentax_footprint"] : []),
     ...(Deno.env.get("DEEPFIND_API_KEY") ? ["deepfind_reverse_email","deepfind_disposable_email","deepfind_ssl_inspect","deepfind_tech_stack","deepfind_url_unshorten","deepfind_telegram_channel","deepfind_telegram_search","deepfind_vin_lookup","deepfind_aircraft_lookup","deepfind_vessel_lookup","deepfind_mac_lookup","deepfind_dark_web_link","deepfind_email_breach","deepfind_transaction_viewer"] : []),
-    ...(Deno.env.get("INTELBASE_API_KEY") && INTELBASE_ENABLED ? ["intelbase_email_lookup"] : []),
     ...(Deno.env.get("VIRUSTOTAL_API_KEY") ? ["virustotal_lookup"] : []),
     ...(Deno.env.get("IPGEOLOCATION_API_KEY") ? ["ipgeolocation_lookup"] : []),
     ...(IPQUALITYSCORE_API_KEY ? ["ipqualityscore_lookup"] : []),

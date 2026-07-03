@@ -56,7 +56,6 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   stolentax_footprint: 1500,
   leakcheck_lookup: 5000,     // 200/day → ~$0.005/call equiv
   hibp_lookup: 3000,          // ~$3.95/mo Pwned 1 plan, ~1300 req/mo → ~$0.003
-  intelbase_email_lookup: 2000,
   oathnet_lookup: 10000,      // 100/day cap, expensive — reserve
   deepfind_reverse_email: 2000,
   deepfind_telegram_channel: 2000,
@@ -68,20 +67,14 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   emailrep: 0,
   gravatar_profile: 0,
 
-  // ---- OSINTNova / Bosint (1000/day shared quota, ~$2/mo plan share) ----
+  // ---- OSINTNova / Bosint (1000/day quota, ~$2/mo plan share) ----
   bosint_email_lookup: 2000,
-  bosint_phone_lookup: 2000,
 
   // ---- Hunter.io ----
   hunter_domain_search: 4000,
   hunter_email_finder: 4000,
   hunter_email_verifier: 1000,
   hunter_combined: 5000,
-
-  // ---- Firecrawl (1 credit ≈ $0.002 on growth plan) ----
-  firecrawl_search: 4000,     // ~2 credits avg
-  firecrawl_scrape: 2000,
-  firecrawl_map: 2000,
 
   // ---- Exa ----
   // Real billing observed: $0.005 keyword, $0.007 neural search, +$0.001
@@ -113,9 +106,6 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   osint_navigator_query: 500,
   osint_navigator_search: 200,
 
-  // ---- Synapsint (multi-endpoint OSINT aggregator, free tier) ----
-  synapsint_lookup: 500,
-
   // ---- Recording / storage (free) ----
   record_artifact: 0,
   record_artifacts: 0,
@@ -140,8 +130,6 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   deepfind_disposable_email: 2000,
   deepfind_email_breach: 2000,
   deepfind_mac_lookup: 2000,
-  deepfind_profile_analyzer: 2000,
-  deepfind_ransomware_exposure: 2000,
   deepfind_ssl_inspect: 2000,
   deepfind_tech_stack: 2000,
   deepfind_telegram_search: 2000,
