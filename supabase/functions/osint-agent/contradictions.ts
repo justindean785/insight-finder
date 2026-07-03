@@ -153,18 +153,37 @@ function givenNamesCompatible(a: string, b: string): boolean {
   return false;
 }
 
+/** True when two surnames could belong to the same person: identical, or one
+ *  is an initial of the other ("s" vs "smith"). No nickname folding — surnames
+ *  don't have nickname variants. */
+function surnamesCompatible(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.length === 1 && b.startsWith(a)) return true;
+  if (b.length === 1 && a.startsWith(b)) return true;
+  return false;
+}
+
 /** True when two full-name strings can describe the SAME person. Surnames must
- *  match (case/punctuation/suffix-insensitive); given names must be compatible;
- *  middle names/initials are folded (ignored). */
+ *  match (case/punctuation/suffix-insensitive, initials folded); given names
+ *  must be compatible; middle names/initials are folded (ignored). A BARE
+ *  single-token name (no resolved surname — "Smith" alone, or "S.") is
+ *  ambiguous: it could be either half of the other side's full name, so it
+ *  folds as compatible when it matches (exactly or by initial) the other
+ *  side's SURNAME too — a lone surname token must not manufacture a HIGH
+ *  "different people" conflict against a name it plausibly matches (thin_name
+ *  already flags it as low-confidence advisory separately). */
 export function namesCompatible(a: string, b: string): boolean {
   const pa = parseName(a);
   const pb = parseName(b);
-  // Different surnames → genuinely different people.
-  if (pa.surname && pb.surname && pa.surname !== pb.surname) return false;
+  // Different surnames → genuinely different people (fold initials: "S." ~ "Smith").
+  if (pa.surname && pb.surname && !surnamesCompatible(pa.surname, pb.surname)) return false;
   // Differing generational suffixes (Jr vs Sr, II vs III) signal potentially
   // DIFFERENT people (father/son), so don't fold them together. A suffix on only
   // ONE side is still a granularity variance and remains compatible.
   if (pa.suffix && pb.suffix && pa.suffix !== pb.suffix) return false;
+  if (!pa.surname && pb.surname && surnamesCompatible(pa.given, pb.surname)) return true;
+  if (!pb.surname && pa.surname && surnamesCompatible(pb.given, pa.surname)) return true;
   return givenNamesCompatible(pa.given, pb.given);
 }
 
@@ -205,6 +224,49 @@ interface ParsedLoc {
   tokens: string[];
 }
 
+// Longest COUNTRY_TOKENS phrase, in words ("united states of america" = 4).
+const COUNTRY_TOKEN_MAX_WORDS = 4;
+
+/** Strip a trailing COUNTRY_TOKENS phrase (possibly several, e.g. a stray
+ *  "USA USA") off a token list — mirrors the comma-separated path's country
+ *  stripping so a no-comma run-on ("Tampa Florida USA") doesn't have its
+ *  trailing country block state recognition. Tries the longest phrase first
+ *  so multi-word country names ("united states") match before single words. */
+function stripTrailingCountryTokens(toks: string[]): string[] {
+  let out = toks;
+  for (let guard = 0; guard < 4; guard++) {
+    let stripped = false;
+    for (let n = Math.min(COUNTRY_TOKEN_MAX_WORDS, out.length - 1); n >= 1; n--) {
+      if (COUNTRY_TOKENS.has(out.slice(-n).join(" "))) {
+        out = out.slice(0, -n);
+        stripped = true;
+        break;
+      }
+    }
+    if (!stripped) break;
+  }
+  return out;
+}
+
+/** Split a trailing US state name/abbreviation off a run-on "City State"
+ *  string with NO comma ("Tampa Florida", "Rocklin CA") — a common provider/
+ *  LLM location format. Tries a 2-token trailing state name first (so
+ *  "Charlotte North Carolina" resolves), then a 1-token trailing state
+ *  (abbreviation or one-word name). Returns { rest: str, state: null } when
+ *  nothing recognizable is found, so the caller falls back to the whole
+ *  string as an unparsed city (unchanged prior behavior). */
+function splitTrailingState(str: string): { rest: string; state: string | null } {
+  const toks = stripTrailingCountryTokens(str.split(" ").filter(Boolean));
+  if (toks.length < 2) return { rest: toks.join(" ") || str, state: null };
+  const last2 = toks.slice(-2).join(" ");
+  const st2 = normState(last2);
+  if (st2 && toks.length > 2) return { rest: toks.slice(0, -2).join(" "), state: st2 };
+  const last1 = toks[toks.length - 1];
+  const st1 = normState(last1);
+  if (st1) return { rest: toks.slice(0, -1).join(" "), state: st1 };
+  return { rest: str, state: null };
+}
+
 function parseLoc(raw: string): ParsedLoc {
   const cleaned = raw.toLowerCase().replace(/[.]/g, "").replace(/\s+/g, " ").trim();
   const parts = cleaned.split(",").map((p) => p.trim()).filter(Boolean);
@@ -213,9 +275,15 @@ function parseLoc(raw: string): ParsedLoc {
   const tokens = cleaned.replace(/,/g, " ").split(" ").filter(Boolean);
   if (parts.length === 0) return { city: null, state: null, tokens };
   if (parts.length === 1) {
-    const st = normState(parts[0]);
+    const whole = parts[0];
+    const st = normState(whole);
     if (st) return { city: null, state: st, tokens };
-    return { city: parts[0], state: null, tokens };
+    // No comma present — the string may still be a run-on "City State" or
+    // "City ST" (see splitTrailingState) before we give up and treat the
+    // whole thing as an unparsed city.
+    const split = splitTrailingState(whole);
+    if (split.state) return { city: split.rest || null, state: split.state, tokens };
+    return { city: whole, state: null, tokens };
   }
   const last = parts[parts.length - 1];
   const st = normState(last);
