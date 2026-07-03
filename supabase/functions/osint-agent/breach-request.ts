@@ -17,7 +17,10 @@ export function buildLeakcheckUrl(value: string, type?: string | null): string {
     : base;
 }
 
-// OathNet: v2 breach search for email/username/phone/domain, ip-info for ip.
+// OathNet: v2 breach search for email/username/phone/domain/name, ip-info for ip.
+// email/username/phone/NAME all go through the same free-text `q=` breach search
+// (a name is just a broader query — expect same-name collisions in the results);
+// domain uses `email_domain`; ip uses the dedicated ip-info endpoint.
 // (The production 502s are an upstream-availability problem handled by fetchRetry
 // at the call site, not a request-shape bug — so construction is preserved.)
 export function buildOathnetUrl(type: string, value: string): string {
@@ -26,7 +29,7 @@ export function buildOathnetUrl(type: string, value: string): string {
   }
   const params = new URLSearchParams();
   if (type === "domain") params.set("email_domain", value);
-  else params.set("q", value);
+  else params.set("q", value); // email | username | phone | name → free-text query
   params.set("limit", "50");
   return `https://oathnet.org/api/service/v2/breach/search?${params.toString()}`;
 }

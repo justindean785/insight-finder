@@ -39,3 +39,14 @@ Deno.test("oathnet: ip uses ip-info; others use v2 breach search", () => {
   assert(domain.includes("email_domain=example.com"));
   assert(!domain.includes("q="));
 });
+
+Deno.test("oathnet: a person NAME goes through the free-text q= breach search", () => {
+  // The enum unblock (type:'name') relies on name falling into the same q=
+  // branch as email/username/phone — NOT email_domain, NOT ip-info.
+  const name = buildOathnetUrl("name", "Catherine Beth Washburn");
+  assert(name.startsWith("https://oathnet.org/api/service/v2/breach/search?"));
+  assert(name.includes("q=Catherine+Beth+Washburn"));
+  assert(name.includes("limit=50"));
+  assert(!name.includes("email_domain="));
+  assert(!name.includes("ip-info"));
+});

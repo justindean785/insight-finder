@@ -808,9 +808,9 @@ export function buildTools(ctx: ToolContext) {
     }),
     oathnet_lookup: tool({
      description:
-       "Query OathNet v2 for breach correlation on a high-value email/username/phone/domain, or geo+ASN on an IP. Use once when the planner identifies corroboration or contradiction-resolution value. Do not run on weak leads or as an automatic companion call.",
+       "Query OathNet v2 for breach correlation on a high-value email/username/phone/domain/NAME, or geo+ASN on an IP. For a person's full NAME pass type:'name' (searched as a free-text query across the breach corpus — expect same-name collisions, so treat name-only hits as [VERIFY] until a selector overlaps). A first-class breach source: run it on the seed AND on high-value selectors/names discovered mid-investigation.",
       inputSchema: z.object({
-        type: z.enum(["email", "username", "phone", "ip", "domain"]),
+        type: z.enum(["email", "username", "phone", "ip", "domain", "name"]),
         value: z.string(),
       }),
       execute: async ({ type, value }, opts) => {
@@ -1006,7 +1006,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     breach_check: tool({
       description:
-        "Check whether an email or username appears in public breach datasets. Primary source: stolen.tax — fans out in parallel to (a) OsintCat `database-search` (returns site+password combos), (b) Snusbase (returns identity records: name/phone/address/DOB), and (c) OsintCat plain `breach` mode. Returns combined hit count + per-source raw data. Falls back to the leakcheck public endpoint if stolen.tax is unavailable. Pass `email` for email seeds or `value` for usernames/other identifiers.",
+        "Check whether an email, username, or PERSON NAME appears in public breach datasets. Primary source: stolen.tax — fans out in parallel to (a) OsintCat `database-search` (returns site+password combos), (b) Snusbase (returns identity records: name/phone/address/DOB — so a full NAME is a valid query here), and (c) OsintCat plain `breach` mode. Returns combined hit count + per-source raw data. Falls back to the leakcheck public endpoint if stolen.tax is unavailable. Pass `email` for email seeds, or `value` for a username, phone, or a person's full NAME (name hits carry same-name collision risk — treat as [VERIFY] until a selector overlaps).",
       inputSchema: z.object({
         email: z.string().min(1).optional(),
         value: z.string().min(1).optional(),
@@ -1191,7 +1191,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     leakcheck_lookup: tool({
       description:
-        "LeakCheck Pro v2 breach lookup (https://leakcheck.io/api/v2). SECONDARY breach source — 200 calls/day. Returns leak sources, breach dates, and (where present) passwords/usernames for an email, username, phone, hash, or domain. Use to corroborate breach_check and to surface password/source detail. Do NOT spam on low-value handles.",
+        "LeakCheck Pro v2 breach lookup (https://leakcheck.io/api/v2). SECONDARY breach source — 200 calls/day. Returns leak sources, breach dates, and (where present) passwords/usernames for an email, username, phone, hash, or domain. For a person's full NAME, pass type:'keyword' (free-text corpus search — same-name collisions apply). Use to corroborate breach_check and to surface password/source detail. Do NOT spam on low-value handles.",
       inputSchema: z.object({
         value: z.string().min(1),
         type: z.enum(["auto","email","username","phone","hash","domain","keyword"]).optional().default("auto"),
