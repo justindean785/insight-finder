@@ -153,18 +153,37 @@ function givenNamesCompatible(a: string, b: string): boolean {
   return false;
 }
 
+/** True when two surnames could belong to the same person: identical, or one
+ *  is an initial of the other ("s" vs "smith"). No nickname folding — surnames
+ *  don't have nickname variants. */
+function surnamesCompatible(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.length === 1 && b.startsWith(a)) return true;
+  if (b.length === 1 && a.startsWith(b)) return true;
+  return false;
+}
+
 /** True when two full-name strings can describe the SAME person. Surnames must
- *  match (case/punctuation/suffix-insensitive); given names must be compatible;
- *  middle names/initials are folded (ignored). */
+ *  match (case/punctuation/suffix-insensitive, initials folded); given names
+ *  must be compatible; middle names/initials are folded (ignored). A BARE
+ *  single-token name (no resolved surname — "Smith" alone, or "S.") is
+ *  ambiguous: it could be either half of the other side's full name, so it
+ *  folds as compatible when it matches (exactly or by initial) the other
+ *  side's SURNAME too — a lone surname token must not manufacture a HIGH
+ *  "different people" conflict against a name it plausibly matches (thin_name
+ *  already flags it as low-confidence advisory separately). */
 export function namesCompatible(a: string, b: string): boolean {
   const pa = parseName(a);
   const pb = parseName(b);
-  // Different surnames → genuinely different people.
-  if (pa.surname && pb.surname && pa.surname !== pb.surname) return false;
+  // Different surnames → genuinely different people (fold initials: "S." ~ "Smith").
+  if (pa.surname && pb.surname && !surnamesCompatible(pa.surname, pb.surname)) return false;
   // Differing generational suffixes (Jr vs Sr, II vs III) signal potentially
   // DIFFERENT people (father/son), so don't fold them together. A suffix on only
   // ONE side is still a granularity variance and remains compatible.
   if (pa.suffix && pb.suffix && pa.suffix !== pb.suffix) return false;
+  if (!pa.surname && pb.surname && surnamesCompatible(pa.given, pb.surname)) return true;
+  if (!pb.surname && pa.surname && surnamesCompatible(pb.given, pa.surname)) return true;
   return givenNamesCompatible(pa.given, pb.given);
 }
 
@@ -205,6 +224,25 @@ interface ParsedLoc {
   tokens: string[];
 }
 
+/** Split a trailing US state name/abbreviation off a run-on "City State"
+ *  string with NO comma ("Tampa Florida", "Rocklin CA") — a common provider/
+ *  LLM location format. Tries a 2-token trailing state name first (so
+ *  "Charlotte North Carolina" resolves), then a 1-token trailing state
+ *  (abbreviation or one-word name). Returns { rest: str, state: null } when
+ *  nothing recognizable is found, so the caller falls back to the whole
+ *  string as an unparsed city (unchanged prior behavior). */
+function splitTrailingState(str: string): { rest: string; state: string | null } {
+  const toks = str.split(" ").filter(Boolean);
+  if (toks.length < 2) return { rest: str, state: null };
+  const last2 = toks.slice(-2).join(" ");
+  const st2 = normState(last2);
+  if (st2 && toks.length > 2) return { rest: toks.slice(0, -2).join(" "), state: st2 };
+  const last1 = toks[toks.length - 1];
+  const st1 = normState(last1);
+  if (st1) return { rest: toks.slice(0, -1).join(" "), state: st1 };
+  return { rest: str, state: null };
+}
+
 function parseLoc(raw: string): ParsedLoc {
   const cleaned = raw.toLowerCase().replace(/[.]/g, "").replace(/\s+/g, " ").trim();
   const parts = cleaned.split(",").map((p) => p.trim()).filter(Boolean);
@@ -213,9 +251,15 @@ function parseLoc(raw: string): ParsedLoc {
   const tokens = cleaned.replace(/,/g, " ").split(" ").filter(Boolean);
   if (parts.length === 0) return { city: null, state: null, tokens };
   if (parts.length === 1) {
-    const st = normState(parts[0]);
+    const whole = parts[0];
+    const st = normState(whole);
     if (st) return { city: null, state: st, tokens };
-    return { city: parts[0], state: null, tokens };
+    // No comma present — the string may still be a run-on "City State" or
+    // "City ST" (see splitTrailingState) before we give up and treat the
+    // whole thing as an unparsed city.
+    const split = splitTrailingState(whole);
+    if (split.state) return { city: split.rest || null, state: split.state, tokens };
+    return { city: whole, state: null, tokens };
   }
   const last = parts[parts.length - 1];
   const st = normState(last);
@@ -514,6 +558,61 @@ export function clusterScopedContradictionPatches(
     out.push(...structuredContradictionPatches(group, nowIso));
   }
   return out;
+}
+
+/**
+ * Restrict a thread's artifacts to the ones that belong to a SINGLE finding's
+ * identity candidate, so its confidence penalty reflects only its OWN
+ * contradictions / advisory signals — not those of an unrelated candidate that
+ * happens to share the thread (a CA person must not be docked for a TX person's
+ * location conflict).
+ *
+ * "Belongs to the finding" =
+ *   • the artifact is one the finding explicitly cites (its value is in
+ *     `supportingValues`), OR
+ *   • it shares a `metadata.cluster_id` with a cited artifact (same candidate).
+ *
+ * When no cited artifact can be resolved (the finding supplied no
+ * `supporting_artifact_values`, or none match a thread row) we can't scope
+ * safely, so this returns an EMPTY list and the caller should fall back to the
+ * thread-wide set — conservative: keep the penalty rather than silently inflate
+ * confidence by dropping contradictions we can't attribute.
+ */
+export function artifactsForFinding(
+  artifacts: ArtifactLike[],
+  supportingValues: string[],
+): ArtifactLike[] {
+  const wanted = new Set(
+    (supportingValues ?? []).map((v) => v.trim().toLowerCase()).filter(Boolean),
+  );
+  if (wanted.size === 0) return [];
+  const cited = artifacts.filter((a) => wanted.has(a.value.trim().toLowerCase()));
+  if (cited.length === 0) return [];
+  const clusterIds = new Set(
+    cited
+      .map((a) => a.metadata?.cluster_id)
+      .filter((c): c is string => typeof c === "string" && !!c.trim())
+      .map((c) => c.trim()),
+  );
+  // No cluster assigned → we cannot attribute artifacts to distinct candidates,
+  // so fall back to the FULL thread-wide set. Narrowing to cited-only here would
+  // silently DROP genuine self-contradictions on an unclustered single-subject
+  // thread and dishonestly inflate confidence (the exact overshoot this scoping
+  // must avoid).
+  if (clusterIds.size === 0) return artifacts;
+  // Otherwise scope to the finding's own candidate cluster(s) PLUS any
+  // UNCLUSTERED siblings (not proven to belong to a different candidate), and
+  // EXCLUDE only artifacts KNOWN to belong to a DIFFERENT candidate cluster —
+  // that exclusion is the actual #6 fix (a CA finding must not eat a TX
+  // candidate's contradiction). Keeping unclustered rows avoids dropping real
+  // conflicts when clustering is incomplete.
+  const scoped = new Set<ArtifactLike>(cited);
+  for (const a of artifacts) {
+    const cid = a.metadata?.cluster_id;
+    const cidStr = typeof cid === "string" ? cid.trim() : "";
+    if (!cidStr || clusterIds.has(cidStr)) scoped.add(a);
+  }
+  return [...scoped];
 }
 
 /** True when two structured contradictions describe the same conflict
