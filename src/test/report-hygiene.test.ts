@@ -76,6 +76,15 @@ describe("#3 strip CONFIRMED wording", () => {
   it("is a no-op when there is no CONFIRMED wording", () => {
     expect(sanitizeValueForLabel("deenthegreat", false)).toBe("deenthegreat");
   });
+
+  it("does NOT strip ordinary lowercase prose use of 'confirmed' (live regression)", () => {
+    // The exact live-captured mangled case: an `i`-flagged regex matched the
+    // lowercase verb "confirmed" mid-sentence and deleted everything up to
+    // the next period, turning "...191 confirmed in 5 breach corpora: Digido.ph, ..."
+    // into "...191 .ph, ..." in the exported report.
+    const v = "Phone +19165299191 confirmed in 5 breach corpora: Digido.ph, 1win, Wattpad, Verifications.io, National Public Data";
+    expect(sanitizeValueForLabel(v, false)).toBe(v);
+  });
 });
 
 // ---------------------------------------------------------------------------

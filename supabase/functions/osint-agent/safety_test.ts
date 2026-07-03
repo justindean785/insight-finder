@@ -59,3 +59,23 @@ Deno.test("an explicit age cue inside a date-bearing bio still fires", () => {
   const m = meta({ kind: "social", value: "u", metadata: { bio: "born 2009, i'm 15 now" } });
   assertEquals(m.possible_minor, true);
 });
+
+Deno.test("an SSN whose group number is 10-17 does NOT trigger possible_minor", () => {
+  // The exact live case: "602-17-1270" (kind "other", original_kind "ssn" —
+  // an LLM-asserted free-text tag, not a controlled enum) matched the bare-age
+  // scan on its "-17-" group number and produced a spurious possible_minor
+  // flag + auto_pivot_blocked on a real adult's SSN. The fix is shape-based
+  // (SSN_LIKE_RE), same approach as the DOB guard above, since original_kind
+  // tagging isn't reliable enough to key off of alone.
+  const m = meta({ kind: "other", value: "602-17-1270", confidence: 60, metadata: { original_kind: "ssn" } });
+  assertEquals(m.possible_minor, undefined);
+  assertEquals(m.auto_pivot_blocked, undefined);
+  assertEquals(m.minor_signals, undefined);
+});
+
+Deno.test("other SSN-shaped group-number-in-10-17 values do not false-positive", () => {
+  for (const v of ["123-14-5678", "275-92-7276".replace("92", "17"), "XXX-17-1234"]) {
+    const m = meta({ kind: "other", value: v, metadata: {} });
+    assertEquals(m.possible_minor, undefined, `SSN-shaped value ${v} must not flag minor`);
+  }
+});

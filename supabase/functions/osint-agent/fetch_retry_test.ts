@@ -8,7 +8,7 @@
  */
 
 import { assertEquals, assertRejects } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { fetchRetry } from "./fetch_retry.ts";
+import { fetchRetry, createIdleTimeoutFetch } from "./fetch_retry.ts";
 
 type ScriptedStep = number;
 
@@ -117,5 +117,108 @@ Deno.test("fetchRetry: does not retry on 4xx other than 429", async () => {
     await r.body?.cancel();
   } finally {
     await s.shutdown();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// createIdleTimeoutFetch — guards LLM orchestrator provider fetches (the one
+// outbound call in this codebase that previously had NO timeout at all: a
+// provider stream that opens and then goes silent used to hang streamText()
+// forever, since stopWhen's wall-clock deadline is only checked between
+// COMPLETED steps). These tests simulate a stalled upstream via a server
+// whose ReadableStream body stops producing chunks without closing.
+// ---------------------------------------------------------------------------
+
+Deno.test("createIdleTimeoutFetch: passes through a normal fast response untouched", async () => {
+  const s = await startScriptedServer({ "/ok": [200] });
+  try {
+    const guardedFetch = createIdleTimeoutFetch(500);
+    const r = await guardedFetch(`${s.url}/ok`);
+    assertEquals(r.status, 200);
+    assertEquals(await r.text(), "body");
+  } finally {
+    await s.shutdown();
+  }
+});
+
+Deno.test("createIdleTimeoutFetch: aborts when the server never sends a response", async () => {
+  // Handler stalls well past the idle window before ever resolving — simulates
+  // a connection that opens but the upstream doesn't reply for a long time (no
+  // headers). It DOES eventually resolve (300ms) so the test server's shutdown()
+  // — which drains in-flight handlers — can't itself hang; the assertion is that
+  // the client-side idle abort (50ms) fires long before that.
+  const server = Deno.serve({ port: 0, hostname: "127.0.0.1" }, async () => {
+    await new Promise((res) => setTimeout(res, 300));
+    return new Response("too-late", { status: 200 });
+  });
+  try {
+    const guardedFetch = createIdleTimeoutFetch(50);
+    const addr = server.addr as Deno.NetAddr;
+    await assertRejects(() => guardedFetch(`http://${addr.hostname}:${addr.port}/silent`));
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("createIdleTimeoutFetch: aborts when the stream sends one chunk then stalls", async () => {
+  // Server sends headers + one chunk immediately, then the stream's pull()
+  // never resolves again — a stalled mid-stream connection, exactly the
+  // failure mode that hung the orchestrator. Safe to leave the pull()
+  // permanently pending here (unlike the handler-never-responds test above):
+  // Deno.serve's shutdown() drains on the HANDLER's own returned promise,
+  // which already resolved the instant `new Response(stream)` was returned —
+  // a downstream stream that never finishes producing bytes doesn't block it.
+  let pulls = 0;
+  const server = Deno.serve({ port: 0, hostname: "127.0.0.1" }, () => {
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls++;
+        if (pulls === 1) {
+          controller.enqueue(new TextEncoder().encode("first-chunk"));
+          return;
+        }
+        return new Promise<void>(() => {});
+      },
+    });
+    return new Response(stream, { status: 200 });
+  });
+  try {
+    const guardedFetch = createIdleTimeoutFetch(50);
+    const addr = server.addr as Deno.NetAddr;
+    const r = await guardedFetch(`http://${addr.hostname}:${addr.port}/stall`);
+    assertEquals(r.status, 200);
+    await assertRejects(() => r.text());
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("createIdleTimeoutFetch: does not abort a slow-but-progressing stream", async () => {
+  // Each chunk arrives well within the idle window, even though the total
+  // stream duration exceeds a single flat timeout would allow — proves the
+  // guard is idle-based (resets per chunk), not an overall hard cap that
+  // would incorrectly kill a long legitimate completion.
+  const server = Deno.serve({ port: 0, hostname: "127.0.0.1" }, () => {
+    let n = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (n >= 3) {
+          controller.close();
+          return;
+        }
+        await new Promise((res) => setTimeout(res, 20));
+        controller.enqueue(new TextEncoder().encode(`chunk${n}-`));
+        n++;
+      },
+    });
+    return new Response(stream, { status: 200 });
+  });
+  try {
+    const guardedFetch = createIdleTimeoutFetch(100);
+    const addr = server.addr as Deno.NetAddr;
+    const r = await guardedFetch(`http://${addr.hostname}:${addr.port}/slow`);
+    assertEquals(await r.text(), "chunk0-chunk1-chunk2-");
+  } finally {
+    await server.shutdown();
   }
 });

@@ -15,6 +15,24 @@ function buildScanUrl(scanId: string, reveal = false): string {
     : `${SERUS_BASE}/darkweb/scans/${scanId}`;
 }
 
+// Serus 422s a phone identifierValue that isn't E.164 (live case: seed
+// "9165299191" sent as-is → "rejected phone format — skipped"). The tool
+// description says E.164 is "preferred," but the orchestrator doesn't always
+// comply, and a re-run shouldn't be required just to add a "+1" — normalize
+// here so the format is correct regardless of what the model passed. Only a
+// bare 10-digit (assume US/Canada, the overwhelmingly common case for this
+// app) or an 11-digit string already carrying a leading "1" is confidently
+// convertible; anything else (a foreign number missing its country code, an
+// already-odd input) is passed through unchanged rather than guessed at.
+export function normalizePhoneForSerus(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("+")) return trimmed;
+  const digits = trimmed.replace(/\D/g, "");
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  return trimmed;
+}
+
 /** Build a Serus-authorized fetch wrapper. Throws on missing key. */
 function serusHeaders(): HeadersInit {
   if (!SERUS_API_KEY) {
@@ -152,6 +170,9 @@ export async function runSerusScan(
   const maxRetries = options.maxRetries ?? POLL_MAX_RETRIES;
   const intervalMs = options.intervalMs ?? POLL_INTERVAL_MS;
   const initiatedAt = new Date().toISOString();
+  if (identifierType === "phone") {
+    identifierValue = normalizePhoneForSerus(identifierValue);
+  }
 
   let headers: HeadersInit;
   try {

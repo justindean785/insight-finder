@@ -8,14 +8,21 @@ import { MODELS } from "./models.ts";
 import {
   MINIMAX_API_KEY, GEMINI_API_KEY, PERPLEXITY_API_KEY, fetchRetry,
   LOVABLE_API_KEY, XAI_API_KEY, GROK_ORCHESTRATOR_MODEL_ID,
+  ORCHESTRATOR_FETCH,
 } from "./env.ts";
 import { selectFallbackProvider } from "./orchestrator_select.ts";
 
 // ---- MiniMax OpenAI-compatible provider ----------------------------------------
+// MiniMax is the primary (near-always-live) orchestrator — every investigation
+// runs through it unless GROK/OPENADAPTER keys are set. `fetch: ORCHESTRATOR_FETCH`
+// bounds it with an idle-timeout guard (see fetch_retry.ts) so a stalled stream
+// can't hang the run forever; without it this was the one unbounded outbound call
+// in the codebase.
 export const minimax = createOpenAICompatible({
   name: "minimax",
   baseURL: "https://api.minimax.io/v1",
   headers: { Authorization: `Bearer ${MINIMAX_API_KEY}` },
+  fetch: ORCHESTRATOR_FETCH,
 });
 
 // Direct MiniMax chat-completions caller for sub-agent helpers + native plugins (web_search).
