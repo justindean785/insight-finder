@@ -186,6 +186,15 @@ async function callFallbackProvider(
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 60000);
+  // Defense-in-depth for the abort-cascade fix above: chain the caller's signal
+  // (per-tool timeout / cancellation) onto this fetch too, so even if a fallback
+  // is ever reached with a live-then-aborted signal it cancels the request
+  // instead of running to the 60s cap off-ledger (Codex review).
+  const onExternalAbort = () => ctrl.abort();
+  if (opts.signal) {
+    if (opts.signal.aborted) ctrl.abort();
+    else opts.signal.addEventListener("abort", onExternalAbort, { once: true });
+  }
   try {
     const r = await fetch(`${baseURL}/chat/completions`, {
       method: "POST",
@@ -202,6 +211,7 @@ async function callFallbackProvider(
     return { ok: r.ok, status: r.status, content, raw };
   } finally {
     clearTimeout(timer);
+    opts.signal?.removeEventListener("abort", onExternalAbort);
   }
 }
 
@@ -231,11 +241,29 @@ export async function minimaxChatWithFallback(
     if (!shouldFallbackOnStatus(result.status)) {
       return { ...result, usedFallback: false };
     }
+    // Same orphaned-fallback guard as the catch path below, for the STATUS
+    // branch: if MiniMax returns a non-throwing 5xx/429 AFTER the caller
+    // already aborted (per-tool timeout — runWithToolTimeout has moved on),
+    // do NOT fire a fallback. Return the MiniMax status result (clean skip,
+    // matching the no-fallback status shape) instead of burning Lovable/Grok
+    // quota off-ledger for a result nobody reads (Codex review, code-review).
+    if (opts.signal?.aborted) {
+      return { ...result, usedFallback: false };
+    }
     console.warn(
       `[orchestrator-fallback] MiniMax failed (status=${result.status}), retrying on fallback`,
     );
   } catch (e) {
     if (!shouldFallbackOnError(e)) {
+      throw e;
+    }
+    // Do NOT cascade to a fallback when the CALLER aborted (an external per-tool
+    // timeout / request cancellation via opts.signal). runWithToolTimeout has
+    // already returned the timeout result, so a fallback LLM call here is
+    // orphaned — it burns Lovable/Grok quota + cost off-ledger in the background
+    // for a result nobody reads (Codex review). Only MiniMax's OWN failure
+    // (its internal timeout / 5xx / network error) should cascade.
+    if (opts.signal?.aborted) {
       throw e;
     }
     const msg = e instanceof Error ? e.message : String(e);
