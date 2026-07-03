@@ -316,7 +316,7 @@ Deno.test("ambiguous scope: a value shared across TWO clusters is unscopable —
   assertEquals(scoped, artifacts);
 });
 
-Deno.test("ambiguous scope: falls back to thread-wide, so a genuine cross-cluster self-conflict for THIS finding is still caught (conservative, never inflates)", () => {
+Deno.test("ambiguous scope: the conservative thread-wide fallback still surfaces the real cross-candidate conflict (never silently drops it)", () => {
   const artifacts = [
     { kind: "name", value: "John", source: "A", metadata: { cluster_id: "c1" } },
     { kind: "address", value: "Rocklin, CA", source: "A2", metadata: { cluster_id: "c1", residence: "Rocklin, CA" } },
