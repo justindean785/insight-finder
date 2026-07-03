@@ -140,3 +140,44 @@ Deno.test("name_conflict: cross-gender-ambiguous nicknames are NOT auto-folded",
   // Unambiguous nickname pairs still fold.
   assertEquals(namesCompatible("Steve Jones", "Stephen Jones"), true);
 });
+
+// ---------------------------------------------------------------------------
+// Codex + Copilot review follow-ups on this PR — 3 remaining under-folding
+// gaps in the SAME direction as the fixes above (compatible variants must not
+// manufacture a HIGH "different people" conflict). None inflate confidence;
+// genuinely incompatible names/locations are unaffected (pinned below too).
+// ---------------------------------------------------------------------------
+
+Deno.test("name_conflict: a surname INITIAL folds against the full surname (Codex)", () => {
+  assertEquals(namesCompatible("John S.", "John Smith"), true);
+  assertEquals(namesCompatible("John Smith", "John S."), true);
+  // A surname initial still correctly conflicts with a genuinely different surname.
+  assertEquals(namesCompatible("John S.", "John Doe"), false);
+});
+
+Deno.test("name_conflict: a bare SURNAME-ONLY token folds against a matching full name (Copilot)", () => {
+  // "Smith" alone is ambiguous (could be either half of "John Smith") — thin_name
+  // already flags it as low-confidence advisory; it must not ALSO fire a HIGH
+  // "different people" conflict against a name it plausibly matches.
+  assertEquals(namesCompatible("Smith", "John Smith"), true);
+  assertEquals(namesCompatible("John Smith", "Smith"), true);
+  // Surname-initial-only ("S.") folds the same way.
+  assertEquals(namesCompatible("S.", "John Smith"), true);
+  // A bare token that matches NEITHER the given nor the surname still conflicts.
+  assertEquals(namesCompatible("Jones", "John Smith"), false);
+});
+
+Deno.test("location_conflict: a run-on 'City State' with NO comma folds against 'City, ST' (Codex)", () => {
+  assertEquals(locationsCompatible("Tampa Florida", "Tampa, FL"), true);
+  assertEquals(locationsCompatible("Rocklin CA", "Rocklin, CA"), true);
+  // Multi-word state name, no comma.
+  assertEquals(locationsCompatible("Charlotte North Carolina", "Charlotte, NC"), true);
+  // A genuinely different state still conflicts even without a comma.
+  assertEquals(locationsCompatible("Tampa Florida", "Austin Texas"), false);
+});
+
+Deno.test("location_conflict: a plain two-word city with no trailing state is NOT mis-split", () => {
+  // "Elk Grove" must not be parsed as city="elk" + a bogus trailing state.
+  assertEquals(locationsCompatible("Elk Grove, CA", "Elk Grove, CA"), true);
+  assertEquals(locationsCompatible("Elk Grove, CA", "Austin, TX"), false);
+});
