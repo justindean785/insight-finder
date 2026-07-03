@@ -240,9 +240,13 @@ Deno.test("advisory scoping: a CA finding is NOT docked for a TX candidate's thi
 });
 
 Deno.test("genuine conflict still fires: a self-contradiction WITHIN the finding's cluster still docks", () => {
+  // Cross-state (CA vs CO), not same-state-different-city (Sacramento is also
+  // CA) — after #194, location_conflict only fires HIGH on a genuine state
+  // mismatch, so the within-cluster fixture must actually cross a state line
+  // to exercise a real conflict here.
   const artifacts = [
     { kind: "address", value: "Rocklin, CA", source: "A", metadata: { cluster_id: "c1", residence: "Rocklin, CA" } },
-    { kind: "employer", value: "Acme", source: "B", metadata: { cluster_id: "c1", based: "Sacramento, CA" } },
+    { kind: "employer", value: "Acme", source: "B", metadata: { cluster_id: "c1", based: "Denver, CO" } },
     { kind: "address", value: "Austin, TX", source: "C", metadata: { cluster_id: "c2", residence: "Austin, TX" } },
   ];
   // The finding cites the CA address; scope pulls in its c1 sibling, which
