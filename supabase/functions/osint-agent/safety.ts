@@ -24,6 +24,17 @@ const DATE_LIKE_RE = /\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4
 function isDateLike(s: string): boolean {
   return DATE_LIKE_RE.test(s);
 }
+// Same hazard as a DOB: an SSN's dash-delimited digit groups (###-##-####,
+// masked or not) can contain a "17" segment that has nothing to do with age
+// (e.g. "602-17-1270" false-positived as bare-age-17 — the middle group is
+// the SSN's group number, not a person's age). Guard the bare-digit scan on
+// shape the same way DATE_LIKE_RE does, since the model's free-text
+// original_kind tagging ("ssn", "SSN", "gov_id", ...) isn't a reliable enum
+// to key off of.
+const SSN_LIKE_RE = /^[Xx*\d]{3}-[Xx*\d]{2}-\d{4}$/;
+function isIdLike(s: string): boolean {
+  return SSN_LIKE_RE.test(s.trim());
+}
 
 export function scrubArtifactRow(row: Record<string, unknown>): Record<string, unknown> {
   const kind = String(row.kind ?? "").toLowerCase();
@@ -59,8 +70,10 @@ export function scrubArtifactRow(row: Record<string, unknown>): Record<string, u
     if (phraseMatch) signals.push(`phrase:${phraseMatch[0].toLowerCase()}`);
     // Bare digit 10–17 in a short bio (≤120 chars) is a soft signal — but never
     // on a date-like string, whose month/day (e.g. "1958-10-11" → "10") is not
-    // an age. Explicit age cues ("i'm 16", "16 y/o") still match above.
-    if (!cueMatch && h.length <= 120 && !isDateLike(h)) {
+    // an age, and never on an SSN-shaped string, whose group number (e.g.
+    // "602-17-1270" → "17") isn't one either. Explicit age cues ("i'm 16",
+    // "16 y/o") still match above.
+    if (!cueMatch && h.length <= 120 && !isDateLike(h) && !isIdLike(h)) {
       const bare = h.match(/(?:^|[^\d])(1[0-7])(?:[^\d]|$)/);
       if (bare) {
         const age = parseInt(bare[1], 10);
