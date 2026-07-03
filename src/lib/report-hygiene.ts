@@ -40,13 +40,22 @@ export function isAsciiSafe(s: string): boolean {
 // Render-only: the underlying artifact is untouched (audit trail preserved).
 // ---------------------------------------------------------------------------
 
-const CONFIRMED_WORDING_RE = /\s*[—–\-:|(]*\s*\bCONFIRMED\b[^.;|]*/gi;
+// Deliberately case-SENSITIVE (no `i` flag): the promotional wording this
+// targets is the model echoing the bracketed evidence-label vocabulary
+// ("[CONFIRMED]") into a value string, e.g. "— CONFIRMED via two independent
+// classes". An `i` flag also matched ordinary lowercase prose use of the verb
+// "confirmed" (e.g. "Phone +19165299191 confirmed in 5 breach corpora:
+// Digido.ph, ...") and deleted everything from "confirmed" up to the next
+// `.`/`;`/`|`, mangling unrelated legitimate report text — live case caught in
+// the "Collision / Likely Unrelated" section, where the value silently lost
+// "confirmed in 5 breach corpora: Digido" and rendered as "...191 .ph, 1win, ...".
+const CONFIRMED_WORDING_RE = /\s*[—–\-:|(]*\s*\bCONFIRMED\b[^.;|]*/g;
 
 export function sanitizeValueForLabel(value: string, isConfirmed: boolean): string {
   if (isConfirmed) return value;
-  if (!/\bCONFIRMED\b/i.test(value)) return value;
+  if (!/\bCONFIRMED\b/.test(value)) return value;
   const cleaned = value.replace(CONFIRMED_WORDING_RE, " ").replace(/\s{2,}/g, " ").replace(/\s*[—–\-:|]\s*$/, "").trim();
-  return cleaned.length ? cleaned : value.replace(/\bCONFIRMED\b/gi, "reported").trim();
+  return cleaned.length ? cleaned : value.replace(/\bCONFIRMED\b/g, "reported").trim();
 }
 
 // ---------------------------------------------------------------------------
