@@ -119,40 +119,58 @@ Deno.serve(async (req) => {
         supabaseAdmin.from("user_credits").select("balance_micro_usd,unlimited,blocked").eq("user_id", userId).maybeSingle(),
         supabaseAdmin.rpc("has_role", { _user_id: userId, _role: "admin" }),
       ]);
-      const creditRow = creditRes.data as { balance_micro_usd?: number; unlimited?: boolean; blocked?: boolean } | null;
-      const isAdmin = adminRes.data === true;
-      const gate = evaluateCreditGate(creditRow, isAdmin, CREDIT_RUN_RESERVE_MICRO_USD);
-      creditsExempt = gate.exempt;
-      if (!gate.allow) {
-        return new Response(JSON.stringify({
-          error: "Out of credits",
-          code: gate.code,
-          detail: gate.detail,
-          balance_micro_usd: Number(creditRow?.balance_micro_usd ?? 0),
-        }), { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
-      // Daily-cap gate (audit F04): a balance check alone lets a capped user
-      // keep starting new runs all day. Read the current day's spend via the
-      // atomic debit RPC with a zero amount — a pure read that still applies
-      // the RPC's own UTC-day rollover correction (20260629_user_credits.sql:94-96),
-      // so a fresh calendar day is recognized even if daily_window_start on a
-      // raw SELECT hasn't been reset by a real debit yet today.
-      if (!creditsExempt) {
-        const { data: dailyData } = await supabaseAdmin.rpc("debit_user_credits", {
-          _user_id: userId,
-          _amount_micro_usd: 0,
-        });
-        const dailyRow = (Array.isArray(dailyData) ? dailyData[0] : dailyData) as
-          | { daily_spent?: number; unlimited?: boolean }
-          | null;
-        const dailyGate = evaluateDailyCapGate(dailyRow);
-        if (!dailyGate.allow) {
+      // FAIL OPEN on a bookkeeping READ error. A Supabase query returns
+      // { data, error } WITHOUT throwing, so a transient PostgREST/DB error
+      // leaves creditRes.data null. Enforcing the gate on null data would
+      // wrongly DENY a paying user ("Out of credits") on a DB blip — the
+      // opposite of the "never hard-fail a run on credit bookkeeping" intent
+      // (Copilot review). Skip the gate (allow the run) and log; creditsExempt
+      // stays false so the debit still applies once the ledger is reachable.
+      if (creditRes.error) {
+        console.warn("[credits] pre-gate read failed (allowing run):", creditRes.error.message ?? creditRes.error);
+      } else {
+        const creditRow = creditRes.data as { balance_micro_usd?: number; unlimited?: boolean; blocked?: boolean } | null;
+        const isAdmin = adminRes.data === true;
+        const gate = evaluateCreditGate(creditRow, isAdmin, CREDIT_RUN_RESERVE_MICRO_USD);
+        creditsExempt = gate.exempt;
+        if (!gate.allow) {
           return new Response(JSON.stringify({
-            error: "Daily credit cap reached",
-            code: dailyGate.code,
-            detail: dailyGate.detail,
-            daily_spent_micro_usd: Number(dailyRow?.daily_spent ?? 0),
+            error: "Out of credits",
+            code: gate.code,
+            detail: gate.detail,
+            balance_micro_usd: Number(creditRow?.balance_micro_usd ?? 0),
           }), { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+        // Daily-cap gate (audit F04): a balance check alone lets a capped user
+        // keep starting new runs all day. Read the current day's spend via the
+        // atomic debit RPC with a zero amount — a pure read that still applies
+        // the RPC's own UTC-day rollover correction (20260629_user_credits.sql:94-96),
+        // so a fresh calendar day is recognized even if daily_window_start on a
+        // raw SELECT hasn't been reset by a real debit yet today.
+        if (!creditsExempt) {
+          const { data: dailyData, error: dailyErr } = await supabaseAdmin.rpc("debit_user_credits", {
+            _user_id: userId,
+            _amount_micro_usd: 0,
+          });
+          // Same fail-OPEN rule, made EXPLICIT + logged (Copilot review): if the
+          // rollover-read RPC errors, allow the run rather than enforce/deny on
+          // null data.
+          if (dailyErr) {
+            console.warn("[credits] daily-cap read failed (allowing run):", dailyErr.message ?? dailyErr);
+          } else {
+            const dailyRow = (Array.isArray(dailyData) ? dailyData[0] : dailyData) as
+              | { daily_spent?: number; unlimited?: boolean }
+              | null;
+            const dailyGate = evaluateDailyCapGate(dailyRow);
+            if (!dailyGate.allow) {
+              return new Response(JSON.stringify({
+                error: "Daily credit cap reached",
+                code: dailyGate.code,
+                detail: dailyGate.detail,
+                daily_spent_micro_usd: Number(dailyRow?.daily_spent ?? 0),
+              }), { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+            }
+          }
         }
       }
     } catch (e) {
