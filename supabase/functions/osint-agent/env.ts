@@ -16,6 +16,7 @@
  */
 
 import { createOpenAICompatible } from "npm:@ai-sdk/openai-compatible@1";
+import { MODELS } from "./models.ts";
 
 // ---- CORS headers ------------------------------------------------------------
 export const corsHeaders = {
@@ -77,8 +78,11 @@ export const lovableGateway = LOVABLE_API_KEY
 //   MINIMAX_ORCHESTRATOR_MODEL_ID=<verified-highspeed-id>
 export const PRIMARY_ORCHESTRATOR_MODEL_ID =
   Deno.env.get("MINIMAX_ORCHESTRATOR_MODEL_ID") ?? "MiniMax-M2.7";
-// Lovable Gateway model used only if MiniMax key is missing.
-export const FALLBACK_MODEL_ID = "google/gemini-2.5-pro";
+// Lovable Gateway fallback model (used when MiniMax is unavailable / preflight
+// fails). Single source of truth is MODELS.fallback in models.ts — repointed to a
+// served flash-class model + env-overridable via LOVABLE_FALLBACK_MODEL_ID (B5),
+// since the old "google/gemini-2.5-pro" 403'd here and killed the run.
+export const FALLBACK_MODEL_ID = MODELS.fallback;
 
 // ---- Tranche 2: env-gated alternative orchestrator providers -----------------
 // These let an operator move the top-level orchestrator/synthesis turn off

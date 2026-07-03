@@ -76,6 +76,14 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   serus_darkweb_scan: { requiresKey: "SERUS_API_KEY" },
   ipqualityscore_lookup: { requiresKey: "IPQUALITYSCORE_API_KEY" },
   urlscanner_scan: { requiresKey: "URLSCANNER_API_KEY" },
+  // Breach-source tools that HARD-require their key (they self-skip with an error
+  // when it is absent), so a keyless deploy should drop them from the schema rather
+  // than let the model burn a step on a guaranteed-empty call.
+  // NOTE: breach_check is deliberately NOT listed here — it has a KEYLESS
+  // leakcheck.io/api/public fallback (tool-registry.ts) and still returns breach
+  // data with no STOLENTAX_API_KEY, so gating it would remove real capability.
+  rapidapi_breach_search: { requiresKey: "RAPIDAPI_KEY" },
+  rapidapi_all_breaches: { requiresKey: "RAPIDAPI_KEY" },
 };
 
 /** Every env var name the requirements depend on — what the wiring must probe. */
@@ -112,4 +120,20 @@ export function discoverCapabilities(
 /** Just the providers that should be gated before the run. */
 export function unavailableProviders(caps: CapabilityStatus[]): CapabilityStatus[] {
   return caps.filter((c) => !c.available);
+}
+
+/** Tool names to REMOVE from the model's schedulable set AND the tool schema it
+ *  sees (missing key / unsupported seed). Pure — the readiness gate in index.ts
+ *  deletes exactly these from the `tools` object before streamText, so a keyless
+ *  tool is never advertised and never wastes a step returning "not configured". */
+export function gatedToolNames(caps: CapabilityStatus[]): string[] {
+  return caps.filter((c) => !c.available).map((c) => c.tool);
+}
+
+/** The subset of `allNames` that survives the readiness gate (available tools).
+ *  Pure helper so the "keyless tool is absent from the schedulable set + schema"
+ *  invariant is unit-testable without booting the orchestrator. */
+export function schedulableTools(allNames: string[], caps: CapabilityStatus[]): string[] {
+  const gated = new Set(gatedToolNames(caps));
+  return allNames.filter((n) => !gated.has(n));
 }

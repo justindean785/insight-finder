@@ -40,6 +40,63 @@ export function stripReasoningMarkup(text: string): string {
     .trim();
 }
 
+// ---- Tool-call markup (Phase C1) -------------------------------------------
+// MiniMax sometimes writes raw tool-call syntax as literal TEXT into its
+// assistant message — `<function_calls><invoke name="exify">…</invoke>`,
+// stray `</invoke>` fragments while streaming, and "# Not a real tool"
+// self-correction headings after it notices a hallucinated tool. None of that is
+// a finding; it must never reach the chat timeline. (Structured, real tool calls
+// arrive as separate `tool-*` parts and are unaffected — this only touches the
+// text body.) antml:-prefixed variants are handled too.
+// The distinctive Anthropic-style tool-call container tags the model leaks. We
+// deliberately do NOT strip generic child tags like <parameter> on their own —
+// they're removed as part of a block below, and a lone <parameter> can appear in
+// legitimate prose about APIs. Tag name is bounded by (?![\w-]) so a real word
+// like `<invoke-endpoint>` in report text is never mistaken for a tool call.
+const TOOLCALL_TAGS = "invoke|function_calls|function_results";
+// Whole <function_calls>…</function_calls> block (carries nested invoke/parameter).
+const FN_CALLS_BLOCK_RE = /<\s*(?:antml:)?function_calls(?![\w-])[^>]*>[\s\S]*?<\s*\/\s*(?:antml:)?function_calls\s*>/gi;
+// Standalone <invoke …>…</invoke> block (with its nested <parameter> children).
+const INVOKE_BLOCK_RE = /<\s*(?:antml:)?invoke(?![\w-])[^>]*>[\s\S]*?<\s*\/\s*(?:antml:)?invoke\s*>/gi;
+// Trailing UNCLOSED invoke/function_calls block still streaming in. Bounded to the
+// next BLANK LINE (or end) — non-greedy — so it can't swallow a real finding that
+// follows an example tool-call snippet in the same message.
+const TOOLCALL_OPEN_RE = /<\s*(?:antml:)?(?:invoke|function_calls)(?![\w-])[^>]*>[\s\S]*?(?=\n[ \t]*\n|$)/i;
+// Any stray tool-call container tag fragment (orphan open/close) left behind.
+const TOOLCALL_STRAY_RE = new RegExp(`<\\s*/?\\s*(?:antml:)?(?:${TOOLCALL_TAGS})(?![\\w-])[^>]*>`, "gi");
+// "# Not a real tool" self-correction HEADINGS the model emits after noticing a
+// hallucinated tool. Anchored to a markdown heading (leading #) so a legitimate
+// prose line that merely contains the phrase is never stripped.
+const NOT_A_REAL_TOOL_RE = /^[ \t]{0,3}#{1,6}[ \t]+[^\n]*\bnot a real tool\b[^\n]*$/gim;
+
+/**
+ * Remove raw tool-call markup the model leaked into its text body so it never
+ * renders in the chat timeline. Order matters: drop full function_calls blocks
+ * (which wrap invoke/parameter), then standalone invoke blocks, then any trailing
+ * unclosed block, then stray tags and self-correction lines, then tidy whitespace.
+ * Integrity note: purely a display cleanup — never alters a finding or claim.
+ */
+export function stripToolCallMarkup(text: string): string {
+  if (!text) return "";
+  return text
+    .replace(FN_CALLS_BLOCK_RE, "")
+    .replace(INVOKE_BLOCK_RE, "")
+    .replace(TOOLCALL_OPEN_RE, "")
+    .replace(TOOLCALL_STRAY_RE, "")
+    .replace(NOT_A_REAL_TOOL_RE, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/**
+ * Full sanitize for assistant TEXT shown in the chat timeline: strip reasoning
+ * blocks AND leaked tool-call markup. Single entry point so the render path and
+ * the copy-to-clipboard path stay in sync.
+ */
+export function sanitizeChatText(text: string): string {
+  return stripToolCallMarkup(stripReasoningMarkup(text));
+}
+
 /**
  * Strip any residual angle-bracket tag fragments from a single short field
  * (a card title, detail, or reason). Defense-in-depth for the case where a

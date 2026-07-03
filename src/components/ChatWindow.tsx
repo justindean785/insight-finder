@@ -21,7 +21,7 @@ import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { isSubmitBlocked } from "@/lib/submit-guard";
 import { dedupeCards } from "@/lib/next-step-cards";
 import { computePivots } from "@/lib/pivot-engine";
-import { stripReasoningMarkup } from "@/lib/sanitize-agent-text";
+import { sanitizeChatText } from "@/lib/sanitize-agent-text";
 import { scrollBehavior } from "@/lib/motion";
 import { deriveToolCharge, deriveToolPreview, deriveToolRuntime, deriveToolTone } from "@/lib/tool-run";
 import { shouldFollowChatScroll, shouldAdoptInitialMessages, CHAT_REENGAGE_THRESHOLD_PX } from "@/lib/chat-scroll";
@@ -582,6 +582,15 @@ export function cycleSummaryBadges(group: {
   ].filter((bit): bit is string => Boolean(bit));
 }
 
+// Cycle header label (Phase C2). When the runtime couldn't resolve a cycle number
+// (cycleId <= 0, e.g. an older thread or a partial run), we previously rendered a
+// literal "REVIEW CYCLE ?", which reads like a bug. Drop the "cycle N" suffix
+// entirely in that case and show just the stage — never a bare "?".
+export function cycleSummaryLabel(stage: string, cycleId: number): string {
+  const base = (stage ?? "").trim();
+  return cycleId > 0 ? `${base} cycle ${cycleId}` : base;
+}
+
 // A cycle that produced nothing — only skips, with no useful output, no cache
 // hits, no real failures, and no stale results — is pure noise (e.g. a provider
 // disabled in config surfacing as "1 skipped · unavailable: disabled"). The
@@ -620,7 +629,7 @@ function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt
         <div className="flex flex-wrap items-center gap-2">
           {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
           <span className="font-mono uppercase tracking-[0.2em] text-foreground/80">
-            {group.stage} cycle {group.cycleId > 0 ? group.cycleId : "?"}
+            {cycleSummaryLabel(group.stage, group.cycleId)}
           </span>
           <span>{group.parts.length} call{group.parts.length === 1 ? "" : "s"}</span>
           {avgExpected != null && <span>EV {avgExpected}</span>}
@@ -1032,10 +1041,12 @@ function wrapChildren(children: React.ReactNode): React.ReactNode {
   return children;
 }
 
-// Chain-of-thought stripping is centralized in `@/lib/sanitize-agent-text`
-// (`stripReasoningMarkup`) so the chat body and the Next Steps card parser share
-// one source of truth. Local alias kept for the existing render call site.
-const stripThinkTags = stripReasoningMarkup;
+// Chat-body sanitizing is centralized in `@/lib/sanitize-agent-text`. The chat
+// timeline strips BOTH reasoning blocks AND leaked tool-call markup (raw
+// <invoke …>/<function_calls>/"# Not a real tool" the model wrote as text) via
+// sanitizeChatText, so the rendered body and the copy-to-clipboard path stay in
+// sync. Local alias kept for the existing render call sites.
+const stripThinkTags = sanitizeChatText;
 
 export function ChatWindow({ threadId }: { threadId: string }) {
   const [state, setState] = useState<

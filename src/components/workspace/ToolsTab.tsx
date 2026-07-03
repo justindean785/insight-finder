@@ -194,7 +194,9 @@ function ActivityRowSummary({ e }: { e: ToolEvent }) {
           <span className="text-meta text-foreground truncate">{e.displayName}</span>
           <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70 shrink-0">{e.toolName}</span>
         </div>
-        <div className="text-data text-muted-foreground truncate">{e.reason ?? e.actionLabel}</div>
+        {/* Title truncates once above; the REASON body carries the full provider
+            string — wrap to 2 lines instead of a single-line clip (Phase C3). */}
+        <div className="text-data text-muted-foreground line-clamp-2 break-words">{e.reason ?? e.actionLabel}</div>
       </div>
       <div className="flex items-center gap-1 shrink-0 text-data text-muted-foreground tabular-nums">
         <Clock className="w-3 h-3" />

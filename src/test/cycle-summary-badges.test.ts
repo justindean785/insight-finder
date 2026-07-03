@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { cycleSummaryBadges } from "@/components/ChatWindow";
+import { cycleSummaryBadges, cycleSummaryLabel } from "@/components/ChatWindow";
 
 /**
  * Beta-facing rule: the inline chat cycle cards must never surface a "failed"
@@ -35,5 +35,28 @@ describe("cycleSummaryBadges — chat cycle cards", () => {
       failed: 5,
     } as Parameters<typeof cycleSummaryBadges>[0] & { failed: number });
     expect(badges).toEqual([]);
+  });
+});
+
+/**
+ * Phase C2: a cycle whose number couldn't be resolved must never render a literal
+ * "?" (the old "REVIEW CYCLE ?"). It shows just the stage instead.
+ */
+describe("cycleSummaryLabel — cycle header", () => {
+  it("renders 'stage cycle N' when the cycle number is known", () => {
+    expect(cycleSummaryLabel("Review", 3)).toBe("Review cycle 3");
+  });
+
+  it("never renders a literal '?' when the cycle number is unresolved", () => {
+    for (const id of [-1, 0]) {
+      const label = cycleSummaryLabel("Review", id);
+      expect(label).toBe("Review");
+      expect(label).not.toContain("?");
+      expect(label.toLowerCase()).not.toContain("cycle");
+    }
+  });
+
+  it("trims a stray-whitespace stage without leaving a dangling label", () => {
+    expect(cycleSummaryLabel("  Triage  ", -1)).toBe("Triage");
   });
 });
