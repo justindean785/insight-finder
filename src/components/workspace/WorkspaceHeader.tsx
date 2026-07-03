@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
@@ -70,9 +70,35 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
     return () => { supabase.removeChannel(ch); };
   }, [threadId, loadIntegrity]);
 
+  // A case only reads "active" while work is actually happening. Older code kept
+  // any case with >=1 artifact/tool call pinned to "active" forever whenever its
+  // thread.status was never advanced to finished/stopped (the known stuck-active
+  // bug). Instead we treat a case as "completed" once it has produced evidence
+  // but has had no tool activity within a short recency window — reloading a done
+  // investigation now settles to "completed" rather than a permanent pulse.
+  const ACTIVE_WINDOW_MS = 12_000;
+  const [now, setNow] = useState(() => Date.now());
+  const lastActivityMs = useMemo(() => {
+    let max = 0;
+    for (const e of activity.events) {
+      const t = Date.parse(e.at);
+      if (Number.isFinite(t) && t > max) max = t;
+    }
+    return max;
+  }, [activity.events]);
+  const recentlyActive = lastActivityMs > 0 && now - lastActivityMs < ACTIVE_WINDOW_MS;
+  // Only tick while a run is plausibly live, so the pulse can settle to
+  // "completed" once activity goes quiet; idle/old cases never spin a timer.
+  useEffect(() => {
+    if (!recentlyActive) return;
+    const id = setInterval(() => setNow(Date.now()), 3000);
+    return () => clearInterval(id);
+  }, [recentlyActive]);
+
   const status: "idle" | "active" | "completed" =
     thread?.status === "finished" || thread?.status === "stopped" ? "completed"
-    : artifactCount > 0 || activity.total > 0 ? "active"
+    : recentlyActive ? "active"
+    : artifactCount > 0 || activity.total > 0 ? "completed"
     : "idle";
   const statusColor =
     status === "completed" ? "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high)/0.4)] bg-[hsl(var(--confidence-high)/0.1)]"

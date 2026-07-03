@@ -102,6 +102,11 @@ type Store = {
   // before dedupe — used to detect cap saturation honestly.
   loadedCount: number;
   hasMore: boolean;
+  // Whether at least one load has completed, and whether the most recent load
+  // errored. Together these let the UI tell "still loading" and "load failed,
+  // retry" apart from a genuinely-empty case.
+  loaded: boolean;
+  error: boolean;
   subscribers: Set<(snapshot: StoreSnapshot) => void>;
   channel: ReturnType<typeof supabase.channel> | null;
   loading: Promise<void> | null;
@@ -116,6 +121,8 @@ type StoreSnapshot = {
   items: Artifact[];
   loadedCount: number;
   hasMore: boolean;
+  loaded: boolean;
+  error: boolean;
 };
 
 /** Hard cap on initial artifact load per thread. Large investigations
@@ -127,20 +134,38 @@ const stores = new Map<string, Store>();
 const THROTTLE_MS = 500;
 
 function snapshot(store: Store): StoreSnapshot {
-  return { items: store.items, loadedCount: store.loadedCount, hasMore: store.hasMore };
+  return {
+    items: store.items,
+    loadedCount: store.loadedCount,
+    hasMore: store.hasMore,
+    loaded: store.loaded,
+    error: store.error,
+  };
 }
 
 async function loadStore(threadId: string, store: Store) {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("artifacts")
     .select("id,kind,value,confidence,source,created_at,metadata")
     .eq("thread_id", threadId)
     .order("created_at", { ascending: true })
     .limit(ARTIFACTS_INITIAL_LIMIT);
+  // A transient DB/network failure must not masquerade as an empty case. Flag
+  // the error and keep whatever we already had so the UI can offer a retry
+  // instead of silently rendering "nothing found".
+  if (error) {
+    store.loaded = true;
+    store.error = true;
+    const snap = snapshot(store);
+    for (const fn of store.subscribers) fn(snap);
+    return;
+  }
   const rows = (data ?? []) as Artifact[];
   store.loadedCount = rows.length;
   store.hasMore = rows.length >= ARTIFACTS_INITIAL_LIMIT;
   store.items = dedupeArtifacts(rows);
+  store.loaded = true;
+  store.error = false;
   const snap = snapshot(store);
   for (const fn of store.subscribers) fn(snap);
 }
@@ -197,6 +222,8 @@ function acquireStore(threadId: string, listener: (snapshot: StoreSnapshot) => v
       items: [],
       loadedCount: 0,
       hasMore: false,
+      loaded: false,
+      error: false,
       subscribers: new Set(),
       channel: null,
       loading: null,
@@ -253,6 +280,8 @@ export function useThreadArtifacts(threadId: string) {
     items: seed?.items ?? [],
     loadedCount: seed?.loadedCount ?? 0,
     hasMore: seed?.hasMore ?? false,
+    loaded: seed?.loaded ?? false,
+    error: seed?.error ?? false,
   }));
 
   useEffect(() => {
@@ -272,6 +301,12 @@ export function useThreadArtifacts(threadId: string) {
     for (const fn of store.subscribers) fn(next);
   };
 
+  // Force a fresh SELECT — used by the evidence surfaces' error-retry affordance.
+  const retry = () => {
+    const store = stores.get(threadId);
+    if (store) void loadStore(threadId, store);
+  };
+
   const userItems = snap.items.filter((a) => !isMeta(a));
   const metaItems = snap.items.filter(isMeta);
   return {
@@ -282,5 +317,9 @@ export function useThreadArtifacts(threadId: string) {
     loadedCount: snap.loadedCount,
     hasMore: snap.hasMore,
     cap: ARTIFACTS_INITIAL_LIMIT,
+    // Distinct load states so a transient failure isn't shown as "empty".
+    loading: !snap.loaded,
+    error: snap.error,
+    retry,
   };
 }

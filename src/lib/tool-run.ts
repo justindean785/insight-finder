@@ -52,6 +52,27 @@ export function describeTransportError(err: unknown): string {
   return "Scan request failed before the stream started — check the browser console for transport details.";
 }
 
+// A clean negative — the tool ran fine and simply found nothing (e.g.
+// `{ ok:false, error:"not found" }` or a provider 404). This is an EMPTY
+// outcome, not a fault. Mirrors the authoritative edge classifier
+// (osint-agent/tool-outcome.ts `classifyToolOutcome` → `EMPTY_RE` + a bare 404)
+// that already drives the Tools tab's neutral `outcome:"empty"` bucket, so the
+// live chat cards stop painting the same successful-negative result alarming red.
+// Scoped to not-found / 404 — the edge's "no usable result" phrase is left to the
+// client's SKIP handling (also neutral), preserving its existing classification.
+const EMPTY_REASON_RE = /not found\b|\b404\b/i;
+
+function isCleanEmptyResult(output: Record<string, unknown> | null): boolean {
+  if (!output) return false;
+  const status = typeof output.status === "string" ? output.status.toLowerCase() : "";
+  if (status === "empty" || status === "not_found" || status === "no_results") return true;
+  const code = typeof output.status_code === "number" ? output.status_code
+    : typeof output.statusCode === "number" ? output.statusCode
+    : null;
+  if (code === 404) return true;
+  return EMPTY_REASON_RE.test(deriveToolReason(output));
+}
+
 export function deriveToolTone(part: {
   state?: string;
   errorText?: unknown;
@@ -60,7 +81,8 @@ export function deriveToolTone(part: {
   const output = asOutput(part.output);
   if (part.state === "output-error" || part.errorText != null) return "error";
   if (output?.skipped === true) return "skip";
-  if (output?.ok === false) return "error";
+  // ok:false with a "not found"/empty reason is a clean negative, not an error.
+  if (output?.ok === false) return isCleanEmptyResult(output) ? "ok" : "error";
   return part.state === "output-available" ? "ok" : "pending";
 }
 
@@ -105,6 +127,11 @@ export function deriveToolStatus(part: {
     if (GATE_REASON_RE.test(reasonText)) return "gated";
     if (SKIP_REASON_RE.test(reasonText)) return "skipped";
     if (DEGRADED_REASON_RE.test(reasonText)) return "degraded";
+    // Clean negative last (mirrors the edge classifier's governance→empty→failed
+    // precedence): an ok:false tool result whose reason is just "not found"/404 is
+    // an EMPTY success, not a fault. Never reclassify a hard stream output-error.
+    const cleanNegative = output?.ok === false && part.state !== "output-error" && part.errorText == null;
+    if (cleanNegative && isCleanEmptyResult(output)) return "succeeded";
     return "failed";
   }
 

@@ -10,9 +10,9 @@ import {
   CommandItem,
 } from "@/components/ui/command";
 import {
-  Database, BarChart3, Lock, FileOutput, Network, Sparkles,
-  Clock, Map as MapIcon, FileText, ShieldCheck, AlertTriangle,
-  Search, ArrowRight, MessageSquare,
+  Database, BarChart3, Lock, Network,
+  Clock, FileText, ShieldCheck, AlertTriangle,
+  RotateCcw, MessageSquare,
 } from "lucide-react";
 
 type Thread = { id: string; title: string; seed_value: string | null; updated_at: string };
@@ -26,18 +26,20 @@ type NavTarget = {
   tab: string;
 };
 
+// Only jump targets that resolve to a real, mounted destination. The Evidence
+// lenses (artifacts→Board, matrix→Table, clusters, timeline) are honored by
+// EvidenceTab via the requested-view it reads off this same event; custody/
+// audit/issues land on the Tools tab; report on the Report tab. Removed the
+// old notes/map/overview/pivots targets — none of those tabs are mounted, so
+// they either no-op'd or silently dumped the user on the Evidence board.
 const NAV_TARGETS: NavTarget[] = [
   { id: "ev-artifacts", label: "Artifacts",  hint: "Evidence",   icon: Database,     section: "evidence",   tab: "artifacts" },
   { id: "ev-clusters",  label: "Clusters",   hint: "Evidence",   icon: Network,      section: "evidence",   tab: "clusters"  },
   { id: "ev-matrix",    label: "Matrix",     hint: "Evidence",   icon: BarChart3,    section: "evidence",   tab: "matrix"    },
-  { id: "an-overview",  label: "Overview",   hint: "Analysis",   icon: Sparkles,     section: "analysis",   tab: "overview"  },
-  { id: "an-pivots",    label: "Pivots",     hint: "Analysis",   icon: ArrowRight,   section: "analysis",   tab: "pivots"    },
-  { id: "an-timeline",  label: "Timeline",   hint: "Analysis",   icon: Clock,        section: "analysis",   tab: "timeline"  },
-  { id: "an-map",       label: "Map",        hint: "Analysis",   icon: MapIcon,      section: "analysis",   tab: "map"       },
+  { id: "ev-timeline",  label: "Timeline",   hint: "Evidence",   icon: Clock,        section: "evidence",   tab: "timeline" },
   { id: "pv-custody",   label: "Custody",    hint: "Provenance", icon: Lock,         section: "provenance", tab: "custody"   },
   { id: "pv-audit",     label: "Audit",      hint: "Provenance", icon: ShieldCheck,  section: "provenance", tab: "audit"     },
   { id: "pv-issues",    label: "Issues",     hint: "Provenance", icon: AlertTriangle,section: "provenance", tab: "issues"    },
-  { id: "ou-notes",     label: "Notes",      hint: "Output",     icon: FileOutput,   section: "output",     tab: "notes"     },
   { id: "ou-report",    label: "Report",     hint: "Output",     icon: FileText,     section: "output",     tab: "report"    },
 ];
 
@@ -123,12 +125,15 @@ export function CommandPalette() {
             onSelect={() => { setOpen(false); focusChat(); }}
           />
           <PaletteItem
-            icon={Search}
+            icon={RotateCcw}
             label="Re-run Insight Finder on current seed"
-            hint="Sends a fresh run prompt"
+            hint="Fresh run"
             onSelect={() => {
               setOpen(false);
-              focusChat();
+              // ChatWindow owns the run lifecycle; ask it to re-run the current
+              // thread's seed (invalidates the cache entry and starts a fresh
+              // investigation). No-ops safely when there's no seed to re-run.
+              window.dispatchEvent(new CustomEvent("swarmbot:rerun"));
             }}
           />
         </CommandGroup>

@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useReviewStates } from "@/lib/review";
 import { EvidenceBoard } from "@/components/ResourcesPanel";
@@ -26,10 +26,31 @@ const VIEWS: { key: View; label: string; icon: LucideIcon }[] = [
  * and verification status, plus alternate lenses: a flat sortable table, entity
  * clusters, and a chronological timeline. Fills the full main workspace width.
  */
-export function EvidenceTab({ threadId }: { threadId: string }) {
+function isView(v: string): v is View {
+  return v === "board" || v === "table" || v === "clusters" || v === "timeline";
+}
+
+export function EvidenceTab({
+  threadId,
+  viewRequest,
+}: {
+  threadId: string;
+  // A command-palette jump target may request a specific lens; `n` is a nonce so
+  // re-requesting the same lens still re-applies it.
+  viewRequest?: { view: string; n: number } | null;
+}) {
   const { items, updateLocal, hasMore, cap } = useThreadArtifacts(threadId);
   const review = useReviewStates(threadId);
-  const [view, setView] = useState<View>("board");
+  const [view, setView] = useState<View>(
+    viewRequest && isView(viewRequest.view) ? viewRequest.view : "board",
+  );
+
+  // Honor a requested lens from the command palette (also fires on first mount,
+  // since EvidenceTab lazy-loads after the jump event has already been handled).
+  useEffect(() => {
+    if (viewRequest && isView(viewRequest.view)) setView(viewRequest.view);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewRequest?.n]);
 
   // Analyst review state, summarised for the header context line. Read-only
   // tally — verification logic is untouched.

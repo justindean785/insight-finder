@@ -53,15 +53,25 @@ export default function ChatPage() {
     navigate(`/chat/${data.id}`);
   };
 
-  // A command-palette "jump to <tab>" should switch the workspace mode.
+  // A command-palette "jump to <tab>" should switch the workspace mode — and for
+  // an Evidence lens (artifacts/matrix/clusters/timeline) also tell EvidenceTab
+  // which lens to open, so the jump lands on the right view instead of always
+  // dumping the user on the Board. The nonce forces re-honoring repeat jumps.
+  const [evidenceReq, setEvidenceReq] = useState<{ view: string; n: number } | null>(null);
   useEffect(() => {
     const onNav = (e: Event) => {
       const detail = (e as CustomEvent).detail as { tab?: string; section?: string };
       const t = detail?.tab ?? "";
-      if (["report"].includes(t)) setTab("report");
+      if (t === "report") setTab("report");
       else if (["custody", "audit", "issues"].includes(t)) setTab("tools");
-      else if (["map", "timeline", "clusters", "pivots", "matrix"].includes(t)) setTab("evidence");
-      else if (["artifacts", "overview"].includes(t) || detail?.section === "evidence") setTab("evidence");
+      else if (["artifacts", "matrix", "clusters", "timeline"].includes(t) || detail?.section === "evidence") {
+        setTab("evidence");
+        const view = t === "matrix" ? "table"
+          : t === "clusters" ? "clusters"
+          : t === "timeline" ? "timeline"
+          : "board";
+        setEvidenceReq((prev) => ({ view, n: (prev?.n ?? 0) + 1 }));
+      }
     };
     window.addEventListener("swarmbot:navigate", onNav);
     return () => window.removeEventListener("swarmbot:navigate", onNav);
@@ -97,7 +107,7 @@ export default function ChatPage() {
       </div>
       {tab !== "chat" && (
         <Suspense fallback={<div className="absolute inset-0 grid place-items-center text-muted-foreground text-sm">Loading workspace…</div>}>
-          {tab === "evidence" && <div role="tabpanel" id="workspace-tabpanel-evidence" aria-labelledby="workspace-tab-evidence" className="absolute inset-0"><EvidenceTab threadId={threadId} /></div>}
+          {tab === "evidence" && <div role="tabpanel" id="workspace-tabpanel-evidence" aria-labelledby="workspace-tab-evidence" className="absolute inset-0"><EvidenceTab threadId={threadId} viewRequest={evidenceReq} /></div>}
           {tab === "report" && (
             <div role="tabpanel" id="workspace-tabpanel-report" aria-labelledby="workspace-tab-report" className="absolute inset-0 overflow-y-auto">
               <div className="mx-auto max-w-4xl"><ReportTab threadId={threadId} artifacts={items} /></div>

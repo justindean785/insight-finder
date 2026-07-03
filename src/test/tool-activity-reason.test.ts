@@ -77,7 +77,18 @@ describe("deriveToolStatus — budget/provider reclassification (review #4)", ()
   });
   it("a genuine error is still failed", () => {
     expect(deriveToolStatus({ state: "output-error", errorText: "invalid email: validation failed" })).toBe("failed");
-    expect(deriveToolStatus({ state: "output-available", output: { ok: false, reason: "404 not found" } })).toBe("failed");
+    // A stream/output-error carrying a 404 is a genuine transport failure.
+    expect(deriveToolStatus({ state: "output-error", errorText: "upstream returned HTTP 404" })).toBe("failed");
+  });
+
+  it("a clean not-found / 404 negative is EMPTY, not failed", () => {
+    // Mirrors the edge classifier (classifyToolOutcome → 'empty' for not-found /
+    // 404): a successful lookup that simply has no record must read neutral, not
+    // as an alarming red failure. Only the ok:false tool-output path — never a
+    // hard stream output-error — is reclassified.
+    expect(deriveToolStatus({ state: "output-available", output: { ok: false, reason: "404 not found" } })).toBe("succeeded");
+    expect(deriveToolStatus({ state: "output-available", output: { ok: false, reason: "tool returned no usable result" } })).toBe("skipped");
+    expect(deriveToolStatus({ state: "output-available", output: { ok: false, status_code: 404 } })).toBe("succeeded");
   });
 });
 
