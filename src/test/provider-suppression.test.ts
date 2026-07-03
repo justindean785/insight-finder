@@ -44,6 +44,28 @@ describe("timeout suppresses the provider for the same investigation", () => {
   });
 });
 
+describe("suppression spans sibling tools of the same provider", () => {
+  it("a timeout on one hunter tool suppresses a DIFFERENT hunter tool this run", () => {
+    // hunter_domain_search and hunter_email_finder are distinct tools that share
+    // the 'hunter' provider group. Suppression is keyed to the provider, so a
+    // failure on one must suppress its sibling for the run — even though the
+    // sibling itself never failed. (Regression guard for the multi-tool provider
+    // grouping in circuit.ts PROVIDER_TOOLS.)
+    expect(providerForTool("hunter_domain_search")).toBe("hunter");
+    expect(providerForTool("hunter_email_finder")).toBe("hunter");
+    expect(providerForTool("hunter_domain_search")).toBe(providerForTool("hunter_email_finder"));
+
+    expect(shouldRun(thread, "hunter_email_finder", "sel").allow).toBe(true);
+    recordResult(thread, "hunter_domain_search", "sel", "default", { status: "timeout" });
+
+    // the sibling is now blocked purely by provider-group suppression
+    const d = shouldRun(thread, "hunter_email_finder", "another-sel");
+    expect(d.allow).toBe(false);
+    expect((d as { reason?: string }).reason).toMatch(/timeout|suppress/i);
+    expect(isProviderSuppressed(thread, "hunter_email_finder").suppressed).toBe(true);
+  });
+});
+
 describe("suppression is isolated per investigation", () => {
   it("does not affect a different investigation", () => {
     recordResult(thread, "stolentax_footprint", "sel", "default", { status: "http_429" });

@@ -2,10 +2,9 @@
  * capabilities.ts — pure investigation-start capability discovery (Phase 6).
  *
  * Evaluates each provider BEFORE the execution loop so providers that cannot
- * run (missing key, disabled config, gated access, unsupported seed) are marked
- * unavailable and skipped — instead of becoming attempted live calls (e.g. the
- * `hibp` "API_KEY not configured" and `intelbase gated` no-op executions in the
- * trace audit).
+ * run (missing key, unsupported seed) are marked unavailable and skipped —
+ * instead of becoming attempted live calls (e.g. the `hibp`
+ * "API_KEY not configured" no-op executions in the trace audit).
  *
  * PURE: receives only key-PRESENCE booleans (never secret values) + the seed
  * type, so it can never log or leak a secret. The thin runtime wiring in
@@ -14,7 +13,7 @@
  * skip).
  */
 
-export type CapabilityReason = "ok" | "missing_key" | "disabled" | "gated" | "unsupported_seed";
+export type CapabilityReason = "ok" | "missing_key" | "unsupported_seed";
 
 export interface CapabilityStatus {
   tool: string;
@@ -27,10 +26,6 @@ export interface CapabilityStatus {
 export interface ProviderRequirement {
   /** env var that must be present (truthy) for the provider to run */
   requiresKey?: string;
-  /** hard-disabled regardless of env (e.g. out-of-budget) */
-  disabled?: boolean;
-  /** gated unless this env flag is present/enabled (e.g. feature flag) */
-  gatedUnless?: string;
   /** seed types this provider supports; if set and the seed isn't included,
    *  the provider is unsupported for this run */
   seedTypes?: string[];
@@ -90,7 +85,6 @@ export function capabilityEnvKeys(
   const keys = new Set<string>();
   for (const req of Object.values(requirements)) {
     if (req.requiresKey) keys.add(req.requiresKey);
-    if (req.gatedUnless) keys.add(req.gatedUnless);
   }
   return [...keys];
 }
@@ -104,12 +98,8 @@ export function discoverCapabilities(
 ): CapabilityStatus[] {
   const out: CapabilityStatus[] = [];
   for (const [tool, req] of Object.entries(requirements)) {
-    if (req.disabled) {
-      out.push({ tool, available: false, reason: "disabled", detail: "provider disabled in config" });
-    } else if (req.requiresKey && !env[req.requiresKey]) {
+    if (req.requiresKey && !env[req.requiresKey]) {
       out.push({ tool, available: false, reason: "missing_key", detail: `${req.requiresKey} not set` });
-    } else if (req.gatedUnless && !env[req.gatedUnless]) {
-      out.push({ tool, available: false, reason: "gated", detail: `${req.gatedUnless} not enabled` });
     } else if (req.seedTypes && seedType && !req.seedTypes.includes(seedType)) {
       out.push({ tool, available: false, reason: "unsupported_seed", detail: `not supported for seed '${seedType}'` });
     } else {
