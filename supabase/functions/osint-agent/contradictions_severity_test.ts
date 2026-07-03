@@ -181,3 +181,16 @@ Deno.test("location_conflict: a plain two-word city with no trailing state is NO
   assertEquals(locationsCompatible("Elk Grove, CA", "Elk Grove, CA"), true);
   assertEquals(locationsCompatible("Elk Grove, CA", "Austin, TX"), false);
 });
+
+Deno.test("location_conflict: a no-comma run-on with a trailing COUNTRY still folds a state (Codex)", () => {
+  // A trailing "USA" must not block state recognition on the residual
+  // "City State" run — this must fold identically to its comma-form
+  // counterpart "Tampa, FL, USA".
+  assertEquals(locationsCompatible("Tampa Florida USA", "Tampa, FL, USA"), true);
+  assertEquals(locationsCompatible("Tampa Florida USA", "Tampa, FL"), true);
+  assertEquals(locationsCompatible("Rocklin CA US", "Rocklin, CA"), true);
+  // Multi-word state AND multi-word country trailing, no comma anywhere.
+  assertEquals(locationsCompatible("Charlotte North Carolina United States", "Charlotte, NC"), true);
+  // A genuinely different state still conflicts with a trailing country present.
+  assertEquals(locationsCompatible("Tampa Florida USA", "Austin Texas USA"), false);
+});
