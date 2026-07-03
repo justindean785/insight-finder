@@ -251,11 +251,9 @@ All colors MUST be HSL.
   .ring-glow {
     box-shadow: 0 0 0 1px hsl(var(--info) / 0.4), 0 0 18px -6px hsl(var(--info) / 0.35);
   }
+  /* Name kept for callers; solid color now (gradient text-clip is decorative, not meaningful). */
   .gradient-text {
-    background: linear-gradient(90deg, hsl(var(--foreground)), hsl(var(--foreground) / 0.65));
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
+    color: hsl(var(--foreground));
   }
   .confidence-pop {
     box-shadow:
@@ -489,13 +487,13 @@ All colors MUST be HSL.
   .pivot-priority {
     display: inline-flex;
     align-items: center;
-    height: 15px;
+    height: 16px;
     padding: 0 5px;
     border-radius: 999px;
     font-family: "Geist Mono", ui-monospace, monospace;
-    font-size: 9px;
+    font-size: 10px;
     line-height: 1;
-    letter-spacing: 0.12em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
     border: 1px solid currentColor;
   }
@@ -575,27 +573,29 @@ All colors MUST be HSL.
     color: hsl(var(--muted-foreground));
     background: hsl(var(--surface-1));
     border: 1px solid hsl(var(--border-subtle));
-    border-left: 2px solid hsl(var(--border));
     transition: all 160ms ease;
   }
   .forensic-chip:hover {
     color: hsl(var(--foreground));
-    border-left-color: hsl(var(--info) / 0.6);
+    border-color: hsl(var(--info) / 0.6);
     background: hsl(var(--surface-2));
   }
   .forensic-chip[data-active="true"],
   .forensic-chip.is-active {
     color: hsl(var(--foreground));
     background: hsl(var(--info-muted));
-    border-color: hsl(var(--info) / 0.35);
-    border-left: 2px solid hsl(var(--info));
+    border-color: hsl(var(--info) / 0.5);
+  }
+  .forensic-chip:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px hsl(var(--ring)), 0 0 0 4px hsl(var(--background));
   }
 
   /* Group separator label for chip rows / filter bars */
   .chip-group-label {
     font-family: "Geist Mono", ui-monospace, monospace;
     font-size: 10px;
-    letter-spacing: 0.16em;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
     color: hsl(var(--muted-foreground) / 0.7);
     padding-right: 8px;
@@ -753,6 +753,10 @@ All colors MUST be HSL.
     background: hsl(var(--primary) / 0.18);
     border-color: hsl(var(--primary) / 0.5);
     box-shadow: 0 0 14px -4px hsl(var(--primary) / 0.6);
+  }
+  .pattern-chip:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px hsl(var(--ring)), 0 0 0 4px hsl(var(--background));
   }
 
   /* Neural-connection motif for pattern cards — subtle dotted edge. */

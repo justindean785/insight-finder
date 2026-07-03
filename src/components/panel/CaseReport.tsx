@@ -1140,7 +1140,7 @@ export function CaseReport({
 
       {/* Risk level */}
       <SectionHeader>Risk Level</SectionHeader>
-      <div className={cn("rounded-md border-t-2 border border-border-subtle bg-surface-2 p-4", RISK_COLOR[risk.level])}>
+      <div className={cn("rounded-md border bg-surface-2 p-4", RISK_COLOR[risk.level])}>
         <div className="flex items-center gap-2">
           <span className="w-2 h-2 rounded-full bg-current" />
           <span className="px-2 py-0.5 rounded border border-current text-eyebrow font-mono uppercase tracking-[0.2em]">
