@@ -17,6 +17,26 @@
 
 import { createOpenAICompatible } from "npm:@ai-sdk/openai-compatible@1";
 import { MODELS } from "./models.ts";
+import { createIdleTimeoutFetch } from "./fetch_retry.ts";
+
+// Every orchestrator LLM provider (minimax, lovable-ai-gateway, xai-grok,
+// openadapter) is built via createOpenAICompatible with this as its `fetch`.
+// Without it, a stalled stream (upstream opens the connection then goes silent
+// mid-generation) hangs streamText() forever: stopWhen's wall-clock deadline is
+// only evaluated BETWEEN completed steps, so a step whose model call never
+// resolves is never interrupted — the thread stays "active" and the UI sits
+// frozen on the last tool label with no recovery (see fetch_retry.ts).
+//
+// 90s, not the tighter 45s minimaxChat() uses for a small complete call:
+// MiniMax-M2.7 is a reasoning model that can go quiet for a while mid-thought
+// before its first output chunk, especially on a large prompt or a hard
+// tool-call decision — and because this is an IDLE timeout (resets on every
+// chunk, not a flat cap), a legitimately long multi-minute completion is
+// never punished, only true silence is. MiniMax is the default/near-always
+// orchestrator provider, so a false-abort here ends a run early; start
+// generous and tighten only once inter-chunk-gap telemetry justifies it.
+export const ORCHESTRATOR_STALL_TIMEOUT_MS = 90_000;
+export const ORCHESTRATOR_FETCH = createIdleTimeoutFetch(ORCHESTRATOR_STALL_TIMEOUT_MS);
 
 // ---- CORS headers ------------------------------------------------------------
 export const corsHeaders = {
@@ -58,6 +78,7 @@ export const lovableGateway = LOVABLE_API_KEY
         "Lovable-API-Key": LOVABLE_API_KEY,
         "X-Lovable-AIG-SDK": "vercel-ai-sdk",
       },
+      fetch: ORCHESTRATOR_FETCH,
     })
   : null;
 
@@ -107,6 +128,7 @@ export const grokGateway = XAI_API_KEY
       name: "xai-grok",
       baseURL: "https://api.x.ai/v1",
       headers: { Authorization: `Bearer ${XAI_API_KEY}` },
+      fetch: ORCHESTRATOR_FETCH,
     })
   : null;
 
@@ -116,6 +138,7 @@ export const openAdapterGateway = (OPENADAPTER_API_KEY && OPENADAPTER_BASE_URL)
       name: "openadapter",
       baseURL: OPENADAPTER_BASE_URL,
       headers: { Authorization: `Bearer ${OPENADAPTER_API_KEY}` },
+      fetch: ORCHESTRATOR_FETCH,
     })
   : null;
 
