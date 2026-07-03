@@ -7,7 +7,7 @@ import {
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
   URLSCANNER_API_KEY,
   XAI_API_KEY, GROK_ORCHESTRATOR_MODEL_ID,
-  OSINT_AGENT_PROBE_SECRET,
+  OSINT_AGENT_PROBE_SECRET, FALLBACK_MODEL_ID,
 } from "./env.ts";
 import { minimaxChat } from "./providers.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
@@ -152,7 +152,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
         const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
           method: "POST",
           headers: { "Lovable-API-Key": LOVABLE_API_KEY, "Content-Type": "application/json" },
-          body: JSON.stringify({ model: "google/gemini-2.5-pro", messages: [{ role: "user", content: "ping" }], max_tokens: 4 }),
+          body: JSON.stringify({ model: FALLBACK_MODEL_ID, messages: [{ role: "user", content: "ping" }], max_tokens: 4 }),
           signal,
         });
         return { ok: res.ok, status: res.status };

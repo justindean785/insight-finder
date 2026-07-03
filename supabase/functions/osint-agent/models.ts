@@ -17,7 +17,14 @@ export type Tier = "fast" | "smart" | "fallback";
 export const MODELS: Record<Tier, string> = {
   fast: "MiniMax-M2.7",
   smart: "MiniMax-M2.7",
-  fallback: "google/gemini-2.5-pro",
+  // Fallback runs on the Lovable AI gateway when MiniMax is unavailable. The old
+  // pinned "google/gemini-2.5-pro" returns 403 Forbidden on this gateway key (the
+  // pro tier is credit-gated), which turned a MiniMax preflight-timeout into a
+  // DEAD run instead of a graceful degrade (Phase B5). Repoint to the free/served
+  // flash-class model and make it operator-overridable WITHOUT a code change via
+  // LOVABLE_FALLBACK_MODEL_ID. Single source of truth — env.ts + health-handler.ts
+  // read this value. The PRIMARY orchestrator model (MiniMax) is unchanged.
+  fallback: Deno.env.get("LOVABLE_FALLBACK_MODEL_ID") ?? "google/gemini-2.5-flash",
 };
 
 // Steps that MUST run on the smart tier. Everything else defaults to "fast".

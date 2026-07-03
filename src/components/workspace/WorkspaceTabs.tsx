@@ -120,6 +120,13 @@ export function WorkspaceTabs({
                 role="tab"
                 aria-selected={isActive}
                 aria-controls={`workspace-tabpanel-${t.key}`}
+                // Below 460px the chip is icon-only (matching the "More" button's
+                // label breakpoint), so a narrow bar never renders the useless
+                // 1-char truncation "C…"/"E…"/"R…". The label stays in the
+                // accessible tree via sr-only (see the span below), so we do NOT
+                // set aria-label — that would override the accessible name and drop
+                // the count span from the screen-reader announcement (Phase C3).
+                title={t.label}
                 tabIndex={isActive ? 0 : -1}
                 onKeyDown={(e) => onKeyDown(e, idx)}
                 onClick={() => { setMoreOpen(false); onChange(t.key); }}
@@ -130,7 +137,7 @@ export function WorkspaceTabs({
                 )}
               >
                 <Icon className="h-3.5 w-3.5 shrink-0" strokeWidth={1.8} />
-                <span className="truncate">{t.label}</span>
+                <span className="truncate max-[459px]:sr-only">{t.label}</span>
                 {count && count.value > 0 && (
                   <span
                     className={cn(

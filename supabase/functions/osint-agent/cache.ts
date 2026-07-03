@@ -42,7 +42,14 @@ export const DEFAULT_TOOL_TIMEOUT_MS = 12_000;
 // Legit-slow tools whose p95 genuinely exceeds the default but still yield value.
 // Everything else uses the default cap.
 export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
-  gemini_deep_dork: 30_000, // Gemini grounded search — p95 ~46s
+  // Phase B3 — cap the three chronic time sinks so a slow provider fails FAST with
+  // a schema-safe timeout instead of holding a step open. All three forward the
+  // per-tool AbortSignal into their fetch, so the cap truly cancels the in-flight
+  // request (not just abandons the promise). gemini_deep_dork's p95 (~46s) exceeds
+  // this cap by design: it becomes a fast-fail corroboration source, not a 30s tax.
+  gemini_deep_dork: 12_000,        // was 30_000 — kill the per-run 30s timeout tail
+  deepfind_reverse_email: 8_000,   // account-discovery corroboration — fail fast
+  jina_reader_scrape: 8_000,       // single-page scrape — fail fast, try a lighter source
   dork_harvest: 25_000,     // wraps several web searches — p95 ~17s
   exa_search: 20_000,       // neural search + contents — p95 ~12s
   exa_find_similar: 20_000,
