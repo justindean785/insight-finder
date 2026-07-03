@@ -241,6 +241,15 @@ export async function minimaxChatWithFallback(
     if (!shouldFallbackOnStatus(result.status)) {
       return { ...result, usedFallback: false };
     }
+    // Same orphaned-fallback guard as the catch path below, for the STATUS
+    // branch: if MiniMax returns a non-throwing 5xx/429 AFTER the caller
+    // already aborted (per-tool timeout — runWithToolTimeout has moved on),
+    // do NOT fire a fallback. Return the MiniMax status result (clean skip,
+    // matching the no-fallback status shape) instead of burning Lovable/Grok
+    // quota off-ledger for a result nobody reads (Codex review, code-review).
+    if (opts.signal?.aborted) {
+      return { ...result, usedFallback: false };
+    }
     console.warn(
       `[orchestrator-fallback] MiniMax failed (status=${result.status}), retrying on fallback`,
     );

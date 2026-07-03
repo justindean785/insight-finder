@@ -126,6 +126,15 @@ Deno.serve(async (req) => {
       // opposite of the "never hard-fail a run on credit bookkeeping" intent
       // (Copilot review). Skip the gate (allow the run) and log; creditsExempt
       // stays false so the debit still applies once the ledger is reachable.
+      // NOTE: this also skips the `blocked` (paused/banned) check for the
+      // duration of the read error — a deliberate best-effort tradeoff. It is
+      // backstopped: creditsExempt stays false, so the first paid call debits
+      // via debit_user_credits, which returns ok:false/'blocked', and the
+      // mid-run hard-stop aborts the run at the next step boundary. So a blocked
+      // account gets at most a partial run on a transient blip, not a free one
+      // (only a full DB outage — where nothing can enforce `blocked` — lets it
+      // through, an accepted degraded mode). Failing CLOSED here instead would
+      // lock out every legitimate paying user on any DB blip, which is worse.
       if (creditRes.error) {
         console.warn("[credits] pre-gate read failed (allowing run):", creditRes.error.message ?? creditRes.error);
       } else {
