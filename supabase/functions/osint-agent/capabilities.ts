@@ -13,7 +13,7 @@
  * skip).
  */
 
-export type CapabilityReason = "ok" | "missing_key" | "unsupported_seed";
+export type CapabilityReason = "ok" | "missing_key" | "gated" | "disabled" | "unsupported_seed";
 
 export interface CapabilityStatus {
   tool: string;
@@ -24,8 +24,12 @@ export interface CapabilityStatus {
 }
 
 export interface ProviderRequirement {
+  /** provider is intentionally unavailable in this build */
+  disabled?: boolean;
   /** env var that must be present (truthy) for the provider to run */
   requiresKey?: string;
+  /** feature flag/env var that must be true for the provider to run */
+  gatedUnless?: string;
   /** seed types this provider supports; if set and the seed isn't included,
    *  the provider is unsupported for this run */
   seedTypes?: string[];
@@ -76,6 +80,10 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   serus_darkweb_scan: { requiresKey: "SERUS_API_KEY" },
   ipqualityscore_lookup: { requiresKey: "IPQUALITYSCORE_API_KEY" },
   urlscanner_scan: { requiresKey: "URLSCANNER_API_KEY" },
+  intelbase_email_lookup: { requiresKey: "INTELBASE_API_KEY", gatedUnless: "INTELBASE_ENABLED" },
+  firecrawl_search: { disabled: true },
+  firecrawl_scrape: { disabled: true },
+  firecrawl_map: { disabled: true },
 };
 
 /** Every env var name the requirements depend on — what the wiring must probe. */
@@ -85,6 +93,7 @@ export function capabilityEnvKeys(
   const keys = new Set<string>();
   for (const req of Object.values(requirements)) {
     if (req.requiresKey) keys.add(req.requiresKey);
+    if (req.gatedUnless) keys.add(req.gatedUnless);
   }
   return [...keys];
 }
@@ -98,8 +107,12 @@ export function discoverCapabilities(
 ): CapabilityStatus[] {
   const out: CapabilityStatus[] = [];
   for (const [tool, req] of Object.entries(requirements)) {
-    if (req.requiresKey && !env[req.requiresKey]) {
+    if (req.disabled) {
+      out.push({ tool, available: false, reason: "disabled", detail: "provider disabled in config" });
+    } else if (req.requiresKey && !env[req.requiresKey]) {
       out.push({ tool, available: false, reason: "missing_key", detail: `${req.requiresKey} not set` });
+    } else if (req.gatedUnless && !env[req.gatedUnless]) {
+      out.push({ tool, available: false, reason: "gated", detail: `${req.gatedUnless} not enabled` });
     } else if (req.seedTypes && seedType && !req.seedTypes.includes(seedType)) {
       out.push({ tool, available: false, reason: "unsupported_seed", detail: `not supported for seed '${seedType}'` });
     } else {
