@@ -9,8 +9,8 @@ import { describe, it, expect } from "vitest";
  *
  * Edge response contract (must stay stable — the frontend probe in
  * ChatWindow.tsx consumes this shape):
- *   GET  /functions/v1/osint-agent?health=1  → 200 { ok, service, version, checks, intelbase_enabled }
- *   HEAD /functions/v1/osint-agent?health=1  → 200 (no body)
+ *   GET  /functions/v1/osint-agent?health=1  → 200 when ok:true, 503 when ok:false
+ *   HEAD /functions/v1/osint-agent?health=1  → 200 when ok:true, 503 when ok:false (no body)
  *   anything else                            → normal handler (auth, etc.)
  *
  *   ok:true   → orchestrator key + core DB env present
@@ -28,7 +28,7 @@ function deriveReadiness(env: Env): {
 } {
   const has = (v: string | null | undefined) => !!(v && v.length > 0);
   const orchestratorOk = has(env.MINIMAX_API_KEY) || has(env.LOVABLE_API_KEY);
-  const coreOk = has(env.SUPABASE_URL) && has(env.SUPABASE_SERVICE_ROLE_KEY);
+  const coreOk = has(env.SUPABASE_URL) && has(env.SUPABASE_SERVICE_ROLE_KEY) && has(env.SUPABASE_ANON_KEY);
   const tools = {
     oathnet: has(env.OATHNET_API_KEY),
     synapsint: has(env.SYNAPSINT_API_KEY),
@@ -51,7 +51,7 @@ function deriveReadiness(env: Env): {
       : { ok: false, detail: "Set MINIMAX_API_KEY or LOVABLE_API_KEY in Supabase secrets" },
     core: coreOk
       ? { ok: true }
-      : { ok: false, detail: "SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY missing" },
+      : { ok: false, detail: "SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / SUPABASE_ANON_KEY missing" },
     tools: {
       ok: true,
       detail: `${enabledOptional}/${Object.keys(tools).length} optional tool APIs configured`,
@@ -74,6 +74,7 @@ const fullHealthy: Env = {
   MINIMAX_API_KEY: "sk-minimax-1234",
   SUPABASE_URL: "https://abc.supabase.co",
   SUPABASE_SERVICE_ROLE_KEY: "service-key",
+  SUPABASE_ANON_KEY: "anon-key",
   OATHNET_API_KEY: "o",
   EXA_API_KEY: "e",
   HUNTER_API_KEY: "h",
@@ -88,6 +89,7 @@ describe("deriveReadiness — healthy configurations", () => {
       MINIMAX_API_KEY: "sk-x",
       SUPABASE_URL: "https://x.supabase.co",
       SUPABASE_SERVICE_ROLE_KEY: "k",
+      SUPABASE_ANON_KEY: "anon",
     });
     expect(r.ok).toBe(true);
     expect(r.checks.orchestrator.ok).toBe(true);
@@ -99,6 +101,7 @@ describe("deriveReadiness — healthy configurations", () => {
       LOVABLE_API_KEY: "lov-1",
       SUPABASE_URL: "https://x.supabase.co",
       SUPABASE_SERVICE_ROLE_KEY: "k",
+      SUPABASE_ANON_KEY: "anon",
     });
     expect(r.ok).toBe(true);
     expect(r.checks.orchestrator.ok).toBe(true);
@@ -110,6 +113,7 @@ describe("deriveReadiness — healthy configurations", () => {
       LOVABLE_API_KEY: "b",
       SUPABASE_URL: "https://x.supabase.co",
       SUPABASE_SERVICE_ROLE_KEY: "k",
+      SUPABASE_ANON_KEY: "anon",
     });
     expect(r.ok).toBe(true);
   });
@@ -120,6 +124,7 @@ describe("deriveReadiness — healthy configurations", () => {
       LOVABLE_API_KEY: "",
       SUPABASE_URL: "https://x.supabase.co",
       SUPABASE_SERVICE_ROLE_KEY: "k",
+      SUPABASE_ANON_KEY: "anon",
     });
     expect(r.ok).toBe(false);
     expect(r.checks.orchestrator.ok).toBe(false);
@@ -150,6 +155,7 @@ describe("deriveReadiness — failure paths", () => {
     const r = deriveReadiness({
       SUPABASE_URL: "https://x.supabase.co",
       SUPABASE_SERVICE_ROLE_KEY: "k",
+      SUPABASE_ANON_KEY: "anon",
     });
     expect(r.ok).toBe(false);
     expect(r.checks.orchestrator.ok).toBe(false);
@@ -174,12 +180,23 @@ describe("deriveReadiness — failure paths", () => {
     expect(r.ok).toBe(false);
   });
 
-  it("only service key set (no URL) → core check fails", () => {
+  it("only service key set (no URL or anon key) → core check fails", () => {
     const r = deriveReadiness({
       MINIMAX_API_KEY: "a",
       SUPABASE_SERVICE_ROLE_KEY: "k",
     });
     expect(r.checks.core.ok).toBe(false);
+  });
+
+  it("orchestrator + URL + service key but no anon key → core check fails", () => {
+    const r = deriveReadiness({
+      MINIMAX_API_KEY: "a",
+      SUPABASE_URL: "https://x.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "k",
+    });
+    expect(r.checks.core.ok).toBe(false);
+    expect(r.checks.core.detail).toMatch(/SUPABASE_ANON_KEY/);
+    expect(r.ok).toBe(false);
   });
 });
 
@@ -191,6 +208,7 @@ describe("deriveReadiness — optional tools accounting", () => {
       MINIMAX_API_KEY: "a",
       SUPABASE_URL: "https://x.supabase.co",
       SUPABASE_SERVICE_ROLE_KEY: "k",
+      SUPABASE_ANON_KEY: "anon",
     });
     expect(r.checks.tools.detail).toBe("0/13 optional tool APIs configured");
   });

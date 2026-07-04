@@ -19,6 +19,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { PanelLeftOpen, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { CommandPalette } from "@/components/CommandPalette";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 
@@ -107,14 +108,16 @@ export default function ChatPage() {
       </div>
       {tab !== "chat" && (
         <Suspense fallback={<div className="absolute inset-0 grid place-items-center text-muted-foreground text-sm">Loading workspace…</div>}>
-          {tab === "evidence" && <div role="tabpanel" id="workspace-tabpanel-evidence" aria-labelledby="workspace-tab-evidence" className="absolute inset-0"><EvidenceTab threadId={threadId} viewRequest={evidenceReq} /></div>}
+          {tab === "evidence" && <div role="tabpanel" id="workspace-tabpanel-evidence" aria-labelledby="workspace-tab-evidence" className="absolute inset-0"><ErrorBoundary><EvidenceTab threadId={threadId} viewRequest={evidenceReq} /></ErrorBoundary></div>}
           {tab === "report" && (
             <div role="tabpanel" id="workspace-tabpanel-report" aria-labelledby="workspace-tab-report" className="absolute inset-0 overflow-y-auto">
-              <div className="mx-auto max-w-4xl"><ReportTab threadId={threadId} artifacts={items} /></div>
+              <ErrorBoundary>
+                <div className="mx-auto max-w-4xl"><ReportTab threadId={threadId} artifacts={items} /></div>
+              </ErrorBoundary>
             </div>
           )}
-          {tab === "graph" && <div role="tabpanel" id="workspace-tabpanel-graph" aria-labelledby="workspace-tab-graph" className="absolute inset-0"><GraphTab threadId={threadId} /></div>}
-          {tab === "tools" && <div role="tabpanel" id="workspace-tabpanel-tools" aria-labelledby="workspace-tab-tools" className="absolute inset-0"><ToolsTab threadId={threadId} /></div>}
+          {tab === "graph" && <div role="tabpanel" id="workspace-tabpanel-graph" aria-labelledby="workspace-tab-graph" className="absolute inset-0"><ErrorBoundary><GraphTab threadId={threadId} /></ErrorBoundary></div>}
+          {tab === "tools" && <div role="tabpanel" id="workspace-tabpanel-tools" aria-labelledby="workspace-tab-tools" className="absolute inset-0"><ErrorBoundary><ToolsTab threadId={threadId} /></ErrorBoundary></div>}
         </Suspense>
       )}
     </div>
