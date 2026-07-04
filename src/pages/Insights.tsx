@@ -258,10 +258,10 @@ export default function Insights() {
           <Card title="Activity last 14 days" icon={Clock}>
             {loading ? (
               <SkeletonRows rows={4} />
-            ) : derived && derived.activityByDay.length > 0 ? (
+            ) : derived && derived.activityTotal > 0 ? (
               <SparkBars data={derived.activityByDay} />
             ) : (
-              <EmptyHint>No recent artifact activity.</EmptyHint>
+              <EmptyHint>No artifact activity in the last 14 days.</EmptyHint>
             )}
           </Card>
         </section>
@@ -386,6 +386,12 @@ export function deriveInsights(s: Stats) {
     const key = d.toISOString().slice(0, 10);
     activityByDay.push({ day: key, count: dayMap.get(key) ?? 0 });
   }
+  // activityByDay always has 14 entries (one per day in the window), so its
+  // LENGTH can never gate the empty-state — the render must key off whether any
+  // of those days actually saw activity. Without this, an idle account renders
+  // 14 near-invisible zero-height bars (a chart that reads as broken) and the
+  // "no activity" hint is unreachable dead code.
+  const activityTotal = activityByDay.reduce((n, d) => n + d.count, 0);
 
   const threadTitle = new Map(s.threads.map((t) => [t.id, t.title]));
   const topCases = [...caseArtifacts.entries()]
@@ -405,7 +411,7 @@ export function deriveInsights(s: Stats) {
     avgConfidence: confN ? Math.round(confSum / confN) : 0,
   };
 
-  return { totals, byGroup, topSources, confidenceBuckets, activityByDay, topCases };
+  return { totals, byGroup, topSources, confidenceBuckets, activityByDay, activityTotal, topCases };
 }
 
 function NavLink({
