@@ -40,13 +40,19 @@ export const RECENT_WINDOW = 10;
 // Max orchestrator steps per run (was stepCountIs(50)). A low ceiling plus the
 // wall-clock deadline below collapse the p95 tool-time tail. Named so a test can
 // pin it and so index.ts and any planner share one source of truth.
-export const MAX_ORCHESTRATOR_STEPS = 30;
+// Speed pass: 30 → 22. With the Gemini-primary path (parallel tool calls) 22
+// steps comfortably reaches saturation on real runs; the extra 8 were being
+// spent on redundant fan-out and dragging p95 wall-clock.
+export const MAX_ORCHESTRATOR_STEPS = 22;
 
 // Hard wall-clock deadline for a single run (ms). A StopCondition trips once elapsed
 // time exceeds this, ending the run CLEANLY (onFinish persists the partial assistant
 // + artifacts and marks the thread finished) instead of grinding to the step cap. A
 // catastrophic-tail backstop (audit observed a 17.6-min max), not a routine limiter.
-export const ORCHESTRATOR_WALL_CLOCK_MS = 6 * 60_000;
+// Speed pass: 6 min → 4 min. Backstop only — with the step cap + parallel tool
+// calls, healthy runs finish well under this; the 6-min tail was chasing dead
+// providers.
+export const ORCHESTRATOR_WALL_CLOCK_MS = 4 * 60_000;
 
 /**
  * True once `budgetMs` has elapsed since `startedAt` (both epoch ms). Extracted as a
