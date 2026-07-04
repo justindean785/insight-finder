@@ -150,7 +150,10 @@ export const MAX_TOTAL_CALLS = 30;
 // AND the concurrency figure quoted in the system prompt. The queue still spaces
 // starts (MIN_START_GAP_MS) and backs off on real 429s — wider just means more
 // in flight at once, never hard-failed.
-export const MAX_CONCURRENT_CALLS = 6;
+// Speed pass: raised 6→10 to cut wall-clock further once the orchestrator emits
+// parallel tool calls (Gemini path). Queue still spaces starts (MIN_START_GAP_MS)
+// and backs off on real 429s — wider just means more in flight at once.
+export const MAX_CONCURRENT_CALLS = 10;
 export const MAX_PAID_CALLS = 12;
 
 // ---- Configurable runtime limits ---------------------------------------------
@@ -231,7 +234,9 @@ export const MAX_SAME_TOOL_CALLS = 16;
 // Speed pass: env-tunable, default lowered 600→200ms so cycles start faster.
 // Still a real gap between call starts (queue spacing); raise via MIN_START_GAP_MS
 // if a provider's per-second limit needs more breathing room.
-export const MIN_START_GAP_MS = envNumber("MIN_START_GAP_MS", 200);
+// Speed pass: default lowered 200→100ms — cycles start faster; still a real gap
+// between call starts. Raise via MIN_START_GAP_MS if a provider needs breathing.
+export const MIN_START_GAP_MS = envNumber("MIN_START_GAP_MS", 100);
 
 function getThread(threadId: string): RuntimeThreadState {
   let state = THREADS.get(threadId);

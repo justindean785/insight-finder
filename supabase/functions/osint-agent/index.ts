@@ -402,6 +402,12 @@ Deno.serve(async (req) => {
       openadapter: !!openAdapterGateway,
     });
     const minimaxIsPrimary = orchChoice.provider === "minimax";
+    // Speed pass: operator can pin the orchestrator to the Lovable AI Gateway
+    // (Gemini) via ORCHESTRATOR_PROVIDER=lovable. When pinned, we skip MiniMax
+    // entirely — Gemini is faster and supports parallel tool calls natively
+    // (the SDK default; providerOptions below only attach the serial-mode
+    // flag when MiniMax is live), which is the single largest wall-clock win.
+    const lovablePinned = ORCHESTRATOR_PROVIDER === "lovable" && !!lovableGateway;
     // The MiniMax-specific overflow pre-pivot + health probe only apply when
     // MiniMax is the primary. Alternative providers carry their own large
     // context windows and reliability, so they bypass the Gemini fallback path.
@@ -409,7 +415,11 @@ Deno.serve(async (req) => {
       minimaxIsPrimary &&
       (approxPromptChars > MINIMAX_CHAR_BUDGET ||
         trimmedMessages.length > MINIMAX_MSG_BUDGET);
-    let useFallback = minimaxIsPrimary ? (!minimaxAvailable || wouldOverflow) : false;
+    let useFallback = lovablePinned
+      ? true
+      : minimaxIsPrimary
+      ? (!minimaxAvailable || wouldOverflow)
+      : false;
     // Pre-flight MiniMax health probe. The fallback selection above only fires
     // when MiniMax's key is missing or the prompt would overflow — it does NOT
     // catch the case where MiniMax is configured and accepts the request but is
@@ -424,7 +434,7 @@ Deno.serve(async (req) => {
     // isolate — it's demonstrably alive, so the extra round-trip (and up to the
     // 6s timeout on the unhealthy path) is removed from time-to-first-token.
     // A cold isolate has no cached health → the probe still runs (safe default).
-    if (minimaxIsPrimary && !useFallback && lovableGateway && !minimaxHealthyWithin(60_000)) {
+    if (minimaxIsPrimary && !useFallback && !lovablePinned && lovableGateway && !minimaxHealthyWithin(60_000)) {
       try {
         const probePromise = minimaxChat({ user: "ping", maxTokens: 4, temperature: 0 });
         // Swallow a late rejection if the timeout wins the race below, so it
