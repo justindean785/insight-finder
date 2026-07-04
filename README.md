@@ -86,6 +86,13 @@ npm run dev
 
 ## Supabase Setup
 
+> **Note:** the steps below assume a Supabase project **you** own/link directly.
+> If your Supabase project is owned by a third-party platform account (e.g. a
+> Lovable Cloud-managed backend), `supabase functions deploy` will 403 — the
+> owning platform must ship the function through its own deploy pipeline
+> instead. Check with whoever owns the project before assuming this command
+> applies.
+
 ```sh
 # 1. Initialize Supabase locally (if not already linked)
 npx supabase init
@@ -161,7 +168,7 @@ The `osint-agent` edge function exposes a lightweight readiness endpoint used by
 
 Interpretation:
 
-- **404** — function is not deployed. Run `npx supabase functions deploy osint-agent`.
+- **404** — function is not deployed. Run `npx supabase functions deploy osint-agent` (or, if the project is owned by a third-party deploy pipeline, trigger that pipeline instead — see the note under Supabase Setup above).
 - **200 + `ok:true`** — ready to scan.
 - **200 + `ok:false`** — function is deployed but a required dep is missing. Inspect `checks.orchestrator.detail` / `checks.core.detail` for the exact missing secret(s). The frontend will block the scan and surface the detail in a toast.
 - `checks.tools.detail` reports `configured/13 optional tool APIs` — informational only, never blocks a run.
@@ -181,7 +188,7 @@ curl -sS "$VITE_SUPABASE_URL/functions/v1/osint-agent?health=1" \
 |---------|-------------|-----|
 | "Session expired" toast | Auth token expired | Sign out and sign in again |
 | "Access denied" toast | Wrong thread ID | Create a new thread |
-| "Edge function not deployed" toast | Function not pushed | `npx supabase functions deploy osint-agent` |
+| "Edge function not deployed" toast | Function not pushed | `npx supabase functions deploy osint-agent` (self-owned project) or the project's own deploy pipeline (third-party-owned project) |
 | "Edge function not deployed" pre-scan | 404 from `/health` probe | Deploy the function |
 | "Scan backend is not ready: …" toast | 200 + `ok:false` from `/health` | Set the missing secret named in the toast (usually `MINIMAX_API_KEY` or `LOVABLE_API_KEY`) |
 | "Scan backend timed out" | Cold start | Retry; first invocation after deploy takes ~5-10s |
