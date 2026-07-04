@@ -86,6 +86,7 @@ Deno.test({
   assertEquals((results[1] as { ok?: boolean }).ok, true);
   assertEquals((results[2] as { ok?: boolean }).ok, true);
   clearRuntime(threadId);
+  },
 });
 
 Deno.test("Gemini-parallel L2: sanitizeModelMessages synthesizes a placeholder result for any orphaned sibling in a parallel batch", () => {
