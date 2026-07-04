@@ -605,6 +605,55 @@ function isNoiseToolGroup(group: ToolRunGroup): boolean {
   );
 }
 
+function flowToneForGroup(group: ToolRunGroup): "completed" | "partial" | "cached" | "skipped" {
+  if (group.useful > 0) return "completed";
+  if (group.cached > 0 || group.stale > 0) return "cached";
+  if (group.skipped > 0 && group.failed === 0) return "skipped";
+  return "partial";
+}
+
+function RunFlowRail({ groups }: { groups: ToolRunGroup[] }) {
+  if (groups.length <= 1) return null;
+  return (
+    <div className="rounded-xl border border-white/8 bg-[linear-gradient(160deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02)_58%,rgba(255,255,255,0.01))] px-3 py-2 shadow-[0_14px_50px_-34px_rgba(0,0,0,0.95)]">
+      <div className="mb-1 flex items-center gap-2 text-[10px] font-mono uppercase tracking-[0.18em] text-muted-foreground/80">
+        <GitBranch className="h-3 w-3 text-primary/80" />
+        Run flow
+      </div>
+      <div className="flex items-center gap-1 overflow-x-auto pb-0.5 [scrollbar-width:thin]">
+        {groups.map((group, index) => {
+          const tone = flowToneForGroup(group);
+          const isLast = index === groups.length - 1;
+          const icon = tone === "completed"
+            ? <CheckCircle2 className="h-3.5 w-3.5" />
+            : tone === "cached"
+              ? <Clock className="h-3.5 w-3.5" />
+              : tone === "skipped"
+                ? <CircleSlash className="h-3.5 w-3.5" />
+                : <Square className="h-3.5 w-3.5" />;
+          const toneClass = tone === "completed"
+            ? "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high)/0.35)] bg-[hsl(var(--confidence-high)/0.08)]"
+            : tone === "cached"
+              ? "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid)/0.35)] bg-[hsl(var(--confidence-mid)/0.08)]"
+              : tone === "skipped"
+                ? "text-muted-foreground border-white/12 bg-white/[0.03]"
+                : "text-foreground border-white/15 bg-white/[0.05]";
+          return (
+            <div key={`flow-${group.key}-${index}`} className="flex shrink-0 items-center gap-1">
+              <div className={cn("inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px]", toneClass)}>
+                {icon}
+                <span className="font-mono uppercase tracking-[0.08em]">{cycleSummaryLabel(group.stage, group.cycleId)}</span>
+                <span className="text-[10px] opacity-80">{group.parts.length}</span>
+              </div>
+              {!isLast && <span className="h-px w-5 shrink-0 bg-gradient-to-r from-white/25 to-white/5" aria-hidden />}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt?: string }) {
   const [expanded, setExpanded] = useState(false);
   const avgExpected = group.expectedValues.length
@@ -933,12 +982,14 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIM
   // Drop do-nothing cycles (all-skipped, no useful/cache/fail/stale) from chat —
   // single ToolParts always pass through; only noise ToolRunGroups are removed.
   const visibleToolGroups = toolGroups.filter((entry) => "part" in entry || !isNoiseToolGroup(entry));
+  const groupedCycles = visibleToolGroups.filter((entry): entry is ToolRunGroup => !("part" in entry));
   // Detect failed run sentinel
   const firstText = parts.find((p) => p.type === "text");
   if (firstText?.text?.startsWith?.(FAIL_PREFIX)) {
     const reason = firstText.text.slice(FAIL_PREFIX.length);
     return (
       <div className="space-y-2">
+        <RunFlowRail groups={groupedCycles} />
         {visibleToolGroups.map((entry, i) => "part" in entry ? (
           <ToolPart key={`failed-tool-${i}`} part={entry.part} createdAt={createdAt} />
         ) : (
@@ -955,6 +1006,7 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIM
       )}
       {visibleToolGroups.length > 0 && (
         <div className="space-y-2">
+          <RunFlowRail groups={groupedCycles} />
           {visibleToolGroups.map((entry, i) => "part" in entry ? (
             <ToolPart key={`tool-${i}`} part={entry.part} createdAt={createdAt} />
           ) : (
