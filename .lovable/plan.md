@@ -1,72 +1,73 @@
-## TL;DR
+## Ranked by impact — do #1 and #2, defer the rest
 
-The 10-minute investigations and dead-tool calls **are already fixed in the repo** — the fixes just aren't live. The deployed `osint-agent` still reports `build:d026c04` (2026-07-03), but 5 PRs merged after that stamp (#46, #47, #48, #49, #51) contain exactly the perf, timeout, readiness-gate, and fallback-model fixes you need. Because `build-info.ts` was never re-stamped after those merges, Lovable's auto-deploy pipeline didn't treat the function as changed and the old build stayed live.
+### #1 — Frontend status taxonomy: stop rendering "skipped/expected" as red "failed" ⭐ BIGGEST WIN
 
-Fix is a one-line stamp bump to force redeploy, then verify `/health` returns the new marker. Separately, this plan lists the remaining beta-readiness gaps the audit surfaced so nothing gets lost.
+**Why this dwarfs everything else:** 5 of the 8 "failing" tools in your screenshot are not actually broken:
+- `jina_reader_scrape` HTTP 451 → the URL is legally blocked. Working as designed.
+- `stolentax_footprint` HTTP 401 → provider rejected the key. Not a code bug, and the run correctly moved on.
+- `socialfetch_lookup` / `leakcheck_lookup` HTTP 400 → provider says selector shape wrong. Deterministic dead-end, correctly stopped.
+- `serus_darkweb_scan` timeout → known slow provider, run continued.
 
----
+The backend **already classifies these correctly** (`isFreeCall` in `cache.ts:219`, `classifyToolOutcome`). But `ChatWindow.tsx` + Health tab collapse everything non-green into red "FAILED (8) — NEED ATTENTION."
 
-## Evidence
+That red banner is what makes the app *feel* broken to a beta user even when the investigation succeeded. Fixing it changes nothing about the investigation quality — it changes the entire perception of reliability.
 
-**Deployed vs. source drift**
+**Change:** Add a third chip state in the frontend Health tab and Activity timeline:
+- 🟢 **succeeded** — 2xx with useful payload
+- ⚪ **skipped** — 401/403/451/429, deterministic 400 with "not configured"/"blocked"/"rate-limited", `{skipped:true}` — grey, collapsed under an "Expected skips (N)" accordion
+- 🔴 **failed** — genuine 5xx, unhandled timeout on a Tier-A tool, `{error}` without a known reason — the only thing that stays red and prominent
 
-- `curl .../osint-agent?health=1` → `build:"d026c04"`, stamped `2026-07-03`.
-- `git log b9dcc6e..HEAD -- supabase/functions/osint-agent/` → 5 merged PRs since that stamp, none re-ran `scripts/stamp-build.mjs`.
+Files: `src/components/panel/AuditTab.tsx` (Health tab), `src/lib/tool-run.ts` (add `deriveDisplayState`), `src/components/ChatWindow.tsx` (timeline chip color).
 
-**What those 5 PRs actually contain (matches your reported symptoms 1:1):**
-
-| PR | Fixes symptom |
-|----|--------------|
-| **#46** perf/hardening | 6-min wall-clock deadline + 30-step cap (kills 10-min runs); **readiness gate deletes keyless/disabled/gated tools from the schema before the model sees them** (kills dead-tool calls at the source); per-tool timeout caps on `gemini_deep_dork` (12s), `deepfind_reverse_email` (8s), `jina_reader_scrape` (8s); unknown-tool guard; fallback repointed off the 403-ing `google/gemini-2.5-pro` to a Flash-class model. |
-| **#47** | 90s idle-timeout wired into all four LLM providers (`createIdleTimeoutFetch`) — stops orchestrator stream from hanging forever on stalled providers. SSN minor-safety FP + Serus phone E.164 fixes. |
-| **#48** | Stop-button actually aborts (widens `threads.status` CHECK to allow `'stopped'`); O(n) message-budget; cost-parity entries for `coverage_audit`/`detect_contradictions`/`tool_audit`/`record_finding`/`unknown_tool_ignored`. |
-| **#49, #51** | Name/location conflict folding — stops the "different people" −25 penalty from firing on nickname/initial/city-state variants. |
-
-`grep` confirms all this code is present in the working tree (`ORCHESTRATOR_WALL_CLOCK_MS = 6 * 60_000` in `orchestrator-budget.ts:49`, `readiness-gate` in `index.ts:298`, `createIdleTimeoutFetch` in `env.ts:39`). It is simply not deployed.
-
-**Why the deployed function still calls "dead" tools:** the readiness gate (PR #46, Phase B1) is what removes keyless/disabled providers from the tool schema the model sees. Without it live, the planner still proposes `firecrawl_*`, `intelbase_email_lookup` (gated off), and other disabled tools, then they return `{ skipped: true }` and show as "failed" in the timeline. Live deploy = symptom gone.
+Backend is untouched. ~200 LOC.
 
 ---
 
-## Fix
+### #2 — Ship the mirror's build to the mirror ⭐ FREE WIN
 
-### Step 1 — Force redeploy by re-stamping build-info (the only code change)
+The screenshots are from `insight-finder-sandy.vercel.app`, which is a *different Vercel-hosted project* but presumably runs the same osint-agent code. Its Health tab shows `gemini_deep_dork exceeded 30000ms` — that's the pre-PR#46 30s cap. **This project (`skzqwbyvmwqarfgfvyky`) already runs the 12s-capped build after last turn's redeploy.** So the mirror is behind.
 
-Edit `supabase/functions/osint-agent/build-info.ts` to reflect the current HEAD (`64dc33b`):
-
-```ts
-export const BUILD_MARKER = "64dc33b";
-export const BUILD_COMMITTED_AT = "2026-07-04T00:00:00-07:00";
-```
-
-This is exactly what `scripts/stamp-build.mjs` produces and matches the pattern used by every prior `sync(...)` PR. Lovable's auto-deploy watches file mtimes/hashes inside `supabase/functions/**`; touching `build-info.ts` is what actually promotes the function.
-
-### Step 2 — Verify
-
-`curl "https://skzqwbyvmwqarfgfvyky.supabase.co/functions/v1/osint-agent?health=1"` should return `"build":"64dc33b"`. If it does, symptoms 1 and 2 (10-min hangs, dead-tool calls) are resolved live.
+If you want the mirror app fixed, sync its build the same way (bump its `build-info.ts`, redeploy). Zero code changes; I can do it in one turn if the mirror is in the same repo — but I'd need to confirm which Supabase project ref the mirror uses. **Ask the user:** is `insight-finder-sandy` a separate Supabase project, or does it share this backend?
 
 ---
 
-## Remaining beta-readiness gaps (surfaced by the audit — not fixed in this plan)
+### #3 — Rotate `STOLENTAX_API_KEY` (user action, 30 seconds)
 
-These are real, but distinct from the deploy problem. Flagged for your call before build mode:
-
-1. **Pivot / planner ranking is correct in code but has one blind spot.** `graph_pivots.ts` + `playbooks.ts` correctly cheapest-first, drop dead-ends, cap premium re-confirms, and route by seed type. Gap: the planner's `toolList` (system prompt) is what the LLM picks from, and the readiness gate only prunes the *schema*. If the planner prompt still names a tool that got readiness-gated, the LLM will keep suggesting it and get repaired to the internal sink. Low-severity, but worth a follow-up: filter `toolList` through the same readiness check.
-2. **Status taxonomy — "skipped/unavailable" still renders as red "failed"** (BETA_FINDINGS.md §B). Backend already distinguishes via `isFreeCall`; frontend `ChatWindow.tsx` timeline collapses both to failed. Cross-lane, needs a UI change to add a third chip state. This is why the board *looks* full of failures even when the run is healthy.
-3. **Evidence-integrity items** (BETA_FINDINGS.md §C): confidence-vs-corroboration inconsistency; famous-name collision (Adrian Broner → Adrien Broner) not flagged; whois existence elevating linkage confidence. Sign-off-gated, not touched here.
-4. **Duplicate secret entries** in the Cloud dashboard (`IPGEOLOCATION_API_KEY`, `VIRUSTOTAL_API_KEY`, `LEAKCHECK_API_KEY`, `STOLENTAX_API_KEY`, `INTELBASE_API_KEY` each appear twice, dated May 27). User action: de-dupe in Backend → Secrets.
-5. **`INTELBASE_ENABLED` is unset**, so `intelbase_email_lookup` stays gated even though the key is present. If you want intelbase live, add that secret; otherwise it correctly stays disabled.
-6. **`index.ts` still 3,854 LOC monolith** (Beta Readiness Audit BLOCKER-2). P1, not a runtime issue, defer past limited beta.
+Only genuine actionable failure in the screenshots. Backend → Secrets → update. No code change.
 
 ---
 
-## Files touched
+### #4 — Small planner input-shape guard (nice-to-have, ~30 LOC)
 
-- `supabase/functions/osint-agent/build-info.ts` — 2-line bump. Nothing else.
+The `socialfetch_lookup` / `leakcheck_lookup` HTTP 400s trace to the LLM sending an email where a username is expected (or vice versa). The tools already return `{error}`, but the planner keeps making the same mistake for the rest of the run because there's no learned suppression.
+
+Add a per-tool-per-selector-shape suppression in `circuit.ts`: after 2 400s on `socialfetch_lookup{selector_type:email}`, suppress that combo for the run. The tool stays live for username selectors. Prevents wasted retries without touching evidence logic.
+
+---
+
+### What NOT to do (would look productive but wouldn't move the needle)
+
+- **Raising timeouts** on `gemini_deep_dork` / `deepfind_reverse_email` / `minimax_extract` — these providers are genuinely slow; longer timeouts just push more runs past the 6-min wall clock. The current caps are correct.
+- **Dropping tools from the planner** — the readiness gate already handles keyless/disabled tools; removing more shrinks coverage. Only cull if a tool has *never* returned useful data in `tool_usage_log`.
+- **Chasing the frontend "48 artifact" count discrepancy** — that's a rendering polish item, not a beta blocker.
+
+---
+
+## Files (only if you approve #1)
+
+- `src/lib/tool-run.ts` — add `deriveDisplayState()` returning `"success" | "skipped" | "failed"`, keyed off status code + error string patterns already used in `cache.ts:isFreeCall`.
+- `src/components/panel/AuditTab.tsx` — split failing bucket into "Failed" and "Expected skips (collapsed)".
+- `src/components/ChatWindow.tsx` — grey chip for skipped calls in timeline.
+- One test file: `src/test/tool-run-display.test.ts` (already exists, extend it).
+
+No backend, no migration, no secret changes.
 
 ## Non-goals
 
-- No feature code changes to osint-agent.
-- No frontend changes.
-- No migration changes.
-- No secret changes (user's call whether to add `INTELBASE_ENABLED` or de-dupe secrets).
+- No changes to evidence logic, confidence scoring, or the orchestrator.
+- No changes to which tools are called or in what order.
+- No raising of any timeouts.
+
+---
+
+**Bottom line:** #1 is the one that turns "beta looks broken" into "beta looks solid" without changing a single tool call. Everything else is polish.
