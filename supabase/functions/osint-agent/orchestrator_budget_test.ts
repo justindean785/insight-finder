@@ -94,12 +94,12 @@ Deno.test("elidedToolResultRef: names tool, size and retrieval path", () => {
 });
 
 // ---- A2: step cap + wall-clock deadline are live and named ------------------
-Deno.test("step cap is the named ~30 ceiling", () => {
-  assertEquals(MAX_ORCHESTRATOR_STEPS, 30);
+Deno.test("step cap is the named ~22 ceiling", () => {
+  assertEquals(MAX_ORCHESTRATOR_STEPS, 22);
 });
 
-Deno.test("wall-clock deadline is 6 minutes and trips cleanly on elapse", () => {
-  assertEquals(ORCHESTRATOR_WALL_CLOCK_MS, 6 * 60_000);
+Deno.test("wall-clock deadline is 4 minutes and trips cleanly on elapse", () => {
+  assertEquals(ORCHESTRATOR_WALL_CLOCK_MS, 4 * 60_000);
   const start = 1_000_000;
   assertEquals(deadlineReached(start, start, ORCHESTRATOR_WALL_CLOCK_MS), false);
   assertEquals(
