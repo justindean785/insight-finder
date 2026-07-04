@@ -235,7 +235,23 @@ export function GraphTab({ threadId }: { threadId: string }) {
 
   // Node positions resync on graph/hidden only — so selecting a node (which only
   // restyles edges) never resets a manual drag arrangement.
-  useEffect(() => { setRfNodes(toRfNodes(graph, hidden)); }, [graph, hidden, setRfNodes]);
+  //
+  // Carry React Flow's measured width/height across every rebuild. A node is only
+  // painted once `initialized = !!node.width && !!node.height` (the ResizeObserver
+  // writes those). Handing setNodes a freshly-built, dimensionless array on a
+  // later update (the async seed fetch lands a second rebuild right after the
+  // first measurement, and artifact streams land more) wipes those dimensions;
+  // because the DOM element's size is unchanged the observer never re-fires, so
+  // every node gets stranded at `visibility:hidden` and the canvas goes blank.
+  useEffect(() => {
+    setRfNodes((prev) => {
+      const measured = new Map(prev.map((p) => [p.id, { width: p.width, height: p.height }]));
+      return toRfNodes(graph, hidden).map((n) => {
+        const m = measured.get(n.id);
+        return m?.width != null && m?.height != null ? { ...n, width: m.width, height: m.height } : n;
+      });
+    });
+  }, [graph, hidden, setRfNodes]);
   useEffect(() => { setRfEdges(toRfEdges(graph, hidden, selected)); }, [graph, hidden, selected, setRfEdges]);
 
   // Fit once the (async) nodes for a case are present; re-fits when the case
