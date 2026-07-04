@@ -161,7 +161,7 @@ export default function HomeHub() {
       </header>
 
       <main className="relative z-10 mx-auto max-w-6xl px-6 sm:px-10 pb-16">
-        <section className="pt-6 sm:pt-10 pb-10">
+        <section className="pt-6 sm:pt-10 pb-10 rounded-3xl border border-white/[0.07] bg-[linear-gradient(160deg,rgba(255,255,255,0.05),rgba(255,255,255,0.018)_52%,rgba(255,255,255,0.008))] px-5 sm:px-7 py-7 sm:py-8 shadow-[0_26px_90px_-54px_rgba(0,0,0,0.98)] backdrop-blur-xl">
           <div className="flex items-center gap-2 text-eyebrow font-mono uppercase tracking-[0.26em] text-[hsl(var(--intel-blue))]">
             <span className="h-1 w-1 animate-pulse rounded-full bg-[hsl(var(--intel-blue))]" />
             Workspace
@@ -178,18 +178,24 @@ export default function HomeHub() {
               onClick={startCase}
               disabled={creating}
               variant="cta"
-              className="h-10 rounded-xl px-4 gap-2 disabled:opacity-60"
+              className="h-10 rounded-xl px-4 gap-2 disabled:opacity-60 shadow-[0_14px_34px_-18px_hsl(var(--intel-blue)/0.7)]"
             >
               <Plus className="w-4 h-4" />
               {creating ? "Starting…" : "Start new case"}
             </Button>
             <Link
               to="/chat"
-              className="h-10 rounded-xl px-4 inline-flex items-center gap-2 border border-white/12 bg-white/[0.035] hover:bg-white/[0.06] text-foreground text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+              className="h-10 rounded-xl px-4 inline-flex items-center gap-2 border border-white/12 bg-[linear-gradient(145deg,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] hover:bg-[linear-gradient(145deg,rgba(255,255,255,0.12),rgba(255,255,255,0.045))] text-foreground text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
               <MessageSquare className="w-4 h-4" />
               Resume most recent
             </Link>
+          </div>
+          <div className="mt-6 flex flex-wrap items-center gap-2 text-[11px] font-mono uppercase tracking-[0.14em] text-muted-foreground">
+            <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1">Cases {counts.cases.toLocaleString()}</span>
+            <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1">Artifacts {counts.artifacts.toLocaleString()}</span>
+            <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1">Memories {counts.memories.toLocaleString()}</span>
+            <span className="rounded-full border border-[hsl(var(--intel-blue)/0.35)] bg-[hsl(var(--intel-blue)/0.08)] px-2.5 py-1 text-[hsl(var(--intel-blue))]">Last active {lastCaseLabel}</span>
           </div>
         </section>
 
@@ -293,14 +299,14 @@ function HubCard({
   return (
     <Link
       to={to}
-      className="group relative flex flex-col overflow-hidden rounded-2xl border border-white/[0.07] glass-card p-5 transition-all duration-300 ease-premium hover:-translate-y-0.5 hover:border-[hsl(var(--intel-blue)/0.4)] hover:shadow-[0_18px_50px_-24px_hsl(var(--intel-blue)/0.6)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--intel-blue)/0.5)]"
+      className="group relative flex flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[linear-gradient(150deg,rgba(255,255,255,0.06),rgba(255,255,255,0.02)_55%,rgba(255,255,255,0.008))] p-5 shadow-[0_20px_70px_-44px_rgba(0,0,0,0.96)] backdrop-blur-xl transition-all duration-300 ease-premium hover:-translate-y-0.5 hover:border-[hsl(var(--intel-blue)/0.4)] hover:shadow-[0_24px_70px_-34px_hsl(var(--intel-blue)/0.62)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--intel-blue)/0.5)]"
     >
       {/* hover sheen — intel-blue wash that fades in on the top edge */}
       <div
         aria-hidden
         className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[hsl(var(--intel-blue)/0.55)] to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100"
       />
-      <div className="mb-4 grid h-10 w-10 place-items-center rounded-xl border border-[hsl(var(--intel-blue)/0.28)] bg-[hsl(var(--intel-blue)/0.1)] text-[hsl(var(--intel-blue))] shadow-[0_0_24px_-10px_hsl(var(--intel-blue)/0.7)] transition-transform duration-300 group-hover:scale-105">
+      <div className="mb-4 grid h-10 w-10 place-items-center rounded-xl border border-[hsl(var(--intel-blue)/0.3)] bg-[linear-gradient(180deg,hsl(var(--intel-blue)/0.15),hsl(var(--intel-blue)/0.08))] text-[hsl(var(--intel-blue))] shadow-[0_0_24px_-10px_hsl(var(--intel-blue)/0.7)] transition-transform duration-300 group-hover:scale-105">
         <Icon className="h-5 w-5" strokeWidth={1.6} />
       </div>
       <div className="font-display text-base font-semibold tracking-tight">{title}</div>
