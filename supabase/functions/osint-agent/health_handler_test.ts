@@ -1,5 +1,32 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
+import { deriveReadiness, isHealthProbe, handleHealthProbe } from "./health-handler.ts";
+
+// ---------------------------------------------------------------------------
+// deriveReadiness — pure function
+// ---------------------------------------------------------------------------
+
+Deno.test("deriveReadiness: requires SUPABASE_ANON_KEY for core ok", () => {
+  const missingAnon = deriveReadiness({
+    MINIMAX_API_KEY: "mm",
+    SUPABASE_URL: "https://x.supabase.co",
+    SUPABASE_SERVICE_ROLE_KEY: "service",
+  });
+  assertEquals(missingAnon.ok, false);
+  assertEquals(missingAnon.checks.core.ok, false);
+  assertEquals(
+    missingAnon.checks.core.detail,
+    "SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / SUPABASE_ANON_KEY missing",
+  );
+
+  const ready = deriveReadiness({
+    MINIMAX_API_KEY: "mm",
+    SUPABASE_URL: "https://x.supabase.co",
+    SUPABASE_SERVICE_ROLE_KEY: "service",
+    SUPABASE_ANON_KEY: "anon",
+  });
+  assertEquals(ready.ok, true);
+  assertEquals(ready.checks.core.ok, true);
+});
 
 // ---------------------------------------------------------------------------
 // isHealthProbe — pure function, no env dependencies
@@ -34,11 +61,11 @@ Deno.test("isHealthProbe: GET with ?health=0 → false", () => {
 // handleHealthProbe — lightweight ?health=1 (public, no probe)
 // ---------------------------------------------------------------------------
 
-Deno.test("handleHealthProbe: ?health=1 returns 200 with ok/version/build", async () => {
+Deno.test("handleHealthProbe: ?health=1 returns 200/503 aligned with ok flag", async () => {
   const req = new Request("https://example.com/osint-agent?health=1", { method: "GET" });
   const res = await handleHealthProbe(req);
-  assertEquals(res.status, 200);
   const body = await res.json();
+  assertEquals(res.status, body.ok ? 200 : 503);
   assertEquals(body.service, "osint-agent");
   assertEquals(typeof body.version, "string");
   assertEquals(typeof body.build, "string");
@@ -53,10 +80,10 @@ Deno.test("handleHealthProbe: ?health=1 does not leak providers block", async ()
   assertEquals(body.providers, undefined);
 });
 
-Deno.test("handleHealthProbe: HEAD returns no body", async () => {
+Deno.test("handleHealthProbe: HEAD status matches readiness", async () => {
   const req = new Request("https://example.com/osint-agent?health=1", { method: "HEAD" });
   const res = await handleHealthProbe(req);
-  assertEquals(res.status, 200);
+  assertEquals(res.status, res.ok ? 200 : 503);
   assertEquals(res.body, null);
 });
 
@@ -96,9 +123,6 @@ Deno.test("handleHealthProbe: ?probe=1 403 response does not leak provider detai
 });
 
 Deno.test("handleHealthProbe: OSINT_AGENT_PROBE_SECRET unset → ?probe=1 fails closed", async () => {
-  // In the test env, OSINT_AGENT_PROBE_SECRET is not set (empty string).
-  // Even sending a blank x-probe-secret header should be rejected because
-  // the guard checks `!OSINT_AGENT_PROBE_SECRET` (empty → fail closed).
   const req = new Request("https://example.com/osint-agent?health=1&probe=1", {
     method: "GET",
     headers: { "x-probe-secret": "" },

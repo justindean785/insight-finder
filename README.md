@@ -110,7 +110,7 @@ npx supabase secrets set LOVABLE_API_KEY=<your-key> --env production
 ## Development
 
 ```sh
-npm run dev        # Start Vite dev server (port 5173)
+npm run dev        # Start Vite dev server (port 8080)
 npm run build      # Production build → dist/
 npm run preview    # Preview production build locally
 ```
@@ -155,15 +155,15 @@ The `osint-agent` edge function exposes a lightweight readiness endpoint used by
 
 | Trigger | Status | Body |
 | --- | --- | --- |
-| `GET /functions/v1/osint-agent?health=1` | `200` | `{ ok, service, version, checks: { orchestrator, core, tools }, intelbase_enabled }` |
-| `HEAD /functions/v1/osint-agent?health=1` | `200` | (no body) |
+| `GET /functions/v1/osint-agent?health=1` | `200` when ready, `503` when not | `{ ok, service, version, checks: { orchestrator, core, tools }, intelbase_enabled }` |
+| `HEAD /functions/v1/osint-agent?health=1` | `200` when ready, `503` when not | (no body) |
 | (no `?health=1` query) | normal flow | auth + scan handler |
 
 Interpretation:
 
 - **404** — function is not deployed. Run `npx supabase functions deploy osint-agent`.
 - **200 + `ok:true`** — ready to scan.
-- **200 + `ok:false`** — function is deployed but a required dep is missing. Inspect `checks.orchestrator.detail` / `checks.core.detail` for the exact missing secret(s). The frontend will block the scan and surface the detail in a toast.
+- **503 + `ok:false`** — function is deployed but a required dep is missing. Inspect `checks.orchestrator.detail` / `checks.core.detail` for the exact missing secret(s). The frontend will block the scan and surface the detail in a toast.
 - `checks.tools.detail` reports `configured/13 optional tool APIs` — informational only, never blocks a run.
 
 Quick CLI check after deploy:

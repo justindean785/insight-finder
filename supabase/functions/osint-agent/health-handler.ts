@@ -1,5 +1,5 @@
 import {
-  corsHeaders, MINIMAX_API_KEY, LOVABLE_API_KEY, SUPABASE_URL, SERVICE_KEY,
+  corsHeaders, MINIMAX_API_KEY, LOVABLE_API_KEY, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY,
   OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
   CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED,
   HIBP_API_KEY, EXA_API_KEY, FIRECRAWL_API_KEY, SERUS_API_KEY,
@@ -12,11 +12,12 @@ import {
 import { minimaxChat } from "./providers.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
 
-function deriveReadiness(env: {
+export function deriveReadiness(env: {
   MINIMAX_API_KEY?: string | null;
   LOVABLE_API_KEY?: string | null;
   SUPABASE_URL?: string | null;
   SUPABASE_SERVICE_ROLE_KEY?: string | null;
+  SUPABASE_ANON_KEY?: string | null;
   OATHNET_API_KEY?: string | null;
   SYNAPSINT_API_KEY?: string | null;
   OSINTNOVA_API_KEY?: string | null;
@@ -38,7 +39,7 @@ function deriveReadiness(env: {
 }): { ok: boolean; checks: Record<string, { ok: boolean; detail?: string }> } {
   const has = (v: string | null | undefined) => !!(v && v.length > 0);
   const orchestratorOk = has(env.MINIMAX_API_KEY) || has(env.LOVABLE_API_KEY);
-  const coreOk = has(env.SUPABASE_URL) && has(env.SUPABASE_SERVICE_ROLE_KEY);
+  const coreOk = has(env.SUPABASE_URL) && has(env.SUPABASE_SERVICE_ROLE_KEY) && has(env.SUPABASE_ANON_KEY);
   const tools = {
     oathnet: has(env.OATHNET_API_KEY),
     synapsint: has(env.SYNAPSINT_API_KEY),
@@ -66,7 +67,7 @@ function deriveReadiness(env: {
       : { ok: false, detail: "Set MINIMAX_API_KEY or LOVABLE_API_KEY in Supabase secrets" },
     core: coreOk
       ? { ok: true }
-      : { ok: false, detail: "SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY missing" },
+      : { ok: false, detail: "SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / SUPABASE_ANON_KEY missing" },
     tools: {
       ok: true, // optional tools are never required
       detail: `${enabledOptional}/${Object.keys(tools).length} optional tool APIs configured`,
@@ -88,6 +89,7 @@ export function isHealthProbe(req: Request): boolean {
 export async function handleHealthProbe(req: Request): Promise<Response> {
   const r = deriveReadiness({
     MINIMAX_API_KEY, LOVABLE_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY,
+    SUPABASE_ANON_KEY,
     OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
     CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, HIBP_API_KEY, EXA_API_KEY,
     FIRECRAWL_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY, GITHUB_API_TOKEN, PERPLEXITY_API_KEY,
@@ -187,7 +189,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   return new Response(
     req.method === "HEAD" ? null : JSON.stringify(body),
     {
-      status: 200,
+      status: r.ok ? 200 : 503,
       headers: {
         ...corsHeaders,
         "Content-Type": "application/json",

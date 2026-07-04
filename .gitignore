@@ -28,6 +28,9 @@ dist-ssr
 .env.local
 .env.*.local
 
+# Vercel local link metadata (projectId/orgId — do not commit)
+.vercel
+
 # Supabase local config
 supabase/.env
 supabase/.temp/

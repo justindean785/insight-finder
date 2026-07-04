@@ -1497,7 +1497,7 @@ function ChatWindowInner({
     // GET (not HEAD) so we can read the JSON body and distinguish
     //   404 → function not deployed
     //   200 + ok:true  → ready to scan
-    //   200 + ok:false → deployed but a required dep is missing (e.g. orchestrator key)
+    //   503 + ok:false → deployed but a required dep is missing (e.g. orchestrator key)
     if (!readyProbedOnceRef.current) {
       readyProbedOnceRef.current = true;
       const { signal, cancel } = signalWithTimeout(5000);
@@ -1507,7 +1507,7 @@ function ChatWindowInner({
           toast.error("Edge function not deployed. Run: supabase functions deploy osint-agent");
           return;
         }
-        if (probeRes.ok) {
+        if (probeRes.status === 503 || probeRes.ok) {
           try {
             const body = (await probeRes.json()) as {
               ok?: boolean;
