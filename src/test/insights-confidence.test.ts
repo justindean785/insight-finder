@@ -81,3 +81,47 @@ describe("deriveInsights — aggregate confidence scaling", () => {
     expect(unscored?.count).toBe(1);
   });
 });
+
+/**
+ * Regression guard for the "Activity last 14 days" empty-state.
+ *
+ * activityByDay ALWAYS has 14 entries (one per day in the window), so the old
+ * render condition `activityByDay.length > 0` was always true — the empty-state
+ * hint was unreachable dead code and an idle account rendered 14 near-invisible
+ * zero-height bars (a chart that reads as broken). The render now keys off
+ * `activityTotal`, which these tests pin. Dates are built relative to now so the
+ * in-window / out-of-window split is stable whenever the suite runs.
+ */
+function artifactOnDate(createdAtIso: string, i = 0): ArtifactLike {
+  return { id: `a${i}`, kind: "email", source: "whois", confidence: 50, created_at: createdAtIso, thread_id: "t1" };
+}
+function daysAgoIso(days: number): string {
+  return new Date(Date.now() - days * 86_400_000).toISOString();
+}
+function statsWithArtifacts(artifacts: ArtifactLike[]) {
+  return { threads: [], artifacts, memoryCount: 0 };
+}
+
+describe("deriveInsights — activity empty-state", () => {
+  it("activityByDay is always 14 entries, so its length can't gate the empty-state", () => {
+    expect(deriveInsights(statsWithArtifacts([])).activityByDay).toHaveLength(14);
+  });
+
+  it("activityTotal is 0 when there are no artifacts (empty-state path)", () => {
+    expect(deriveInsights(statsWithArtifacts([])).activityTotal).toBe(0);
+  });
+
+  it("activityTotal is 0 when all activity is older than the 14-day window", () => {
+    const old = [artifactOnDate(daysAgoIso(20), 0), artifactOnDate(daysAgoIso(45), 1)];
+    expect(deriveInsights(statsWithArtifacts(old)).activityTotal).toBe(0);
+  });
+
+  it("activityTotal counts only artifacts inside the 14-day window (SparkBars path)", () => {
+    const mixed = [
+      artifactOnDate(daysAgoIso(0), 0), // today — in window
+      artifactOnDate(daysAgoIso(5), 1), // in window
+      artifactOnDate(daysAgoIso(30), 2), // out of window — excluded
+    ];
+    expect(deriveInsights(statsWithArtifacts(mixed)).activityTotal).toBe(2);
+  });
+});
