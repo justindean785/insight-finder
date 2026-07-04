@@ -624,7 +624,15 @@ export function artifactsForFinding(
   // thread and dishonestly inflate confidence (the exact overshoot this scoping
   // must avoid).
   if (clusterIds.size === 0) return artifacts;
-  // Otherwise scope to the finding's own candidate cluster(s) PLUS any
+  // Cited artifacts span MORE THAN ONE cluster — the same value string exists
+  // in two (or more) different candidate clusters (e.g. a shared given name in
+  // a same-name-collision thread). We cannot tell which cluster is genuinely
+  // "this finding's own", and unioning them back in would re-introduce the
+  // exact cross-candidate contamination this function exists to prevent (a CA
+  // candidate eating a TX candidate's contradiction). Ambiguous → unscopable →
+  // fall back to the thread-wide set, same conservative rule as no-cluster.
+  if (clusterIds.size > 1) return artifacts;
+  // Otherwise scope to the finding's own SINGLE candidate cluster PLUS any
   // UNCLUSTERED siblings (not proven to belong to a different candidate), and
   // EXCLUDE only artifacts KNOWN to belong to a DIFFERENT candidate cluster —
   // that exclusion is the actual #6 fix (a CA finding must not eat a TX

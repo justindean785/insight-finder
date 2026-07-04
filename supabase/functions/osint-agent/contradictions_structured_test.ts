@@ -291,6 +291,46 @@ Deno.test("clustered finding: excludes a DIFFERENT candidate cluster but keeps u
   assertEquals(vals, ["Rocklin, CA", "sib@example.com"]);
 });
 
+// ---------------------------------------------------------------------------
+// Copilot review follow-up (mirror PR #52) — a cited VALUE that exists in
+// MORE THAN ONE candidate cluster (same-name-collision threads routinely
+// share a value like a given name across two different people's clusters) is
+// ambiguous: we cannot tell which cluster is genuinely "this finding's own".
+// artifactsForFinding must treat this as unscopable and fall back thread-wide
+// — NOT union both clusters back in, which would silently re-introduce the
+// exact cross-candidate contamination this function exists to prevent.
+// ---------------------------------------------------------------------------
+
+Deno.test("ambiguous scope: a value shared across TWO clusters is unscopable — falls back thread-wide", () => {
+  const artifacts = [
+    // "John" appears in BOTH c1 (a CA candidate) and c2 (a TX candidate) — a
+    // realistic same-name-collision case.
+    { kind: "name", value: "John", source: "A", metadata: { cluster_id: "c1" } },
+    { kind: "address", value: "Rocklin, CA", source: "A2", metadata: { cluster_id: "c1", residence: "Rocklin, CA" } },
+    { kind: "name", value: "John", source: "B", metadata: { cluster_id: "c2" } },
+    { kind: "address", value: "Austin, TX", source: "B2", metadata: { cluster_id: "c2", residence: "Austin, TX" } },
+  ];
+  // The ambiguous cited value alone (ONLY "John") must fall back to the FULL
+  // thread-wide set, not union just the two "John" rows or pick one cluster.
+  const scoped = artifactsForFinding(artifacts, ["John"]);
+  assertEquals(scoped, artifacts);
+});
+
+Deno.test("ambiguous scope: the conservative thread-wide fallback still surfaces the real cross-candidate conflict (never silently drops it)", () => {
+  const artifacts = [
+    { kind: "name", value: "John", source: "A", metadata: { cluster_id: "c1" } },
+    { kind: "address", value: "Rocklin, CA", source: "A2", metadata: { cluster_id: "c1", residence: "Rocklin, CA" } },
+    { kind: "name", value: "John", source: "B", metadata: { cluster_id: "c2" } },
+    { kind: "address", value: "Austin, TX", source: "B2", metadata: { cluster_id: "c2", residence: "Austin, TX" } },
+  ];
+  const scoped = artifactsForFinding(artifacts, ["John"]);
+  const contras = detectContradictions(scoped);
+  // Conservative fallback still surfaces the real (thread-wide) conflict —
+  // it does not silently drop it, matching the documented "never inflate"
+  // guarantee even in the ambiguous-cluster case.
+  assertEquals(contras.some((c) => c.kind === "location_conflict"), true);
+});
+
 Deno.test("merge preserves prior entries (including legacy string contradictions)", () => {
   const legacy = "location_conflict: noted earlier in prose";
   const entry: StructuredContradiction = {
