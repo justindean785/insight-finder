@@ -155,27 +155,9 @@ export default function Auth() {
             </TabsContent>
           </Tabs>
 
-          <div className="relative my-5">
-            <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-white/[0.06]" /></div>
-            <div className="relative flex justify-center">
-              <span className="px-2.5 text-[10px] uppercase tracking-[0.18em] text-muted-foreground bg-[hsl(var(--surface-1))]">
-                or
-              </span>
-            </div>
-          </div>
-
-          <Button
-            type="button"
-            variant="outline"
-            className="w-full h-10 bg-transparent border-white/[0.08] hover:bg-white/[0.04] hover:border-white/[0.14] text-foreground/90"
-            onClick={google}
-            disabled={loading}
-          >
-            <svg viewBox="0 0 24 24" className="w-4 h-4 mr-2" aria-hidden>
-              <path fill="#EA4335" d="M12 10.2v3.9h5.5c-.24 1.4-1.65 4.1-5.5 4.1-3.32 0-6-2.74-6-6.1S8.68 6 12 6c1.88 0 3.15.8 3.87 1.5l2.64-2.55C16.78 3.4 14.6 2.4 12 2.4 6.7 2.4 2.4 6.7 2.4 12s4.3 9.6 9.6 9.6c5.55 0 9.22-3.9 9.22-9.4 0-.63-.07-1.1-.16-1.6H12z" />
-            </svg>
-            Continue with Google
-          </Button>
+          {/* Google sign-in intentionally hidden — managed provider not yet
+              provisioned with credentials. Re-enable once Client ID/Secret
+              are pasted in Cloud → Users → Auth Settings → Google. */}
         </div>
 
         {/* Footnote */}
