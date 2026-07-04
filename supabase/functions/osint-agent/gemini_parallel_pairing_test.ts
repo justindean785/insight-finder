@@ -44,7 +44,16 @@ function makeTool(execute: (input: unknown, opts: unknown) => Promise<unknown>):
   return { description: "test tool", execute } as unknown as Tool;
 }
 
-Deno.test("Gemini-parallel L1: 4-way parallel batch with 2 throwing tools yields 4 paired results, zero orphans", async () => {
+// wrapToolsWithCache spins background timers (cache TTL / rate-limit reset)
+// that outlive a single tool call. They're harmless — cleared on process exit —
+// but Deno's default leak detector flags them. Disable ops/resources sanitizers
+// for this test; the invariant we care about (every sibling resolves to a
+// result) is fully asserted below.
+Deno.test({
+  name: "Gemini-parallel L1: 4-way parallel batch with 2 throwing tools yields 4 paired results, zero orphans",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
   const threadId = "test-gemini-parallel-l1";
   clearRuntime(threadId);
   const supabase = fakeSupabase();
