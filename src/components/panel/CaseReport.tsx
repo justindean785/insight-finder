@@ -17,7 +17,7 @@ import { checkIndependence, computeEffectiveSourceCount } from "@/lib/audit/sour
 import { lintReport } from "@/lib/audit/confidence-linter";
 import { SourceBadge } from "@/components/SourceBadge";
 import { breachSeverity, isAiSummaryArtifact, isDobPlaceholder, qualConfidence } from "@/lib/report-badges";
-import { EvidenceStatusBadge } from "@/components/ui/workspace-primitives";
+import { EvidenceStatusBadge, StatusLegend } from "@/components/ui/workspace-primitives";
 import { ConfidenceBar } from "@/components/ui/confidence";
 import { evidenceStatus } from "@/lib/evidence-status";
 import {
@@ -133,13 +133,14 @@ function BucketTable({ rows, empty }: { rows: Artifact[]; empty: string }) {
 /* ------------------------------------------------------------------ */
 /* Section header — red bar + ALL-CAPS spaced title, like the ref UI. */
 /* ------------------------------------------------------------------ */
-function SectionHeader({ children }: { children: React.ReactNode }) {
+function SectionHeader({ children, right }: { children: React.ReactNode; right?: React.ReactNode }) {
   return (
     <div className="flex items-center gap-2 mt-6 mb-3">
       <span className="w-[3px] h-4 bg-[hsl(var(--info))] rounded-sm shadow-[0_0_16px_hsl(var(--info)/0.55)]" />
       <h3 className="text-eyebrow font-semibold uppercase tracking-[0.18em] text-[hsl(var(--info))]">
         {children}
       </h3>
+      {right && <div className="ml-auto">{right}</div>}
     </div>
   );
 }
@@ -1029,7 +1030,7 @@ export function CaseReport({
       )}
 
       {/* 4. Confirmed findings */}
-      <SectionHeader>Confirmed Findings</SectionHeader>
+      <SectionHeader right={<StatusLegend />}>Confirmed Findings</SectionHeader>
       <BucketTable rows={buckets.confirmed} empty="No findings meet the confirmation threshold (official + independent corroboration)." />
 
       {/* 5. Probable findings */}

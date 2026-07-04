@@ -5,7 +5,9 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { EvidenceDisplayStatus, EvidenceStatusTone } from "@/lib/evidence-status";
+import { Info } from "lucide-react";
+import { EVIDENCE_STATUS_LEGEND, type EvidenceDisplayStatus, type EvidenceStatusTone } from "@/lib/evidence-status";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 /**
  * Shared workspace UI primitives — small, typed, reusable building blocks used
@@ -314,6 +316,45 @@ export function EvidenceStatusBadge({
       <Icon className="w-3 h-3 shrink-0" strokeWidth={2} />
       {label}
     </span>
+  );
+}
+
+/* ── StatusLegend ───────────────────────────────────────────────────── */
+
+/**
+ * One shared status/confidence legend, rendered from the single canonical
+ * `EVIDENCE_STATUS_LEGEND` vocabulary. Dropped into the findings table, the
+ * evidence board, and the graph so every surface explains the same badges with
+ * the same words. Opens in a popover to stay out of the way until asked for.
+ */
+export function StatusLegend({ className, align = "end" }: { className?: string; align?: "start" | "center" | "end" }) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "inline-flex items-center gap-1 rounded-full border border-border-subtle bg-surface-2/50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground",
+            className,
+          )}
+          aria-label="Show evidence status legend"
+        >
+          <Info className="h-3 w-3" strokeWidth={2} />
+          Legend
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align={align} className="w-[min(92vw,340px)] p-3">
+        <div className="mb-2 text-eyebrow uppercase tracking-wider text-muted-foreground">Evidence status</div>
+        <ul className="space-y-2">
+          {EVIDENCE_STATUS_LEGEND.map((entry) => (
+            <li key={entry.status} className="flex flex-col gap-0.5">
+              <EvidenceStatusBadge status={entry.status} label={entry.label} tone={entry.tone} className="self-start" />
+              <span className="text-[11px] leading-snug text-muted-foreground">{entry.hint}</span>
+            </li>
+          ))}
+        </ul>
+      </PopoverContent>
+    </Popover>
   );
 }
 

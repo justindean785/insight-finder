@@ -1,6 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { evidenceStatus, isSharedInfrastructure, EVIDENCE_STATUS_RANK } from "@/lib/evidence-status";
+import { evidenceStatus, isSharedInfrastructure, EVIDENCE_STATUS_RANK, EVIDENCE_STATUS_LEGEND, EVIDENCE_STATUS_ORDER } from "@/lib/evidence-status";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
+
+describe("EVIDENCE_STATUS_LEGEND — one shared vocabulary", () => {
+  it("covers every canonical status, in order, with label + hint", () => {
+    expect(EVIDENCE_STATUS_LEGEND.map((e) => e.status)).toEqual(EVIDENCE_STATUS_ORDER);
+    for (const entry of EVIDENCE_STATUS_LEGEND) {
+      expect(entry.label.length).toBeGreaterThan(0);
+      expect(entry.hint.length).toBeGreaterThan(10);
+      expect(entry.tone).toBeTruthy();
+    }
+  });
+
+  it("matches the label/tone a real artifact resolves to (legend == chips)", () => {
+    const verified = EVIDENCE_STATUS_LEGEND.find((e) => e.status === "verified")!;
+    expect(verified.label).toBe("Verified");
+  });
+});
 
 function art(partial: Partial<Artifact>): Artifact {
   return {

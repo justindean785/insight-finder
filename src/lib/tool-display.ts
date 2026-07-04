@@ -112,6 +112,35 @@ export function toolDisplayName(toolName: string): string {
 }
 
 /**
+ * Plain-language names for the runtime's investigation stages. The orchestrator
+ * emits raw tokens (TRIAGE, REVIEW, TARGETED_PIVOT, VERIFY, REPORT — see
+ * `runtime-policy.ts` `InvestigationStage`); the chat timeline must never show
+ * a raw `SNAKE_CASE` token to an analyst.
+ */
+const STAGE_LABELS: Record<string, string> = {
+  TRIAGE: "Triage",
+  REVIEW: "Review",
+  TARGETED_PIVOT: "Targeted pivot",
+  VERIFY: "Verify",
+  REPORT: "Report",
+};
+
+/**
+ * Maps a runtime stage token to a human-readable stage name. Unknown/legacy
+ * tokens are de-cased into Title-case plain words rather than leaked verbatim,
+ * so a `SNAKE_CASE` value can never reach the UI. Empty input → "Review" (the
+ * grouping default).
+ */
+export function humanizeStage(stage: string | null | undefined): string {
+  const raw = (stage ?? "").trim();
+  if (!raw) return "Review";
+  const known = STAGE_LABELS[raw.toUpperCase()];
+  if (known) return known;
+  const cleaned = raw.replace(/[_-]+/g, " ").toLowerCase().trim();
+  return cleaned ? cleaned.charAt(0).toUpperCase() + cleaned.slice(1) : "Review";
+}
+
+/**
  * Returns just the action portion (after the " — ") for use in reports
  * and prose where the full role prefix would be redundant.
  */

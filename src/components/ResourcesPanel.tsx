@@ -19,7 +19,8 @@ import {
 } from "@/lib/intel";
 import { evidenceStatus, EVIDENCE_STATUS_RANK } from "@/lib/evidence-status";
 import { readableSourceLabel } from "@/lib/tool-display";
-import { EvidenceStatusBadge, FilterChips } from "@/components/ui/workspace-primitives";
+import { humanizeArtifactMetadata } from "@/lib/artifact-metadata";
+import { EvidenceStatusBadge, FilterChips, StatusLegend } from "@/components/ui/workspace-primitives";
 import {
   useReviewStates, REVIEW_CLASS, REVIEW_SHORT,
   type ReviewState,
@@ -505,6 +506,7 @@ function ArtifactDrawerInner({
   threadId: string;
 }) {
   const meta = (artifact.metadata ?? {}) as Record<string, unknown>;
+  const metaRows = humanizeArtifactMetadata(meta);
   const falsePositive = meta.false_positive === true;
   const rState = reviewGet(artifact.id);
   const src = extractSourceInfo(artifact);
@@ -669,8 +671,25 @@ function ArtifactDrawerInner({
               </Button>
             </div>
           </Field>
-          <Field label="Metadata">
-            <pre className="code-panel max-h-64 overflow-x-auto p-3 text-data font-mono">{JSON.stringify(meta, null, 2)}</pre>
+          <Field label="Details">
+            {metaRows.length === 0 ? (
+              <div className="text-muted-foreground text-xs">No additional details recorded.</div>
+            ) : (
+              <dl className="space-y-1.5 rounded-lg border border-white/[0.08] bg-white/[0.025] p-2.5 text-xs">
+                {metaRows.map((row) => (
+                  <div key={row.key} className="flex items-start justify-between gap-3">
+                    <dt className="shrink-0 text-eyebrow uppercase tracking-wider text-muted-foreground">{row.label}</dt>
+                    <dd className="min-w-0 break-all text-right font-mono text-foreground [overflow-wrap:anywhere]">{row.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+            {import.meta.env.DEV && (
+              <details className="mt-2">
+                <summary className="cursor-pointer text-eyebrow uppercase tracking-wider text-muted-foreground/70">Raw metadata (dev only)</summary>
+                <pre className="code-panel mt-1 max-h-64 overflow-x-auto p-3 text-data font-mono">{JSON.stringify(meta, null, 2)}</pre>
+              </details>
+            )}
           </Field>
 
           <div className="grid grid-cols-2 gap-2">
@@ -834,6 +853,7 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
                 { key: "newest", label: "Newest" },
               ]}
             />
+            <StatusLegend />
           </div>
         </div>
       )}

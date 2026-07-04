@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { toolDisplayName, toolActionLabel, toolAgentRole } from "@/lib/tool-display";
+import { toolDisplayName, toolActionLabel, toolAgentRole, humanizeStage } from "@/lib/tool-display";
 
 const KNOWN_TOOLS = [
   "list_tools", "triage_seed",
@@ -93,5 +93,29 @@ describe("toolAgentRole", () => {
 
   it("returns 'Analyst' for unknown tools", () => {
     expect(toolAgentRole("unknown_thing")).toBe("Analyst");
+  });
+});
+
+describe("humanizeStage", () => {
+  it("maps every canonical runtime stage to a plain-language name (no SNAKE_CASE)", () => {
+    const stages = ["TRIAGE", "REVIEW", "TARGETED_PIVOT", "VERIFY", "REPORT"];
+    for (const stage of stages) {
+      const label = humanizeStage(stage);
+      expect(label).not.toContain("_");
+      expect(label).not.toBe(stage);
+    }
+    expect(humanizeStage("TARGETED_PIVOT")).toBe("Targeted pivot");
+    expect(humanizeStage("TRIAGE")).toBe("Triage");
+  });
+
+  it("de-cases an unknown/legacy token instead of leaking it verbatim", () => {
+    expect(humanizeStage("SOME_FUTURE_STAGE")).toBe("Some future stage");
+    expect(humanizeStage("some_future_stage")).not.toContain("_");
+  });
+
+  it("falls back to 'Review' for empty/nullish input", () => {
+    expect(humanizeStage("")).toBe("Review");
+    expect(humanizeStage(null)).toBe("Review");
+    expect(humanizeStage(undefined)).toBe("Review");
   });
 });

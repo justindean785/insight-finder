@@ -24,7 +24,7 @@ import {
   type GraphNode as EntityNodeModel,
 } from "@/lib/entity-graph";
 import { ConfidenceMeter } from "@/components/investigation/primitives";
-import { CopyButton } from "@/components/ui/workspace-primitives";
+import { CopyButton, StatusLegend } from "@/components/ui/workspace-primitives";
 import { EmptyState } from "@/components/panel/EmptyState";
 import { Activity, AlertTriangle, Share2, Sparkles, X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -440,11 +440,14 @@ export function GraphTab({ threadId }: { threadId: string }) {
             {GROUP_LABEL[g]}
           </span>
         ))}
-        <span className="ml-auto inline-flex items-center gap-2 text-data text-muted-foreground/70">
-          <Activity className="h-3.5 w-3.5" />
-          {graph.stats.nodeCount} entities · {graph.stats.realEdgeCount} real links · {graph.stats.clusterCount} clusters
-          {graph.stats.bridgeCount > 0 && <> · {graph.stats.bridgeCount} bridge{graph.stats.bridgeCount > 1 ? "s" : ""}</>}
-        </span>
+        <div className="ml-auto flex items-center gap-3">
+          <span className="inline-flex items-center gap-2 text-data text-muted-foreground/70">
+            <Activity className="h-3.5 w-3.5" />
+            {graph.stats.nodeCount} entities · {graph.stats.realEdgeCount} real links · {graph.stats.clusterCount} clusters
+            {graph.stats.bridgeCount > 0 && <> · {graph.stats.bridgeCount} bridge{graph.stats.bridgeCount > 1 ? "s" : ""}</>}
+          </span>
+          <StatusLegend />
+        </div>
       </div>
     </div>
   );
