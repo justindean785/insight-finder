@@ -30,6 +30,22 @@ export interface ConfidenceDimension {
   reason: string; // how this value was derived (shown in the accessible list)
 }
 
+/**
+ * Plain-language definition of what each confidence axis MEASURES (keyed by the
+ * dimension `key` below). Distinct from a dimension's per-case `reason`, which
+ * explains how the current value was derived — these explain the axis itself so
+ * a label like "Report readiness" or "Conflict-free" is never unexplained.
+ */
+export const DIMENSION_DEFINITIONS: Record<string, string> = {
+  identity: "How strongly the evidence converges on one real-world identity — the confidence of the strongest identity cluster.",
+  selectors: "Coverage of strong, pivotable selectors (email, phone, handle, domain, address, wallet). More distinct types = a firmer base.",
+  corroboration: "Share of findings backed by ≥2 independent source classes rather than a single source.",
+  diversity: "How many distinct source families contributed — breadth guards against one source skewing the picture.",
+  recency: "Freshness of the newest evidence. Older data is more likely to be stale or superseded.",
+  conflictFree: "Absence of conflicts, collisions, and unverified breach indicators. Higher = fewer contradictions to resolve.",
+  readiness: "Share of findings that are verified or corroborated (report-safe). Low means most findings still need review before reporting.",
+};
+
 export interface ConfidenceProfile {
   dimensions: ConfidenceDimension[];
   overall: number; // 0-100, mean of the axes

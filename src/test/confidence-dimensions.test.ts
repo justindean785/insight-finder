@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildConfidenceProfile, type ConfidenceProfile } from "@/lib/confidence-dimensions";
+import { buildConfidenceProfile, DIMENSION_DEFINITIONS, type ConfidenceProfile } from "@/lib/confidence-dimensions";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 
 const NOW = Date.parse("2026-06-21T00:00:00Z");
@@ -16,6 +16,20 @@ const A = (over: Partial<Artifact> = {}): Artifact => ({
 });
 
 const dim = (p: ConfidenceProfile, key: string) => p.dimensions.find((d) => d.key === key)!;
+
+describe("DIMENSION_DEFINITIONS — every confidence axis is explained", () => {
+  it("has a non-empty definition for every dimension key the profile emits", () => {
+    const profile = buildConfidenceProfile({
+      artifacts: [A({ id: "1", kind: "email", value: "a@b.com" })],
+      seedValue: "a@b.com",
+      nowMs: NOW,
+    });
+    for (const d of profile.dimensions) {
+      expect(DIMENSION_DEFINITIONS[d.key], `missing definition for "${d.key}"`).toBeTruthy();
+      expect(DIMENSION_DEFINITIONS[d.key].length).toBeGreaterThan(10);
+    }
+  });
+});
 
 describe("buildConfidenceProfile — honest, deterministic confidence axes", () => {
   it("is deterministic for identical input (with a fixed now)", () => {

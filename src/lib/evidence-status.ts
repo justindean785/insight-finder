@@ -276,6 +276,25 @@ export const EVIDENCE_STATUS_ORDER: EvidenceDisplayStatus[] = [
   "rejected",
 ];
 
+export interface EvidenceLegendEntry {
+  status: EvidenceDisplayStatus;
+  label: string;
+  tone: EvidenceStatusTone;
+  hint: string;
+}
+
+/**
+ * The single, canonical status vocabulary — one ordered list the findings table,
+ * evidence board, and graph all render from, so every surface speaks the same
+ * language. Derived directly from the maps above (no duplicated copy).
+ */
+export const EVIDENCE_STATUS_LEGEND: EvidenceLegendEntry[] = EVIDENCE_STATUS_ORDER.map((status) => ({
+  status,
+  label: STATUS_LABEL[status],
+  tone: STATUS_TONE[status],
+  hint: STATUS_HINT[status],
+}));
+
 /** Sort weight so the strongest, most actionable evidence surfaces first. */
 export const EVIDENCE_STATUS_RANK: Record<EvidenceDisplayStatus, number> = {
   verified: 0,

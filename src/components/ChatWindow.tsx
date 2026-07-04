@@ -32,7 +32,7 @@ import {
 } from "@/lib/recommended-pivots";
 import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon, Copy as CopyIcon } from "lucide-react";
 import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
-import { toolDisplayName } from "@/lib/tool-display";
+import { toolDisplayName, toolActionLabel, humanizeStage } from "@/lib/tool-display";
 
 const SUPABASE_PROJECT_ID = (import.meta.env.VITE_SUPABASE_PROJECT_ID as string | undefined)?.trim();
 // Resolve from the client's SUPABASE_URL (which carries the baked-in default),
@@ -528,7 +528,10 @@ function computeToolGroups(parts: MessagePartShape[]): Array<ToolRunGroup | { pa
     const cached = runtime?.cache_layer === "thread" || runtime?.cache_layer === "user" || !!(part.output && typeof part.output === "object" && (part.output as Record<string, unknown>)._cached);
     const stale = runtime?.stale_cache === true;
     const charge = deriveToolCharge(part.output).label;
-    const selector = typeof runtime?.selector === "string" && runtime.selector ? runtime.selector : name;
+    // A real selector value (email / domain / handle being investigated) is
+    // shown verbatim; when a tool has none, fall back to a plain-language action
+    // label instead of leaking the raw tool id (e.g. "memory_recall") to the UI.
+    const selector = typeof runtime?.selector === "string" && runtime.selector ? runtime.selector : toolActionLabel(name);
     const useful = tone === "ok" && !cached && !stale ? 1 : 0;
     const reason = typeof runtime?.rejection_reason === "string" ? runtime.rejection_reason : "";
     if (!current || current.key !== key) {
@@ -642,7 +645,7 @@ function RunFlowRail({ groups }: { groups: ToolRunGroup[] }) {
             <div key={`flow-${group.key}-${index}`} className="flex shrink-0 items-center gap-1">
               <div className={cn("inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px]", toneClass)}>
                 {icon}
-                <span className="font-mono uppercase tracking-[0.08em]">{cycleSummaryLabel(group.stage, group.cycleId)}</span>
+                <span className="font-mono uppercase tracking-[0.08em]">{cycleSummaryLabel(humanizeStage(group.stage), group.cycleId)}</span>
                 <span className="text-[10px] opacity-80">{group.parts.length}</span>
               </div>
               {!isLast && <span className="h-px w-5 shrink-0 bg-gradient-to-r from-white/25 to-white/5" aria-hidden />}
@@ -678,7 +681,7 @@ function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt
         <div className="flex flex-wrap items-center gap-2">
           {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
           <span className="font-mono uppercase tracking-[0.2em] text-foreground/80">
-            {cycleSummaryLabel(group.stage, group.cycleId)}
+            {cycleSummaryLabel(humanizeStage(group.stage), group.cycleId)}
           </span>
           <span>{group.parts.length} call{group.parts.length === 1 ? "" : "s"}</span>
           {avgExpected != null && <span>EV {avgExpected}</span>}

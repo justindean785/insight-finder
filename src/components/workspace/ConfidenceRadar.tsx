@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import type { ReviewAdjustment } from "@/lib/intel";
-import { buildConfidenceProfile, type ConfidenceDimension } from "@/lib/confidence-dimensions";
+import { buildConfidenceProfile, DIMENSION_DEFINITIONS, type ConfidenceDimension } from "@/lib/confidence-dimensions";
 import { Radar, Info, ShieldCheck, ShieldAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { confidenceColor, tierInfo } from "@/lib/confidence-tier";
@@ -107,6 +107,7 @@ export function ConfidenceRadar({
               <g key={d.key}>
                 <line x1={CX} y1={CY} x2={ex} y2={ey} stroke="hsl(var(--border-subtle))" strokeWidth={1} />
                 <text x={lx} y={ly} textAnchor={anchor} dominantBaseline="middle" fontSize={9} className="font-mono" fill="hsl(var(--muted-foreground))">
+                  <title>{DIMENSION_DEFINITIONS[d.key] ?? d.reason}</title>
                   {d.label}
                 </text>
               </g>
@@ -132,7 +133,12 @@ export function ConfidenceRadar({
           {dims.map((d) => (
             <li key={d.key} className="text-data">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-foreground">{d.label}</span>
+                <span
+                  className="text-foreground decoration-dotted decoration-muted-foreground/50 underline-offset-2 [text-decoration-line:underline] cursor-help"
+                  title={DIMENSION_DEFINITIONS[d.key] ?? d.reason}
+                >
+                  {d.label}
+                </span>
                 <span className="font-mono tabular-nums" style={{ color: bandColor(d) }}>
                   {d.sufficient ? `${d.value}%` : "—"}
                 </span>
