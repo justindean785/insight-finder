@@ -345,6 +345,23 @@ export function GraphTab({ threadId }: { threadId: string }) {
           />
         </ReactFlow>
 
+        {graph.stats.realEdgeCount === 0 && (
+          <div className="pointer-events-none absolute inset-0 z-[5] grid place-items-center p-4">
+            <div className="max-w-md rounded-xl border border-white/10 bg-[linear-gradient(160deg,rgba(255,255,255,0.1),rgba(255,255,255,0.025)_55%)] px-4 py-3 text-center shadow-[0_20px_60px_-36px_rgba(0,0,0,0.95)] backdrop-blur-xl">
+              <div className="inline-flex items-center gap-1.5 text-eyebrow uppercase tracking-[0.12em] text-[hsl(var(--warning))]">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                No durable links yet
+              </div>
+              <p className="mt-1.5 text-sm text-foreground/90">
+                This case has artifacts, but they do not share strong selectors yet.
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Run additional pivots or corroborate with independent sources to form graph connections.
+              </p>
+            </div>
+          </div>
+        )}
+
         {selectedNode && (
           <div className="absolute top-3 right-3 z-10 w-[min(22rem,calc(100%-1.5rem))] rounded-2xl border border-white/12 bg-[linear-gradient(160deg,rgba(255,255,255,0.09),rgba(255,255,255,0.03)_48%,rgba(255,255,255,0.015))] p-3 shadow-[0_30px_100px_-42px_rgba(0,0,0,0.96)] backdrop-blur-xl">
             <div className="flex items-start justify-between gap-2">
