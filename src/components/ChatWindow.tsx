@@ -2096,9 +2096,10 @@ function ChatWindowInner({
                   <button
                     key={`${s.title}-${i}`}
                     onClick={() => sendText(s.prompt)}
-                    className="group relative w-[240px] md:w-auto shrink-0 snap-start overflow-hidden rounded-xl glass border border-border-subtle p-3 text-left transition-all duration-300 hover:-translate-y-0.5 hover:border-primary/50 hover:ring-glow animate-pivot-in"
+                    className="group relative w-[246px] md:w-auto shrink-0 snap-start overflow-hidden rounded-2xl border border-white/12 bg-[linear-gradient(155deg,rgba(255,255,255,0.09),rgba(255,255,255,0.025)_46%,rgba(255,255,255,0.01))] p-3 text-left shadow-[0_18px_44px_-24px_rgba(0,0,0,0.92)] backdrop-blur-xl transition-all duration-300 hover:-translate-y-0.5 hover:border-primary/55 hover:shadow-[0_26px_60px_-30px_rgba(0,0,0,0.98)] animate-pivot-in"
                     style={{ animationDelay: `${Math.min(i * 40, 320)}ms` }}
                   >
+                    <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/40 to-transparent opacity-70" />
                     {s.priority && (
                       <span
                         className={
@@ -2120,7 +2121,7 @@ function ChatWindowInner({
                           <Sparkles className="w-3 h-3 text-primary" />
                         )}
                         {s.priority && <span className={`pivot-priority pivot-priority--${s.priority}`}>{s.priority}</span>}
-                        <span className="truncate text-[10px] uppercase tracking-[0.14em] text-muted-foreground font-mono">{s.meta}</span>
+                        <span className="truncate text-[10px] uppercase tracking-[0.14em] text-muted-foreground/80 font-mono">{s.meta}</span>
                       </span>
                       <span className="block text-sm font-semibold leading-snug text-foreground group-hover:text-primary transition-colors">{s.title}</span>
                       {s.detail && <span className="block text-[11px] leading-snug text-muted-foreground line-clamp-2">{s.detail}</span>}

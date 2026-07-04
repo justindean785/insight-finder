@@ -278,9 +278,9 @@ export function GraphTab({ threadId }: { threadId: string }) {
   }
 
   return (
-    <div className="h-full flex flex-col min-h-0">
+    <div className="h-full flex flex-col min-h-0 rounded-2xl border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.015))] shadow-[0_24px_90px_-50px_rgba(0,0,0,0.98)]">
       {/* Group filters + run-level warnings */}
-      <div className="shrink-0 border-b border-white/[0.08] px-2.5 py-2 sm:px-4">
+      <div className="shrink-0 border-b border-white/[0.08] px-2.5 py-2 sm:px-4 bg-[linear-gradient(180deg,rgba(255,255,255,0.03),transparent)]">
         <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 sm:flex-wrap sm:overflow-visible">
           {presentGroups.map((g) => {
             const off = hidden.has(g);
@@ -313,6 +313,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
       </div>
 
       <div className="relative flex-1 min-h-0">
+        <div className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(circle_at_18%_14%,rgba(72,185,255,0.09),transparent_42%),radial-gradient(circle_at_82%_78%,rgba(255,255,255,0.06),transparent_40%)]" />
         <ReactFlow
           nodes={rfNodes}
           edges={rfEdges}
@@ -328,7 +329,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
           nodesConnectable={false}
           elementsSelectable
           proOptions={{ hideAttribution: false }}
-          className="bg-[radial-gradient(circle_at_50%_40%,hsl(var(--surface-1)/0.55),transparent_72%)]"
+          className="bg-[radial-gradient(circle_at_50%_40%,hsl(var(--surface-1)/0.62),transparent_72%)]"
         >
           <Background variant={BackgroundVariant.Dots} gap={26} size={1} color="hsl(var(--foreground) / 0.10)" />
           <Controls showInteractive={false} className="!rounded-lg !border !border-white/10 !bg-surface-1/90 !shadow-lg [&_button]:!border-white/10 [&_button]:!bg-transparent [&_button]:!text-foreground" />
@@ -345,7 +346,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
         </ReactFlow>
 
         {selectedNode && (
-          <div className="absolute top-3 right-3 z-10 w-[min(22rem,calc(100%-1.5rem))] rounded-2xl border border-white/10 bg-popover/95 p-3 shadow-[0_28px_90px_-42px_rgba(0,0,0,0.95)] backdrop-blur-xl">
+          <div className="absolute top-3 right-3 z-10 w-[min(22rem,calc(100%-1.5rem))] rounded-2xl border border-white/12 bg-[linear-gradient(160deg,rgba(255,255,255,0.09),rgba(255,255,255,0.03)_48%,rgba(255,255,255,0.015))] p-3 shadow-[0_30px_100px_-42px_rgba(0,0,0,0.96)] backdrop-blur-xl">
             <div className="flex items-start justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2">
                 <span
@@ -399,7 +400,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
       </div>
 
       {/* Legend + honest stats */}
-      <div className="shrink-0 border-t border-white/[0.08] px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5">
+      <div className="shrink-0 border-t border-white/[0.08] px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 bg-[linear-gradient(0deg,rgba(255,255,255,0.03),transparent)]">
         {presentGroups.map((g) => (
           <span key={g} className={cn("inline-flex items-center gap-1.5 text-data", hidden.has(g) ? "text-muted-foreground/40" : "text-muted-foreground")}>
             <span className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ backgroundColor: GROUP_COLOR[g] }} />
