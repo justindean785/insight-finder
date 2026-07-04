@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SwarmMark } from "@/components/ui/swarm-mark";
+import { probeOAuthProvider } from "@/lib/oauth-preflight";
 
 export default function Auth() {
   const navigate = useNavigate();
@@ -65,6 +66,16 @@ export default function Auth() {
 
   const google = async () => {
     setLoading(true);
+    // Pre-flight the provider so a beta user never lands on Supabase's raw JSON
+    // error page when Google isn't fully configured (provider enabled but no
+    // client secret → "missing OAuth secret"). Self-healing: once the secret is
+    // set in Supabase, the probe passes and the normal OAuth redirect runs.
+    const ready = await probeOAuthProvider("google");
+    if (!ready) {
+      toast.error("Google sign-in isn't available yet — please continue with email.");
+      setLoading(false);
+      return;
+    }
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
