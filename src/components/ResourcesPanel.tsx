@@ -267,7 +267,10 @@ function ArtifactsList({
         // Order kinds by their strongest member so high-value kinds lead.
         kinds.sort((a, b) => (grouped[g][b][0]?.confidence ?? 0) - (grouped[g][a][0]?.confidence ?? 0));
         return (
-          <div key={g}>
+          <div
+            key={g}
+            className="rounded-2xl border border-white/8 bg-[linear-gradient(165deg,rgba(255,255,255,0.05),rgba(255,255,255,0.018)_48%,rgba(255,255,255,0.008))] p-2.5 shadow-[0_22px_80px_-52px_rgba(0,0,0,0.96)] backdrop-blur-xl"
+          >
             {/* Group header: quiet label · count; only a flag count when something is flagged */}
             <div className="flex items-center gap-2 px-2 pb-1.5">
               <Icon
@@ -308,7 +311,7 @@ function ArtifactsList({
                 const rangeColor = (hi ?? 0) >= 70 ? "hsl(var(--confidence-high))"
                   : (hi ?? 0) >= 50 ? "hsl(var(--confidence-mid))" : "hsl(var(--confidence-low))";
                 return (
-                  <div key={kind}>
+                  <div key={kind} className="rounded-xl border border-white/6 bg-white/[0.015]">
                     {/* Kind subheader — clickable when the cluster is collapsible */}
                     <div
                       role={collapsible ? "button" : undefined}
@@ -343,7 +346,7 @@ function ArtifactsList({
                     </div>
 
                     {open && (
-                      <div className="divide-y divide-border-subtle/35 pl-2">
+                      <div className="divide-y divide-border-subtle/35 pl-2 py-1">
                         {list.map((a) => (
                           <ArtifactRow
                             key={a.id}
@@ -398,8 +401,9 @@ function ArtifactRow({
           }}
           data-density-row
           className={cn(
-            "group/row flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            "group/row flex w-full cursor-pointer items-center gap-2.5 rounded-xl border border-transparent px-2 py-2 text-left transition-all duration-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             fp ? "hover:bg-danger-muted/30" : "hover:bg-white/[0.04]",
+            !fp && "hover:border-white/10 hover:shadow-[0_10px_30px_-24px_rgba(0,0,0,0.95)]",
             dismissed && "opacity-50",
           )}
         >
@@ -805,7 +809,7 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
   return (
     <>
       {items.length > 0 && (
-        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-x-3 gap-y-2 px-2 py-2.5 border-b border-border-subtle bg-background/90 backdrop-blur">
+        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-x-3 gap-y-2 px-2 py-2.5 border-b border-border-subtle bg-[linear-gradient(180deg,rgba(13,15,19,0.94),rgba(13,15,19,0.86))] backdrop-blur-xl">
           <FilterChips<EvidenceStatusFilter>
             ariaLabel="Filter evidence by strength"
             active={statusFilter}

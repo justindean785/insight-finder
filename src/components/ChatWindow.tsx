@@ -605,6 +605,55 @@ function isNoiseToolGroup(group: ToolRunGroup): boolean {
   );
 }
 
+function flowToneForGroup(group: ToolRunGroup): "completed" | "partial" | "cached" | "skipped" {
+  if (group.useful > 0) return "completed";
+  if (group.cached > 0 || group.stale > 0) return "cached";
+  if (group.skipped > 0 && group.failed === 0) return "skipped";
+  return "partial";
+}
+
+function RunFlowRail({ groups }: { groups: ToolRunGroup[] }) {
+  if (groups.length <= 1) return null;
+  return (
+    <div className="rounded-xl border border-white/8 bg-[linear-gradient(160deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02)_58%,rgba(255,255,255,0.01))] px-3 py-2 shadow-[0_14px_50px_-34px_rgba(0,0,0,0.95)]">
+      <div className="mb-1 flex items-center gap-2 text-[10px] font-mono uppercase tracking-[0.18em] text-muted-foreground/80">
+        <GitBranch className="h-3 w-3 text-primary/80" />
+        Run flow
+      </div>
+      <div className="flex items-center gap-1 overflow-x-auto pb-0.5 [scrollbar-width:thin]">
+        {groups.map((group, index) => {
+          const tone = flowToneForGroup(group);
+          const isLast = index === groups.length - 1;
+          const icon = tone === "completed"
+            ? <CheckCircle2 className="h-3.5 w-3.5" />
+            : tone === "cached"
+              ? <Clock className="h-3.5 w-3.5" />
+              : tone === "skipped"
+                ? <CircleSlash className="h-3.5 w-3.5" />
+                : <Square className="h-3.5 w-3.5" />;
+          const toneClass = tone === "completed"
+            ? "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high)/0.35)] bg-[hsl(var(--confidence-high)/0.08)]"
+            : tone === "cached"
+              ? "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid)/0.35)] bg-[hsl(var(--confidence-mid)/0.08)]"
+              : tone === "skipped"
+                ? "text-muted-foreground border-white/12 bg-white/[0.03]"
+                : "text-foreground border-white/15 bg-white/[0.05]";
+          return (
+            <div key={`flow-${group.key}-${index}`} className="flex shrink-0 items-center gap-1">
+              <div className={cn("inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px]", toneClass)}>
+                {icon}
+                <span className="font-mono uppercase tracking-[0.08em]">{cycleSummaryLabel(group.stage, group.cycleId)}</span>
+                <span className="text-[10px] opacity-80">{group.parts.length}</span>
+              </div>
+              {!isLast && <span className="h-px w-5 shrink-0 bg-gradient-to-r from-white/25 to-white/5" aria-hidden />}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt?: string }) {
   const [expanded, setExpanded] = useState(false);
   const avgExpected = group.expectedValues.length
@@ -933,12 +982,14 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIM
   // Drop do-nothing cycles (all-skipped, no useful/cache/fail/stale) from chat —
   // single ToolParts always pass through; only noise ToolRunGroups are removed.
   const visibleToolGroups = toolGroups.filter((entry) => "part" in entry || !isNoiseToolGroup(entry));
+  const groupedCycles = visibleToolGroups.filter((entry): entry is ToolRunGroup => !("part" in entry));
   // Detect failed run sentinel
   const firstText = parts.find((p) => p.type === "text");
   if (firstText?.text?.startsWith?.(FAIL_PREFIX)) {
     const reason = firstText.text.slice(FAIL_PREFIX.length);
     return (
       <div className="space-y-2">
+        <RunFlowRail groups={groupedCycles} />
         {visibleToolGroups.map((entry, i) => "part" in entry ? (
           <ToolPart key={`failed-tool-${i}`} part={entry.part} createdAt={createdAt} />
         ) : (
@@ -955,6 +1006,7 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIM
       )}
       {visibleToolGroups.length > 0 && (
         <div className="space-y-2">
+          <RunFlowRail groups={groupedCycles} />
           {visibleToolGroups.map((entry, i) => "part" in entry ? (
             <ToolPart key={`tool-${i}`} part={entry.part} createdAt={createdAt} />
           ) : (
@@ -2096,9 +2148,10 @@ function ChatWindowInner({
                   <button
                     key={`${s.title}-${i}`}
                     onClick={() => sendText(s.prompt)}
-                    className="group relative w-[240px] md:w-auto shrink-0 snap-start overflow-hidden rounded-xl glass border border-border-subtle p-3 text-left transition-all duration-300 hover:-translate-y-0.5 hover:border-primary/50 hover:ring-glow animate-pivot-in"
+                    className="group relative w-[246px] md:w-auto shrink-0 snap-start overflow-hidden rounded-2xl border border-white/12 bg-[linear-gradient(155deg,rgba(255,255,255,0.09),rgba(255,255,255,0.025)_46%,rgba(255,255,255,0.01))] p-3 text-left shadow-[0_18px_44px_-24px_rgba(0,0,0,0.92)] backdrop-blur-xl transition-all duration-300 hover:-translate-y-0.5 hover:border-primary/55 hover:shadow-[0_26px_60px_-30px_rgba(0,0,0,0.98)] animate-pivot-in"
                     style={{ animationDelay: `${Math.min(i * 40, 320)}ms` }}
                   >
+                    <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/40 to-transparent opacity-70" />
                     {s.priority && (
                       <span
                         className={
@@ -2120,7 +2173,7 @@ function ChatWindowInner({
                           <Sparkles className="w-3 h-3 text-primary" />
                         )}
                         {s.priority && <span className={`pivot-priority pivot-priority--${s.priority}`}>{s.priority}</span>}
-                        <span className="truncate text-[10px] uppercase tracking-[0.14em] text-muted-foreground font-mono">{s.meta}</span>
+                        <span className="truncate text-[10px] uppercase tracking-[0.14em] text-muted-foreground/80 font-mono">{s.meta}</span>
                       </span>
                       <span className="block text-sm font-semibold leading-snug text-foreground group-hover:text-primary transition-colors">{s.title}</span>
                       {s.detail && <span className="block text-[11px] leading-snug text-muted-foreground line-clamp-2">{s.detail}</span>}
