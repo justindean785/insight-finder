@@ -24,7 +24,12 @@ export const MODELS: Record<Tier, string> = {
   // flash-class model and make it operator-overridable WITHOUT a code change via
   // LOVABLE_FALLBACK_MODEL_ID. Single source of truth — env.ts + health-handler.ts
   // read this value. The PRIMARY orchestrator model (MiniMax) is unchanged.
-  fallback: Deno.env.get("LOVABLE_FALLBACK_MODEL_ID") ?? "google/gemini-2.5-flash",
+  // Speed pass: default flipped from gemini-2.5-flash to gemini-3-flash-preview
+  // (Lovable AI docs default). Faster, larger context, same free/served tier —
+  // and this is also the orchestrator model when ORCHESTRATOR_PROVIDER=lovable
+  // is pinned, so the fastest served flash class is what we want by default.
+  // Override with LOVABLE_FALLBACK_MODEL_ID.
+  fallback: Deno.env.get("LOVABLE_FALLBACK_MODEL_ID") ?? "google/gemini-3-flash-preview",
 };
 
 // Steps that MUST run on the smart tier. Everything else defaults to "fast".
