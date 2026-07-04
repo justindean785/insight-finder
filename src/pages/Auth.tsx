@@ -48,7 +48,7 @@ export default function Auth() {
     });
     setLoading(false);
     if (error) toast.error(error.message);
-    else toast.success("Check your email to confirm your account.");
+    else toast.success("Welcome — signing you in…");
   };
 
   return (
