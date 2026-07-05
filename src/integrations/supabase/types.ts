@@ -601,6 +601,17 @@ export type Database = {
           },
         ]
       }
+      tool_health: {
+        Row: {
+          last_seen_at: string | null
+          ok_pct: number | null
+          p50_duration_ms: number | null
+          p95_duration_ms: number | null
+          sample_size: number | null
+          tool_name: string | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
       append_evidence: {
