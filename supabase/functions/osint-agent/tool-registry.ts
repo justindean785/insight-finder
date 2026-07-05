@@ -71,7 +71,7 @@ import { TOOL_CATALOG, CATALOG_CACHE, FINDING_LABELS } from "./catalog.ts";
 import { beginCycle, recordFindingSummary } from "./runtime-policy.ts";
 import { serus_darkweb_scan } from "./tools/serus.ts";
 import { okWithSuccessFlag, socialfetchError, isHackertargetApiError, isCrtshOk, dohTypeError, blockchairError } from "./tool_response.ts";
-import { enforceNameSeedPriority, NAME_SEED_PLANNER_RULES } from "./planner-guidance.ts";
+import { enforceNameSeedPriority, enforceFallbackToolPolicy, NAME_SEED_PLANNER_RULES } from "./planner-guidance.ts";
 import { sweepUsername } from "./sweeper.ts";
 import { trimExaResults, archiveAttachment } from "./archiver.ts";
 
@@ -484,6 +484,11 @@ export function buildTools(ctx: ToolContext) {
             if (name === "urlscanner_scan" && !URLSCANNER_API_KEY) return false;
             // Dead/degraded tools — stop re-proposing them this investigation.
             if (brokenTools.has(name) || isDegraded(name)) return false;
+            // gemini_deep_dork (~46% success, 21s latency) is fallback-only — keep
+            // it off the planner menu until the cheaper dork path has been tried.
+            if (name === "gemini_deep_dork" && !already_queried.some((e) =>
+              /dork_harvest|google_dorks/.test(String(e).toLowerCase())
+            )) return false;
             return true;
           });
 
@@ -628,9 +633,12 @@ export function buildTools(ctx: ToolContext) {
             json: true,
             maxTokens: 1500,
           });
-          const parsed = enforceNameSeedPriority(
-            safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content },
-            { seedType: detectedSeedType, alreadyQueried: already_queried },
+          const parsed = enforceFallbackToolPolicy(
+            enforceNameSeedPriority(
+              safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content },
+              { seedType: detectedSeedType, alreadyQueried: already_queried },
+            ),
+            { alreadyQueried: already_queried },
           );
           // Slice 2 / Phase B1 — re-rank & filter the planned pivots through the
           // entity graph: drop dead-end / over-broad-unconfirmed / already-
@@ -770,7 +778,10 @@ export function buildTools(ctx: ToolContext) {
           } catch {
             data = { raw: text.slice(0, 4000) };
           }
-          return { ok: r.ok, status: r.status, data };
+          // HTTP 200 with an empty breach payload is a successful negative — not a
+          // provider failure (inflated the 23% "failure" rate in beta telemetry).
+          if (r.ok) return { ok: true, status: r.status, data };
+          return { ok: false, status: r.status, data };
         } catch (e) {
           return { error: String(e) };
         }
@@ -1092,6 +1103,13 @@ export function buildTools(ctx: ToolContext) {
           const sources = Array.isArray(d?.result)
             ? Array.from(new Set(d.result.map((x: LeakCheckResult) => x?.source?.name).filter(Boolean))).slice(0, 50)
             : [];
+          // Clean negative (HTTP 200, zero hits) is success — not a failure.
+          if (r.ok && found === 0) {
+            return { ok: true, status: r.status, source: "leakcheck.v2", found: 0, data: { success: !!d?.success, found: 0, quota, sources, raw: data } };
+          }
+          if (r.status === 429) {
+            return { ok: false, skipped: true, status: r.status, source: "leakcheck.v2", error: "leakcheck rate-limited — provider suppressed for investigation", found, quota };
+          }
           return { ok: r.ok, status: r.status, source: "leakcheck.v2", data: { success: !!d?.success, found, quota, sources, raw: data } };
         } catch (e) {
           return { error: String(e) };
@@ -2632,7 +2650,7 @@ export function buildTools(ctx: ToolContext) {
       inputSchema: z.object({
         seed: z.string(),
         kind: z.enum(["email", "username", "phone", "name", "person", "domain", "ip", "hash", "crypto_wallet"]),
-        max_queries: z.number().int().min(1).max(12).default(8),
+        max_queries: z.number().int().min(1).max(12).default(5),
       }),
       execute: async ({ seed, kind: rawKind, max_queries }) => {
         const kind = rawKind === "person" ? "name" : rawKind;
@@ -2907,7 +2925,17 @@ export function buildTools(ctx: ToolContext) {
           `Goal: deep-dork this seed across Google. Surface breach/leak exposure, document/file leaks (PDFs, CVs, dumps), pastebin/rentry/ghostbin pastes, forum mentions, social/profile traces, and any public-records or news hits. Prefer recent + high-signal results.`;
         const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
         const res = await geminiGroundedSearch({ prompt: user, system, signal });
-        if (!res.ok) return { ok: false, status: res.status, error: "gemini_grounded_search_failed", detail: String((res.raw as { error?: { message?: unknown } })?.error?.message ?? "").slice(0, 400) };
+        if (!res.ok) {
+          markToolDegraded("gemini_deep_dork", `gemini_grounded_search HTTP ${res.status}`);
+          return {
+            ok: false,
+            skipped: true,
+            status: res.status,
+            error: "gemini_grounded_search_failed",
+            detail: String((res.raw as { error?: { message?: unknown } })?.error?.message ?? "").slice(0, 400),
+            note: "Fallback dork only — prefer dork_harvest. Skipped for rest of this investigation after failure.",
+          };
+        }
 
         // Classify + dedupe citations, then auto-record.
         const seen = new Set<string>();
