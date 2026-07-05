@@ -19,6 +19,7 @@ import { toast } from "sonner";
 import { detectSeed } from "@/lib/seed";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { isSubmitBlocked } from "@/lib/submit-guard";
+import { interpretReadinessProbe, type ReadinessBody } from "@/lib/readiness-probe";
 import { dedupeCards } from "@/lib/next-step-cards";
 import { computePivots } from "@/lib/pivot-engine";
 import { sanitizeChatText } from "@/lib/sanitize-agent-text";
@@ -1563,21 +1564,16 @@ function ChatWindowInner({
           return;
         }
         if (probeRes.status === 503 || probeRes.ok) {
+          let body: ReadinessBody | null = null;
           try {
-            const body = (await probeRes.json()) as {
-              ok?: boolean;
-              checks?: { orchestrator?: { ok: boolean; detail?: string } };
-            };
-            if (body && body.ok === false) {
-              const orch = body.checks?.orchestrator;
-              const msg = orch?.detail
-                ? `Scan backend is not ready: ${orch.detail}`
-                : "Scan backend is not ready (required secret missing).";
-              toast.error(msg);
-              return;
-            }
+            body = (await probeRes.json()) as ReadinessBody;
           } catch {
-            // Body wasn't JSON — treat as "deployed but unknown shape", let the scan through
+            body = null;
+          }
+          const decision = interpretReadinessProbe(probeRes.status, body);
+          if (decision.block) {
+            toast.error(decision.message);
+            return;
           }
         }
       } catch (probeErr) {
