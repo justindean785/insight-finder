@@ -31,5 +31,11 @@
   },
   "include": [
     "src"
+  ],
+  // src/lib/mcp/** are inert byte-identical snapshots of the Lovable mirror's MCP
+  // source (imports @lovable.dev/mcp-js, deliberately not a dep here — CLAUDE.md
+  // + issue #241). Excluded from typecheck like the generated bundle is from eslint.
+  "exclude": [
+    "src/lib/mcp"
   ]
 }
