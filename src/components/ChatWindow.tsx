@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import { detectSeed } from "@/lib/seed";
+import { detectSeed, formatThreadTitle } from "@/lib/seed";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { isSubmitBlocked } from "@/lib/submit-guard";
 import { interpretReadinessProbe, type ReadinessBody } from "@/lib/readiness-probe";
@@ -1771,7 +1771,7 @@ function ChatWindowInner({
       const { error: threadErr } = await supabase
         .from("threads")
         .update({
-          title: userText.slice(0, 80),
+          title: formatThreadTitle(userText),
           seed_value: userText.slice(0, 200),
           updated_at: new Date().toISOString(),
         })
