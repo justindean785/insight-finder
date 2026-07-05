@@ -9,6 +9,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SwarmMark } from "@/components/ui/swarm-mark";
 import { probeOAuthProvider } from "@/lib/oauth-preflight";
 
+// Google OAuth is hidden for beta: the managed provider is toggled on in Supabase
+// but has no client secret, so /auth/v1/authorize?provider=google returns 400.
+// Email/password is the shipping path. Set VITE_ENABLE_GOOGLE_OAUTH="true" to
+// re-show the button once the Google client id/secret are configured — the click
+// handler still pre-flights, so it can never strand a user on the raw error page.
+const googleEnabled = import.meta.env.VITE_ENABLE_GOOGLE_OAUTH === "true";
+
 export default function Auth() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -39,14 +46,25 @@ export default function Auth() {
   const signUp = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    const { error } = await supabase.auth.signUp({
+    const { data, error } = await supabase.auth.signUp({
       email: suEmail,
       password: suPassword,
       options: { emailRedirectTo: `${window.location.origin}/` },
     });
     setLoading(false);
-    if (error) toast.error(error.message);
-    else toast.success("Check your email to confirm your account.");
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    // Base the message on the actual result, not the old confirm-email assumption.
+    // With auto-confirm on, signUp returns a live session and onAuthStateChange
+    // routes straight into the app — so "check your email" is wrong. Only prompt
+    // for confirmation when there's genuinely no session yet.
+    if (data.session) {
+      toast.success("Welcome — you're in.");
+    } else {
+      toast.success("Check your email to confirm your account.");
+    }
   };
 
   const resetPassword = async (e: React.FormEvent) => {
@@ -216,27 +234,31 @@ export default function Auth() {
             </TabsContent>
           </Tabs>
 
-          <div className="relative my-5">
-            <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-white/[0.06]" /></div>
-            <div className="relative flex justify-center">
-              <span className="px-2.5 text-eyebrow uppercase tracking-[0.18em] text-muted-foreground bg-[hsl(var(--surface-1))]">
-                or
-              </span>
-            </div>
-          </div>
+          {googleEnabled && (
+            <>
+              <div className="relative my-5">
+                <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-white/[0.06]" /></div>
+                <div className="relative flex justify-center">
+                  <span className="px-2.5 text-eyebrow uppercase tracking-[0.18em] text-muted-foreground bg-[hsl(var(--surface-1))]">
+                    or
+                  </span>
+                </div>
+              </div>
 
-          <Button
-            type="button"
-            variant="outline"
-            className="w-full h-10 bg-white/[0.035] border-white/10 hover:bg-white/[0.06] hover:border-white/[0.14] text-foreground/90"
-            onClick={google}
-            disabled={loading}
-          >
-            <svg viewBox="0 0 24 24" className="w-4 h-4 mr-2" aria-hidden>
-              <path fill="#EA4335" d="M12 10.2v3.9h5.5c-.24 1.4-1.65 4.1-5.5 4.1-3.32 0-6-2.74-6-6.1S8.68 6 12 6c1.88 0 3.15.8 3.87 1.5l2.64-2.55C16.78 3.4 14.6 2.4 12 2.4 6.7 2.4 2.4 6.7 2.4 12s4.3 9.6 9.6 9.6c5.55 0 9.22-3.9 9.22-9.4 0-.63-.07-1.1-.16-1.6H12z" />
-            </svg>
-            Continue with Google
-          </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full h-10 bg-white/[0.035] border-white/10 hover:bg-white/[0.06] hover:border-white/[0.14] text-foreground/90"
+                onClick={google}
+                disabled={loading}
+              >
+                <svg viewBox="0 0 24 24" className="w-4 h-4 mr-2" aria-hidden>
+                  <path fill="#EA4335" d="M12 10.2v3.9h5.5c-.24 1.4-1.65 4.1-5.5 4.1-3.32 0-6-2.74-6-6.1S8.68 6 12 6c1.88 0 3.15.8 3.87 1.5l2.64-2.55C16.78 3.4 14.6 2.4 12 2.4 6.7 2.4 2.4 6.7 2.4 12s4.3 9.6 9.6 9.6c5.55 0 9.22-3.9 9.22-9.4 0-.63-.07-1.1-.16-1.6H12z" />
+                </svg>
+                Continue with Google
+              </Button>
+            </>
+          )}
         </div>
 
         {/* Footnote */}
