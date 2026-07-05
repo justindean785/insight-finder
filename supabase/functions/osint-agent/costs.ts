@@ -70,6 +70,16 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   // ---- OSINTNova / Bosint (1000/day quota, ~$2/mo plan share) ----
   bosint_email_lookup: 2000,
 
+  // ---- Indicia (api.indicia.app) — token-metered, ~$0.002/token estimate.
+  // Explicit (never the $0.0002 default). hudsonrock is free (0 tokens);
+  // web-dbs spans 1-2 tokens depending on services selected.
+  indicia_email: 2000,
+  indicia_phone: 2000,
+  indicia_person: 2000,
+  indicia_address: 2000,
+  indicia_web_dbs: 3000,
+  indicia_hudsonrock: 0,
+
   // ---- Hunter.io ----
   hunter_domain_search: 4000,
   hunter_email_finder: 4000,

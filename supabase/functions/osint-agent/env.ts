@@ -199,6 +199,7 @@ export const IPQUALITYSCORE_API_KEY = Deno.env.get("IPQUALITYSCORE_API_KEY");
 // unset; this export lets the planner/audit drop them off the menu so an un-keyed
 // deploy never wastes a planner slot proposing a tool that can only return skipped.
 export const RAPIDAPI_KEY = Deno.env.get("RAPIDAPI_KEY");
+export const INDICIA_API_KEY = Deno.env.get("INDICIA_API_KEY");
 
 // OpenCorporates company-registry search. NOW EFFECTIVELY REQUIRED — the v0.4
 // search endpoint returns 401 "Invalid Api Token" for ALL keyless requests, so

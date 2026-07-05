@@ -35,7 +35,7 @@ import {
   CORDCAT_API_KEY, HUNTER_API_KEY,
   HIBP_API_KEY, GITHUB_API_TOKEN, EXA_API_KEY, JINA_API_KEY,
   GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY,
-  RAPIDAPI_KEY,
+  RAPIDAPI_KEY, INDICIA_API_KEY,
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
   URLSCANNER_API_KEY,
   degradedTools,
@@ -43,6 +43,10 @@ import {
   deadHosts, markHostDead, isHostDead,
 } from "./env.ts";
 import { buildLeakcheckUrl, buildOathnetUrl } from "./breach-request.ts";
+import {
+  indicia_email, indicia_phone, indicia_person,
+  indicia_address, indicia_web_dbs, indicia_hudsonrock,
+} from "./tools/indicia.ts";
 
 import {
   validateArtifact, TTL_24H_MS, TOOL_TTL_MS, NO_CACHE_TOOLS,
@@ -397,6 +401,9 @@ export function buildTools(ctx: ToolContext) {
             "breach_check","leakcheck_lookup","hibp_lookup","oathnet_lookup",
             "bosint_email_lookup",
             "stolentax_footprint","serus_darkweb_scan",
+            // Indicia — US person/phone/email/address + web-DB breach aggregator.
+            "indicia_email","indicia_phone","indicia_person","indicia_address",
+            "indicia_web_dbs","indicia_hudsonrock",
             // DeepFind suite (shared 1000/day pool).
             "deepfind_reverse_email","deepfind_disposable_email",
             "deepfind_ssl_inspect","deepfind_tech_stack","deepfind_url_unshorten",
@@ -442,12 +449,17 @@ export function buildTools(ctx: ToolContext) {
           //   hackernews_user       0% ok
           //   gravatar_profile     14% ok (404s; already demoted in #171)
           //   emailrep             19% ok (429 rate-limited; low value)
-          // NB: hibp_lookup (0%) and ipqualityscore_lookup (0%) are NOT hard-blocked
-          // — they stay on their API-key gates (valuable once the key/integration
-          // is fixed; ipqs key replacement is an owner/config action).
+          //   ipqualityscore_lookup 0/28 ok — dead key ("Invalid or unauthorized
+          //                        key" for 30d); cut 2026-07-05.
+          // NB: hibp_lookup (0%) stays on its API-key gate (valuable once keyed) and
+          // is NOT hard-blocked. ipqualityscore is now hard-cut (dead key).
+          // stolentax_footprint / synapsint_lookup / emailrep / ipqualityscore_lookup
+          // are ALSO hard-disabled in capabilities.ts (disabled:true) so the readiness
+          // gate deletes them from the tool schema entirely; keeping them here is
+          // belt-and-suspenders for the planner menu.
           const PERMANENT_BLOCK = new Set([
-            "stolentax_footprint","hackernews_user",
-            "gravatar_profile","emailrep",
+            "stolentax_footprint","synapsint_lookup","hackernews_user",
+            "gravatar_profile","emailrep","ipqualityscore_lookup",
           ]);
           // Tools the circuit breaker has disabled this investigation (e.g.
           // a provider after consecutive HTTP 500s). Without this the planner
@@ -467,6 +479,9 @@ export function buildTools(ctx: ToolContext) {
             if (name === "serus_darkweb_scan" && !SERUS_API_KEY) return false;
             // IPQualityScore: same key-gating — only proposable when configured.
             if (name === "ipqualityscore_lookup" && !IPQUALITYSCORE_API_KEY) return false;
+            // Indicia — all six endpoints share one key; keep them off the planner
+            // menu until INDICIA_API_KEY is set.
+            if (name.startsWith("indicia_") && !INDICIA_API_KEY) return false;
             // RapidAPI breach tools are the PRIMARY email breach source but only
             // work with RAPIDAPI_KEY — both self-skip without it. Keep them off the
             // planner menu when unkeyed so an un-keyed deploy doesn't burn a planner
@@ -1070,10 +1085,12 @@ export function buildTools(ctx: ToolContext) {
     }),
     leakcheck_lookup: tool({
       description:
-        "LeakCheck Pro v2 breach lookup (https://leakcheck.io/api/v2). SECONDARY breach source — 200 calls/day. Returns leak sources, breach dates, and (where present) passwords/usernames for an email, username, phone, hash, or domain. For a person's full NAME, pass type:'keyword' (free-text corpus search — same-name collisions apply). Use to corroborate breach_check and to surface password/source detail. Do NOT spam on low-value handles.",
+        "LeakCheck Pro v2 breach lookup (https://leakcheck.io/api/v2). SECONDARY breach source — 200 calls/day. Returns leak sources, breach dates, and (where present) passwords/usernames for an email, username, phone, hash, or domain. Pass a phone in any format (E.164 ok — it's normalized to digits). For a person's full NAME, use oathnet_lookup type:'name' instead — LeakCheck v2 /query does not support keyword/name search and 400s on it. Use to corroborate breach_check and to surface password/source detail. Do NOT spam on low-value handles.",
       inputSchema: z.object({
         value: z.string().min(1),
-        type: z.enum(["auto","email","username","phone","hash","domain","keyword"]).optional().default("auto"),
+        // NOTE: no 'keyword' — LeakCheck v2 /query 400s on keyword/name searches
+        // (verified in prod). Names go to oathnet_lookup type:'name'.
+        type: z.enum(["auto","email","username","phone","hash","domain"]).optional().default("auto"),
       }),
       execute: async ({ value, type }) => {
         const LEAKCHECK_API_KEY = Deno.env.get("LEAKCHECK_API_KEY");
@@ -2002,7 +2019,15 @@ export function buildTools(ctx: ToolContext) {
       description:
         "Wayback Machine CDX archive search — corroborate that a domain/URL existed and when. Input: { url: string } (a domain like 'acme.com' or a full URL). Returns ACCURATE earliest + latest capture timestamps (each queried separately so they are NOT understated by a capped page) and up to 25 sample capture rows (timestamp, original, statuscode). `sampled_count` is the number of SAMPLE rows returned (capped at 25) — it is NOT the total capture count; `capped:true` means more captures exist than were sampled. Empty archive → { ok:true, archived:false, captures:[] }. No API key.",
       inputSchema: z.object({ url: z.string().min(1).describe("domain or URL to look up in the archive") }),
-      execute: async ({ url }) => {
+      execute: async ({ url }, opts) => {
+        // archive.org's CDX endpoint is chronically slow (p95 ~60s). The cache
+        // wrapper's per-tool cap for wayback_cdx_search is raised to 25s
+        // (TOOL_TIMEOUT_OVERRIDE_MS) so a legit-slow archive still resolves, and
+        // the wrapper's AbortSignal is forwarded into every fetch so a hit on the
+        // cap CANCELS the request cleanly instead of orphaning it (the prior null/
+        // timeout bug: the 12s default cap fired while an un-signalled 15s fetch
+        // kept running). retries:1 keeps worst-case wall-clock under the cap.
+        const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
         try {
           const base = `https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(url)}&output=json`;
           // Accurate bookends, NOT derived from the capped sample page: CDX
@@ -2010,7 +2035,7 @@ export function buildTools(ctx: ToolContext) {
           // &limit=-1 is the newest. Each is failure-tolerant (null on any error).
           const firstTs = async (limit: string): Promise<string | null> => {
             try {
-              const r = await fetchRetry(`${base}&fl=timestamp&limit=${limit}`, {}, { timeoutMs: 15_000 });
+              const r = await fetchRetry(`${base}&fl=timestamp&limit=${limit}`, { signal }, { timeoutMs: 12_000, retries: 1 });
               if (!r.ok) { await r.body?.cancel().catch(() => {}); return null; }
               const data = await r.json().catch(() => null);
               if (!Array.isArray(data) || data.length < 2) return null;
@@ -2021,7 +2046,7 @@ export function buildTools(ctx: ToolContext) {
             } catch { return null; }
           };
           // Small sample page for context (collapsed to unique urlkeys).
-          const r = await fetchRetry(`${base}&limit=25&collapse=urlkey`, {}, { timeoutMs: 15_000 });
+          const r = await fetchRetry(`${base}&limit=25&collapse=urlkey`, { signal }, { timeoutMs: 12_000, retries: 1 });
           if (!r.ok) return { ok: false, status: r.status, error: `wayback cdx ${r.status}`, url };
           const data = await r.json().catch(() => null);
           // CDX json: row[0] is the header (["urlkey","timestamp","original","statuscode",...]).
@@ -2046,7 +2071,17 @@ export function buildTools(ctx: ToolContext) {
             capped: rows.length >= 25,
             captures: rows.slice(0, 25),
           };
-        } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
+        } catch (e) {
+          // Explicit timeout surface: an AbortError here is the tool cap / archive.org
+          // being too slow, NOT a code error. Log it and return a clear reason so the
+          // timeline shows "timed out" instead of a bare stack string.
+          const isAbort = e instanceof DOMException && e.name === "AbortError";
+          if (isAbort) {
+            console.warn(`[wayback_cdx_search] timed out for ${url} (archive.org slow / tool cap)`);
+            return { ok: false, error: "wayback_cdx_search timed out (archive.org slow)", _timeout: true, url };
+          }
+          return { error: String(e instanceof Error ? e.message : e) };
+        }
       },
     }),
     crtsh_lookup: tool({
@@ -3678,13 +3713,22 @@ export function buildTools(ctx: ToolContext) {
       description:
         "Submit a URL to the Wayback Machine to create a permanent archived snapshot. Returns the archived URL. Use on any volatile evidence (social posts, leak listings) so a [CONFIRMED] finding remains defensible.",
       inputSchema: z.object({ url: z.string().url() }),
-      execute: async ({ url }) => {
+      execute: async ({ url }, opts) => {
+        const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
         try {
-          const r = await fetchT(`https://web.archive.org/save/${url}`, {
+          // archive.org's /save endpoint is fronted by Cloudflare and intermittently
+          // returns 520/523 (origin down). fetchRetry retries once on 5xx (its retry
+          // predicate covers 520/523), which recovers the transient failures the
+          // prior one-shot fetchT surfaced as-is. The tool cap is raised to 25s
+          // (TOOL_TIMEOUT_OVERRIDE_MS) and the wrapper signal is forwarded so a slow
+          // save cancels cleanly. `url` is validated (z.string().url()) and
+          // encoded so a query string in the evidence URL can't break the path.
+          const r = await fetchRetry(`https://web.archive.org/save/${encodeURIComponent(url)}`, {
             method: "GET",
             headers: { "User-Agent": "Proximity-OSINT/1.0" },
             redirect: "manual",
-          }, 15_000);
+            signal,
+          }, { timeoutMs: 20_000, retries: 1 });
           const location = r.headers.get("content-location") || r.headers.get("location");
           const archived = location ? `https://web.archive.org${location.startsWith("/") ? location : "/" + location}` : undefined;
           return {
@@ -4217,6 +4261,16 @@ export function buildTools(ctx: ToolContext) {
   // Serus darkweb scan — imported from tools/serus.ts (was missing from inline tools).
   (tools as ToolRegistry).serus_darkweb_scan = serus_darkweb_scan;
 
+  // Indicia (api.indicia.app) — 6 person/phone/email/address + web-DB breach tools,
+  // imported from tools/indicia.ts. Gated on INDICIA_API_KEY via capabilities.ts;
+  // face/geo/gmail/username endpoints are intentionally NOT wired (hard policy).
+  (tools as ToolRegistry).indicia_email = indicia_email;
+  (tools as ToolRegistry).indicia_phone = indicia_phone;
+  (tools as ToolRegistry).indicia_person = indicia_person;
+  (tools as ToolRegistry).indicia_address = indicia_address;
+  (tools as ToolRegistry).indicia_web_dbs = indicia_web_dbs;
+  (tools as ToolRegistry).indicia_hudsonrock = indicia_hudsonrock;
+
   // Inject memory tools (cross-investigation learning) into the registry.
   //
   // Late-injected registry tools, written as `(tools as ToolRegistry).X =
@@ -4352,17 +4406,20 @@ export function buildTools(ctx: ToolContext) {
     ...(SOCIALFETCH_API_KEY ? ["socialfetch_lookup"] : []),
     ...(HUNTER_API_KEY ? ["hunter_combined", "hunter_email_verifier", "hunter_domain_search"] : []),
     ...(Deno.env.get("LEAKCHECK_API_KEY") ? ["leakcheck_lookup"] : []),
-    ...(Deno.env.get("STOLENTAX_API_KEY") ? ["breach_check", "stolentax_footprint"] : []),
+    // stolentax_footprint CUT 2026-07-05 (disabled in capabilities.ts) — breach_check
+    // still uses STOLENTAX_API_KEY when present but falls back to keyless leakcheck.
+    ...(Deno.env.get("STOLENTAX_API_KEY") ? ["breach_check"] : []),
+    ...(INDICIA_API_KEY ? ["indicia_email","indicia_phone","indicia_person","indicia_address","indicia_web_dbs","indicia_hudsonrock"] : []),
     ...(Deno.env.get("DEEPFIND_API_KEY") ? ["deepfind_reverse_email","deepfind_disposable_email","deepfind_ssl_inspect","deepfind_tech_stack","deepfind_url_unshorten","deepfind_telegram_channel","deepfind_telegram_search","deepfind_vin_lookup","deepfind_aircraft_lookup","deepfind_vessel_lookup","deepfind_mac_lookup","deepfind_dark_web_link","deepfind_email_breach","deepfind_transaction_viewer"] : []),
     ...(Deno.env.get("VIRUSTOTAL_API_KEY") ? ["virustotal_lookup"] : []),
     ...(Deno.env.get("IPGEOLOCATION_API_KEY") ? ["ipgeolocation_lookup"] : []),
-    ...(IPQUALITYSCORE_API_KEY ? ["ipqualityscore_lookup"] : []),
+    // ipqualityscore_lookup CUT 2026-07-05 (dead key; disabled in capabilities.ts).
     ...(RAPIDAPI_KEY ? ["rapidapi_breach_search", "rapidapi_all_breaches"] : []),
     ...(Deno.env.get("EXA_API_KEY") ? ["exa_search","exa_get_contents","exa_find_similar"] : []),
     ...(Deno.env.get("GEMINI_API_KEY") ? ["gemini_deep_dork"] : []),
     // Free / always-on tools
     "whois_lookup","dns_records","crtsh_subdomains","wayback_snapshots","archive_url","http_fingerprint",
-    "ip_intel","shodan_internetdb","hackertarget","urlscan_search","emailrep","gravatar_profile","hibp_lookup",
+    "ip_intel","shodan_internetdb","hackertarget","urlscan_search","gravatar_profile","hibp_lookup",
     "google_dorks","dork_harvest","username_sweep","github_user","reddit_user","hackernews_user",
     "minimax_web_search","jina_reader_scrape",
   ]);

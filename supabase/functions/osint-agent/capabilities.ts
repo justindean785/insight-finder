@@ -53,7 +53,25 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   cordcat_discord_lookup: { requiresKey: "CORDCAT_API_KEY" },
   bosint_email_lookup: { requiresKey: "OSINTNOVA_API_KEY" },
   leakcheck_lookup: { requiresKey: "LEAKCHECK_API_KEY" },
-  stolentax_footprint: { requiresKey: "STOLENTAX_API_KEY" },
+  // CUT 2026-07-05 (tool-hardening audit). All three are gated OFF the schedulable
+  // set — the readiness gate in index.ts deletes them from the tool schema so the
+  // model never sees or wastes a step on them. Code is intentionally LEFT in the
+  // registry (not deleted) so re-enabling is a one-line flip if a provider recovers.
+  //   • stolentax_footprint — dead key + depleted balance (26× 401 / 8× 403 in prod,
+  //     confirmed out of credits 2026-07-05). Was requiresKey; now hard-disabled so a
+  //     stale key can't re-advertise it.
+  //   • synapsint_lookup — 43× vendor 500s (server-side, unfixable our end); ~10% ok.
+  //   • emailrep — emailrep.io killed its unauthenticated API; 29× 429 and ~0 value.
+  //     Email verification/reputation now routes to hunter_email_verifier.
+  //   • ipqualityscore_lookup — dead key: 0/28 success, all HTTP 200 "Invalid or
+  //     unauthorized key" for 30 days straight (verified prod 2026-07-05). An
+  //     invalid key is NOT a balance-exhaustion skip — it emits no real reliability
+  //     signal, so it's cut like the others. Re-enable (delete this line) once
+  //     IPQUALITYSCORE_API_KEY is replaced with a valid key.
+  stolentax_footprint: { disabled: true },
+  synapsint_lookup: { disabled: true },
+  emailrep: { disabled: true },
+  ipqualityscore_lookup: { disabled: true },
   // DeepFind re-verified 2026-06-13 against the live API with a valid key: the
   // ONLY problem was the expired key (403). Our code already uses the correct
   // HTTP methods (POST+body / path-param). These 12 endpoints return 200/201.
@@ -78,7 +96,7 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   osint_navigator_query: { requiresKey: "OSINT_NAVIGATOR_API_KEY" },
   osint_navigator_search: { requiresKey: "OSINT_NAVIGATOR_API_KEY" },
   serus_darkweb_scan: { requiresKey: "SERUS_API_KEY" },
-  ipqualityscore_lookup: { requiresKey: "IPQUALITYSCORE_API_KEY" },
+  // ipqualityscore_lookup — see the CUT block below (dead key, disabled 2026-07-05).
   urlscanner_scan: { requiresKey: "URLSCANNER_API_KEY" },
   intelbase_email_lookup: { requiresKey: "INTELBASE_API_KEY", gatedUnless: "INTELBASE_ENABLED" },
   firecrawl_search: { disabled: true },
@@ -93,6 +111,17 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   // so it returns real breach data on a keyless deploy and must NOT be gated.
   rapidapi_breach_search: { requiresKey: "RAPIDAPI_KEY" },
   rapidapi_all_breaches: { requiresKey: "RAPIDAPI_KEY" },
+  // Indicia (api.indicia.app) — US person/phone/email/address + web-DB breach
+  // aggregator, added 2026-07-05 to replace the cut footprint tools. All six
+  // endpoints gate on a single key; a keyless deploy drops them from the schema
+  // (readiness gate) instead of burning a step. Face/geo/gmail/username endpoints
+  // are intentionally NOT wired (hard policy — see tools/indicia.ts).
+  indicia_email: { requiresKey: "INDICIA_API_KEY" },
+  indicia_phone: { requiresKey: "INDICIA_API_KEY" },
+  indicia_person: { requiresKey: "INDICIA_API_KEY" },
+  indicia_address: { requiresKey: "INDICIA_API_KEY" },
+  indicia_web_dbs: { requiresKey: "INDICIA_API_KEY" },
+  indicia_hudsonrock: { requiresKey: "INDICIA_API_KEY" },
 };
 
 /** Every env var name the requirements depend on — what the wiring must probe. */

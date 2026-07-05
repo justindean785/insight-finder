@@ -64,14 +64,24 @@ Deno.test("free / always-on tools survive the readiness gate", () => {
 });
 
 Deno.test("a present key keeps its tool in the schema (control)", () => {
-  const caps = discoverCapabilities(
-    { IPQUALITYSCORE_API_KEY: true, RAPIDAPI_KEY: true, STOLENTAX_API_KEY: true },
-    null,
-  );
+  // Control that gating does NOT over-reach: a keyed, available provider survives.
+  // (Was ipqualityscore_lookup — cut 2026-07-05 as a dead key; use rapidapi, which
+  // is in SCHEMA and available with its key.)
+  const caps = discoverCapabilities({ RAPIDAPI_KEY: true }, null);
   const active = schedulableTools(SCHEMA, caps);
-  assert(active.includes("ipqualityscore_lookup"));
   assert(active.includes("rapidapi_breach_search"));
   assert(active.includes("breach_check"));
+});
+
+Deno.test("cut tools are gated out of the schema even with their key present", () => {
+  const caps = discoverCapabilities(
+    { STOLENTAX_API_KEY: true, SYNAPSINT_API_KEY: true, IPQUALITYSCORE_API_KEY: true },
+    null,
+  );
+  const gated = new Set(gatedToolNames(caps));
+  for (const t of ["stolentax_footprint", "synapsint_lookup", "emailrep", "ipqualityscore_lookup"]) {
+    assert(gated.has(t), `${t} is cut (disabled) and must be gated even with its key present`);
+  }
 });
 
 Deno.test("newly-mapped rapidapi breach tools are gated only on their own key", () => {

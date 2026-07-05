@@ -92,6 +92,16 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   deepfind_email_breach: "breach",
   deepfind_dark_web_link: "breach",
   serus_darkweb_scan: "breach",
+  // Indicia (api.indicia.app) — data-broker + breach-dump aggregator. ALL SIX
+  // classify as `breach` (CLASS_CAP 60, in NEVER_HIGH) so a single Indicia hit is a
+  // LEAD capped at ≤60 and can never alone reach Confirmed — even person/address
+  // people-search results, which are broker records, not verified identity.
+  indicia_email: "breach",
+  indicia_phone: "breach",
+  indicia_person: "breach",
+  indicia_address: "breach",
+  indicia_web_dbs: "breach",
+  indicia_hudsonrock: "breach",
   leakcheck: "breach", // bare alias of leakcheck_lookup seen in compound source strings
   // ── Threat-intel / ransomware-victim exposure ──
   // ransomware.live and the dead deepfind_ransomware_exposure report that an

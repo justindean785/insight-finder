@@ -54,6 +54,18 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   exa_search: 20_000,       // neural search + contents — p95 ~12s
   exa_find_similar: 20_000,
   exa_get_contents: 20_000,
+  // archive.org (Cloudflare-fronted, chronically slow p95 ~60s) — raise past the
+  // tools' own per-attempt fetch timeouts so a legit-slow archive resolves instead
+  // of the 12s default cap orphaning an un-signalled request (2026-07-05 fix).
+  wayback_cdx_search: 25_000,
+  archive_url: 25_000,
+  // Indicia broker lookups — person/address can be slow; own fetch timeout is 18s.
+  indicia_email: 20_000,
+  indicia_phone: 20_000,
+  indicia_person: 20_000,
+  indicia_address: 20_000,
+  indicia_web_dbs: 20_000,
+  indicia_hudsonrock: 20_000,
 };
 export function toolTimeoutMs(name: string): number {
   return TOOL_TIMEOUT_OVERRIDE_MS[name] ?? DEFAULT_TOOL_TIMEOUT_MS;
