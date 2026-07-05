@@ -95,6 +95,25 @@ export interface ToolContext {
   manualOverrideSelector: string | null;
 }
 
+// Hosts that reliably return 451/403 THROUGH r.jina.ai — scraping them is a
+// guaranteed ~8s dead round-trip (the abort signal only cancels AFTER the cap
+// fires; the wasted wall-clock is already spent). Skip the call entirely and
+// return the same origin-blocked shape the agent already knows how to pivot on.
+// SCOPE: this guard is Jina-specific — these same hosts remain valid targets for
+// socialfetch_lookup, reddit_user (.json), and direct-API tools; do NOT promote
+// this to a global domain block.
+const JINA_HARD_BLOCK_HOSTS = [
+  "x.com",
+  "twitter.com",
+  "twitch.tv",
+  "instagram.com",
+  "reddit.com",
+  "facebook.com",
+];
+function isJinaHardBlocked(hostname: string): boolean {
+  return JINA_HARD_BLOCK_HOSTS.some((h) => hostname === h || hostname.endsWith(`.${h}`));
+}
+
 export function buildTools(ctx: ToolContext) {
   const { supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, messages, manualOverrideSelector } = ctx;
 
@@ -1097,6 +1116,12 @@ export function buildTools(ctx: ToolContext) {
         if (!LEAKCHECK_API_KEY) return { error: "LEAKCHECK_API_KEY not configured" };
         const q = value.trim();
         if (!q) return { error: "missing value" };
+        // LeakCheck v2 /query 400s on keyword/name searches. A multi-word value
+        // with no @ is a person name — skip cleanly (avoid the guaranteed 400)
+        // and route the caller to the tool that DOES support name search.
+        if (!q.includes("@") && /\s/.test(q) && (type === "auto" || type === "username")) {
+          return { ok: false, skipped: true, source: "leakcheck.v2", reason: "name/keyword not supported by LeakCheck v2 — use oathnet_lookup type:'name'", value: q };
+        }
         try {
           const url = buildLeakcheckUrl(q, type);
           const r = await fetchT(url, { headers: { "X-API-Key": LEAKCHECK_API_KEY, "Accept": "application/json" } }, 20_000);
@@ -3075,6 +3100,10 @@ export function buildTools(ctx: ToolContext) {
         parsed.hash = ""; // r.jina.ai 422s on fragments
         // Skip a host already proven dead (NXDOMAIN) this investigation.
         if (isHostDead(parsed.hostname)) return { skipped: true, reason: "host does not resolve (NXDOMAIN) — skipped", url: raw };
+        // Skip hosts that always 451/403 through Jina — save the ~8s dead round-trip.
+        if (isJinaHardBlocked(parsed.hostname)) {
+          return { error: "jina 451", status: 451, url: parsed.toString(), skipped: true, hint: "origin blocks Jina — try wayback_snapshots, socialfetch_lookup, or a direct-API tool" };
+        }
         // Rebuild a clean URL; r.jina.ai expects the raw URL appended.
         const clean = parsed.toString();
         try {
