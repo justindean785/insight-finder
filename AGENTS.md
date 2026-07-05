@@ -33,6 +33,9 @@ gotchas. This file only adds Cursor Cloud environment notes.
   OSINT APIs. Use benign, non-PII seeds (e.g. the domain `example.com`) for smoke
   tests. A scan of `example.com` completes in ~20s and returns whois/DNS/CDN
   findings — a good end-to-end check.
+- **Live smoke script:** `node scripts/live-scan.mjs [seed]` — signs up a fresh
+  test user, creates a thread, streams `osint-agent` on production, prints artifact
+  count + failure reason. Default seed: `example.com`.
 - Backend readiness (does not spend credits or hit the LLM):
   `curl -sS "$VITE_SUPABASE_URL/functions/v1/osint-agent?health=1" -H "apikey: <anon key>"`
   → `{"ok":true,...}` when the orchestrator + core secrets are set.
