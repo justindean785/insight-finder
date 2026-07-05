@@ -435,32 +435,52 @@ Deno.serve(async (req) => {
     // 6s timeout on the unhealthy path) is removed from time-to-first-token.
     // A cold isolate has no cached health → the probe still runs (safe default).
     if (minimaxIsPrimary && !useFallback && !lovablePinned && lovableGateway && !minimaxHealthyWithin(60_000)) {
-      try {
-        const probePromise = minimaxChat({ user: "ping", maxTokens: 4, temperature: 0 });
-        // Swallow a late rejection if the timeout wins the race below, so it
-        // never surfaces as an unhandled rejection after we've moved on.
-        probePromise.catch(() => {});
-        const probe = (await Promise.race([
-          probePromise,
-          new Promise<{ ok: boolean; status: number }>((resolve) =>
-            setTimeout(() => resolve({ ok: false, status: 0 }), 6000)),
-        ])) as { ok: boolean; status: number };
-        if (shouldFallbackAfterMinimaxPreflight(probe)) {
-          useFallback = true;
-          console.warn(
-            `[orchestrator] minimax preflight unhealthy (status=${minimaxPreflightFailureLabel(probe)}) → Gemini fallback for thread ${threadId}`,
-          );
-        } else if (!probe.ok) {
-          console.info(
-            `[orchestrator] minimax preflight ${minimaxPreflightFailureLabel(probe)} — keeping MiniMax primary for thread ${threadId}`,
-          );
+      // Two-attempt preflight (mirror's preview-verified probe): MiniMax can go
+      // quiet for 6–10s under load on a busy turn (large prompt + reasoning
+      // warm-up), so give it up to 12s per attempt with one retry (250ms
+      // backoff). Combined with #229's policy: a TIMEOUT — even after both
+      // attempts — never forces the fallback (cold-isolate timeouts are
+      // ambiguous and were flapping healthy turns off MiniMax); only an
+      // explicit HTTP failure from MiniMax itself pivots the run.
+      const PREFLIGHT_TIMEOUT_MS = 12_000;
+      const PREFLIGHT_ATTEMPTS = 2;
+      const probeOnce = async (): Promise<{ ok: boolean; status: number }> => {
+        try {
+          const ctrl = new AbortController();
+          const timer = setTimeout(() => ctrl.abort(), PREFLIGHT_TIMEOUT_MS);
+          try {
+            const res = await minimaxChat({
+              user: "ping", maxTokens: 4, temperature: 0, signal: ctrl.signal,
+            });
+            return { ok: res.ok, status: res.status };
+          } finally {
+            clearTimeout(timer);
+          }
+        } catch {
+          // Timeout/abort/network — encoded as status 0, the ambiguous class
+          // that shouldFallbackAfterMinimaxPreflight refuses to pivot on.
+          return { ok: false, status: 0 };
         }
-      } catch (e) {
-        // Network error / abort during the probe → MiniMax is unreachable.
+      };
+      let lastProbe: { ok: boolean; status: number } = { ok: false, status: 0 };
+      for (let attempt = 1; attempt <= PREFLIGHT_ATTEMPTS; attempt++) {
+        lastProbe = await probeOnce();
+        if (lastProbe.ok) break;
+        if (attempt < PREFLIGHT_ATTEMPTS) {
+          console.warn(
+            `[orchestrator] minimax preflight attempt ${attempt}/${PREFLIGHT_ATTEMPTS} failed (status=${minimaxPreflightFailureLabel(lastProbe)}) — retrying`,
+          );
+          await new Promise((r) => setTimeout(r, 250));
+        }
+      }
+      if (shouldFallbackAfterMinimaxPreflight(lastProbe)) {
         useFallback = true;
         console.warn(
-          `[orchestrator] minimax preflight threw → Gemini fallback:`,
-          e instanceof Error ? e.message : String(e),
+          `[orchestrator] minimax preflight unhealthy after ${PREFLIGHT_ATTEMPTS} attempts (status=${minimaxPreflightFailureLabel(lastProbe)}) → Gemini fallback for thread ${threadId}`,
+        );
+      } else if (!lastProbe.ok) {
+        console.info(
+          `[orchestrator] minimax preflight ${minimaxPreflightFailureLabel(lastProbe)} after ${PREFLIGHT_ATTEMPTS} attempts — keeping MiniMax primary for thread ${threadId}`,
         );
       }
     }

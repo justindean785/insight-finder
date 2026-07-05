@@ -13,7 +13,7 @@
  * skip).
  */
 
-export type CapabilityReason = "ok" | "missing_key" | "unsupported_seed";
+export type CapabilityReason = "ok" | "missing_key" | "gated" | "disabled" | "unsupported_seed";
 
 export interface CapabilityStatus {
   tool: string;
@@ -24,8 +24,12 @@ export interface CapabilityStatus {
 }
 
 export interface ProviderRequirement {
+  /** provider is intentionally unavailable in this build */
+  disabled?: boolean;
   /** env var that must be present (truthy) for the provider to run */
   requiresKey?: string;
+  /** feature flag/env var that must be true for the provider to run */
+  gatedUnless?: string;
   /** seed types this provider supports; if set and the seed isn't included,
    *  the provider is unsupported for this run */
   seedTypes?: string[];
@@ -76,12 +80,17 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   serus_darkweb_scan: { requiresKey: "SERUS_API_KEY" },
   ipqualityscore_lookup: { requiresKey: "IPQUALITYSCORE_API_KEY" },
   urlscanner_scan: { requiresKey: "URLSCANNER_API_KEY" },
-  // Breach-source tools that HARD-require their key (they self-skip with an error
-  // when it is absent), so a keyless deploy should drop them from the schema rather
-  // than let the model burn a step on a guaranteed-empty call.
-  // NOTE: breach_check is deliberately NOT listed here — it has a KEYLESS
-  // leakcheck.io/api/public fallback (tool-registry.ts) and still returns breach
-  // data with no STOLENTAX_API_KEY, so gating it would remove real capability.
+  intelbase_email_lookup: { requiresKey: "INTELBASE_API_KEY", gatedUnless: "INTELBASE_ENABLED" },
+  firecrawl_search: { disabled: true },
+  firecrawl_scrape: { disabled: true },
+  firecrawl_map: { disabled: true },
+  // RapidAPI breach tools are keyed but were historically only self-skipping
+  // (missing from this map), so a keyless deploy still advertised them to the
+  // model and burned a step on a guaranteed-empty call. The readiness gate now
+  // drops them from the schema when RAPIDAPI_KEY is absent. NOTE: breach_check is
+  // deliberately NOT listed here — despite using STOLENTAX_API_KEY when present,
+  // it falls back to the keyless leakcheck.io/api/public endpoint (tool-registry.ts),
+  // so it returns real breach data on a keyless deploy and must NOT be gated.
   rapidapi_breach_search: { requiresKey: "RAPIDAPI_KEY" },
   rapidapi_all_breaches: { requiresKey: "RAPIDAPI_KEY" },
 };
@@ -93,6 +102,7 @@ export function capabilityEnvKeys(
   const keys = new Set<string>();
   for (const req of Object.values(requirements)) {
     if (req.requiresKey) keys.add(req.requiresKey);
+    if (req.gatedUnless) keys.add(req.gatedUnless);
   }
   return [...keys];
 }
@@ -106,8 +116,12 @@ export function discoverCapabilities(
 ): CapabilityStatus[] {
   const out: CapabilityStatus[] = [];
   for (const [tool, req] of Object.entries(requirements)) {
-    if (req.requiresKey && !env[req.requiresKey]) {
+    if (req.disabled) {
+      out.push({ tool, available: false, reason: "disabled", detail: "provider disabled in config" });
+    } else if (req.requiresKey && !env[req.requiresKey]) {
       out.push({ tool, available: false, reason: "missing_key", detail: `${req.requiresKey} not set` });
+    } else if (req.gatedUnless && !env[req.gatedUnless]) {
+      out.push({ tool, available: false, reason: "gated", detail: `${req.gatedUnless} not enabled` });
     } else if (req.seedTypes && seedType && !req.seedTypes.includes(seedType)) {
       out.push({ tool, available: false, reason: "unsupported_seed", detail: `not supported for seed '${seedType}'` });
     } else {
@@ -123,9 +137,10 @@ export function unavailableProviders(caps: CapabilityStatus[]): CapabilityStatus
 }
 
 /** Tool names to REMOVE from the model's schedulable set AND the tool schema it
- *  sees (missing key / unsupported seed). Pure — the readiness gate in index.ts
- *  deletes exactly these from the `tools` object before streamText, so a keyless
- *  tool is never advertised and never wastes a step returning "not configured". */
+ *  sees (missing key / disabled / gated / unsupported seed). Pure — the readiness
+ *  gate in index.ts deletes exactly these from the `tools` object before streamText,
+ *  so a keyless tool is never advertised and never wastes a step returning
+ *  "not configured". */
 export function gatedToolNames(caps: CapabilityStatus[]): string[] {
   return caps.filter((c) => !c.available).map((c) => c.tool);
 }
