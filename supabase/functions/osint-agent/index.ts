@@ -16,7 +16,7 @@ import {
   geminiDirectGateway, GEMINI_FALLBACK_MODEL_ID, ALLOW_LOVABLE_FALLBACK,
   grokGateway, openAdapterGateway, ORCHESTRATOR_PROVIDER,
   GROK_ORCHESTRATOR_MODEL_ID, OPENADAPTER_ORCHESTRATOR_MODEL_ID,
-  degradedTools, deadHosts, resetFirecrawlCreditsLow,
+  degradedTools, deadHosts, resetFirecrawlCreditsLow, INTELBASE_ENABLED,
 } from "./env.ts";
 
 import { detectSeedServer } from "./validation.ts";
@@ -315,6 +315,12 @@ Deno.serve(async (req) => {
     {
       const envPresence: Record<string, boolean> = {};
       for (const k of capabilityEnvKeys()) envPresence[k] = !!Deno.env.get(k);
+      // INTELBASE_ENABLED is a hard-coded code-level kill switch in env.ts (the
+      // provider's tools import that constant and self-skip while it is false).
+      // The capability gate must follow the SAME source of truth — reading the
+      // secret here would advertise intelbase_email_lookup to the model while
+      // every call still returns the disabled skip (Codex review on #232).
+      envPresence["INTELBASE_ENABLED"] = INTELBASE_ENABLED;
       const caps = discoverCapabilities(envPresence, null);
       for (const cap of caps) {
         if (!cap.available) {

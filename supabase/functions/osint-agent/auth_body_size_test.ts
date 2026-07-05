@@ -35,3 +35,13 @@ Deno.test("isBodyTooLarge: unserializable input (circular) never throws — fail
   circular.self = circular;
   assertEquals(isBodyTooLarge(circular, MAX_REQUEST_BODY_BYTES), false);
 });
+
+Deno.test("isBodyTooLarge: measures UTF-8 bytes, not UTF-16 code units (multi-byte payload)", () => {
+  // Each CJK char is 1 UTF-16 code unit but 3 UTF-8 bytes. A payload whose
+  // .length sits under the cap must still be rejected when its byte size
+  // exceeds it — matching what Content-Length (bytes) would have said.
+  const chars = Math.floor(MAX_REQUEST_BODY_BYTES / 2); // 1M code units → ~3MB UTF-8
+  const multibyte = { text: "漢".repeat(chars) };
+  assertEquals(JSON.stringify(multibyte).length < MAX_REQUEST_BODY_BYTES, true);
+  assertEquals(isBodyTooLarge(multibyte, MAX_REQUEST_BODY_BYTES), true);
+});

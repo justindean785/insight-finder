@@ -27,10 +27,13 @@ export function isContentLengthTooLarge(header: string | null, capBytes: number)
   return Number.isFinite(n) && n > capBytes;
 }
 
-/** True if a parsed body's serialized size exceeds the cap. */
+/** True if a parsed body's serialized size exceeds the cap. Measured in UTF-8
+ *  BYTES (TextEncoder), not string length — UTF-16 code units undercount
+ *  multi-byte payloads, letting a body past a cap that Content-Length (bytes)
+ *  would have rejected (Codex/Copilot review on #232). */
 export function isBodyTooLarge(body: unknown, capBytes: number): boolean {
   try {
-    return JSON.stringify(body).length > capBytes;
+    return new TextEncoder().encode(JSON.stringify(body)).length > capBytes;
   } catch {
     return false;
   }
