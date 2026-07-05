@@ -7,8 +7,8 @@
  * confirmation). This is the "evidence → graph → reasoning → cheapest justified
  * pivot" layer.
  *
- * PURE: no I/O. It is dark-launched in index.ts behind GRAPH_PIVOTS_ENABLED
- * (default off), so merging changes nothing in production until enabled.
+ * PURE: no I/O. Enabled by default in minimax_plan_pivots; set
+ * GRAPH_PIVOTS_ENABLED=false to disable.
  */
 
 import {

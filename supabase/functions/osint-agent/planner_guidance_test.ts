@@ -5,6 +5,7 @@ import {
   enforceFallbackToolPolicy,
   NAME_SEED_PLANNER_RULES,
   dorkHarvestPrerequisitesMet,
+  generateNameVariations,
 } from "./planner-guidance.ts";
 
 Deno.test("person seeds use the name playbook", () => {
@@ -105,6 +106,30 @@ Deno.test("name-seed planner also handles the extracted pivots response shape", 
   assertStringIncludes(String(pivots[1]?.reason), "[VERIFY]");
 });
 
+Deno.test("generateNameVariations expands LEADS-style LAST, FIRST MIDDLE names", () => {
+  assertEquals(generateNameVariations("MORRIS, JARRETT RILEY"), [
+    "Jarrett Riley Morris",
+    "Riley Morris",
+    "Riley J Morris",
+    "Morris Riley",
+  ]);
+});
+
+Deno.test("generateNameVariations handles LAST, FIRST without middle", () => {
+  assertEquals(generateNameVariations("SMITH, JOHN"), ["John Smith", "Smith John"]);
+});
+
+Deno.test("generateNameVariations title-cases and dedupes", () => {
+  const vars = generateNameVariations("  o'brien, SEAN PATRICK  ");
+  assertEquals(vars[0], "Sean Patrick O'Brien");
+  assertEquals(new Set(vars.map((v) => v.toLowerCase())).size, vars.length);
+});
+
+Deno.test("planner guidance documents LEADS-style name variation orderings", () => {
+  assertStringIncludes(NAME_SEED_PLANNER_RULES, "LEADS-style");
+  assertStringIncludes(NAME_SEED_PLANNER_RULES, "Jarrett Riley Morris");
+});
+
 Deno.test("planner guidance explicitly forbids username-first name investigations", () => {
   assertStringIncludes(NAME_SEED_PLANNER_RULES, "NAME/PERSON");
   assertStringIncludes(NAME_SEED_PLANNER_RULES, "rank username_sweep or username_search below");
@@ -164,8 +189,8 @@ Deno.test("known non-name seeds (e.g. email) are returned unchanged", () => {
 Deno.test("gemini_deep_dork is demoted until dork_harvest/google_dorks have run", () => {
   const plan = enforceFallbackToolPolicy({
     proposed_calls: [
-      { tool_name: "gemini_deep_dork", selector: "x@y.com", expected_value: 80, reason: "deep dork" },
-      { tool_name: "dork_harvest", selector: "x@y.com", expected_value: 70, reason: "harvest" },
+      { tool_name: "gemini_deep_dork", selector: "x@y.com", expected_value: 80, reason: "deep dork", purpose: "confirm email exposure" },
+      { tool_name: "dork_harvest", selector: "x@y.com", expected_value: 70, reason: "harvest", purpose: "harvest dorks" },
     ],
   }, { alreadyQueried: [] });
   const proposed = plan.proposed_calls as Array<Record<string, unknown>>;
@@ -176,11 +201,29 @@ Deno.test("gemini_deep_dork is demoted until dork_harvest/google_dorks have run"
 Deno.test("gemini_deep_dork demotion lifts after dork_harvest runs", () => {
   const input = {
     proposed_calls: [
-      { tool_name: "gemini_deep_dork", selector: "x@y.com", expected_value: 80, reason: "deep dork" },
+      { tool_name: "gemini_deep_dork", selector: "x@y.com", expected_value: 80, reason: "deep dork", purpose: "confirm email exposure" },
     ],
   };
   const plan = enforceFallbackToolPolicy(input, { alreadyQueried: ["dork_harvest::email::x@y.com"] });
   assertEquals(plan, input);
+});
+
+Deno.test("enforceFallbackToolPolicy rejects proposed_calls missing purpose", () => {
+  const plan = enforceFallbackToolPolicy({
+    proposed_calls: [
+      { tool_name: "exa_search", selector: "Alice", expected_value: 80, reason: "name search" },
+      { tool_name: "dork_harvest", selector: "Alice", expected_value: 70, reason: "dorks", purpose: "harvest public docs" },
+    ],
+    calls_rejected: [],
+  }, { alreadyQueried: ["dork_harvest::name::Alice"] });
+
+  const proposed = plan.proposed_calls as Array<Record<string, unknown>>;
+  const rejected = plan.calls_rejected as Array<Record<string, unknown>>;
+  assertEquals(proposed.length, 1);
+  assertEquals(proposed[0]?.tool_name, "dork_harvest");
+  assertEquals(rejected.length, 1);
+  assertEquals(rejected[0]?.tool_name, "exa_search");
+  assertStringIncludes(String(rejected[0]?.reason), "[REJECTED — missing purpose]");
 });
 
 Deno.test("dorkHarvestPrerequisitesMet detects google_dorks or dork_harvest", () => {

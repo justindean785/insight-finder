@@ -24,7 +24,62 @@ NAME/PERSON SEED ORDERING:
 - Lead with real-name discovery: exa_search, minimax_web_search, google_dorks, and dork_harvest.
 - Always rank username_sweep or username_search below unresolved real-name search.
 - A handle derived from a person's name is a weak candidate, not an identity match. Label sweep hits [VERIFY] until independently corroborated.
+- For LEADS-style names (LAST, FIRST MIDDLE), search multiple name orderings — e.g. MORRIS, JARRETT RILEY → Jarrett Riley Morris, Riley Morris, Riley J Morris, Morris Riley — via distinct dork/search selectors (not one concatenated string).
 `.trim();
+
+/** Title-case a token, preserving apostrophes (O'Brien). */
+function titleWord(word: string): string {
+  return word.toLowerCase().replace(/(^|['-])(\w)/g, (_, sep, c) => `${sep}${c.toUpperCase()}`);
+}
+
+/**
+ * Expand a LEADS-style "LAST, FIRST MIDDLE" string into common search orderings.
+ * e.g. "MORRIS, JARRETT RILEY" → ["Jarrett Riley Morris", "Riley Morris", "Riley J Morris", "Morris Riley"]
+ */
+export function generateNameVariations(lastFirst: string): string[] {
+  const raw = lastFirst.trim();
+  if (!raw) return [];
+
+  const titleCase = (s: string) => s.split(/\s+/).filter(Boolean).map(titleWord).join(" ");
+
+  if (!raw.includes(",")) {
+    const titled = titleCase(raw);
+    return titled ? [titled] : [];
+  }
+
+  const commaIdx = raw.indexOf(",");
+  const lastPart = raw.slice(0, commaIdx).trim();
+  const givenPart = raw.slice(commaIdx + 1).trim();
+  if (!lastPart || !givenPart) {
+    const fallback = titleCase(raw.replace(",", " "));
+    return fallback ? [fallback] : [];
+  }
+
+  const last = titleCase(lastPart);
+  const given = givenPart.split(/\s+/).filter(Boolean).map(titleWord);
+  const first = given[0] ?? "";
+  const middle = given.slice(1);
+
+  const out: string[] = [];
+  if (first && middle.length) {
+    const mid = middle[0];
+    out.push(`${first} ${middle.join(" ")} ${last}`.trim());
+    out.push(`${mid} ${last}`);
+    if (first.charAt(0)) out.push(`${mid} ${first.charAt(0)} ${last}`);
+    out.push(`${last} ${mid}`);
+  } else if (first) {
+    out.push(`${first} ${last}`);
+    out.push(`${last} ${first}`);
+  }
+
+  const seen = new Set<string>();
+  return out.filter((v) => {
+    const key = v.toLowerCase();
+    if (!v || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -119,16 +174,57 @@ export function enforceNameSeedPriority(
   };
 }
 
+function hasPurpose(call: Record<string, unknown>): boolean {
+  return typeof call.purpose === "string" && call.purpose.trim().length > 0;
+}
+
+/** Move proposed_calls missing a non-empty `purpose` into calls_rejected. */
+function rejectCallsMissingPurpose(rawPlan: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(rawPlan.proposed_calls)) return rawPlan;
+
+  const kept: unknown[] = [];
+  const rejected = Array.isArray(rawPlan.calls_rejected) ? [...rawPlan.calls_rejected] : [];
+  let moved = 0;
+
+  for (const call of rawPlan.proposed_calls) {
+    if (!isRecord(call)) {
+      kept.push(call);
+      continue;
+    }
+    if (hasPurpose(call)) {
+      kept.push(call);
+      continue;
+    }
+    moved++;
+    rejected.push({
+      ...call,
+      tool_name: toolName(call) || undefined,
+      reason: `[REJECTED — missing purpose] ${String(call.reason ?? "")}`.trim(),
+      weak_lead: true,
+    });
+  }
+
+  if (!moved) return rawPlan;
+
+  return {
+    ...rawPlan,
+    proposed_calls: kept,
+    calls_rejected: rejected,
+  };
+}
+
 /**
  * Demote fallback dork tools (gemini_deep_dork ~46% success in prod telemetry)
  * until google_dorks + dork_harvest have run. Labeling/ranking only — never drops
  * a call — mirrors the username-sweep [VERIFY] pattern.
+ *
+ * Also rejects proposed_calls that omit the required `purpose` field.
  */
 export function enforceFallbackToolPolicy(
   rawPlan: Record<string, unknown>,
   context: { alreadyQueried: string[] },
 ): Record<string, unknown> {
-  if (dorkHarvestPrerequisitesMet(context.alreadyQueried)) return rawPlan;
+  const withPurpose = rejectCallsMissingPurpose(rawPlan);
 
   const labelFallback = (call: unknown) => {
     if (!isRecord(call)) return call;
@@ -142,15 +238,19 @@ export function enforceFallbackToolPolicy(
     };
   };
 
-  const proposed = Array.isArray(rawPlan.proposed_calls)
-    ? rawPlan.proposed_calls.map(labelFallback)
+  if (dorkHarvestPrerequisitesMet(context.alreadyQueried)) {
+    return withPurpose;
+  }
+
+  const proposed = Array.isArray(withPurpose.proposed_calls)
+    ? withPurpose.proposed_calls.map(labelFallback)
     : undefined;
-  const pivots = Array.isArray(rawPlan.pivots)
-    ? rawPlan.pivots.map(labelFallback)
+  const pivots = Array.isArray(withPurpose.pivots)
+    ? withPurpose.pivots.map(labelFallback)
     : undefined;
 
   return {
-    ...rawPlan,
+    ...withPurpose,
     ...(proposed ? { proposed_calls: proposed } : {}),
     ...(pivots ? { pivots } : {}),
   };

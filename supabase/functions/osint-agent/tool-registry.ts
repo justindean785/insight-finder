@@ -68,7 +68,8 @@ import {
 
 import { minimaxChat, minimaxChatWithFallback, safeJson, geminiGroundedSearch, perplexitySearch } from "./providers.ts";
 import { dorkToExaQuery } from "./dork-translate.ts";
-import { augmentDorkQuery, isTemplateOrSampleUrl } from "./dork-relevance.ts";
+import { augmentDorkQuery, isTemplateOrSampleUrl, scoreDorkRelevance, applyDorkRelevance, DORK_RELEVANCE_FLOOR } from "./dork-relevance.ts";
+import { verifyDorkDocumentHit } from "./dork-verify.ts";
 import { buildAutoRecordedRow } from "./auto-record-integrity.ts";
 
 import { TOOL_CATALOG, CATALOG_CACHE, FINDING_LABELS } from "./catalog.ts";
@@ -76,6 +77,7 @@ import { beginCycle, recordFindingSummary } from "./runtime-policy.ts";
 import { serus_darkweb_scan } from "./tools/serus.ts";
 import { okWithSuccessFlag, socialfetchError, isHackertargetApiError, isCrtshOk, dohTypeError, blockchairError } from "./tool_response.ts";
 import { enforceNameSeedPriority, enforceFallbackToolPolicy, NAME_SEED_PLANNER_RULES } from "./planner-guidance.ts";
+import { buildEvidenceDigest } from "./evidence-digest.ts";
 import { sweepUsername } from "./sweeper.ts";
 import { trimExaResults, archiveAttachment } from "./archiver.ts";
 
@@ -409,7 +411,12 @@ export function buildTools(ctx: ToolContext) {
       inputSchema: z.object({
         seed: z.string(),
         already_queried: z.array(z.string()).max(200).default([]),
-        artifacts: z.preprocess(coerceArtifactsInput, z.array(z.object({ kind: z.string(), value: z.string() })).max(200)),
+        artifacts: z.preprocess(coerceArtifactsInput, z.array(z.object({
+          kind: z.string(),
+          value: z.string(),
+          confidence: z.number().optional(),
+          metadata: z.record(z.unknown()).optional(),
+        })).max(200)),
         budget_remaining: z.number().int().min(0).max(100).default(30),
       }),
       execute: async ({ seed, already_queried, artifacts, budget_remaining }) => {
@@ -662,8 +669,14 @@ export function buildTools(ctx: ToolContext) {
           const r = await minimaxChatWithFallback({
             model: MODELS.smart,
             system:
-              `You are the execution planner for a forensic OSINT runtime. ONLY propose tools from this EXACT list (names must match verbatim — do not invent or rename): ${toolList.join(", ")}.\n\n${NAME_SEED_PLANNER_RULES}\n\nRUNTIME RULES:\n- Stage choices: TRIAGE, REVIEW, TARGETED_PIVOT, VERIFY, REPORT.\n- Propose ALL independent, non-redundant pivots that can run in PARALLEL this cycle (free/low-cost especially) so the investigation finishes in FEWER cycles. Only serialize a pivot when it depends on a prior pivot's result.\n- Respect the hard total-call and concurrency ceilings enforced by the runtime.\n- Weak-lead and expected-value signals are advisory. Do not turn them into prerequisites or retry loops.\n- Prefer the cheapest tool that can answer the current question: run FREE/LOW-cost validation before spending on EXPENSIVE/premium tools (see TOOL COST TIERS in the context below). Cost is advisory — never drop a uniquely high-value lead just because it is expensive.\n- When a finding is breach-derived or otherwise confidence-capped, propose ONE independent, trusted NON-infrastructure source to corroborate it and lift the cap, rather than re-running the same breach source.\n- Cached results NEVER count as corroboration. If a fresh cache hit would satisfy the question, prefer it over a live call.\n- If evidence is weak, explain that in the reason and keep the result [VERIFY].\n\nReply ONLY with JSON matching this exact shape:\n{\n  "stage":"TRIAGE|REVIEW|TARGETED_PIVOT|VERIFY|REPORT",\n  "goal":"string",\n  "current_findings":["string"],\n  "proposed_calls":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "params_preview":{},\n    "expected_value":0,\n    "cost_tier":"free|low|expensive",\n    "reason":"string",\n    "stop_condition":"string",\n    "cache_status":"thread|user|stale|miss"\n  }],\n  "calls_rejected":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "expected_value":0,\n    "reason":"string",\n    "cost_tier":"free|low|expensive",\n    "weak_lead":true,\n    "stale_cache":false,\n    "manual_override":false\n  }]\n}\nOrder proposed_calls by expected_value descending. Respect budget_remaining as the max number of proposed_calls.`,
-            user: `Seed: ${seed}\nBudget remaining: ${budget_remaining}\nAlready queried: ${JSON.stringify(already_queried).slice(0,4000)}\nArtifacts so far: ${JSON.stringify(artifacts).slice(0,8000)}\n\n${costGuide}${relationshipHint}${pivotHint}${memoryHint}`,
+              `You are the execution planner for a forensic OSINT runtime. ONLY propose tools from this EXACT list (names must match verbatim — do not invent or rename): ${toolList.join(", ")}.\n\n${NAME_SEED_PLANNER_RULES}\n\nRUNTIME RULES:\n- Stage choices: TRIAGE, REVIEW, TARGETED_PIVOT, VERIFY, REPORT.\n- Propose ALL independent, non-redundant pivots that can run in PARALLEL this cycle (free/low-cost especially) so the investigation finishes in FEWER cycles. Only serialize a pivot when it depends on a prior pivot's result.\n- Respect the hard total-call and concurrency ceilings enforced by the runtime.\n- Weak-lead and expected-value signals are advisory. Do not turn them into prerequisites or retry loops.\n- Prefer the cheapest tool that can answer the current question: run FREE/LOW-cost validation before spending on EXPENSIVE/premium tools (see TOOL COST TIERS in the context below). Cost is advisory — never drop a uniquely high-value lead just because it is expensive.\n- When a finding is breach-derived or otherwise confidence-capped, propose ONE independent, trusted NON-infrastructure source to corroborate it and lift the cap, rather than re-running the same breach source.\n- Cached results NEVER count as corroboration. If a fresh cache hit would satisfy the question, prefer it over a live call.\n- If evidence is weak, explain that in the reason and keep the result [VERIFY].\n- Every proposed_call MUST include a concise purpose (why this pivot advances the investigation).\n\nReply ONLY with JSON matching this exact shape:\n{\n  "stage":"TRIAGE|REVIEW|TARGETED_PIVOT|VERIFY|REPORT",\n  "goal":"string",\n  "current_findings":["string"],\n  "proposed_calls":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "params_preview":{},\n    "expected_value":0,\n    "cost_tier":"free|low|expensive",\n    "purpose":"string",\n    "reason":"string",\n    "stop_condition":"string",\n    "cache_status":"thread|user|stale|miss"\n  }],\n  "calls_rejected":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "expected_value":0,\n    "reason":"string",\n    "cost_tier":"free|low|expensive",\n    "weak_lead":true,\n    "stale_cache":false,\n    "manual_override":false\n  }]\n}\nOrder proposed_calls by expected_value descending. Respect budget_remaining as the max number of proposed_calls.`,
+            user: (() => {
+              const artList = artifacts as Array<{ kind: string; value: string; confidence?: number; metadata?: Record<string, unknown> }>;
+              const artifactsBlock = artList.length > 20
+                ? buildEvidenceDigest(artList, 15)
+                : JSON.stringify(artifacts).slice(0, 8000);
+              return `Seed: ${seed}\nBudget remaining: ${budget_remaining}\nAlready queried: ${JSON.stringify(already_queried).slice(0,4000)}\nArtifacts so far: ${artifactsBlock}\n\n${costGuide}${relationshipHint}${pivotHint}${memoryHint}`;
+            })(),
             json: true,
             maxTokens: 1500,
           });
@@ -683,7 +696,7 @@ export function buildTools(ctx: ToolContext) {
           // then rewrite proposed_calls in the chosen order. Off (default) →
           // byte-for-byte the existing behavior; any error falls back to the
           // planner's raw output.
-          if (Deno.env.get("GRAPH_PIVOTS_ENABLED") === "true") {
+          if (Deno.env.get("GRAPH_PIVOTS_ENABLED") !== "false") {
             try {
               const calls = (parsed as { proposed_calls?: unknown }).proposed_calls;
               if (Array.isArray(calls) && calls.length) {
@@ -1789,7 +1802,23 @@ export function buildTools(ctx: ToolContext) {
             username,
           };
         }
-        return await sweepUsername(username);
+        const result = await sweepUsername(username);
+        const hasContentMatch = result.found.some(
+          (h) => (h as { bio_match?: boolean; content_match?: boolean }).bio_match === true ||
+            (h as { bio_match?: boolean; content_match?: boolean }).content_match === true,
+        );
+        if (result.found.length > 0 && !hasContentMatch) {
+          return {
+            ...result,
+            suppressed_candidates: result.found.map((h) => ({
+              site: h.site,
+              url: h.url,
+              reason: "existence-only — no bio/content match; corroborate before recording",
+            })),
+            note: "Existence hits are returned for pivoting but are NOT auto-recorded. Use socialfetch_lookup or jina_reader_scrape to verify profile content before record_artifacts.",
+          };
+        }
+        return result;
       },
     }),
     username_search: tool({
@@ -2909,6 +2938,8 @@ export function buildTools(ctx: ToolContext) {
         }
 
         let inserted = 0;
+        let suppressed = 0;
+        const subjectName = (kind === "name" || rawKind === "person") ? seed : undefined;
         const providerStats = queryResults.reduce(
           (acc, q) => {
             const p = q.provider ?? "perplexity_search";
@@ -2921,32 +2952,57 @@ export function buildTools(ctx: ToolContext) {
           { perplexity: 0, exa: 0, success: 0, failed: 0 },
         );
         if (collected.length > 0) {
-          const rows = collected.map((c) => {
+          const rows: Array<{
+            thread_id: string;
+            user_id: string;
+            kind: string;
+            value: string;
+            confidence: number;
+            source: string;
+            metadata: Record<string, unknown>;
+          }> = [];
+          for (const c of collected) {
+            let dorkRelevance;
+            let verifyMeta: Record<string, unknown> = {};
+            if (c.classify === "document") {
+              const verified = await verifyDorkDocumentHit({ url: c.url, seed, subjectName });
+              if (verified.relevance < DORK_RELEVANCE_FLOOR) {
+                suppressed++;
+                continue;
+              }
+              dorkRelevance = verified;
+              verifyMeta = {
+                content_verified: verified.content_verified,
+                text_fetched: verified.textFetched,
+              };
+            }
             const built = buildAutoRecordedRow({
               kind: c.classify,
               value: c.url,
               source: "dork_harvest",
               rawConfidence: c.classify === "leak_paste" ? 55 : 60,
+              dorkRelevance,
               metadata: {
                 seed,
                 seed_kind: kind,
                 dork_query: c.via,
                 discovered_via: "google_dork → perplexity sonar (exa keyword fallback)",
+                ...verifyMeta,
               },
             });
-            return {
+            rows.push({
               thread_id: threadId,
               user_id: userId,
               ...built,
-            };
-          });
+            });
+          }
           const safeRows = scrubArtifactRows(rows);
           const { error } = await supabase.from("artifacts").insert(safeRows);
           if (!error) {
             inserted = safeRows.length;
             bumpArtifacts(safeRows.length, safeRows.map((r) => String(r.kind)));
           } else {
-            return { ok: false, error: error.message, queries: queryResults, found: collected.length, inserted: 0 };
+            return { ok: false, error: error.message, queries: queryResults, found: collected.length, inserted: 0, suppressed };
           }
         }
 
@@ -2957,13 +3013,14 @@ export function buildTools(ctx: ToolContext) {
           queries_run: queryResults.length,
           urls_found: collected.length,
           artifacts_inserted: inserted,
+          suppressed,
           sample: collected.slice(0, 20),
           per_query: queryResults,
           provider_stats: providerStats,
           degraded: providerStats.exa > 0,
           note: inserted > 0
-            ? `Inserted ${inserted} document/leak artifacts. They are now in the case — do NOT also record them via record_artifacts.${providerStats.exa > 0 ? ` Fallback engaged: Exa handled ${providerStats.exa}/${queryResults.length} query(ies).` : ""}`
-            : `No document/leak URLs found in this harvest pass.${providerStats.exa > 0 ? ` Fallback engaged: Exa handled ${providerStats.exa}/${queryResults.length} query(ies).` : ""}`,
+            ? `Inserted ${inserted} document/leak artifacts${suppressed > 0 ? ` (${suppressed} low-relevance documents suppressed)` : ""}. They are now in the case — do NOT also record them via record_artifacts.${providerStats.exa > 0 ? ` Fallback engaged: Exa handled ${providerStats.exa}/${queryResults.length} query(ies).` : ""}`
+            : `No document/leak URLs found in this harvest pass${suppressed > 0 ? ` (${suppressed} document hits suppressed for low relevance)` : ""}.${providerStats.exa > 0 ? ` Fallback engaged: Exa handled ${providerStats.exa}/${queryResults.length} query(ies).` : ""}`,
         };
       },
     }),
@@ -3005,41 +3062,61 @@ export function buildTools(ctx: ToolContext) {
           if (/(pastebin\.com|rentry\.co|ghostbin\.co|justpaste\.it|controlc\.com|0bin\.net|hastebin\.com|paste\.ee|dpaste\.com)/.test(low)) return "leak_paste";
           return "url";
         };
-        const rows = res.citations
-          .filter((c) => {
-            if (!c.uri || seen.has(c.uri)) return false;
-            // Drop ephemeral Gemini grounding-redirect URLs (expire in minutes,
-            // zero OSINT value) and raw google search URLs. Massive junk source.
-            const low = c.uri.toLowerCase();
-            if (low.includes("vertexaisearch.cloud.google.com")) return false;
-            if (low.includes("google.com/search?") || low.includes("/url?q=")) return false;
-            if (low.startsWith("https://www.google.com/") && !low.includes("/maps/")) return false;
-            seen.add(c.uri);
-            return true;
-          })
-          .map((c) => {
-            const k = classify(c.uri);
-            if (k === "document" && isTemplateOrSampleUrl(c.uri)) return null;
-            const built = buildAutoRecordedRow({
-              kind: k,
-              value: c.uri,
-              source: "gemini_deep_dork",
-              rawConfidence: k === "leak_paste" ? 55 : k === "document" ? 60 : 50,
-              metadata: {
-                seed,
-                seed_kind: kind,
-                focus: focus ?? null,
-                title: c.title ?? null,
-                discovered_via: "gemini google_search grounding",
-              },
-            });
-            return {
-              thread_id: threadId,
-              user_id: userId,
-              ...built,
+        const subjectName = (kind === "name" || kind === "person") ? seed : undefined;
+        const rows: Array<{
+          thread_id: string;
+          user_id: string;
+          kind: string;
+          value: string;
+          confidence: number;
+          source: string;
+          metadata: Record<string, unknown>;
+        }> = [];
+        let suppressed = 0;
+        for (const c of res.citations) {
+          if (!c.uri || seen.has(c.uri)) continue;
+          const low = c.uri.toLowerCase();
+          if (low.includes("vertexaisearch.cloud.google.com")) continue;
+          if (low.includes("google.com/search?") || low.includes("/url?q=")) continue;
+          if (low.startsWith("https://www.google.com/") && !low.includes("/maps/")) continue;
+          seen.add(c.uri);
+          const k = classify(c.uri);
+          if (k === "document" && isTemplateOrSampleUrl(c.uri)) continue;
+          let dorkRelevance;
+          let verifyMeta: Record<string, unknown> = {};
+          if (k === "document") {
+            const verified = await verifyDorkDocumentHit({ url: c.uri, seed, subjectName, signal });
+            if (verified.relevance < DORK_RELEVANCE_FLOOR) {
+              suppressed++;
+              continue;
+            }
+            dorkRelevance = verified;
+            verifyMeta = {
+              content_verified: verified.content_verified,
+              text_fetched: verified.textFetched,
             };
-          })
-          .filter((r): r is NonNullable<typeof r> => r !== null);
+          }
+          const built = buildAutoRecordedRow({
+            kind: k,
+            value: c.uri,
+            source: "gemini_deep_dork",
+            rawConfidence: k === "leak_paste" ? 55 : k === "document" ? 60 : 50,
+            dorkRelevance,
+            metadata: {
+              seed,
+              seed_kind: kind,
+              focus: focus ?? null,
+              title: c.title ?? null,
+              discovered_via: "gemini google_search grounding",
+              ...verifyMeta,
+            },
+          });
+          rows.push({
+            thread_id: threadId,
+            user_id: userId,
+            ...built,
+          });
+        }
         let inserted = 0;
         if (rows.length) {
           const safeRows = scrubArtifactRows(rows);
@@ -3058,9 +3135,12 @@ export function buildTools(ctx: ToolContext) {
           dork_queries: res.queries,
           citations: res.citations.slice(0, 40),
           artifacts_inserted: inserted,
+          suppressed,
           note: inserted > 0
-            ? `Recorded ${inserted} cited URLs as artifacts — do NOT re-record via record_artifacts.`
-            : "No grounded citations returned.",
+            ? `Recorded ${inserted} cited URLs as artifacts${suppressed > 0 ? ` (${suppressed} low-relevance documents suppressed)` : ""} — do NOT re-record via record_artifacts.`
+            : suppressed > 0
+              ? `No artifacts recorded (${suppressed} document hits suppressed for low relevance).`
+              : "No grounded citations returned.",
         };
       },
     }),
@@ -3840,6 +3920,9 @@ export function buildTools(ctx: ToolContext) {
             : bioName
               ? Math.min(cap.confidence, BIO_CROSS_LINK_NAME_CAP)
               : cap.confidence;
+          let confidenceCeiling = cap.cap;
+          if (collisionExcluded) confidenceCeiling = Math.min(confidenceCeiling, EXCLUDED_COLLISION_CONFIDENCE);
+          if (bioName) confidenceCeiling = Math.min(confidenceCeiling, BIO_CROSS_LINK_NAME_CAP);
           // Resolve the confirmation gap, then DERIVE a coherent status from it
           // (status can never contradict reason_not_confirmed).
           const aReqRNC = typeof a.metadata?.reason_not_confirmed === "string" ? a.metadata.reason_not_confirmed : null;
@@ -3885,7 +3968,8 @@ export function buildTools(ctx: ToolContext) {
             reason_not_confirmed: resolvedReasonNotConfirmed,
             contradictions: a.metadata?.contradictions ?? [],
             next_verification_step: a.metadata?.next_verification_step ?? null,
-            confidence_cap_applied: bioName ? Math.min(cap.cap, BIO_CROSS_LINK_NAME_CAP) : cap.cap,
+            confidence_cap_applied: confidenceCeiling,
+            confidence_ceiling: confidenceCeiling,
             ...(collisionExcluded ? { excluded_collision: true, reclassified_from: a.kind } : {}),
             ...(surnameOnly ? { excluded_reason: "same_surname_only" } : {}),
             ...(listingAgent ? { contact_type: "real_estate_listing_agent" } : {}),
