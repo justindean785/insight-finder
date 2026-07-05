@@ -29,3 +29,36 @@ export function isMessageSchemaError(message: string, errorName = ""): boolean {
       .test(message) || /InvalidPrompt|MissingToolResults/i.test(errorName)
   );
 }
+
+/**
+ * Map a genuine orchestrator/provider stream failure to a clear, non-alarming,
+ * ACTIONABLE message. Returns null when the error isn't a recognized provider
+ * failure (the caller then falls back to the redacted raw message, so real
+ * novel errors are never hidden).
+ *
+ * Pure + integrity-neutral: this only rewords the FAILURE surfaced to the user
+ * when the LLM orchestrator call fails — it changes NO evidence/confidence/tool
+ * logic. The specific case this fixes: a Lovable/MiniMax **403** on a
+ * credit-gated or over-quota key used to reach users as a bare, scary
+ * "Investigation run failed - Forbidden".
+ */
+export function classifyStreamProviderError(message: string, errorName = ""): string | null {
+  const s = `${message} ${errorName}`.toLowerCase();
+  const saved = "Your partial results were saved.";
+  if (/\b403\b|forbidden|quota|credit|insufficient|payment|billing/.test(s)) {
+    return `The AI analysis provider rejected the request — it's likely out of credits or over quota. ${saved} Please retry shortly; if it keeps happening, the provider key needs attention.`;
+  }
+  if (/\b429\b|rate.?limit|too many requests|overloaded/.test(s)) {
+    return `The AI analysis provider is rate-limited right now. ${saved} Please retry in a moment.`;
+  }
+  if (/\b401\b|unauthorized|invalid api key|invalid.*key|authentication failed/.test(s)) {
+    return `The AI analysis provider rejected the credentials. ${saved} This needs an operator to check the provider key.`;
+  }
+  if (/context (window|length)|maximum.*(token|context)|token.*limit|too long|overflow/.test(s)) {
+    return `This investigation exceeded the model's context limit. ${saved} Try a narrower follow-up.`;
+  }
+  if (/timeout|timed out|econnreset|econnrefused|network error|fetch failed|unreachable|socket hang/.test(s)) {
+    return `The AI analysis provider was temporarily unreachable (network/timeout). ${saved} Please retry shortly.`;
+  }
+  return null;
+}

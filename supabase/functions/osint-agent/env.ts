@@ -66,10 +66,13 @@ export const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 export const MINIMAX_API_KEY = Deno.env.get("MINIMAX_API_KEY")!;
 export const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY") ?? "";
 
-// Lovable AI Gateway provider — used as a fallback when MiniMax hits its
-// context-window limit on long-running investigations. Gemini's context window
-// is dramatically larger, so the orchestrator can keep reasoning over a full
-// fan-out history without truncation.
+// Lovable AI Gateway provider — LAST-RESORT fallback only, and only when the
+// operator explicitly opts in via ALLOW_LOVABLE_FALLBACK=true (or pins it as
+// primary with ORCHESTRATOR_PROVIDER=lovable). The gateway proxies through
+// Lovable's shared quota and has burned runs on credit-gated models before;
+// the default fallback is the DIRECT Gemini API below.
+export const ALLOW_LOVABLE_FALLBACK =
+  (Deno.env.get("ALLOW_LOVABLE_FALLBACK") ?? "").trim().toLowerCase() === "true";
 export const lovableGateway = LOVABLE_API_KEY
   ? createOpenAICompatible({
       name: "lovable-ai-gateway",
@@ -78,6 +81,24 @@ export const lovableGateway = LOVABLE_API_KEY
         "Lovable-API-Key": LOVABLE_API_KEY,
         "X-Lovable-AIG-SDK": "vercel-ai-sdk",
       },
+      fetch: ORCHESTRATOR_FETCH,
+    })
+  : null;
+
+// Direct Google Gemini — the DEFAULT orchestrator fallback when MiniMax is
+// unavailable / preflight-fails / would overflow. Uses Google's OpenAI-compatible
+// endpoint so it plugs into the same createOpenAICompatible plumbing as every
+// other provider. Keyed by GEMINI_API_KEY (already used by geminiGroundedSearch);
+// model is a GA flash SKU, overridable via GEMINI_FALLBACK_MODEL_ID. Preview
+// (gemini-3-*-preview) and retired (gemini-2.0-*) SKUs must not be set here.
+export const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
+export const GEMINI_FALLBACK_MODEL_ID =
+  Deno.env.get("GEMINI_FALLBACK_MODEL_ID") ?? "gemini-2.5-flash";
+export const geminiDirectGateway = GEMINI_API_KEY
+  ? createOpenAICompatible({
+      name: "gemini-direct",
+      baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
+      headers: { Authorization: `Bearer ${GEMINI_API_KEY}` },
       fetch: ORCHESTRATOR_FETCH,
     })
   : null;
@@ -264,7 +285,8 @@ export function isHostDead(input: string): boolean {
 }
 
 // ---- Additional API keys -----------------------------------------------------
-export const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
+// (GEMINI_API_KEY moved up to the orchestrator-provider section — it now also
+// keys the direct-Gemini fallback gateway, which must be declared after it.)
 export const OSINT_NAVIGATOR_API_KEY = Deno.env.get("OSINT_NAVIGATOR_API_KEY");
 export const PERPLEXITY_API_KEY = Deno.env.get("PERPLEXITY_API_KEY");
 

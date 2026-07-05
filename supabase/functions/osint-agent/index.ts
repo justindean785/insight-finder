@@ -13,9 +13,10 @@ import { discoverCapabilities, capabilityEnvKeys, gatedToolNames } from "./capab
 import {
   corsHeaders, MINIMAX_API_KEY, LOVABLE_API_KEY,
   lovableGateway, PRIMARY_ORCHESTRATOR_MODEL_ID, FALLBACK_MODEL_ID,
+  geminiDirectGateway, GEMINI_FALLBACK_MODEL_ID, ALLOW_LOVABLE_FALLBACK,
   grokGateway, openAdapterGateway, ORCHESTRATOR_PROVIDER,
   GROK_ORCHESTRATOR_MODEL_ID, OPENADAPTER_ORCHESTRATOR_MODEL_ID,
-  degradedTools, deadHosts, resetFirecrawlCreditsLow,
+  degradedTools, deadHosts, resetFirecrawlCreditsLow, INTELBASE_ENABLED,
 } from "./env.ts";
 
 import { detectSeedServer } from "./validation.ts";
@@ -38,7 +39,11 @@ import { repairUnknownTool } from "./unknown-tool-guard.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { buildTools } from "./tool-registry.ts";
-import { isMessageSchemaError } from "./stream-error-classify.ts";
+import { isMessageSchemaError, classifyStreamProviderError } from "./stream-error-classify.ts";
+import {
+  shouldFallbackAfterMinimaxPreflight,
+  minimaxPreflightFailureLabel,
+} from "./minimax-preflight.ts";
 import { evaluateCreditGate, evaluateDailyCapGate, reasonToAbortForCredits } from "./credits.ts";
 
 // ---- Orchestrator resilience knobs (Phase 1: MissingToolResults crash) --------
@@ -310,6 +315,12 @@ Deno.serve(async (req) => {
     {
       const envPresence: Record<string, boolean> = {};
       for (const k of capabilityEnvKeys()) envPresence[k] = !!Deno.env.get(k);
+      // INTELBASE_ENABLED is a hard-coded code-level kill switch in env.ts (the
+      // provider's tools import that constant and self-skip while it is false).
+      // The capability gate must follow the SAME source of truth — reading the
+      // secret here would advertise intelbase_email_lookup to the model while
+      // every call still returns the disabled skip (Codex review on #232).
+      envPresence["INTELBASE_ENABLED"] = INTELBASE_ENABLED;
       const caps = discoverCapabilities(envPresence, null);
       for (const cap of caps) {
         if (!cap.available) {
@@ -416,6 +427,26 @@ Deno.serve(async (req) => {
       : minimaxIsPrimary
       ? (!minimaxAvailable || wouldOverflow)
       : false;
+    if (minimaxIsPrimary && !minimaxAvailable) {
+      // MINIMAX_API_KEY must be set in the deployed environment. Losing it is a
+      // config regression, not a routine failover — flag it at error level so it
+      // can't hide behind a quietly-working fallback (?health=1 reports the same
+      // via checks.minimax.reason="missing_key").
+      console.error(
+        "[orchestrator] MINIMAX_API_KEY is not configured — MiniMax primary unavailable, falling back",
+      );
+    }
+    // Which gateway takes a fallback turn. Direct Gemini is the default; the
+    // Lovable gateway only participates when the operator pinned it as primary
+    // (ORCHESTRATOR_PROVIDER=lovable) or opted in via ALLOW_LOVABLE_FALLBACK.
+    // Grok/xAI is never a fallback (primary pin only).
+    const fallbackTarget = lovablePinned
+      ? { gateway: lovableGateway!, modelId: FALLBACK_MODEL_ID, label: "Lovable Gateway fallback", provider: "lovable-gateway" as const }
+      : geminiDirectGateway
+      ? { gateway: geminiDirectGateway, modelId: GEMINI_FALLBACK_MODEL_ID, label: "Gemini direct fallback", provider: "gemini-direct" as const }
+      : (lovableGateway && ALLOW_LOVABLE_FALLBACK)
+      ? { gateway: lovableGateway, modelId: FALLBACK_MODEL_ID, label: "Lovable Gateway fallback", provider: "lovable-gateway" as const }
+      : null;
     // Pre-flight MiniMax health probe. The fallback selection above only fires
     // when MiniMax's key is missing or the prompt would overflow — it does NOT
     // catch the case where MiniMax is configured and accepts the request but is
@@ -430,16 +461,17 @@ Deno.serve(async (req) => {
     // isolate — it's demonstrably alive, so the extra round-trip (and up to the
     // 6s timeout on the unhealthy path) is removed from time-to-first-token.
     // A cold isolate has no cached health → the probe still runs (safe default).
-    if (minimaxIsPrimary && !useFallback && !lovablePinned && lovableGateway && !minimaxHealthyWithin(60_000)) {
-      // Two-attempt preflight: MiniMax can go quiet for 6–10s under load on a
-      // busy turn (large prompt + reasoning warm-up). A single short probe
-      // over-triggers Gemini fallback for what is really a transient blip.
-      // Give it up to 12s per attempt, and retry once (250ms backoff) before
-      // giving up. A truly dead upstream still fails over in ~24s worst case,
-      // but a transient stall keeps the run on MiniMax as intended.
+    if (minimaxIsPrimary && !useFallback && !lovablePinned && fallbackTarget && !minimaxHealthyWithin(60_000)) {
+      // Two-attempt preflight (mirror's preview-verified probe): MiniMax can go
+      // quiet for 6–10s under load on a busy turn (large prompt + reasoning
+      // warm-up), so give it up to 12s per attempt with one retry (250ms
+      // backoff). Combined with #229's policy: a TIMEOUT — even after both
+      // attempts — never forces the fallback (cold-isolate timeouts are
+      // ambiguous and were flapping healthy turns off MiniMax); only an
+      // explicit HTTP failure from MiniMax itself pivots the run.
       const PREFLIGHT_TIMEOUT_MS = 12_000;
       const PREFLIGHT_ATTEMPTS = 2;
-      const probeOnce = async (): Promise<{ ok: boolean; status: number; reason?: string }> => {
+      const probeOnce = async (): Promise<{ ok: boolean; status: number }> => {
         try {
           const ctrl = new AbortController();
           const timer = setTimeout(() => ctrl.abort(), PREFLIGHT_TIMEOUT_MS);
@@ -451,33 +483,38 @@ Deno.serve(async (req) => {
           } finally {
             clearTimeout(timer);
           }
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          const aborted = /abort/i.test(msg);
-          return { ok: false, status: 0, reason: aborted ? "timeout" : msg };
+        } catch {
+          // Timeout/abort/network — encoded as status 0, the ambiguous class
+          // that shouldFallbackAfterMinimaxPreflight refuses to pivot on.
+          return { ok: false, status: 0 };
         }
       };
-      let lastProbe: { ok: boolean; status: number; reason?: string } = { ok: false, status: 0 };
+      let lastProbe: { ok: boolean; status: number } = { ok: false, status: 0 };
       for (let attempt = 1; attempt <= PREFLIGHT_ATTEMPTS; attempt++) {
         lastProbe = await probeOnce();
         if (lastProbe.ok) break;
         if (attempt < PREFLIGHT_ATTEMPTS) {
           console.warn(
-            `[orchestrator] minimax preflight attempt ${attempt}/${PREFLIGHT_ATTEMPTS} failed (status=${lastProbe.status || lastProbe.reason || "timeout"}) — retrying`,
+            `[orchestrator] minimax preflight attempt ${attempt}/${PREFLIGHT_ATTEMPTS} failed (status=${minimaxPreflightFailureLabel(lastProbe)}) — retrying`,
           );
           await new Promise((r) => setTimeout(r, 250));
         }
       }
-      if (!lastProbe.ok) {
+      if (shouldFallbackAfterMinimaxPreflight(lastProbe)) {
         useFallback = true;
         console.warn(
-          `[orchestrator] minimax preflight unhealthy after ${PREFLIGHT_ATTEMPTS} attempts (status=${lastProbe.status || lastProbe.reason || "timeout"}) → Gemini fallback for thread ${threadId}`,
+          `[orchestrator] minimax preflight unhealthy after ${PREFLIGHT_ATTEMPTS} attempts (status=${minimaxPreflightFailureLabel(lastProbe)}) → Gemini fallback for thread ${threadId}`,
+        );
+      } else if (!lastProbe.ok) {
+        console.info(
+          `[orchestrator] minimax preflight ${minimaxPreflightFailureLabel(lastProbe)} after ${PREFLIGHT_ATTEMPTS} attempts — keeping MiniMax primary for thread ${threadId}`,
         );
       }
     }
-    if (useFallback && !lovableGateway) {
+    if (useFallback && !fallbackTarget) {
       throw new Error(
-        "Neither MINIMAX_API_KEY nor LOVABLE_API_KEY is configured for the orchestrator.",
+        "MiniMax is unavailable and no fallback is configured — set GEMINI_API_KEY " +
+          "(direct Gemini fallback) or opt in to the Lovable gateway with ALLOW_LOVABLE_FALLBACK=true.",
       );
     }
     // Resolve the primary (non-fallback) model from the selected provider.
@@ -488,10 +525,10 @@ Deno.serve(async (req) => {
         ? { model: openAdapterGateway!.chatModel(OPENADAPTER_ORCHESTRATOR_MODEL_ID), label: `${OPENADAPTER_ORCHESTRATOR_MODEL_ID} (OpenAdapter)` }
         : { model: minimax.chatModel(PRIMARY_ORCHESTRATOR_MODEL_ID), label: `${PRIMARY_ORCHESTRATOR_MODEL_ID} (MiniMax direct)` };
     const orchestratorModel = useFallback
-      ? lovableGateway!.chatModel(FALLBACK_MODEL_ID)
+      ? fallbackTarget!.gateway.chatModel(fallbackTarget!.modelId)
       : primaryModel;
     console.log(
-      `[orchestrator] running on ${useFallback ? FALLBACK_MODEL_ID + " (Lovable Gateway fallback)" : primaryLabel} ` +
+      `[orchestrator] running on ${useFallback ? `${fallbackTarget!.modelId} (${fallbackTarget!.label})` : primaryLabel} ` +
         `(provider=${orchChoice.provider}/${orchChoice.reason}, approx prompt chars=${approxPromptChars}, messages=${trimmedMessages.length})`,
     );
 
@@ -645,8 +682,8 @@ Deno.serve(async (req) => {
           "[orchestrator] stream error:",
           JSON.stringify({
             thread_id: threadId,
-            provider: useFallback ? "lovable-gateway" : "minimax",
-            model: useFallback ? FALLBACK_MODEL_ID : MODELS[ORCHESTRATOR_TIER],
+            provider: useFallback ? fallbackTarget!.provider : "minimax",
+            model: useFallback ? fallbackTarget!.modelId : MODELS[ORCHESTRATOR_TIER],
             approx_prompt_chars: approxPromptChars,
             context_overflow: isCtxOverflow,
             // A schema/pairing fault is a builder bug, NOT context overflow —
@@ -870,6 +907,8 @@ Deno.serve(async (req) => {
         if (isMessageSchemaError(m, name)) {
           return "Investigation ended early — partial results were saved.";
         }
+        const friendly = classifyStreamProviderError(m, name);
+        if (friendly) return friendly;
         const redacted = m
           .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
           .replace(/sk-[A-Za-z0-9._-]+/g, "sk-[REDACTED]")

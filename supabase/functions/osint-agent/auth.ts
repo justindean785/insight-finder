@@ -10,6 +10,35 @@ import { corsHeaders, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY } from "./env
 import { checkRateLimit as checkRateLimitDistributed, MAX_REQS_PER_MIN, MAX_REQS_PER_HOUR } from "./ratelimit.ts";
 import { detectSeedServer } from "./validation.ts";
 
+// Hard cap on the parsed request body so an authenticated caller can't inflate
+// DB storage (the `messages` insert below persists `lastUser.parts` verbatim)
+// or processing cost by sending an oversized payload. Generous for real chat
+// turns (pasted text, long seeds) — attachments are uploaded to Storage
+// separately, never inlined into `parts`. Checked twice: fast-path via
+// Content-Length (rejects before the body is even read), and again against the
+// parsed body's serialized size as a fallback for chunked requests that omit
+// Content-Length.
+export const MAX_REQUEST_BODY_BYTES = 2_000_000;
+
+/** True if a declared Content-Length exceeds the cap. Missing/invalid header → false (checked again post-parse). */
+export function isContentLengthTooLarge(header: string | null, capBytes: number): boolean {
+  if (!header) return false;
+  const n = Number(header);
+  return Number.isFinite(n) && n > capBytes;
+}
+
+/** True if a parsed body's serialized size exceeds the cap. Measured in UTF-8
+ *  BYTES (TextEncoder), not string length — UTF-16 code units undercount
+ *  multi-byte payloads, letting a body past a cap that Content-Length (bytes)
+ *  would have rejected (Codex/Copilot review on #232). */
+export function isBodyTooLarge(body: unknown, capBytes: number): boolean {
+  try {
+    return new TextEncoder().encode(JSON.stringify(body)).length > capBytes;
+  } catch {
+    return false;
+  }
+}
+
 export interface SetupContext {
   supabase: ReturnType<typeof createClient>;
   supabaseAdmin: ReturnType<typeof createClient>;
@@ -119,6 +148,18 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
     );
   }
 
+  // ---- Request body size guard (fast path via Content-Length) ---------------
+  if (isContentLengthTooLarge(req.headers.get("Content-Length"), MAX_REQUEST_BODY_BYTES)) {
+    throw new Response(
+      JSON.stringify({
+        error: "Payload Too Large",
+        code: "BODY_TOO_LARGE",
+        detail: `Request body exceeds the ${MAX_REQUEST_BODY_BYTES} byte limit.`,
+      }),
+      { status: 413, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+
   // ---- Parse request body ----------------------------------------------------
   let body: { messages: UIMessage[]; threadId: string };
   try {
@@ -131,6 +172,18 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
         detail: "Request must include threadId and messages array.",
       }),
       { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+  // Fallback for chunked requests with no (or a spoofed) Content-Length header —
+  // check the actual parsed size before it can reach the DB insert below.
+  if (isBodyTooLarge(body, MAX_REQUEST_BODY_BYTES)) {
+    throw new Response(
+      JSON.stringify({
+        error: "Payload Too Large",
+        code: "BODY_TOO_LARGE",
+        detail: `Request body exceeds the ${MAX_REQUEST_BODY_BYTES} byte limit.`,
+      }),
+      { status: 413, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }
   const { messages, threadId } = body;

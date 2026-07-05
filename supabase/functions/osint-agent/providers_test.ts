@@ -219,57 +219,67 @@ Deno.test("minimaxChatWithFallback: MiniMax 403 + no fallback configured → cle
 // ---------------------------------------------------------------------------
 
 const MINIMAX_HOST = "api.minimax.io";
+const GEMINI_HOST = "generativelanguage.googleapis.com";
+const LOVABLE_GW_HOST = "ai.gateway.lovable.dev";
 const GROK_HOST = "api.x.ai";
 
 /** Build a fetch stub that routes by URL host and records all hits. */
 function routingFetch(routes: {
   minimax: () => Response;
-  grok?: () => Response;
+  gemini?: () => Response;
+  lovable?: () => Response;
 }): { fetch: typeof globalThis.fetch; calls: string[] } {
   const calls: string[] = [];
   const fetch = (async (input: Request | URL | string) => {
     const url = input instanceof Request ? input.url : String(input);
     calls.push(url);
     if (url.includes(MINIMAX_HOST)) return routes.minimax();
+    if (url.includes(GEMINI_HOST)) {
+      if (!routes.gemini) throw new Error(`unexpected gemini call to ${url}`);
+      return routes.gemini();
+    }
+    if (url.includes(LOVABLE_GW_HOST)) {
+      if (!routes.lovable) throw new Error(`unexpected lovable call to ${url}`);
+      return routes.lovable();
+    }
     if (url.includes(GROK_HOST)) {
-      if (!routes.grok) throw new Error(`unexpected grok call to ${url}`);
-      return routes.grok();
+      throw new Error(`Grok must NEVER be selected as a fallback (got ${url})`);
     }
     throw new Error(`unexpected fetch to ${url}`);
   }) as typeof globalThis.fetch;
   return { fetch, calls };
 }
 
-Deno.test("minimaxChatWithFallback falls back to Grok when MiniMax returns 429 and XAI_API_KEY is configured", async () => {
+Deno.test("minimaxChatWithFallback falls back to direct Gemini when MiniMax returns 429 and GEMINI_API_KEY is configured", async () => {
   const { minimaxChatWithFallback } = await import("./providers.ts");
   const origFetch = globalThis.fetch;
   const { fetch, calls } = routingFetch({
     minimax: () => new Response("rate limited", { status: 429 }),
-    grok: () =>
-      new Response(JSON.stringify({ choices: [{ message: { content: "grok-answer" } }] }), {
+    gemini: () =>
+      new Response(JSON.stringify({ choices: [{ message: { content: "gemini-answer" } }] }), {
         status: 200,
       }),
   });
   try {
     globalThis.fetch = fetch;
-    const result = await minimaxChatWithFallback({ user: "test" }, { grok: true });
+    const result = await minimaxChatWithFallback({ user: "test" }, { gemini: true });
     // Cascade succeeded on the fallback provider.
     assertEquals(result.usedFallback, true);
     assertEquals(result.ok, true);
-    assertEquals(result.content, "grok-answer");
+    assertEquals(result.content, "gemini-answer");
     // The MiniMax 429 did NOT incorrectly surface as the final result.
     assertEquals(result.status, 200);
     // Proof the fallback provider was actually called: both hosts were hit,
-    // MiniMax first, then Grok.
+    // MiniMax first, then the DIRECT Gemini endpoint (not the Lovable gateway).
     assertEquals(calls.length, 2);
     assertEquals(calls[0].includes(MINIMAX_HOST), true);
-    assertEquals(calls[1].includes(GROK_HOST), true);
+    assertEquals(calls[1].includes(GEMINI_HOST), true);
   } finally {
     globalThis.fetch = origFetch;
   }
 });
 
-Deno.test("minimaxChatWithFallback falls back to Grok when MiniMax throws network TypeError and XAI_API_KEY is configured", async () => {
+Deno.test("minimaxChatWithFallback falls back to direct Gemini when MiniMax throws network TypeError", async () => {
   const { minimaxChatWithFallback } = await import("./providers.ts");
   const origFetch = globalThis.fetch;
   const calls: string[] = [];
@@ -277,8 +287,8 @@ Deno.test("minimaxChatWithFallback falls back to Grok when MiniMax throws networ
     const url = input instanceof Request ? input.url : String(input);
     calls.push(url);
     if (url.includes(MINIMAX_HOST)) throw new TypeError("error sending request: fetch failed");
-    if (url.includes(GROK_HOST)) {
-      return new Response(JSON.stringify({ choices: [{ message: { content: "grok-after-network-fail" } }] }), {
+    if (url.includes(GEMINI_HOST)) {
+      return new Response(JSON.stringify({ choices: [{ message: { content: "gemini-after-network-fail" } }] }), {
         status: 200,
       });
     }
@@ -286,14 +296,88 @@ Deno.test("minimaxChatWithFallback falls back to Grok when MiniMax throws networ
   }) as typeof globalThis.fetch;
   try {
     globalThis.fetch = fetch;
-    const result = await minimaxChatWithFallback({ user: "test" }, { grok: true });
+    const result = await minimaxChatWithFallback({ user: "test" }, { gemini: true });
     assertEquals(result.usedFallback, true);
     assertEquals(result.ok, true);
-    assertEquals(result.content, "grok-after-network-fail");
+    assertEquals(result.content, "gemini-after-network-fail");
     // Network error on MiniMax was caught and did not propagate as a throw.
     assertEquals(calls.length, 2);
     assertEquals(calls[0].includes(MINIMAX_HOST), true);
-    assertEquals(calls[1].includes(GROK_HOST), true);
+    assertEquals(calls[1].includes(GEMINI_HOST), true);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+Deno.test("minimaxChatWithFallback prefers direct Gemini over the Lovable gateway when both are available", async () => {
+  const { minimaxChatWithFallback } = await import("./providers.ts");
+  const origFetch = globalThis.fetch;
+  const { fetch, calls } = routingFetch({
+    minimax: () => new Response("server error", { status: 500 }),
+    gemini: () =>
+      new Response(JSON.stringify({ choices: [{ message: { content: "gemini-wins" } }] }), {
+        status: 200,
+      }),
+    // No lovable route: routingFetch throws if the gateway is hit.
+  });
+  try {
+    globalThis.fetch = fetch;
+    const result = await minimaxChatWithFallback(
+      { user: "test" },
+      { gemini: true, lovable: true, allowLovable: true },
+    );
+    assertEquals(result.usedFallback, true);
+    assertEquals(result.content, "gemini-wins");
+    assertEquals(calls.length, 2);
+    assertEquals(calls[1].includes(GEMINI_HOST), true);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+Deno.test("minimaxChatWithFallback does NOT use the Lovable gateway without ALLOW_LOVABLE_FALLBACK", async () => {
+  const { minimaxChatWithFallback } = await import("./providers.ts");
+  const origFetch = globalThis.fetch;
+  const { fetch, calls } = routingFetch({
+    minimax: () => new Response("rate limited", { status: 429 }),
+    // No gemini or lovable routes: any fallback call throws.
+  });
+  try {
+    globalThis.fetch = fetch;
+    const result = await minimaxChatWithFallback(
+      { user: "test" },
+      { gemini: false, lovable: true, allowLovable: false },
+    );
+    // Lovable is present but not opted in → clean failure, no fallback fired.
+    assertEquals(result.ok, false);
+    assertEquals(result.usedFallback, false);
+    assertEquals(calls.length, 1);
+    assertEquals(calls[0].includes(MINIMAX_HOST), true);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+Deno.test("minimaxChatWithFallback uses the Lovable gateway when opted in and Gemini is absent", async () => {
+  const { minimaxChatWithFallback } = await import("./providers.ts");
+  const origFetch = globalThis.fetch;
+  const { fetch, calls } = routingFetch({
+    minimax: () => new Response("rate limited", { status: 429 }),
+    lovable: () =>
+      new Response(JSON.stringify({ choices: [{ message: { content: "gateway-answer" } }] }), {
+        status: 200,
+      }),
+  });
+  try {
+    globalThis.fetch = fetch;
+    const result = await minimaxChatWithFallback(
+      { user: "test" },
+      { gemini: false, lovable: true, allowLovable: true },
+    );
+    assertEquals(result.usedFallback, true);
+    assertEquals(result.content, "gateway-answer");
+    assertEquals(calls.length, 2);
+    assertEquals(calls[1].includes(LOVABLE_GW_HOST), true);
   } finally {
     globalThis.fetch = origFetch;
   }
@@ -307,12 +391,12 @@ Deno.test("minimaxChatWithFallback does not call fallback when MiniMax succeeds"
       new Response(JSON.stringify({ choices: [{ message: { content: "minimax-answer" } }] }), {
         status: 200,
       }),
-    // No grok route: if the fallback were called, routingFetch throws.
+    // No gemini route: if the fallback were called, routingFetch throws.
   });
   try {
     globalThis.fetch = fetch;
-    // Even with Grok "available", a MiniMax success must not trigger fallback.
-    const result = await minimaxChatWithFallback({ user: "test" }, { grok: true });
+    // Even with Gemini "available", a MiniMax success must not trigger fallback.
+    const result = await minimaxChatWithFallback({ user: "test" }, { gemini: true });
     assertEquals(result.usedFallback, false);
     assertEquals(result.ok, true);
     assertEquals(result.content, "minimax-answer");
