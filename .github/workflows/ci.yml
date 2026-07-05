@@ -37,6 +37,48 @@ jobs:
           path: coverage/
           if-no-files-found: error
 
+  migrations:
+    name: Migrations (psql validation)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: 127.0.0.1
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: postgres
+    steps:
+      - uses: actions/checkout@v4
+      # The shim stubs the objects Supabase provisions outside this repo
+      # (anon/authenticated/service_role roles, auth.*, storage.*, the
+      # supabase_realtime publication) so the real migrations can run.
+      - name: Apply Supabase platform shim
+        run: psql --set ON_ERROR_STOP=1 --quiet -f .github/ci/supabase-platform-shim.sql
+      - name: Apply migrations in timestamp order
+        run: |
+          set -euo pipefail
+          # Sort by the timestamp prefix (the part before the first
+          # underscore), matching how the Supabase CLI orders migrations —
+          # plain byte order would misplace e.g. 20260608115117_* vs
+          # 20260608_*.
+          count=0
+          while IFS= read -r f; do
+            echo "==> ${f}"
+            psql --set ON_ERROR_STOP=1 --quiet -f "${f}"
+            count=$((count + 1))
+          done < <(printf '%s\n' supabase/migrations/*.sql | LC_ALL=C sort -t_ -k1,1)
+          echo "Applied ${count} migrations cleanly."
+
   edge:
     name: Edge functions (deno test)
     runs-on: ubuntu-latest
