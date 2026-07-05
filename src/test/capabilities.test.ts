@@ -103,10 +103,12 @@ describe("capability gating wired through the breaker", () => {
 
   it("keeps #9 provider suppression working for available providers after a failure", () => {
     applyGates(thread, PROD_ENV);
-    // stolentax is available (key present) → runs, then 429s → suppressed for the run
-    expect(shouldRun(thread, "stolentax_footprint", "a@b.com").allow).toBe(true);
-    recordResult(thread, "stolentax_footprint", "a@b.com", "default", { status: "http_429" });
-    expect(shouldRun(thread, "stolentax_footprint", "again").allow).toBe(false);
+    // leakcheck is available (key present) → runs, then 429s → suppressed for the run.
+    // (Was stolentax_footprint, now hard-disabled/cut 2026-07-05 — use another
+    // available keyed breach provider to exercise the same suppression path.)
+    expect(shouldRun(thread, "leakcheck_lookup", "a@b.com").allow).toBe(true);
+    recordResult(thread, "leakcheck_lookup", "a@b.com", "default", { status: "http_429" });
+    expect(shouldRun(thread, "leakcheck_lookup", "again").allow).toBe(false);
   });
 });
 

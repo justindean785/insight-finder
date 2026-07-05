@@ -25,6 +25,36 @@ Deno.test("leakcheck: appends concrete (non-auto) type", () => {
   assert(!buildLeakcheckUrl("x", "auto").includes("type="));
 });
 
+Deno.test("leakcheck: phone values are normalized to bare digits (the E.164 400 fix)", () => {
+  // LeakCheck v2 /query rejects "+"/separators on phone → 400 (verified in prod
+  // from tool_usage_log.input_json, e.g. "+19165629177"). Normalize to digits.
+  assertEquals(
+    buildLeakcheckUrl("+19165629177", "phone"),
+    "https://leakcheck.io/api/v2/query/19165629177?type=phone",
+  );
+  assertEquals(
+    buildLeakcheckUrl("+1 (916) 562-9177", "phone"),
+    "https://leakcheck.io/api/v2/query/19165629177?type=phone",
+  );
+  // Non-phone types are NOT digit-stripped.
+  assert(buildLeakcheckUrl("a@b.com", "email").includes("a%40b.com"));
+});
+
+Deno.test("leakcheck: keyword is not offered (names route to oathnet type:name)", async () => {
+  // The tool schema must not accept 'keyword' — LeakCheck v2 /query 400s on it.
+  const { buildTools } = await import("./tool-registry.ts");
+  const ctx = {
+    supabase: {}, supabaseAdmin: {}, userId: "t", threadId: "t",
+    archiveEnabled: false, detectedSeedType: "email", messages: [], manualOverrideSelector: null,
+  } as unknown as import("./tool-registry.ts").ToolContext;
+  const tools = buildTools(ctx).tools as Record<string, { inputSchema: { safeParse(v: unknown): { success: boolean } } }>;
+  const lc = tools.leakcheck_lookup;
+  const parsed = lc.inputSchema.safeParse({ value: "chester dean", type: "keyword" });
+  assert(!parsed.success, "leakcheck_lookup must reject type:'keyword'");
+  // Concrete supported types still parse.
+  assert(lc.inputSchema.safeParse({ value: "a@b.com", type: "email" }).success);
+});
+
 Deno.test("oathnet: ip uses ip-info; others use v2 breach search", () => {
   assertEquals(
     buildOathnetUrl("ip", "8.8.8.8"),
