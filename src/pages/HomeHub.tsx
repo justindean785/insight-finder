@@ -58,12 +58,13 @@ export default function HomeHub() {
       setLoading(true);
       try {
         const [threadsRes, artifactsRes, memoriesRes, recentRes] = await Promise.all([
-          supabase.from("threads").select("id", { count: "exact", head: true }),
-          supabase.from("artifacts").select("id", { count: "exact", head: true }),
-          supabase.from("agent_memory").select("id", { count: "exact", head: true }),
+          supabase.from("threads").select("id", { count: "exact", head: true }).eq("user_id", user.id),
+          supabase.from("artifacts").select("id", { count: "exact", head: true }).eq("user_id", user.id),
+          supabase.from("agent_memory").select("id", { count: "exact", head: true }).eq("user_id", user.id),
           supabase
             .from("threads")
             .select("id,title,updated_at")
+            .eq("user_id", user.id)
             .order("updated_at", { ascending: false })
             .limit(5),
         ]);
@@ -199,7 +200,14 @@ export default function HomeHub() {
           </div>
         </section>
 
-        <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <HubCard
+            to="/cases"
+            icon={FileSearch}
+            title="Cases"
+            blurb="Browse every investigation you've run. Open any case to review evidence and reports."
+            cta="View all cases"
+          />
           <HubCard
             to="/chat"
             icon={MessageSquare}
@@ -239,7 +247,7 @@ export default function HomeHub() {
           <div className="flex items-center justify-between mb-3">
             <h2 className="font-display text-lg font-semibold tracking-tight">Recent cases</h2>
             <Link
-              to="/chat"
+              to="/cases"
               className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
               All cases <ArrowRight className="w-3 h-3" />
@@ -260,7 +268,7 @@ export default function HomeHub() {
               counts.recentCases.map((c) => (
                 <Link
                   key={c.id}
-                  to={`/chat/${c.id}`}
+                  to={`/cases/${c.id}`}
                   className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.03] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                 >
                   <MessageSquare className="w-4 h-4 text-muted-foreground shrink-0" />

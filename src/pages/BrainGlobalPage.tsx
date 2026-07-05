@@ -141,36 +141,57 @@ export default function BrainGlobalPage() {
   useEffect(() => {
     if (!user) return;
     let alive = true;
-    (async () => {
+    const loadMemories = async () => {
       setMemLoading(true);
       const { data } = await supabase
         .from("agent_memory")
         .select("id,kind,subject,subject_kind,content,related_values,confidence,hit_count,last_used_at,created_at,source_thread_id")
+        .eq("user_id", user.id)
         .order("created_at", { ascending: false })
         .limit(500);
       if (!alive) return;
       const list = (data as Memory[] | null) ?? [];
       setMemories(list);
       setMemLoading(false);
-      // SocialFetch credit count for header chip.
       const { count: sfUsed } = await supabase
         .from("tool_usage_log")
         .select("id", { count: "exact", head: true })
+        .eq("user_id", user.id)
         .eq("tool_name", "socialfetch_lookup");
       if (alive) setSfCreditsLeft(Math.max(0, SOCIALFETCH_CAP - (sfUsed ?? 0)));
 
       const ids = Array.from(new Set(list.map((m) => m.source_thread_id).filter(Boolean) as string[]));
       if (ids.length) {
         const { data: t } = await supabase
-          .from("threads").select("id,title").in("id", ids);
+          .from("threads")
+          .select("id,title")
+          .eq("user_id", user.id)
+          .in("id", ids);
         if (alive && t) {
           const map: Record<string, string> = {};
           for (const row of t as { id: string; title: string }[]) map[row.id] = row.title;
           setThreadTitles(map);
         }
       }
-    })();
-    return () => { alive = false; };
+    };
+    void loadMemories();
+    const channel = supabase
+      .channel(`brain-mem-${user.id}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "agent_memory", filter: `user_id=eq.${user.id}` },
+        () => void loadMemories(),
+      )
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "tool_usage_log", filter: `user_id=eq.${user.id}` },
+        () => void loadMemories(),
+      )
+      .subscribe();
+    return () => {
+      alive = false;
+      void supabase.removeChannel(channel);
+    };
   }, [user]);
 
   const stats = useMemo(() => {
@@ -288,7 +309,7 @@ export default function BrainGlobalPage() {
             suppressed={suppressed}
             onSuppress={toggleSuppress}
             onDelete={markDeleted}
-            onOpenCase={(id) => navigate(`/chat/${id}`)}
+            onOpenCase={(id) => navigate(`/cases/${id}`)}
           />
         )}
         {subTab === "patterns" && (
@@ -306,7 +327,7 @@ export default function BrainGlobalPage() {
             onPromote={togglePromote}
             onSuppress={toggleSuppress}
             onDelete={markDeleted}
-            onOpenCase={(id) => navigate(`/chat/${id}`)}
+            onOpenCase={(id) => navigate(`/cases/${id}`)}
           />
         )}
         {subTab === "sources" && <SourcesTab />}
@@ -887,11 +908,13 @@ function reliabilityColor(p: number): string {
 }
 
 function SourcesTab() {
+  const { user } = useAuth();
   const [rows, setRows] = useState<SourceRow[]>([]);
   const [reviews, setReviews] = useState<ReviewSummary>({ confirmed: 0, key: 0, recheck: 0, dismissed: 0 });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (!user) return;
     let alive = true;
     (async () => {
       setLoading(true);
@@ -900,9 +923,10 @@ function SourcesTab() {
         supabase
           .from("tool_usage_log")
           .select("tool_name, ok, created_at")
+          .eq("user_id", user.id)
           .in("tool_name", SOURCE_TOOLS)
           .limit(5000),
-        supabase.from("artifact_reviews").select("state"),
+        supabase.from("artifact_reviews").select("state").eq("user_id", user.id),
       ]);
       if (!alive) return;
       const byTool = new Map<string, { okR: number; nR: number; okP: number; nP: number }>();
@@ -936,7 +960,7 @@ function SourcesTab() {
       setLoading(false);
     })();
     return () => { alive = false; };
-  }, []);
+  }, [user]);
 
   return (
     <div className="space-y-5">
@@ -1066,6 +1090,7 @@ type RunRow = {
 };
 
 function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) {
+  const { user } = useAuth();
   const [loading, setLoading] = useState(true);
   const [socialUsed, setSocialUsed] = useState(0);
   const [socialLastUsed, setSocialLastUsed] = useState<string | null>(null);
@@ -1077,6 +1102,7 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
   const [runs, setRuns] = useState<RunRow[]>([]);
 
   useEffect(() => {
+    if (!user) return;
     let alive = true;
     (async () => {
       setLoading(true);
@@ -1084,11 +1110,13 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
         supabase
           .from("tool_usage_log")
           .select("tool_name, thread_id, cost_micro_usd, charged_micro_usd, created_at")
+          .eq("user_id", user.id)
           .order("created_at", { ascending: false })
           .limit(5000),
         supabase
           .from("threads")
           .select("id, title, cost_micro_usd, updated_at")
+          .eq("user_id", user.id)
           .order("updated_at", { ascending: false })
           .limit(500),
       ]);
@@ -1155,7 +1183,7 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
       setLoading(false);
     })();
     return () => { alive = false; };
-  }, []);
+  }, [user]);
 
   const sfLeft = Math.max(0, SOCIALFETCH_CAP - socialUsed);
   const sfPct = Math.min(100, (socialUsed / SOCIALFETCH_CAP) * 100);
