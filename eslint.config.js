@@ -5,7 +5,9 @@ import reactRefresh from "eslint-plugin-react-refresh";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist"] },
+  // supabase/functions/mcp/index.ts is an esbuild bundle auto-generated on the
+  // Lovable mirror and must stay byte-identical to it (CLAUDE.md + issue #241).
+  { ignores: ["dist", "supabase/functions/mcp/index.ts"] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ["**/*.{ts,tsx}"],

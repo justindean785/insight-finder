@@ -1,6 +1,6 @@
 # CLAUDE.md — read first
 
-Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + React + TS + Tailwind/shadcn frontend; Supabase (Postgres/Auth/Storage + **3 Deno edge functions** — `osint-agent`, `evidence-export`, `security-test-lab` — sharing `supabase/functions/_shared/`) backend.
+Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + React + TS + Tailwind/shadcn frontend; Supabase (Postgres/Auth/Storage + **4 Deno edge functions** — `osint-agent`, `evidence-export`, `security-test-lab`, `mcp` — sharing `supabase/functions/_shared/`) backend.
 
 ## ⚠️ Deploy topology — the #1 thing to get right
 
@@ -22,13 +22,14 @@ There is **ONE place to work: this repo, `justindean785/insight-finder`** (local
 - **Netlify is NOT used** (a stray `netlify.toml` was removed). Don't re-add it.
 - The Lovable-hosted frontend (`*.lovable.app`) is **deprecated** — both frontends hit the same Supabase backend, so Vercel already works against live data.
 
-### Backend (3 edge functions) → via Lovable
+### Backend (4 edge functions) → via Lovable
 - The Supabase project `skzqwbyvmwqarfgfvyky` is **owned by Lovable Cloud**, not the user. Lovable deploys the edge functions from **its** connected GitHub repo `justindean785/seeker-spark-search-5362c57c` (branch `main`).
 - **Do NOT use `supabase functions deploy`** — the user's token 403s on that project (ownership wall). It is the wrong channel.
-- **The backend is 3 functions + a shared module. A sync MUST cover all that changed — not just `osint-agent/`** (the old single-function recipe is why `evidence-export` drifted below):
+- **The backend is 4 functions + a shared module. A sync MUST cover all that changed — not just `osint-agent/`** (the old single-function recipe is why `evidence-export` drifted below):
   - `supabase/functions/osint-agent/` — 72 files; live tool defs inline in `index.ts`
   - `supabase/functions/evidence-export/` — PDF/zip export; `index.ts` + `text-sanitize.ts` (+ test)
   - `supabase/functions/security-test-lab/` — admin-only red-team harness; `index.ts`
+  - `supabase/functions/mcp/` — **Lovable-auto-generated MCP server** (`swarmbot-mcp`: echo / list_investigations / get_investigation; Supabase-OAuth-gated, read-only tools). ⚠️ **Authorship direction is REVERSED for this one: mirror → insight-finder.** The deployed `index.ts` is a bundle the `@lovable.dev/mcp-js` Vite plugin regenerates on the MIRROR from `src/lib/mcp/**`; this repo holds inert byte-identical snapshots of both (no plugin wired here by design — see issue #241). To change MCP tools: edit `src/lib/mcp/` on the mirror (or via Lovable chat), let its build regenerate the bundle, then backport BOTH source and bundle here. **Never sync insight-finder→mirror for this function.**
   - `supabase/functions/_shared/ai-gateway.ts`
 - **To ship a backend change:** edit here in `insight-finder`, then sync the changed function(s) into `seeker-spark-search-5362c57c` via a PR (the `gh` token can push there), merge → Lovable auto-deploys. Per function: `cp -R supabase/functions/<fn>/. <clone>/supabase/functions/<fn>/` + a `git diff` review.
 - **Sync = true merge, NEVER `rsync --delete` / blanket overwrite.** The mirror has at times held Lovable-authored work not yet backported (e.g. the #16 source-classification rework — see `PR_BODY_backport-16.md` in the `pr2` worktree); a delete-sync would clobber it.
