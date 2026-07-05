@@ -1,7 +1,7 @@
 // Regression tests for the dead-provider reliability fixes (2026-06-13 trace:
 // 144 calls / 30 fails — deepfind family + synapsint burned ~20 wasted calls).
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { recordResult, shouldRun, providerForTool, clearThread } from "./circuit.ts";
+import { recordResult, shouldRun, providerForTool, clearThread, selectorForTool } from "./circuit.ts";
 
 Deno.test("deepfind provider group covers all endpoints", () => {
   // Every deepfind_* endpoint shares one key/base — all must map to "deepfind".
@@ -29,6 +29,43 @@ Deno.test("403 on one deepfind endpoint suppresses the whole family", () => {
   const d = shouldRun(thread, "deepfind_profile_analyzer", "someuser");
   assertEquals(d.allow, false);
   clearThread(thread);
+});
+
+Deno.test("403 on indicia_person suppresses the whole indicia family", () => {
+  const thread = "t-indicia-403";
+  clearThread(thread);
+  recordResult(thread, "indicia_person", "jarrett morris", "default", { status: "http_403" });
+  assertEquals(shouldRun(thread, "indicia_email", "a@b.com").allow, false);
+  clearThread(thread);
+});
+
+Deno.test("3 consecutive empty results disable the tool for the run", () => {
+  const thread = "t-empty-disable";
+  clearThread(thread);
+  recordResult(thread, "indicia_person", "nobody", "default", { status: "ok", empty: true });
+  assertEquals(shouldRun(thread, "indicia_person", "other").allow, true);
+  recordResult(thread, "indicia_person", "other", "default", { status: "ok", empty: true });
+  recordResult(thread, "indicia_person", "third", "default", { status: "ok", empty: true });
+  assertEquals(shouldRun(thread, "indicia_person", "fourth").allow, false);
+  clearThread(thread);
+});
+
+Deno.test("oathnet burst cap blocks after max calls per investigation", () => {
+  const thread = "t-oathnet-cap";
+  clearThread(thread);
+  for (let i = 0; i < 6; i++) {
+    recordResult(thread, "oathnet_lookup", `email::user${i}@x.com`, "default", { status: "ok" });
+  }
+  assertEquals(shouldRun(thread, "oathnet_lookup", "email::new@x.com").allow, false);
+  clearThread(thread);
+});
+
+Deno.test("socialfetch selector includes platform for dedup", () => {
+  const a = selectorForTool("socialfetch_lookup", "username", "handle", { platform: "twitter", handle: "Handle" });
+  const b = selectorForTool("socialfetch_lookup", "username", "handle", { platform: "instagram", handle: "handle" });
+  assertEquals(a, "twitter::handle");
+  assertEquals(b, "instagram::handle");
+  assertEquals(a !== b, true);
 });
 
 Deno.test("404 across 2 distinct selectors disables the endpoint for the run", () => {

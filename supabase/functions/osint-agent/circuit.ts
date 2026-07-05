@@ -62,6 +62,19 @@ const PROVIDER_TOOLS: Record<string, string[]> = {
   hunter: ["hunter_domain_search", "hunter_email_finder", "hunter_email_verifier", "hunter_combined"],
   exa: ["exa_search", "exa_find_similar", "exa_get_contents"],
   minimax: ["minimax_web_search", "minimax_correlate", "minimax_plan_pivots", "minimax_extract"],
+  // crt.sh intermittently 502/404/timeouts — one dead call suppresses the family.
+  crtsh: ["crtsh_lookup", "crtsh_subdomains"],
+  // Wayback/archive CDX is slow and often times out at 12s; suppress family on failure.
+  wayback: ["wayback_cdx_search", "wayback_snapshots", "archive_url"],
+  serus: ["serus_darkweb_scan"],
+  indicia: [
+    "indicia_email",
+    "indicia_phone",
+    "indicia_person",
+    "indicia_address",
+    "indicia_web_dbs",
+    "indicia_hudsonrock",
+  ],
 };
 const TOOL_PROVIDER = new Map<string, string>();
 for (const [provider, tools] of Object.entries(PROVIDER_TOOLS)) {
@@ -81,6 +94,7 @@ interface Suppression {
 
 interface BreakerState {
   consecutive: number;
+  consecutiveEmpty: number;
   total: number;
   lastAt: number;
   disabledReason?: string;
@@ -90,6 +104,12 @@ interface BreakerState {
   /** distinct selectors that returned 404 — 2+ implies the endpoint is gone */
   notFound: Set<string>;
 }
+
+/** After this many consecutive fail/empty outcomes, skip the tool for the rest of the run. */
+export const CONSECUTIVE_FAIL_EMPTY_DISABLE = 3;
+
+/** Per-investigation cap for expensive oathnet fan-out (audit: 17× in ~20s). */
+export const OATHNET_MAX_CALLS_PER_RUN = 6;
 
 interface CallRecord {
   callKey: string;
@@ -198,7 +218,7 @@ function breakerFor(threadId: string, tool: string): BreakerState {
   const s = state(threadId);
   let b = s.breakers.get(tool);
   if (!b) {
-    b = { consecutive: 0, total: 0, lastAt: 0, deadSelectors: new Set(), notFound: new Set() };
+    b = { consecutive: 0, consecutiveEmpty: 0, total: 0, lastAt: 0, deadSelectors: new Set(), notFound: new Set() };
     s.breakers.set(tool, b);
   }
   return b;
@@ -271,6 +291,12 @@ export function shouldRun(
   if (selector && b.deadSelectors.has(selector)) {
     return { allow: false, reason: `selector blacklisted for ${tool}` };
   }
+  if (tool === "oathnet_lookup") {
+    const oathnetCalls = [...state(threadId).calls.values()].filter((c) => c.callKey.startsWith("oathnet_lookup::")).length;
+    if (oathnetCalls >= OATHNET_MAX_CALLS_PER_RUN) {
+      return { allow: false, reason: `burst limit reached for oathnet_lookup (${OATHNET_MAX_CALLS_PER_RUN}/${OATHNET_MAX_CALLS_PER_RUN} on this investigation)` };
+    }
+  }
   if (!opts.force && selector) {
     const key = callKey(tool, selector, purpose);
     const prior = state(threadId).calls.get(key);
@@ -297,13 +323,26 @@ export function shouldRun(
   return { allow: true };
 }
 
+/** Build a stable dedup selector for tools whose inputs span multiple fields. */
+export function selectorForTool(tool: string, selectorType: string, selector: string, params?: Record<string, unknown>): string {
+  if (tool === "socialfetch_lookup") {
+    const platform = String(params?.platform ?? "").trim().toLowerCase();
+    const handle = String(params?.handle ?? selector).trim().toLowerCase().replace(/^@+/, "");
+    return platform ? `${platform}::${handle}` : handle || selector;
+  }
+  if (tool === "oathnet_lookup" && params?.type) {
+    return `${String(params.type).toLowerCase()}::${selector}`;
+  }
+  return selector;
+}
+
 /** Record outcome of a tool call and update breaker. */
 export function recordResult(
   threadId: string,
   tool: string,
   selector: string,
   purpose: string,
-  outcome: { status: FailureKind; artifactCount?: number },
+  outcome: { status: FailureKind; artifactCount?: number; empty?: boolean },
 ): void {
   const b = breakerFor(threadId, tool);
   const s = state(threadId);
@@ -314,12 +353,24 @@ export function recordResult(
     artifactCount: outcome.artifactCount ?? 0,
     ts: Date.now(),
   });
+  if (outcome.empty) {
+    b.consecutiveEmpty++;
+    b.consecutive = 0;
+    b.total++;
+    b.lastAt = Date.now();
+    if (b.consecutiveEmpty >= CONSECUTIVE_FAIL_EMPTY_DISABLE && !b.disabledReason) {
+      b.disabledReason = `disabled after ${b.consecutiveEmpty} consecutive empty results`;
+    }
+    return;
+  }
   if (outcome.status === "ok") {
     b.consecutive = 0;
+    b.consecutiveEmpty = 0;
     b.lastAt = Date.now();
     return;
   }
   b.consecutive++;
+  b.consecutiveEmpty = 0;
   b.total++;
   b.lastAt = Date.now();
   switch (outcome.status) {

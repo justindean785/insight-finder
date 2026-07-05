@@ -526,17 +526,15 @@ export function wrapToolsWithCache(
         const inp = (input ?? {}) as Record<string, unknown>;
         const selectorType = detectSelectorType(inp);
         const selectorValue = detectSelectorValue(inp);
-        const sel = circuit.normalizeSelector(selectorType, selectorValue);
+        const params = normalizedParams(inp);
+        const sel = circuit.selectorForTool(name, selectorType, circuit.normalizeSelector(selectorType, selectorValue), params);
         const purpose = String(inp.purpose ?? "default");
         const force = inp.force === true;
         const overrideSelector = ctx.manualOverrideSelector
           ? circuit.normalizeSelector(selectorType, ctx.manualOverrideSelector)
           : "";
         const manualOverride = overrideSelector.length > 0 && overrideSelector === sel;
-        // Redact sensitive inputs (e.g. HIBP password / full SHA-1) BEFORE this
-        // value can reach tool_usage_log.input_json or tool_call_cache.input_json.
         const inputJson = redactSensitiveToolInput(name, normalizeForHash(input)) as unknown as Record<string, unknown>;
-        const params = normalizedParams(inp);
         const signal = await loadSelectorEvidence(ctx.supabase, ctx.investigationId, selectorType, sel);
         const weakLead = analyzeWeakLead(signal);
         // Persistent tool-health prior (Phase 2): latency + reliability from the
@@ -779,6 +777,7 @@ export function wrapToolsWithCache(
           circuit.recordResult(ctx.investigationId, name, sel, purpose, {
             status: circuit.classifyResult(result, null),
             artifactCount: 0,
+            empty: !!(result && typeof result === "object" && (result as Record<string, unknown>).empty === true),
           });
         } catch (e) {
           ok = false;
