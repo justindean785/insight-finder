@@ -35,6 +35,99 @@ type AnyMsg = { role?: string; content?: unknown; [k: string]: unknown };
 
 const DROPPED_RESULT_PLACEHOLDER = "[result dropped to fit context]";
 
+// ---- Selector-preserving tool-result summarization (issue #238) ----------------
+// The orchestrator pivots off identifiers it reads in raw tool-result text — the
+// system prompt explicitly tells it to extract emails/usernames/phones/domains/
+// IPs/wallets/handles from raw output and "feed each as a new pivot," and
+// recording is only a precondition of the final REPORT, not of a pivot. So a raw
+// result is NOT redundant with the recorded artifacts: blindly truncating or
+// eliding it can drop a secondary selector the model hadn't pivoted on yet,
+// silently narrowing discovery while artifact count stays unchanged.
+//
+// So when we compact an OLDER result (one the model has already had several steps
+// to read at full size — never the recent window), we preserve every pivot-able
+// selector verbatim and drop only the raw envelope (HTML, API metadata, verbose
+// JSON). The full result stays retrievable via memory_recall.
+
+// Global scanners for the exact selector classes system-prompt.ts pivots on.
+// Order matters only for display grouping; dedup is by value across all classes.
+const SELECTOR_SCANNERS: ReadonlyArray<RegExp> = [
+  /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,               // email
+  /\bhttps?:\/\/[^\s"'<>)\]]+/g,                                        // url
+  /\b(?:\d{1,3}\.){3}\d{1,3}\b/g,                                       // ipv4
+  /\b0x[a-fA-F0-9]{40}\b/g,                                             // eth wallet
+  /\b(?:bc1[a-z0-9]{25,62}|[13][a-km-zA-HJ-NP-Z1-9]{25,39})\b/g,        // btc wallet
+  /(?<![\w.])@[A-Za-z0-9_]{2,30}\b/g,                                   // social handle
+  /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}\b/gi,       // bare domain
+  /\+?\d[\d\s().-]{6,17}\d/g,                                           // phone-ish
+];
+
+const MAX_PRESERVED_SELECTORS = 60;
+
+/**
+ * Extract every pivot-able selector from a blob of tool-result text, de-duplicated
+ * and capped. Pure; used by summarizeToolResultValue and unit-tested directly.
+ */
+export function extractPivotSelectors(text: string): string[] {
+  const found: string[] = [];
+  const seen = new Set<string>();
+  for (const re of SELECTOR_SCANNERS) {
+    for (const m of text.matchAll(re)) {
+      const v = (m[0] ?? "").trim().replace(/[).,;]+$/, "");
+      if (!v || seen.has(v)) continue;
+      seen.add(v);
+      found.push(v);
+      if (found.length >= MAX_PRESERVED_SELECTORS) return found;
+    }
+  }
+  return found;
+}
+
+/**
+ * Compact an OLDER tool-result value while preserving pivot fuel. If the
+ * serialized value is already within `maxChars`, it is returned unchanged (same
+ * contract as a plain truncate — small results are untouched). Otherwise returns
+ * a summary STRING: a marker (naming the tool + original size + memory_recall
+ * pointer), the full list of extracted selectors (never dropped to fit — the head
+ * snippet is what shrinks), and a head snippet filling the remaining room.
+ *
+ * NEVER larger than the original. Caller wraps the returned value back into the
+ * tool-result's `{ type, value }` shape, so pairing/schema are unaffected.
+ */
+export function summarizeToolResultValue(
+  val: unknown,
+  maxChars: number,
+  toolName?: unknown,
+): unknown {
+  let raw: string;
+  if (typeof val === "string") {
+    raw = val;
+  } else {
+    try { raw = JSON.stringify(val); } catch { raw = String(val); }
+  }
+  if (raw.length <= maxChars) return val;
+
+  const name = typeof toolName === "string" && toolName ? toolName : "tool";
+  const selectors = extractPivotSelectors(raw);
+  const selectorBlock = selectors.length
+    ? `pivot selectors preserved: ${selectors.join(", ")}`
+    : "no pivot selectors detected";
+  const marker =
+    `[older ${name} result summarized to fit context — ${raw.length} chars original; ` +
+    `full result persisted, retrieve via memory_recall]`;
+  const fixed = `${marker}\n${selectorBlock}`;
+  const room = maxChars - fixed.length - 12; // 12 ≈ "\n--- head ---\n"
+  if (room > 40) {
+    const head = raw.slice(0, room).replace(/\s+\S*$/, "");
+    const summary = `${fixed}\n--- head ---\n${head}`;
+    return summary.length < raw.length ? summary : fixed;
+  }
+  // Selector list alone (fixed) fills the budget — keep it; never drop selectors
+  // to satisfy the cap (capTotalToBudget is the structural backstop). Still
+  // guaranteed smaller than the original raw payload that overflowed the cap.
+  return fixed.length < raw.length ? fixed : raw.slice(0, maxChars);
+}
+
 /**
  * Coerce any tool-result `output` into a schema-valid typed union
  * (`{ type, value }`). A bare value, a `{ value }` without `type`, or an

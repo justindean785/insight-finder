@@ -21,7 +21,7 @@ import {
 
 import { detectSeedServer } from "./validation.ts";
 import { sanitizeToolOutput, capPartsSize } from "./safety.ts";
-import { sanitizeModelMessages, capToolResultOutputs } from "./message-sanitize.ts";
+import { sanitizeModelMessages, capToolResultOutputs, summarizeToolResultValue } from "./message-sanitize.ts";
 import { guard, routingGuard, triageState, countRecordArtifactCalls } from "./guard.ts";
 import { setupRequest } from "./auth.ts";
 import { minimax, minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
@@ -197,7 +197,11 @@ Deno.serve(async (req) => {
 
     const modelMessages = await convertToModelMessages(messages);
 
-    const MAX_TOOL_RESULT_CHARS_OLD = 4000;
+    // #238: older-result cap tightened 4000→1500. Safe only BECAUSE older results
+    // now go through selector-preserving summarization (summarizeToolResultValue) —
+    // every pivot-able selector survives regardless of this cap; only the raw
+    // envelope/head shrinks. Recent results keep their full raw cap below.
+    const MAX_TOOL_RESULT_CHARS_OLD = 1500;
     const MAX_TOOL_RESULT_CHARS_RECENT = 16000;
     // RECENT_WINDOW, TOTAL_PROMPT_CHAR_BUDGET, approxMsgChars + capTotalToBudget are
     // imported from ./orchestrator-budget.ts (pure + unit-tested).
@@ -235,12 +239,19 @@ Deno.serve(async (req) => {
       const max = isRecent ? MAX_TOOL_RESULT_CHARS_RECENT : MAX_TOOL_RESULT_CHARS_OLD;
       if (m.role !== "tool" && m.role !== "assistant") return m;
       if (!Array.isArray(m.content)) return m;
+      // Recent results stay raw (the model may pivot off their detail on the very
+      // next step); OLDER results are compacted with selector-preserving
+      // summarization (issue #238) — the raw envelope is dropped but every
+      // pivot-able selector survives, so discovery breadth isn't silently cut.
       const content = (m.content as TrimPart[]).map((part: TrimPart) => {
         if (part?.type === "tool-result" && part.output != null) {
           if (part.output && typeof part.output === "object" && "value" in part.output) {
-            return { ...part, output: { ...part.output, value: truncateValue((part.output as { value: unknown }).value, max) } };
+            const value = isRecent
+              ? truncateValue((part.output as { value: unknown }).value, max)
+              : summarizeToolResultValue((part.output as { value: unknown }).value, max, part.toolName);
+            return { ...part, output: { ...part.output, value } };
           }
-          return { ...part, output: truncateValue(part.output, max) };
+          return { ...part, output: isRecent ? truncateValue(part.output, max) : summarizeToolResultValue(part.output, max, part.toolName) };
         }
         if (part?.type === "text" && typeof part.text === "string") {
           return { ...part, text: truncateStr(part.text, isRecent ? 16000 : 4000) };
@@ -538,7 +549,9 @@ Deno.serve(async (req) => {
     // full size; everything older is heavily compacted.
     const STEP_RECENT_WINDOW = 8;
     const STEP_RECENT_CHARS = 12000;
-    const STEP_OLDER_CHARS = 3000;
+    // #238: older-result cap tightened 3000→1500 (selector-preserving summary keeps
+    // the pivot fuel; only the raw envelope shrinks). Recent stays 12000 raw.
+    const STEP_OLDER_CHARS = 1500;
     const prepareStep: NonNullable<Parameters<typeof streamText>[0]["prepareStep"]> =
       async ({ messages: stepMessages }) => {
         const { data: threadState } = await supabase
@@ -563,12 +576,17 @@ Deno.serve(async (req) => {
           const max = isRecent ? STEP_RECENT_CHARS : STEP_OLDER_CHARS;
           if (m.role !== "tool" && m.role !== "assistant") return m;
           if (!Array.isArray(m.content)) return m;
+          // Older results → selector-preserving summarization (issue #238);
+          // recent stay raw for next-step pivot detail.
           const content = (m.content as TrimPart[]).map((part: TrimPart) => {
             if (part?.type === "tool-result" && part.output != null) {
               if (part.output && typeof part.output === "object" && "value" in part.output) {
-                return { ...part, output: { ...part.output, value: truncateValue((part.output as { value: unknown }).value, max) } };
+                const value = isRecent
+                  ? truncateValue((part.output as { value: unknown }).value, max)
+                  : summarizeToolResultValue((part.output as { value: unknown }).value, max, part.toolName);
+                return { ...part, output: { ...part.output, value } };
               }
-              return { ...part, output: truncateValue(part.output, max) };
+              return { ...part, output: isRecent ? truncateValue(part.output, max) : summarizeToolResultValue(part.output, max, part.toolName) };
             }
             if (part?.type === "text" && typeof part.text === "string") {
               return { ...part, text: truncateStr(part.text, isRecent ? STEP_RECENT_CHARS : STEP_OLDER_CHARS) };
