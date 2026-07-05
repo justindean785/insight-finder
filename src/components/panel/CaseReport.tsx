@@ -111,6 +111,8 @@ function ArtifactRow({ a }: { a: Artifact }) {
 function BucketTable({ rows, empty }: { rows: Artifact[]; empty: string }) {
   if (!rows.length) return <p className="text-muted-foreground italic text-data mt-2">{empty}</p>;
   return (
+    <>
+    <p className="sm:hidden mt-2 -mb-1 text-[10px] text-muted-foreground/70">Scroll horizontally to see all columns →</p>
     <div className="rounded-xl border border-white/[0.08] overflow-x-auto mt-2 bg-[hsl(var(--surface-1))/0.42] [scrollbar-width:thin]">
       <table className="w-full min-w-[1024px] table-fixed [&_td]:align-top text-data">
         <thead>
@@ -127,6 +129,7 @@ function BucketTable({ rows, empty }: { rows: Artifact[]; empty: string }) {
         <tbody>{rows.map((a) => <ArtifactRow key={a.id} a={a} />)}</tbody>
       </table>
     </div>
+    </>
   );
 }
 
@@ -197,7 +200,7 @@ function ConfPill({ label }: { label: ConfLabel }) {
 type IdentityRow = { field: string; value: string; label: ConfLabel };
 
 function pickBest(artifacts: Artifact[], kinds: string[]): Artifact | null {
-  const pool = artifacts.filter((a) => kinds.includes(a.kind.toLowerCase()));
+  const pool = artifacts.filter((a) => kinds.includes(String(a.kind ?? "").toLowerCase()));
   if (!pool.length) return null;
   const rank: Record<ConfLabel, number> = {
     CONFIRMED: 6, CORRELATED: 5, INFERRED: 4, VERIFY: 3, LOW: 2, CONFLICT: 1, FAILED: 0,
@@ -213,8 +216,8 @@ function pickBest(artifacts: Artifact[], kinds: string[]): Artifact | null {
 function pickAllEmails(artifacts: Artifact[]): Artifact[] {
   const seen = new Set<string>();
   const out: Artifact[] = [];
-  for (const a of artifacts.filter((x) => x.kind.toLowerCase() === "email")) {
-    const k = a.value.toLowerCase();
+  for (const a of artifacts.filter((x) => String(x.kind ?? "").toLowerCase() === "email")) {
+    const k = String(a.value ?? "").toLowerCase();
     if (seen.has(k)) continue;
     seen.add(k);
     out.push(a);
@@ -264,7 +267,7 @@ type RegistrationRow = {
 function buildRegistrationRows(artifacts: Artifact[]): RegistrationRow[] {
   const rows: RegistrationRow[] = [];
   for (const a of artifacts) {
-    const k = a.kind.toLowerCase();
+    const k = String(a.kind ?? "").toLowerCase();
     const meta = (a.metadata ?? {}) as Record<string, unknown>;
     const site =
       (meta.site as string) ||
@@ -274,7 +277,7 @@ function buildRegistrationRows(artifacts: Artifact[]): RegistrationRow[] {
       null;
     if (k === "breach" && !isReputationArtifact(a)) {
       rows.push({
-        site: site || a.value,
+        site: site || String(a.value ?? "—"),
         identifier:
           (meta.identifier as string) ||
           (meta.email as string) ||
@@ -296,7 +299,7 @@ function buildRegistrationRows(artifacts: Artifact[]): RegistrationRow[] {
   // Dedupe by site|identifier
   const seen = new Set<string>();
   return rows.filter((r) => {
-    const k = `${r.site.toLowerCase()}|${r.identifier.toLowerCase()}`;
+    const k = `${String(r.site ?? "").toLowerCase()}|${String(r.identifier ?? "").toLowerCase()}`;
     if (seen.has(k)) return false;
     seen.add(k);
     return true;
@@ -318,9 +321,10 @@ function buildHunterNotes(artifacts: Artifact[], seedValue: string | null): Hunt
     });
   }
   if (passwords.length >= 2) {
-    const sample = passwords.slice(0, 3).map((p) => `\`${p.value}\``).join(", ");
+    // Credential-masking policy: indicate presence/count, NEVER the plaintext
+    // values (the report elsewhere states creds are masked — keep that promise).
     notes.push({
-      text: `Password reuse pattern detected (${sample}). Treat any account secured by this family as compromised.`,
+      text: `Password reuse pattern detected across ${passwords.length} exposed credentials (values masked by policy). Treat any account secured by this family as compromised.`,
     });
   }
 
@@ -480,7 +484,7 @@ function artifactSourceClasses(a: Artifact): Set<string> {
 // NOT touch confidence caps, source classification, or status derivation — Signal
 // reuses the same bucket() the Confirmed/Probable counters use.
 export function buildAnalyticRadar(artifacts: Artifact[], riskLevel: RiskLevel): ReportMetric[] {
-  const kinds = new Set(artifacts.map((a) => a.kind.toLowerCase()));
+  const kinds = new Set(artifacts.map((a) => String(a.kind ?? "").toLowerCase()));
   const avg = averageConfidence(artifacts);
   const total = Math.max(artifacts.length, 1);
 
@@ -491,7 +495,7 @@ export function buildAnalyticRadar(artifacts: Artifact[], riskLevel: RiskLevel):
   // missed it and read 0 despite many breaches. Count exposure ARTIFACTS,
   // weighted by metadata.severity when present, else confidence.
   const exposureArts = artifacts.filter((a) =>
-    ["breach_exposure", "credential_exposure", "leak_paste"].includes(a.kind));
+    ["breach_exposure", "credential_exposure", "leak_paste"].includes(String(a.kind ?? "")));
   const exposureStrength = exposureArts.reduce((s, a) => {
     const m = (a.metadata ?? {}) as Record<string, unknown>;
     const sev = typeof m.severity === "number" ? m.severity : null;
@@ -519,8 +523,8 @@ export function buildAnalyticRadar(artifacts: Artifact[], riskLevel: RiskLevel):
   const riskScore: Record<RiskLevel, number> = { LOW: 22, MEDIUM: 48, HIGH: 74, CRITICAL: 94 };
 
   return [
-    { label: "Identity", value: clampScore((identityHits / 8) * 100), detail: `${identityHits}/8 identity categories observed` },
-    { label: "Corroboration", value: corroborationValue, detail: `${corroborated}/${artifacts.length} finding${artifacts.length === 1 ? "" : "s"} across ≥2 independent source classes` },
+    { label: "Identity coverage", value: clampScore((identityHits / 8) * 100), detail: `${identityHits}/8 identity categories observed` },
+    { label: "Cross-source", value: corroborationValue, detail: `${corroborated}/${artifacts.length} finding${artifacts.length === 1 ? "" : "s"} across ≥2 independent source classes` },
     { label: "Confidence", value: clampScore(avg), detail: `${avg}% average artifact confidence` },
     { label: "Exposure", value: exposureValue, detail: `${exposureArts.length} breach / credential-exposure finding${exposureArts.length === 1 ? "" : "s"}` },
     { label: "Coverage", value: coverageValue, detail: `${coveredExpected}/${EXPECTED_SOURCE_CATEGORIES.length} source categories represented` },
@@ -632,7 +636,11 @@ function CompactBarChart({ data, color = "hsl(var(--info))" }: { data: ChartDatu
 /* ---------- narrative / dossier helpers ---------- */
 
 function topByConfidence(artifacts: Artifact[], kinds: string[]): Artifact | null {
-  const pool = artifacts.filter((a) => kinds.includes(a.kind));
+  // Case-insensitive kind match + null-safe read. `pickBest` already lowercases;
+  // this keeps the narrative builders consistent so a capitalized/undefined
+  // `kind` never silently drops a row (or throws into the ErrorBoundary).
+  const set = new Set(kinds.map((k) => k.toLowerCase()));
+  const pool = artifacts.filter((a) => set.has(String(a.kind ?? "").toLowerCase()));
   if (!pool.length) return null;
   return pool.slice().sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))[0];
 }
@@ -640,7 +648,7 @@ function topByConfidence(artifacts: Artifact[], kinds: string[]): Artifact | nul
 type ProfileField = { label: string; value: string };
 function buildSubjectProfile(artifacts: Artifact[]): ProfileField[] {
   const out: ProfileField[] = [];
-  const name = topByConfidence(artifacts, ["name"]);
+  const name = topByConfidence(artifacts, ["name", "person"]);
   if (name) {
     out.push({ label: "Name", value: name.value });
     const m = (name.metadata ?? {}) as Record<string, unknown>;
@@ -657,9 +665,70 @@ function buildSubjectProfile(artifacts: Artifact[]): ProfileField[] {
   return out;
 }
 
+// Digital footprint — the "feels complete" prose block the reference dossier
+// leads with. Presentation only: it surfaces already-classified handle/account/
+// URL artifacts as clickable links grouped by platform; it does NOT re-rank,
+// re-classify, or change any confidence/status.
+type FootprintLink = { platform: string; value: string; href: string | null; inferred: boolean };
+const FOOTPRINT_KINDS = new Set(["username", "handle", "account", "account_id", "social", "url", "domain", "website", "profile"]);
+// Last-label values that look like a TLD but aren't — keeps file names / version
+// strings from being turned into fake `https://` links.
+const FOOTPRINT_NON_TLD = new Set([
+  "pdf", "doc", "docx", "png", "jpg", "jpeg", "gif", "webp", "svg", "js", "ts",
+  "tsx", "jsx", "json", "txt", "csv", "xml", "html", "htm", "zip", "md", "mp4",
+  "mp3", "exe", "dll", "py", "rb", "go",
+]);
+// Exported for unit testing (pure presentation helper — no component state).
+// eslint-disable-next-line react-refresh/only-export-components
+export function buildProfileLinks(artifacts: Artifact[]): FootprintLink[] {
+  const out: FootprintLink[] = [];
+  const seen = new Set<string>();
+  for (const a of artifacts) {
+    const kind = String(a.kind ?? "").toLowerCase();
+    if (!FOOTPRINT_KINDS.has(kind)) continue;
+    const value = String(a.value ?? "").trim();
+    if (!value) continue;
+    const m = (a.metadata ?? {}) as Record<string, unknown>;
+    const platform = String(m.platform ?? m.site ?? m.service ?? m.source_name ?? "").trim() || displayKind(a);
+    const urlCand = [value, m.url, m.profile_url, m.source_url, m.link].find(
+      (u) => typeof u === "string" && /^https?:\/\//i.test(u),
+    ) as string | undefined;
+    let href: string | null = urlCand ?? null;
+    // Bare domain/handle-as-URL (e.g. "craftin247.bandcamp.com") → linkable, but
+    // only when the host's last label looks like a real TLD (alpha, not a file
+    // extension) so "resume.pdf", "v1.2.3", "Node.js", "2024.01.15" don't become
+    // fake external links.
+    if (!href) {
+      const host = value.split("/")[0];
+      const lastLabel = (host.split(".").pop() ?? "").toLowerCase();
+      const looksLikeHost = /^[\w-]+(\.[\w-]+)+$/.test(host) && /^[a-z]{2,24}$/.test(lastLabel);
+      if (looksLikeHost && !FOOTPRINT_NON_TLD.has(lastLabel)) href = `https://${value}`;
+    }
+    const key = `${platform.toLowerCase()}|${value.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const inferred = m.provenance_verified === false || m.provenance === "llm_asserted_unverified" || isAiSummaryArtifact(a);
+    out.push({ platform, value, href, inferred });
+  }
+  return out;
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function buildAliases(artifacts: Artifact[]): string[] {
+  const set = new Set<string>();
+  for (const a of artifacts) {
+    const kind = String(a.kind ?? "").toLowerCase();
+    if (kind === "username" || kind === "handle") {
+      const v = String(a.value ?? "").trim();
+      if (v) set.add(v);
+    }
+  }
+  return Array.from(set).slice(0, 12);
+}
+
 type BreachRow = { site: string; date: string; classes: string; creds: string[]; severity: "CRITICAL" | "HIGH" | null };
 function buildBreachExposure(artifacts: Artifact[]): BreachRow[] {
-  const rows = artifacts.filter((a) => a.kind === "breach_exposure").map((a) => {
+  const rows = artifacts.filter((a) => String(a.kind ?? "").toLowerCase() === "breach_exposure").map((a) => {
     const m = (a.metadata ?? {}) as Record<string, unknown>;
     const dc = m.data_classes;
     const classes = Array.isArray(dc) ? dc.map(String).join(", ") : "";
@@ -697,6 +766,8 @@ export function CaseReport({
 }) {
   const display = useMemo(() => extractDisplaySeed(seedValue, seedType), [seedValue, seedType]);
   const subjectProfile = useMemo(() => buildSubjectProfile(artifacts), [artifacts]);
+  const profileLinks = useMemo(() => buildProfileLinks(artifacts), [artifacts]);
+  const aliases = useMemo(() => buildAliases(artifacts), [artifacts]);
   const breachRows = useMemo(() => buildBreachExposure(artifacts), [artifacts]);
   const analystConf = useMemo(() => analystConfidence(artifacts), [artifacts]);
   const narrative = useMemo(() => {
@@ -790,6 +861,13 @@ export function CaseReport({
         <ReportKpi label="Leads" value={buckets.lead.length} detail="requires analyst verification" tone="warn" />
         <ReportKpi label="Contradictions" value={buckets.contradiction.length} detail="quality or conflict flags" tone={buckets.contradiction.length > 0 ? "danger" : "neutral"} />
       </section>
+      {buckets.confirmed.length === 0 && artifacts.length > 0 && (
+        <p className="mt-2 text-data leading-relaxed text-muted-foreground">
+          A tier of <span className="font-mono text-foreground">0 confirmed</span> is by design, not an empty case: AI-inferred and
+          single-source findings stay <span className="text-[hsl(var(--confidence-mid))]">leads</span> until a second independent source
+          class corroborates them. The evidence below is real — it just hasn't cleared the confirmation bar yet.
+        </p>
+      )}
 
       {/* Analyst confidence vs strict auto-corroboration — reconciles the
           "0 confirmed" metric with the reasoned identity read so they don't read
@@ -809,30 +887,68 @@ export function CaseReport({
         </div>
       </section>
 
-      {/* Subject profile */}
-      {subjectProfile.length > 0 && (
+      {/* Subject profile — always rendered so the dossier reads complete; an
+          empty case shows an honest "nothing yet" line instead of vanishing. */}
+      <SectionHeader>Subject Profile</SectionHeader>
+      {subjectProfile.length > 0 || aliases.length > 0 ? (
+        <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-4 grid gap-2 sm:grid-cols-2">
+          {subjectProfile.map((f) => {
+            const dobSuspect = /date of birth|dob/i.test(f.label) && isDobPlaceholder(f.value);
+            return (
+              <div key={f.label} className="flex flex-col">
+                <span className="text-eyebrow font-mono uppercase tracking-[0.14em] text-muted-foreground">{f.label}</span>
+                <span className="font-mono text-foreground break-words [overflow-wrap:anywhere]">
+                  {f.value}
+                  {dobSuspect && (
+                    <span
+                      className="ml-2 align-middle rounded border border-[hsl(var(--warning))]/60 bg-[hsl(var(--warning))]/10 px-1.5 py-px text-[9px] font-mono uppercase tracking-wider text-[hsl(var(--warning))] no-underline"
+                      title="January 1 is a common placeholder DOB — verify before relying on it"
+                    >
+                      placeholder?
+                    </span>
+                  )}
+                </span>
+              </div>
+            );
+          })}
+          {aliases.length > 0 && (
+            <div className="flex flex-col sm:col-span-2">
+              <span className="text-eyebrow font-mono uppercase tracking-[0.14em] text-muted-foreground">Aliases / handles</span>
+              <span className="font-mono text-foreground break-words [overflow-wrap:anywhere]">{aliases.join(", ")}</span>
+            </div>
+          )}
+        </div>
+      ) : (
+        <p className="text-muted-foreground italic text-data mt-2">No confirmed identity fields recovered yet.</p>
+      )}
+
+      {/* Digital footprint — clickable profiles/handles/domains. Surfaces the
+          evidence that makes the report feel complete; presentation only.
+          Omitted in the brief variant (like Breach Exposure / analytics). */}
+      {!isBrief && profileLinks.length > 0 && (
         <>
-          <SectionHeader>Subject Profile</SectionHeader>
-          <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-4 grid gap-2 sm:grid-cols-2">
-            {subjectProfile.map((f) => {
-              const dobSuspect = /date of birth|dob/i.test(f.label) && isDobPlaceholder(f.value);
-              return (
-                <div key={f.label} className="flex flex-col">
-                  <span className="text-eyebrow font-mono uppercase tracking-[0.14em] text-muted-foreground">{f.label}</span>
-                  <span className="font-mono text-foreground break-words [overflow-wrap:anywhere]">
-                    {f.value}
-                    {dobSuspect && (
-                      <span
-                        className="ml-2 align-middle rounded border border-[hsl(var(--warning))]/60 bg-[hsl(var(--warning))]/10 px-1.5 py-px text-[9px] font-mono uppercase tracking-wider text-[hsl(var(--warning))] no-underline"
-                        title="January 1 is a common placeholder DOB — verify before relying on it"
-                      >
-                        placeholder?
-                      </span>
-                    )}
-                  </span>
-                </div>
-              );
-            })}
+          <SectionHeader>Digital Footprint</SectionHeader>
+          <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-3 grid gap-1.5 sm:grid-cols-2">
+            {profileLinks.map((l) => (
+              <div key={`${l.platform}|${l.value}`} className="flex items-baseline gap-2 min-w-0">
+                <span className="shrink-0 text-eyebrow font-mono uppercase tracking-[0.12em] text-muted-foreground">{l.platform}</span>
+                {l.href ? (
+                  <a
+                    href={l.href}
+                    target="_blank"
+                    rel="noopener noreferrer nofollow"
+                    className="min-w-0 truncate font-mono text-[hsl(var(--info))] underline decoration-dotted underline-offset-2 hover:decoration-solid"
+                  >
+                    {l.value}
+                  </a>
+                ) : (
+                  <span className="min-w-0 truncate font-mono text-foreground break-words [overflow-wrap:anywhere]">{l.value}</span>
+                )}
+                {l.inferred && (
+                  <span className="shrink-0 rounded border border-conf-possible/40 bg-conf-possible/10 px-1 py-px text-[9px] font-mono uppercase tracking-wider text-conf-possible">inferred</span>
+                )}
+              </div>
+            ))}
           </div>
         </>
       )}
@@ -848,8 +964,17 @@ export function CaseReport({
       )}
 
       {!isBrief && (<>
-      <section className="mt-4 grid gap-3 xl:grid-cols-[1.05fr_0.95fr]">
-        <ReportChartCard title="Analytic Radar" subtitle="Composite profile from evidence, source, risk, and coverage signals.">
+      {/* Hybrid: prose dossier leads; the chart-heavy analytics live in a
+          collapsible block so they don't dominate (esp. on mobile). */}
+      <details className="mt-4 group rounded-xl border border-white/[0.08] bg-[hsl(var(--surface-1))/0.4]" open>
+        <summary className="cursor-pointer list-none select-none px-3 py-2.5 flex items-center gap-2 text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">
+          <span className="transition-transform group-open:rotate-90" aria-hidden>▸</span>
+          Analytics
+          <span className="ml-auto text-[10px] normal-case tracking-normal text-muted-foreground/70">descriptive — not scoring</span>
+        </summary>
+        <div className="px-3 pb-3 space-y-3">
+      <section className="grid gap-3 xl:grid-cols-[1.05fr_0.95fr]">
+        <ReportChartCard title="Analytic Radar" subtitle="Descriptive analytics, computed independently from the Confidence signals panel above.">
           <AnalyticRadar data={radar} />
         </ReportChartCard>
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
@@ -884,6 +1009,8 @@ export function CaseReport({
           </div>
         </div>
       </section>
+        </div>
+      </details>
 
       <section className="mt-4 rounded-xl border border-[hsl(var(--info)/0.18)] bg-[hsl(var(--info)/0.055)] p-3">
         <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-[hsl(var(--info))]">
@@ -977,7 +1104,7 @@ export function CaseReport({
       </div>
 
       {/* Breach Exposure — masked credential indicators only (full dossier) */}
-      {!isBrief && breachRows.length > 0 && (
+      {!isBrief && (breachRows.length > 0 ? (
         <>
           <SectionHeader>Breach Exposure</SectionHeader>
           <div className="rounded-md border border-border-subtle overflow-x-auto [scrollbar-width:thin]">
@@ -1027,7 +1154,12 @@ export function CaseReport({
           </div>
           <p className="mt-1 text-data text-muted-foreground">Credential values are masked by policy — presence is indicated, never the plaintext, hash, or hint.</p>
         </>
-      )}
+      ) : (
+        <>
+          <SectionHeader>Breach Exposure</SectionHeader>
+          <p className="text-muted-foreground italic text-data mt-2">No breach or credential-exposure records surfaced.</p>
+        </>
+      ))}
 
       {/* 4. Confirmed findings */}
       <SectionHeader right={<StatusLegend />}>Confirmed Findings</SectionHeader>
@@ -1067,10 +1199,9 @@ export function CaseReport({
         </>
       )}
 
-      {/* Identity */}
-      {identity.length > 0 && (
-        <>
-          <SectionHeader>Identity</SectionHeader>
+      {/* Identity — always rendered with an honest empty state. */}
+      <SectionHeader>Identity</SectionHeader>
+      {identity.length > 0 ? (
           <div className="rounded-md border border-border-subtle overflow-hidden">
             <table className="w-full text-data">
               <thead>
@@ -1091,7 +1222,8 @@ export function CaseReport({
               </tbody>
             </table>
           </div>
-        </>
+      ) : (
+        <p className="text-muted-foreground italic text-data mt-2">No identity fields extracted yet — investigation may be early or selectors unresolved.</p>
       )}
 
       {/* Hunter's notes (after identity, before registrations) */}

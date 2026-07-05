@@ -40,17 +40,17 @@ describe("buildAnalyticRadar (display metrics — counts only)", () => {
     expect(axis(buildAnalyticRadar(arts, "LOW"), "Signal").value).toBe(0);
   });
 
-  it("Corroboration < 100 when findings are single-source-class (BUG-3)", () => {
+  it("Cross-source < 100 when findings are single-source-class (BUG-3)", () => {
     const arts = Array.from({ length: 5 }, () =>
       mk({ kind: "email", metadata: { source_category: ["breach"] } }));
-    expect(axis(buildAnalyticRadar(arts, "LOW"), "Corroboration").value).toBeLessThan(100);
+    expect(axis(buildAnalyticRadar(arts, "LOW"), "Cross-source").value).toBeLessThan(100);
   });
 
-  it("Corroboration counts only findings with >=2 independent classes", () => {
+  it("Cross-source counts only findings with >=2 independent classes", () => {
     const arts = [
       mk({ kind: "name", metadata: { source_category: ["breach", "news"] } }),
       mk({ kind: "email", metadata: { source_category: ["breach"] } }),
     ];
-    expect(axis(buildAnalyticRadar(arts, "LOW"), "Corroboration").value).toBe(50);
+    expect(axis(buildAnalyticRadar(arts, "LOW"), "Cross-source").value).toBe(50);
   });
 });
