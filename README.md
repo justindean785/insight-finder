@@ -162,7 +162,9 @@ The `osint-agent` edge function exposes a lightweight readiness endpoint used by
 
 | Trigger | Status | Body |
 | --- | --- | --- |
-| `GET /functions/v1/osint-agent?health=1` | `200` when ready, `503` when not | `{ ok, service, version, checks: { orchestrator, core, tools }, intelbase_enabled }` |
+| `GET /functions/v1/osint-agent?health=1` | `200` when ready, `503` when not | `{ ok, service, version, build, build_committed_at, checks: { orchestrator, core, tools, minimax }, intelbase_enabled }` |
+
+`checks.minimax` (added 2026-07-05) is a live 5s-bounded reachability probe of the primary orchestrator: `{ ok: true }` when `MINIMAX_API_KEY` is set and a ping succeeds, else `{ ok: false, reason: "missing_key" \| "preflight_failed" \| "timeout" }`. Overall `ok`/status is **not** coupled to it — a MiniMax blip degrades to the Gemini fallback rather than marking the function down. `build` is the stamped git short-SHA for deploy-drift verification.
 | `HEAD /functions/v1/osint-agent?health=1` | `200` when ready, `503` when not | (no body) |
 | (no `?health=1` query) | normal flow | auth + scan handler |
 
