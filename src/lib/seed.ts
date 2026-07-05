@@ -66,6 +66,34 @@ export function extractDisplaySeed(
   return { selector: short, kind: (seedType as SeedKind) || "other", title: short };
 }
 
+// --- Thread title formatting ---------------------------------------------
+// Human-readable thread titles: "[Entity Type]: [Seed]" instead of the raw
+// seed blob (issue #73). Unknown/unclassified seeds keep the legacy
+// slice(0, 80) behavior so nothing regresses. MUST mirror formatThreadTitle
+// in supabase/functions/osint-agent/validation.ts (no shared module exists
+// between src/ and supabase/functions/).
+export const THREAD_TITLE_MAX = 80;
+
+const SEED_KIND_LABELS: Record<string, string> = {
+  email: "Email",
+  username: "Username",
+  phone: "Phone",
+  ip: "IP",
+  domain: "Domain",
+  url: "URL",
+  crypto: "Crypto Wallet",
+  person: "Person",
+  address: "Address",
+};
+
+export function formatThreadTitle(text: string): string {
+  const raw = (text ?? "").trim();
+  const detected = detectSeed(raw);
+  const label = detected ? SEED_KIND_LABELS[detected.kind] : undefined;
+  if (!label) return raw.slice(0, THREAD_TITLE_MAX);
+  return `${label}: ${detected!.raw}`.slice(0, THREAD_TITLE_MAX);
+}
+
 export function detectSeed(input: string): DetectedSeed | null {
   const raw = input.trim();
   if (!raw) return null;

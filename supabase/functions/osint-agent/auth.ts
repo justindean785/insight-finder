@@ -8,7 +8,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import type { UIMessage } from "npm:ai@6";
 import { corsHeaders, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY } from "./env.ts";
 import { checkRateLimit as checkRateLimitDistributed, MAX_REQS_PER_MIN, MAX_REQS_PER_HOUR } from "./ratelimit.ts";
-import { detectSeedServer } from "./validation.ts";
+import { detectSeedServer, formatThreadTitle } from "./validation.ts";
 
 // Hard cap on the parsed request body so an authenticated caller can't inflate
 // DB storage (the `messages` insert below persists `lastUser.parts` verbatim)
@@ -243,7 +243,7 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
       await supabase
         .from("threads")
         .update({
-          title: text.slice(0, 80),
+          title: formatThreadTitle(text, detected),
           seed_value: text.slice(0, 200),
           ...(detected ? { seed_type: detected.kind } : {}),
           updated_at: new Date().toISOString(),
