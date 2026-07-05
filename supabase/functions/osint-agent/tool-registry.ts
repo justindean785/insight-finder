@@ -1116,6 +1116,12 @@ export function buildTools(ctx: ToolContext) {
         if (!LEAKCHECK_API_KEY) return { error: "LEAKCHECK_API_KEY not configured" };
         const q = value.trim();
         if (!q) return { error: "missing value" };
+        // LeakCheck v2 /query 400s on keyword/name searches. A multi-word value
+        // with no @ is a person name — skip cleanly (avoid the guaranteed 400)
+        // and route the caller to the tool that DOES support name search.
+        if (!q.includes("@") && /\s/.test(q) && (type === "auto" || type === "username")) {
+          return { ok: false, skipped: true, source: "leakcheck.v2", reason: "name/keyword not supported by LeakCheck v2 — use oathnet_lookup type:'name'", value: q };
+        }
         try {
           const url = buildLeakcheckUrl(q, type);
           const r = await fetchT(url, { headers: { "X-API-Key": LEAKCHECK_API_KEY, "Accept": "application/json" } }, 20_000);
