@@ -24,6 +24,9 @@ export const MODELS: Record<Tier, string> = {
   // flash-class model and make it operator-overridable WITHOUT a code change via
   // LOVABLE_FALLBACK_MODEL_ID. Single source of truth — env.ts + health-handler.ts
   // read this value. The PRIMARY orchestrator model (MiniMax) is unchanged.
+  // Pinned to the GA flash model: gemini-3-flash-preview (the mirror's brief
+  // "speed pass" default) is a preview SKU with no serving guarantee and is
+  // barred from this deploy. Override with LOVABLE_FALLBACK_MODEL_ID.
   fallback: Deno.env.get("LOVABLE_FALLBACK_MODEL_ID") ?? "google/gemini-2.5-flash",
 };
 

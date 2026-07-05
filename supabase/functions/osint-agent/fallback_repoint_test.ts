@@ -32,7 +32,7 @@ Deno.test("B5: MiniMax failure cascades to Lovable using the repointed model", a
       throw new Error(`unexpected fetch to ${url}`);
     }) as typeof globalThis.fetch;
 
-    const result = await minimaxChatWithFallback({ user: "test" }, { lovable: true });
+    const result = await minimaxChatWithFallback({ user: "test" }, { lovable: true, allowLovable: true });
     assertEquals(result.usedFallback, true);
     assertEquals(result.ok, true);
     assertEquals(result.content, "flash-answer");
@@ -61,7 +61,7 @@ Deno.test("B5/#205: an already-aborted caller signal does NOT trigger the fallba
     ctrl.abort(); // the caller (per-tool timeout) already gave up
     let threw = false;
     try {
-      await minimaxChatWithFallback({ user: "test", signal: ctrl.signal }, { lovable: true, grok: true });
+      await minimaxChatWithFallback({ user: "test", signal: ctrl.signal }, { gemini: true, lovable: true, allowLovable: true });
     } catch {
       threw = true;
     }

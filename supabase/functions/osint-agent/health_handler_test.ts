@@ -130,3 +130,71 @@ Deno.test("handleHealthProbe: OSINT_AGENT_PROBE_SECRET unset → ?probe=1 fails 
   const res = await handleHealthProbe(req);
   assertEquals(res.status, 403);
 });
+
+// ---------------------------------------------------------------------------
+// checkMinimax — checks.minimax on plain ?health=1 (deps-injected, no network)
+// ---------------------------------------------------------------------------
+
+Deno.test("checkMinimax: missing key → ok:false reason:missing_key", async () => {
+  const { checkMinimax } = await import("./health-handler.ts");
+  const res = await checkMinimax({ hasKey: false });
+  assertEquals(res.ok, false);
+  assertEquals(res.reason, "missing_key");
+});
+
+Deno.test("checkMinimax: live ping ok → ok:true", async () => {
+  const { checkMinimax } = await import("./health-handler.ts");
+  const res = await checkMinimax({
+    hasKey: true,
+    recentlyHealthy: false,
+    chat: (() =>
+      Promise.resolve({ ok: true, status: 200, content: "pong", raw: {} })) as never,
+  });
+  assertEquals(res.ok, true);
+});
+
+Deno.test("checkMinimax: upstream 429 → ok:false reason:preflight_failed with status detail", async () => {
+  const { checkMinimax } = await import("./health-handler.ts");
+  const res = await checkMinimax({
+    hasKey: true,
+    recentlyHealthy: false,
+    chat: (() =>
+      Promise.resolve({ ok: false, status: 429, content: "", raw: {} })) as never,
+  });
+  assertEquals(res.ok, false);
+  assertEquals(res.reason, "preflight_failed");
+  assertEquals(res.detail, "status=429");
+});
+
+Deno.test("checkMinimax: aborted probe → ok:false reason:timeout", async () => {
+  const { checkMinimax } = await import("./health-handler.ts");
+  const res = await checkMinimax({
+    hasKey: true,
+    recentlyHealthy: false,
+    chat: (() => Promise.reject(new DOMException("Aborted", "AbortError"))) as never,
+  });
+  assertEquals(res.ok, false);
+  assertEquals(res.reason, "timeout");
+});
+
+Deno.test("checkMinimax: recent orchestrator success short-circuits the paid ping", async () => {
+  const { checkMinimax } = await import("./health-handler.ts");
+  const res = await checkMinimax({
+    hasKey: true,
+    recentlyHealthy: true,
+    chat: (() => Promise.reject(new Error("must not be called"))) as never,
+  });
+  assertEquals(res.ok, true);
+  assertEquals(res.detail, "recently_ok");
+});
+
+Deno.test("handleHealthProbe: checks.minimax present on plain ?health=1", async () => {
+  const req = new Request("https://edge.test/osint-agent?health=1", { method: "GET" });
+  const res = await handleHealthProbe(req);
+  const body = await res.json();
+  // Test env has no MINIMAX_API_KEY → the check must fail CLOSED with the
+  // missing_key reason (never silently absent).
+  assertEquals(typeof body.checks.minimax, "object");
+  assertEquals(body.checks.minimax.ok, false);
+  assertEquals(body.checks.minimax.reason, "missing_key");
+});

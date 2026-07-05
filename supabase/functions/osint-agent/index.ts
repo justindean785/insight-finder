@@ -13,6 +13,7 @@ import { discoverCapabilities, capabilityEnvKeys, gatedToolNames } from "./capab
 import {
   corsHeaders, MINIMAX_API_KEY, LOVABLE_API_KEY,
   lovableGateway, PRIMARY_ORCHESTRATOR_MODEL_ID, FALLBACK_MODEL_ID,
+  geminiDirectGateway, GEMINI_FALLBACK_MODEL_ID, ALLOW_LOVABLE_FALLBACK,
   grokGateway, openAdapterGateway, ORCHESTRATOR_PROVIDER,
   GROK_ORCHESTRATOR_MODEL_ID, OPENADAPTER_ORCHESTRATOR_MODEL_ID,
   degradedTools, deadHosts, resetFirecrawlCreditsLow,
@@ -402,6 +403,12 @@ Deno.serve(async (req) => {
       openadapter: !!openAdapterGateway,
     });
     const minimaxIsPrimary = orchChoice.provider === "minimax";
+    // Speed pass: operator can pin the orchestrator to the Lovable AI Gateway
+    // (Gemini) via ORCHESTRATOR_PROVIDER=lovable. When pinned, we skip MiniMax
+    // entirely — Gemini is faster and supports parallel tool calls natively
+    // (the SDK default; providerOptions below only attach the serial-mode
+    // flag when MiniMax is live), which is the single largest wall-clock win.
+    const lovablePinned = ORCHESTRATOR_PROVIDER === "lovable" && !!lovableGateway;
     // The MiniMax-specific overflow pre-pivot + health probe only apply when
     // MiniMax is the primary. Alternative providers carry their own large
     // context windows and reliability, so they bypass the Gemini fallback path.
@@ -409,7 +416,31 @@ Deno.serve(async (req) => {
       minimaxIsPrimary &&
       (approxPromptChars > MINIMAX_CHAR_BUDGET ||
         trimmedMessages.length > MINIMAX_MSG_BUDGET);
-    let useFallback = minimaxIsPrimary ? (!minimaxAvailable || wouldOverflow) : false;
+    let useFallback = lovablePinned
+      ? true
+      : minimaxIsPrimary
+      ? (!minimaxAvailable || wouldOverflow)
+      : false;
+    if (minimaxIsPrimary && !minimaxAvailable) {
+      // MINIMAX_API_KEY must be set in the deployed environment. Losing it is a
+      // config regression, not a routine failover — flag it at error level so it
+      // can't hide behind a quietly-working fallback (?health=1 reports the same
+      // via checks.minimax.reason="missing_key").
+      console.error(
+        "[orchestrator] MINIMAX_API_KEY is not configured — MiniMax primary unavailable, falling back",
+      );
+    }
+    // Which gateway takes a fallback turn. Direct Gemini is the default; the
+    // Lovable gateway only participates when the operator pinned it as primary
+    // (ORCHESTRATOR_PROVIDER=lovable) or opted in via ALLOW_LOVABLE_FALLBACK.
+    // Grok/xAI is never a fallback (primary pin only).
+    const fallbackTarget = lovablePinned
+      ? { gateway: lovableGateway!, modelId: FALLBACK_MODEL_ID, label: "Lovable Gateway fallback", provider: "lovable-gateway" as const }
+      : geminiDirectGateway
+      ? { gateway: geminiDirectGateway, modelId: GEMINI_FALLBACK_MODEL_ID, label: "Gemini direct fallback", provider: "gemini-direct" as const }
+      : (lovableGateway && ALLOW_LOVABLE_FALLBACK)
+      ? { gateway: lovableGateway, modelId: FALLBACK_MODEL_ID, label: "Lovable Gateway fallback", provider: "lovable-gateway" as const }
+      : null;
     // Pre-flight MiniMax health probe. The fallback selection above only fires
     // when MiniMax's key is missing or the prompt would overflow — it does NOT
     // catch the case where MiniMax is configured and accepts the request but is
@@ -424,39 +455,60 @@ Deno.serve(async (req) => {
     // isolate — it's demonstrably alive, so the extra round-trip (and up to the
     // 6s timeout on the unhealthy path) is removed from time-to-first-token.
     // A cold isolate has no cached health → the probe still runs (safe default).
-    if (minimaxIsPrimary && !useFallback && lovableGateway && !minimaxHealthyWithin(60_000)) {
-      try {
-        const probePromise = minimaxChat({ user: "ping", maxTokens: 4, temperature: 0 });
-        // Swallow a late rejection if the timeout wins the race below, so it
-        // never surfaces as an unhandled rejection after we've moved on.
-        probePromise.catch(() => {});
-        const probe = (await Promise.race([
-          probePromise,
-          new Promise<{ ok: boolean; status: number }>((resolve) =>
-            setTimeout(() => resolve({ ok: false, status: 0 }), 6000)),
-        ])) as { ok: boolean; status: number };
-        if (shouldFallbackAfterMinimaxPreflight(probe)) {
-          useFallback = true;
-          console.warn(
-            `[orchestrator] minimax preflight unhealthy (status=${minimaxPreflightFailureLabel(probe)}) → Gemini fallback for thread ${threadId}`,
-          );
-        } else if (!probe.ok) {
-          console.info(
-            `[orchestrator] minimax preflight ${minimaxPreflightFailureLabel(probe)} — keeping MiniMax primary for thread ${threadId}`,
-          );
+    if (minimaxIsPrimary && !useFallback && !lovablePinned && fallbackTarget && !minimaxHealthyWithin(60_000)) {
+      // Two-attempt preflight (mirror's preview-verified probe): MiniMax can go
+      // quiet for 6–10s under load on a busy turn (large prompt + reasoning
+      // warm-up), so give it up to 12s per attempt with one retry (250ms
+      // backoff). Combined with #229's policy: a TIMEOUT — even after both
+      // attempts — never forces the fallback (cold-isolate timeouts are
+      // ambiguous and were flapping healthy turns off MiniMax); only an
+      // explicit HTTP failure from MiniMax itself pivots the run.
+      const PREFLIGHT_TIMEOUT_MS = 12_000;
+      const PREFLIGHT_ATTEMPTS = 2;
+      const probeOnce = async (): Promise<{ ok: boolean; status: number }> => {
+        try {
+          const ctrl = new AbortController();
+          const timer = setTimeout(() => ctrl.abort(), PREFLIGHT_TIMEOUT_MS);
+          try {
+            const res = await minimaxChat({
+              user: "ping", maxTokens: 4, temperature: 0, signal: ctrl.signal,
+            });
+            return { ok: res.ok, status: res.status };
+          } finally {
+            clearTimeout(timer);
+          }
+        } catch {
+          // Timeout/abort/network — encoded as status 0, the ambiguous class
+          // that shouldFallbackAfterMinimaxPreflight refuses to pivot on.
+          return { ok: false, status: 0 };
         }
-      } catch (e) {
-        // Network error / abort during the probe → MiniMax is unreachable.
+      };
+      let lastProbe: { ok: boolean; status: number } = { ok: false, status: 0 };
+      for (let attempt = 1; attempt <= PREFLIGHT_ATTEMPTS; attempt++) {
+        lastProbe = await probeOnce();
+        if (lastProbe.ok) break;
+        if (attempt < PREFLIGHT_ATTEMPTS) {
+          console.warn(
+            `[orchestrator] minimax preflight attempt ${attempt}/${PREFLIGHT_ATTEMPTS} failed (status=${minimaxPreflightFailureLabel(lastProbe)}) — retrying`,
+          );
+          await new Promise((r) => setTimeout(r, 250));
+        }
+      }
+      if (shouldFallbackAfterMinimaxPreflight(lastProbe)) {
         useFallback = true;
         console.warn(
-          `[orchestrator] minimax preflight threw → Gemini fallback:`,
-          e instanceof Error ? e.message : String(e),
+          `[orchestrator] minimax preflight unhealthy after ${PREFLIGHT_ATTEMPTS} attempts (status=${minimaxPreflightFailureLabel(lastProbe)}) → Gemini fallback for thread ${threadId}`,
+        );
+      } else if (!lastProbe.ok) {
+        console.info(
+          `[orchestrator] minimax preflight ${minimaxPreflightFailureLabel(lastProbe)} after ${PREFLIGHT_ATTEMPTS} attempts — keeping MiniMax primary for thread ${threadId}`,
         );
       }
     }
-    if (useFallback && !lovableGateway) {
+    if (useFallback && !fallbackTarget) {
       throw new Error(
-        "Neither MINIMAX_API_KEY nor LOVABLE_API_KEY is configured for the orchestrator.",
+        "MiniMax is unavailable and no fallback is configured — set GEMINI_API_KEY " +
+          "(direct Gemini fallback) or opt in to the Lovable gateway with ALLOW_LOVABLE_FALLBACK=true.",
       );
     }
     // Resolve the primary (non-fallback) model from the selected provider.
@@ -467,10 +519,10 @@ Deno.serve(async (req) => {
         ? { model: openAdapterGateway!.chatModel(OPENADAPTER_ORCHESTRATOR_MODEL_ID), label: `${OPENADAPTER_ORCHESTRATOR_MODEL_ID} (OpenAdapter)` }
         : { model: minimax.chatModel(PRIMARY_ORCHESTRATOR_MODEL_ID), label: `${PRIMARY_ORCHESTRATOR_MODEL_ID} (MiniMax direct)` };
     const orchestratorModel = useFallback
-      ? lovableGateway!.chatModel(FALLBACK_MODEL_ID)
+      ? fallbackTarget!.gateway.chatModel(fallbackTarget!.modelId)
       : primaryModel;
     console.log(
-      `[orchestrator] running on ${useFallback ? FALLBACK_MODEL_ID + " (Lovable Gateway fallback)" : primaryLabel} ` +
+      `[orchestrator] running on ${useFallback ? `${fallbackTarget!.modelId} (${fallbackTarget!.label})` : primaryLabel} ` +
         `(provider=${orchChoice.provider}/${orchChoice.reason}, approx prompt chars=${approxPromptChars}, messages=${trimmedMessages.length})`,
     );
 
@@ -624,8 +676,8 @@ Deno.serve(async (req) => {
           "[orchestrator] stream error:",
           JSON.stringify({
             thread_id: threadId,
-            provider: useFallback ? "lovable-gateway" : "minimax",
-            model: useFallback ? FALLBACK_MODEL_ID : MODELS[ORCHESTRATOR_TIER],
+            provider: useFallback ? fallbackTarget!.provider : "minimax",
+            model: useFallback ? fallbackTarget!.modelId : MODELS[ORCHESTRATOR_TIER],
             approx_prompt_chars: approxPromptChars,
             context_overflow: isCtxOverflow,
             // A schema/pairing fault is a builder bug, NOT context overflow —
