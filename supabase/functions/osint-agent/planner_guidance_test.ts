@@ -2,7 +2,9 @@ import { assertEquals, assertStringIncludes } from "https://deno.land/std@0.224.
 import { playbookFor } from "./playbooks.ts";
 import {
   enforceNameSeedPriority,
+  enforceFallbackToolPolicy,
   NAME_SEED_PLANNER_RULES,
+  dorkHarvestPrerequisitesMet,
 } from "./planner-guidance.ts";
 
 Deno.test("person seeds use the name playbook", () => {
@@ -157,4 +159,32 @@ Deno.test("known non-name seeds (e.g. email) are returned unchanged", () => {
   const plan = enforceNameSeedPriority(input, { seedType: "email", alreadyQueried: [] });
   // no name-first reordering or [VERIFY] labeling for non-name identifiers
   assertEquals(plan, input);
+});
+
+Deno.test("gemini_deep_dork is demoted until dork_harvest/google_dorks have run", () => {
+  const plan = enforceFallbackToolPolicy({
+    proposed_calls: [
+      { tool_name: "gemini_deep_dork", selector: "x@y.com", expected_value: 80, reason: "deep dork" },
+      { tool_name: "dork_harvest", selector: "x@y.com", expected_value: 70, reason: "harvest" },
+    ],
+  }, { alreadyQueried: [] });
+  const proposed = plan.proposed_calls as Array<Record<string, unknown>>;
+  assertEquals(proposed[0]?.expected_value, 35);
+  assertStringIncludes(String(proposed[0]?.reason), "[FALLBACK");
+});
+
+Deno.test("gemini_deep_dork demotion lifts after dork_harvest runs", () => {
+  const input = {
+    proposed_calls: [
+      { tool_name: "gemini_deep_dork", selector: "x@y.com", expected_value: 80, reason: "deep dork" },
+    ],
+  };
+  const plan = enforceFallbackToolPolicy(input, { alreadyQueried: ["dork_harvest::email::x@y.com"] });
+  assertEquals(plan, input);
+});
+
+Deno.test("dorkHarvestPrerequisitesMet detects google_dorks or dork_harvest", () => {
+  assertEquals(dorkHarvestPrerequisitesMet([]), false);
+  assertEquals(dorkHarvestPrerequisitesMet(["google_dorks::domain::example.com"]), true);
+  assertEquals(dorkHarvestPrerequisitesMet(["dork_harvest::email::x@y.com"]), true);
 });

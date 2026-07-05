@@ -1,5 +1,5 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { augmentDorkQuery, scoreDorkRelevance, applyDorkRelevance } from "./dork-relevance.ts";
+import { augmentDorkQuery, scoreDorkRelevance, applyDorkRelevance, isTemplateOrSampleUrl } from "./dork-relevance.ts";
 
 Deno.test("#8: augmentDorkQuery appends negative keywords", () => {
   const q = augmentDorkQuery('"5204653368" filetype:pdf');
@@ -52,4 +52,15 @@ Deno.test("#8: not-fetched text → 0.1", () => {
 Deno.test("#8: applyDorkRelevance scales cap (60 × 0 = 0)", () => {
   const r = scoreDorkRelevance({ text: "no seed here", seed: "5204653368" });
   assertEquals(applyDorkRelevance(60, r), 0);
+});
+
+Deno.test("#8: isTemplateOrSampleUrl drops resume-sample paths", () => {
+  assertEquals(isTemplateOrSampleUrl("https://cdn.example.com/resume-sample.pdf"), true);
+  assertEquals(isTemplateOrSampleUrl("https://cdn.example.com/resume-examples_may_20.pdf"), true);
+  assertEquals(isTemplateOrSampleUrl("https://cdn.example.com/john-doe-resume.pdf"), false);
+  assertEquals(isTemplateOrSampleUrl("https://cdn.example.com/about"), false);
+});
+
+Deno.test("#8: isTemplateOrSampleUrl does not trip on example.com host", () => {
+  assertEquals(isTemplateOrSampleUrl("https://example.com/resume.pdf"), false);
 });

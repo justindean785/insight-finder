@@ -18,6 +18,32 @@ const NEGATIVE_KEYWORDS = [
   "sample", "example", "template", "format", "guide", "tutorial", "demo", "placeholder",
 ];
 
+// URL-path tokens that mark a hit as a generic template/sample/example doc
+// rather than a document about the subject. The query-level negatives above
+// only steer Google; the harvest actually runs through Perplexity Sonar / Exa,
+// which do NOT honor `-"sample"` operators — so `resume-sample.pdf`,
+// `resume-examples_may_20.pdf`, and `…-cover-letter-examples.pdf` still come
+// back. This is a second, provider-agnostic gate applied to the URL path only.
+const TEMPLATE_URL_TOKENS = ["sample", "example", "template", "placeholder", "tutorial"];
+
+/**
+ * True when a harvested URL's PATH looks like a generic template/sample/example
+ * document (not about the subject). Inspects the path only — never the host — so
+ * legitimate hosts like `example.com` never trip it. Conservative: matches a
+ * token only at the start of a path segment (`examples`, `resume-sample`, …).
+ */
+export function isTemplateOrSampleUrl(url: string): boolean {
+  let path = "";
+  try {
+    path = new URL(url).pathname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (!path) return false;
+  const segments = path.split(/[^a-z0-9]+/).filter(Boolean);
+  return segments.some((seg) => TEMPLATE_URL_TOKENS.some((tok) => seg.startsWith(tok)));
+}
+
 /** Append negative keyword filters to a Google dork query (idempotent). */
 export function augmentDorkQuery(query: string): string {
   const q = (query ?? "").trim();

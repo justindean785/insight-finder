@@ -38,7 +38,7 @@ import { repairUnknownTool } from "./unknown-tool-guard.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { buildTools } from "./tool-registry.ts";
-import { isMessageSchemaError } from "./stream-error-classify.ts";
+import { isMessageSchemaError, classifyStreamProviderError } from "./stream-error-classify.ts";
 import { evaluateCreditGate, evaluateDailyCapGate, reasonToAbortForCredits } from "./credits.ts";
 
 // ---- Orchestrator resilience knobs (Phase 1: MissingToolResults crash) --------
@@ -841,6 +841,8 @@ Deno.serve(async (req) => {
         if (isMessageSchemaError(m, name)) {
           return "Investigation ended early — partial results were saved.";
         }
+        const friendly = classifyStreamProviderError(m, name);
+        if (friendly) return friendly;
         const redacted = m
           .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
           .replace(/sk-[A-Za-z0-9._-]+/g, "sk-[REDACTED]")

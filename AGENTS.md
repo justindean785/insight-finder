@@ -33,9 +33,19 @@ gotchas. This file only adds Cursor Cloud environment notes.
   OSINT APIs. Use benign, non-PII seeds (e.g. the domain `example.com`) for smoke
   tests. A scan of `example.com` completes in ~20s and returns whois/DNS/CDN
   findings — a good end-to-end check.
+- **Live smoke script:** `node scripts/live-scan.mjs [seed]` — signs up a fresh
+  test user, creates a thread, streams `osint-agent` on production, prints artifact
+  count + failure reason. Default seed: `example.com`.
 - Backend readiness (does not spend credits or hit the LLM):
   `curl -sS "$VITE_SUPABASE_URL/functions/v1/osint-agent?health=1" -H "apikey: <anon key>"`
   → `{"ok":true,...}` when the orchestrator + core secrets are set.
+- **Lovable AI Gateway spend cap:** orchestrator fallback bills Lovable credits.
+  A cap hit surfaces as **403 Forbidden** in the investigation stream (now
+  classified to a clear quota message). Operator action: raise the cap in Lovable
+  settings. Primary orchestrator is still MiniMax; gateway is fallback only.
+- **Backend deploy:** edge-function changes only go live after a reviewed sync to
+  `seeker-spark-search-5362c57c` → Lovable auto-deploy (see `CLAUDE.md`). Merging
+  to `insight-finder/main` alone does not update production edge code.
 
 ### Standard commands (defined in `package.json`)
 `npm run dev` · `npm run lint` · `npm run typecheck` · `npm run test` /

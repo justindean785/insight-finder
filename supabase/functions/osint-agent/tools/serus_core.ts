@@ -237,6 +237,7 @@ export async function runSerusScan(
   if (!last || !isTerminalStatus(last)) {
     return {
       ok: false,
+      skipped: true,
       status: "timeout",
       scanId,
       identifierType,

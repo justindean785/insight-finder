@@ -10,6 +10,15 @@ const USERNAME_SWEEP_TOOLS = new Set([
   "username_search",
 ]);
 
+/** Tools that must NOT lead an investigation — only after cheaper dork paths run. */
+const FALLBACK_DORK_TOOLS = new Set(["gemini_deep_dork"]);
+
+export function dorkHarvestPrerequisitesMet(alreadyQueried: string[]): boolean {
+  return alreadyQueried.some((entry) =>
+    /dork_harvest|google_dorks/.test(String(entry).toLowerCase())
+  );
+}
+
 export const NAME_SEED_PLANNER_RULES = `
 NAME/PERSON SEED ORDERING:
 - Lead with real-name discovery: exa_search, minimax_web_search, google_dorks, and dork_harvest.
@@ -101,6 +110,43 @@ export function enforceNameSeedPriority(
     : undefined;
   const pivots = Array.isArray(rawPlan.pivots)
     ? [...rawPlan.pivots].map(labelPriority).sort(byPriority)
+    : undefined;
+
+  return {
+    ...rawPlan,
+    ...(proposed ? { proposed_calls: proposed } : {}),
+    ...(pivots ? { pivots } : {}),
+  };
+}
+
+/**
+ * Demote fallback dork tools (gemini_deep_dork ~46% success in prod telemetry)
+ * until google_dorks + dork_harvest have run. Labeling/ranking only — never drops
+ * a call — mirrors the username-sweep [VERIFY] pattern.
+ */
+export function enforceFallbackToolPolicy(
+  rawPlan: Record<string, unknown>,
+  context: { alreadyQueried: string[] },
+): Record<string, unknown> {
+  if (dorkHarvestPrerequisitesMet(context.alreadyQueried)) return rawPlan;
+
+  const labelFallback = (call: unknown) => {
+    if (!isRecord(call)) return call;
+    const name = toolName(call) || (typeof call.tool === "string" ? call.tool : "");
+    if (!FALLBACK_DORK_TOOLS.has(name)) return call;
+    return {
+      ...call,
+      expected_value: Math.min(expectedValue(call), 35),
+      priority: Math.max(pivotPriority(call), 9),
+      reason: `[FALLBACK — run google_dorks + dork_harvest first] ${String(call.reason ?? "")}`.trim(),
+    };
+  };
+
+  const proposed = Array.isArray(rawPlan.proposed_calls)
+    ? rawPlan.proposed_calls.map(labelFallback)
+    : undefined;
+  const pivots = Array.isArray(rawPlan.pivots)
+    ? rawPlan.pivots.map(labelFallback)
     : undefined;
 
   return {
