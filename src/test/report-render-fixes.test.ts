@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildReportMarkdown } from "@/lib/intel";
+import { buildReportMarkdown, geoConflictArtifactIds, reportDisplayValue } from "@/lib/intel";
 
 // Fixture mirroring the artifact shape used across intel.ts consumers.
 const artifact = (over: Partial<{ id: string; kind: string; value: string; source: string | null; confidence: number | null; created_at: string; metadata: Record<string, unknown> | null }> = {}) => ({
@@ -118,5 +118,102 @@ describe("report #6 — warnings banner is not duplicated", () => {
     // 0 is acceptable (clustering may not trip on this tiny fixture); the
     // invariant is that it is NEVER printed twice.
     expect(collisionWarnings).toBeLessThanOrEqual(1);
+  });
+});
+
+// Phase 7 — Key Findings hygiene: sanitized values, weak_lead/geo exclusion, tool failures.
+describe("report phase 7 — Key Findings and tool health surfacing", () => {
+  it("reportDisplayValue strips bracket tokens from confirmed rows", () => {
+    const a = artifact({
+      id: "e1",
+      kind: "email",
+      value: "alice@example.com [CONFIRMED] via breach + github",
+      metadata: { reviewed: true },
+    });
+    expect(reportDisplayValue(a)).toBe("alice@example.com via breach + github");
+  });
+
+  it("Key Findings uses sanitized values on confirmed rows (no raw [CONFIRMED])", () => {
+    const md = buildReportMarkdown({
+      seedValue: "alice@example.com",
+      seedType: "email",
+      artifacts: [
+        artifact({
+          id: "e1",
+          kind: "email",
+          value: "alice@example.com [CONFIRMED] via breach + github",
+          metadata: { reviewed: true },
+        }),
+      ],
+    });
+    const section = md.split("## Key Findings")[1]?.split("## ")[0] ?? "";
+    expect(section).not.toContain("[CONFIRMED]");
+    expect(section).toContain("alice@example.com via breach + github");
+  });
+
+  it("excludes weak_lead artifacts from Key Findings even when analyst-confirmed", () => {
+    const md = buildReportMarkdown({
+      seedValue: "x@y.com",
+      seedType: "email",
+      artifacts: [
+        artifact({
+          id: "wl1",
+          kind: "weak_lead",
+          value: "Synthient Credential Stuffing Threat Data (1.9B records, April 2025)",
+          metadata: { reviewed: true },
+        }),
+        artifact({ id: "e1", kind: "email", value: "x@y.com", metadata: { reviewed: true } }),
+      ],
+    });
+    const section = md.split("## Key Findings")[1]?.split("## ")[0] ?? "";
+    expect(section).not.toContain("Synthient Credential Stuffing");
+    expect(section).toContain("x@y.com");
+  });
+
+  it("excludes geo-conflicting artifacts from Key Findings", () => {
+    const geo = artifact({
+      id: "ip1",
+      kind: "ip",
+      value: "66.87.118.76",
+      confidence: 90,
+      metadata: {
+        geo_conflict: true,
+        geo_conflict_note: "Bellevue WA vs San Jose CA",
+        reviewed: true,
+      },
+    });
+    expect(geoConflictArtifactIds([geo], "x@y.com").has("ip1")).toBe(true);
+
+    const md = buildReportMarkdown({
+      seedValue: "x@y.com",
+      seedType: "email",
+      artifacts: [
+        geo,
+        artifact({ id: "e1", kind: "email", value: "x@y.com", metadata: { reviewed: true } }),
+      ],
+    });
+    const section = md.split("## Key Findings")[1]?.split("## ")[0] ?? "";
+    expect(section).not.toContain("66.87.118.76");
+    expect(section).toContain("x@y.com");
+  });
+
+  it("surfaces tool failures in Executive Summary and Weak Areas when toolHealth.failed > 0", () => {
+    const md = buildReportMarkdown({
+      seedValue: "x@y.com",
+      seedType: "email",
+      artifacts: [artifact({ id: "e1", kind: "email", value: "x@y.com" })],
+      toolHealth: {
+        failed: 2,
+        skipped: 1,
+        gated: 0,
+        failingTools: [{ toolName: "hibp_breach_check", failed: 2, lastError: "missing API key" }],
+      },
+    });
+    const exec = md.split("## Executive Summary")[1]?.split("## ")[0] ?? "";
+    const weak = md.split("## Weak Areas")[1]?.split("## ")[0] ?? "";
+    expect(exec).toContain("2 tool invocations failed");
+    expect(exec).toContain("hibp_breach_check");
+    expect(weak).toContain("Tool failure: `hibp_breach_check`");
+    expect(weak).toContain("missing API key");
   });
 });

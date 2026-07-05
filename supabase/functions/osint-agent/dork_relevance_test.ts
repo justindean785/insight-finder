@@ -49,6 +49,16 @@ Deno.test("#8: not-fetched text → 0.1", () => {
   assertEquals(r.relevance, 0.1);
 });
 
+Deno.test("#8: not-fetched text + requireVerification → 0", () => {
+  const r = scoreDorkRelevance({
+    text: null,
+    seed: "5204653368",
+    subjectName: "Chris Nanos",
+    requireVerification: true,
+  });
+  assertEquals(r.relevance, 0);
+});
+
 Deno.test("#8: applyDorkRelevance scales cap (60 × 0 = 0)", () => {
   const r = scoreDorkRelevance({ text: "no seed here", seed: "5204653368" });
   assertEquals(applyDorkRelevance(60, r), 0);

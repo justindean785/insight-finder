@@ -64,6 +64,8 @@ export interface DorkRelevanceInput {
   subjectCity?: string;
   /** The hit URL — used for the .gov/.edu/.org gate. */
   url?: string;
+  /** When true and text was not fetched, relevance is 0 (suppress unverified hits). */
+  requireVerification?: boolean;
 }
 
 export interface DorkRelevance {
@@ -87,10 +89,14 @@ function norm(s: string): string {
  *   seed + city (no name)                    → 0.5
  *   seed only                                → 0.2
  *   text not fetched (null)                  → 0.1  (unknown — keep but low)
+ *   text not fetched + requireVerification   → 0    (suppress until verified)
  */
 export function scoreDorkRelevance(input: DorkRelevanceInput): DorkRelevance {
   const text = input.text;
   if (text == null) {
+    if (input.requireVerification) {
+      return { relevance: 0, containsSeed: false, containsName: false, containsCity: false, reason: "document text not fetched — suppressed pending verification" };
+    }
     return { relevance: 0.1, containsSeed: false, containsName: false, containsCity: false, reason: "document text not fetched — relevance unknown" };
   }
   const t = norm(text);

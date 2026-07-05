@@ -931,6 +931,15 @@ function mdEscape(v: string): string {
   return v.replace(/\|/g, "\\|").replace(/\n+/g, " ");
 }
 
+/** Render-safe artifact value: strip promotional/bracket labels, annotate reserved numbers. */
+export function reportDisplayValue(a: Artifact, review?: ReviewAdjustment): string {
+  const label = labelForArtifact(a, review);
+  let value = sanitizeValueForLabel(a.value, label === "CONFIRMED");
+  const reserved = reservedNumberAnnotation(a);
+  if (reserved) value = `${value} — ${reserved}`;
+  return value;
+}
+
 export function buildEvidenceMatrixMarkdown(artifacts: Artifact[]): string {
   if (artifacts.length === 0) return "_No evidence recorded._";
   const rows = artifacts.map((a) => {
@@ -974,10 +983,17 @@ export type ReportInput = {
   toolActivity?: Array<{ toolName: string }>;
   /** Total tool invocations incl. suppressed failures, when known. */
   toolInvocations?: number;
+  /** Authoritative tool health rollup (from tool_usage_log), for failure surfacing. */
+  toolHealth?: {
+    failed: number;
+    skipped: number;
+    gated: number;
+    failingTools: Array<{ toolName: string; failed: number; lastError?: string | null }>;
+  };
 };
 
 export function buildReportMarkdown(input: ReportInput): string {
-  const { seedValue, seedType, messages, reviews, reportType, toolActivity, toolInvocations } = input;
+  const { seedValue, seedType, messages, reviews, reportType, toolActivity, toolInvocations, toolHealth } = input;
   const display = extractDisplaySeed(seedValue, seedType);
   // Collapse breach datasets recorded twice under name variants from the same
   // source pair (conservative — see dedupeBreachDatasets) so the Artifact Table
@@ -1012,6 +1028,9 @@ export function buildReportMarkdown(input: ReportInput): string {
   const gaps = inferToolGaps(audit);
   const clusterReport = buildIdentityClusters(artifacts, seedValue);
   const isNameSearch = !!detectNameLocationSeed(seedValue);
+  const geoConflictIds = geoConflictArtifactIds(artifacts, seedValue);
+  const keyFindingEligible = (a: Artifact) =>
+    a.kind !== "weak_lead" && !geoConflictIds.has(a.id);
 
   // Group artifacts for entity table and network connections
   const byGroup = new Map<Group, Artifact[]>();
@@ -1037,6 +1056,10 @@ export function buildReportMarkdown(input: ReportInput): string {
       if (reviewTally.needs) bits.push(`${reviewTally.needs} flagged for recheck`);
       parts.push(`Analyst review: ${bits.join(", ")}.`);
     }
+    if (toolHealth && toolHealth.failed > 0) {
+      const names = toolHealth.failingTools.slice(0, 5).map((t) => t.toolName).join(", ");
+      parts.push(`${toolHealth.failed} tool invocation${toolHealth.failed === 1 ? "" : "s"} failed${names ? ` (${names})` : ""} — results may be incomplete.`);
+    }
     parts.push("All findings are presented as observations from named sources, not as confirmed identity claims.");
     return parts.join(" ");
   })();
@@ -1046,13 +1069,14 @@ export function buildReportMarkdown(input: ReportInput): string {
   // high-confidence INFERRED/CORRELATED rows — we surface the strongest
   // uncorroborated leads, clearly labelled, without promoting them.
   const keyFindings = (() => {
-    if (confirmed.length) {
-      return confirmed.slice(0, 10).map((a) =>
-        `- **${a.kind}** — \`${a.value}\` _(source indicates via ${humanizeSourceChain(a.source)}, confidence ${conf(a) ?? "—"})_`,
+    const confirmedEligible = confirmed.filter(keyFindingEligible);
+    if (confirmedEligible.length) {
+      return confirmedEligible.slice(0, 10).map((a) =>
+        `- **${a.kind}** — \`${reportDisplayValue(a, rev(a))}\` _(source indicates via ${humanizeSourceChain(a.source)}, confidence ${conf(a) ?? "—"})_`,
       ).join("\n");
     }
     const leads = artifacts
-      .filter((a) => { const l = lbl(a); return l === "CORRELATED" || l === "INFERRED"; })
+      .filter((a) => { const l = lbl(a); return (l === "CORRELATED" || l === "INFERRED") && keyFindingEligible(a); })
       .sort((a, b) => (conf(b) ?? 0) - (conf(a) ?? 0))
       .slice(0, 10);
     if (!leads.length) return "_No findings recorded yet._";
@@ -1060,7 +1084,7 @@ export function buildReportMarkdown(input: ReportInput): string {
       "_No fully-corroborated findings yet (none reach CONFIRMED — 2+ independent source classes or analyst review). Strongest uncorroborated leads:_",
       "",
       ...leads.map((a) =>
-        `- **${a.kind}** — \`${sanitizeValueForLabel(a.value, false)}\` _(${lbl(a)}, confidence ${conf(a) ?? "—"}, via ${humanizeSourceChain(a.source)})_`,
+        `- **${a.kind}** — \`${reportDisplayValue(a, rev(a))}\` _(${lbl(a)}, confidence ${conf(a) ?? "—"}, via ${humanizeSourceChain(a.source)})_`,
       ),
     ].join("\n");
   })();
@@ -1208,6 +1232,12 @@ export function buildReportMarkdown(input: ReportInput): string {
     if (missing.length) parts.push(`- Missing coverage: ${missing.map((m) => GROUP_LABEL[m]).join(", ")}`);
     if (verify.length) parts.push(`- ${verify.length} item${verify.length === 1 ? "" : "s"} flagged as possible matches that need verification.`);
     if (low.length) parts.push(`- ${low.length} low-confidence lead${low.length === 1 ? "" : "s"} — treat as leads, not findings.`);
+    if (toolHealth && toolHealth.failed > 0) {
+      for (const t of toolHealth.failingTools.slice(0, 8)) {
+        const err = t.lastError?.trim();
+        parts.push(`- Tool failure: \`${t.toolName}\` (${t.failed} failed${err ? ` — ${err}` : ""})`);
+      }
+    }
     return parts.length ? parts.join("\n") : "_No obvious gaps detected._";
   })();
 
@@ -1864,6 +1894,22 @@ export function buildIdentityClusters(
   });
 
   return { clusters: out, collision, warnings, seedName, seedState };
+}
+
+/** Artifact ids with geo disagreement — inline metadata or cluster seed-location mismatch. */
+export function geoConflictArtifactIds(artifacts: Artifact[], seedValue: string | null): Set<string> {
+  const ids = new Set<string>();
+  for (const a of artifacts) {
+    const m = (a.metadata ?? {}) as Record<string, unknown>;
+    if (m.geo_conflict === true) ids.add(a.id);
+  }
+  const { clusters } = buildIdentityClusters(artifacts, seedValue);
+  for (const c of clusters) {
+    if (c.matchesSeedLocation === false) {
+      for (const a of c.artifacts) ids.add(a.id);
+    }
+  }
+  return ids;
 }
 
 function clusterLabel(idx: number, c: Omit<IdentityCluster, "id" | "label" | "matchesSeedLocation">, seedName: string | null): string {

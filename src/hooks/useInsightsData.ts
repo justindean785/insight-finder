@@ -23,6 +23,8 @@ export type ToolUsageSummary = {
   count: number;
   ok: number;
   failed: number;
+  /** Rolling ok rate 0–100 from tool_usage_log.ok. */
+  okPct: number;
 };
 
 export type InsightsData = {
@@ -95,14 +97,19 @@ export function useInsightsData(userId: string | undefined, enabled: boolean) {
       const toolMap = new Map<string, ToolUsageSummary>();
       for (const row of toolLogRes.data ?? []) {
         const name = row.tool_name as string;
-        const prev = toolMap.get(name) ?? { tool_name: name, count: 0, ok: 0, failed: 0 };
+        const prev = toolMap.get(name) ?? { tool_name: name, count: 0, ok: 0, failed: 0, okPct: 0 };
         prev.count++;
         const ok = row.ok as boolean;
         if (ok) prev.ok++;
         else prev.failed++;
         toolMap.set(name, prev);
       }
-      const toolSummaries = [...toolMap.values()].sort((a, b) => b.count - a.count);
+      const toolSummaries = [...toolMap.values()]
+        .map((t) => ({
+          ...t,
+          okPct: t.count ? Math.round((t.ok / t.count) * 100) : 0,
+        }))
+        .sort((a, b) => b.count - a.count);
 
       setData({
         threads: (threadsRes.data ?? []) as InsightsThreadRow[],

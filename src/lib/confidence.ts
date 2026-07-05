@@ -58,14 +58,100 @@ export type TrustBadge = {
 
 const DAY = 86_400_000;
 
+type StoredConfidenceBreakdown = {
+  raw?: number;
+  after_cap?: number;
+  ceiling?: number;
+  after_relevance?: number;
+  geography_penalty?: number;
+  contradiction_penalty?: number;
+  review_delta?: number;
+  final?: number;
+};
+
+function isStoredBreakdown(v: unknown): v is StoredConfidenceBreakdown {
+  return !!v && typeof v === "object" && typeof (v as StoredConfidenceBreakdown).final === "number";
+}
+
+function explainFromStoredBreakdown(
+  a: Artifact,
+  breakdown: StoredConfidenceBreakdown,
+  review?: ReviewState,
+): ConfidenceExplanation {
+  const components: ConfidenceComponent[] = [];
+
+  if (breakdown.raw != null) {
+    components.push({
+      label: "Raw score",
+      delta: breakdown.raw,
+      why: "Tool-reported confidence before server-side caps.",
+    });
+  }
+  if (breakdown.after_cap != null && breakdown.ceiling != null) {
+    components.push({
+      label: `Source-class cap (${breakdown.ceiling})`,
+      delta: breakdown.after_cap - (breakdown.raw ?? breakdown.after_cap),
+      why: `Capped to ${breakdown.after_cap} by evidence-class rules (ceiling ${breakdown.ceiling}).`,
+    });
+  }
+  if (breakdown.after_relevance != null) {
+    components.push({
+      label: "Relevance scale",
+      delta: breakdown.after_relevance - (breakdown.after_cap ?? breakdown.after_relevance),
+      why: "Scaled by dork/document relevance against the class ceiling.",
+    });
+  }
+  if (breakdown.geography_penalty != null && breakdown.geography_penalty > 0) {
+    components.push({
+      label: "Geography mismatch",
+      delta: -breakdown.geography_penalty,
+      why: "Selector resolves in a different geography than the seed cluster.",
+    });
+  }
+  if (breakdown.contradiction_penalty != null && breakdown.contradiction_penalty > 0) {
+    components.push({
+      label: "Contradiction",
+      delta: -breakdown.contradiction_penalty,
+      why: "Graph or cluster contradiction lowered confidence.",
+    });
+  }
+  if (breakdown.review_delta != null && breakdown.review_delta !== 0) {
+    components.push({
+      label: breakdown.review_delta > 0 ? "Analyst review boost" : "Analyst review penalty",
+      delta: breakdown.review_delta,
+      why: "Applied from your artifact review mark (server-side scoring).",
+    });
+  } else if (review && review !== "new") {
+    // Live review not yet reflected in stored breakdown — show UI delta for transparency.
+    if (review === "confirmed") {
+      components.push({ label: "Analyst confirmed", delta: 15, why: "Confirm review adds +15." });
+    } else if (review === "key") {
+      components.push({ label: "Marked key", delta: 18, why: "Promoting an artifact as Key adds +18." });
+    } else if (review === "recheck") {
+      components.push({ label: "Needs recheck", delta: -12, why: "Recheck flag pulls confidence down until re-verified." });
+    } else if (review === "dismissed" || review === "wrong") {
+      components.push({ label: "Dismissed", delta: -40, why: "Analyst dismissed/marked false — exclude from conclusions." });
+    }
+  }
+
+  const final = Math.max(0, Math.min(100, breakdown.final ?? a.confidence ?? 0));
+  const src = extractSourceInfo(a);
+  return { raw: a.confidence ?? 0, final, components, badges: badgesFor(a, src, review) };
+}
+
 /**
  * Decompose a stored artifact confidence into its analyst-readable inputs.
  * This is deterministic — no model call — so it can power "Why this is 60%"
  * popovers without an additional round-trip.
  */
 export function explainConfidence(a: Artifact, review?: ReviewState): ConfidenceExplanation {
-  const src = extractSourceInfo(a);
   const meta = (a.metadata ?? {}) as Record<string, unknown>;
+  const stored = meta.confidence_breakdown;
+  if (isStoredBreakdown(stored)) {
+    return explainFromStoredBreakdown(a, stored, review);
+  }
+
+  const src = extractSourceInfo(a);
   const components: ConfidenceComponent[] = [];
 
   // 1) Base source reliability

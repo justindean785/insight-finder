@@ -48,6 +48,7 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // request (not just abandons the promise). gemini_deep_dork's p95 (~46s) exceeds
   // this cap by design: it becomes a fast-fail corroboration source, not a 30s tax.
   gemini_deep_dork: 12_000,        // was 30_000 — kill the per-run 30s timeout tail
+  attachment_analyze: 20_000,      // image fetch + vision OCR
   deepfind_reverse_email: 8_000,   // account-discovery corroboration — fail fast
   jina_reader_scrape: 8_000,       // single-page scrape — fail fast, try a lighter source
   dork_harvest: 25_000,     // wraps several web searches — p95 ~17s

@@ -85,6 +85,12 @@ describe("#3 strip CONFIRMED wording", () => {
     const v = "Phone +19165299191 confirmed in 5 breach corpora: Digido.ph, 1win, Wattpad, Verifications.io, National Public Data";
     expect(sanitizeValueForLabel(v, false)).toBe(v);
   });
+
+  it("strips bracketed integrity-label tokens like [CONFIRMED]", () => {
+    expect(sanitizeValueForLabel("alice@example.com [CONFIRMED] via breach", false)).toBe("alice@example.com via breach");
+    expect(sanitizeValueForLabel("handle [VERIFY] on Instagram", true)).toBe("handle on Instagram");
+    expect(sanitizeValueForLabel("lead [INFERRED] from exa", false)).toBe("lead from exa");
+  });
 });
 
 // ---------------------------------------------------------------------------

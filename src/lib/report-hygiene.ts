@@ -51,11 +51,20 @@ export function isAsciiSafe(s: string): boolean {
 // "confirmed in 5 breach corpora: Digido" and rendered as "...191 .ph, 1win, ...".
 const CONFIRMED_WORDING_RE = /\s*[—–\-:|(]*\s*\bCONFIRMED\b[^.;|]*/g;
 
+/** Bracketed integrity-label echoes the model sometimes writes into values. */
+const BRACKET_LABEL_RE = /\[(?:CONFIRMED|VERIFY|INFERRED|CORRELATED|LOW|FAILED)\]/gi;
+
+function stripBracketLabelTokens(value: string): string {
+  if (!/\[(?:CONFIRMED|VERIFY|INFERRED|CORRELATED|LOW|FAILED)\]/i.test(value)) return value;
+  return value.replace(BRACKET_LABEL_RE, " ").replace(/\s{2,}/g, " ").trim();
+}
+
 export function sanitizeValueForLabel(value: string, isConfirmed: boolean): string {
-  if (isConfirmed) return value;
-  if (!/\bCONFIRMED\b/.test(value)) return value;
-  const cleaned = value.replace(CONFIRMED_WORDING_RE, " ").replace(/\s{2,}/g, " ").replace(/\s*[—–\-:|]\s*$/, "").trim();
-  return cleaned.length ? cleaned : value.replace(/\bCONFIRMED\b/g, "reported").trim();
+  const stripped = stripBracketLabelTokens(value);
+  if (isConfirmed) return stripped;
+  if (!/\bCONFIRMED\b/.test(stripped)) return stripped;
+  const cleaned = stripped.replace(CONFIRMED_WORDING_RE, " ").replace(/\s{2,}/g, " ").replace(/\s*[—–\-:|]\s*$/, "").trim();
+  return cleaned.length ? cleaned : stripped.replace(/\bCONFIRMED\b/g, "reported").trim();
 }
 
 // ---------------------------------------------------------------------------

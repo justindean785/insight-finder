@@ -890,6 +890,8 @@ const SOURCE_TOOLS = [
   "minimax_web_search", "gemini_deep_dork", "triage_seed", "breach_check",
   "deepfind_disposable_email", "oathnet_lookup", "intelbase_email_lookup",
   "exa_search", "jina_reader_scrape",
+  "indicia_email", "indicia_phone", "indicia_person", "indicia_address",
+  "indicia_web_dbs", "indicia_hudsonrock",
 ];
 
 type SourceRow = {
@@ -970,7 +972,9 @@ function SourcesTab() {
   return (
     <div className="space-y-5">
       <p className="text-xs text-muted-foreground">
-        Your review marks shift how much the agent trusts each source on future runs.
+        Source reliability bars reflect your tool success rates. Review marks (confirm, key, dismiss) are
+        fed into the investigation planner on the next run so the agent avoids dismissed leads and
+        prioritizes corroboration you flagged.
       </p>
 
       <div className="flex gap-2 flex-wrap">
@@ -1072,11 +1076,11 @@ function LearnsExplainer() {
         How the agent learns
       </div>
       <div className="flex items-start justify-center gap-2 sm:gap-4">
-        <Step Icon={Wrench} label="Tools" sub="returns results" />
+        <Step Icon={Wrench} label="Tools" sub="success rate tracked" />
         <ArrowRight className="w-4 h-4 mt-4 text-muted-foreground shrink-0" strokeWidth={1.5} />
         <Step Icon={UserCheck} label="You" sub="confirm or dismiss" />
         <ArrowRight className="w-4 h-4 mt-4 text-muted-foreground shrink-0" strokeWidth={1.5} />
-        <Step Icon={Brain} label="Agent" sub="adjusts trust weight" />
+        <Step Icon={Brain} label="Agent" sub="planner reads marks" />
       </div>
     </div>
   );

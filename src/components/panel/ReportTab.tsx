@@ -5,6 +5,7 @@ import { buildReportMarkdown, buildEvidenceMatrixMarkdown } from "@/lib/intel";
 import { useReviewStates } from "@/lib/review";
 import { useThreadMessages } from "@/hooks/useThreadMessages";
 import { useThreadToolActivity } from "@/hooks/useThreadToolActivity";
+import { useThreadToolHealth } from "@/hooks/useThreadToolHealth";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -82,12 +83,27 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
   );
   const toolInvocations = toolActivity.total + toolActivity.hiddenFailed;
 
+  const toolHealthRollup = useThreadToolHealth(threadId);
+  const toolHealth = useMemo(
+    () => ({
+      failed: toolHealthRollup.totals.failed,
+      skipped: toolHealthRollup.totals.skipped,
+      gated: 0,
+      failingTools: toolHealthRollup.failing.map((r) => ({
+        toolName: r.toolName,
+        failed: r.failed,
+        lastError: r.lastError,
+      })),
+    }),
+    [toolHealthRollup.totals.failed, toolHealthRollup.totals.skipped, toolHealthRollup.failing],
+  );
+
   const markdown = useMemo(
     () => buildReportMarkdown({
       seedValue: seed.value, seedType: seed.type, artifacts, messages, reviews, reportType,
-      toolActivity: toolActivityList, toolInvocations,
+      toolActivity: toolActivityList, toolInvocations, toolHealth,
     }),
-    [seed, artifacts, messages, reviews, reportType, toolActivityList, toolInvocations],
+    [seed, artifacts, messages, reviews, reportType, toolActivityList, toolInvocations, toolHealth],
   );
   const matrixMd = useMemo(() => buildEvidenceMatrixMarkdown(artifacts), [artifacts]);
 

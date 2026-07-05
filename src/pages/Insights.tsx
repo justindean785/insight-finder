@@ -162,7 +162,7 @@ export default function Insights() {
               <BarList
                 items={data.toolSummaries.slice(0, 8).map((t) => ({
                   key: t.tool_name,
-                  label: t.tool_name.replace(/_/g, " "),
+                  label: `${t.tool_name.replace(/_/g, " ")} · ${t.okPct}% ok`,
                   value: t.count,
                   total: data.toolSummaries[0]?.count || 1,
                   color: "hsl(var(--intel-blue))",

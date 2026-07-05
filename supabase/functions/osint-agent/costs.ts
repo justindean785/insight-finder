@@ -111,6 +111,7 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   virustotal_lookup: 2000,
   dork_harvest: 3000,         // wraps several web searches
   gemini_deep_dork: 2000,     // 1 Gemini 2.5 Flash call w/ google_search grounding
+  attachment_analyze: 2000,   // 1 Gemini 2.5 Flash vision OCR call (gateway fallback same tier)
 
   // ---- OSINT Navigator (tool-recommendation meta service) ----
   osint_navigator_query: 500,

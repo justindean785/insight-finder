@@ -127,6 +127,7 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   google_dorks: "ai_summary",
   dork_harvest: "ai_summary",
   jina_reader_scrape: "independent_public",
+  attachment_analyze: "ai_summary",
   exa_get_contents: "independent_public",
   // infra — split into sub-classes so cross-tool corroboration counts (#56)
   whois_lookup: "infra_registry",

@@ -24,6 +24,7 @@ import * as circuit from "./circuit.ts";
 import { buildNodes } from "./graph.ts";
 import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
 import { selectPivots, proposedCallToCandidate, type PivotCandidate, type ProposedCall } from "./graph_pivots.ts";
+import { loadAnalystReviews, buildFeedbackContext } from "./analyst-feedback.ts";
 import { renderPivotChecklistForPrompt } from "./pivot-checklists.ts";
 import { unknownToolNudge } from "./unknown-tool-guard.ts";
 import type { QueryType } from "./query-type-router.ts";
@@ -47,6 +48,7 @@ import {
   indicia_email, indicia_phone, indicia_person,
   indicia_address, indicia_web_dbs, indicia_hudsonrock,
 } from "./tools/indicia.ts";
+import { attachment_analyze } from "./tools/attachment-analyze.ts";
 
 import {
   validateArtifact, TTL_24H_MS, TOOL_TTL_MS, NO_CACHE_TOOLS,
@@ -666,6 +668,17 @@ export function buildTools(ctx: ToolContext) {
             console.warn("[planner] pivot hint build failed (non-fatal):", e);
           }
 
+          // Phase 4 — analyst feedback loop: read artifact_reviews for this
+          // thread and steer the planner away from dismissed sources / toward
+          // confirmed pivots. Best-effort; failure never blocks planning.
+          let feedbackHint = "";
+          try {
+            const analystReviews = await loadAnalystReviews(supabase, threadId, userId);
+            feedbackHint = buildFeedbackContext(analystReviews);
+          } catch (e) {
+            console.warn("[planner] analyst feedback lookup failed (non-fatal):", e);
+          }
+
           const r = await minimaxChatWithFallback({
             model: MODELS.smart,
             system:
@@ -675,7 +688,7 @@ export function buildTools(ctx: ToolContext) {
               const artifactsBlock = artList.length > 20
                 ? buildEvidenceDigest(artList, 15)
                 : JSON.stringify(artifacts).slice(0, 8000);
-              return `Seed: ${seed}\nBudget remaining: ${budget_remaining}\nAlready queried: ${JSON.stringify(already_queried).slice(0,4000)}\nArtifacts so far: ${artifactsBlock}\n\n${costGuide}${relationshipHint}${pivotHint}${memoryHint}`;
+              return `Seed: ${seed}\nBudget remaining: ${budget_remaining}\nAlready queried: ${JSON.stringify(already_queried).slice(0,4000)}\nArtifacts so far: ${artifactsBlock}\n\n${costGuide}${relationshipHint}${pivotHint}${memoryHint}${feedbackHint}`;
             })(),
             json: true,
             maxTokens: 1500,
@@ -4384,6 +4397,9 @@ export function buildTools(ctx: ToolContext) {
   (tools as ToolRegistry).indicia_web_dbs = indicia_web_dbs;
   (tools as ToolRegistry).indicia_hudsonrock = indicia_hudsonrock;
 
+  // Vision OCR for user-uploaded image attachments (signed storage URLs).
+  (tools as ToolRegistry).attachment_analyze = attachment_analyze;
+
   // Inject memory tools (cross-investigation learning) into the registry.
   //
   // Late-injected registry tools, written as `(tools as ToolRegistry).X =
@@ -4529,7 +4545,7 @@ export function buildTools(ctx: ToolContext) {
     // ipqualityscore_lookup CUT 2026-07-05 (dead key; disabled in capabilities.ts).
     ...(RAPIDAPI_KEY ? ["rapidapi_breach_search", "rapidapi_all_breaches"] : []),
     ...(Deno.env.get("EXA_API_KEY") ? ["exa_search","exa_get_contents","exa_find_similar"] : []),
-    ...(Deno.env.get("GEMINI_API_KEY") ? ["gemini_deep_dork"] : []),
+    ...(Deno.env.get("GEMINI_API_KEY") ? ["gemini_deep_dork", "attachment_analyze"] : []),
     // Free / always-on tools
     "whois_lookup","dns_records","crtsh_subdomains","wayback_snapshots","archive_url","http_fingerprint",
     "ip_intel","shodan_internetdb","hackertarget","urlscan_search","gravatar_profile","hibp_lookup",

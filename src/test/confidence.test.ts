@@ -103,6 +103,26 @@ describe("explainConfidence", () => {
     expect(explainConfidence(art({ confidence: 73 })).raw).toBe(73);
     expect(explainConfidence(art({ confidence: null })).raw).toBe(0);
   });
+
+  it("prefers metadata.confidence_breakdown when present", () => {
+    const { components, final } = explainConfidence(
+      art({
+        confidence: 85,
+        metadata: {
+          confidence_breakdown: {
+            raw: 78,
+            after_cap: 60,
+            ceiling: 60,
+            review_delta: 25,
+            final: 85,
+          },
+        },
+      }),
+    );
+    expect(final).toBe(85);
+    expect(components.some((c) => c.label === "Raw score" && c.delta === 78)).toBe(true);
+    expect(components.some((c) => c.label === "Analyst review boost" && c.delta === 25)).toBe(true);
+  });
 });
 
 describe("BADGE_TONE_CLASS", () => {

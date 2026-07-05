@@ -58,6 +58,12 @@ Deno.test("dork_harvest (a) happy path: Perplexity citations parsed + classified
           citations: ["https://victim.example/leak.pdf", "https://pastebin.com/abc123", "https://nonmatch.example/page"],
         }), { status: 200 });
       }
+      if (url.includes("victim.example/leak.pdf")) {
+        return new Response("Report for alice@example.com — breach exposure", {
+          status: 200,
+          headers: { "content-type": "text/plain" },
+        });
+      }
       throw new Error(`unexpected fetch to ${url}`); // Exa must NOT be hit on the happy path
     }) as typeof globalThis.fetch;
 
@@ -92,6 +98,12 @@ Deno.test("dork_harvest (b) primary failure → falls back to Exa and returns Ex
           results: [{ url: "https://dump.example/breach.csv" }, { url: "https://rentry.co/leak42" }],
         }), { status: 200 });
       }
+      if (url.includes("dump.example/breach.csv")) {
+        return new Response("username bob credentials dump", {
+          status: 200,
+          headers: { "content-type": "text/csv" },
+        });
+      }
       throw new Error(`unexpected fetch to ${url}`);
     }) as typeof globalThis.fetch;
 
@@ -123,6 +135,12 @@ Deno.test("dork_harvest (c) dork→Exa translation: drops filetype:/quotes, maps
       if (url.includes(EXA_HOST)) {
         exaBody = JSON.parse(String(init?.body ?? "{}"));
         return new Response(JSON.stringify({ results: [{ url: "https://x.example/a.pdf" }] }), { status: 200 });
+      }
+      if (url.includes("x.example/a.pdf")) {
+        return new Response("Site report for example.com infrastructure", {
+          status: 200,
+          headers: { "content-type": "application/pdf" },
+        });
       }
       throw new Error(`unexpected fetch to ${url}`);
     }) as typeof globalThis.fetch;

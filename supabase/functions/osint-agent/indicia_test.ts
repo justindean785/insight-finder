@@ -154,3 +154,40 @@ Deno.test("indicia outcome: 200 with success:false → failed (status alone does
     assertEquals(classifyToolOutcome(r.error, r.status), "failed");
   });
 });
+
+Deno.test("indicia_person: parseStructuredName reorders LAST, FIRST[, ST] before API call", async () => {
+  await withStubbedFetch((_url, init) => {
+    const body = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    assertEquals(body.name, "JARRETT RILEY MORRIS");
+    assertEquals(body.state, "CA");
+    return jsonResponse(200, { success: true, data: { web: [{ name: "Jarrett Morris" }] } });
+  }, async () => {
+    const r = await exec(indicia_person, { name: "MORRIS, JARRETT RILEY, CA" });
+    assertEquals(r.ok, true);
+    assertEquals(r.count, 1);
+  });
+});
+
+Deno.test("indicia_person: explicit state param wins over parsed suffix", async () => {
+  await withStubbedFetch((_url, init) => {
+    const body = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    assertEquals(body.name, "JANE DOE");
+    assertEquals(body.state, "NY");
+    return jsonResponse(200, { success: true, data: { web: [] } });
+  }, async () => {
+    const r = await exec(indicia_person, { name: "DOE, JANE, CA", state: "NY" });
+    assertEquals(r.empty, true);
+    assertEquals(classifyToolOutcome(r.error, r.status), "empty");
+  });
+});
+
+Deno.test("indicia_person: natural-order name passes through unchanged", async () => {
+  await withStubbedFetch((_url, init) => {
+    const body = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    assertEquals(body.name, "Jane Doe");
+    return jsonResponse(200, { success: true, data: { web: [{ a: 1 }] } });
+  }, async () => {
+    const r = await exec(indicia_person, { name: "Jane Doe", state: "CA" });
+    assertEquals(r.ok, true);
+  });
+});
