@@ -74,29 +74,30 @@ describe("selectOrchestratorProvider — only-available fallthrough", () => {
 });
 
 describe("selectFallbackProvider — tool-level fallback selection", () => {
-  it("selects grok when both grok and lovable are available", () => {
-    expect(selectFallbackProvider({ grok: true, lovable: true }))
-      .toEqual({ provider: "grok", reason: "XAI_API_KEY configured" });
+  it("selects direct Gemini when available (deterministic priority)", () => {
+    expect(selectFallbackProvider({ gemini: true, lovable: true, allowLovable: true }))
+      .toEqual({ provider: "gemini", reason: "GEMINI_API_KEY configured" });
   });
 
-  it("selects grok when only grok is available", () => {
-    expect(selectFallbackProvider({ grok: true, lovable: false }))
-      .toEqual({ provider: "grok", reason: "XAI_API_KEY configured" });
+  it("selects direct Gemini when it is the only provider available", () => {
+    expect(selectFallbackProvider({ gemini: true, lovable: false, allowLovable: false }))
+      .toEqual({ provider: "gemini", reason: "GEMINI_API_KEY configured" });
   });
 
-  it("selects lovable when only lovable is available", () => {
-    expect(selectFallbackProvider({ grok: false, lovable: true }))
-      .toEqual({ provider: "lovable", reason: "LOVABLE_API_KEY configured" });
+  it("selects lovable only behind the ALLOW_LOVABLE_FALLBACK opt-in", () => {
+    expect(selectFallbackProvider({ gemini: false, lovable: true, allowLovable: true }))
+      .toEqual({ provider: "lovable", reason: "ALLOW_LOVABLE_FALLBACK=true" });
   });
 
-  it("returns null provider when neither is available", () => {
-    const result = selectFallbackProvider({ grok: false, lovable: false });
+  it("refuses the lovable gateway without the opt-in", () => {
+    const result = selectFallbackProvider({ gemini: false, lovable: true, allowLovable: false });
+    expect(result.provider).toBeNull();
+    expect(result.reason).toMatch(/ALLOW_LOVABLE_FALLBACK/);
+  });
+
+  it("returns null provider when nothing is available", () => {
+    const result = selectFallbackProvider({ gemini: false, lovable: false, allowLovable: false });
     expect(result.provider).toBeNull();
     expect(result.reason).toMatch(/exhausted/i);
-  });
-
-  it("prefers grok over lovable (deterministic priority)", () => {
-    const result = selectFallbackProvider({ grok: true, lovable: true });
-    expect(result.provider).toBe("grok");
   });
 });
