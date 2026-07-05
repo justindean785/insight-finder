@@ -64,7 +64,7 @@ import {
 
 import { minimaxChat, minimaxChatWithFallback, safeJson, geminiGroundedSearch, perplexitySearch } from "./providers.ts";
 import { dorkToExaQuery } from "./dork-translate.ts";
-import { augmentDorkQuery } from "./dork-relevance.ts";
+import { augmentDorkQuery, isTemplateOrSampleUrl } from "./dork-relevance.ts";
 
 import { TOOL_CATALOG, CATALOG_CACHE, FINDING_LABELS } from "./catalog.ts";
 import { beginCycle, recordFindingSummary } from "./runtime-policy.ts";
@@ -2805,6 +2805,11 @@ export function buildTools(ctx: ToolContext) {
               if (PASTE_HOST_RE.test(u)) classify = "leak_paste";
               else if (DOC_EXT_RE.test(u)) classify = "document";
               if (!classify) continue;
+              // Drop template/sample/example documents that slip past the
+              // query-level negatives (Perplexity/Exa ignore `-"sample"`): a
+              // `resume-sample.pdf` hit is never real evidence about the subject.
+              // Pastes are exempt — the token gate is a document-path heuristic.
+              if (classify === "document" && isTemplateOrSampleUrl(u)) { seen.add(u); continue; }
               seen.add(u);
               collected.push({ url: u, via: q, classify });
               hits++;
