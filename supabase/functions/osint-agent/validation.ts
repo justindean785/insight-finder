@@ -53,6 +53,37 @@ export function detectSeedServer(input: string): DetectedSeed | null {
   return { kind: "other", raw, normalized: raw.toLowerCase() };
 }
 
+// ---- Thread title formatting --------------------------------------------------
+// Human-readable thread titles: "[Entity Type]: [Seed]" instead of the raw
+// seed blob (issue #73). Unknown/unclassified seeds keep the legacy
+// slice(0, 80) behavior so nothing regresses. MUST mirror formatThreadTitle
+// in src/lib/seed.ts (no shared module exists between src/ and
+// supabase/functions/).
+export const THREAD_TITLE_MAX = 80;
+
+const SEED_KIND_LABELS: Record<string, string> = {
+  email: "Email",
+  username: "Username",
+  phone: "Phone",
+  ip: "IP",
+  domain: "Domain",
+  url: "URL",
+  crypto: "Crypto Wallet",
+  person: "Person",
+  address: "Address",
+};
+
+export function formatThreadTitle(
+  text: string,
+  detected?: DetectedSeed | null,
+): string {
+  const raw = (text ?? "").trim();
+  const d = detected === undefined ? detectSeedServer(raw) : detected;
+  const label = d ? SEED_KIND_LABELS[d.kind] : undefined;
+  if (!label) return raw.slice(0, THREAD_TITLE_MAX);
+  return `${label}: ${d!.raw}`.slice(0, THREAD_TITLE_MAX);
+}
+
 // ---- Reserved / fiction / invalid phone detection ----------------------------
 // NANPA reserves the 555-0100..555-0199 range for fiction/examples, and certain
 // patterns (all-same digit, sequential, N11 service codes, invalid NANP area/

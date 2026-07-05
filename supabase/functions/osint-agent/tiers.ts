@@ -45,6 +45,16 @@ export const TIER_B: ReadonlyArray<string> = [
   "deepfind_tech_stack",
   "emailrep",
   "gravatar_profile",
+  // Indicia — broker/lead tier (reliability ~65). New, unproven aggregator whose
+  // data is data-broker + breach-dump; kept below the established TIER_A breach
+  // sources. Paired with the `breach` source-class (CLASS_CAP 60, NEVER_HIGH) so a
+  // single Indicia hit can never reach Confirmed.
+  "indicia_email",
+  "indicia_phone",
+  "indicia_person",
+  "indicia_address",
+  "indicia_web_dbs",
+  "indicia_hudsonrock",
 ];
 
 export const TIER_C: ReadonlyArray<string> = [

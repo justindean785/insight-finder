@@ -8,10 +8,38 @@ import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { discoverCapabilities } from "./capabilities.ts";
 
 Deno.test("a healthy keyed provider is still available (control)", () => {
-  const caps = discoverCapabilities({ IPQUALITYSCORE_API_KEY: true }, null);
-  const ipqs = caps.find((c) => c.tool === "ipqualityscore_lookup");
-  assertEquals(ipqs?.available, true);
-  assertEquals(ipqs?.reason, "ok");
+  // Was ipqualityscore_lookup — cut 2026-07-05 (dead key). Use another healthy
+  // keyed provider as the control that gating does NOT over-reach.
+  const caps = discoverCapabilities({ OATHNET_API_KEY: true }, null);
+  const oath = caps.find((c) => c.tool === "oathnet_lookup");
+  assertEquals(oath?.available, true);
+  assertEquals(oath?.reason, "ok");
+});
+
+Deno.test("cut providers (dead keys / dead APIs) are gated off the schedulable set", () => {
+  // Even with their keys present, the four CUT tools must report unavailable so the
+  // readiness gate strips them from the schema (they no longer emit real signal).
+  const caps = discoverCapabilities(
+    { STOLENTAX_API_KEY: true, SYNAPSINT_API_KEY: true, IPQUALITYSCORE_API_KEY: true },
+    null,
+  );
+  const byTool = new Map(caps.map((c) => [c.tool, c]));
+  for (const t of ["stolentax_footprint", "synapsint_lookup", "emailrep", "ipqualityscore_lookup"]) {
+    assertEquals(byTool.get(t)?.available, false, `${t} must be gated off (cut)`);
+    assertEquals(byTool.get(t)?.reason, "disabled", `${t} reason must be 'disabled'`);
+  }
+});
+
+Deno.test("indicia tools are gated on INDICIA_API_KEY", () => {
+  const withKey = new Map(
+    discoverCapabilities({ INDICIA_API_KEY: true }, null).map((c) => [c.tool, c]),
+  );
+  const noKey = new Map(discoverCapabilities({}, null).map((c) => [c.tool, c]));
+  for (const t of ["indicia_email", "indicia_phone", "indicia_person", "indicia_address", "indicia_web_dbs", "indicia_hudsonrock"]) {
+    assertEquals(withKey.get(t)?.available, true, `${t} available with key`);
+    assertEquals(noKey.get(t)?.available, false, `${t} gated without key`);
+    assertEquals(noKey.get(t)?.reason, "missing_key", `${t} reason missing_key`);
+  }
 });
 
 Deno.test("working deepfind endpoints are available when key is set", () => {
