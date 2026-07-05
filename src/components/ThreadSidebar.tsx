@@ -5,7 +5,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import {
   Plus, LogOut, Trash2, PanelLeftOpen, PanelLeftClose, Search, Brain, CheckCircle2,
-  ShieldAlert, Database, Activity, BarChart3, Wallet,
+  ShieldAlert, Database, Activity, BarChart3, Wallet, FolderOpen,
   Mail, Phone, Globe, Network, User, Hash, FileSearch, type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -128,6 +128,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   const location = useLocation();
   const onBrainRoute = location.pathname.startsWith("/brain");
   const onInsightsRoute = location.pathname.startsWith("/insights");
+  const onCasesRoute = location.pathname.startsWith("/cases");
   const [threads, setThreads] = useState<Thread[]>([]);
   const [metrics, setMetrics] = useState<Record<string, ThreadMetrics>>({});
   const [metricsSampled, setMetricsSampled] = useState(false);
@@ -145,6 +146,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
       const { data } = await supabase
         .from("threads")
         .select("id,title,updated_at,credits_used,cost_micro_usd,status,seed_type")
+        .eq("user_id", user.id)
         .order("updated_at", { ascending: false });
       setThreads((data as Thread[] | null) ?? []);
 
@@ -158,14 +160,15 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
 
       const { count } = await supabase
         .from("agent_memory")
-        .select("id", { count: "exact", head: true });
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", user.id);
 
-      // New patterns since last Global Brain visit (timestamp in localStorage).
       const lastVisited = localStorage.getItem("brain_last_visited");
       if (lastVisited) {
         const { count: newCount } = await supabase
           .from("agent_memory")
           .select("id", { count: "exact", head: true })
+          .eq("user_id", user.id)
           .gt("created_at", lastVisited);
         setNewPatternCount(newCount ?? 0);
       } else {
@@ -184,6 +187,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
       const { data: arts } = await supabase
         .from("artifacts")
         .select("thread_id,kind,confidence")
+        .eq("user_id", user.id)
         .limit(SIDEBAR_METRICS_SAMPLE_LIMIT);
       const rows = (arts ?? []) as { thread_id: string; kind: string; confidence: number | null }[];
       const agg: Record<string, ThreadMetrics> = {};
@@ -276,6 +280,20 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         >
           <Plus className="w-4 h-4" />
         </button>
+
+        <Link
+          to="/cases"
+          className={cn(
+            "relative w-8 h-8 rounded-lg grid place-items-center transition-colors",
+            onCasesRoute
+              ? "bg-primary/15 text-primary ring-1 ring-primary/40"
+              : "glass-interactive text-muted-foreground hover:text-primary",
+          )}
+          title="All cases"
+          aria-label="All cases"
+        >
+          <FolderOpen className="w-4 h-4" strokeWidth={1.5} />
+        </Link>
 
         <Link
           to="/brain"
@@ -406,6 +424,19 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         >
           <Plus className="w-4 h-4" /> New investigation
         </Button>
+        <Link
+          to="/cases"
+          aria-label="All cases"
+          className={cn(
+            "relative mt-2 flex items-center gap-2 w-full px-3 py-2 rounded-lg border text-sm font-medium transition-colors",
+            onCasesRoute
+              ? "border-[hsl(var(--intel-blue)/0.3)] bg-[hsl(var(--intel-blue)/0.1)] text-foreground shadow-[inset_0_0_0_1px_hsl(var(--intel-blue)/0.15)]"
+              : "border-border-subtle bg-surface-0 text-muted-foreground hover:text-foreground hover:border-white/15 hover:bg-surface-1",
+          )}
+        >
+          <FolderOpen className={cn("w-3.5 h-3.5", onCasesRoute && "text-[hsl(var(--intel-blue))]")} strokeWidth={1.5} />
+          <span>All cases</span>
+        </Link>
         <Link
           to="/brain"
           aria-label="Global Brain"

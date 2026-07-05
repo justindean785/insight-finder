@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { deriveInsights } from "@/pages/Insights";
+import { deriveInsights } from "@/pages/InsightsDerived";
 
 /**
  * Regression guard for the Insights aggregate-confidence scaling bug.
