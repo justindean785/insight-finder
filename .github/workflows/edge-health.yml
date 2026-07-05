@@ -1,0 +1,61 @@
+name: Edge Health
+
+# External uptime monitor for the deployed osint-agent edge function.
+# The health endpoint is `GET .../osint-agent?health=1` (query param, NOT a
+# /health path) and is reachable without auth. A failed scheduled run shows
+# up in the Actions tab and emails the repo owner — that is the alerting.
+
+on:
+  schedule:
+    # Every 15 minutes. Polling every 5 would triple Actions minutes for
+    # little extra signal.
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+# Only one probe at a time; a queued probe supersedes a stuck one.
+concurrency:
+  group: edge-health
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: osint-agent health probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe ?health=1 and assert green
+        run: |
+          set -euo pipefail
+          URL='https://skzqwbyvmwqarfgfvyky.supabase.co/functions/v1/osint-agent?health=1'
+          BODY="$(mktemp)"
+
+          if ! STATUS="$(curl -sS --max-time 30 -o "$BODY" -w '%{http_code}' "$URL")"; then
+            echo "::error::edge health: curl could not reach $URL"
+            exit 1
+          fi
+
+          echo "HTTP status: $STATUS"
+          echo "Response body:"
+          cat "$BODY"; echo
+
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::edge health: HTTP $STATUS (expected 200)"
+            exit 1
+          fi
+
+          BUILD="$(jq -r '.build // "unknown"' "$BODY")"
+          echo "Deployed build: $BUILD"
+
+          if [ "$(jq -r '.ok' "$BODY")" != "true" ]; then
+            echo "::error::edge health: .ok != true on build $BUILD — failing checks:"
+            jq -r '.checks | to_entries[] | select(.value.ok != true) | "  - \(.key): \(.value.reason // .value.detail // "no reason given")"' "$BODY"
+            exit 1
+          fi
+
+          if [ "$(jq -r '.checks.minimax.ok' "$BODY")" != "true" ]; then
+            REASON="$(jq -r '.checks.minimax.reason // "unknown"' "$BODY")"
+            echo "::error::edge health: minimax reachability check failed on build $BUILD (reason: $REASON)"
+            exit 1
+          fi
+
+          echo "Health OK — build $BUILD, all checks green."
