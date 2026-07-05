@@ -64,7 +64,8 @@ import {
 
 import { minimaxChat, minimaxChatWithFallback, safeJson, geminiGroundedSearch, perplexitySearch } from "./providers.ts";
 import { dorkToExaQuery } from "./dork-translate.ts";
-import { augmentDorkQuery } from "./dork-relevance.ts";
+import { augmentDorkQuery, isTemplateOrSampleUrl } from "./dork-relevance.ts";
+import { buildAutoRecordedRow } from "./auto-record-integrity.ts";
 
 import { TOOL_CATALOG, CATALOG_CACHE, FINDING_LABELS } from "./catalog.ts";
 import { beginCycle, recordFindingSummary } from "./runtime-policy.ts";
@@ -2805,6 +2806,11 @@ export function buildTools(ctx: ToolContext) {
               if (PASTE_HOST_RE.test(u)) classify = "leak_paste";
               else if (DOC_EXT_RE.test(u)) classify = "document";
               if (!classify) continue;
+              // Drop template/sample/example documents that slip past the
+              // query-level negatives (Perplexity/Exa ignore `-"sample"`): a
+              // `resume-sample.pdf` hit is never real evidence about the subject.
+              // Pastes are exempt — the token gate is a document-path heuristic.
+              if (classify === "document" && isTemplateOrSampleUrl(u)) { seen.add(u); continue; }
               seen.add(u);
               collected.push({ url: u, via: q, classify });
               hits++;
@@ -2837,20 +2843,25 @@ export function buildTools(ctx: ToolContext) {
           { perplexity: 0, exa: 0, success: 0, failed: 0 },
         );
         if (collected.length > 0) {
-          const rows = collected.map((c) => ({
-            thread_id: threadId,
-            user_id: userId,
-            kind: c.classify,
-            value: c.url,
-            confidence: c.classify === "leak_paste" ? 55 : 60,
-            source: "dork_harvest",
-            metadata: {
-              seed,
-              seed_kind: kind,
-              dork_query: c.via,
-              discovered_via: "google_dork → perplexity sonar (exa keyword fallback)",
-            },
-          }));
+          const rows = collected.map((c) => {
+            const built = buildAutoRecordedRow({
+              kind: c.classify,
+              value: c.url,
+              source: "dork_harvest",
+              rawConfidence: c.classify === "leak_paste" ? 55 : 60,
+              metadata: {
+                seed,
+                seed_kind: kind,
+                dork_query: c.via,
+                discovered_via: "google_dork → perplexity sonar (exa keyword fallback)",
+              },
+            });
+            return {
+              thread_id: threadId,
+              user_id: userId,
+              ...built,
+            };
+          });
           const safeRows = scrubArtifactRows(rows);
           const { error } = await supabase.from("artifacts").insert(safeRows);
           if (!error) {
@@ -2880,7 +2891,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     gemini_deep_dork: tool({
       description:
-        "DEEP DORK via Gemini 2.5 Flash with native Google Search grounding. Gemini reasons about the seed, formulates several targeted Google dork queries internally, executes them against real Google, and returns a synthesized writeup PLUS all source URLs as grounding citations. Use this when google_dorks/dork_harvest miss something or you want LLM-driven dork generation (e.g. tricky person/handle disambiguation, leak/breach context, niche forum surfacing). AUTO-RECORDS every cited URL as an artifact (kind='url' or classified by extension as 'document'/'leak_paste'). 1 Gemini call ≈ $0.002.",
+        "FALLBACK deep-dork via Gemini 2.5 Flash with native Google Search grounding. Use AFTER google_dorks + dork_harvest — ~46% success rate in production telemetry; do not lead with this. Gemini reasons about the seed, formulates targeted Google dork queries internally, executes them against real Google, and returns a synthesized writeup PLUS source URLs as grounding citations. Use when dork_harvest misses something or you need LLM-driven dork generation (tricky disambiguation, niche forum surfacing). AUTO-RECORDS every cited URL as an artifact (kind='url' or classified by extension as 'document'/'leak_paste'). Template/sample document URLs are dropped. 1 Gemini call ≈ $0.002.",
       inputSchema: z.object({
         seed: z.string(),
         kind: z.enum(["email","username","phone","name","person","domain","ip","hash","crypto_wallet","url","other"]),
@@ -2920,13 +2931,12 @@ export function buildTools(ctx: ToolContext) {
           })
           .map((c) => {
             const k = classify(c.uri);
-            return {
-              thread_id: threadId,
-              user_id: userId,
+            if (k === "document" && isTemplateOrSampleUrl(c.uri)) return null;
+            const built = buildAutoRecordedRow({
               kind: k,
               value: c.uri,
-              confidence: k === "leak_paste" ? 60 : k === "document" ? 65 : 55,
               source: "gemini_deep_dork",
+              rawConfidence: k === "leak_paste" ? 55 : k === "document" ? 60 : 50,
               metadata: {
                 seed,
                 seed_kind: kind,
@@ -2934,8 +2944,14 @@ export function buildTools(ctx: ToolContext) {
                 title: c.title ?? null,
                 discovered_via: "gemini google_search grounding",
               },
+            });
+            return {
+              thread_id: threadId,
+              user_id: userId,
+              ...built,
             };
-          });
+          })
+          .filter((r): r is NonNullable<typeof r> => r !== null);
         let inserted = 0;
         if (rows.length) {
           const safeRows = scrubArtifactRows(rows);
