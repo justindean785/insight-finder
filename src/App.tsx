@@ -16,6 +16,8 @@ const ChatResume = lazy(() => import("./pages/ChatResume"));
 const AdminSecurity = lazy(() => import("./pages/AdminSecurity"));
 const BrainGlobalPage = lazy(() => import("./pages/BrainGlobalPage"));
 const Insights = lazy(() => import("./pages/Insights"));
+const CasesPage = lazy(() => import("./pages/CasesPage"));
+const CaseViewPage = lazy(() => import("./pages/CaseViewPage"));
 // Dev-only preview of the report card. It renders hardcoded sample/demo PII, so
 // it must never be a production route nor ship in the prod bundle. Gating the
 // dynamic import on `import.meta.env.DEV` (constant-folded to `false` in prod)
@@ -53,6 +55,8 @@ const App = () => (
             <Route path="/auth" element={<Auth />} />
             <Route path="/chat" element={<ChatResume />} />
             <Route path="/chat/:threadId" element={<ChatPage />} />
+            <Route path="/cases" element={<CasesPage />} />
+            <Route path="/cases/:threadId" element={<CaseViewPage />} />
             <Route path="/insights" element={<Insights />} />
             <Route path="/brain" element={<BrainGlobalPage />} />
             {import.meta.env.DEV && ReportPreview && (

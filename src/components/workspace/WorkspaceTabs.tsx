@@ -1,4 +1,5 @@
-import { useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown, MessagesSquare, Database, FileText, Share2, Activity, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -80,6 +81,50 @@ export function WorkspaceTabs({
 }) {
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const [moreOpen, setMoreOpen] = useState(false);
+  // The "More" trigger lives inside the mobile chrome header, which has
+  // `backdrop-blur-xl` — a backdrop-filter creates a NEW stacking context, so an
+  // in-flow `z-50` dropdown is trapped *inside* that context and paints behind
+  // the later-in-DOM `absolute inset-0` workspace panels (the "More does
+  // nothing" bug). Rendering the menu through a portal to <body> with fixed
+  // positioning escapes that trap so it lands above the panels.
+  const moreBtnRef = useRef<HTMLButtonElement | null>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!moreOpen) return;
+    const place = () => {
+      const el = moreBtnRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      setMenuPos({ top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) });
+    };
+    place();
+    // Reposition on scroll/resize so a fixed menu tracks its trigger instead of
+    // detaching; `capture` catches scrolls on any ancestor scroll container.
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [moreOpen]);
+
+  useEffect(() => {
+    if (!moreOpen) return;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Node | null;
+      if (moreBtnRef.current?.contains(t)) return;
+      if (t instanceof Element && t.closest("[data-workspace-more-menu]")) return;
+      setMoreOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setMoreOpen(false); };
+    document.addEventListener("pointerdown", onDown, true);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown, true);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [moreOpen]);
 
   // Roving arrow-key navigation across the tab bar (WAI-ARIA tabs pattern).
   const onKeyDown = (e: React.KeyboardEvent, idx: number) => {
@@ -154,6 +199,7 @@ export function WorkspaceTabs({
           })}
           <button
             type="button"
+            ref={moreBtnRef}
             // When a "More" tab (Tools/Graph) is the active workspace tab, this
             // trigger stands in as its tab element so the active tabpanel's
             // aria-labelledby={workspace-tab-<key>} resolves to a real node.
@@ -179,8 +225,13 @@ export function WorkspaceTabs({
           </button>
         </div>
 
-        {moreOpen && (
-          <div className="absolute right-0 top-[calc(100%+0.35rem)] z-50 w-44 overflow-hidden rounded-xl border border-white/10 bg-[hsl(var(--popover))] p-1 shadow-[0_24px_80px_-34px_rgba(0,0,0,0.95)]">
+        {moreOpen && menuPos && typeof document !== "undefined" && createPortal(
+          <div
+            data-workspace-more-menu
+            role="menu"
+            style={{ position: "fixed", top: menuPos.top, right: menuPos.right }}
+            className="z-[60] w-44 overflow-hidden rounded-xl border border-white/10 bg-[hsl(var(--popover))] p-1 shadow-[0_24px_80px_-34px_rgba(0,0,0,0.95)]"
+          >
             {COMPACT_MORE.map((t) => {
               const Icon = t.icon;
               const count = counts?.[t.key];
@@ -188,6 +239,7 @@ export function WorkspaceTabs({
                 <button
                   key={t.key}
                   type="button"
+                  role="menuitem"
                   onClick={() => { setMoreOpen(false); onChange(t.key); }}
                   className={cn(
                     "flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-sm transition-all duration-200 ease-premium",
@@ -205,7 +257,8 @@ export function WorkspaceTabs({
                 </button>
               );
             })}
-          </div>
+          </div>,
+          document.body,
         )}
       </div>
     );
