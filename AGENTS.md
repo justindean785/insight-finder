@@ -43,6 +43,10 @@ gotchas. This file only adds Cursor Cloud environment notes.
   A cap hit surfaces as **403 Forbidden** in the investigation stream (now
   classified to a clear quota message). Operator action: raise the cap in Lovable
   settings. Primary orchestrator is still MiniMax; gateway is fallback only.
+- **MiniMax preflight vs. gateway:** a 6s preflight ping timeout used to force
+  every cold edge isolate onto the Lovable gateway (logs show
+  `Lovable Gateway fallback` on every step). Fixed on `main` after the preflight
+  timeout PR lands — only explicit HTTP probe failures pivot to gateway.
 - **Backend deploy:** edge-function changes only go live after a reviewed sync to
   `seeker-spark-search-5362c57c` → Lovable auto-deploy (see `CLAUDE.md`). Merging
   to `insight-finder/main` alone does not update production edge code.
