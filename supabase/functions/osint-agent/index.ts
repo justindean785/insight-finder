@@ -13,6 +13,7 @@ import { discoverCapabilities, capabilityEnvKeys, gatedToolNames } from "./capab
 import {
   corsHeaders, MINIMAX_API_KEY, LOVABLE_API_KEY,
   lovableGateway, PRIMARY_ORCHESTRATOR_MODEL_ID, FALLBACK_MODEL_ID,
+  geminiDirectGateway, GEMINI_FALLBACK_MODEL_ID, ALLOW_LOVABLE_FALLBACK,
   grokGateway, openAdapterGateway, ORCHESTRATOR_PROVIDER,
   GROK_ORCHESTRATOR_MODEL_ID, OPENADAPTER_ORCHESTRATOR_MODEL_ID,
   degradedTools, deadHosts, resetFirecrawlCreditsLow,
@@ -420,6 +421,26 @@ Deno.serve(async (req) => {
       : minimaxIsPrimary
       ? (!minimaxAvailable || wouldOverflow)
       : false;
+    if (minimaxIsPrimary && !minimaxAvailable) {
+      // MINIMAX_API_KEY must be set in the deployed environment. Losing it is a
+      // config regression, not a routine failover — flag it at error level so it
+      // can't hide behind a quietly-working fallback (?health=1 reports the same
+      // via checks.minimax.reason="missing_key").
+      console.error(
+        "[orchestrator] MINIMAX_API_KEY is not configured — MiniMax primary unavailable, falling back",
+      );
+    }
+    // Which gateway takes a fallback turn. Direct Gemini is the default; the
+    // Lovable gateway only participates when the operator pinned it as primary
+    // (ORCHESTRATOR_PROVIDER=lovable) or opted in via ALLOW_LOVABLE_FALLBACK.
+    // Grok/xAI is never a fallback (primary pin only).
+    const fallbackTarget = lovablePinned
+      ? { gateway: lovableGateway!, modelId: FALLBACK_MODEL_ID, label: "Lovable Gateway fallback", provider: "lovable-gateway" as const }
+      : geminiDirectGateway
+      ? { gateway: geminiDirectGateway, modelId: GEMINI_FALLBACK_MODEL_ID, label: "Gemini direct fallback", provider: "gemini-direct" as const }
+      : (lovableGateway && ALLOW_LOVABLE_FALLBACK)
+      ? { gateway: lovableGateway, modelId: FALLBACK_MODEL_ID, label: "Lovable Gateway fallback", provider: "lovable-gateway" as const }
+      : null;
     // Pre-flight MiniMax health probe. The fallback selection above only fires
     // when MiniMax's key is missing or the prompt would overflow — it does NOT
     // catch the case where MiniMax is configured and accepts the request but is
@@ -434,7 +455,7 @@ Deno.serve(async (req) => {
     // isolate — it's demonstrably alive, so the extra round-trip (and up to the
     // 6s timeout on the unhealthy path) is removed from time-to-first-token.
     // A cold isolate has no cached health → the probe still runs (safe default).
-    if (minimaxIsPrimary && !useFallback && !lovablePinned && lovableGateway && !minimaxHealthyWithin(60_000)) {
+    if (minimaxIsPrimary && !useFallback && !lovablePinned && fallbackTarget && !minimaxHealthyWithin(60_000)) {
       // Two-attempt preflight (mirror's preview-verified probe): MiniMax can go
       // quiet for 6–10s under load on a busy turn (large prompt + reasoning
       // warm-up), so give it up to 12s per attempt with one retry (250ms
@@ -484,9 +505,10 @@ Deno.serve(async (req) => {
         );
       }
     }
-    if (useFallback && !lovableGateway) {
+    if (useFallback && !fallbackTarget) {
       throw new Error(
-        "Neither MINIMAX_API_KEY nor LOVABLE_API_KEY is configured for the orchestrator.",
+        "MiniMax is unavailable and no fallback is configured — set GEMINI_API_KEY " +
+          "(direct Gemini fallback) or opt in to the Lovable gateway with ALLOW_LOVABLE_FALLBACK=true.",
       );
     }
     // Resolve the primary (non-fallback) model from the selected provider.
@@ -497,10 +519,10 @@ Deno.serve(async (req) => {
         ? { model: openAdapterGateway!.chatModel(OPENADAPTER_ORCHESTRATOR_MODEL_ID), label: `${OPENADAPTER_ORCHESTRATOR_MODEL_ID} (OpenAdapter)` }
         : { model: minimax.chatModel(PRIMARY_ORCHESTRATOR_MODEL_ID), label: `${PRIMARY_ORCHESTRATOR_MODEL_ID} (MiniMax direct)` };
     const orchestratorModel = useFallback
-      ? lovableGateway!.chatModel(FALLBACK_MODEL_ID)
+      ? fallbackTarget!.gateway.chatModel(fallbackTarget!.modelId)
       : primaryModel;
     console.log(
-      `[orchestrator] running on ${useFallback ? FALLBACK_MODEL_ID + " (Lovable Gateway fallback)" : primaryLabel} ` +
+      `[orchestrator] running on ${useFallback ? `${fallbackTarget!.modelId} (${fallbackTarget!.label})` : primaryLabel} ` +
         `(provider=${orchChoice.provider}/${orchChoice.reason}, approx prompt chars=${approxPromptChars}, messages=${trimmedMessages.length})`,
     );
 
@@ -654,8 +676,8 @@ Deno.serve(async (req) => {
           "[orchestrator] stream error:",
           JSON.stringify({
             thread_id: threadId,
-            provider: useFallback ? "lovable-gateway" : "minimax",
-            model: useFallback ? FALLBACK_MODEL_ID : MODELS[ORCHESTRATOR_TIER],
+            provider: useFallback ? fallbackTarget!.provider : "minimax",
+            model: useFallback ? fallbackTarget!.modelId : MODELS[ORCHESTRATOR_TIER],
             approx_prompt_chars: approxPromptChars,
             context_overflow: isCtxOverflow,
             // A schema/pairing fault is a builder bug, NOT context overflow —

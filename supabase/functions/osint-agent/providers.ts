@@ -7,7 +7,7 @@ import { createOpenAICompatible } from "npm:@ai-sdk/openai-compatible@1";
 import { MODELS } from "./models.ts";
 import {
   MINIMAX_API_KEY, GEMINI_API_KEY, PERPLEXITY_API_KEY, fetchRetry,
-  LOVABLE_API_KEY, XAI_API_KEY, GROK_ORCHESTRATOR_MODEL_ID,
+  LOVABLE_API_KEY, ALLOW_LOVABLE_FALLBACK, GEMINI_FALLBACK_MODEL_ID,
   ORCHESTRATOR_FETCH,
 } from "./env.ts";
 import { selectFallbackProvider } from "./orchestrator_select.ts";
@@ -165,18 +165,23 @@ export type FallbackResult = {
 };
 
 async function callFallbackProvider(
-  provider: "lovable" | "grok",
+  provider: "gemini" | "lovable",
   opts: Parameters<typeof minimaxChat>[0],
 ): Promise<{ ok: boolean; status: number; content: string; raw: unknown }> {
-  const isGrok = provider === "grok";
-  const baseURL = isGrok ? "https://api.x.ai/v1" : "https://ai.gateway.lovable.dev/v1";
-  const apiKey = isGrok ? XAI_API_KEY : LOVABLE_API_KEY;
-  const model = isGrok ? GROK_ORCHESTRATOR_MODEL_ID : MODELS.fallback;
+  // "gemini" = the direct Google API via its OpenAI-compatible endpoint — the
+  // default fallback. "lovable" = the gateway, reachable only behind the
+  // ALLOW_LOVABLE_FALLBACK opt-in (see selectFallbackProvider). Grok/xAI is
+  // never a fallback.
+  const isGemini = provider === "gemini";
+  const baseURL = isGemini
+    ? "https://generativelanguage.googleapis.com/v1beta/openai"
+    : "https://ai.gateway.lovable.dev/v1";
+  const model = isGemini ? GEMINI_FALLBACK_MODEL_ID : MODELS.fallback;
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (isGrok) {
-    headers["Authorization"] = `Bearer ${apiKey}`;
+  if (isGemini) {
+    headers["Authorization"] = `Bearer ${GEMINI_API_KEY}`;
   } else {
-    headers["Lovable-API-Key"] = apiKey;
+    headers["Lovable-API-Key"] = LOVABLE_API_KEY;
     headers["X-Lovable-AIG-SDK"] = "vercel-ai-sdk";
   }
 
@@ -241,7 +246,7 @@ export async function minimaxChatWithFallback(
   // `env.ts` captures API keys at module load, so a test can't flip availability
   // after import. Production passes nothing → availability is read from the live
   // env bindings exactly as before, so runtime behavior is unchanged.
-  deps?: { lovable?: boolean; grok?: boolean },
+  deps?: { gemini?: boolean; lovable?: boolean; allowLovable?: boolean },
 ): Promise<FallbackResult> {
   try {
     const result = await minimaxChat(opts);
@@ -278,8 +283,9 @@ export async function minimaxChatWithFallback(
   }
 
   const fb = selectFallbackProvider({
+    gemini: deps?.gemini ?? !!GEMINI_API_KEY,
     lovable: deps?.lovable ?? !!LOVABLE_API_KEY,
-    grok: deps?.grok ?? !!XAI_API_KEY,
+    allowLovable: deps?.allowLovable ?? ALLOW_LOVABLE_FALLBACK,
   });
   if (!fb.provider) {
     return { ok: false, status: 0, content: "", raw: { error: fb.reason }, usedFallback: false };
