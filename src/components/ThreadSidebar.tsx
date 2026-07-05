@@ -249,7 +249,19 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   const deleteThread = async (id: string, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    await supabase.from("threads").delete().eq("id", id);
+    // Deleting a case is irreversible (cascades to its artifacts/evidence), so
+    // confirm before destroying it and surface any failure instead of silently
+    // navigating away as if it worked.
+    if (typeof window !== "undefined" && !window.confirm("Delete this investigation and all of its evidence? This cannot be undone.")) {
+      return;
+    }
+    const { error } = await supabase.from("threads").delete().eq("id", id);
+    if (error) {
+      toast.error(error.message || "Could not delete the case");
+      return;
+    }
+    setThreads((prev) => prev.filter((t) => t.id !== id));
+    toast.success("Case deleted");
     if (id === threadId) navigate("/");
   };
 

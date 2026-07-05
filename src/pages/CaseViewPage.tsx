@@ -41,6 +41,7 @@ export default function CaseViewPage() {
   const [tab, setTab] = useState<ViewCaseTab>("report");
   const [meta, setMeta] = useState<ThreadMeta | null>(null);
   const [metaLoading, setMetaLoading] = useState(true);
+  const [metaError, setMetaError] = useState(false);
 
   const { items } = useThreadArtifacts(threadId ?? "");
   const activity = useThreadToolActivity(threadId ?? "");
@@ -53,6 +54,7 @@ export default function CaseViewPage() {
     if (!user || !threadId) return;
     let alive = true;
     setMetaLoading(true);
+    setMetaError(false);
     (async () => {
       const { data, error } = await supabase
         .from("threads")
@@ -61,8 +63,10 @@ export default function CaseViewPage() {
         .eq("user_id", user.id)
         .maybeSingle();
       if (!alive) return;
-      if (error || !data) setMeta(null);
-      else setMeta(data as ThreadMeta);
+      // A network/DB error is NOT the same as a missing row — don't tell the
+      // user their case "doesn't exist" when the fetch simply failed.
+      if (error) { setMetaError(true); setMeta(null); }
+      else setMeta((data as ThreadMeta) ?? null);
       setMetaLoading(false);
     })();
     return () => {
@@ -88,10 +92,14 @@ export default function CaseViewPage() {
       <div className="min-h-screen bg-background">
         <AppNav />
         <main className="mx-auto max-w-lg px-6 py-16 text-center">
-          <h1 className="font-display text-xl font-semibold">Case not found</h1>
-          <p className="mt-2 text-sm text-muted-foreground">This case doesn&apos;t exist or belongs to another account.</p>
-          <Button className="mt-6" variant="outline" onClick={() => navigate("/cases")}>
-            Back to cases
+          <h1 className="font-display text-xl font-semibold">{metaError ? "Couldn't load this case" : "Case not found"}</h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {metaError
+              ? "Something went wrong loading this case. Check your connection and try again."
+              : "This case doesn't exist or belongs to another account."}
+          </p>
+          <Button className="mt-6" variant="outline" onClick={() => (metaError ? window.location.reload() : navigate("/cases"))}>
+            {metaError ? "Retry" : "Back to cases"}
           </Button>
         </main>
       </div>

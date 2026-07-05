@@ -64,12 +64,15 @@ export default function CasesPage() {
   const [cases, setCases] = useState<CaseRow[]>([]);
   const [metrics, setMetrics] = useState<Map<string, CaseMetrics>>(new Map());
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [query, setQuery] = useState("");
 
-  const load = useCallback(async () => {
+  // Only the first load shows the full skeleton; realtime refreshes update the
+  // list in place (silent) so a live scan doesn't flash back to skeleton.
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!user) return;
-    setLoading(true);
+    if (!opts?.silent) setLoading(true);
     try {
       const [threadsRes, artifactsRes, toolsRes] = await Promise.all([
         supabase
@@ -90,6 +93,7 @@ export default function CasesPage() {
           .limit(10000),
       ]);
       if (threadsRes.error) throw threadsRes.error;
+      setError(null);
       setCases((threadsRes.data ?? []) as CaseRow[]);
 
       const m = new Map<string, CaseMetrics>();
@@ -108,6 +112,12 @@ export default function CasesPage() {
       setMetrics(m);
     } catch (e) {
       captureError(e, "cases.load");
+      // Surface the failure instead of silently rendering the "no cases" empty
+      // state — but only for a foreground load; a failed background realtime
+      // refresh should keep the list we're already showing, not flash an error.
+      if (!opts?.silent) {
+        setError(e instanceof Error ? e.message : "Could not load your cases.");
+      }
     } finally {
       setLoading(false);
     }
@@ -120,20 +130,28 @@ export default function CasesPage() {
 
   useEffect(() => {
     if (!user) return;
+    // Coalesce realtime bursts (a live scan writes rows rapidly) into a single
+    // silent refresh so we don't fire a 3-query storm per artifact insert.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => void load({ silent: true }), 600);
+    };
     const channel = supabase
       .channel(`cases-${user.id}`)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "threads", filter: `user_id=eq.${user.id}` },
-        () => void load(),
+        schedule,
       )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "artifacts", filter: `user_id=eq.${user.id}` },
-        () => void load(),
+        schedule,
       )
       .subscribe();
     return () => {
+      if (timer) clearTimeout(timer);
       void supabase.removeChannel(channel);
     };
   }, [user, load]);
@@ -209,6 +227,16 @@ export default function CasesPage() {
               <Skeleton className="h-14 w-full" />
               <Skeleton className="h-14 w-full" />
               <Skeleton className="h-14 w-full" />
+            </div>
+          ) : error && cases.length === 0 ? (
+            <div className="p-8 text-center text-sm">
+              <p className="text-danger">{error}</p>
+              <button
+                onClick={() => void load()}
+                className="mt-3 inline-flex items-center rounded-lg border border-border-subtle px-3 py-1.5 text-xs text-foreground hover:bg-white/[0.04]"
+              >
+                Retry
+              </button>
             </div>
           ) : filtered.length === 0 ? (
             <div className="p-8 text-center text-sm text-muted-foreground">

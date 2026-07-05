@@ -946,7 +946,12 @@ function SourcesTab() {
         const pPct = b.nP ? (b.okP / b.nP) * 100 : NaN;
         const delta = isFinite(rPct) && isFinite(pPct) ? Math.round(rPct - pPct) : 0;
         return { tool: t, reliability: overall, delta, runs: total };
-      }).sort((a, b) => b.runs - a.runs);
+      })
+        // Only surface sources this user has ACTUALLY run — otherwise a new
+        // account sees all 13 tools at 0%/0 runs, which reads as fake example
+        // data rather than their own live activity.
+        .filter((r) => r.runs > 0)
+        .sort((a, b) => b.runs - a.runs);
       setRows(computed);
 
       const summary: ReviewSummary = { confirmed: 0, key: 0, recheck: 0, dismissed: 0 };
@@ -983,6 +988,8 @@ function SourcesTab() {
         </div>
         {loading ? (
           <div className="p-6 text-center text-xs text-muted-foreground">Computing source reliability…</div>
+        ) : rows.length === 0 ? (
+          <div className="p-6 text-center text-xs text-muted-foreground">No source activity yet — run an investigation and each tool's reliability will build up here.</div>
         ) : (
           <div className="divide-y divide-border-subtle/40">
             {rows.map((r) => <SourceWeightRow key={r.tool} row={r} />)}
