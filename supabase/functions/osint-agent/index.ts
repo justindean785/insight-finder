@@ -39,6 +39,10 @@ import { repairUnknownTool } from "./unknown-tool-guard.ts";
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { buildTools } from "./tool-registry.ts";
 import { isMessageSchemaError, classifyStreamProviderError } from "./stream-error-classify.ts";
+import {
+  shouldFallbackAfterMinimaxPreflight,
+  minimaxPreflightFailureLabel,
+} from "./minimax-preflight.ts";
 import { evaluateCreditGate, evaluateDailyCapGate, reasonToAbortForCredits } from "./credits.ts";
 
 // ---- Orchestrator resilience knobs (Phase 1: MissingToolResults crash) --------
@@ -431,10 +435,14 @@ Deno.serve(async (req) => {
           new Promise<{ ok: boolean; status: number }>((resolve) =>
             setTimeout(() => resolve({ ok: false, status: 0 }), 6000)),
         ])) as { ok: boolean; status: number };
-        if (!probe.ok) {
+        if (shouldFallbackAfterMinimaxPreflight(probe)) {
           useFallback = true;
           console.warn(
-            `[orchestrator] minimax preflight unhealthy (status=${probe.status || "timeout"}) → Gemini fallback for thread ${threadId}`,
+            `[orchestrator] minimax preflight unhealthy (status=${minimaxPreflightFailureLabel(probe)}) → Gemini fallback for thread ${threadId}`,
+          );
+        } else if (!probe.ok) {
+          console.info(
+            `[orchestrator] minimax preflight ${minimaxPreflightFailureLabel(probe)} — keeping MiniMax primary for thread ${threadId}`,
           );
         }
       } catch (e) {
