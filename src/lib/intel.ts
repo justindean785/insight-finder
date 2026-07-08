@@ -124,6 +124,11 @@ const USERNAME_SWEEP_SOURCES = new Set([
   "username_search",
   "deepfind_profile_analyzer",
   "deepfind_reverse_email",
+  // Legacy: the stolentax_footprint tool was retired, but persisted artifacts
+  // that predate metadata.source_category still carry this source slug. Keep it
+  // classified sweep-only so retiring the tool never reclassifies (or uncaps)
+  // historical account-discovery hits.
+  "stolentax_footprint",
 ]);
 
 // Direct profile sources observe the value on the actual platform and can
@@ -162,7 +167,10 @@ export function isDirectProfileSource(src: string | null | undefined, _meta?: Re
 // Threat/reputation sources (VirusTotal, URLScan, EmailRep, IPQS, AbuseIPDB).
 // These describe reputation/abuse signals, NOT credential breach data, and must
 // never be presented under "Breach / Exposure".
-const REPUTATION_SOURCE_RE = /virustotal|urlscan|ipqualityscore|ipqs|abuseipdb|reputation|threat/i;
+// `emailrep` is a legacy slug: the emailrep tool was retired, but persisted
+// reputation rows can still carry source "emailrep" — keep matching it so those
+// historical rows never render under Breach / Exposure.
+const REPUTATION_SOURCE_RE = /virustotal|urlscan|ipqualityscore|ipqs|abuseipdb|emailrep|reputation|threat/i;
 
 /** True when an artifact is a threat/reputation signal rather than a breach. */
 export function isReputationArtifact(a: { kind: string; source: string | null; metadata: Record<string, unknown> | null }): boolean {
