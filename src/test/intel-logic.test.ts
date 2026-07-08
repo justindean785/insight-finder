@@ -9,6 +9,7 @@ import {
   isUsernameSweepSource,
   isDirectProfileSource,
   isSensitiveKind,
+  detectNameLocationSeed,
 } from "@/lib/intel";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 
@@ -291,5 +292,38 @@ describe("labelForArtifact", () => {
       });
       expect(labelForArtifact(a)).toBe("CORRELATED");
     });
+  });
+});
+
+describe("detectNameLocationSeed — URL seeds must not produce a phantom subject", () => {
+  it("a clean URL seed yields no name search (kind=url)", () => {
+    expect(detectNameLocationSeed("https://youtu.be/30gJKcyQlFU")).toBeNull();
+  });
+
+  it("the live 3gfgct case: URL fragments never become the subject name", () => {
+    // This exact string produced "Detected subject: 3gfgct https youtu" on every
+    // cluster in the live report. URL tokens must be stripped → no phantom name.
+    const r = detectNameLocationSeed("3gfgct https://youtu.be/30gJKcyQlFU");
+    // A single real token ("3gfgct") + a URL is not a name search — no phantom.
+    expect(r).toBeNull();
+  });
+
+  it("strips an embedded URL but keeps a genuine multi-word name", () => {
+    const r = detectNameLocationSeed("John Smith https://x.com/johnsmith");
+    expect(r).not.toBeNull();
+    expect(r!.name).toBe("john smith");
+    // no URL fragment leaked into the name
+    expect(r!.name).not.toContain("https");
+    expect(r!.name).not.toContain("com");
+  });
+
+  it("a real name + state still resolves name and state", () => {
+    const r = detectNameLocationSeed("Jane Doe California");
+    expect(r!.name).toBe("jane doe");
+    expect(r!.state).toBe("CA");
+  });
+
+  it("a bare handle/URL host yields no name (would-be fragments dropped)", () => {
+    expect(detectNameLocationSeed("watch youtu be")).toBeNull();
   });
 });

@@ -124,6 +124,7 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   minimax_web_search: "ai_summary",
   exa_search: "ai_summary",
   gemini_deep_dork: "ai_summary",
+  gemini_vision: "ai_summary",
   google_dorks: "ai_summary",
   dork_harvest: "ai_summary",
   jina_reader_scrape: "independent_public",

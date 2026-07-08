@@ -81,13 +81,19 @@ export function extractIndiciaRecords(data: unknown): unknown[] {
   }
   if (out.length === 0) {
     // No arrays — but some endpoints may return a single record object under
-    // data.<key>. Count it only if it carries real content (guards against an
-    // empty {} or a bare {found:0} echo being read as a hit).
+    // data.<key>. Count it only if it carries a real PAYLOAD (guards against an
+    // empty {}, or a metadata-only no-hit echo like {found:0} / {count:0} /
+    // {found:false} being misread as a hit). A bare number/boolean is metadata,
+    // not a record: `found`/`count` sentinels are exactly how these endpoints
+    // signal a valid negative, so a scalar-only object must read as EMPTY. Only
+    // a non-empty nested object/array or a non-empty string counts as substance.
     const substantive = Object.values(d).some((v) => {
       if (v == null) return false;
+      if (Array.isArray(v)) return v.some((x) => x != null);
       if (typeof v === "object") return Object.keys(v as object).length > 0;
       if (typeof v === "string") return v.trim().length > 0;
-      return typeof v === "number" || typeof v === "boolean";
+      // number / boolean → metadata sentinel (found/count/exists), never a record.
+      return false;
     });
     if (substantive && Object.keys(d).length > 0) out.push(d);
   }

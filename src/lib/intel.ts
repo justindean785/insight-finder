@@ -1368,13 +1368,41 @@ function extractAreaCode(phone: string): string | null {
   return null;
 }
 
+// URL / URL-infrastructure tokens that must NEVER become a subject name. A seed
+// that carries a URL tokenizes to fragments like "https youtu be watch v" — the
+// live 3gfgct case surfaced "3gfgct https youtu" as the Detected subject on the
+// report AND as the fallback label of every un-named cluster. Strip URLs first,
+// then drop any residual infra tokens, so a URL-bearing seed yields NO phantom
+// name rather than a garbage one.
+const URL_INFRA_TOKENS = new Set([
+  "http", "https", "www", "watch", "youtu", "youtube", "com", "net", "org",
+  "be", "tv", "io", "co", "gg", "ly", "app", "gov", "edu", "html", "php", "aspx",
+  "embed", "shorts", "channel", "playlist", "profile", "status", "reel", "video",
+]);
+
+/** Remove URL substrings from an otherwise free-form seed so their path/host
+ *  fragments never leak into a derived subject name. */
+function stripUrls(s: string): string {
+  return s
+    .replace(/\bhttps?:\/\/\S+/gi, " ")
+    .replace(/\bwww\.\S+/gi, " ")
+    .replace(/\b[a-z0-9-]+\.(?:com|net|org|be|tv|io|co|gg|ly|app|gov|edu)(?:\/\S*)?/gi, " ");
+}
+
 /** Best-effort name + location detection from a free-form seed string. */
 export function detectNameLocationSeed(seedValue: string | null): { name: string | null; state: string | null } | null {
   if (!seedValue) return null;
   if (detectSeed(seedValue)?.kind !== "other") return null; // structured seed → not a name search
-  const toks = tokenize(seedValue);
+  // Strip embedded URL(s) BEFORE deriving a name. A clean URL seed is already
+  // caught by the kind check above; this covers mixed "<handle> https://…" seeds
+  // where the URL would otherwise dominate the tokenized name.
+  const cleaned = stripUrls(seedValue);
+  const toks = tokenize(cleaned).filter((t) => !URL_INFRA_TOKENS.has(t));
+  // Fewer than two real tokens → not a name search. Returning null (not an
+  // object) keeps `isNameSearch` false for URL/link seeds, so no phantom subject
+  // is emitted and clusters fall back to their own names, not a URL fragment.
   if (toks.length < 2) return null;
-  const state = extractStateFromText(seedValue);
+  const state = extractStateFromText(cleaned);
   const nameToks = toks.filter((t) => !US_STATE_TOKENS[t]);
   const name = nameToks.length ? nameToks.slice(0, 3).join(" ") : null;
   return { name, state };
