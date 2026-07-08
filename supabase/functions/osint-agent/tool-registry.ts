@@ -939,7 +939,10 @@ export function buildTools(ctx: ToolContext) {
       execute: async ({ url }) => {
         if (!SOCIALFETCH_API_KEY) return { error: "SOCIALFETCH_API_KEY not configured" };
         try {
-          const r = await fetchRetry(`https://api.socialfetch.dev/v1/web/markdown?url=${encodeURIComponent(url)}`, { headers: { "x-api-key": SOCIALFETCH_API_KEY } }, { retries: 1 });
+          // Single attempt with a long per-attempt timeout: server-side markdown
+          // of a heavy page (YouTube etc.) is slow, and retrying a timeout would
+          // just double the wait past the 25s outer tool budget (see cache.ts).
+          const r = await fetchRetry(`https://api.socialfetch.dev/v1/web/markdown?url=${encodeURIComponent(url)}`, { headers: { "x-api-key": SOCIALFETCH_API_KEY } }, { retries: 0, timeoutMs: 22_000 });
           if (r.status === 402) {
             return { ok: false, status: 402, error: "SOCIALFETCH_CREDITS_EXHAUSTED", message: "Social Fetch credit balance is zero. Check /v1/balance." };
           }
