@@ -171,3 +171,33 @@ Deno.test("indicia outcome: 200 with success:false → failed (status alone does
     assertEquals(classifyToolOutcome(r.error, r.status), "failed");
   });
 });
+
+// #248 cherry-pick: broker/public-record name seeds ("LAST, FIRST MIDDLE[, ST]")
+// must be reordered to natural "First … Last" before the person API call, and a
+// trailing state code lifted into the state field.
+Deno.test("indicia_person: reorders LAST, FIRST[, ST] before the API call", async () => {
+  let sentBody: Record<string, unknown> | null = null;
+  await withStubbedFetch((_url, init) => {
+    sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    return jsonResponse(200, { success: true, data: { web: [{ name: "Jarrett Riley Morris" }] } });
+  }, async () => {
+    const r = await exec(indicia_person, { name: "MORRIS, JARRETT RILEY, CA" });
+    assertEquals(r.ok, true);
+  });
+  assert(sentBody !== null, "expected a request body to be sent");
+  assertEquals((sentBody as Record<string, unknown>).name, "JARRETT RILEY MORRIS");
+  // Parsed trailing ", CA" fills the empty state field.
+  assertEquals((sentBody as Record<string, unknown>).state, "CA");
+});
+
+Deno.test("indicia_person: explicit state wins over a parsed suffix", async () => {
+  let sentBody: Record<string, unknown> | null = null;
+  await withStubbedFetch((_url, init) => {
+    sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    return jsonResponse(200, { success: true, data: { web: [{ name: "John Smith" }] } });
+  }, async () => {
+    await exec(indicia_person, { name: "SMITH, JOHN TX", state: "NY" });
+  });
+  assertEquals((sentBody as Record<string, unknown>).name, "JOHN SMITH");
+  assertEquals((sentBody as Record<string, unknown>).state, "NY");
+});
