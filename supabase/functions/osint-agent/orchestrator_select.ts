@@ -8,7 +8,7 @@
 // provider is selected only when its key is configured AND it is either pinned
 // via ORCHESTRATOR_PROVIDER or is the only available provider.
 
-export type OrchestratorProvider = "minimax" | "grok" | "openadapter" | "lovable";
+export type OrchestratorProvider = "minimax" | "grok" | "openadapter";
 
 export interface OrchestratorAvailability {
   /** ORCHESTRATOR_PROVIDER secret, lowercased/trimmed ("" if unset). */
@@ -67,33 +67,20 @@ export function selectOrchestratorProvider(a: OrchestratorAvailability): Orchest
 export interface FallbackAvailability {
   /** Direct Gemini API configured (GEMINI_API_KEY present). */
   gemini: boolean;
-  /** Lovable AI Gateway configured (LOVABLE_API_KEY present). */
-  lovable: boolean;
-  /** Operator opt-in for the Lovable gateway (ALLOW_LOVABLE_FALLBACK=true). */
-  allowLovable: boolean;
 }
 
 export interface FallbackChoice {
-  provider: "gemini" | "lovable" | null;
+  provider: "gemini" | null;
   reason: string;
 }
 
 /**
  * Choose the FALLBACK provider when MiniMax can't take (or dropped) a turn.
  *
- * Order: direct Gemini → Lovable gateway (opt-in only) → none. Grok/xAI is
- * deliberately never a fallback — it stays an explicit primary pin
- * (ORCHESTRATOR_PROVIDER=grok) or nothing. The Lovable gateway is gated
- * behind ALLOW_LOVABLE_FALLBACK because it proxies shared quota and has
- * burned runs on credit-gated models.
+ * Direct Gemini is the only fallback. Grok/xAI is never a fallback — it
+ * stays an explicit primary pin (ORCHESTRATOR_PROVIDER=grok) or nothing.
  */
 export function selectFallbackProvider(a: FallbackAvailability): FallbackChoice {
   if (a.gemini) return { provider: "gemini", reason: "GEMINI_API_KEY configured" };
-  if (a.lovable && a.allowLovable) {
-    return { provider: "lovable", reason: "ALLOW_LOVABLE_FALLBACK=true" };
-  }
-  if (a.lovable) {
-    return { provider: null, reason: "Lovable gateway present but ALLOW_LOVABLE_FALLBACK is not true" };
-  }
   return { provider: null, reason: "All orchestrators exhausted — check API quotas" };
 }

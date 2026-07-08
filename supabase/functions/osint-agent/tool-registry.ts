@@ -30,7 +30,7 @@ import type { QueryType } from "./query-type-router.ts";
 import { DNS_TYPES, VIRTUAL_TYPE_MAP, isVirtualType, resolveVirtualHost, filterTxtByPrefix } from "./tools/dns-virtual.ts";
 
 import {
-  MINIMAX_API_KEY, LOVABLE_API_KEY,
+  MINIMAX_API_KEY,
   OATHNET_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
   CORDCAT_API_KEY, HUNTER_API_KEY,
   HIBP_API_KEY, GITHUB_API_TOKEN, EXA_API_KEY, JINA_API_KEY,

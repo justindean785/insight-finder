@@ -7,7 +7,7 @@ import { createOpenAICompatible } from "npm:@ai-sdk/openai-compatible@1";
 import { MODELS } from "./models.ts";
 import {
   MINIMAX_API_KEY, GEMINI_API_KEY, PERPLEXITY_API_KEY, fetchRetry,
-  LOVABLE_API_KEY, ALLOW_LOVABLE_FALLBACK, GEMINI_FALLBACK_MODEL_ID,
+  GEMINI_FALLBACK_MODEL_ID,
   ORCHESTRATOR_FETCH,
 } from "./env.ts";
 import { selectFallbackProvider } from "./orchestrator_select.ts";
@@ -165,25 +165,14 @@ export type FallbackResult = {
 };
 
 async function callFallbackProvider(
-  provider: "gemini" | "lovable",
   opts: Parameters<typeof minimaxChat>[0],
 ): Promise<{ ok: boolean; status: number; content: string; raw: unknown }> {
-  // "gemini" = the direct Google API via its OpenAI-compatible endpoint — the
-  // default fallback. "lovable" = the gateway, reachable only behind the
-  // ALLOW_LOVABLE_FALLBACK opt-in (see selectFallbackProvider). Grok/xAI is
-  // never a fallback.
-  const isGemini = provider === "gemini";
-  const baseURL = isGemini
-    ? "https://generativelanguage.googleapis.com/v1beta/openai"
-    : "https://ai.gateway.lovable.dev/v1";
-  const model = isGemini ? GEMINI_FALLBACK_MODEL_ID : MODELS.fallback;
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (isGemini) {
-    headers["Authorization"] = `Bearer ${GEMINI_API_KEY}`;
-  } else {
-    headers["Lovable-API-Key"] = LOVABLE_API_KEY;
-    headers["X-Lovable-AIG-SDK"] = "vercel-ai-sdk";
-  }
+  const baseURL = "https://generativelanguage.googleapis.com/v1beta/openai";
+  const model = GEMINI_FALLBACK_MODEL_ID;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${GEMINI_API_KEY}`,
+  };
 
   const body: Record<string, unknown> = {
     model,
@@ -243,10 +232,7 @@ export function shouldFallbackOnError(e: unknown): boolean {
 export async function minimaxChatWithFallback(
   opts: Parameters<typeof minimaxChat>[0],
   // Optional dependency injection for testing the cascade without env mutation.
-  // `env.ts` captures API keys at module load, so a test can't flip availability
-  // after import. Production passes nothing → availability is read from the live
-  // env bindings exactly as before, so runtime behavior is unchanged.
-  deps?: { gemini?: boolean; lovable?: boolean; allowLovable?: boolean },
+  deps?: { gemini?: boolean },
 ): Promise<FallbackResult> {
   try {
     const result = await minimaxChat(opts);
@@ -269,12 +255,9 @@ export async function minimaxChatWithFallback(
     if (!shouldFallbackOnError(e)) {
       throw e;
     }
-    // Do NOT cascade to a fallback when the CALLER aborted (an external per-tool
-    // timeout / request cancellation via opts.signal). runWithToolTimeout has
-    // already returned the timeout result, so a fallback LLM call here is
-    // orphaned — it burns Lovable/Grok quota + cost off-ledger in the background
-    // for a result nobody reads (Codex review). Only MiniMax's OWN failure
-    // (its internal timeout / 5xx / network error) should cascade.
+    // Do NOT cascade to a fallback when the CALLER aborted. runWithToolTimeout
+    // has already returned the timeout result, so a fallback call here would be
+    // orphaned and burn quota off-ledger. Only MiniMax's OWN failure cascades.
     if (opts.signal?.aborted) {
       throw e;
     }
@@ -282,16 +265,12 @@ export async function minimaxChatWithFallback(
     console.warn(`[orchestrator-fallback] MiniMax error (${msg}), retrying on fallback`);
   }
 
-  const fb = selectFallbackProvider({
-    gemini: deps?.gemini ?? !!GEMINI_API_KEY,
-    lovable: deps?.lovable ?? !!LOVABLE_API_KEY,
-    allowLovable: deps?.allowLovable ?? ALLOW_LOVABLE_FALLBACK,
-  });
+  const fb = selectFallbackProvider({ gemini: deps?.gemini ?? !!GEMINI_API_KEY });
   if (!fb.provider) {
     return { ok: false, status: 0, content: "", raw: { error: fb.reason }, usedFallback: false };
   }
   console.warn(`[orchestrator-fallback] using ${fb.provider} (${fb.reason})`);
-  const result = await callFallbackProvider(fb.provider, opts);
+  const result = await callFallbackProvider(opts);
   return { ...result, usedFallback: true };
 }
 

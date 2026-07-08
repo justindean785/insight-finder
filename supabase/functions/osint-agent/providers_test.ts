@@ -86,16 +86,12 @@ Deno.test("shouldFallbackOnError: RangeError → no fallback", () => {
 // ---------------------------------------------------------------------------
 // minimaxChatWithFallback — integration tests.
 //
-// The function calls selectFallbackProvider which reads XAI_API_KEY and
-// LOVABLE_API_KEY from env.ts (captured at module-load time). Since env.ts
-// was already loaded by the static import above, we cannot change its
-// exported values. Instead, the tests that exercise the "no fallback
-// available" path work as-is (env keys are empty in test), and the tests
-// that need fallback to trigger use a local HTTP server so we control
-// both the primary and fallback responses — but we need the env module
-// to believe a key is configured.
+// The function calls selectFallbackProvider which reads GEMINI_API_KEY from
+// env.ts (captured at module-load time). Since env.ts was already loaded by
+// the static import above, we cannot change its exported values. Instead,
+// the tests use a deps injection parameter to control fallback availability.
 //
-// Strategy: the XAI_API_KEY was already read as "" from env.ts. We
+// Strategy: GEMINI_API_KEY was already read as "" from env.ts. We
 // cannot change that. But selectFallbackProvider reads it from the live
 // env.ts export. The export is `const` so we can't mutate it directly.
 //
@@ -220,14 +216,12 @@ Deno.test("minimaxChatWithFallback: MiniMax 403 + no fallback configured → cle
 
 const MINIMAX_HOST = "api.minimax.io";
 const GEMINI_HOST = "generativelanguage.googleapis.com";
-const LOVABLE_GW_HOST = "ai.gateway.lovable.dev";
 const GROK_HOST = "api.x.ai";
 
 /** Build a fetch stub that routes by URL host and records all hits. */
 function routingFetch(routes: {
   minimax: () => Response;
   gemini?: () => Response;
-  lovable?: () => Response;
 }): { fetch: typeof globalThis.fetch; calls: string[] } {
   const calls: string[] = [];
   const fetch = (async (input: Request | URL | string) => {
@@ -237,10 +231,6 @@ function routingFetch(routes: {
     if (url.includes(GEMINI_HOST)) {
       if (!routes.gemini) throw new Error(`unexpected gemini call to ${url}`);
       return routes.gemini();
-    }
-    if (url.includes(LOVABLE_GW_HOST)) {
-      if (!routes.lovable) throw new Error(`unexpected lovable call to ${url}`);
-      return routes.lovable();
     }
     if (url.includes(GROK_HOST)) {
       throw new Error(`Grok must NEVER be selected as a fallback (got ${url})`);
@@ -304,80 +294,6 @@ Deno.test("minimaxChatWithFallback falls back to direct Gemini when MiniMax thro
     assertEquals(calls.length, 2);
     assertEquals(calls[0].includes(MINIMAX_HOST), true);
     assertEquals(calls[1].includes(GEMINI_HOST), true);
-  } finally {
-    globalThis.fetch = origFetch;
-  }
-});
-
-Deno.test("minimaxChatWithFallback prefers direct Gemini over the Lovable gateway when both are available", async () => {
-  const { minimaxChatWithFallback } = await import("./providers.ts");
-  const origFetch = globalThis.fetch;
-  const { fetch, calls } = routingFetch({
-    minimax: () => new Response("server error", { status: 500 }),
-    gemini: () =>
-      new Response(JSON.stringify({ choices: [{ message: { content: "gemini-wins" } }] }), {
-        status: 200,
-      }),
-    // No lovable route: routingFetch throws if the gateway is hit.
-  });
-  try {
-    globalThis.fetch = fetch;
-    const result = await minimaxChatWithFallback(
-      { user: "test" },
-      { gemini: true, lovable: true, allowLovable: true },
-    );
-    assertEquals(result.usedFallback, true);
-    assertEquals(result.content, "gemini-wins");
-    assertEquals(calls.length, 2);
-    assertEquals(calls[1].includes(GEMINI_HOST), true);
-  } finally {
-    globalThis.fetch = origFetch;
-  }
-});
-
-Deno.test("minimaxChatWithFallback does NOT use the Lovable gateway without ALLOW_LOVABLE_FALLBACK", async () => {
-  const { minimaxChatWithFallback } = await import("./providers.ts");
-  const origFetch = globalThis.fetch;
-  const { fetch, calls } = routingFetch({
-    minimax: () => new Response("rate limited", { status: 429 }),
-    // No gemini or lovable routes: any fallback call throws.
-  });
-  try {
-    globalThis.fetch = fetch;
-    const result = await minimaxChatWithFallback(
-      { user: "test" },
-      { gemini: false, lovable: true, allowLovable: false },
-    );
-    // Lovable is present but not opted in → clean failure, no fallback fired.
-    assertEquals(result.ok, false);
-    assertEquals(result.usedFallback, false);
-    assertEquals(calls.length, 1);
-    assertEquals(calls[0].includes(MINIMAX_HOST), true);
-  } finally {
-    globalThis.fetch = origFetch;
-  }
-});
-
-Deno.test("minimaxChatWithFallback uses the Lovable gateway when opted in and Gemini is absent", async () => {
-  const { minimaxChatWithFallback } = await import("./providers.ts");
-  const origFetch = globalThis.fetch;
-  const { fetch, calls } = routingFetch({
-    minimax: () => new Response("rate limited", { status: 429 }),
-    lovable: () =>
-      new Response(JSON.stringify({ choices: [{ message: { content: "gateway-answer" } }] }), {
-        status: 200,
-      }),
-  });
-  try {
-    globalThis.fetch = fetch;
-    const result = await minimaxChatWithFallback(
-      { user: "test" },
-      { gemini: false, lovable: true, allowLovable: true },
-    );
-    assertEquals(result.usedFallback, true);
-    assertEquals(result.content, "gateway-answer");
-    assertEquals(calls.length, 2);
-    assertEquals(calls[1].includes(LOVABLE_GW_HOST), true);
   } finally {
     globalThis.fetch = origFetch;
   }
