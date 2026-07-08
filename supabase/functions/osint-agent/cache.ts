@@ -66,6 +66,10 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   indicia_address: 20_000,
   indicia_web_dbs: 20_000,
   indicia_hudsonrock: 20_000,
+  // SocialFetch server-side web read (/v1/web/markdown) fetches + renders + converts
+  // a full page (YouTube, etc.) upstream, which legitimately exceeds the 12s default.
+  // 25s outer budget sits above the tool's own 22s per-attempt fetch timeout.
+  socialfetch_web_read: 25_000,
 };
 export function toolTimeoutMs(name: string): number {
   return TOOL_TIMEOUT_OVERRIDE_MS[name] ?? DEFAULT_TOOL_TIMEOUT_MS;
