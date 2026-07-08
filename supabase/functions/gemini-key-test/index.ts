@@ -8,22 +8,26 @@ Deno.serve(async (req) => {
       status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }
-  const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`;
+  const model = 'gemini-2.5-flash';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
   const started = Date.now();
-  const r = await fetch(url);
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ contents: [{ parts: [{ text: 'Reply with exactly the word: pong' }] }] }),
+  });
   const text = await r.text();
-  let parsed: unknown = text;
+  let parsed: any = text;
   try { parsed = JSON.parse(text); } catch { /* keep raw */ }
-  const modelCount = (parsed as { models?: unknown[] })?.models?.length;
+  const reply = parsed?.candidates?.[0]?.content?.parts?.[0]?.text;
   return new Response(JSON.stringify({
     ok: r.ok,
     status: r.status,
     latency_ms: Date.now() - started,
-    key_length: key.length,
+    model,
     key_prefix: key.slice(0, 6),
-    model_count: modelCount,
-    sample: r.ok
-      ? ((parsed as { models?: Array<{ name: string }> }).models ?? []).slice(0, 3).map((m) => m.name)
-      : parsed,
+    reply,
+    usage: parsed?.usageMetadata,
+    error: r.ok ? undefined : parsed,
   }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 });
