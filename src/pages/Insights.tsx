@@ -241,7 +241,7 @@ function StatTile({
 }) {
   return (
     <div className="rounded-2xl border border-border-subtle/80 glass-card p-5">
-      <div className="flex items-center gap-2 text-eyebrow uppercase tracking-wider text-muted-foreground">
+      <div className="flex items-center gap-2 text-meta font-medium text-muted-foreground">
         <Icon className="w-3.5 h-3.5" />
         {label}
       </div>
@@ -271,7 +271,7 @@ function Card({
 }) {
   return (
     <div className="rounded-2xl border border-border-subtle/80 glass-card p-5">
-      <div className="flex items-center gap-2 text-eyebrow uppercase tracking-wider text-muted-foreground mb-4">
+      <div className="flex items-center gap-2 text-title font-semibold text-foreground/90 mb-4">
         <Icon className="w-3.5 h-3.5" />
         {title}
       </div>

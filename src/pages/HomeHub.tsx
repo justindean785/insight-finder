@@ -191,7 +191,7 @@ export default function HomeHub() {
               Resume most recent
             </Link>
           </div>
-          <div className="mt-6 flex flex-wrap items-center gap-2 text-micro font-mono uppercase tracking-[0.14em] text-muted-foreground">
+          <div className="mt-6 flex flex-wrap items-center gap-2 text-micro font-mono tracking-normal text-muted-foreground">
             <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1">Cases {counts.cases.toLocaleString()}</span>
             <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1">Artifacts {counts.artifacts.toLocaleString()}</span>
             <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1">Memories {counts.memories.toLocaleString()}</span>
