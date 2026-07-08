@@ -649,6 +649,7 @@ export type Database = {
           unlimited: boolean
         }[]
       }
+      get_insights_summary: { Args: { p_user_id?: string }; Returns: Json }
       has_role: {
         Args: {
           _role: Database["public"]["Enums"]["app_role"]
