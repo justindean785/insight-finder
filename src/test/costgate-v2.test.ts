@@ -17,7 +17,7 @@ import { summarizeRunCosts } from "@/lib/runCost";
 // The point of this file is to prove that:
 //   (a) none of those failed calls charge actual credits (charged_micro_usd 0),
 //       while their attributed list price (cost_micro_usd) is preserved; and
-//   (b) the one real circuit gap — synapsint's plain 5xx slipping past the old
+//   (b) the one real circuit gap — a paid provider's plain 5xx slipping past the old
 //       consecutive-failure guard — now fails the provider over on the FIRST 500.
 
 // The 19 failed-but-attributed calls from the trace, with their list prices.
@@ -30,16 +30,16 @@ const FAILED_TRACE_ROWS: Array<{ tool: string; status: number; baseCost: number 
   { tool: "whois_lookup", status: 0, baseCost: 1_000 }, // TLS/blank failure
   { tool: "whois_lookup", status: 0, baseCost: 1_000 },
   { tool: "whois_lookup", status: 0, baseCost: 1_000 },
-  { tool: "synapsint_lookup", status: 500, baseCost: 500 },
-  { tool: "synapsint_lookup", status: 500, baseCost: 500 },
-  { tool: "synapsint_lookup", status: 500, baseCost: 500 },
-  { tool: "synapsint_lookup", status: 500, baseCost: 500 },
-  { tool: "synapsint_lookup", status: 500, baseCost: 500 },
-  { tool: "synapsint_lookup", status: 500, baseCost: 500 },
+  { tool: "serus_darkweb_scan", status: 500, baseCost: 500 },
+  { tool: "serus_darkweb_scan", status: 500, baseCost: 500 },
+  { tool: "serus_darkweb_scan", status: 500, baseCost: 500 },
+  { tool: "serus_darkweb_scan", status: 500, baseCost: 500 },
+  { tool: "serus_darkweb_scan", status: 500, baseCost: 500 },
+  { tool: "serus_darkweb_scan", status: 500, baseCost: 500 },
   { tool: "socialfetch_lookup", status: 400, baseCost: 3_000 },
   { tool: "bosint_phone_lookup", status: 500, baseCost: 2_000 },
   { tool: "deepfind_profile_analyzer", status: 404, baseCost: 2_000 },
-  { tool: "stolentax_footprint", status: 403, baseCost: 1_500 },
+  { tool: "serus_darkweb_scan", status: 403, baseCost: 1_500 },
   { tool: "ipgeolocation_lookup", status: 401, baseCost: 1_000 },
 ];
 
@@ -86,24 +86,24 @@ describe("CostGate v2 — run summary separates charged from attributed", () => 
   });
 });
 
-describe("CostGate v2 — synapsint first-5xx degrade (the one real circuit gap)", () => {
+describe("CostGate v2 — paid-provider first-5xx degrade (the one real circuit gap)", () => {
   let thread = "";
   let n = 0;
   beforeEach(() => { thread = `cg-${++n}`; clearThread(thread); });
 
-  it("suppresses synapsint's provider on the FIRST 500, not after several", () => {
-    expect(shouldRun(thread, "synapsint_lookup", "seed-1").allow).toBe(true);
-    recordResult(thread, "synapsint_lookup", "seed-1", "default", {
+  it("suppresses the provider on the FIRST 500, not after several", () => {
+    expect(shouldRun(thread, "serus_darkweb_scan", "seed-1").allow).toBe(true);
+    recordResult(thread, "serus_darkweb_scan", "seed-1", "default", {
       status: classifyResult({ ok: false, status: 500 }, null),
     });
-    expect(isProviderSuppressed(thread, "synapsint_lookup").suppressed).toBe(true);
+    expect(isProviderSuppressed(thread, "serus_darkweb_scan").suppressed).toBe(true);
     // A different selector for the same provider is now skipped (free) too.
-    expect(shouldRun(thread, "synapsint_lookup", "seed-2").allow).toBe(false);
+    expect(shouldRun(thread, "serus_darkweb_scan", "seed-2").allow).toBe(false);
   });
 
   it("does not over-suppress on a SUCCESS", () => {
-    recordResult(thread, "synapsint_lookup", "seed-1", "default", { status: "ok", artifactCount: 1 });
-    expect(isProviderSuppressed(thread, "synapsint_lookup").suppressed).toBe(false);
+    recordResult(thread, "serus_darkweb_scan", "seed-1", "default", { status: "ok", artifactCount: 1 });
+    expect(isProviderSuppressed(thread, "serus_darkweb_scan").suppressed).toBe(false);
   });
 });
 

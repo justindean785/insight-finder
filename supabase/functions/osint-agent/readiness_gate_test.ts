@@ -13,7 +13,6 @@ import {
 const SCHEMA = [
   "hibp_lookup",
   "ipqualityscore_lookup",
-  "stolentax_footprint",
   "breach_check", // keyless fallback → must SURVIVE the gate
   "rapidapi_breach_search",
   "rapidapi_all_breaches",
@@ -32,7 +31,6 @@ Deno.test("keyless tools are gated out of schedulable set AND schema", () => {
     const t of [
       "hibp_lookup",
       "ipqualityscore_lookup",
-      "stolentax_footprint",
       "rapidapi_breach_search",
       "rapidapi_all_breaches",
       "gemini_deep_dork",
@@ -74,14 +72,15 @@ Deno.test("a present key keeps its tool in the schema (control)", () => {
 });
 
 Deno.test("cut tools are gated out of the schema even with their key present", () => {
-  const caps = discoverCapabilities(
-    { STOLENTAX_API_KEY: true, SYNAPSINT_API_KEY: true, IPQUALITYSCORE_API_KEY: true },
-    null,
-  );
+  // ipqualityscore_lookup is disabled (dead key) in capabilities.ts, so it must be
+  // gated even when IPQUALITYSCORE_API_KEY is present. (The permanently-dead
+  // stolentax_footprint / synapsint_lookup / emailrep tools were removed entirely.)
+  const caps = discoverCapabilities({ IPQUALITYSCORE_API_KEY: true }, null);
   const gated = new Set(gatedToolNames(caps));
-  for (const t of ["stolentax_footprint", "synapsint_lookup", "emailrep", "ipqualityscore_lookup"]) {
-    assert(gated.has(t), `${t} is cut (disabled) and must be gated even with its key present`);
-  }
+  assert(
+    gated.has("ipqualityscore_lookup"),
+    "ipqualityscore_lookup is cut (disabled) and must be gated even with its key present",
+  );
 });
 
 Deno.test("newly-mapped rapidapi breach tools are gated only on their own key", () => {

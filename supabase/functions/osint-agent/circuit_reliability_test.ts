@@ -43,11 +43,11 @@ Deno.test("404 across 2 distinct selectors disables the endpoint for the run", (
   clearThread(thread);
 });
 
-Deno.test("synapsint 500 suppresses on first failure (unchanged)", () => {
+Deno.test("a paid provider's 500 suppresses on first failure (unchanged)", () => {
   const thread = "t-500";
   clearThread(thread);
-  recordResult(thread, "synapsint_lookup", "example.com", "default", { status: "http_500" });
-  assertEquals(shouldRun(thread, "synapsint_lookup", "other.com").allow, false);
+  recordResult(thread, "serus_darkweb_scan", "example.com", "default", { status: "http_500" });
+  assertEquals(shouldRun(thread, "serus_darkweb_scan", "other.com").allow, false);
   clearThread(thread);
 });
 

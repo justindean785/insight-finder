@@ -27,7 +27,6 @@ export const TIER_A: ReadonlyArray<string> = [
 
 export const TIER_B: ReadonlyArray<string> = [
   "virustotal_lookup",
-  "stolentax_footprint",
   "cordcat_lookup",
   "parallax_lookup",
   "urlscan_search",
@@ -43,7 +42,6 @@ export const TIER_B: ReadonlyArray<string> = [
   "http_fingerprint",
   "deepfind_ssl_inspect",
   "deepfind_tech_stack",
-  "emailrep",
   "gravatar_profile",
   // Indicia — broker/lead tier (reliability ~65). New, unproven aggregator whose
   // data is data-broker + breach-dump; kept below the established TIER_A breach

@@ -122,7 +122,6 @@ const BREACH_ONLY_SOURCES = new Set([
 const USERNAME_SWEEP_SOURCES = new Set([
   "username_sweep",
   "username_search",
-  "stolentax_footprint",
   "deepfind_profile_analyzer",
   "deepfind_reverse_email",
 ]);
@@ -163,7 +162,7 @@ export function isDirectProfileSource(src: string | null | undefined, _meta?: Re
 // Threat/reputation sources (VirusTotal, URLScan, EmailRep, IPQS, AbuseIPDB).
 // These describe reputation/abuse signals, NOT credential breach data, and must
 // never be presented under "Breach / Exposure".
-const REPUTATION_SOURCE_RE = /virustotal|urlscan|emailrep|ipqualityscore|ipqs|abuseipdb|reputation|threat/i;
+const REPUTATION_SOURCE_RE = /virustotal|urlscan|ipqualityscore|ipqs|abuseipdb|reputation|threat/i;
 
 /** True when an artifact is a threat/reputation signal rather than a breach. */
 export function isReputationArtifact(a: { kind: string; source: string | null; metadata: Record<string, unknown> | null }): boolean {
@@ -903,7 +902,7 @@ export function buildInvestigationSummary(input: ReportInput): string {
 
 /** Suggested fan-out tool groups based on artifact kinds present. */
 export const SUGGESTED_TOOLS_BY_KIND: Record<string, string[]> = {
-  email: ["emailrep", "breach_check", "gravatar_profile", "hunter_email_verifier", "intelbase_email_lookup"],
+  email: ["breach_check", "gravatar_profile", "hunter_email_verifier", "intelbase_email_lookup"],
   username: ["username_sweep", "github_user", "reddit_user", "hackernews_user", "google_dorks"],
   domain: ["whois_lookup", "dns_records", "crtsh_subdomains", "hunter_domain_search", "urlscan_search"],
   ip: ["ip_intel", "shodan_internetdb", "hackertarget"],

@@ -27,7 +27,7 @@ describe("infrastructure source sub-class classification", () => {
   });
   it("maps reputation tools to infra_reputation", () => {
     expect(classifySource("virustotal_lookup")).toBe("infra_reputation");
-    expect(classifySource("emailrep")).toBe("infra_reputation");
+    expect(classifySource("urlscanner_scan")).toBe("infra_reputation");
     expect(classifySource("ipqualityscore_lookup")).toBe("infra_reputation");
   });
   it("still strips parenthetical qualifiers", () => {

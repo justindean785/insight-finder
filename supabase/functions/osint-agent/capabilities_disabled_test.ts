@@ -17,17 +17,14 @@ Deno.test("a healthy keyed provider is still available (control)", () => {
 });
 
 Deno.test("cut providers (dead keys / dead APIs) are gated off the schedulable set", () => {
-  // Even with their keys present, the four CUT tools must report unavailable so the
-  // readiness gate strips them from the schema (they no longer emit real signal).
-  const caps = discoverCapabilities(
-    { STOLENTAX_API_KEY: true, SYNAPSINT_API_KEY: true, IPQUALITYSCORE_API_KEY: true },
-    null,
-  );
+  // Even with its key present, the CUT ipqualityscore_lookup tool must report
+  // unavailable so the readiness gate strips it from the schema (dead key, no real
+  // signal). (The permanently-dead stolentax_footprint / synapsint_lookup / emailrep
+  // tools were removed from the codebase entirely, not just disabled.)
+  const caps = discoverCapabilities({ IPQUALITYSCORE_API_KEY: true }, null);
   const byTool = new Map(caps.map((c) => [c.tool, c]));
-  for (const t of ["stolentax_footprint", "synapsint_lookup", "emailrep", "ipqualityscore_lookup"]) {
-    assertEquals(byTool.get(t)?.available, false, `${t} must be gated off (cut)`);
-    assertEquals(byTool.get(t)?.reason, "disabled", `${t} reason must be 'disabled'`);
-  }
+  assertEquals(byTool.get("ipqualityscore_lookup")?.available, false, "ipqualityscore_lookup must be gated off (cut)");
+  assertEquals(byTool.get("ipqualityscore_lookup")?.reason, "disabled", "ipqualityscore_lookup reason must be 'disabled'");
 });
 
 Deno.test("indicia tools are gated on INDICIA_API_KEY", () => {

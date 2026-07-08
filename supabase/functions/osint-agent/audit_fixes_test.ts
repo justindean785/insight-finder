@@ -22,7 +22,7 @@ Deno.test("classifySource maps infra tools to sub-classes", () => {
   assertEquals(classifySource("http_fingerprint"), "infra_scan");
   assertEquals(classifySource("virustotal_lookup"), "infra_reputation");
   assertEquals(classifySource("ipqualityscore_lookup"), "infra_reputation");
-  assertEquals(classifySource("emailrep"), "infra_reputation");
+  assertEquals(classifySource("urlscanner_scan"), "infra_reputation");
   assertEquals(classifySource("hunter_domain_search"), "infra_registry");
 });
 

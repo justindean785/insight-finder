@@ -2,7 +2,7 @@
 //
 // Indicia (api.indicia.app) — US person/phone/email/address + web-DB breach
 // aggregator. Added 2026-07-05 to replace the cut footprint aggregators
-// (synapsint_lookup, stolentax_footprint — both dead in prod).
+// (the permanently-dead synapsint and stolentax footprint tools).
 //
 // These are LIVE runtime tool defs (AI-SDK `tool()`), imported and late-attached
 // into buildTools() in tool-registry.ts — NOT the dead `tools/*.ts` barrel. Gated

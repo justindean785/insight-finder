@@ -1,5 +1,5 @@
 /**
- * tools/osint_navigator.ts — OSINT Navigator (query + search), OathNet, Synapsint.
+ * tools/osint_navigator.ts — OSINT Navigator (query + search) + OathNet.
  * Extracted from index.ts (lines 2188–2350).
  */
 
@@ -8,10 +8,7 @@ import { z } from "npm:zod@3";
 import {
   OSINT_NAVIGATOR_API_KEY,
   OATHNET_API_KEY,
-  SYNAPSINT_API_KEY,
   fetchRetry,
-  isDegraded,
-  markToolDegraded,
 } from "../env.ts";
 import type {
   NavigatorQueryResponse,
@@ -91,41 +88,6 @@ export const oathnet_lookup = tool({
       }
       return { ok: r.ok, status: r.status, data };
     } catch (e) {
-      return { error: String(e) };
-    }
-  },
-}),
-
-export const synapsint_lookup = tool({
-  description:
-    "Synapsint multi-endpoint OSINT aggregator (synapsint.pythonanywhere.com). One tool, many endpoints — pick the right `endpoint` for the seed type. " +
-    "Domain endpoints: links, subdomains, dns, waf, tenant (Microsoft), leaks (emails leaked from this domain), whoisd, dmarc, sh (security headers), tls, ranking, pastes (pastebin mentions), dnssec. " +
-    "IP endpoints: check (IP info + open ports), rip (reverse-IP shared-hosting neighbors), whoiss. " +
-    "ASN endpoint: asn. Email endpoint: email (leaked credentials). CVE endpoint: cve. " +
-    "Use as a fast secondary corroboration source for domain/IP/email/CVE/ASN seeds — especially valuable for `rip` (shared hosting), `tenant` (M365 enumeration), `pastes`, and `leaks` which other tools don't cover. Free tier API key; treat quota as generous but not unlimited.",
-  inputSchema: z.object({
-    endpoint: z.enum([
-      "links","asn","check","waf","subdomains","dns","tenant","rip",
-      "email","leaks","whoisd","whoiss","cve","dmarc","sh","tls",
-      "ranking","pastes","dnssec",
-    ]).describe("Which Synapsint endpoint to call."),
-    value: z.string().describe("Parameter for the endpoint — domain, ip, asn, email, or CVE id as appropriate."),
-  }),
-  execute: async ({ endpoint, value }) => {
-    if (!SYNAPSINT_API_KEY) return { error: "SYNAPSINT_API_KEY not configured" };
-    const deg = isDegraded("synapsint_lookup"); if (deg) return deg;
-    try {
-      const url = `https://synapsint.pythonanywhere.com/${endpoint}/${encodeURIComponent(value)}`;
-      const r = await fetchRetry(url, {
-        headers: { "X-API-KEY": SYNAPSINT_API_KEY, "accept": "application/json" },
-      }, { retries: 1 });
-      const text = await r.text();
-      let data: unknown;
-      try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 4000) }; }
-      if (r.status >= 500) markToolDegraded("synapsint_lookup", `HTTP ${r.status}`);
-      return { ok: r.ok, status: r.status, endpoint, value, data };
-    } catch (e) {
-      markToolDegraded("synapsint_lookup", `network error`);
       return { error: String(e) };
     }
   },

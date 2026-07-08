@@ -4,8 +4,8 @@ import { toolDisplayName, toolActionLabel, toolAgentRole, humanizeStage } from "
 const KNOWN_TOOLS = [
   "list_tools", "triage_seed",
   "breach_check", "hibp_lookup", "leakcheck_lookup", "oathnet_lookup",
-  "stolentax_footprint", "serus_darkweb_scan",
-  "emailrep", "gravatar_profile", "hunter_domain_search", "hunter_email_finder",
+  "serus_darkweb_scan",
+  "gravatar_profile", "hunter_domain_search", "hunter_email_finder",
   "hunter_email_verifier", "hunter_combined", "bosint_email_lookup", "bosint_phone_lookup",
   "deepfind_reverse_email", "deepfind_disposable_email", "intelbase_email_lookup",
   "socialfetch_lookup", "cordcat_discord_lookup", "username_sweep", "username_search",
@@ -23,7 +23,7 @@ const KNOWN_TOOLS = [
   "crypto_wallet",
   "deepfind_ransomware_exposure", "deepfind_vin_lookup",
   "deepfind_aircraft_lookup", "deepfind_vessel_lookup",
-  "osint_navigator_query", "osint_navigator_search", "synapsint_lookup",
+  "osint_navigator_query", "osint_navigator_search",
   "record_artifacts", "record_artifact", "record_evidence", "record_finding",
   "memory_recall", "memory_save",
   "coverage_audit", "detect_contradictions", "tool_audit",
@@ -54,7 +54,7 @@ describe("toolDisplayName", () => {
   it("sensitive tools do not expose raw identifiers in collapsed label", () => {
     const sensitive = [
       "breach_check", "hibp_lookup", "leakcheck_lookup", "oathnet_lookup",
-      "serus_darkweb_scan", "stolentax_footprint", "deepfind_reverse_email",
+      "serus_darkweb_scan", "deepfind_reverse_email",
       "intelbase_email_lookup",
     ];
     for (const tool of sensitive) {

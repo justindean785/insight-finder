@@ -54,7 +54,7 @@ import {
   coerceArtifactsInput,
 } from "./validation.ts";
 
-import type { NavigatorQueryResponse, NavigatorSearchResponse, NavigatorTool, StolenTaxResponse, GitHubCodeSearchResponse, GitHubCodeMatch } from "./api_types.ts";
+import type { NavigatorQueryResponse, NavigatorSearchResponse, NavigatorTool, GitHubCodeSearchResponse, GitHubCodeMatch } from "./api_types.ts";
 
 import {
   scrubArtifactRow, scrubArtifactRows, hashInput, normalizeForHash,
@@ -455,7 +455,7 @@ export function buildTools(ctx: ToolContext) {
             "rapidapi_breach_search","rapidapi_all_breaches",
             "breach_check","leakcheck_lookup","hibp_lookup","oathnet_lookup",
             "bosint_email_lookup",
-            "stolentax_footprint","serus_darkweb_scan",
+            "serus_darkweb_scan",
             // Indicia — US person/phone/email/address + web-DB breach aggregator.
             "indicia_email","indicia_phone","indicia_person","indicia_address",
             "indicia_web_dbs","indicia_hudsonrock",
@@ -468,7 +468,7 @@ export function buildTools(ctx: ToolContext) {
             "deepfind_email_breach","deepfind_transaction_viewer",
             // Profile / social
             "socialfetch_lookup","cordcat_discord_lookup","github_user","github_code_search",
-            "hackernews_user","reddit_user","gravatar_profile","emailrep",
+            "hackernews_user","reddit_user","gravatar_profile",
             "username_sweep","username_search",
             // Email enrichment
             "hunter_domain_search","hunter_email_finder","hunter_email_verifier","hunter_combined",
@@ -500,21 +500,20 @@ export function buildTools(ctx: ToolContext) {
           // for ~0 yield. Runtime defs + catalog entries are kept (contract
           // test stays green) and they're decoupled from playbooks; re-add
           // here only after the underlying integration/key is repaired.
-          //   stolentax_footprint  22% ok, ~10s latency (401 bad key + aborts)
           //   hackernews_user       0% ok
           //   gravatar_profile     14% ok (404s; already demoted in #171)
-          //   emailrep             19% ok (429 rate-limited; low value)
           //   ipqualityscore_lookup 0/28 ok — dead key ("Invalid or unauthorized
           //                        key" for 30d); cut 2026-07-05.
           // NB: hibp_lookup (0%) stays on its API-key gate (valuable once keyed) and
-          // is NOT hard-blocked. ipqualityscore is now hard-cut (dead key).
-          // stolentax_footprint / synapsint_lookup / emailrep / ipqualityscore_lookup
-          // are ALSO hard-disabled in capabilities.ts (disabled:true) so the readiness
-          // gate deletes them from the tool schema entirely; keeping them here is
-          // belt-and-suspenders for the planner menu.
+          // is NOT hard-blocked. ipqualityscore is now hard-cut (dead key) and is
+          // ALSO hard-disabled in capabilities.ts (disabled:true) so the readiness
+          // gate deletes it from the tool schema entirely; keeping it here is
+          // belt-and-suspenders for the planner menu. (The permanently-dead
+          // stolentax_footprint / synapsint_lookup / emailrep tools were removed
+          // from the codebase entirely in the dead-tool cull.)
           const PERMANENT_BLOCK = new Set([
-            "stolentax_footprint","synapsint_lookup","hackernews_user",
-            "gravatar_profile","emailrep","ipqualityscore_lookup",
+            "hackernews_user",
+            "gravatar_profile","ipqualityscore_lookup",
           ]);
           // Tools the circuit breaker has disabled this investigation (e.g.
           // a provider after consecutive HTTP 500s). Without this the planner
@@ -1085,57 +1084,6 @@ export function buildTools(ctx: ToolContext) {
           const data = await r.json().catch(() => ({}));
           // leakcheck public signals failure via {success:false} at HTTP 200.
           return { ok: okWithSuccessFlag(r.ok, data), source: "leakcheck.public", data };
-        } catch (e) {
-          return { error: String(e) };
-        }
-      },
-    }),
-    stolentax_footprint: tool({
-      description:
-        "stolen.tax OsintCat-Footprint — account-discovery sweep across ~127 sites for an email or username. Returns per-site presence + extra account metadata (display name, user_id, plan, SSO providers, password-set flag, etc.). Complements deepfind_reverse_email (different site list) and is higher-fidelity per hit. Same 1000/day stolen.tax budget as breach_check.",
-      inputSchema: memoSchema("stolentax_footprint", () => z.object({
-        value: z.string().min(1),
-        type: z.enum(["auto", "email", "username"]).default("auto"),
-      })),
-      execute: async ({ value, type }) => {
-        const STOLENTAX_API_KEY = Deno.env.get("STOLENTAX_API_KEY");
-        if (!STOLENTAX_API_KEY) return { error: "STOLENTAX_API_KEY not configured" };
-        const q = value.trim();
-        if (!q) return { error: "missing value" };
-        // Auto-detect: contains '@' -> email, else username.
-        const ft = type === "auto" ? (q.includes("@") ? "email" : "username") : type;
-        try {
-          // 127-site account-discovery sweep — legitimately slow upstream.
-          const r = await fetchT(
-            "https://stolen.tax/api/v2/index.php?path=osintcat-footprint",
-            {
-              method: "POST",
-              headers: {
-                "Authorization": `Bearer ${STOLENTAX_API_KEY}`,
-                "X-API-Key": STOLENTAX_API_KEY,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({ query: q, footprint_type: ft }),
-            },
-            25_000,
-          );
-          const text = await r.text();
-          let parsed: StolenTaxResponse;
-          try { parsed = JSON.parse(text); } catch { parsed = { raw: text.slice(0, 4000) }; }
-          const d = parsed?.data ?? {};
-          const taken = Array.isArray(d?.results)
-            ? d.results.filter((x) => x?.taken === true).map((x) => ({ domain: x.domain, extra: x.ExtraData ?? null }))
-            : [];
-          return {
-            ok: r.ok,
-            status: r.status,
-            source: "stolen.tax/osintcat-footprint",
-            footprint_type: ft,
-            stats: d?.stats ?? null,
-            taken_count: taken.length,
-            taken,
-            raw: parsed,
-          };
         } catch (e) {
           return { error: String(e) };
         }
@@ -3358,31 +3306,6 @@ export function buildTools(ctx: ToolContext) {
         } catch (e) { return { error: String(e) }; }
       },
     }),
-    emailrep: tool({
-      description:
-        "Free EmailRep.io reputation lookup. Returns reputation (high/medium/low/none), suspicious flag, deliverability, breach count, domain age, and which sites the email is registered on. Great corroboration for any email seed.",
-      inputSchema: memoSchema("emailrep", () => z.object({ email: z.string().email() })),
-      execute: async ({ email }) => {
-        // emailrep.io disabled its unauthenticated API in 2025 — keyless calls now
-        // 429 with "the unauthenticated API is currently disabled; use an API key".
-        // Without EMAILREP_API_KEY this is a config skip, not a tool failure.
-        const KEY = Deno.env.get("EMAILREP_API_KEY");
-        try {
-          const headers: Record<string, string> = { "User-Agent": "Proximity-OSINT", Accept: "application/json" };
-          if (KEY) headers["Key"] = KEY;
-          const r = await fetchT(`https://emailrep.io/${encodeURIComponent(email)}`, { headers });
-          if (!KEY && (r.status === 429 || r.status === 401)) {
-            return {
-              skipped: true,
-              status: r.status,
-              note: "EMAILREP_API_KEY not configured — emailrep.io disabled its unauthenticated API. Set the key to enable, or corroborate via gravatar_profile / hunter_* / breach_check.",
-            };
-          }
-          const data = await r.json().catch(() => ({}));
-          return { ok: r.ok, status: r.status, data };
-        } catch (e) { return { error: String(e) }; }
-      },
-    }),
     gravatar_profile: tool({
       description:
         "Look up a Gravatar profile by email. Returns display name, bio, linked social accounts, avatar URL — and confirms the email is real. Always run on any email seed.",
@@ -4561,8 +4484,8 @@ export function buildTools(ctx: ToolContext) {
     ...(SOCIALFETCH_API_KEY ? ["socialfetch_lookup"] : []),
     ...(HUNTER_API_KEY ? ["hunter_combined", "hunter_email_verifier", "hunter_domain_search"] : []),
     ...(Deno.env.get("LEAKCHECK_API_KEY") ? ["leakcheck_lookup"] : []),
-    // stolentax_footprint CUT 2026-07-05 (disabled in capabilities.ts) — breach_check
-    // still uses STOLENTAX_API_KEY when present but falls back to keyless leakcheck.
+    // breach_check uses STOLENTAX_API_KEY when present but falls back to keyless
+    // leakcheck (the standalone stolentax_footprint tool was removed in the cull).
     ...(Deno.env.get("STOLENTAX_API_KEY") ? ["breach_check"] : []),
     ...(INDICIA_API_KEY ? ["indicia_email","indicia_phone","indicia_person","indicia_address","indicia_web_dbs","indicia_hudsonrock"] : []),
     ...(Deno.env.get("DEEPFIND_API_KEY") ? ["deepfind_reverse_email","deepfind_disposable_email","deepfind_ssl_inspect","deepfind_tech_stack","deepfind_url_unshorten","deepfind_telegram_channel","deepfind_telegram_search","deepfind_vin_lookup","deepfind_aircraft_lookup","deepfind_vessel_lookup","deepfind_mac_lookup","deepfind_dark_web_link","deepfind_email_breach","deepfind_transaction_viewer"] : []),
