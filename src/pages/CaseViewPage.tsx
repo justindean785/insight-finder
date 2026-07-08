@@ -135,7 +135,7 @@ export default function CaseViewPage() {
           </div>
           <div className="flex items-center gap-2 shrink-0">
             {running && (
-              <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded-full border border-[hsl(var(--intel-blue)/0.35)] bg-[hsl(var(--intel-blue)/0.08)] text-[hsl(var(--intel-blue))]">
+              <span className="text-eyebrow font-mono uppercase tracking-wider px-2 py-1 rounded-full border border-[hsl(var(--intel-blue)/0.35)] bg-[hsl(var(--intel-blue)/0.08)] text-[hsl(var(--intel-blue))]">
                 Running
               </span>
             )}

@@ -82,7 +82,7 @@ function ArtifactRow({ a }: { a: Artifact }) {
       <td className={cn("px-3 py-2 font-mono break-words [overflow-wrap:anywhere]", isExcluded && "line-through decoration-muted-foreground/50")}>
         {a.value}
         {isInferred && !isExcluded && (
-          <span className="ml-2 align-middle rounded border border-conf-possible/40 bg-conf-possible/10 px-1 py-px text-[9px] font-mono uppercase tracking-wider text-conf-possible no-underline">
+          <span className="ml-2 align-middle rounded border border-conf-possible/40 bg-conf-possible/10 px-1 py-px text-micro font-mono uppercase tracking-wider text-conf-possible no-underline">
             inferred · unverified
           </span>
         )}
@@ -92,7 +92,7 @@ function ArtifactRow({ a }: { a: Artifact }) {
       </td>
       <td className="px-3 py-2">
         <EvidenceStatusBadge status={status.status} label={status.label} tone={status.tone} hint={status.hint} />
-        <div className="mt-1 text-[10px] leading-snug text-muted-foreground">{status.basis}</div>
+        <div className="mt-1 text-eyebrow leading-snug text-muted-foreground">{status.basis}</div>
       </td>
       <td className="px-3 py-2 text-data">
         <ConfidenceBar score={a.confidence} showValue className="min-w-[5.5rem]" />
@@ -112,7 +112,7 @@ function BucketTable({ rows, empty }: { rows: Artifact[]; empty: string }) {
   if (!rows.length) return <p className="text-muted-foreground italic text-data mt-2">{empty}</p>;
   return (
     <>
-    <p className="sm:hidden mt-2 -mb-1 text-[10px] text-muted-foreground/70">Scroll horizontally to see all columns →</p>
+    <p className="sm:hidden mt-2 -mb-1 text-eyebrow text-muted-foreground/70">Scroll horizontally to see all columns →</p>
     <div className="rounded-xl border border-white/[0.08] overflow-x-auto mt-2 bg-[hsl(var(--surface-1))/0.42] [scrollbar-width:thin]">
       <table className="w-full min-w-[1024px] table-fixed [&_td]:align-top text-data">
         <thead>
@@ -827,7 +827,7 @@ export function CaseReport({
   }, [buckets]);
 
   return (
-    <article id="case-report-print-root" className="case-report-doc text-[12.5px] leading-relaxed text-foreground/95">
+    <article id="case-report-print-root" className="case-report-doc text-data leading-relaxed text-foreground/95">
       <VerdictBanner verdict={verdict} confCount={confidenceFindings.length} indepCount={independenceFindings.length} />
       {/* Header */}
       <header className="report-cover relative overflow-hidden rounded-2xl border border-white/[0.08] bg-[hsl(var(--surface-1))/0.72] p-4 sm:p-5">
@@ -901,7 +901,7 @@ export function CaseReport({
                   {f.value}
                   {dobSuspect && (
                     <span
-                      className="ml-2 align-middle rounded border border-[hsl(var(--warning))]/60 bg-[hsl(var(--warning))]/10 px-1.5 py-px text-[9px] font-mono uppercase tracking-wider text-[hsl(var(--warning))] no-underline"
+                      className="ml-2 align-middle rounded border border-[hsl(var(--warning))]/60 bg-[hsl(var(--warning))]/10 px-1.5 py-px text-micro font-mono uppercase tracking-wider text-[hsl(var(--warning))] no-underline"
                       title="January 1 is a common placeholder DOB — verify before relying on it"
                     >
                       placeholder?
@@ -945,7 +945,7 @@ export function CaseReport({
                   <span className="min-w-0 truncate font-mono text-foreground break-words [overflow-wrap:anywhere]">{l.value}</span>
                 )}
                 {l.inferred && (
-                  <span className="shrink-0 rounded border border-conf-possible/40 bg-conf-possible/10 px-1 py-px text-[9px] font-mono uppercase tracking-wider text-conf-possible">inferred</span>
+                  <span className="shrink-0 rounded border border-conf-possible/40 bg-conf-possible/10 px-1 py-px text-micro font-mono uppercase tracking-wider text-conf-possible">inferred</span>
                 )}
               </div>
             ))}
@@ -970,7 +970,7 @@ export function CaseReport({
         <summary className="cursor-pointer list-none select-none px-3 py-2.5 flex items-center gap-2 text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">
           <span className="transition-transform group-open:rotate-90" aria-hidden>▸</span>
           Analytics
-          <span className="ml-auto text-[10px] normal-case tracking-normal text-muted-foreground/70">descriptive — not scoring</span>
+          <span className="ml-auto text-eyebrow normal-case tracking-normal text-muted-foreground/70">descriptive — not scoring</span>
         </summary>
         <div className="px-3 pb-3 space-y-3">
       <section className="grid gap-3 xl:grid-cols-[1.05fr_0.95fr]">
@@ -1125,7 +1125,7 @@ export function CaseReport({
                       {b.severity && (
                         <span
                           className={cn(
-                            "ml-2 align-middle rounded border px-1.5 py-px text-[9px] font-mono uppercase tracking-wider",
+                            "ml-2 align-middle rounded border px-1.5 py-px text-micro font-mono uppercase tracking-wider",
                             b.severity === "CRITICAL"
                               ? "border-destructive/50 bg-destructive/15 text-destructive"
                               : "border-[hsl(var(--warning))]/60 bg-[hsl(var(--warning))]/10 text-[hsl(var(--warning))]",
@@ -1142,7 +1142,7 @@ export function CaseReport({
                       {b.creds.length ? (
                         <span className="flex flex-wrap gap-1">
                           {b.creds.map((c) => (
-                            <span key={c} className="rounded border border-destructive/40 bg-destructive/10 px-1.5 py-px text-[10px] font-mono text-destructive">{c}</span>
+                            <span key={c} className="rounded border border-destructive/40 bg-destructive/10 px-1.5 py-px text-eyebrow font-mono text-destructive">{c}</span>
                           ))}
                         </span>
                       ) : "—"}

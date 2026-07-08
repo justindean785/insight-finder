@@ -382,14 +382,14 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
 
         <span className="ml-auto hidden sm:flex items-center gap-2 shrink-0">
           {cached && (
-            <span className="px-1.5 py-0.5 rounded-md text-[9px] font-mono uppercase tracking-wider border border-primary/30 bg-primary/10 text-primary">
+            <span className="px-1.5 py-0.5 rounded-md text-micro font-mono uppercase tracking-wider border border-primary/30 bg-primary/10 text-primary">
               cached
             </span>
           )}
           {tier && (
             <span
               className={cn(
-                "px-1.5 py-0.5 rounded-md text-[9px] font-mono uppercase tracking-wider border",
+                "px-1.5 py-0.5 rounded-md text-micro font-mono uppercase tracking-wider border",
                 tier === "smart"
                   ? "border-accent/50 bg-accent/10 text-accent"
                   : "border-white/10 bg-white/[0.04] text-muted-foreground",
@@ -401,7 +401,7 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
           )}
           {durationLabel && (
             <span
-              className="px-1.5 py-0.5 rounded-md text-[9px] font-mono tabular-nums border border-white/10 bg-white/[0.03] text-muted-foreground"
+              className="px-1.5 py-0.5 rounded-md text-micro font-mono tabular-nums border border-white/10 bg-white/[0.03] text-muted-foreground"
               title={`Tool runtime: ${durationMs}ms`}
             >
               {durationLabel}
@@ -621,7 +621,7 @@ function RunFlowRail({ groups }: { groups: ToolRunGroup[] }) {
   if (groups.length <= 1) return null;
   return (
     <div className="rounded-xl border border-white/8 bg-[linear-gradient(160deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02)_58%,rgba(255,255,255,0.01))] px-3 py-2 shadow-[0_14px_50px_-34px_rgba(0,0,0,0.95)]">
-      <div className="mb-1 flex items-center gap-2 text-[10px] font-mono uppercase tracking-[0.18em] text-muted-foreground/80">
+      <div className="mb-1 flex items-center gap-2 text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground/80">
         <GitBranch className="h-3 w-3 text-primary/80" />
         Run flow
       </div>
@@ -645,10 +645,10 @@ function RunFlowRail({ groups }: { groups: ToolRunGroup[] }) {
                 : "text-foreground border-white/15 bg-white/[0.05]";
           return (
             <div key={`flow-${group.key}-${index}`} className="flex shrink-0 items-center gap-1">
-              <div className={cn("inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px]", toneClass)}>
+              <div className={cn("inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-micro", toneClass)}>
                 {icon}
                 <span className="font-mono uppercase tracking-[0.08em]">{cycleSummaryLabel(humanizeStage(group.stage), group.cycleId)}</span>
-                <span className="text-[10px] opacity-80">{group.parts.length}</span>
+                <span className="text-eyebrow opacity-80">{group.parts.length}</span>
               </div>
               {!isLast && <span className="h-px w-5 shrink-0 bg-gradient-to-r from-white/25 to-white/5" aria-hidden />}
             </div>
@@ -1052,7 +1052,7 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIM
             <button
               type="button"
               onClick={() => copyToClipboard(copyText, "Message copied")}
-              className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground/70 hover:text-foreground hover:bg-surface-2 transition-colors"
+              className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-micro text-muted-foreground/70 hover:text-foreground hover:bg-surface-2 transition-colors"
               aria-label="Copy message"
               title="Copy message"
             >
@@ -2175,10 +2175,10 @@ function ChatWindowInner({
                           <Sparkles className="w-3 h-3 text-primary" />
                         )}
                         {s.priority && <span className={`pivot-priority pivot-priority--${s.priority}`}>{s.priority}</span>}
-                        <span className="truncate text-[10px] uppercase tracking-[0.14em] text-muted-foreground/80 font-mono">{s.meta}</span>
+                        <span className="truncate text-eyebrow uppercase tracking-[0.14em] text-muted-foreground/80 font-mono">{s.meta}</span>
                       </span>
                       <span className="block text-sm font-semibold leading-snug text-foreground group-hover:text-primary transition-colors">{s.title}</span>
-                      {s.detail && <span className="block text-[11px] leading-snug text-muted-foreground line-clamp-2">{s.detail}</span>}
+                      {s.detail && <span className="block text-micro leading-snug text-muted-foreground line-clamp-2">{s.detail}</span>}
                     </span>
                   </button>
                 ))}
@@ -2249,7 +2249,7 @@ function ChatWindowInner({
                 placeholder="Investigate an email, username, phone, IP, or domain…"
                 aria-label="Investigation query — enter an email, username, phone, IP, or domain"
                 rows={2}
-                className="min-h-[72px] max-h-32 font-chat bg-transparent border-0 resize-none overflow-y-auto focus-visible:ring-0 focus-visible:ring-offset-0 pl-[3.25rem] sm:pl-14 pr-14 sm:pr-16 py-3 sm:py-4 text-[15px] leading-6 tracking-[-0.01em] placeholder:text-muted-foreground/70"
+                className="min-h-[72px] max-h-32 font-chat bg-transparent border-0 resize-none overflow-y-auto focus-visible:ring-0 focus-visible:ring-offset-0 pl-[3.25rem] sm:pl-14 pr-14 sm:pr-16 py-3 sm:py-4 text-body leading-6 tracking-[-0.01em] placeholder:text-muted-foreground/70"
               />
               <Button
                 type="button"

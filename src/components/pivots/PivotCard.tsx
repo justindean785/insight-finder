@@ -72,7 +72,7 @@ export function PivotCard({
               </button>
             )}
             <span className={`pivot-priority pivot-priority--${pivot.priority}`}>{pivot.priority}</span>
-            <span className="truncate text-[10px] uppercase tracking-[0.14em] text-muted-foreground font-mono">
+            <span className="truncate text-eyebrow uppercase tracking-[0.14em] text-muted-foreground font-mono">
               {pivot.type} · {pivot.source}
             </span>
           </div>

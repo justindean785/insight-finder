@@ -87,12 +87,12 @@ function ClusterCard({ cluster: c, index }: { cluster: IdentityCluster; index: n
       <div className="flex items-start justify-between gap-2">
         <div className="text-data font-semibold leading-tight">{title}</div>
         {infraOnly ? (
-          <div className="text-[9px] font-mono px-1.5 py-0.5 rounded border shrink-0 text-muted-foreground border-border bg-secondary/40">
+          <div className="text-micro font-mono px-1.5 py-0.5 rounded border shrink-0 text-muted-foreground border-border bg-secondary/40">
             <span className="flex items-center gap-1"><Server className="w-2.5 h-2.5" />{shared ? "shared infra" : "infrastructure"}</span>
           </div>
         ) : (
           <div className={cn(
-            "text-[9px] font-mono px-1.5 py-0.5 rounded border shrink-0",
+            "text-micro font-mono px-1.5 py-0.5 rounded border shrink-0",
             matches === true
               ? "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/40 bg-[hsl(var(--confidence-high))]/10"
               : matches === false
@@ -106,7 +106,7 @@ function ClusterCard({ cluster: c, index }: { cluster: IdentityCluster; index: n
         )}
       </div>
       {shared && (
-        <div className="text-[10px] text-muted-foreground/90 flex items-center gap-1">
+        <div className="text-eyebrow text-muted-foreground/90 flex items-center gap-1">
           <Server className="w-2.5 h-2.5 shrink-0" />
           Shared infrastructure · not ownership proof
         </div>
@@ -121,7 +121,7 @@ function ClusterCard({ cluster: c, index }: { cluster: IdentityCluster; index: n
         <Field icon={Network} label="ips" values={c.ips} />
       </div>
 
-      <div className="flex items-center justify-between text-[9px] text-muted-foreground border-t border-border/40 pt-1.5">
+      <div className="flex items-center justify-between text-micro text-muted-foreground border-t border-border/40 pt-1.5">
         <span className="flex items-center gap-1">
           <Tag className="w-2.5 h-2.5" />
           {c.artifacts.length} artifact{c.artifacts.length === 1 ? "" : "s"} · {c.sources.length} tool{c.sources.length === 1 ? "" : "s"}
@@ -130,7 +130,7 @@ function ClusterCard({ cluster: c, index }: { cluster: IdentityCluster; index: n
       </div>
 
       {c.mergeReasons.length > 0 && (
-        <div className="text-[9px] text-muted-foreground/90 flex flex-wrap gap-1 leading-snug">
+        <div className="text-micro text-muted-foreground/90 flex flex-wrap gap-1 leading-snug">
           {c.mergeReasons.map((r, i) => (
             <span key={i} className="font-mono px-1 py-0.5 rounded bg-secondary/40 border border-border/40">{r}</span>
           ))}
@@ -153,7 +153,7 @@ function Field({
   if (!values.length) return null;
   return (
     <div className="space-y-0.5 col-span-2">
-      <div className="text-muted-foreground flex items-center gap-1 text-[9px] uppercase tracking-wider">
+      <div className="text-muted-foreground flex items-center gap-1 text-micro uppercase tracking-wider">
         <Icon className="w-2.5 h-2.5" />
         {label}
       </div>

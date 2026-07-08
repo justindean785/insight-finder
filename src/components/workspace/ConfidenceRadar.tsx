@@ -59,7 +59,7 @@ export function ConfidenceRadar({
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
           <Radar className="w-3.5 h-3.5 text-muted-foreground" aria-hidden />
-          <h3 className="text-[13px] font-semibold text-foreground leading-none">Confidence signals</h3>
+          <h3 className="text-meta font-semibold text-foreground leading-none">Confidence signals</h3>
         </div>
         <span
           className={cn(
@@ -146,7 +146,7 @@ export function ConfidenceRadar({
               <div className="mt-0.5 h-1 rounded-full bg-surface-3 overflow-hidden" aria-hidden>
                 <div className="h-full rounded-full" style={{ width: `${d.sufficient ? d.value : 0}%`, backgroundColor: bandColor(d) }} />
               </div>
-              <p className="mt-0.5 text-[10px] leading-snug text-muted-foreground/80">
+              <p className="mt-0.5 text-eyebrow leading-snug text-muted-foreground/80">
                 {!d.sufficient && <span className="text-muted-foreground">Insufficient data — </span>}
                 {d.reason}
               </p>

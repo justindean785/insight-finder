@@ -192,7 +192,7 @@ export default function HomeHub() {
               Resume most recent
             </Link>
           </div>
-          <div className="mt-6 flex flex-wrap items-center gap-2 text-[11px] font-mono uppercase tracking-[0.14em] text-muted-foreground">
+          <div className="mt-6 flex flex-wrap items-center gap-2 text-micro font-mono uppercase tracking-[0.14em] text-muted-foreground">
             <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1">Cases {counts.cases.toLocaleString()}</span>
             <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1">Artifacts {counts.artifacts.toLocaleString()}</span>
             <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1">Memories {counts.memories.toLocaleString()}</span>
@@ -276,7 +276,7 @@ export default function HomeHub() {
                     <div className="text-sm text-foreground truncate">
                       {c.title?.trim() || "Untitled case"}
                     </div>
-                    <div className="text-[11px] text-muted-foreground font-mono">
+                    <div className="text-micro text-muted-foreground font-mono">
                       {relativeTime(c.updated_at)}
                     </div>
                   </div>
@@ -352,7 +352,7 @@ function StatTile({
       <div className="mt-2 font-display text-4xl font-semibold tabular-nums tracking-tight">
         {loading ? <Skeleton className="h-10 w-24" /> : value.toLocaleString()}
       </div>
-      {sub && <div className="mt-1 text-[11px] font-mono text-muted-foreground">{sub}</div>}
+      {sub && <div className="mt-1 text-micro font-mono text-muted-foreground">{sub}</div>}
     </div>
   );
 }

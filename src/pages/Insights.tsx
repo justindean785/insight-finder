@@ -211,7 +211,7 @@ export default function Insights() {
                     <div className="text-sm text-foreground truncate">
                       {c.title?.trim() || "Untitled case"}
                     </div>
-                    <div className="text-[11px] text-muted-foreground font-mono">
+                    <div className="text-micro text-muted-foreground font-mono">
                       {c.artifactCount} artifacts · last activity {relativeTime(c.lastAt)}
                     </div>
                   </div>
@@ -261,7 +261,7 @@ function StatTile({
           </>
         )}
       </div>
-      {sub && <div className="mt-1 text-[11px] text-muted-foreground">{sub}</div>}
+      {sub && <div className="mt-1 text-micro text-muted-foreground">{sub}</div>}
     </div>
   );
 }

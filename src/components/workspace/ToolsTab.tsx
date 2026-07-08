@@ -167,9 +167,9 @@ function ActivityLog({
                   summary={<ActivityRowSummary e={e} />}
                 >
                   <div className="rounded-lg border border-border-subtle bg-surface-2/40 px-3 py-2 text-data text-muted-foreground leading-relaxed">
-                    <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70">Reason</span>
+                    <span className="font-mono text-eyebrow uppercase tracking-wider text-muted-foreground/70">Reason</span>
                     <div className="mt-1 text-foreground/90 break-words">{e.reason}</div>
-                    <div className="mt-2 font-mono text-[10px] text-muted-foreground/60 break-all">id: {e.id}</div>
+                    <div className="mt-2 font-mono text-eyebrow text-muted-foreground/60 break-all">id: {e.id}</div>
                   </div>
                 </ExpandableRow>
               ) : (
@@ -192,7 +192,7 @@ function ActivityRowSummary({ e }: { e: ToolEvent }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-meta text-foreground truncate">{e.displayName}</span>
-          <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70 shrink-0">{e.toolName}</span>
+          <span className="font-mono text-eyebrow uppercase tracking-wider text-muted-foreground/70 shrink-0">{e.toolName}</span>
         </div>
         {/* Title truncates once above; the REASON body carries the full provider
             string — wrap to 2 lines instead of a single-line clip (Phase C3). */}

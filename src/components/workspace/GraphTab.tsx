@@ -86,8 +86,8 @@ const EntityNode = memo(function EntityNode({ data, selected }: NodeProps<Entity
         )}
       >
         <Handle type="target" position={Position.Top} className="!h-1 !w-1 !border-0 !bg-transparent !opacity-0" isConnectable={false} />
-        <span className="font-mono text-[11px] font-bold leading-none">{data.label}</span>
-        <span className="font-mono text-[8px] uppercase tracking-[0.16em] opacity-70">{data.kind} · seed</span>
+        <span className="font-mono text-micro font-bold leading-none">{data.label}</span>
+        <span className="font-mono text-micro uppercase tracking-[0.16em] opacity-70">{data.kind} · seed</span>
         <Handle type="source" position={Position.Bottom} className="!h-1 !w-1 !border-0 !bg-transparent !opacity-0" isConnectable={false} />
       </div>
     );
@@ -105,9 +105,9 @@ const EntityNode = memo(function EntityNode({ data, selected }: NodeProps<Entity
     >
       <Handle type="target" position={Position.Top} className="!h-1 !w-1 !border-0 !bg-transparent !opacity-0" isConnectable={false} />
       <span className="h-2 w-2 shrink-0 rounded-[3px]" style={{ backgroundColor: color }} />
-      <span className="max-w-[140px] truncate font-mono text-[11px] text-foreground/90">{data.label}</span>
+      <span className="max-w-[140px] truncate font-mono text-micro text-foreground/90">{data.label}</span>
       {data.confidence > 0 && (
-        <span className="font-mono text-[9px] tabular-nums text-muted-foreground">{data.confidence}</span>
+        <span className="font-mono text-micro tabular-nums text-muted-foreground">{data.confidence}</span>
       )}
       <Handle type="source" position={Position.Bottom} className="!h-1 !w-1 !border-0 !bg-transparent !opacity-0" isConnectable={false} />
     </div>
@@ -315,7 +315,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
               >
                 <span className="h-2 w-2 rounded-[2px]" style={{ backgroundColor: GROUP_COLOR[g], opacity: off ? 0.4 : 1 }} />
                 {GROUP_LABEL[g]}
-                <span className="font-mono text-[10px] tabular-nums text-muted-foreground">{groupCounts.get(g)}</span>
+                <span className="font-mono text-eyebrow tabular-nums text-muted-foreground">{groupCounts.get(g)}</span>
               </button>
             );
           })}
@@ -417,13 +417,13 @@ export function GraphTab({ threadId }: { threadId: string }) {
                         {c.bridge && <Sparkles className="h-3 w-3 shrink-0 text-[hsl(var(--warning))]" />}
                         <span className="truncate font-mono text-data text-foreground/90">{shorten(c.otherLabel, 28)}</span>
                       </div>
-                      <div className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+                      <div className="mt-0.5 text-micro leading-snug text-muted-foreground">
                         <span className="text-foreground/70">{EDGE_LABEL[c.type]}{c.bridge ? " · bridge" : ""}</span> — {c.reason}
                       </div>
                     </li>
                   ))}
                   {connections.length > 8 && (
-                    <li className="text-[11px] text-muted-foreground">+{connections.length - 8} more…</li>
+                    <li className="text-micro text-muted-foreground">+{connections.length - 8} more…</li>
                   )}
                 </ul>
               )}
