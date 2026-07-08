@@ -21,14 +21,14 @@ beforeEach(() => { thread = `inv-${++n}-${Math.random()}`; clearThread(thread); 
 
 describe("429 suppresses the provider for the same investigation", () => {
   it("blocks the next call to that provider this run", () => {
-    expect(shouldRun(thread, "stolentax_footprint", "sel").allow).toBe(true);
-    recordResult(thread, "stolentax_footprint", "sel", "default", { status: "http_429" });
+    expect(shouldRun(thread, "serus_darkweb_scan", "sel").allow).toBe(true);
+    recordResult(thread, "serus_darkweb_scan", "sel", "default", { status: "http_429" });
 
-    const d = shouldRun(thread, "stolentax_footprint", "another-sel");
+    const d = shouldRun(thread, "serus_darkweb_scan", "another-sel");
     expect(d.allow).toBe(false);
     expect((d as { reason?: string }).reason).toMatch(/429|suppress/i);
 
-    const s = isProviderSuppressed(thread, "stolentax_footprint");
+    const s = isProviderSuppressed(thread, "serus_darkweb_scan");
     expect(s.suppressed).toBe(true);
     expect(s.until).toBeGreaterThan(Date.now());
   });
@@ -68,17 +68,17 @@ describe("suppression spans sibling tools of the same provider", () => {
 
 describe("suppression is isolated per investigation", () => {
   it("does not affect a different investigation", () => {
-    recordResult(thread, "stolentax_footprint", "sel", "default", { status: "http_429" });
+    recordResult(thread, "serus_darkweb_scan", "sel", "default", { status: "http_429" });
     const other = `inv-other-${Math.random()}`;
     clearThread(other);
-    expect(shouldRun(other, "stolentax_footprint", "sel").allow).toBe(true);
-    expect(isProviderSuppressed(other, "stolentax_footprint").suppressed).toBe(false);
+    expect(shouldRun(other, "serus_darkweb_scan", "sel").allow).toBe(true);
+    expect(isProviderSuppressed(other, "serus_darkweb_scan").suppressed).toBe(false);
   });
 });
 
 describe("other providers still run", () => {
   it("a 429 on one provider does not block unrelated providers", () => {
-    recordResult(thread, "stolentax_footprint", "sel", "default", { status: "http_429" });
+    recordResult(thread, "serus_darkweb_scan", "sel", "default", { status: "http_429" });
     expect(shouldRun(thread, "leakcheck_lookup", "sel").allow).toBe(true);
     expect(shouldRun(thread, "breach_check", "sel").allow).toBe(true);
   });
@@ -86,8 +86,8 @@ describe("other providers still run", () => {
 
 describe("no extra billing for skipped suppressed calls", () => {
   it("a suppressed/skipped call charges 0 credits", () => {
-    recordResult(thread, "stolentax_footprint", "sel", "default", { status: "http_429" });
-    const d = shouldRun(thread, "stolentax_footprint", "again");
+    recordResult(thread, "serus_darkweb_scan", "sel", "default", { status: "http_429" });
+    const d = shouldRun(thread, "serus_darkweb_scan", "again");
     expect(d.allow).toBe(false);
     // cache.ts blocks a !allow decision and logs it with freeCall=true, so the
     // attempted-but-skipped call bills nothing.
@@ -98,17 +98,17 @@ describe("no extra billing for skipped suppressed calls", () => {
 
 describe("suppression resets at the run boundary / has a finite cooldown", () => {
   it("clearThread lifts suppression", () => {
-    recordResult(thread, "stolentax_footprint", "sel", "default", { status: "http_429" });
-    expect(isProviderSuppressed(thread, "stolentax_footprint").suppressed).toBe(true);
+    recordResult(thread, "serus_darkweb_scan", "sel", "default", { status: "http_429" });
+    expect(isProviderSuppressed(thread, "serus_darkweb_scan").suppressed).toBe(true);
     clearThread(thread);
-    expect(isProviderSuppressed(thread, "stolentax_footprint").suppressed).toBe(false);
-    expect(shouldRun(thread, "stolentax_footprint", "sel").allow).toBe(true);
+    expect(isProviderSuppressed(thread, "serus_darkweb_scan").suppressed).toBe(false);
+    expect(shouldRun(thread, "serus_darkweb_scan", "sel").allow).toBe(true);
   });
 
   it("uses a finite cooldown window (not permanent)", () => {
     const before = Date.now();
-    recordResult(thread, "stolentax_footprint", "sel", "default", { status: "http_429" });
-    const s = isProviderSuppressed(thread, "stolentax_footprint");
+    recordResult(thread, "serus_darkweb_scan", "sel", "default", { status: "http_429" });
+    const s = isProviderSuppressed(thread, "serus_darkweb_scan");
     expect(s.until).toBeGreaterThan(before);
     expect(s.until).toBeLessThanOrEqual(Date.now() + PROVIDER_SUPPRESS_MS + 50);
   });
@@ -116,11 +116,11 @@ describe("suppression resets at the run boundary / has a finite cooldown", () =>
 
 describe("observability", () => {
   it("exposes active suppressions in a snapshot", () => {
-    recordResult(thread, "stolentax_footprint", "sel", "default", { status: "http_429" });
+    recordResult(thread, "serus_darkweb_scan", "sel", "default", { status: "http_429" });
     recordResult(thread, "bosint_email_lookup", "sel", "default", { status: "timeout" });
     const snap = suppressionSnapshot(thread);
     const providers = snap.map((x) => x.provider).sort();
-    expect(providers).toContain("stolentax_footprint");
+    expect(providers).toContain("serus_darkweb_scan");
     expect(providers).toContain("bosint");
     for (const x of snap) expect(x.reason).toMatch(/suppress|429|timeout/i);
   });

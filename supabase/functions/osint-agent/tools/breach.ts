@@ -22,14 +22,6 @@ interface StolenTaxParsed {
   [k: string]: unknown;
 }
 
-/** One taken-account row from the osintcat-footprint response. */
-interface FootprintResult {
-  domain?: string;
-  taken?: boolean;
-  ExtraData?: unknown;
-  [k: string]: unknown;
-}
-
 /** Loose shape for the LeakCheck v2 query response (only fields we read). */
 interface LeakCheckResponse {
   success?: boolean;
@@ -139,56 +131,6 @@ export const breach_check = tool({
       );
       const data = await r.json().catch(() => ({}));
       return { ok: r.ok, source: "leakcheck.public", data };
-    } catch (e) {
-      return { error: String(e) };
-    }
-  },
-}),
-
-export const stolentax_footprint = tool({
-  description:
-    "stolen.tax OsintCat-Footprint — account-discovery sweep across ~127 sites for an email or username. Returns per-site presence + extra account metadata (display name, user_id, plan, SSO providers, password-set flag, etc.). Complements deepfind_reverse_email (different site list) and is higher-fidelity per hit. Same 1000/day stolen.tax budget as breach_check.",
-  inputSchema: z.object({
-    value: z.string().min(1),
-    type: z.enum(["auto", "email", "username"]).default("auto"),
-  }),
-  execute: async ({ value, type }) => {
-    const STOLENTAX_API_KEY = Deno.env.get("STOLENTAX_API_KEY");
-    if (!STOLENTAX_API_KEY) return { error: "STOLENTAX_API_KEY not configured" };
-    const q = value.trim();
-    if (!q) return { error: "missing value" };
-    // Auto-detect: contains '@' -> email, else username.
-    const ft = type === "auto" ? (q.includes("@") ? "email" : "username") : type;
-    try {
-      const r = await fetch(
-        "https://stolen.tax/api/v2/index.php?path=osintcat-footprint",
-        {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${STOLENTAX_API_KEY}`,
-            "X-API-Key": STOLENTAX_API_KEY,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ query: q, footprint_type: ft }),
-        },
-      );
-      const text = await r.text();
-      let parsed: StolenTaxParsed;
-      try { parsed = JSON.parse(text); } catch { parsed = { raw: text.slice(0, 4000) }; }
-      const d = parsed?.data ?? {};
-      const taken = Array.isArray(d?.results)
-        ? (d.results as FootprintResult[]).filter((x) => x?.taken === true).map((x) => ({ domain: x.domain, extra: x.ExtraData ?? null }))
-        : [];
-      return {
-        ok: r.ok,
-        status: r.status,
-        source: "stolen.tax/osintcat-footprint",
-        footprint_type: ft,
-        stats: d?.stats ?? null,
-        taken_count: taken.length,
-        taken,
-        raw: parsed,
-      };
     } catch (e) {
       return { error: String(e) };
     }

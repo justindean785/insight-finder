@@ -87,21 +87,6 @@ interface HunterCombinedData {
   [k: string]: unknown;
 }
 
-export const emailrep = tool({
-  description:
-    "Free EmailRep.io reputation lookup. Returns reputation (high/medium/low/none), suspicious flag, deliverability, breach count, domain age, and which sites the email is registered on. Great corroboration for any email seed.",
-  inputSchema: z.object({ email: z.string().email() }),
-  execute: async ({ email }) => {
-    try {
-      const r = await fetch(`https://emailrep.io/${encodeURIComponent(email)}`, {
-        headers: { "User-Agent": "Proximity-OSINT", Accept: "application/json" },
-      });
-      const data = await r.json().catch(() => ({}));
-      return { ok: r.ok, status: r.status, data };
-    } catch (e) { return { error: String(e) }; }
-  },
-}),
-
 export const gravatar_profile = tool({
   description:
     "Look up a Gravatar profile by email. Returns display name, bio, linked social accounts, avatar URL — and confirms the email is real. Always run on any email seed.",

@@ -27,15 +27,12 @@ const SOURCE_LABELS: Record<string, string> = {
   intelbase_email_lookup: "email exposure lookup",
   deepfind_reverse_email: "reverse email lookup",
   deepfind_disposable_email: "disposable-address check",
-  stolentax_footprint: "restricted-indicator review",
   // threat intel (conservative — org/victim-level, not the subject)
   ransomwarelive_lookup: "threat-intel lookup",
   deepfind_ransomware_exposure: "threat-intel exposure lookup",
   // email intelligence
   bosint_email_lookup: "email intelligence lookup",
   bosint_phone_lookup: "phone intelligence lookup",
-  emailrep: "email reputation lookup",
-  emailrep_lookup: "email reputation lookup",
   gravatar_profile: "avatar/profile lookup",
   gravatar_lookup: "avatar/profile lookup",
   hunter_email_verifier: "email verification",
@@ -74,7 +71,6 @@ const SOURCE_LABELS: Record<string, string> = {
   wayback_snapshots: "web archive lookup",
   wayback_cdx_search: "web archive lookup",
   archive_url: "archive snapshot",
-  synapsint_lookup: "aggregated-intel search",
   // public records / registries
   census_geocode: "address geocode",
   nominatim_geocode: "address geocode",

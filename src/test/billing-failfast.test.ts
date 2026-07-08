@@ -61,8 +61,8 @@ describe("4. first 502/504 blocks retry spam for the same provider", () => {
   });
 
   it("disables the tool for the run after the FIRST 504", () => {
-    recordResult(thread, "stolentax_footprint", "sel", "default", { status: "http_504" });
-    expect(shouldRun(thread, "stolentax_footprint", "sel").allow).toBe(false);
+    recordResult(thread, "serus_darkweb_scan", "sel", "default", { status: "http_504" });
+    expect(shouldRun(thread, "serus_darkweb_scan", "sel").allow).toBe(false);
   });
 });
 
@@ -74,7 +74,7 @@ describe("6. run summary separates charged vs avoided failed-call cost", () => {
       { tool_name: "leakcheck_lookup", ok: true, cached: false, cost_micro_usd: 5_000, charged_micro_usd: 5_000 },
       { tool_name: "hunter_email_verifier", ok: true, cached: false, cost_micro_usd: 1_000, charged_micro_usd: 1_000 },
       { tool_name: "oathnet_lookup", ok: false, cached: false, cost_micro_usd: 10_000, charged_micro_usd: 0 }, // 502
-      { tool_name: "stolentax_footprint", ok: false, cached: false, cost_micro_usd: 1_500, charged_micro_usd: 0 }, // 504
+      { tool_name: "serus_darkweb_scan", ok: false, cached: false, cost_micro_usd: 1_500, charged_micro_usd: 0 }, // 504
       { tool_name: "memory_save", ok: false, cached: false, cost_micro_usd: 200, charged_micro_usd: 0 }, // dup-key
       { tool_name: "hibp_lookup", ok: false, cached: false, cost_micro_usd: 0, charged_micro_usd: 0 }, // free
       { tool_name: "leakcheck_lookup", ok: true, cached: true, cost_micro_usd: 0, charged_micro_usd: 0 }, // cache hit

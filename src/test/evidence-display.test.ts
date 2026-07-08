@@ -43,7 +43,7 @@ describe("extractFailedAndSkipped parity (review #3)", () => {
   });
   it("classifies provider-disabled as degraded", () => {
     const out = extractFailedAndSkipped([
-      msg([{ type: "tool-synapsint_lookup", state: "output-error", errorText: "unavailable: disabled (provider disabled)" }]),
+      msg([{ type: "tool-ipqualityscore_lookup", state: "output-error", errorText: "unavailable: disabled (provider disabled)" }]),
     ]);
     expect(out[0].kind).toBe("degraded");
   });

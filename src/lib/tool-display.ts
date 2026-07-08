@@ -17,11 +17,9 @@ const DISPLAY: Record<string, string> = {
   hibp_lookup:           "Risk Signal Analyst — Checking known exposure records",
   leakcheck_lookup:      "Risk Signal Analyst — Querying credential exposure index",
   oathnet_lookup:        "Risk Signal Analyst — Deep-scanning credential signals",
-  stolentax_footprint:   "Risk Signal Analyst — Mapping digital footprint exposure",
   serus_darkweb_scan:    "Risk Signal Analyst — Scanning restricted-source indicators",
 
   // ── Email intelligence ──
-  emailrep:              "Evidence Triage — Assessing email reputation signals",
   gravatar_profile:      "Profile Analyst — Checking linked avatar data",
   hunter_domain_search:  "Data Hunter — Enumerating domain-linked contacts",
   hunter_email_finder:   "Data Hunter — Locating associated email addresses",
@@ -89,7 +87,6 @@ const DISPLAY: Record<string, string> = {
   deepfind_vessel_lookup:"Data Hunter — Searching vessel registry records",
   osint_navigator_query: "Lead Analyst — Querying intelligence navigator",
   osint_navigator_search:"Data Hunter — Searching intelligence source catalog",
-  synapsint_lookup:      "Data Hunter — Searching aggregated intelligence feeds",
 
   // ── Recording & analysis ──
   record_artifacts:      "Case Manager — Organizing case artifacts",
