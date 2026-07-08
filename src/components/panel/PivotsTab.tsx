@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { normalizeTarget } from "@/lib/next-step-cards";
 import { computePivots, canonicalKey, type DisplayPivot } from "@/lib/pivot-engine";
 import { pivotSkipStorageKey, type RecommendedPivot } from "@/lib/recommended-pivots";
+import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
 import { PivotCard } from "@/components/pivots/PivotCard";
 
 /**
@@ -56,12 +57,15 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
     return () => window.removeEventListener("swarmbot:report-pivots", onReportPivots as EventListener);
   }, [threadId]);
 
+  // Targets already hit by a tool → shown here as "searched" rather than "new".
+  const queriedTargets = useThreadQueriedTargets(threadId);
+
   // Live pivots: recomputed whenever artifacts stream in, a new report turn
   // lands, or the skip set changes. computePivots already hard-hides skipped
   // targets, so this list IS the visible list.
   const visible = useMemo(
-    () => computePivots({ artifacts, seedValue, reportPivots, skipSet: skipped }),
-    [artifacts, seedValue, reportPivots, skipped],
+    () => computePivots({ artifacts, seedValue, reportPivots, skipSet: skipped, queriedSet: queriedTargets }),
+    [artifacts, seedValue, reportPivots, skipped, queriedTargets],
   );
 
   const recommendationByKey = useMemo(() => {

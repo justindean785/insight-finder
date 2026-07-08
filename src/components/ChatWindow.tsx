@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { detectSeed, formatThreadTitle } from "@/lib/seed";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
+import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
 import { isSubmitBlocked } from "@/lib/submit-guard";
 import { interpretReadinessProbe, type ReadinessBody } from "@/lib/readiness-probe";
 import { dedupeCards } from "@/lib/next-step-cards";
@@ -1209,6 +1210,9 @@ function ChatWindowInner({
   const submitLockRef = useRef(false);
   const [rerunBusy, setRerunBusy] = useState(false);
   const { items: artifacts } = useThreadArtifacts(threadId);
+  // Targets tools have already been run against — the "already investigated"
+  // signal that stops the rail re-suggesting a pivot that's already been run.
+  const queriedTargets = useThreadQueriedTargets(threadId);
   const [seedValue, setSeedValue] = useState<string | null>(null);
   // Skipped pivots (normalized-target keys) so a lead the analyst dismissed in
   // the Pivots tab never reappears in the chat rail. Hydrated from localStorage
@@ -1969,7 +1973,7 @@ function ChatWindowInner({
     // deduped, already-run-filtered and ranked. Chat only takes the top 3
     // still-actionable ("new") pivots; already-searched ones sink to the Pivots
     // tab. Recomputes whenever artifacts stream in or a new turn lands.
-    const ranked = computePivots({ artifacts, seedValue, reportPivots, skipSet: pivotSkip });
+    const ranked = computePivots({ artifacts, seedValue, reportPivots, skipSet: pivotSkip, queriedSet: queriedTargets });
     for (const p of ranked.filter((candidate) => candidate.status === "new").slice(0, 3)) {
       seenLabels.add(p.actionLabel);
       out.push({
@@ -1998,7 +2002,7 @@ function ChatWindowInner({
     // "Review lead · Damien O Brien" and "Review lead · Damien O'Brien" surfaced
     // from the same source are one lead, not two. Keep the first (highest-ranked).
     return dedupeCards(out).slice(0, 4);
-  }, [isLoading, messages, artifacts, seedValue, reportPivots, pivotSkip]);
+  }, [isLoading, messages, artifacts, seedValue, reportPivots, pivotSkip, queriedTargets]);
 
   return (
     <div className="relative flex-1 flex flex-col h-full min-w-0 overflow-hidden bg-background">
