@@ -134,30 +134,41 @@ export function useInsightsData(userId: string | undefined, enabled: boolean) {
 
   useEffect(() => {
     if (!enabled || !userId) return;
+    // Coalesce realtime bursts: an active scan can insert dozens of artifact /
+    // tool-usage rows per second, and each one would otherwise fire a full
+    // six-query reload. Debounce to one reload per quiet 600ms window (mirrors
+    // the CasesPage realtime pattern), so the Insights view stays live without
+    // hammering the DB.
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleLoad = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { timer = null; void load(); }, 600);
+    };
     const channel = supabase
       .channel(`insights-${userId}`)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "artifacts", filter: `user_id=eq.${userId}` },
-        () => void load(),
+        scheduleLoad,
       )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "threads", filter: `user_id=eq.${userId}` },
-        () => void load(),
+        scheduleLoad,
       )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "agent_memory", filter: `user_id=eq.${userId}` },
-        () => void load(),
+        scheduleLoad,
       )
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "tool_usage_log", filter: `user_id=eq.${userId}` },
-        () => void load(),
+        scheduleLoad,
       )
       .subscribe();
     return () => {
+      if (timer) clearTimeout(timer);
       void supabase.removeChannel(channel);
     };
   }, [enabled, userId, load]);

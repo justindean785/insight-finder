@@ -334,6 +334,7 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
       />
       <button
         onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
         className="w-full flex items-center gap-3 px-4 py-3.5 text-left"
       >
         <span
@@ -1560,7 +1561,9 @@ function ChatWindowInner({
       try {
         const probeRes = await fetch(`${FUNCTIONS_URL}?health=1`, { method: "GET", signal });
         if (probeRes.status === 404) {
-          toast.error("Edge function not deployed. Run: supabase functions deploy osint-agent");
+          // NB: `supabase functions deploy` 403s on this Lovable-owned project —
+          // the real deploy path is the Lovable mirror sync, not a CLI command.
+          toast.error("Backend edge function is not deployed. Deploy osint-agent via the Lovable mirror to continue.");
           return;
         }
         if (probeRes.status === 503 || probeRes.ok) {

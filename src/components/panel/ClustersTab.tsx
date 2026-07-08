@@ -13,15 +13,21 @@ export function ClustersTab({ threadId, artifacts }: { threadId: string; artifac
   const [seedValue, setSeedValue] = useState<string | null>(null);
 
   useEffect(() => {
+    // Guard against a thread-switch race (see TimelineTab): a late seed fetch for
+    // the previous thread must not overwrite the current thread's seed and
+    // mislabel cluster "seed match".
+    let alive = true;
     supabase
       .from("threads")
       .select("seed_value")
       .eq("id", threadId)
       .maybeSingle()
       .then(({ data, error }) => {
+        if (!alive) return;
         if (error) { captureError(error, "ClustersTab.seedFetch", { threadId }); return; }
         setSeedValue((data as { seed_value: string | null } | null)?.seed_value ?? null);
       });
+    return () => { alive = false; };
   }, [threadId]);
 
   const report = useMemo(() => buildIdentityClusters(artifacts, seedValue), [artifacts, seedValue]);

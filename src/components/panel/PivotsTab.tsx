@@ -195,7 +195,9 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
         <button
           type="button"
           onClick={() => {
-            window.dispatchEvent(new CustomEvent("proximity:open-tab", { detail: { tab: "matrix" } }));
+            // Route through the real nav bus (ChatPage listens for swarmbot:navigate);
+            // the old "proximity:open-tab" event had no listener — the pill was dead.
+            window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { section: "evidence", tab: "matrix" } }));
           }}
           className={
             "inline-flex items-center gap-1.5 px-2 py-1 rounded-full border font-mono text-eyebrow uppercase tracking-wider transition-colors " +
