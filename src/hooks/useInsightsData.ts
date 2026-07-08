@@ -1,22 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { captureError } from "@/lib/telemetry";
-
-export type InsightsArtifactRow = {
-  id: string;
-  kind: string;
-  source: string | null;
-  confidence: number | null;
-  created_at: string;
-  thread_id: string;
-};
-
-export type InsightsThreadRow = {
-  id: string;
-  title: string | null;
-  updated_at: string;
-  created_at: string;
-};
+import type { InsightsSummary } from "@/pages/InsightsDerived";
 
 export type ToolUsageSummary = {
   tool_name: string;
@@ -26,17 +11,14 @@ export type ToolUsageSummary = {
 };
 
 export type InsightsData = {
-  threads: InsightsThreadRow[];
-  artifacts: InsightsArtifactRow[];
+  /** Server-aggregated over ALL rows (see get_insights_summary RPC). */
+  summary: InsightsSummary;
   memoryCount: number;
   caseCountExact: number;
   artifactCountExact: number;
   toolSummaries: ToolUsageSummary[];
   toolCallsTotal: number;
 };
-
-const ARTIFACT_CAP = 5000;
-const THREAD_CAP = 500;
 
 export function useInsightsData(userId: string | undefined, enabled: boolean) {
   const [data, setData] = useState<InsightsData | null>(null);
@@ -48,70 +30,40 @@ export function useInsightsData(userId: string | undefined, enabled: boolean) {
     setLoading(true);
     setError(null);
     try {
-      const [
-        threadsRes,
-        artifactsRes,
-        memCountRes,
-        caseCountRes,
-        artifactCountRes,
-        toolLogRes,
-      ] = await Promise.all([
-        supabase
-          .from("threads")
-          .select("id,title,updated_at,created_at")
-          .eq("user_id", userId)
-          .order("updated_at", { ascending: false })
-          .limit(THREAD_CAP),
-        supabase
-          .from("artifacts")
-          .select("id,kind,source,confidence,created_at,thread_id")
-          .eq("user_id", userId)
-          .order("created_at", { ascending: false })
-          .limit(ARTIFACT_CAP),
-        supabase
-          .from("agent_memory")
-          .select("id", { count: "exact", head: true })
-          .eq("user_id", userId),
-        supabase
-          .from("threads")
-          .select("id", { count: "exact", head: true })
-          .eq("user_id", userId),
-        supabase
-          .from("artifacts")
-          .select("id", { count: "exact", head: true })
-          .eq("user_id", userId),
-        supabase
-          .from("tool_usage_log")
-          .select("tool_name,ok")
-          .eq("user_id", userId)
-          .order("created_at", { ascending: false })
-          .limit(3000),
+      // Aggregates come from the RPC (GROUP BY over every row, RLS-scoped to the
+      // caller) so they aren't capped at PostgREST's 1,000-row ceiling the way
+      // the old client-side row fetch was. The three headline counts stay as
+      // exact `head:true` count queries.
+      const [summaryRes, memCountRes, caseCountRes, artifactCountRes] = await Promise.all([
+        // Cast: the RPC isn't in the generated Supabase types yet (added in the
+        // same change as its migration); it's RLS-scoped to auth.uid().
+        supabase.rpc("get_insights_summary" as never) as unknown as Promise<{
+          data: InsightsSummary | null;
+          error: { message: string } | null;
+        }>,
+        supabase.from("agent_memory").select("id", { count: "exact", head: true }).eq("user_id", userId),
+        supabase.from("threads").select("id", { count: "exact", head: true }).eq("user_id", userId),
+        supabase.from("artifacts").select("id", { count: "exact", head: true }).eq("user_id", userId),
       ]);
 
-      if (threadsRes.error) throw threadsRes.error;
-      if (artifactsRes.error) throw artifactsRes.error;
-      if (toolLogRes.error) throw toolLogRes.error;
+      if (summaryRes.error) throw new Error(summaryRes.error.message);
+      const summary = summaryRes.data;
+      if (!summary) throw new Error("Insights summary was empty.");
 
-      const toolMap = new Map<string, ToolUsageSummary>();
-      for (const row of toolLogRes.data ?? []) {
-        const name = row.tool_name as string;
-        const prev = toolMap.get(name) ?? { tool_name: name, count: 0, ok: 0, failed: 0 };
-        prev.count++;
-        const ok = row.ok as boolean;
-        if (ok) prev.ok++;
-        else prev.failed++;
-        toolMap.set(name, prev);
-      }
-      const toolSummaries = [...toolMap.values()].sort((a, b) => b.count - a.count);
+      const toolSummaries: ToolUsageSummary[] = (summary.tool_counts ?? []).map((t) => ({
+        tool_name: t.tool_name,
+        count: t.count,
+        ok: t.ok_count,
+        failed: Math.max(0, t.count - t.ok_count),
+      }));
 
       setData({
-        threads: (threadsRes.data ?? []) as InsightsThreadRow[],
-        artifacts: (artifactsRes.data ?? []) as InsightsArtifactRow[],
+        summary,
         memoryCount: memCountRes.count ?? 0,
         caseCountExact: caseCountRes.count ?? 0,
         artifactCountExact: artifactCountRes.count ?? 0,
         toolSummaries,
-        toolCallsTotal: toolSummaries.reduce((n, t) => n + t.count, 0),
+        toolCallsTotal: summary.tool_calls_total ?? 0,
       });
     } catch (e) {
       captureError(e, "insights.load");
@@ -136,9 +88,8 @@ export function useInsightsData(userId: string | undefined, enabled: boolean) {
     if (!enabled || !userId) return;
     // Coalesce realtime bursts: an active scan can insert dozens of artifact /
     // tool-usage rows per second, and each one would otherwise fire a full
-    // six-query reload. Debounce to one reload per quiet 600ms window (mirrors
-    // the CasesPage realtime pattern), so the Insights view stays live without
-    // hammering the DB.
+    // reload. Debounce to one reload per quiet 600ms window so the Insights view
+    // stays live without hammering the DB.
     let timer: ReturnType<typeof setTimeout> | null = null;
     const scheduleLoad = () => {
       if (timer) clearTimeout(timer);

@@ -61,13 +61,7 @@ export default function Insights() {
   }
   if (!user) return <Navigate to="/auth" replace />;
 
-  const derived = data
-    ? deriveInsights({
-        threads: data.threads,
-        artifacts: data.artifacts,
-        memoryCount: data.memoryCount,
-      })
-    : null;
+  const derived = data ? deriveInsights(data.summary) : null;
 
   const totals = derived
     ? {
@@ -128,7 +122,7 @@ export default function Insights() {
                   key: g.group,
                   label: GROUP_LABEL[g.group],
                   value: g.count,
-                  total: derived.totals.artifacts || 1,
+                  total: totals?.artifacts || 1,
                   color: GROUP_COLOR[g.group],
                 }))}
               />
