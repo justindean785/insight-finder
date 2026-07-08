@@ -80,6 +80,7 @@ export type SourceClass =
  *  the per-sub-class caps depend on these exact values. */
 const TOOL_CLASS: Record<string, SourceClass> = {
   // breach / leak
+  breach_data: "breach",
   breach_check: "breach",
   rapidapi_breach_search: "breach",
   leakcheck_lookup: "breach",
@@ -207,6 +208,14 @@ export function splitSourceLabels(label: string | null | undefined): string[] {
     .filter(Boolean);
 }
 
+// Slash/slug-style breach provider labels are common in recorded artifacts
+// ("breach_data/memory", "breach_check/fling_com", "username_sweep/breach_data",
+// "serus_darkweb_scan (reveal:true)"). Classify them as breach BEFORE the generic
+// public-record / news free-text aliases, so a mixed "breach_check/oathnet/serus"
+// source can't be upgraded to public_record.
+const BREACH_SLUG_RE =
+  /(?:^|[/+|,;\s])(?:breach(?:[_-]?(?:check|data|exposure))?|leakcheck|hibp|serus[_-]?darkweb[_-]?scan|deepfind[_-]?(?:email[_-]?breach|dark[_-]?web[_-]?link|ransomware[_-]?exposure)|stolentax[_-]?footprint)(?:$|[/+|,;\s])/i;
+
 /** Classify ONE source token (internal slug or a single free-text label) into a
  *  single SourceClass. Returns "unknown" only when nothing matches.
  *
@@ -223,6 +232,10 @@ export function classifySource(toolOrSource: string | null | undefined): SourceC
   // still hits — without this, breach/passive-social hits leaked to unknown.
   const slug = toolOrSource.toLowerCase().replace(/\s*\([^)]*\)\s*$/, "").trim();
   if (TOOL_CLASS[slug]) return TOOL_CLASS[slug];
+
+  // Slash/slug breach labels classify as breach before the public-record aliases
+  // below, so a mixed breach source can't launder up to public_record.
+  if (BREACH_SLUG_RE.test(slug)) return "breach";
 
   // Reverse-IP / shared-host lookups describe co-tenants on a shared/CDN IP —
   // they never prove ownership and must not corroborate identity (#56). Matched

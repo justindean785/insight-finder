@@ -59,3 +59,53 @@ Deno.test("standalone-breach compound (address style) unchanged at breach cap 60
   assertEquals(r.source_classes, ["breach"]);
   assertEquals(r.cap, 60);
 });
+
+// ── #119: breach-metadata laundering guard ─────────────────────────────────
+// Breach-derived PII whose SURFACE source is a generic/aggregator or public-record
+// label — while the breach provenance lives only in metadata — must not launder up
+// to a public_record cap. The guard reads breach signals from metadata, pushes a
+// `breach` class, and drops `public_record` whenever `breach` is present.
+
+Deno.test("#119: breach metadata demotes a public_record surface label (laundering blocked)", () => {
+  // Surface source classifies as public_record (opencorporates_search, cap 75),
+  // but the metadata reveals the evidence is actually breach-derived.
+  const r = applyEvidenceCaps({
+    rawConfidence: 95,
+    sources: ["opencorporates_search"],
+    metadata: { breach_count: 3, breach_names: ["fling.com"] },
+  });
+  assert(r.source_classes.includes("breach"), `expected breach, got ${r.source_classes.join(",")}`);
+  assert(!r.source_classes.includes("public_record"), "public_record must be dropped when breach metadata is present");
+  assert(r.cap <= 65, `breach-derived cap must be <=65, got ${r.cap}`);
+  assert(r.confidence <= 65, `laundered confidence must be capped, got ${r.confidence}`);
+});
+
+Deno.test("#119: breach signal in metadata adds a breach class even with a generic source", () => {
+  const r = applyEvidenceCaps({
+    rawConfidence: 95,
+    sources: ["Multiple sources"], // generic wrapper label, no breach on the surface
+    metadata: { breach_source: "leakcheck", data_classes: ["passwords"] },
+  });
+  // Provenance: a `breach` class is derived from metadata even though the surface
+  // source names no breach tool. (The exact cap when an unrelated `unknown` class
+  // also corroborates is pre-existing cross-class behaviour, out of this guard's scope.)
+  assert(r.source_classes.includes("breach"), `expected breach from metadata, got ${r.source_classes.join(",")}`);
+});
+
+Deno.test("#119: slash/slug breach labels classify as breach, not public_record", () => {
+  const r = applyEvidenceCaps({ rawConfidence: 90, sources: ["username_sweep/breach_data"] });
+  assert(r.source_classes.includes("breach"), `expected breach, got ${r.source_classes.join(",")}`);
+  assert(!r.source_classes.includes("public_record"), "a mixed breach slug must not upgrade to public_record");
+  assert(r.cap <= 65, `got ${r.cap}`);
+});
+
+Deno.test("#119: NO false demotion — public_record without breach metadata is unchanged", () => {
+  const r = applyEvidenceCaps({
+    rawConfidence: 90,
+    sources: ["census_geocode"], // → public_record, cap 75
+    metadata: { note: "address exists in county records" },
+  });
+  assert(r.source_classes.includes("public_record"), `expected public_record, got ${r.source_classes.join(",")}`);
+  assert(!r.source_classes.includes("breach"), "no breach signal → no breach class");
+  assertEquals(r.cap, 75);
+});

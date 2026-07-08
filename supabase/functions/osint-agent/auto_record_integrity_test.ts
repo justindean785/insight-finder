@@ -37,3 +37,20 @@ Deno.test("buildAutoRecordedRow: preserves caller metadata", () => {
   assertEquals(row.metadata.seed, "Jane Doe");
   assertEquals(row.metadata.focus, "breach exposure");
 });
+
+// #119: the auto-record path must also honor the breach-metadata laundering
+// guard — a breach-derived row whose surface source looks like a public record
+// must be demoted to the breach cap, not recorded at public_record (75).
+Deno.test("buildAutoRecordedRow: breach metadata blocks public_record laundering (#119, 5th call site)", () => {
+  const row = buildAutoRecordedRow({
+    kind: "email",
+    value: "leaked@example.com",
+    source: "opencorporates_search", // classifies public_record (cap 75) on the surface
+    rawConfidence: 95,
+    metadata: { breach_count: 3, breach_names: ["fling.com"] },
+  });
+  const classes = row.metadata.source_category as string[];
+  assertEquals(classes.includes("breach"), true);
+  assertEquals(classes.includes("public_record"), false);
+  assertEquals(row.confidence <= 65, true);
+});
