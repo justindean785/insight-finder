@@ -3917,6 +3917,11 @@ export function buildTools(ctx: ToolContext) {
         const accepted: Array<{ index: number; kind: string; value: string }> = [];
         const rejected: Array<{ index: number; reason: string; kind: string; value: string }> = [];
         const rows: Array<Record<string, unknown>> = [];
+        // In-process dedup: a single batch sometimes carries the same
+        // (kind, value) twice (model repeats itself, or two sources agree).
+        // Skip exact repeats so we don't write duplicate artifact rows. This is
+        // a non-destructive, in-memory-only guard — no DB change.
+        const seenInBatch = new Set<string>();
         artifacts.forEach((a, i) => {
           // Infer strict kind from value patterns (LAPD → law_enforcement_unit,
           // People v X → court_case, wallet hex → crypto_wallet, etc.).
@@ -4016,6 +4021,12 @@ export function buildTools(ctx: ToolContext) {
             // Spread LAST so a corrected `note` overrides the model-supplied one.
             ...dateSanity.metaPatch,
           };
+          const dedupKey = `${finalKind} ${v.value}`;
+          if (seenInBatch.has(dedupKey)) {
+            rejected.push({ index: i, reason: "duplicate (kind,value) already in this batch", kind: finalKind, value: v.value });
+            return;
+          }
+          seenInBatch.add(dedupKey);
           rows.push({
             thread_id: threadId,
             user_id: userId,

@@ -331,9 +331,18 @@ export function wrapToolsWithCache(
       toolHealthPromise = (async () => {
         const map = new Map<string, ToolHealth>();
         try {
-          const { data } = await adminDb
+          const { data, error } = await adminDb
             .from("tool_health")
             .select("tool_name,ok_pct,p95_duration_ms,sample_size");
+          // Supabase returns { data, error } WITHOUT throwing on a query-level
+          // failure (missing view / permission denied), so surface it here — the
+          // catch below only fires on network/thrown errors. Degradation is
+          // unchanged (empty map → neutral scoring); this just makes the
+          // "view missing" case observable instead of silent.
+          if (error) {
+            console.warn("[tool_health] load failed (scoring without prior):", error.message);
+            return map;
+          }
           for (const row of (data ?? []) as Array<Record<string, unknown>>) {
             const tn = typeof row.tool_name === "string" ? row.tool_name : null;
             if (!tn) continue;
