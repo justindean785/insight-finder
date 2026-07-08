@@ -96,6 +96,9 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
 
   // ---- Social ----
   socialfetch_lookup: 3000,
+  socialfetch_web_read: 3000, // /v1/web/markdown — ~1 credit/URL, same pool as a lookup
+  socialfetch_whoami: 0,      // /v1/whoami — free, zero credits
+  socialfetch_balance: 0,     // /v1/balance — free, zero credits
 
   // ---- CordCat (Discord OSINT) ----
   // Free plan: 60 req/hour. Treat each successful call as ~$0.002.
