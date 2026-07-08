@@ -321,9 +321,16 @@ function SparkBars({ data }: { data: Array<{ day: string; count: number }> }) {
       {data.map((d) => {
         const h = Math.max(2, Math.round((d.count / max) * 100));
         return (
-          <div key={d.day} className="flex-1 flex flex-col items-center gap-1" title={`${d.day}: ${d.count}`}>
+          // h-full + justify-end give the percentage-height bar a resolved
+          // parent height; without it the column collapsed and the bars
+          // rendered at 0px (the "empty" activity chart).
+          <div
+            key={d.day}
+            className="flex-1 h-full flex flex-col justify-end"
+            title={`${d.day}: ${d.count}`}
+          >
             <div
-              className="w-full rounded-sm"
+              className="w-full rounded-sm motion-safe:transition-[height] motion-safe:duration-500 motion-safe:ease-out"
               style={{
                 height: `${h}%`,
                 backgroundColor:
