@@ -2030,10 +2030,10 @@ function ChatWindowInner({
         <div ref={contentRef} className="max-w-[40rem] mx-auto space-y-6 min-w-0">
           <div className="h-2" aria-hidden />
           {messages.length === 0 && (
-            <div className="flex flex-col items-center px-4 py-14 text-center sm:py-16">
+            <div className="flex flex-col items-center px-4 py-6 text-center sm:py-8">
               {/* halftone signal-field hero — a dotted intel field with a slow
                   radar sweep passing over it. Distinctive + on-brand; no asset. */}
-              <div className="relative mb-9 h-36 w-full max-w-[280px] select-none" aria-hidden>
+              <div className="relative mb-6 h-28 w-full max-w-[280px] select-none" aria-hidden>
                 <div
                   className="absolute inset-0"
                   style={{
@@ -2067,7 +2067,7 @@ function ChatWindowInner({
                 with confidence tiers.
               </p>
 
-              <div className="mt-7 flex flex-wrap items-center justify-center gap-2">
+              <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
                 {["jordan.sample@example.com", "elonmusk", "8.8.8.8", "lovable.app"].map((s) => (
                   <button
                     key={s}
@@ -2080,13 +2080,13 @@ function ChatWindowInner({
               </div>
 
               {/* clean hairline steps (à la the references) — understated, no boxes */}
-              <div className="mt-12 w-full max-w-md border-t border-white/[0.06] text-left">
+              <div className="mt-8 w-full max-w-md border-t border-white/[0.06] text-left">
                 {[
                   ["01", "Seed", "Email, username, phone, IP, domain, or wallet."],
                   ["02", "Route", "The agent selects providers and pivots on what it finds."],
                   ["03", "Reveal", "Evidence lands on the board with confidence tiers."],
                 ].map(([n, t, d]) => (
-                  <div key={n} className="flex gap-4 border-b border-white/[0.06] py-3.5">
+                  <div key={n} className="flex gap-4 border-b border-white/[0.06] py-3">
                     <span className="font-mono text-data tabular-nums text-[hsl(var(--intel-blue)/0.85)]">{n}</span>
                     <div className="min-w-0">
                       <div className="text-sm font-medium text-foreground">{t}</div>
