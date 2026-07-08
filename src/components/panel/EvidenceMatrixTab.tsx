@@ -165,7 +165,7 @@ export function EvidenceMatrixTab({
             <div className="text-data">Try clearing filters or running more tools against the seed.</div>
           </div>
         ) : (
-          <ul className="space-y-2">
+          <ul className="grid grid-cols-1 gap-2 lg:grid-cols-2">
             {rows.map(({ a, label, review: rState, score }) => {
               const meta = (a.metadata ?? {}) as Record<string, unknown>;
               const preview = Object.keys(meta).slice(0, 3).map((k) => `${k}=${shorten(String(meta[k]))}`).join(" · ");
