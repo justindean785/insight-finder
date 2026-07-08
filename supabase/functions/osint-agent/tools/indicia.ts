@@ -46,6 +46,7 @@
 import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { fetchT } from "../fetch_retry.ts";
+import { parseStructuredName } from "../name-parse.ts";
 
 const INDICIA_BASE = "https://api.indicia.app";
 // Under the 20s per-tool cap set for indicia_* in cache.ts TOOL_TIMEOUT_OVERRIDE_MS,
@@ -258,8 +259,16 @@ export const indicia_person = tool({
     city: z.string().optional().describe("US city to narrow the search."),
     state: z.string().optional().describe("US state (2-letter or full) to narrow the search."),
   }),
-  execute: async ({ name, city, state }, opts) =>
-    indiciaRequest("/v1/search/intelligence/person", "person", { name, city, state }, { name, city, state }, getSignal(opts)),
+  execute: async ({ name, city, state }, opts) => {
+    // Broker/public-record seeds often arrive as "LAST, FIRST MIDDLE[, ST]"
+    // (LEADS/CSV export style). Reorder to natural "First … Last" and lift a
+    // trailing state code so the person API isn't fed a comma-inverted query.
+    const parsed = parseStructuredName(name);
+    const resolvedName = parsed.name || name;
+    const resolvedState = state ?? parsed.state;
+    const query = { name: resolvedName, city, state: resolvedState };
+    return indiciaRequest("/v1/search/intelligence/person", "person", query, query, getSignal(opts));
+  },
 });
 
 /** US address → linked individuals/records. 1 token/call. Broker/lead tier. */
