@@ -31,16 +31,21 @@ export function TimelineTab({ threadId, artifacts }: { threadId: string; artifac
   const [seed, setSeed] = useState<{ value: string | null; type: string | null; createdAt: string | null } | null>(null);
 
   useEffect(() => {
+    // Guard against a thread-switch race: a slow response for thread A must not
+    // overwrite the seed after the user has already switched to thread B.
+    let alive = true;
     supabase
       .from("threads")
       .select("seed_value,seed_type,created_at")
       .eq("id", threadId)
       .maybeSingle()
       .then(({ data, error }) => {
+        if (!alive) return;
         if (error) { captureError(error, "TimelineTab.seedFetch", { threadId }); return; }
         const d = data as { seed_value: string | null; seed_type: string | null; created_at: string } | null;
         if (d) setSeed({ value: d.seed_value, type: d.seed_type, createdAt: d.created_at });
       });
+    return () => { alive = false; };
   }, [threadId]);
 
   const messages = useThreadMessages(threadId);

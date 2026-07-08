@@ -63,16 +63,23 @@ Deno.test("dork_harvest (a) happy path: Perplexity citations parsed + classified
 
     const dork = getDork(inserted);
     const res = await dork.execute({ seed: "alice@example.com", kind: "email", max_queries: 1 }, {}) as {
-      ok: boolean; artifacts_inserted: number; provider_stats: Record<string, number>; sample: Array<{ classify: string }>;
+      ok: boolean; artifacts_inserted: number; candidate_links_unread_count: number;
+      candidate_links_unread: Array<{ classify: string }>;
+      provider_stats: Record<string, number>;
     };
 
     assertEquals(res.ok, true);
-    // leak.pdf → document, pastebin → leak_paste; nonmatch dropped.
-    assertEquals(res.artifacts_inserted, 2);
+    // Fix #5c: URLs are PARSED + CLASSIFIED (leak.pdf → document, pastebin →
+    // leak_paste; nonmatch dropped) but NOT recorded — the seed ("alice@…") is
+    // absent from both URLs and there's no GEMINI_API_KEY to read them, so they
+    // are held as unverified candidate links instead of polluting the evidence
+    // table. This is the whole point of the relevance gate.
+    assertEquals(res.artifacts_inserted, 0);
+    assertEquals(res.candidate_links_unread_count, 2);
     assert(res.provider_stats.perplexity >= 1, "primary provider must be labelled perplexity");
     assertEquals(res.provider_stats.exa, 0);
-    const kinds = inserted.map((r) => r.kind).sort();
-    assertEquals(kinds, ["document", "leak_paste"]);
+    const classes = res.candidate_links_unread.map((c) => c.classify).sort();
+    assertEquals(classes, ["document", "leak_paste"]);
   } finally {
     globalThis.fetch = origFetch;
   }
@@ -103,7 +110,11 @@ Deno.test("dork_harvest (b) primary failure → falls back to Exa and returns Ex
 
     assert(exaCalled, "Exa fallback must be invoked when Perplexity 400s");
     assertEquals(res.ok, true);
-    assertEquals(res.artifacts_inserted, 2); // breach.csv (document) + rentry.co (leak_paste)
+    // Fix #5c: seed "bob" is absent from breach.csv / rentry.co URLs and there's
+    // no GEMINI_API_KEY to read them → held as candidates, not recorded. The
+    // fallback + parsing path (what this test guards) still works end to end.
+    assertEquals(res.artifacts_inserted, 0);
+    assertEquals((res as unknown as { candidate_links_unread_count: number }).candidate_links_unread_count, 2);
     assertEquals(res.degraded, true);
     assertEquals(res.provider_stats.exa, 1);
     assertEquals(res.per_query[0].provider, "exa_search");
@@ -137,6 +148,40 @@ Deno.test("dork_harvest (c) dork→Exa translation: drops filetype:/quotes, maps
     assertEquals(body.type, "keyword");
     // No dork operators leak into the keyword query.
     assertEquals(/filetype:|ext:|site:|intitle:|inurl:|["']/.test(body.query), false);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+Deno.test("dork_harvest (d) Fix #5c: a URL whose path carries the seed IS recorded (keyless relevance)", async () => {
+  const origFetch = globalThis.fetch;
+  const inserted: Row[] = [];
+  try {
+    globalThis.fetch = (async (input: Request | URL | string) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url.includes(PPLX_HOST)) {
+        return new Response(JSON.stringify({
+          // One URL carries the seed in its path (relevant), one does not (noise).
+          choices: [{ message: { content: "hits" } }],
+          citations: ["https://leaks.example/bigfoot95-dump.pdf", "https://unrelated.example/annual-report.pdf"],
+        }), { status: 200 });
+      }
+      throw new Error(`unexpected fetch to ${url}`); // no Gemini key → no read attempted
+    }) as typeof globalThis.fetch;
+
+    const dork = getDork(inserted);
+    const res = await dork.execute({ seed: "bigfoot95", kind: "username", max_queries: 1 }, {}) as {
+      artifacts_inserted: number; candidate_links_unread_count: number;
+    };
+
+    // Only the seed-bearing URL is recorded; the unrelated report is a candidate.
+    assertEquals(res.artifacts_inserted, 1);
+    assertEquals(res.candidate_links_unread_count, 1);
+    assertEquals(inserted.length, 1);
+    assertEquals(String(inserted[0].value).includes("bigfoot95"), true);
+    const meta = inserted[0].metadata as Record<string, unknown>;
+    assertEquals(meta.relevance, 1);
+    assertEquals(meta.relevance_basis, "seed present in URL path");
   } finally {
     globalThis.fetch = origFetch;
   }

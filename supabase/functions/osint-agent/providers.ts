@@ -387,3 +387,100 @@ export async function geminiGroundedSearch(opts: {
     opts.signal?.removeEventListener("abort", onExternalAbort);
   }
 }
+
+// ---- Gemini multimodal (vision + document) -------------------------------------
+// MiniMax-M2.7 is text-only and cannot see images — the live false-identity trace
+// (a mugshot chained face→name to an unrelated person) was the direct result.
+// Gemini Flash IS multimodal, so this helper sends inline image / PDF-page bytes
+// alongside a text instruction and returns the model's text. It mirrors
+// geminiGroundedSearch's URL/auth/timeout/abort-chaining exactly; the only
+// differences are (1) the `parts` array carries `inline_data` blobs and (2)
+// google_search grounding is opt-in (used for "has this image been posted
+// anywhere" reverse-search intent, off by default for plain extraction).
+export interface GeminiPart {
+  text?: string;
+  inline_data?: { mime_type: string; data: string };
+}
+export async function geminiVision(opts: {
+  parts: GeminiPart[];
+  system?: string;
+  model?: string;
+  temperature?: number;
+  /** Add the google_search tool so Gemini can check where an image appears. */
+  useGrounding?: boolean;
+  /** Optional external abort signal (per-tool timeout). Aborts the fetch. */
+  signal?: AbortSignal;
+}): Promise<{
+  ok: boolean;
+  status: number;
+  text: string;
+  citations: Array<{ uri: string; title?: string }>;
+  queries: string[];
+  raw: unknown;
+}> {
+  // Read the key at call time (not the import-time const): keeps vision decoupled
+  // from module-load order so a test can enable it without polluting env.ts's
+  // boot-time fallback-provider selection. In prod the key is set before the
+  // isolate starts, so this is identical to the const.
+  const apiKey = Deno.env.get("GEMINI_API_KEY");
+  if (!apiKey) {
+    return { ok: false, status: 0, text: "", citations: [], queries: [], raw: { error: "GEMINI_API_KEY not configured" } };
+  }
+  // Flash multimodal SKU; reuses the same env override as the orchestrator
+  // fallback, with a vision-specific override for operators who want to pin a
+  // different multimodal model without moving the text fallback.
+  const model = opts.model ?? Deno.env.get("GEMINI_VISION_MODEL_ID") ?? GEMINI_FALLBACK_MODEL_ID ?? "gemini-2.5-flash";
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const body: Record<string, unknown> = {
+    contents: [{ role: "user", parts: opts.parts }],
+    generationConfig: { temperature: opts.temperature ?? 0.1 },
+  };
+  if (opts.useGrounding) body.tools = [{ google_search: {} }];
+  if (opts.system) {
+    body.systemInstruction = { role: "system", parts: [{ text: opts.system }] };
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 60000);
+  const onExternalAbort = () => ctrl.abort();
+  if (opts.signal) {
+    if (opts.signal.aborted) ctrl.abort();
+    else opts.signal.addEventListener("abort", onExternalAbort, { once: true });
+  }
+  try {
+    const r = await fetchRetry(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    const txt = await r.text();
+    let raw: unknown;
+    try { raw = JSON.parse(txt); } catch { raw = { raw: txt.slice(0, 4000) }; }
+
+    interface GeminiWebChunk { uri?: unknown; title?: unknown }
+    interface GeminiCandidate {
+      content?: { parts?: Array<{ text?: unknown }> };
+      groundingMetadata?: {
+        groundingChunks?: Array<{ web?: GeminiWebChunk }>;
+        webSearchQueries?: unknown;
+      };
+    }
+    const rawObj = raw as { candidates?: GeminiCandidate[] } | null;
+    const cand = rawObj?.candidates?.[0];
+    const parts = cand?.content?.parts ?? [];
+    const text = parts.map((p) => (typeof p?.text === "string" ? p.text : "")).join("\n").trim();
+    const chunks = cand?.groundingMetadata?.groundingChunks ?? [];
+    const citations = chunks
+      .map((c) => c?.web)
+      .filter((w): w is GeminiWebChunk & { uri: string } => !!w && typeof w.uri === "string")
+      .map((w) => ({ uri: String(w.uri), title: typeof w.title === "string" ? w.title : undefined }));
+    const rawQueries = cand?.groundingMetadata?.webSearchQueries;
+    const queries: string[] = Array.isArray(rawQueries)
+      ? rawQueries.filter((q): q is string => typeof q === "string")
+      : [];
+    return { ok: r.ok, status: r.status, text, citations, queries, raw };
+  } finally {
+    clearTimeout(timer);
+    opts.signal?.removeEventListener("abort", onExternalAbort);
+  }
+}
