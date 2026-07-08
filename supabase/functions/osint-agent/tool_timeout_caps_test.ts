@@ -41,3 +41,15 @@ Deno.test("B3: blowing the cap returns a schema-safe timeout and aborts the fetc
   // The per-tool signal was aborted so a signal-forwarding fetch is cancelled.
   assert(captured !== null && (captured as AbortSignal).aborted, "timeout must abort the factory signal");
 });
+
+// Telemetry-backed overrides (2026-07-08 failing-tools panel): these tools
+// chronically hit the 12s default and lost coverage. Regression-guard the fix.
+Deno.test("timeout overrides: chronically-slow tools exceed the 12s default", () => {
+  // Serus POLLS ~25s upstream by design — a 12s cap guaranteed a timeout.
+  assert(toolTimeoutMs("serus_darkweb_scan") >= 25_000, "serus must clear its ~25s poll window");
+  assertEquals(toolTimeoutMs("crtsh_lookup"), 25_000);
+  assertEquals(toolTimeoutMs("crtsh_subdomains"), 25_000);
+  assertEquals(toolTimeoutMs("whois_lookup"), 20_000);
+  // wayback_snapshots must match its cdx peer (which is already 25s).
+  assertEquals(toolTimeoutMs("wayback_snapshots"), toolTimeoutMs("wayback_cdx_search"));
+});

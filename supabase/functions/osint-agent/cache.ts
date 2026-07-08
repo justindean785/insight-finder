@@ -70,6 +70,19 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // a full page (YouTube, etc.) upstream, which legitimately exceeds the 12s default.
   // 25s outer budget sits above the tool's own 22s per-attempt fetch timeout.
   socialfetch_web_read: 25_000,
+  // Telemetry-backed overrides (live failing-tools panel 2026-07-08): these
+  // chronically hit the 12s default and lose real coverage.
+  // crt.sh certificate transparency is Cloudflare-fronted and slow (p95 » 12s).
+  crtsh_lookup: 25_000,
+  crtsh_subdomains: 25_000,
+  // WHOIS registrar RDAP/port-43 chains can run long.
+  whois_lookup: 20_000,
+  // web.archive.org (peer of wayback_cdx_search / archive_url, which are already 25s).
+  wayback_snapshots: 25_000,
+  // Serus darkweb scan POLLS upstream until the scan finishes — POLL_INTERVAL_MS
+  // (2.5s) × POLL_MAX_RETRIES (10) = ~25s by design (serus_core.ts), so a 12s cap
+  // guaranteed a timeout on every non-trivial scan. 30s sits above the poll window.
+  serus_darkweb_scan: 30_000,
 };
 export function toolTimeoutMs(name: string): number {
   return TOOL_TIMEOUT_OVERRIDE_MS[name] ?? DEFAULT_TOOL_TIMEOUT_MS;
