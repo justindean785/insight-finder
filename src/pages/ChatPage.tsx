@@ -35,7 +35,14 @@ export default function ChatPage() {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const [tab, setTab] = useState<WorkspaceTab>("chat");
-  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  // Persist the sidebar collapse across reloads — re-collapsing every session is
+  // a common annoyance for a workspace tool.
+  const [leftCollapsed, setLeftCollapsed] = useState(() => {
+    try { return localStorage.getItem("if:leftCollapsed") === "1"; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("if:leftCollapsed", leftCollapsed ? "1" : "0"); } catch { /* ignore */ }
+  }, [leftCollapsed]);
   const [mLeft, setMLeft] = useState(false);
 
   // Reset to the conversation when switching cases.
