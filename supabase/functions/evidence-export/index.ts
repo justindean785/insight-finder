@@ -4,6 +4,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { PDFDocument, StandardFonts, rgb } from "npm:pdf-lib@1.17.1";
 import { zipSync, strToU8 } from "npm:fflate@0.8.2";
+import { sanitizeWinAnsi, safeIso } from "./text-sanitize.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -43,7 +44,7 @@ async function sha256Hex(s: string): Promise<string> {
 
 function wrap(text: string, max: number): string[] {
   const out: string[] = [];
-  const words = text.split(/\s+/);
+  const words = sanitizeWinAnsi(text).split(/\s+/);
   let line = "";
   for (const w of words) {
     if ((line + " " + w).length > max) { if (line) out.push(line); line = w.slice(0, max); }
@@ -53,7 +54,7 @@ function wrap(text: string, max: number): string[] {
   return out;
 }
 
-async function buildPdf(opts: {
+export async function buildPdf(opts: {
   thread: { id: string; title: string; seed_value: string | null; seed_type: string | null; created_at: string };
   rows: EvidenceRow[];
   verify: { ok: boolean; total: number; first_break: number | null };
@@ -82,7 +83,7 @@ async function buildPdf(opts: {
     ["Investigation", thread.title || "(untitled)"],
     ["Thread ID", thread.id],
     ["Seed", `${thread.seed_type ?? "—"} · ${thread.seed_value ?? "—"}`],
-    ["Opened", new Date(thread.created_at).toISOString()],
+    ["Opened", safeIso(thread.created_at)],
     ["Exported", exportedAt],
     ["Entries", String(rows.length)],
     ["Hard / Soft", `${rows.filter((r) => r.classification === "hard").length} / ${rows.filter((r) => r.classification === "soft").length}`],
@@ -100,7 +101,7 @@ async function buildPdf(opts: {
   // Verdict
   y -= 10;
   cover.drawRectangle({ x: MARGIN, y: y - 50, width: PAGE_W - 2 * MARGIN, height: 50, color: verify.ok ? rgb(0.92, 0.98, 0.94) : rgb(0.99, 0.92, 0.92) });
-  cover.drawText(verify.ok ? "✓ CHAIN VERIFIED" : "✗ CHAIN BROKEN", {
+  cover.drawText(verify.ok ? "CHAIN VERIFIED" : "CHAIN BROKEN", {
     x: MARGIN + 12, y: y - 22, size: 14, font: bold, color: verify.ok ? good : danger,
   });
   cover.drawText(verify.ok ? `${verify.total} rows · all hash links valid` : `Break detected at seq ${verify.first_break ?? "?"}`, {
@@ -126,10 +127,10 @@ async function buildPdf(opts: {
       x: MARGIN + 40, y: cy, size: 9, font: bold,
       color: r.classification === "hard" ? good : accent,
     });
-    page.drawText(`${r.kind ?? "—"}${typeof r.confidence === "number" ? ` · ${r.confidence}%` : ""}`, {
+    page.drawText(`${sanitizeWinAnsi(r.kind ?? "-")}${typeof r.confidence === "number" ? ` · ${r.confidence}%` : ""}`, {
       x: MARGIN + 90, y: cy, size: 9, font, color: muted,
     });
-    page.drawText(new Date(r.collected_at).toISOString(), {
+    page.drawText(safeIso(r.collected_at), {
       x: PAGE_W - MARGIN - 130, y: cy, size: 8, font: mono, color: muted,
     });
     cy -= 14;
@@ -146,7 +147,7 @@ async function buildPdf(opts: {
     }
     if (r.archive_storage_path) {
       newPageIfNeeded(12);
-      page.drawText(`archived: ${r.archive_storage_path} · ${r.archive_bytes ?? 0}B · sha256:${(r.archive_sha256 ?? "").slice(0, 16)}…`, {
+      page.drawText(`archived: ${sanitizeWinAnsi(r.archive_storage_path)} · ${r.archive_bytes ?? 0}B · sha256:${(r.archive_sha256 ?? "").slice(0, 16)}...`, {
         x: MARGIN, y: cy, size: 7, font: mono, color: accent,
       });
       cy -= 10;
@@ -195,6 +196,15 @@ Deno.serve(async (req) => {
     if (!authHeader?.startsWith("Bearer ")) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
+    // Fail closed (not just incidentally) if SUPABASE_ANON_KEY is unset —
+    // mirrors osint-agent/auth.ts. Without this, createClient(URL, undefined)
+    // only fails later, by accident, when auth.getUser() errors — audit F19.
+    if (!SUPABASE_ANON_KEY) {
+      return new Response(
+        JSON.stringify({ error: "Service Misconfigured", code: "ANON_KEY_MISSING" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
     const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
       global: { headers: { Authorization: authHeader } },
     });
@@ -203,7 +213,13 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
     const userId = userData.user.id;
-    const { threadId } = (await req.json()) as { threadId: string };
+    let body: { threadId?: string };
+    try {
+      body = await req.json();
+    } catch {
+      return new Response(JSON.stringify({ error: "Invalid JSON body" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+    const { threadId } = body;
     if (!threadId) return new Response(JSON.stringify({ error: "threadId required" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
     const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
@@ -238,19 +254,30 @@ Deno.serve(async (req) => {
     const finalManifest = { ...manifest, manifest_sha256: manifestSha };
     const finalJson = JSON.stringify(finalManifest, null, 2);
 
-    const pdfBytes = await buildPdf({
-      thread: thread as { id: string; title: string; seed_value: string | null; seed_type: string | null; created_at: string },
-      rows, verify, exportedAt, manifestSha,
-    });
+    // PDF is a human-readable rendering; manifest.json is the authoritative
+    // chain-of-custody record. If PDF generation throws for any reason, degrade
+    // to a manifest-only bundle rather than 500-ing the whole export.
+    let pdfBytes: Uint8Array | null = null;
+    let pdfError: string | null = null;
+    try {
+      pdfBytes = await buildPdf({
+        thread: thread as { id: string; title: string; seed_value: string | null; seed_type: string | null; created_at: string },
+        rows, verify, exportedAt, manifestSha,
+      });
+    } catch (e) {
+      pdfError = (e as Error)?.message ?? String(e);
+      console.error("[evidence-export] PDF generation failed; exporting manifest-only:", pdfError);
+    }
 
     const stamp = exportedAt.replace(/[:.]/g, "-");
-    const zipped = zipSync({
+    const files: Record<string, Uint8Array> = {
       [`evidence-${threadId}-${stamp}/manifest.json`]: strToU8(finalJson),
-      [`evidence-${threadId}-${stamp}/report.pdf`]: pdfBytes,
       [`evidence-${threadId}-${stamp}/README.txt`]: strToU8(
-        `Chain-of-custody export for thread ${threadId}\nExported: ${exportedAt}\nManifest SHA-256: ${manifestSha}\nVerification: ${verify.ok ? "VALID" : `BROKEN@${verify.first_break}`}\n`,
+        `Chain-of-custody export for thread ${threadId}\nExported: ${exportedAt}\nManifest SHA-256: ${manifestSha}\nVerification: ${verify.ok ? "VALID" : `BROKEN@${verify.first_break}`}\n${pdfError ? `\nNOTE: PDF render was skipped (${pdfError}). manifest.json is the authoritative record.\n` : ""}`,
       ),
-    });
+    };
+    if (pdfBytes) files[`evidence-${threadId}-${stamp}/report.pdf`] = pdfBytes;
+    const zipped = zipSync(files);
 
     const fname = `evidence-${threadId}-${stamp}.zip`;
     return new Response(zipped, {
