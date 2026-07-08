@@ -4021,9 +4021,15 @@ export function buildTools(ctx: ToolContext) {
             // Spread LAST so a corrected `note` overrides the model-supplied one.
             ...dateSanity.metaPatch,
           };
-          const dedupKey = `${finalKind} ${v.value}`;
+          // Include source in the key: two DIFFERENT sources reporting the same
+          // (kind, value) in one batch is corroboration, not a duplicate — e.g.
+          // leakcheck_lookup + oathnet_lookup both hitting the same breach email
+          // must both land as distinct source observations, or the multi-source
+          // signal the confidence/corroboration logic depends on collapses to one
+          // row (the same class of bug flagged in #189's migration key).
+          const dedupKey = `${finalKind} ${v.value} ${a.source ?? ""}`;
           if (seenInBatch.has(dedupKey)) {
-            rejected.push({ index: i, reason: "duplicate (kind,value) already in this batch", kind: finalKind, value: v.value });
+            rejected.push({ index: i, reason: "duplicate (kind,value,source) already in this batch", kind: finalKind, value: v.value });
             return;
           }
           seenInBatch.add(dedupKey);
