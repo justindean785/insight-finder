@@ -50,3 +50,31 @@ Deno.test("synapsint 500 suppresses on first failure (unchanged)", () => {
   assertEquals(shouldRun(thread, "synapsint_lookup", "other.com").allow, false);
   clearThread(thread);
 });
+
+Deno.test("indicia provider group covers all six endpoints", () => {
+  // All six share one key + one prepaid balance — all must map to "indicia".
+  for (
+    const t of [
+      "indicia_email",
+      "indicia_phone",
+      "indicia_person",
+      "indicia_address",
+      "indicia_web_dbs",
+      "indicia_hudsonrock",
+    ]
+  ) {
+    assertEquals(providerForTool(t), "indicia", `${t} not in indicia group`);
+  }
+});
+
+Deno.test("402 on one indicia endpoint suppresses the whole family (Fix #3)", () => {
+  const thread = "t-indicia-402";
+  clearThread(thread);
+  // Depleted prepaid balance surfaces as 402 on indicia_email.
+  recordResult(thread, "indicia_email", "a@example.com", "default", { status: "http_402" });
+  // Every sibling on the same empty balance must now be blocked, not retried.
+  assertEquals(shouldRun(thread, "indicia_phone", "+15597727112").allow, false);
+  assertEquals(shouldRun(thread, "indicia_person", "Jane Doe").allow, false);
+  assertEquals(shouldRun(thread, "indicia_web_dbs", "jane@example.com").allow, false);
+  clearThread(thread);
+});

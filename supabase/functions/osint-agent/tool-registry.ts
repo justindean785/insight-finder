@@ -47,6 +47,7 @@ import {
   indicia_email, indicia_phone, indicia_person,
   indicia_address, indicia_web_dbs, indicia_hudsonrock,
 } from "./tools/indicia.ts";
+import { gemini_vision, runGeminiVision } from "./tools/gemini_vision.ts";
 
 import {
   validateArtifact, TTL_24H_MS, TOOL_TTL_MS, NO_CACHE_TOOLS,
@@ -68,7 +69,7 @@ import {
 
 import { minimaxChat, minimaxChatWithFallback, safeJson, geminiGroundedSearch, perplexitySearch } from "./providers.ts";
 import { dorkToExaQuery } from "./dork-translate.ts";
-import { augmentDorkQuery, isTemplateOrSampleUrl } from "./dork-relevance.ts";
+import { augmentDorkQuery, isTemplateOrSampleUrl, scoreDorkRelevance, applyDorkRelevance, DORK_RELEVANCE_FLOOR } from "./dork-relevance.ts";
 import { buildAutoRecordedRow } from "./auto-record-integrity.ts";
 
 import { TOOL_CATALOG, CATALOG_CACHE, FINDING_LABELS } from "./catalog.ts";
@@ -95,6 +96,25 @@ export interface ToolContext {
   manualOverrideSelector: string | null;
 }
 
+// Hosts that reliably return 451/403 THROUGH r.jina.ai — scraping them is a
+// guaranteed ~8s dead round-trip (the abort signal only cancels AFTER the cap
+// fires; the wasted wall-clock is already spent). Skip the call entirely and
+// return the same origin-blocked shape the agent already knows how to pivot on.
+// SCOPE: this guard is Jina-specific — these same hosts remain valid targets for
+// socialfetch_lookup, reddit_user (.json), and direct-API tools; do NOT promote
+// this to a global domain block.
+const JINA_HARD_BLOCK_HOSTS = [
+  "x.com",
+  "twitter.com",
+  "twitch.tv",
+  "instagram.com",
+  "reddit.com",
+  "facebook.com",
+];
+function isJinaHardBlocked(hostname: string): boolean {
+  return JINA_HARD_BLOCK_HOSTS.some((h) => hostname === h || hostname.endsWith(`.${h}`));
+}
+
 export function buildTools(ctx: ToolContext) {
   const { supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, messages, manualOverrideSelector } = ctx;
 
@@ -112,6 +132,21 @@ export function buildTools(ctx: ToolContext) {
           disabled.push({
             name: "hibp_lookup",
             reason: "HIBP_API_KEY not configured — use breach_check / leakcheck_lookup / oathnet_lookup for breach corroboration.",
+          });
+        }
+        // Parity (Fix #4): the schema readiness gate (capabilities.ts) and the
+        // planner filter both strip these when their key is absent, but list_tools
+        // was still advertising them — so the agent saw a tool the runtime had
+        // deleted. Gate them here too, matching the HIBP treatment above.
+        if (!INDICIA_API_KEY) {
+          for (const n of ["indicia_email","indicia_phone","indicia_person","indicia_address","indicia_web_dbs","indicia_hudsonrock"]) {
+            disabled.push({ name: n, reason: "INDICIA_API_KEY not configured — Indicia person/phone/email/address + web-DB lookups are unavailable." });
+          }
+        }
+        if (!GEMINI_API_KEY) {
+          disabled.push({
+            name: "gemini_vision",
+            reason: "GEMINI_API_KEY not configured — image/document reading (vision) is unavailable; record attachments as URLs only.",
           });
         }
         const disabledNames = new Set(disabled.map((d) => d.name));
@@ -482,6 +517,9 @@ export function buildTools(ctx: ToolContext) {
             // Indicia — all six endpoints share one key; keep them off the planner
             // menu until INDICIA_API_KEY is set.
             if (name.startsWith("indicia_") && !INDICIA_API_KEY) return false;
+            // Gemini vision/document reader — only works with GEMINI_API_KEY; keep
+            // it off the planner menu when unkeyed (same gate as gemini_deep_dork).
+            if (name === "gemini_vision" && !GEMINI_API_KEY) return false;
             // RapidAPI breach tools are the PRIMARY email breach source but only
             // work with RAPIDAPI_KEY — both self-skip without it. Keep them off the
             // planner menu when unkeyed so an un-keyed deploy doesn't burn a planner
@@ -1097,6 +1135,12 @@ export function buildTools(ctx: ToolContext) {
         if (!LEAKCHECK_API_KEY) return { error: "LEAKCHECK_API_KEY not configured" };
         const q = value.trim();
         if (!q) return { error: "missing value" };
+        // LeakCheck v2 /query 400s on keyword/name searches. A multi-word value
+        // with no @ is a person name — skip cleanly (avoid the guaranteed 400)
+        // and route the caller to the tool that DOES support name search.
+        if (!q.includes("@") && /\s/.test(q) && (type === "auto" || type === "username")) {
+          return { ok: false, skipped: true, source: "leakcheck.v2", reason: "name/keyword not supported by LeakCheck v2 — use oathnet_lookup type:'name'", value: q };
+        }
         try {
           const url = buildLeakcheckUrl(q, type);
           const r = await fetchT(url, { headers: { "X-API-Key": LEAKCHECK_API_KEY, "Accept": "application/json" } }, 20_000);
@@ -2681,7 +2725,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     dork_harvest: tool({
       description:
-        "Execute the highest-yield document/leak dorks for a seed and AUTO-RECORD any PDFs, Office docs, CSV/SQL/log/env dumps, pastebin entries, and stealer-log URLs as artifacts (kind='document' for files, kind='leak_paste' for pastes). This is the way to turn google_dorks output into real evidence. Runs N targeted queries through Perplexity Sonar web search (with an Exa keyword fallback that honors site: domains), parses URLs from results, classifies them by extension/host, and inserts them directly into the case. Costs 1 Perplexity call per query.",
+        "Execute the highest-yield document/leak dorks for a seed and record the RELEVANT PDFs, Office docs, CSV/SQL/log/env dumps, pastebin entries, and stealer-log URLs as artifacts (kind='document' / 'leak_paste'). A URL is recorded ONLY if the seed appears in its path OR a bounded Gemini read (top few docs) finds the seed in the document text — irrelevant hits (resume templates, unrelated court/SEC/FEC filings) are held in `candidate_links_unread`, NOT recorded, so the evidence table stays clean. Runs N targeted Perplexity Sonar queries (Exa keyword fallback honors site: domains). Costs 1 Perplexity call per query plus up to 3 Gemini reads.",
       inputSchema: z.object({
         seed: z.string(),
         kind: z.enum(["email", "username", "phone", "name", "person", "domain", "ip", "hash", "crypto_wallet"]),
@@ -2895,18 +2939,90 @@ export function buildTools(ctx: ToolContext) {
           },
           { perplexity: 0, exa: 0, success: 0, failed: 0 },
         );
-        if (collected.length > 0) {
-          const rows = collected.map((c) => {
+        // --- Relevance gate (Fix #5c) -------------------------------------------
+        // The old path recorded EVERY document/leak URL blind — the live case
+        // shows the cost: a poultry-science paper, PNC SEC filings, FEC legal
+        // PDFs, and resume-writing guides all landed as confidence-55 artifacts
+        // because the seed appeared in a Perplexity *result*, not in the document.
+        // A URL is now recorded ONLY if it passes a seed relevance check (seed in
+        // the URL path) OR is READ by Gemini and the seed is found in the extracted
+        // text. Everything else goes to `candidate_links_unread` — surfaced for the
+        // agent, but NOT inserted into the artifact table.
+        const seedNorm = String(seed).toLowerCase().replace(/[^a-z0-9]/g, "");
+        const GEMINI_READ_BUDGET = 3; // bounded reads per harvest (latency/cost)
+        // Read the key at call time so the read-branch is decoupled from module
+        // load order (prod sets it at boot; this keeps env.ts's fallback selection
+        // unpolluted when a test enables vision).
+        const geminiKeyForRead = Deno.env.get("GEMINI_API_KEY");
+        let geminiReads = 0;
+        const candidateUnread: Array<{ url: string; via: string; classify: string; reason: string }> = [];
+        const toRecord: Array<{
+          url: string; via: string; classify: "document" | "leak_paste";
+          confidence: number; relevance: number; read: boolean; selectors?: string[];
+        }> = [];
+
+        for (const c of collected) {
+          // 1) Cheap URL-level seed match — a URL whose path carries the seed/
+          //    selector is self-evidently about it (a paste/profile with the handle
+          //    in the path). Keyless, no fetch.
+          const urlNorm = c.url.toLowerCase().replace(/[^a-z0-9]/g, "");
+          if (seedNorm.length >= 4 && urlNorm.includes(seedNorm)) {
+            toRecord.push({ ...c, confidence: c.classify === "leak_paste" ? 55 : 60, relevance: 1, read: false });
+            continue;
+          }
+          // 2) Bounded Gemini document read — actually READ the doc and score seed
+          //    presence in the real text. This is what finally reads harvested PDFs
+          //    instead of recording the URL blind.
+          if (geminiKeyForRead && geminiReads < GEMINI_READ_BUDGET) {
+            geminiReads++;
+            let text: string | null = null;
+            let selectors: string[] = [];
+            try {
+              const vis = await runGeminiVision({ mode: "document", url: c.url }, undefined);
+              if (vis?.ok && vis.result && typeof vis.result === "object") {
+                const res = vis.result as Record<string, unknown>;
+                text = typeof res.extracted_text === "string" ? res.extracted_text : null;
+                selectors = Array.isArray(res.selectors) ? (res.selectors as unknown[]).map(String) : [];
+              }
+            } catch { /* read failure → treated as unread below */ }
+            const rel = scoreDorkRelevance({ text, seed: String(seed), url: c.url });
+            if (rel.relevance >= DORK_RELEVANCE_FLOOR) {
+              toRecord.push({
+                ...c,
+                confidence: applyDorkRelevance(c.classify === "leak_paste" ? 55 : 60, rel),
+                relevance: rel.relevance,
+                read: true,
+                selectors,
+              });
+            } else {
+              candidateUnread.push({ url: c.url, via: c.via, classify: c.classify, reason: rel.reason });
+            }
+            continue;
+          }
+          // 3) Unread + no URL seed match → candidate link, NOT an artifact.
+          candidateUnread.push({
+            url: c.url, via: c.via, classify: c.classify,
+            reason: geminiKeyForRead ? "gemini read budget exhausted — unread, seed not in URL" : "not read (no GEMINI_API_KEY) and seed not in URL",
+          });
+        }
+
+        if (toRecord.length > 0) {
+          const rows = toRecord.map((c) => {
             const built = buildAutoRecordedRow({
               kind: c.classify,
               value: c.url,
               source: "dork_harvest",
-              rawConfidence: c.classify === "leak_paste" ? 55 : 60,
+              rawConfidence: c.confidence,
               metadata: {
                 seed,
                 seed_kind: kind,
                 dork_query: c.via,
                 discovered_via: "google_dork → perplexity sonar (exa keyword fallback)",
+                relevance: c.relevance,
+                ...(c.read
+                  ? { provenance: "extracted_from_document", read_by: "gemini_vision" }
+                  : { relevance_basis: "seed present in URL path" }),
+                ...(c.selectors && c.selectors.length ? { extracted_selectors: c.selectors.slice(0, 40) } : {}),
               },
             });
             return {
@@ -2932,13 +3048,19 @@ export function buildTools(ctx: ToolContext) {
           queries_run: queryResults.length,
           urls_found: collected.length,
           artifacts_inserted: inserted,
-          sample: collected.slice(0, 20),
+          gemini_reads: geminiReads,
+          // Unverified URLs — surfaced as leads, NOT recorded as artifacts. The
+          // agent may read a specific one via gemini_vision (mode='document') if it
+          // looks promising; they are deliberately kept out of the evidence table.
+          candidate_links_unread: candidateUnread.slice(0, 30),
+          candidate_links_unread_count: candidateUnread.length,
+          sample: toRecord.slice(0, 20).map((c) => c.url),
           per_query: queryResults,
           provider_stats: providerStats,
           degraded: providerStats.exa > 0,
           note: inserted > 0
-            ? `Inserted ${inserted} document/leak artifacts. They are now in the case — do NOT also record them via record_artifacts.${providerStats.exa > 0 ? ` Fallback engaged: Exa handled ${providerStats.exa}/${queryResults.length} query(ies).` : ""}`
-            : `No document/leak URLs found in this harvest pass.${providerStats.exa > 0 ? ` Fallback engaged: Exa handled ${providerStats.exa}/${queryResults.length} query(ies).` : ""}`,
+            ? `Recorded ${inserted} RELEVANT document/leak artifact(s) (seed matched in URL or read text). ${candidateUnread.length} unverified URL(s) held in candidate_links_unread — NOT recorded; do NOT re-record them via record_artifacts.${providerStats.exa > 0 ? ` Fallback engaged: Exa handled ${providerStats.exa}/${queryResults.length} query(ies).` : ""}`
+            : `No RELEVANT document/leak URLs this pass — ${candidateUnread.length} unverified candidate(s) held in candidate_links_unread (seed not found in URL${GEMINI_API_KEY ? "/read text" : "; no GEMINI_API_KEY to read them"}). Nothing recorded.${providerStats.exa > 0 ? ` Fallback engaged: Exa handled ${providerStats.exa}/${queryResults.length} query(ies).` : ""}`,
         };
       },
     }),
@@ -3075,6 +3197,10 @@ export function buildTools(ctx: ToolContext) {
         parsed.hash = ""; // r.jina.ai 422s on fragments
         // Skip a host already proven dead (NXDOMAIN) this investigation.
         if (isHostDead(parsed.hostname)) return { skipped: true, reason: "host does not resolve (NXDOMAIN) — skipped", url: raw };
+        // Skip hosts that always 451/403 through Jina — save the ~8s dead round-trip.
+        if (isJinaHardBlocked(parsed.hostname)) {
+          return { error: "jina 451", status: 451, url: parsed.toString(), skipped: true, hint: "origin blocks Jina — try wayback_snapshots, socialfetch_lookup, or a direct-API tool" };
+        }
         // Rebuild a clean URL; r.jina.ai expects the raw URL appended.
         const clean = parsed.toString();
         try {
@@ -4271,6 +4397,11 @@ export function buildTools(ctx: ToolContext) {
   (tools as ToolRegistry).indicia_web_dbs = indicia_web_dbs;
   (tools as ToolRegistry).indicia_hudsonrock = indicia_hudsonrock;
 
+  // Gemini vision/document reader (tools/gemini_vision.ts) — the multimodal eyes
+  // MiniMax-M2.7 lacks. Gated on GEMINI_API_KEY via capabilities.ts; classed
+  // ai_summary in source-classification.ts (lead-tier, capped ≤55).
+  (tools as ToolRegistry).gemini_vision = gemini_vision;
+
   // Inject memory tools (cross-investigation learning) into the registry.
   //
   // Late-injected registry tools, written as `(tools as ToolRegistry).X =
@@ -4416,7 +4547,7 @@ export function buildTools(ctx: ToolContext) {
     // ipqualityscore_lookup CUT 2026-07-05 (dead key; disabled in capabilities.ts).
     ...(RAPIDAPI_KEY ? ["rapidapi_breach_search", "rapidapi_all_breaches"] : []),
     ...(Deno.env.get("EXA_API_KEY") ? ["exa_search","exa_get_contents","exa_find_similar"] : []),
-    ...(Deno.env.get("GEMINI_API_KEY") ? ["gemini_deep_dork"] : []),
+    ...(Deno.env.get("GEMINI_API_KEY") ? ["gemini_deep_dork", "gemini_vision"] : []),
     // Free / always-on tools
     "whois_lookup","dns_records","crtsh_subdomains","wayback_snapshots","archive_url","http_fingerprint",
     "ip_intel","shodan_internetdb","hackertarget","urlscan_search","gravatar_profile","hibp_lookup",

@@ -62,6 +62,19 @@ const PROVIDER_TOOLS: Record<string, string[]> = {
   hunter: ["hunter_domain_search", "hunter_email_finder", "hunter_email_verifier", "hunter_combined"],
   exa: ["exa_search", "exa_find_similar", "exa_get_contents"],
   minimax: ["minimax_web_search", "minimax_correlate", "minimax_plan_pivots", "minimax_extract"],
+  // All six Indicia endpoints share ONE api key + one prepaid balance. A depleted
+  // balance (402) or rate-limit (429) on any one endpoint means every sibling is
+  // equally dead for the run — group them so one suppression stops the family
+  // instead of each endpoint re-firing under its own name (the same trap the
+  // deepfind group above closed).
+  indicia: [
+    "indicia_email",
+    "indicia_phone",
+    "indicia_person",
+    "indicia_address",
+    "indicia_web_dbs",
+    "indicia_hudsonrock",
+  ],
 };
 const TOOL_PROVIDER = new Map<string, string>();
 for (const [provider, tools] of Object.entries(PROVIDER_TOOLS)) {
@@ -324,7 +337,13 @@ export function recordResult(
   b.lastAt = Date.now();
   switch (outcome.status) {
     case "http_402":
+      // A 402 is a depleted prepaid balance — provider-wide, not endpoint-local.
+      // Every sibling on the same shared key/balance is equally out of credit, so
+      // suppress the whole provider for the run (mirrors 429/timeout/5xx). Without
+      // this, one indicia_* endpoint's 402 leaves the other five firing into the
+      // same empty balance, each burning a step to return the same 402.
       b.disabledReason = "402 payment required — disabled for thread";
+      suppressProvider(threadId, tool, `402 payment required — provider '${providerForTool(tool)}' suppressed for investigation`);
       break;
     case "http_403":
     case "http_401":
