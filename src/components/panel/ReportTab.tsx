@@ -234,7 +234,11 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
       <div className="no-print">
         <ConfidenceRadar artifacts={artifacts} seedValue={seed.value} reviews={reviews} />
       </div>
-      <div className="rounded-lg border border-border-subtle bg-surface-1 px-4 py-5 max-h-[78vh] overflow-y-auto [scrollbar-width:thin]">
+      {/* No inner scroll: the report flows in the page's single scroll container
+          (CaseViewPage's overflow-y-auto). A nested max-h/overflow box here made
+          a scroll-within-scroll that let the report cover slide under — and bleed
+          past — the sticky Report header at certain offsets. */}
+      <div className="rounded-lg border border-border-subtle bg-surface-1 px-4 py-5">
         <CaseReport seedValue={seed.value} seedType={seed.type} artifacts={artifacts} reviews={reviews} messages={messages} reportType={reportType} />
       </div>
 

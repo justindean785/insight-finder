@@ -340,8 +340,15 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
           <BarChart3 className="w-4 h-4" strokeWidth={1.5} />
         </Link>
 
+        {/* Only the most-recent cases belong in the 56px rail. Mapping the full
+            list crammed all ~140+ cases in as indistinguishable icons; the active
+            case is always kept visible, then the newest few. Expand for the rest. */}
         <div className="flex-1 overflow-y-auto w-full flex flex-col items-center gap-1 px-1">
-          {threads.map((t) => {
+          {(() => {
+            const active = threads.find((t) => t.id === threadId);
+            const recent = threads.filter((t) => t.id !== threadId).slice(0, 7);
+            return (active ? [active, ...recent] : recent);
+          })().map((t) => {
             const Icon = seedIcon(t.seed_type, t.title);
             const active = t.id === threadId;
             return (

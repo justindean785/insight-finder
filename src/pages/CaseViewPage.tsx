@@ -11,6 +11,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { MessageSquare, ArrowLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { isActiveThreadStatus } from "@/lib/thread-status";
+import { extractDisplaySeed } from "@/lib/seed";
 
 const EvidenceTab = lazy(() =>
   import("@/components/workspace/EvidenceTab").then((m) => ({ default: m.EvidenceTab })),
@@ -113,6 +114,12 @@ export default function CaseViewPage() {
   };
 
   const running = isActiveThreadStatus(meta?.status ?? null);
+  // The stored title / seed_value can be the whole pasted run-prompt, which
+  // overran the header and truncated mid-word. Pull the clean selector out of
+  // the blob (same helper the report cover uses) for the heading, and keep the
+  // full instruction as the subtitle for context.
+  const caseTitle = extractDisplaySeed(meta?.seed_value ?? meta?.title, meta?.seed_type).title;
+  const caseSubtitle = meta?.seed_value?.trim() || meta?.title?.trim() || "";
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -127,10 +134,10 @@ export default function CaseViewPage() {
           </Link>
           <div className="min-w-0 flex-1">
             <h1 className="font-display text-lg sm:text-xl font-semibold tracking-tight truncate">
-              {meta?.title?.trim() || "Untitled case"}
+              {caseTitle || "Untitled case"}
             </h1>
-            {meta?.seed_value && (
-              <p className="text-xs text-muted-foreground font-mono truncate mt-0.5">{meta.seed_value}</p>
+            {caseSubtitle && caseSubtitle !== caseTitle && (
+              <p className="text-xs text-muted-foreground font-mono truncate mt-0.5">{caseSubtitle}</p>
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
