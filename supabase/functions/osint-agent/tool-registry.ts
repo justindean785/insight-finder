@@ -64,7 +64,7 @@ import {
 
 import {
   guard, routingGuard, CONSUMER_DOMAINS, STAGE2_TOOLS,
-  triageState, bumpArtifacts, skipStub,
+  triageState, bumpArtifacts, skipStub, correlateNudge,
 } from "./guard.ts";
 
 import { minimaxChat, minimaxChatWithFallback, safeJson, geminiGroundedSearch, perplexitySearch } from "./providers.ts";
@@ -4243,6 +4243,10 @@ export function buildTools(ctx: ToolContext) {
                   "Prior memory found for some of the artifacts you just recorded. Read `memory_hits` — incorporate confirmed connections/lessons and cite them as [MEMORY] in the final report. Do NOT re-investigate values already covered.",
               }
             : {}),
+          // Audit F1: once enough new artifacts have accrued since the last correlate,
+          // surface a hint so the orchestrator actually runs minimax_correlate (it never
+          // fired in the audited run). Empty object when not yet due.
+          ...correlateNudge(),
         };
       },
     }),
