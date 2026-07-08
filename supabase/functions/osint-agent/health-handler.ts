@@ -1,13 +1,13 @@
 import {
-  corsHeaders, MINIMAX_API_KEY, LOVABLE_API_KEY, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY,
+  corsHeaders, MINIMAX_API_KEY, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY,
   OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
   CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED,
   HIBP_API_KEY, EXA_API_KEY, FIRECRAWL_API_KEY, SERUS_API_KEY,
   GITHUB_API_TOKEN, PERPLEXITY_API_KEY, IPQUALITYSCORE_API_KEY,
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
-  URLSCANNER_API_KEY,
+  URLSCANNER_API_KEY, GEMINI_FALLBACK_MODEL_ID,
   XAI_API_KEY, GROK_ORCHESTRATOR_MODEL_ID,
-  OSINT_AGENT_PROBE_SECRET, FALLBACK_MODEL_ID,
+  OSINT_AGENT_PROBE_SECRET,
 } from "./env.ts";
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
@@ -62,7 +62,6 @@ export async function checkMinimax(deps?: {
 
 export function deriveReadiness(env: {
   MINIMAX_API_KEY?: string | null;
-  LOVABLE_API_KEY?: string | null;
   SUPABASE_URL?: string | null;
   SUPABASE_SERVICE_ROLE_KEY?: string | null;
   SUPABASE_ANON_KEY?: string | null;
@@ -86,7 +85,7 @@ export function deriveReadiness(env: {
   URLSCANNER_API_KEY?: string | null;
 }): { ok: boolean; checks: Record<string, { ok: boolean; detail?: string; reason?: string }> } {
   const has = (v: string | null | undefined) => !!(v && v.length > 0);
-  const orchestratorOk = has(env.MINIMAX_API_KEY) || has(env.LOVABLE_API_KEY);
+  const orchestratorOk = has(env.MINIMAX_API_KEY);
   const coreOk = has(env.SUPABASE_URL) && has(env.SUPABASE_SERVICE_ROLE_KEY) && has(env.SUPABASE_ANON_KEY);
   const tools = {
     oathnet: has(env.OATHNET_API_KEY),
@@ -112,7 +111,7 @@ export function deriveReadiness(env: {
   const checks: Record<string, { ok: boolean; detail?: string; reason?: string }> = {
     orchestrator: orchestratorOk
       ? { ok: true }
-      : { ok: false, detail: "Set MINIMAX_API_KEY or LOVABLE_API_KEY in Supabase secrets" },
+      : { ok: false, detail: "Set MINIMAX_API_KEY in Supabase secrets" },
     core: coreOk
       ? { ok: true }
       : { ok: false, detail: "SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / SUPABASE_ANON_KEY missing" },
@@ -136,7 +135,7 @@ export function isHealthProbe(req: Request): boolean {
 
 export async function handleHealthProbe(req: Request): Promise<Response> {
   const r = deriveReadiness({
-    MINIMAX_API_KEY, LOVABLE_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY,
+    MINIMAX_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY,
     SUPABASE_ANON_KEY,
     OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
     CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, HIBP_API_KEY, EXA_API_KEY,
@@ -203,17 +202,8 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
         clearTimeout(timer);
       }
     };
-    const [mm, lov, gk] = await Promise.all([
+    const [mm, gk, gm] = await Promise.all([
       probeProvider("minimax", !!MINIMAX_API_KEY, (signal) => minimaxChat({ user: "ping", maxTokens: 4, temperature: 0, signal })),
-      probeProvider("lovable", !!LOVABLE_API_KEY, async (signal) => {
-        const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-          method: "POST",
-          headers: { "Lovable-API-Key": LOVABLE_API_KEY, "Content-Type": "application/json" },
-          body: JSON.stringify({ model: FALLBACK_MODEL_ID, messages: [{ role: "user", content: "ping" }], max_tokens: 4 }),
-          signal,
-        });
-        return { ok: res.ok, status: res.status };
-      }),
       probeProvider("grok", !!XAI_API_KEY, async (signal) => {
         const res = await fetch("https://api.x.ai/v1/chat/completions", {
           method: "POST",
@@ -223,10 +213,19 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
         });
         return { ok: res.ok, status: res.status };
       }),
+      probeProvider("gemini", !!Deno.env.get("GEMINI_API_KEY"), async (signal) => {
+        const res = await fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${Deno.env.get("GEMINI_API_KEY")}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ model: GEMINI_FALLBACK_MODEL_ID, messages: [{ role: "user", content: "ping" }], max_tokens: 4 }),
+          signal,
+        });
+        return { ok: res.ok, status: res.status };
+      }),
     ]);
     providers.minimax = mm;
-    providers.lovable = lov;
     providers.grok = gk;
+    providers.gemini = gm;
   }
   const body: Record<string, unknown> = {
     ok: r.ok,

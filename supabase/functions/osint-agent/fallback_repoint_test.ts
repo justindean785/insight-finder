@@ -1,52 +1,39 @@
-// fallback_repoint_test.ts — Phase B5: the orchestrator fallback no longer points
-// at google/gemini-2.5-pro (which 403s on the Lovable gateway and killed the run).
-// It is repointed to a served flash-class model, env-overridable, and the #205
-// no-fallback-after-abort guard is intact.
+// fallback_repoint_test.ts — the orchestrator fallback is direct Gemini API;
+// the Lovable AI gateway path has been removed. These tests verify the abort
+// guard (#205) is intact: an already-aborted caller signal must NOT trigger
+// the fallback, and a MiniMax failure should cascade to Gemini.
 import { assert, assertEquals } from "jsr:@std/assert@^1";
-import { MODELS } from "./models.ts";
-import { FALLBACK_MODEL_ID } from "./env.ts";
 import { minimaxChatWithFallback } from "./providers.ts";
 
 const MINIMAX_HOST = "api.minimax.io";
-const LOVABLE_HOST = "ai.gateway.lovable.dev";
+const GEMINI_HOST = "generativelanguage.googleapis.com";
 
-Deno.test("B5: fallback repointed off the 403-ing gemini-2.5-pro to flash-class", () => {
-  assert(MODELS.fallback !== "google/gemini-2.5-pro", "must not use the credit-gated pro model that 403s");
-  assert(/flash/i.test(MODELS.fallback), `fallback should be a flash-class model, got ${MODELS.fallback}`);
-  assertEquals(FALLBACK_MODEL_ID, MODELS.fallback, "env.ts + models.ts must share one source of truth");
-});
-
-Deno.test("B5: MiniMax failure cascades to Lovable using the repointed model", async () => {
+Deno.test("fallback: MiniMax 429 cascades to direct Gemini", async () => {
   const origFetch = globalThis.fetch;
-  const seen: Array<{ url: string; model?: string }> = [];
+  const seen: string[] = [];
   try {
-    globalThis.fetch = (async (input: Request | URL | string, init?: RequestInit) => {
+    globalThis.fetch = (async (input: Request | URL | string) => {
       const url = input instanceof Request ? input.url : String(input);
-      let model: string | undefined;
-      try { model = JSON.parse(String(init?.body ?? "{}")).model; } catch { /* ignore */ }
-      seen.push({ url, model });
+      seen.push(url);
       if (url.includes(MINIMAX_HOST)) return new Response("rate limited", { status: 429 });
-      if (url.includes(LOVABLE_HOST)) {
-        return new Response(JSON.stringify({ choices: [{ message: { content: "flash-answer" } }] }), { status: 200 });
+      if (url.includes(GEMINI_HOST)) {
+        return new Response(JSON.stringify({ choices: [{ message: { content: "gemini-answer" } }] }), { status: 200 });
       }
       throw new Error(`unexpected fetch to ${url}`);
     }) as typeof globalThis.fetch;
 
-    const result = await minimaxChatWithFallback({ user: "test" }, { lovable: true, allowLovable: true });
+    const result = await minimaxChatWithFallback({ user: "test" }, { gemini: true });
     assertEquals(result.usedFallback, true);
     assertEquals(result.ok, true);
-    assertEquals(result.content, "flash-answer");
-    // The fallback request carried the repointed (served) model — the concrete B5 fix.
-    const lov = seen.find((b) => b.url.includes(LOVABLE_HOST));
-    assert(lov, "the Lovable fallback endpoint must have been called");
-    assertEquals(lov?.model, MODELS.fallback);
-    assert(lov?.model !== "google/gemini-2.5-pro");
+    assertEquals(result.content, "gemini-answer");
+    assert(seen[0].includes(MINIMAX_HOST));
+    assert(seen[1].includes(GEMINI_HOST));
   } finally {
     globalThis.fetch = origFetch;
   }
 });
 
-Deno.test("B5/#205: an already-aborted caller signal does NOT trigger the fallback", async () => {
+Deno.test("#205: an already-aborted caller signal does NOT trigger the fallback", async () => {
   const origFetch = globalThis.fetch;
   const hosts: string[] = [];
   try {
@@ -58,10 +45,10 @@ Deno.test("B5/#205: an already-aborted caller signal does NOT trigger the fallba
     }) as typeof globalThis.fetch;
 
     const ctrl = new AbortController();
-    ctrl.abort(); // the caller (per-tool timeout) already gave up
+    ctrl.abort();
     let threw = false;
     try {
-      await minimaxChatWithFallback({ user: "test", signal: ctrl.signal }, { gemini: true, lovable: true, allowLovable: true });
+      await minimaxChatWithFallback({ user: "test", signal: ctrl.signal }, { gemini: true });
     } catch {
       threw = true;
     }

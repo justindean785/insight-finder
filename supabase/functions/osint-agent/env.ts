@@ -16,11 +16,10 @@
  */
 
 import { createOpenAICompatible } from "npm:@ai-sdk/openai-compatible@1";
-import { MODELS } from "./models.ts";
 import { createIdleTimeoutFetch } from "./fetch_retry.ts";
 
-// Every orchestrator LLM provider (minimax, lovable-ai-gateway, xai-grok,
-// openadapter) is built via createOpenAICompatible with this as its `fetch`.
+// Every orchestrator LLM provider (minimax, xai-grok, openadapter, gemini-direct)
+// is built via createOpenAICompatible with this as its `fetch`.
 // Without it, a stalled stream (upstream opens the connection then goes silent
 // mid-generation) hangs streamText() forever: stopWhen's wall-clock deadline is
 // only evaluated BETWEEN completed steps, so a step whose model call never
@@ -64,26 +63,6 @@ export const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
  */
 export const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 export const MINIMAX_API_KEY = Deno.env.get("MINIMAX_API_KEY")!;
-export const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY") ?? "";
-
-// Lovable AI Gateway provider — LAST-RESORT fallback only, and only when the
-// operator explicitly opts in via ALLOW_LOVABLE_FALLBACK=true (or pins it as
-// primary with ORCHESTRATOR_PROVIDER=lovable). The gateway proxies through
-// Lovable's shared quota and has burned runs on credit-gated models before;
-// the default fallback is the DIRECT Gemini API below.
-export const ALLOW_LOVABLE_FALLBACK =
-  (Deno.env.get("ALLOW_LOVABLE_FALLBACK") ?? "").trim().toLowerCase() === "true";
-export const lovableGateway = LOVABLE_API_KEY
-  ? createOpenAICompatible({
-      name: "lovable-ai-gateway",
-      baseURL: "https://ai.gateway.lovable.dev/v1",
-      headers: {
-        "Lovable-API-Key": LOVABLE_API_KEY,
-        "X-Lovable-AIG-SDK": "vercel-ai-sdk",
-      },
-      fetch: ORCHESTRATOR_FETCH,
-    })
-  : null;
 
 // Direct Google Gemini — the DEFAULT orchestrator fallback when MiniMax is
 // unavailable / preflight-fails / would overflow. Uses Google's OpenAI-compatible
@@ -120,11 +99,6 @@ export const geminiDirectGateway = GEMINI_API_KEY
 //   MINIMAX_ORCHESTRATOR_MODEL_ID=<verified-highspeed-id>
 export const PRIMARY_ORCHESTRATOR_MODEL_ID =
   Deno.env.get("MINIMAX_ORCHESTRATOR_MODEL_ID") ?? "MiniMax-M2.7";
-// Lovable Gateway fallback model (used when MiniMax is unavailable / preflight
-// fails). Single source of truth is MODELS.fallback in models.ts — repointed to a
-// served flash-class model + env-overridable via LOVABLE_FALLBACK_MODEL_ID (B5),
-// since the old "google/gemini-2.5-pro" 403'd here and killed the run.
-export const FALLBACK_MODEL_ID = MODELS.fallback;
 
 // ---- Tranche 2: env-gated alternative orchestrator providers -----------------
 // These let an operator move the top-level orchestrator/synthesis turn off

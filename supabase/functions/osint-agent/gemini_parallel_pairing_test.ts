@@ -1,5 +1,5 @@
 // gemini_parallel_pairing_test.ts — names and pins the sibling-result-pairing
-// guarantee for the LOVABLE/GEMINI orchestrator path, which is the one path that
+// guarantee for the GEMINI fallback orchestrator path, which is the one path that
 // runs WITHOUT the MiniMax-only `parallel_tool_calls: false` provider option
 // (index.ts only attaches that constraint when `minimaxIsPrimary && !useFallback`
 // — see ORCHESTRATOR_PARALLEL_TOOL_CALLS). When Gemini is primary/fallback it is

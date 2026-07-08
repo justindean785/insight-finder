@@ -253,6 +253,8 @@ export const PREMIUM_TOOLS = new Set<string>([
   "exa_find_similar",
   "exa_get_contents",
   "hunter_combined",
+  "serus_darkweb_scan",    // $2.5k/call, dark web data is stable within a scan
+  "deepfind_reverse_email", // 8s timeout, expensive on retry; once-per-selector is sufficient
 ]);
 
 export function isPremiumTool(tool: string): boolean {
