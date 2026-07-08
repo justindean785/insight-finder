@@ -32,7 +32,7 @@ import {
   pivotSkipStorageKey,
   type RecommendedPivot,
 } from "@/lib/recommended-pivots";
-import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon, Copy as CopyIcon } from "lucide-react";
+import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon, Copy as CopyIcon, ArrowRight } from "lucide-react";
 import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
 import { toolDisplayName, toolActionLabel, humanizeStage } from "@/lib/tool-display";
 
@@ -2146,43 +2146,34 @@ function ChatWindowInner({
                 </span>
                 <div className="h-px flex-1 bg-gradient-to-r from-white/10 to-transparent" />
               </div>
-              {/* Horizontal scroll-snap rail: swipes on narrow screens, settles
-                  into a tidy 3-up grid on md+. Replaces the ragged flex-wrap of
-                  stacked chips. */}
-              <div className="flex gap-3 overflow-x-auto snap-x snap-mandatory pb-2 -mx-4 px-4 [scrollbar-width:thin] [scrollbar-color:hsl(var(--border))_transparent] md:grid md:grid-cols-3 md:gap-2 md:overflow-visible md:mx-0 md:px-0">
+              {/* Mobile: horizontal scroll-snap rail. sm+: an even 2-up grid —
+                  equal-height cards (h-full + flex-col) so ragged detail lengths
+                  can't stagger the row, roomier than the old cramped 3-up so the
+                  meta/title stop truncating. Each card ends in a "Run" affordance
+                  that animates on hover to read as actionable, not decorative. */}
+              <div className="flex gap-3 overflow-x-auto snap-x snap-mandatory pb-2 -mx-4 px-4 [scrollbar-width:thin] [scrollbar-color:hsl(var(--border))_transparent] sm:grid sm:grid-cols-2 sm:gap-2.5 sm:overflow-visible sm:mx-0 sm:px-0 sm:pb-0">
                 {suggestions.map((s, i) => (
                   <button
                     key={`${s.title}-${i}`}
                     onClick={() => sendText(s.prompt)}
-                    className="group relative w-[246px] md:w-auto shrink-0 snap-start overflow-hidden rounded-2xl border border-white/12 bg-[linear-gradient(155deg,rgba(255,255,255,0.09),rgba(255,255,255,0.025)_46%,rgba(255,255,255,0.01))] p-3 text-left shadow-[0_18px_44px_-24px_rgba(0,0,0,0.92)] backdrop-blur-xl transition-all duration-300 hover:-translate-y-0.5 hover:border-primary/55 hover:shadow-[0_26px_60px_-30px_rgba(0,0,0,0.98)] animate-pivot-in"
+                    className="group relative flex w-[248px] shrink-0 snap-start flex-col overflow-hidden rounded-2xl border border-white/12 bg-[linear-gradient(155deg,rgba(255,255,255,0.09),rgba(255,255,255,0.025)_46%,rgba(255,255,255,0.01))] p-3.5 text-left shadow-[0_18px_44px_-24px_rgba(0,0,0,0.92)] backdrop-blur-xl transition-all duration-300 ease-premium hover:-translate-y-0.5 hover:border-primary/55 hover:shadow-[0_26px_60px_-30px_rgba(0,0,0,0.98)] active:translate-y-0 active:scale-[0.99] motion-safe:animate-pivot-in sm:h-full sm:w-auto"
                     style={{ animationDelay: `${Math.min(i * 40, 320)}ms` }}
                   >
                     <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/40 to-transparent opacity-70" />
-                    {s.priority && (
-                      <span
-                        className={
-                          "absolute left-0 inset-y-2 w-0.5 rounded-full " +
-                          (s.priority === "high"
-                            ? "bg-[hsl(var(--confidence-high))]"
-                            : s.priority === "medium"
-                              ? "bg-[hsl(var(--confidence-mid))]"
-                              : "bg-muted")
-                        }
-                        aria-hidden
-                      />
-                    )}
-                    <span className="block pl-2 space-y-1">
-                      <span className="flex items-center gap-1.5">
-                        {s.icon === "pivot" ? (
-                          <GitBranch className="w-3 h-3 text-primary" />
-                        ) : (
-                          <Sparkles className="w-3 h-3 text-primary" />
-                        )}
-                        {s.priority && <span className={`pivot-priority pivot-priority--${s.priority}`}>{s.priority}</span>}
-                        <span className="truncate text-micro tracking-normal text-muted-foreground/80 font-mono">{s.meta}</span>
-                      </span>
-                      <span className="block text-sm font-semibold leading-snug text-foreground group-hover:text-primary transition-colors">{s.title}</span>
-                      {s.detail && <span className="block text-micro leading-snug text-muted-foreground line-clamp-2">{s.detail}</span>}
+                    <span className="flex items-center gap-1.5">
+                      {s.icon === "pivot" ? (
+                        <GitBranch className="w-3 h-3 shrink-0 text-primary" />
+                      ) : (
+                        <Sparkles className="w-3 h-3 shrink-0 text-primary" />
+                      )}
+                      {s.priority && <span className={`pivot-priority pivot-priority--${s.priority}`}>{s.priority}</span>}
+                      <span className="truncate text-micro tracking-normal text-muted-foreground/80 font-mono">{s.meta}</span>
+                    </span>
+                    <span className="mt-1.5 block text-sm font-semibold leading-snug text-foreground transition-colors group-hover:text-primary">{s.title}</span>
+                    {s.detail && <span className="mt-1 block flex-1 text-micro leading-relaxed text-muted-foreground line-clamp-2">{s.detail}</span>}
+                    <span className="mt-2.5 inline-flex items-center gap-1 font-mono text-micro text-primary/65 transition-all group-hover:gap-1.5 group-hover:text-primary">
+                      {s.icon === "pivot" ? "Run pivot" : "Run"}
+                      <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
                     </span>
                   </button>
                 ))}
