@@ -14,8 +14,8 @@ import { minimax_web_search, minimax_extract, minimax_correlate, minimax_plan_pi
 // IntelBase
 import { intelbase_email_lookup } from "./intelbase.ts";
 
-// OSINT Navigator + OathNet + Synapsint
-import { osint_navigator_query, osint_navigator_search, oathnet_lookup, synapsint_lookup } from "./osint_navigator.ts";
+// OSINT Navigator + OathNet
+import { osint_navigator_query, osint_navigator_search, oathnet_lookup } from "./osint_navigator.ts";
 
 // Serus darkweb scan
 import { serus_darkweb_scan } from "./serus.ts";
@@ -26,12 +26,12 @@ import { socialfetch_lookup, cordcat_discord_lookup, username_sweep, username_se
   deepfind_profile_analyzer, deepfind_telegram_channel, deepfind_telegram_search } from "./social.ts";
 
 // Email
-import { emailrep, gravatar_profile, hunter_domain_search, hunter_email_finder,
+import { gravatar_profile, hunter_domain_search, hunter_email_finder,
   hunter_email_verifier, hunter_combined, bosint_email_lookup, bosint_phone_lookup,
   deepfind_reverse_email, deepfind_disposable_email } from "./email.ts";
 
 // Breach
-import { breach_check, stolentax_footprint, leakcheck_lookup, hibp_lookup } from "./breach.ts";
+import { breach_check, leakcheck_lookup, hibp_lookup } from "./breach.ts";
 
 // Infrastructure
 import { whois_lookup, crtsh_subdomains, dns_records, shodan_internetdb,
@@ -71,8 +71,8 @@ export const ALL_STATIC_TOOLS = {
   minimax_web_search, minimax_extract, minimax_correlate, minimax_plan_pivots,
   // IntelBase
   intelbase_email_lookup,
-  // Navigator + OathNet + Synapsint
-  osint_navigator_query, osint_navigator_search, oathnet_lookup, synapsint_lookup,
+  // Navigator + OathNet
+  osint_navigator_query, osint_navigator_search, oathnet_lookup,
   // Serus
   serus_darkweb_scan,
   // Social
@@ -80,11 +80,11 @@ export const ALL_STATIC_TOOLS = {
   github_user, github_code_search, reddit_user, hackernews_user,
   deepfind_profile_analyzer, deepfind_telegram_channel, deepfind_telegram_search,
   // Email
-  emailrep, gravatar_profile, hunter_domain_search, hunter_email_finder,
+  gravatar_profile, hunter_domain_search, hunter_email_finder,
   hunter_email_verifier, hunter_combined, bosint_email_lookup, bosint_phone_lookup,
   deepfind_reverse_email, deepfind_disposable_email,
   // Breach
-  breach_check, stolentax_footprint, leakcheck_lookup, hibp_lookup,
+  breach_check, leakcheck_lookup, hibp_lookup,
   // Infrastructure
   whois_lookup, crtsh_subdomains, dns_records, shodan_internetdb,
   ip_intel, ipgeolocation_lookup, http_fingerprint, virustotal_lookup,

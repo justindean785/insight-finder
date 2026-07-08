@@ -933,7 +933,6 @@ export const NO_SANITIZE_TOOLS = new Set<string>([
 export const AUTO_EVIDENCE_TOOLS = new Set<string>([
   "breach_check",
   "leakcheck_lookup",
-  "stolentax_footprint",
   "intelbase_email_lookup",
   "oathnet_lookup",
   "deepfind_reverse_email",

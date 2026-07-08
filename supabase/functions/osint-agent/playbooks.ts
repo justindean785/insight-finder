@@ -40,8 +40,8 @@ export const PLAYBOOKS: Record<SeedType, Playbook> = {
     // rapidapi_breach_search is the PRIMARY/FIRST breach call. breach_check is the
     // fallback when RAPIDAPI_KEY is absent. leakcheck_lookup + oathnet_lookup are
     // CORROBORATION-ONLY (scarce 200/day & 100/day budgets) — demoted to recommended
-    // so they are never the opening breach move. emailrep + gravatar_profile (~85%
-    // no-value in prod) are likewise demoted out of the required fan-out.
+    // so they are never the opening breach move. gravatar_profile (~85% no-value in
+    // prod) is likewise demoted out of the required fan-out.
     required: ["rapidapi_breach_search", "breach_check", "hibp_lookup", "deepfind_reverse_email", "hunter_email_verifier"],
     recommended: ["leakcheck_lookup", "oathnet_lookup", "socialfetch_lookup", "gemini_deep_dork", "exa_search", "google_dorks", "dork_harvest"],
     coverage: ["identity", "email", "username", "breach", "social"],

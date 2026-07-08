@@ -54,7 +54,7 @@ import {
   coerceArtifactsInput,
 } from "./validation.ts";
 
-import type { NavigatorQueryResponse, NavigatorSearchResponse, NavigatorTool, StolenTaxResponse, GitHubCodeSearchResponse, GitHubCodeMatch } from "./api_types.ts";
+import type { NavigatorQueryResponse, NavigatorSearchResponse, NavigatorTool, GitHubCodeSearchResponse, GitHubCodeMatch } from "./api_types.ts";
 
 import {
   scrubArtifactRow, scrubArtifactRows, hashInput, normalizeForHash,
@@ -75,7 +75,7 @@ import { buildAutoRecordedRow } from "./auto-record-integrity.ts";
 import { TOOL_CATALOG, CATALOG_CACHE, FINDING_LABELS } from "./catalog.ts";
 import { beginCycle, recordFindingSummary } from "./runtime-policy.ts";
 import { serus_darkweb_scan } from "./tools/serus.ts";
-import { okWithSuccessFlag, socialfetchError, isHackertargetApiError, isCrtshOk, dohTypeError, blockchairError } from "./tool_response.ts";
+import { okWithSuccessFlag, isHackertargetApiError, isCrtshOk, dohTypeError, blockchairError } from "./tool_response.ts";
 import { enforceNameSeedPriority, enforceFallbackToolPolicy, NAME_SEED_PLANNER_RULES } from "./planner-guidance.ts";
 import { sweepUsername } from "./sweeper.ts";
 import { trimExaResults, archiveAttachment } from "./archiver.ts";
@@ -110,9 +110,31 @@ const JINA_HARD_BLOCK_HOSTS = [
   "instagram.com",
   "reddit.com",
   "facebook.com",
+  "youtube.com",
+  "youtu.be",
 ];
 function isJinaHardBlocked(hostname: string): boolean {
   return JINA_HARD_BLOCK_HOSTS.some((h) => hostname === h || hostname.endsWith(`.${h}`));
+}
+
+// ---------------------------------------------------------------------------
+// PERF-3 (#69): per-isolate schema cache.
+// buildTools() runs on EVERY request, but the zod inputSchemas it constructs
+// are pure and identical across requests — none of the 84 inline defs reads
+// ctx (verified). Each schema is therefore built once per isolate (lazily, on
+// the first request) and reused, instead of re-running ~84 z.object()
+// constructions per request. Zod schemas are immutable, so sharing one
+// instance across requests is safe.
+// NOTE: keys MUST stay unique per call site (use the tool name) — a duplicate
+// key would silently hand the second tool the first tool's schema.
+const SCHEMA_CACHE = new Map<string, unknown>();
+function memoSchema<T>(key: string, build: () => T): T {
+  let cached = SCHEMA_CACHE.get(key);
+  if (cached === undefined) {
+    cached = build();
+    SCHEMA_CACHE.set(key, cached);
+  }
+  return cached as T;
 }
 
 export function buildTools(ctx: ToolContext) {
@@ -122,7 +144,7 @@ export function buildTools(ctx: ToolContext) {
     list_tools: tool({
       description:
         "Returns the OSINT tool catalog, per-seed fan-out recipes, finding-label rules, and tools disabled by provider configuration. Triage and expected-value signals never hide otherwise available tools.",
-      inputSchema: z.object({}).strict(),
+      inputSchema: memoSchema("list_tools", () => z.object({}).strict()),
       execute: async () => {
         const disabled: Array<{ name: string; reason: string }> = [];
         // HIBP needs a paid key; hide it entirely when unset so the agent
@@ -171,10 +193,10 @@ export function buildTools(ctx: ToolContext) {
     triage_seed: tool({
       description:
         "Optional early classification for email or username seeds. Records a `triage_decision` artifact but never unlocks or blocks other tools.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("triage_seed", () => z.object({
         seed: z.string().min(1),
         type: z.enum(["email", "username"]),
-      }),
+      })),
       execute: async ({ seed, type }) => {
         const normalized = seed.trim();
         const domain = type === "email" && normalized.includes("@")
@@ -294,10 +316,10 @@ export function buildTools(ctx: ToolContext) {
     minimax_web_search: tool({
       description:
         "Live web search powered by Perplexity Sonar (grounded, real-time, with citations). Use for the original seed or a corroborated selector when the planned query can answer a distinct verification question. Returns a concise synthesized answer plus cited source URLs.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("minimax_web_search", () => z.object({
         query: z.string().min(2).describe("Search query, e.g. \"alice@example.com\" leak OR breach"),
         focus: z.string().optional().describe("Optional steering hint, e.g. 'find social profiles', 'find leaks'"),
-      }),
+      })),
       execute: async ({ query, focus }) => {
         if (!PERPLEXITY_API_KEY) return { error: "PERPLEXITY_API_KEY not configured" };
         try {
@@ -351,10 +373,10 @@ export function buildTools(ctx: ToolContext) {
     minimax_extract: tool({
       description:
         "Extract structured OSINT entities from any blob of raw text (HTML excerpts, breach JSON dumps, social profile bios, tool outputs). MiniMax returns deduped emails, usernames, phones, urls, ips, domains, full names, employers, locations, and crypto wallets.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("minimax_extract", () => z.object({
         text: z.string().min(1).max(20000),
         context: z.string().optional().describe("What the blob is, e.g. 'github bio for handle xyz'"),
-      }),
+      })),
       execute: async ({ text, context }, opts) => {
         try {
           const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
@@ -374,7 +396,7 @@ export function buildTools(ctx: ToolContext) {
     minimax_correlate: tool({
       description:
         "Have MiniMax correlate and rescore a batch of artifacts. Pass the relevant artifacts gathered so far; it returns identity clusters, dedup mapping, confidence rescoring, and contradiction flags. Run after at least three meaningful new artifacts or before final verification.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("minimax_correlate", () => z.object({
         seed: z.string().describe("Original seed identifier"),
         // Models frequently pass `artifacts` as a JSON STRING; coerce to an
         // array before validating (same as record_artifacts) so a stringified
@@ -386,7 +408,7 @@ export function buildTools(ctx: ToolContext) {
           confidence: z.number().optional(),
           metadata: z.unknown().optional(),
         })).max(200)),
-      }),
+      })),
       execute: async ({ seed, artifacts }) => {
         // Input guard: never spend a paid MiniMax call on an empty/invalid
         // payload. The counter check below tracks how many NEW artifacts were
@@ -422,12 +444,12 @@ export function buildTools(ctx: ToolContext) {
     minimax_plan_pivots: tool({
       description:
         "Plan the next bounded investigation cycle. Returns structured JSON with stage, goal, current_findings, proposed_calls[], and calls_rejected[]. Use it before any non-planner pivot batch so the investigation stays budgeted, cache-aware, and evidence-led.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("minimax_plan_pivots", () => z.object({
         seed: z.string(),
         already_queried: z.array(z.string()).max(200).default([]),
         artifacts: z.preprocess(coerceArtifactsInput, z.array(z.object({ kind: z.string(), value: z.string() })).max(200)),
         budget_remaining: z.number().int().min(0).max(100).default(30),
-      }),
+      })),
       execute: async ({ seed, already_queried, artifacts, budget_remaining }) => {
         try {
           const baseToolList = [
@@ -435,7 +457,7 @@ export function buildTools(ctx: ToolContext) {
             "rapidapi_breach_search","rapidapi_all_breaches",
             "breach_check","leakcheck_lookup","hibp_lookup","oathnet_lookup",
             "bosint_email_lookup",
-            "stolentax_footprint","serus_darkweb_scan",
+            "serus_darkweb_scan",
             // Indicia — US person/phone/email/address + web-DB breach aggregator.
             "indicia_email","indicia_phone","indicia_person","indicia_address",
             "indicia_web_dbs","indicia_hudsonrock",
@@ -447,8 +469,8 @@ export function buildTools(ctx: ToolContext) {
             "deepfind_mac_lookup","deepfind_dark_web_link",
             "deepfind_email_breach","deepfind_transaction_viewer",
             // Profile / social
-            "socialfetch_lookup","cordcat_discord_lookup","github_user","github_code_search",
-            "hackernews_user","reddit_user","gravatar_profile","emailrep",
+            "socialfetch_lookup","socialfetch_web_read","cordcat_discord_lookup","github_user","github_code_search",
+            "hackernews_user","reddit_user","gravatar_profile",
             "username_sweep","username_search",
             // Email enrichment
             "hunter_domain_search","hunter_email_finder","hunter_email_verifier","hunter_combined",
@@ -480,21 +502,20 @@ export function buildTools(ctx: ToolContext) {
           // for ~0 yield. Runtime defs + catalog entries are kept (contract
           // test stays green) and they're decoupled from playbooks; re-add
           // here only after the underlying integration/key is repaired.
-          //   stolentax_footprint  22% ok, ~10s latency (401 bad key + aborts)
           //   hackernews_user       0% ok
           //   gravatar_profile     14% ok (404s; already demoted in #171)
-          //   emailrep             19% ok (429 rate-limited; low value)
           //   ipqualityscore_lookup 0/28 ok — dead key ("Invalid or unauthorized
           //                        key" for 30d); cut 2026-07-05.
           // NB: hibp_lookup (0%) stays on its API-key gate (valuable once keyed) and
-          // is NOT hard-blocked. ipqualityscore is now hard-cut (dead key).
-          // stolentax_footprint / synapsint_lookup / emailrep / ipqualityscore_lookup
-          // are ALSO hard-disabled in capabilities.ts (disabled:true) so the readiness
-          // gate deletes them from the tool schema entirely; keeping them here is
-          // belt-and-suspenders for the planner menu.
+          // is NOT hard-blocked. ipqualityscore is now hard-cut (dead key) and is
+          // ALSO hard-disabled in capabilities.ts (disabled:true) so the readiness
+          // gate deletes it from the tool schema entirely; keeping it here is
+          // belt-and-suspenders for the planner menu. (The permanently-dead
+          // stolentax_footprint / synapsint_lookup / emailrep tools were removed
+          // from the codebase entirely in the dead-tool cull.)
           const PERMANENT_BLOCK = new Set([
-            "stolentax_footprint","synapsint_lookup","hackernews_user",
-            "gravatar_profile","emailrep","ipqualityscore_lookup",
+            "hackernews_user",
+            "gravatar_profile","ipqualityscore_lookup",
           ]);
           // Tools the circuit breaker has disabled this investigation (e.g.
           // a provider after consecutive HTTP 500s). Without this the planner
@@ -726,10 +747,10 @@ export function buildTools(ctx: ToolContext) {
     osint_navigator_query: tool({
       description:
         "OSINT Navigator natural-language tool recommendation (POST https://navigator.indicator.media/api/query). Ask 'which OSINT tools should I use for X?' in plain English and get back a curated list of verified tools with names + URLs. Use when you (the planner) are unsure which third-party tool fits a pivot, or when the user asks for tool recommendations. Returns {answer, tools:[{name,url,...}]}. Rate-limited by tier. Do NOT invent tools — only cite what's returned.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("osint_navigator_query", () => z.object({
         query: z.string().describe("Natural-language question, e.g. 'tools to find who registered a domain' or 'image verification tools'"),
         skip_cache: z.boolean().optional().default(false),
-      }),
+      })),
       execute: async ({ query, skip_cache }) => {
         if (!OSINT_NAVIGATOR_API_KEY) return { error: "OSINT_NAVIGATOR_API_KEY not configured" };
         try {
@@ -766,11 +787,11 @@ export function buildTools(ctx: ToolContext) {
     osint_navigator_search: tool({
       description:
         "OSINT Navigator direct tool-database search (POST https://navigator.indicator.media/api/tools/search). Keyword / category lookup, NOT Q&A. Optional category slugs: domains_websites, social_media, image_video_analysis, geolocation_mapping, transport, companies. Use for browsing alternatives or when you already know the category. Returns a list of verified tools — do NOT invent.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("osint_navigator_search", () => z.object({
         query: z.string().describe("Keyword(s), e.g. 'whois', 'archive', 'vessel tracking'"),
         category: z.string().optional().describe("Optional category slug; omit to broaden"),
         limit: z.number().int().min(1).max(25).optional().default(10),
-      }),
+      })),
       execute: async ({ query, category, limit }) => {
         if (!OSINT_NAVIGATOR_API_KEY) return { error: "OSINT_NAVIGATOR_API_KEY not configured" };
         try {
@@ -807,10 +828,10 @@ export function buildTools(ctx: ToolContext) {
     oathnet_lookup: tool({
      description:
        "Query OathNet v2 for breach correlation on a high-value email/username/phone/domain/NAME, or geo+ASN on an IP. For a person's full NAME pass type:'name' (searched as a free-text query across the breach corpus — expect same-name collisions, so treat name-only hits as [VERIFY] until a selector overlaps). A first-class breach source: run it on the seed AND on high-value selectors/names discovered mid-investigation.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("oathnet_lookup", () => z.object({
         type: z.enum(["email", "username", "phone", "ip", "domain", "name"]),
         value: z.string(),
-      }),
+      })),
       execute: async ({ type, value }, opts) => {
         if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
         try {
@@ -842,12 +863,12 @@ export function buildTools(ctx: ToolContext) {
     }),
     socialfetch_lookup: tool({
       description:
-        "Query SocialFetch for normalized public social profiles. SUPPORTED platforms ONLY: 'tiktok' | 'instagram' | 'twitter' | 'facebook'. For ANY OTHER platform (youtube, twitch, soundcloud, bandcamp, roblox, github, reddit, linkedin, mastodon, etc.) DO NOT call this tool — prefer `jina_reader_scrape` on the profile URL (cleanest fallback), then `http_fingerprint`, `wayback_snapshots`, or `minimax_web_search`. SocialFetch quota is LOW — if it errors or returns nothing, retry the same profile URL via `jina_reader_scrape` instead of burning more SocialFetch calls. Unsupported platforms return an informative no-op instead of crashing. Use platform='facebook' with a full profile URL; otherwise pass a bare handle. kind='profile' for profile metadata, kind='videos' (TikTok only) for paginated videos.",
-      inputSchema: z.object({
+        "Query SocialFetch for normalized public social PROFILES and their content. SUPPORTED platforms: 'tiktok' | 'instagram' | 'twitter' | 'facebook'. kind='profile' (default) = profile metadata; 'videos' (tiktok) / 'posts' (instagram) / 'tweets' (twitter) = a profile's content collection; 'video' (tiktok) = one video by URL/id (pass it as `handle`). Use platform='facebook' with a full profile URL; otherwise pass a bare handle. Returns { ok, found, status, lookupStatus, data, meta, error }; on profile routes lookupStatus is 'found'|'private'|'not_found' — treat 'private'/'not_found' as a NORMAL negative, not an error. For a HARD-BLOCKED host that is NOT one of these four structured platforms (youtube, twitch, reddit, or an arbitrary evidence page), use `socialfetch_web_read` — it fetches server-side, unlike `jina_reader_scrape`, which those origins block. Jina remains the reader for non-blocked hosts. SocialFetch quota is LOW — don't re-burn calls on a nothing-result. Unsupported platforms return an informative no-op instead of crashing.",
+      inputSchema: memoSchema("socialfetch_lookup", () => z.object({
         platform: z.string(),
-        handle: z.string().describe("Username/handle, or full URL for facebook"),
-        kind: z.enum(["profile", "videos"]).default("profile"),
-      }),
+        handle: z.string().describe("Username/handle, full URL for facebook, or video URL/id for tiktok kind='video'"),
+        kind: z.enum(["profile", "videos", "posts", "tweets", "video"]).default("profile"),
+      })),
       execute: async ({ platform, handle, kind }) => {
         const p = String(platform || "").trim().toLowerCase();
         const SUPPORTED = new Set(["tiktok", "instagram", "twitter", "facebook"]);
@@ -855,35 +876,111 @@ export function buildTools(ctx: ToolContext) {
           return {
             ok: false,
             skipped: true,
-            reason: `socialfetch_lookup does not support platform='${platform}'. Use http_fingerprint on the profile URL, wayback_snapshots, or minimax_web_search instead.`,
+            reason: `socialfetch_lookup does not support platform='${platform}'. For a blocked host (youtube/twitch/reddit/arbitrary page) use socialfetch_web_read; otherwise http_fingerprint, wayback_snapshots, or minimax_web_search.`,
             supported: Array.from(SUPPORTED),
           };
         }
         if (!SOCIALFETCH_API_KEY) return { error: "SOCIALFETCH_API_KEY not configured" };
         try {
+          const h = encodeURIComponent(handle);
           let url: string;
           if (p === "facebook") {
-            url = `https://api.socialfetch.dev/v1/facebook/profiles?url=${encodeURIComponent(handle)}`;
+            url = `https://api.socialfetch.dev/v1/facebook/profiles?url=${h}`;
           } else if (p === "tiktok" && kind === "videos") {
-            url = `https://api.socialfetch.dev/v1/tiktok/profiles/${encodeURIComponent(handle)}/videos`;
+            url = `https://api.socialfetch.dev/v1/tiktok/profiles/${h}/videos`;
+          } else if (p === "tiktok" && kind === "video") {
+            url = `https://api.socialfetch.dev/v1/tiktok/videos/${h}`;
+          } else if (p === "instagram" && kind === "posts") {
+            url = `https://api.socialfetch.dev/v1/instagram/profiles/${h}/posts`;
+          } else if (p === "twitter" && kind === "tweets") {
+            url = `https://api.socialfetch.dev/v1/twitter/profiles/${h}/tweets`;
           } else {
-            url = `https://api.socialfetch.dev/v1/${p}/profiles/${encodeURIComponent(handle)}`;
+            url = `https://api.socialfetch.dev/v1/${p}/profiles/${h}`;
           }
-          const r = await fetchT(url, { headers: { "x-api-key": SOCIALFETCH_API_KEY } });
+          // fetchRetry retries transient 5xx but returns 4xx (401/402/404/etc.)
+          // without retry — the right policy for a low-quota paid API.
+          const r = await fetchRetry(url, { headers: { "x-api-key": SOCIALFETCH_API_KEY } }, { retries: 1 });
+          // 402 = credits exhausted. Surface distinctly and never retry so the
+          // agent stops burning quota and the operator can refill.
+          if (r.status === 402) {
+            return { ok: false, status: 402, found: false, error: "SOCIALFETCH_CREDITS_EXHAUSTED", message: "Social Fetch credit balance is zero. Check /v1/balance." };
+          }
           const text = await r.text();
-          let data: unknown;
-          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 4000) }; }
-          // SocialFetch returns {error:{code}} on 4xx/5xx; a 200 may still carry a
-          // "not found"/"private" outcome in data (a legitimate negative).
-          const err = socialfetchError(data);
-          // A 404 means the handle has no profile on this platform — a legitimate
-          // negative, not a tool failure. Mark it ok with found:false so it doesn't
-          // inflate the failure rate (the live API + key are healthy).
-          if (r.status === 404 && !err) {
-            return { ok: true, status: 404, found: false, data };
+          // Envelope is { data, meta }. meta = { requestId, creditsCharged, version }.
+          let env: { data?: Record<string, unknown> | null; meta?: unknown; error?: unknown };
+          try { env = JSON.parse(text) as typeof env; } catch { env = { data: { raw: text.slice(0, 4000) } }; }
+          const payload = (env?.data ?? null) as Record<string, unknown> | null;
+          // Profile routes carry data.lookupStatus ('found'|'private'|'not_found').
+          // Collection routes (videos/posts/tweets) have NO lookupStatus — infer
+          // success from the presence of the returned array instead.
+          const lookupStatus = (payload && typeof payload === "object" ? (payload.lookupStatus ?? null) : null) as string | null;
+          const isCollection = kind === "videos" || kind === "posts" || kind === "tweets";
+          const collectionHit = Array.isArray(payload?.videos) || Array.isArray(payload?.posts) || Array.isArray(payload?.tweets);
+          const found = r.ok && (
+            lookupStatus === "found" ||
+            (lookupStatus == null && isCollection && collectionHit) ||
+            (lookupStatus == null && !isCollection && !env?.error && r.status !== 404)
+          );
+          // A 404 with no error body is a legitimate "no such profile" negative,
+          // not a tool failure — mark ok so it doesn't inflate the failure rate.
+          const ok = r.status === 404 && !env?.error ? true : r.ok;
+          return { ok, status: r.status, found, lookupStatus, data: payload, meta: env?.meta ?? null, error: env?.error ?? null };
+        } catch (e) {
+          return { error: String(e) };
+        }
+      },
+    }),
+    socialfetch_web_read: tool({
+      description:
+        "Read ANY web URL as clean markdown via SocialFetch's SERVER-SIDE fetch (/v1/web/markdown). Use this for hosts that r.jina.ai HARD-BLOCKS — youtube/youtu.be, x/twitter, twitch, reddit — and for arbitrary evidence pages Jina can't reach: SocialFetch fetches server-side so origin 403/451 blocks don't apply. Costs ~1 credit per URL and SocialFetch quota is LOW — call it only for a specific blocked/important URL, NEVER as a bulk crawler. Returns { ok, status, data (markdown), meta, error }.",
+      inputSchema: memoSchema("socialfetch_web_read", () => z.object({
+        url: z.string().describe("Fully-qualified http(s) URL to read"),
+      })),
+      execute: async ({ url }) => {
+        if (!SOCIALFETCH_API_KEY) return { error: "SOCIALFETCH_API_KEY not configured" };
+        try {
+          const r = await fetchRetry(`https://api.socialfetch.dev/v1/web/markdown?url=${encodeURIComponent(url)}`, { headers: { "x-api-key": SOCIALFETCH_API_KEY } }, { retries: 1 });
+          if (r.status === 402) {
+            return { ok: false, status: 402, error: "SOCIALFETCH_CREDITS_EXHAUSTED", message: "Social Fetch credit balance is zero. Check /v1/balance." };
           }
-          const found = r.ok && !err;
-          return { ok: found, status: r.status, found, ...(err ? { error_code: err.code } : {}), data };
+          const text = await r.text();
+          let env: { data?: unknown; meta?: unknown; error?: unknown };
+          try { env = JSON.parse(text) as typeof env; } catch { env = { data: text.slice(0, 8000) }; }
+          return { ok: r.ok, status: r.status, data: env?.data ?? env, meta: env?.meta ?? null, error: env?.error ?? null };
+        } catch (e) {
+          return { error: String(e) };
+        }
+      },
+    }),
+    socialfetch_whoami: tool({
+      description:
+        "Validate the SocialFetch API key and return account info (/v1/whoami). FREE — zero credits consumed. Use to confirm the key is active before running paid SocialFetch lookups.",
+      inputSchema: memoSchema("socialfetch_whoami", () => z.object({})),
+      execute: async () => {
+        if (!SOCIALFETCH_API_KEY) return { error: "SOCIALFETCH_API_KEY not configured" };
+        try {
+          const r = await fetchRetry("https://api.socialfetch.dev/v1/whoami", { headers: { "x-api-key": SOCIALFETCH_API_KEY } }, { retries: 1 });
+          const text = await r.text();
+          let env: { data?: unknown; meta?: unknown };
+          try { env = JSON.parse(text) as typeof env; } catch { env = { data: text.slice(0, 2000) }; }
+          return { ok: r.ok, status: r.status, data: env?.data ?? env, meta: env?.meta ?? null };
+        } catch (e) {
+          return { error: String(e) };
+        }
+      },
+    }),
+    socialfetch_balance: tool({
+      description:
+        "Return the current SocialFetch credit balance/status (healthy|grace|exhausted) via /v1/balance. FREE — zero credits consumed. Call before a batch of paid lookups to confirm sufficient quota.",
+      inputSchema: memoSchema("socialfetch_balance", () => z.object({})),
+      execute: async () => {
+        if (!SOCIALFETCH_API_KEY) return { error: "SOCIALFETCH_API_KEY not configured" };
+        try {
+          const r = await fetchRetry("https://api.socialfetch.dev/v1/balance", { headers: { "x-api-key": SOCIALFETCH_API_KEY } }, { retries: 1 });
+          const text = await r.text();
+          let env: { data?: unknown; meta?: unknown };
+          try { env = JSON.parse(text) as typeof env; } catch { env = { data: text.slice(0, 2000) }; }
+          return { ok: r.ok, status: r.status, data: env?.data ?? env, meta: env?.meta ?? null };
         } catch (e) {
           return { error: String(e) };
         }
@@ -892,7 +989,7 @@ export function buildTools(ctx: ToolContext) {
     bosint_email_lookup: tool({
       description:
         "OSINTNova (Bosint) email exposure check. Surface-level breach + exposure indicators for an email address. Shared 1000 calls/day quota across Bosint endpoints, 120/min. Use for an original or independently corroborated email when the planner needs exposure context. Returns {success, data, api_metadata}.",
-      inputSchema: z.object({ email: z.string().describe("Email address to check") }),
+      inputSchema: memoSchema("bosint_email_lookup", () => z.object({ email: z.string().describe("Email address to check") })),
       execute: async ({ email }) => {
         if (!OSINTNOVA_API_KEY) return { error: "OSINTNOVA_API_KEY not configured" };
         try {
@@ -911,9 +1008,9 @@ export function buildTools(ctx: ToolContext) {
     cordcat_discord_lookup: tool({
       description:
         "CordCat Discord OSINT lookup. Given a 17-20 digit Discord snowflake user ID, returns the full Discord profile (username, global_name, avatar, banner, public_flags), DSA sanction statements, breach hits, and FiveM records in one call. ONLY accepts a numeric snowflake — NOT a Discord username/tag. If you only have a username, extract the snowflake first (jina_reader_scrape on a profile page, message link, or invite, or via discord.id-style lookups). Free plan budget: 60 req/hour — do not spam.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("cordcat_discord_lookup", () => z.object({
         discord_id: z.string().regex(/^\d{17,20}$/, "Must be a 17-20 digit Discord snowflake ID"),
-      }),
+      })),
       execute: async ({ discord_id }) => {
         if (!CORDCAT_API_KEY) return { error: "CORDCAT_API_KEY not configured" };
         try {
@@ -939,10 +1036,10 @@ export function buildTools(ctx: ToolContext) {
     breach_check: tool({
       description:
         "Check whether an email, username, or PERSON NAME appears in public breach datasets. Primary source: stolen.tax — fans out in parallel to (a) OsintCat `database-search` (returns site+password combos), (b) Snusbase (returns identity records: name/phone/address/DOB — so a full NAME is a valid query here), and (c) OsintCat plain `breach` mode. Returns combined hit count + per-source raw data. Falls back to the leakcheck public endpoint if stolen.tax is unavailable. Pass `email` for email seeds, or `value` for a username, phone, or a person's full NAME (name hits carry same-name collision risk — treat as [VERIFY] until a selector overlaps).",
-      inputSchema: z.object({
+      inputSchema: memoSchema("breach_check", () => z.object({
         email: z.string().min(1).optional(),
         value: z.string().min(1).optional(),
-      }).refine((v) => !!(v.email || v.value), { message: "Provide `email` or `value`" }),
+      }).refine((v) => !!(v.email || v.value), { message: "Provide `email` or `value`" })),
       execute: async ({ email, value }) => {
         const query = (email ?? value ?? "").trim();
         if (!query) return { error: "missing query" };
@@ -1070,66 +1167,15 @@ export function buildTools(ctx: ToolContext) {
         }
       },
     }),
-    stolentax_footprint: tool({
-      description:
-        "stolen.tax OsintCat-Footprint — account-discovery sweep across ~127 sites for an email or username. Returns per-site presence + extra account metadata (display name, user_id, plan, SSO providers, password-set flag, etc.). Complements deepfind_reverse_email (different site list) and is higher-fidelity per hit. Same 1000/day stolen.tax budget as breach_check.",
-      inputSchema: z.object({
-        value: z.string().min(1),
-        type: z.enum(["auto", "email", "username"]).default("auto"),
-      }),
-      execute: async ({ value, type }) => {
-        const STOLENTAX_API_KEY = Deno.env.get("STOLENTAX_API_KEY");
-        if (!STOLENTAX_API_KEY) return { error: "STOLENTAX_API_KEY not configured" };
-        const q = value.trim();
-        if (!q) return { error: "missing value" };
-        // Auto-detect: contains '@' -> email, else username.
-        const ft = type === "auto" ? (q.includes("@") ? "email" : "username") : type;
-        try {
-          // 127-site account-discovery sweep — legitimately slow upstream.
-          const r = await fetchT(
-            "https://stolen.tax/api/v2/index.php?path=osintcat-footprint",
-            {
-              method: "POST",
-              headers: {
-                "Authorization": `Bearer ${STOLENTAX_API_KEY}`,
-                "X-API-Key": STOLENTAX_API_KEY,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({ query: q, footprint_type: ft }),
-            },
-            25_000,
-          );
-          const text = await r.text();
-          let parsed: StolenTaxResponse;
-          try { parsed = JSON.parse(text); } catch { parsed = { raw: text.slice(0, 4000) }; }
-          const d = parsed?.data ?? {};
-          const taken = Array.isArray(d?.results)
-            ? d.results.filter((x) => x?.taken === true).map((x) => ({ domain: x.domain, extra: x.ExtraData ?? null }))
-            : [];
-          return {
-            ok: r.ok,
-            status: r.status,
-            source: "stolen.tax/osintcat-footprint",
-            footprint_type: ft,
-            stats: d?.stats ?? null,
-            taken_count: taken.length,
-            taken,
-            raw: parsed,
-          };
-        } catch (e) {
-          return { error: String(e) };
-        }
-      },
-    }),
     leakcheck_lookup: tool({
       description:
         "LeakCheck Pro v2 breach lookup (https://leakcheck.io/api/v2). SECONDARY breach source — 200 calls/day. Returns leak sources, breach dates, and (where present) passwords/usernames for an email, username, phone, hash, or domain. Pass a phone in any format (E.164 ok — it's normalized to digits). For a person's full NAME, use oathnet_lookup type:'name' instead — LeakCheck v2 /query does not support keyword/name search and 400s on it. Use to corroborate breach_check and to surface password/source detail. Do NOT spam on low-value handles.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("leakcheck_lookup", () => z.object({
         value: z.string().min(1),
         // NOTE: no 'keyword' — LeakCheck v2 /query 400s on keyword/name searches
         // (verified in prod). Names go to oathnet_lookup type:'name'.
         type: z.enum(["auto","email","username","phone","hash","domain"]).optional().default("auto"),
-      }),
+      })),
       execute: async ({ value, type }) => {
         const LEAKCHECK_API_KEY = Deno.env.get("LEAKCHECK_API_KEY");
         if (!LEAKCHECK_API_KEY) return { error: "LEAKCHECK_API_KEY not configured" };
@@ -1180,11 +1226,11 @@ export function buildTools(ctx: ToolContext) {
     hibp_lookup: tool({
       description:
         "Have I Been Pwned v3 breach + paste lookup (https://haveibeenpwned.com/api/v3). Authoritative breach corroboration — Troy Hunt's curated breach corpus. Returns breach metadata (name, domain, breach date, data classes). Requires HIBP_API_KEY (paid Pwned subscription). Rate: 1 req / 1.5s per key. Use to corroborate breach_check / leakcheck_lookup on confirmed emails.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("hibp_lookup", () => z.object({
         email: z.string().email(),
         include_pastes: z.boolean().optional().default(false),
         truncate: z.boolean().optional().default(false).describe("If true, only breach names are returned (smaller payload)."),
-      }),
+      })),
       execute: async ({ email, include_pastes, truncate }) => {
         if (!HIBP_API_KEY) return { error: "HIBP_API_KEY not configured", skipped: true };
         const headers = {
@@ -1220,7 +1266,7 @@ export function buildTools(ctx: ToolContext) {
     rapidapi_breach_search: tool({
       description:
         "PRIMARY + MANDATORY breach source — RapidAPI Email Breach Search (~8000 lookups/month, broadest corpus). MUST be the FIRST breach call on ANY email — the seed OR any email discovered mid-investigation (pivot/contact/breach-derived) — BEFORE breach_check / leakcheck_lookup / oathnet_lookup. For an email, returns the breach corpus it appears in: per-breach id/name, breach date, and the exposed field set (email, password, etc.) with per-field `sensitive` flags. Then corroborate hits with leakcheck_lookup / hibp_lookup / breach_check (independent corpora). A breach hit is an EXPOSURE association — record it as observed/needs_corroboration, never as confirmed identity on its own. Requires RAPIDAPI_KEY in Supabase secrets (host/path overridable via RAPIDAPI_BREACH_HOST/PATH); self-skips when the key is absent.",
-      inputSchema: z.object({ email: z.string().email() }),
+      inputSchema: memoSchema("rapidapi_breach_search", () => z.object({ email: z.string().email() })),
       execute: async ({ email }) => {
         const RAPIDAPI_KEY = Deno.env.get("RAPIDAPI_KEY");
         if (!RAPIDAPI_KEY) return { error: "RAPIDAPI_KEY not configured", skipped: true };
@@ -1284,10 +1330,10 @@ export function buildTools(ctx: ToolContext) {
     rapidapi_all_breaches: tool({
       description:
         "RapidAPI Email Breach Search — All Breaches catalog (GET /rapidapi/all-breaches). Returns the DataBreach.com breach corpus: per-breach name, id, row count, exposed field types (+ per-field counts), breach/upload dates, summary, hibp_id. REFERENCE/metadata only — it does NOT check a specific email or return PII about a subject. Use to contextualize a breach id surfaced by rapidapi_breach_search (how large the corpus is, which fields were exposed) or to answer 'is breach X in the database'. Optional `filter` narrows by name/id substring. Requires RAPIDAPI_KEY; self-skips when absent.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("rapidapi_all_breaches", () => z.object({
         filter: z.string().optional().describe("case-insensitive substring to match against breach name or id"),
         limit: z.number().int().min(1).max(500).optional().default(100),
-      }),
+      })),
       execute: async ({ filter, limit }) => {
         const RAPIDAPI_KEY = Deno.env.get("RAPIDAPI_KEY");
         if (!RAPIDAPI_KEY) return { error: "RAPIDAPI_KEY not configured", skipped: true };
@@ -1346,7 +1392,7 @@ export function buildTools(ctx: ToolContext) {
     deepfind_reverse_email: tool({
       description:
         "DeepFind.Me reverse-email account discovery (https://deepfind.me) — checks ~120 services for accounts registered to an email address. Returns service hits plus partial email/phone recovery hints. Shared DeepFind budget: 1000 calls/day.",
-      inputSchema: z.object({ email: z.string().email() }),
+      inputSchema: memoSchema("deepfind_reverse_email", () => z.object({ email: z.string().email() })),
       // opts carries the per-tool timeout AbortSignal (Phase B3): forwarding it to
       // fetchRetry makes the 8s cap actually cancel the in-flight request instead
       // of abandoning the promise while the paid call runs on to fetchRetry's cap.
@@ -1371,7 +1417,7 @@ export function buildTools(ctx: ToolContext) {
     deepfind_disposable_email: tool({
       description:
         "DeepFind.Me disposable/burner email detector. Flags temp-mail providers via known-list + MX heuristics. Use to grade email credibility before pivoting.",
-      inputSchema: z.object({ email: z.string().email() }),
+      inputSchema: memoSchema("deepfind_disposable_email", () => z.object({ email: z.string().email() })),
       execute: async ({ email }) => {
         const KEY = Deno.env.get("DEEPFIND_API_KEY");
         if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
@@ -1387,7 +1433,7 @@ export function buildTools(ctx: ToolContext) {
     deepfind_ssl_inspect: tool({
       description:
         "DeepFind.Me SSL/TLS certificate inspector. Returns issuer, validity window, SANs, key size, protocol, cipher, and misconfig warnings for a domain.",
-      inputSchema: z.object({ domain: z.string().min(3) }),
+      inputSchema: memoSchema("deepfind_ssl_inspect", () => z.object({ domain: z.string().min(3) })),
       execute: async ({ domain }) => {
         const KEY = Deno.env.get("DEEPFIND_API_KEY");
         if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
@@ -1406,7 +1452,7 @@ export function buildTools(ctx: ToolContext) {
     deepfind_tech_stack: tool({
       description:
         "DeepFind.Me tech-stack detector. Identifies CMS, frameworks, analytics, CDN, server tech for a URL. Useful for domain/url seeds.",
-      inputSchema: z.object({ url: z.string().min(3) }),
+      inputSchema: memoSchema("deepfind_tech_stack", () => z.object({ url: z.string().min(3) })),
       execute: async ({ url }) => {
         const KEY = Deno.env.get("DEEPFIND_API_KEY");
         if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
@@ -1427,7 +1473,7 @@ export function buildTools(ctx: ToolContext) {
     deepfind_url_unshorten: tool({
       description:
         "DeepFind.Me URL unshortener. Follows full redirect chain for short URLs (bit.ly, t.co, etc) and returns final destination + safety signal.",
-      inputSchema: z.object({ url: z.string().min(3) }),
+      inputSchema: memoSchema("deepfind_url_unshorten", () => z.object({ url: z.string().min(3) })),
       execute: async ({ url }) => {
         const KEY = Deno.env.get("DEEPFIND_API_KEY");
         if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
@@ -1445,7 +1491,7 @@ export function buildTools(ctx: ToolContext) {
     deepfind_telegram_channel: tool({
       description:
         "DeepFind.Me Telegram channel lookup. Returns channel metadata + recent visible messages for a public Telegram handle.",
-      inputSchema: z.object({ handle: z.string().min(1) }),
+      inputSchema: memoSchema("deepfind_telegram_channel", () => z.object({ handle: z.string().min(1) })),
       execute: async ({ handle }) => {
         const KEY = Deno.env.get("DEEPFIND_API_KEY");
         if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
@@ -1464,7 +1510,7 @@ export function buildTools(ctx: ToolContext) {
     deepfind_telegram_search: tool({
       description:
         "DeepFind.Me Telegram channel keyword search — discover public channels matching a topic.",
-      inputSchema: z.object({ query: z.string().min(2) }),
+      inputSchema: memoSchema("deepfind_telegram_search", () => z.object({ query: z.string().min(2) })),
       execute: async ({ query }) => {
         const KEY = Deno.env.get("DEEPFIND_API_KEY");
         if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
@@ -1482,7 +1528,7 @@ export function buildTools(ctx: ToolContext) {
     deepfind_vin_lookup: tool({
       description:
         "DeepFind.Me VIN decoder (17-char VIN → NHTSA vPIC vehicle specs + safety recalls).",
-      inputSchema: z.object({ vin: z.string().length(17) }),
+      inputSchema: memoSchema("deepfind_vin_lookup", () => z.object({ vin: z.string().length(17) })),
       execute: async ({ vin }) => {
         const KEY = Deno.env.get("DEEPFIND_API_KEY");
         if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
@@ -1500,7 +1546,7 @@ export function buildTools(ctx: ToolContext) {
     deepfind_aircraft_lookup: tool({
       description:
         "DeepFind.Me FAA N-Number lookup (US-registered aircraft → owner of record, airworthiness, engine).",
-      inputSchema: z.object({ nNumber: z.string().min(2) }),
+      inputSchema: memoSchema("deepfind_aircraft_lookup", () => z.object({ nNumber: z.string().min(2) })),
       execute: async ({ nNumber }) => {
         const KEY = Deno.env.get("DEEPFIND_API_KEY");
         if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
@@ -1518,7 +1564,7 @@ export function buildTools(ctx: ToolContext) {
     deepfind_vessel_lookup: tool({
       description:
         "DeepFind.Me vessel lookup (7-digit IMO or 9-digit MMSI → vessel identity, dimensions, build, ownership).",
-      inputSchema: z.object({ identifier: z.string().min(7).max(9) }),
+      inputSchema: memoSchema("deepfind_vessel_lookup", () => z.object({ identifier: z.string().min(7).max(9) })),
       execute: async ({ identifier }) => {
         const KEY = Deno.env.get("DEEPFIND_API_KEY");
         if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
@@ -1536,7 +1582,7 @@ export function buildTools(ctx: ToolContext) {
     deepfind_mac_lookup: tool({
       description:
         "DeepFind.Me MAC address → manufacturer / OUI / address type lookup.",
-      inputSchema: z.object({ macAddress: z.string().min(6) }),
+      inputSchema: memoSchema("deepfind_mac_lookup", () => z.object({ macAddress: z.string().min(6) })),
       execute: async ({ macAddress }) => {
         const KEY = Deno.env.get("DEEPFIND_API_KEY");
         if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
@@ -1554,7 +1600,7 @@ export function buildTools(ctx: ToolContext) {
     deepfind_dark_web_link: tool({
       description:
         "DeepFind.Me .onion validator — verifies V2/V3 format and checks DeepFind's 18k+ known-service database.",
-      inputSchema: z.object({ url: z.string().min(6) }),
+      inputSchema: memoSchema("deepfind_dark_web_link", () => z.object({ url: z.string().min(6) })),
       execute: async ({ url }) => {
         const KEY = Deno.env.get("DEEPFIND_API_KEY");
         if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
@@ -1572,7 +1618,7 @@ export function buildTools(ctx: ToolContext) {
     deepfind_email_breach: tool({
       description:
         "DeepFind.Me email breach lookup (FREE) — checks an email against known public data breaches (HIBP-style). Returns per-breach name, date, PwnCount, and exposed DataClasses (passwords, phones, etc.). Use as a free corroborating breach source, especially as a fallback when paid breach tools (stolentax/oathnet/leakcheck) are rate-limited. Breach hits are verification leads, not confirmed identity facts.",
-      inputSchema: z.object({ email: z.string().email() }),
+      inputSchema: memoSchema("deepfind_email_breach", () => z.object({ email: z.string().email() })),
       execute: async ({ email }) => {
         const KEY = Deno.env.get("DEEPFIND_API_KEY");
         if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
@@ -1605,7 +1651,7 @@ export function buildTools(ctx: ToolContext) {
     deepfind_transaction_viewer: tool({
       description:
         "DeepFind.Me blockchain transaction lookup by HASH (BTC / ETH / SOL). Returns sender, receiver, value (+ USD), fees, status, block, token transfers, and an explorer URL. Complements crypto_wallet (which inspects an ADDRESS) — use this when a transaction hash is the artifact. Auto-detects network from the hash format.",
-      inputSchema: z.object({ hash: z.string().min(16).describe("Transaction hash. BTC: 64 hex chars; ETH: 0x + 64 hex; SOL: base58.") }),
+      inputSchema: memoSchema("deepfind_transaction_viewer", () => z.object({ hash: z.string().min(16).describe("Transaction hash. BTC: 64 hex chars; ETH: 0x + 64 hex; SOL: base58.") })),
       execute: async ({ hash }) => {
         const KEY = Deno.env.get("DEEPFIND_API_KEY");
         if (!KEY) return { error: "DEEPFIND_API_KEY not configured" };
@@ -1621,10 +1667,10 @@ export function buildTools(ctx: ToolContext) {
     virustotal_lookup: tool({
       description:
         "VirusTotal v3 lookup (https://www.virustotal.com/api/v3). Returns reputation, detections, categories, WHOIS, resolutions, and community votes for a file hash (md5/sha1/sha256), URL, domain, or IP. Public-API quota: 4 req/min, 500/day — use sparingly on high-value artifacts only. Returns the `attributes.last_analysis_stats` (harmless/malicious/suspicious/undetected) plus category and reputation.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("virustotal_lookup", () => z.object({
         kind: z.enum(["file", "url", "domain", "ip"]),
         value: z.string().min(3),
-      }),
+      })),
       execute: async ({ kind, value }) => {
         const KEY = Deno.env.get("VIRUSTOTAL_API_KEY");
         if (!KEY) return { error: "VIRUSTOTAL_API_KEY not configured" };
@@ -1681,7 +1727,7 @@ export function buildTools(ctx: ToolContext) {
     ipgeolocation_lookup: tool({
       description:
         "IPGeolocation.io enrichment for an IP (https://api.ipgeolocation.io). Returns geo, ISP, organization, ASN, connection type (residential/mobile/dch/etc), currency, timezone, calling code. Use as a SECONDARY corroborating source after ip_intel — they agree → high confidence; they disagree → flag VPN/proxy. Free tier: 1000/day.",
-      inputSchema: z.object({ ip: z.string().min(3) }),
+      inputSchema: memoSchema("ipgeolocation_lookup", () => z.object({ ip: z.string().min(3) })),
       execute: async ({ ip }) => {
         const KEY = Deno.env.get("IPGEOLOCATION_API_KEY");
         if (!KEY) return { error: "IPGEOLOCATION_API_KEY not configured" };
@@ -1701,12 +1747,12 @@ export function buildTools(ctx: ToolContext) {
         "email → deliverability, disposable, recent_abuse, leaked, first/last name, domain age; " +
         "ip → proxy, vpn, tor, bot_status, recent_abuse, connection_type, ISP/org. " +
         "USE THIS EARLY as a VALIDATION GATE before spending on deep lookups: if `valid:false` or fraud_score is high (>=85) for a phone/email seed, the identifier is reserved/fake/disposable — treat any attributions to it as low-confidence and STOP burning paid breach/people-search calls on it. Free tier ~5000/mo.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("ipqualityscore_lookup", () => z.object({
         kind: z.enum(["phone", "email", "ip"]).describe("Which IPQS endpoint to hit."),
         value: z.string().min(3).describe("Phone (E.164 preferred), email, or IP address."),
         country: z.string().length(2).optional().describe("ISO2 country hint for phone validation (e.g. 'US'). Improves carrier/line-type accuracy."),
         strictness: z.number().int().min(0).max(3).optional().describe("Phone/email only: 0-3. Higher = stricter validation (more checks, may raise false positives). Default 0."),
-      }),
+      })),
       execute: async ({ kind, value, country, strictness }) => {
         const KEY = Deno.env.get("IPQUALITYSCORE_API_KEY");
         if (!KEY) return { error: "IPQUALITYSCORE_API_KEY not configured", code: "ipqs_key_missing", hint: "Set IPQUALITYSCORE_API_KEY in the Supabase edge function secrets and redeploy." };
@@ -1741,7 +1787,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     ip_intel: tool({
       description: "Geolocate an IP and return ISP, ASN, city, country.",
-      inputSchema: z.object({ ip: z.string() }),
+      inputSchema: memoSchema("ip_intel", () => z.object({ ip: z.string() })),
       execute: async ({ ip }) => {
         try {
           const r = await fetchT(
@@ -1783,7 +1829,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     whois_lookup: tool({
       description: "RDAP/WHOIS lookup for a domain.",
-      inputSchema: z.object({ domain: z.string() }),
+      inputSchema: memoSchema("whois_lookup", () => z.object({ domain: z.string() })),
       execute: async ({ domain }) => {
         try {
           const r = await fetchRetry(`https://rdap.org/domain/${encodeURIComponent(domain)}`, {});
@@ -1798,7 +1844,7 @@ export function buildTools(ctx: ToolContext) {
       // Until then this is the edge-native built-in sweep.
       description:
         "Built-in Username Sweep: parallel HTTP existence check across ~95 platforms for a handle. Returns the list of sites where the handle resolves. Only call this on a handle with NO spaces. Do NOT call it on a full name or name+location seed — derive candidate handles first.",
-      inputSchema: z.object({ username: z.string().min(1) }),
+      inputSchema: memoSchema("username_sweep", () => z.object({ username: z.string().min(1) })),
       execute: async ({ username }) => {
         if (/\s/.test(username.trim())) {
           return {
@@ -1813,7 +1859,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     username_search: tool({
       description: "Alias of username_sweep: same edge-native ~95-site existence check. Same no-spaces rule applies.",
-      inputSchema: z.object({ username: z.string().min(1) }),
+      inputSchema: memoSchema("username_search", () => z.object({ username: z.string().min(1) })),
       execute: async ({ username }) => {
         if (/\s/.test(username.trim())) {
           return {
@@ -1828,7 +1874,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     crtsh_subdomains: tool({
       description: "Enumerate subdomains for a domain via crt.sh certificate transparency logs.",
-      inputSchema: z.object({ domain: z.string() }),
+      inputSchema: memoSchema("crtsh_subdomains", () => z.object({ domain: z.string() })),
       execute: async ({ domain }) => {
         try {
           const r = await fetchRetry(`https://crt.sh/?q=%25.${encodeURIComponent(domain)}&output=json`, {}, { timeoutMs: 12_000 });
@@ -1844,7 +1890,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     dns_records: tool({
       description: "Resolve DNS records for a hostname via Cloudflare DoH. Real types: A, AAAA, MX, NS, TXT, CNAME, SOA, CAA. Virtual types are auto-translated to TXT queries: SPF (TXT @ host, filtered v=spf1), DMARC (TXT @ _dmarc.host, v=DMARC1), DKIM (TXT @ <dkimSelector>._domainkey.host — requires dkimSelector), BIMI (TXT @ default._bimi.host, v=BIMI1). SPF/DKIM/DMARC/BIMI are NOT real record types — never query them as-is; pass them here and they resolve correctly.",
-      inputSchema: z.object({ host: z.string(), types: z.array(z.enum(DNS_TYPES)).default(["A","MX","NS","TXT"]), dkimSelector: z.string().optional() }),
+      inputSchema: memoSchema("dns_records", () => z.object({ host: z.string(), types: z.array(z.enum(DNS_TYPES)).default(["A","MX","NS","TXT"]), dkimSelector: z.string().optional() })),
       execute: async ({ host, types, dkimSelector }) => {
         try {
           const out: Record<string, unknown> = {};
@@ -1892,7 +1938,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     github_user: tool({
       description: "Fetch a GitHub user's public profile + recent public repos.",
-      inputSchema: z.object({ username: z.string() }),
+      inputSchema: memoSchema("github_user", () => z.object({ username: z.string() })),
       execute: async ({ username }) => {
         try {
           const h = { "User-Agent": "Proximity-OSINT", Accept: "application/vnd.github+json" };
@@ -1917,7 +1963,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     wayback_snapshots: tool({
       description: "Look up archive.org Wayback Machine snapshots for a URL. Returns the closest snapshot + total count.",
-      inputSchema: z.object({ url: z.string() }),
+      inputSchema: memoSchema("wayback_snapshots", () => z.object({ url: z.string() })),
       execute: async ({ url }) => {
         try {
           const [closest, cdx] = await Promise.all([
@@ -1936,7 +1982,7 @@ export function buildTools(ctx: ToolContext) {
     ransomwarelive_lookup: tool({
       description:
         "Ransomware.live victim-exposure check — is a DOMAIN listed as a ransomware/extortion victim on a leak site? Input: { domain: string } (a registrable domain like 'acme.com', NOT a URL or email). Returns up to 25 victim entries (group, date, description). Uses api-pro.ransomware.live when RANSOMWARELIVE_API_KEY is set; without a key the tool returns { ok:false, degraded:true } because the free api.ransomware.live API has been retired. A real empty result means NOT listed → { ok:true, listed:false, victims:[] }.",
-      inputSchema: z.object({ domain: z.string().min(1).describe("registrable domain, e.g. acme.com") }),
+      inputSchema: memoSchema("ransomwarelive_lookup", () => z.object({ domain: z.string().min(1).describe("registrable domain, e.g. acme.com") })),
       execute: async ({ domain }) => {
         try {
           const d = domain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
@@ -1973,10 +2019,10 @@ export function buildTools(ctx: ToolContext) {
     urlscanner_scan: tool({
       description:
         "URLScanner.online PRIVATE URL/domain/IP security scanner (sync endpoint). One call returns score (0-100), verdict (clean|low|medium|high|critical), DNS records, SSL cert chain, HTTP security-header analysis, WHOIS (incl. domainAge / registrar / expiry), threat-blocklist hits (URLhaus, Spamhaus, SURBL), and an AI risk summary (knownDomain, domainReputation, riskLevel, briefSummary, recommendations). Input: { url: string } (URL, domain, or IP). Requires URLSCANNER_API_KEY (free 10/day, solo 100/day). Scans are PRIVATE (never published). Typical latency 15-20s; modules that time out return null for that field — the response is always returned. Reserve for high-value suspicious artifacts.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("urlscanner_scan", () => z.object({
         url: z.string().min(1).describe("URL, registrable domain, or IP to scan"),
         rescan: z.boolean().optional().describe("Force a fresh scan, bypassing the 7-day cache"),
-      }),
+      })),
       execute: async ({ url, rescan }) => {
         if (!URLSCANNER_API_KEY) return { error: "URLSCANNER_API_KEY not configured", degraded: true };
         try {
@@ -2062,7 +2108,7 @@ export function buildTools(ctx: ToolContext) {
     wayback_cdx_search: tool({
       description:
         "Wayback Machine CDX archive search — corroborate that a domain/URL existed and when. Input: { url: string } (a domain like 'acme.com' or a full URL). Returns ACCURATE earliest + latest capture timestamps (each queried separately so they are NOT understated by a capped page) and up to 25 sample capture rows (timestamp, original, statuscode). `sampled_count` is the number of SAMPLE rows returned (capped at 25) — it is NOT the total capture count; `capped:true` means more captures exist than were sampled. Empty archive → { ok:true, archived:false, captures:[] }. No API key.",
-      inputSchema: z.object({ url: z.string().min(1).describe("domain or URL to look up in the archive") }),
+      inputSchema: memoSchema("wayback_cdx_search", () => z.object({ url: z.string().min(1).describe("domain or URL to look up in the archive") })),
       execute: async ({ url }, opts) => {
         // archive.org's CDX endpoint is chronically slow (p95 ~60s). The cache
         // wrapper's per-tool cap for wayback_cdx_search is raised to 25s
@@ -2131,7 +2177,7 @@ export function buildTools(ctx: ToolContext) {
     crtsh_lookup: tool({
       description:
         "crt.sh certificate-transparency lookup — issued certs for a DOMAIN. Input: { domain: string }. Returns UNIQUE subdomains (parsed from name_value) and unique issuer names, each capped at 50, plus the total cert count. crt.sh is slow and can return a non-JSON error/overload page → that returns { error }. No API key. (crtsh_subdomains returns only the subdomain list; this also surfaces issuers + cert count.)",
-      inputSchema: z.object({ domain: z.string().min(1).describe("registrable domain, e.g. acme.com") }),
+      inputSchema: memoSchema("crtsh_lookup", () => z.object({ domain: z.string().min(1).describe("registrable domain, e.g. acme.com") })),
       execute: async ({ domain }) => {
         try {
           const d = domain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
@@ -2150,7 +2196,7 @@ export function buildTools(ctx: ToolContext) {
     census_geocode: tool({
       description:
         "US Census one-line address geocoder — does a US street ADDRESS exist, and where? Input: { address: string } (a one-line US street address). Returns the standardized matched address + coordinates (lon/lat) and matched:boolean. US addresses only. No API key.",
-      inputSchema: z.object({ address: z.string().min(1).describe("one-line US street address") }),
+      inputSchema: memoSchema("census_geocode", () => z.object({ address: z.string().min(1).describe("one-line US street address") })),
       execute: async ({ address }) => {
         try {
           const r = await fetchT(`https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=${encodeURIComponent(address)}&benchmark=Public_AR_Current&format=json`, {}, 15_000);
@@ -2169,7 +2215,7 @@ export function buildTools(ctx: ToolContext) {
     nominatim_geocode: tool({
       description:
         "OpenStreetMap Nominatim geocoder — resolve any worldwide ADDRESS or place to coordinates. Input: { address: string }. Returns the top match: display_name, lat/lon, category/type, and a residential-vs-commercial hint when derivable. Rate-limited to 1 req/sec by OSM policy (sends a descriptive User-Agent). No API key.",
-      inputSchema: z.object({ address: z.string().min(1).describe("free-form address or place name") }),
+      inputSchema: memoSchema("nominatim_geocode", () => z.object({ address: z.string().min(1).describe("free-form address or place name") })),
       execute: async ({ address }) => {
         try {
           const r = await fetchT(
@@ -2202,10 +2248,10 @@ export function buildTools(ctx: ToolContext) {
     hibp_pwned_passwords_kanon: tool({
       description:
         "Have I Been Pwned k-anonymity password-exposure check (NO API key). Input: { password: string } OR { sha1: string } (a 40-hex SHA-1 of the password). PRIVACY GUARANTEE: only the first 5 chars of the SHA-1 hash ever leave this function — the password and the full hash are NEVER sent. Returns { ok, pwned:boolean, count:number } = how many breach corpora contain that password.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("hibp_pwned_passwords_kanon", () => z.object({
         password: z.string().min(1).optional().describe("plaintext password (hashed locally with SHA-1; never transmitted)"),
         sha1: z.string().regex(/^[0-9a-fA-F]{40}$/).optional().describe("precomputed 40-hex SHA-1 of the password"),
-      }),
+      })),
       execute: async ({ password, sha1 }) => {
         try {
           let hashHex: string;
@@ -2236,7 +2282,7 @@ export function buildTools(ctx: ToolContext) {
     gleif_lei_search: tool({
       description:
         "GLEIF Legal Entity Identifier registry search by NAME (NO API key). Input: { name: string } (org/company legal name). Returns up to 10 entities: lei, legalName, status, jurisdiction, legalAddress {city, country}, registrationStatus. COVERAGE CAVEAT: only entities that hold an LEI (financial-market participants — public companies, funds, many regulated/private orgs); small private companies may be ABSENT, so an EMPTY result does NOT mean the company doesn't exist. Falls back to fuzzy name suggestions when the exact filter returns nothing.",
-      inputSchema: z.object({ name: z.string().min(1).describe("org / company legal name") }),
+      inputSchema: memoSchema("gleif_lei_search", () => z.object({ name: z.string().min(1).describe("org / company legal name") })),
       execute: async ({ name }) => {
         try {
           const q = encodeURIComponent(name.trim());
@@ -2291,7 +2337,7 @@ export function buildTools(ctx: ToolContext) {
     opencorporates_search: tool({
       description:
         "OpenCorporates company-registry search — find official company registrations by NAME. Input: { name: string } (company name). Returns up to 20 companies: name, jurisdiction_code, company_number, incorporation_date, current_status. REQUIRES OPENCORPORATES_API_KEY — the v0.4 endpoint now returns 401 'Invalid Api Token' for all keyless requests, so the tool self-skips when the key is unset. For keyless company-registry corroboration, use gleif_lei_search instead.",
-      inputSchema: z.object({ name: z.string().min(1).describe("company / organization name") }),
+      inputSchema: memoSchema("opencorporates_search", () => z.object({ name: z.string().min(1).describe("company / organization name") })),
       execute: async ({ name }) => {
         // OpenCorporates retired keyless access — every anonymous request now
         // 401s ("Invalid Api Token"). Self-skip BEFORE the doomed fetch, matching
@@ -2323,7 +2369,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     http_fingerprint: tool({
       description: "Fetch a URL and return status, server/tech headers, title, and a short text excerpt. Use to investigate a website without leaving the agent.",
-      inputSchema: z.object({ url: z.string().url() }),
+      inputSchema: memoSchema("http_fingerprint", () => z.object({ url: z.string().url() })),
       execute: async ({ url }) => {
         try {
           // Skip a host already proven dead (NXDOMAIN) this investigation
@@ -2382,7 +2428,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     crypto_wallet: tool({
       description: "Inspect a Bitcoin or Ethereum address. Returns balance, tx count, and recent activity.",
-      inputSchema: z.object({ chain: z.enum(["btc", "eth"]), address: z.string() }),
+      inputSchema: memoSchema("crypto_wallet", () => z.object({ chain: z.enum(["btc", "eth"]), address: z.string() })),
       execute: async ({ chain, address }) => {
         try {
           if (chain === "btc") {
@@ -2403,11 +2449,11 @@ export function buildTools(ctx: ToolContext) {
     google_dorks: tool({
       description:
         "Generate copy-paste Google/Bing/DuckDuckGo/Yandex dork queries for a seed identifier. NO external API cost. Use once for the original seed or a corroborated high-value selector when the resulting query set supports a defined verification goal.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("google_dorks", () => z.object({
         seed: z.string(),
         // Accept legacy/alias "person" → mapped to "name" in execute().
         kind: z.enum(["email", "username", "phone", "name", "person", "domain", "ip", "hash", "crypto_wallet"]),
-      }),
+      })),
       execute: async ({ seed, kind: rawKind }) => {
         const kind = rawKind === "person" ? "name" : rawKind;
         // google_dorks is intentionally ungated — it only emits search URLs.
@@ -2726,11 +2772,11 @@ export function buildTools(ctx: ToolContext) {
     dork_harvest: tool({
       description:
         "Execute the highest-yield document/leak dorks for a seed and record the RELEVANT PDFs, Office docs, CSV/SQL/log/env dumps, pastebin entries, and stealer-log URLs as artifacts (kind='document' / 'leak_paste'). A URL is recorded ONLY if the seed appears in its path OR a bounded Gemini read (top few docs) finds the seed in the document text — irrelevant hits (resume templates, unrelated court/SEC/FEC filings) are held in `candidate_links_unread`, NOT recorded, so the evidence table stays clean. Runs N targeted Perplexity Sonar queries (Exa keyword fallback honors site: domains). Costs 1 Perplexity call per query plus up to 3 Gemini reads.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("dork_harvest", () => z.object({
         seed: z.string(),
         kind: z.enum(["email", "username", "phone", "name", "person", "domain", "ip", "hash", "crypto_wallet"]),
         max_queries: z.number().int().min(1).max(12).default(5),
-      }),
+      })),
       execute: async ({ seed, kind: rawKind, max_queries }) => {
         const kind = rawKind === "person" ? "name" : rawKind;
         // Targeted dork queries per kind, ordered by document/leak yield.
@@ -3067,11 +3113,11 @@ export function buildTools(ctx: ToolContext) {
     gemini_deep_dork: tool({
       description:
         "FALLBACK deep-dork via Gemini 2.5 Flash with native Google Search grounding. Use AFTER google_dorks + dork_harvest — ~46% success rate in production telemetry; do not lead with this. Gemini reasons about the seed, formulates targeted Google dork queries internally, executes them against real Google, and returns a synthesized writeup PLUS source URLs as grounding citations. Use when dork_harvest misses something or you need LLM-driven dork generation (tricky disambiguation, niche forum surfacing). AUTO-RECORDS every cited URL as an artifact (kind='url' or classified by extension as 'document'/'leak_paste'). Template/sample document URLs are dropped. 1 Gemini call ≈ $0.002.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("gemini_deep_dork", () => z.object({
         seed: z.string(),
         kind: z.enum(["email","username","phone","name","person","domain","ip","hash","crypto_wallet","url","other"]),
         focus: z.string().optional().describe("Optional angle, e.g. 'breach exposure', 'resume/CV leaks', 'social handles', 'pastebin dumps', 'forum posts', 'court records'."),
-      }),
+      })),
       execute: async ({ seed, kind, focus }, opts) => {
         if (!GEMINI_API_KEY) return { ok: false, error: "GEMINI_API_KEY not configured" };
         const system =
@@ -3164,7 +3210,7 @@ export function buildTools(ctx: ToolContext) {
     shodan_internetdb: tool({
       description:
         "Free, no-auth Shodan InternetDB lookup for an IP. Returns open ports, hostnames, CPEs, tags, and known CVEs. Use on every IP after ip_intel.",
-      inputSchema: z.object({ ip: z.string() }),
+      inputSchema: memoSchema("shodan_internetdb", () => z.object({ ip: z.string() })),
       execute: async ({ ip }) => {
         try {
           const r = await fetchT(`https://internetdb.shodan.io/${encodeURIComponent(ip)}`, {}, 12_000);
@@ -3176,10 +3222,10 @@ export function buildTools(ctx: ToolContext) {
     jina_reader_scrape: tool({
       description:
         "#1 PRIMARY scraper for ANY URL — free, unlimited, returns clean LLM-ready markdown. Always prefer this over firecrawl/exa_contents for single-page extraction. Use https://r.jina.ai/{url} under the hood. Works on articles, profile pages, forums, leak listings, dorks hits, Discord/Telegram links, PDFs (best-effort), etc. Pass a fully-qualified http(s) URL — do NOT pass relative paths or text snippets.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("jina_reader_scrape", () => z.object({
         url: z.string().url(),
         maxChars: z.number().int().min(500).max(40000).default(18000),
-      }),
+      })),
       // opts carries the per-tool timeout AbortSignal (Phase B3): forwarding it to
       // fetchRetry makes the 8s cap truly cancel the scrape mid-flight rather than
       // abandon the promise while r.jina.ai keeps streaming.
@@ -3199,7 +3245,7 @@ export function buildTools(ctx: ToolContext) {
         if (isHostDead(parsed.hostname)) return { skipped: true, reason: "host does not resolve (NXDOMAIN) — skipped", url: raw };
         // Skip hosts that always 451/403 through Jina — save the ~8s dead round-trip.
         if (isJinaHardBlocked(parsed.hostname)) {
-          return { error: "jina 451", status: 451, url: parsed.toString(), skipped: true, hint: "origin blocks Jina — try wayback_snapshots, socialfetch_lookup, or a direct-API tool" };
+          return { error: "jina 451", status: 451, url: parsed.toString(), skipped: true, hint: "origin hard-blocks Jina — use socialfetch_web_read (server-side markdown) for this host, or wayback_snapshots / a direct-API tool" };
         }
         // Rebuild a clean URL; r.jina.ai expects the raw URL appended.
         const clean = parsed.toString();
@@ -3233,7 +3279,7 @@ export function buildTools(ctx: ToolContext) {
     exa_search: tool({
       description:
         "Exa /search — neural + keyword web search with optional inline contents (text, highlights, summary). Use when semantic or exact-string discovery has the highest expected value; do not automatically pair it with another search provider. Supports includeDomains/excludeDomains, startPublishedDate/endPublishedDate, and category ('company','research paper','news','pdf','github','tweet','personal site','linkedin profile','financial report').",
-      inputSchema: z.object({
+      inputSchema: memoSchema("exa_search", () => z.object({
         query: z.string().min(2),
         type: z.enum(["auto", "neural", "keyword"]).default("auto"),
         numResults: z.number().int().min(1).max(25).default(10),
@@ -3249,7 +3295,7 @@ export function buildTools(ctx: ToolContext) {
           "One of: company, research paper, news, pdf, github, tweet, personal site, linkedin profile, financial report. Other values are ignored (search runs unfiltered).",
         ),
         contents: z.boolean().default(true).describe("If true, include text+highlights+summary for each result."),
-      }),
+      })),
       execute: async ({ query, type, numResults, includeDomains, excludeDomains, startPublishedDate, endPublishedDate, category, contents }) => {
         if (!EXA_API_KEY) return { error: "EXA_API_KEY not configured" };
         const EXA_CATEGORIES = new Set([
@@ -3283,12 +3329,12 @@ export function buildTools(ctx: ToolContext) {
     exa_find_similar: tool({
       description:
         "Exa /findSimilar — given a known URL, find pages similar to it (same person's other profiles, related company sites, similar leak listings). Powerful for OSINT pivoting from any single confirmed profile URL.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("exa_find_similar", () => z.object({
         url: z.string().url(),
         numResults: z.number().int().min(1).max(25).default(10),
         excludeSourceDomain: z.boolean().default(true),
         contents: z.boolean().default(true),
-      }),
+      })),
       execute: async ({ url, numResults, excludeSourceDomain, contents }) => {
         if (!EXA_API_KEY) return { error: "EXA_API_KEY not configured" };
         try {
@@ -3310,14 +3356,14 @@ export function buildTools(ctx: ToolContext) {
     exa_get_contents: tool({
       description:
         "Exa /contents — fetch full text, highlights, and an AI summary for up to 10 URLs in a single call. Best for bulk URL reading when you already have URLs from search results and just need their content. Set livecrawl='always' to bypass Exa's cache for time-sensitive pages.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("exa_get_contents", () => z.object({
         urls: z.array(z.string().url()).min(1).max(10),
         text: z.boolean().default(true),
         highlights: z.boolean().default(true),
         summary: z.boolean().default(true),
         livecrawl: z.enum(["never","fallback","auto","always"]).default("auto"),
         maxCharacters: z.number().int().min(200).max(8000).default(3000),
-      }),
+      })),
       execute: async ({ urls, text, highlights, summary, livecrawl, maxCharacters }) => {
         if (!EXA_API_KEY) return { error: "EXA_API_KEY not configured" };
         try {
@@ -3338,35 +3384,10 @@ export function buildTools(ctx: ToolContext) {
         } catch (e) { return { error: String(e) }; }
       },
     }),
-    emailrep: tool({
-      description:
-        "Free EmailRep.io reputation lookup. Returns reputation (high/medium/low/none), suspicious flag, deliverability, breach count, domain age, and which sites the email is registered on. Great corroboration for any email seed.",
-      inputSchema: z.object({ email: z.string().email() }),
-      execute: async ({ email }) => {
-        // emailrep.io disabled its unauthenticated API in 2025 — keyless calls now
-        // 429 with "the unauthenticated API is currently disabled; use an API key".
-        // Without EMAILREP_API_KEY this is a config skip, not a tool failure.
-        const KEY = Deno.env.get("EMAILREP_API_KEY");
-        try {
-          const headers: Record<string, string> = { "User-Agent": "Proximity-OSINT", Accept: "application/json" };
-          if (KEY) headers["Key"] = KEY;
-          const r = await fetchT(`https://emailrep.io/${encodeURIComponent(email)}`, { headers });
-          if (!KEY && (r.status === 429 || r.status === 401)) {
-            return {
-              skipped: true,
-              status: r.status,
-              note: "EMAILREP_API_KEY not configured — emailrep.io disabled its unauthenticated API. Set the key to enable, or corroborate via gravatar_profile / hunter_* / breach_check.",
-            };
-          }
-          const data = await r.json().catch(() => ({}));
-          return { ok: r.ok, status: r.status, data };
-        } catch (e) { return { error: String(e) }; }
-      },
-    }),
     gravatar_profile: tool({
       description:
         "Look up a Gravatar profile by email. Returns display name, bio, linked social accounts, avatar URL — and confirms the email is real. Always run on any email seed.",
-      inputSchema: z.object({ email: z.string().email() }),
+      inputSchema: memoSchema("gravatar_profile", () => z.object({ email: z.string().email() })),
       execute: async ({ email }) => {
         try {
           const enc = new TextEncoder().encode(email.trim().toLowerCase());
@@ -3387,10 +3408,10 @@ export function buildTools(ctx: ToolContext) {
     hackertarget: tool({
       description:
         "Free HackerTarget recon (50 queries/day per source IP, no key). Modes: reverseiplookup (domains hosted on an IP), hostsearch (subdomains+IPs of a domain), dnslookup (all DNS records), aslookup (ASN of an IP), geoip, reverse-dns.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("hackertarget", () => z.object({
         mode: z.enum(["reverseiplookup", "hostsearch", "dnslookup", "aslookup", "geoip", "reversedns"]),
         query: z.string(),
-      }),
+      })),
       execute: async ({ mode, query }) => {
         const slug = mode === "reversedns" ? "reversedns" : mode;
         try {
@@ -3409,7 +3430,7 @@ export function buildTools(ctx: ToolContext) {
     urlscan_search: tool({
       description:
         "Search urlscan.io's public scan database (no auth). Use to find historical URLs/screenshots referencing a domain, IP, hash, or string. Returns up to 20 scan results with page URL, screenshot, IP, ASN.",
-      inputSchema: z.object({ query: z.string().describe('Lucene query, e.g. domain:example.com or ip:1.2.3.4 or page.url:"keyword"') }),
+      inputSchema: memoSchema("urlscan_search", () => z.object({ query: z.string().describe('Lucene query, e.g. domain:example.com or ip:1.2.3.4 or page.url:"keyword"') })),
       execute: async ({ query }) => {
         try {
           const r = await fetchT(`https://urlscan.io/api/v1/search/?q=${encodeURIComponent(query)}&size=20`, {}, 12_000);
@@ -3435,7 +3456,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     hackernews_user: tool({
       description: "Fetch a Hacker News user profile (karma, about, account age, submitted item IDs).",
-      inputSchema: z.object({ username: z.string() }),
+      inputSchema: memoSchema("hackernews_user", () => z.object({ username: z.string() })),
       execute: async ({ username }) => {
         try {
           const r = await fetchT(`https://hacker-news.firebaseio.com/v0/user/${encodeURIComponent(username)}.json`);
@@ -3446,7 +3467,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     reddit_user: tool({
       description: "Fetch a Reddit user's public profile and recent posts/comments.",
-      inputSchema: z.object({ username: z.string() }),
+      inputSchema: memoSchema("reddit_user", () => z.object({ username: z.string() })),
       execute: async ({ username }) => {
         try {
           const h = { "User-Agent": "Proximity-OSINT/1.0" };
@@ -3509,7 +3530,7 @@ export function buildTools(ctx: ToolContext) {
     github_code_search: tool({
       description:
         "Search GitHub's public code index for a string (email, username, key fragment, internal hostname). Returns up to 20 file matches with repo and snippet. Authenticated via GITHUB_API_TOKEN (5,000 req/hr) when configured, else falls back to unauthenticated (60 req/hr).",
-      inputSchema: z.object({ query: z.string() }),
+      inputSchema: memoSchema("github_code_search", () => z.object({ query: z.string() })),
       execute: async ({ query }) => {
         try {
           const headers: Record<string, string> = {
@@ -3541,13 +3562,13 @@ export function buildTools(ctx: ToolContext) {
     hunter_domain_search: tool({
       description:
         "Hunter.io domain-search. Returns emails associated with a domain, plus organization, pattern, department/seniority breakdown, and per-email sources. Premium signal — use on any non-consumer domain.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("hunter_domain_search", () => z.object({
         domain: z.string(),
         limit: z.number().int().min(1).max(100).optional(),
         department: z.string().optional().describe("executive, it, finance, management, sales, legal, support, hr, marketing, communication, education, design, health, operations"),
         seniority: z.string().optional().describe("junior, senior, executive"),
         type: z.enum(["personal", "generic"]).optional(),
-      }),
+      })),
       execute: async ({ domain, limit, department, seniority, type }) => {
         if (!HUNTER_API_KEY) return { error: "HUNTER_API_KEY not configured" };
         try {
@@ -3617,12 +3638,12 @@ export function buildTools(ctx: ToolContext) {
     hunter_email_finder: tool({
       description:
         "Hunter.io email-finder. Guess and verify a person's email at a given domain using their name. Returns email + score + verification status.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("hunter_email_finder", () => z.object({
         domain: z.string(),
         first_name: z.string().optional(),
         last_name: z.string().optional(),
         full_name: z.string().optional(),
-      }),
+      })),
       execute: async ({ domain, first_name, last_name, full_name }) => {
         if (!HUNTER_API_KEY) return { error: "HUNTER_API_KEY not configured" };
         if (!first_name && !last_name && !full_name) return { error: "Provide first_name+last_name or full_name" };
@@ -3664,7 +3685,7 @@ export function buildTools(ctx: ToolContext) {
     hunter_email_verifier: tool({
       description:
         "Hunter.io email-verifier. Returns deliverability status (deliverable/undeliverable/risky/unknown), MX/SMTP checks, disposable/webmail/gibberish flags, and a 0-100 score.",
-      inputSchema: z.object({ email: z.string().email() }),
+      inputSchema: memoSchema("hunter_email_verifier", () => z.object({ email: z.string().email() })),
       execute: async ({ email }) => {
         if (!HUNTER_API_KEY) return { error: "HUNTER_API_KEY not configured" };
         try {
@@ -3716,7 +3737,7 @@ export function buildTools(ctx: ToolContext) {
     hunter_combined: tool({
       description:
         "Hunter.io combined enrichment (person + company) for an email. Returns name, role, seniority, social profiles, plus the company's industry, size, tech stack, HQ, founded date, social presence.",
-      inputSchema: z.object({ email: z.string().email() }),
+      inputSchema: memoSchema("hunter_combined", () => z.object({ email: z.string().email() })),
       execute: async ({ email }) => {
         if (!HUNTER_API_KEY) return { error: "HUNTER_API_KEY not configured" };
         try {
@@ -3838,7 +3859,7 @@ export function buildTools(ctx: ToolContext) {
     archive_url: tool({
       description:
         "Submit a URL to the Wayback Machine to create a permanent archived snapshot. Returns the archived URL. Use on any volatile evidence (social posts, leak listings) so a [CONFIRMED] finding remains defensible.",
-      inputSchema: z.object({ url: z.string().url() }),
+      inputSchema: memoSchema("archive_url", () => z.object({ url: z.string().url() })),
       execute: async ({ url }, opts) => {
         const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
         try {
@@ -3874,7 +3895,7 @@ export function buildTools(ctx: ToolContext) {
         "Confidence is automatically CAPPED by source class server-side: breach-only ≤60, two-breach ≤65, username_sweep-only ≤45, social_profile_passive ≤40, ai_summary ≤55. " +
         "Setting confidence ≥90 only works when the artifact has corroboration from a court_record + independent_public/news source. " +
         "Each artifact may include metadata.{status, cluster_id, reason_for_confidence, reason_not_confirmed, contradictions, next_verification_step}. status enum: new|verified|probable|needs_review|contradicted|excluded|exhausted|manual_review_required.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("record_artifacts", () => z.object({
         // Tolerant input: some models emit `artifacts` as a JSON string
         // (or fenced code block). Parse it back into an array.
         artifacts: z.preprocess(coerceArtifactsInput, z.array(
@@ -3888,7 +3909,7 @@ export function buildTools(ctx: ToolContext) {
           )
           .min(1)
           .max(200)),
-      }),
+      })),
       execute: async ({ artifacts }) => {
         const accepted: Array<{ index: number; kind: string; value: string }> = [];
         const rejected: Array<{ index: number; reason: string; kind: string; value: string }> = [];
@@ -4202,13 +4223,13 @@ export function buildTools(ctx: ToolContext) {
     record_artifact: tool({
       description:
         "Backwards-compatible shim. PREFER record_artifacts with an array. This wraps a single item into a one-element batch.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("record_artifact", () => z.object({
         kind: z.string(),
         value: z.string(),
         confidence: z.number().min(0).max(100).optional(),
         source: z.string().optional(),
         metadata: z.record(z.unknown()).optional(),
-      }),
+      })),
       execute: async ({ kind, value, confidence, source, metadata }) => {
         const inferred = inferKind(kind, value);
         const v = validateArtifact(inferred.kind, value);
@@ -4336,7 +4357,7 @@ export function buildTools(ctx: ToolContext) {
     record_evidence: tool({
       description:
         "Append one tamper-evident row to the investigation's chain-of-custody log. Use for high-stakes findings that need provenance (a Hard claim with an archived URL, a court/government record, a verified breach hit). Each call appends a hashed row whose chain_hash depends on the prior row — the UI can verify the whole chain. Classification: 'hard' = official record or first-party verified source. 'soft' = social/inferred/pattern-match.",
-      inputSchema: z.object({
+      inputSchema: memoSchema("record_evidence", () => z.object({
         classification: z.enum(["hard", "soft"]),
         kind: z.string().describe("artifact kind this evidence relates to (email/phone/ip/username/domain/breach/name/other)"),
         value: z.string(),
@@ -4345,7 +4366,7 @@ export function buildTools(ctx: ToolContext) {
         confidence: z.number().min(0).max(100).optional(),
         notes: z.string().max(2000).optional().describe("Free-text collection notes / extraction context"),
         metadata: z.record(z.unknown()).optional(),
-      }),
+      })),
       execute: async ({ classification, kind, value, source, source_url, confidence, notes, metadata }) => {
         const meta = { ...(metadata ?? {}), ...(notes ? { notes } : {}) };
         const { data, error } = await supabase.rpc("append_evidence", {
@@ -4411,11 +4432,11 @@ export function buildTools(ctx: ToolContext) {
   (tools as ToolRegistry).memory_recall = tool({
     description:
       "Recall prior agent memory for this user (lessons learned, identity links, recurring patterns, known false positives). Call EARLY in any investigation with the seed value AND with each newly confirmed high-value artifact (email, username, domain, wallet). Returns up to 20 most-relevant memory entries.",
-    inputSchema: z.object({
+    inputSchema: memoSchema("memory_recall", () => z.object({
       subject: z.string().describe("The value to recall around — the seed, an email, a handle, a domain, a wallet, etc."),
       kind: z.enum(["pattern", "connection", "lesson", "identity", "any"]).optional().default("any"),
       limit: z.number().int().min(1).max(50).optional().default(20),
-    }),
+    })),
     execute: async ({ subject, kind, limit }) => {
       const subj = String(subject ?? "").trim().toLowerCase();
       if (!subj) return { ok: false, error: "empty subject" };
@@ -4467,7 +4488,7 @@ export function buildTools(ctx: ToolContext) {
   (tools as ToolRegistry).memory_save = tool({
     description:
       "Persist a durable cross-investigation memory: a learned pattern, a confirmed connection between artifacts, an analyst lesson, or an identity cluster. Call AT THE END of an investigation with the strongest connections + any lessons (e.g. \"this domain is always parked\", \"this handle resolves to person X\", \"breach DB Y has stale phones\"). Idempotent: calling with the same kind+subject+content updates the existing entry.",
-    inputSchema: z.object({
+    inputSchema: memoSchema("memory_save", () => z.object({
       // Tolerant input: some models emit `entries` as a JSON string, or as
       // an array containing stringified objects. Normalize both shapes.
       entries: z.preprocess((raw) => {
@@ -4503,7 +4524,7 @@ export function buildTools(ctx: ToolContext) {
       scope: z.enum(["global", "case"]).optional().default("global").describe(
         "global = reusable cross-case knowledge (default). case = facts/decisions tied to THIS investigation only (dismissed leads, analyst confirmations, false positives).",
       ),
-    }),
+    })),
     execute: async ({ entries, scope }) => {
       // Upserts on (user_id, kind, subject, md5(content)) — re-saving the same
       // lesson bumps hit_count + last_used_at instead of duplicating rows.
@@ -4530,15 +4551,19 @@ export function buildTools(ctx: ToolContext) {
   // ---------------------------------------------------------------------
   // Workflow-gate tools (Lead Investigator must call these before final report)
   // ---------------------------------------------------------------------
-  const availableToolsForAudit = new Set<string>([
+  // PERF-3 (#69): env is frozen for the life of an isolate, so this capability
+  // set is identical on every request — built once (lazily) at module scope
+  // via memoSchema and shared. It is read-only everywhere (coverage_audit /
+  // tool_audit only call .has() / spread it); do not mutate it per-request.
+  const availableToolsForAudit = memoSchema("__availableToolsForAudit", () => new Set<string>([
     ...(OATHNET_API_KEY ? ["oathnet_lookup"] : []),
     ...(SERUS_API_KEY ? ["serus_darkweb_scan"] : []),
     ...(OSINTNOVA_API_KEY ? ["osintnova_lookup", "osintnova_email_lookup", "osintnova_phone_lookup"] : []),
-    ...(SOCIALFETCH_API_KEY ? ["socialfetch_lookup"] : []),
+    ...(SOCIALFETCH_API_KEY ? ["socialfetch_lookup", "socialfetch_web_read"] : []),
     ...(HUNTER_API_KEY ? ["hunter_combined", "hunter_email_verifier", "hunter_domain_search"] : []),
     ...(Deno.env.get("LEAKCHECK_API_KEY") ? ["leakcheck_lookup"] : []),
-    // stolentax_footprint CUT 2026-07-05 (disabled in capabilities.ts) — breach_check
-    // still uses STOLENTAX_API_KEY when present but falls back to keyless leakcheck.
+    // breach_check uses STOLENTAX_API_KEY when present but falls back to keyless
+    // leakcheck (the standalone stolentax_footprint tool was removed in the cull).
     ...(Deno.env.get("STOLENTAX_API_KEY") ? ["breach_check"] : []),
     ...(INDICIA_API_KEY ? ["indicia_email","indicia_phone","indicia_person","indicia_address","indicia_web_dbs","indicia_hudsonrock"] : []),
     ...(Deno.env.get("DEEPFIND_API_KEY") ? ["deepfind_reverse_email","deepfind_disposable_email","deepfind_ssl_inspect","deepfind_tech_stack","deepfind_url_unshorten","deepfind_telegram_channel","deepfind_telegram_search","deepfind_vin_lookup","deepfind_aircraft_lookup","deepfind_vessel_lookup","deepfind_mac_lookup","deepfind_dark_web_link","deepfind_email_breach","deepfind_transaction_viewer"] : []),
@@ -4553,7 +4578,7 @@ export function buildTools(ctx: ToolContext) {
     "ip_intel","shodan_internetdb","hackertarget","urlscan_search","gravatar_profile","hibp_lookup",
     "google_dorks","dork_harvest","username_sweep","github_user","reddit_user","hackernews_user",
     "minimax_web_search","jina_reader_scrape",
-  ]);
+  ]));
 
   async function callsForThread(): Promise<string[]> {
     const { data } = await supabaseAdmin
@@ -4576,9 +4601,9 @@ export function buildTools(ctx: ToolContext) {
     description:
       "Internal runtime sink — do NOT call. Hallucinated/unknown tool names are " +
       "redirected here and dropped. Use only the other tools listed in your schema.",
-    inputSchema: z.object({
+    inputSchema: memoSchema("unknown_tool_ignored", () => z.object({
       requested: z.string().optional().describe("The unknown tool name that was dropped."),
-    }),
+    })),
     execute: ({ requested }: { requested?: string }) =>
       Promise.resolve({ ok: true, dropped: true, ignored_tool: requested ?? null, note: unknownToolNudge(requested) }),
   });
@@ -4586,7 +4611,7 @@ export function buildTools(ctx: ToolContext) {
   (tools as ToolRegistry).coverage_audit = tool({
     description:
       "Advisory coverage audit. Returns gaps and missing opportunities but never blocks progress or reporting.",
-    inputSchema: z.object({}).strict(),
+    inputSchema: memoSchema("coverage_audit", () => z.object({}).strict()),
     execute: async () => {
       const called = await callsForThread();
       const report = auditCoverage(detectedSeedType, called, availableToolsForAudit);
@@ -4597,10 +4622,10 @@ export function buildTools(ctx: ToolContext) {
   (tools as ToolRegistry).detect_contradictions = tool({
     description:
       "Advisory contradiction analysis. Strongly recommended before high-confidence attribution, but never an execution prerequisite.",
-    inputSchema: z.object({
+    inputSchema: memoSchema("detect_contradictions", () => z.object({
       cluster_artifact_kinds: z.array(z.string()).optional()
         .describe("Optional. Restrict to specific artifact kinds (e.g. ['email','username','name','ip'])."),
-    }),
+    })),
     execute: async ({ cluster_artifact_kinds }) => {
       let q = supabase.from("artifacts").select("id,kind,value,source,metadata,created_at").eq("thread_id", threadId);
       if (cluster_artifact_kinds?.length) q = q.in("kind", cluster_artifact_kinds);
@@ -4658,7 +4683,7 @@ export function buildTools(ctx: ToolContext) {
   (tools as ToolRegistry).tool_audit = tool({
     description:
       "Advisory tool health and utilization summary. Never a progress gate.",
-    inputSchema: z.object({}).strict(),
+    inputSchema: memoSchema("tool_audit", () => z.object({}).strict()),
     execute: async () => {
       const { data: rows } = await supabaseAdmin
         .from("tool_usage_log")
@@ -4704,7 +4729,7 @@ export function buildTools(ctx: ToolContext) {
   (tools as ToolRegistry).record_finding = tool({
     description:
       "Persist a source-backed analyst FINDING. Audit helpers are optional. Each finding must cite supporting artifacts, name drivers and reducers, and acknowledge contradictions. Confidence is computed server-side; Tier-C-only evidence is hard-capped at 50.",
-    inputSchema: z.object({
+    inputSchema: memoSchema("record_finding", () => z.object({
       conclusion: z.string().min(5).max(2000),
       cluster_label: z.string().optional().describe("e.g. 'Cluster A — Rocklin candidate'"),
       supporting_sources: z.array(z.string()).min(1).describe("Tool names that produced the evidence."),
@@ -4718,7 +4743,7 @@ export function buildTools(ctx: ToolContext) {
       relationship_evidence_strength: z.number().min(0).max(100).default(60),
       corroboration_count: z.number().min(1).default(1),
       label: z.enum(["CONFIRMED","CORROBORATED","INFERRED","VERIFY","LOW","DISMISSED"]).default("INFERRED"),
-    }),
+    })),
     execute: async (i) => {
       const { data: contraRows } = await supabase
         .from("artifacts")

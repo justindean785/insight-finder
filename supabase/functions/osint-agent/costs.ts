@@ -53,7 +53,6 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   rapidapi_breach_search: 1250, // RapidAPI Email Breach Search — ~8000/mo plan
   rapidapi_all_breaches: 1000,  // RapidAPI corpus catalog (reference, same plan)
   breach_check: 3000,         // 3 stolen.tax calls in parallel
-  stolentax_footprint: 1500,
   leakcheck_lookup: 5000,     // 200/day → ~$0.005/call equiv
   hibp_lookup: 3000,          // ~$3.95/mo Pwned 1 plan, ~1300 req/mo → ~$0.003
   oathnet_lookup: 10000,      // 100/day cap, expensive — reserve
@@ -64,7 +63,6 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   // darkweb/breach tools like oathnet $0.01, leakcheck $0.005). Explicit on
   // purpose — a darkweb scan must never fall through to the $0.0002 default.
   serus_darkweb_scan: 2500,
-  emailrep: 0,
   gravatar_profile: 0,
 
   // ---- OSINTNova / Bosint (1000/day quota, ~$2/mo plan share) ----
@@ -98,6 +96,9 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
 
   // ---- Social ----
   socialfetch_lookup: 3000,
+  socialfetch_web_read: 3000, // /v1/web/markdown — ~1 credit/URL, same pool as a lookup
+  socialfetch_whoami: 0,      // /v1/whoami — free, zero credits
+  socialfetch_balance: 0,     // /v1/balance — free, zero credits
 
   // ---- CordCat (Discord OSINT) ----
   // Free plan: 60 req/hour. Treat each successful call as ~$0.002.

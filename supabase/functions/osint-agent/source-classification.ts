@@ -86,7 +86,6 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   hibp_lookup: "breach",
   oathnet_lookup: "breach",
   intelbase_email_lookup: "breach",
-  stolentax_footprint: "breach",
   deepfind_reverse_email: "breach",
   deepfind_disposable_email: "breach",
   deepfind_email_breach: "breach",
@@ -141,11 +140,8 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   shodan_internetdb: "infra_scan",
   http_fingerprint: "infra_scan",
   hackertarget: "infra_scan",
-  synapsint_lookup: "infra_scan",
   virustotal_lookup: "infra_reputation",
   ipqualityscore_lookup: "infra_reputation",
-  emailrep: "infra_reputation",
-  emailrep_lookup: "infra_reputation",
   // certificate transparency — DNS/infra perspective
   crtsh_lookup: "infra_dns",
   // geocoders — address-existence public records

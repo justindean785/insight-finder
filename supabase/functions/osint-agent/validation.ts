@@ -135,7 +135,6 @@ export const TOOL_TTL_MS: Record<string, number> = {
   minimax_web_search: TTL_6H_MS,
   exa_search: TTL_6H_MS,
   jina_reader_scrape: TTL_6H_MS,
-  emailrep_lookup: TTL_12H_MS,
   gravatar_lookup: TTL_12H_MS,
   leakcheck_lookup: TTL_24H_MS,
   oathnet_lookup: TTL_24H_MS,
