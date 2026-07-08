@@ -64,6 +64,7 @@ export const record_artifacts = tool({
         rawConfidence: a.confidence ?? 50,
         sources: effSources,
         kind: a.kind,
+        metadata: aMeta,
       });
       // Provenance guard (#131 follow-up): flag a bare-domain source nothing fetched
       // (the menstoppingviolence.org incident). The LIVE path (tool-registry.ts)
@@ -320,6 +321,7 @@ export const record_artifact = tool({
       rawConfidence: confidence ?? 50,
       sources: effSources,
       kind: inferred.kind,
+      metadata: inMeta,
     });
     // Provenance guard (#131 follow-up) — mirrors record_artifacts.
     const llmAssertedProvenance = effSources.some((s) => isLlmAssertedDomainSource(s));

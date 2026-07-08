@@ -31,6 +31,7 @@ export function buildAutoRecordedRow(input: AutoRecordInput): {
     rawConfidence: input.rawConfidence,
     sources: [input.source],
     kind: input.kind,
+    metadata: input.metadata ?? null,
   });
   const reasonNotConfirmed =
     (typeof input.metadata?.reason_not_confirmed === "string" ? input.metadata.reason_not_confirmed : null) ??
