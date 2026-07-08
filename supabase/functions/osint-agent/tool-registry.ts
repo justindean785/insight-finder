@@ -75,7 +75,7 @@ import { buildAutoRecordedRow } from "./auto-record-integrity.ts";
 import { TOOL_CATALOG, CATALOG_CACHE, FINDING_LABELS } from "./catalog.ts";
 import { beginCycle, recordFindingSummary } from "./runtime-policy.ts";
 import { serus_darkweb_scan } from "./tools/serus.ts";
-import { okWithSuccessFlag, socialfetchError, isHackertargetApiError, isCrtshOk, dohTypeError, blockchairError } from "./tool_response.ts";
+import { okWithSuccessFlag, isHackertargetApiError, isCrtshOk, dohTypeError, blockchairError } from "./tool_response.ts";
 import { enforceNameSeedPriority, enforceFallbackToolPolicy, NAME_SEED_PLANNER_RULES } from "./planner-guidance.ts";
 import { sweepUsername } from "./sweeper.ts";
 import { trimExaResults, archiveAttachment } from "./archiver.ts";
@@ -110,6 +110,8 @@ const JINA_HARD_BLOCK_HOSTS = [
   "instagram.com",
   "reddit.com",
   "facebook.com",
+  "youtube.com",
+  "youtu.be",
 ];
 function isJinaHardBlocked(hostname: string): boolean {
   return JINA_HARD_BLOCK_HOSTS.some((h) => hostname === h || hostname.endsWith(`.${h}`));
@@ -467,7 +469,7 @@ export function buildTools(ctx: ToolContext) {
             "deepfind_mac_lookup","deepfind_dark_web_link",
             "deepfind_email_breach","deepfind_transaction_viewer",
             // Profile / social
-            "socialfetch_lookup","cordcat_discord_lookup","github_user","github_code_search",
+            "socialfetch_lookup","socialfetch_web_read","cordcat_discord_lookup","github_user","github_code_search",
             "hackernews_user","reddit_user","gravatar_profile",
             "username_sweep","username_search",
             // Email enrichment
@@ -861,11 +863,11 @@ export function buildTools(ctx: ToolContext) {
     }),
     socialfetch_lookup: tool({
       description:
-        "Query SocialFetch for normalized public social profiles. SUPPORTED platforms ONLY: 'tiktok' | 'instagram' | 'twitter' | 'facebook'. For ANY OTHER platform (youtube, twitch, soundcloud, bandcamp, roblox, github, reddit, linkedin, mastodon, etc.) DO NOT call this tool — prefer `jina_reader_scrape` on the profile URL (cleanest fallback), then `http_fingerprint`, `wayback_snapshots`, or `minimax_web_search`. SocialFetch quota is LOW — if it errors or returns nothing, retry the same profile URL via `jina_reader_scrape` instead of burning more SocialFetch calls. Unsupported platforms return an informative no-op instead of crashing. Use platform='facebook' with a full profile URL; otherwise pass a bare handle. kind='profile' for profile metadata, kind='videos' (TikTok only) for paginated videos.",
+        "Query SocialFetch for normalized public social PROFILES and their content. SUPPORTED platforms: 'tiktok' | 'instagram' | 'twitter' | 'facebook'. kind='profile' (default) = profile metadata; 'videos' (tiktok) / 'posts' (instagram) / 'tweets' (twitter) = a profile's content collection; 'video' (tiktok) = one video by URL/id (pass it as `handle`). Use platform='facebook' with a full profile URL; otherwise pass a bare handle. Returns { ok, found, status, lookupStatus, data, meta, error }; on profile routes lookupStatus is 'found'|'private'|'not_found' — treat 'private'/'not_found' as a NORMAL negative, not an error. For a HARD-BLOCKED host that is NOT one of these four structured platforms (youtube, twitch, reddit, or an arbitrary evidence page), use `socialfetch_web_read` — it fetches server-side, unlike `jina_reader_scrape`, which those origins block. Jina remains the reader for non-blocked hosts. SocialFetch quota is LOW — don't re-burn calls on a nothing-result. Unsupported platforms return an informative no-op instead of crashing.",
       inputSchema: memoSchema("socialfetch_lookup", () => z.object({
         platform: z.string(),
-        handle: z.string().describe("Username/handle, or full URL for facebook"),
-        kind: z.enum(["profile", "videos"]).default("profile"),
+        handle: z.string().describe("Username/handle, full URL for facebook, or video URL/id for tiktok kind='video'"),
+        kind: z.enum(["profile", "videos", "posts", "tweets", "video"]).default("profile"),
       })),
       execute: async ({ platform, handle, kind }) => {
         const p = String(platform || "").trim().toLowerCase();
@@ -874,35 +876,111 @@ export function buildTools(ctx: ToolContext) {
           return {
             ok: false,
             skipped: true,
-            reason: `socialfetch_lookup does not support platform='${platform}'. Use http_fingerprint on the profile URL, wayback_snapshots, or minimax_web_search instead.`,
+            reason: `socialfetch_lookup does not support platform='${platform}'. For a blocked host (youtube/twitch/reddit/arbitrary page) use socialfetch_web_read; otherwise http_fingerprint, wayback_snapshots, or minimax_web_search.`,
             supported: Array.from(SUPPORTED),
           };
         }
         if (!SOCIALFETCH_API_KEY) return { error: "SOCIALFETCH_API_KEY not configured" };
         try {
+          const h = encodeURIComponent(handle);
           let url: string;
           if (p === "facebook") {
-            url = `https://api.socialfetch.dev/v1/facebook/profiles?url=${encodeURIComponent(handle)}`;
+            url = `https://api.socialfetch.dev/v1/facebook/profiles?url=${h}`;
           } else if (p === "tiktok" && kind === "videos") {
-            url = `https://api.socialfetch.dev/v1/tiktok/profiles/${encodeURIComponent(handle)}/videos`;
+            url = `https://api.socialfetch.dev/v1/tiktok/profiles/${h}/videos`;
+          } else if (p === "tiktok" && kind === "video") {
+            url = `https://api.socialfetch.dev/v1/tiktok/videos/${h}`;
+          } else if (p === "instagram" && kind === "posts") {
+            url = `https://api.socialfetch.dev/v1/instagram/profiles/${h}/posts`;
+          } else if (p === "twitter" && kind === "tweets") {
+            url = `https://api.socialfetch.dev/v1/twitter/profiles/${h}/tweets`;
           } else {
-            url = `https://api.socialfetch.dev/v1/${p}/profiles/${encodeURIComponent(handle)}`;
+            url = `https://api.socialfetch.dev/v1/${p}/profiles/${h}`;
           }
-          const r = await fetchT(url, { headers: { "x-api-key": SOCIALFETCH_API_KEY } });
+          // fetchRetry retries transient 5xx but returns 4xx (401/402/404/etc.)
+          // without retry — the right policy for a low-quota paid API.
+          const r = await fetchRetry(url, { headers: { "x-api-key": SOCIALFETCH_API_KEY } }, { retries: 1 });
+          // 402 = credits exhausted. Surface distinctly and never retry so the
+          // agent stops burning quota and the operator can refill.
+          if (r.status === 402) {
+            return { ok: false, status: 402, found: false, error: "SOCIALFETCH_CREDITS_EXHAUSTED", message: "Social Fetch credit balance is zero. Check /v1/balance." };
+          }
           const text = await r.text();
-          let data: unknown;
-          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 4000) }; }
-          // SocialFetch returns {error:{code}} on 4xx/5xx; a 200 may still carry a
-          // "not found"/"private" outcome in data (a legitimate negative).
-          const err = socialfetchError(data);
-          // A 404 means the handle has no profile on this platform — a legitimate
-          // negative, not a tool failure. Mark it ok with found:false so it doesn't
-          // inflate the failure rate (the live API + key are healthy).
-          if (r.status === 404 && !err) {
-            return { ok: true, status: 404, found: false, data };
+          // Envelope is { data, meta }. meta = { requestId, creditsCharged, version }.
+          let env: { data?: Record<string, unknown> | null; meta?: unknown; error?: unknown };
+          try { env = JSON.parse(text) as typeof env; } catch { env = { data: { raw: text.slice(0, 4000) } }; }
+          const payload = (env?.data ?? null) as Record<string, unknown> | null;
+          // Profile routes carry data.lookupStatus ('found'|'private'|'not_found').
+          // Collection routes (videos/posts/tweets) have NO lookupStatus — infer
+          // success from the presence of the returned array instead.
+          const lookupStatus = (payload && typeof payload === "object" ? (payload.lookupStatus ?? null) : null) as string | null;
+          const isCollection = kind === "videos" || kind === "posts" || kind === "tweets";
+          const collectionHit = Array.isArray(payload?.videos) || Array.isArray(payload?.posts) || Array.isArray(payload?.tweets);
+          const found = r.ok && (
+            lookupStatus === "found" ||
+            (lookupStatus == null && isCollection && collectionHit) ||
+            (lookupStatus == null && !isCollection && !env?.error && r.status !== 404)
+          );
+          // A 404 with no error body is a legitimate "no such profile" negative,
+          // not a tool failure — mark ok so it doesn't inflate the failure rate.
+          const ok = r.status === 404 && !env?.error ? true : r.ok;
+          return { ok, status: r.status, found, lookupStatus, data: payload, meta: env?.meta ?? null, error: env?.error ?? null };
+        } catch (e) {
+          return { error: String(e) };
+        }
+      },
+    }),
+    socialfetch_web_read: tool({
+      description:
+        "Read ANY web URL as clean markdown via SocialFetch's SERVER-SIDE fetch (/v1/web/markdown). Use this for hosts that r.jina.ai HARD-BLOCKS — youtube/youtu.be, x/twitter, twitch, reddit — and for arbitrary evidence pages Jina can't reach: SocialFetch fetches server-side so origin 403/451 blocks don't apply. Costs ~1 credit per URL and SocialFetch quota is LOW — call it only for a specific blocked/important URL, NEVER as a bulk crawler. Returns { ok, status, data (markdown), meta, error }.",
+      inputSchema: memoSchema("socialfetch_web_read", () => z.object({
+        url: z.string().describe("Fully-qualified http(s) URL to read"),
+      })),
+      execute: async ({ url }) => {
+        if (!SOCIALFETCH_API_KEY) return { error: "SOCIALFETCH_API_KEY not configured" };
+        try {
+          const r = await fetchRetry(`https://api.socialfetch.dev/v1/web/markdown?url=${encodeURIComponent(url)}`, { headers: { "x-api-key": SOCIALFETCH_API_KEY } }, { retries: 1 });
+          if (r.status === 402) {
+            return { ok: false, status: 402, error: "SOCIALFETCH_CREDITS_EXHAUSTED", message: "Social Fetch credit balance is zero. Check /v1/balance." };
           }
-          const found = r.ok && !err;
-          return { ok: found, status: r.status, found, ...(err ? { error_code: err.code } : {}), data };
+          const text = await r.text();
+          let env: { data?: unknown; meta?: unknown; error?: unknown };
+          try { env = JSON.parse(text) as typeof env; } catch { env = { data: text.slice(0, 8000) }; }
+          return { ok: r.ok, status: r.status, data: env?.data ?? env, meta: env?.meta ?? null, error: env?.error ?? null };
+        } catch (e) {
+          return { error: String(e) };
+        }
+      },
+    }),
+    socialfetch_whoami: tool({
+      description:
+        "Validate the SocialFetch API key and return account info (/v1/whoami). FREE — zero credits consumed. Use to confirm the key is active before running paid SocialFetch lookups.",
+      inputSchema: memoSchema("socialfetch_whoami", () => z.object({})),
+      execute: async () => {
+        if (!SOCIALFETCH_API_KEY) return { error: "SOCIALFETCH_API_KEY not configured" };
+        try {
+          const r = await fetchRetry("https://api.socialfetch.dev/v1/whoami", { headers: { "x-api-key": SOCIALFETCH_API_KEY } }, { retries: 1 });
+          const text = await r.text();
+          let env: { data?: unknown; meta?: unknown };
+          try { env = JSON.parse(text) as typeof env; } catch { env = { data: text.slice(0, 2000) }; }
+          return { ok: r.ok, status: r.status, data: env?.data ?? env, meta: env?.meta ?? null };
+        } catch (e) {
+          return { error: String(e) };
+        }
+      },
+    }),
+    socialfetch_balance: tool({
+      description:
+        "Return the current SocialFetch credit balance/status (healthy|grace|exhausted) via /v1/balance. FREE — zero credits consumed. Call before a batch of paid lookups to confirm sufficient quota.",
+      inputSchema: memoSchema("socialfetch_balance", () => z.object({})),
+      execute: async () => {
+        if (!SOCIALFETCH_API_KEY) return { error: "SOCIALFETCH_API_KEY not configured" };
+        try {
+          const r = await fetchRetry("https://api.socialfetch.dev/v1/balance", { headers: { "x-api-key": SOCIALFETCH_API_KEY } }, { retries: 1 });
+          const text = await r.text();
+          let env: { data?: unknown; meta?: unknown };
+          try { env = JSON.parse(text) as typeof env; } catch { env = { data: text.slice(0, 2000) }; }
+          return { ok: r.ok, status: r.status, data: env?.data ?? env, meta: env?.meta ?? null };
         } catch (e) {
           return { error: String(e) };
         }
@@ -3167,7 +3245,7 @@ export function buildTools(ctx: ToolContext) {
         if (isHostDead(parsed.hostname)) return { skipped: true, reason: "host does not resolve (NXDOMAIN) — skipped", url: raw };
         // Skip hosts that always 451/403 through Jina — save the ~8s dead round-trip.
         if (isJinaHardBlocked(parsed.hostname)) {
-          return { error: "jina 451", status: 451, url: parsed.toString(), skipped: true, hint: "origin blocks Jina — try wayback_snapshots, socialfetch_lookup, or a direct-API tool" };
+          return { error: "jina 451", status: 451, url: parsed.toString(), skipped: true, hint: "origin hard-blocks Jina — use socialfetch_web_read (server-side markdown) for this host, or wayback_snapshots / a direct-API tool" };
         }
         // Rebuild a clean URL; r.jina.ai expects the raw URL appended.
         const clean = parsed.toString();
@@ -4481,7 +4559,7 @@ export function buildTools(ctx: ToolContext) {
     ...(OATHNET_API_KEY ? ["oathnet_lookup"] : []),
     ...(SERUS_API_KEY ? ["serus_darkweb_scan"] : []),
     ...(OSINTNOVA_API_KEY ? ["osintnova_lookup", "osintnova_email_lookup", "osintnova_phone_lookup"] : []),
-    ...(SOCIALFETCH_API_KEY ? ["socialfetch_lookup"] : []),
+    ...(SOCIALFETCH_API_KEY ? ["socialfetch_lookup", "socialfetch_web_read"] : []),
     ...(HUNTER_API_KEY ? ["hunter_combined", "hunter_email_verifier", "hunter_domain_search"] : []),
     ...(Deno.env.get("LEAKCHECK_API_KEY") ? ["leakcheck_lookup"] : []),
     // breach_check uses STOLENTAX_API_KEY when present but falls back to keyless
