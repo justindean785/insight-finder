@@ -187,9 +187,18 @@ export function EvidenceMatrixTab({
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <div className={"font-mono text-foreground break-all " + (rState === "dismissed" ? "line-through" : "")}>
-                        {sanitizeValueForLabel(a.value, label === "CONFIRMED")}
-                      </div>
+                      <button
+                        type="button"
+                        onClick={() => { void navigator.clipboard?.writeText(a.value); toast.success("Value copied"); }}
+                        title="Copy value"
+                        className={
+                          "group/val inline-flex max-w-full items-start gap-1.5 rounded text-left font-mono text-foreground break-all transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 " +
+                          (rState === "dismissed" ? "line-through" : "")
+                        }
+                      >
+                        <span className="break-all">{sanitizeValueForLabel(a.value, label === "CONFIRMED")}</span>
+                        <Copy className="mt-0.5 h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover/val:opacity-60" aria-hidden />
+                      </button>
                       <div className="text-eyebrow tracking-normal text-muted-foreground mt-0.5 flex items-center gap-1.5 flex-wrap">
                         <span>{displayKind(a)}</span>
                         <span>·</span>
