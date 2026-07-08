@@ -364,7 +364,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
         {graph.stats.realEdgeCount === 0 && (
           <div className="pointer-events-none absolute inset-0 z-[5] grid place-items-center p-4">
             <div className="max-w-md rounded-xl border border-white/10 bg-[linear-gradient(160deg,rgba(255,255,255,0.1),rgba(255,255,255,0.025)_55%)] px-4 py-3 text-center shadow-[0_20px_60px_-36px_rgba(0,0,0,0.95)] backdrop-blur-xl">
-              <div className="inline-flex items-center gap-1.5 text-eyebrow uppercase tracking-[0.12em] text-[hsl(var(--warning))]">
+              <div className="inline-flex items-center gap-1.5 text-micro font-semibold tracking-normal text-[hsl(var(--warning))]">
                 <AlertTriangle className="h-3.5 w-3.5" />
                 No durable links yet
               </div>
@@ -406,7 +406,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
             )}
             {/* The auditable WHY behind every link — straight from shared-selector analysis. */}
             <div className="mt-3">
-              <div className="text-eyebrow uppercase tracking-[0.14em] text-muted-foreground/80">Connections</div>
+              <div className="text-micro font-semibold tracking-normal text-muted-foreground/80">Connections</div>
               {connections.length === 0 ? (
                 <p className="mt-1 text-data text-muted-foreground">No links beyond the seed.</p>
               ) : (

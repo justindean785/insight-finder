@@ -24,7 +24,7 @@ function StatCount({ icon: Icon, label, value, tone }: {
       <Icon className={cn("h-4 w-4 shrink-0", toneCls)} aria-hidden />
       <div className="min-w-0">
         <div className="font-mono tabular-nums text-sm leading-none text-foreground">{value}</div>
-        <div className="text-eyebrow uppercase tracking-wider text-muted-foreground">{label}</div>
+        <div className="text-micro tracking-normal text-muted-foreground">{label}</div>
       </div>
     </div>
   );
@@ -96,7 +96,7 @@ export function ToolHealthPanel({ threadId }: { threadId: string }) {
 
       {failing.length > 0 && (
         <div className="space-y-1.5">
-          <div className="text-eyebrow uppercase tracking-wider text-destructive/80 flex items-center gap-1.5">
+          <div className="text-micro font-semibold tracking-normal text-destructive/80 flex items-center gap-1.5">
             <XCircle className="h-3 w-3" /> Failing tools ({failing.length}) — need attention
           </div>
           {failing.map((r) => <HealthRow key={`fail-${r.toolName}`} row={r} />)}
@@ -104,7 +104,7 @@ export function ToolHealthPanel({ threadId }: { threadId: string }) {
       )}
 
       <div className="space-y-1.5">
-        <div className="text-eyebrow uppercase tracking-wider text-muted-foreground">All tools ({rows.length})</div>
+        <div className="text-micro font-semibold tracking-normal text-muted-foreground">All tools ({rows.length})</div>
         {rows.map((r) => <HealthRow key={r.toolName} row={r} />)}
       </div>
     </div>

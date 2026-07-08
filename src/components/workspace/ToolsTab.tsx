@@ -167,7 +167,7 @@ function ActivityLog({
                   summary={<ActivityRowSummary e={e} />}
                 >
                   <div className="rounded-lg border border-border-subtle bg-surface-2/40 px-3 py-2 text-data text-muted-foreground leading-relaxed">
-                    <span className="font-mono text-eyebrow uppercase tracking-wider text-muted-foreground/70">Reason</span>
+                    <span className="font-mono text-micro tracking-normal text-muted-foreground/70">Reason</span>
                     <div className="mt-1 text-foreground/90 break-words">{e.reason}</div>
                     <div className="mt-2 font-mono text-eyebrow text-muted-foreground/60 break-all">id: {e.id}</div>
                   </div>

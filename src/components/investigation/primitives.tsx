@@ -131,7 +131,7 @@ export function SectionLabel({
         className="h-[5px] w-[5px] rounded-full"
         style={{ background: `hsl(${dot})`, boxShadow: status ? `0 0 6px hsl(${dot})` : "none" }}
       />
-      <span className="font-mono text-eyebrow uppercase tracking-[0.22em] text-muted-foreground">
+      <span className="font-mono text-meta font-semibold tracking-normal text-muted-foreground">
         {children}
       </span>
       {count !== undefined && (
@@ -189,7 +189,7 @@ export function Stat({
     "hsl(var(--foreground))";
   return (
     <div className="flex flex-col gap-1">
-      <span className="font-mono text-micro uppercase tracking-[0.18em] text-muted-foreground/70">
+      <span className="font-mono text-micro tracking-normal text-muted-foreground/70">
         {label}
       </span>
       <div className="flex items-baseline gap-2">

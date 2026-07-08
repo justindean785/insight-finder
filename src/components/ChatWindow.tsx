@@ -458,7 +458,7 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
             />
           )}
           <div>
-            <div className="text-muted-foreground mb-1.5 flex items-center gap-1 font-mono uppercase tracking-wider text-eyebrow"><StickyNote className="w-3 h-3" /> Note</div>
+            <div className="text-muted-foreground mb-1.5 flex items-center gap-1 font-mono tracking-normal text-micro"><StickyNote className="w-3 h-3" /> Note</div>
             <Textarea
               value={note}
               onChange={(e) => setNote(e.target.value)}
@@ -621,7 +621,7 @@ function RunFlowRail({ groups }: { groups: ToolRunGroup[] }) {
   if (groups.length <= 1) return null;
   return (
     <div className="rounded-xl border border-white/8 bg-[linear-gradient(160deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02)_58%,rgba(255,255,255,0.01))] px-3 py-2 shadow-[0_14px_50px_-34px_rgba(0,0,0,0.95)]">
-      <div className="mb-1 flex items-center gap-2 text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground/80">
+      <div className="mb-1 flex items-center gap-2 text-meta font-mono font-semibold tracking-normal text-muted-foreground">
         <GitBranch className="h-3 w-3 text-primary/80" />
         Run flow
       </div>
@@ -647,7 +647,7 @@ function RunFlowRail({ groups }: { groups: ToolRunGroup[] }) {
             <div key={`flow-${group.key}-${index}`} className="flex shrink-0 items-center gap-1">
               <div className={cn("inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-micro", toneClass)}>
                 {icon}
-                <span className="font-mono uppercase tracking-[0.08em]">{cycleSummaryLabel(humanizeStage(group.stage), group.cycleId)}</span>
+                <span className="font-mono tracking-normal">{cycleSummaryLabel(humanizeStage(group.stage), group.cycleId)}</span>
                 <span className="text-eyebrow opacity-80">{group.parts.length}</span>
               </div>
               {!isLast && <span className="h-px w-5 shrink-0 bg-gradient-to-r from-white/25 to-white/5" aria-hidden />}
@@ -682,7 +682,7 @@ function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt
       >
         <div className="flex flex-wrap items-center gap-2">
           {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-          <span className="font-mono uppercase tracking-[0.2em] text-foreground/80">
+          <span className="font-mono font-medium tracking-normal text-foreground/80">
             {cycleSummaryLabel(humanizeStage(group.stage), group.cycleId)}
           </span>
           <span>{group.parts.length} call{group.parts.length === 1 ? "" : "s"}</span>
@@ -783,7 +783,7 @@ function FailedRunCard({ reason, onRetry }: { reason: string; onRetry: () => voi
           <AlertTriangle className="w-4 h-4 text-destructive animate-warning-pulse" />
         </span>
         <div className="min-w-0 flex-1 space-y-1">
-          <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-destructive/80">
+          <div className="text-micro font-mono font-semibold tracking-normal text-destructive/80">
             System alert
           </div>
           <div className="text-sm font-semibold text-foreground">
@@ -811,14 +811,14 @@ function FailedRunCard({ reason, onRetry }: { reason: string; onRetry: () => voi
         <button
           type="button"
           onClick={copyDetails}
-          className="text-eyebrow font-mono uppercase tracking-[0.14em] text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-white/[0.04]"
+          className="text-micro font-mono tracking-normal text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-white/[0.04]"
         >
           Copy technical details
         </button>
         <button
           type="button"
           onClick={() => setShowDetails((v) => !v)}
-          className="text-eyebrow font-mono uppercase tracking-[0.14em] text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-white/[0.04]"
+          className="text-micro font-mono tracking-normal text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-white/[0.04]"
         >
           {showDetails ? "Hide" : "Show"} technical details
         </button>
@@ -2137,7 +2137,7 @@ function ChatWindowInner({
             <div className="pt-2 animate-fade-up">
               <div className="flex items-center gap-2 mb-3 px-1">
                 <Sparkles className="w-3 h-3 text-primary" />
-                <span className="text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">
+                <span className="text-meta font-mono font-semibold tracking-normal text-muted-foreground">
                   Next steps
                 </span>
                 <div className="h-px flex-1 bg-gradient-to-r from-white/10 to-transparent" />
@@ -2175,7 +2175,7 @@ function ChatWindowInner({
                           <Sparkles className="w-3 h-3 text-primary" />
                         )}
                         {s.priority && <span className={`pivot-priority pivot-priority--${s.priority}`}>{s.priority}</span>}
-                        <span className="truncate text-eyebrow uppercase tracking-[0.14em] text-muted-foreground/80 font-mono">{s.meta}</span>
+                        <span className="truncate text-micro tracking-normal text-muted-foreground/80 font-mono">{s.meta}</span>
                       </span>
                       <span className="block text-sm font-semibold leading-snug text-foreground group-hover:text-primary transition-colors">{s.title}</span>
                       {s.detail && <span className="block text-micro leading-snug text-muted-foreground line-clamp-2">{s.detail}</span>}

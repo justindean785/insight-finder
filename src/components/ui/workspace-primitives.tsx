@@ -147,7 +147,7 @@ export function MetricCard({
       className={cn("rounded-lg border border-border-subtle bg-surface-1 px-3 py-2.5", className)}
       title={hint}
     >
-      <div className="flex items-center gap-1.5 text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">
+      <div className="flex items-center gap-1.5 text-micro tracking-normal text-muted-foreground">
         {Icon && <Icon className={cn("w-3 h-3", tone !== "neutral" && color)} />}
         <span className="truncate">{label}</span>
       </div>
@@ -334,7 +334,7 @@ export function StatusLegend({ className, align = "end" }: { className?: string;
         <button
           type="button"
           className={cn(
-            "inline-flex items-center gap-1 rounded-full border border-border-subtle bg-surface-2/50 px-2 py-0.5 text-eyebrow font-medium uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground",
+            "inline-flex items-center gap-1 rounded-full border border-border-subtle bg-surface-2/50 px-2 py-0.5 text-micro font-medium tracking-normal text-muted-foreground transition-colors hover:text-foreground",
             className,
           )}
           aria-label="Show evidence status legend"
@@ -344,7 +344,7 @@ export function StatusLegend({ className, align = "end" }: { className?: string;
         </button>
       </PopoverTrigger>
       <PopoverContent align={align} className="w-[min(92vw,340px)] p-3">
-        <div className="mb-2 text-eyebrow uppercase tracking-wider text-muted-foreground">Evidence status</div>
+        <div className="mb-2 text-micro font-semibold tracking-normal text-muted-foreground">Evidence status</div>
         <ul className="space-y-2">
           {EVIDENCE_STATUS_LEGEND.map((entry) => (
             <li key={entry.status} className="flex flex-col gap-0.5">

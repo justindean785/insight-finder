@@ -146,7 +146,7 @@ export function EvidenceMatrixTab({
             </span>
             <button
               onClick={() => { setReviewFilter("ANY"); setFilter("ALL"); }}
-              className="text-eyebrow font-mono uppercase tracking-wider text-muted-foreground/70 hover:text-foreground transition-colors"
+              className="text-micro font-mono tracking-normal text-muted-foreground/70 hover:text-foreground transition-colors"
               title="Reset all filters"
             >
               reset
@@ -190,7 +190,7 @@ export function EvidenceMatrixTab({
                       <div className={"font-mono text-foreground break-all " + (rState === "dismissed" ? "line-through" : "")}>
                         {sanitizeValueForLabel(a.value, label === "CONFIRMED")}
                       </div>
-                      <div className="text-eyebrow uppercase tracking-wider text-muted-foreground mt-0.5 flex items-center gap-1.5 flex-wrap">
+                      <div className="text-eyebrow tracking-normal text-muted-foreground mt-0.5 flex items-center gap-1.5 flex-wrap">
                         <span>{displayKind(a)}</span>
                         <span>·</span>
                         <SourceAttribution artifact={a} threadId={threadId} />
@@ -276,7 +276,7 @@ export function EvidenceMatrixTab({
                       className="mt-1 inline-flex items-center gap-1 text-data text-muted-foreground font-mono"
                       title="Raw source/tool confidence — not affected by analyst review actions."
                     >
-                      <span className="uppercase tracking-wider text-eyebrow">raw</span>
+                      <span className="tracking-normal text-eyebrow">raw</span>
                       <span>{base}/100</span>
                     </div>
                   )}
@@ -405,7 +405,7 @@ function PrimaryAction({
     <Tooltip>
       <TooltipTrigger asChild>
         <Button size="sm" variant="ghost"
-          className={"h-7 px-2.5 gap-1 text-eyebrow font-medium uppercase tracking-wider " + toneClasses(tone, active)}
+          className={"h-7 px-2.5 gap-1 text-micro font-medium tracking-normal " + toneClasses(tone, active)}
           onClick={onClick}>
           <Icon className="w-3 h-3" /> {label}
         </Button>

@@ -521,7 +521,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         {(["Today", "This week", "Older"] as const).map((bucket) =>
           groups[bucket].length === 0 ? null : (
             <div key={bucket} className="mb-2.5">
-              <div className="px-2 py-1 text-eyebrow uppercase tracking-[0.08em] text-muted-foreground flex items-center gap-1.5">
+              <div className="px-2 py-1 text-micro font-medium tracking-normal text-muted-foreground flex items-center gap-1.5">
                 <span className="w-1 h-1 rounded-full bg-muted-foreground/50" />
                 {bucket}
                 <span className="ml-1 font-mono opacity-50">{groups[bucket].length}</span>
@@ -665,7 +665,7 @@ function SpendTrend({ threads, totalCost }: { threads: Thread[]; totalCost: numb
     <div className="rounded-xl border border-white/10 bg-white/[0.035] p-1">
       <div className="rounded-lg bg-black/20 px-3 py-2.5">
         <div className="flex items-center justify-between gap-3">
-          <span className="text-eyebrow uppercase tracking-[0.12em] text-muted-foreground">Spend</span>
+          <span className="text-micro tracking-normal text-muted-foreground">Spend</span>
           <span className="font-mono text-micro text-muted-foreground">{threads.length} cases</span>
         </div>
         <div className="mt-1 flex items-end justify-between gap-3">

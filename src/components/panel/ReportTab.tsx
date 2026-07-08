@@ -203,7 +203,7 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
       <div className="p-3 space-y-3">
       {/* Report-type selector — changes the rendered dossier AND every export. */}
       <div className="no-print flex flex-wrap items-center gap-1.5" role="group" aria-label="Report type">
-        <span className="text-eyebrow font-mono uppercase tracking-[0.16em] text-muted-foreground mr-1">Report</span>
+        <span className="text-micro font-mono tracking-normal text-muted-foreground mr-1">Report</span>
         {REPORT_TYPES.map((t) => (
           <button
             key={t.id}
@@ -239,7 +239,7 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
       </div>
 
       <details className="rounded-lg border border-border-subtle bg-surface-2 no-print">
-        <summary className="cursor-pointer px-3 py-2 text-eyebrow uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+        <summary className="cursor-pointer px-3 py-2 text-micro font-medium tracking-normal text-muted-foreground flex items-center gap-1.5">
           <FileText className="w-3 h-3" /> Raw markdown
         </summary>
         <pre className="p-3 text-data font-mono leading-relaxed text-foreground/80 whitespace-pre-wrap break-words max-h-[50vh] overflow-y-auto [scrollbar-width:thin] border-t border-border-subtle">
@@ -261,7 +261,7 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
           </DialogHeader>
 
           <div className="rounded-md border border-border-subtle bg-surface-2 px-3 py-2 flex items-center justify-between gap-2 text-xs">
-            <span className="text-muted-foreground uppercase tracking-wider text-eyebrow">Classification</span>
+            <span className="text-muted-foreground tracking-normal text-micro">Classification</span>
             <span className="font-mono text-foreground">INTERNAL</span>
           </div>
 

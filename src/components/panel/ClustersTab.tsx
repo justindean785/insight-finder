@@ -40,7 +40,7 @@ export function ClustersTab({ threadId, artifacts }: { threadId: string; artifac
     <div className="p-3 space-y-3">
       {report.warnings.length > 0 && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 space-y-1.5 animate-pivot-in">
-          <div className="flex items-center gap-1.5 text-eyebrow font-semibold text-destructive uppercase tracking-wider">
+          <div className="flex items-center gap-1.5 text-micro font-semibold text-destructive tracking-normal">
             <AlertTriangle className="w-3.5 h-3.5" /> Misattribution warning
           </div>
           {report.warnings.map((w, i) => (
@@ -153,7 +153,7 @@ function Field({
   if (!values.length) return null;
   return (
     <div className="space-y-0.5 col-span-2">
-      <div className="text-muted-foreground flex items-center gap-1 text-micro uppercase tracking-wider">
+      <div className="text-muted-foreground flex items-center gap-1 text-micro tracking-normal">
         <Icon className="w-2.5 h-2.5" />
         {label}
       </div>
