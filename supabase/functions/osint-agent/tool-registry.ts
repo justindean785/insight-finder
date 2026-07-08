@@ -19,7 +19,7 @@ import { applyDateSanity } from "./date-sanity.ts";
 import { computeAxes, sourceConfidence, applyEvidenceCaps, isUnrelatedEntity, EXCLUDED_COLLISION_CONFIDENCE, isBioCrossLinkName, BIO_CROSS_LINK_NAME_CAP, deriveStatus, coerceCoherentStatus, looksDeadEnd } from "./confidence.ts";
 import { queryTypesOf } from "./query-type-router.ts";
 import { isSameSurnameOnlyLead, isListingAgentLead } from "./collision-policy.ts";
-import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDomainSource, LLM_ASSERTED_PROVENANCE } from "./artifact_types.ts";
+import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDomainSource, LLM_ASSERTED_PROVENANCE, countIndependentClasses } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
 import { buildNodes } from "./graph.ts";
 import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
@@ -4746,6 +4746,9 @@ export function buildTools(ctx: ToolContext) {
       next_pivots: z.array(z.string()).optional(),
       identity_evidence_strength: z.number().min(0).max(100).default(60),
       relationship_evidence_strength: z.number().min(0).max(100).default(60),
+      // Advisory only — NOT read for scoring. The real corroboration count is
+      // derived server-side from supporting_sources (see F06 below). Kept
+      // accepted so an older/uninstructed model call still validates.
       corroboration_count: z.number().min(1).default(1),
       label: z.enum(["CONFIRMED","CORROBORATED","INFERRED","VERIFY","LOW","DISMISSED"]).default("INFERRED"),
     })),
@@ -4765,9 +4768,17 @@ export function buildTools(ctx: ToolContext) {
       const allRows = (contraRows ?? []) as Parameters<typeof detectContradictions>[0];
       const scopedRows = artifactsForFinding(allRows, i.supporting_artifact_values ?? []);
       const contras = detectContradictions(scopedRows.length > 0 ? scopedRows : allRows);
+      // Audit F06: i.corroboration_count was a raw model-supplied integer with no
+      // independence check — a single ai_summary-class source claiming
+      // corroboration_count:5 inflated the artifact axis to 100. Derive the real
+      // count server-side from the independent SOURCE CLASSES actually backing
+      // this finding (same taxonomy the frontend's independentSourceClassCount in
+      // src/lib/intel.ts uses), so the boost can never exceed what
+      // supporting_sources genuinely proves.
+      const corroborationCount = countIndependentClasses(i.supporting_sources.map(classifySource));
       const axes = computeAxes({
         sources: i.supporting_sources,
-        corroborationCount: i.corroboration_count,
+        corroborationCount,
         contradictions: contras,
         identityEvidenceStrength: i.identity_evidence_strength,
         relationshipEvidenceStrength: i.relationship_evidence_strength,
