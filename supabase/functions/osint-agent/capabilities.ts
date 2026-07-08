@@ -93,6 +93,7 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   virustotal_lookup: { requiresKey: "VIRUSTOTAL_API_KEY" },
   ipgeolocation_lookup: { requiresKey: "IPGEOLOCATION_API_KEY" },
   gemini_deep_dork: { requiresKey: "GEMINI_API_KEY" },
+  gemini_vision: { requiresKey: "GEMINI_API_KEY" },
   osint_navigator_query: { requiresKey: "OSINT_NAVIGATOR_API_KEY" },
   osint_navigator_search: { requiresKey: "OSINT_NAVIGATOR_API_KEY" },
   serus_darkweb_scan: { requiresKey: "SERUS_API_KEY" },

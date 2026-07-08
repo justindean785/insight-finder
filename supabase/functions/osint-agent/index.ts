@@ -39,6 +39,7 @@ import { repairUnknownTool } from "./unknown-tool-guard.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { buildTools } from "./tool-registry.ts";
+import { runAttachmentIntake } from "./attachment-intake.ts";
 import { isMessageSchemaError, classifyStreamProviderError } from "./stream-error-classify.ts";
 import {
   shouldFallbackAfterMinimaxPreflight,
@@ -351,6 +352,24 @@ Deno.serve(async (req) => {
         );
       }
     }
+
+    // ---- Attachment intake (read images/PDFs BEFORE reasoning) -----------------
+    // MiniMax-M2.7 is text-only. Deterministically read any uploaded image/PDF on
+    // the latest user message through Gemini vision/document mode, record public
+    // anchors (watermark/handle/selectors) as LEAD-TIER artifacts, and inject a
+    // summary into the system prompt so the model reasons over what the file
+    // actually contained instead of a bare URL. Best-effort: never blocks the run.
+    let visionIntakeSummary = "";
+    {
+      const intake = await runAttachmentIntake(messages, { supabase, userId, threadId });
+      if (intake.ran) {
+        visionIntakeSummary = intake.summary;
+        console.log(
+          `[attachment-intake] read ${intake.attachments_read} file(s), recorded ${intake.artifacts_inserted} lead-tier artifact(s) before reasoning`,
+        );
+      }
+    }
+
     // Tracks the cost amount already written to the DB via mid-run
     // checkpoints so the final write only adds the remaining delta.
     let lastCheckpointMicroUsd = 0;
@@ -627,7 +646,7 @@ Deno.serve(async (req) => {
       providerOptions: (minimaxIsPrimary && !useFallback)
         ? { minimax: { parallel_tool_calls: ORCHESTRATOR_PARALLEL_TOOL_CALLS } }
         : undefined,
-      system: SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType),
+      system: SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary,
       messages: trimmedMessages,
       tools: wrapToolsWithCache(tools, {
         investigationId: threadId,

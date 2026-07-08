@@ -109,8 +109,9 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   ip_intel: 1000,
   ipgeolocation_lookup: 1000,
   virustotal_lookup: 2000,
-  dork_harvest: 3000,         // wraps several web searches
+  dork_harvest: 3000,         // wraps several web searches (+ up to 3 Gemini reads)
   gemini_deep_dork: 2000,     // 1 Gemini 2.5 Flash call w/ google_search grounding
+  gemini_vision: 2000,        // 1 Gemini Flash multimodal call (image or PDF page)
 
   // ---- OSINT Navigator (tool-recommendation meta service) ----
   osint_navigator_query: 500,

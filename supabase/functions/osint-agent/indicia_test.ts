@@ -77,6 +77,23 @@ Deno.test("indicia: extractIndiciaRecords is defensive across keys, not hardcode
   assert(extractIndiciaRecords({ person: { name: "x" } }).length >= 1);
 });
 
+Deno.test("indicia: metadata-only no-hit echoes read as EMPTY, not a bogus record", () => {
+  // The integrity bug (Fix #2): {found:0} / {count:0} / {found:false} are how the
+  // API signals a valid NEGATIVE. A bare number/boolean field must NOT count as a
+  // record, or a no-hit is misreported as an ok:true one-record hit.
+  assertEquals(extractIndiciaRecords({ found: 0 }).length, 0);
+  assertEquals(extractIndiciaRecords({ count: 0 }).length, 0);
+  assertEquals(extractIndiciaRecords({ found: false }).length, 0);
+  assertEquals(extractIndiciaRecords({ found: 0, count: 0 }).length, 0);
+  // Truthy scalars are ALSO metadata (exists:true is not a record payload).
+  assertEquals(extractIndiciaRecords({ found: 1, exists: true }).length, 0);
+  // Empty nested containers are not substance either.
+  assertEquals(extractIndiciaRecords({ web: [], meta: {} }).length, 0);
+  // But a real string/object payload alongside metadata IS a record.
+  assert(extractIndiciaRecords({ found: 1, name: "Jane Doe" }).length >= 1);
+  assert(extractIndiciaRecords({ profile: { handle: "x" }, count: 1 }).length >= 1);
+});
+
 // ---- Outcome contract via a stubbed fetch -----------------------------------
 // Replaces globalThis.fetch so execute() runs without network; asserts the
 // returned object maps to the correct outcome through the REAL classifier.
