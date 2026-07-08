@@ -1,13 +1,12 @@
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { gemini_vision, runGeminiVision } from "./tools/gemini_vision.ts";
+import { classifyToolOutcome } from "./tool-outcome.ts";
 
-// gemini_vision wiring + outcome contract. env.ts captures GEMINI_API_KEY at
-// import time, so (like aaa_dork_harvest_test) we set the key FIRST, then
-// dynamic-import the tool. globalThis.fetch is stubbed to fake the Gemini API so
-// no network is hit; base64 input skips the attachment byte-fetch entirely.
-Deno.env.set("GEMINI_API_KEY", "test-key");
-const { gemini_vision, runGeminiVision } = await import("./tools/gemini_vision.ts");
-const { classifyToolOutcome } = await import("./tool-outcome.ts");
-
+// gemini_vision wiring + outcome contract. The tool reads GEMINI_API_KEY at CALL
+// time, so we set it only INSIDE each test (never at module top-level) — setting
+// it at import would pollute env.ts's boot-time fallback-provider selection for
+// providers_test/fallback_repoint in the shared `deno test` process.
+// globalThis.fetch is stubbed so no network is hit.
 type ExecTool = { execute: (input: unknown, opts: unknown) => Promise<Record<string, unknown>> };
 const exec = (input: unknown): Promise<Record<string, unknown>> =>
   (gemini_vision as unknown as ExecTool).execute(input, {});
@@ -19,6 +18,14 @@ function geminiResponse(status: number, modelText: string): Response {
     ? { candidates: [{ content: { parts: [{ text: modelText }] } }] }
     : { error: { message: modelText } };
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
+/** Set GEMINI_API_KEY for the duration of fn only, then restore. */
+async function withGeminiKey(fn: () => Promise<void>) {
+  const orig = Deno.env.get("GEMINI_API_KEY");
+  Deno.env.set("GEMINI_API_KEY", "gv-test-key");
+  try { await fn(); }
+  finally { if (orig === undefined) Deno.env.delete("GEMINI_API_KEY"); else Deno.env.set("GEMINI_API_KEY", orig); }
 }
 
 async function withStubbedGemini(
@@ -34,7 +41,7 @@ async function withStubbedGemini(
     }
     throw new Error(`unexpected fetch in test: ${u}`);
   }) as typeof fetch;
-  try { await fn(); } finally { globalThis.fetch = orig; }
+  try { await withGeminiKey(fn); } finally { globalThis.fetch = orig; }
 }
 
 Deno.test("gemini_vision image mode: returns attributes/watermarks/handles, lead-tier provenance", async () => {
@@ -80,9 +87,11 @@ Deno.test("gemini_vision document mode: extracts text + selectors (reads the PDF
 });
 
 Deno.test("gemini_vision: no input (no url/base64) → skip, not a crash", async () => {
-  const r = await runGeminiVision({ mode: "image" }, undefined);
-  assert(!r.ok);
-  assert(typeof r.error === "string" && (r.error as string).includes("no input"));
+  await withGeminiKey(async () => {
+    const r = await runGeminiVision({ mode: "image" }, undefined);
+    assert(!r.ok);
+    assert(typeof r.error === "string" && (r.error as string).includes("no input"));
+  });
 });
 
 Deno.test("gemini_vision: Gemini non-2xx → failed outcome", async () => {

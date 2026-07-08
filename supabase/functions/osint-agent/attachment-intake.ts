@@ -19,7 +19,12 @@ import type { UIMessage } from "npm:ai@6";
 import { runGeminiVision } from "./tools/gemini_vision.ts";
 import { buildAutoRecordedRow } from "./auto-record-integrity.ts";
 import { scrubArtifactRows } from "./safety.ts";
-import { GEMINI_API_KEY } from "./env.ts";
+
+// Read the key at call time (not an import-time const) so intake enablement is
+// decoupled from module-load order and never pollutes env.ts's boot-time
+// fallback-provider selection. In prod the key is set at boot, so this equals
+// the const.
+const geminiKey = (): string | undefined => Deno.env.get("GEMINI_API_KEY");
 
 const MARKER = "Attached files:";
 // - [name](url) (meta)   — Supabase signed URLs are base64url, so they carry no ')'.
@@ -105,7 +110,7 @@ export async function runAttachmentIntake(
   deps: IntakeDeps,
 ): Promise<AttachmentIntakeResult> {
   const empty: AttachmentIntakeResult = { ran: false, attachments_read: 0, artifacts_inserted: 0, summary: "" };
-  if (!GEMINI_API_KEY) return empty; // no eyes without a key — stay silent, no phantom reads
+  if (!geminiKey()) return empty; // no eyes without a key — stay silent, no phantom reads
   try {
     const latestUser = [...messages].reverse().find((m) => m.role === "user");
     const atts = parseAttachments(messageText(latestUser)).filter((a) => isImageAttachment(a) || isDocAttachment(a));

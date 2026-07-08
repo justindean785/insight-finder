@@ -2950,6 +2950,10 @@ export function buildTools(ctx: ToolContext) {
         // agent, but NOT inserted into the artifact table.
         const seedNorm = String(seed).toLowerCase().replace(/[^a-z0-9]/g, "");
         const GEMINI_READ_BUDGET = 3; // bounded reads per harvest (latency/cost)
+        // Read the key at call time so the read-branch is decoupled from module
+        // load order (prod sets it at boot; this keeps env.ts's fallback selection
+        // unpolluted when a test enables vision).
+        const geminiKeyForRead = Deno.env.get("GEMINI_API_KEY");
         let geminiReads = 0;
         const candidateUnread: Array<{ url: string; via: string; classify: string; reason: string }> = [];
         const toRecord: Array<{
@@ -2969,7 +2973,7 @@ export function buildTools(ctx: ToolContext) {
           // 2) Bounded Gemini document read — actually READ the doc and score seed
           //    presence in the real text. This is what finally reads harvested PDFs
           //    instead of recording the URL blind.
-          if (GEMINI_API_KEY && geminiReads < GEMINI_READ_BUDGET) {
+          if (geminiKeyForRead && geminiReads < GEMINI_READ_BUDGET) {
             geminiReads++;
             let text: string | null = null;
             let selectors: string[] = [];
@@ -2998,7 +3002,7 @@ export function buildTools(ctx: ToolContext) {
           // 3) Unread + no URL seed match → candidate link, NOT an artifact.
           candidateUnread.push({
             url: c.url, via: c.via, classify: c.classify,
-            reason: GEMINI_API_KEY ? "gemini read budget exhausted — unread, seed not in URL" : "not read (no GEMINI_API_KEY) and seed not in URL",
+            reason: geminiKeyForRead ? "gemini read budget exhausted — unread, seed not in URL" : "not read (no GEMINI_API_KEY) and seed not in URL",
           });
         }
 

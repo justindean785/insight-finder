@@ -38,7 +38,12 @@ import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { geminiVision, type GeminiPart } from "../providers.ts";
 import { assertSafeUrl } from "../safety.ts";
-import { GEMINI_API_KEY } from "../env.ts";
+
+// Read the key at CALL time (not an import-time const). In prod the key is set
+// before the isolate starts, so this equals the const; it also keeps the tool's
+// behavior decoupled from module-load order (a test can set the key without
+// polluting env.ts's boot-time fallback-provider selection for other modules).
+const geminiKey = (): string | undefined => Deno.env.get("GEMINI_API_KEY");
 
 // Gemini inline_data caps a single request near 20MB total; stay under it so a
 // large scan/PDF fails fast with a clear message rather than a 400 from Google.
@@ -175,7 +180,7 @@ export async function runGeminiVision(
   signal: AbortSignal | undefined,
 ): Promise<Record<string, unknown>> {
   const { mode, url, base64, mime_type, reverse_search, question } = args;
-  if (!GEMINI_API_KEY) {
+  if (!geminiKey()) {
     // Gated by capabilities.ts, so defensive only. "not configured" → skip.
     return { error: "GEMINI_API_KEY not configured", source: "gemini_vision", mode };
   }

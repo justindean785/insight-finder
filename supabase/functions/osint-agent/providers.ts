@@ -418,14 +418,19 @@ export async function geminiVision(opts: {
   queries: string[];
   raw: unknown;
 }> {
-  if (!GEMINI_API_KEY) {
+  // Read the key at call time (not the import-time const): keeps vision decoupled
+  // from module-load order so a test can enable it without polluting env.ts's
+  // boot-time fallback-provider selection. In prod the key is set before the
+  // isolate starts, so this is identical to the const.
+  const apiKey = Deno.env.get("GEMINI_API_KEY");
+  if (!apiKey) {
     return { ok: false, status: 0, text: "", citations: [], queries: [], raw: { error: "GEMINI_API_KEY not configured" } };
   }
   // Flash multimodal SKU; reuses the same env override as the orchestrator
   // fallback, with a vision-specific override for operators who want to pin a
   // different multimodal model without moving the text fallback.
   const model = opts.model ?? Deno.env.get("GEMINI_VISION_MODEL_ID") ?? GEMINI_FALLBACK_MODEL_ID ?? "gemini-2.5-flash";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   const body: Record<string, unknown> = {
     contents: [{ role: "user", parts: opts.parts }],
     generationConfig: { temperature: opts.temperature ?? 0.1 },

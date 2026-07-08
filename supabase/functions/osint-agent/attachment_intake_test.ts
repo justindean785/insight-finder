@@ -1,13 +1,18 @@
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { parseAttachments, isImageAttachment, isDocAttachment, runAttachmentIntake } from "./attachment-intake.ts";
 
-// env.ts captures GEMINI_API_KEY at import → set before the dynamic import so
-// runAttachmentIntake's key guard passes and the read path is exercisable.
-Deno.env.set("GEMINI_API_KEY", "gv-test-key");
-const { parseAttachments, isImageAttachment, isDocAttachment, runAttachmentIntake } =
-  await import("./attachment-intake.ts");
-
+// runAttachmentIntake reads GEMINI_API_KEY at CALL time, so we set it only INSIDE
+// the read tests (never at module top-level) — setting it at import would pollute
+// env.ts's boot-time fallback-provider selection for providers_test/fallback_repoint.
 const GEMINI_HOST = "generativelanguage.googleapis.com";
 type Row = Record<string, unknown>;
+
+async function withGeminiKey(fn: () => Promise<void>) {
+  const orig = Deno.env.get("GEMINI_API_KEY");
+  Deno.env.set("GEMINI_API_KEY", "gv-test-key");
+  try { await fn(); }
+  finally { if (orig === undefined) Deno.env.delete("GEMINI_API_KEY"); else Deno.env.set("GEMINI_API_KEY", orig); }
+}
 
 Deno.test("parseAttachments: splits the composer 'Attached files:' block (signed URLs intact)", () => {
   const text =
@@ -49,23 +54,25 @@ Deno.test("runAttachmentIntake: image → records watermark(domain)+handle, attr
     return Promise.resolve(new Response(new Uint8Array([1, 2, 3, 4]), { status: 200, headers: { "content-type": "image/jpeg" } }));
   }) as typeof fetch;
   try {
-    const res = await runAttachmentIntake(
-      userMsg("who is this?\n\nAttached files:\n- [mug.jpg](https://sb.co/x.jpg) (image/jpeg, 1 MB)"),
-      stubDeps(sink),
-    );
-    assertEquals(res.ran, true);
-    assertEquals(res.attachments_read, 1);
-    // watermark domain + handle both recorded as lead-tier
-    const kinds = sink.map((r) => r.kind).sort();
-    assert(kinds.includes("domain"), "watermark domain recorded");
-    assert(kinds.includes("username"), "handle recorded");
-    for (const r of sink) {
-      const meta = r.metadata as Record<string, unknown>;
-      assertEquals(meta.provenance, "inferred_from_vision");
-      assert((r.confidence as number) <= 55, "vision artifacts are lead-tier (≤55)");
-    }
-    assert(res.summary.includes("ATTRIBUTES ONLY"), "summary must state attributes-only (no face→name)");
-    assert(res.summary.includes("bustednewspaper.com"));
+    await withGeminiKey(async () => {
+      const res = await runAttachmentIntake(
+        userMsg("who is this?\n\nAttached files:\n- [mug.jpg](https://sb.co/x.jpg) (image/jpeg, 1 MB)"),
+        stubDeps(sink),
+      );
+      assertEquals(res.ran, true);
+      assertEquals(res.attachments_read, 1);
+      // watermark domain + handle both recorded as lead-tier
+      const kinds = sink.map((r) => r.kind).sort();
+      assert(kinds.includes("domain"), "watermark domain recorded");
+      assert(kinds.includes("username"), "handle recorded");
+      for (const r of sink) {
+        const meta = r.metadata as Record<string, unknown>;
+        assertEquals(meta.provenance, "inferred_from_vision");
+        assert((r.confidence as number) <= 55, "vision artifacts are lead-tier (≤55)");
+      }
+      assert(res.summary.includes("ATTRIBUTES ONLY"), "summary must state attributes-only (no face→name)");
+      assert(res.summary.includes("bustednewspaper.com"));
+    });
   } finally {
     globalThis.fetch = orig;
   }
@@ -86,17 +93,19 @@ Deno.test("runAttachmentIntake: PDF → reads document, records classified selec
     return Promise.resolve(new Response(new Uint8Array([37, 80, 68, 70]), { status: 200, headers: { "content-type": "application/pdf" } }));
   }) as typeof fetch;
   try {
-    const res = await runAttachmentIntake(
-      userMsg("Attached files:\n- [export.pdf](https://sb.co/export.pdf) (application/pdf, 1 MB)"),
-      stubDeps(sink),
-    );
-    assertEquals(res.ran, true);
-    const kinds = sink.map((r) => r.kind).sort();
-    assert(kinds.includes("email"));
-    assert(kinds.includes("phone"));
-    assert(kinds.includes("username"));
-    for (const r of sink) assertEquals((r.metadata as Record<string, unknown>).provenance, "extracted_from_document");
-    assert(res.summary.includes("DOCUMENT"));
+    await withGeminiKey(async () => {
+      const res = await runAttachmentIntake(
+        userMsg("Attached files:\n- [export.pdf](https://sb.co/export.pdf) (application/pdf, 1 MB)"),
+        stubDeps(sink),
+      );
+      assertEquals(res.ran, true);
+      const kinds = sink.map((r) => r.kind).sort();
+      assert(kinds.includes("email"));
+      assert(kinds.includes("phone"));
+      assert(kinds.includes("username"));
+      for (const r of sink) assertEquals((r.metadata as Record<string, unknown>).provenance, "extracted_from_document");
+      assert(res.summary.includes("DOCUMENT"));
+    });
   } finally {
     globalThis.fetch = orig;
   }
