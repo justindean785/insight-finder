@@ -3917,6 +3917,11 @@ export function buildTools(ctx: ToolContext) {
         const accepted: Array<{ index: number; kind: string; value: string }> = [];
         const rejected: Array<{ index: number; reason: string; kind: string; value: string }> = [];
         const rows: Array<Record<string, unknown>> = [];
+        // In-process dedup: a single batch sometimes carries the same
+        // (kind, value) twice (model repeats itself, or two sources agree).
+        // Skip exact repeats so we don't write duplicate artifact rows. This is
+        // a non-destructive, in-memory-only guard — no DB change.
+        const seenInBatch = new Set<string>();
         artifacts.forEach((a, i) => {
           // Infer strict kind from value patterns (LAPD → law_enforcement_unit,
           // People v X → court_case, wallet hex → crypto_wallet, etc.).
@@ -4016,6 +4021,23 @@ export function buildTools(ctx: ToolContext) {
             // Spread LAST so a corrected `note` overrides the model-supplied one.
             ...dateSanity.metaPatch,
           };
+          // Include EFFECTIVE source(s) in the key, not just the top-level
+          // `source` field: two DIFFERENT sources reporting the same (kind,
+          // value) in one batch is corroboration, not a duplicate — e.g.
+          // leakcheck_lookup + oathnet_lookup both hitting the same breach email
+          // must both land as distinct source observations, or the multi-source
+          // signal the confidence/corroboration logic depends on collapses to one
+          // row (the same class of bug flagged in #189's migration key). Using
+          // only `a.source` still missed this when provenance instead lives in
+          // `metadata.sources` (or `a.source` is a generic wrapper label like
+          // "Multiple sources") — so key on the same `effSources` this block
+          // already computes for confidence caps (sorted for a stable key).
+          const dedupKey = `${finalKind} ${v.value} ${[...effSources].sort().join(",")}`;
+          if (seenInBatch.has(dedupKey)) {
+            rejected.push({ index: i, reason: "duplicate (kind,value,sources) already in this batch", kind: finalKind, value: v.value });
+            return;
+          }
+          seenInBatch.add(dedupKey);
           rows.push({
             thread_id: threadId,
             user_id: userId,
