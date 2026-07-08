@@ -58,8 +58,9 @@ export function EvidenceMatrixTab({
   return (
     <TooltipProvider delayDuration={200}>
       <div className="text-xs">
-        <div className="sticky top-0 z-10 border-b border-border bg-card/95 p-2.5 backdrop-blur sm:p-3">
-        <div className="mb-2 flex items-start gap-2 rounded-lg border border-border bg-secondary/25 px-2.5 py-2 text-data text-muted-foreground">
+        {/* Scoring legend — explanatory, scrolls away so the sticky filter bar
+            below stays compact (the scroll viewport can be short). */}
+        <div className="mx-2.5 mt-2.5 flex items-start gap-2 rounded-lg border border-border bg-secondary/25 px-2.5 py-2 text-data text-muted-foreground sm:mx-3">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
           <div className="leading-snug">
             <span className="text-foreground font-medium">Review scoring:</span>{" "}
@@ -69,6 +70,7 @@ export function EvidenceMatrixTab({
             <span className="text-destructive">Dismiss</span> excludes.
           </div>
         </div>
+        <div className="sticky top-0 z-10 border-b border-border bg-card/95 p-2.5 backdrop-blur sm:p-3">
 
         {/* Status segmented control */}
         <div className="flex gap-2 overflow-x-auto pb-1">
