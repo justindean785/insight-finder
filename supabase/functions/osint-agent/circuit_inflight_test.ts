@@ -76,6 +76,31 @@ Deno.test("in-flight gate does not affect a different provider", () => {
   clearThread(thread);
 });
 
+Deno.test("TOCTOU: mark before waitMs — sibling blocked even if mark is set after shouldRun", async () => {
+  // Regression test for the prior TOCTOU: if markProviderInFlight ran AFTER an
+  // `await waitMs` pacing delay, a sibling dispatched during the wait would pass
+  // shouldRun (provider not yet in-flight) and fire a second live call. Fix is to
+  // call markProviderInFlight before the await. Simulate that ordering here:
+  const thread = "t-toctou";
+  clearThread(thread);
+
+  // First call: shouldRun allows, then we immediately mark (correct ordering).
+  const first = shouldRun(thread, "minimax_web_search", "q1");
+  assertEquals(first.allow, true);
+  // Mark happens BEFORE any await (correct order).
+  markProviderInFlight(thread, "minimax_web_search");
+
+  // Simulate the pacing wait with a real microtask gap.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  // Sibling dispatched after the await must still be blocked — the mark was set before.
+  const sibling = shouldRun(thread, "minimax_web_search", "q2");
+  assertEquals(sibling.allow, false, "sibling must be blocked even after async gap");
+
+  clearProviderInFlight(thread, "minimax_web_search");
+  clearThread(thread);
+});
+
 Deno.test("quota-401 after in-flight clears still suppresses the provider for the rest of the run", () => {
   const thread = "t-inflight-then-401";
   clearThread(thread);

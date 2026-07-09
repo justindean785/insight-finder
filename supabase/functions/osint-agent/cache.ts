@@ -774,6 +774,15 @@ export function wrapToolsWithCache(
             stale_cache: !!staleRecord,
           });
         }
+        // Mark the provider in-flight NOW — before the pacing wait and before any
+        // live dispatch — so same-step parallel siblings see the flag in shouldRun
+        // regardless of whether a waitMs delay fires between shouldRun and the actual
+        // fetch. Placing this after `await waitMs` (the prior TOCTOU) meant calls
+        // dispatched during the pacing window all passed the gate before the mark was
+        // set. ALWAYS_ALLOW_TOOLS bypass this (same exemption as the timeout gate).
+        if (!ALWAYS_ALLOW_TOOLS.has(name)) {
+          circuit.markProviderInFlight(ctx.investigationId, name);
+        }
         if (runtimeDecision.waitMs > 0) {
           await new Promise((resolve) => setTimeout(resolve, runtimeDecision.waitMs));
         }
@@ -790,17 +799,6 @@ export function wrapToolsWithCache(
           stop_condition: "stop if no corroborating evidence, duplicate selector, or provider suppression appears",
           cache_status: staleRecord ? "stale" : "miss",
         });
-
-        // 3) live
-        // Mark the provider in-flight BEFORE dispatching so same-step parallel
-        // siblings are gated by the in-flight check in shouldRun. This is the
-        // defence-in-depth layer for when parallel_tool_calls:false is ignored
-        // by the gateway (e.g. Lovable fallback), preventing a quota-401 burst
-        // where multiple calls race past shouldRun before any 401 is recorded.
-        // ALWAYS_ALLOW_TOOLS bypass this (same exemption as the timeout gate).
-        if (!ALWAYS_ALLOW_TOOLS.has(name)) {
-          circuit.markProviderInFlight(ctx.investigationId, name);
-        }
         let ok = true;
         let result: unknown;
         let errInfo: { errorMsg: string | null; statusCode: number | null } = { errorMsg: null, statusCode: null };
