@@ -54,6 +54,7 @@ import {
   indicia_email, indicia_phone, indicia_person,
   indicia_address, indicia_web_dbs, indicia_hudsonrock,
 } from "./tools/indicia.ts";
+import { pdl_person_enrich } from "./tools/peopledatalabs.ts";
 import { gemini_vision, runGeminiVision } from "./tools/gemini_vision.ts";
 
 import {
