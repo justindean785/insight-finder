@@ -290,6 +290,12 @@ export function applyEvidenceCaps(input: CapInput): CapResult {
     if (c === "public_record" && classes.includes("breach")) return false;
     return true;
   });
+  // "unknown" is the ABSENCE of a source classification, not a corroborating
+  // opinion — counting it toward the ≥2-independent-class threshold is the exact
+  // false-promotion C-2 guards against. Keep it in uniqClasses for the base cap +
+  // provenance (source_classes), but exclude it from the CORROBORATION count that
+  // drives the cross-class boost and the "corroborated across N" reason string.
+  const corroboratingClasses = uniqClasses.filter((c) => c !== "unknown");
   const counts: Record<string, number> = {};
   for (const c of classes) counts[c] = (counts[c] ?? 0) + 1;
   if (breachEvidenceCount > 0) counts.breach = breachEvidenceCount;
@@ -335,7 +341,7 @@ export function applyEvidenceCaps(input: CapInput): CapResult {
   // Cross-class corroboration with a non-infra class: ≥2 distinct classes lifts
   // the cap. This is allowed for any mix, but the trusted-class guard below
   // prevents weak non-infra signals from escaping the infra-safe ceiling.
-  if (uniqClasses.length >= 2 && !infraOnly) {
+  if (corroboratingClasses.length >= 2 && !infraOnly) {
     cap = Math.min(95, cap + 10);
   }
   if (uniqClasses.includes("court_record") && uniqClasses.some((c) => c === "news" || c === "independent_public")) {
@@ -359,18 +365,21 @@ export function applyEvidenceCaps(input: CapInput): CapResult {
 
   const confidence = Math.max(0, Math.min(input.rawConfidence ?? 50, cap));
 
-  // Build human-readable reason strings.
+  // Build human-readable reason strings. "unknown" never counts as corroboration,
+  // so the count/list below use corroboratingClasses (unknown excluded).
   const infraCount = infraCorroborationClasses.length;
-  const totalDistinct = uniqClasses.length;
+  const corroboratingCount = corroboratingClasses.length;
   let reason_for_confidence: string;
   if (infraOnly && infraCount >= 2) {
     reason_for_confidence = `infrastructure corroborated across ${infraCount} sub-classes: ${infraCorroborationClasses.join(", ")}`;
-  } else if (totalDistinct >= 2) {
-    reason_for_confidence = `corroborated across ${totalDistinct} source classes: ${uniqClasses.join(", ")}`;
-  } else if (uniqClasses[0] === "news" && isNameKind) {
+  } else if (corroboratingCount >= 2) {
+    reason_for_confidence = `corroborated across ${corroboratingCount} source classes: ${corroboratingClasses.join(", ")}`;
+  } else if (corroboratingClasses[0] === "news" && isNameKind) {
     reason_for_confidence = "single source class: news (name-from-news treated as lead, not confirmation)";
   } else {
-    reason_for_confidence = `single source class: ${uniqClasses[0] ?? "unknown"}`;
+    // Name the ONE real corroborating class (e.g. ["unknown","breach"] → "breach");
+    // fall back to the raw first class only when everything is unknown.
+    reason_for_confidence = `single source class: ${corroboratingClasses[0] ?? uniqClasses[0] ?? "unknown"}`;
   }
 
   let reason_not_confirmed: string | undefined;
@@ -378,9 +387,9 @@ export function applyEvidenceCaps(input: CapInput): CapResult {
     reason_not_confirmed = undefined;
   } else if (infraOnly) {
     reason_not_confirmed = "infrastructure evidence supports existence, not ownership or identity";
-  } else if (!hasTrustedNonInfra && totalDistinct >= 2) {
+  } else if (!hasTrustedNonInfra && corroboratingCount >= 2) {
     reason_not_confirmed = "no independent identity/ownership source — needs an official, court, news, or independent-public class";
-  } else if (totalDistinct < 2) {
+  } else if (corroboratingCount < 2) {
     reason_not_confirmed = "needs second independent class of evidence";
   } else {
     reason_not_confirmed = "evidence does not yet meet official+independent threshold";

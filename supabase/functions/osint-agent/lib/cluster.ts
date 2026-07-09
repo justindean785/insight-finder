@@ -141,6 +141,23 @@ export function selfAdmissionQuote(a: Artifact): string | null {
 export function ownershipProof(a: Artifact): string | null {
   return metaStr(a.metaRaw, "ownership_proof");
 }
+/** An ownership/self-admission signal that is only an UNVERIFIED LLM assertion
+ *  (provenance:"llm_asserted_unverified" or provenance_verified:false) is NOT a
+ *  proven first-party statement — e.g. a Steam realname the model guessed. It must
+ *  never unlock the self-admission cap-override in promoteConfidence(). */
+function isLlmAssertedUnverified(a: Artifact): boolean {
+  return /"provenance"\s*:\s*"llm_asserted_unverified"/i.test(a.metaRaw)
+    || /"provenance_verified"\s*:\s*false/i.test(a.metaRaw);
+}
+/** A GENUINE, proven first-party self-admission / ownership proof on THIS artifact:
+ *  an explicit source_quote / ownership_proof, or a "= SAME" identity assertion —
+ *  and NOT an unverified LLM assertion. This is the ONE evidence signal allowed to
+ *  promote a member above its source-class cap. Deliberately NOT keyed on
+ *  source_category (an "unknown" class is the absence of classification, not proof). */
+export function isVerifiedSelfAdmission(a: Artifact): boolean {
+  const signal = !!selfAdmissionQuote(a) || !!ownershipProof(a) || /=\s*same/i.test(a.value);
+  return signal && !isLlmAssertedUnverified(a);
+}
 function isContradictionArtifact(a: Artifact): boolean {
   return a.kind === "contradiction" || /"status"\s*:\s*"needs_review"/i.test(a.metaRaw) ||
     metaBoolTrue(a.metaRaw, "contradiction");
@@ -243,9 +260,20 @@ export function promoteConfidence(
   if (isExcluded(member)) return member.confidence; // untouched
   if (opts.contradicted) return Math.min(member.confidence, 40); // do NOT promote
   let conf = member.confidence;
-  if (distinctSources(clusterMembers).size >= 2) conf = Math.max(conf, TIERS.LIKELY); // 75
-  const memberSelfAdmit = !!selfAdmissionQuote(member) || !!ownershipProof(member) || /=\s*same/i.test(member.value);
-  if (opts.hasSelfAdmission && memberSelfAdmit) conf = Math.max(conf, TIERS.CONFIRMED); // 90 core identity
+  // Cluster co-membership (≥2 distinct sources in the subject) is NOT an
+  // independent source class: the artifact's OWN sources are already priced into
+  // member.confidence by applyEvidenceCaps' source-class caps. So a corroborated
+  // cluster may lift a member toward "Likely" but NEVER above its own capped
+  // confidence — Math.min(75, member.confidence). Otherwise a GitHub-404 dead-end
+  // (conf 30) or a confirmed false positive (conf 10) rides cluster co-membership
+  // up to 75/"Likely" and corrupts the downstream C-3 evidence grade.
+  if (distinctSources(clusterMembers).size >= 2) conf = Math.max(conf, Math.min(TIERS.LIKELY, member.confidence));
+  // The ONE legitimate promotion ABOVE the source-class cap: a PROVEN first-party
+  // self-admission / ownership proof ("I am X" / "= SAME PERSON") — the strongest
+  // evidence class, not weak evidence that got lucky with corroboration. Gated on
+  // isVerifiedSelfAdmission (never source_category, never an llm_asserted_unverified
+  // assertion), so a model-guessed Steam realname can't earn it.
+  if (opts.hasSelfAdmission && isVerifiedSelfAdmission(member)) conf = Math.max(conf, TIERS.CONFIRMED); // 90 core identity
   return conf;
 }
 
@@ -313,7 +341,7 @@ export function clusterArtifacts(arts: Artifact[]): ClusterResult {
     const subjectId = `subj_${hash}`, clusterId = `clus_${hash}`;
     const clusterArts = idxs.map((i) => arts[i]);
     const isContra = idxs.some((i) => memberContradicted[i]);
-    const hasSelfAdmission = idxs.some((i) => !!selfAdmissionQuote(arts[i]) || !!ownershipProof(arts[i]));
+    const hasSelfAdmission = idxs.some((i) => isVerifiedSelfAdmission(arts[i]));
     const clusterMembers: ClusterMember[] = [];
     for (const i of idxs) {
       const conf = promoteConfidence(arts[i], clusterArts, { contradicted: isContra, hasSelfAdmission });
