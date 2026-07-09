@@ -55,7 +55,19 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   breach_check: 3000,         // 3 stolen.tax calls in parallel
   leakcheck_lookup: 5000,     // 200/day → ~$0.005/call equiv
   hibp_lookup: 3000,          // ~$3.95/mo Pwned 1 plan, ~1300 req/mo → ~$0.003
-  oathnet_lookup: 10000,      // 100/day cap, expensive — reserve
+  oathnet_lookup: 10000,      // 500/day POOLED cap (all oathnet_* share it), expensive — reserve
+  // OathNet v2 expansion — all draw the same 500/day pool. Search-class calls match
+  // oathnet_lookup ($0.01); manifest/file reads + autocomplete + scanner-mgmt are cheaper
+  // reads; victim_archive never hits the API (reference only). None fall to the default.
+  oathnet_stealer_search: 10000,   // pooled search-class (stealer credentials)
+  oathnet_victims_search: 10000,   // pooled search-class (victim manifests)
+  oathnet_subdomains: 10000,       // pooled search-class (v2 stealer subdomain)
+  oathnet_victim_manifest: 500,    // single-log manifest read
+  oathnet_victim_file: 500,        // single-file read (redacted)
+  oathnet_victim_archive: 200,     // reference only — never downloads bytes
+  oathnet_breach_dbnames: 200,     // db-name autocomplete helper
+  oathnet_ai_filter: 1000,         // NL→structured filter creation
+  oathnet_scanner: 500,            // scanner quota/list/create management
   deepfind_reverse_email: 2000,
   deepfind_telegram_channel: 2000,
   // Serus darkweb scan: serus_core charges 0.25 credits/scan. No public USD

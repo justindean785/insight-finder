@@ -86,6 +86,16 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   leakcheck_lookup: "breach",
   hibp_lookup: "breach",
   oathnet_lookup: "breach",
+  // OathNet v2 stealer/victim surface — infostealer credential/manifest dumps are
+  // breach-class LEADS (CLASS_CAP 60, NEVER_HIGH): a single stealer/victim hit can
+  // never alone reach Confirmed. oathnet_subdomains is infrastructure (mirrors
+  // crtsh_subdomains → infra_dns), not identity. The helper tools (ai_filter,
+  // breach_dbnames, scanner, victim_archive) don't produce recorded artifacts.
+  oathnet_stealer_search: "breach",
+  oathnet_victims_search: "breach",
+  oathnet_victim_manifest: "breach",
+  oathnet_victim_file: "breach",
+  oathnet_subdomains: "infra_dns",
   intelbase_email_lookup: "breach",
   deepfind_reverse_email: "breach",
   deepfind_disposable_email: "breach",
