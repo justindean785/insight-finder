@@ -6,9 +6,9 @@ import {
 } from "@/lib/intel";
 import {
   useReviewStates, REVIEW_CLASS, REVIEW_SHORT, REVIEW_STATES, REVIEW_HELP,
-  REVIEW_CONFIDENCE_DELTA, type ReviewState,
+  REVIEW_CONFIDENCE_DELTA, launchRecheckInChat, type ReviewState,
 } from "@/lib/review";
-import { Copy, CheckCircle2, Star, ShieldQuestion, EyeOff, RotateCcw, Info, XCircle, MoreHorizontal } from "lucide-react";
+import { Copy, CheckCircle2, Star, ShieldQuestion, Ban, RotateCcw, Info, XCircle, MoreHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -65,9 +65,8 @@ export function EvidenceMatrixTab({
           <div className="leading-snug">
             <span className="text-foreground font-medium">Review scoring:</span>{" "}
             <span className="text-[hsl(var(--confidence-high))]">Confirm</span> +20 ·{" "}
-            <span className="text-primary">Key</span> +25 ·{" "}
-            <span className="text-[hsl(var(--confidence-mid))]">Recheck</span> -20 ·{" "}
-            <span className="text-destructive">Dismiss</span> excludes.
+            <span className="text-[hsl(var(--confidence-mid))]">Recheck</span> re-verifies in chat ·{" "}
+            <span className="text-destructive">False</span> excludes.
           </div>
         </div>
         <div className="sticky top-0 z-10 border-b border-border bg-card/95 p-2.5 backdrop-blur sm:p-3">
@@ -292,7 +291,10 @@ export function EvidenceMatrixTab({
                     </div>
                   )}
 
-                  {/* Hierarchical actions: primary (Confirm/Key) · secondary (Recheck/Dismiss) · overflow */}
+                  {/* One clear verdict each: Confirm true · Recheck in chat · False.
+                      "Key finding" and "false + teach agent" are deliberate
+                      refinements, so they live in the overflow — the main row
+                      stays a simple true / recheck / false decision. */}
                   <div className="mt-3 flex items-center justify-between gap-2">
                     <Button size="sm" variant="ghost" className="h-7 px-2 gap-1 text-data text-muted-foreground hover:text-foreground"
                       onClick={() => copy(a.value, "Copied value")}>
@@ -300,29 +302,34 @@ export function EvidenceMatrixTab({
                     </Button>
                     <div className="flex items-center gap-1">
                       <PrimaryAction icon={CheckCircle2} label="Confirm" tip={REVIEW_HELP.confirmed}
-                        active={rState === "confirmed"} tone="high"
+                        active={rState === "confirmed" || rState === "key"} tone="high"
                         onClick={() => review.set(a.id, "confirmed")} />
-                      <PrimaryAction icon={Star} label="Key" tip={REVIEW_HELP.key}
-                        active={rState === "key"} tone="brand"
-                        onClick={() => review.set(a.id, "key")} />
-                      <SecondaryAction icon={ShieldQuestion} label="Recheck" tip={REVIEW_HELP.recheck}
+                      <PrimaryAction icon={ShieldQuestion} label="Recheck"
+                        tip="Sends this exact finding to the chatbot for a fresh, independent re-verification — and flags it as needing another look."
                         active={rState === "recheck"} tone="warn"
-                        onClick={() => review.set(a.id, "recheck")} />
-                      <SecondaryAction icon={EyeOff} label="Dismiss" tip={REVIEW_HELP.dismissed}
+                        onClick={() => {
+                          void review.set(a.id, "recheck");
+                          launchRecheckInChat(threadId, { value: a.value, kind: a.kind });
+                          toast.success("Rechecking in chat…");
+                        }} />
+                      <PrimaryAction icon={XCircle} label="False" tip={REVIEW_HELP.dismissed}
                         active={rState === "dismissed"} tone="danger"
                         onClick={() => review.set(a.id, "dismissed")} />
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                          <Button size="sm" variant="ghost" className="h-7 w-7 p-0">
+                          <Button size="sm" variant="ghost" className="h-7 w-7 p-0" aria-label="More review actions">
                             <MoreHorizontal className="w-3.5 h-3.5" />
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="text-xs">
+                          <DropdownMenuItem onClick={() => review.set(a.id, "key")}>
+                            <Star className="w-3 h-3 mr-2" /> Pin as key finding
+                          </DropdownMenuItem>
                           <DropdownMenuItem
                             className="text-destructive focus:text-destructive"
                             onClick={() => review.set(a.id, "wrong", { value: a.value, kind: a.kind })}
                           >
-                            <XCircle className="w-3 h-3 mr-2" /> Mark as false
+                            <Ban className="w-3 h-3 mr-2" /> Mark false &amp; teach agent
                           </DropdownMenuItem>
                           {rState !== "new" && (
                             <>
@@ -426,20 +433,3 @@ function PrimaryAction({
   );
 }
 
-function SecondaryAction({
-  icon: Icon, label, tip, active, tone, onClick,
-}: { icon: React.ComponentType<{ className?: string }>; label: string; tip: string; active: boolean; tone: ActionTone; onClick: () => void }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button size="sm" variant="ghost"
-          className={"h-7 w-7 p-0 " + toneClasses(tone, active)}
-          aria-label={label}
-          onClick={onClick}>
-          <Icon className="w-3.5 h-3.5" />
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent side="top" className="max-w-[240px] text-xs">{label} — {tip}</TooltipContent>
-    </Tooltip>
-  );
-}

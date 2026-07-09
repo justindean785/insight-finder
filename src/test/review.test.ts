@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   REVIEW_STATES,
   REVIEW_LABEL,
@@ -6,6 +6,8 @@ import {
   REVIEW_HELP,
   REVIEW_CONFIDENCE_DELTA,
   REVIEW_CLASS,
+  recheckPrompt,
+  launchRecheckInChat,
   type ReviewState,
 } from "@/lib/review";
 
@@ -44,5 +46,39 @@ describe("review state maps", () => {
 
   it("dismissed has no confidence delta (handled as a FAILED override)", () => {
     expect(REVIEW_CONFIDENCE_DELTA.dismissed).toBe(0);
+  });
+});
+
+describe("recheck → chatbot handoff", () => {
+  it("recheckPrompt scopes to the exact value+kind and asks for independent re-verification", () => {
+    const p = recheckPrompt("john.doe@example.com", "email");
+    expect(p).toContain('"john.doe@example.com"');
+    expect(p).toContain("(email)");
+    expect(p.toLowerCase()).toContain("independent");
+    // No kind → no empty parens.
+    expect(recheckPrompt("somevalue")).not.toContain("()");
+  });
+
+  it("launchRecheckInChat flips to the Chat tab AND fires a scoped run on the pivot bus", () => {
+    const nav = vi.fn();
+    const pivot = vi.fn();
+    window.addEventListener("swarmbot:navigate", nav as EventListener);
+    window.addEventListener("proximity:run-pivot", pivot as EventListener);
+    try {
+      launchRecheckInChat("thread-123", { value: "acme-handle", kind: "username" });
+
+      expect(nav).toHaveBeenCalledTimes(1);
+      expect((nav.mock.calls[0][0] as CustomEvent).detail).toEqual({ tab: "chat" });
+
+      expect(pivot).toHaveBeenCalledTimes(1);
+      const detail = (pivot.mock.calls[0][0] as CustomEvent).detail;
+      expect(detail.threadId).toBe("thread-123");
+      expect(detail.value).toBe("acme-handle");
+      expect(detail.type).toBe("username");
+      expect(detail.prompt).toBe(recheckPrompt("acme-handle", "username"));
+    } finally {
+      window.removeEventListener("swarmbot:navigate", nav as EventListener);
+      window.removeEventListener("proximity:run-pivot", pivot as EventListener);
+    }
   });
 });
