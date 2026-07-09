@@ -25,16 +25,25 @@ export default {
         serif: ['ui-serif', 'Georgia', 'serif'],
         mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
       },
-      // Semantic type scale — replaces ad-hoc inline `text-[Xpx]`. Reading text
-      // (`data` and up) is floored at 12px for legibility; `eyebrow` is the only
-      // sub-12px size and is reserved for uppercase labels/badges, never prose.
+      // Semantic type scale — one ladder from dense labels to hero titles, so
+      // hierarchy comes from SIZE, not from making everything an uppercase label.
+      // Reading text floors at `micro` (11px); `eyebrow` (10px) is uppercase
+      // labels/badges only, never prose. Headings (`h3`→`display`) are tokenized
+      // so titles stop being one-off `text-[Npx]` arbitraries; the heading side
+      // holds a ~1.25 ratio ladder for real hierarchy. Fixed rem (product
+      // register), not clamp — users view at consistent DPI.
       fontSize: {
         // size-only so each label keeps its own `tracking-[...]`; never used for prose
-        eyebrow: ['0.625rem', { lineHeight: '1.1' }],                         // 10px — uppercase labels only
-        data: ['0.75rem', { lineHeight: '1.45' }],                            // 12px — dense data / table cells (reading floor)
-        meta: ['0.8125rem', { lineHeight: '1.5' }],                           // 13px — secondary/body-supporting
-        body: ['0.875rem', { lineHeight: '1.6' }],                            // 14px — body
-        title: ['1rem', { lineHeight: '1.3', letterSpacing: '-0.01em' }],     // 16px — section titles
+        eyebrow: ['0.625rem', { lineHeight: '1.1' }],                          // 10px — uppercase labels/badges only
+        micro: ['0.6875rem', { lineHeight: '1.35' }],                          // 11px — dense reading floor (replaces sub-10px)
+        data: ['0.75rem', { lineHeight: '1.45' }],                             // 12px — dense data / table cells
+        meta: ['0.8125rem', { lineHeight: '1.5' }],                            // 13px — secondary / body-supporting
+        body: ['0.875rem', { lineHeight: '1.6' }],                             // 14px — body prose
+        title: ['1rem', { lineHeight: '1.3', letterSpacing: '-0.01em' }],      // 16px — section titles
+        h3: ['1.1875rem', { lineHeight: '1.3', letterSpacing: '-0.014em' }],   // 19px — sub-headings
+        h2: ['1.5rem', { lineHeight: '1.2', letterSpacing: '-0.02em' }],       // 24px — panel / section headings
+        h1: ['1.875rem', { lineHeight: '1.15', letterSpacing: '-0.025em' }],   // 30px — case / page titles
+        display: ['2.5rem', { lineHeight: '1.05', letterSpacing: '-0.03em' }], // 40px — hero ceiling (fixed, no clamp)
       },
       transitionTimingFunction: {
         premium: "cubic-bezier(0.32, 0.72, 0, 1)",

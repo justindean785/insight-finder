@@ -182,11 +182,16 @@ All colors MUST be HSL.
 
   /* Section labels — eyebrows / micro-headings used across panels */
   .label-eyebrow {
-    font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 10.5px;
-    letter-spacing: 0.14em;
+    /* One intensifier, not three: 11px floor, lighter tracking, and a color one
+       step toward ink (was 10.5px + 0.14em + muted-foreground, which stacked
+       small-size + heavy-tracking + reduced-contrast against the system's own
+       micro-type rule). Uses the loaded data face (JetBrains Mono), not the
+       never-loaded Geist Mono that silently fell back to system mono. */
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: hsl(var(--muted-foreground));
+    color: hsl(var(--foreground) / 0.82);
     font-weight: 500;
   }
 
@@ -490,7 +495,7 @@ All colors MUST be HSL.
     height: 16px;
     padding: 0 5px;
     border-radius: 999px;
-    font-family: "Geist Mono", ui-monospace, monospace;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
     font-size: 10px;
     line-height: 1;
     letter-spacing: 0.08em;
@@ -566,7 +571,7 @@ All colors MUST be HSL.
     height: 26px;
     padding: 0 10px;
     border-radius: 4px;
-    font-family: "Geist Mono", ui-monospace, monospace;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
     font-size: 11px;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -593,7 +598,7 @@ All colors MUST be HSL.
 
   /* Group separator label for chip rows / filter bars */
   .chip-group-label {
-    font-family: "Geist Mono", ui-monospace, monospace;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
     font-size: 10px;
     letter-spacing: 0.1em;
     text-transform: uppercase;
@@ -624,7 +629,7 @@ All colors MUST be HSL.
     background:
       linear-gradient(180deg, hsl(0 0% 9%) 0%, hsl(0 0% 7%) 100%);
     border-bottom: 1px solid hsl(var(--border-subtle));
-    font-family: "Geist Mono", ui-monospace, monospace;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
     font-size: 10px;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -656,7 +661,7 @@ All colors MUST be HSL.
     user-select: none;
     text-align: right;
     padding: 10px 8px 10px 10px;
-    font-family: "Geist Mono", ui-monospace, monospace;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
     font-size: 10.5px;
     line-height: 1.55;
     color: hsl(var(--muted-foreground) / 0.5);
@@ -667,7 +672,7 @@ All colors MUST be HSL.
   .code-panel__code {
     margin: 0;
     padding: 10px 12px;
-    font-family: "Geist Mono", ui-monospace, monospace;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
     font-size: 11.5px;
     line-height: 1.55;
     color: hsl(var(--foreground) / 0.92);
@@ -734,7 +739,7 @@ All colors MUST be HSL.
     height: 24px;
     padding: 0 10px;
     border-radius: 999px;
-    font-family: "Geist Mono", ui-monospace, monospace;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
     font-size: 10px;
     letter-spacing: 0.12em;
     text-transform: uppercase;

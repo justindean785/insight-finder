@@ -61,13 +61,7 @@ export default function Insights() {
   }
   if (!user) return <Navigate to="/auth" replace />;
 
-  const derived = data
-    ? deriveInsights({
-        threads: data.threads,
-        artifacts: data.artifacts,
-        memoryCount: data.memoryCount,
-      })
-    : null;
+  const derived = data ? deriveInsights(data.summary) : null;
 
   const totals = derived
     ? {
@@ -128,7 +122,7 @@ export default function Insights() {
                   key: g.group,
                   label: GROUP_LABEL[g.group],
                   value: g.count,
-                  total: derived.totals.artifacts || 1,
+                  total: totals?.artifacts || 1,
                   color: GROUP_COLOR[g.group],
                 }))}
               />
@@ -211,7 +205,7 @@ export default function Insights() {
                     <div className="text-sm text-foreground truncate">
                       {c.title?.trim() || "Untitled case"}
                     </div>
-                    <div className="text-[11px] text-muted-foreground font-mono">
+                    <div className="text-micro text-muted-foreground font-mono">
                       {c.artifactCount} artifacts · last activity {relativeTime(c.lastAt)}
                     </div>
                   </div>
@@ -247,7 +241,7 @@ function StatTile({
 }) {
   return (
     <div className="rounded-2xl border border-border-subtle/80 glass-card p-5">
-      <div className="flex items-center gap-2 text-eyebrow uppercase tracking-wider text-muted-foreground">
+      <div className="flex items-center gap-2 text-meta font-medium text-muted-foreground">
         <Icon className="w-3.5 h-3.5" />
         {label}
       </div>
@@ -261,7 +255,7 @@ function StatTile({
           </>
         )}
       </div>
-      {sub && <div className="mt-1 text-[11px] text-muted-foreground">{sub}</div>}
+      {sub && <div className="mt-1 text-micro text-muted-foreground">{sub}</div>}
     </div>
   );
 }
@@ -277,7 +271,7 @@ function Card({
 }) {
   return (
     <div className="rounded-2xl border border-border-subtle/80 glass-card p-5">
-      <div className="flex items-center gap-2 text-eyebrow uppercase tracking-wider text-muted-foreground mb-4">
+      <div className="flex items-center gap-2 text-title font-semibold text-foreground/90 mb-4">
         <Icon className="w-3.5 h-3.5" />
         {title}
       </div>
@@ -321,9 +315,16 @@ function SparkBars({ data }: { data: Array<{ day: string; count: number }> }) {
       {data.map((d) => {
         const h = Math.max(2, Math.round((d.count / max) * 100));
         return (
-          <div key={d.day} className="flex-1 flex flex-col items-center gap-1" title={`${d.day}: ${d.count}`}>
+          // h-full + justify-end give the percentage-height bar a resolved
+          // parent height; without it the column collapsed and the bars
+          // rendered at 0px (the "empty" activity chart).
+          <div
+            key={d.day}
+            className="flex-1 h-full flex flex-col justify-end"
+            title={`${d.day}: ${d.count}`}
+          >
             <div
-              className="w-full rounded-sm"
+              className="w-full rounded-sm motion-safe:transition-[height] motion-safe:duration-500 motion-safe:ease-out"
               style={{
                 height: `${h}%`,
                 backgroundColor:

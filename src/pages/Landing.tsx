@@ -93,8 +93,8 @@ export default function Landing() {
               <div className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-white/10 bg-white/[0.04]">
                 <Icon className="w-4 h-4 text-foreground/80" strokeWidth={1.5} />
               </div>
-              <h2 className="text-sm font-medium text-foreground">{title}</h2>
-              <p className="text-xs text-muted-foreground leading-relaxed">{desc}</p>
+              <h2 className="text-title font-semibold text-foreground">{title}</h2>
+              <p className="text-meta text-muted-foreground leading-relaxed">{desc}</p>
             </div>
           ))}
         </div>

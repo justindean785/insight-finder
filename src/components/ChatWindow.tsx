@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { detectSeed, formatThreadTitle } from "@/lib/seed";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
+import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
 import { isSubmitBlocked } from "@/lib/submit-guard";
 import { interpretReadinessProbe, type ReadinessBody } from "@/lib/readiness-probe";
 import { dedupeCards } from "@/lib/next-step-cards";
@@ -31,7 +32,7 @@ import {
   pivotSkipStorageKey,
   type RecommendedPivot,
 } from "@/lib/recommended-pivots";
-import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon, Copy as CopyIcon } from "lucide-react";
+import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon, Copy as CopyIcon, ArrowRight } from "lucide-react";
 import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
 import { toolDisplayName, toolActionLabel, humanizeStage } from "@/lib/tool-display";
 
@@ -382,14 +383,14 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
 
         <span className="ml-auto hidden sm:flex items-center gap-2 shrink-0">
           {cached && (
-            <span className="px-1.5 py-0.5 rounded-md text-[9px] font-mono uppercase tracking-wider border border-primary/30 bg-primary/10 text-primary">
+            <span className="px-1.5 py-0.5 rounded-md text-micro font-mono uppercase tracking-wider border border-primary/30 bg-primary/10 text-primary">
               cached
             </span>
           )}
           {tier && (
             <span
               className={cn(
-                "px-1.5 py-0.5 rounded-md text-[9px] font-mono uppercase tracking-wider border",
+                "px-1.5 py-0.5 rounded-md text-micro font-mono uppercase tracking-wider border",
                 tier === "smart"
                   ? "border-accent/50 bg-accent/10 text-accent"
                   : "border-white/10 bg-white/[0.04] text-muted-foreground",
@@ -401,7 +402,7 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
           )}
           {durationLabel && (
             <span
-              className="px-1.5 py-0.5 rounded-md text-[9px] font-mono tabular-nums border border-white/10 bg-white/[0.03] text-muted-foreground"
+              className="px-1.5 py-0.5 rounded-md text-micro font-mono tabular-nums border border-white/10 bg-white/[0.03] text-muted-foreground"
               title={`Tool runtime: ${durationMs}ms`}
             >
               {durationLabel}
@@ -458,7 +459,7 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
             />
           )}
           <div>
-            <div className="text-muted-foreground mb-1.5 flex items-center gap-1 font-mono uppercase tracking-wider text-eyebrow"><StickyNote className="w-3 h-3" /> Note</div>
+            <div className="text-muted-foreground mb-1.5 flex items-center gap-1 font-mono tracking-normal text-micro"><StickyNote className="w-3 h-3" /> Note</div>
             <Textarea
               value={note}
               onChange={(e) => setNote(e.target.value)}
@@ -621,7 +622,7 @@ function RunFlowRail({ groups }: { groups: ToolRunGroup[] }) {
   if (groups.length <= 1) return null;
   return (
     <div className="rounded-xl border border-white/8 bg-[linear-gradient(160deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02)_58%,rgba(255,255,255,0.01))] px-3 py-2 shadow-[0_14px_50px_-34px_rgba(0,0,0,0.95)]">
-      <div className="mb-1 flex items-center gap-2 text-[10px] font-mono uppercase tracking-[0.18em] text-muted-foreground/80">
+      <div className="mb-1 flex items-center gap-2 text-meta font-mono font-semibold tracking-normal text-muted-foreground">
         <GitBranch className="h-3 w-3 text-primary/80" />
         Run flow
       </div>
@@ -645,10 +646,10 @@ function RunFlowRail({ groups }: { groups: ToolRunGroup[] }) {
                 : "text-foreground border-white/15 bg-white/[0.05]";
           return (
             <div key={`flow-${group.key}-${index}`} className="flex shrink-0 items-center gap-1">
-              <div className={cn("inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px]", toneClass)}>
+              <div className={cn("inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-micro", toneClass)}>
                 {icon}
-                <span className="font-mono uppercase tracking-[0.08em]">{cycleSummaryLabel(humanizeStage(group.stage), group.cycleId)}</span>
-                <span className="text-[10px] opacity-80">{group.parts.length}</span>
+                <span className="font-mono tracking-normal">{cycleSummaryLabel(humanizeStage(group.stage), group.cycleId)}</span>
+                <span className="text-eyebrow opacity-80">{group.parts.length}</span>
               </div>
               {!isLast && <span className="h-px w-5 shrink-0 bg-gradient-to-r from-white/25 to-white/5" aria-hidden />}
             </div>
@@ -682,7 +683,7 @@ function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt
       >
         <div className="flex flex-wrap items-center gap-2">
           {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-          <span className="font-mono uppercase tracking-[0.2em] text-foreground/80">
+          <span className="font-mono font-medium tracking-normal text-foreground/80">
             {cycleSummaryLabel(humanizeStage(group.stage), group.cycleId)}
           </span>
           <span>{group.parts.length} call{group.parts.length === 1 ? "" : "s"}</span>
@@ -783,7 +784,7 @@ function FailedRunCard({ reason, onRetry }: { reason: string; onRetry: () => voi
           <AlertTriangle className="w-4 h-4 text-destructive animate-warning-pulse" />
         </span>
         <div className="min-w-0 flex-1 space-y-1">
-          <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-destructive/80">
+          <div className="text-micro font-mono font-semibold tracking-normal text-destructive/80">
             System alert
           </div>
           <div className="text-sm font-semibold text-foreground">
@@ -811,14 +812,14 @@ function FailedRunCard({ reason, onRetry }: { reason: string; onRetry: () => voi
         <button
           type="button"
           onClick={copyDetails}
-          className="text-eyebrow font-mono uppercase tracking-[0.14em] text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-white/[0.04]"
+          className="text-micro font-mono tracking-normal text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-white/[0.04]"
         >
           Copy technical details
         </button>
         <button
           type="button"
           onClick={() => setShowDetails((v) => !v)}
-          className="text-eyebrow font-mono uppercase tracking-[0.14em] text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-white/[0.04]"
+          className="text-micro font-mono tracking-normal text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-white/[0.04]"
         >
           {showDetails ? "Hide" : "Show"} technical details
         </button>
@@ -1052,7 +1053,7 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIM
             <button
               type="button"
               onClick={() => copyToClipboard(copyText, "Message copied")}
-              className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground/70 hover:text-foreground hover:bg-surface-2 transition-colors"
+              className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-micro text-muted-foreground/70 hover:text-foreground hover:bg-surface-2 transition-colors"
               aria-label="Copy message"
               title="Copy message"
             >
@@ -1209,11 +1210,16 @@ function ChatWindowInner({
   const submitLockRef = useRef(false);
   const [rerunBusy, setRerunBusy] = useState(false);
   const { items: artifacts } = useThreadArtifacts(threadId);
+  // Targets tools have already been run against — the "already investigated"
+  // signal that stops the rail re-suggesting a pivot that's already been run.
+  const queriedTargets = useThreadQueriedTargets(threadId);
   const [seedValue, setSeedValue] = useState<string | null>(null);
   // Skipped pivots (normalized-target keys) so a lead the analyst dismissed in
   // the Pivots tab never reappears in the chat rail. Hydrated from localStorage
   // and kept in sync via the skip-changed event other surfaces dispatch.
   const [pivotSkip, setPivotSkip] = useState<Set<string>>(new Set());
+  // Which "Next steps" card is expanded into its full mini-brief (click to open).
+  const [expandedPivot, setExpandedPivot] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [attachments, setAttachments] = useState<
     Array<{ id: string; name: string; size: number; type: string; path: string; url: string; uploading?: boolean }>
@@ -1969,7 +1975,7 @@ function ChatWindowInner({
     // deduped, already-run-filtered and ranked. Chat only takes the top 3
     // still-actionable ("new") pivots; already-searched ones sink to the Pivots
     // tab. Recomputes whenever artifacts stream in or a new turn lands.
-    const ranked = computePivots({ artifacts, seedValue, reportPivots, skipSet: pivotSkip });
+    const ranked = computePivots({ artifacts, seedValue, reportPivots, skipSet: pivotSkip, queriedSet: queriedTargets });
     for (const p of ranked.filter((candidate) => candidate.status === "new").slice(0, 3)) {
       seenLabels.add(p.actionLabel);
       out.push({
@@ -1998,7 +2004,7 @@ function ChatWindowInner({
     // "Review lead · Damien O Brien" and "Review lead · Damien O'Brien" surfaced
     // from the same source are one lead, not two. Keep the first (highest-ranked).
     return dedupeCards(out).slice(0, 4);
-  }, [isLoading, messages, artifacts, seedValue, reportPivots, pivotSkip]);
+  }, [isLoading, messages, artifacts, seedValue, reportPivots, pivotSkip, queriedTargets]);
 
   return (
     <div className="relative flex-1 flex flex-col h-full min-w-0 overflow-hidden bg-background">
@@ -2030,10 +2036,10 @@ function ChatWindowInner({
         <div ref={contentRef} className="max-w-[40rem] mx-auto space-y-6 min-w-0">
           <div className="h-2" aria-hidden />
           {messages.length === 0 && (
-            <div className="flex flex-col items-center px-4 py-14 text-center sm:py-16">
+            <div className="flex flex-col items-center px-4 py-6 text-center sm:py-8">
               {/* halftone signal-field hero — a dotted intel field with a slow
                   radar sweep passing over it. Distinctive + on-brand; no asset. */}
-              <div className="relative mb-9 h-36 w-full max-w-[280px] select-none" aria-hidden>
+              <div className="relative mb-6 h-28 w-full max-w-[280px] select-none" aria-hidden>
                 <div
                   className="absolute inset-0"
                   style={{
@@ -2067,7 +2073,7 @@ function ChatWindowInner({
                 with confidence tiers.
               </p>
 
-              <div className="mt-7 flex flex-wrap items-center justify-center gap-2">
+              <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
                 {["jordan.sample@example.com", "elonmusk", "8.8.8.8", "lovable.app"].map((s) => (
                   <button
                     key={s}
@@ -2080,13 +2086,13 @@ function ChatWindowInner({
               </div>
 
               {/* clean hairline steps (à la the references) — understated, no boxes */}
-              <div className="mt-12 w-full max-w-md border-t border-white/[0.06] text-left">
+              <div className="mt-8 w-full max-w-md border-t border-white/[0.06] text-left">
                 {[
                   ["01", "Seed", "Email, username, phone, IP, domain, or wallet."],
                   ["02", "Route", "The agent selects providers and pivots on what it finds."],
                   ["03", "Reveal", "Evidence lands on the board with confidence tiers."],
                 ].map(([n, t, d]) => (
-                  <div key={n} className="flex gap-4 border-b border-white/[0.06] py-3.5">
+                  <div key={n} className="flex gap-4 border-b border-white/[0.06] py-3">
                     <span className="font-mono text-data tabular-nums text-[hsl(var(--intel-blue)/0.85)]">{n}</span>
                     <div className="min-w-0">
                       <div className="text-sm font-medium text-foreground">{t}</div>
@@ -2137,51 +2143,65 @@ function ChatWindowInner({
             <div className="pt-2 animate-fade-up">
               <div className="flex items-center gap-2 mb-3 px-1">
                 <Sparkles className="w-3 h-3 text-primary" />
-                <span className="text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">
+                <span className="text-meta font-mono font-semibold tracking-normal text-muted-foreground">
                   Next steps
                 </span>
                 <div className="h-px flex-1 bg-gradient-to-r from-white/10 to-transparent" />
               </div>
-              {/* Horizontal scroll-snap rail: swipes on narrow screens, settles
-                  into a tidy 3-up grid on md+. Replaces the ragged flex-wrap of
-                  stacked chips. */}
-              <div className="flex gap-3 overflow-x-auto snap-x snap-mandatory pb-2 -mx-4 px-4 [scrollbar-width:thin] [scrollbar-color:hsl(var(--border))_transparent] md:grid md:grid-cols-3 md:gap-2 md:overflow-visible md:mx-0 md:px-0">
-                {suggestions.map((s, i) => (
-                  <button
-                    key={`${s.title}-${i}`}
-                    onClick={() => sendText(s.prompt)}
-                    className="group relative w-[246px] md:w-auto shrink-0 snap-start overflow-hidden rounded-2xl border border-white/12 bg-[linear-gradient(155deg,rgba(255,255,255,0.09),rgba(255,255,255,0.025)_46%,rgba(255,255,255,0.01))] p-3 text-left shadow-[0_18px_44px_-24px_rgba(0,0,0,0.92)] backdrop-blur-xl transition-all duration-300 hover:-translate-y-0.5 hover:border-primary/55 hover:shadow-[0_26px_60px_-30px_rgba(0,0,0,0.98)] animate-pivot-in"
+              {/* Mobile: horizontal scroll-snap rail. sm+: an even 2-up grid —
+                  equal-height cards (h-full + flex-col) so ragged detail lengths
+                  can't stagger the row, roomier than the old cramped 3-up so the
+                  meta/title stop truncating. Each card ends in a "Run" affordance
+                  that animates on hover to read as actionable, not decorative. */}
+              <div className="flex gap-3 overflow-x-auto snap-x snap-mandatory pb-2 -mx-4 px-4 [scrollbar-width:thin] [scrollbar-color:hsl(var(--border))_transparent] sm:grid sm:grid-cols-2 sm:items-start sm:gap-2.5 sm:overflow-visible sm:mx-0 sm:px-0 sm:pb-0">
+                {suggestions.map((s, i) => {
+                  const cardId = `${s.title}-${i}`;
+                  const expanded = expandedPivot === cardId;
+                  return (
+                  <div
+                    key={cardId}
+                    role="button"
+                    tabIndex={0}
+                    aria-expanded={expanded}
+                    onClick={() => setExpandedPivot(expanded ? null : cardId)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpandedPivot(expanded ? null : cardId); }
+                    }}
+                    className="group relative flex w-[248px] shrink-0 cursor-pointer snap-start flex-col overflow-hidden rounded-2xl border border-white/12 bg-[linear-gradient(155deg,rgba(255,255,255,0.09),rgba(255,255,255,0.025)_46%,rgba(255,255,255,0.01))] p-3.5 text-left shadow-[0_18px_44px_-24px_rgba(0,0,0,0.92)] backdrop-blur-xl transition-all duration-200 ease-premium hover:-translate-y-0.5 hover:border-primary/55 hover:shadow-[0_26px_60px_-30px_rgba(0,0,0,0.98)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/45 focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-safe:animate-pivot-in sm:w-auto"
                     style={{ animationDelay: `${Math.min(i * 40, 320)}ms` }}
                   >
                     <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/40 to-transparent opacity-70" />
-                    {s.priority && (
-                      <span
-                        className={
-                          "absolute left-0 inset-y-2 w-0.5 rounded-full " +
-                          (s.priority === "high"
-                            ? "bg-[hsl(var(--confidence-high))]"
-                            : s.priority === "medium"
-                              ? "bg-[hsl(var(--confidence-mid))]"
-                              : "bg-muted")
-                        }
-                        aria-hidden
-                      />
-                    )}
-                    <span className="block pl-2 space-y-1">
-                      <span className="flex items-center gap-1.5">
-                        {s.icon === "pivot" ? (
-                          <GitBranch className="w-3 h-3 text-primary" />
-                        ) : (
-                          <Sparkles className="w-3 h-3 text-primary" />
-                        )}
-                        {s.priority && <span className={`pivot-priority pivot-priority--${s.priority}`}>{s.priority}</span>}
-                        <span className="truncate text-[10px] uppercase tracking-[0.14em] text-muted-foreground/80 font-mono">{s.meta}</span>
-                      </span>
-                      <span className="block text-sm font-semibold leading-snug text-foreground group-hover:text-primary transition-colors">{s.title}</span>
-                      {s.detail && <span className="block text-[11px] leading-snug text-muted-foreground line-clamp-2">{s.detail}</span>}
+                    <span className="flex items-center gap-1.5 pr-5">
+                      {s.icon === "pivot" ? (
+                        <GitBranch className="w-3 h-3 shrink-0 text-primary" />
+                      ) : (
+                        <Sparkles className="w-3 h-3 shrink-0 text-primary" />
+                      )}
+                      {s.priority && <span className={`pivot-priority pivot-priority--${s.priority}`}>{s.priority}</span>}
+                      <span className="truncate text-micro font-medium tracking-normal text-muted-foreground/80">{s.meta}</span>
                     </span>
-                  </button>
-                ))}
+                    <ChevronDown className={cn("absolute right-3 top-3.5 h-3.5 w-3.5 text-muted-foreground/50 transition-transform duration-200", expanded && "rotate-180")} aria-hidden />
+                    <span className="mt-1.5 block text-sm font-semibold leading-snug text-foreground transition-colors group-hover:text-primary">{s.title}</span>
+                    {s.detail && (
+                      <span className={cn("mt-1 block text-micro leading-relaxed text-muted-foreground", !expanded && "line-clamp-2 min-h-[2.1rem]")}>{s.detail}</span>
+                    )}
+                    {expanded && s.target && (
+                      <span className="mt-2 flex items-center gap-1.5 border-t border-white/[0.07] pt-2 text-micro">
+                        <span className="text-muted-foreground/60">Target</span>
+                        <span className="truncate font-mono text-foreground/90">{s.target}</span>
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); sendText(s.prompt); }}
+                      className="mt-2.5 inline-flex w-fit items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/[0.06] px-2.5 py-1 text-micro font-medium text-primary/90 transition-all duration-200 hover:border-primary/55 hover:bg-primary/[0.12] hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/45 active:scale-[0.97]"
+                    >
+                      {s.icon === "pivot" ? "Run pivot" : "Run"}
+                      <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
+                    </button>
+                  </div>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -2249,7 +2269,7 @@ function ChatWindowInner({
                 placeholder="Investigate an email, username, phone, IP, or domain…"
                 aria-label="Investigation query — enter an email, username, phone, IP, or domain"
                 rows={2}
-                className="min-h-[72px] max-h-32 font-chat bg-transparent border-0 resize-none overflow-y-auto focus-visible:ring-0 focus-visible:ring-offset-0 pl-[3.25rem] sm:pl-14 pr-14 sm:pr-16 py-3 sm:py-4 text-[15px] leading-6 tracking-[-0.01em] placeholder:text-muted-foreground/70"
+                className="min-h-[72px] max-h-32 font-chat bg-transparent border-0 resize-none overflow-y-auto focus-visible:ring-0 focus-visible:ring-offset-0 pl-[3.25rem] sm:pl-14 pr-14 sm:pr-16 py-3 sm:py-4 text-body leading-6 tracking-[-0.01em] placeholder:text-muted-foreground/70"
               />
               <Button
                 type="button"

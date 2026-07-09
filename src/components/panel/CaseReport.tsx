@@ -82,7 +82,7 @@ function ArtifactRow({ a }: { a: Artifact }) {
       <td className={cn("px-3 py-2 font-mono break-words [overflow-wrap:anywhere]", isExcluded && "line-through decoration-muted-foreground/50")}>
         {a.value}
         {isInferred && !isExcluded && (
-          <span className="ml-2 align-middle rounded border border-conf-possible/40 bg-conf-possible/10 px-1 py-px text-[9px] font-mono uppercase tracking-wider text-conf-possible no-underline">
+          <span className="ml-2 align-middle rounded border border-conf-possible/40 bg-conf-possible/10 px-1 py-px text-micro font-mono uppercase tracking-wider text-conf-possible no-underline">
             inferred · unverified
           </span>
         )}
@@ -92,7 +92,7 @@ function ArtifactRow({ a }: { a: Artifact }) {
       </td>
       <td className="px-3 py-2">
         <EvidenceStatusBadge status={status.status} label={status.label} tone={status.tone} hint={status.hint} />
-        <div className="mt-1 text-[10px] leading-snug text-muted-foreground">{status.basis}</div>
+        <div className="mt-1 text-eyebrow leading-snug text-muted-foreground">{status.basis}</div>
       </td>
       <td className="px-3 py-2 text-data">
         <ConfidenceBar score={a.confidence} showValue className="min-w-[5.5rem]" />
@@ -112,11 +112,11 @@ function BucketTable({ rows, empty }: { rows: Artifact[]; empty: string }) {
   if (!rows.length) return <p className="text-muted-foreground italic text-data mt-2">{empty}</p>;
   return (
     <>
-    <p className="sm:hidden mt-2 -mb-1 text-[10px] text-muted-foreground/70">Scroll horizontally to see all columns →</p>
+    <p className="sm:hidden mt-2 -mb-1 text-eyebrow text-muted-foreground/70">Scroll horizontally to see all columns →</p>
     <div className="rounded-xl border border-white/[0.08] overflow-x-auto mt-2 bg-[hsl(var(--surface-1))/0.42] [scrollbar-width:thin]">
       <table className="w-full min-w-[1024px] table-fixed [&_td]:align-top text-data">
         <thead>
-          <tr className="bg-white/[0.035] text-eyebrow uppercase tracking-[0.15em] text-muted-foreground">
+          <tr className="bg-white/[0.035] text-micro font-medium tracking-normal text-muted-foreground">
             <th className="text-left font-normal px-3 py-2 w-[104px]">Kind</th>
             <th className="text-left font-normal px-3 py-2 w-[22%]">Value</th>
             <th className="text-left font-normal px-3 py-2 w-[168px]">Source</th>
@@ -140,7 +140,7 @@ function SectionHeader({ children, right }: { children: React.ReactNode; right?:
   return (
     <div className="flex items-center gap-2 mt-6 mb-3">
       <span className="w-[3px] h-4 bg-[hsl(var(--info))] rounded-sm shadow-[0_0_16px_hsl(var(--info)/0.55)]" />
-      <h3 className="text-eyebrow font-semibold uppercase tracking-[0.18em] text-[hsl(var(--info))]">
+      <h3 className="text-title font-semibold tracking-normal text-[hsl(var(--info))]">
         {children}
       </h3>
       {right && <div className="ml-auto">{right}</div>}
@@ -151,7 +151,7 @@ function SectionHeader({ children, right }: { children: React.ReactNode; right?:
 function HunterNote({ children }: { children: React.ReactNode }) {
   return (
     <aside className="my-3 pl-3 border-l-2 border-destructive/80 text-foreground/90 leading-relaxed">
-      <div className="text-eyebrow font-semibold tracking-[0.2em] uppercase text-destructive mb-1">
+      <div className="text-micro font-semibold tracking-normal text-destructive mb-1">
         Hunter's Note
       </div>
       <div className="text-data">{children}</div>
@@ -580,7 +580,7 @@ function ReportChartCard({ title, subtitle, children }: { title: string; subtitl
     <div className="report-chart-card rounded-xl border border-white/[0.08] bg-[hsl(var(--surface-1))/0.72] p-3">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">{title}</div>
+          <div className="text-meta font-mono font-semibold tracking-normal text-muted-foreground">{title}</div>
           <div className="mt-1 text-data text-muted-foreground">{subtitle}</div>
         </div>
       </div>
@@ -827,7 +827,7 @@ export function CaseReport({
   }, [buckets]);
 
   return (
-    <article id="case-report-print-root" className="case-report-doc text-[12.5px] leading-relaxed text-foreground/95">
+    <article id="case-report-print-root" className="case-report-doc text-data leading-relaxed text-foreground/95">
       <VerdictBanner verdict={verdict} confCount={confidenceFindings.length} indepCount={independenceFindings.length} />
       {/* Header */}
       <header className="report-cover relative overflow-hidden rounded-2xl border border-white/[0.08] bg-[hsl(var(--surface-1))/0.72] p-4 sm:p-5">
@@ -839,7 +839,7 @@ export function CaseReport({
             <h2 className="mt-2 text-xl sm:text-2xl font-display font-semibold tracking-normal break-words [overflow-wrap:anywhere]">
               {display.title}
             </h2>
-            <div className="mt-2 flex flex-wrap gap-1.5 text-eyebrow font-mono uppercase tracking-wider text-muted-foreground">
+            <div className="mt-2 flex flex-wrap gap-1.5 text-eyebrow font-mono tracking-normal text-muted-foreground">
               <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{display.kind}</span>
               <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{reportType === "brief" ? "executive brief" : "full dossier"}</span>
               <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{artifacts.length} artifacts</span>
@@ -849,7 +849,7 @@ export function CaseReport({
             </div>
           </div>
           <div className={cn("shrink-0 rounded-2xl border px-4 py-3 text-right", RISK_COLOR[risk.level])}>
-            <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">Risk posture</div>
+            <div className="text-micro font-mono tracking-normal text-muted-foreground">Risk posture</div>
             <div className="mt-1 font-display text-2xl font-semibold tracking-normal">{risk.level}</div>
           </div>
         </div>
@@ -874,14 +874,14 @@ export function CaseReport({
           as a contradiction. Display only; no scoring changed. */}
       <section className="mt-4 grid gap-3 rounded-xl border border-white/[0.08] bg-white/[0.025] p-3 sm:grid-cols-2">
         <div>
-          <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">Analyst confidence</div>
+          <div className="text-micro font-mono tracking-normal text-muted-foreground">Analyst confidence</div>
           <div className="mt-1 font-display text-2xl font-semibold text-[hsl(var(--info))]">
-            {analystConf}% <span className="text-sm font-mono uppercase tracking-wider text-muted-foreground">· {qualConfidence(analystConf)}</span>
+            {analystConf}% <span className="text-sm font-mono tracking-normal text-muted-foreground">· {qualConfidence(analystConf)}</span>
           </div>
           <p className="mt-1 text-data leading-relaxed text-muted-foreground">Strongest identity-bearing artifact — reasoned read, not an auto-confirmation.</p>
         </div>
         <div>
-          <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">Auto-corroboration</div>
+          <div className="text-micro font-mono tracking-normal text-muted-foreground">Auto-corroboration</div>
           <div className="mt-1 font-display text-2xl font-semibold text-foreground">{buckets.confirmed.length} / {artifacts.length}</div>
           <p className="mt-1 text-data leading-relaxed text-muted-foreground">Findings backed by ≥2 independent source classes. Breach-only / single-class evidence stays a lead by design.</p>
         </div>
@@ -896,12 +896,12 @@ export function CaseReport({
             const dobSuspect = /date of birth|dob/i.test(f.label) && isDobPlaceholder(f.value);
             return (
               <div key={f.label} className="flex flex-col">
-                <span className="text-eyebrow font-mono uppercase tracking-[0.14em] text-muted-foreground">{f.label}</span>
+                <span className="text-micro font-mono tracking-normal text-muted-foreground">{f.label}</span>
                 <span className="font-mono text-foreground break-words [overflow-wrap:anywhere]">
                   {f.value}
                   {dobSuspect && (
                     <span
-                      className="ml-2 align-middle rounded border border-[hsl(var(--warning))]/60 bg-[hsl(var(--warning))]/10 px-1.5 py-px text-[9px] font-mono uppercase tracking-wider text-[hsl(var(--warning))] no-underline"
+                      className="ml-2 align-middle rounded border border-[hsl(var(--warning))]/60 bg-[hsl(var(--warning))]/10 px-1.5 py-px text-micro font-mono uppercase tracking-wider text-[hsl(var(--warning))] no-underline"
                       title="January 1 is a common placeholder DOB — verify before relying on it"
                     >
                       placeholder?
@@ -913,7 +913,7 @@ export function CaseReport({
           })}
           {aliases.length > 0 && (
             <div className="flex flex-col sm:col-span-2">
-              <span className="text-eyebrow font-mono uppercase tracking-[0.14em] text-muted-foreground">Aliases / handles</span>
+              <span className="text-micro font-mono tracking-normal text-muted-foreground">Aliases / handles</span>
               <span className="font-mono text-foreground break-words [overflow-wrap:anywhere]">{aliases.join(", ")}</span>
             </div>
           )}
@@ -945,7 +945,7 @@ export function CaseReport({
                   <span className="min-w-0 truncate font-mono text-foreground break-words [overflow-wrap:anywhere]">{l.value}</span>
                 )}
                 {l.inferred && (
-                  <span className="shrink-0 rounded border border-conf-possible/40 bg-conf-possible/10 px-1 py-px text-[9px] font-mono uppercase tracking-wider text-conf-possible">inferred</span>
+                  <span className="shrink-0 rounded border border-conf-possible/40 bg-conf-possible/10 px-1 py-px text-micro font-mono uppercase tracking-wider text-conf-possible">inferred</span>
                 )}
               </div>
             ))}
@@ -967,10 +967,10 @@ export function CaseReport({
       {/* Hybrid: prose dossier leads; the chart-heavy analytics live in a
           collapsible block so they don't dominate (esp. on mobile). */}
       <details className="mt-4 group rounded-xl border border-white/[0.08] bg-[hsl(var(--surface-1))/0.4]" open>
-        <summary className="cursor-pointer list-none select-none px-3 py-2.5 flex items-center gap-2 text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">
+        <summary className="cursor-pointer list-none select-none px-3 py-2.5 flex items-center gap-2 text-meta font-mono font-semibold tracking-normal text-muted-foreground">
           <span className="transition-transform group-open:rotate-90" aria-hidden>▸</span>
           Analytics
-          <span className="ml-auto text-[10px] normal-case tracking-normal text-muted-foreground/70">descriptive — not scoring</span>
+          <span className="ml-auto text-eyebrow normal-case tracking-normal text-muted-foreground/70">descriptive — not scoring</span>
         </summary>
         <div className="px-3 pb-3 space-y-3">
       <section className="grid gap-3 xl:grid-cols-[1.05fr_0.95fr]">
@@ -992,7 +992,7 @@ export function CaseReport({
           <CompactBarChart data={sourceDistribution} color="hsl(var(--brain-cyan))" />
         </ReportChartCard>
         <div className="rounded-xl border border-white/[0.08] bg-[hsl(var(--surface-1))/0.62] p-3">
-          <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">Radar Notes</div>
+          <div className="text-meta font-mono font-semibold tracking-normal text-muted-foreground">Radar Notes</div>
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
             {radar.map((metric) => (
               <div key={metric.label} className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-2">
@@ -1013,7 +1013,7 @@ export function CaseReport({
       </details>
 
       <section className="mt-4 rounded-xl border border-[hsl(var(--info)/0.18)] bg-[hsl(var(--info)/0.055)] p-3">
-        <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-[hsl(var(--info))]">
+        <div className="text-meta font-mono font-semibold tracking-normal text-[hsl(var(--info))]">
           Accuracy Guardrails
         </div>
         <div className="mt-2 grid gap-2 md:grid-cols-3">
@@ -1110,7 +1110,7 @@ export function CaseReport({
           <div className="rounded-md border border-border-subtle overflow-x-auto [scrollbar-width:thin]">
             <table className="w-full min-w-[640px] table-fixed [&_td]:align-top text-data">
               <thead>
-                <tr className="bg-surface-2 text-eyebrow uppercase tracking-[0.15em] text-muted-foreground">
+                <tr className="bg-surface-2 text-micro font-medium tracking-normal text-muted-foreground">
                   <th className="text-left font-normal px-3 py-2 w-[28%]">Breach</th>
                   <th className="text-left font-normal px-3 py-2 w-[110px]">Date</th>
                   <th className="text-left font-normal px-3 py-2">Data classes</th>
@@ -1125,7 +1125,7 @@ export function CaseReport({
                       {b.severity && (
                         <span
                           className={cn(
-                            "ml-2 align-middle rounded border px-1.5 py-px text-[9px] font-mono uppercase tracking-wider",
+                            "ml-2 align-middle rounded border px-1.5 py-px text-micro font-mono uppercase tracking-wider",
                             b.severity === "CRITICAL"
                               ? "border-destructive/50 bg-destructive/15 text-destructive"
                               : "border-[hsl(var(--warning))]/60 bg-[hsl(var(--warning))]/10 text-[hsl(var(--warning))]",
@@ -1142,7 +1142,7 @@ export function CaseReport({
                       {b.creds.length ? (
                         <span className="flex flex-wrap gap-1">
                           {b.creds.map((c) => (
-                            <span key={c} className="rounded border border-destructive/40 bg-destructive/10 px-1.5 py-px text-[10px] font-mono text-destructive">{c}</span>
+                            <span key={c} className="rounded border border-destructive/40 bg-destructive/10 px-1.5 py-px text-eyebrow font-mono text-destructive">{c}</span>
                           ))}
                         </span>
                       ) : "—"}
@@ -1205,7 +1205,7 @@ export function CaseReport({
           <div className="rounded-md border border-border-subtle overflow-hidden">
             <table className="w-full text-data">
               <thead>
-                <tr className="bg-surface-2 text-eyebrow uppercase tracking-[0.15em] text-muted-foreground">
+                <tr className="bg-surface-2 text-micro font-medium tracking-normal text-muted-foreground">
                   <th className="text-left font-normal px-3 py-2 w-[35%]">Field</th>
                   <th className="text-left font-normal px-3 py-2">Value</th>
                   <th className="text-left font-normal px-3 py-2 w-[110px]">Confidence</th>
@@ -1236,7 +1236,7 @@ export function CaseReport({
           <div className="rounded-md border border-border-subtle overflow-hidden">
             <table className="w-full text-data">
               <thead>
-                <tr className="bg-surface-2 text-eyebrow uppercase tracking-[0.15em] text-muted-foreground">
+                <tr className="bg-surface-2 text-micro font-medium tracking-normal text-muted-foreground">
                   <th className="text-left font-normal px-3 py-2 w-[30%]">Site</th>
                   <th className="text-left font-normal px-3 py-2">Account identifier</th>
                   <th className="text-left font-normal px-3 py-2 w-[120px]">Source</th>
@@ -1280,7 +1280,7 @@ export function CaseReport({
             {risk.level}
           </span>
         </div>
-        <div className="mt-3 text-eyebrow uppercase tracking-[0.2em] text-muted-foreground">
+        <div className="mt-3 text-micro tracking-normal text-muted-foreground">
           Key risks
         </div>
         {risk.risks.length === 0 ? (
@@ -1355,7 +1355,7 @@ function VerdictBanner({ verdict, confCount, indepCount }: { verdict: ReportVerd
         {cfg.label}
       </span>
       <div className="min-w-0">
-        <div className="text-eyebrow uppercase tracking-[0.16em] opacity-80">Confidence verdict</div>
+        <div className="text-micro tracking-normal opacity-80">Confidence verdict</div>
         <p className="mt-0.5 text-data leading-relaxed text-foreground/85">
           {cfg.note}
           {total > 0 ? ` ${total} flag${total === 1 ? "" : "s"} in Accuracy Guardrails.` : ""}
@@ -1384,7 +1384,7 @@ function ReportKpi({
     "text-foreground";
   return (
     <div className="report-kpi relative overflow-hidden rounded-xl border border-white/[0.08] bg-[hsl(var(--surface-1))/0.72] p-3">
-      <div className="text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">{label}</div>
+      <div className="text-micro font-mono tracking-normal text-muted-foreground">{label}</div>
       <div className={cn("mt-2 font-display text-2xl font-semibold leading-none", toneClass)}>{value}</div>
       <div className="mt-2 text-data leading-relaxed text-muted-foreground">{detail}</div>
     </div>
@@ -1394,7 +1394,7 @@ function ReportKpi({
 function MiniAssessment({ label, value, hint }: { label: string; value: string; hint: string }) {
   return (
     <div className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-2">
-      <div className="text-eyebrow font-mono uppercase tracking-[0.14em] text-muted-foreground">{label}</div>
+      <div className="text-micro font-mono tracking-normal text-muted-foreground">{label}</div>
       <div className="mt-1 font-mono text-lg leading-none text-foreground">{value}</div>
       <div className="mt-1 text-data leading-relaxed text-muted-foreground">{hint}</div>
     </div>

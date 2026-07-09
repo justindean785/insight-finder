@@ -7,6 +7,7 @@ import { useThreadToolActivity } from "@/hooks/useThreadToolActivity";
 import { ShieldAlert, Lock, Coins, Plus, Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { extractDisplaySeed } from "@/lib/seed";
 
 type Thread = {
   id: string;
@@ -138,7 +139,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
           aria-hidden
         />
         <button onClick={copySeed} className="group flex items-center gap-1.5 min-w-0 shrink text-left" title={thread?.seed_value ?? ""}>
-          <span className="font-mono text-meta text-foreground truncate max-w-[58vw] sm:max-w-[42vw]">{thread?.seed_value || "—"}</span>
+          <span className="font-mono text-meta text-foreground truncate max-w-[58vw] sm:max-w-[42vw]">{thread ? extractDisplaySeed(thread.seed_value, thread.seed_type).title : "—"}</span>
           {thread?.seed_value && <Copy className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />}
         </button>
         {status !== "idle" && (
@@ -175,7 +176,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
           <button
             onClick={createInvestigation}
             disabled={creating}
-            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-white/10 bg-white px-2.5 text-eyebrow font-semibold uppercase tracking-[0.12em] text-black transition-colors hover:bg-white/90 disabled:opacity-50"
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-white/10 bg-white px-2.5 text-micro font-semibold tracking-normal text-black transition-colors hover:bg-white/90 disabled:opacity-50"
             title="Start a new investigation"
             aria-label="Start a new investigation"
           >

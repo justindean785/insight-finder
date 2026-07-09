@@ -58,8 +58,9 @@ export function EvidenceMatrixTab({
   return (
     <TooltipProvider delayDuration={200}>
       <div className="text-xs">
-        <div className="sticky top-0 z-10 border-b border-border bg-card/95 p-2.5 backdrop-blur sm:p-3">
-        <div className="mb-2 flex items-start gap-2 rounded-lg border border-border bg-secondary/25 px-2.5 py-2 text-data text-muted-foreground">
+        {/* Scoring legend — explanatory, scrolls away so the sticky filter bar
+            below stays compact (the scroll viewport can be short). */}
+        <div className="mx-2.5 mt-2.5 flex items-start gap-2 rounded-lg border border-border bg-secondary/25 px-2.5 py-2 text-data text-muted-foreground sm:mx-3">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
           <div className="leading-snug">
             <span className="text-foreground font-medium">Review scoring:</span>{" "}
@@ -69,6 +70,7 @@ export function EvidenceMatrixTab({
             <span className="text-destructive">Dismiss</span> excludes.
           </div>
         </div>
+        <div className="sticky top-0 z-10 border-b border-border bg-card/95 p-2.5 backdrop-blur sm:p-3">
 
         {/* Status segmented control */}
         <div className="flex gap-2 overflow-x-auto pb-1">
@@ -146,7 +148,7 @@ export function EvidenceMatrixTab({
             </span>
             <button
               onClick={() => { setReviewFilter("ANY"); setFilter("ALL"); }}
-              className="text-eyebrow font-mono uppercase tracking-wider text-muted-foreground/70 hover:text-foreground transition-colors"
+              className="text-micro font-mono tracking-normal text-muted-foreground/70 hover:text-foreground transition-colors"
               title="Reset all filters"
             >
               reset
@@ -163,7 +165,7 @@ export function EvidenceMatrixTab({
             <div className="text-data">Try clearing filters or running more tools against the seed.</div>
           </div>
         ) : (
-          <ul className="space-y-2">
+          <ul className="grid grid-cols-1 gap-2 lg:grid-cols-2">
             {rows.map(({ a, label, review: rState, score }) => {
               const meta = (a.metadata ?? {}) as Record<string, unknown>;
               const preview = Object.keys(meta).slice(0, 3).map((k) => `${k}=${shorten(String(meta[k]))}`).join(" · ");
@@ -187,10 +189,19 @@ export function EvidenceMatrixTab({
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <div className={"font-mono text-foreground break-all " + (rState === "dismissed" ? "line-through" : "")}>
-                        {sanitizeValueForLabel(a.value, label === "CONFIRMED")}
-                      </div>
-                      <div className="text-eyebrow uppercase tracking-wider text-muted-foreground mt-0.5 flex items-center gap-1.5 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => { void navigator.clipboard?.writeText(a.value); toast.success("Value copied"); }}
+                        title="Copy value"
+                        className={
+                          "group/val inline-flex max-w-full items-start gap-1.5 rounded text-left font-mono text-foreground break-all transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 " +
+                          (rState === "dismissed" ? "line-through" : "")
+                        }
+                      >
+                        <span className="break-all">{sanitizeValueForLabel(a.value, label === "CONFIRMED")}</span>
+                        <Copy className="mt-0.5 h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover/val:opacity-60" aria-hidden />
+                      </button>
+                      <div className="text-eyebrow tracking-normal text-muted-foreground mt-0.5 flex items-center gap-1.5 flex-wrap">
                         <span>{displayKind(a)}</span>
                         <span>·</span>
                         <SourceAttribution artifact={a} threadId={threadId} />
@@ -276,7 +287,7 @@ export function EvidenceMatrixTab({
                       className="mt-1 inline-flex items-center gap-1 text-data text-muted-foreground font-mono"
                       title="Raw source/tool confidence — not affected by analyst review actions."
                     >
-                      <span className="uppercase tracking-wider text-eyebrow">raw</span>
+                      <span className="tracking-normal text-eyebrow">raw</span>
                       <span>{base}/100</span>
                     </div>
                   )}
@@ -405,7 +416,7 @@ function PrimaryAction({
     <Tooltip>
       <TooltipTrigger asChild>
         <Button size="sm" variant="ghost"
-          className={"h-7 px-2.5 gap-1 text-eyebrow font-medium uppercase tracking-wider " + toneClasses(tone, active)}
+          className={"h-7 px-2.5 gap-1 text-micro font-medium tracking-normal " + toneClasses(tone, active)}
           onClick={onClick}>
           <Icon className="w-3 h-3" /> {label}
         </Button>

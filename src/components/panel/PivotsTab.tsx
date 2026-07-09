@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { normalizeTarget } from "@/lib/next-step-cards";
 import { computePivots, canonicalKey, type DisplayPivot } from "@/lib/pivot-engine";
 import { pivotSkipStorageKey, type RecommendedPivot } from "@/lib/recommended-pivots";
+import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
 import { PivotCard } from "@/components/pivots/PivotCard";
 
 /**
@@ -56,12 +57,15 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
     return () => window.removeEventListener("swarmbot:report-pivots", onReportPivots as EventListener);
   }, [threadId]);
 
+  // Targets already hit by a tool → shown here as "searched" rather than "new".
+  const queriedTargets = useThreadQueriedTargets(threadId);
+
   // Live pivots: recomputed whenever artifacts stream in, a new report turn
   // lands, or the skip set changes. computePivots already hard-hides skipped
   // targets, so this list IS the visible list.
   const visible = useMemo(
-    () => computePivots({ artifacts, seedValue, reportPivots, skipSet: skipped }),
-    [artifacts, seedValue, reportPivots, skipped],
+    () => computePivots({ artifacts, seedValue, reportPivots, skipSet: skipped, queriedSet: queriedTargets }),
+    [artifacts, seedValue, reportPivots, skipped, queriedTargets],
   );
 
   const recommendationByKey = useMemo(() => {
@@ -186,7 +190,7 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
       {/* Run-meta pills: cost + contradictions */}
       <div className="flex flex-wrap gap-1.5">
         <span
-          className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full border border-border-subtle bg-surface-1 font-mono text-eyebrow uppercase tracking-wider text-muted-foreground"
+          className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full border border-border-subtle bg-surface-1 font-mono text-eyebrow tracking-normal text-muted-foreground"
           title="Estimated API cost so far"
         >
           <Wallet className="w-3 h-3 text-[hsl(var(--info))]" />
@@ -200,7 +204,7 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
             window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { section: "evidence", tab: "matrix" } }));
           }}
           className={
-            "inline-flex items-center gap-1.5 px-2 py-1 rounded-full border font-mono text-eyebrow uppercase tracking-wider transition-colors " +
+            "inline-flex items-center gap-1.5 px-2 py-1 rounded-full border font-mono text-eyebrow tracking-normal transition-colors " +
             (contradictions > 0
               ? "border-[hsl(var(--confidence-mid))]/40 bg-[hsl(var(--warning-muted))] text-[hsl(var(--confidence-mid))] hover:bg-[hsl(var(--warning-muted))]/80"
               : "border-border-subtle bg-surface-1 text-muted-foreground")
@@ -213,7 +217,7 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
       </div>
       {visible.length > 0 && (
         <div className="flex items-center justify-between rounded-md border border-border bg-card/40 px-2 py-1.5">
-          <button onClick={toggleAll} className="flex items-center gap-1.5 text-eyebrow uppercase tracking-wider text-muted-foreground hover:text-foreground">
+          <button onClick={toggleAll} className="flex items-center gap-1.5 text-micro tracking-normal text-muted-foreground hover:text-foreground">
             {allSelected ? <CheckSquare className="w-3.5 h-3.5 text-primary" /> : <Square className="w-3.5 h-3.5" />}
             {selected.size > 0 ? `${selected.size} selected` : "Select all"}
           </button>

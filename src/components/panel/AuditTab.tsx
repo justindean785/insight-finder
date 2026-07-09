@@ -259,7 +259,7 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
           const labels: Record<string, string> = { done: "Done", partial: "Partial", missing: "Missing" };
           return (
             <div className="space-y-2">
-              <div className="flex items-center gap-3 text-eyebrow uppercase tracking-wider text-muted-foreground">
+              <div className="flex items-center gap-3 text-micro tracking-normal text-muted-foreground">
                 {(["done","partial","missing"] as const).map((s) => (
                   <span key={s} className="inline-flex items-center gap-1.5">
                     <span className={cn("coverage-cell__dot", palette[s])} />
@@ -270,7 +270,7 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
               <div className="coverage-grid">
                 {rows.map((r) => (
                   <div key={r.kind} className="coverage-cell" data-status={r.status}>
-                    <div className="flex items-center justify-between text-eyebrow uppercase tracking-wider">
+                    <div className="flex items-center justify-between text-eyebrow tracking-normal">
                       <span className="text-foreground/90 truncate">
                         <span className={cn("coverage-cell__dot", palette[r.status])} />
                         {r.kind}
@@ -310,7 +310,7 @@ function Section({
   return (
     <section className="rounded-lg border border-border bg-card/30 p-3 space-y-2">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2 text-eyebrow uppercase tracking-wider text-muted-foreground">
+        <div className="flex items-center gap-2 text-micro font-semibold tracking-normal text-muted-foreground">
           <Icon className="w-3 h-3" /> {title}
         </div>
         {count != null && <span className="text-data font-mono text-muted-foreground">{count}</span>}
