@@ -269,6 +269,7 @@ export const PREMIUM_TOOLS = new Set<string>([
   "exa_find_similar",
   "exa_get_contents",
   "hunter_combined",
+  "pdl_person_enrich",
 ]);
 
 export function isPremiumTool(tool: string): boolean {

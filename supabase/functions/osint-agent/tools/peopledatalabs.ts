@@ -94,10 +94,11 @@ export const pdl_person_enrich = tool({
     if (!(hasStrongDirect || hasNameAndEmployer || hasNameAndSpecificLocation)) {
       return {
         ok: false,
+        skipped: true,
         source: "peopledatalabs",
         endpoint: "person_enrich",
-        error: "peopledatalabs: refused — needs a professional selector: (email/phone/profile URL) OR (name + company|school) OR (name + specific 'City, Region' location). Name-only or name+country is not enough.",
-      } satisfies PdlResult;
+        error: "peopledatalabs: gated — needs a professional selector: (email/phone/profile URL) OR (name+company|school) OR (name + specific 'City, Region'). Name-only or name+country is not enough.",
+      } as PdlResult;
     }
 
     const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
