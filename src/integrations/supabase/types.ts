@@ -100,34 +100,40 @@ export type Database = {
       }
       artifacts: {
         Row: {
+          cluster_id: string | null
           confidence: number | null
           created_at: string
           id: string
           kind: string
           metadata: Json | null
           source: string | null
+          subject_id: string | null
           thread_id: string
           user_id: string
           value: string
         }
         Insert: {
+          cluster_id?: string | null
           confidence?: number | null
           created_at?: string
           id?: string
           kind: string
           metadata?: Json | null
           source?: string | null
+          subject_id?: string | null
           thread_id: string
           user_id: string
           value: string
         }
         Update: {
+          cluster_id?: string | null
           confidence?: number | null
           created_at?: string
           id?: string
           kind?: string
           metadata?: Json | null
           source?: string | null
+          subject_id?: string | null
           thread_id?: string
           user_id?: string
           value?: string
@@ -271,6 +277,54 @@ export type Database = {
           thread_id?: string
           updated_at?: string
           user_id?: string
+        }
+        Relationships: []
+      }
+      memory_merge_candidates: {
+        Row: {
+          content: string
+          created_at: string
+          id: string
+          kind: string
+          proposed_confidence: number | null
+          reason: string
+          related_values: string[] | null
+          reviewed: boolean
+          subject: string
+          subject_ids: string[] | null
+          thread_id: string | null
+          user_id: string
+          verdict: string
+        }
+        Insert: {
+          content: string
+          created_at?: string
+          id?: string
+          kind: string
+          proposed_confidence?: number | null
+          reason: string
+          related_values?: string[] | null
+          reviewed?: boolean
+          subject: string
+          subject_ids?: string[] | null
+          thread_id?: string | null
+          user_id: string
+          verdict: string
+        }
+        Update: {
+          content?: string
+          created_at?: string
+          id?: string
+          kind?: string
+          proposed_confidence?: number | null
+          reason?: string
+          related_values?: string[] | null
+          reviewed?: boolean
+          subject?: string
+          subject_ids?: string[] | null
+          thread_id?: string | null
+          user_id?: string
+          verdict?: string
         }
         Relationships: []
       }
