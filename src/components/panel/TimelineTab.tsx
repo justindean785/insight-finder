@@ -79,7 +79,7 @@ export function TimelineTab({ threadId, artifacts }: { threadId: string; artifac
                   </span>
                 </div>
                 <div className="font-mono text-foreground break-all">{it.title}</div>
-                <div className="text-eyebrow uppercase tracking-wider text-muted-foreground">
+                <div className="text-eyebrow tracking-normal text-muted-foreground">
                   {it.kind ?? "—"}
                   {it.source ? ` · via ${it.source}` : ""}
                   {it.confidence != null ? ` · ${it.confidence}%` : ""}

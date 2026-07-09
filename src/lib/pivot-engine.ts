@@ -48,6 +48,13 @@ export type ComputePivotsInput = {
   reportPivots: RecommendedPivot[];
   /** Normalized-target keys the user explicitly skipped (proximity:pivot-skip). */
   skipSet: Set<string>;
+  /**
+   * Normalized targets tools have ALREADY been run against (from
+   * tool_usage_log). Any pivot on one of these is demoted to "searched" so the
+   * chat never re-suggests an already-investigated lead. Optional — defaults to
+   * empty, so existing callers/tests behave unchanged.
+   */
+  queriedSet?: Set<string>;
 };
 
 // ---- Ranking weights ---------------------------------------------------
@@ -124,6 +131,7 @@ function findingDisplay(p: Pivot): Omit<DisplayPivot, "score"> {
  */
 export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
   const { artifacts, seedValue, reportPivots, skipSet } = input;
+  const queriedSet = input.queriedSet ?? new Set<string>();
 
   // --- already-run signal sets (all keyed with normalizeTarget) -----------
   const seedKey = normalizeTarget(seedValue ?? "");
@@ -236,7 +244,10 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
     }
 
     let status: Pivot["status"] = c.status;
-    if (parentSet.has(k)) status = "searched";
+    // A tool already run against this exact target is the strongest "already
+    // investigated" signal we have (artifacts carry no parent lineage), so it
+    // overrides the generator's optimistic "new" for both origins.
+    if (parentSet.has(k) || queriedSet.has(k)) status = "searched";
     else if (c.origin === "report" && existingValueSet.has(k)) status = "searched";
 
     const conf = clamp(c.confidence ?? 0, 0, 100);

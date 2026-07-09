@@ -56,9 +56,9 @@ export function TabHeader({
       <div className="flex min-w-0 items-center gap-2.5">
         {Icon && <Icon className="w-4 h-4 shrink-0 text-muted-foreground" strokeWidth={1.75} aria-hidden />}
         <div className="min-w-0">
-          <h2 className="text-[13px] font-semibold leading-tight tracking-tight text-foreground">{title}</h2>
+          <h2 className="text-meta font-semibold leading-tight tracking-tight text-foreground">{title}</h2>
           {subtitle != null && (
-            <div className="mt-0.5 text-[11px] leading-tight text-muted-foreground">{subtitle}</div>
+            <div className="mt-0.5 text-micro leading-tight text-muted-foreground">{subtitle}</div>
           )}
         </div>
       </div>
@@ -147,7 +147,7 @@ export function MetricCard({
       className={cn("rounded-lg border border-border-subtle bg-surface-1 px-3 py-2.5", className)}
       title={hint}
     >
-      <div className="flex items-center gap-1.5 text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">
+      <div className="flex items-center gap-1.5 text-micro tracking-normal text-muted-foreground">
         {Icon && <Icon className={cn("w-3 h-3", tone !== "neutral" && color)} />}
         <span className="truncate">{label}</span>
       </div>
@@ -206,7 +206,7 @@ export function FilterChips<T extends string>({
             {o.count !== undefined && (
               <span
                 className={cn(
-                  "inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-mono tabular-nums",
+                  "inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-eyebrow font-mono tabular-nums",
                   isActive ? "bg-background/60 text-foreground" : "bg-surface-2 text-muted-foreground",
                   toneCls,
                 )}
@@ -249,7 +249,7 @@ export function ToolStatusBadge({
     <span
       className={cn(
         "inline-flex items-center gap-1 rounded-full border font-mono uppercase tracking-[0.08em]",
-        size === "sm" ? "px-2 py-0.5 text-[10px]" : "px-2.5 py-1 text-[11px]",
+        size === "sm" ? "px-2 py-0.5 text-eyebrow" : "px-2.5 py-1 text-micro",
         meta.classes,
         className,
       )}
@@ -308,7 +308,7 @@ export function EvidenceStatusBadge({
       title={hint}
       className={cn(
         "inline-flex items-center gap-1 rounded-full border font-medium tracking-tight whitespace-nowrap",
-        size === "sm" ? "px-2 py-0.5 text-[10px]" : "px-2.5 py-1 text-[11px]",
+        size === "sm" ? "px-2 py-0.5 text-eyebrow" : "px-2.5 py-1 text-micro",
         EVIDENCE_TONE_CLASS[tone],
         className,
       )}
@@ -334,7 +334,7 @@ export function StatusLegend({ className, align = "end" }: { className?: string;
         <button
           type="button"
           className={cn(
-            "inline-flex items-center gap-1 rounded-full border border-border-subtle bg-surface-2/50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground",
+            "inline-flex items-center gap-1 rounded-full border border-border-subtle bg-surface-2/50 px-2 py-0.5 text-micro font-medium tracking-normal text-muted-foreground transition-colors hover:text-foreground",
             className,
           )}
           aria-label="Show evidence status legend"
@@ -344,12 +344,12 @@ export function StatusLegend({ className, align = "end" }: { className?: string;
         </button>
       </PopoverTrigger>
       <PopoverContent align={align} className="w-[min(92vw,340px)] p-3">
-        <div className="mb-2 text-eyebrow uppercase tracking-wider text-muted-foreground">Evidence status</div>
+        <div className="mb-2 text-micro font-semibold tracking-normal text-muted-foreground">Evidence status</div>
         <ul className="space-y-2">
           {EVIDENCE_STATUS_LEGEND.map((entry) => (
             <li key={entry.status} className="flex flex-col gap-0.5">
               <EvidenceStatusBadge status={entry.status} label={entry.label} tone={entry.tone} className="self-start" />
-              <span className="text-[11px] leading-snug text-muted-foreground">{entry.hint}</span>
+              <span className="text-micro leading-snug text-muted-foreground">{entry.hint}</span>
             </li>
           ))}
         </ul>

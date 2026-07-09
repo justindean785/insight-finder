@@ -34,7 +34,7 @@ export function TierBadge({
   muted?: boolean;
   size?: "sm" | "md";
 }) {
-  const pad = size === "sm" ? "px-1.5 py-[1px] text-[9px]" : "px-2 py-0.5 text-data";
+  const pad = size === "sm" ? "px-1.5 py-[1px] text-micro" : "px-2 py-0.5 text-data";
 
   if (muted) {
     return (
@@ -131,7 +131,7 @@ export function SectionLabel({
         className="h-[5px] w-[5px] rounded-full"
         style={{ background: `hsl(${dot})`, boxShadow: status ? `0 0 6px hsl(${dot})` : "none" }}
       />
-      <span className="font-mono text-eyebrow uppercase tracking-[0.22em] text-muted-foreground">
+      <span className="font-mono text-meta font-semibold tracking-normal text-muted-foreground">
         {children}
       </span>
       {count !== undefined && (
@@ -189,11 +189,11 @@ export function Stat({
     "hsl(var(--foreground))";
   return (
     <div className="flex flex-col gap-1">
-      <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground/70">
+      <span className="font-mono text-micro tracking-normal text-muted-foreground/70">
         {label}
       </span>
       <div className="flex items-baseline gap-2">
-        <span className="font-mono text-[22px] leading-none tabular-nums tracking-tight" style={{ color: valueColor }}>
+        <span className="font-mono text-h2 leading-none tabular-nums tracking-tight" style={{ color: valueColor }}>
           {value}
         </span>
         {delta && <span className="font-mono text-data tabular-nums text-muted-foreground/70">{delta}</span>}

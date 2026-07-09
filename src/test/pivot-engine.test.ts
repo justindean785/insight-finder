@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { computePivots, canonicalKey } from "@/lib/pivot-engine";
 import { extractRecommendedPivots, type RecommendedPivot } from "@/lib/recommended-pivots";
+import { normalizeTarget } from "@/lib/next-step-cards";
 
 let seq = 0;
 function art(partial: Partial<Artifact> & { kind: string; value: string }): Artifact {
@@ -173,6 +174,33 @@ describe("computePivots — weak/path-bearing domain-url noise guard (#185 fallb
     const values = out.map((p) => p.value);
     expect(values).toContain("subject.com");
     expect(values).not.toContain("subject.com/some/path");
+  });
+});
+
+describe("computePivots — already-queried (tool_usage_log) filter", () => {
+  it("demotes a finding whose target a tool already ran against to 'searched'", () => {
+    // The core bug: a discovered email that seven tools already hit kept
+    // showing as a 'new' pivot because artifacts carry no parent lineage.
+    const artifacts = [art({ kind: "email", value: "Ran@Example.com" })];
+    const queriedSet = new Set([normalizeTarget("ran@example.com")]);
+    const out = computePivots({ artifacts, seedValue: null, reportPivots: [], skipSet: NONE, queriedSet });
+    const p = out.find((x) => x.value === "Ran@Example.com");
+    expect(p).toBeDefined();
+    expect(p?.status).toBe("searched");
+  });
+
+  it("leaves an un-queried finding as 'new' so real leads still surface", () => {
+    const artifacts = [art({ kind: "email", value: "Fresh@Example.com" })];
+    const queriedSet = new Set([normalizeTarget("someone-else@example.com")]);
+    const out = computePivots({ artifacts, seedValue: null, reportPivots: [], skipSet: NONE, queriedSet });
+    const p = out.find((x) => x.value === "Fresh@Example.com");
+    expect(p?.status).toBe("new");
+  });
+
+  it("is a no-op when no queriedSet is supplied (back-compat)", () => {
+    const artifacts = [art({ kind: "email", value: "Legacy@Example.com" })];
+    const out = computePivots({ artifacts, seedValue: null, reportPivots: [], skipSet: NONE });
+    expect(out.find((x) => x.value === "Legacy@Example.com")?.status).toBe("new");
   });
 });
 

@@ -17,7 +17,7 @@ function CountPill({ value, active }: { value: number; active: boolean }) {
     <span
       aria-hidden={value === 0}
       className={cn(
-        "inline-flex h-[17px] min-w-[17px] items-center justify-center rounded-full px-1 font-mono text-[10px] tabular-nums leading-none",
+        "inline-flex h-[17px] min-w-[17px] items-center justify-center rounded-full px-1 font-mono text-eyebrow tabular-nums leading-none",
         value === 0
           ? "opacity-0"
           : active

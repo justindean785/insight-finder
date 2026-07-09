@@ -288,7 +288,7 @@ function ArtifactsList({
               </span>
               <span className="text-data tabular-nums text-muted-foreground/80">· {all.length}</span>
               {failedC > 0 && (
-                <span className="ml-auto text-[9.5px] tabular-nums" style={{ color: "hsl(var(--danger))" }}>
+                <span className="ml-auto text-micro tabular-nums" style={{ color: "hsl(var(--danger))" }}>
                   {failedC} flagged
                 </span>
               )}
@@ -335,7 +335,7 @@ function ArtifactsList({
                       <span className="text-data font-medium text-foreground/75">{kindHeading(kind, list.length)}</span>
                       <span className="text-data tabular-nums text-muted-foreground/70">· {list.length}</span>
                       {uniformProv && (
-                        <span className="truncate font-mono text-[9.5px] text-muted-foreground/60" title={uniformProv}>{readableSourceLabel(uniformProv)}</span>
+                        <span className="truncate font-mono text-micro text-muted-foreground/60" title={uniformProv}>{readableSourceLabel(uniformProv)}</span>
                       )}
                       {/* Singletons show their score on the row itself; only
                           show a subheader figure for multi-row clusters. */}
@@ -549,22 +549,22 @@ function ArtifactDrawerInner({
         className="w-[min(92vw,460px)] overflow-y-auto border-l border-white/[0.08] bg-[hsl(var(--surface-0))] p-0 sm:max-w-[460px]"
       >
         <SheetHeader className="border-b border-white/[0.08] px-5 py-5 text-left">
-          <SheetDescription className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+          <SheetDescription className="font-mono text-eyebrow uppercase tracking-[0.18em] text-muted-foreground">
             Evidence detail
           </SheetDescription>
           <SheetTitle className="font-mono text-xl leading-tight break-words [overflow-wrap:anywhere]">
             {artifact.value}
           </SheetTitle>
           <div className="flex flex-wrap items-center gap-2 pt-1">
-            <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+            <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 font-mono text-eyebrow uppercase tracking-[0.14em] text-muted-foreground">
               {artifact.kind}
             </span>
             {artifact.confidence != null && (
-              <span className="rounded-md border border-[hsl(var(--confidence-mid)/0.35)] bg-[hsl(var(--confidence-mid)/0.1)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[hsl(var(--confidence-mid))]">
+              <span className="rounded-md border border-[hsl(var(--confidence-mid)/0.35)] bg-[hsl(var(--confidence-mid)/0.1)] px-2 py-1 font-mono text-eyebrow uppercase tracking-[0.14em] text-[hsl(var(--confidence-mid))]">
                 {artifact.confidence}% confidence
               </span>
             )}
-            <span className={"rounded-md border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] " + REVIEW_CLASS[rState]}>
+            <span className={"rounded-md border px-2 py-1 font-mono text-eyebrow uppercase tracking-[0.14em] " + REVIEW_CLASS[rState]}>
               {REVIEW_SHORT[rState]}
             </span>
           </div>
@@ -768,7 +768,7 @@ function ArtifactPeek({ artifact: a, confColor }: { artifact: Artifact; confColo
         <div className="grid grid-cols-2 gap-2 text-data text-muted-foreground">
           {src?.all && src.all.length > 0 && (
             <div className="col-span-2">
-              <div className="uppercase tracking-[0.1em] text-[9px] text-muted-foreground/70 mb-1">Sources</div>
+              <div className="uppercase tracking-[0.1em] text-micro text-muted-foreground/70 mb-1">Sources</div>
               <div className="flex items-center gap-1 flex-wrap">
                 {src.all.map((s) => (
                   <SourceBadge key={s} source={s} size="xs" />
@@ -793,7 +793,7 @@ function ArtifactPeek({ artifact: a, confColor }: { artifact: Artifact; confColo
 function PeekField({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="min-w-0">
-      <div className="uppercase tracking-[0.1em] text-[9px] text-muted-foreground/70">{label}</div>
+      <div className="uppercase tracking-[0.1em] text-micro text-muted-foreground/70">{label}</div>
       <div className="text-foreground truncate" title={typeof children === "string" ? children : undefined}>{children}</div>
     </div>
   );

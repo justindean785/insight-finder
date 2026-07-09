@@ -261,11 +261,11 @@ export default function CasesPage() {
                           <span className="text-sm font-medium text-foreground truncate max-w-[min(100%,20rem)]">
                             {c.title?.trim() || "Untitled case"}
                           </span>
-                          <span className={cn("text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full border", st.tone)}>
+                          <span className={cn("text-eyebrow font-mono uppercase tracking-wider px-2 py-0.5 rounded-full border", st.tone)}>
                             {st.text}
                           </span>
                         </div>
-                        <div className="mt-1 text-[11px] text-muted-foreground font-mono flex flex-wrap gap-x-3 gap-y-0.5">
+                        <div className="mt-1 text-micro text-muted-foreground font-mono flex flex-wrap gap-x-3 gap-y-0.5">
                           <span>{m.artifacts} artifacts</span>
                           <span>{m.toolCalls} tool calls</span>
                           <span>Updated {relativeTime(c.updated_at)}</span>

@@ -109,7 +109,7 @@ function Hero({
           <span className="font-mono text-data tabular-nums text-muted-foreground/60">{caseId ?? "—"}</span>
         </div>
         <div className="flex items-center gap-2">
-          <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground/60">Verdict</span>
+          <span className="font-mono text-micro tracking-normal text-muted-foreground/60">Verdict</span>
           <span
             className="rounded-[3px] px-2 py-0.5 font-mono text-eyebrow uppercase tracking-[0.16em]"
             style={{ color: `hsl(${vc})`, background: `hsl(${vc} / 0.1)`, border: `1px solid hsl(${vc} / 0.3)` }}
@@ -161,14 +161,14 @@ function StatusPip({ status }: { status: "running" | "complete" | "blocked" }) {
 function Seed({ seed }: { seed: { value: string; type: string } }) {
   return (
     <div className="grid grid-cols-[140px_1fr_auto] items-center gap-6 border-b border-border-subtle px-6 py-4">
-      <span className="font-mono text-[9px] uppercase tracking-[0.22em] text-muted-foreground/60">
+      <span className="font-mono text-micro tracking-normal text-muted-foreground/60">
         Seed · {seed.type.toUpperCase()}
       </span>
       {/* Seed value uses the primary accent (the one place it's spent). */}
-      <span className="font-mono text-[15px] tracking-tight text-primary">{seed.value}</span>
+      <span className="font-mono text-body tracking-tight text-primary">{seed.value}</span>
       <button
         onClick={() => navigator.clipboard?.writeText(seed.value)}
-        className="font-mono text-eyebrow uppercase tracking-[0.16em] text-muted-foreground/60 transition-colors hover:text-foreground"
+        className="font-mono text-micro tracking-normal text-muted-foreground/60 transition-colors hover:text-foreground"
       >
         Copy →
       </button>
@@ -223,7 +223,7 @@ function Clusters({ clusters, findings }: { clusters: ClusterAudit[]; findings: 
                 <div className="min-w-[560px]">
                 <div className="grid grid-cols-[140px_1fr_180px_120px] gap-4 border-b border-border-subtle px-4 py-2">
                   {["Claim", "Value", "Source", "Conf"].map((h) => (
-                    <span key={h} className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground/60">
+                    <span key={h} className="font-mono text-micro tracking-normal text-muted-foreground/60">
                       {h}
                     </span>
                   ))}
@@ -299,14 +299,14 @@ function Hypotheses({ items }: { items: Hypothesis[] }) {
                   {h.id}
                 </span>
                 {isLead && (
-                  <span className="font-mono text-[8px] uppercase tracking-[0.18em] text-primary/80">Lead</span>
+                  <span className="font-mono text-micro uppercase tracking-[0.18em] text-primary/80">Lead</span>
                 )}
               </div>
               <div className="flex flex-col gap-2">
                 <span className="text-meta tracking-tight text-foreground">{h.label}</span>
                 <span className="text-data leading-relaxed text-muted-foreground">{h.evidence}</span>
                 <div className="mt-1 flex items-start gap-2 rounded-[2px] bg-surface-1 px-2.5 py-1.5">
-                  <span className="font-mono text-[8px] uppercase tracking-[0.18em] text-muted-foreground/60">Needs</span>
+                  <span className="font-mono text-micro tracking-normal text-muted-foreground/60">Needs</span>
                   <span className="text-data text-muted-foreground">{h.distinguishingEvidence}</span>
                 </div>
               </div>
@@ -356,7 +356,7 @@ function Independence({
         <div className="min-w-[680px]">
         <div className="grid grid-cols-[40px_70px_1fr_1fr_140px_56px] gap-3 border-b border-border-subtle bg-surface-1 px-4 py-2">
           {["ID", "Type", "Origin", "URL", "Retrieved", "Conf"].map((h) => (
-            <span key={h} className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground/60">{h}</span>
+            <span key={h} className="font-mono text-micro tracking-normal text-muted-foreground/60">{h}</span>
           ))}
         </div>
         {sources.map((s) => (
@@ -401,12 +401,12 @@ function CollapseBlock({
         borderColor: collapsed ? "hsl(var(--primary) / 0.18)" : "hsl(var(--border-subtle))",
       }}
     >
-      <span className="font-mono text-[9px] uppercase tracking-[0.22em] text-muted-foreground/60">{label}</span>
+      <span className="font-mono text-micro tracking-normal text-muted-foreground/60">{label}</span>
       <div className="mt-2 flex items-baseline gap-3">
-        <span className="font-mono text-[36px] leading-none tabular-nums tracking-tight" style={{ color: collapsed ? "hsl(var(--primary))" : "hsl(var(--foreground))" }}>
+        <span className="font-mono text-display leading-none tabular-nums tracking-tight" style={{ color: collapsed ? "hsl(var(--primary))" : "hsl(var(--foreground))" }}>
           {value.toString().padStart(2, "0")}
         </span>
-        <span className="font-mono text-eyebrow uppercase tracking-[0.16em] text-muted-foreground/60">sources</span>
+        <span className="font-mono text-eyebrow tracking-normal text-muted-foreground/60">sources</span>
       </div>
       <div className="mt-3 flex gap-1">
         {Array.from({ length: Math.max(total, 1) }).map((_, i) => (

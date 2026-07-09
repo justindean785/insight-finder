@@ -80,7 +80,7 @@ export function EvidenceTab({
       ))}
       {hasMore && (
         <span
-          className="ml-2 inline-flex items-center rounded border border-warning/30 bg-warning/10 px-1 py-px text-[9px] uppercase tracking-wider text-warning"
+          className="ml-2 inline-flex items-center rounded border border-warning/30 bg-warning/10 px-1 py-px text-micro uppercase tracking-wider text-warning"
           title={`Initial load capped at ${cap.toLocaleString()} rows. New realtime inserts still apply, but older artifacts beyond the cap are not yet loaded.`}
         >
           ⚠ sampled (latest {cap.toLocaleString()})

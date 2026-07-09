@@ -47,7 +47,7 @@ function CountPill({ value, active }: { value: number; active: boolean }) {
     <span
       aria-hidden={value === 0}
       className={cn(
-        "inline-flex h-[17px] min-w-[17px] items-center justify-center rounded-full px-1 font-mono text-[10px] tabular-nums leading-none transition-colors",
+        "inline-flex h-[17px] min-w-[17px] items-center justify-center rounded-full px-1 font-mono text-eyebrow tabular-nums leading-none transition-colors",
         value === 0
           ? "opacity-0"
           : active
@@ -176,7 +176,7 @@ export function WorkspaceTabs({
                 onKeyDown={(e) => onKeyDown(e, idx)}
                 onClick={() => { setMoreOpen(false); onChange(t.key); }}
                 className={cn(
-                  "relative min-w-0 flex-1 inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-2 text-[12px] font-medium transition-all duration-200 ease-premium active:scale-[0.98]",
+                  "relative min-w-0 flex-1 inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-2 text-data font-medium transition-all duration-200 ease-premium active:scale-[0.98]",
                   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                   isActive ? "bg-white text-black shadow-sm" : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
                 )}
@@ -186,7 +186,7 @@ export function WorkspaceTabs({
                 {count && count.value > 0 && (
                   <span
                     className={cn(
-                      "inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 font-mono text-[9px] tabular-nums leading-none",
+                      "inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 font-mono text-micro tabular-nums leading-none",
                       isActive ? "bg-black/10 text-black/65" : "bg-surface-4 text-foreground",
                     )}
                   >
@@ -208,7 +208,7 @@ export function WorkspaceTabs({
             aria-expanded={moreOpen}
             onClick={() => setMoreOpen((open) => !open)}
             className={cn(
-              "relative inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-lg px-2 text-[12px] font-medium transition-all duration-200 ease-premium active:scale-[0.98]",
+              "relative inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-lg px-2 text-data font-medium transition-all duration-200 ease-premium active:scale-[0.98]",
               moreActive ? "bg-[hsl(var(--info-muted))] text-[hsl(var(--info))]" : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
             )}
           >
@@ -250,7 +250,7 @@ export function WorkspaceTabs({
                   <span className="min-w-0 flex-1 truncate">{t.label}</span>
                   {count?.alert ? <AlertDot count={count.alert} /> : null}
                   {count && count.value > 0 && (
-                    <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
+                    <span className="font-mono text-eyebrow tabular-nums text-muted-foreground">
                       {count.value > 99 ? "99+" : count.value}
                     </span>
                   )}

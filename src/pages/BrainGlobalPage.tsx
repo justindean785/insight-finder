@@ -253,7 +253,7 @@ export default function BrainGlobalPage() {
             <p className="text-xs text-muted-foreground mt-0.5">
               Patterns, lessons and source weighting the agent has accumulated across investigations.
             </p>
-            <p className="mt-1.5 text-[11px] text-muted-foreground/80">
+            <p className="mt-1.5 text-micro text-muted-foreground/80">
               Pin / mute / hide actions on this screen are local view controls — they do not modify
               the source memory or create an audited governance record.
             </p>
@@ -414,12 +414,12 @@ function MemoryCard({ m, isNew }: { m: Memory; isNew: boolean }) {
           <Icon className={cn("w-3 h-3 shrink-0", meta.tone)} strokeWidth={1.75} />
           <span className="text-eyebrow uppercase tracking-wider text-muted-foreground">{meta.label}</span>
           {m.subject_kind && (
-            <span className="px-1 py-px rounded border border-border-subtle font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
+            <span className="px-1 py-px rounded border border-border-subtle font-mono text-micro uppercase tracking-wider text-muted-foreground">
               {m.subject_kind}
             </span>
           )}
           {isNew && (
-            <span className="px-1 py-px rounded font-mono text-[9px] uppercase tracking-wider bg-primary/15 text-primary border border-primary/30">
+            <span className="px-1 py-px rounded font-mono text-micro uppercase tracking-wider bg-primary/15 text-primary border border-primary/30">
               new
             </span>
           )}
@@ -578,7 +578,7 @@ function MemoryRichCard({
     >
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 min-w-0">
-          <span className="px-1.5 py-px rounded border border-border-subtle font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
+          <span className="px-1.5 py-px rounded border border-border-subtle font-mono text-micro uppercase tracking-wider text-muted-foreground">
             {typeLabel}
           </span>
           {m.confidence != null && (
@@ -774,7 +774,7 @@ function PatternCard({
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 min-w-0">
           <TrendingUp className="w-3 h-3 shrink-0 text-primary" strokeWidth={1.75} />
-          <span className="px-1.5 py-px rounded border border-border-subtle font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
+          <span className="px-1.5 py-px rounded border border-border-subtle font-mono text-micro uppercase tracking-wider text-muted-foreground">
             {typeLabel}
           </span>
           {m.confidence != null && (
@@ -796,12 +796,12 @@ function PatternCard({
             </span>
           )}
           {suppressed && (
-            <span className="px-1 py-px rounded font-mono text-[9px] uppercase tracking-wider bg-muted/30 text-muted-foreground border border-border-subtle">
+            <span className="px-1 py-px rounded font-mono text-micro uppercase tracking-wider bg-muted/30 text-muted-foreground border border-border-subtle">
               suppressed
             </span>
           )}
           {promoted && !suppressed && (
-            <span className="px-1 py-px rounded font-mono text-[9px] uppercase tracking-wider bg-primary/15 text-primary border border-primary/30">
+            <span className="px-1 py-px rounded font-mono text-micro uppercase tracking-wider bg-primary/15 text-primary border border-primary/30">
               promoted
             </span>
           )}

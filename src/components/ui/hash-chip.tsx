@@ -23,7 +23,7 @@ export function HashChip({
   const [copied, setCopied] = useState(false);
   if (!value) {
     return (
-      <span className={cn("inline-flex items-center gap-1 font-mono text-[11px] text-muted-foreground/60", className)}>
+      <span className={cn("inline-flex items-center gap-1 font-mono text-micro text-muted-foreground/60", className)}>
         <Icon className="w-3 h-3" />
         {label && <span className="opacity-70">{label}</span>}
         <span>—</span>
@@ -48,7 +48,7 @@ export function HashChip({
       onClick={handleCopy}
       title={value}
       className={cn(
-        "group inline-flex items-center gap-1 font-mono text-[11px] tabular-nums",
+        "group inline-flex items-center gap-1 font-mono text-micro tabular-nums",
         "px-1.5 py-0.5 rounded border border-border-subtle/70 bg-surface-2/60",
         "transition-colors hover:border-evidence/40 hover:bg-evidence/5",
         muted ? "text-muted-foreground" : "text-foreground/85",

@@ -210,7 +210,7 @@ function StatCell({
     "text-foreground";
   return (
     <div className="bg-popover px-3 py-2">
-      <div className="flex items-center gap-1 text-[9px] uppercase tracking-[0.1em] text-muted-foreground">
+      <div className="flex items-center gap-1 text-micro uppercase tracking-[0.1em] text-muted-foreground">
         <Icon className="w-3 h-3" /> {label}
       </div>
       <div className={cn("mt-0.5 font-mono tabular-nums text-sm", color)}>{value}</div>

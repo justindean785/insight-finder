@@ -24,7 +24,7 @@ function StatCount({ icon: Icon, label, value, tone }: {
       <Icon className={cn("h-4 w-4 shrink-0", toneCls)} aria-hidden />
       <div className="min-w-0">
         <div className="font-mono tabular-nums text-sm leading-none text-foreground">{value}</div>
-        <div className="text-eyebrow uppercase tracking-wider text-muted-foreground">{label}</div>
+        <div className="text-micro tracking-normal text-muted-foreground">{label}</div>
       </div>
     </div>
   );
@@ -41,7 +41,7 @@ function HealthRow({ row }: { row: ToolHealthRow }) {
     >
       <div className="flex items-center gap-2 flex-wrap">
         <span className="font-mono text-foreground/90 truncate" title={row.toolName}>{row.toolName}</span>
-        <span className="ml-auto flex items-center gap-2 font-mono tabular-nums text-[11px]">
+        <span className="ml-auto flex items-center gap-2 font-mono tabular-nums text-micro">
           {row.ok > 0 && <span className="text-conf-confirmed" title="succeeded"><CheckCircle2 className="inline h-3 w-3 mr-0.5" />{row.ok}</span>}
           {row.failed > 0 && <span className="text-destructive" title="failed"><XCircle className="inline h-3 w-3 mr-0.5" />{row.failed}</span>}
           {row.skipped > 0 && <span className="text-muted-foreground" title="skipped (governance)"><CircleSlash className="inline h-3 w-3 mr-0.5" />{row.skipped}</span>}
@@ -49,7 +49,7 @@ function HealthRow({ row }: { row: ToolHealthRow }) {
         </span>
       </div>
       {hasFailure && row.lastError && (
-        <div className="mt-1.5 rounded-md border border-destructive/20 bg-black/30 px-2 py-1 font-mono text-[11px] leading-snug text-destructive/90 break-words [overflow-wrap:anywhere]">
+        <div className="mt-1.5 rounded-md border border-destructive/20 bg-black/30 px-2 py-1 font-mono text-micro leading-snug text-destructive/90 break-words [overflow-wrap:anywhere]">
           {row.lastStatusCode != null && <span className="mr-1 opacity-70">HTTP {row.lastStatusCode}</span>}
           {row.lastError}
         </div>
@@ -96,7 +96,7 @@ export function ToolHealthPanel({ threadId }: { threadId: string }) {
 
       {failing.length > 0 && (
         <div className="space-y-1.5">
-          <div className="text-eyebrow uppercase tracking-wider text-destructive/80 flex items-center gap-1.5">
+          <div className="text-micro font-semibold tracking-normal text-destructive/80 flex items-center gap-1.5">
             <XCircle className="h-3 w-3" /> Failing tools ({failing.length}) — need attention
           </div>
           {failing.map((r) => <HealthRow key={`fail-${r.toolName}`} row={r} />)}
@@ -104,7 +104,7 @@ export function ToolHealthPanel({ threadId }: { threadId: string }) {
       )}
 
       <div className="space-y-1.5">
-        <div className="text-eyebrow uppercase tracking-wider text-muted-foreground">All tools ({rows.length})</div>
+        <div className="text-micro font-semibold tracking-normal text-muted-foreground">All tools ({rows.length})</div>
         {rows.map((r) => <HealthRow key={r.toolName} row={r} />)}
       </div>
     </div>

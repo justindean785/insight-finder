@@ -12,7 +12,6 @@ import {
   Settings as SettingsIcon,
   Plus,
   ArrowRight,
-  Activity,
   FileSearch,
 } from "lucide-react";
 import { addBreadcrumb, captureError } from "@/lib/telemetry";
@@ -192,7 +191,7 @@ export default function HomeHub() {
               Resume most recent
             </Link>
           </div>
-          <div className="mt-6 flex flex-wrap items-center gap-2 text-[11px] font-mono uppercase tracking-[0.14em] text-muted-foreground">
+          <div className="mt-6 flex flex-wrap items-center gap-2 text-micro font-mono tracking-normal text-muted-foreground">
             <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1">Cases {counts.cases.toLocaleString()}</span>
             <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1">Artifacts {counts.artifacts.toLocaleString()}</span>
             <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1">Memories {counts.memories.toLocaleString()}</span>
@@ -231,17 +230,9 @@ export default function HomeHub() {
           />
         </section>
 
-        <section className="mt-10 grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <StatTile loading={loading} icon={FileSearch} label="Cases" value={counts.cases} />
-          <StatTile loading={loading} icon={Activity} label="Artifacts" value={counts.artifacts} />
-          <StatTile
-            loading={loading}
-            icon={Brain}
-            label="Memories"
-            value={counts.memories}
-            sub={`Last activity ${lastCaseLabel}`}
-          />
-        </section>
+        {/* The three headline counts already live as chips in the hero above;
+            a second big-number "hero-metric" tile row repeated the same data.
+            Removed to de-duplicate and drop the hero-metric template. */}
 
         <section className="mt-10">
           <div className="flex items-center justify-between mb-3">
@@ -276,7 +267,7 @@ export default function HomeHub() {
                     <div className="text-sm text-foreground truncate">
                       {c.title?.trim() || "Untitled case"}
                     </div>
-                    <div className="text-[11px] text-muted-foreground font-mono">
+                    <div className="text-micro text-muted-foreground font-mono">
                       {relativeTime(c.updated_at)}
                     </div>
                   </div>
@@ -326,33 +317,3 @@ function HubCard({
   );
 }
 
-function StatTile({
-  loading,
-  icon: Icon,
-  label,
-  value,
-  sub,
-}: {
-  loading: boolean;
-  icon: typeof Activity;
-  label: string;
-  value: number;
-  sub?: string;
-}) {
-  return (
-    <div className="group relative overflow-hidden rounded-2xl border border-white/[0.07] glass-card p-5 transition-colors duration-300 hover:border-[hsl(var(--intel-blue)/0.3)]">
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-x-5 top-0 h-px bg-gradient-to-r from-[hsl(var(--intel-blue)/0.5)] to-transparent"
-      />
-      <div className="flex items-center gap-2 text-eyebrow font-mono uppercase tracking-[0.18em] text-muted-foreground">
-        <Icon className="h-3.5 w-3.5 text-[hsl(var(--intel-blue))]" />
-        {label}
-      </div>
-      <div className="mt-2 font-display text-4xl font-semibold tabular-nums tracking-tight">
-        {loading ? <Skeleton className="h-10 w-24" /> : value.toLocaleString()}
-      </div>
-      {sub && <div className="mt-1 text-[11px] font-mono text-muted-foreground">{sub}</div>}
-    </div>
-  );
-}

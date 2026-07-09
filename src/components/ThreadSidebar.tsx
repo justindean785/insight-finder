@@ -320,7 +320,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         >
           <Brain className="w-4 h-4" strokeWidth={1.5} />
           {newPatternCount > 0 && !onBrainRoute && (
-            <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-primary text-primary-foreground text-[9px] font-mono font-bold grid place-items-center shadow-[0_0_10px_hsl(var(--primary)/0.7)]">
+            <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-primary text-primary-foreground text-micro font-mono font-bold grid place-items-center shadow-[0_0_10px_hsl(var(--primary)/0.7)]">
               {newPatternCount > 99 ? "99+" : newPatternCount}
             </span>
           )}
@@ -340,8 +340,15 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
           <BarChart3 className="w-4 h-4" strokeWidth={1.5} />
         </Link>
 
+        {/* Only the most-recent cases belong in the 56px rail. Mapping the full
+            list crammed all ~140+ cases in as indistinguishable icons; the active
+            case is always kept visible, then the newest few. Expand for the rest. */}
         <div className="flex-1 overflow-y-auto w-full flex flex-col items-center gap-1 px-1">
-          {threads.map((t) => {
+          {(() => {
+            const active = threads.find((t) => t.id === threadId);
+            const recent = threads.filter((t) => t.id !== threadId).slice(0, 7);
+            return (active ? [active, ...recent] : recent);
+          })().map((t) => {
             const Icon = seedIcon(t.seed_type, t.title);
             const active = t.id === threadId;
             return (
@@ -414,7 +421,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
           </div>
           <div className="min-w-0">
             <div className="font-display font-semibold tracking-tight text-sm text-foreground leading-none">Insight Finder</div>
-            <div className="mt-0.5 text-[10px] text-muted-foreground leading-none">Cases</div>
+            <div className="mt-0.5 text-eyebrow text-muted-foreground leading-none">Cases</div>
           </div>
         </Link>
         <button
@@ -512,7 +519,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
       <div className="flex-1 overflow-y-auto px-2.5 pb-3">
         {metricsSampled && (
           <div
-            className="mb-2 mx-1 inline-flex items-center gap-1 rounded border border-warning/25 bg-warning/8 px-2 py-1 text-[10px] text-warning"
+            className="mb-2 mx-1 inline-flex items-center gap-1 rounded border border-warning/25 bg-warning/8 px-2 py-1 text-eyebrow text-warning"
             title={`Per-thread badges are aggregated from the latest ${SIDEBAR_METRICS_SAMPLE_LIMIT.toLocaleString()} artifact rows. Counts on older or very large threads may be undercounted.`}
           >
             ⚠ Metrics sampled · latest {SIDEBAR_METRICS_SAMPLE_LIMIT.toLocaleString()} rows
@@ -521,7 +528,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         {(["Today", "This week", "Older"] as const).map((bucket) =>
           groups[bucket].length === 0 ? null : (
             <div key={bucket} className="mb-2.5">
-              <div className="px-2 py-1 text-[10px] uppercase tracking-[0.08em] text-muted-foreground flex items-center gap-1.5">
+              <div className="px-2 py-1 text-micro font-medium tracking-normal text-muted-foreground flex items-center gap-1.5">
                 <span className="w-1 h-1 rounded-full bg-muted-foreground/50" />
                 {bucket}
                 <span className="ml-1 font-mono opacity-50">{groups[bucket].length}</span>
@@ -591,7 +598,7 @@ function ThreadRow({
     <Link
       to={`/chat/${t.id}`}
       className={cn(
-        "group relative flex items-start justify-between gap-2 pl-3 pr-2 py-2.5 rounded-lg text-[13px] transition-all duration-500 ease-premium hover:bg-white/[0.045]",
+        "group relative flex items-start justify-between gap-2 pl-3 pr-2 py-2.5 rounded-lg text-meta transition-all duration-500 ease-premium hover:bg-white/[0.045]",
         active && "bg-[hsl(var(--intel-blue)/0.1)] text-foreground ring-1 ring-[hsl(var(--intel-blue)/0.28)] shadow-[inset_2px_0_0_hsl(var(--intel-blue)),0_0_24px_-14px_hsl(var(--intel-blue)/0.8)]",
         dim && !active && "opacity-60",
       )}
@@ -609,9 +616,9 @@ function ThreadRow({
           {dim && <CheckCircle2 className="w-3 h-3 text-confidence-glow shrink-0" />}
           <span className="truncate font-medium" title={t.title}>{t.title}</span>
         </div>
-        <div className="text-[11px] text-muted-foreground flex items-center gap-1.5 flex-wrap leading-5">
+        <div className="text-micro text-muted-foreground flex items-center gap-1.5 flex-wrap leading-5">
           {t.seed_type && (
-            <span className="px-1.5 py-0.5 rounded-md border border-border-subtle bg-white/[0.035] text-[10px] text-muted-foreground">
+            <span className="px-1.5 py-0.5 rounded-md border border-border-subtle bg-white/[0.035] text-eyebrow text-muted-foreground">
               {t.seed_type}
             </span>
           )}
@@ -665,16 +672,16 @@ function SpendTrend({ threads, totalCost }: { threads: Thread[]; totalCost: numb
     <div className="rounded-xl border border-white/10 bg-white/[0.035] p-1">
       <div className="rounded-lg bg-black/20 px-3 py-2.5">
         <div className="flex items-center justify-between gap-3">
-          <span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Spend</span>
-          <span className="font-mono text-[11px] text-muted-foreground">{threads.length} cases</span>
+          <span className="text-micro tracking-normal text-muted-foreground">Spend</span>
+          <span className="font-mono text-micro text-muted-foreground">{threads.length} cases</span>
         </div>
         <div className="mt-1 flex items-end justify-between gap-3">
-          <div className="font-mono text-[17px] font-semibold text-foreground tabular-nums leading-none">
+          <div className="font-mono text-title font-semibold text-foreground tabular-nums leading-none">
             {formatUsd(totalCost)}
           </div>
           {series.length > 1 && (
             <span className={cn(
-              "inline-flex items-center gap-1 text-[11px] font-mono font-medium",
+              "inline-flex items-center gap-1 text-micro font-mono font-medium",
               trend === "up" ? "text-[hsl(var(--confidence-mid))]"
               : trend === "down" ? "text-[hsl(var(--brain-cyan))]"
               : "text-muted-foreground",
