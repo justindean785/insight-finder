@@ -70,7 +70,8 @@ export default function ChatPage() {
     const onNav = (e: Event) => {
       const detail = (e as CustomEvent).detail as { tab?: string; section?: string };
       const t = detail?.tab ?? "";
-      if (t === "report") setTab("report");
+      if (t === "chat") setTab("chat");
+      else if (t === "report") setTab("report");
       else if (["custody", "audit", "issues"].includes(t)) setTab("tools");
       else if (["artifacts", "matrix", "clusters", "timeline"].includes(t) || detail?.section === "evidence") {
         setTab("evidence");

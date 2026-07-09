@@ -84,6 +84,49 @@ export const REVIEW_CLASS: Record<ReviewState, string> = {
 const LEGACY_KEY = (threadId: string) => `proximity:review:${threadId}`;
 const EVT = "proximity:review-changed";
 
+/**
+ * Scoped re-investigation prompt for a single artifact an analyst flagged
+ * "recheck". Phrased so the agent runs *fresh, independent* corroboration on
+ * exactly this value rather than restating what it already found.
+ */
+export function recheckPrompt(value: string, kind?: string): string {
+  const k = kind ? ` (${kind})` : "";
+  return (
+    `Re-verify this specific finding: "${value}"${k}. ` +
+    `An analyst flagged it for another look — run additional independent ` +
+    `tools/sources to confirm or refute it, then report whether it holds up ` +
+    `and at what confidence.`
+  );
+}
+
+/**
+ * Flag → chatbot: switch the workspace to the Chat tab and auto-send a scoped
+ * re-investigation of one artifact. Reuses the same two buses the Pivots tab
+ * and command palette already ride:
+ *   - `swarmbot:navigate` { tab: "chat" }  → ChatPage flips to the Chat tab
+ *   - `proximity:run-pivot` { prompt }     → ChatWindow.sendText() fires the run
+ * ChatWindow stays mounted across tab switches, so the send lands even though
+ * the user was on the Evidence tab a tick earlier.
+ */
+export function launchRecheckInChat(
+  threadId: string,
+  artifact: { value: string; kind?: string },
+) {
+  window.dispatchEvent(
+    new CustomEvent("swarmbot:navigate", { detail: { tab: "chat" } }),
+  );
+  window.dispatchEvent(
+    new CustomEvent("proximity:run-pivot", {
+      detail: {
+        threadId,
+        value: artifact.value,
+        type: artifact.kind,
+        prompt: recheckPrompt(artifact.value, artifact.kind),
+      },
+    }),
+  );
+}
+
 type Map = Record<string, ReviewState>;
 type NoteMap = Record<string, string>;
 

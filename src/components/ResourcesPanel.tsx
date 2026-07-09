@@ -22,7 +22,7 @@ import { readableSourceLabel } from "@/lib/tool-display";
 import { humanizeArtifactMetadata } from "@/lib/artifact-metadata";
 import { EvidenceStatusBadge, FilterChips, StatusLegend } from "@/components/ui/workspace-primitives";
 import {
-  useReviewStates, REVIEW_CLASS, REVIEW_SHORT,
+  useReviewStates, REVIEW_CLASS, REVIEW_SHORT, launchRecheckInChat,
   type ReviewState,
 } from "@/lib/review";
 
@@ -634,14 +634,23 @@ function ArtifactDrawerInner({
               <ReviewBtn current={rState} target="confirmed" onClick={() => reviewSet(artifact.id, "confirmed")}>
                 <CheckCircle2 className="w-3 h-3" /> Confirm
               </ReviewBtn>
-              <ReviewBtn current={rState} target="key" onClick={() => reviewSet(artifact.id, "key")}>
-                <Star className="w-3 h-3" /> Key
-              </ReviewBtn>
-              <ReviewBtn current={rState} target="recheck" onClick={() => reviewSet(artifact.id, "recheck")}>
+              <ReviewBtn
+                current={rState}
+                target="recheck"
+                onClick={() => {
+                  reviewSet(artifact.id, "recheck");
+                  launchRecheckInChat(threadId, { value: artifact.value, kind: artifact.kind });
+                  toast.success("Rechecking in chat…");
+                  onClose();
+                }}
+              >
                 <ShieldQuestion className="w-3 h-3" /> Recheck
               </ReviewBtn>
               <ReviewBtn current={rState} target="dismissed" onClick={() => reviewSet(artifact.id, "dismissed")}>
-                <EyeOff className="w-3 h-3" /> Dismiss
+                <XCircle className="w-3 h-3" /> False
+              </ReviewBtn>
+              <ReviewBtn current={rState} target="key" onClick={() => reviewSet(artifact.id, "key")}>
+                <Star className="w-3 h-3" /> Key
               </ReviewBtn>
               <Button size="sm" variant="ghost" className="col-span-2 h-7 px-2 gap-1 text-data" onClick={() => reviewSet(artifact.id, null)}>
                 Reset
