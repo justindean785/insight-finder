@@ -12,11 +12,22 @@
 // SMART_TOOLS below. The orchestrator itself runs on the smart model because
 // its job is multi-source synthesis.
 
-export type Tier = "fast" | "smart";
+export type Tier = "fast" | "smart" | "fallback";
 
 export const MODELS: Record<Tier, string> = {
   fast: "MiniMax-M2.7",
   smart: "MiniMax-M2.7",
+  // Fallback runs on the Lovable AI gateway when MiniMax is unavailable. The old
+  // pinned "google/gemini-2.5-pro" returns 403 Forbidden on this gateway key (the
+  // pro tier is credit-gated), which turned a MiniMax preflight-timeout into a
+  // DEAD run instead of a graceful degrade (Phase B5). Repoint to the free/served
+  // flash-class model and make it operator-overridable WITHOUT a code change via
+  // LOVABLE_FALLBACK_MODEL_ID. Single source of truth — env.ts + health-handler.ts
+  // read this value. The PRIMARY orchestrator model (MiniMax) is unchanged.
+  // Pinned to the GA flash model: gemini-3-flash-preview (the mirror's brief
+  // "speed pass" default) is a preview SKU with no serving guarantee and is
+  // barred from this deploy. Override with LOVABLE_FALLBACK_MODEL_ID.
+  fallback: Deno.env.get("LOVABLE_FALLBACK_MODEL_ID") ?? "google/gemini-2.5-flash",
 };
 
 // Steps that MUST run on the smart tier. Everything else defaults to "fast".
