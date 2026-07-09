@@ -13,6 +13,7 @@ import { DEFAULT_TOOL_TTL_MS, NO_CACHE_TOOLS, redactSensitiveToolInput, TOOL_TTL
 import { creditsCharged } from "./billing.ts";
 import { classifyToolOutcome } from "./tool-outcome.ts";
 import * as circuit from "./circuit.ts";
+import { guard } from "./guard.ts";
 import {
   ALWAYS_ALLOW_TOOLS,
   analyzeWeakLead,
@@ -810,12 +811,18 @@ export function wrapToolsWithCache(
           });
           ok = deriveOk(result);
           if (!ok) errInfo = extractToolError(result);
+          // C-2: record minimax_correlate's FINAL outcome (post-timeout-race) so
+          // memory_save can tell "correlate failed this cycle" apart from "correlate
+          // never ran" — a timeout stub races the tool's own execute() and wins, so
+          // this is the only point that sees what the model actually received.
+          if (name === "minimax_correlate") guard.lastCorrelateOutcome = ok ? "ok" : "failed";
           circuit.recordResult(ctx.investigationId, name, sel, purpose, {
             status: circuit.classifyResult(result, null),
             artifactCount: 0,
           });
         } catch (e) {
           ok = false;
+          if (name === "minimax_correlate") guard.lastCorrelateOutcome = "failed";
           const msg = redactSecrets(String((e as Error)?.message ?? e)).slice(0, 500);
           finishCall(ctx.investigationId, name);
           logUsage(false, false, Date.now() - t0, msg, null, false, {
