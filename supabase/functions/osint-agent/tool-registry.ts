@@ -4763,6 +4763,12 @@ export function buildTools(ctx: ToolContext) {
   (tools as ToolRegistry).indicia_web_dbs = indicia_web_dbs;
   (tools as ToolRegistry).indicia_hudsonrock = indicia_hudsonrock;
 
+  // People Data Labs Person Enrichment — imported from tools/peopledatalabs.ts.
+  // Gated on PEOPLEDATALABS_API_KEY via capabilities.ts (readiness gate drops the
+  // tool from the schema on keyless deploys); classed `breach` in
+  // source-classification.ts so a single hit is a LEAD, never Confirmed alone.
+  (tools as ToolRegistry).pdl_person_enrich = pdl_person_enrich;
+
   // Gemini vision/document reader (tools/gemini_vision.ts) — the multimodal eyes
   // MiniMax-M2.7 lacks. Gated on GEMINI_API_KEY via capabilities.ts; classed
   // ai_summary in source-classification.ts (lead-tier, capped ≤55).
@@ -4967,6 +4973,7 @@ export function buildTools(ctx: ToolContext) {
     // leakcheck (the standalone stolentax_footprint tool was removed in the cull).
     ...(Deno.env.get("STOLENTAX_API_KEY") ? ["breach_check"] : []),
     ...(INDICIA_API_KEY ? ["indicia_email","indicia_phone","indicia_person","indicia_address","indicia_web_dbs","indicia_hudsonrock"] : []),
+    ...(PEOPLEDATALABS_API_KEY ? ["pdl_person_enrich"] : []),
     ...(Deno.env.get("DEEPFIND_API_KEY") ? ["deepfind_reverse_email","deepfind_disposable_email","deepfind_ssl_inspect","deepfind_tech_stack","deepfind_url_unshorten","deepfind_telegram_channel","deepfind_telegram_search","deepfind_vin_lookup","deepfind_aircraft_lookup","deepfind_vessel_lookup","deepfind_mac_lookup","deepfind_dark_web_link","deepfind_email_breach","deepfind_transaction_viewer"] : []),
     ...(Deno.env.get("VIRUSTOTAL_API_KEY") ? ["virustotal_lookup"] : []),
     ...(Deno.env.get("IPGEOLOCATION_API_KEY") ? ["ipgeolocation_lookup"] : []),
