@@ -49,7 +49,9 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // request (not just abandons the promise). gemini_deep_dork's p95 (~46s) exceeds
   // this cap by design: it becomes a fast-fail corroboration source, not a 30s tax.
   gemini_deep_dork: 12_000,        // was 30_000 — kill the per-run 30s timeout tail
-  deepfind_reverse_email: 8_000,   // account-discovery corroboration — fail fast
+  // deepfind_reverse_email: removed 8s override — falls back to 12s default.
+  // The 8s cap caused 9 timeouts in the 2026-07-08 audit; provider legitimately
+  // needs headroom for the reverse-email lookup.
   jina_reader_scrape: 8_000,       // single-page scrape — fail fast, try a lighter source
   dork_harvest: 25_000,     // wraps several web searches — p95 ~17s
   exa_search: 20_000,       // neural search + contents — p95 ~12s
@@ -92,6 +94,9 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // exceeds 12s; give it headroom. We deliberately keep MODELS.smart (not fast) — this is
   // the misattribution/collision-detection step, where quality outranks a few seconds.
   minimax_correlate: 20_000,
+  // oathnet_lookup: the 2026-07-08 audit showed 2 timeouts at exactly 12,058ms and
+  // 12,075ms — hitting the default 12s cap. Give headroom for legitimate slow responses.
+  oathnet_lookup: 15_000,
 };
 export function toolTimeoutMs(name: string): number {
   return TOOL_TIMEOUT_OVERRIDE_MS[name] ?? DEFAULT_TOOL_TIMEOUT_MS;
@@ -787,6 +792,15 @@ export function wrapToolsWithCache(
         });
 
         // 3) live
+        // Mark the provider in-flight BEFORE dispatching so same-step parallel
+        // siblings are gated by the in-flight check in shouldRun. This is the
+        // defence-in-depth layer for when parallel_tool_calls:false is ignored
+        // by the gateway (e.g. Lovable fallback), preventing a quota-401 burst
+        // where multiple calls race past shouldRun before any 401 is recorded.
+        // ALWAYS_ALLOW_TOOLS bypass this (same exemption as the timeout gate).
+        if (!ALWAYS_ALLOW_TOOLS.has(name)) {
+          circuit.markProviderInFlight(ctx.investigationId, name);
+        }
         let ok = true;
         let result: unknown;
         let errInfo: { errorMsg: string | null; statusCode: number | null } = { errorMsg: null, statusCode: null };
@@ -816,14 +830,17 @@ export function wrapToolsWithCache(
           // never ran" — a timeout stub races the tool's own execute() and wins, so
           // this is the only point that sees what the model actually received.
           if (name === "minimax_correlate") guard.lastCorrelateOutcome = ok ? "ok" : "failed";
+          circuit.clearProviderInFlight(ctx.investigationId, name);
           circuit.recordResult(ctx.investigationId, name, sel, purpose, {
             status: circuit.classifyResult(result, null),
             artifactCount: 0,
+            errorMessage: errInfo.errorMsg ?? undefined,
           });
         } catch (e) {
           ok = false;
           if (name === "minimax_correlate") guard.lastCorrelateOutcome = "failed";
           const msg = redactSecrets(String((e as Error)?.message ?? e)).slice(0, 500);
+          circuit.clearProviderInFlight(ctx.investigationId, name);
           finishCall(ctx.investigationId, name);
           logUsage(false, false, Date.now() - t0, msg, null, false, {
             input: inputJson,
@@ -832,6 +849,7 @@ export function wrapToolsWithCache(
           circuit.recordResult(ctx.investigationId, name, sel, purpose, {
             status: circuit.classifyResult(null, e),
             artifactCount: 0,
+            errorMessage: msg,
           });
           // Resilience (Phase 1): RETURN a schema-safe error result instead of
           // throwing (see the NO_CACHE path above). All bookkeeping — finishCall,

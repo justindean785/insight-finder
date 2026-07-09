@@ -133,6 +133,12 @@ interface ThreadState {
   calls: Map<string, CallRecord>;
   /** provider name → active suppression for this investigation */
   suppressions: Map<string, Suppression>;
+  /** Providers with at least one call currently executing (started, not yet
+   *  recorded via recordResult). Used to prevent a same-step parallel burst
+   *  from dispatching multiple calls to the same provider before any of them
+   *  returns — the scenario where parallel_tool_calls:false is ignored by the
+   *  model/gateway and several calls race past shouldRun simultaneously. */
+  inFlight: Set<string>;
   /** Number of in-flight runs that have acquire()'d this thread. The shared
    *  state is only torn down by release() once this returns to 0, so an
    *  overlapping run (double-submit / retry — setupRequest verifies ownership
@@ -164,7 +170,7 @@ function state(threadId: string): ThreadState {
     THREADS.set(threadId, existing);
     return existing;
   }
-  const s: ThreadState = { breakers: new Map(), calls: new Map(), suppressions: new Map(), active: 0 };
+  const s: ThreadState = { breakers: new Map(), calls: new Map(), suppressions: new Map(), inFlight: new Set(), active: 0 };
   THREADS.set(threadId, s);
   // Evict the least-recently-used thread(s) when over the cap. Iterate in LRU
   // order (oldest first) and drop the oldest entries until back under the cap,
@@ -291,6 +297,18 @@ export function shouldRun(
   if (sup.suppressed) {
     return { allow: false, reason: sup.reason ?? `provider ${sup.provider} suppressed`, until: sup.until };
   }
+  // In-flight provider gate: if a call for this provider is already executing
+  // (started but not yet returned), block same-step siblings. This is the
+  // defensive layer against a same-step parallel burst when parallel_tool_calls
+  // is ignored by the gateway (e.g. Lovable fallback). Without this, several
+  // calls race past shouldRun simultaneously, all making live requests before
+  // the first 401/suppression is recorded. ALWAYS_ALLOW_TOOLS bypass this gate
+  // (they bypass timeouts too — evidence writes must never be blocked).
+  const provider = providerForTool(tool);
+  const s = THREADS.get(threadId);
+  if (s && s.inFlight.has(provider)) {
+    return { allow: false, reason: `provider '${provider}' already has a call in-flight — waiting for its result` };
+  }
   if (b.disabledUntil && now < b.disabledUntil) {
     return { allow: false, reason: b.disabledReason ?? "backoff", until: b.disabledUntil };
   }
@@ -326,13 +344,14 @@ export function shouldRun(
   return { allow: true };
 }
 
-/** Record outcome of a tool call and update breaker. */
+/** Record outcome of a tool call and update breaker.
+ *  @param errorMessage — optional raw error text for quota/limit detection. */
 export function recordResult(
   threadId: string,
   tool: string,
   selector: string,
   purpose: string,
-  outcome: { status: FailureKind; artifactCount?: number },
+  outcome: { status: FailureKind; artifactCount?: number; errorMessage?: string },
 ): void {
   const b = breakerFor(threadId, tool);
   const s = state(threadId);
@@ -525,4 +544,17 @@ export function clearThread(threadId: string): void {
  *  turns into a free, un-billed skip before any live call. */
 export function disableTool(threadId: string, tool: string, reason: string): void {
   breakerFor(threadId, tool).disabledReason = reason;
+}
+
+/** Mark a provider as having an in-flight call for this investigation.
+ *  Call this immediately after shouldRun returns allow:true, before the live
+ *  request is dispatched. Pair with clearProviderInFlight() on completion. */
+export function markProviderInFlight(threadId: string, tool: string): void {
+  state(threadId).inFlight.add(providerForTool(tool));
+}
+
+/** Clear the in-flight marker for a provider once its call has returned
+ *  (success or error). Call this before or alongside recordResult(). */
+export function clearProviderInFlight(threadId: string, tool: string): void {
+  THREADS.get(threadId)?.inFlight.delete(providerForTool(tool));
 }
