@@ -88,10 +88,16 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // (up to 200 entries / 16k chars) to the smart-tier model for a 1500-token JSON
   // clustering+rescoring response. The 2026-07-08 pipeline audit caught it timing out
   // at 12,143ms on the 12s default, so correlation produced ZERO output and 73/73
-  // artifacts stayed cluster_id:null. Smart-tier inference over a full batch legitimately
-  // exceeds 12s; give it headroom. We deliberately keep MODELS.smart (not fast) — this is
-  // the misattribution/collision-detection step, where quality outranks a few seconds.
-  minimax_correlate: 20_000,
+  // artifacts stayed cluster_id:null (raised 12s -> 20s then). RECURRENCE 2026-07-09
+  // (live fullyteamjody run): the call COMPLETED at 22,487ms but the 20s cap had already
+  // binned it as a timeout — a finished correlation was thrown away. execute() doesn't
+  // forward the wrapper signal, so the model call runs to completion regardless; the fix
+  // is to let it finish. Its input is BOUNDED (16k chars / 1500 out tokens) so latency is
+  // bounded — this is calibration, not open-ended bumping. 30s (= the serus precedent, the
+  // highest existing cap) clears the observed 22.5s with headroom. We deliberately keep
+  // MODELS.smart (not fast) — this is the misattribution/collision-detection step, where
+  // quality outranks a few seconds.
+  minimax_correlate: 30_000,
 };
 export function toolTimeoutMs(name: string): number {
   return TOOL_TIMEOUT_OVERRIDE_MS[name] ?? DEFAULT_TOOL_TIMEOUT_MS;
