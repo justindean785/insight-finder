@@ -360,10 +360,17 @@ export function clusterUpdatesFor(arts: Artifact[]): ClusterUpdate[] {
     .map((m) => ({ id: m.id!, cluster_id: m.cluster_id, subject_id: m.subject_id, promoted_confidence: m.promoted_confidence, tier: m.tier }));
 }
 
-// Minimal structural shape of the supabase client — only `from` is required. Kept loose
-// (the query-builder chain is `any`) so a real SupabaseClient is assignable without a
-// hard @supabase/supabase-js import, and so this module stays unit-testable with a stub.
+// Minimal structural shape of the supabase client — only `from` is required. The
+// query-builder chain is deliberately `any`: a precise structural type (matching
+// supabase-js's real PostgrestFilterBuilder generics) makes `deno check` hit "Type
+// instantiation is excessively deep and possibly infinite" (TS2589) at the index.ts call
+// site — the builder's generic chain recurses past TS's resolution depth. `any` here is
+// the standard escape hatch for that class of external-generic-library mismatch, not a
+// laziness shortcut; every value that flows through it is re-validated at the field level
+// inside applyClusteringToThread before use. No hard @supabase/supabase-js import, so
+// this module stays unit-testable with a plain stub (see cluster_test.ts).
 // deno-lint-ignore no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type DbLike = { from(table: string): any };
 
 /**
