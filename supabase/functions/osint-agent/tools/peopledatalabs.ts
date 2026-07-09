@@ -42,7 +42,9 @@ interface PdlResult {
  */
 export const pdl_person_enrich = tool({
   description:
-    "People Data Labs (peopledatalabs.com) Person Enrichment API — one-to-one match against ~3B person profiles. Returns names, work emails, phones, social profile URLs (linkedin/twitter/github/facebook), employment history, education, and geo. Requires at least one strong selector (email, phone, social profile URL, or full_name + company/location). Broker/aggregate data: LEAD until independently corroborated. 1 credit/successful match; 404 (no match) is free.",
+    "People Data Labs Person Enrichment (~3B profiles) — PROFESSIONAL enrichment. Strongest on LinkedIn URLs, work emails, and (name+company). Returns names, work/personal emails, phones, LinkedIn/Twitter/GitHub profiles, employment + education history, geo. " +
+    "NARROW USE: only call when the subject has a plausible professional footprint AND you have (a) a LinkedIn URL, (b) a confirmed work email, (c) name+company, (d) name+school, or (e) name+specific city/region. DO NOT call for bare gaming/anon handles, minors, name-only queries without an employer/location disambiguator, or subjects the case has already framed as consumer/social-only (TikTok/Discord/gaming) — the dataset is professional-biased and will burn a credit for no match. " +
+    "Best as a pivot after a LinkedIn/company hit or when a breach surfaces a work email. Broker/aggregate data: LEAD until corroborated. 1 credit per successful match; 404 no-match is free.",
   inputSchema: z.object({
     email: z.string().optional().describe("Email address to match on."),
     phone: z.string().optional().describe("Phone number (E.164 preferred)."),
@@ -73,16 +75,28 @@ export const pdl_person_enrich = tool({
     }
     if (input.min_likelihood != null) params.set("min_likelihood", String(input.min_likelihood));
 
-    // Require at least one strong selector so we don't burn a call on nothing.
-    const hasStrong = ["email","phone","profile"].some((k) => params.has(k))
-      || (params.has("name") && (params.has("company") || params.has("school") || params.has("location")))
-      || (params.has("first_name") && params.has("last_name") && (params.has("company") || params.has("location")));
-    if (!hasStrong) {
+    // Strict selector gate — enforce the "professional-context" contract from the
+    // tool description at execution time. `location` alone with a name is NOT
+    // enough (per user policy: name+context, not name+country). We require an
+    // employer/school OR a specific locality-level location string (comma-
+    // separated, e.g. "Austin, TX") — a bare country/region gets rejected.
+    const looksSpecificLocation = (v: string | null): boolean => {
+      if (!v) return false;
+      const s = v.trim();
+      // "City, Region" or "City, Country" style — at least one comma + 3+ chars each side.
+      return /,\s*\S{2,}/.test(s) && s.length >= 6;
+    };
+    const hasStrongDirect = ["email","phone","profile"].some((k) => params.has(k));
+    const hasNameAndEmployer = (params.has("name") || (params.has("first_name") && params.has("last_name")))
+      && (params.has("company") || params.has("school"));
+    const hasNameAndSpecificLocation = (params.has("name") || (params.has("first_name") && params.has("last_name")))
+      && looksSpecificLocation(params.get("location"));
+    if (!(hasStrongDirect || hasNameAndEmployer || hasNameAndSpecificLocation)) {
       return {
         ok: false,
         source: "peopledatalabs",
         endpoint: "person_enrich",
-        error: "peopledatalabs: need at least one of email/phone/profile, or name + (company|school|location)",
+        error: "peopledatalabs: refused — needs a professional selector: (email/phone/profile URL) OR (name + company|school) OR (name + specific 'City, Region' location). Name-only or name+country is not enough.",
       } satisfies PdlResult;
     }
 
