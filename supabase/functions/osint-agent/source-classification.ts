@@ -321,7 +321,7 @@ export function classifySource(toolOrSource: string | null | undefined): SourceC
   // TOOL_CLASS, and inside a compound free-text string it is reached via splitting —
   // adding `oathnet_lookup` to this regex would instead make the whole compound
   // match here and suppress the split that the two-breach nudge depends on.)
-  if (/\b(breach|hibp|have i been pwned|leak|paste|combolist|stealer log|dehashed|oathnet)\b/.test(s)) return "breach";
+  if (/\b(breach|hibp|have i been pwned|leak|paste|combolist|stealer log|dehashed|oathnet|peopledatalabs|pdl)\b/.test(s)) return "breach";
 
   // Archive — #16.
   if (/\b(wayback|web archive|archive\.org|archive\.is|archive\.today|cachedview)\b/.test(s)) return "archive";
