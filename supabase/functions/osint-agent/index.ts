@@ -38,6 +38,7 @@ import {
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
+import { applyClusteringToThread } from "./lib/cluster.ts";
 import { buildTools } from "./tool-registry.ts";
 import { runAttachmentIntake } from "./attachment-intake.ts";
 import { isMessageSchemaError, classifyStreamProviderError } from "./stream-error-classify.ts";
@@ -885,6 +886,18 @@ Deno.serve(async (req) => {
           .eq("status", "active");
         if (statusErr) {
           console.warn("[thread status] completion update failed:", statusErr.message);
+        }
+        // C-1: DETERMINISTIC clustering + confidence promotion — the last step of the
+        // run, executed REGARDLESS of whether the LLM correlate tool succeeded, failed,
+        // or was never called (the ccc149bc run recorded 73 artifacts with cluster_id:null
+        // precisely because correlate never fired). Local union-find over shared strong
+        // selectors; the LLM only ever adds candidate edges, never a merge. Best-effort:
+        // a clustering error must never fail an otherwise-complete investigation.
+        try {
+          const clustered = await applyClusteringToThread(supabaseAdmin, threadId);
+          console.log(JSON.stringify({ event: "cluster_applied", thread_id: threadId, ...clustered }));
+        } catch (e) {
+          console.warn("[cluster] applyClusteringToThread failed (non-fatal):", String(e));
         }
         // Investigation is done generating — release this run's hold on the
         // in-memory circuit-breaker state so it doesn't linger on the warm
