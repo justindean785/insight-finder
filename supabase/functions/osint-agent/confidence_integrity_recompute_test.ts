@@ -87,3 +87,9 @@ Deno.test("bug#2: two REAL classes still corroborate (unknown-exclusion doesn't 
   const r = applyEvidenceCaps({ rawConfidence: 95, sources: ["census_geocode", "pacer_docket"] }); // public_record + court_record
   assert(r.reason_for_confidence.startsWith("corroborated across 2 source classes"), r.reason_for_confidence);
 });
+
+Deno.test("bug#2: court_record + an unknown 2nd source no longer boosts to 95 (unknown ≠ corroboration)", () => {
+  const r = applyEvidenceCaps({ rawConfidence: 100, sources: ["pacer_docket", "some_unknown_provider"] });
+  assert(r.source_classes.includes("court_record") && r.source_classes.includes("unknown"), r.source_classes.join(","));
+  assertEquals(r.cap, 90, "court_record's own cap; the unknown 2nd source adds no +10 cross-class boost");
+});

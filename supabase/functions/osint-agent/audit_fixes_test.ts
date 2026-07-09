@@ -62,7 +62,11 @@ Deno.test("infra + trusted class CAN lift past 85", () => {
 });
 
 Deno.test("court_record + news still reaches 95 (unchanged)", () => {
-  const r = applyEvidenceCaps({ rawConfidence: 100, sources: ["pacer_docket", "nytimes_article"] });
+  // Input must genuinely classify as `news` — "nytimes_article" is actually
+  // `unknown` (the underscore blocks the \b boundary) and only hit 95 via the
+  // now-removed unknown-corroboration +10 boost. court_record + real news → 95
+  // via the dedicated court_record+news rule, unaffected by the unknown change.
+  const r = applyEvidenceCaps({ rawConfidence: 100, sources: ["pacer_docket", "nytimes news article"] });
   assertEquals(r.confidence, 95);
 });
 

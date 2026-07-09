@@ -169,7 +169,10 @@ describe("shared-host, passive, and trusted-class guards (review #3/#5)", () => 
   });
 
   it("court_record + news still reaches 95", () => {
-    const r = applyEvidenceCaps({ rawConfidence: 100, sources: ["pacer_docket", "nytimes_article"] });
+    // Input must genuinely classify as `news` (the "nytimes_article" underscore
+    // blocks the \b word boundary → it was actually `unknown`, and only reached
+    // 95 via the old unknown-corroboration +10 boost that has since been removed).
+    const r = applyEvidenceCaps({ rawConfidence: 100, sources: ["pacer_docket", "nytimes news article"] });
     expect(r.confidence).toBe(95);
   });
 });
