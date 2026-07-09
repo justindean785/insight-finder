@@ -6,8 +6,18 @@
 
 // ---- Per-investigation guard state ---------------------------------------------
 // - artifactsSinceCorrelate: new artifacts recorded since last successful minimax_correlate
+// - lastCorrelateOutcome: outcome of the MOST RECENT minimax_correlate call this run —
+//   "ok" | "failed" | null (never called). Set by cache.ts's tool wrapper from the
+//   FINAL result actually returned to the model (so a timeout-stub result counts as
+//   "failed" even though the tool's own execute() never saw the timeout — it raced
+//   against the per-tool cap and lost). Read by C-2 (lib/memory_consolidate.ts via the
+//   memory_save tool) so a correlation failure downgrades any cross-selector claim to
+//   "unresolved" instead of letting it save as a confident merged identity (audit
+//   e29aa8c9: correlate timed out at 12,143ms, and the very next memory_save wrote a
+//   98-confidence merge across two different people).
 export const guard = {
   artifactsSinceCorrelate: 0,
+  lastCorrelateOutcome: null as "ok" | "failed" | null,
 };
 
 /**

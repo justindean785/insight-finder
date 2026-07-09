@@ -66,6 +66,8 @@ import {
   guard, routingGuard, CONSUMER_DOMAINS, STAGE2_TOOLS,
   triageState, bumpArtifacts, skipStub,
 } from "./guard.ts";
+import { reviewMemoryBatch, type MemoryEntry } from "./lib/memory_consolidate.ts";
+import type { Artifact as ClusterArtifact } from "./lib/cluster.ts";
 
 import { minimaxChat, minimaxChatWithFallback, safeJson, geminiGroundedSearch, perplexitySearch } from "./providers.ts";
 import { dorkToExaQuery } from "./dork-translate.ts";
@@ -4553,20 +4555,76 @@ export function buildTools(ctx: ToolContext) {
       ),
     })),
     execute: async ({ entries, scope }) => {
+      // C-2: gate every entry through the deterministic C-1-subject consolidation
+      // check BEFORE it can reach agent_memory. agent_memory's own upsert ratchets
+      // confidence with GREATEST(old,new) — it never goes back down — so this is the
+      // only safe interception point. An entry whose claim spans 2+ C-1 subjects (or
+      // whose cross-selector claim is unverifiable while minimax_correlate failed
+      // this cycle) is never written as a confident merge; it's logged to
+      // memory_merge_candidates for review instead (never silently dropped).
+      let toPersist: MemoryEntry[] = entries as unknown as MemoryEntry[];
+      let candidates: Array<{ entry: MemoryEntry; reason: string; subjectIds: string[] }> = [];
+      try {
+        const { data: artRows } = await supabase
+          .from("artifacts")
+          .select("kind,value,source,confidence,metadata")
+          .eq("thread_id", threadId);
+        if (Array.isArray(artRows) && artRows.length > 0) {
+          const clusterArts: ClusterArtifact[] = artRows.map((r) => {
+            const row = r as { kind: string; value: string; source?: string; confidence?: number; metadata?: unknown };
+            return {
+              kind: row.kind ?? "", value: row.value ?? "", source: row.source ?? "",
+              confidence: Number(row.confidence) || 0,
+              metaRaw: typeof row.metadata === "string" ? row.metadata : JSON.stringify(row.metadata ?? {}),
+            };
+          });
+          const correlateFailed = guard.lastCorrelateOutcome === "failed";
+          const reviewed = reviewMemoryBatch(entries as unknown as MemoryEntry[], clusterArts, correlateFailed);
+          toPersist = reviewed.toPersist;
+          candidates = reviewed.candidates;
+        }
+      } catch (e) {
+        // Fail OPEN on the review step itself (never let a bug here block the
+        // orchestrator), but never fail open on a caught cross-subject merge — that
+        // check already ran inside reviewMemoryBatch before this catch could fire.
+        console.warn("[memory_save] C-2 consolidation review threw (persisting as-is):", String(e));
+      }
+      if (candidates.length > 0) {
+        const rows = candidates.map((c) => ({
+          user_id: userId, thread_id: threadId, subject: c.entry.subject, kind: c.entry.kind,
+          content: c.entry.content, proposed_confidence: c.entry.confidence,
+          verdict: c.subjectIds.length >= 2 ? "blocked" : "unresolved",
+          reason: c.reason, subject_ids: c.subjectIds, related_values: c.entry.related_values ?? [],
+        }));
+        const { error: candErr } = await supabaseAdmin.from("memory_merge_candidates").insert(rows);
+        if (candErr) console.warn("[memory_save] candidate log insert failed:", candErr.message);
+      }
+      if (toPersist.length === 0) {
+        return {
+          ok: true, scope: scope ?? "global", saved: 0, entries: [],
+          blocked: candidates.length,
+          note: candidates.length > 0
+            ? "Every proposed entry was blocked as a cross-subject merge or an unverifiable claim (correlate failed this cycle). Logged for review, not saved. Re-investigate with a narrower, single-subject claim."
+            : undefined,
+        };
+      }
       // Upserts on (user_id, kind, subject, md5(content)) — re-saving the same
       // lesson bumps hit_count + last_used_at instead of duplicating rows.
       try {
         const { data, error } = await supabase.rpc("save_agent_memories", {
           _user_id: userId,
           _thread_id: threadId,
-          _entries: entries as unknown as Record<string, unknown>[],
+          _entries: toPersist as unknown as Record<string, unknown>[],
           _scope: scope ?? "global",
         });
         if (error) {
           console.warn("[memory_save] rpc error:", error.message);
           return { ok: false, error: error.message, scope: scope ?? "global" };
         }
-        return { ok: true, scope: scope ?? "global", saved: data?.length ?? 0, entries: data ?? [] };
+        return {
+          ok: true, scope: scope ?? "global", saved: data?.length ?? 0, entries: data ?? [],
+          ...(candidates.length > 0 ? { blocked: candidates.length, blocked_note: "Some entries were blocked as cross-subject merges — see memory_merge_candidates." } : {}),
+        };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         console.warn("[memory_save] threw:", msg);
