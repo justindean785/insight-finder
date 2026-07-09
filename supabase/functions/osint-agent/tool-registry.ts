@@ -35,7 +35,7 @@ import {
   CORDCAT_API_KEY, HUNTER_API_KEY,
   HIBP_API_KEY, GITHUB_API_TOKEN, EXA_API_KEY, JINA_API_KEY,
   GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY,
-  RAPIDAPI_KEY, INDICIA_API_KEY,
+  RAPIDAPI_KEY, INDICIA_API_KEY, PEOPLEDATALABS_API_KEY,
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
   URLSCANNER_API_KEY,
   degradedTools,
@@ -54,6 +54,7 @@ import {
   indicia_email, indicia_phone, indicia_person,
   indicia_address, indicia_web_dbs, indicia_hudsonrock,
 } from "./tools/indicia.ts";
+import { pdl_person_enrich } from "./tools/peopledatalabs.ts";
 import { gemini_vision, runGeminiVision } from "./tools/gemini_vision.ts";
 
 import {
@@ -173,6 +174,12 @@ export function buildTools(ctx: ToolContext) {
           for (const n of ["indicia_email","indicia_phone","indicia_person","indicia_address","indicia_web_dbs","indicia_hudsonrock"]) {
             disabled.push({ name: n, reason: "INDICIA_API_KEY not configured — Indicia person/phone/email/address + web-DB lookups are unavailable." });
           }
+        }
+        if (!PEOPLEDATALABS_API_KEY) {
+          disabled.push({
+            name: "pdl_person_enrich",
+            reason: "PEOPLEDATALABS_API_KEY not configured — People Data Labs Person Enrichment is unavailable.",
+          });
         }
         if (!GEMINI_API_KEY) {
           disabled.push({
@@ -475,6 +482,8 @@ export function buildTools(ctx: ToolContext) {
             // Indicia — US person/phone/email/address + web-DB breach aggregator.
             "indicia_email","indicia_phone","indicia_person","indicia_address",
             "indicia_web_dbs","indicia_hudsonrock",
+            // People Data Labs Person Enrichment — ~3B profile enrichment API.
+            "pdl_person_enrich",
             // DeepFind suite (shared 1000/day pool).
             "deepfind_reverse_email","deepfind_disposable_email",
             "deepfind_ssl_inspect","deepfind_tech_stack","deepfind_url_unshorten",
@@ -552,6 +561,9 @@ export function buildTools(ctx: ToolContext) {
             // Indicia — all six endpoints share one key; keep them off the planner
             // menu until INDICIA_API_KEY is set.
             if (name.startsWith("indicia_") && !INDICIA_API_KEY) return false;
+            // People Data Labs Person Enrichment — keep off the planner menu
+            // until PEOPLEDATALABS_API_KEY is set (same gate as Indicia).
+            if (name === "pdl_person_enrich" && !PEOPLEDATALABS_API_KEY) return false;
             // Gemini vision/document reader — only works with GEMINI_API_KEY; keep
             // it off the planner menu when unkeyed (same gate as gemini_deep_dork).
             if (name === "gemini_vision" && !GEMINI_API_KEY) return false;
@@ -4751,6 +4763,12 @@ export function buildTools(ctx: ToolContext) {
   (tools as ToolRegistry).indicia_web_dbs = indicia_web_dbs;
   (tools as ToolRegistry).indicia_hudsonrock = indicia_hudsonrock;
 
+  // People Data Labs Person Enrichment — imported from tools/peopledatalabs.ts.
+  // Gated on PEOPLEDATALABS_API_KEY via capabilities.ts (readiness gate drops the
+  // tool from the schema on keyless deploys); classed `breach` in
+  // source-classification.ts so a single hit is a LEAD, never Confirmed alone.
+  (tools as ToolRegistry).pdl_person_enrich = pdl_person_enrich;
+
   // Gemini vision/document reader (tools/gemini_vision.ts) — the multimodal eyes
   // MiniMax-M2.7 lacks. Gated on GEMINI_API_KEY via capabilities.ts; classed
   // ai_summary in source-classification.ts (lead-tier, capped ≤55).
@@ -4955,6 +4973,7 @@ export function buildTools(ctx: ToolContext) {
     // leakcheck (the standalone stolentax_footprint tool was removed in the cull).
     ...(Deno.env.get("STOLENTAX_API_KEY") ? ["breach_check"] : []),
     ...(INDICIA_API_KEY ? ["indicia_email","indicia_phone","indicia_person","indicia_address","indicia_web_dbs","indicia_hudsonrock"] : []),
+    ...(PEOPLEDATALABS_API_KEY ? ["pdl_person_enrich"] : []),
     ...(Deno.env.get("DEEPFIND_API_KEY") ? ["deepfind_reverse_email","deepfind_disposable_email","deepfind_ssl_inspect","deepfind_tech_stack","deepfind_url_unshorten","deepfind_telegram_channel","deepfind_telegram_search","deepfind_vin_lookup","deepfind_aircraft_lookup","deepfind_vessel_lookup","deepfind_mac_lookup","deepfind_dark_web_link","deepfind_email_breach","deepfind_transaction_viewer"] : []),
     ...(Deno.env.get("VIRUSTOTAL_API_KEY") ? ["virustotal_lookup"] : []),
     ...(Deno.env.get("IPGEOLOCATION_API_KEY") ? ["ipgeolocation_lookup"] : []),

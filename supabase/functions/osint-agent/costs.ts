@@ -90,6 +90,14 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   indicia_web_dbs: 3000,
   indicia_hudsonrock: 0,
 
+  // ---- People Data Labs Person Enrichment ----
+  // PDL bills ~$0.10/successful match (~$0.03 on volume tiers); 404 "no match"
+  // is free. Use a conservative $0.05 estimate = 50_000 µUSD to avoid an
+  // under-count while the account is on a starter plan. Failed calls (404)
+  // still route through this default via debit; the classifier maps 404 →
+  // outcome=empty, and the cost debiter only bills on ok/empty per prior policy.
+  pdl_person_enrich: 50000,
+
   // ---- Hunter.io ----
   hunter_domain_search: 4000,
   hunter_email_finder: 4000,
