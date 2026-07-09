@@ -39,6 +39,7 @@ import { repairUnknownTool } from "./unknown-tool-guard.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { applyClusteringToThread } from "./lib/cluster.ts";
+import { reclassifyThreadEvidence } from "./lib/evidence_classify.ts";
 import { buildTools } from "./tool-registry.ts";
 import { runAttachmentIntake } from "./attachment-intake.ts";
 import { isMessageSchemaError, classifyStreamProviderError } from "./stream-error-classify.ts";
@@ -896,6 +897,12 @@ Deno.serve(async (req) => {
         try {
           const clustered = await applyClusteringToThread(supabaseAdmin, threadId);
           console.log(JSON.stringify({ event: "cluster_applied", thread_id: threadId, ...clustered }));
+          // C-3: with C-1 tiers now written to artifact metadata, grade every
+          // evidence_log row still marked unclassified (derived from the tier, never
+          // hardcoded). Updates the NON-hashed classification_grade column only, so
+          // the chain of custody is untouched. Best-effort — never fail the run.
+          const graded = await reclassifyThreadEvidence(supabaseAdmin, threadId);
+          console.log(JSON.stringify({ event: "evidence_reclassified", thread_id: threadId, ...graded }));
         } catch (e) {
           console.warn("[cluster] applyClusteringToThread failed (non-fatal):", String(e));
         }

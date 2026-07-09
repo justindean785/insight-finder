@@ -20,6 +20,7 @@ type EvidenceRow = {
   id: string;
   seq: number;
   classification: "hard" | "soft";
+  classification_grade?: string | null;
   kind: string | null;
   value: string | null;
   source: string | null;
@@ -127,7 +128,7 @@ export async function buildPdf(opts: {
       x: MARGIN + 40, y: cy, size: 9, font: bold,
       color: r.classification === "hard" ? good : accent,
     });
-    page.drawText(`${sanitizeWinAnsi(r.kind ?? "-")}${typeof r.confidence === "number" ? ` · ${r.confidence}%` : ""}`, {
+    page.drawText(`${r.classification_grade ? `[${r.classification_grade}] ` : ""}${sanitizeWinAnsi(r.kind ?? "-")}${typeof r.confidence === "number" ? ` · ${r.confidence}%` : ""}`, {
       x: MARGIN + 90, y: cy, size: 9, font, color: muted,
     });
     page.drawText(safeIso(r.collected_at), {
@@ -231,7 +232,7 @@ Deno.serve(async (req) => {
     }
 
     const { data: rowsData } = await admin.from("evidence_log")
-      .select("id,seq,classification,kind,value,source,source_url,tool_name,confidence,chain_hash,prev_hash,content_hash,collected_at,metadata,archive_storage_path,archive_sha256,archive_bytes,archive_content_type")
+      .select("id,seq,classification,classification_grade,kind,value,source,source_url,tool_name,confidence,chain_hash,prev_hash,content_hash,collected_at,metadata,archive_storage_path,archive_sha256,archive_bytes,archive_content_type")
       .eq("thread_id", threadId)
       .order("seq", { ascending: true });
     const rows = (rowsData as EvidenceRow[]) ?? [];

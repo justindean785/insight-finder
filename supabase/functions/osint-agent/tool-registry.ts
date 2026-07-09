@@ -18,6 +18,7 @@ import {
 import { applyDateSanity } from "./date-sanity.ts";
 import { computeAxes, sourceConfidence, applyEvidenceCaps, isUnrelatedEntity, EXCLUDED_COLLISION_CONFIDENCE, isBioCrossLinkName, BIO_CROSS_LINK_NAME_CAP, deriveStatus, coerceCoherentStatus, looksDeadEnd } from "./confidence.ts";
 import { queryTypesOf } from "./query-type-router.ts";
+import { gradeForArtifact } from "./lib/evidence_classify.ts";
 import { isSameSurnameOnlyLead, isListingAgentLead } from "./collision-policy.ts";
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDomainSource, LLM_ASSERTED_PROVENANCE, countIndependentClasses } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
@@ -4479,6 +4480,11 @@ export function buildTools(ctx: ToolContext) {
                 : (conf ?? 0) >= 85
                 ? "hard"
                 : "soft";
+            // Analyst grade DERIVED from C-1 tier metadata (present only if
+            // clustering already ran this cycle) + contradiction signals. Pre-cluster
+            // this is usually "unclassified"/"contradicted"; the end-of-cycle
+            // reclassification pass promotes it once tiers exist.
+            const classification_grade = gradeForArtifact({ kind: String(r.kind), value: String(r.value), confidence: conf, metadata: meta });
             const sourceUrl =
               meta.source_url ||
               meta.url ||
@@ -4500,6 +4506,7 @@ export function buildTools(ctx: ToolContext) {
               _source: evSource,
               _source_url: typeof sourceUrl === "string" ? sourceUrl : null,
               _classification: classification,
+              _classification_grade: classification_grade,
               _confidence: conf,
               _kind: String(r.kind),
               _value: String(r.value),
@@ -4664,6 +4671,9 @@ export function buildTools(ctx: ToolContext) {
             : (conf ?? 0) >= 85
             ? "hard"
             : "soft";
+        // Analyst grade DERIVED from C-1 tier metadata + contradiction signals
+        // (see record_artifacts). Reclassified end-of-cycle once tiers exist.
+        const classification_grade = gradeForArtifact({ kind: String(row.kind), value: String(row.value), confidence: conf, metadata: meta });
         const sourceUrl =
           meta.source_url || meta.url || meta.profile_url || meta.archived_url || null;
         // Chain-of-custody protection (#131 follow-up): keep an LLM-asserted
@@ -4678,6 +4688,7 @@ export function buildTools(ctx: ToolContext) {
           _source: evSource,
           _source_url: typeof sourceUrl === "string" ? sourceUrl : null,
           _classification: classification,
+          _classification_grade: classification_grade,
           _confidence: conf,
           _kind: String(row.kind),
           _value: String(row.value),

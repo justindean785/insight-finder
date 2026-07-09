@@ -1021,7 +1021,11 @@ async function autoAppendToolEvidence(
     const seed = extractEvidenceSeed(input);
     if (!seed) return;
     const hits = countHits(output);
-    // soft = procedural record of the query (incl. confirmed-clean zero-hit runs)
+    // Hashed `classification` stays "soft": this is a procedural record of the
+    // query (incl. confirmed-clean zero-hit runs), and the chain-of-custody hash
+    // only accepts hard/soft. The analyst-facing GRADE is left "unclassified" —
+    // clustering hasn't run yet — and the end-of-cycle reclassification pass grades
+    // it (by matching the seed to the artifact it produced, else the weak floor).
     const snapshot = JSON.stringify({ input, summary: { hits } }).slice(0, 1500);
     await userDb.rpc("append_evidence", {
       _thread_id: ctx.investigationId,
@@ -1030,6 +1034,7 @@ async function autoAppendToolEvidence(
       _source: toolName,
       _source_url: null,
       _classification: "soft",
+      _classification_grade: "unclassified",
       _confidence: null,
       _kind: "tool_query",
       _value: seed,
