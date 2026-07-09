@@ -53,6 +53,9 @@ export const TIER_B: ReadonlyArray<string> = [
   "indicia_address",
   "indicia_web_dbs",
   "indicia_hudsonrock",
+  // People Data Labs Person Enrichment — data-broker aggregate (~3B profiles).
+  // TIER-B / lead: single hit is a LEAD until an independent selector overlaps.
+  "pdl_person_enrich",
 ];
 
 export const TIER_C: ReadonlyArray<string> = [

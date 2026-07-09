@@ -112,6 +112,10 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   indicia_address: "breach",
   indicia_web_dbs: "breach",
   indicia_hudsonrock: "breach",
+  // People Data Labs — data-broker person aggregator (profiles/employment/emails).
+  // Classed `broker` when available; otherwise treated as `breach` peer to Indicia
+  // — LEAD until independently corroborated, cannot alone reach Confirmed.
+  pdl_person_enrich: "breach",
   leakcheck: "breach", // bare alias of leakcheck_lookup seen in compound source strings
   // ── Threat-intel / ransomware-victim exposure ──
   // ransomware.live and the dead deepfind_ransomware_exposure report that an
