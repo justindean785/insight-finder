@@ -102,7 +102,7 @@ export function ConfidenceMeter({
       </div>
       {showValue && (
         <span className="font-mono text-data tabular-nums" style={{ color: `hsl(${c})` }}>
-          {value.toString().padStart(2, "0")}
+          {Math.round(value).toString().padStart(2, "0")}
         </span>
       )}
     </div>

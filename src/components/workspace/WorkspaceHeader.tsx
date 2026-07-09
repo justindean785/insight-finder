@@ -96,17 +96,27 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
     return () => clearInterval(id);
   }, [recentlyActive]);
 
-  const status: "idle" | "active" | "completed" =
-    thread?.status === "finished" || thread?.status === "stopped" ? "completed"
+  // The DB thread status is the source of truth for whether a run is live:
+  // `active` MUST win over the recency/artifact heuristic, otherwise a normal
+  // >12s model-thinking gap during a live run collapses the pill to COMPLETED
+  // (the "green COMPLETED while still running" bug). A `failed*` status
+  // (e.g. failed_context_limit) reads as its own error state, never green.
+  const rawStatus = thread?.status ?? null;
+  const status: "idle" | "active" | "completed" | "failed" =
+    rawStatus === "active" ? "active"
+    : typeof rawStatus === "string" && rawStatus.startsWith("failed") ? "failed"
+    : rawStatus === "finished" || rawStatus === "stopped" || rawStatus === "completed" ? "completed"
     : recentlyActive ? "active"
     : artifactCount > 0 || activity.total > 0 ? "completed"
     : "idle";
   const statusColor =
-    status === "completed" ? "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high)/0.4)] bg-[hsl(var(--confidence-high)/0.1)]"
+    status === "failed" ? "text-destructive border-destructive/40 bg-destructive/10"
+    : status === "completed" ? "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high)/0.4)] bg-[hsl(var(--confidence-high)/0.1)]"
     : status === "active" ? "text-primary border-primary/40 bg-primary/10"
     : "text-muted-foreground border-border bg-secondary/40";
   const dotColor =
-    status === "completed" ? "bg-[hsl(var(--confidence-high))] shadow-[0_0_8px_hsl(var(--confidence-high)/0.7)]"
+    status === "failed" ? "bg-destructive shadow-[0_0_8px_hsl(var(--destructive)/0.6)]"
+    : status === "completed" ? "bg-[hsl(var(--confidence-high))] shadow-[0_0_8px_hsl(var(--confidence-high)/0.7)]"
     : status === "active" ? "bg-primary shadow-[0_0_8px_hsl(var(--primary)/0.5)] animate-pulse"
     : "bg-muted-foreground";
 

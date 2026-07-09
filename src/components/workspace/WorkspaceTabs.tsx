@@ -55,7 +55,7 @@ function CountPill({ value, active }: { value: number; active: boolean }) {
             : "bg-surface-3 text-muted-foreground",
       )}
     >
-      {value > 999 ? "999+" : value}
+      {value > 99 ? "99+" : value}
     </span>
   );
 }
@@ -268,11 +268,14 @@ export function WorkspaceTabs({
   // active tab a surface to sit against, so the bar reads as navigation and
   // separates from the identity header above it.
   return (
-    <div className="relative flex justify-center overflow-x-auto border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(220_22%_6.5%/0.6),hsl(222_20%_4.5%/0.46))] px-3 py-2.5 backdrop-blur-xl [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    <div className="relative flex overflow-x-auto border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(220_22%_6.5%/0.6),hsl(222_20%_4.5%/0.46))] px-3 py-2.5 backdrop-blur-xl [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       <div
         role="tablist"
         aria-label="Investigation workspace"
-        className="inline-flex w-max items-center gap-1 rounded-2xl border border-white/[0.08] bg-[hsl(220_26%_9%/0.6)] p-1 shadow-[inset_0_1px_0_hsl(0_0%_100%/0.05),0_10px_34px_-22px_hsl(var(--intel-blue)/0.7)]"
+        // mx-auto centers the bar when it fits, but collapses to a left-aligned
+        // scroll (instead of clipping the leading Chat tab past the left edge)
+        // once the 5 tabs+badges overflow a narrow desktop with the sidebar open.
+        className="mx-auto inline-flex w-max items-center gap-1 rounded-2xl border border-white/[0.08] bg-[hsl(220_26%_9%/0.6)] p-1 shadow-[inset_0_1px_0_hsl(0_0%_100%/0.05),0_10px_34px_-22px_hsl(var(--intel-blue)/0.7)]"
       >
         {TABS.map((t, idx) => {
           const Icon = t.icon;

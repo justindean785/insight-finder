@@ -13,9 +13,10 @@ function bandColor(d: ConfidenceDimension): string {
   return confidenceColor(d.value);
 }
 
-// Plot radius kept well inside the viewBox so axis labels (e.g. "Corroboration")
-// have a gutter and never clip — the old R=92 in a 260-wide box ran long labels
-// off the edge.
+// Plot radius kept well inside the viewBox, AND the viewBox is padded on the
+// left/right (see the negative x-origin below) so the long axis labels
+// ("Corroboration" on the right, "Conflict-free" / "Report readiness" on the
+// left) have a real gutter and never clip their first/last letter.
 const R = 62;
 const CX = 140;
 const CY = 116;
@@ -89,7 +90,7 @@ export function ConfidenceRadar({
 
       <div className="mt-3 grid gap-4 sm:grid-cols-[minmax(0,260px)_1fr] items-center">
         {/* Radar (decorative; the list below is the accessible source of truth). */}
-        <svg viewBox="0 0 280 236" className="w-full max-w-[280px] mx-auto" role="img" aria-label={a11ySummary} preserveAspectRatio="xMidYMid meet">
+        <svg viewBox="-26 0 332 236" className="w-full max-w-[300px] mx-auto overflow-visible" role="img" aria-label={a11ySummary} preserveAspectRatio="xMidYMid meet">
           {[0.25, 0.5, 0.75, 1].map((f) => (
             <polygon
               key={f}

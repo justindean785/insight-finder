@@ -27,7 +27,7 @@ const VIEWS: { key: View; label: string; icon: LucideIcon }[] = [
  * clusters, and a chronological timeline. Fills the full main workspace width.
  */
 function isView(v: string): v is View {
-  return v === "board" || v === "table" || v === "clusters" || v === "timeline";
+  return v === "board" || v === "table" || v === "clusters" || v === "timeline" || v === "pivots";
 }
 
 export function EvidenceTab({
