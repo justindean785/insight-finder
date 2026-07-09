@@ -10,6 +10,37 @@ export const guard = {
   artifactsSinceCorrelate: 0,
 };
 
+// ---- Correlation auto-fire (audit F1, 2026-07-08) ------------------------------
+// The 2026-07-08 pipeline audit found minimax_correlate NEVER fired in the main run
+// (0 calls across 230 tool calls) — leaving 73/73 artifacts with cluster_id:null and
+// no dedup / contradiction / same-name-collision detection. The counter above was
+// maintained but never READ. This turns it into an active trigger: once enough new
+// artifacts have accrued since the last successful correlate, the recorder surfaces a
+// `correlate_hint` in its result so the orchestrator clusters + rescores BEFORE it
+// drifts further into fan-out. Threshold sits above the system-prompt's soft "≥3"
+// floor (so we don't burn a paid smart-tier call on every tiny increment) and below the
+// audit's N=15 ceiling — a batch worth correlating without over-nudging.
+export const CORRELATE_ARTIFACT_THRESHOLD = 8;
+
+/** True once enough new artifacts have accrued since the last successful
+ * minimax_correlate to justify a re-correlation pass. Pure — reads guard state. */
+export function correlateDue(): boolean {
+  return guard.artifactsSinceCorrelate >= CORRELATE_ARTIFACT_THRESHOLD;
+}
+
+/** Nudge surfaced in a record_artifacts result when a correlate pass is due. Returns
+ * {} when not due, so it can be spread directly into the tool result (mirrors the
+ * memory_hint pattern). */
+export function correlateNudge(): Record<string, unknown> {
+  if (!correlateDue()) return {};
+  return {
+    correlate_hint:
+      `${guard.artifactsSinceCorrelate} new artifacts have accrued since the last correlation pass. ` +
+      `Call minimax_correlate now (pass the seed + the artifacts gathered so far) to cluster, dedup, ` +
+      `rescore confidence, and flag same-name collisions / contradictions BEFORE continuing to fan out.`,
+  };
+}
+
 /**
  * Count tool calls and record_artifacts calls across a set of UI messages, by
  * inspecting message part types. The AI SDK encodes a call to the tool
