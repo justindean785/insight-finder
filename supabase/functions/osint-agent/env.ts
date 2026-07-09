@@ -200,6 +200,9 @@ export const IPQUALITYSCORE_API_KEY = Deno.env.get("IPQUALITYSCORE_API_KEY");
 // deploy never wastes a planner slot proposing a tool that can only return skipped.
 export const RAPIDAPI_KEY = Deno.env.get("RAPIDAPI_KEY");
 export const INDICIA_API_KEY = Deno.env.get("INDICIA_API_KEY");
+// People Data Labs — person enrichment (~3B profiles). Single tool gated on this
+// key; the readiness gate drops it from the schema when unset.
+export const PEOPLEDATALABS_API_KEY = Deno.env.get("PEOPLEDATALABS_API_KEY");
 
 // OpenCorporates company-registry search. NOW EFFECTIVELY REQUIRED — the v0.4
 // search endpoint returns 401 "Invalid Api Token" for ALL keyless requests, so

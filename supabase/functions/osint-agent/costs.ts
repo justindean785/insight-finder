@@ -90,6 +90,11 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   indicia_web_dbs: 3000,
   indicia_hudsonrock: 0,
 
+  // ---- People Data Labs — per-successful-match credit (varies by plan). The
+  // 404 no-match is free; the classifier maps 404 → outcome=empty and the cost
+  // debiter only bills ok/empty per policy. Explicit (never the default).
+  pdl_person_enrich: 50000,
+
   // ---- Hunter.io ----
   hunter_domain_search: 4000,
   hunter_email_finder: 4000,

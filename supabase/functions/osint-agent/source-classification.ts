@@ -112,6 +112,9 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   indicia_address: "breach",
   indicia_web_dbs: "breach",
   indicia_hudsonrock: "breach",
+  // People Data Labs — data-broker person aggregator. Classed `breach`-peer to
+  // Indicia: a single hit is a LEAD (CLASS_CAP 60), never alone Confirmed.
+  pdl_person_enrich: "breach",
   leakcheck: "breach", // bare alias of leakcheck_lookup seen in compound source strings
   // ── Threat-intel / ransomware-victim exposure ──
   // ransomware.live and the dead deepfind_ransomware_exposure report that an
@@ -317,7 +320,10 @@ export function classifySource(toolOrSource: string | null | undefined): SourceC
   // TOOL_CLASS, and inside a compound free-text string it is reached via splitting —
   // adding `oathnet_lookup` to this regex would instead make the whole compound
   // match here and suppress the split that the two-breach nudge depends on.)
-  if (/\b(breach|hibp|have i been pwned|leak|paste|combolist|stealer log|dehashed|oathnet)\b/.test(s)) return "breach";
+  // `peopledatalabs`/`pdl` are the free-text source labels the pdl_person_enrich
+  // tool emits; classed breach-peer broker (LEAD, cap 60) so a PDL hit under its
+  // free-text label lands at broker cap, not `unknown` (cap 50).
+  if (/\b(breach|hibp|have i been pwned|leak|paste|combolist|stealer log|dehashed|oathnet|peopledatalabs|pdl)\b/.test(s)) return "breach";
 
   // Archive — #16.
   if (/\b(wayback|web archive|archive\.org|archive\.is|archive\.today|cachedview)\b/.test(s)) return "archive";

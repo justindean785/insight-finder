@@ -269,6 +269,9 @@ export const PREMIUM_TOOLS = new Set<string>([
   "exa_find_similar",
   "exa_get_contents",
   "hunter_combined",
+  // People Data Labs — per-successful-match paid; once-per-entity so varied
+  // secondary params (min_likelihood/company) can't each re-bill the same person.
+  "pdl_person_enrich",
 ]);
 
 export function isPremiumTool(tool: string): boolean {
