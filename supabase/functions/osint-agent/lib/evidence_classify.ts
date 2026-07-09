@@ -60,15 +60,32 @@ export function gradeFromTier(tier: string | null | undefined): EvidenceGrade {
 }
 
 export interface GradeSignals {
+  /** analyst review verdict (metadata.review_state) — HIGHEST precedence. */
+  reviewState?: string | null;
   /** C-1 metadata.confidence_tier (authoritative when present). */
   confidenceTier?: string | null;
   /** C-1 metadata.promoted_confidence — used to derive a tier when the label is absent. */
   promotedConfidence?: number | null;
   /** contradiction / needs_review / excluded artifact. */
   contradiction?: boolean;
-  /** user feedback loop (placeholder — enum values must exist now). */
+  /** user feedback loop — set alongside reviewState by apply_artifact_review. */
   userVerified?: boolean;
   userRejected?: boolean;
+}
+
+// A human review verdict outranks any machine-derived grade. Mirrors the SQL
+// mapping in apply_artifact_review and the deltas in src/lib/review.ts. Returns
+// null for `new`/reset/unknown so the grade falls back to machine derivation.
+const REVIEW_STATE_GRADE: Record<string, EvidenceGrade> = {
+  confirmed: "verified",
+  key: "verified",
+  recheck: "weak",
+  dismissed: "rejected",
+  wrong: "rejected",
+};
+export function gradeFromReviewState(state: string | null | undefined): EvidenceGrade | null {
+  if (!state) return null;
+  return REVIEW_STATE_GRADE[state.toLowerCase()] ?? null;
 }
 
 /**
@@ -78,6 +95,10 @@ export interface GradeSignals {
  * can't be distinguished from a genuinely-weak-but-clean finding.
  */
 export function gradeFromSignals(s: GradeSignals): EvidenceGrade {
+  // A human analyst verdict is the top-precedence source of truth — it survives
+  // the C-1 tier re-derivation the end-of-cycle reclassify pass performs.
+  const reviewGrade = gradeFromReviewState(s.reviewState);
+  if (reviewGrade) return reviewGrade;
   if (s.userRejected) return "rejected";
   if (s.userVerified) return "verified";
   if (s.contradiction) return "contradicted";
@@ -111,6 +132,7 @@ export function contradictionSignal(a: ArtifactLike): boolean {
 export function gradeForArtifact(a: ArtifactLike): EvidenceGrade {
   const meta = a.metadata ?? {};
   return gradeFromSignals({
+    reviewState: typeof meta.review_state === "string" ? meta.review_state : null,
     confidenceTier: typeof meta.confidence_tier === "string" ? meta.confidence_tier : null,
     promotedConfidence: typeof meta.promoted_confidence === "number" ? meta.promoted_confidence : null,
     contradiction: contradictionSignal(a),

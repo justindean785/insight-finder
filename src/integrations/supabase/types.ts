@@ -620,6 +620,13 @@ export type Database = {
           out_seq: number
         }[]
       }
+      apply_artifact_review: {
+        Args: { _artifact_id: string; _state: string; _thread_id: string }
+        Returns: {
+          grade: string
+          new_confidence: number
+        }[]
+      }
       bump_memory_hits: { Args: { _ids: string[] }; Returns: undefined }
       has_role: {
         Args: {

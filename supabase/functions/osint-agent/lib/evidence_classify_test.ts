@@ -10,6 +10,7 @@ import {
   EVIDENCE_GRADES,
   type EvidenceRow,
   gradeForArtifact,
+  gradeFromReviewState,
   gradeFromSignals,
   gradeFromTier,
   gradeTag,
@@ -96,6 +97,31 @@ Deno.test("C-3: reclassification pass leaves 0 unclassified rows", () => {
   assertEquals(grade("e3"), "contradicted");
   assertEquals(grade("e4"), "weak"); // procedural row with no clustered artifact floors to weak
   assert(updates.every((u) => u.grade !== "unclassified"), "NO row may remain unclassified after the pass");
+});
+
+// ---- analyst review verdict: highest precedence, survives re-derivation -------
+Deno.test("C-4: metadata.review_state outranks the C-1 tier in both directions", () => {
+  // Analyst confirmed a Weak-tier artifact → verified (survives next reclassify).
+  assertEquals(
+    gradeForArtifact({ kind: "email", metadata: { review_state: "confirmed", confidence_tier: "Weak", promoted_confidence: 30 } }),
+    "verified",
+  );
+  // Analyst marked a Confirmed-tier artifact wrong → rejected.
+  assertEquals(
+    gradeForArtifact({ kind: "email", metadata: { review_state: "wrong", confidence_tier: "Confirmed", promoted_confidence: 95 } }),
+    "rejected",
+  );
+  assertEquals(gradeForArtifact({ metadata: { review_state: "key", confidence_tier: "Possible" } }), "verified");
+  assertEquals(gradeForArtifact({ metadata: { review_state: "recheck", confidence_tier: "Confirmed" } }), "weak");
+  assertEquals(gradeForArtifact({ metadata: { review_state: "dismissed", confidence_tier: "Likely" } }), "rejected");
+});
+
+Deno.test("C-4: a reset/unknown review_state falls back to machine derivation", () => {
+  assertEquals(gradeFromReviewState("new"), null);
+  assertEquals(gradeFromReviewState(""), null);
+  assertEquals(gradeFromReviewState(null), null);
+  // No review_state → tier still governs.
+  assertEquals(gradeForArtifact({ metadata: { confidence_tier: "Likely" } }), "probable");
 });
 
 // ---- M1: value-matching must not re-introduce cross-person bridging -----------

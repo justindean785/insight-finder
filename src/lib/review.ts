@@ -68,6 +68,21 @@ export const REVIEW_CONFIDENCE_DELTA: Record<ReviewState, number> = {
   wrong: -40,   // pull confidence down hard in addition to FAILED override
 };
 
+/** Analyst verdict → evidence classification_grade. Mirrors the backend
+ * lib/evidence_classify.ts gradeFromReviewState and the apply_artifact_review SQL.
+ * `new`/reset → "unclassified" (the C-3 end-of-cycle pass re-derives). */
+export const REVIEW_STATE_GRADE: Record<ReviewState, string> = {
+  new: "unclassified",
+  confirmed: "verified",
+  key: "verified",
+  recheck: "weak",
+  dismissed: "rejected",
+  wrong: "rejected",
+};
+export function reviewStateToGrade(state: ReviewState): string {
+  return REVIEW_STATE_GRADE[state] ?? "unclassified";
+}
+
 export const REVIEW_CLASS: Record<ReviewState, string> = {
   new: "text-muted-foreground border-border bg-secondary/40",
   confirmed:
@@ -186,6 +201,11 @@ export function useReviewStates(threadId: string) {
         delete c.states[id];
         emit(threadId);
         await supabase.from("artifact_reviews").delete().eq("artifact_id", id).eq("user_id", user.id);
+        // Clear the server-side verdict too: restore observed confidence + let the
+        // end-of-cycle pass re-derive the grade. Best-effort, never blocks the UI.
+        try {
+          await supabase.rpc("apply_artifact_review", { _artifact_id: id, _thread_id: threadId, _state: "new" });
+        } catch { /* best-effort; local UI state already cleared */ }
       } else {
         c.states[id] = state;
         emit(threadId);
@@ -193,6 +213,13 @@ export function useReviewStates(threadId: string) {
           { thread_id: threadId, artifact_id: id, user_id: user.id, state },
           { onConflict: "user_id,artifact_id" },
         );
+        // Propagate the verdict into the evidence grade, artifact confidence, and
+        // chain of custody server-side (evidence_log / tool_usage_log are SELECT-only
+        // for the client, so this SECURITY DEFINER RPC does the privileged writes).
+        // Best-effort — never block the UI on it.
+        try {
+          await supabase.rpc("apply_artifact_review", { _artifact_id: id, _thread_id: threadId, _state: state });
+        } catch { /* best-effort; local UI state already saved */ }
         // Teach the agent: when an analyst marks an artifact as factually
         // wrong, persist a durable cross-investigation lesson so future
         // runs recall it and skip the bad lead.
