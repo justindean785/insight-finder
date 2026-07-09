@@ -55,11 +55,22 @@ Deno.test("timeout overrides: chronically-slow tools exceed the 12s default", ()
 });
 
 // Audit F1 (2026-07-08): minimax_correlate timed out at 12,143ms on the 12s default,
-// so the correlation engine produced zero output. Regression-guard the raised cap.
-Deno.test("timeout overrides: minimax_correlate clears the 12s default that killed it", () => {
+// so the correlation engine produced zero output. Raised 12s -> 20s.
+// Recurrence (2026-07-09, live trybutez/fullyteamjody run): correlate COMPLETED at
+// 22,487ms but the 20s cap had already discarded it as a timeout — the finished
+// correlation was thrown away. Its input is BOUNDED (16k chars / 1500 out tokens),
+// so latency is bounded; the cap simply sat below the workload's real p99. Raised to
+// 30s (matching the serus precedent) so a completed correlation is USED, not binned.
+Deno.test("timeout overrides: minimax_correlate clears its real bounded-batch latency (~22.5s)", () => {
   assert(
     toolTimeoutMs("minimax_correlate") > DEFAULT_TOOL_TIMEOUT_MS,
     "minimax_correlate must exceed the default cap it was timing out on",
   );
-  assertEquals(toolTimeoutMs("minimax_correlate"), 20_000);
+  // Must clear the observed 22,487ms real-world completion, with headroom, or a
+  // finished correlation gets discarded again.
+  assert(
+    toolTimeoutMs("minimax_correlate") >= 25_000,
+    "minimax_correlate cap must clear its ~22.5s observed completion latency",
+  );
+  assertEquals(toolTimeoutMs("minimax_correlate"), 30_000);
 });
