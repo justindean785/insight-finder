@@ -11,9 +11,9 @@ import * as circuit from "./circuit.ts";
 import { discoverCapabilities, capabilityEnvKeys, gatedToolNames } from "./capabilities.ts";
 
 import {
-  corsHeaders, MINIMAX_API_KEY,
-  PRIMARY_ORCHESTRATOR_MODEL_ID,
-  geminiDirectGateway, GEMINI_FALLBACK_MODEL_ID,
+  corsHeaders, MINIMAX_API_KEY, LOVABLE_API_KEY,
+  lovableGateway, PRIMARY_ORCHESTRATOR_MODEL_ID, FALLBACK_MODEL_ID,
+  geminiDirectGateway, GEMINI_FALLBACK_MODEL_ID, ALLOW_LOVABLE_FALLBACK,
   grokGateway, openAdapterGateway, ORCHESTRATOR_PROVIDER,
   GROK_ORCHESTRATOR_MODEL_ID, OPENADAPTER_ORCHESTRATOR_MODEL_ID,
   degradedTools, deadHosts, resetFirecrawlCreditsLow, INTELBASE_ENABLED,
@@ -38,6 +38,7 @@ import {
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
+import { applyClusteringToThread } from "./lib/cluster.ts";
 import { buildTools } from "./tool-registry.ts";
 import { runAttachmentIntake } from "./attachment-intake.ts";
 import { isMessageSchemaError, classifyStreamProviderError } from "./stream-error-classify.ts";
@@ -417,8 +418,9 @@ Deno.serve(async (req) => {
     };
 
     // Primary: MiniMax-M2.7 via direct API (user's Max plan covers 15k req/5h).
-    // Fallback: direct Gemini API (GEMINI_API_KEY), used only if MiniMax is
-    // missing or the prompt would overflow MiniMax's ~200k context window.
+    // Fallback: Gemini 2.5 Pro via Lovable AI Gateway, used only if the MiniMax
+    // key is missing or the initial prompt is so large it would overflow
+    // MiniMax's ~200k context window on the first step.
     const approxPromptChars =
       (SYSTEM_PROMPT_FULL.length + FINDING_LABELS.length) +
       JSON.stringify(trimmedMessages).length;
@@ -438,6 +440,12 @@ Deno.serve(async (req) => {
       openadapter: !!openAdapterGateway,
     });
     const minimaxIsPrimary = orchChoice.provider === "minimax";
+    // Speed pass: operator can pin the orchestrator to the Lovable AI Gateway
+    // (Gemini) via ORCHESTRATOR_PROVIDER=lovable. When pinned, we skip MiniMax
+    // entirely — Gemini is faster and supports parallel tool calls natively
+    // (the SDK default; providerOptions below only attach the serial-mode
+    // flag when MiniMax is live), which is the single largest wall-clock win.
+    const lovablePinned = ORCHESTRATOR_PROVIDER === "lovable" && !!lovableGateway;
     // The MiniMax-specific overflow pre-pivot + health probe only apply when
     // MiniMax is the primary. Alternative providers carry their own large
     // context windows and reliability, so they bypass the Gemini fallback path.
@@ -445,7 +453,9 @@ Deno.serve(async (req) => {
       minimaxIsPrimary &&
       (approxPromptChars > MINIMAX_CHAR_BUDGET ||
         trimmedMessages.length > MINIMAX_MSG_BUDGET);
-    let useFallback = minimaxIsPrimary
+    let useFallback = lovablePinned
+      ? true
+      : minimaxIsPrimary
       ? (!minimaxAvailable || wouldOverflow)
       : false;
     if (minimaxIsPrimary && !minimaxAvailable) {
@@ -457,10 +467,16 @@ Deno.serve(async (req) => {
         "[orchestrator] MINIMAX_API_KEY is not configured — MiniMax primary unavailable, falling back",
       );
     }
-    // Fallback gateway: direct Gemini API when MiniMax is unavailable.
-    // Grok/xAI is never a fallback — primary pin only.
-    const fallbackTarget = geminiDirectGateway
+    // Which gateway takes a fallback turn. Direct Gemini is the default; the
+    // Lovable gateway only participates when the operator pinned it as primary
+    // (ORCHESTRATOR_PROVIDER=lovable) or opted in via ALLOW_LOVABLE_FALLBACK.
+    // Grok/xAI is never a fallback (primary pin only).
+    const fallbackTarget = lovablePinned
+      ? { gateway: lovableGateway!, modelId: FALLBACK_MODEL_ID, label: "Lovable Gateway fallback", provider: "lovable-gateway" as const }
+      : geminiDirectGateway
       ? { gateway: geminiDirectGateway, modelId: GEMINI_FALLBACK_MODEL_ID, label: "Gemini direct fallback", provider: "gemini-direct" as const }
+      : (lovableGateway && ALLOW_LOVABLE_FALLBACK)
+      ? { gateway: lovableGateway, modelId: FALLBACK_MODEL_ID, label: "Lovable Gateway fallback", provider: "lovable-gateway" as const }
       : null;
     // Pre-flight MiniMax health probe. The fallback selection above only fires
     // when MiniMax's key is missing or the prompt would overflow — it does NOT
@@ -476,7 +492,7 @@ Deno.serve(async (req) => {
     // isolate — it's demonstrably alive, so the extra round-trip (and up to the
     // 6s timeout on the unhealthy path) is removed from time-to-first-token.
     // A cold isolate has no cached health → the probe still runs (safe default).
-    if (minimaxIsPrimary && !useFallback && fallbackTarget && !minimaxHealthyWithin(60_000)) {
+    if (minimaxIsPrimary && !useFallback && !lovablePinned && fallbackTarget && !minimaxHealthyWithin(60_000)) {
       // Two-attempt preflight (mirror's preview-verified probe): MiniMax can go
       // quiet for 6–10s under load on a busy turn (large prompt + reasoning
       // warm-up), so give it up to 12s per attempt with one retry (250ms
@@ -528,7 +544,8 @@ Deno.serve(async (req) => {
     }
     if (useFallback && !fallbackTarget) {
       throw new Error(
-        "MiniMax is unavailable and no fallback is configured — set GEMINI_API_KEY for direct Gemini fallback.",
+        "MiniMax is unavailable and no fallback is configured — set GEMINI_API_KEY " +
+          "(direct Gemini fallback) or opt in to the Lovable gateway with ALLOW_LOVABLE_FALLBACK=true.",
       );
     }
     // Resolve the primary (non-fallback) model from the selected provider.
@@ -662,7 +679,10 @@ Deno.serve(async (req) => {
       // Rates (micro-USD per token):
       //   MiniMax-M2.7:      in $0.30/M  out $1.20/M  → 0.30, 1.20
       //   Gemini 2.5 Flash:  in $0.30/M  out $2.50/M  → 0.30, 2.50
-      // Fallback rate tracks gemini-2.5-flash (the direct Gemini fallback model).
+      // Fallback rate tracks the DEFAULT fallback model (gemini-2.5-flash, B5);
+      // the old Gemini 2.5 Pro rate ($1.25/$10) over-debited the ledger ~4x on the
+      // fallback path. An operator LOVABLE_FALLBACK_MODEL_ID override is best-effort
+      // metered at the Flash rate.
       onStepFinish: ({ usage }) => {
         // A completed step on the primary provider proves MiniMax is alive —
         // record it so the NEXT turn's preflight probe can be skipped.
@@ -866,6 +886,18 @@ Deno.serve(async (req) => {
           .eq("status", "active");
         if (statusErr) {
           console.warn("[thread status] completion update failed:", statusErr.message);
+        }
+        // C-1: DETERMINISTIC clustering + confidence promotion — the last step of the
+        // run, executed REGARDLESS of whether the LLM correlate tool succeeded, failed,
+        // or was never called (the ccc149bc run recorded 73 artifacts with cluster_id:null
+        // precisely because correlate never fired). Local union-find over shared strong
+        // selectors; the LLM only ever adds candidate edges, never a merge. Best-effort:
+        // a clustering error must never fail an otherwise-complete investigation.
+        try {
+          const clustered = await applyClusteringToThread(supabaseAdmin, threadId);
+          console.log(JSON.stringify({ event: "cluster_applied", thread_id: threadId, ...clustered }));
+        } catch (e) {
+          console.warn("[cluster] applyClusteringToThread failed (non-fatal):", String(e));
         }
         // Investigation is done generating — release this run's hold on the
         // in-memory circuit-breaker state so it doesn't linger on the warm

@@ -30,7 +30,7 @@ import type { QueryType } from "./query-type-router.ts";
 import { DNS_TYPES, VIRTUAL_TYPE_MAP, isVirtualType, resolveVirtualHost, filterTxtByPrefix } from "./tools/dns-virtual.ts";
 
 import {
-  MINIMAX_API_KEY,
+  MINIMAX_API_KEY, LOVABLE_API_KEY,
   OATHNET_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
   CORDCAT_API_KEY, HUNTER_API_KEY,
   HIBP_API_KEY, GITHUB_API_TOKEN, EXA_API_KEY, JINA_API_KEY,
@@ -43,6 +43,13 @@ import {
   deadHosts, markHostDead, isHostDead,
 } from "./env.ts";
 import { buildLeakcheckUrl, buildOathnetUrl } from "./breach-request.ts";
+import {
+  oathnetBreachSearchUrl, oathnetStealerSearchUrl, oathnetVictimsSearchUrl,
+  oathnetVictimManifestUrl, oathnetVictimFileUrl, oathnetVictimArchiveUrl,
+  oathnetSubdomainUrl, oathnetDbnamesUrl, OATHNET_AI_FILTER_URL, OATHNET_SCANNER_URLS,
+  noteOathnetQuota, oathnetQuotaLeft, oathnetExhausted,
+  trimStealerItems, trimVictimItems, summarizeManifest, safeVictimFile,
+} from "./oathnet.ts";
 import {
   indicia_email, indicia_phone, indicia_person,
   indicia_address, indicia_web_dbs, indicia_hudsonrock,
@@ -64,8 +71,10 @@ import {
 
 import {
   guard, routingGuard, CONSUMER_DOMAINS, STAGE2_TOOLS,
-  triageState, bumpArtifacts, skipStub,
+  triageState, bumpArtifacts, skipStub, correlateNudge,
 } from "./guard.ts";
+import { reviewMemoryBatch, type MemoryEntry } from "./lib/memory_consolidate.ts";
+import type { Artifact as ClusterArtifact } from "./lib/cluster.ts";
 
 import { minimaxChat, minimaxChatWithFallback, safeJson, geminiGroundedSearch, perplexitySearch } from "./providers.ts";
 import { dorkToExaQuery } from "./dork-translate.ts";
@@ -456,6 +465,11 @@ export function buildTools(ctx: ToolContext) {
             // Breach + identity
             "rapidapi_breach_search","rapidapi_all_breaches",
             "breach_check","leakcheck_lookup","hibp_lookup","oathnet_lookup",
+            // OathNet v2 expansion — stealer logs, victim manifests, domain subdomains,
+            // and breach-efficiency helpers (shared 500/day pool). Archive is manual-only.
+            "oathnet_stealer_search","oathnet_victims_search","oathnet_victim_manifest",
+            "oathnet_victim_file","oathnet_subdomains","oathnet_breach_dbnames","oathnet_ai_filter",
+            "oathnet_scanner",
             "bosint_email_lookup",
             "serus_darkweb_scan",
             // Indicia — US person/phone/email/address + web-DB breach aggregator.
@@ -831,11 +845,19 @@ export function buildTools(ctx: ToolContext) {
       inputSchema: memoSchema("oathnet_lookup", () => z.object({
         type: z.enum(["email", "username", "phone", "ip", "domain", "name"]),
         value: z.string(),
+        dbnames: z.array(z.string()).max(20).optional().describe("Optional v2 breach DB scoping (names from oathnet_breach_dbnames) to narrow the corpus."),
+        filter_id: z.string().optional().describe("Optional 24-char AI/manual filter context from oathnet_ai_filter to reuse."),
       })),
-      execute: async ({ type, value }, opts) => {
+      execute: async ({ type, value, dbnames, filter_id }, opts) => {
         if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
+        if (oathnetExhausted()) return skipStub("oathnet_lookup", `OathNet pooled daily quota exhausted (${oathnetQuotaLeft()} left today) — the oathnet_* family is soft-disabled for this run.`, { quota_left: oathnetQuotaLeft() });
         try {
-          const url = buildOathnetUrl(type, value);
+          // ip → ip-info; domain → email_domain breach; the free-text q-types use the
+          // richer v2 builder only when dbname/filter scoping is requested (else the
+          // existing, unit-tested buildOathnetUrl path is preserved byte-for-byte).
+          const url = (type !== "ip" && type !== "domain" && ((dbnames && dbnames.length) || filter_id))
+            ? oathnetBreachSearchUrl(value, { dbnames, filter_id })
+            : buildOathnetUrl(type, value);
           const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
           // OathNet upstream intermittently 502s; fetchRetry retries transient
           // 5xx/network with backoff so a flaky gateway doesn't hard-fail a
@@ -852,13 +874,293 @@ export function buildTools(ctx: ToolContext) {
           } catch {
             data = { raw: text.slice(0, 4000) };
           }
+          noteOathnetQuota(data);
           // HTTP 200 with an empty breach payload is a successful negative — not a
           // provider failure (inflated the 23% "failure" rate in beta telemetry).
-          if (r.ok) return { ok: true, status: r.status, data };
-          return { ok: false, status: r.status, data };
+          if (r.ok) return { ok: true, status: r.status, data, quota_left: oathnetQuotaLeft() };
+          return { ok: false, status: r.status, data, quota_left: oathnetQuotaLeft() };
         } catch (e) {
           return { error: String(e) };
         }
+      },
+    }),
+    // ── OathNet v2 expansion (stealer / victims / domain / efficiency) ─────────
+    // Shared 500/day POOLED quota: every oathnet_* tool gates on oathnetExhausted()
+    // and updates the pool from each response's echoed remaining-count. Stealer/victim
+    // payloads carry raw credentials/cookies — trimmers in oathnet.ts strip/mask them so
+    // no plaintext secret enters model context or an artifact (see oathnet_test.ts).
+    oathnet_stealer_search: tool({
+      description:
+        "OathNet v2 STEALER-LOG credential search — the highest-value infostealer surface. Query an email/username/domain/IP/discord_id selector; returns credential records (log id, captured url/domain/subdomain/path, username, email, dates). Raw PASSWORDS/COOKIES are redacted by design — you get a `credential_present` boolean, not the secret. Set has_log_id=true to keep only rows that pivot into a victim log (then use oathnet_victims_search / oathnet_victim_manifest). Every hit is a LEAD until corroborated; label [VERIFY]. Shares the 500/day OathNet pool.",
+      inputSchema: memoSchema("oathnet_stealer_search", () => z.object({
+        value: z.string().describe("Selector: email / username / domain / ip / discord_id"),
+        has_log_id: z.boolean().optional().describe("Keep only rows that can pivot into a victim log"),
+        domains: z.array(z.string()).max(10).optional().describe("Scope to captured host domains, e.g. ['google.com']"),
+        filter_id: z.string().optional().describe("Reuse an oathnet_ai_filter context id"),
+      })),
+      execute: async ({ value, has_log_id, domains, filter_id }, opts) => {
+        if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
+        if (oathnetExhausted()) return skipStub("oathnet_stealer_search", `OathNet pooled daily quota exhausted (${oathnetQuotaLeft()} left today).`, { quota_left: oathnetQuotaLeft() });
+        try {
+          const url = oathnetStealerSearchUrl(value, { hasLogId: has_log_id, domains, filter_id });
+          const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
+          const r = await fetchRetry(url, { headers: { "x-api-key": OATHNET_API_KEY }, signal }, { retries: 1, timeoutMs: 20_000 });
+          const text = await r.text();
+          let data: unknown;
+          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 2000) }; }
+          noteOathnetQuota(data);
+          if (!r.ok) return { ok: false, status: r.status, error: `oathnet stealer ${r.status}`, quota_left: oathnetQuotaLeft() };
+          const d = (data as { data?: { items?: unknown; meta?: { total?: number } } })?.data;
+          const items = Array.isArray(d?.items) ? d!.items : [];
+          return {
+            ok: true, status: r.status,
+            count: items.length, total: d?.meta?.total ?? items.length,
+            items: trimStealerItems(items),
+            quota_left: oathnetQuotaLeft(),
+            note: "Stealer rows are LEADS until corroborated. Passwords/cookies are redacted — do NOT record raw credentials; record identity pivots (log_id, domains, username/email) as [VERIFY].",
+          };
+        } catch (e) { return { error: String(e) }; }
+      },
+    }),
+    oathnet_victims_search: tool({
+      description:
+        "OathNet v2 VICTIM-manifest search — find compromised hosts (stealer-log victims) tied to a selector. Returns victim device metadata keyed by log_id: device usernames, HWIDs, device IPs, device emails, linked discord_ids, doc counts, dates. No raw credentials. Pivot a returned log_id into oathnet_victim_manifest (file tree) → oathnet_victim_file (redacted content). total_docs_min filters to richer logs. Every hit is a LEAD; label [VERIFY]. Shares the 500/day OathNet pool.",
+      inputSchema: memoSchema("oathnet_victims_search", () => z.object({
+        value: z.string().describe("Selector: email / username / ip / discord_id / domain"),
+        total_docs_min: z.number().int().min(0).optional().describe("Only logs with at least N documents"),
+        filter_id: z.string().optional(),
+      })),
+      execute: async ({ value, total_docs_min, filter_id }, opts) => {
+        if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
+        if (oathnetExhausted()) return skipStub("oathnet_victims_search", `OathNet pooled daily quota exhausted (${oathnetQuotaLeft()} left today).`, { quota_left: oathnetQuotaLeft() });
+        try {
+          const url = oathnetVictimsSearchUrl(value, { totalDocsMin: total_docs_min, filter_id });
+          const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
+          const r = await fetchRetry(url, { headers: { "x-api-key": OATHNET_API_KEY }, signal }, { retries: 1, timeoutMs: 20_000 });
+          const text = await r.text();
+          let data: unknown;
+          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 2000) }; }
+          noteOathnetQuota(data);
+          if (!r.ok) return { ok: false, status: r.status, error: `oathnet victims ${r.status}`, quota_left: oathnetQuotaLeft() };
+          const d = (data as { data?: { items?: unknown; meta?: { total?: number } } })?.data;
+          const items = Array.isArray(d?.items) ? d!.items : [];
+          return {
+            ok: true, status: r.status,
+            count: items.length, total: d?.meta?.total ?? items.length,
+            items: trimVictimItems(items),
+            quota_left: oathnetQuotaLeft(),
+            note: "Victim rows are LEADS until corroborated. Pivot a log_id via oathnet_victim_manifest. Label device identifiers [VERIFY].",
+          };
+        } catch (e) { return { error: String(e) }; }
+      },
+    }),
+    oathnet_victim_manifest: tool({
+      description:
+        "OathNet v2 — retrieve one victim log's MANIFEST (file tree: names, types, sizes only; NO file contents). Pass a log_id from oathnet_victims_search / oathnet_stealer_search (has_log_id). Use it to decide which file to read via oathnet_victim_file. Shares the 500/day OathNet pool.",
+      inputSchema: memoSchema("oathnet_victim_manifest", () => z.object({
+        log_id: z.string().describe("Victim log id, e.g. vic_002_gamer_dragonslayer"),
+      })),
+      execute: async ({ log_id }, opts) => {
+        if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
+        if (oathnetExhausted()) return skipStub("oathnet_victim_manifest", `OathNet pooled daily quota exhausted (${oathnetQuotaLeft()} left today).`, { quota_left: oathnetQuotaLeft() });
+        try {
+          const url = oathnetVictimManifestUrl(log_id);
+          const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
+          const r = await fetchRetry(url, { headers: { "x-api-key": OATHNET_API_KEY }, signal }, { retries: 1, timeoutMs: 20_000 });
+          const text = await r.text();
+          let data: unknown;
+          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 2000) }; }
+          noteOathnetQuota(data);
+          if (!r.ok) return { ok: false, status: r.status, error: `oathnet manifest ${r.status}`, quota_left: oathnetQuotaLeft() };
+          // Manifest is raw JSON (no envelope) — summarize to structure only.
+          return { ok: true, status: r.status, manifest: summarizeManifest(data), quota_left: oathnetQuotaLeft() };
+        } catch (e) { return { error: String(e) }; }
+      },
+    }),
+    oathnet_victim_file: tool({
+      description:
+        "OathNet v2 — read ONE file from a victim log, returned REDACTED: metadata (size, line count, SHA-256 for chain-of-custody) plus a masked preview with passwords/cookies/tokens stripped. Raw credentials are NEVER returned. Pass log_id + file_id from oathnet_victim_manifest. Use for triage ('is there a wallet/session/keepass file?'), NOT to harvest secrets. Shares the 500/day OathNet pool.",
+      inputSchema: memoSchema("oathnet_victim_file", () => z.object({
+        log_id: z.string(),
+        file_id: z.string().describe("File id from the victim manifest"),
+      })),
+      execute: async ({ log_id, file_id }, opts) => {
+        if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
+        if (oathnetExhausted()) return skipStub("oathnet_victim_file", `OathNet pooled daily quota exhausted (${oathnetQuotaLeft()} left today).`, { quota_left: oathnetQuotaLeft() });
+        try {
+          const url = oathnetVictimFileUrl(log_id, file_id);
+          const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
+          const r = await fetchRetry(url, { headers: { "x-api-key": OATHNET_API_KEY }, signal }, { retries: 1, timeoutMs: 20_000 });
+          const text = await r.text();
+          if (!r.ok) return { ok: false, status: r.status, error: `oathnet file ${r.status}`, quota_left: oathnetQuotaLeft() };
+          // Chain-of-custody hash over the RAW bytes; the raw text is masked before return
+          // and never persisted or echoed.
+          let sha256: string | undefined;
+          try {
+            const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+            sha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+          } catch { sha256 = undefined; }
+          return { ok: true, status: r.status, file: safeVictimFile({ logId: log_id, fileId: file_id, text, sha256 }), quota_left: oathnetQuotaLeft() };
+        } catch (e) { return { error: String(e) }; }
+      },
+    }),
+    oathnet_victim_archive: tool({
+      description:
+        "OathNet v2 — reference the FULL victim-log ZIP archive. MANUAL-CONSENT ONLY: this tool NEVER downloads or streams archive bytes into the investigation (raw dumps must not enter context/artifacts). Without confirm:true it refuses. With explicit user authorization (confirm:true) it returns the authenticated archive endpoint + log_id for out-of-band retrieval by the operator. Use only when the user explicitly asks to pull a full log.",
+      inputSchema: memoSchema("oathnet_victim_archive", () => z.object({
+        log_id: z.string(),
+        confirm: z.boolean().optional().describe("Must be true AND user-authorized; without it the tool refuses."),
+      })),
+      execute: async ({ log_id, confirm }) => {
+        if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
+        if (!confirm) {
+          return skipStub("oathnet_victim_archive", "Refused: full-archive download is manual-consent only. It requires explicit user authorization (confirm:true) and is retrieved out-of-band — raw archive bytes are never pulled into the investigation.", { manual_consent_required: true, log_id });
+        }
+        // Deliberately does NOT fetch — returns a reference for operator-side retrieval.
+        return {
+          ok: true,
+          manual_action_required: true,
+          log_id,
+          archive_endpoint: oathnetVictimArchiveUrl(log_id),
+          note: "Authenticated ZIP endpoint. Retrieve out-of-band with the x-api-key header; do NOT ingest raw archive contents into artifacts/memory/prompt. Store only a reference + hash per evidence-integrity rules.",
+          quota_left: oathnetQuotaLeft(),
+        };
+      },
+    }),
+    oathnet_subdomains: tool({
+      description:
+        "OathNet v2 — extract SUBDOMAINS observed in stealer records for a domain (independent of crt.sh/hackertarget: overlap = corroboration, unique hits = new coverage). Returns the host list + count. Run on any domain seed/pivot alongside crtsh_subdomains. Shares the 500/day OathNet pool.",
+      inputSchema: memoSchema("oathnet_subdomains", () => z.object({
+        domain: z.string().describe("Root domain, e.g. example.com"),
+      })),
+      execute: async ({ domain }, opts) => {
+        if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
+        if (oathnetExhausted()) return skipStub("oathnet_subdomains", `OathNet pooled daily quota exhausted (${oathnetQuotaLeft()} left today).`, { quota_left: oathnetQuotaLeft() });
+        try {
+          const url = oathnetSubdomainUrl(domain);
+          const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
+          const r = await fetchRetry(url, { headers: { "x-api-key": OATHNET_API_KEY }, signal }, { retries: 1, timeoutMs: 20_000 });
+          const text = await r.text();
+          let data: unknown;
+          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 2000) }; }
+          noteOathnetQuota(data);
+          if (!r.ok) return { ok: false, status: r.status, error: `oathnet subdomain ${r.status}`, quota_left: oathnetQuotaLeft() };
+          const d = (data as { data?: { domain?: string; subdomains?: unknown; count?: number } })?.data ?? {};
+          const subsRaw = Array.isArray(d.subdomains) ? d.subdomains : [];
+          // Entries may be plain strings OR objects with alive metadata — normalize to strings.
+          const subdomains = subsRaw.slice(0, 200).map((s) => (typeof s === "string" ? s : (s as { subdomain?: string; host?: string })?.subdomain ?? (s as { host?: string })?.host ?? String(s)));
+          return {
+            ok: true, status: r.status,
+            domain: d.domain ?? domain,
+            count: typeof d.count === "number" ? d.count : subdomains.length,
+            subdomains,
+            source: "oathnet_stealer_subdomain",
+            quota_left: oathnetQuotaLeft(),
+            note: "Independent subdomain source — corroborate against crtsh_subdomains / hackertarget.",
+          };
+        } catch (e) { return { error: String(e) }; }
+      },
+    }),
+    oathnet_breach_dbnames: tool({
+      description:
+        "OathNet v2 helper — autocomplete breach DATABASE NAMES for scoping. Pass a fragment (e.g. 'link') → matching db names + record counts + available fields. Use the returned names as `dbnames` on oathnet_lookup to narrow a breach query. Cheap. Shares the 500/day OathNet pool.",
+      inputSchema: memoSchema("oathnet_breach_dbnames", () => z.object({
+        q: z.string().describe("DB-name fragment, e.g. 'link' → linkedin_2012"),
+      })),
+      execute: async ({ q }, opts) => {
+        if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
+        if (oathnetExhausted()) return skipStub("oathnet_breach_dbnames", `OathNet pooled daily quota exhausted (${oathnetQuotaLeft()} left today).`, { quota_left: oathnetQuotaLeft() });
+        try {
+          const url = oathnetDbnamesUrl(q);
+          const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
+          const r = await fetchRetry(url, { headers: { "x-api-key": OATHNET_API_KEY }, signal }, { retries: 1, timeoutMs: 15_000 });
+          const text = await r.text();
+          let data: unknown;
+          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 2000) }; }
+          noteOathnetQuota(data);
+          if (!r.ok) return { ok: false, status: r.status, error: `oathnet dbnames ${r.status}`, quota_left: oathnetQuotaLeft() };
+          const items = Array.isArray((data as { items?: unknown }).items) ? (data as { items: unknown[] }).items.slice(0, 40) : [];
+          return { ok: true, status: r.status, items, quota_left: oathnetQuotaLeft() };
+        } catch (e) { return { error: String(e) }; }
+      },
+    }),
+    oathnet_ai_filter: tool({
+      description:
+        "OathNet v2 — translate a NATURAL-LANGUAGE breach query into a structured filter, returning a reusable `filter_id`. Pass that filter_id to oathnet_lookup (or stealer search) to collapse multi-selector queries into fewer, cheaper calls. Example query: 'US banking users with gmail addresses'. Shares the 500/day OathNet pool.",
+      inputSchema: memoSchema("oathnet_ai_filter", () => z.object({
+        query: z.string().describe("Natural-language description of the breach records to match"),
+        index: z.enum(["breach", "stealer", "victims"]).default("breach"),
+      })),
+      execute: async ({ query, index }, opts) => {
+        if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
+        if (oathnetExhausted()) return skipStub("oathnet_ai_filter", `OathNet pooled daily quota exhausted (${oathnetQuotaLeft()} left today).`, { quota_left: oathnetQuotaLeft() });
+        try {
+          const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
+          const r = await fetchRetry(OATHNET_AI_FILTER_URL, {
+            method: "POST",
+            headers: { "x-api-key": OATHNET_API_KEY, "content-type": "application/json" },
+            body: JSON.stringify({ index, query }),
+            signal,
+          }, { retries: 1, timeoutMs: 20_000 });
+          const text = await r.text();
+          let data: unknown;
+          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 2000) }; }
+          noteOathnetQuota(data);
+          if (!r.ok) return { ok: false, status: r.status, error: `oathnet ai_filter ${r.status}`, quota_left: oathnetQuotaLeft() };
+          return { ok: true, status: r.status, data, quota_left: oathnetQuotaLeft() };
+        } catch (e) { return { error: String(e) }; }
+      },
+    }),
+    oathnet_scanner: tool({
+      description:
+        "OathNet SCANNERS — automated monitoring for newly-indexed breach/stealer exposure. action:'quota' (remaining scanner slots) and action:'list' (existing monitors) are read-only. action:'create' sets up a PERSISTENT monitor with notifications and requires confirm:true + explicit user authorization (a side-effecting subscription, not a lookup) — do NOT create scanners autonomously. Shares the 500/day OathNet pool.",
+      inputSchema: memoSchema("oathnet_scanner", () => z.object({
+        action: z.enum(["quota", "list", "create"]),
+        name: z.string().optional().describe("create: monitor name"),
+        scanner_type: z.enum(["breach", "stealer"]).optional().describe("create: what to watch"),
+        query: z.string().optional().describe("create: the selector/query to monitor"),
+        notification_type: z.enum(["email", "discord", "webhook"]).optional(),
+        confirm: z.boolean().optional().describe("create only: must be true AND user-authorized"),
+      })),
+      execute: async ({ action, name, scanner_type, query, notification_type, confirm }, opts) => {
+        if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
+        if (oathnetExhausted()) return skipStub("oathnet_scanner", `OathNet pooled daily quota exhausted (${oathnetQuotaLeft()} left today).`, { quota_left: oathnetQuotaLeft() });
+        const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
+        const headers = { "x-api-key": OATHNET_API_KEY } as Record<string, string>;
+        try {
+          if (action === "quota" || action === "list") {
+            const url = action === "quota" ? OATHNET_SCANNER_URLS.quota : OATHNET_SCANNER_URLS.list;
+            const r = await fetchRetry(url, { headers, signal }, { retries: 1, timeoutMs: 15_000 });
+            const text = await r.text();
+            let data: unknown;
+            try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 2000) }; }
+            noteOathnetQuota(data);
+            if (!r.ok) return { ok: false, status: r.status, error: `oathnet scanner ${action} ${r.status}`, quota_left: oathnetQuotaLeft() };
+            return { ok: true, status: r.status, action, data, quota_left: oathnetQuotaLeft() };
+          }
+          // create — gated
+          if (!confirm) {
+            return skipStub("oathnet_scanner", "Refused: creating a scanner is a persistent, notifying subscription and requires explicit user authorization (confirm:true). Do not create scanners autonomously.", { manual_consent_required: true });
+          }
+          if (!name || !scanner_type || !query) {
+            return { ok: false, error: "create requires name, scanner_type, and query" };
+          }
+          const body = {
+            name, scanner_type,
+            query_config: { q: query },
+            notification_type: notification_type ?? "email",
+            notify_on_zero_results: false,
+          };
+          const r = await fetchRetry(OATHNET_SCANNER_URLS.create, {
+            method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify(body), signal,
+          }, { retries: 0, timeoutMs: 20_000 });
+          const text = await r.text();
+          let data: unknown;
+          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 2000) }; }
+          noteOathnetQuota(data);
+          if (!r.ok) return { ok: false, status: r.status, error: `oathnet scanner create ${r.status}`, quota_left: oathnetQuotaLeft() };
+          return { ok: true, status: r.status, action: "create", data, quota_left: oathnetQuotaLeft() };
+        } catch (e) { return { error: String(e) }; }
       },
     }),
     socialfetch_lookup: tool({
@@ -4243,6 +4545,10 @@ export function buildTools(ctx: ToolContext) {
                   "Prior memory found for some of the artifacts you just recorded. Read `memory_hits` — incorporate confirmed connections/lessons and cite them as [MEMORY] in the final report. Do NOT re-investigate values already covered.",
               }
             : {}),
+          // Audit F1: once enough new artifacts have accrued since the last correlate,
+          // surface a hint so the orchestrator actually runs minimax_correlate (it never
+          // fired in the audited run). Empty object when not yet due.
+          ...correlateNudge(),
         };
       },
     }),
@@ -4553,20 +4859,76 @@ export function buildTools(ctx: ToolContext) {
       ),
     })),
     execute: async ({ entries, scope }) => {
+      // C-2: gate every entry through the deterministic C-1-subject consolidation
+      // check BEFORE it can reach agent_memory. agent_memory's own upsert ratchets
+      // confidence with GREATEST(old,new) — it never goes back down — so this is the
+      // only safe interception point. An entry whose claim spans 2+ C-1 subjects (or
+      // whose cross-selector claim is unverifiable while minimax_correlate failed
+      // this cycle) is never written as a confident merge; it's logged to
+      // memory_merge_candidates for review instead (never silently dropped).
+      let toPersist: MemoryEntry[] = entries as unknown as MemoryEntry[];
+      let candidates: Array<{ entry: MemoryEntry; reason: string; subjectIds: string[] }> = [];
+      try {
+        const { data: artRows } = await supabase
+          .from("artifacts")
+          .select("kind,value,source,confidence,metadata")
+          .eq("thread_id", threadId);
+        if (Array.isArray(artRows) && artRows.length > 0) {
+          const clusterArts: ClusterArtifact[] = artRows.map((r) => {
+            const row = r as { kind: string; value: string; source?: string; confidence?: number; metadata?: unknown };
+            return {
+              kind: row.kind ?? "", value: row.value ?? "", source: row.source ?? "",
+              confidence: Number(row.confidence) || 0,
+              metaRaw: typeof row.metadata === "string" ? row.metadata : JSON.stringify(row.metadata ?? {}),
+            };
+          });
+          const correlateFailed = guard.lastCorrelateOutcome === "failed";
+          const reviewed = reviewMemoryBatch(entries as unknown as MemoryEntry[], clusterArts, correlateFailed);
+          toPersist = reviewed.toPersist;
+          candidates = reviewed.candidates;
+        }
+      } catch (e) {
+        // Fail OPEN on the review step itself (never let a bug here block the
+        // orchestrator), but never fail open on a caught cross-subject merge — that
+        // check already ran inside reviewMemoryBatch before this catch could fire.
+        console.warn("[memory_save] C-2 consolidation review threw (persisting as-is):", String(e));
+      }
+      if (candidates.length > 0) {
+        const rows = candidates.map((c) => ({
+          user_id: userId, thread_id: threadId, subject: c.entry.subject, kind: c.entry.kind,
+          content: c.entry.content, proposed_confidence: c.entry.confidence,
+          verdict: c.subjectIds.length >= 2 ? "blocked" : "unresolved",
+          reason: c.reason, subject_ids: c.subjectIds, related_values: c.entry.related_values ?? [],
+        }));
+        const { error: candErr } = await supabaseAdmin.from("memory_merge_candidates").insert(rows);
+        if (candErr) console.warn("[memory_save] candidate log insert failed:", candErr.message);
+      }
+      if (toPersist.length === 0) {
+        return {
+          ok: true, scope: scope ?? "global", saved: 0, entries: [],
+          blocked: candidates.length,
+          note: candidates.length > 0
+            ? "Every proposed entry was blocked as a cross-subject merge or an unverifiable claim (correlate failed this cycle). Logged for review, not saved. Re-investigate with a narrower, single-subject claim."
+            : undefined,
+        };
+      }
       // Upserts on (user_id, kind, subject, md5(content)) — re-saving the same
       // lesson bumps hit_count + last_used_at instead of duplicating rows.
       try {
         const { data, error } = await supabase.rpc("save_agent_memories", {
           _user_id: userId,
           _thread_id: threadId,
-          _entries: entries as unknown as Record<string, unknown>[],
+          _entries: toPersist as unknown as Record<string, unknown>[],
           _scope: scope ?? "global",
         });
         if (error) {
           console.warn("[memory_save] rpc error:", error.message);
           return { ok: false, error: error.message, scope: scope ?? "global" };
         }
-        return { ok: true, scope: scope ?? "global", saved: data?.length ?? 0, entries: data ?? [] };
+        return {
+          ok: true, scope: scope ?? "global", saved: data?.length ?? 0, entries: data ?? [],
+          ...(candidates.length > 0 ? { blocked: candidates.length, blocked_note: "Some entries were blocked as cross-subject merges — see memory_merge_candidates." } : {}),
+        };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         console.warn("[memory_save] threw:", msg);

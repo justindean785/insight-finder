@@ -59,6 +59,22 @@ const PROVIDER_TOOLS: Record<string, string[]> = {
     "deepfind_dark_web_link",
   ],
   bosint: ["bosint_email_lookup"],
+  // All OathNet tools share ONE api key + ONE 500/day pooled quota. Group them so a
+  // 429 (pool exhausted) / 402 / timeout / 5xx on any one endpoint suppresses the whole
+  // family for the run instead of each re-firing under its own name and burning the
+  // depleted pool (same trap the deepfind/indicia groups close).
+  oathnet: [
+    "oathnet_lookup",
+    "oathnet_stealer_search",
+    "oathnet_victims_search",
+    "oathnet_victim_manifest",
+    "oathnet_victim_file",
+    "oathnet_victim_archive",
+    "oathnet_subdomains",
+    "oathnet_breach_dbnames",
+    "oathnet_ai_filter",
+    "oathnet_scanner",
+  ],
   hunter: ["hunter_domain_search", "hunter_email_finder", "hunter_email_verifier", "hunter_combined"],
   exa: ["exa_search", "exa_find_similar", "exa_get_contents"],
   minimax: ["minimax_web_search", "minimax_correlate", "minimax_plan_pivots", "minimax_extract"],
@@ -253,8 +269,6 @@ export const PREMIUM_TOOLS = new Set<string>([
   "exa_find_similar",
   "exa_get_contents",
   "hunter_combined",
-  "serus_darkweb_scan",    // $2.5k/call, dark web data is stable within a scan
-  "deepfind_reverse_email", // 8s timeout, expensive on retry; once-per-selector is sufficient
 ]);
 
 export function isPremiumTool(tool: string): boolean {

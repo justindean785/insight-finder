@@ -53,3 +53,13 @@ Deno.test("timeout overrides: chronically-slow tools exceed the 12s default", ()
   // wayback_snapshots must match its cdx peer (which is already 25s).
   assertEquals(toolTimeoutMs("wayback_snapshots"), toolTimeoutMs("wayback_cdx_search"));
 });
+
+// Audit F1 (2026-07-08): minimax_correlate timed out at 12,143ms on the 12s default,
+// so the correlation engine produced zero output. Regression-guard the raised cap.
+Deno.test("timeout overrides: minimax_correlate clears the 12s default that killed it", () => {
+  assert(
+    toolTimeoutMs("minimax_correlate") > DEFAULT_TOOL_TIMEOUT_MS,
+    "minimax_correlate must exceed the default cap it was timing out on",
+  );
+  assertEquals(toolTimeoutMs("minimax_correlate"), 20_000);
+});
