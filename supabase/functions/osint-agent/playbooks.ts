@@ -27,10 +27,15 @@ export interface Playbook {
   pivots: Record<string, string[]>; // artifactKind → tools to queue.
 }
 
+// NOTE: deepfind_reverse_email + dork_harvest were removed from these playbook
+// arrays on 2026-07-09 (beta-launch low-yield cull) — both are hard-disabled
+// (capabilities.ts disabled:true + tool-registry.ts PERMANENT_BLOCK); leaving
+// them here would queue pivots the planner can no longer select. See those files
+// for the fail-rate rationale. Re-add here when the tools are re-enabled.
 const EMAIL_PIVOTS: Record<string, string[]> = {
-  email: ["rapidapi_breach_search", "breach_check", "deepfind_reverse_email", "hibp_lookup", "leakcheck_lookup", "oathnet_lookup", "hunter_email_verifier", "deepfind_disposable_email"],
+  email: ["rapidapi_breach_search", "breach_check", "hibp_lookup", "leakcheck_lookup", "oathnet_lookup", "hunter_email_verifier", "deepfind_disposable_email"],
   domain: ["whois_lookup", "dns_records", "virustotal_lookup", "urlscan_search", "crtsh_subdomains", "hunter_domain_search", "deepfind_ssl_inspect"],
-  username: ["socialfetch_lookup", "github_user", "reddit_user", "username_sweep", "deepfind_reverse_email"],
+  username: ["socialfetch_lookup", "github_user", "reddit_user", "username_sweep"],
   phone: ["oathnet_lookup", "osintnova_phone_lookup", "leakcheck_lookup"],
   ip: ["ip_intel", "ipgeolocation_lookup", "shodan_internetdb", "virustotal_lookup", "urlscan_search"],
 };
@@ -42,20 +47,20 @@ export const PLAYBOOKS: Record<SeedType, Playbook> = {
     // CORROBORATION-ONLY (scarce 200/day & 100/day budgets) — demoted to recommended
     // so they are never the opening breach move. gravatar_profile (~85% no-value in
     // prod) is likewise demoted out of the required fan-out.
-    required: ["rapidapi_breach_search", "breach_check", "hibp_lookup", "deepfind_reverse_email", "hunter_email_verifier"],
-    recommended: ["leakcheck_lookup", "oathnet_lookup", "socialfetch_lookup", "gemini_deep_dork", "exa_search", "google_dorks", "dork_harvest"],
+    required: ["rapidapi_breach_search", "breach_check", "hibp_lookup", "hunter_email_verifier"],
+    recommended: ["leakcheck_lookup", "oathnet_lookup", "socialfetch_lookup", "gemini_deep_dork", "exa_search", "google_dorks"],
     coverage: ["identity", "email", "username", "breach", "social"],
     pivots: EMAIL_PIVOTS,
   },
   username: {
-    required: ["socialfetch_lookup", "username_sweep", "github_user", "deepfind_reverse_email", "oathnet_lookup", "leakcheck_lookup", "breach_check"],
+    required: ["socialfetch_lookup", "username_sweep", "github_user", "oathnet_lookup", "leakcheck_lookup", "breach_check"],
     recommended: ["reddit_user", "exa_search", "exa_find_similar", "gemini_deep_dork", "google_dorks"],
     coverage: ["identity", "username", "social", "breach"],
     pivots: EMAIL_PIVOTS,
   },
   phone: {
     required: ["oathnet_lookup", "osintnova_phone_lookup", "leakcheck_lookup", "breach_check"],
-    recommended: ["deepfind_reverse_email", "gemini_deep_dork", "google_dorks"],
+    recommended: ["gemini_deep_dork", "google_dorks"],
     coverage: ["identity", "phone", "breach", "location"],
     pivots: EMAIL_PIVOTS,
   },
@@ -72,14 +77,14 @@ export const PLAYBOOKS: Record<SeedType, Playbook> = {
     pivots: EMAIL_PIVOTS,
   },
   name: {
-    required: ["exa_search", "minimax_web_search", "oathnet_lookup", "google_dorks", "dork_harvest"],
+    required: ["exa_search", "minimax_web_search", "oathnet_lookup", "google_dorks"],
     recommended: ["gemini_deep_dork", "exa_find_similar", "socialfetch_lookup", "hunter_domain_search"],
     coverage: ["identity", "social", "location", "employment", "relationships"],
     pivots: EMAIL_PIVOTS,
   },
   company: {
     required: ["exa_search", "minimax_web_search", "oathnet_lookup", "gemini_deep_dork", "google_dorks", "hunter_domain_search", "whois_lookup"],
-    recommended: ["dns_records", "crtsh_subdomains", "urlscan_search", "virustotal_lookup", "exa_find_similar", "dork_harvest"],
+    recommended: ["dns_records", "crtsh_subdomains", "urlscan_search", "virustotal_lookup", "exa_find_similar"],
     // business_registry (Secretary of State / license) + property are REQUIRED
     // for completeness — a company at an address can't be "done" without them.
     coverage: ["identity", "business_registry", "property", "employment", "relationships", "domain"],
@@ -87,7 +92,7 @@ export const PLAYBOOKS: Record<SeedType, Playbook> = {
   },
   address: {
     required: ["oathnet_lookup", "minimax_web_search", "exa_search", "gemini_deep_dork", "google_dorks", "jina_reader_scrape"],
-    recommended: ["dork_harvest", "exa_get_contents", "hunter_domain_search"],
+    recommended: ["exa_get_contents", "hunter_domain_search"],
     // property + business_registry pivots (assessor/recorder/parcel, SOS/license)
     // gate completeness for an address/business investigation.
     coverage: ["property", "business_registry", "identity", "location", "relationships"],
@@ -101,7 +106,7 @@ export const PLAYBOOKS: Record<SeedType, Playbook> = {
   },
   crypto_wallet: {
     required: ["crypto_wallet", "exa_search", "google_dorks"],
-    recommended: ["gemini_deep_dork", "dork_harvest"],
+    recommended: ["gemini_deep_dork"],
     coverage: ["identity", "relationships"],
     pivots: EMAIL_PIVOTS,
   },
