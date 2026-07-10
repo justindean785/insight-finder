@@ -1112,50 +1112,150 @@ All colors MUST be HSL.
 }
 
 /* ---------- Chat timeline: one width, one surface, even rhythm ---------- */
+/* Workspace content well — fills the main pane symmetrically (not a skinny
+   42rem strip floating in empty space). Max width scales with viewport. */
 .chat-column {
   width: 100%;
-  max-width: 42rem;
+  max-width: min(100%, 56rem); /* 896px — workstation density */
   margin-inline: auto;
+}
+@media (min-width: 1400px) {
+  .chat-column {
+    max-width: min(100%, 64rem); /* 1024px on wide monitors */
+  }
 }
 
 /* Shared card used by tool cycles + agent replies so edges align */
 .chat-card {
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid hsl(0 0% 100% / 0.08);
-  border-radius: 12px;
-  background: hsl(0 0% 100% / 0.03);
+  border: 1px solid hsl(0 0% 100% / 0.09);
+  border-radius: 10px;
+  background:
+    linear-gradient(180deg, hsl(220 18% 9% / 0.55) 0%, hsl(222 20% 6% / 0.42) 100%);
+  box-shadow:
+    inset 0 1px 0 hsl(0 0% 100% / 0.045),
+    0 12px 32px -28px hsl(0 0% 0% / 0.85);
 }
 
 .chat-card__header {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 40px;
-  padding: 0 16px;
+  min-height: 36px;
+  padding: 0 14px;
   border-bottom: 1px solid hsl(0 0% 100% / 0.06);
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: hsl(var(--muted-foreground));
+  background: hsl(0 0% 100% / 0.02);
 }
 .chat-card__header-time {
   margin-left: auto;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0;
   text-transform: none;
+  font-weight: 500;
   opacity: 0.85;
 }
 .chat-card__body {
-  padding: 14px 16px;
+  padding: 12px 14px 14px;
 }
 .chat-card__footer {
   display: flex;
   align-items: center;
-  min-height: 36px;
-  padding: 0 12px 8px;
+  min-height: 32px;
+  padding: 0 10px 8px;
   border-top: 1px solid hsl(0 0% 100% / 0.05);
+}
+
+/* Main chat stage — subtle inset so the column doesn't float in void */
+.chat-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.chat-stage__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: hsl(0 0% 100% / 0.12) transparent;
+}
+.chat-stage__frame {
+  width: 100%;
+  min-height: 100%;
+  box-sizing: border-box;
+  padding: 1rem 1.25rem 1.25rem;
+}
+@media (min-width: 1024px) {
+  .chat-stage__frame {
+    padding: 1.25rem 1.75rem 1.5rem;
+  }
+}
+
+/* Next-steps dense list — full column width, premium border */
+.chat-next-steps {
+  width: 100%;
+  border: 1px solid hsl(0 0% 100% / 0.09);
+  border-radius: 10px;
+  background:
+    linear-gradient(180deg, hsl(220 18% 9% / 0.4) 0%, hsl(222 20% 6% / 0.35) 100%);
+  box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.04);
+  overflow: hidden;
+}
+.chat-next-steps__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 12px;
+  border-bottom: 1px solid hsl(0 0% 100% / 0.06);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: hsl(var(--muted-foreground));
+  background: hsl(0 0% 100% / 0.02);
+}
+.chat-next-steps__list {
+  display: grid;
+  grid-template-columns: 1fr;
+}
+@media (min-width: 900px) {
+  .chat-next-steps__list {
+    grid-template-columns: 1fr 1fr;
+  }
+  .chat-next-steps__list > * {
+    border-bottom: 1px solid hsl(0 0% 100% / 0.06);
+  }
+  .chat-next-steps__list > *:nth-child(odd) {
+    border-right: 1px solid hsl(0 0% 100% / 0.06);
+  }
+  .chat-next-steps__list > *:nth-last-child(-n+2) {
+    border-bottom: 0;
+  }
+}
+.chat-next-steps__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 8px 12px;
+  transition: background 140ms ease;
+}
+.chat-next-steps__row:hover {
+  background: hsl(0 0% 100% / 0.03);
+}
+@media (max-width: 899px) {
+  .chat-next-steps__list > * + * {
+    border-top: 1px solid hsl(0 0% 100% / 0.06);
+  }
 }
 
 /* Agent prose — system font, fixed 14/1.6, hard-even gaps */

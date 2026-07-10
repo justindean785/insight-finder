@@ -925,7 +925,7 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIM
     return (
       <div className="flex w-full justify-end">
         <div
-          className="chat-card relative min-w-0 max-w-[min(100%,28rem)] px-4 py-2.5 text-[14px] leading-[1.6] break-words text-[hsl(0_0%_93%)]"
+          className="chat-card relative min-w-0 max-w-[min(100%,36rem)] px-4 py-2.5 text-[14px] leading-[1.6] break-words text-[hsl(0_0%_93%)]"
           style={{
             overflowWrap: "break-word",
             fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "IBM Plex Sans", sans-serif',
@@ -2022,10 +2022,16 @@ function ChatWindowInner({
   }, [isLoading, messages, artifacts, seedValue, reportPivots, pivotSkip, queriedTargets]);
 
   return (
-    <div className="relative flex-1 flex flex-col h-full min-w-0 overflow-hidden bg-background">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(255,255,255,0.05),transparent_34%),radial-gradient(circle_at_50%_100%,rgba(43,52,68,0.18),transparent_28%)]" />
-      <div className="pointer-events-none absolute inset-y-0 left-[calc(50%-20rem)] w-px bg-gradient-to-b from-transparent via-white/8 to-transparent hidden xl:block" />
-      <div className="pointer-events-none absolute inset-y-0 right-[calc(50%-20rem)] w-px bg-gradient-to-b from-transparent via-white/8 to-transparent hidden xl:block" />
+    <div className="chat-stage relative h-full min-w-0 overflow-hidden bg-background">
+      {/* Soft stage wash — fills the main pane so content doesn't float in void */}
+      <div
+        className="pointer-events-none absolute inset-0"
+        aria-hidden
+        style={{
+          background:
+            "radial-gradient(ellipse 80% 50% at 50% -10%, hsl(220 40% 18% / 0.35), transparent 55%), radial-gradient(ellipse 70% 40% at 50% 110%, hsl(220 30% 10% / 0.4), transparent 50%)",
+        }}
+      />
       <div
         ref={scrollRef}
         onScroll={(event) => {
@@ -2046,10 +2052,10 @@ function ChatWindowInner({
             setShowJumpToLatest(false);
           }
         }}
-        className="relative z-10 flex-1 overflow-y-auto overflow-x-hidden px-3 sm:px-6 py-4 sm:py-5"
+        className="chat-stage__scroll relative z-10"
       >
+        <div className="chat-stage__frame">
         <div ref={contentRef} className="chat-column space-y-3 min-w-0">
-          <div className="h-2" aria-hidden />
           {messages.length === 0 && (
             <div className="flex flex-col items-center px-4 py-6 text-center sm:py-8">
               {/* halftone signal-field hero — a dotted intel field with a slow
@@ -2155,26 +2161,20 @@ function ChatWindowInner({
             <FailedRunCard reason={error.message} onRetry={retryLastUser} />
           )}
           {suggestions.length > 0 && (
-            <div className="w-full animate-fade-up">
-              <div className="mb-1.5 flex h-6 items-center gap-2">
-                <Sparkles className="h-3 w-3 shrink-0 text-muted-foreground" />
-                <span className="text-[11px] font-medium uppercase tracking-[0.06em] text-muted-foreground">
-                  Next steps
-                </span>
-                <span className="font-mono text-[10px] tabular-nums text-muted-foreground/60">
+            <div className="chat-next-steps w-full animate-fade-up">
+              <div className="chat-next-steps__head">
+                <Sparkles className="h-3 w-3 shrink-0 opacity-80" />
+                <span>Next steps</span>
+                <span className="ml-auto font-mono text-[10px] font-medium tabular-nums tracking-normal normal-case opacity-70">
                   {suggestions.length}
                 </span>
               </div>
-              {/* Dense action list — not oversized cards. One row per pivot. */}
-              <div className="overflow-hidden rounded-lg border border-white/[0.08] bg-white/[0.025] divide-y divide-white/[0.06]">
+              <div className="chat-next-steps__list">
                 {suggestions.map((s, i) => {
                   const cardId = `${s.title}-${i}`;
                   const expanded = expandedPivot === cardId;
                   return (
-                    <div
-                      key={cardId}
-                      className="group flex items-stretch gap-2 px-2.5 py-2 transition-colors hover:bg-white/[0.03]"
-                    >
+                    <div key={cardId} className="chat-next-steps__row group">
                       <button
                         type="button"
                         className="min-w-0 flex-1 text-left"
@@ -2187,11 +2187,11 @@ function ChatWindowInner({
                               {s.priority}
                             </span>
                           )}
-                          <span className="truncate text-[12.5px] font-medium leading-tight text-foreground">
+                          <span className="truncate text-[13px] font-medium leading-tight text-foreground">
                             {s.title}
                           </span>
                           {s.meta && (
-                            <span className="hidden min-[420px]:inline truncate text-[10px] text-muted-foreground/75">
+                            <span className="hidden truncate text-[10px] text-muted-foreground/75 sm:inline">
                               · {s.meta}
                             </span>
                           )}
@@ -2216,9 +2216,9 @@ function ChatWindowInner({
                       <button
                         type="button"
                         onClick={() => sendText(s.prompt)}
-                        className="inline-flex h-7 shrink-0 items-center gap-1 self-center rounded-md border border-white/10 bg-white/[0.04] px-2 text-[11px] font-medium text-foreground/90 transition-colors hover:bg-white/[0.08] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-white/12 bg-white/[0.05] px-2.5 text-[11px] font-medium text-foreground/90 transition-colors hover:border-white/20 hover:bg-white/[0.09] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
-                        {s.icon === "pivot" ? "Run" : "Run"}
+                        Run
                         <ArrowRight className="h-3 w-3 opacity-70" />
                       </button>
                     </div>
@@ -2229,11 +2229,12 @@ function ChatWindowInner({
           )}
           <div ref={endRef} />
         </div>
+        </div>
         {showJumpToLatest && (
           <button
             type="button"
             onClick={jumpToLatest}
-            className="sticky bottom-3 ml-auto flex h-9 items-center gap-2 rounded-full border border-white/10 bg-surface-2/95 px-3 text-data font-medium text-foreground shadow-[0_16px_40px_-20px_rgba(0,0,0,0.95)] backdrop-blur-xl hover:bg-surface-3"
+            className="pointer-events-auto sticky bottom-4 z-20 ml-auto mr-4 flex h-9 items-center gap-2 rounded-full border border-white/10 bg-surface-2/95 px-3 text-data font-medium text-foreground shadow-[0_16px_40px_-20px_rgba(0,0,0,0.95)] backdrop-blur-xl hover:bg-surface-3"
           >
             <ArrowDown className="h-3.5 w-3.5" />
             Latest
@@ -2241,7 +2242,7 @@ function ChatWindowInner({
         )}
       </div>
 
-      <div className="relative z-10 border-t border-border-subtle bg-background/95 backdrop-blur-xl px-3 sm:px-4 pt-3 sm:pt-5 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:pb-5">
+      <div className="relative z-10 border-t border-white/[0.06] bg-[linear-gradient(180deg,hsl(220_22%_6%/0.92),hsl(222_24%_4%/0.96))] px-4 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-7 sm:pt-4 sm:pb-5 backdrop-blur-xl">
         <div className="chat-column">
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2">
