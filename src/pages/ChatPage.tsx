@@ -146,7 +146,10 @@ export default function ChatPage() {
 
       {/* Desktop: persistent sidebar rail. Mobile uses the off-canvas Sheet below. */}
       {!isMobile && (
-        <aside className={cn("relative z-10 shrink-0 h-full border-r border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.01))] shadow-[8px_0_38px_-30px_rgba(0,0,0,0.95)] backdrop-blur-xl", leftCollapsed ? "w-14" : "w-72")}>
+        <aside className={cn(
+          "relative z-10 flex h-full min-h-0 shrink-0 flex-col overflow-hidden border-r border-white/8 bg-[hsl(var(--surface-0))] shadow-[8px_0_38px_-30px_rgba(0,0,0,0.95)]",
+          leftCollapsed ? "w-14" : "w-72",
+        )}>
           <ThreadSidebar collapsed={leftCollapsed} onToggleCollapse={() => setLeftCollapsed((c) => !c)} />
         </aside>
       )}
