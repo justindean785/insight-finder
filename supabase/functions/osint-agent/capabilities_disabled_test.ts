@@ -27,6 +27,21 @@ Deno.test("cut providers (dead keys / dead APIs) are gated off the schedulable s
   assertEquals(byTool.get("ipqualityscore_lookup")?.reason, "disabled", "ipqualityscore_lookup reason must be 'disabled'");
 });
 
+Deno.test("low-yield planner tools (2026-07-09 cull) are disabled even with key present", () => {
+  // deepfind_reverse_email (92% fail, all >8s timeouts) + dork_harvest (67% fail,
+  // 23s avg, junk artifacts) were hard-disabled at the beta launch. Even with
+  // DEEPFIND_API_KEY set, deepfind_reverse_email must report disabled so the
+  // readiness gate strips it from the schema. dork_harvest takes no key and must
+  // report disabled unconditionally. (They are ALSO in tool-registry PERMANENT_BLOCK.)
+  const byTool = new Map(
+    discoverCapabilities({ DEEPFIND_API_KEY: true }, null).map((c) => [c.tool, c]),
+  );
+  for (const t of ["deepfind_reverse_email", "dork_harvest"]) {
+    assertEquals(byTool.get(t)?.available, false, `${t} must be gated off (disabled 2026-07-09)`);
+    assertEquals(byTool.get(t)?.reason, "disabled", `${t} reason must be 'disabled'`);
+  }
+});
+
 Deno.test("indicia tools are gated on INDICIA_API_KEY", () => {
   const withKey = new Map(
     discoverCapabilities({ INDICIA_API_KEY: true }, null).map((c) => [c.tool, c]),
@@ -43,8 +58,10 @@ Deno.test("working deepfind endpoints are available when key is set", () => {
   const caps = discoverCapabilities({ DEEPFIND_API_KEY: true }, null);
   const byTool = new Map(caps.map((c) => [c.tool, c]));
   for (
+    // deepfind_reverse_email intentionally omitted — hard-disabled 2026-07-09
+    // (see the low-yield planner-cull test above). The other 11 keyed endpoints
+    // remain available when DEEPFIND_API_KEY is set.
     const t of [
-      "deepfind_reverse_email",
       "deepfind_disposable_email",
       "deepfind_ssl_inspect",
       "deepfind_tech_stack",
