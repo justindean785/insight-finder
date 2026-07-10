@@ -1032,3 +1032,202 @@ All colors MUST be HSL.
 [data-density-stack] > * + * {
   margin-top: var(--density-stack);
 }
+
+/* ---------- Chat timeline: one width, one surface, even rhythm ---------- */
+.chat-column {
+  width: 100%;
+  max-width: 42rem;
+  margin-inline: auto;
+}
+
+/* Shared card used by tool cycles + agent replies so edges align */
+.chat-card {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid hsl(0 0% 100% / 0.08);
+  border-radius: 12px;
+  background: hsl(0 0% 100% / 0.03);
+}
+
+.chat-card__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 16px;
+  border-bottom: 1px solid hsl(0 0% 100% / 0.06);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: hsl(var(--muted-foreground));
+}
+.chat-card__header-time {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0.85;
+}
+.chat-card__body {
+  padding: 14px 16px;
+}
+.chat-card__footer {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 12px 8px;
+  border-top: 1px solid hsl(0 0% 100% / 0.05);
+}
+
+/* Agent prose — system font, fixed 14/1.6, hard-even gaps */
+.chat-prose {
+  width: 100%;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "IBM Plex Sans", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.6;
+  letter-spacing: 0;
+  color: hsl(0 0% 93%);
+  text-align: left;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+.chat-prose > * {
+  margin: 0 !important;
+  max-width: 100%;
+}
+.chat-prose > * + * {
+  margin-top: 12px !important;
+}
+.chat-prose h1,
+.chat-prose h2,
+.chat-prose h3,
+.chat-prose h4 {
+  font-family: inherit;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: 0;
+  color: hsl(0 0% 98%);
+}
+.chat-prose h1 { font-size: 16px; }
+.chat-prose h2 {
+  font-size: 14px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid hsl(0 0% 100% / 0.08);
+}
+.chat-prose h3 { font-size: 14px; }
+.chat-prose h4 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: hsl(var(--muted-foreground));
+}
+.chat-prose p { line-height: 1.6; }
+.chat-prose strong { font-weight: 600; color: hsl(0 0% 98%); }
+.chat-prose ul,
+.chat-prose ol {
+  padding-left: 1.25rem;
+  list-style-position: outside;
+}
+.chat-prose li + li { margin-top: 6px; }
+.chat-prose ul > li::marker,
+.chat-prose ol > li::marker { color: hsl(var(--muted-foreground)); }
+.chat-prose a {
+  color: hsl(var(--info));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.chat-prose hr {
+  border: 0;
+  height: 1px;
+  background: hsl(0 0% 100% / 0.08);
+}
+.chat-prose blockquote {
+  padding: 10px 12px;
+  border-left: 2px solid hsl(var(--intel-blue) / 0.5);
+  background: hsl(0 0% 100% / 0.03);
+  border-radius: 0 8px 8px 0;
+}
+.chat-prose :not(pre) > code {
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 12px;
+  color: hsl(var(--info));
+  background: hsl(var(--info-muted));
+  border: 1px solid hsl(var(--info) / 0.2);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.chat-prose pre code {
+  font-size: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+.chat-prose .chat-table-wrap {
+  width: 100%;
+  border: 1px solid hsl(0 0% 100% / 0.08);
+  border-radius: 8px;
+  overflow-x: auto;
+  background: hsl(222 20% 5% / 0.55);
+  scrollbar-width: thin;
+}
+.chat-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.chat-prose thead th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: hsl(var(--muted-foreground));
+  background: hsl(0 0% 100% / 0.04);
+  border-bottom: 1px solid hsl(0 0% 100% / 0.08);
+  padding: 8px 12px;
+}
+.chat-prose tbody td {
+  text-align: left;
+  vertical-align: top;
+  padding: 8px 12px;
+  border-bottom: 1px solid hsl(0 0% 100% / 0.05);
+}
+.chat-prose tbody tr:last-child td { border-bottom: 0; }
+.chat-prose .chat-code-block {
+  width: 100%;
+  border: 1px solid hsl(0 0% 100% / 0.08);
+  border-radius: 8px;
+  background: hsl(222 24% 4%);
+  overflow: hidden;
+}
+.chat-prose .chat-code-block pre {
+  margin: 0 !important;
+  padding: 12px;
+  overflow-x: auto;
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  color: hsl(0 0% 90%);
+  white-space: pre;
+  scrollbar-width: thin;
+}
+.chat-label-chip {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  margin-right: 4px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1.3;
+  text-transform: uppercase;
+}
