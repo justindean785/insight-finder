@@ -80,9 +80,17 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   ipqualityscore_lookup: { disabled: true },
   // DeepFind re-verified 2026-06-13 against the live API with a valid key: the
   // ONLY problem was the expired key (403). Our code already uses the correct
-  // HTTP methods (POST+body / path-param). These 12 endpoints return 200/201.
+  // HTTP methods (POST+body / path-param). These endpoints return 200/201.
   // Requires DEEPFIND_API_KEY set to the current key in Supabase function secrets.
-  deepfind_reverse_email: { requiresKey: "DEEPFIND_API_KEY" },
+  // ── DISABLED 2026-07-09 (beta launch, low-yield planner cull) ──────────────
+  // deepfind_reverse_email is hard-disabled (NOT just key-gated): live logs for
+  // 2026-07-08→09 (456 calls) show 92% failure (12/13), and EVERY failure was an
+  // >8000ms timeout — pure latency tax that ate the fetch window for ~0 corroboration
+  // value. `disabled:true` makes the index.ts readiness gate delete it from the main
+  // tool schema so the Lead Investigator never sees it (belt-and-suspenders with the
+  // pivot-planner PERMANENT_BLOCK in tool-registry.ts). Execute code is LEFT intact —
+  // re-enable by restoring `{ requiresKey: "DEEPFIND_API_KEY" }` if the provider recovers.
+  deepfind_reverse_email: { disabled: true },
   deepfind_disposable_email: { requiresKey: "DEEPFIND_API_KEY" },
   deepfind_ssl_inspect: { requiresKey: "DEEPFIND_API_KEY" },
   deepfind_tech_stack: { requiresKey: "DEEPFIND_API_KEY" },
@@ -109,6 +117,16 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   firecrawl_search: { disabled: true },
   firecrawl_scrape: { disabled: true },
   firecrawl_map: { disabled: true },
+  // ── DISABLED 2026-07-09 (beta launch, low-yield planner cull) ──────────────
+  // dork_harvest: live logs for 2026-07-08→09 (456 calls) show 67% failure (2/3),
+  // 23,219ms avg latency, and it auto-records junk artifacts (FEC/court PDFs) that
+  // inflate downstream context for ~0 corroboration value. Together with
+  // deepfind_reverse_email it caused 14 of the run's 21 timeout failures.
+  // `disabled:true` makes the index.ts readiness gate delete it from the main tool
+  // schema; it is ALSO in the pivot-planner PERMANENT_BLOCK (tool-registry.ts).
+  // Execute code (Perplexity/Exa harvest + auto-record) is LEFT intact — re-enable
+  // by deleting this line once the timeout/junk-artifact problems are fixed.
+  dork_harvest: { disabled: true },
   // RapidAPI breach tools are keyed but were historically only self-skipping
   // (missing from this map), so a keyless deploy still advertised them to the
   // model and burned a step on a guaranteed-empty call. The readiness gate now

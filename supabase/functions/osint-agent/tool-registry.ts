@@ -536,9 +536,20 @@ export function buildTools(ctx: ToolContext) {
           // belt-and-suspenders for the planner menu. (The permanently-dead
           // stolentax_footprint / synapsint_lookup / emailrep tools were removed
           // from the codebase entirely in the dead-tool cull.)
+          // deepfind_reverse_email + dork_harvest — CUT 2026-07-09 (beta-launch
+          // low-yield cull). Live logs 2026-07-08→09 (456 calls): deepfind_reverse_email
+          // 92% fail (12/13), every failure an >8000ms timeout; dork_harvest 67% fail
+          // (2/3), 23,219ms avg, and it auto-records junk artifacts (FEC/court PDFs).
+          // Between them they caused 14 of the run's 21 timeout failures. Blocking them
+          // here keeps the pivot planner (toolList → line ~719 prompt) from proposing
+          // them. They are ALSO disabled:true in capabilities.ts so the main-agent
+          // readiness gate drops them from the streamText schema. Runtime execute defs
+          // + catalog entries are LEFT intact — re-enable by removing them from BOTH
+          // this set AND the capabilities.ts disable once the timeouts are fixed.
           const PERMANENT_BLOCK = new Set([
             "hackernews_user",
             "gravatar_profile","ipqualityscore_lookup",
+            "deepfind_reverse_email","dork_harvest",
           ]);
           // Tools the circuit breaker has disabled this investigation (e.g.
           // a provider after consecutive HTTP 500s). Without this the planner
