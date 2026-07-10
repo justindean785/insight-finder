@@ -234,6 +234,16 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
 
   const newThread = async () => {
     if (!user) return;
+    // Reuse an existing empty shell instead of stacking "New investigation" rows.
+    const shell = threads.find((t) => {
+      const title = (t.title ?? "").trim().toLowerCase();
+      const emptyTitle = !title || title === "new investigation" || title === "investigation";
+      return emptyTitle && Number(t.cost_micro_usd ?? 0) <= 0 && (metrics[t.id]?.artifacts ?? 0) === 0;
+    });
+    if (shell) {
+      navigate(`/chat/${shell.id}`);
+      return;
+    }
     const { data, error } = await supabase
       .from("threads")
       .insert({ user_id: user.id })
@@ -389,14 +399,8 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   const filtered = typeFilter === "all"
     ? byQuery
     : byQuery.filter((t) => (t.seed_type ?? "other").toLowerCase() === typeFilter);
-  // Group ALL cases by recency (updated_at), regardless of run status. Splitting
-  // active vs finished into separate sections pushed recently-completed scans
-  // below a long "Older" pile of cases still stuck in "active" (runs that never
-  // finalized their status), so the newest scans looked lost. One recency-ordered
-  // list keeps them at the top; completed runs are shown dimmed with a ✓ in their
-  // own bucket rather than banished to a section below the fold.
-  const groups: Record<string, Thread[]> = { Today: [], "This week": [], Older: [] };
-  for (const t of filtered) groups[bucketOf(t.updated_at)].push(t);
+  // One recency-ordered list (Today / This week / Older). Completed runs are
+  // dimmed on the row rather than banished to a separate section.
   const totalCost = threads.reduce((s, t) => s + Number(t.cost_micro_usd ?? 0), 0);
 
   const TYPES: { key: string; label: string }[] = [
@@ -408,90 +412,92 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
     { key: "domain", label: "Domain" },
   ];
 
+  // Empty shells (default DB title, no spend yet) clutter the list and stack
+  // on top of real cases. Keep the one currently open so the user can seed it;
+  // hide the rest until they get a real title/selector.
+  const isEmptyShell = (t: Thread) => {
+    const title = (t.title ?? "").trim().toLowerCase();
+    const emptyTitle = !title || title === "new investigation" || title === "investigation";
+    const noSpend = Number(t.cost_micro_usd ?? 0) <= 0;
+    const noMetrics = (metrics[t.id]?.artifacts ?? 0) === 0;
+    return emptyTitle && noSpend && noMetrics;
+  };
+  const listThreads = filtered.filter((t) => t.id === threadId || !isEmptyShell(t));
+  const listGroups: Record<"Today" | "This week" | "Older", Thread[]> = {
+    Today: [], "This week": [], Older: [],
+  };
+  for (const t of listThreads) listGroups[bucketOf(t.updated_at)].push(t);
+
   return (
-    <div className="w-full h-full flex flex-col bg-[hsl(var(--surface-0))]">
-      <div className="px-3 py-3 border-b border-border-subtle flex items-center gap-2">
+    <div className="flex h-full w-full min-h-0 flex-col bg-[hsl(var(--surface-0))]">
+      {/* Brand — shrink-0 so list never paints under it */}
+      <div className="shrink-0 flex items-center gap-2 border-b border-border-subtle px-3 py-3">
         <Link
           to="/"
           aria-label="Home"
-          className="flex items-center gap-2 min-w-0 group focus:outline-none focus:ring-2 focus:ring-primary/40 rounded-lg"
+          className="flex min-w-0 items-center gap-2 rounded-lg group focus:outline-none focus:ring-2 focus:ring-primary/40"
         >
-          <div className="w-8 h-8 rounded-lg border border-white/10 bg-white/[0.035] grid place-items-center transition-colors group-hover:bg-white/[0.06]">
-            <SwarmMark className="w-4 h-4 text-foreground/90" />
+          <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-white/10 bg-white/[0.035] transition-colors group-hover:bg-white/[0.06]">
+            <SwarmMark className="h-4 w-4 text-foreground/90" />
           </div>
           <div className="min-w-0">
-            <div className="font-display font-semibold tracking-tight text-sm text-foreground leading-none">Insight Finder</div>
-            <div className="mt-0.5 text-eyebrow text-muted-foreground leading-none">Cases</div>
+            <div className="font-display text-sm font-semibold leading-none tracking-tight text-foreground">Insight Finder</div>
+            <div className="mt-0.5 text-eyebrow leading-none text-muted-foreground">Cases</div>
           </div>
         </Link>
         <button
           onClick={onToggleCollapse}
-          className="ml-auto w-8 h-8 rounded-lg border border-white/10 bg-white/[0.035] text-muted-foreground hover:text-foreground hover:bg-white/[0.06] transition-colors"
+          className="ml-auto grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-white/10 bg-white/[0.035] text-muted-foreground transition-colors hover:bg-white/[0.06] hover:text-foreground"
           title="Collapse sidebar"
           aria-label="Collapse sidebar"
         >
-          <PanelLeftClose className="w-4 h-4 mx-auto" />
+          <PanelLeftClose className="h-4 w-4" />
         </button>
       </div>
 
-      <div className="px-3 pt-3 pb-2">
+      {/* Primary actions + destinations */}
+      <div className="shrink-0 space-y-1.5 px-3 pt-3 pb-2">
         <Button
           onClick={newThread}
           size="sm"
           variant="cta"
-          className="w-full h-9 justify-center gap-2 rounded-lg border border-white/12 text-sm font-semibold"
+          className="h-9 w-full justify-center gap-2 rounded-lg border border-white/12 text-sm font-semibold"
         >
-          <Plus className="w-4 h-4" /> New investigation
+          <Plus className="h-4 w-4" /> New investigation
         </Button>
-        <Link
-          to="/cases"
-          aria-label="All cases"
-          className={cn(
-            "relative mt-2 flex items-center gap-2 w-full px-3 py-2 rounded-lg border text-sm font-medium transition-colors",
-            onCasesRoute
-              ? "border-[hsl(var(--intel-blue)/0.3)] bg-[hsl(var(--intel-blue)/0.1)] text-foreground shadow-[inset_0_0_0_1px_hsl(var(--intel-blue)/0.15)]"
-              : "border-border-subtle bg-surface-0 text-muted-foreground hover:text-foreground hover:border-white/15 hover:bg-surface-1",
-          )}
-        >
-          <FolderOpen className={cn("w-3.5 h-3.5", onCasesRoute && "text-[hsl(var(--intel-blue))]")} strokeWidth={1.5} />
-          <span>All cases</span>
-        </Link>
-        <Link
-          to="/brain"
-          aria-label="Global Brain"
-          className={cn(
-            "relative mt-2 flex items-center gap-2 w-full px-3 py-2 rounded-lg border text-sm font-medium transition-colors",
-            onBrainRoute
-              ? "border-[hsl(var(--intel-blue)/0.3)] bg-[hsl(var(--intel-blue)/0.1)] text-foreground shadow-[inset_0_0_0_1px_hsl(var(--intel-blue)/0.15)]"
-              : "border-border-subtle bg-surface-0 text-muted-foreground hover:text-foreground hover:border-white/15 hover:bg-surface-1",
-          )}
-        >
-          <Brain className={cn("w-3.5 h-3.5", onBrainRoute && "text-[hsl(var(--intel-blue))]")} strokeWidth={1.5} />
-          <span>Brain</span>
-          {newPatternCount > 0 && !onBrainRoute && (
-            <span className="ml-auto inline-flex items-center justify-center min-w-[22px] h-[18px] px-1.5 rounded-full bg-white text-black text-eyebrow font-mono font-bold tracking-normal">
-              {newPatternCount > 99 ? "99+" : newPatternCount}
-            </span>
-          )}
-        </Link>
-        <Link
-          to="/insights"
-          aria-label="Insights"
-          className={cn(
-            "relative mt-2 flex items-center gap-2 w-full px-3 py-2 rounded-lg border text-sm font-medium transition-colors",
-            onInsightsRoute
-              ? "border-[hsl(var(--intel-blue)/0.3)] bg-[hsl(var(--intel-blue)/0.1)] text-foreground shadow-[inset_0_0_0_1px_hsl(var(--intel-blue)/0.15)]"
-              : "border-border-subtle bg-surface-0 text-muted-foreground hover:text-foreground hover:border-white/15 hover:bg-surface-1",
-          )}
-        >
-          <BarChart3 className={cn("w-3.5 h-3.5", onInsightsRoute && "text-[hsl(var(--intel-blue))]")} strokeWidth={1.5} />
-          <span>Insights</span>
-        </Link>
+        {(
+          [
+            { to: "/cases", label: "All cases", icon: FolderOpen, active: onCasesRoute, badge: 0 },
+            { to: "/brain", label: "Brain", icon: Brain, active: onBrainRoute, badge: onBrainRoute ? 0 : newPatternCount },
+            { to: "/insights", label: "Insights", icon: BarChart3, active: onInsightsRoute, badge: 0 },
+          ] as const
+        ).map(({ to, label, icon: Icon, active, badge }) => (
+          <Link
+            key={to}
+            to={to}
+            aria-label={label}
+            className={cn(
+              "flex h-9 w-full items-center gap-2 rounded-lg border px-3 text-sm font-medium transition-colors",
+              active
+                ? "border-[hsl(var(--intel-blue)/0.3)] bg-[hsl(var(--intel-blue)/0.1)] text-foreground"
+                : "border-transparent text-muted-foreground hover:border-white/10 hover:bg-white/[0.03] hover:text-foreground",
+            )}
+          >
+            <Icon className={cn("h-3.5 w-3.5 shrink-0", active && "text-[hsl(var(--intel-blue))]")} strokeWidth={1.5} />
+            <span className="truncate">{label}</span>
+            {badge > 0 && (
+              <span className="ml-auto inline-flex h-[18px] min-w-[22px] items-center justify-center rounded-full bg-white px-1.5 font-mono text-eyebrow font-bold tracking-normal text-black">
+                {badge > 99 ? "99+" : badge}
+              </span>
+            )}
+          </Link>
+        ))}
       </div>
 
-      <div className="px-3 pb-2">
-        <div className="flex items-center gap-2 rounded-lg border border-border-subtle bg-black/20 px-3 py-2 transition-colors focus-within:border-white/20 focus-within:bg-surface-1">
-          <Search className="w-3.5 h-3.5 text-muted-foreground" />
+      {/* Search + filter */}
+      <div className="shrink-0 space-y-2 px-3 pb-2">
+        <div className="flex h-9 items-center gap-2 rounded-lg border border-border-subtle bg-black/20 px-3 transition-colors focus-within:border-white/20 focus-within:bg-surface-1">
+          <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -500,9 +506,6 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
             className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
           />
         </div>
-      </div>
-
-      <div className="px-3 pb-3">
         <label htmlFor="case-type-filter" className="sr-only">Filter investigations</label>
         <select
           id="case-type-filter"
@@ -516,58 +519,62 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         </select>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-2.5 pb-3">
+      {/* Case list — only this region scrolls; footer stays pinned */}
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-2.5 pb-2 [scrollbar-width:thin]">
         {metricsSampled && (
           <div
             className="mb-2 mx-1 inline-flex items-center gap-1 rounded border border-warning/25 bg-warning/8 px-2 py-1 text-eyebrow text-warning"
-            title={`Per-thread badges are aggregated from the latest ${SIDEBAR_METRICS_SAMPLE_LIMIT.toLocaleString()} artifact rows. Counts on older or very large threads may be undercounted.`}
+            title={`Per-thread badges are aggregated from the latest ${SIDEBAR_METRICS_SAMPLE_LIMIT.toLocaleString()} artifact rows.`}
           >
-            ⚠ Metrics sampled · latest {SIDEBAR_METRICS_SAMPLE_LIMIT.toLocaleString()} rows
+            ⚠ Metrics sampled
           </div>
         )}
         {(["Today", "This week", "Older"] as const).map((bucket) =>
-          groups[bucket].length === 0 ? null : (
-            <div key={bucket} className="mb-2.5">
-              <div className="px-2 py-1 text-micro font-medium tracking-normal text-muted-foreground flex items-center gap-1.5">
-                <span className="w-1 h-1 rounded-full bg-muted-foreground/50" />
+          listGroups[bucket].length === 0 ? null : (
+            <div key={bucket} className="mb-2">
+              <div className="flex items-center gap-1.5 px-2 py-1 text-micro font-medium tracking-normal text-muted-foreground">
+                <span className="h-1 w-1 rounded-full bg-muted-foreground/50" />
                 {bucket}
-                <span className="ml-1 font-mono opacity-50">{groups[bucket].length}</span>
+                <span className="ml-1 font-mono opacity-50">{listGroups[bucket].length}</span>
               </div>
-              {groups[bucket].map((t) => (
-                <ThreadRow
-                  key={t.id}
-                  t={t}
-                  active={t.id === threadId}
-                  onDelete={deleteThread}
-                  dim={!isActiveThreadStatus(t.status)}
-                  m={metrics[t.id]}
-                />
-              ))}
+              <div className="flex flex-col gap-0.5">
+                {listGroups[bucket].map((t) => (
+                  <ThreadRow
+                    key={t.id}
+                    t={t}
+                    active={t.id === threadId}
+                    onDelete={deleteThread}
+                    dim={!isActiveThreadStatus(t.status)}
+                    m={metrics[t.id]}
+                  />
+                ))}
+              </div>
             </div>
           )
         )}
 
-        {filtered.length === 0 && (
+        {listThreads.length === 0 && (
           <div className="px-2 py-6 text-center text-xs text-muted-foreground">
             {q ? "No matches" : "No investigations yet"}
           </div>
         )}
       </div>
 
-      <div className="p-3 border-t border-border-subtle space-y-2.5">
+      {/* Footer — opaque so rows never show through */}
+      <div className="shrink-0 space-y-2 border-t border-border-subtle bg-[hsl(var(--surface-0))] p-3">
         <SpendTrend threads={threads} totalCost={totalCost} />
         <CreditChip credits={credits} />
         <a
           href={SUPPORT_MAILTO}
-          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+          className="flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
         >
-          <Mail className="w-3.5 h-3.5" strokeWidth={1.5} />
+          <Mail className="h-3.5 w-3.5" strokeWidth={1.5} />
           <span>Send feedback</span>
         </a>
         <div className="flex items-center justify-between gap-2 text-xs">
-          <div className="truncate text-muted-foreground" title={user?.email}>{user?.email}</div>
-          <button onClick={signOut} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors" aria-label="Sign out" title="Sign out">
-            <LogOut className="w-4 h-4" />
+          <div className="min-w-0 truncate text-muted-foreground" title={user?.email}>{user?.email}</div>
+          <button onClick={signOut} className="shrink-0 text-muted-foreground transition-colors hover:text-foreground" aria-label="Sign out" title="Sign out">
+            <LogOut className="h-4 w-4" />
           </button>
         </div>
       </div>
@@ -584,74 +591,68 @@ function ThreadRow({
   dim?: boolean;
   m?: ThreadMetrics;
 }) {
-  const sev: "high" | "mid" | "ok" | "low" =
-    (m?.breaches ?? 0) > 0 ? "high"
-    : (m?.lowConf ?? 0) > 0 ? "mid"
-    : (m?.artifacts ?? 0) > 0 ? "ok"
-    : "low";
-  const stripCls =
-    sev === "high" ? "bg-[hsl(var(--danger))] shadow-[0_0_10px_hsl(var(--danger)/0.7)]"
-    : sev === "mid" ? "bg-[hsl(var(--confidence-mid))] shadow-[0_0_10px_hsl(var(--confidence-mid)/0.55)]"
-    : sev === "ok"  ? "bg-[hsl(var(--confidence-high))] shadow-[0_0_10px_hsl(var(--confidence-high)/0.55)]"
-    : "bg-border-strong/70";
+  const empty = (() => {
+    const title = (t.title ?? "").trim().toLowerCase();
+    return !title || title === "new investigation" || title === "investigation";
+  })();
+  const displayTitle = empty ? "Untitled case" : t.title;
+
   return (
     <Link
       to={`/chat/${t.id}`}
       className={cn(
-        "group relative flex items-start justify-between gap-2 pl-3 pr-2 py-2.5 rounded-lg text-meta transition-all duration-500 ease-premium hover:bg-white/[0.045]",
-        active && "bg-[hsl(var(--intel-blue)/0.1)] text-foreground ring-1 ring-[hsl(var(--intel-blue)/0.28)] shadow-[inset_2px_0_0_hsl(var(--intel-blue)),0_0_24px_-14px_hsl(var(--intel-blue)/0.8)]",
-        dim && !active && "opacity-60",
+        "group relative flex min-h-[2.75rem] items-center gap-2 overflow-hidden rounded-lg px-2.5 py-2 text-meta transition-colors",
+        "hover:bg-white/[0.04]",
+        active && "bg-[hsl(var(--intel-blue)/0.12)] text-foreground ring-1 ring-[hsl(var(--intel-blue)/0.3)]",
+        dim && !active && "opacity-55",
       )}
     >
+      {/* Status pip — in flow, not absolute (prevents bleed into next row) */}
       <span
         aria-hidden
         className={cn(
-          "absolute left-0 top-2 bottom-2 w-0.5 rounded-full",
-          active ? "bg-gradient-to-b from-primary to-accent" : stripCls,
-          !active && sev === "low" && "opacity-50",
+          "h-1.5 w-1.5 shrink-0 rounded-full",
+          active && "bg-[hsl(var(--intel-blue))] shadow-[0_0_6px_hsl(var(--intel-blue)/0.6)]",
+          !active && dim && "bg-[hsl(var(--confidence-high))]",
+          !active && !dim && (m?.breaches ?? 0) > 0 && "bg-[hsl(var(--danger))]",
+          !active && !dim && (m?.breaches ?? 0) === 0 && (m?.artifacts ?? 0) > 0 && "bg-[hsl(var(--confidence-high))]",
+          !active && !dim && (m?.artifacts ?? 0) === 0 && "bg-muted-foreground/45",
         )}
       />
-      <div className="min-w-0 flex-1">
-        <div className="truncate flex items-center gap-1.5 leading-5">
-          {dim && <CheckCircle2 className="w-3 h-3 text-confidence-glow shrink-0" />}
-          <span className="truncate font-medium" title={t.title}>{t.title}</span>
+      <div className="min-w-0 flex-1 overflow-hidden">
+        <div className="flex min-w-0 items-center gap-1.5">
+          {dim && <CheckCircle2 className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-high))]" />}
+          <span className="truncate text-[13px] font-medium leading-tight" title={displayTitle}>
+            {displayTitle}
+          </span>
         </div>
-        <div className="text-micro text-muted-foreground flex items-center gap-1.5 flex-wrap leading-5">
+        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-[11px] leading-tight text-muted-foreground">
           {t.seed_type && (
-            <span className="px-1.5 py-0.5 rounded-md border border-border-subtle bg-white/[0.035] text-eyebrow text-muted-foreground">
+            <span className="shrink-0 rounded border border-border-subtle bg-white/[0.03] px-1 py-px text-[10px] uppercase tracking-wide">
               {t.seed_type}
             </span>
           )}
-          {(m?.artifacts ?? 0) > 0 && (
-            <span className="inline-flex items-center gap-0.5 font-mono text-data text-foreground/80" title="Artifacts">
-              <Database className="w-2.5 h-2.5 opacity-70" />{m!.artifacts}
-            </span>
-          )}
-          {(m?.breaches ?? 0) > 0 && (
-            <span className="inline-flex items-center gap-0.5 font-mono text-data text-[hsl(var(--danger))]" title="Breaches">
-              <ShieldAlert className="w-2.5 h-2.5" />{m!.breaches}
-            </span>
-          )}
-          {(m?.lowConf ?? 0) > 0 && (
-            <span className="inline-flex items-center gap-0.5 font-mono text-data text-[hsl(var(--confidence-mid))]" title="Needs verify">
-              <Activity className="w-2.5 h-2.5" />{m!.lowConf}
-            </span>
-          )}
-          <span>{timeAgo(t.updated_at)}</span>
+          <span className="shrink-0 tabular-nums">{timeAgo(t.updated_at)}</span>
           {Number(t.cost_micro_usd ?? 0) > 0 && (
             <>
-              <span className="opacity-40">·</span>
-              <span className="font-mono text-primary/80">{formatUsd(t.cost_micro_usd)}</span>
+              <span className="shrink-0 opacity-40">·</span>
+              <span className="shrink-0 font-mono tabular-nums text-foreground/70">{formatUsd(t.cost_micro_usd)}</span>
             </>
+          )}
+          {(m?.artifacts ?? 0) > 0 && (
+            <span className="ml-auto inline-flex shrink-0 items-center gap-0.5 font-mono tabular-nums text-foreground/65" title="Artifacts">
+              <Database className="h-2.5 w-2.5 opacity-70" />{m!.artifacts}
+            </span>
           )}
         </div>
       </div>
       <button
+        type="button"
         onClick={(e) => onDelete(t.id, e)}
-        className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity"
-        aria-label="Delete"
+        className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
+        aria-label="Delete case"
       >
-        <Trash2 className="w-3.5 h-3.5" />
+        <Trash2 className="h-3.5 w-3.5" />
       </button>
     </Link>
   );
