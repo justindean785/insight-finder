@@ -3,7 +3,7 @@
  * Health probe → health-handler.ts, tool registry → tool-registry.ts.
  */
 
-import { convertToModelMessages, streamText, stepCountIs, type UIMessage, type ModelMessage } from "npm:ai@6";
+import { convertToModelMessages, streamText, generateText, stepCountIs, type UIMessage, type ModelMessage } from "npm:ai@6";
 
 import { MODELS, ORCHESTRATOR_TIER } from "./models.ts";
 import { buildWorkflowAddendum } from "./workflow_prompt.ts";
@@ -35,6 +35,10 @@ import {
   MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS,
   capTotalToBudget, deadlineReached,
 } from "./orchestrator-budget.ts";
+import {
+  shouldForceFinalize, buildFinalizeDirective, FINALIZE_ACTIVE_TOOLS, FINALIZE_MAX_STEPS,
+  extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt,
+} from "./orchestrator-finalize.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
@@ -572,8 +576,19 @@ Deno.serve(async (req) => {
     // #238: older-result cap tightened 3000→1500 (selector-preserving summary keeps
     // the pivot fuel; only the raw envelope shrinks). Recent stays 12000 raw.
     const STEP_OLDER_CHARS = 1500;
+    // Base orchestrator system prompt, shared by streamText and by the forced
+    // finalize step (which appends buildFinalizeDirective() to this exact base).
+    const baseSystemPrompt =
+      SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary;
+    // Count of forced finalize steps taken (P0 fix A). A StopCondition ends the run
+    // once it reaches FINALIZE_MAX_STEPS so the closing synthesis can't loop for the
+    // whole reserve window. Incremented in prepareStep when a finalize step is forced.
+    let finalizeStepsRun = 0;
+    // Wall-clock start for BOTH the finalize-reserve check (prepareStep) and the hard
+    // deadline StopCondition below. Declared here so prepareStep's closure reads it.
+    const runStartedAt = Date.now();
     const prepareStep: NonNullable<Parameters<typeof streamText>[0]["prepareStep"]> =
-      async ({ messages: stepMessages }) => {
+      async ({ messages: stepMessages, stepNumber }) => {
         const { data: threadState } = await supabase
           .from("threads")
           .select("status")
@@ -619,14 +634,26 @@ Deno.serve(async (req) => {
         // guarantee a schema-valid, tool-paired array on every in-stream step so
         // a mid-run trim can't sever a tool-call/result pair and wedge the run.
         const budgeted = capTotalToBudget(trimmed, TOTAL_PROMPT_CHAR_BUDGET, STEP_RECENT_WINDOW);
-        return {
-          messages: sanitizeModelMessages(
-            capToolResultOutputs(budgeted, MAX_TOOL_RESULT_CHARS),
-          ),
-        };
+        const stepMessagesOut = sanitizeModelMessages(
+          capToolResultOutputs(budgeted, MAX_TOOL_RESULT_CHARS),
+        );
+        // P0 fix A — reserve the run's final step(s) for a guaranteed report. Once
+        // the wall-clock reserve window opens (or we hit the last allowed step),
+        // stop fanning out: restrict tools to record_artifacts and append the
+        // finalize directive so the model writes its Findings report NOW instead of
+        // the deadline tripping mid-tool-call and leaving "No report yet". A
+        // StopCondition (finalizeStepsRun >= FINALIZE_MAX_STEPS) ends the run after.
+        if (shouldForceFinalize(Date.now() - runStartedAt, stepNumber ?? 0)) {
+          finalizeStepsRun++;
+          return {
+            messages: stepMessagesOut,
+            activeTools: [...FINALIZE_ACTIVE_TOOLS],
+            system: baseSystemPrompt + buildFinalizeDirective(),
+          };
+        }
+        return { messages: stepMessagesOut };
       };
 
-    const runStartedAt = Date.now();
     // Ends the run cleanly once the wall-clock deadline passes (see constant). The
     // StopCondition receives { steps }; we only need elapsed time, so it's ignored.
     const orchestratorDeadlineReached = () =>
@@ -672,7 +699,14 @@ Deno.serve(async (req) => {
       },
       // Named step cap + wall-clock deadline (Phase 2, Play 1). Either stops the
       // agent loop cleanly; onFinish then persists partials and marks finished.
-      stopWhen: [stepCountIs(MAX_ORCHESTRATOR_STEPS), orchestratorDeadlineReached],
+      // Third condition (P0 fix A): once the forced finalize phase has run its
+      // budgeted step(s), stop — the model has written its report, so don't spin
+      // the remaining reserve window re-synthesizing (and re-recording) artifacts.
+      stopWhen: [
+        stepCountIs(MAX_ORCHESTRATOR_STEPS),
+        orchestratorDeadlineReached,
+        () => finalizeStepsRun >= FINALIZE_MAX_STEPS,
+      ],
       prepareStep,
       // Meter orchestrator LLM token spend per step so threads.cost_micro_usd
       // reflects the actual model cost, not just tool fan-out cost.
@@ -762,7 +796,48 @@ Deno.serve(async (req) => {
       // row at completion — historically seed_type was only stored in the
       // triage decision JSON and the threads.seed_type column stayed null.
       let detectedSeedKind: string | null = null;
-        const assistant = [...finalMessages].reverse().find((m) => m.role === "assistant");
+        let assistant = [...finalMessages].reverse().find((m) => m.role === "assistant");
+        // P0 fix B — salvage backstop. If the run did work but produced no usable
+        // report (the "No report yet" gap — e.g. the loop stopped on a tool step
+        // before the model synthesized), run ONE bounded, TOOL-FREE generation that
+        // restates the gathered artifacts as a Findings report, and persist that as
+        // the assistant message. Best-effort: any failure leaves the prior behavior
+        // untouched. Fix A makes this rare; B guarantees a report even if A's forced
+        // step still emitted no text.
+        try {
+          const { toolCalls: workToolCalls } = countRecordArtifactCalls(finalMessages);
+          const existingReport = extractAssistantReportText(finalMessages as unknown as Array<{ role?: string; parts?: Array<{ type?: string; text?: unknown }> }>);
+          if (needsReportSalvage(existingReport, workToolCalls)) {
+            const { data: salvageArts } = await supabase
+              .from("artifacts")
+              .select("kind,value,confidence,source")
+              .eq("thread_id", threadId)
+              .order("confidence", { ascending: false })
+              .limit(200);
+            const salvage = await generateText({
+              model: orchestratorModel,
+              maxOutputTokens: ORCHESTRATOR_MAX_OUTPUT_TOKENS,
+              system: baseSystemPrompt,
+              prompt: buildSalvageSynthesisPrompt(seedValueRaw, (salvageArts ?? []) as Array<Record<string, unknown>>),
+            });
+            const salvageText = (salvage?.text ?? "").trim();
+            if (salvageText) {
+              const salvagePart = { type: "text", text: salvageText } as unknown;
+              if (assistant) {
+                assistant.parts = [...(assistant.parts ?? []), salvagePart] as typeof assistant.parts;
+              } else {
+                assistant = { role: "assistant", parts: [salvagePart] } as unknown as UIMessage;
+                finalMessages.push(assistant);
+              }
+              console.log(JSON.stringify({
+                event: "report_salvaged", thread_id: threadId,
+                tool_calls: workToolCalls, salvage_chars: salvageText.length, artifacts: (salvageArts ?? []).length,
+              }));
+            }
+          }
+        } catch (e) {
+          console.warn("[report-salvage] backstop failed (non-fatal):", String(e));
+        }
         if (assistant) {
           // Cap `messages.parts` payload to avoid silent PostgREST 500s when
           // a long fan-out produces multi-MB tool-result blobs. We strip
