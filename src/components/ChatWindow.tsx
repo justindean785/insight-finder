@@ -174,6 +174,8 @@ function shorten(s: string, max = 32): string {
   return clean.length > max ? clean.slice(0, max - 1) + "…" : clean;
 }
 
+const CODE_COLLAPSE_LINES = 24;
+
 function CodePanel({
   label, content, onCopy, variant = "input",
 }: {
@@ -182,8 +184,18 @@ function CodePanel({
   onCopy: () => void;
   variant?: "input" | "output" | "error";
 }) {
-  const lineCount = content.split("\n").length;
-  const gutter = Array.from({ length: lineCount }, (_, i) => String(i + 1)).join("\n");
+  const [expanded, setExpanded] = useState(false);
+  const lines = content.length ? content.split("\n") : [""];
+  const lineCount = lines.length;
+  const charCount = content.length;
+  const isLong = lineCount > CODE_COLLAPSE_LINES || charCount > 2800;
+  const shown = expanded || !isLong
+    ? content
+    : lines.slice(0, CODE_COLLAPSE_LINES).join("\n") + "\n…";
+  const shownLines = shown.split("\n");
+  const gutter = shownLines.map((_, i) => String(i + 1)).join("\n");
+  const meta = `${lineCount} line${lineCount === 1 ? "" : "s"} · ${(charCount / 1024).toFixed(charCount >= 1024 ? 1 : 0)}${charCount >= 1024 ? "kb" : "b"}`;
+
   return (
     <div
       className={cn(
@@ -197,18 +209,22 @@ function CodePanel({
           variant === "output" && "code-panel__head--output",
         )}
       >
-        <span className="code-panel__head-label">{label}</span>
-        <button
-          type="button"
-          className="text-data tracking-wider hover:text-foreground transition-colors"
-          onClick={onCopy}
-        >
-          copy
-        </button>
+        <span className="code-panel__head-label">
+          {label}
+          <span className="code-panel__head-meta">{meta}</span>
+        </span>
+        <div className="code-panel__head-actions">
+          {isLong && (
+            <button type="button" onClick={() => setExpanded((v) => !v)}>
+              {expanded ? "Collapse" : "Expand"}
+            </button>
+          )}
+          <button type="button" onClick={onCopy}>Copy</button>
+        </div>
       </div>
-      <div className="code-panel__body">
+      <div className={cn("code-panel__body", expanded && "code-panel__body--expanded")}>
         <div className="code-panel__gutter" aria-hidden>{gutter}</div>
-        <pre className="code-panel__code">{content}</pre>
+        <pre className="code-panel__code">{shown}</pre>
       </div>
     </div>
   );
@@ -307,175 +323,173 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
 
   const charge = deriveToolCharge(part.output);
   const artifactPreview = deriveToolPreview(name, part.output);
+  const displayName = toolDisplayName(name);
+  const actionOnly = toolActionLabel(name);
+  const hasInput = part.input != null;
+  const hasOutput = part.output !== undefined;
+  const canSplitIo = hasInput && hasOutput && !part.errorText;
 
   return (
     <div
       ref={rootRef}
       data-failed-tool={failed ? "true" : undefined}
       className={cn(
-        "group relative w-full text-[13px] animate-fade-up overflow-hidden chat-card",
+        "group relative w-full min-w-0 text-[13px] animate-fade-up overflow-hidden chat-card",
         failed && "border-destructive/30 bg-[hsl(0_40%_8%/0.85)]",
         flash && "ring-2 ring-destructive/60",
       )}
     >
-      {/* status rail */}
-      <span
-        className={cn(
-          "absolute left-0 top-0 bottom-0 w-[2px]",
-          failed
-            ? "bg-destructive shadow-[0_0_12px_hsl(var(--danger)/0.7)]"
-            : tone === "skip"
-            ? "bg-muted-foreground/30"
-            : done
-            ? "bg-primary shadow-[0_0_12px_hsl(var(--intel-blue)/0.6)]"
-            : "bg-muted-foreground/40",
-        )}
-      />
       <button
+        type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
-        className="w-full flex items-center gap-3 px-4 py-3.5 text-left"
+        className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-4 py-3 text-left"
       >
         <span
           className={cn(
-            "inline-flex items-center justify-center w-2 h-2 rounded-full shrink-0",
+            "inline-flex h-2 w-2 shrink-0 rounded-full",
             failed
-              ? "bg-destructive shadow-[0_0_10px_hsl(var(--danger)/0.8)]"
+              ? "bg-destructive shadow-[0_0_8px_hsl(var(--danger)/0.7)]"
               : tone === "skip"
               ? "bg-muted-foreground/45"
               : done
-              ? "bg-primary shadow-[0_0_10px_hsl(var(--intel-blue)/0.7)]"
+              ? "bg-[hsl(var(--confidence-high))] shadow-[0_0_8px_hsl(var(--confidence-high)/0.55)]"
               : "bg-muted-foreground/60 animate-pulse",
           )}
+          aria-hidden
         />
-        <span
-          className={cn(
-            "font-mono text-eyebrow font-semibold tracking-[0.14em] uppercase truncate",
-            failed ? "text-destructive" : "text-foreground/85",
-          )}
-        >
-          {name}
-        </span>
-        {failed ? (
-          <XCircle className="w-3.5 h-3.5 text-destructive shrink-0" />
-        ) : tone === "skip" ? (
-          <CircleSlash className="w-3.5 h-3.5 text-muted-foreground/70 shrink-0" />
-        ) : done ? (
-          <CheckCircle2 className="w-3.5 h-3.5 text-primary shrink-0" />
-        ) : (
-          <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground shrink-0" />
-        )}
-        {artifactPreview && (
-          <span className="text-data text-muted-foreground font-mono shrink-0">
-            · {artifactPreview}
-          </span>
-        )}
-        {argSummary && (
-          <span
-            className="hidden md:inline text-data text-muted-foreground/70 font-mono truncate min-w-0 max-w-[42%]"
-            title={argSummary}
-          >
-            {argSummary}
-          </span>
-        )}
-
-        <span className="ml-auto hidden sm:flex items-center gap-2 shrink-0">
-          {cached && (
-            <span className="px-1.5 py-0.5 rounded-md text-micro font-mono uppercase tracking-wider border border-primary/30 bg-primary/10 text-primary">
-              cached
-            </span>
-          )}
-          {tier && (
+        <span className="min-w-0">
+          <span className="flex min-w-0 items-center gap-2">
             <span
               className={cn(
-                "px-1.5 py-0.5 rounded-md text-micro font-mono uppercase tracking-wider border",
-                tier === "smart"
-                  ? "border-accent/50 bg-accent/10 text-accent"
-                  : "border-white/10 bg-white/[0.04] text-muted-foreground",
+                "truncate text-[13px] font-medium leading-snug",
+                failed ? "text-destructive" : "text-foreground/92",
               )}
-              title={tierModel ? `${tier} · ${tierModel}` : tier}
+              title={displayName}
             >
-              {tier}
+              {actionOnly}
+            </span>
+            {failed ? (
+              <XCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />
+            ) : tone === "skip" ? (
+              <CircleSlash className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
+            ) : done ? (
+              <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-[hsl(var(--confidence-high))]" />
+            ) : (
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+            )}
+          </span>
+          <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+            {artifactPreview && (
+              <span className="truncate font-mono tabular-nums">{artifactPreview}</span>
+            )}
+            {argSummary && (
+              <>
+                {artifactPreview && <span className="opacity-40" aria-hidden>·</span>}
+                <span className="truncate font-mono opacity-80" title={argSummary}>{argSummary}</span>
+              </>
+            )}
+          </span>
+        </span>
+
+        <span className="flex shrink-0 items-center gap-1.5">
+          {cached && (
+            <span className="hidden rounded border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground sm:inline">
+              cached
             </span>
           )}
           {durationLabel && (
             <span
-              className="px-1.5 py-0.5 rounded-md text-micro font-mono tabular-nums border border-white/10 bg-white/[0.03] text-muted-foreground"
+              className="hidden rounded border border-white/10 bg-white/[0.03] px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground sm:inline"
               title={`Tool runtime: ${durationMs}ms`}
             >
               {durationLabel}
             </span>
           )}
           {ts && (
-            <span className="font-mono text-data text-muted-foreground/70 flex items-center gap-1">
-              <Clock className="w-3 h-3" />
-              {ts.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+            <span className="font-mono text-[11px] tabular-nums text-muted-foreground/75">
+              {ts.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
             </span>
           )}
-          {charge.label && (
-            <span
-              className="font-mono text-data text-muted-foreground/60"
-              title={charge.title ?? undefined}
-            >
-              {charge.label}
-            </span>
+          {open ? (
+            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground/60" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/60" />
           )}
         </span>
-        <span className="ml-auto sm:hidden font-mono text-data text-muted-foreground/70 shrink-0">
-          {ts ? ts.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}
-        </span>
-        {open ? (
-          <ChevronDown className="w-3.5 h-3.5 text-muted-foreground/60 shrink-0" />
-        ) : (
-          <ChevronRight className="w-3.5 h-3.5 text-muted-foreground/60 shrink-0" />
-        )}
       </button>
+
       {open && (
-        <div className="border-t border-white/6 bg-background/40 p-4 space-y-3 text-xs">
-          {part.input != null && (
-            <CodePanel
-              label="Input"
-              content={safeStringify(part.input)}
-              onCopy={() => copyToClipboard(safeStringify(part.input), "Input copied")}
-              variant="input"
-            />
-          )}
-          {part.output !== undefined && (
-            <CodePanel
-              label="Output"
-              content={safeStringify(part.output)}
-              onCopy={() => copyToClipboard(safeStringify(part.output), "Output copied")}
-              variant="output"
-            />
-          )}
+        <div className="tool-detail">
+          <div className="tool-detail__meta">
+            <span>Tool</span>
+            <code title={name}>{name}</code>
+            {tier && (
+              <span title={tierModel ? `${tier} · ${tierModel}` : tier}>
+                tier · {tier}
+              </span>
+            )}
+            {charge.label && <span title={charge.title ?? undefined}>{charge.label}</span>}
+            {displayName !== actionOnly && (
+              <span className="truncate opacity-80">{displayName}</span>
+            )}
+          </div>
+
+          <div className={cn("tool-io-grid", canSplitIo && "tool-io-grid--split")}>
+            {hasInput && (
+              <CodePanel
+                label="Input"
+                content={safeStringify(part.input)}
+                onCopy={() => copyToClipboard(safeStringify(part.input), "Input copied")}
+                variant="input"
+              />
+            )}
+            {hasOutput && (
+              <CodePanel
+                label="Output"
+                content={safeStringify(part.output)}
+                onCopy={() => copyToClipboard(safeStringify(part.output), "Output copied")}
+                variant="output"
+              />
+            )}
+          </div>
+
           {part.errorText && (
-            <CodePanel
-              label="Error"
-              content={part.errorText}
-              onCopy={() => copyToClipboard(part.errorText ?? "", "Error copied")}
-              variant="error"
-            />
+            <div className="mt-2.5">
+              <CodePanel
+                label="Error"
+                content={part.errorText}
+                onCopy={() => copyToClipboard(part.errorText ?? "", "Error copied")}
+                variant="error"
+              />
+            </div>
           )}
-          <div>
-            <div className="text-muted-foreground mb-1.5 flex items-center gap-1 font-mono tracking-normal text-micro"><StickyNote className="w-3 h-3" /> Note</div>
+
+          <div className="mt-2.5">
+            <div className="mb-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <StickyNote className="h-3 w-3" /> Analyst note
+            </div>
             <Textarea
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              placeholder="Analyst note (saved locally)…"
+              placeholder="Note saved locally on this device…"
               rows={2}
-              className="text-xs"
+              className="min-h-[2.5rem] text-[12px]"
             />
-            <div className="flex items-center justify-end gap-2 mt-1">
-              {noteSaved && <span className="text-data text-muted-foreground">saved</span>}
+            <div className="mt-1.5 flex items-center justify-end gap-2">
+              {noteSaved && <span className="text-[11px] text-muted-foreground">saved</span>}
               <Button
                 size="sm"
                 variant="secondary"
+                className="h-7 text-[11px]"
                 onClick={() => {
                   localStorage.setItem(noteKey, note);
                   setNoteSaved(note);
                   toast.success("Note saved");
                 }}
-              >Save note</Button>
+              >
+                Save note
+              </Button>
             </div>
           </div>
         </div>

@@ -4,10 +4,10 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadToolActivity } from "@/hooks/useThreadToolActivity";
-import { ShieldAlert, Lock, Coins, Plus, Copy } from "lucide-react";
+import { ShieldAlert, Lock, Coins, Plus, Copy, Link2, Mail, Phone, Globe, Network, User, Hash, FileSearch } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import { extractDisplaySeed } from "@/lib/seed";
+import { extractDisplaySeed, type SeedKind } from "@/lib/seed";
 
 type Thread = {
   id: string;
@@ -26,11 +26,32 @@ function fmtUsd(micro: number | null | undefined): string {
   return `$${usd.toFixed(2)}`;
 }
 
+const KIND_ICON: Record<SeedKind, typeof Globe> = {
+  email: Mail,
+  username: User,
+  phone: Phone,
+  ip: Network,
+  domain: Globe,
+  url: Link2,
+  crypto: Hash,
+  other: FileSearch,
+};
+
+const KIND_LABEL: Record<SeedKind, string> = {
+  email: "Email",
+  username: "Username",
+  phone: "Phone",
+  ip: "IP address",
+  domain: "Domain",
+  url: "URL",
+  crypto: "Wallet",
+  other: "Selector",
+};
+
 /**
- * Persistent investigation header — the case IDENTITY bar. It carries the seed,
- * run status, chain-of-custody integrity, and spend. The per-section counts
- * (artifacts, tool calls) and their alerts live on the workspace tabs instead,
- * so every number appears in exactly one place.
+ * Case command bar — Palantir/Claude workstation style.
+ * Three-zone grid: left meta · centered identity · right ops.
+ * Seed is the visual center of gravity, not pinned to the far left.
  */
 export function WorkspaceHeader({ threadId }: { threadId: string }) {
   const navigate = useNavigate();
@@ -71,12 +92,6 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
     return () => { supabase.removeChannel(ch); };
   }, [threadId, loadIntegrity]);
 
-  // A case only reads "active" while work is actually happening. Older code kept
-  // any case with >=1 artifact/tool call pinned to "active" forever whenever its
-  // thread.status was never advanced to finished/stopped (the known stuck-active
-  // bug). Instead we treat a case as "completed" once it has produced evidence
-  // but has had no tool activity within a short recency window — reloading a done
-  // investigation now settles to "completed" rather than a permanent pulse.
   const ACTIVE_WINDOW_MS = 12_000;
   const [now, setNow] = useState(() => Date.now());
   const lastActivityMs = useMemo(() => {
@@ -88,8 +103,6 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
     return max;
   }, [activity.events]);
   const recentlyActive = lastActivityMs > 0 && now - lastActivityMs < ACTIVE_WINDOW_MS;
-  // Only tick while a run is plausibly live, so the pulse can settle to
-  // "completed" once activity goes quiet; idle/old cases never spin a timer.
   useEffect(() => {
     if (!recentlyActive) return;
     const id = setInterval(() => setNow(Date.now()), 3000);
@@ -101,14 +114,11 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
     : recentlyActive ? "active"
     : artifactCount > 0 || activity.total > 0 ? "completed"
     : "idle";
-  const statusColor =
-    status === "completed" ? "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high)/0.4)] bg-[hsl(var(--confidence-high)/0.1)]"
-    : status === "active" ? "text-primary border-primary/40 bg-primary/10"
-    : "text-muted-foreground border-border bg-secondary/40";
-  const dotColor =
-    status === "completed" ? "bg-[hsl(var(--confidence-high))] shadow-[0_0_8px_hsl(var(--confidence-high)/0.7)]"
-    : status === "active" ? "bg-primary shadow-[0_0_8px_hsl(var(--primary)/0.5)] animate-pulse"
-    : "bg-muted-foreground";
+
+  const display = thread
+    ? extractDisplaySeed(thread.seed_value, thread.seed_type)
+    : { selector: "—", kind: "other" as SeedKind, title: "Investigation" };
+  const KindIcon = KIND_ICON[display.kind] ?? FileSearch;
 
   const integrityPct = integrity && integrity.total > 0
     ? (integrity.ok ? 100 : Math.max(0, Math.round(((Number(integrity.first_break ?? 1) - 1) / Math.max(integrity.total, 1)) * 100)))
@@ -131,24 +141,66 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
   };
 
   return (
-    <header className="relative border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(220_24%_7%/0.72),hsl(222_22%_4.5%/0.62))] backdrop-blur-xl">
-      <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[hsl(var(--intel-blue)/0.45)] to-transparent" />
-      <div className="h-14 px-4 sm:px-5 flex items-center gap-3 min-w-0">
-        <span
-          className={cn("h-2 w-2 shrink-0 rounded-full", dotColor)}
-          aria-hidden
-        />
-        <button onClick={copySeed} className="group flex items-center gap-1.5 min-w-0 shrink text-left" title={thread?.seed_value ?? ""}>
-          <span className="font-mono text-meta text-foreground truncate max-w-[58vw] sm:max-w-[42vw]">{thread ? extractDisplaySeed(thread.seed_value, thread.seed_type).title : "—"}</span>
-          {thread?.seed_value && <Copy className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />}
-        </button>
-        {status !== "idle" && (
-          <span className={cn("shrink-0 rounded-full border px-2.5 py-1 text-eyebrow font-mono uppercase tracking-[0.16em]", statusColor)}>
-            {status}
-          </span>
-        )}
+    <header className="relative border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(220_22%_6.5%/0.92),hsl(222_24%_4%/0.88))] backdrop-blur-xl">
+      <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
 
-        <div className="ml-auto flex items-center gap-3 sm:gap-4 text-data shrink-0">
+      {/* 3-zone command bar: left balance · center identity · right ops */}
+      <div className="grid h-[3.5rem] grid-cols-[1fr_minmax(0,auto)_1fr] items-center gap-2 px-3 sm:px-5">
+        {/* Left — case class (balances the right so center is true center) */}
+        <div className="flex min-w-0 items-center gap-2 justify-self-start">
+          <span className="hidden sm:inline-flex items-center gap-1.5 rounded-md border border-white/[0.07] bg-white/[0.03] px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+            <KindIcon className="h-3 w-3 shrink-0 opacity-80" strokeWidth={1.75} aria-hidden />
+            {KIND_LABEL[display.kind]}
+          </span>
+          <span className="hidden md:inline text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/55">
+            Case file
+          </span>
+        </div>
+
+        {/* Center — investigation identity */}
+        <div className="flex min-w-0 max-w-[min(100%,36rem)] flex-col items-center justify-center justify-self-center px-1">
+          <button
+            type="button"
+            onClick={copySeed}
+            title={thread?.seed_value ? `Copy ${thread.seed_value}` : undefined}
+            className="group flex max-w-full items-center gap-2 rounded-lg px-2 py-0.5 text-center transition-colors hover:bg-white/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <span
+              className={cn(
+                "h-1.5 w-1.5 shrink-0 rounded-full",
+                status === "completed" && "bg-[hsl(var(--confidence-high))] shadow-[0_0_8px_hsl(var(--confidence-high)/0.65)]",
+                status === "active" && "bg-[hsl(var(--info))] shadow-[0_0_8px_hsl(var(--info)/0.55)] animate-pulse",
+                status === "idle" && "bg-muted-foreground/70",
+              )}
+              aria-hidden
+            />
+            <span className="truncate font-mono text-[13px] font-medium tracking-tight text-foreground sm:text-[14px]">
+              {display.title}
+            </span>
+            {thread?.seed_value && (
+              <Copy className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" aria-hidden />
+            )}
+          </button>
+          {status !== "idle" && (
+            <div className="mt-0.5 flex items-center gap-1.5">
+              <span
+                className={cn(
+                  "rounded-full border px-2 py-px text-[9px] font-semibold uppercase tracking-[0.16em]",
+                  status === "completed" && "border-[hsl(var(--confidence-high)/0.35)] bg-[hsl(var(--confidence-high)/0.1)] text-[hsl(var(--confidence-high))]",
+                  status === "active" && "border-[hsl(var(--info)/0.35)] bg-[hsl(var(--info)/0.1)] text-[hsl(var(--info))]",
+                )}
+              >
+                {status === "active" ? "Running" : "Complete"}
+              </span>
+              <span className="hidden text-[10px] text-muted-foreground/70 sm:inline tabular-nums">
+                {artifactCount} evidence · {activity.total} tools
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Right — ops metrics */}
+        <div className="flex items-center justify-self-end gap-2 sm:gap-2.5">
           {integrityPct != null && (
             <div
               title={integrity?.ok ? `${integrity.total} evidence rows · chain valid` : `Chain break at seq ${integrity?.first_break}`}
@@ -156,27 +208,26 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
                 ? `Chain of custody valid — ${integrityPct}%`
                 : `Chain of custody broken at sequence ${integrity?.first_break} — ${integrityPct}%`}
               className={cn(
-                "flex items-center gap-1 rounded-full border px-2 py-1 font-mono tabular-nums",
+                "inline-flex items-center gap-1 rounded-full border px-2 py-1 font-mono text-[11px] tabular-nums",
                 integrity?.ok
-                  ? "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/40 bg-[hsl(var(--confidence-high))]/10"
-                  : "text-destructive border-destructive/40 bg-destructive/10",
+                  ? "border-[hsl(var(--confidence-high))]/35 bg-[hsl(var(--confidence-high))]/10 text-[hsl(var(--confidence-high))]"
+                  : "border-destructive/40 bg-destructive/10 text-destructive",
               )}
             >
-              {/* Glyph carries the state too, so it isn't color-only. */}
-              {integrity?.ok ? <Lock className="w-3 h-3" /> : <ShieldAlert className="w-3 h-3" />}
-              {integrityPct}%
+              {integrity?.ok ? <Lock className="h-3 w-3" /> : <ShieldAlert className="h-3 w-3" />}
+              <span className="hidden xs:inline sm:inline">{integrityPct}%</span>
             </div>
           )}
           {(thread?.cost_micro_usd ?? 0) > 0 && (
-            <div className="hidden md:flex items-center gap-1 text-muted-foreground" title="Spend on this case">
-              <Coins className="w-3.5 h-3.5" />
-              <span className="font-mono text-foreground tabular-nums">{fmtUsd(thread?.cost_micro_usd)}</span>
+            <div className="hidden sm:inline-flex items-center gap-1 rounded-full border border-white/[0.07] bg-white/[0.03] px-2 py-1 text-[11px] text-muted-foreground" title="Spend on this case">
+              <Coins className="h-3 w-3" />
+              <span className="font-mono tabular-nums text-foreground/90">{fmtUsd(thread?.cost_micro_usd)}</span>
             </div>
           )}
           <button
             onClick={createInvestigation}
             disabled={creating}
-            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-white/10 bg-white px-2.5 text-micro font-semibold tracking-normal text-black transition-colors hover:bg-white/90 disabled:opacity-50"
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-white/10 bg-white px-2.5 text-[11px] font-semibold tracking-normal text-black transition-colors hover:bg-white/90 disabled:opacity-50"
             title="Start a new investigation"
             aria-label="Start a new investigation"
           >
