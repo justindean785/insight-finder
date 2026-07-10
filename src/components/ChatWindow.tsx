@@ -174,7 +174,7 @@ function shorten(s: string, max = 32): string {
   return clean.length > max ? clean.slice(0, max - 1) + "…" : clean;
 }
 
-const CODE_COLLAPSE_LINES = 24;
+const CODE_COLLAPSE_LINES = 10;
 
 function CodePanel({
   label, content, onCopy, variant = "input",
@@ -188,7 +188,7 @@ function CodePanel({
   const lines = content.length ? content.split("\n") : [""];
   const lineCount = lines.length;
   const charCount = content.length;
-  const isLong = lineCount > CODE_COLLAPSE_LINES || charCount > 2800;
+  const isLong = lineCount > CODE_COLLAPSE_LINES || charCount > 1200;
   const shown = expanded || !isLong
     ? content
     : lines.slice(0, CODE_COLLAPSE_LINES).join("\n") + "\n…";
@@ -327,7 +327,6 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
   const actionOnly = toolActionLabel(name);
   const hasInput = part.input != null;
   const hasOutput = part.output !== undefined;
-  const canSplitIo = hasInput && hasOutput && !part.errorText;
 
   return (
     <div
@@ -435,7 +434,7 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
             )}
           </div>
 
-          <div className={cn("tool-io-grid", canSplitIo && "tool-io-grid--split")}>
+          <div className="tool-io-grid">
             {hasInput && (
               <CodePanel
                 label="Input"
@@ -1886,6 +1885,23 @@ function ChatWindowInner({
   };
 
   const isLoading = status === "submitted" || status === "streaming";
+
+  // Broadcast live run state so the case header never shows COMPLETE while
+  // the chat stream is still open (tool_usage_log can lag 12s+ between calls).
+  useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent("proximity:run-state", {
+        detail: { threadId, running: isLoading },
+      }),
+    );
+    return () => {
+      window.dispatchEvent(
+        new CustomEvent("proximity:run-state", {
+          detail: { threadId, running: false },
+        }),
+      );
+    };
+  }, [threadId, isLoading]);
 
   // Run progress readout for the "Investigating…" indicator: an elapsed timer
   // (plus the current tool step) so an analyst can distinguish a working run

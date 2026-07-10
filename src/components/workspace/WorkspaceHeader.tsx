@@ -92,8 +92,23 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
     return () => { supabase.removeChannel(ch); };
   }, [threadId, loadIntegrity]);
 
-  const ACTIVE_WINDOW_MS = 12_000;
+  // Tool log can go quiet for long stretches (MiniMax thinking / provider lag).
+  // 12s was too short — header flipped to COMPLETE between tool calls mid-run.
+  const ACTIVE_WINDOW_MS = 90_000;
   const [now, setNow] = useState(() => Date.now());
+  // Live chat stream — authoritative "running" signal from ChatWindow.
+  const [chatRunning, setChatRunning] = useState(false);
+  useEffect(() => {
+    setChatRunning(false);
+    const onRun = (e: Event) => {
+      const d = (e as CustomEvent<{ threadId?: string; running?: boolean }>).detail;
+      if (!d || d.threadId !== threadId) return;
+      setChatRunning(!!d.running);
+    };
+    window.addEventListener("proximity:run-state", onRun as EventListener);
+    return () => window.removeEventListener("proximity:run-state", onRun as EventListener);
+  }, [threadId]);
+
   const lastActivityMs = useMemo(() => {
     let max = 0;
     for (const e of activity.events) {
@@ -103,15 +118,18 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
     return max;
   }, [activity.events]);
   const recentlyActive = lastActivityMs > 0 && now - lastActivityMs < ACTIVE_WINDOW_MS;
+  const liveRun = chatRunning || recentlyActive;
   useEffect(() => {
-    if (!recentlyActive) return;
+    if (!liveRun) return;
     const id = setInterval(() => setNow(Date.now()), 3000);
     return () => clearInterval(id);
-  }, [recentlyActive]);
+  }, [liveRun]);
 
+  // Priority: live stream/tool activity → Running; only then terminal/completed.
+  // Never paint COMPLETE while chat is streaming or tools ran in the last 90s.
   const status: "idle" | "active" | "completed" =
-    thread?.status === "finished" || thread?.status === "stopped" ? "completed"
-    : recentlyActive ? "active"
+    liveRun ? "active"
+    : thread?.status === "finished" || thread?.status === "stopped" ? "completed"
     : artifactCount > 0 || activity.total > 0 ? "completed"
     : "idle";
 
