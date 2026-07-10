@@ -120,7 +120,7 @@ export default function ChatPage() {
           {tab === "report" && (
             <div role="tabpanel" id="workspace-tabpanel-report" aria-labelledby="workspace-tab-report" className="absolute inset-0 overflow-y-auto">
               <ErrorBoundary>
-                <div className="mx-auto max-w-4xl"><ReportTab threadId={threadId} artifacts={items} /></div>
+                <div className="chat-column mx-auto px-4 py-3 sm:px-7"><ReportTab threadId={threadId} artifacts={items} /></div>
               </ErrorBoundary>
             </div>
           )}

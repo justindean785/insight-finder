@@ -264,49 +264,50 @@ export function WorkspaceTabs({
     );
   }
 
-  // Desktop: a real segmented control. A contained pill bar gives the raised
-  // active tab a surface to sit against, so the bar reads as navigation and
-  // separates from the identity header above it.
+  // Full-width nav strip with centered segmented control — matches the widened
+  // chat column so chrome and content share one symmetrical axis.
   return (
-    <div className="relative flex justify-center overflow-x-auto border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(220_22%_6.5%/0.6),hsl(222_20%_4.5%/0.46))] px-3 py-2.5 backdrop-blur-xl [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-      <div
-        role="tablist"
-        aria-label="Investigation workspace"
-        className="inline-flex w-max items-center gap-1 rounded-2xl border border-white/[0.08] bg-[hsl(220_26%_9%/0.6)] p-1 shadow-[inset_0_1px_0_hsl(0_0%_100%/0.05),0_10px_34px_-22px_hsl(var(--intel-blue)/0.7)]"
-      >
-        {TABS.map((t, idx) => {
-          const Icon = t.icon;
-          const isActive = active === t.key;
-          const count = counts?.[t.key];
-          return (
-            <button
-              key={t.key}
-              ref={(el) => { tabRefs.current[idx] = el; }}
-              id={`workspace-tab-${t.key}`}
-              role="tab"
-              aria-selected={isActive}
-              aria-controls={`workspace-tabpanel-${t.key}`}
-              tabIndex={isActive ? 0 : -1}
-              onKeyDown={(e) => onKeyDown(e, idx)}
-              onClick={() => onChange(t.key)}
-              className={cn(
-                "relative inline-flex h-9 items-center gap-2 rounded-lg px-3.5 text-meta font-medium transition-all duration-200 ease-premium active:scale-[0.98]",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-                isActive
-                  ? "bg-[hsl(var(--intel-blue)/0.16)] text-foreground shadow-[inset_0_0_0_1px_hsl(var(--intel-blue)/0.34),0_0_20px_-7px_hsl(var(--intel-blue)/0.85)]"
-                  : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
-              )}
-            >
-              <Icon
-                className={cn("h-4 w-4 shrink-0 transition-colors", isActive ? "text-[hsl(var(--intel-blue))]" : "text-current")}
-                strokeWidth={1.8}
-              />
-              <span className="leading-none tracking-tight">{t.label}</span>
-              {count ? <CountPill value={count.value} active={isActive} /> : null}
-              {count?.alert ? <AlertDot count={count.alert} /> : null}
-            </button>
-          );
-        })}
+    <div className="relative border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(220_22%_6.5%/0.72),hsl(222_20%_4.5%/0.55))] backdrop-blur-xl">
+      <div className="chat-column mx-auto flex justify-center overflow-x-auto px-4 py-2 sm:px-7 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div
+          role="tablist"
+          aria-label="Investigation workspace"
+          className="inline-flex w-full max-w-full items-center justify-center gap-0.5 rounded-xl border border-white/[0.08] bg-[hsl(220_26%_8%/0.75)] p-1 shadow-[inset_0_1px_0_hsl(0_0%_100%/0.05)] sm:w-auto sm:gap-1"
+        >
+          {TABS.map((t, idx) => {
+            const Icon = t.icon;
+            const isActive = active === t.key;
+            const count = counts?.[t.key];
+            return (
+              <button
+                key={t.key}
+                ref={(el) => { tabRefs.current[idx] = el; }}
+                id={`workspace-tab-${t.key}`}
+                role="tab"
+                aria-selected={isActive}
+                aria-controls={`workspace-tabpanel-${t.key}`}
+                tabIndex={isActive ? 0 : -1}
+                onKeyDown={(e) => onKeyDown(e, idx)}
+                onClick={() => onChange(t.key)}
+                className={cn(
+                  "relative inline-flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg px-2.5 text-meta font-medium transition-all duration-200 ease-premium active:scale-[0.98] sm:flex-none sm:gap-2 sm:px-4",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                  isActive
+                    ? "bg-[hsl(var(--intel-blue)/0.18)] text-foreground shadow-[inset_0_0_0_1px_hsl(var(--intel-blue)/0.35)]"
+                    : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
+                )}
+              >
+                <Icon
+                  className={cn("h-4 w-4 shrink-0 transition-colors", isActive ? "text-[hsl(var(--intel-blue))]" : "text-current")}
+                  strokeWidth={1.8}
+                />
+                <span className="leading-none tracking-tight">{t.label}</span>
+                {count ? <CountPill value={count.value} active={isActive} /> : null}
+                {count?.alert ? <AlertDot count={count.alert} /> : null}
+              </button>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

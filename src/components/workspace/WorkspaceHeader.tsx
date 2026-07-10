@@ -163,7 +163,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
       <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
 
       {/* 3-zone command bar: left balance · center identity · right ops */}
-      <div className="grid h-[3.5rem] grid-cols-[1fr_minmax(0,auto)_1fr] items-center gap-2 px-3 sm:px-5">
+      <div className="mx-auto grid h-[3.5rem] w-full max-w-[min(100%,64rem)] grid-cols-[1fr_minmax(0,auto)_1fr] items-center gap-2 px-4 sm:px-7">
         {/* Left — case class (balances the right so center is true center) */}
         <div className="flex min-w-0 items-center gap-2 justify-self-start">
           <span className="hidden sm:inline-flex items-center gap-1.5 rounded-md border border-white/[0.07] bg-white/[0.03] px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
