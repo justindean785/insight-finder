@@ -2139,66 +2139,73 @@ function ChatWindowInner({
             <FailedRunCard reason={error.message} onRetry={retryLastUser} />
           )}
           {suggestions.length > 0 && (
-            <div className="pt-2 animate-fade-up">
-              <div className="flex items-center gap-2 mb-3 px-1">
-                <Sparkles className="w-3 h-3 text-primary" />
-                <span className="text-meta font-mono font-semibold tracking-normal text-muted-foreground">
+            <div className="w-full animate-fade-up">
+              <div className="mb-1.5 flex h-6 items-center gap-2">
+                <Sparkles className="h-3 w-3 shrink-0 text-muted-foreground" />
+                <span className="text-[11px] font-medium uppercase tracking-[0.06em] text-muted-foreground">
                   Next steps
                 </span>
-                <div className="h-px flex-1 bg-gradient-to-r from-white/10 to-transparent" />
+                <span className="font-mono text-[10px] tabular-nums text-muted-foreground/60">
+                  {suggestions.length}
+                </span>
               </div>
-              {/* Mobile: horizontal scroll-snap rail. sm+: an even 2-up grid —
-                  equal-height cards (h-full + flex-col) so ragged detail lengths
-                  can't stagger the row, roomier than the old cramped 3-up so the
-                  meta/title stop truncating. Each card ends in a "Run" affordance
-                  that animates on hover to read as actionable, not decorative. */}
-              <div className="flex gap-3 overflow-x-auto snap-x snap-mandatory pb-2 -mx-4 px-4 [scrollbar-width:thin] [scrollbar-color:hsl(var(--border))_transparent] sm:grid sm:grid-cols-2 sm:items-start sm:gap-2.5 sm:overflow-visible sm:mx-0 sm:px-0 sm:pb-0">
+              {/* Dense action list — not oversized cards. One row per pivot. */}
+              <div className="overflow-hidden rounded-lg border border-white/[0.08] bg-white/[0.025] divide-y divide-white/[0.06]">
                 {suggestions.map((s, i) => {
                   const cardId = `${s.title}-${i}`;
                   const expanded = expandedPivot === cardId;
                   return (
-                  <div
-                    key={cardId}
-                    role="button"
-                    tabIndex={0}
-                    aria-expanded={expanded}
-                    onClick={() => setExpandedPivot(expanded ? null : cardId)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpandedPivot(expanded ? null : cardId); }
-                    }}
-                    className="group relative flex w-[248px] shrink-0 cursor-pointer snap-start flex-col overflow-hidden rounded-2xl border border-white/12 bg-[linear-gradient(155deg,rgba(255,255,255,0.09),rgba(255,255,255,0.025)_46%,rgba(255,255,255,0.01))] p-3.5 text-left shadow-[0_18px_44px_-24px_rgba(0,0,0,0.92)] backdrop-blur-xl transition-all duration-200 ease-premium hover:-translate-y-0.5 hover:border-primary/55 hover:shadow-[0_26px_60px_-30px_rgba(0,0,0,0.98)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/45 focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-safe:animate-pivot-in sm:w-auto"
-                    style={{ animationDelay: `${Math.min(i * 40, 320)}ms` }}
-                  >
-                    <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/40 to-transparent opacity-70" />
-                    <span className="flex items-center gap-1.5 pr-5">
-                      {s.icon === "pivot" ? (
-                        <GitBranch className="w-3 h-3 shrink-0 text-primary" />
-                      ) : (
-                        <Sparkles className="w-3 h-3 shrink-0 text-primary" />
-                      )}
-                      {s.priority && <span className={`pivot-priority pivot-priority--${s.priority}`}>{s.priority}</span>}
-                      <span className="truncate text-micro font-medium tracking-normal text-muted-foreground/80">{s.meta}</span>
-                    </span>
-                    <ChevronDown className={cn("absolute right-3 top-3.5 h-3.5 w-3.5 text-muted-foreground/50 transition-transform duration-200", expanded && "rotate-180")} aria-hidden />
-                    <span className="mt-1.5 block text-sm font-semibold leading-snug text-foreground transition-colors group-hover:text-primary">{s.title}</span>
-                    {s.detail && (
-                      <span className={cn("mt-1 block text-micro leading-relaxed text-muted-foreground", !expanded && "line-clamp-2 min-h-[2.1rem]")}>{s.detail}</span>
-                    )}
-                    {expanded && s.target && (
-                      <span className="mt-2 flex items-center gap-1.5 border-t border-white/[0.07] pt-2 text-micro">
-                        <span className="text-muted-foreground/60">Target</span>
-                        <span className="truncate font-mono text-foreground/90">{s.target}</span>
-                      </span>
-                    )}
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); sendText(s.prompt); }}
-                      className="mt-2.5 inline-flex w-fit items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/[0.06] px-2.5 py-1 text-micro font-medium text-primary/90 transition-all duration-200 hover:border-primary/55 hover:bg-primary/[0.12] hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/45 active:scale-[0.97]"
+                    <div
+                      key={cardId}
+                      className="group flex items-stretch gap-2 px-2.5 py-2 transition-colors hover:bg-white/[0.03]"
                     >
-                      {s.icon === "pivot" ? "Run pivot" : "Run"}
-                      <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
-                    </button>
-                  </div>
+                      <button
+                        type="button"
+                        className="min-w-0 flex-1 text-left"
+                        aria-expanded={expanded}
+                        onClick={() => setExpandedPivot(expanded ? null : cardId)}
+                      >
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          {s.priority && (
+                            <span className={`pivot-priority pivot-priority--${s.priority} shrink-0`}>
+                              {s.priority}
+                            </span>
+                          )}
+                          <span className="truncate text-[12.5px] font-medium leading-tight text-foreground">
+                            {s.title}
+                          </span>
+                          {s.meta && (
+                            <span className="hidden min-[420px]:inline truncate text-[10px] text-muted-foreground/75">
+                              · {s.meta}
+                            </span>
+                          )}
+                        </div>
+                        {s.detail && (
+                          <p
+                            className={cn(
+                              "mt-0.5 text-[11px] leading-snug text-muted-foreground",
+                              !expanded && "line-clamp-1",
+                            )}
+                          >
+                            {s.detail}
+                          </p>
+                        )}
+                        {expanded && s.target && (
+                          <p className="mt-1 flex items-center gap-1.5 text-[11px]">
+                            <span className="text-muted-foreground/70">Target</span>
+                            <span className="truncate font-mono text-foreground/85">{s.target}</span>
+                          </p>
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => sendText(s.prompt)}
+                        className="inline-flex h-7 shrink-0 items-center gap-1 self-center rounded-md border border-white/10 bg-white/[0.04] px-2 text-[11px] font-medium text-foreground/90 transition-colors hover:bg-white/[0.08] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        {s.icon === "pivot" ? "Run" : "Run"}
+                        <ArrowRight className="h-3 w-3 opacity-70" />
+                      </button>
+                    </div>
                   );
                 })}
               </div>
