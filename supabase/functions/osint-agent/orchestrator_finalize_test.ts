@@ -10,12 +10,14 @@ import {
   extractAssistantReportText,
   needsReportSalvage,
   buildSalvageSynthesisPrompt,
+  toolCallCapReached,
+  shouldSkipForToolCap,
   FINALIZE_ACTIVE_TOOLS,
   FINALIZE_RESERVE_MS,
   FINALIZE_MAX_STEPS,
   MIN_REPORT_CHARS,
 } from "./orchestrator-finalize.ts";
-import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS } from "./orchestrator-budget.ts";
+import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN } from "./orchestrator-budget.ts";
 
 // ---- Fix A: shouldForceFinalize -------------------------------------------------
 
@@ -61,6 +63,37 @@ Deno.test("buildFinalizeDirective instructs report-then-record and forbids new l
   assert(d.includes("record_artifacts"), "mentions record_artifacts");
   assert(d.includes("findings report") || d.includes("final") , "asks for the final report");
   assert(d.includes("no new") || d.includes("not start") || d.includes("do not start"), "forbids new lookups");
+});
+
+// ---- Run tool-call cap ----------------------------------------------------------
+
+Deno.test("toolCallCapReached: trips at the cap, not before", () => {
+  assertEquals(toolCallCapReached(MAX_TOOL_CALLS_PER_RUN - 1), false, "one under the cap keeps working");
+  assertEquals(toolCallCapReached(MAX_TOOL_CALLS_PER_RUN), true, "at the cap → finalize");
+  assertEquals(toolCallCapReached(MAX_TOOL_CALLS_PER_RUN + 10), true, "past the cap → finalize");
+  assertEquals(toolCallCapReached(5, 5), true, "honors an explicit cap override");
+});
+
+Deno.test("shouldSkipForToolCap: skips a live lookup past the cap but NEVER a recording tool", () => {
+  // A run that has already made cap genuine calls: further NON-recording lookups skip.
+  assertEquals(shouldSkipForToolCap(MAX_TOOL_CALLS_PER_RUN, false), true, "lookup past cap → skip");
+  assertEquals(shouldSkipForToolCap(MAX_TOOL_CALLS_PER_RUN - 1, false), false, "lookup under cap → run");
+  // record_artifacts / evidence writes are exempt so capping can't strand evidence.
+  assertEquals(shouldSkipForToolCap(MAX_TOOL_CALLS_PER_RUN + 50, true), false, "recording tool past cap → still runs");
+});
+
+Deno.test("run-cap enforcement: a 61-call run cannot exceed the cap of genuine calls", () => {
+  // Simulate the wrapper's per-call gate over 80 attempted NON-recording lookups.
+  let genuine = 0;
+  let capped = false;
+  let skipped = 0;
+  for (let i = 0; i < 80; i++) {
+    if (shouldSkipForToolCap(genuine, false)) { capped = true; skipped++; continue; }
+    genuine++; // a genuine live execution
+  }
+  assertEquals(genuine, MAX_TOOL_CALLS_PER_RUN, "genuine executions are clamped at the cap");
+  assertEquals(capped, true, "run_capped is set once the cap is hit");
+  assertEquals(skipped, 80 - MAX_TOOL_CALLS_PER_RUN, "every attempt past the cap is skipped, not run");
 });
 
 // ---- Fix B: report-salvage detection + synthesis prompt --------------------------

@@ -45,6 +45,16 @@ export const RECENT_WINDOW = 10;
 // spent on redundant fan-out and dragging p95 wall-clock.
 export const MAX_ORCHESTRATOR_STEPS = 22;
 
+// Hard ceiling on GENUINE (live, non-cached, non-skipped) tool executions per run.
+// Live logs showed a single investigation balloon to 230 tool calls / 747s of
+// tool-time (43× socialfetch_web_read, 38× minimax_web_search) — unbounded run size
+// is the dominant "why is it slow". Once a run hits this, the wrapper stops starting
+// new lookups and the orchestrator finalizes with the evidence in hand (see
+// orchestrator-finalize.ts). Recording/evidence tools (ALWAYS_ALLOW) are exempt so
+// the closing record_artifacts + report still run. Cheatsheet target: avg <30/run,
+// so 60 is a generous backstop that only clips the pathological tail. Single tunable.
+export const MAX_TOOL_CALLS_PER_RUN = 60;
+
 // Hard wall-clock deadline for a single run (ms). A StopCondition trips once elapsed
 // time exceeds this, ending the run CLEANLY (onFinish persists the partial assistant
 // + artifacts and marks the thread finished) instead of grinding to the step cap. A

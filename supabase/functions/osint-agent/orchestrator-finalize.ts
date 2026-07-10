@@ -22,7 +22,7 @@
  * only guarantees the synthesis STEP happens. The report content stays the model's,
  * grounded strictly in artifacts already gathered.
  */
-import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS } from "./orchestrator-budget.ts";
+import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN } from "./orchestrator-budget.ts";
 
 // Reserve the final stretch of the wall-clock budget for a guaranteed synthesis+record
 // step. Once elapsed enters this window the orchestrator stops issuing new lookups and
@@ -58,6 +58,30 @@ export function shouldForceFinalize(
   const reserveMs = opts?.reserveMs ?? FINALIZE_RESERVE_MS;
   const maxSteps = opts?.maxSteps ?? MAX_ORCHESTRATOR_STEPS;
   return elapsedMs >= budgetMs - reserveMs || stepNumber >= maxSteps - 1;
+}
+
+/**
+ * True once a run has made its budgeted number of genuine (live) tool executions.
+ * Checked in prepareStep to force the closing synthesis — a third finalize trigger
+ * alongside the wall-clock reserve window and the step cap.
+ */
+export function toolCallCapReached(genuineToolCalls: number, cap: number = MAX_TOOL_CALLS_PER_RUN): boolean {
+  return genuineToolCalls >= cap;
+}
+
+/**
+ * Decides whether the tool-cache wrapper should short-circuit a specific live call
+ * because the run cap is hit. Recording/evidence tools are NEVER skipped (the
+ * closing record_artifacts must run), so the cap can't strand collected evidence.
+ * Pure so the enforcement rule is unit-tested without the wrapper's DB/circuit deps.
+ */
+export function shouldSkipForToolCap(
+  genuineToolCalls: number,
+  isRecordingTool: boolean,
+  cap: number = MAX_TOOL_CALLS_PER_RUN,
+): boolean {
+  if (isRecordingTool) return false;
+  return genuineToolCalls >= cap;
 }
 
 /**

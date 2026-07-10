@@ -14,6 +14,7 @@ import { creditsCharged } from "./billing.ts";
 import { classifyToolOutcome } from "./tool-outcome.ts";
 import * as circuit from "./circuit.ts";
 import { guard } from "./guard.ts";
+import { shouldSkipForToolCap } from "./orchestrator-finalize.ts";
 import {
   ALWAYS_ALLOW_TOOLS,
   analyzeWeakLead,
@@ -331,6 +332,12 @@ export function wrapToolsWithCache(
     supabaseAdmin?: ReturnType<typeof createClient>;
     onCost?: (microUsd: number) => void;
     manualOverrideSelector?: string | null;
+    // Per-run genuine-tool-call budget (MAX_TOOL_CALLS_PER_RUN). Owned by index.ts's
+    // per-request closure and passed in so the wrapper can (a) increment on each
+    // genuine live execution and (b) short-circuit new lookups once the cap is hit.
+    // `capped` is surfaced by index.ts (finalize + telemetry). Optional so callers
+    // that don't set it (tests, other entrypoints) are unaffected.
+    toolCallBudget?: { genuine: number; capped: boolean };
   },
 ) {
   const wrapped: Record<string, Tool> = {};
@@ -711,6 +718,30 @@ export function wrapToolsWithCache(
           }
         }
 
+        // ---- Per-run tool-call cap (graceful) ----
+        // Once the run has made MAX_TOOL_CALLS_PER_RUN genuine live executions, stop
+        // STARTING new lookups: return a schema-safe skip (like a governor rejection)
+        // so the step keeps a valid tool-call/result pair and the model finalizes with
+        // what it has. Checked here — AFTER cache hits (still served free) and before
+        // the live call — so cached corroboration never costs budget. Recording tools
+        // (ALWAYS_ALLOW) are exempt via shouldSkipForToolCap, so the closing
+        // record_artifacts is never starved and no collected evidence is stranded.
+        // This is the hard backstop; prepareStep also forces synthesis once capped.
+        if (ctx.toolCallBudget && shouldSkipForToolCap(ctx.toolCallBudget.genuine, ALWAYS_ALLOW_TOOLS.has(name))) {
+          ctx.toolCallBudget.capped = true;
+          await logUsage(false, false, Date.now() - t0, "run tool-call cap reached", null, true, {
+            input: inputJson,
+            runtime: { ...runtimeMetaBase, rejection_reason: "run_capped", rejection_source: "run_cap", stale_cache: !!staleRecord },
+          });
+          return attachRuntimeMeta({ ok: false, skipped: true, run_capped: true, error: "run tool-call cap reached" }, {
+            ...runtimeMetaBase,
+            rejection_reason: "run_capped",
+            stage: "CAPPED",
+            cache_layer: "miss",
+            stale_cache: !!staleRecord,
+          });
+        }
+
         const decision = circuit.shouldRun(ctx.investigationId, name, sel, purpose, { force });
         if (!decision.allow) {
           noteRejectedCall(ctx.investigationId, {
@@ -793,6 +824,13 @@ export function wrapToolsWithCache(
         });
 
         // 3) live
+        // Count this GENUINE live execution against the per-run cap. Placed here (past
+        // every cache/circuit/runtime gate, at the point we commit to running live) so
+        // cached hits and governor skips never consume the budget — matching the
+        // outcome semantics the wrapper already uses. Recording/evidence tools are
+        // exempt so evidence writes don't eat the lookup budget. A live timeout/error
+        // still counts: it genuinely ran and consumed time/quota.
+        if (ctx.toolCallBudget && !ALWAYS_ALLOW_TOOLS.has(name)) ctx.toolCallBudget.genuine++;
         let ok = true;
         let result: unknown;
         let errInfo: { errorMsg: string | null; statusCode: number | null } = { errorMsg: null, statusCode: null };
