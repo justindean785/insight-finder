@@ -32,12 +32,12 @@ import { wrapToolsWithCache } from "./cache.ts";
 import { beginCycle, clearRuntime } from "./runtime-policy.ts";
 import {
   TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW,
-  MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS,
+  MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN,
   capTotalToBudget, deadlineReached,
 } from "./orchestrator-budget.ts";
 import {
   shouldForceFinalize, buildFinalizeDirective, FINALIZE_ACTIVE_TOOLS, FINALIZE_MAX_STEPS,
-  extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt,
+  extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt, toolCallCapReached,
 } from "./orchestrator-finalize.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
 
@@ -584,6 +584,11 @@ Deno.serve(async (req) => {
     // once it reaches FINALIZE_MAX_STEPS so the closing synthesis can't loop for the
     // whole reserve window. Incremented in prepareStep when a finalize step is forced.
     let finalizeStepsRun = 0;
+    // Per-run genuine-tool-call budget (MAX_TOOL_CALLS_PER_RUN). Passed into
+    // wrapToolsWithCache, which increments `genuine` on each live execution and flips
+    // `capped` once the cap is hit; prepareStep reads it to force finalize. Owned by
+    // this per-request closure so concurrent runs on a warm isolate never share it.
+    const toolCallBudget = { genuine: 0, capped: false };
     // Wall-clock start for BOTH the finalize-reserve check (prepareStep) and the hard
     // deadline StopCondition below. Declared here so prepareStep's closure reads it.
     const runStartedAt = Date.now();
@@ -637,13 +642,24 @@ Deno.serve(async (req) => {
         const stepMessagesOut = sanitizeModelMessages(
           capToolResultOutputs(budgeted, MAX_TOOL_RESULT_CHARS),
         );
-        // P0 fix A — reserve the run's final step(s) for a guaranteed report. Once
-        // the wall-clock reserve window opens (or we hit the last allowed step),
-        // stop fanning out: restrict tools to record_artifacts and append the
-        // finalize directive so the model writes its Findings report NOW instead of
-        // the deadline tripping mid-tool-call and leaving "No report yet". A
-        // StopCondition (finalizeStepsRun >= FINALIZE_MAX_STEPS) ends the run after.
-        if (shouldForceFinalize(Date.now() - runStartedAt, stepNumber ?? 0)) {
+        // Force the closing synthesis step when ANY run budget is exhausted:
+        //  • P0 fix A — the wall-clock reserve window opened, or we hit the last step.
+        //  • Run tool-call cap — MAX_TOOL_CALLS_PER_RUN genuine live calls reached
+        //    (the wrapper is already skipping new lookups; make the model finalize
+        //    instead of burning steps on skipped calls).
+        // Either way: restrict tools to record_artifacts and append the finalize
+        // directive so the model writes its Findings report NOW instead of the
+        // deadline tripping mid-tool-call and leaving "No report yet". A StopCondition
+        // (finalizeStepsRun >= FINALIZE_MAX_STEPS) ends the run after.
+        const capReached = toolCallCapReached(toolCallBudget.genuine);
+        if (capReached && !toolCallBudget.capped) {
+          toolCallBudget.capped = true;
+          console.log(JSON.stringify({
+            event: "run_capped", thread_id: threadId,
+            genuine_tool_calls: toolCallBudget.genuine, cap: MAX_TOOL_CALLS_PER_RUN,
+          }));
+        }
+        if (capReached || shouldForceFinalize(Date.now() - runStartedAt, stepNumber ?? 0)) {
           finalizeStepsRun++;
           return {
             messages: stepMessagesOut,
@@ -683,6 +699,7 @@ Deno.serve(async (req) => {
         supabaseAdmin,
         onCost,
         manualOverrideSelector,
+        toolCallBudget,
       }),
       // Unknown-tool guard (Phase B4): the model occasionally emits a tool call
       // for a name that is NOT in the live registry (hallucinations like exify /
@@ -946,6 +963,15 @@ Deno.serve(async (req) => {
         } catch (e) {
           console.warn("[safety-net] zero-artifact check failed:", e);
         }
+        // Durable end-of-run signal that this run finalized because it hit the
+        // per-run tool-call cap (vs. a natural finish). Visible in edge logs; the
+        // capped lookups also carry run_capped:true in tool_usage_log (rejection_reason).
+        if (toolCallBudget.capped) {
+          console.log(JSON.stringify({
+            event: "run_capped_finalize", thread_id: threadId,
+            genuine_tool_calls: toolCallBudget.genuine, cap: MAX_TOOL_CALLS_PER_RUN,
+          }));
+        }
         const { error: statusErr } = await supabase
           .from("threads")
           .update({
@@ -969,7 +995,7 @@ Deno.serve(async (req) => {
         // selectors; the LLM only ever adds candidate edges, never a merge. Best-effort:
         // a clustering error must never fail an otherwise-complete investigation.
         try {
-          const clustered = await applyClusteringToThread(supabaseAdmin, threadId);
+          const clustered = await applyClusteringToThread(supabaseAdmin, threadId, userId);
           console.log(JSON.stringify({ event: "cluster_applied", thread_id: threadId, ...clustered }));
         } catch (e) {
           console.warn("[cluster] applyClusteringToThread failed (non-fatal):", String(e));
