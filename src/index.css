@@ -609,87 +609,171 @@ All colors MUST be HSL.
   }
 
   /* === Code panel — forensic JSON / trace block ===
-     Heavier than a generic <pre>; reads as evidence, not debug. */
+     Aligned gutter + code (same font metrics), full-width stack. */
   .code-panel {
     position: relative;
-    border-radius: 8px;
-    border: 1px solid hsl(var(--border));
-    background:
-      linear-gradient(180deg, hsl(0 0% 6%) 0%, hsl(0 0% 4%) 100%);
-    box-shadow:
-      inset 0 1px 0 hsl(0 0% 100% / 0.04),
-      inset 0 0 0 1px hsl(0 0% 0% / 0.4);
+    width: 100%;
+    min-width: 0;
+    border-radius: 10px;
+    border: 1px solid hsl(0 0% 100% / 0.08);
+    background: hsl(222 22% 5%);
     overflow: hidden;
   }
   .code-panel__head {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 6px 10px;
-    background:
-      linear-gradient(180deg, hsl(0 0% 9%) 0%, hsl(0 0% 7%) 100%);
-    border-bottom: 1px solid hsl(var(--border-subtle));
-    font-family: "JetBrains Mono", ui-monospace, monospace;
-    font-size: 10px;
-    letter-spacing: 0.14em;
+    gap: 8px;
+    min-height: 34px;
+    padding: 0 10px 0 12px;
+    background: hsl(0 0% 100% / 0.03);
+    border-bottom: 1px solid hsl(0 0% 100% / 0.06);
+    font-family: system-ui, -apple-system, "Segoe UI", "IBM Plex Sans", sans-serif;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
     color: hsl(var(--muted-foreground));
   }
   .code-panel__head-label {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
+    min-width: 0;
   }
   .code-panel__head-label::before {
     content: "";
-    width: 6px; height: 6px; border-radius: 1px;
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    flex-shrink: 0;
     background: hsl(var(--info));
-    box-shadow: 0 0 8px hsl(var(--info) / 0.7);
   }
   .code-panel__head--output .code-panel__head-label::before {
     background: hsl(var(--confidence-high));
-    box-shadow: 0 0 8px hsl(var(--confidence-high) / 0.7);
+  }
+  .code-panel__head-meta {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 10px;
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
+    color: hsl(var(--muted-foreground) / 0.75);
+    font-variant-numeric: tabular-nums;
+  }
+  .code-panel__head-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .code-panel__head-actions button {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 24px;
+    padding: 0 8px;
+    border-radius: 6px;
+    border: 1px solid hsl(0 0% 100% / 0.08);
+    background: hsl(0 0% 100% / 0.03);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: hsl(var(--muted-foreground));
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+  .code-panel__head-actions button:hover {
+    background: hsl(0 0% 100% / 0.07);
+    color: hsl(var(--foreground));
+    border-color: hsl(0 0% 100% / 0.12);
   }
   .code-panel__body {
     display: grid;
-    grid-template-columns: auto 1fr;
-    max-height: 22rem;
+    grid-template-columns: 2.75rem minmax(0, 1fr);
+    max-height: 16rem;
     overflow: auto;
     scrollbar-width: thin;
+    scrollbar-color: hsl(0 0% 100% / 0.12) transparent;
+  }
+  .code-panel__body--expanded {
+    max-height: min(70vh, 36rem);
+  }
+  .code-panel__gutter,
+  .code-panel__code {
+    /* Lock gutter to code so line numbers never drift */
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11.5px;
+    line-height: 1.55;
+    tab-size: 2;
   }
   .code-panel__gutter {
     user-select: none;
     text-align: right;
-    padding: 10px 8px 10px 10px;
-    font-family: "JetBrains Mono", ui-monospace, monospace;
-    font-size: 10.5px;
-    line-height: 1.55;
-    color: hsl(var(--muted-foreground) / 0.5);
-    background: hsl(0 0% 3% / 0.6);
-    border-right: 1px solid hsl(var(--border-subtle));
+    padding: 10px 8px 10px 6px;
+    color: hsl(var(--muted-foreground) / 0.45);
+    background: hsl(0 0% 0% / 0.25);
+    border-right: 1px solid hsl(0 0% 100% / 0.05);
     white-space: pre;
   }
   .code-panel__code {
     margin: 0;
-    padding: 10px 12px;
-    font-family: "JetBrains Mono", ui-monospace, monospace;
-    font-size: 11.5px;
-    line-height: 1.55;
-    color: hsl(var(--foreground) / 0.92);
+    padding: 10px 12px 10px 10px;
+    color: hsl(0 0% 90%);
     white-space: pre;
     overflow-x: auto;
+    min-width: 0;
   }
   .code-panel--error {
-    border-color: hsl(var(--danger) / 0.45);
+    border-color: hsl(var(--danger) / 0.4);
   }
   .code-panel--error .code-panel__head {
     background: hsl(var(--danger-muted));
     color: hsl(var(--danger));
-    border-bottom-color: hsl(var(--danger) / 0.3);
+    border-bottom-color: hsl(var(--danger) / 0.25);
   }
   .code-panel--error .code-panel__head-label::before {
     background: hsl(var(--danger));
-    box-shadow: 0 0 8px hsl(var(--danger) / 0.7);
+  }
+
+  /* Side-by-side input/output when the tool pane is wide enough */
+  .tool-io-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+    width: 100%;
+    min-width: 0;
+  }
+  @media (min-width: 720px) {
+    .tool-io-grid--split {
+      grid-template-columns: 1fr 1fr;
+      align-items: start;
+    }
+  }
+  .tool-detail {
+    width: 100%;
+    min-width: 0;
+    border-top: 1px solid hsl(0 0% 100% / 0.06);
+    background: hsl(222 24% 3.5% / 0.55);
+    padding: 12px;
+  }
+  .tool-detail__meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+    margin-bottom: 10px;
+    font-size: 11px;
+    color: hsl(var(--muted-foreground));
+  }
+  .tool-detail__meta code {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 10.5px;
+    color: hsl(var(--foreground) / 0.7);
+    background: hsl(0 0% 100% / 0.04);
+    border: 1px solid hsl(0 0% 100% / 0.06);
+    border-radius: 4px;
+    padding: 1px 6px;
   }
 
   /* === Coverage grid cells — Done / Partial / Missing heatmap === */
