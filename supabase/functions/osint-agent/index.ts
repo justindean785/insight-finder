@@ -995,7 +995,7 @@ Deno.serve(async (req) => {
         // selectors; the LLM only ever adds candidate edges, never a merge. Best-effort:
         // a clustering error must never fail an otherwise-complete investigation.
         try {
-          const clustered = await applyClusteringToThread(supabaseAdmin, threadId);
+          const clustered = await applyClusteringToThread(supabaseAdmin, threadId, userId);
           console.log(JSON.stringify({ event: "cluster_applied", thread_id: threadId, ...clustered }));
         } catch (e) {
           console.warn("[cluster] applyClusteringToThread failed (non-fatal):", String(e));

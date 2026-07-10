@@ -411,6 +411,12 @@ type DbLike = { from(table: string): any };
 export async function applyClusteringToThread(
   admin: DbLike,
   threadId: string,
+  // artifacts.user_id is NOT NULL (no default); the cluster_decision insert below
+  // omitted it, so every write hit a 23502 not-null violation and the custody
+  // artifact was silently dropped (0 cluster_decision rows ever persisted). The
+  // caller threads the run's authenticated user_id — same value every succeeding
+  // artifact write (record_artifacts) already uses. Required for the insert to land.
+  userId: string,
 ): Promise<{ updated: number; subjects: number; merges: number }> {
   const { data, error } = await admin.from("artifacts")
     .select("id,kind,value,source,confidence,metadata").eq("thread_id", threadId);
@@ -440,7 +446,7 @@ export async function applyClusteringToThread(
   // cluster_decision log (best-effort) — makes a null-cluster outcome debuggable.
   if (decisions.length) {
     const { error: iErr } = await admin.from("artifacts").insert([{
-      thread_id: threadId, kind: "cluster_decision",
+      thread_id: threadId, user_id: userId, kind: "cluster_decision",
       value: `Deterministic clustering: ${subjects.length} subjects, ${decisions.length} merges`,
       source: "lib/cluster.ts (union-find)", confidence: 100,
       metadata: { cluster_id: null, subject_id: null, decisions: decisions.slice(0, 60), subject_count: subjects.length },
