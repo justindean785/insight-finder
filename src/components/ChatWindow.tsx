@@ -313,10 +313,8 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
       ref={rootRef}
       data-failed-tool={failed ? "true" : undefined}
       className={cn(
-        "group relative my-2 text-xs animate-fade-up overflow-hidden rounded-2xl border backdrop-blur-xl",
-        failed
-          ? "intel-node intel-node--failed border-destructive/30 bg-[linear-gradient(180deg,rgba(70,20,20,0.24),rgba(16,9,9,0.82))] shadow-[0_24px_60px_-46px_hsl(var(--danger)/0.55)]"
-          : "intel-node border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.015))] shadow-[0_24px_60px_-48px_rgba(0,0,0,0.85)]",
+        "group relative w-full text-[13px] animate-fade-up overflow-hidden chat-card",
+        failed && "border-destructive/30 bg-[hsl(0_40%_8%/0.85)]",
         flash && "ring-2 ring-destructive/60",
       )}
     >
@@ -621,9 +619,9 @@ function flowToneForGroup(group: ToolRunGroup): "completed" | "partial" | "cache
 function RunFlowRail({ groups }: { groups: ToolRunGroup[] }) {
   if (groups.length <= 1) return null;
   return (
-    <div className="rounded-xl border border-white/8 bg-[linear-gradient(160deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02)_58%,rgba(255,255,255,0.01))] px-3 py-2 shadow-[0_14px_50px_-34px_rgba(0,0,0,0.95)]">
-      <div className="mb-1 flex items-center gap-2 text-meta font-mono font-semibold tracking-normal text-muted-foreground">
-        <GitBranch className="h-3 w-3 text-primary/80" />
+    <div className="chat-card px-4 py-3">
+      <div className="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.04em] text-muted-foreground">
+        <GitBranch className="h-3 w-3 text-muted-foreground" />
         Run flow
       </div>
       <div className="flex items-center gap-1 overflow-x-auto pb-0.5 [scrollbar-width:thin]">
@@ -674,41 +672,45 @@ function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt
   // errors, so a user who expands a cycle never sees a red "failed" card.
   const visibleParts = group.parts.filter((part) => deriveToolTone(part) !== "error");
   return (
-    <div className="rounded-2xl border border-white/8 bg-white/[0.03] text-data text-muted-foreground">
+    <div className="chat-card text-[13px] leading-relaxed text-muted-foreground">
       <button
         type="button"
         className="w-full px-4 py-3 text-left"
         aria-expanded={expanded}
         onClick={() => setExpanded((value) => !value)}
       >
-        <div className="flex flex-wrap items-center gap-2">
-          {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-          <span className="font-mono font-medium tracking-normal text-foreground/80">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+          <span className="font-medium text-foreground/90">
             {cycleSummaryLabel(humanizeStage(group.stage), group.cycleId)}
           </span>
-          <span>{group.parts.length} call{group.parts.length === 1 ? "" : "s"}</span>
-          {avgExpected != null && <span>EV {avgExpected}</span>}
-          {time && <span>{time}</span>}
+          <span className="tabular-nums">{group.parts.length} call{group.parts.length === 1 ? "" : "s"}</span>
+          {avgExpected != null && <span className="tabular-nums">EV {avgExpected}</span>}
+          {time && <span className="ml-auto tabular-nums text-muted-foreground/80">{time}</span>}
         </div>
-        <div className="mt-1 break-all text-foreground/80 sm:break-normal">
-          {selectors.join(" • ")}
-          {extra > 0 ? ` • +${extra} more` : ""}
-        </div>
-        <div className="mt-1 flex flex-wrap gap-2">
-          {summaryBits.map((bit) => (
-            <span key={bit} className="rounded-md border border-white/8 bg-black/20 px-1.5 py-0.5 font-mono text-data">
-              {bit}
-            </span>
-          ))}
-        </div>
+        {(selectors.length > 0 || extra > 0) && (
+          <div className="mt-1.5 break-all pl-5 text-foreground/75 sm:break-words">
+            {selectors.join(" · ")}
+            {extra > 0 ? ` · +${extra} more` : ""}
+          </div>
+        )}
+        {summaryBits.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap gap-1.5 pl-5">
+            {summaryBits.map((bit) => (
+              <span key={bit} className="rounded border border-white/8 bg-black/20 px-1.5 py-0.5 font-mono text-[11px] tabular-nums">
+                {bit}
+              </span>
+            ))}
+          </div>
+        )}
         {group.reasons[0] && (
-          <div className="mt-1 text-data text-muted-foreground/80">
+          <div className="mt-1.5 pl-5 text-[12px] text-muted-foreground/80">
             {group.reasons[0]}
           </div>
         )}
       </button>
       {expanded && visibleParts.length > 0 && (
-        <div className="space-y-2 border-t border-white/8 px-3 py-3">
+        <div className="space-y-2 border-t border-white/[0.06] px-4 py-3">
           {visibleParts.map((part, partIndex) => (
             <ToolPart key={`${group.key}-${partIndex}`} part={part} createdAt={createdAt} />
           ))}
@@ -719,15 +721,17 @@ function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt
 }
 
 const LABEL_STYLES: Record<string, string> = {
-  CONFIRMED: "bg-primary/15 text-primary border-primary/30",
-  INFERRED:  "bg-accent/15 text-accent border-accent/30",
-  VERIFY:    "bg-[hsl(var(--confidence-mid)/0.15)] text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid)/0.4)]",
-  FAILED:    "bg-destructive/15 text-destructive border-destructive/40",
-  LOW:       "bg-muted text-muted-foreground border-border",
+  CONFIRMED: "chat-label-chip text-[hsl(var(--conf-confirmed))] border-[hsl(var(--conf-confirmed)/0.4)] bg-[hsl(var(--conf-confirmed)/0.12)]",
+  CORRELATED: "chat-label-chip text-[hsl(var(--conf-likely))] border-[hsl(var(--conf-likely)/0.4)] bg-[hsl(var(--conf-likely)/0.12)]",
+  INFERRED:  "chat-label-chip text-[hsl(var(--conf-possible))] border-[hsl(var(--conf-possible)/0.45)] bg-[hsl(var(--conf-possible)/0.12)]",
+  VERIFY:    "chat-label-chip text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid)/0.4)] bg-[hsl(var(--confidence-mid)/0.12)]",
+  FAILED:    "chat-label-chip text-destructive border-destructive/40 bg-destructive/12",
+  LOW:       "chat-label-chip text-muted-foreground border-border bg-secondary/60",
+  CONFLICT:  "chat-label-chip text-destructive border-destructive/40 bg-destructive/12",
 };
 
 function renderTextWithBadges(text: string): React.ReactNode {
-  const re = /\[(CONFIRMED|INFERRED|VERIFY|FAILED|LOW)\]/g;
+  const re = /\[(CONFIRMED|CORRELATED|INFERRED|VERIFY|FAILED|LOW|CONFLICT)\]/g;
   const out: React.ReactNode[] = [];
   let last = 0;
   let m: RegExpExecArray | null;
@@ -735,13 +739,9 @@ function renderTextWithBadges(text: string): React.ReactNode {
     if (m.index > last) out.push(text.slice(last, m.index));
     const tag = m[1];
     out.push(
-      <span
-        key={`b-${m.index}`}
-        className={cn(
-          "inline-block px-1.5 py-0.5 mr-1 rounded text-data font-semibold font-mono border align-middle",
-          LABEL_STYLES[tag],
-        )}
-      >{tag}</span>,
+      <span key={`b-${m.index}`} className={LABEL_STYLES[tag] ?? "chat-label-chip border-border text-muted-foreground"}>
+        {tag}
+      </span>,
     );
     last = re.lastIndex;
   }
@@ -868,36 +868,22 @@ function formatAge(ms: number): string {
 // as changed). Combined with <MarkdownBlock> below, unchanged prior messages no
 // longer re-parse their markdown on each streamed token.
 const chatMarkdownComponents: Components = {
-  // Replace plain text nodes containing [LABEL] tokens with badges
+  // Spacing/typography owned by `.chat-prose` so every block is even.
   p: ({ node, children, ...rest }) => <p {...rest}>{wrapChildren(children)}</p>,
   li: ({ node, children, ...rest }) => <li {...rest}>{wrapChildren(children)}</li>,
+  strong: ({ node, children, ...rest }) => <strong {...rest}>{wrapChildren(children)}</strong>,
   pre: ({ node, children, ...rest }) => (
-    <div className="my-2 -mx-1 sm:mx-0 rounded-lg border border-border-subtle bg-secondary/40 overflow-hidden">
-      <pre
-        {...rest}
-        className="overflow-x-auto whitespace-pre p-3 text-data leading-[1.55] font-mono text-foreground/90 [scrollbar-width:thin]"
-      >
-        {children}
-      </pre>
+    <div className="chat-code-block">
+      <pre {...rest} className="overflow-x-auto whitespace-pre">{children}</pre>
     </div>
   ),
   table: ({ node, children, ...rest }) => (
-    <div className="my-2 -mx-1 sm:mx-0 rounded-lg border border-border-subtle bg-secondary/30 overflow-x-auto [scrollbar-width:thin]">
-      <table {...rest} className="w-full text-data border-collapse">
-        {children}
-      </table>
+    <div className="chat-table-wrap">
+      <table {...rest}>{children}</table>
     </div>
   ),
-  th: ({ node, children, ...rest }) => (
-    <th {...rest} className="text-left font-semibold text-foreground px-2.5 py-1.5 border-b border-border-subtle bg-secondary/40 whitespace-nowrap">
-      {children}
-    </th>
-  ),
-  td: ({ node, children, ...rest }) => (
-    <td {...rest} className="align-top px-2.5 py-1.5 border-b border-border-subtle/60 text-foreground/90">
-      {wrapChildren(children)}
-    </td>
-  ),
+  th: ({ node, children, ...rest }) => <th {...rest}>{children}</th>,
+  td: ({ node, children, ...rest }) => <td {...rest}>{wrapChildren(children)}</td>,
 };
 
 const CHAT_REMARK_PLUGINS = [remarkGfm];
@@ -924,15 +910,12 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIM
     const files = attachments.filter((a) => !isImageAttachment(a));
     const sizeOf = (meta: string) => meta.split(",").pop()?.trim() || "";
     return (
-      <div className="flex justify-end">
+      <div className="flex w-full justify-end">
         <div
-          className="relative max-w-[78%] min-w-0 rounded-2xl rounded-br-md px-4 py-2.5 text-sm leading-relaxed break-words text-foreground/95 border border-primary/20 shadow-[0_8px_28px_-16px_hsl(0_0%_0%/0.7)]"
+          className="chat-card relative min-w-0 max-w-[min(100%,28rem)] px-4 py-2.5 text-[14px] leading-[1.6] break-words text-[hsl(0_0%_93%)]"
           style={{
-            background:
-              "linear-gradient(180deg, hsl(248 40% 12% / 0.55) 0%, hsl(230 14% 5% / 0.65) 100%)",
-            backdropFilter: "blur(18px) saturate(160%)",
-            WebkitBackdropFilter: "blur(18px) saturate(160%)",
-            overflowWrap: "anywhere",
+            overflowWrap: "break-word",
+            fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "IBM Plex Sans", sans-serif',
           }}
         >
           {body && <div className="whitespace-pre-wrap">{body}</div>}
@@ -1005,13 +988,26 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIM
       </div>
     );
   }
+  // Single joined prose block so tool cards and the reply share one width stack.
+  const prose = reflowCollapsedTables(
+    parts
+      .filter((p) => p.type === "text")
+      .map((p) => stripThinkTags(p.text ?? ""))
+      .filter(Boolean)
+      .join("\n\n")
+      .trim(),
+  );
+  const timeLabel = createdAt
+    ? new Date(createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : null;
+
   return (
-    <div className="space-y-2">
+    <div className="flex w-full flex-col gap-3">
       {cacheMeta && onRerun && (
         <CacheBanner cachedAt={cacheMeta.cachedAt} onRerun={onRerun} busy={!!rerunBusy} />
       )}
       {visibleToolGroups.length > 0 && (
-        <div className="space-y-2">
+        <div className="flex w-full flex-col gap-2">
           <RunFlowRail groups={groupedCycles} />
           {visibleToolGroups.map((entry, i) => "part" in entry ? (
             <ToolPart key={`tool-${i}`} part={entry.part} createdAt={createdAt} />
@@ -1020,48 +1016,37 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIM
           ))}
         </div>
       )}
-      {parts.map((p, i) => {
-        if (p.type === CACHE_BANNER_TYPE) return null;
-        if (typeof p.type === "string" && p.type.startsWith("tool-")) return null;
-        if (p.type === "text") {
-          const cleaned = reflowCollapsedTables(stripThinkTags(p.text ?? ""));
-          if (!cleaned) return null;
-          return (
-            <div
-              key={i}
-              className="prose prose-sm prose-invert font-chat max-w-none min-w-0 break-words prose-headings:font-display prose-headings:tracking-tight prose-h1:text-base prose-h2:text-sm prose-h2:mt-4 prose-h2:mb-2 prose-h2:pb-1 prose-h2:border-b prose-h2:border-border-subtle prose-h3:text-meta prose-h3:mt-3 prose-h3:mb-1.5 prose-p:leading-7 prose-p:my-2 prose-li:my-0.5 prose-strong:text-foreground prose-strong:font-semibold prose-code:text-[hsl(var(--info))] prose-code:px-1 prose-code:py-px prose-code:rounded prose-code:before:content-none prose-code:after:content-none prose-a:text-[hsl(var(--info))] prose-a:no-underline hover:prose-a:underline prose-hr:border-border-subtle"
-            >
-              <MarkdownBlock content={cleaned} />
+      {prose && (
+        <article className="chat-card w-full min-w-0" aria-label="Agent response">
+          <div className="chat-card__header">
+            <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[hsl(var(--intel-blue))]" aria-hidden />
+            <span>Agent</span>
+            {timeLabel && <span className="chat-card__header-time">{timeLabel}</span>}
+          </div>
+          <div className="chat-card__body">
+            <div className="chat-prose">
+              <MarkdownBlock content={prose} />
             </div>
-          );
-        }
-        if (typeof p.type === "string" && p.type.startsWith("tool-")) {
-          return <ToolPart key={i} part={p as ToolPartShape} createdAt={createdAt} />;
-        }
-        return null;
-      })}
-      {(() => {
-        // Copy the full assistant message text (all text parts, think-tags stripped).
-        const copyText = parts
-          .filter((p) => p.type === "text")
-          .map((p) => stripThinkTags(p.text ?? ""))
-          .join("\n")
-          .trim();
-        if (!copyText) return null;
-        return (
-          <div className="flex justify-start pt-0.5">
+          </div>
+          <div className="chat-card__footer">
             <button
               type="button"
-              onClick={() => copyToClipboard(copyText, "Message copied")}
-              className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-micro text-muted-foreground/70 hover:text-foreground hover:bg-surface-2 transition-colors"
+              onClick={() => copyToClipboard(prose, "Message copied")}
+              className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12px] text-muted-foreground hover:bg-white/[0.04] hover:text-foreground transition-colors"
               aria-label="Copy message"
               title="Copy message"
             >
               <CopyIcon className="w-3 h-3" /> Copy
             </button>
           </div>
-        );
-      })()}
+        </article>
+      )}
+      {parts.map((p, i) => {
+        if (typeof p.type === "string" && p.type.startsWith("tool-") && visibleToolGroups.length === 0) {
+          return <ToolPart key={i} part={p as ToolPartShape} createdAt={createdAt} />;
+        }
+        return null;
+      })}
     </div>
   );
 }
@@ -2033,7 +2018,7 @@ function ChatWindowInner({
         }}
         className="relative z-10 flex-1 overflow-y-auto overflow-x-hidden px-3 sm:px-6 py-4 sm:py-5"
       >
-        <div ref={contentRef} className="max-w-[40rem] mx-auto space-y-6 min-w-0">
+        <div ref={contentRef} className="chat-column space-y-3 min-w-0">
           <div className="h-2" aria-hidden />
           {messages.length === 0 && (
             <div className="flex flex-col items-center px-4 py-6 text-center sm:py-8">
@@ -2220,7 +2205,7 @@ function ChatWindowInner({
       </div>
 
       <div className="relative z-10 border-t border-border-subtle bg-background/95 backdrop-blur-xl px-3 sm:px-4 pt-3 sm:pt-5 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:pb-5">
-        <div className="max-w-[40rem] mx-auto">
+        <div className="chat-column">
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2">
               {attachments.map((a) => {
