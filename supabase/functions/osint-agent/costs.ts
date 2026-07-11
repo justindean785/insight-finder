@@ -108,6 +108,10 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
 
   // ---- Social ----
   socialfetch_lookup: 3000,
+  // Pre-stream anchor reads — truthful operation names; priced at the underlying
+  // provider's cost so the metered spend matches what was actually called.
+  anchor_profile_read: 3000, // SocialFetch profile read (same pool as socialfetch_lookup)
+  anchor_serp_read: 1000,    // Perplexity SERP read (same as minimax_web_search)
   socialfetch_web_read: 3000, // /v1/web/markdown — ~1 credit/URL, same pool as a lookup
   socialfetch_whoami: 0,      // /v1/whoami — free, zero credits
   socialfetch_balance: 0,     // /v1/balance — free, zero credits

@@ -440,7 +440,7 @@ Deno.serve(async (req) => {
     })();
     const anchorPromise: Promise<AnchorIntakeResult> =
       anchorSeed && (anchorSeed.kind === "username" || anchorSeed.kind === "url" || anchorSeed.kind === "person")
-        ? runAnchorIntake(anchorSeed, { supabase, userId, threadId, onCost }, messages).catch((e): AnchorIntakeResult => {
+        ? runAnchorIntake(anchorSeed, { supabase, supabaseAdmin, userId, threadId, onCost }, messages).catch((e): AnchorIntakeResult => {
             console.warn("[anchor-intake] unexpected rejection:", (e as Error)?.message);
             return emptyAnchor;
           })
@@ -615,24 +615,19 @@ Deno.serve(async (req) => {
     // prompt. The UNTRUSTED fetched prose (bio / SERP answer) is injected as an
     // isolated data MESSAGE below — never the system prompt — so profile/SERP text
     // can't reach the model at instruction priority (prompt-injection isolation).
+    // The anchor's TRUSTED summary (directive + structured facts) goes into the
+    // system prompt. Its UNTRUSTED fetched prose is injected as a separate
+    // ASSISTANT-role DATA message — NOT the user turn (so it is never represented
+    // as a user instruction) and NOT the system prompt (so it can't reach the model
+    // at instruction priority). The system prompt's standing directive establishes
+    // the trust boundary; the envelope + sanitization are defense-in-depth
+    // (PR #305 review, finding #4). An assistant-role carrier is accepted by both
+    // the MiniMax and Gemini-fallback providers (role stays alternating).
     const anchor = await anchorPromise;
     const anchorIntakeSummary = anchor.ran ? anchor.summary : "";
-    if (anchor.ran && anchor.untrusted) {
-      // Merge the untrusted fetched content INTO the current user turn (rather than
-      // pushing a second consecutive user message, which strict providers like the
-      // Gemini fallback reject). Kept out of the system prompt so it can't reach the
-      // model at instruction priority. Falls back to a new message only if the tail
-      // isn't a user turn.
-      const last = trimmedMessages[trimmedMessages.length - 1] as ModelMessage | undefined;
-      if (last && last.role === "user") {
-        if (typeof last.content === "string") {
-          last.content = `${last.content}\n\n${anchor.untrusted}`;
-        } else if (Array.isArray(last.content)) {
-          last.content = [...last.content, { type: "text", text: `\n\n${anchor.untrusted}` }] as typeof last.content;
-        }
-      } else {
-        trimmedMessages.push({ role: "user", content: anchor.untrusted } as ModelMessage);
-      }
+    const anchorUntrusted = (anchor.ran || anchor.skipped_existing) ? anchor.untrusted : "";
+    if (anchorUntrusted) {
+      trimmedMessages.push({ role: "assistant", content: anchorUntrusted } as ModelMessage);
     }
     if (anchor.ran) {
       console.log(

@@ -8,6 +8,7 @@ import {
   isCrossSubjectContactLaundering,
   isHumanInputProvenance,
   humanInputCorroborated,
+  countIndependentObservations,
   sourceProfileHandle,
 } from "./output-integrity.ts";
 
@@ -57,9 +58,32 @@ Deno.test("WP2-#8 human-input provenance (the Prestan Jackson correction)", () =
   assert(!isHumanInputProvenance({ provenance: "read_from_profile", source: "socialfetch_lookup" }));
 });
 
-Deno.test("WP2-#8 corroboration lifts the human-input cap (review finding)", () => {
+Deno.test("WP2-#8 corroboration lifts the human-input cap ONLY on independent evidence", () => {
   assert(!humanInputCorroborated({ provenance: "human_input" }));
   assert(humanInputCorroborated({ provenance: "human_input", independently_verified: true }));
-  assert(humanInputCorroborated({ sources: ["user_correction", "socialfetch_lookup"] }));
-  assert(!humanInputCorroborated({ sources: ["user_correction"] }));
+  // distinct source STRINGS alone no longer release it (review finding #5)
+  assert(!humanInputCorroborated({ sources: ["user_correction", "socialfetch_lookup"] }));
+  assert(humanInputCorroborated({ corroborating_observations: [{ sourceClass: "court_record", url: "https://courts.gov/c/1" }] }));
+  // a contradiction blocks promotion
+  assert(!humanInputCorroborated({ independently_verified: true, contradictions: [{ note: "conflict" }] }));
+});
+
+Deno.test("independence model — same record collapses; distinct records count (review finding #5)", () => {
+  assertEquals(countIndependentObservations([
+    { sourceClass: "official_profile_match", url: "https://x.com/a" },
+    { sourceClass: "independent_public", url: "https://www.x.com/a/" },
+  ]), 1); // two tools, same page
+  assertEquals(countIndependentObservations([
+    { sourceClass: "independent_public", url: "https://ex.com/p" },
+    { sourceClass: "independent_public", url: "https://web.archive.org/web/2020/https://ex.com/p" },
+  ]), 1); // live + archive
+  assertEquals(countIndependentObservations([
+    { sourceClass: "ai_summary", url: "https://serp" },
+    { sourceClass: "independent_public", url: "https://news.example.com/s" },
+  ]), 1); // SERP summary excluded; only the cited page counts
+  assertEquals(countIndependentObservations([
+    { sourceClass: "official_profile_match", url: "https://ig.com/u" },
+    { sourceClass: "court_record", url: "https://courts.gov/case/1" },
+  ]), 2); // two genuinely independent records
+  assertEquals(countIndependentObservations([{ sourceClass: "username_sweep", url: "https://a" }, { sourceClass: "human_input" }]), 0);
 });

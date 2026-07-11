@@ -138,6 +138,7 @@ const USERNAME_SWEEP_SOURCES = new Set([
 // social handle to CONFIRMED.
 const DIRECT_PROFILE_SOURCES = new Set([
   "socialfetch_lookup",
+  "anchor_profile_read", // pre-stream anchor read via SocialFetch — a real profile READ
   "github_user",
   "reddit_user",
   "hackernews_user",

@@ -94,5 +94,11 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
+      # Scoped TYPE-CHECK (not just transpilation) on the pure, import-free
+      # integrity modules. Deliberately limited to leaf modules so it catches type
+      # errors in new code WITHOUT pulling in the ~12-157 pre-existing AI-SDK/
+      # Supabase type-graph errors that a whole-project `deno check` would surface.
+      - name: Deno type-check (scoped, new pure modules)
+        run: cd supabase/functions/osint-agent && deno check anchor-parse.ts output-integrity.ts
       - name: Deno edge tests
         run: npm run test:edge

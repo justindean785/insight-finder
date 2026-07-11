@@ -156,17 +156,71 @@ export function isHumanInputProvenance(meta: Meta): boolean {
   return HUMAN_INPUT_RE.test(text);
 }
 
+// ── Independence model (PR #305 review, finding #5) ──────────────────────────
+// Corroboration must be INDEPENDENT, not merely two different source STRINGS. An
+// observation does NOT count toward independent corroboration when it is a
+// discovery/summary/passive/human class, and two observations of the SAME
+// underlying record (same URL/domain — a SERP summary and its cited page, a live
+// page and its archive copy, repeated calls to one profile, a human restatement,
+// an LLM assertion derived from another source) collapse to ONE observation.
+
+// Mirrors source-classification.ts NON_CORROBORATING_CLASSES (+ human_input);
+// inlined so this integrity module stays import-free and type-checkable in isolation.
+const NON_CORROBORATING_CLASSES = new Set<string>([
+  "unknown", "web_search", "ai_summary", "username_sweep", "social_profile_passive",
+  "social_review", "infra_shared_host", "threat_intel", "human_input",
+]);
+
+/** Normalize a URL/domain to its underlying-record identity: drop scheme, www,
+ *  archive-wrapper prefixes, query/hash, and trailing slash. So archive/cache/live
+ *  copies and repeated fetches of one page fold to a single identity. */
+function normalizeRecordIdentity(raw: string): string {
+  let s = (raw ?? "").toLowerCase().trim();
+  s = s.replace(/^https?:\/\//, "");                        // outer scheme
+  s = s.replace(/^web\.archive\.org\/web\/\d+\w*\//, "");   // archive.org wrapper
+  s = s.replace(/^(?:archive\.(?:ph|is|today))\/\w+\//, ""); // archive.today wrapper
+  s = s.replace(/^https?:\/\//, "");                        // inner scheme revealed by an archive wrapper
+  s = s.replace(/^www\./, "");
+  s = s.replace(/[?#].*$/, "").replace(/\/+$/, "");
+  return s;
+}
+
+export interface Observation {
+  /** The observation's source class (preferred). */
+  sourceClass?: string;
+  /** Fallback raw source/tool name when sourceClass is absent. */
+  source?: string;
+  url?: string;
+  domain?: string;
+}
+
+/** Count DISTINCT independent observations — corroborating classes only, collapsed
+ *  by underlying-record identity. Two tools reading the same page, a SERP summary +
+ *  its cited page, live + archive, and repeated calls each contribute at most 1. */
+export function countIndependentObservations(obs: Observation[] | null | undefined): number {
+  const ids = new Set<string>();
+  for (const o of obs ?? []) {
+    const cls = String(o.sourceClass ?? o.source ?? "unknown").toLowerCase().trim();
+    if (NON_CORROBORATING_CLASSES.has(cls)) continue;
+    const rec = o.url ? normalizeRecordIdentity(o.url) : o.domain ? normalizeRecordIdentity(o.domain) : `class:${cls}`;
+    if (rec) ids.add(rec);
+  }
+  return ids.size;
+}
+
 /**
  * True when a human-provided fact has INDEPENDENT corroboration from a source the
- * agent found itself — so the human-input cap should NOT clamp it. The human
- * observation stays human-sourced; the corroboration lets the combined claim
- * promote. Corroboration = an explicit verified/corroborated flag, or ≥2 distinct
- * sources on the artifact (the human assertion + an independent agent source).
+ * agent found itself, so the human-input cap should lift. The human observation
+ * stays human-sourced; a qualifying independent observation lets the claim promote.
+ * A contradiction blocks promotion. NOTE: no longer keys off distinct source
+ * strings — it requires an explicit verified flag or ≥1 independent observation.
  */
 export function humanInputCorroborated(meta: Meta): boolean {
   const m = (meta ?? {}) as Record<string, unknown>;
+  // A recorded contradiction blocks promotion outright.
+  if (m.contradicted === true) return false;
+  if (Array.isArray(m.contradictions) && (m.contradictions as unknown[]).length > 0) return false;
   if (m.independently_verified === true || m.corroborated === true || m.human_input_verified === true) return true;
-  const sources = Array.isArray(m.sources) ? (m.sources as unknown[]).filter((s) => typeof s === "string") : [];
-  const distinct = new Set(sources.map((s) => String(s).toLowerCase().trim()).filter(Boolean));
-  return distinct.size >= 2;
+  const obs = Array.isArray(m.corroborating_observations) ? (m.corroborating_observations as Observation[]) : [];
+  return countIndependentObservations(obs) >= 1;
 }

@@ -8,6 +8,7 @@ import {
   isCrossSubjectContactLaundering,
   isHumanInputProvenance,
   humanInputCorroborated,
+  countIndependentObservations,
   sourceProfileHandle,
 } from "../../supabase/functions/osint-agent/output-integrity";
 
@@ -92,12 +93,56 @@ describe("WP2-#8 human-input provenance", () => {
     expect(isHumanInputProvenance({ provenance: "read_from_profile", source: "socialfetch_lookup" })).toBe(false);
     expect(isHumanInputProvenance(null)).toBe(false);
   });
-  it("corroboration lifts the cap (review finding — was permanently capped)", () => {
-    // Uncorroborated human input stays capped...
+  it("corroboration lifts the cap only on INDEPENDENT evidence, not distinct source strings", () => {
+    // Uncorroborated human input stays capped.
     expect(humanInputCorroborated({ provenance: "human_input" })).toBe(false);
-    // ...but an independently-verified flag or ≥2 distinct sources releases it.
+    // An explicit verified flag releases it.
     expect(humanInputCorroborated({ provenance: "human_input", independently_verified: true })).toBe(true);
-    expect(humanInputCorroborated({ provenance: "human_input", sources: ["user_correction", "socialfetch_lookup"] })).toBe(true);
-    expect(humanInputCorroborated({ sources: ["user_correction"] })).toBe(false); // single source, still capped
+    // Distinct source STRINGS alone no longer release it (the review finding).
+    expect(humanInputCorroborated({ sources: ["user_correction", "socialfetch_lookup"] })).toBe(false);
+    // A qualifying independent observation releases it.
+    expect(humanInputCorroborated({ provenance: "human_input", corroborating_observations: [{ sourceClass: "official_profile_match", url: "https://instagram.com/x" }] })).toBe(true);
+    // A contradiction blocks promotion regardless.
+    expect(humanInputCorroborated({ independently_verified: true, contradictions: [{ note: "conflicts" }] })).toBe(false);
+  });
+});
+
+describe("WP2-#5 independence model (review finding — not just distinct source names)", () => {
+  it("two tools reading the SAME page are one observation, not two", () => {
+    expect(countIndependentObservations([
+      { sourceClass: "official_profile_match", url: "https://x.com/a" },
+      { sourceClass: "independent_public", url: "https://www.x.com/a/" }, // same record
+    ])).toBe(1);
+  });
+  it("a SERP summary plus its cited page is not two independent observations", () => {
+    expect(countIndependentObservations([
+      { sourceClass: "ai_summary", url: "https://serp/answer" }, // excluded class
+      { sourceClass: "independent_public", url: "https://news.example.com/story" },
+    ])).toBe(1);
+  });
+  it("a live page and its archive copy collapse to one", () => {
+    expect(countIndependentObservations([
+      { sourceClass: "independent_public", url: "https://ex.com/p" },
+      { sourceClass: "independent_public", url: "https://web.archive.org/web/2020/https://ex.com/p" },
+    ])).toBe(1);
+  });
+  it("repeated calls to the same profile are one", () => {
+    expect(countIndependentObservations([
+      { sourceClass: "social_profile_active", url: "https://ig.com/u" },
+      { sourceClass: "social_profile_active", url: "https://ig.com/u" },
+    ])).toBe(1);
+  });
+  it("two independent first-party profiles / a profile + public record count as two", () => {
+    expect(countIndependentObservations([
+      { sourceClass: "official_profile_match", url: "https://ig.com/u" },
+      { sourceClass: "court_record", url: "https://courts.gov/case/1" },
+    ])).toBe(2);
+  });
+  it("purely non-corroborating classes count as zero", () => {
+    expect(countIndependentObservations([
+      { sourceClass: "ai_summary", url: "https://a" },
+      { sourceClass: "username_sweep", url: "https://b" },
+      { sourceClass: "human_input" },
+    ])).toBe(0);
   });
 });
