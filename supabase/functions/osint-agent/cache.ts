@@ -199,6 +199,23 @@ const SELECTOR_INPUT_KEYS = new Set([
   "manualOverride",
 ]);
 
+// Pure planner-annotation params: they explain WHY a tool was called but never
+// change its RESULT. Excluded from the selector-reuse params hash so the SAME
+// selector re-queried later in the SAME thread reuses the cached result even when
+// the planner passes a different `purpose`/`reason`. Deliberately conservative —
+// result-shaping params (kind/depth/limit/focus/…) are NOT here, so a different
+// mode can never be served a wrong-mode cache hit.
+const ANNOTATION_PARAM_KEYS = new Set(["purpose", "reason", "rationale", "note", "notes"]);
+
+/** params minus pure annotation keys — feeds the thread-scoped selector-reuse
+ * hash only; the cross-thread input_hash still uses the FULL params. Exported for
+ * the selector-reuse regression test. */
+export function semanticParams(params: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(params).filter(([key]) => !ANNOTATION_PARAM_KEYS.has(key)),
+  );
+}
+
 function normalizedParams(input: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(input).filter(([key]) => !SELECTOR_INPUT_KEYS.has(key)),
@@ -624,7 +641,12 @@ export function wrapToolsWithCache(
         let hash: string | null = null;
         let paramsHash: string | null = null;
         try {
-          paramsHash = await hashInput(params);
+          // paramsHash excludes pure annotation keys (purpose/reason/…) so the SAME
+          // selector re-queried in a later turn of the SAME thread reuses the cached
+          // result even when the planner's `purpose` differs (the thread-scoped
+          // selector-reuse lookup below keys on it). input_hash keeps the FULL params,
+          // so the existing cross-thread exact-match layer is UNCHANGED.
+          paramsHash = await hashInput(semanticParams(params));
           hash = await hashInput({
             selector_type: selectorType,
             selector: sel,
@@ -715,6 +737,63 @@ export function wrapToolsWithCache(
             }
           } catch (error) {
             console.warn(`[tool_call_cache] lookup failed for ${name}:`, error);
+          }
+        }
+
+        // ---- Cross-turn selector reuse (thread-scoped) ----
+        // The fast in-memory layer is per-isolate and dies between turns, and the
+        // input_hash lookup above misses when the planner re-queries the SAME selector
+        // with a different `purpose` (purpose is folded into input_hash). Fall back to
+        // the freshest SUCCESSFUL row for this THREAD + tool + normalized selector +
+        // semantic params (annotation keys excluded via paramsHash). Scoped to
+        // investigation_id so cross-thread caching is UNCHANGED; matched on
+        // selector_type + selector_normalized + params_hash so a different mode
+        // (kind/depth/limit) can never serve a wrong-mode result. Only successful
+        // results are ever written (see the success-only store below), so a hit here
+        // is always a prior success. Replays are free + corroboration-ineligible,
+        // exactly like the two layers above. Uses only columns the write path already
+        // persists — no schema change.
+        if (sel && paramsHash) {
+          try {
+            const { data } = await adminDb
+              .from("tool_call_cache")
+              .select("output_json, created_at, expires_at, source_created_at")
+              .eq("investigation_id", ctx.investigationId)
+              .eq("tool_name", name)
+              .eq("selector_type", selectorType)
+              .eq("selector_normalized", sel)
+              .eq("params_hash", paramsHash)
+              .eq("stale", false)
+              .order("created_at", { ascending: false })
+              .limit(1)
+              .maybeSingle();
+            if (data) {
+              const row = data as {
+                created_at: string;
+                output_json: unknown;
+                expires_at?: string | null;
+                source_created_at?: string | null;
+              };
+              const createdAt = new Date(row.created_at).getTime();
+              if (fresh(createdAt, row.expires_at)) {
+                const output = row.output_json;
+                if (key) TOOL_CACHE_LRU.set(key, { output, createdAt });
+                await logUsage(true, true, Date.now() - t0, null, null, false, {
+                  input: inputJson,
+                  runtime: { ...cacheRuntime, cache_layer: "user", selector_reuse: true, stale_cache: false, source_created_at: row.source_created_at ?? row.created_at },
+                });
+                return attachRuntimeMeta(markCached(output, row.source_created_at ?? row.created_at, "user"), {
+                  ...cacheRuntime,
+                  cache_layer: "user",
+                  selector_reuse: true,
+                  stale_cache: false,
+                  source_created_at: row.source_created_at ?? row.created_at,
+                  corroboration_eligible: false,
+                });
+              }
+            }
+          } catch (error) {
+            console.warn(`[tool_call_cache] selector-reuse lookup failed for ${name}:`, error);
           }
         }
 
