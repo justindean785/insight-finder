@@ -85,6 +85,40 @@ export function shouldSkipForToolCap(
 }
 
 /**
+ * The system-prompt addendum appended to every NON-finalize (intermediate) step.
+ *
+ * WHY: SYSTEM_PROMPT_FULL is injected verbatim on every streamText cycle, and its
+ * "Final message MUST contain a Findings table / Network / Summary" language makes
+ * the model re-narrate the WHOLE dossier every cycle (observed cycle-1 = 130,757
+ * chars). That balloons the carried context and drives the between-cycle dead-time.
+ * This directive establishes the per-cycle contract: emit ONLY this cycle's NEW
+ * findings, one compact line each, with a confidence tier — no table, no re-stating
+ * of prior findings, no full dossier. The full dossier is written ONCE, later, when
+ * buildFinalizeDirective() fires (and rendered on demand by the Report tab from the
+ * structured artifacts feed). Integrity-neutral: changes only the free-text channel;
+ * record_artifacts / evidence provenance are untouched.
+ *
+ * Tier thresholds MUST mirror tierFor() in lib/cluster.ts (≥90 Confirmed, ≥75
+ * Likely, ≥50 Possible, ≥30 Weak, else Unverified) so the words shown in the live
+ * cycle stream match the structured tiers the clusterer stamps.
+ */
+export function buildPerCycleCompactDirective(): string {
+  return [
+    "",
+    "",
+    "=== PER-CYCLE OUTPUT: COMPACT ONLY (this is an intermediate step, NOT the final report) ===",
+    "Do NOT write a Findings table, a Network section, a Summary, or a full report in this message.",
+    "Do NOT re-state findings from earlier cycles. Report ONLY what is NEW in THIS cycle.",
+    "For each new finding, emit exactly ONE short line:",
+    "  <finding> — <selector/value> — <Tier>",
+    "where <Tier> is derived from the finding's 0-100 confidence using these exact thresholds:",
+    "  ≥90 Confirmed · ≥75 Likely · ≥50 Possible · ≥30 Weak · else Unverified.",
+    "If this cycle found nothing new, say so in one short line and pivot. Keep the whole message tight.",
+    "You will be told explicitly when to write the full closing report — do NOT pre-empt it here.",
+  ].join("\n");
+}
+
+/**
  * The system-prompt addendum appended for the forced finalize step. Tells the model
  * the budget is nearly spent, forbids new lookups, and asks for the report AS ITS
  * MESSAGE TEXT plus record_artifacts for anything not yet persisted.

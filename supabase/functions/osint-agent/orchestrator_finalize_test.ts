@@ -7,6 +7,7 @@ import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.t
 import {
   shouldForceFinalize,
   buildFinalizeDirective,
+  buildPerCycleCompactDirective,
   extractAssistantReportText,
   needsReportSalvage,
   buildSalvageSynthesisPrompt,
@@ -63,6 +64,34 @@ Deno.test("buildFinalizeDirective instructs report-then-record and forbids new l
   assert(d.includes("record_artifacts"), "mentions record_artifacts");
   assert(d.includes("findings report") || d.includes("final") , "asks for the final report");
   assert(d.includes("no new") || d.includes("not start") || d.includes("do not start"), "forbids new lookups");
+});
+
+// ---- Per-cycle compact output directive -----------------------------------------
+
+Deno.test("buildPerCycleCompactDirective: forbids the full dossier and demands new-only compact lines", () => {
+  const d = buildPerCycleCompactDirective();
+  const lower = d.toLowerCase();
+  // Forbids the full-dossier shapes on an intermediate turn.
+  assert(lower.includes("do not write a findings table"), "forbids a Findings table mid-run");
+  assert(/network section/i.test(d), "names the Network section it must not write");
+  assert(/summary/i.test(d), "names the Summary it must not write");
+  // New-findings-only + compact one-line format.
+  assert(/only .*new|new in this cycle/i.test(d), "asks for NEW findings only");
+  assert(lower.includes("do not re-state"), "forbids re-stating earlier findings");
+  assert(lower.includes("one"), "asks for one-line-per-finding output");
+  // Defers the full report to the explicit finalize signal.
+  assert(/do not pre-empt|explicitly when to write/i.test(d), "defers the closing report");
+});
+
+Deno.test("buildPerCycleCompactDirective: tier thresholds mirror tierFor() exactly", () => {
+  const d = buildPerCycleCompactDirective();
+  // The words + numeric thresholds must match lib/cluster.ts tierFor():
+  //   >=90 Confirmed, >=75 Likely, >=50 Possible, >=30 Weak, else Unverified.
+  for (const [n, tier] of [["90", "Confirmed"], ["75", "Likely"], ["50", "Possible"], ["30", "Weak"]] as const) {
+    assert(d.includes(n), `directive states the ${tier} threshold ${n}`);
+    assert(d.includes(tier), `directive names the ${tier} tier`);
+  }
+  assert(d.includes("Unverified"), "directive names the Unverified (below-30) tier");
 });
 
 // ---- Run tool-call cap ----------------------------------------------------------
