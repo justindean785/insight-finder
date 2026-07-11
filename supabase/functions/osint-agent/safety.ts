@@ -222,16 +222,69 @@ export function assertSafeUrl(rawUrl: string): URL {
 }
 
 // ---- Part-size capping --------------------------------------------------------
-// Hard-cap the serialized size of UIMessage.parts before persisting. PostgREST
-// silently 500s on multi-MB JSONB inserts, so we drop `output.raw` blobs from
-// tool-result parts (largest contributors) when over budget, then replace any
-// remaining oversized parts with a stub.
+// A persisted assistant message is a UIMessage: its tool parts have type
+// `tool-<name>` (or `dynamic-tool`), NOT the ModelMessage `tool-call` /
+// `tool-result` discriminators. Match on the UIMessage shape so the caps below
+// actually engage on the parts we store.
+function isUiToolPart(type: unknown): boolean {
+  return typeof type === "string" && (type.startsWith("tool-") || type === "dynamic-tool");
+}
+
+// Per-part payload cap applied to a UIMessage.parts array BEFORE it is written
+// to `messages.parts`. A single tool (e.g. socialfetch_lookup returning a full
+// video dump) can emit a 600KB+ `output.data`; stored verbatim it bloats the
+// row and — replayed by the client every turn — eventually blows the 2MB
+// request-body limit. We shrink only tool parts whose `output`/`input` exceeds
+// `fieldThreshold` (small outputs pass through byte-identical), reusing
+// `sanitizeToolOutput` so the part shape is preserved for UI tool-replay and
+// only oversized string/array values are truncated. Mirrors the cache-path
+// sanitize at index.ts (assistant_parts cached for future-run context).
+export function capToolPartPayloads(
+  parts: unknown[],
+  fieldThreshold = 50_000,
+  maxStr = 8_000,
+  hardMax = 60_000,
+): unknown[] {
+  const cap = (v: unknown): unknown => {
+    // First pass: structure-preserving sanitize — redacts our own auth material,
+    // truncates long strings, caps huge arrays. Handles most oversized shapes.
+    const sanitized = sanitizeToolOutput(v, maxStr);
+    if (JSON.stringify(sanitized).length <= hardMax) return sanitized;
+    // Still oversized: a deeply-nested payload of many small fields (e.g. a
+    // socialfetch_lookup video dump — 10 videos × ~60KB of `details`) that
+    // per-string / per-array caps can't shrink. Replace with a bounded preview
+    // so replay stays useful without carrying the full blob.
+    const raw = JSON.stringify(sanitized);
+    return { _truncated: true, _original_bytes: raw.length, preview: raw.slice(0, maxStr) + "…[truncated]" };
+  };
+  return parts.map((p) => {
+    const part = p as Record<string, unknown> | null;
+    if (!part || typeof part !== "object" || !isUiToolPart(part.type)) return p;
+    let next: Record<string, unknown> | null = null;
+    for (const field of ["output", "input"] as const) {
+      const v = part[field];
+      if (v == null) continue;
+      if (JSON.stringify(v).length > fieldThreshold) {
+        next ??= { ...part };
+        next[field] = cap(v);
+      }
+    }
+    return next ?? part;
+  });
+}
+
+// Hard-cap the total serialized size of UIMessage.parts before persisting.
+// PostgREST silently 500s on multi-MB JSONB inserts, so when the whole blob is
+// over budget we drop `output.raw`/`per_source` from tool parts (largest
+// contributors), then replace any remaining oversized part with a stub. This is
+// a whole-message backstop; capToolPartPayloads handles the common single-blob
+// case first, so this rarely engages.
 export function capPartsSize(parts: unknown[], maxBytes: number): unknown[] {
   const size = (x: unknown) => JSON.stringify(x).length;
   if (size(parts) <= maxBytes) return parts;
   const stripped = parts.map((p) => {
     const part = p as Record<string, unknown> | null;
-    if (part && (part.type === "tool-result" || part.type === "tool-call")) {
+    if (part && isUiToolPart(part.type)) {
       const output = part.output as Record<string, unknown> | undefined;
       if (output && typeof output === "object") {
         const { raw: _raw, per_source: _ps, ...rest } = output as Record<string, unknown>;
@@ -241,11 +294,11 @@ export function capPartsSize(parts: unknown[], maxBytes: number): unknown[] {
     return part;
   });
   if (size(stripped) <= maxBytes) return stripped;
-  // Last resort: stub oversized tool-results
+  // Last resort: stub any oversized tool part (preserve its original type).
   return stripped.map((p) => {
     const part = p as Record<string, unknown> | null;
-    if (part && part.type === "tool-result" && size(part) > 100_000) {
-      return { type: "tool-result", toolCallId: part.toolCallId, toolName: part.toolName, output: { truncated: true } };
+    if (part && isUiToolPart(part.type) && size(part) > 100_000) {
+      return { type: part.type, toolCallId: part.toolCallId, toolName: part.toolName, output: { truncated: true } };
     }
     return part;
   });
