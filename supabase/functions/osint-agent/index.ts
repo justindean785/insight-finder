@@ -36,7 +36,8 @@ import {
   capTotalToBudget, deadlineReached,
 } from "./orchestrator-budget.ts";
 import {
-  shouldForceFinalize, buildFinalizeDirective, FINALIZE_ACTIVE_TOOLS, FINALIZE_MAX_STEPS,
+  shouldForceFinalize, buildFinalizeDirective, buildPerCycleCompactDirective,
+  FINALIZE_ACTIVE_TOOLS, FINALIZE_MAX_STEPS,
   extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt, toolCallCapReached,
 } from "./orchestrator-finalize.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
@@ -667,7 +668,16 @@ Deno.serve(async (req) => {
             system: baseSystemPrompt + buildFinalizeDirective(),
           };
         }
-        return { messages: stepMessagesOut };
+        // Intermediate (non-finalize) step: append the compact per-cycle directive so
+        // the model reports only THIS cycle's new findings as one-line-each instead of
+        // re-narrating the whole dossier every turn (the context-bloat root cause). The
+        // full dossier is owned solely by the finalize branch above. baseSystemPrompt is
+        // byte-identical to the top-level streamText `system`, so this only APPENDS the
+        // directive for this step.
+        return {
+          messages: stepMessagesOut,
+          system: baseSystemPrompt + buildPerCycleCompactDirective(),
+        };
       };
 
     // Ends the run cleanly once the wall-clock deadline passes (see constant). The
