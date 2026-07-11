@@ -330,7 +330,13 @@ export function buildTools(ctx: ToolContext) {
         focus: z.string().optional().describe("Optional steering hint, e.g. 'find social profiles', 'find leaks'"),
       })),
       execute: async ({ query, focus }) => {
-        if (!PERPLEXITY_API_KEY) return { error: "PERPLEXITY_API_KEY not configured" };
+        // Absent key → clean skip (log-only), NOT a raw error string, so the
+        // orchestrator falls through to its other search tools instead of
+        // surfacing "PERPLEXITY_API_KEY not configured" into tool output.
+        if (!PERPLEXITY_API_KEY) {
+          console.warn("[minimax_web_search] PERPLEXITY_API_KEY not configured — skipping web-search provider");
+          return { ok: false, skipped: true, provider_unavailable: true, answer: "", citations: [] };
+        }
         try {
           const r = await fetchRetry("https://api.perplexity.ai/chat/completions", {
             method: "POST",
@@ -356,6 +362,16 @@ export function buildTools(ctx: ToolContext) {
           });
           if (!r.ok) {
             const body = await r.text().catch(() => "");
+            // Dead/unauthorized key (401) or forbidden (403): the raw upstream body
+            // must NOT leak into tool output (testers saw `perplexity 401: {...}` 5x
+            // in live logs 2026-07-09). Log internally for ops, return a clean skipped
+            // result so the orchestrator falls through to its other search tools.
+            // Non-auth failures (429 / 5xx) are transient — keep the surfaced status
+            // so the planner can still decide on retry.
+            if (r.status === 401 || r.status === 403) {
+              console.warn(`[minimax_web_search] perplexity ${r.status} (auth) — skipping provider for query="${query.slice(0,120)}": ${body.slice(0, 300)}`);
+              return { ok: false, skipped: true, provider_unavailable: true, answer: "", citations: [] };
+            }
             console.warn(`[minimax_web_search] perplexity ${r.status} for query="${query.slice(0,120)}": ${body.slice(0, 300)}`);
             return { ok: false, status: r.status, error: `perplexity ${r.status}: ${body.slice(0, 300)}`, answer: "", citations: [] };
           }
@@ -418,7 +434,7 @@ export function buildTools(ctx: ToolContext) {
           metadata: z.unknown().optional(),
         })).max(200)),
       })),
-      execute: async ({ seed, artifacts }) => {
+      execute: async ({ seed, artifacts }, opts) => {
         // Input guard: never spend a paid MiniMax call on an empty/invalid
         // payload. The counter check below tracks how many NEW artifacts were
         // recorded, but the model can still invoke this with no seed or an
@@ -443,6 +459,15 @@ export function buildTools(ctx: ToolContext) {
             user: `Seed: ${seed}\n\nArtifacts:\n${JSON.stringify(artifacts).slice(0, 16000)}`,
             json: true,
             maxTokens: 1500,
+            // Best-effort: forward the wrapper's per-tool timeout AbortSignal (#284
+            // kept the 30s cap so a legitimately-slow ~22.5s completion is still USED).
+            // Without this the correlate model call was orphaned — it kept running
+            // past the cap and could cascade an off-ledger fallback LLM. Forwarding
+            // the signal cancels the in-flight fetch AT the cap and suppresses that
+            // fallback (providers.ts guards on opts.signal?.aborted). Clustering does
+            // not depend on this tool — the deterministic local union-find (index.ts)
+            // runs regardless — so a cancelled correlate costs the run nothing.
+            signal: (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal,
           });
           const parsed = safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content };
           guard.artifactsSinceCorrelate = 0;
