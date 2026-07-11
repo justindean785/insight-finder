@@ -116,52 +116,83 @@ export async function runAttachmentIntake(
     const atts = parseAttachments(messageText(latestUser)).filter((a) => isImageAttachment(a) || isDocAttachment(a));
     if (atts.length === 0) return empty;
 
-    const rows: Array<Record<string, unknown>> = [];
-    const summaries: string[] = [];
-    let read = 0;
+    // Read each attachment through Gemini IN PARALLEL (was serial). A run rarely
+    // has >1 file, but a mugshot + a PDF used to cost the sum of both reads on the
+    // critical path before the first token; Promise.all makes it the max. Order
+    // is preserved, so summaries stay in attachment order.
+    interface FileRead { rows: Array<Record<string, unknown>>; summary: string; read: boolean }
+    const perFile = await Promise.all(
+      atts.slice(0, MAX_ATTACHMENTS).map(async (a): Promise<FileRead> => {
+        const out: FileRead = { rows: [], summary: "", read: false };
+        const isImg = isImageAttachment(a) && !PDF_EXT.test(a.name) && !PDF_EXT.test(a.url);
+        const mode = isImg ? "image" as const : "document" as const;
+        const vis = await runGeminiVision({ mode, url: a.url, reverse_search: false }, undefined);
+        if (!vis?.ok || !vis.result || typeof vis.result !== "object") {
+          // Trace WHY a file wasn't read — intake used to skip silently, so a
+          // "it didn't read my PDF" report left no diagnostic trail. gemini_vision
+          // returns { ok:false, status, error, detail } on fetch/size/mime/API failure.
+          console.warn(JSON.stringify({
+            event: "attachment_intake_skip", file: a.name, mode,
+            ok: vis?.ok ?? false,
+            status: (vis as { status?: unknown } | null)?.status ?? null,
+            error: (vis as { error?: unknown } | null)?.error ?? null,
+            detail: (vis as { detail?: unknown } | null)?.detail ?? null,
+          }));
+          return out;
+        }
+        out.read = true;
+        const res = vis.result as Record<string, unknown>;
 
-    for (const a of atts.slice(0, MAX_ATTACHMENTS)) {
-      const isImg = isImageAttachment(a) && !PDF_EXT.test(a.name) && !PDF_EXT.test(a.url);
-      const mode = isImg ? "image" as const : "document" as const;
-      const vis = await runGeminiVision({ mode, url: a.url, reverse_search: false }, undefined);
-      if (!vis?.ok || !vis.result || typeof vis.result !== "object") continue;
-      read++;
-      const res = vis.result as Record<string, unknown>;
+        if (mode === "image") {
+          const watermarks = Array.isArray(res.watermarks) ? (res.watermarks as unknown[]).map(String) : [];
+          const handles = Array.isArray(res.handles) ? (res.handles as unknown[]).map(String) : [];
+          const attributes = Array.isArray(res.attributes) ? (res.attributes as unknown[]).map(String) : [];
+          const scene = typeof res.scene === "string" ? res.scene : "";
+          // Record source watermarks (domain-like) and public handles as leads.
+          for (const w of watermarks) {
+            const dom = domainLike(w);
+            if (dom) out.rows.push(mkRow(deps, "domain", dom, a, "inferred_from_vision", { watermark: w }));
+          }
+          for (const h of handles) {
+            const sk = selectorKind(h);
+            if (sk) out.rows.push(mkRow(deps, sk.kind, sk.value, a, "inferred_from_vision", { from_image: a.name }));
+          }
+          out.summary =
+            `IMAGE "${a.name}" (read by Gemini vision — ATTRIBUTES ONLY, not an identity): ` +
+            `scene: ${scene || "n/a"}; attributes: ${attributes.slice(0, 8).join(", ") || "none"}; ` +
+            `watermarks: ${watermarks.join(", ") || "none"}; handles: ${handles.join(", ") || "none"}. ` +
+            `Treat any watermark/handle as the SEED to pivot on; never assert a name from the face.`;
+          console.log(JSON.stringify({
+            event: "attachment_intake_read", file: a.name, mode,
+            watermarks: watermarks.length, handles: handles.length,
+          }));
+        } else {
+          const selectors = Array.isArray(res.selectors) ? (res.selectors as unknown[]).map(String) : [];
+          const extracted = typeof res.extracted_text === "string" ? res.extracted_text : "";
+          for (const s of selectors) {
+            const sk = selectorKind(s);
+            if (sk) out.rows.push(mkRow(deps, sk.kind, sk.value, a, "extracted_from_document", { from_document: a.name }));
+          }
+          out.summary =
+            `DOCUMENT "${a.name}" (read by Gemini — extracted text/selectors): ` +
+            `selectors: ${selectors.slice(0, 15).join(", ") || "none"}. ` +
+            `Excerpt: ${extracted.slice(0, 600)}${extracted.length > 600 ? "…" : ""}`;
+          // A document read that yields NO text and NO selectors "succeeded" but
+          // gave the model nothing — the likely shape of "it didn't read my PDF".
+          // Surface it distinctly so a scanned/image-only or empty PDF is visible.
+          console.log(JSON.stringify({
+            event: "attachment_intake_read", file: a.name, mode,
+            extracted_chars: extracted.length, selectors: selectors.length,
+            empty: extracted.length === 0 && selectors.length === 0,
+          }));
+        }
+        return out;
+      }),
+    );
 
-      if (mode === "image") {
-        const watermarks = Array.isArray(res.watermarks) ? (res.watermarks as unknown[]).map(String) : [];
-        const handles = Array.isArray(res.handles) ? (res.handles as unknown[]).map(String) : [];
-        const attributes = Array.isArray(res.attributes) ? (res.attributes as unknown[]).map(String) : [];
-        const scene = typeof res.scene === "string" ? res.scene : "";
-        // Record source watermarks (domain-like) and public handles as leads.
-        for (const w of watermarks) {
-          const dom = domainLike(w);
-          if (dom) rows.push(mkRow(deps, "domain", dom, a, "inferred_from_vision", { watermark: w }));
-        }
-        for (const h of handles) {
-          const sk = selectorKind(h);
-          if (sk) rows.push(mkRow(deps, sk.kind, sk.value, a, "inferred_from_vision", { from_image: a.name }));
-        }
-        summaries.push(
-          `IMAGE "${a.name}" (read by Gemini vision — ATTRIBUTES ONLY, not an identity): ` +
-          `scene: ${scene || "n/a"}; attributes: ${attributes.slice(0, 8).join(", ") || "none"}; ` +
-          `watermarks: ${watermarks.join(", ") || "none"}; handles: ${handles.join(", ") || "none"}. ` +
-          `Treat any watermark/handle as the SEED to pivot on; never assert a name from the face.`,
-        );
-      } else {
-        const selectors = Array.isArray(res.selectors) ? (res.selectors as unknown[]).map(String) : [];
-        const extracted = typeof res.extracted_text === "string" ? res.extracted_text : "";
-        for (const s of selectors) {
-          const sk = selectorKind(s);
-          if (sk) rows.push(mkRow(deps, sk.kind, sk.value, a, "extracted_from_document", { from_document: a.name }));
-        }
-        summaries.push(
-          `DOCUMENT "${a.name}" (read by Gemini — extracted text/selectors): ` +
-          `selectors: ${selectors.slice(0, 15).join(", ") || "none"}. ` +
-          `Excerpt: ${extracted.slice(0, 600)}${extracted.length > 600 ? "…" : ""}`,
-        );
-      }
-    }
+    const rows: Array<Record<string, unknown>> = perFile.flatMap((r) => r.rows);
+    const summaries: string[] = perFile.filter((r) => r.read).map((r) => r.summary);
+    const read = perFile.filter((r) => r.read).length;
 
     let inserted = 0;
     if (rows.length) {
