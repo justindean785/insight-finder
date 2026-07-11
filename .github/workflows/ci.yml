@@ -78,6 +78,12 @@ jobs:
             count=$((count + 1))
           done < <(printf '%s\n' supabase/migrations/*.sql | LC_ALL=C sort -t_ -k1,1)
           echo "Applied ${count} migrations cleanly."
+      # Runtime proof (not just DDL): invoke record_artifacts_with_evidence +
+      # append_evidence for real and assert every stored content_hash is
+      # byte-for-byte canonical-recomputable from its columns, the two writers
+      # share one valid verify_evidence_chain chain, and dedup/retry are idempotent.
+      - name: Evidence content-hash + chain compatibility regression
+        run: psql --set ON_ERROR_STOP=1 --quiet -f .github/ci/content-hash-compat-test.sql
 
   edge:
     name: Edge functions (deno test)
