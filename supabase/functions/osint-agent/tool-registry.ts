@@ -19,6 +19,7 @@ import { applyDateSanity } from "./date-sanity.ts";
 import { computeAxes, sourceConfidence, applyEvidenceCaps, isUnrelatedEntity, EXCLUDED_COLLISION_CONFIDENCE, isBioCrossLinkName, BIO_CROSS_LINK_NAME_CAP, deriveStatus, coerceCoherentStatus, looksDeadEnd } from "./confidence.ts";
 import { queryTypesOf } from "./query-type-router.ts";
 import { isSameSurnameOnlyLead, isListingAgentLead } from "./collision-policy.ts";
+import { isDisprovenReason, isZeroBreachExposure, NO_BREACH_KIND, isCrossSubjectContactLaundering, sourceProfileHandle, isHumanInputProvenance, HUMAN_INPUT_CONFIDENCE_CAP } from "./output-integrity.ts";
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDomainSource, LLM_ASSERTED_PROVENANCE, countIndependentClasses } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
 import { buildNodes } from "./graph.ts";
@@ -4295,23 +4296,61 @@ export function buildTools(ctx: ToolContext) {
           const isPerson = v.kind === "name" || v.kind === "person";
           const surnameOnly = !unrelated && isPerson && isSameSurnameOnlyLead(a.metadata ?? null);
           const listingAgent = isListingAgentLead(a.metadata ?? null);
+          // WP2-#4: a lead the system's OWN reason field already disproved
+          // (not-same-entity / not-correlated / collision). confidence.ts's
+          // UNRELATED_NOTE_RE is word-bounded and misses underscore-joined tokens
+          // like "single_source_collision_not_correlated", so these slipped through
+          // as live weak_leads — suppress them here.
+          const disprovenLead = isDisprovenReason(a.metadata ?? null);
+          // WP2-#6: a contact/geo lead scraped from a DIFFERENT account than the
+          // seed and attributed to the seed with no explicit link is laundered
+          // (barlozblendz's phone/geo → a lead ABOUT pjsmakka). Keep it (audit) but
+          // scope it out of the seed's clusters/leads.
+          const seedHandle = String(triageState.seed ?? "");
+          const crossSubjectContact = isCrossSubjectContactLaundering(v.kind, v.value, a.metadata ?? null, seedHandle);
           const collisionExcluded = unrelated || surnameOnly;
+          const excludedFromSubject = collisionExcluded || disprovenLead || crossSubjectContact;
+          // WP2-#5: a breach_exposure whose own metadata shows a zero/negative scan
+          // (isBreached:false, totalBreaches:0, totalPastes:0) is NOT an exposure —
+          // relabel to no_breach_found and force confidence to 0.
+          const zeroBreach = !excludedFromSubject && isZeroBreachExposure(v.kind, a.metadata ?? null);
+          // WP2-#8: a fact from a user-typed correction is tagged human_input and
+          // capped below Confirmed until an agent-found source corroborates it.
+          const humanInput = isHumanInputProvenance(a.metadata ?? null);
           // Bio-linked name gate: a name pulled out of a profile bio is an
           // unverified identity claim and can never anchor the case.
-          const bioName = !collisionExcluded && isBioCrossLinkName(v.kind, a.metadata ?? null);
-          const finalKind = collisionExcluded ? "excluded_collision" : v.kind;
-          const finalConfidence = collisionExcluded
-            ? Math.min(cap.confidence, EXCLUDED_COLLISION_CONFIDENCE)
-            : bioName
-              ? Math.min(cap.confidence, BIO_CROSS_LINK_NAME_CAP)
-              : cap.confidence;
+          const bioName = !excludedFromSubject && !zeroBreach && isBioCrossLinkName(v.kind, a.metadata ?? null);
+          const finalKind = zeroBreach ? NO_BREACH_KIND : excludedFromSubject ? "excluded_collision" : v.kind;
+          const finalConfidence = zeroBreach
+            ? 0
+            : excludedFromSubject
+              ? Math.min(cap.confidence, EXCLUDED_COLLISION_CONFIDENCE)
+              : bioName
+                ? Math.min(cap.confidence, BIO_CROSS_LINK_NAME_CAP)
+                : humanInput
+                  ? Math.min(cap.confidence, HUMAN_INPUT_CONFIDENCE_CAP)
+                  : cap.confidence;
+          // WP2-#8: surface human_input in the source_category label WITHOUT adding
+          // a new SourceClass to the integrity-critical taxonomy — the confidence
+          // engine already ran on the real classes, so caps are unaffected.
+          const sourceCategory = humanInput
+            ? Array.from(new Set([...(cap.source_classes ?? []), "human_input"]))
+            : cap.source_classes;
           // Resolve the confirmation gap, then DERIVE a coherent status from it
           // (status can never contradict reason_not_confirmed).
           const aReqRNC = typeof a.metadata?.reason_not_confirmed === "string" ? a.metadata.reason_not_confirmed : null;
           const resolvedReasonNotConfirmed = bioName
             ? "name appears only in a bio/linked-accounts block — confirm it is the subject, not a mentioned third party"
-            : (aReqRNC ?? cap.reason_not_confirmed ?? null);
-          const derivedStatus = collisionExcluded
+            : zeroBreach
+              ? "scan returned no breach or paste hits — negative result, not an exposure"
+              : disprovenLead
+                ? "the lead's own reason marks it not-the-same-entity / not-correlated / a collision"
+                : crossSubjectContact
+                  ? "contact/geo scraped from a different account than the seed, with no explicit link to the subject"
+                  : humanInput
+                    ? "human-provided input — needs independent corroboration by a source the agent found itself before it can reach Confirmed"
+                    : (aReqRNC ?? cap.reason_not_confirmed ?? null);
+          const derivedStatus = excludedFromSubject
             ? "excluded"
             : bioName
               ? "unverified_bio_link"
@@ -4336,25 +4375,45 @@ export function buildTools(ctx: ToolContext) {
             ...(a.metadata ?? {}),
             ...(v.metaPatch ?? {}),
             ...(inferred.reclassified_from ? { reclassified_from: inferred.reclassified_from } : {}),
-            source_category: cap.source_classes,
+            source_category: sourceCategory,
             query_types: queryTypesOf({ value: v.value, kind: v.kind, metadata: a.metadata ?? null }),
             status: derivedStatus,
             cluster_id: a.metadata?.cluster_id ?? null,
-            reason_for_confidence: collisionExcluded
-              ? (surnameOnly
-                  ? "excluded: shared surname only — not a corroborated family/associate link"
-                  : "excluded: flagged as unrelated/different entity than the seed")
+            reason_for_confidence: zeroBreach
+              ? "no breach/paste hits in the scan — recorded as a negative result"
+              : excludedFromSubject
+                ? (surnameOnly
+                    ? "excluded: shared surname only — not a corroborated family/associate link"
+                    : disprovenLead
+                      ? "excluded: the lead's own reason disproves it (not-same-entity / not-correlated / collision)"
+                      : crossSubjectContact
+                        ? "excluded: contact/geo belongs to a different account, not linked to the subject"
+                        : "excluded: flagged as unrelated/different entity than the seed")
               : bioName
                 ? "bio-linked name — unverified identity claim, may be an associate/shoutout, not the subject"
-                : cap.reason_for_confidence,
+                : humanInput
+                  ? "human-provided input — held below Confirmed pending independent corroboration"
+                  : cap.reason_for_confidence,
             reason_not_confirmed: resolvedReasonNotConfirmed,
             contradictions: a.metadata?.contradictions ?? [],
             next_verification_step: a.metadata?.next_verification_step ?? null,
-            confidence_cap_applied: bioName ? Math.min(cap.cap, BIO_CROSS_LINK_NAME_CAP) : cap.cap,
-            ...(collisionExcluded ? { excluded_collision: true, reclassified_from: a.kind } : {}),
+            confidence_cap_applied: zeroBreach
+              ? 0
+              : bioName
+                ? Math.min(cap.cap, BIO_CROSS_LINK_NAME_CAP)
+                : humanInput
+                  ? Math.min(cap.cap, HUMAN_INPUT_CONFIDENCE_CAP)
+                  : cap.cap,
+            ...(zeroBreach ? { no_breach_found: true, breach_result: "none", reclassified_from: a.kind } : {}),
+            ...(excludedFromSubject ? { excluded_collision: true, excluded_from_subject: true, reclassified_from: a.kind } : {}),
             ...(surnameOnly ? { excluded_reason: "same_surname_only" } : {}),
+            ...(disprovenLead ? { excluded_reason: "disproven_by_reason" } : {}),
+            ...(crossSubjectContact
+              ? { excluded_reason: "cross_subject_contact_not_linked", cross_subject_contact: true, scoped_to_account: sourceProfileHandle(a.metadata ?? null) }
+              : {}),
             ...(listingAgent ? { contact_type: "real_estate_listing_agent" } : {}),
             ...(bioName ? { bio_cross_link: true } : {}),
+            ...(humanInput ? { human_input: true, human_input_verified: false } : {}),
             ...(llmAssertedProvenance ? { provenance: LLM_ASSERTED_PROVENANCE, provenance_verified: false } : {}),
             // Spread LAST so a corrected `note` overrides the model-supplied one.
             ...dateSanity.metaPatch,
@@ -4621,19 +4680,43 @@ export function buildTools(ctx: ToolContext) {
         const isPerson = v.kind === "name" || v.kind === "person";
         const surnameOnly = !unrelated && isPerson && isSameSurnameOnlyLead(metadata ?? null);
         const listingAgent = isListingAgentLead(metadata ?? null);
+        // Output-integrity gates mirror record_artifacts (see that path for the
+        // rationale behind each): disproven-reason suppression, cross-subject
+        // contact scoping, zero-breach relabel, human-input tagging.
+        const disprovenLead = isDisprovenReason(metadata ?? null);
+        const seedHandle = String(triageState.seed ?? "");
+        const crossSubjectContact = isCrossSubjectContactLaundering(v.kind, v.value, metadata ?? null, seedHandle);
         const collisionExcluded = unrelated || surnameOnly;
-        const bioName = !collisionExcluded && isBioCrossLinkName(v.kind, metadata ?? null);
-        const finalKind = collisionExcluded ? "excluded_collision" : v.kind;
-        const finalConfidence = collisionExcluded
-          ? Math.min(cap.confidence, EXCLUDED_COLLISION_CONFIDENCE)
-          : bioName
-            ? Math.min(cap.confidence, BIO_CROSS_LINK_NAME_CAP)
-            : cap.confidence;
+        const excludedFromSubject = collisionExcluded || disprovenLead || crossSubjectContact;
+        const zeroBreach = !excludedFromSubject && isZeroBreachExposure(v.kind, metadata ?? null);
+        const humanInput = isHumanInputProvenance(metadata ?? null);
+        const bioName = !excludedFromSubject && !zeroBreach && isBioCrossLinkName(v.kind, metadata ?? null);
+        const finalKind = zeroBreach ? NO_BREACH_KIND : excludedFromSubject ? "excluded_collision" : v.kind;
+        const finalConfidence = zeroBreach
+          ? 0
+          : excludedFromSubject
+            ? Math.min(cap.confidence, EXCLUDED_COLLISION_CONFIDENCE)
+            : bioName
+              ? Math.min(cap.confidence, BIO_CROSS_LINK_NAME_CAP)
+              : humanInput
+                ? Math.min(cap.confidence, HUMAN_INPUT_CONFIDENCE_CAP)
+                : cap.confidence;
+        const sourceCategory = humanInput
+          ? Array.from(new Set([...(cap.source_classes ?? []), "human_input"]))
+          : cap.source_classes;
         const reqRNC = typeof metadata?.reason_not_confirmed === "string" ? metadata.reason_not_confirmed : null;
         const resolvedReasonNotConfirmed = bioName
           ? "name appears only in a bio/linked-accounts block — confirm it is the subject, not a mentioned third party"
-          : (reqRNC ?? cap.reason_not_confirmed ?? null);
-        const derivedStatus = collisionExcluded
+          : zeroBreach
+            ? "scan returned no breach or paste hits — negative result, not an exposure"
+            : disprovenLead
+              ? "the lead's own reason marks it not-the-same-entity / not-correlated / a collision"
+              : crossSubjectContact
+                ? "contact/geo scraped from a different account than the seed, with no explicit link to the subject"
+                : humanInput
+                  ? "human-provided input — needs independent corroboration by a source the agent found itself before it can reach Confirmed"
+                  : (reqRNC ?? cap.reason_not_confirmed ?? null);
+        const derivedStatus = excludedFromSubject
           ? "excluded"
           : bioName
             ? "unverified_bio_link"
@@ -4651,25 +4734,45 @@ export function buildTools(ctx: ToolContext) {
           ...(metadata ?? {}),
           ...(v.metaPatch ?? {}),
           ...(inferred.reclassified_from ? { reclassified_from: inferred.reclassified_from } : {}),
-          source_category: cap.source_classes,
+          source_category: sourceCategory,
           query_types: queryTypesOf({ value: v.value, kind: v.kind, metadata: metadata ?? null }),
           status: derivedStatus,
           cluster_id: metadata?.cluster_id ?? null,
-          reason_for_confidence: collisionExcluded
-            ? (surnameOnly
-                ? "excluded: shared surname only — not a corroborated family/associate link"
-                : "excluded: flagged as unrelated/different entity than the seed")
-            : bioName
-              ? "bio-linked name — unverified identity claim, may be an associate/shoutout, not the subject"
-              : cap.reason_for_confidence,
+          reason_for_confidence: zeroBreach
+            ? "no breach/paste hits in the scan — recorded as a negative result"
+            : excludedFromSubject
+              ? (surnameOnly
+                  ? "excluded: shared surname only — not a corroborated family/associate link"
+                  : disprovenLead
+                    ? "excluded: the lead's own reason disproves it (not-same-entity / not-correlated / collision)"
+                    : crossSubjectContact
+                      ? "excluded: contact/geo belongs to a different account, not linked to the subject"
+                      : "excluded: flagged as unrelated/different entity than the seed")
+              : bioName
+                ? "bio-linked name — unverified identity claim, may be an associate/shoutout, not the subject"
+                : humanInput
+                  ? "human-provided input — held below Confirmed pending independent corroboration"
+                  : cap.reason_for_confidence,
           reason_not_confirmed: resolvedReasonNotConfirmed,
           contradictions: metadata?.contradictions ?? [],
           next_verification_step: metadata?.next_verification_step ?? null,
-          confidence_cap_applied: bioName ? Math.min(cap.cap, BIO_CROSS_LINK_NAME_CAP) : cap.cap,
-          ...(collisionExcluded ? { excluded_collision: true, reclassified_from: kind } : {}),
+          confidence_cap_applied: zeroBreach
+            ? 0
+            : bioName
+              ? Math.min(cap.cap, BIO_CROSS_LINK_NAME_CAP)
+              : humanInput
+                ? Math.min(cap.cap, HUMAN_INPUT_CONFIDENCE_CAP)
+                : cap.cap,
+          ...(zeroBreach ? { no_breach_found: true, breach_result: "none", reclassified_from: kind } : {}),
+          ...(excludedFromSubject ? { excluded_collision: true, excluded_from_subject: true, reclassified_from: kind } : {}),
           ...(surnameOnly ? { excluded_reason: "same_surname_only" } : {}),
+          ...(disprovenLead ? { excluded_reason: "disproven_by_reason" } : {}),
+          ...(crossSubjectContact
+            ? { excluded_reason: "cross_subject_contact_not_linked", cross_subject_contact: true, scoped_to_account: sourceProfileHandle(metadata ?? null) }
+            : {}),
           ...(listingAgent ? { contact_type: "real_estate_listing_agent" } : {}),
           ...(bioName ? { bio_cross_link: true } : {}),
+          ...(humanInput ? { human_input: true, human_input_verified: false } : {}),
           ...(llmAssertedProvenance ? { provenance: LLM_ASSERTED_PROVENANCE, provenance_verified: false } : {}),
         };
         const row = scrubArtifactRow({

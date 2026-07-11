@@ -119,5 +119,13 @@ export function detectSeed(input: string): DetectedSeed | null {
   }
   if (DOMAIN_RE.test(raw)) return { kind: "domain", raw, normalized: raw.toLowerCase() };
   if (USERNAME_RE.test(raw)) return { kind: "username", raw, normalized: raw.toLowerCase() };
+  // A leading "@" is how people write a social handle (e.g. "@pjsmakka"). Strip
+  // it and re-test so it classifies as a username instead of `other`. MUST mirror
+  // detectSeedServer() in supabase/functions/osint-agent/validation.ts so the
+  // chat client and edge function agree on the cache key.
+  const handleStripped = raw.replace(/^@+/, "");
+  if (handleStripped !== raw && USERNAME_RE.test(handleStripped)) {
+    return { kind: "username", raw, normalized: handleStripped.toLowerCase() };
+  }
   return { kind: "other", raw, normalized: raw.toLowerCase() };
 }

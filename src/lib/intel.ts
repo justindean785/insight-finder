@@ -7,6 +7,8 @@ import {
   clusterDisplayId,
   bucketQualifiesAsCluster,
   isCollisionArtifact,
+  isRelatedEntity,
+  relationshipToSubject,
   sanitizeValueForLabel,
   reportDisplayKind,
   reservedNumberAnnotation,
@@ -1101,7 +1103,7 @@ export function buildReportMarkdown(input: ReportInput): string {
     : [
         ...(collisionArtifacts.length
           ? [
-              "_These artifacts were flagged as namesakes / unrelated entities. They do NOT belong to the subject and do NOT strengthen the main network._",
+              "_These artifacts were flagged as namesakes, unrelated entities, disproven leads, or unlinked cross-account contact/geo. They do NOT belong to the subject and do NOT strengthen the main network._",
               "",
               ...collisionArtifacts.map((a) =>
                 `- \`${sanitizeValueForLabel(a.value, false)}\` — ${reportDisplayKind(a) === a.kind ? displayKind(a) : "source_conflict"} _(${labelForArtifact(a)}, via ${humanizeSourceChain(a.source)})_`,
@@ -1119,6 +1121,28 @@ export function buildReportMarkdown(input: ReportInput): string {
             ]
           : []),
       ].join("\n");
+
+  // Related / associated entities: co-appearing accounts (bio-mentioned or SERP
+  // co-occurring) carry a relationship_to_subject. They are RELATED, not the
+  // subject and not noise — shown in their own section, deduped by folded value.
+  const relatedSection = (() => {
+    const related = artifacts.filter((a) => isRelatedEntity(a) && !collisionIds.has(a.id));
+    if (related.length === 0) return "_No related/associated entities identified._";
+    const seen = new Set<string>();
+    const rows: string[] = [];
+    for (const a of related.sort((x, y) => (conf(y) ?? 0) - (conf(x) ?? 0))) {
+      const key = normalizeHandle(a.value) || a.value.trim().toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const rel = (relationshipToSubject(a) ?? "associated").replace(/_/g, " ");
+      rows.push(`- \`${sanitizeValueForLabel(a.value, false)}\` — _${rel}_ (${labelForArtifact(a)}, via ${humanizeSourceChain(a.source)})`);
+    }
+    return [
+      "_Entities that co-appear with the subject (accounts referenced in the subject's bio or surfaced alongside it in search results). They are RELATED to the subject — not the subject, and not noise. They are not promoted to co-equal investigative subjects._",
+      "",
+      ...rows,
+    ].join("\n");
+  })();
 
   const network = (() => {
     const sections: string[] = [];
@@ -1268,6 +1292,9 @@ export function buildReportMarkdown(input: ReportInput): string {
     "",
     `## Candidate Identity Clusters`,
     buildClusterSection(clusterReport, { includeWarnings: false }),
+    "",
+    `## Related / Associated Entities`,
+    relatedSection,
     "",
     `## Key Findings`,
     keyFindings,
@@ -1611,6 +1638,11 @@ export function buildIdentityClusters(
     const m = (a.metadata ?? {}) as Record<string, unknown>;
     if (m.false_positive === true) return false;
     if (isCollisionArtifact(a)) return false;
+    // Related/associated entities (bio-mentioned or SERP co-appearing accounts)
+    // are RELATED to the subject, not the subject — they must not seed or become a
+    // co-equal candidate identity cluster. They are surfaced in their own report
+    // section and remain in the artifact table for audit.
+    if (isRelatedEntity(a)) return false;
     return true;
   });
 

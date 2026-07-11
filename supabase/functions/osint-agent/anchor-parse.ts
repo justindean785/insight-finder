@@ -1,0 +1,142 @@
+// anchor-parse.ts — PURE, import-free parsers for the anchor read.
+//
+// Split out of anchor-intake.ts so the entity-extraction logic can be unit-tested
+// under both Deno (deno test) and the frontend's vitest without pulling in the
+// Deno-only network/runtime deps (env.ts, npm:ai). No imports, no I/O.
+
+export interface AnchorSeed {
+  kind: string;
+  raw: string;
+  normalized: string;
+}
+
+const HANDLE_RE = /@([a-z0-9._]{2,30})\b/gi;
+const IG_URL_RE = /https?:\/\/(?:www\.)?instagram\.com\/([a-z0-9._]{2,30})\/?/gi;
+const URL_RE = /https?:\/\/[^\s"'<>)\]]+/gi;
+
+// instagram.com path segments that are NOT handles.
+const IG_RESERVED = new Set(["p", "reel", "reels", "explore", "stories", "tv", "accounts", "about"]);
+
+/** Fold a handle to a comparable form (lowercase, drop leading @, trailing dots). */
+export function foldHandle(raw: string): string {
+  return (raw ?? "").trim().toLowerCase().replace(/^@+/, "").replace(/\.+$/, "");
+}
+
+export interface ProfileEntities {
+  handle: string | null;
+  displayName: string | null;
+  bio: string | null;
+  followers: number | null;
+  following: number | null;
+  verified: boolean;
+  externalLinks: string[];
+  /** @handles named inside the bio — co-appearing accounts, NOT the subject. */
+  relatedHandles: string[];
+}
+
+/** Extract identity entities from a SocialFetch profile `data` payload. Pure. */
+export function extractProfileEntities(payload: Record<string, unknown> | null | undefined): ProfileEntities {
+  const p = payload ?? {};
+  const str = (k: string): string | null =>
+    (typeof p[k] === "string" && (p[k] as string).trim() ? (p[k] as string).trim() : null);
+  const num = (k: string): number | null =>
+    (typeof p[k] === "number" && Number.isFinite(p[k]) ? (p[k] as number) : null);
+  const bio = str("bio");
+  const externalLinks: string[] = [];
+  const ext = str("externalUrl");
+  if (ext) externalLinks.push(ext);
+  if (Array.isArray(p.bioLinks)) {
+    for (const l of p.bioLinks as unknown[]) {
+      const s = String(l).trim();
+      if (s) externalLinks.push(/^https?:\/\//i.test(s) ? s : `https://${s}`);
+    }
+  }
+  const related = new Set<string>();
+  if (bio) {
+    let m: RegExpExecArray | null;
+    HANDLE_RE.lastIndex = 0;
+    while ((m = HANDLE_RE.exec(bio)) !== null) related.add(foldHandle(m[1]));
+  }
+  const selfHandle = foldHandle(str("handle") ?? "");
+  related.delete(selfHandle);
+  return {
+    handle: str("handle"),
+    displayName: str("displayName") ?? str("display_name") ?? str("fullName") ?? str("name"),
+    bio,
+    followers: num("followers"),
+    following: num("following"),
+    verified: p.verified === true,
+    externalLinks: Array.from(new Set(externalLinks)),
+    relatedHandles: Array.from(related),
+  };
+}
+
+export interface SerpEntities {
+  /** Related/associated handles the SERP surfaced (excludes the seed itself). */
+  relatedHandles: string[];
+  /** Instagram profile URLs referenced (excludes the seed's own). */
+  profileUrls: string[];
+  /** Non-social external links surfaced. */
+  externalLinks: string[];
+  /** The seed's OWN instagram profile URL if the SERP named it (anchor corroboration). */
+  seedProfileUrl: string | null;
+}
+
+/**
+ * Mine a Perplexity/SERP answer + citations for entities co-appearing with the
+ * seed handle. Pure. Handles @mentions in prose and instagram.com/<handle> URLs in
+ * both the answer and the citation list.
+ */
+export function parseSerpEntities(answer: string, citations: string[], seedHandle: string): SerpEntities {
+  const seed = foldHandle(seedHandle);
+  const text = `${answer ?? ""}\n${(citations ?? []).join("\n")}`;
+  const related = new Set<string>();
+  const profileUrls = new Set<string>();
+  let seedProfileUrl: string | null = null;
+
+  let m: RegExpExecArray | null;
+  IG_URL_RE.lastIndex = 0;
+  while ((m = IG_URL_RE.exec(text)) !== null) {
+    const h = foldHandle(m[1]);
+    if (!h || IG_RESERVED.has(h)) continue;
+    const canonical = `https://www.instagram.com/${h}/`;
+    if (h === seed) { seedProfileUrl = canonical; continue; }
+    profileUrls.add(canonical);
+    related.add(h);
+  }
+  HANDLE_RE.lastIndex = 0;
+  while ((m = HANDLE_RE.exec(answer ?? "")) !== null) {
+    const h = foldHandle(m[1]);
+    if (h && h !== seed) related.add(h);
+  }
+
+  const externalLinks = new Set<string>();
+  for (const c of citations ?? []) {
+    if (typeof c !== "string") continue;
+    if (/instagram\.com/i.test(c)) continue; // captured above
+    if (/^https?:\/\//i.test(c)) externalLinks.add(c);
+  }
+  URL_RE.lastIndex = 0;
+  while ((m = URL_RE.exec(answer ?? "")) !== null) {
+    if (!/instagram\.com/i.test(m[0])) externalLinks.add(m[0].replace(/[.,);]+$/, ""));
+  }
+
+  return {
+    relatedHandles: Array.from(related),
+    profileUrls: Array.from(profileUrls),
+    externalLinks: Array.from(externalLinks),
+    seedProfileUrl,
+  };
+}
+
+/** Pull a bare handle out of a username/url seed (strips @, instagram URL, etc.). */
+export function seedToHandle(seed: AnchorSeed): string | null {
+  const raw = (seed.normalized || seed.raw || "").trim();
+  if (!raw) return null;
+  if (seed.kind === "username") return foldHandle(raw);
+  if (seed.kind === "url") {
+    const m = raw.match(/(?:instagram|twitter|x|tiktok|facebook|threads)\.com\/@?([a-z0-9._]{2,30})/i);
+    return m ? foldHandle(m[1]) : null;
+  }
+  return null;
+}

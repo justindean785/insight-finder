@@ -23,6 +23,10 @@ export const STRICT_KINDS = [
   "hash",
   "crypto_wallet",
   "breach_exposure",
+  // Negative breach-scan result: a scan that returned isBreached:false /
+  // totalBreaches:0 / totalPastes:0. Recorded (never deleted) so the audit shows
+  // the scan ran, but it is NOT an exposure and carries confidence 0.
+  "no_breach_found",
   "threat_reputation",
   "reputation_signal",
   "contradiction",

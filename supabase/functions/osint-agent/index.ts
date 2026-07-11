@@ -46,6 +46,7 @@ import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { applyClusteringToThread } from "./lib/cluster.ts";
 import { buildTools } from "./tool-registry.ts";
 import { runAttachmentIntake, type AttachmentIntakeResult } from "./attachment-intake.ts";
+import { runAnchorIntake, type AnchorIntakeResult } from "./anchor-intake.ts";
 import { isMessageSchemaError, classifyStreamProviderError } from "./stream-error-classify.ts";
 import {
   shouldFallbackAfterMinimaxPreflight,
@@ -378,6 +379,27 @@ Deno.serve(async (req) => {
         return { ran: false, attachments_read: 0, artifacts_inserted: 0, summary: "" };
       });
 
+    // ---- Anchor read (READ the primary profile + SERP BEFORE the breadth sweep) --
+    // When the seed resolves to a handle/profile, deterministically FETCH + READ the
+    // subject's primary social profile AND the search-engine results page before the
+    // model's first turn — so the run leads with the anchor identity (bio, display
+    // name, follower counts, external links, related accounts) recorded as a READ,
+    // instead of constructing the profile URL as INFERRED and burning the run on a
+    // ~95-platform dev-handle sweep. Overlaps the preflight like attachment intake;
+    // awaited where the system prompt is assembled. Best-effort, never blocks.
+    const emptyAnchor: AnchorIntakeResult = { ran: false, profile_read: false, serp_read: false, artifacts_inserted: 0, summary: "" };
+    const anchorSeed = (() => {
+      const head = seedValueRaw.split(/Attached files:/i)[0].trim().split("\n").map((s) => s.trim()).find(Boolean) ?? "";
+      return head ? detectSeedServer(head) : null;
+    })();
+    const anchorPromise: Promise<AnchorIntakeResult> =
+      anchorSeed && (anchorSeed.kind === "username" || anchorSeed.kind === "url" || anchorSeed.kind === "person")
+        ? runAnchorIntake(anchorSeed, { supabase, userId, threadId }, messages).catch((e): AnchorIntakeResult => {
+            console.warn("[anchor-intake] unexpected rejection:", (e as Error)?.message);
+            return emptyAnchor;
+          })
+        : Promise.resolve(emptyAnchor);
+
     // Tracks the cost amount already written to the DB via mid-run
     // checkpoints so the final write only adds the remaining delta.
     let lastCheckpointMicroUsd = 0;
@@ -588,10 +610,19 @@ Deno.serve(async (req) => {
         `[attachment-intake] read ${intake.attachments_read} file(s), recorded ${intake.artifacts_inserted} lead-tier artifact(s) before reasoning`,
       );
     }
+    // Resolve the anchor read started above (it overlapped the preflight + setup).
+    // Its summary establishes the subject identity the model must reason over first.
+    const anchor = await anchorPromise;
+    const anchorIntakeSummary = anchor.ran ? anchor.summary : "";
+    if (anchor.ran) {
+      console.log(
+        `[anchor-intake] profile_read=${anchor.profile_read} serp_read=${anchor.serp_read}, recorded ${anchor.artifacts_inserted} anchor artifact(s) before reasoning`,
+      );
+    }
     // Base orchestrator system prompt, shared by streamText and by the forced
     // finalize step (which appends buildFinalizeDirective() to this exact base).
     const baseSystemPrompt =
-      SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary;
+      SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary + anchorIntakeSummary;
     // Count of forced finalize steps taken (P0 fix A). A StopCondition ends the run
     // once it reaches FINALIZE_MAX_STEPS so the closing synthesis can't loop for the
     // whole reserve window. Incremented in prepareStep when a finalize step is forced.
@@ -711,7 +742,7 @@ Deno.serve(async (req) => {
       providerOptions: (minimaxIsPrimary && !useFallback)
         ? { minimax: { parallel_tool_calls: ORCHESTRATOR_PARALLEL_TOOL_CALLS } }
         : undefined,
-      system: SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary,
+      system: SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary + anchorIntakeSummary,
       messages: trimmedMessages,
       tools: wrapToolsWithCache(tools, {
         investigationId: threadId,
