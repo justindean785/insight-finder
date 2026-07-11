@@ -20,7 +20,7 @@ import {
 } from "./env.ts";
 
 import { detectSeedServer } from "./validation.ts";
-import { sanitizeToolOutput, capPartsSize } from "./safety.ts";
+import { sanitizeToolOutput, capPartsSize, capToolPartPayloads } from "./safety.ts";
 import { sanitizeModelMessages, capToolResultOutputs, summarizeToolResultValue } from "./message-sanitize.ts";
 import { guard, routingGuard, triageState, countRecordArtifactCalls } from "./guard.ts";
 import { setupRequest } from "./auth.ts";
@@ -877,10 +877,14 @@ Deno.serve(async (req) => {
           console.warn("[report-salvage] backstop failed (non-fatal):", String(e));
         }
         if (assistant) {
-          // Cap `messages.parts` payload to avoid silent PostgREST 500s when
-          // a long fan-out produces multi-MB tool-result blobs. We strip
-          // `output.raw` from any tool-result part above the cap.
-          const safeParts = capPartsSize(assistant.parts as unknown[], 3_500_000);
+          // Cap `messages.parts` payload before persisting. First shrink any
+          // single oversized tool payload (e.g. a 600KB socialfetch_lookup
+          // dump) so one blob can't bloat the row or, replayed by the client
+          // every turn, blow the 2MB request-body limit — small outputs pass
+          // through untouched. Then apply the whole-message 3.5MB backstop to
+          // avoid silent PostgREST 500s on multi-MB inserts.
+          const cappedParts = capToolPartPayloads(assistant.parts as unknown[]);
+          const safeParts = capPartsSize(cappedParts, 3_500_000);
           const { error: msgErr } = await supabase.from("messages").insert({
             thread_id: threadId,
             user_id: userId,
