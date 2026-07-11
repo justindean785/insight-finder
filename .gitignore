@@ -48,3 +48,11 @@ AUDIT_main_2026-06-08.md
 LEAD_REVIEW_STATE.md
 
 *.tsbuildinfo
+
+# Sensitive scan artifacts — never commit (2026-07-11 PII incident remediation)
+last_scan_tool_usage_full.csv
+logs (*).json
+release-checklist.html
+*.scan.csv
+scan-output/
+telemetry/
