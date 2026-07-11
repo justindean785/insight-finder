@@ -4,6 +4,8 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 
 ## ⚠️ Deploy topology — the #1 thing to get right
 
+> A mirror merge is NOT a deploy. The only proof of deploy is a moved build SHA.
+
 There is **ONE place to work: this repo, `justindean785/insight-finder`** (local: `/Users/dizosint/insight-finder`, production branch `main`). Everything below was consolidated 2026-06-13 after the setup sprawled across 5 repos / 3 hosts. Do not recreate that sprawl.
 
 ```

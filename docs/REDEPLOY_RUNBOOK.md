@@ -7,17 +7,23 @@ one correct redeploy channel.
 
 ## Deploy topology (why `supabase functions deploy` is NOT used)
 
+> A mirror merge is NOT a deploy. The only proof of deploy is a moved build SHA.
+
 The Supabase project `skzqwbyvmwqarfgfvyky` is owned by **Lovable Cloud**, not the
-user. Lovable deploys the edge functions from **its** connected repo
-`justindean785/seeker-spark-search-5362c57c` (branch `main`). The user's token
-**403s** on `supabase functions deploy` for this project — that is the wrong
-channel. CI (`.github/workflows/ci.yml`) is **test-only by design**; it does not
-(and should not) deploy.
+user. The Lovable project is connected to its mirror repo
+`justindean785/seeker-spark-search-5362c57c` (branch `main`), but **a push/merge to
+that mirror only SYNCS the code into the Lovable project — it does NOT deploy the
+edge function.** The deploy is a separate, explicit step (the Lovable project agent
+running `supabase--deploy_edge_functions`). The user's token **403s** on
+`supabase functions deploy` for this project — that is the wrong channel. CI
+(`.github/workflows/ci.yml`) is **test-only by design**; it does not (and should
+not) deploy.
 
 ```
 edit here (insight-finder/main)
-   └─ sync changed function(s) → seeker-spark-search-5362c57c (PR, gh token)
-        └─ merge → Lovable auto-deploys to Supabase
+   └─ stamp build-info.ts (npm run stamp:build) → commit
+        └─ surgical sync PR → seeker-spark-search-5362c57c (gh token) → merge = SYNC ONLY
+             └─ EXPLICIT Lovable deploy (supabase--deploy_edge_functions) → verify health SHA moved
 ```
 
 ## Build marker — how drift is now detectable
@@ -55,9 +61,12 @@ git push
 #      cp -R supabase/functions/osint-agent/. <mirror-clone>/supabase/functions/osint-agent/
 #    then open a PR against seeker-spark-search-5362c57c, review the diff, merge.
 
-# 3. Lovable auto-deploys on merge. Then verify parity:
+# 3. EXPLICITLY trigger the Lovable edge-function deploy — merging the mirror PR
+#    does NOT deploy. The Lovable project agent must run
+#    supabase--deploy_edge_functions for osint-agent (a "redeploy" nudge often only
+#    creates a commit; the merge alone only syncs code). THEN verify parity:
 curl -s ".../osint-agent?health=1" -H "Authorization: Bearer <JWT>" | jq .build
-#   → must equal the short SHA you shipped.
+#   → must equal the short SHA you shipped. If it did NOT move, nothing shipped.
 ```
 
 ## Orchestrator readiness gate
