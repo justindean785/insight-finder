@@ -4,7 +4,23 @@ import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 // shouldFallbackOnStatus / shouldFallbackOnError — pure helpers, no env deps.
 // Static import is safe here.
 // ---------------------------------------------------------------------------
-import { shouldFallbackOnStatus, shouldFallbackOnError, perplexitySearch } from "./providers.ts";
+import { shouldFallbackOnStatus, shouldFallbackOnError, perplexitySearch, visionGenerationConfig } from "./providers.ts";
+
+// ---------------------------------------------------------------------------
+// visionGenerationConfig — force JSON output for the structured readers, but
+// NOT when grounding (google_search is incompatible with responseMimeType).
+// ---------------------------------------------------------------------------
+Deno.test("visionGenerationConfig: document/non-grounding read forces JSON output", () => {
+  const cfg = visionGenerationConfig(false, 0.1);
+  assertEquals(cfg.responseMimeType, "application/json");
+  assertEquals(cfg.temperature, 0.1);
+});
+
+Deno.test("visionGenerationConfig: grounded (reverse-search) read omits JSON mode", () => {
+  const cfg = visionGenerationConfig(true, 0.2);
+  assertEquals(cfg.responseMimeType, undefined, "JSON mode is incompatible with google_search grounding");
+  assertEquals(cfg.temperature, 0.2);
+});
 
 Deno.test("shouldFallbackOnStatus: 200 → no fallback", () => {
   assertEquals(shouldFallbackOnStatus(200), false);

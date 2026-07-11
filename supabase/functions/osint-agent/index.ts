@@ -20,7 +20,7 @@ import {
 } from "./env.ts";
 
 import { detectSeedServer } from "./validation.ts";
-import { sanitizeToolOutput, capPartsSize } from "./safety.ts";
+import { sanitizeToolOutput, capPartsSize, capToolPartPayloads } from "./safety.ts";
 import { sanitizeModelMessages, capToolResultOutputs, summarizeToolResultValue } from "./message-sanitize.ts";
 import { guard, routingGuard, triageState, countRecordArtifactCalls } from "./guard.ts";
 import { setupRequest } from "./auth.ts";
@@ -45,7 +45,7 @@ import { repairUnknownTool } from "./unknown-tool-guard.ts";
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { applyClusteringToThread } from "./lib/cluster.ts";
 import { buildTools } from "./tool-registry.ts";
-import { runAttachmentIntake } from "./attachment-intake.ts";
+import { runAttachmentIntake, type AttachmentIntakeResult } from "./attachment-intake.ts";
 import { isMessageSchemaError, classifyStreamProviderError } from "./stream-error-classify.ts";
 import {
   shouldFallbackAfterMinimaxPreflight,
@@ -365,16 +365,18 @@ Deno.serve(async (req) => {
     // anchors (watermark/handle/selectors) as LEAD-TIER artifacts, and inject a
     // summary into the system prompt so the model reasons over what the file
     // actually contained instead of a bare URL. Best-effort: never blocks the run.
-    let visionIntakeSummary = "";
-    {
-      const intake = await runAttachmentIntake(messages, { supabase, userId, threadId });
-      if (intake.ran) {
-        visionIntakeSummary = intake.summary;
-        console.log(
-          `[attachment-intake] read ${intake.attachments_read} file(s), recorded ${intake.artifacts_inserted} lead-tier artifact(s) before reasoning`,
-        );
-      }
-    }
+    // Kick intake off WITHOUT awaiting here: the Gemini document/vision read
+    // (the slow part) then overlaps the MiniMax preflight + tool/prompt setup
+    // below instead of stacking serially in front of them. The summary is only
+    // needed when the system prompt is assembled (baseSystemPrompt below), so we
+    // await it there — time-to-first-token drops from (intake + preflight) to
+    // ~max(intake, preflight). Best-effort: a rejection can't happen (intake
+    // swallows its own errors) but guard anyway.
+    const intakePromise = runAttachmentIntake(messages, { supabase, userId, threadId })
+      .catch((e): AttachmentIntakeResult => {
+        console.warn("[attachment-intake] unexpected rejection:", (e as Error)?.message);
+        return { ran: false, attachments_read: 0, artifacts_inserted: 0, summary: "" };
+      });
 
     // Tracks the cost amount already written to the DB via mid-run
     // checkpoints so the final write only adds the remaining delta.
@@ -577,6 +579,15 @@ Deno.serve(async (req) => {
     // #238: older-result cap tightened 3000→1500 (selector-preserving summary keeps
     // the pivot fuel; only the raw envelope shrinks). Recent stays 12000 raw.
     const STEP_OLDER_CHARS = 1500;
+    // Resolve the attachment intake started above (it overlapped the preflight
+    // + setup). Its summary must be present before the system prompt is built.
+    const intake = await intakePromise;
+    const visionIntakeSummary = intake.ran ? intake.summary : "";
+    if (intake.ran) {
+      console.log(
+        `[attachment-intake] read ${intake.attachments_read} file(s), recorded ${intake.artifacts_inserted} lead-tier artifact(s) before reasoning`,
+      );
+    }
     // Base orchestrator system prompt, shared by streamText and by the forced
     // finalize step (which appends buildFinalizeDirective() to this exact base).
     const baseSystemPrompt =
@@ -866,10 +877,14 @@ Deno.serve(async (req) => {
           console.warn("[report-salvage] backstop failed (non-fatal):", String(e));
         }
         if (assistant) {
-          // Cap `messages.parts` payload to avoid silent PostgREST 500s when
-          // a long fan-out produces multi-MB tool-result blobs. We strip
-          // `output.raw` from any tool-result part above the cap.
-          const safeParts = capPartsSize(assistant.parts as unknown[], 3_500_000);
+          // Cap `messages.parts` payload before persisting. First shrink any
+          // single oversized tool payload (e.g. a 600KB socialfetch_lookup
+          // dump) so one blob can't bloat the row or, replayed by the client
+          // every turn, blow the 2MB request-body limit — small outputs pass
+          // through untouched. Then apply the whole-message 3.5MB backstop to
+          // avoid silent PostgREST 500s on multi-MB inserts.
+          const cappedParts = capToolPartPayloads(assistant.parts as unknown[]);
+          const safeParts = capPartsSize(cappedParts, 3_500_000);
           const { error: msgErr } = await supabase.from("messages").insert({
             thread_id: threadId,
             user_id: userId,

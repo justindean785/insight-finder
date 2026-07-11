@@ -6,7 +6,7 @@
 // false top-of-report safety banner). The fix excludes DOB / date-like values
 // from the bare-age heuristic WITHOUT weakening real minor-age detection.
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { scrubArtifactRow } from "./safety.ts";
+import { scrubArtifactRow, capToolPartPayloads, capPartsSize } from "./safety.ts";
 
 function meta(row: Record<string, unknown>): Record<string, unknown> {
   return (scrubArtifactRow(row).metadata ?? {}) as Record<string, unknown>;
@@ -78,4 +78,90 @@ Deno.test("other SSN-shaped group-number-in-10-17 values do not false-positive",
     const m = meta({ kind: "other", value: v, metadata: {} });
     assertEquals(m.possible_minor, undefined, `SSN-shaped value ${v} must not flag minor`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Fix C — persist-side tool-payload capping (capToolPartPayloads) + the
+// whole-message backstop (capPartsSize) matching the ACTUAL persisted
+// UIMessage part types (`tool-<name>` / `dynamic-tool`), not ModelMessage
+// `tool-call` / `tool-result`. See docs/FIX_PLAN_thread-92a7d650.md.
+// ---------------------------------------------------------------------------
+
+Deno.test("capToolPartPayloads: oversized tool-<name> output is shrunk", () => {
+  const big = "x".repeat(600_000);
+  const parts = [
+    { type: "step-start" },
+    { type: "text", text: "hello" },
+    { type: "tool-socialfetch_lookup", toolCallId: "c1",
+      input: { handle: "916exoticz" },
+      output: { ok: true, data: { blob: big } } },
+  ];
+  const before = JSON.stringify(parts).length;
+  const capped = capToolPartPayloads(parts);
+  const after = JSON.stringify(capped).length;
+  assert(after < before, "oversized part must shrink");
+  assert(after < 50_000, `capped parts should be small, got ${after}`);
+  // Shape preserved: still a tool part with output.data, just truncated.
+  const p = (capped[2] as Record<string, unknown>);
+  assertEquals(p.type, "tool-socialfetch_lookup");
+  assertEquals(p.toolCallId, "c1");
+  const data = (p.output as { data: { blob: string } }).data;
+  assert(data.blob.length < big.length, "blob truncated");
+});
+
+Deno.test("capToolPartPayloads: deeply-nested many-field payload hits hard ceiling", () => {
+  // The real socialfetch_lookup shape: a big object of many SMALL values that
+  // per-string/per-array caps can't shrink. Must fall back to a bounded preview.
+  const details: Record<string, string> = {};
+  for (let i = 0; i < 4000; i++) details["k" + i] = "v" + i;
+  const parts = [
+    { type: "tool-socialfetch_lookup", toolCallId: "c1",
+      output: { ok: true, data: { videos: [{ id: "x", details }] } } },
+  ];
+  const before = JSON.stringify(parts).length;
+  assert(before > 60_000, `precondition: large from many small fields, got ${before}`);
+  const capped = capToolPartPayloads(parts);
+  const after = JSON.stringify(capped).length;
+  assert(after < before && after < 60_000, `must shrink under the hard ceiling, got ${after}`);
+  const out = (capped[0] as Record<string, unknown>).output as Record<string, unknown>;
+  assertEquals(out._truncated, true);
+  assert(typeof out.preview === "string", "preview retained");
+  assertEquals((capped[0] as Record<string, unknown>).type, "tool-socialfetch_lookup");
+});
+
+Deno.test("capToolPartPayloads: small tool output is byte-identical", () => {
+  const parts = [
+    { type: "tool-breach_check", toolCallId: "b1",
+      input: { value: "a@b.com" },
+      output: { ok: true, found: 2, breaches: ["AcmeLeak", "FooDump"] } },
+  ];
+  const before = JSON.stringify(parts);
+  const capped = capToolPartPayloads(parts);
+  assertEquals(JSON.stringify(capped), before, "small tool output must be untouched");
+});
+
+Deno.test("capToolPartPayloads: non-tool parts and dynamic-tool handled", () => {
+  const parts = [
+    { type: "text", text: "y".repeat(600_000) }, // NOT a tool part → untouched
+    { type: "dynamic-tool", toolName: "x", toolCallId: "d1",
+      output: { data: "z".repeat(600_000) } },
+  ];
+  const capped = capToolPartPayloads(parts);
+  // text part passes through verbatim (only tool parts are capped)
+  assertEquals(JSON.stringify(capped[0]), JSON.stringify(parts[0]));
+  // dynamic-tool oversized output IS capped
+  assert(JSON.stringify(capped[1]).length < 50_000, "dynamic-tool output must shrink");
+});
+
+Deno.test("capPartsSize: engages on UIMessage tool-<name> parts (regression)", () => {
+  // A single 4MB tool part: over the 3.5MB whole-message cap. The OLD code
+  // matched only `tool-result`/`tool-call`, so this stayed 4MB; the fix must
+  // strip output.raw and, failing that, stub it.
+  const parts = [
+    { type: "tool-socialfetch_lookup", toolCallId: "c1", toolName: "socialfetch_lookup",
+      output: { ok: true, raw: "r".repeat(4_000_000) } },
+  ];
+  assert(JSON.stringify(parts).length > 3_500_000, "precondition: over cap");
+  const capped = capPartsSize(parts, 3_500_000);
+  assert(JSON.stringify(capped).length <= 3_500_000, "capPartsSize must bring it under the cap");
 });

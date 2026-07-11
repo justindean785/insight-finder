@@ -380,6 +380,19 @@ export interface GeminiPart {
   text?: string;
   inline_data?: { mime_type: string; data: string };
 }
+// Force valid JSON output for the structured image/document readers — their system
+// prompts demand STRICT JSON, but gemini-2.5-flash (a thinking model) will otherwise
+// wrap the JSON in prose/fences or truncate a large extraction, so extractJson()
+// returns null and the file reads as "no parseable JSON" (the likely "it didn't read
+// my PDF" failure). responseMimeType is INCOMPATIBLE with the google_search grounding
+// tool, so it is omitted when grounding is on (image reverse-search only). Pure +
+// exported so the JSON-mode gate is unit-tested without a live Gemini call.
+export function visionGenerationConfig(useGrounding: boolean, temperature = 0.1): Record<string, unknown> {
+  const cfg: Record<string, unknown> = { temperature };
+  if (!useGrounding) cfg.responseMimeType = "application/json";
+  return cfg;
+}
+
 export async function geminiVision(opts: {
   parts: GeminiPart[];
   system?: string;
@@ -412,7 +425,7 @@ export async function geminiVision(opts: {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   const body: Record<string, unknown> = {
     contents: [{ role: "user", parts: opts.parts }],
-    generationConfig: { temperature: opts.temperature ?? 0.1 },
+    generationConfig: visionGenerationConfig(opts.useGrounding ?? false, opts.temperature ?? 0.1),
   };
   if (opts.useGrounding) body.tools = [{ google_search: {} }];
   if (opts.system) {
