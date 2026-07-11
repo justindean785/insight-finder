@@ -30,7 +30,6 @@ import type { UIMessage } from "npm:ai@6";
 import { fetchRetry } from "./env.ts";
 import { buildAutoRecordedRow } from "./auto-record-integrity.ts";
 import { scrubArtifactRows } from "./safety.ts";
-import { messageText } from "./attachment-intake.ts";
 import {
   type AnchorSeed,
   extractProfileEntities,
@@ -157,9 +156,10 @@ export async function runAnchorIntake(
     const handle = seedToHandle(seed);
     const isPerson = seed.kind === "person" || seed.kind === "name";
     if (!handle && !isPerson) return empty;
-    // If the user uploaded an image/PDF, attachment-intake already anchors on it;
-    // still run the SERP/profile read — they are complementary, not exclusive.
-    void messageText(messages?.[messages.length - 1]);
+    // `messages` is accepted for parity with runAttachmentIntake and future use
+    // (e.g. honoring an inline handle correction); the anchor read keys off the
+    // classified seed, so it is not consumed here.
+    void messages;
 
     const rows: Array<Record<string, unknown>> = [];
     const summaryParts: string[] = [];
