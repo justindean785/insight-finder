@@ -10,6 +10,8 @@ import {
   buildPerCycleCompactDirective,
   extractAssistantReportText,
   needsReportSalvage,
+  stripReasoning,
+  hasReportShape,
   buildSalvageSynthesisPrompt,
   toolCallCapReached,
   shouldSkipForToolCap,
@@ -23,7 +25,7 @@ import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_
 // ---- Fix A: shouldForceFinalize -------------------------------------------------
 
 Deno.test("shouldForceFinalize: opens exactly at the wall-clock reserve window", () => {
-  const edge = ORCHESTRATOR_WALL_CLOCK_MS - FINALIZE_RESERVE_MS; // 240s - 45s = 195s
+  const edge = ORCHESTRATOR_WALL_CLOCK_MS - FINALIZE_RESERVE_MS; // 240s - 90s = 150s
   assertEquals(shouldForceFinalize(edge - 1, 3), false, "1ms before the window stays open for lookups");
   assertEquals(shouldForceFinalize(edge, 3), true, "at the window edge we finalize");
   assertEquals(shouldForceFinalize(edge + 5_000, 3), true, "past the window we finalize");
@@ -145,14 +147,63 @@ Deno.test("extractAssistantReportText: returns empty string when no assistant te
   assertEquals(extractAssistantReportText([]), "");
 });
 
-Deno.test("needsReportSalvage: gap = work happened but no substantive report", () => {
+Deno.test("needsReportSalvage: gap = work happened but no REPORT SHAPE (not mere length)", () => {
   assertEquals(needsReportSalvage("", 12), true, "12 tool calls, empty report → salvage");
-  assertEquals(needsReportSalvage("too short", 12), true, "below MIN_REPORT_CHARS → salvage");
-  assertEquals(needsReportSalvage("x".repeat(MIN_REPORT_CHARS + 1), 12), false, "real report → no salvage");
+  assertEquals(needsReportSalvage("too short", 12), true, "short + no report shape → salvage");
+  // The real bug: lots of <think> + inter-step narration, NO report. Long, but not
+  // a report → must still salvage (the old <MIN_REPORT_CHARS gate missed this).
+  const narration =
+    "<think>Let me keep digging into the surname and the TikTok sec_uid.</think>\n" +
+    "Going deeper — SoundCloud, KUSH LIFE brand, TikTok scraping, and carrier triangulation.\n" +
+    "KUSH LIFE confirmed as a separate brand. Recording now and diving into the next reel. " +
+    "x".repeat(MIN_REPORT_CHARS + 1);
+  assertEquals(needsReportSalvage(narration, 12), true, "long narration, no report shape → salvage");
+  // A real report (heading + findings table + tier labels) → no salvage.
+  const report =
+    "<think>internal reasoning</think>\n## Investigation Report\n\n" +
+    "| # | Finding | Source | Tier |\n|---|---|---|---|\n" +
+    "| 1 | Phone confirmed | linktr.ee | [CONFIRMED] |\n" +
+    "Confidence: 92%. One gap remains on the surname [VERIFY].";
+  assertEquals(needsReportSalvage(report, 12), false, "real report shape → no salvage");
+  // Report shape even when short / label-only (grouped findings with tiers).
+  assertEquals(
+    needsReportSalvage("Findings: handle [CONFIRMED]; email [VERIFY]; alias [LOW]", 12),
+    false,
+    "≥2 tier labels → report shape",
+  );
 });
 
 Deno.test("needsReportSalvage: a genuinely empty case (no tool calls) is left alone", () => {
   assertEquals(needsReportSalvage("", 0), false, "no work done → not the report gap");
+});
+
+Deno.test("stripReasoning: removes closed AND dangling <think> blocks", () => {
+  assertEquals(stripReasoning("<think>reasoning</think>Report body"), "Report body");
+  assertEquals(stripReasoning("a<think>x</think>b<think>y</think>c"), "abc");
+  // Truncation-severed opener (no closing tag) → drop to end.
+  assertEquals(stripReasoning("Visible.\n<think>cut off mid-thought"), "Visible.");
+  assertEquals(stripReasoning("<THINK>upper</THINK>ok").trim(), "ok");
+});
+
+Deno.test("hasReportShape: heading OR findings table OR ≥2 tier labels", () => {
+  assert(hasReportShape("## Investigation Report\nbody"), "report heading");
+  assert(hasReportShape("### Findings\n- x"), "findings heading");
+  assert(hasReportShape("| # | Finding |\n|---|---|\n| 1 | x |"), "markdown table separator");
+  assert(hasReportShape("handle [CONFIRMED], email [VERIFY]"), "two tier labels");
+  // Inter-step narration (the truncated-turn shape) is NOT a report.
+  assert(!hasReportShape("Going deeper — SoundCloud, KUSH LIFE, and carrier triangulation."), "narration");
+  assert(!hasReportShape("Recording now and diving into the next reel."), "narration 2");
+  assert(!hasReportShape("Found one [CONFIRMED] hit so far."), "single tier label is not enough");
+  assert(!hasReportShape(""), "empty");
+});
+
+Deno.test("FINALIZE_RESERVE_MS widened so a single long step can't jump the window", () => {
+  // Regression for thread 92a7d650: a ~30s tool step starting before the reserve
+  // opened jumped the old 45s window [195s,240s] and the run hard-stopped with no
+  // report. The reserve must be comfortably wider than the longest single step.
+  assert(FINALIZE_RESERVE_MS >= 90_000, `reserve should be ≥90s, got ${FINALIZE_RESERVE_MS}`);
+  const openAt = ORCHESTRATOR_WALL_CLOCK_MS - FINALIZE_RESERVE_MS;
+  assert(openAt <= 150_000, `finalize should open by ~150s, opens at ${openAt}`);
 });
 
 Deno.test("buildSalvageSynthesisPrompt: grounds strictly in the passed artifacts, no tools", () => {

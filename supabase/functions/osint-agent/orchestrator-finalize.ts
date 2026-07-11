@@ -27,8 +27,20 @@ import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_
 // Reserve the final stretch of the wall-clock budget for a guaranteed synthesis+record
 // step. Once elapsed enters this window the orchestrator stops issuing new lookups and
 // forces a FINALIZE step, so the run ends with a report instead of tripping the hard
-// deadline mid-tool-call. 45s ≈ one closing MiniMax synthesis turn with headroom.
-export const FINALIZE_RESERVE_MS = 45_000;
+// deadline mid-tool-call.
+//
+// Widened 45s → 90s: `shouldForceFinalize` is only evaluated at STEP BOUNDARIES
+// (prepareStep). With a 45s window [195s, 240s], a single step that begins before
+// 195s and runs past 240s — e.g. a ~30s minimax_correlate, or a few serial tools —
+// jumps the window entirely: no boundary lands inside it, so finalize is never
+// forced and the hard deadline hard-stops the run mid-tool-chain with NO report
+// (the live "convo stops, no report" bug, thread 92a7d650). A 90s window [150s,
+// 240s] can only be jumped by a single step exceeding 90s, which the per-tool
+// timeouts make very unlikely. Trade-off: long runs stop gathering ~45s earlier to
+// guarantee a report — the right call. (Raising/removing the 240s hard deadline
+// itself — plan Fix A2 — still needs a live Supabase edge wall-clock test; not done
+// here.)
+export const FINALIZE_RESERVE_MS = 90_000;
 
 // Cap the forced finalize phase to this many steps (a StopCondition ends the run once
 // reached). 2 lets the model call record_artifacts then write the report from its
@@ -155,14 +167,46 @@ export function extractAssistantReportText(finalMessages: ReportMsg[]): string {
     .trim();
 }
 
+// MiniMax emits reasoning wrapped in <think>…</think>. Strip closed blocks AND a
+// dangling (truncation-severed) opener so only the model's ACTUAL output text is
+// measured. Verified necessary: a truncated turn carried 11.6k chars of text —
+// all <think> + inter-step narration, zero report — and the old <200-char gate
+// passed, so salvage never ran (thread 92a7d650).
+const REASONING_BLOCK_RE = /<think\b[^>]*>[\s\S]*?<\/think>/gi;
+const REASONING_DANGLING_RE = /<think\b[^>]*>[\s\S]*$/i;
+export function stripReasoning(text: string): string {
+  return (text ?? "").replace(REASONING_BLOCK_RE, "").replace(REASONING_DANGLING_RE, "").trim();
+}
+
+// Positive signal that a closing REPORT (not just inter-step narration) was
+// written. Stripping <think> is not enough — truncated turns still carry 500–1100
+// chars of narration ("Going deeper —", "Recording now and diving into…") that is
+// NOT a report. Real reports carry a report/findings heading, a markdown findings
+// table, or repeated tier labels ([Confirmed]/[Verify]/…). Any one qualifies.
+const REPORT_HEADING_RE = /^\s{0,3}#{1,4}\s+.*\b(report|findings|summary|assessment|conclusion)\b/im;
+const TABLE_SEPARATOR_RE = /\|\s*:?-{2,}/;
+const TIER_LABEL_RE = /\[(confirmed(?:\s+owner)?|verify|likely|possible(?:\s+owner)?|weak|unverified|low)\]/gi;
+export function hasReportShape(text: string): boolean {
+  const t = text ?? "";
+  if (REPORT_HEADING_RE.test(t)) return true;
+  if (TABLE_SEPARATOR_RE.test(t)) return true;
+  return (t.match(TIER_LABEL_RE) ?? []).length >= 2;
+}
+
 /**
  * The "No report yet" gap: the run DID work (made tool calls) but produced no
- * substantive report text. A genuinely empty case (no tool calls at all) is left
- * alone — there is nothing to synthesize and no gap to paper over.
+ * closing REPORT — only reasoning + inter-step narration, cut off before synthesis.
+ * A genuinely empty case (no tool calls) is left alone — nothing to synthesize.
+ *
+ * Fires when, after stripping <think>, the assistant text shows no report shape.
+ * The old `< MIN_REPORT_CHARS` gate missed the common failure (lots of narration,
+ * no report); this checks for a positive report signal instead.
  */
 export function needsReportSalvage(reportText: string, toolCalls: number): boolean {
   if (toolCalls <= 0) return false;
-  return (reportText?.trim().length ?? 0) < MIN_REPORT_CHARS;
+  const body = stripReasoning(reportText);
+  if (hasReportShape(body)) return false;   // a real report block exists — leave it
+  return true;                               // work done, but no report → salvage
 }
 
 type SalvageArtifact = { kind?: unknown; value?: unknown; confidence?: unknown; source?: unknown };
