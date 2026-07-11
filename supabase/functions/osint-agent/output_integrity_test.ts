@@ -7,6 +7,7 @@ import {
   isZeroBreachExposure,
   isCrossSubjectContactLaundering,
   isHumanInputProvenance,
+  humanInputCorroborated,
   sourceProfileHandle,
 } from "./output-integrity.ts";
 
@@ -14,8 +15,17 @@ Deno.test("WP2-#4 disproven reason catches underscore-joined tokens the word reg
   assert(isDisprovenReason({ reason: "domain_similar_letters_not_same_entity" }));
   assert(isDisprovenReason({ reason: "single_source_collision_not_correlated" }));
   assert(isDisprovenReason({ note: "not the same entity" }));
+  assert(isDisprovenReason({ disposition: "namesake" }));
   assert(!isDisprovenReason({ reason: "single source class: breach" }));
   assert(!isDisprovenReason({ relationship_to_subject: "co_appears_in_serp_with_seed" }));
+});
+
+Deno.test("WP2-#4 disproven reason does NOT fire on benign/negated 'collision' (review finding)", () => {
+  assert(!isDisprovenReason({ reason: "no collision detected" }));
+  assert(!isDisprovenReason({ note: "collision cleared" }));
+  assert(!isDisprovenReason({ note: "collision review passed" }));
+  assert(!isDisprovenReason({ reason: "possible collision requires review" }));
+  assert(!isDisprovenReason({ disposition: "collision" }));
 });
 
 Deno.test("WP2-#5 zero-breach relabel flags empty scans, keeps real exposures", () => {
@@ -45,4 +55,11 @@ Deno.test("WP2-#8 human-input provenance (the Prestan Jackson correction)", () =
   assert(isHumanInputProvenance({ provenance: "human_input" }));
   assert(isHumanInputProvenance({ human_input: true }));
   assert(!isHumanInputProvenance({ provenance: "read_from_profile", source: "socialfetch_lookup" }));
+});
+
+Deno.test("WP2-#8 corroboration lifts the human-input cap (review finding)", () => {
+  assert(!humanInputCorroborated({ provenance: "human_input" }));
+  assert(humanInputCorroborated({ provenance: "human_input", independently_verified: true }));
+  assert(humanInputCorroborated({ sources: ["user_correction", "socialfetch_lookup"] }));
+  assert(!humanInputCorroborated({ sources: ["user_correction"] }));
 });

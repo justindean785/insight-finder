@@ -379,27 +379,6 @@ Deno.serve(async (req) => {
         return { ran: false, attachments_read: 0, artifacts_inserted: 0, summary: "" };
       });
 
-    // ---- Anchor read (READ the primary profile + SERP BEFORE the breadth sweep) --
-    // When the seed resolves to a handle/profile, deterministically FETCH + READ the
-    // subject's primary social profile AND the search-engine results page before the
-    // model's first turn — so the run leads with the anchor identity (bio, display
-    // name, follower counts, external links, related accounts) recorded as a READ,
-    // instead of constructing the profile URL as INFERRED and burning the run on a
-    // ~95-platform dev-handle sweep. Overlaps the preflight like attachment intake;
-    // awaited where the system prompt is assembled. Best-effort, never blocks.
-    const emptyAnchor: AnchorIntakeResult = { ran: false, profile_read: false, serp_read: false, artifacts_inserted: 0, summary: "" };
-    const anchorSeed = (() => {
-      const head = seedValueRaw.split(/Attached files:/i)[0].trim().split("\n").map((s) => s.trim()).find(Boolean) ?? "";
-      return head ? detectSeedServer(head) : null;
-    })();
-    const anchorPromise: Promise<AnchorIntakeResult> =
-      anchorSeed && (anchorSeed.kind === "username" || anchorSeed.kind === "url" || anchorSeed.kind === "person")
-        ? runAnchorIntake(anchorSeed, { supabase, userId, threadId }, messages).catch((e): AnchorIntakeResult => {
-            console.warn("[anchor-intake] unexpected rejection:", (e as Error)?.message);
-            return emptyAnchor;
-          })
-        : Promise.resolve(emptyAnchor);
-
     // Tracks the cost amount already written to the DB via mid-run
     // checkpoints so the final write only adds the remaining delta.
     let lastCheckpointMicroUsd = 0;
@@ -445,6 +424,27 @@ Deno.serve(async (req) => {
         }
       }
     };
+
+    // ---- Anchor read (READ the primary profile + SERP BEFORE the breadth sweep) --
+    // When the seed resolves to a handle/profile, deterministically FETCH + READ the
+    // subject's primary social profile AND the search-engine results page before the
+    // model's first turn — so the run leads with the anchor identity recorded as a
+    // READ, instead of constructing the profile URL as INFERRED and burning the run
+    // on a ~95-platform dev-handle sweep. Kicked off here (after onCost is defined so
+    // its paid reads debit credits) to overlap setup; awaited at prompt assembly. An
+    // idempotency guard inside makes a follow-up turn a no-op — no repeat paid calls.
+    const emptyAnchor: AnchorIntakeResult = { ran: false, profile_read: false, serp_read: false, artifacts_inserted: 0, summary: "", untrusted: "" };
+    const anchorSeed = (() => {
+      const head = seedValueRaw.split(/Attached files:/i)[0].trim().split("\n").map((s) => s.trim()).find(Boolean) ?? "";
+      return head ? detectSeedServer(head) : null;
+    })();
+    const anchorPromise: Promise<AnchorIntakeResult> =
+      anchorSeed && (anchorSeed.kind === "username" || anchorSeed.kind === "url" || anchorSeed.kind === "person")
+        ? runAnchorIntake(anchorSeed, { supabase, userId, threadId, onCost }, messages).catch((e): AnchorIntakeResult => {
+            console.warn("[anchor-intake] unexpected rejection:", (e as Error)?.message);
+            return emptyAnchor;
+          })
+        : Promise.resolve(emptyAnchor);
 
     // Primary: MiniMax-M2.7 via direct API (user's Max plan covers 15k req/5h).
     // Fallback: Gemini 2.5 Pro via Lovable AI Gateway, used only if the MiniMax
@@ -611,9 +611,29 @@ Deno.serve(async (req) => {
       );
     }
     // Resolve the anchor read started above (it overlapped the preflight + setup).
-    // Its summary establishes the subject identity the model must reason over first.
+    // Only the TRUSTED summary (directive + structured facts) goes into the system
+    // prompt. The UNTRUSTED fetched prose (bio / SERP answer) is injected as an
+    // isolated data MESSAGE below — never the system prompt — so profile/SERP text
+    // can't reach the model at instruction priority (prompt-injection isolation).
     const anchor = await anchorPromise;
     const anchorIntakeSummary = anchor.ran ? anchor.summary : "";
+    if (anchor.ran && anchor.untrusted) {
+      // Merge the untrusted fetched content INTO the current user turn (rather than
+      // pushing a second consecutive user message, which strict providers like the
+      // Gemini fallback reject). Kept out of the system prompt so it can't reach the
+      // model at instruction priority. Falls back to a new message only if the tail
+      // isn't a user turn.
+      const last = trimmedMessages[trimmedMessages.length - 1] as ModelMessage | undefined;
+      if (last && last.role === "user") {
+        if (typeof last.content === "string") {
+          last.content = `${last.content}\n\n${anchor.untrusted}`;
+        } else if (Array.isArray(last.content)) {
+          last.content = [...last.content, { type: "text", text: `\n\n${anchor.untrusted}` }] as typeof last.content;
+        }
+      } else {
+        trimmedMessages.push({ role: "user", content: anchor.untrusted } as ModelMessage);
+      }
+    }
     if (anchor.ran) {
       console.log(
         `[anchor-intake] profile_read=${anchor.profile_read} serp_read=${anchor.serp_read}, recorded ${anchor.artifacts_inserted} anchor artifact(s) before reasoning`,

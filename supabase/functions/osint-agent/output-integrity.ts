@@ -37,12 +37,28 @@ function foldHandle(raw: string): string {
 // word-bounded (\b), so `\bcollision\b` never matches inside an underscore-joined
 // token like `single_source_collision_not_correlated`, and those disproven leads
 // slipped through as live weak_leads. This substring check catches them.
-const DISPROVEN_REASON_RE = /not[_\s-]*same[_\s-]*entity|not[_\s-]*correlated|collision|not[_\s-]*the[_\s-]*same/i;
+// Only DISPROVING dispositions match — never a bare "collision" (which also
+// appears in benign phrases like "no collision detected", "collision cleared",
+// "collision review passed", "possible collision requiring verification"). A
+// "collision" token counts only in an explicitly disproving compound
+// (same-name / namesake / single-source collision, or collision_not_correlated).
+// No \b anchors: "_" is a regex word char, so \b never fires inside an
+// underscore-joined token like "…letters_not_same_entity". Each alternative is a
+// specific disproving compound, so it stays precise without word boundaries. A
+// bare "collision" is intentionally NOT an alternative.
+const DISPROVEN_REASON_RE =
+  /not[_\s-]*(?:the[_\s-]*)?same[_\s-]*(?:entity|person)|not[_\s-]*correlated|(?:same[_\s-]*name|namesake|single[_\s-]*source)[_\s-]*collision|collision[_\s-]*not[_\s-]*correlated/i;
 
-/** True when metadata's reason/disposition marks the lead as already disproved
- *  (not-same-entity / not-correlated / collision). */
+/** True when metadata marks the lead as already disproved (not-same-entity /
+ *  not-correlated / a disproving collision). Prefers an explicit structured
+ *  disposition; falls back to a tightly-scoped free-text match. */
 export function isDisprovenReason(meta: Meta): boolean {
-  const text = metaText(meta, ["reason", "reason_not_confirmed", "disposition", "relationship", "note", "notes"]);
+  const m = (meta ?? {}) as Record<string, unknown>;
+  // Structured disposition wins — no ambiguity.
+  if (m.disproven === true || m.not_same_entity === true || m.not_correlated === true) return true;
+  const disp = typeof m.disposition === "string" ? m.disposition.toLowerCase().trim() : "";
+  if (["not_same_entity", "not_correlated", "namesake", "unrelated", "collision_unrelated"].includes(disp)) return true;
+  const text = metaText(m, ["reason", "reason_not_confirmed", "disposition", "relationship", "note", "notes"]);
   if (!text) return false;
   return DISPROVEN_REASON_RE.test(text);
 }
@@ -138,4 +154,19 @@ export function isHumanInputProvenance(meta: Meta): boolean {
   if (/^human_input$/i.test(prov) || /^user_(?:provided|correction|input)$/i.test(prov)) return true;
   const text = metaText(m, ["derived_from", "handles_derived", "provenance", "source", "note", "notes", "reason"]);
   return HUMAN_INPUT_RE.test(text);
+}
+
+/**
+ * True when a human-provided fact has INDEPENDENT corroboration from a source the
+ * agent found itself — so the human-input cap should NOT clamp it. The human
+ * observation stays human-sourced; the corroboration lets the combined claim
+ * promote. Corroboration = an explicit verified/corroborated flag, or ≥2 distinct
+ * sources on the artifact (the human assertion + an independent agent source).
+ */
+export function humanInputCorroborated(meta: Meta): boolean {
+  const m = (meta ?? {}) as Record<string, unknown>;
+  if (m.independently_verified === true || m.corroborated === true || m.human_input_verified === true) return true;
+  const sources = Array.isArray(m.sources) ? (m.sources as unknown[]).filter((s) => typeof s === "string") : [];
+  const distinct = new Set(sources.map((s) => String(s).toLowerCase().trim()).filter(Boolean));
+  return distinct.size >= 2;
 }

@@ -19,7 +19,7 @@ import { applyDateSanity } from "./date-sanity.ts";
 import { computeAxes, sourceConfidence, applyEvidenceCaps, isUnrelatedEntity, EXCLUDED_COLLISION_CONFIDENCE, isBioCrossLinkName, BIO_CROSS_LINK_NAME_CAP, deriveStatus, coerceCoherentStatus, looksDeadEnd } from "./confidence.ts";
 import { queryTypesOf } from "./query-type-router.ts";
 import { isSameSurnameOnlyLead, isListingAgentLead } from "./collision-policy.ts";
-import { isDisprovenReason, isZeroBreachExposure, NO_BREACH_KIND, isCrossSubjectContactLaundering, sourceProfileHandle, isHumanInputProvenance, HUMAN_INPUT_CONFIDENCE_CAP } from "./output-integrity.ts";
+import { isDisprovenReason, isZeroBreachExposure, NO_BREACH_KIND, isCrossSubjectContactLaundering, sourceProfileHandle, isHumanInputProvenance, humanInputCorroborated, HUMAN_INPUT_CONFIDENCE_CAP } from "./output-integrity.ts";
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDomainSource, LLM_ASSERTED_PROVENANCE, countIndependentClasses } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
 import { buildNodes } from "./graph.ts";
@@ -4315,8 +4315,12 @@ export function buildTools(ctx: ToolContext) {
           // relabel to no_breach_found and force confidence to 0.
           const zeroBreach = !excludedFromSubject && isZeroBreachExposure(v.kind, a.metadata ?? null);
           // WP2-#8: a fact from a user-typed correction is tagged human_input and
-          // capped below Confirmed until an agent-found source corroborates it.
+          // capped below Confirmed UNTIL an agent-found source corroborates it. Once
+          // independently corroborated, the cap lifts so it can promote (the human
+          // observation stays human-sourced; the corroboration carries the weight).
           const humanInput = isHumanInputProvenance(a.metadata ?? null);
+          const humanCorroborated = humanInput && humanInputCorroborated(a.metadata ?? null);
+          const humanCapApplies = humanInput && !humanCorroborated;
           // Bio-linked name gate: a name pulled out of a profile bio is an
           // unverified identity claim and can never anchor the case.
           const bioName = !excludedFromSubject && !zeroBreach && isBioCrossLinkName(v.kind, a.metadata ?? null);
@@ -4327,7 +4331,7 @@ export function buildTools(ctx: ToolContext) {
               ? Math.min(cap.confidence, EXCLUDED_COLLISION_CONFIDENCE)
               : bioName
                 ? Math.min(cap.confidence, BIO_CROSS_LINK_NAME_CAP)
-                : humanInput
+                : humanCapApplies
                   ? Math.min(cap.confidence, HUMAN_INPUT_CONFIDENCE_CAP)
                   : cap.confidence;
           // WP2-#8: surface human_input in the source_category label WITHOUT adding
@@ -4347,7 +4351,7 @@ export function buildTools(ctx: ToolContext) {
                 ? "the lead's own reason marks it not-the-same-entity / not-correlated / a collision"
                 : crossSubjectContact
                   ? "contact/geo scraped from a different account than the seed, with no explicit link to the subject"
-                  : humanInput
+                  : humanCapApplies
                     ? "human-provided input — needs independent corroboration by a source the agent found itself before it can reach Confirmed"
                     : (aReqRNC ?? cap.reason_not_confirmed ?? null);
           const derivedStatus = excludedFromSubject
@@ -4391,7 +4395,7 @@ export function buildTools(ctx: ToolContext) {
                         : "excluded: flagged as unrelated/different entity than the seed")
               : bioName
                 ? "bio-linked name — unverified identity claim, may be an associate/shoutout, not the subject"
-                : humanInput
+                : humanCapApplies
                   ? "human-provided input — held below Confirmed pending independent corroboration"
                   : cap.reason_for_confidence,
             reason_not_confirmed: resolvedReasonNotConfirmed,
@@ -4401,7 +4405,7 @@ export function buildTools(ctx: ToolContext) {
               ? 0
               : bioName
                 ? Math.min(cap.cap, BIO_CROSS_LINK_NAME_CAP)
-                : humanInput
+                : humanCapApplies
                   ? Math.min(cap.cap, HUMAN_INPUT_CONFIDENCE_CAP)
                   : cap.cap,
             ...(zeroBreach ? { no_breach_found: true, breach_result: "none", reclassified_from: a.kind } : {}),
@@ -4413,7 +4417,7 @@ export function buildTools(ctx: ToolContext) {
               : {}),
             ...(listingAgent ? { contact_type: "real_estate_listing_agent" } : {}),
             ...(bioName ? { bio_cross_link: true } : {}),
-            ...(humanInput ? { human_input: true, human_input_verified: false } : {}),
+            ...(humanInput ? { human_input: true, human_input_verified: humanCorroborated } : {}),
             ...(llmAssertedProvenance ? { provenance: LLM_ASSERTED_PROVENANCE, provenance_verified: false } : {}),
             // Spread LAST so a corrected `note` overrides the model-supplied one.
             ...dateSanity.metaPatch,
@@ -4690,6 +4694,8 @@ export function buildTools(ctx: ToolContext) {
         const excludedFromSubject = collisionExcluded || disprovenLead || crossSubjectContact;
         const zeroBreach = !excludedFromSubject && isZeroBreachExposure(v.kind, metadata ?? null);
         const humanInput = isHumanInputProvenance(metadata ?? null);
+        const humanCorroborated = humanInput && humanInputCorroborated(metadata ?? null);
+        const humanCapApplies = humanInput && !humanCorroborated;
         const bioName = !excludedFromSubject && !zeroBreach && isBioCrossLinkName(v.kind, metadata ?? null);
         const finalKind = zeroBreach ? NO_BREACH_KIND : excludedFromSubject ? "excluded_collision" : v.kind;
         const finalConfidence = zeroBreach
@@ -4698,7 +4704,7 @@ export function buildTools(ctx: ToolContext) {
             ? Math.min(cap.confidence, EXCLUDED_COLLISION_CONFIDENCE)
             : bioName
               ? Math.min(cap.confidence, BIO_CROSS_LINK_NAME_CAP)
-              : humanInput
+              : humanCapApplies
                 ? Math.min(cap.confidence, HUMAN_INPUT_CONFIDENCE_CAP)
                 : cap.confidence;
         const sourceCategory = humanInput
@@ -4713,7 +4719,7 @@ export function buildTools(ctx: ToolContext) {
               ? "the lead's own reason marks it not-the-same-entity / not-correlated / a collision"
               : crossSubjectContact
                 ? "contact/geo scraped from a different account than the seed, with no explicit link to the subject"
-                : humanInput
+                : humanCapApplies
                   ? "human-provided input — needs independent corroboration by a source the agent found itself before it can reach Confirmed"
                   : (reqRNC ?? cap.reason_not_confirmed ?? null);
         const derivedStatus = excludedFromSubject
@@ -4750,7 +4756,7 @@ export function buildTools(ctx: ToolContext) {
                       : "excluded: flagged as unrelated/different entity than the seed")
               : bioName
                 ? "bio-linked name — unverified identity claim, may be an associate/shoutout, not the subject"
-                : humanInput
+                : humanCapApplies
                   ? "human-provided input — held below Confirmed pending independent corroboration"
                   : cap.reason_for_confidence,
           reason_not_confirmed: resolvedReasonNotConfirmed,
@@ -4760,7 +4766,7 @@ export function buildTools(ctx: ToolContext) {
             ? 0
             : bioName
               ? Math.min(cap.cap, BIO_CROSS_LINK_NAME_CAP)
-              : humanInput
+              : humanCapApplies
                 ? Math.min(cap.cap, HUMAN_INPUT_CONFIDENCE_CAP)
                 : cap.cap,
           ...(zeroBreach ? { no_breach_found: true, breach_result: "none", reclassified_from: kind } : {}),
@@ -4772,7 +4778,7 @@ export function buildTools(ctx: ToolContext) {
             : {}),
           ...(listingAgent ? { contact_type: "real_estate_listing_agent" } : {}),
           ...(bioName ? { bio_cross_link: true } : {}),
-          ...(humanInput ? { human_input: true, human_input_verified: false } : {}),
+          ...(humanInput ? { human_input: true, human_input_verified: humanCorroborated } : {}),
           ...(llmAssertedProvenance ? { provenance: LLM_ASSERTED_PROVENANCE, provenance_verified: false } : {}),
         };
         const row = scrubArtifactRow({

@@ -7,6 +7,7 @@ import {
   isZeroBreachExposure,
   isCrossSubjectContactLaundering,
   isHumanInputProvenance,
+  humanInputCorroborated,
   sourceProfileHandle,
 } from "../../supabase/functions/osint-agent/output-integrity";
 
@@ -16,9 +17,18 @@ describe("WP2-#4 disproven-lead suppression", () => {
     expect(isDisprovenReason({ reason: "domain_similar_letters_not_same_entity" })).toBe(true);
     expect(isDisprovenReason({ reason: "single_source_collision_not_correlated" })).toBe(true);
   });
-  it("catches spaced phrasing too", () => {
+  it("catches spaced phrasing and structured dispositions", () => {
     expect(isDisprovenReason({ note: "not the same entity as the seed" })).toBe(true);
-    expect(isDisprovenReason({ disposition: "collision" })).toBe(true);
+    expect(isDisprovenReason({ disposition: "namesake" })).toBe(true);
+    expect(isDisprovenReason({ not_correlated: true })).toBe(true);
+    expect(isDisprovenReason({ reason: "same-name collision" })).toBe(true);
+  });
+  it("does NOT fire on a bare or benign 'collision' (review finding — was overbroad)", () => {
+    expect(isDisprovenReason({ reason: "no collision detected" })).toBe(false);
+    expect(isDisprovenReason({ note: "collision cleared" })).toBe(false);
+    expect(isDisprovenReason({ note: "collision review passed" })).toBe(false);
+    expect(isDisprovenReason({ reason: "possible collision requires review" })).toBe(false);
+    expect(isDisprovenReason({ disposition: "collision" })).toBe(false); // bare, ambiguous
   });
   it("does not fire on a benign reason", () => {
     expect(isDisprovenReason({ reason: "single source class: breach" })).toBe(false);
@@ -81,5 +91,13 @@ describe("WP2-#8 human-input provenance", () => {
   it("does not fire on an agent-found artifact", () => {
     expect(isHumanInputProvenance({ provenance: "read_from_profile", source: "socialfetch_lookup" })).toBe(false);
     expect(isHumanInputProvenance(null)).toBe(false);
+  });
+  it("corroboration lifts the cap (review finding — was permanently capped)", () => {
+    // Uncorroborated human input stays capped...
+    expect(humanInputCorroborated({ provenance: "human_input" })).toBe(false);
+    // ...but an independently-verified flag or ≥2 distinct sources releases it.
+    expect(humanInputCorroborated({ provenance: "human_input", independently_verified: true })).toBe(true);
+    expect(humanInputCorroborated({ provenance: "human_input", sources: ["user_correction", "socialfetch_lookup"] })).toBe(true);
+    expect(humanInputCorroborated({ sources: ["user_correction"] })).toBe(false); // single source, still capped
   });
 });

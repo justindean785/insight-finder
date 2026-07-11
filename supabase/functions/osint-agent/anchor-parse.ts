@@ -22,6 +22,26 @@ export function foldHandle(raw: string): string {
   return (raw ?? "").trim().toLowerCase().replace(/^@+/, "").replace(/\.+$/, "");
 }
 
+/**
+ * Neutralize fetched public text before it can reach the model: flatten newlines
+ * (so it can't forge extra chat turns), strip angle brackets / backticks (so it
+ * can't forge the untrusted-content envelope or a code block), and cap length.
+ * Defense-in-depth alongside the standing "treat as data" directive.
+ */
+export function sanitizeUntrusted(text: string, cap = 600): string {
+  return (text ?? "")
+    .replace(/[<>]/g, " ")
+    .replace(/[`]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, cap);
+}
+
+/** Hostname of a URL (a low-injection-risk token for the trusted summary), or "". */
+export function hostOf(url: string): string {
+  try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return ""; }
+}
+
 export interface ProfileEntities {
   handle: string | null;
   displayName: string | null;

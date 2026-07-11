@@ -74,13 +74,14 @@ export function isCollisionArtifact(a: Artifact): boolean {
   // contacts here too; also quarantine anything explicitly scoped out of subject.
   if (m.excluded_from_subject === true) return true;
   // Defense in depth: a lead whose OWN reason disproves it (not-same-entity /
-  // not-correlated / a collision token) — even if it wasn't relabeled at record
-  // time (legacy rows). Word-bounded \bcollision\b is deliberately NOT used; we
-  // target the underscore-joined reason tokens the pipeline actually writes.
+  // not-correlated / a DISPROVING collision) — even if it wasn't relabeled at
+  // record time (legacy rows). A bare "collision" is deliberately NOT matched: it
+  // also appears in benign phrases ("no collision detected", "collision cleared").
+  // Only explicitly disproving compounds count. Mirrors output-integrity.ts.
   const reason = [m.reason, m.disposition, m.reason_not_confirmed]
     .filter((s): s is string => typeof s === "string")
     .join(" ");
-  if (/not[_\s-]*same[_\s-]*entity|not[_\s-]*correlated|_collision|collision_/i.test(reason)) return true;
+  if (/not[_\s-]*(?:the[_\s-]*)?same[_\s-]*(?:entity|person)|not[_\s-]*correlated|(?:same[_\s-]*name|namesake|single[_\s-]*source)[_\s-]*collision|collision[_\s-]*not[_\s-]*correlated/i.test(reason)) return true;
   return false;
 }
 

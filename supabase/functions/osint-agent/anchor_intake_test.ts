@@ -38,22 +38,24 @@ Deno.test("parseSerpEntities mines related accounts + seed profile url", () => {
 
 // ---- Integration: anchor read records READ provenance ------------------------
 
-function fakeSupabase(captured: Array<Record<string, unknown>>) {
+interface Captured { rows: Array<Record<string, unknown>>; rpc: Array<{ fn: string; args: Record<string, unknown> }>; costs: number[] }
+
+function fakeSupabase(cap: Captured, existing: unknown[] = []) {
+  const filter: { eq: (c: string, v: unknown) => typeof filter; limit: (n: number) => Promise<{ data: unknown[]; error: null }> } = {
+    eq: () => filter,
+    limit: () => Promise.resolve({ data: existing, error: null }),
+  };
   return {
     from: (_t: string) => ({
-      insert: (rows: unknown[]) => {
-        captured.push(...(rows as Array<Record<string, unknown>>));
-        return Promise.resolve({ error: null });
-      },
+      insert: (rows: unknown[]) => { cap.rows.push(...(rows as Array<Record<string, unknown>>)); return Promise.resolve({ error: null }); },
+      select: (_cols: string) => filter,
     }),
+    rpc: (fn: string, args: Record<string, unknown>) => { cap.rpc.push({ fn, args }); return Promise.resolve({ data: null, error: null }); },
   };
 }
 
-Deno.test("anchor read fetches the profile + SERP and records the anchor as READ (not inferred)", async () => {
-  const origFetch = globalThis.fetch;
-  Deno.env.set("SOCIALFETCH_API_KEY", "test-key");
-  Deno.env.set("PERPLEXITY_API_KEY", "test-key");
-  // Stub network: SocialFetch profile + Perplexity SERP.
+function stubFetch() {
+  const orig = globalThis.fetch;
   globalThis.fetch = ((input: Request | URL | string): Promise<Response> => {
     const url = String((input as Request).url ?? input);
     if (url.includes("socialfetch.dev")) {
@@ -69,45 +71,76 @@ Deno.test("anchor read fetches the profile + SERP and records the anchor as READ
     }
     return Promise.resolve(new Response("{}", { status: 404 }));
   }) as typeof fetch;
+  return () => { globalThis.fetch = orig; };
+}
 
+Deno.test("anchor read records the anchor as READ, appends chain-of-custody, and meters cost", async () => {
+  const restore = stubFetch();
+  Deno.env.set("SOCIALFETCH_API_KEY", "test-key");
+  Deno.env.set("PERPLEXITY_API_KEY", "test-key");
   try {
-    const captured: Array<Record<string, unknown>> = [];
+    const cap: Captured = { rows: [], rpc: [], costs: [] };
     const res = await runAnchorIntake(
       { kind: "username", raw: "@pjsmakka", normalized: "pjsmakka" },
-      { supabase: fakeSupabase(captured), userId: "u1", threadId: "t1" },
+      { supabase: fakeSupabase(cap), userId: "u1", threadId: "t1", onCost: (m) => cap.costs.push(m) },
     );
 
-    assert(res.ran, "anchor intake ran");
-    assert(res.profile_read, "profile was read");
-    assert(res.serp_read, "SERP was read");
-    assert(captured.length > 0, "recorded anchor artifacts before reasoning");
+    assert(res.ran && res.profile_read && res.serp_read, "profile + SERP were read");
+    assert(cap.rows.length > 0, "recorded anchor artifacts before reasoning");
 
-    // The anchor Instagram profile is recorded as a READ via a DIRECT_PROFILE
-    // source — NOT constructed/inferred from a search summary.
-    const anchor = captured.find((r) => r.value === "https://www.instagram.com/pjsmakka/" && r.source === "socialfetch_lookup");
-    assert(anchor, "anchor IG profile recorded with source=socialfetch_lookup (a real fetch)");
+    // READ via a DIRECT_PROFILE source — NOT inferred; execution path is transparent.
+    const anchor = cap.rows.find((r) => r.value === "https://www.instagram.com/pjsmakka/" && r.source === "socialfetch_lookup");
+    assert(anchor, "anchor IG profile recorded with source=socialfetch_lookup");
     const am = anchor!.metadata as Record<string, unknown>;
     assertEquals(am.provenance, "read_from_profile");
-    assertEquals(am.read, true);
-    assertEquals(am.bio, "LLPOPS LLBOODAH LLRICH");
-    assertEquals(am.followers, 512);
+    assertEquals(am.anchor_direct_fetch, true, "execution path is transparent (direct fetch)");
+    assertEquals(am.metered_via_wrapper, false);
+    assertEquals(am.provider, "socialfetch");
+    assertEquals(am.anchor_intake_seed, "pjsmakka", "carries the idempotency key");
 
-    // SERP-surfaced amplifier accounts are RELATED entities, not subjects.
-    const related = captured.filter((r) => {
-      const m = (r.metadata ?? {}) as Record<string, unknown>;
-      return m.related_entity === true && typeof m.relationship_to_subject === "string";
-    });
-    assert(related.length >= 1, "related accounts recorded with relationship_to_subject");
-    assert(related.some((r) => String(r.value).includes("raphousetvhq")));
+    // Review finding #1 — chain of custody: EVERY inserted row also appended evidence.
+    const appended = cap.rpc.filter((c) => c.fn === "append_evidence");
+    assertEquals(appended.length, cap.rows.length, "one append_evidence per anchor artifact");
 
-    // The SERP identity summary was READ (not a bare constructed URL).
-    const serpSummary = captured.find((r) => {
+    // Review finding #4 — metering: each paid provider read debited cost.
+    assert(cap.costs.length >= 2, "socialfetch + perplexity reads were metered via onCost");
+    assert(cap.costs.every((c) => c > 0), "each metered read has a positive cost");
+
+    // Review finding #3 — the raw bio is NOT in the (system-prompt) summary; it is
+    // isolated inside the untrusted envelope, sanitized.
+    assert(!res.summary.includes("LLPOPS"), "raw bio prose stays OUT of the trusted summary");
+    assert(res.untrusted.includes("<untrusted_fetched_content"), "external prose is enveloped");
+    assert(res.untrusted.includes("LLPOPS"), "bio survives as inert DATA inside the envelope");
+
+    // RELATED accounts carry a relationship, not subject status.
+    assert(cap.rows.some((r) => {
       const m = (r.metadata ?? {}) as Record<string, unknown>;
-      return m.provenance === "read_from_serp" && typeof m.identity_summary === "string";
-    });
-    assert(serpSummary, "SERP identity summary recorded as read_from_serp");
+      return m.related_entity === true && String(r.value).includes("raphousetvhq");
+    }), "SERP amplifier accounts recorded as RELATED entities");
   } finally {
-    globalThis.fetch = origFetch;
+    restore();
+    Deno.env.delete("SOCIALFETCH_API_KEY");
+    Deno.env.delete("PERPLEXITY_API_KEY");
+  }
+});
+
+Deno.test("review finding #2 — a follow-up turn is idempotent (no repeat paid calls/inserts)", async () => {
+  const restore = stubFetch();
+  Deno.env.set("SOCIALFETCH_API_KEY", "test-key");
+  Deno.env.set("PERPLEXITY_API_KEY", "test-key");
+  try {
+    // The thread already carries an anchor row for this seed → guard returns a hit.
+    const cap: Captured = { rows: [], rpc: [], costs: [] };
+    const res = await runAnchorIntake(
+      { kind: "username", raw: "@pjsmakka", normalized: "pjsmakka" },
+      { supabase: fakeSupabase(cap, [{ id: "existing-anchor" }]), userId: "u1", threadId: "t1", onCost: (m) => cap.costs.push(m) },
+    );
+    assertEquals(res.skipped_existing, true, "second turn skips — already anchored");
+    assertEquals(res.ran, false);
+    assertEquals(cap.rows.length, 0, "no duplicate artifacts inserted");
+    assertEquals(cap.costs.length, 0, "no repeat paid provider calls");
+  } finally {
+    restore();
     Deno.env.delete("SOCIALFETCH_API_KEY");
     Deno.env.delete("PERPLEXITY_API_KEY");
   }
