@@ -229,8 +229,11 @@ export async function executeProvider<T>(
     } catch { /* best-effort */ }
   }
 
-  // 5. Cache write-back on success.
-  if (useCache && ok && inputHash) {
+  // 5. Cache write-back on a genuine success only. A "free" outcome (a
+  //    key-missing skip, or a disabled/degraded/gated provider) reports ok=true
+  //    so it is not charged, but it is NOT a real result — caching it would
+  //    poison the cache and suppress a real read once the key/provider returns.
+  if (useCache && ok && !resultFree(result) && inputHash) {
     try {
       await ctx.adminDb.from("tool_call_cache").upsert({
         user_id: ctx.userId,
