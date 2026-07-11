@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -726,21 +726,82 @@ export function buildAliases(artifacts: Artifact[]): string[] {
   return Array.from(set).slice(0, 12);
 }
 
-type BreachRow = { site: string; date: string; classes: string; creds: string[]; severity: "CRITICAL" | "HIGH" | null };
+// A concrete, sensitive breach value the operator can unmask on click.
+type RevealField = { label: string; value: string };
+type BreachRow = {
+  site: string;
+  date: string;
+  exposedFields: string[];   // field CLASSES exposed (e.g. "Password", "DOB") — safe to name
+  reveal: RevealField[];     // concrete VALUES captured in the record — masked until clicked
+  severity: "CRITICAL" | "HIGH" | null;
+  minorRedacted: boolean;    // minor-safety hard stop: never revealable
+};
+
+const metaStr = (m: Record<string, unknown>, k: string): string =>
+  typeof m[k] === "string" ? (m[k] as string).trim() : "";
+
+/**
+ * Build the breach-exposure rows from the REAL artifact metadata shape
+ * (`exposed_fields`, `password_hash`, `zip`/`city`/…). Records for the SAME
+ * breach are reported by several tools, so merge by breach name+date rather than
+ * emitting duplicate rows — the merged row carries the union of exposed field
+ * classes and any concrete value (e.g. the one tool that returned the hash).
+ * Concrete values are collected for masked, click-to-reveal display; anything
+ * flagged minor-related is marked non-revealable (minor-safety hard stop).
+ */
 function buildBreachExposure(artifacts: Artifact[]): BreachRow[] {
-  const rows = artifacts.filter((a) => String(a.kind ?? "").toLowerCase() === "breach_exposure").map((a) => {
+  const byKey = new Map<string, BreachRow>();
+  for (const a of artifacts) {
+    if (String(a.kind ?? "").toLowerCase() !== "breach_exposure") continue;
     const m = (a.metadata ?? {}) as Record<string, unknown>;
-    const dc = m.data_classes;
-    const classes = Array.isArray(dc) ? dc.map(String).join(", ") : "";
-    const date = String(m.breach_date ?? "");
-    // MASK credentials — never surface plaintext / hash / hint VALUES.
-    const creds: string[] = [];
-    if (m.password_exposed || m.passwords || m.password) creds.push("password ✓");
-    if (m.password_hash_exposed || m.hash) creds.push("hash present");
-    if (m.password_hint) creds.push("hint present");
-    return { site: a.value, date, classes, creds, severity: breachSeverity(a) };
-  });
-  return rows.sort((a, b) => (a.date < b.date ? -1 : 1));
+    // Prefer the explicit breach name; else strip the "<selector> - " prefix off value.
+    const site = (metaStr(m, "breach_name") || String(a.value ?? "").replace(/^.*?\s-\s/, "")).trim()
+      || String(a.value ?? "");
+    const date = metaStr(m, "breach_date");
+    const exposedFields = Array.isArray(m.exposed_fields) ? m.exposed_fields.map(String) : [];
+    // Concrete values actually present in the record → revealable.
+    const reveal: RevealField[] = [];
+    const hash = metaStr(m, "password_hash");
+    if (hash) reveal.push({ label: "Password hash", value: hash });
+    const loc = [metaStr(m, "city"), metaStr(m, "state"), metaStr(m, "zip"), metaStr(m, "country")]
+      .filter(Boolean).join(" ");
+    if (loc) reveal.push({ label: "Location", value: loc });
+    // Minor-safety hard stop: a record flagged minor-related is never unmasked.
+    const minorRedacted = m.possible_minor === true || m.minor_warning === true
+      || String(m.flag ?? "").toUpperCase() === "MINOR_SAFETY_FLAG";
+    const sev = breachSeverity(a);
+
+    const key = `${site.toLowerCase()}|${date}`;
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.exposedFields = Array.from(new Set([...existing.exposedFields, ...exposedFields]));
+      for (const r of reveal) if (!existing.reveal.some((x) => x.label === r.label)) existing.reveal.push(r);
+      if (!existing.severity && sev) existing.severity = sev;
+      existing.minorRedacted = existing.minorRedacted || minorRedacted;
+    } else {
+      byKey.set(key, { site, date, exposedFields, reveal, severity: sev, minorRedacted });
+    }
+  }
+  return Array.from(byKey.values()).sort((a, b) => (a.date < b.date ? -1 : 1));
+}
+
+/** A single sensitive breach value, masked until the operator clicks Reveal. */
+function MaskedValue({ label, value }: RevealField) {
+  const [shown, setShown] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => setShown((s) => !s)}
+      title={shown ? "Click to hide" : "Click to reveal this breach value"}
+      className="group inline-flex max-w-full items-center gap-1.5 rounded border border-destructive/40 bg-destructive/10 px-1.5 py-px font-mono text-eyebrow text-destructive transition-colors hover:bg-destructive/20"
+    >
+      <span className="text-micro uppercase tracking-wider text-muted-foreground">{label}</span>
+      <span className="break-all [overflow-wrap:anywhere]">
+        {shown ? value : "•".repeat(Math.min(12, Math.max(6, value.length)))}
+      </span>
+      <span className="shrink-0 text-micro opacity-70">{shown ? "Hide" : "Reveal"}</span>
+    </button>
+  );
 }
 
 /** Strongest identity-bearing artifact confidence — the reasoned read, distinct
@@ -1111,10 +1172,10 @@ export function CaseReport({
             <table className="w-full min-w-[640px] table-fixed [&_td]:align-top text-data">
               <thead>
                 <tr className="bg-surface-2 text-micro font-medium tracking-normal text-muted-foreground">
-                  <th className="text-left font-normal px-3 py-2 w-[28%]">Breach</th>
-                  <th className="text-left font-normal px-3 py-2 w-[110px]">Date</th>
-                  <th className="text-left font-normal px-3 py-2">Data classes</th>
-                  <th className="text-left font-normal px-3 py-2 w-[180px]">Credentials</th>
+                  <th className="text-left font-normal px-3 py-2 w-[26%]">Breach</th>
+                  <th className="text-left font-normal px-3 py-2 w-[100px]">Date</th>
+                  <th className="text-left font-normal px-3 py-2">Exposed fields</th>
+                  <th className="text-left font-normal px-3 py-2 w-[220px]">Breach values</th>
                 </tr>
               </thead>
               <tbody>
@@ -1137,12 +1198,27 @@ export function CaseReport({
                       )}
                     </td>
                     <td className="px-3 py-2 font-mono text-muted-foreground whitespace-nowrap">{b.date || "—"}</td>
-                    <td className="px-3 py-2 text-muted-foreground break-words">{b.classes || "—"}</td>
-                    <td className="px-3 py-2">
-                      {b.creds.length ? (
+                    <td className="px-3 py-2 break-words">
+                      {b.exposedFields.length ? (
                         <span className="flex flex-wrap gap-1">
-                          {b.creds.map((c) => (
-                            <span key={c} className="rounded border border-destructive/40 bg-destructive/10 px-1.5 py-px text-eyebrow font-mono text-destructive">{c}</span>
+                          {b.exposedFields.map((c) => (
+                            <span key={c} className="rounded border border-border-subtle bg-surface-2 px-1.5 py-px text-eyebrow font-mono text-muted-foreground">{c}</span>
+                          ))}
+                        </span>
+                      ) : "—"}
+                    </td>
+                    <td className="px-3 py-2">
+                      {b.minorRedacted ? (
+                        <span
+                          className="rounded border border-[hsl(var(--warning))]/60 bg-[hsl(var(--warning))]/10 px-1.5 py-px text-eyebrow font-mono uppercase tracking-wider text-[hsl(var(--warning))]"
+                          title="Redacted — minor-safety hard stop. Not revealable."
+                        >
+                          redacted · minor-safety
+                        </span>
+                      ) : b.reveal.length ? (
+                        <span className="flex flex-col items-start gap-1">
+                          {b.reveal.map((r) => (
+                            <MaskedValue key={r.label} label={r.label} value={r.value} />
                           ))}
                         </span>
                       ) : "—"}
@@ -1152,7 +1228,7 @@ export function CaseReport({
               </tbody>
             </table>
           </div>
-          <p className="mt-1 text-data text-muted-foreground">Credential values are masked by policy — presence is indicated, never the plaintext, hash, or hint.</p>
+          <p className="mt-1 text-data text-muted-foreground">Breach values are masked by default — click <span className="font-mono text-destructive">Reveal</span> to unmask a captured value. Records flagged minor-related stay redacted and cannot be revealed.</p>
         </>
       ) : (
         <>
