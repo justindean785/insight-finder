@@ -382,6 +382,18 @@ export async function geminiGroundedSearch(opts: {
       ? rawQueries.filter((q): q is string => typeof q === "string")
       : [];
     return { ok: r.ok, status: r.status, text, citations, queries, raw };
+  } catch (err) {
+    // A timeout (our 60s timer) or an external-signal abort rejects the fetch
+    // with an AbortError. Without this catch it propagates uncaught to the
+    // caller (e.g. runGeminiVision → attachment-intake's top-level catch),
+    // silently dropping the read. Return the same {ok:false} shape this
+    // function already uses for the missing-key case so every caller handles it
+    // as a graceful failure (and the attachment_intake_skip trace fires).
+    const aborted = (err instanceof Error && err.name === "AbortError") || ctrl.signal.aborted;
+    const message = aborted
+      ? "gemini request timed out (60s)"
+      : `gemini request error: ${err instanceof Error ? err.message : String(err)}`;
+    return { ok: false, status: 0, text: "", citations: [], queries: [], raw: { error: message } };
   } finally {
     clearTimeout(timer);
     opts.signal?.removeEventListener("abort", onExternalAbort);
@@ -492,6 +504,18 @@ export async function geminiVision(opts: {
       ? rawQueries.filter((q): q is string => typeof q === "string")
       : [];
     return { ok: r.ok, status: r.status, text, citations, queries, raw };
+  } catch (err) {
+    // A timeout (our 60s timer) or an external-signal abort rejects the fetch
+    // with an AbortError. Without this catch it propagates uncaught to the
+    // caller (e.g. runGeminiVision → attachment-intake's top-level catch),
+    // silently dropping the read. Return the same {ok:false} shape this
+    // function already uses for the missing-key case so every caller handles it
+    // as a graceful failure (and the attachment_intake_skip trace fires).
+    const aborted = (err instanceof Error && err.name === "AbortError") || ctrl.signal.aborted;
+    const message = aborted
+      ? "gemini request timed out (60s)"
+      : `gemini request error: ${err instanceof Error ? err.message : String(err)}`;
+    return { ok: false, status: 0, text: "", citations: [], queries: [], raw: { error: message } };
   } finally {
     clearTimeout(timer);
     opts.signal?.removeEventListener("abort", onExternalAbort);
