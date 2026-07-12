@@ -71,8 +71,9 @@ import {
 } from "./safety.ts";
 
 import {
-  guard, routingGuard, CONSUMER_DOMAINS, STAGE2_TOOLS,
-  triageState, bumpArtifacts, skipStub, correlateNudge,
+  CONSUMER_DOMAINS, STAGE2_TOOLS,
+  bumpArtifacts, skipStub, correlateNudge, createRequestState,
+  type RequestState,
 } from "./guard.ts";
 import { reviewMemoryBatch, type MemoryEntry } from "./lib/memory_consolidate.ts";
 import type { Artifact as ClusterArtifact } from "./lib/cluster.ts";
@@ -102,8 +103,18 @@ export interface ToolContext {
   threadId: string;
   archiveEnabled: boolean;
   detectedSeedType: string;
+  /** The investigation's original seed text (auth.ts's SetupContext field of the
+   *  same name) — finding #7's source of truth for gates that need "the seed"
+   *  regardless of whether triage_seed ran. Optional so existing test stubs that
+   *  don't set it keep compiling/running; production always supplies it. */
+  detectedSeedValue?: string | null;
   messages: UIMessage[];
   manualOverrideSelector: string | null;
+  /** Request-scoped guard/routing/triage state (finding #8). Optional so
+   *  existing test stubs keep working — buildTools() falls back to a fresh
+   *  createRequestState() when absent, which is correct for a stub since a
+   *  test's single buildTools() call is never concurrent with another request. */
+  requestState?: RequestState;
 }
 
 // Hosts that reliably return 451/403 THROUGH r.jina.ai — scraping them is a
@@ -148,7 +159,12 @@ function memoSchema<T>(key: string, build: () => T): T {
 }
 
 export function buildTools(ctx: ToolContext) {
-  const { supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, messages, manualOverrideSelector } = ctx;
+  const { supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, detectedSeedValue, messages, manualOverrideSelector } = ctx;
+  // Finding #8: request-scoped state, never module-level. Falls back to a fresh
+  // instance for callers (tests) that don't supply one — production (index.ts)
+  // always does.
+  const requestState = ctx.requestState ?? createRequestState();
+  const { guard, routingGuard, triageState } = requestState;
 
   const tools = {
     list_tools: tool({
@@ -317,7 +333,7 @@ export function buildTools(ctx: ToolContext) {
             source: "triage_seed",
             metadata: { label: "triage_decision", ...decision } as Record<string, unknown>,
           }]);
-          bumpArtifacts(1, ["triage_decision"]);
+          bumpArtifacts(requestState, 1, ["triage_decision"]);
         } catch { /* best-effort */ }
 
         return { ok: true, stage1, decision };
@@ -3423,7 +3439,7 @@ export function buildTools(ctx: ToolContext) {
           const { error } = await supabase.from("artifacts").insert(safeRows);
           if (!error) {
             inserted = safeRows.length;
-            bumpArtifacts(safeRows.length, safeRows.map((r) => String(r.kind)));
+            bumpArtifacts(requestState, safeRows.length, safeRows.map((r) => String(r.kind)));
           } else {
             return { ok: false, error: error.message, queries: queryResults, found: collected.length, inserted: 0 };
           }
@@ -3531,7 +3547,7 @@ export function buildTools(ctx: ToolContext) {
           const { error } = await supabase.from("artifacts").insert(safeRows);
           if (!error) {
             inserted = safeRows.length;
-            bumpArtifacts(safeRows.length, safeRows.map((r) => String(r.kind)));
+            bumpArtifacts(requestState, safeRows.length, safeRows.map((r) => String(r.kind)));
           }
         }
         return {
@@ -4306,7 +4322,15 @@ export function buildTools(ctx: ToolContext) {
           // seed and attributed to the seed with no explicit link is laundered
           // (barlozblendz's phone/geo → a lead ABOUT pjsmakka). Keep it (audit) but
           // scope it out of the seed's clusters/leads.
-          const seedHandle = String(triageState.seed ?? "");
+          // Finding #7: triageState.seed is populated ONLY by the optional
+          // triage_seed tool (email/username workflows) — for every other seed
+          // type (name/phone/url/domain/hostname/IP), or whenever triage_seed
+          // simply never ran, it stays "" and this guard returned false
+          // immediately. Source from the ORIGINAL request context instead
+          // (auth.ts's detectedSeedValue, threaded via ToolContext), which is
+          // populated for every accepted seed type on every turn (initial and
+          // reuse); triageState.seed remains a secondary fallback.
+          const seedHandle = String(detectedSeedValue ?? triageState.seed ?? "");
           const crossSubjectContact = isCrossSubjectContactLaundering(v.kind, v.value, a.metadata ?? null, seedHandle);
           const collisionExcluded = unrelated || surnameOnly;
           const excludedFromSubject = collisionExcluded || disprovenLead || crossSubjectContact;
@@ -4477,7 +4501,7 @@ export function buildTools(ctx: ToolContext) {
         }
         const safeRowsForFollowup = insertedRows;
         const flagged = safeRows.filter((r) => (r.metadata as { minor_warning?: unknown } | undefined)?.minor_warning).length;
-        bumpArtifacts(safeRowsForFollowup.length, safeRowsForFollowup.map((r) => String(r.kind)));
+        bumpArtifacts(requestState, safeRowsForFollowup.length, safeRowsForFollowup.map((r) => String(r.kind)));
         beginCycle(
           threadId,
           "Review newly recorded evidence and select the smallest justified verification batch.",
@@ -4647,7 +4671,7 @@ export function buildTools(ctx: ToolContext) {
           // Audit F1: once enough new artifacts have accrued since the last correlate,
           // surface a hint so the orchestrator actually runs minimax_correlate (it never
           // fired in the audited run). Empty object when not yet due.
-          ...correlateNudge(),
+          ...correlateNudge(guard),
         };
       },
     }),
@@ -4688,7 +4712,9 @@ export function buildTools(ctx: ToolContext) {
         // rationale behind each): disproven-reason suppression, cross-subject
         // contact scoping, zero-breach relabel, human-input tagging.
         const disprovenLead = isDisprovenReason(metadata ?? null);
-        const seedHandle = String(triageState.seed ?? "");
+        // Finding #7: source from the original request context — see the
+        // matching comment at the record_artifacts call site above.
+        const seedHandle = String(detectedSeedValue ?? triageState.seed ?? "");
         const crossSubjectContact = isCrossSubjectContactLaundering(v.kind, v.value, metadata ?? null, seedHandle);
         const collisionExcluded = unrelated || surnameOnly;
         const excludedFromSubject = collisionExcluded || disprovenLead || crossSubjectContact;
@@ -4792,7 +4818,7 @@ export function buildTools(ctx: ToolContext) {
         });
         const { error } = await supabase.from("artifacts").insert([row]);
         if (error) return { ok: false, error: error.message };
-        bumpArtifacts(1, [String(row.kind)]);
+        bumpArtifacts(requestState, 1, [String(row.kind)]);
         beginCycle(
           threadId,
           "Review the newly recorded artifact and select the smallest justified verification batch.",

@@ -22,7 +22,7 @@ import {
 import { detectSeedServer } from "./validation.ts";
 import { sanitizeToolOutput, capPartsSize, capToolPartPayloads } from "./safety.ts";
 import { sanitizeModelMessages, capToolResultOutputs, summarizeToolResultValue } from "./message-sanitize.ts";
-import { guard, routingGuard, triageState, countRecordArtifactCalls } from "./guard.ts";
+import { countRecordArtifactCalls, createRequestState } from "./guard.ts";
 import { setupRequest } from "./auth.ts";
 import { minimax, minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider } from "./orchestrator_select.ts";
@@ -47,6 +47,7 @@ import { applyClusteringToThread } from "./lib/cluster.ts";
 import { buildTools } from "./tool-registry.ts";
 import { runAttachmentIntake, type AttachmentIntakeResult } from "./attachment-intake.ts";
 import { runAnchorIntake, type AnchorIntakeResult } from "./anchor-intake.ts";
+import { buildAnchorUserMessage } from "./anchor-parse.ts";
 import { isMessageSchemaError, classifyStreamProviderError } from "./stream-error-classify.ts";
 import {
   shouldFallbackAfterMinimaxPreflight,
@@ -97,25 +98,20 @@ Deno.serve(async (req) => {
   deadHosts.clear();
   resetFirecrawlCreditsLow();
 
-  // ---- Reset guard/triage state (module-scoped, must be reset per-request) ----
-  guard.artifactsSinceCorrelate = 0;
-  routingGuard.artifactsTotal = 0;
-  routingGuard.memoryRecallTimestamps = [];
-  routingGuard.memoryRecallSubjectsThisStep.clear();
-  triageState.ran = false;
-  triageState.seed = null;
-  triageState.seedType = null;
-  triageState.seedDomain = null;
-  triageState.cleared.clear();
-  triageState.reasons = [];
-  triageState.skipped = [];
-  triageState.identitySignals.name = false;
-  triageState.identitySignals.username = false;
+  // ---- Request-scoped guard/routing/triage state (finding #8) ----------------
+  // Previously three mutable MODULE-LEVEL singletons, reset here at the top of
+  // the handler. On a warm edge isolate serving overlapping/concurrent requests,
+  // that reset (and every subsequent read/write from tool-registry.ts/cache.ts)
+  // raced: one investigation's seed or triage decisions could bleed into
+  // another's mid-flight request. createRequestState() returns a brand-new
+  // object every call — nothing here is shared across requests anymore. It is
+  // threaded explicitly into buildTools() and wrapToolsWithCache() below.
+  const requestState = createRequestState();
 
   try {
     // ---- setupRequest handles CORS, auth, thread verification, message persistence ----
     const ctx = await setupRequest(req);
-    const { supabase, supabaseAdmin, user, userId, threadId, archiveEnabled, detectedSeedType, messages } = ctx;
+    const { supabase, supabaseAdmin, user, userId, threadId, archiveEnabled, detectedSeedType, detectedSeedValue, messages } = ctx;
     const manualOverrideSelector = extractManualOverrideSelector(messages);
 
     // ---- Per-user credit gate (beta budget protection) ----------------------
@@ -200,7 +196,8 @@ Deno.serve(async (req) => {
     }
 
     const { tools, availableToolsForAudit } = buildTools({
-      supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, messages, manualOverrideSelector,
+      supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, detectedSeedValue, messages, manualOverrideSelector,
+      requestState,
     });
 
     const modelMessages = await convertToModelMessages(messages);
@@ -307,7 +304,7 @@ Deno.serve(async (req) => {
     beginCycle(
       threadId,
       "Classify the seed, reject weak pivots, and select the smallest high-value initial batch.",
-      [`seed:${seedValueRaw}`, `stage2:${triageState.ran ? "open" : "pending"}`],
+      [`seed:${seedValueRaw}`, `stage2:${requestState.triageState.ran ? "open" : "pending"}`],
     );
     // Register this run as an active owner of the thread's circuit state. A
     // double-submit / retry can start a second overlapping run for the same
@@ -617,17 +614,22 @@ Deno.serve(async (req) => {
     // can't reach the model at instruction priority (prompt-injection isolation).
     // The anchor's TRUSTED summary (directive + structured facts) goes into the
     // system prompt. Its UNTRUSTED fetched prose is injected as a separate
-    // ASSISTANT-role DATA message — NOT the user turn (so it is never represented
-    // as a user instruction) and NOT the system prompt (so it can't reach the model
-    // at instruction priority). The system prompt's standing directive establishes
-    // the trust boundary; the envelope + sanitization are defense-in-depth
-    // (PR #305 review, finding #4). An assistant-role carrier is accepted by both
-    // the MiniMax and Gemini-fallback providers (role stays alternating).
+    // USER-role DATA message, wrapped in the <untrusted_fetched_content> envelope —
+    // NOT the system prompt (so it can't reach the model at instruction priority)
+    // and, critically, NOT an assistant-role message (audit finding #4: a trailing
+    // assistant-role message is an ASSISTANT PREFILL for providers that support
+    // that semantic — including MiniMax and the Gemini fallback — letting fetched
+    // untrusted content be continued as if the model itself had said it). A
+    // user-role carrier cannot be treated as a completion prefix; the envelope's
+    // own "DATA ONLY" label plus SYSTEM_PROMPT_FULL's standing
+    // UNTRUSTED_DATA_DISCIPLINE directive (system-prompt.ts, applies every turn)
+    // keep it from being read as a user instruction either.
     const anchor = await anchorPromise;
     const anchorIntakeSummary = anchor.ran ? anchor.summary : "";
     const anchorUntrusted = (anchor.ran || anchor.skipped_existing) ? anchor.untrusted : "";
-    if (anchorUntrusted) {
-      trimmedMessages.push({ role: "assistant", content: anchorUntrusted } as ModelMessage);
+    const anchorMessage = buildAnchorUserMessage(anchorUntrusted);
+    if (anchorMessage) {
+      trimmedMessages.push(anchorMessage as ModelMessage);
     }
     if (anchor.ran) {
       console.log(
@@ -667,7 +669,7 @@ Deno.serve(async (req) => {
         // only inside bumpArtifacts() means steps that find zero artifacts
         // never clear the set, silently blocking memory_recall for any
         // previously-queried subject for the rest of the investigation.
-        routingGuard.memoryRecallSubjectsThisStep.clear();
+        requestState.routingGuard.memoryRecallSubjectsThisStep.clear();
         if (!Array.isArray(stepMessages) || stepMessages.length === 0) return {};
         const trimmed: ModelMessage[] = stepMessages.map((m: ModelMessage, idx: number) => {
           const isRecent = idx >= stepMessages.length - STEP_RECENT_WINDOW;
@@ -767,6 +769,7 @@ Deno.serve(async (req) => {
         onCost,
         manualOverrideSelector,
         toolCallBudget,
+        guard: requestState.guard,
       }),
       // Unknown-tool guard (Phase B4): the model occasionally emits a tool call
       // for a name that is NOT in the live registry (hallucinations like exify /
@@ -1024,7 +1027,7 @@ Deno.serve(async (req) => {
               thread_id: threadId,
               record_artifact_calls: recordCalls,
               tool_calls: toolCalls,
-              in_memory_artifacts: routingGuard.artifactsTotal,
+              in_memory_artifacts: requestState.routingGuard.artifactsTotal,
               seed: seedValueRaw.slice(0, 120),
               // ran lookups but never recorded → almost certainly the record gap,
               // not a genuinely empty case.

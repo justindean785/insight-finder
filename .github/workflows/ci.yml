@@ -84,6 +84,22 @@ jobs:
       # share one valid verify_evidence_chain chain, and dedup/retry are idempotent.
       - name: Evidence content-hash + chain compatibility regression
         run: psql --set ON_ERROR_STOP=1 --quiet -f .github/ci/content-hash-compat-test.sql
+      # Findings #9/#10: confidence bounds (valid/negative/above-max/NaN/Infinity/
+      # empty, no partial writes) + dedup enforced at the DB level, including the
+      # direct-insert bypass path the audit flagged and legitimate distinct-source
+      # observations NOT being collapsed.
+      - name: Artifacts confidence-bounds + dedup regression
+        run: psql --set ON_ERROR_STOP=1 --quiet -f .github/ci/artifacts-integrity-test.sql
+      # Genuine CONCURRENT duplicate-insert race (two real overlapping sessions,
+      # not sequential calls) — proves the unique index, not just app-level logic.
+      - name: Concurrent duplicate-insert regression
+        run: bash .github/ci/concurrent-dedup-test.sh
+      # Re-apply the newest migration a second time — proves it's idempotent, and
+      # that a re-run doesn't disturb the working hash-chain.
+      - name: Migration idempotency (re-run newest migration)
+        run: |
+          psql --set ON_ERROR_STOP=1 --quiet -f supabase/migrations/20260711130000_artifacts_confidence_bounds_and_dedup.sql
+          psql --set ON_ERROR_STOP=1 --quiet -f .github/ci/content-hash-compat-test.sql
 
   edge:
     name: Edge functions (deno test)

@@ -8,12 +8,21 @@ import { z } from "npm:zod@3";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { INTELBASE_ENABLED, SUPABASE_URL, SERVICE_KEY } from "../env.ts";
 import {
-  triageState,
   bumpArtifacts,
   STAGE2_TOOLS,
   CONSUMER_DOMAINS,
+  createRequestState,
 } from "../guard.ts";
 import { TOOL_CATALOG, CATALOG_CACHE } from "../catalog.ts";
+
+// NOTE: this module's tool exports (list_tools/triage_seed) are NOT wired into
+// buildTools() (tool-registry.ts defines its own live versions inline) — a stale
+// mirror per CLAUDE.md's "older tools/*.ts files are stale mirrors, not the
+// runtime source" note. Kept self-consistent with a local stand-in request state
+// (never shared/module-level in the live runtime) rather than deleted, since
+// removing dead files is out of scope here.
+const localRequestState = createRequestState();
+const { triageState } = localRequestState;
 
 /** Loose shape for a stolen.tax v2 parsed response (only fields we read). */
 interface StolenTaxParsed {
@@ -270,7 +279,7 @@ export const triage_seed = tool({
         source: "triage_seed",
         metadata: { label: "triage_decision", ...decision } as Record<string, unknown>,
       }]);
-      bumpArtifacts(1, ["triage_decision"]);
+      bumpArtifacts(localRequestState, 1, ["triage_decision"]);
     } catch { /* best-effort */ }
 
     return { ok: true, stage1, decision };

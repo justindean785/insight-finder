@@ -6,11 +6,18 @@
 import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { PERPLEXITY_API_KEY } from "../env.ts";
-import { guard } from "../guard.ts";
+import type { GuardState } from "../guard.ts";
 import { minimaxChat, safeJson, perplexitySearch } from "../providers.ts";
 import { MODELS } from "../models.ts";
 import { coerceArtifactsInput, detectSeedServer } from "../validation.ts";
 import { enforceNameSeedPriority, NAME_SEED_PLANNER_RULES } from "../planner-guidance.ts";
+
+// NOTE: this module's tool exports are NOT wired into buildTools() (tool-registry.ts
+// defines its own live minimax_correlate inline) — a stale mirror per CLAUDE.md's
+// "older tools/*.ts files are stale mirrors, not the runtime source" note. Kept
+// self-consistent with a local stand-in state (never shared/module-level in the
+// live runtime) rather than deleted, since removing dead files is out of scope here.
+const localGuard: GuardState = { artifactsSinceCorrelate: 0, lastCorrelateOutcome: null };
 
 // ---- minimax_web_search (Perplexity Sonar) ----------------------------------
 
@@ -88,7 +95,7 @@ export const minimax_correlate = tool({
         maxTokens: 1500,
       });
       const parsed = safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content };
-      guard.artifactsSinceCorrelate = 0;
+      localGuard.artifactsSinceCorrelate = 0;
       return { ok: r.ok, status: r.status, analysis: parsed };
     } catch (e) { return { error: String(e) }; }
   },

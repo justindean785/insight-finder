@@ -116,6 +116,11 @@ async function readProfile(handle: string, signal?: AbortSignal): Promise<ReadRe
     if (!payload || ls === "not_found") return { ok: false, error: "profile not found", status: 404 };
     return { ok: true, payload };
   } catch (e) {
+    // Finding #2: a genuine abort (the caller's timeout firing) must PROPAGATE so
+    // executeProvider's runWithTimeout catch can classify it as _tool_timeout —
+    // swallowing it into an ordinary {ok:false} return made the timeout branch
+    // structurally unreachable. Every OTHER failure still resolves normally.
+    if (signal?.aborted) throw e;
     return { ok: false, error: String((e as Error).message ?? e) };
   }
 }
@@ -154,6 +159,9 @@ async function readSerp(query: string, focus: string, signal?: AbortSignal): Pro
     if (!answer && citations.length === 0) return { ok: false, error: "perplexity: empty answer" };
     return { ok: true, answer, citations };
   } catch (e) {
+    // Finding #2: propagate a genuine abort so the timeout wrapper sees it (see
+    // readProfile's matching comment above).
+    if (signal?.aborted) throw e;
     return { ok: false, error: String((e as Error).message ?? e) };
   }
 }
@@ -279,7 +287,10 @@ export async function runAnchorIntake(
         }
         summaryParts.push(
           `PRIMARY PROFILE READ (instagram/@${handle}${ent.verified ? " ✓" : ""}): ` +
-          `display name "${sanitizeUntrusted(ent.displayName ?? "?", 80)}"; ` +
+          // Finding #3: structural JSON encoding, not manual quote-wrapping — a
+          // fetched display name containing a literal `"` can otherwise escape the
+          // quoted span and inject free text into the TRUSTED system-prompt summary.
+          `display name ${JSON.stringify(sanitizeUntrusted(ent.displayName ?? "?", 80))}; ` +
           `${ent.followers ?? "?"} followers / ${ent.following ?? "?"} following; ` +
           `external link hosts: ${ent.externalLinks.map(hostOf).filter(Boolean).join(", ") || "none"}; ` +
           `bio-mentioned accounts (RELATED, not the subject): ${ent.relatedHandles.join(", ") || "none"}.`,
@@ -330,7 +341,7 @@ export async function runAnchorIntake(
         }));
       }
       summaryParts.push(
-        `SERP READ ("${sanitizeUntrusted(q, 120)}")` +
+        `SERP READ (${JSON.stringify(sanitizeUntrusted(q, 120))})` +
         (ent.relatedHandles.length ? ` | related accounts: ${ent.relatedHandles.slice(0, 12).join(", ")}` : "") +
         (ent.externalLinks.length ? ` | external hosts: ${ent.externalLinks.map(hostOf).filter(Boolean).slice(0, 8).join(", ")}` : ""),
       );

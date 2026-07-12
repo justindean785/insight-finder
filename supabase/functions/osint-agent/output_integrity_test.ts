@@ -87,3 +87,48 @@ Deno.test("independence model — same record collapses; distinct records count 
   ]), 2); // two genuinely independent records
   assertEquals(countIndependentObservations([{ sourceClass: "username_sweep", url: "https://a" }, { sourceClass: "human_input" }]), 0);
 });
+
+// ── Finding #6: fail-closed + canonical-classifier fallback for raw source names ──
+Deno.test("finding #6: missing class entirely is excluded", () => {
+  assertEquals(countIndependentObservations([{ url: "https://a" }]), 0);
+});
+
+Deno.test("finding #6: an unrecognized raw source string is excluded, not counted merely for being distinct", () => {
+  assertEquals(countIndependentObservations([
+    { source: "totally_made_up_tool_xyz_not_a_real_provider", url: "https://a" },
+  ]), 0);
+});
+
+Deno.test("finding #6: an unrecognized explicit sourceClass string is not blindly trusted", () => {
+  assertEquals(countIndependentObservations([{ sourceClass: "not_a_real_class_at_all", url: "https://a" }]), 0);
+});
+
+Deno.test('finding #6: the exact audit example — source:"gemini_deep_dork" with no sourceClass — no longer slips through', () => {
+  // Before: sourceClass ?? source ?? "unknown" used the raw string directly;
+  // "gemini_deep_dork" isn't literally "unknown" so it wrongly counted.
+  // classifySource("gemini_deep_dork") correctly resolves to "ai_summary"
+  // (non-corroborating) — now correctly excluded.
+  assertEquals(countIndependentObservations([{ source: "gemini_deep_dork", url: "https://a" }]), 0);
+});
+
+Deno.test("finding #6: a raw source name the canonical classifier DOES recognize as corroborating still counts", () => {
+  assertEquals(countIndependentObservations([
+    { source: "oathnet_lookup", url: "https://oathnet.example/hit/1" },
+  ]), 1);
+});
+
+Deno.test("finding #6: two tools backed by the SAME upstream class collapse to one despite different raw tool names", () => {
+  assertEquals(countIndependentObservations([
+    { source: "rapidapi_breach_search", domain: "breach-corpus-A" },
+    { source: "breach_check", domain: "breach-corpus-A" },
+  ]), 1);
+});
+
+Deno.test("finding #6: mixed valid/invalid observations — only the valid ones count", () => {
+  assertEquals(countIndependentObservations([
+    { sourceClass: "court_record", url: "https://courts.gov/case/9" },
+    { source: "made_up_nonsense_provider" },
+    { sourceClass: "" },
+    { sourceClass: "official_profile_match", url: "https://ig.com/real" },
+  ]), 2);
+});

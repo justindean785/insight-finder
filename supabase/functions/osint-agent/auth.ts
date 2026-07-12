@@ -47,6 +47,15 @@ export interface SetupContext {
   threadId: string;
   archiveEnabled: boolean;
   detectedSeedType: string;
+  /** The investigation's ORIGINAL seed text, from the thread's persisted
+   *  `seed_value` (or the just-typed first message on a brand-new thread).
+   *  Finding #7: this is the request's real seed, independent of whether the
+   *  optional `triage_seed` tool ever ran — integrity gates that need "the
+   *  seed" (e.g. the cross-subject contact-laundering guard) must source it
+   *  from here, not from triage-tool state, so they fire on every seed type
+   *  (name/phone/URL/domain/IP), not just email/username. Null only if the
+   *  thread genuinely has no seed recorded yet. */
+  detectedSeedValue: string | null;
   messages: UIMessage[];
 }
 
@@ -219,6 +228,12 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
   let detectedSeedType: string = String(
     (thread as { seed_type?: string | null }).seed_type ?? "unknown",
   ).toLowerCase();
+  // Finding #7: the ORIGINAL seed value, sourced from the request's own thread
+  // row — not from optional triage-tool state. Starts as whatever was already
+  // persisted (covers every reuse/follow-up turn); the block below refreshes it
+  // to the freshly-typed text on a brand-new thread's first message.
+  let detectedSeedValue: string | null =
+    (thread as { seed_value?: string | null }).seed_value ?? null;
 
   // ---- Save user message (last one) ------------------------------------------
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
@@ -240,6 +255,7 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
       const isNewInvestigation = (thread as { title?: string | null }).title === "New investigation";
       const detected = isNewInvestigation ? detectSeedServer(text) : null;
       if (detected) detectedSeedType = detected.kind;
+      if (isNewInvestigation) detectedSeedValue = text.slice(0, 200);
       await supabase
         .from("threads")
         .update({
@@ -261,6 +277,7 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
     threadId,
     archiveEnabled,
     detectedSeedType,
+    detectedSeedValue,
     messages,
   };
 }

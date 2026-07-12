@@ -14,7 +14,7 @@ import { creditsCharged } from "./billing.ts";
 import { classifyToolOutcome } from "./tool-outcome.ts";
 import { writeToolUsage } from "./provider-exec.ts";
 import * as circuit from "./circuit.ts";
-import { guard } from "./guard.ts";
+import type { GuardState } from "./guard.ts";
 import { shouldSkipForToolCap } from "./orchestrator-finalize.ts";
 import {
   ALWAYS_ALLOW_TOOLS,
@@ -356,6 +356,12 @@ export function wrapToolsWithCache(
     // `capped` is surfaced by index.ts (finalize + telemetry). Optional so callers
     // that don't set it (tests, other entrypoints) are unaffected.
     toolCallBudget?: { genuine: number; capped: boolean };
+    // Request-scoped guard state (finding #8) — the wrapper sets
+    // guard.lastCorrelateOutcome from the FINAL minimax_correlate result. Optional
+    // so existing tests that don't exercise minimax_correlate are unaffected; a
+    // caller that does must supply the request's own requestState.guard, never a
+    // shared/module-level instance.
+    guard?: GuardState;
   },
 ) {
   const wrapped: Record<string, Tool> = {};
@@ -904,14 +910,14 @@ export function wrapToolsWithCache(
           // memory_save can tell "correlate failed this cycle" apart from "correlate
           // never ran" — a timeout stub races the tool's own execute() and wins, so
           // this is the only point that sees what the model actually received.
-          if (name === "minimax_correlate") guard.lastCorrelateOutcome = ok ? "ok" : "failed";
+          if (name === "minimax_correlate" && ctx.guard) ctx.guard.lastCorrelateOutcome = ok ? "ok" : "failed";
           circuit.recordResult(ctx.investigationId, name, sel, purpose, {
             status: circuit.classifyResult(result, null),
             artifactCount: 0,
           });
         } catch (e) {
           ok = false;
-          if (name === "minimax_correlate") guard.lastCorrelateOutcome = "failed";
+          if (name === "minimax_correlate" && ctx.guard) ctx.guard.lastCorrelateOutcome = "failed";
           const msg = redactSecrets(String((e as Error)?.message ?? e)).slice(0, 500);
           finishCall(ctx.investigationId, name);
           logUsage(false, false, Date.now() - t0, msg, null, false, {

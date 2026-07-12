@@ -1,6 +1,7 @@
 // Verifies the record-time output-integrity gates (WP2) against the exact
-// artifact metadata from the live @pjsmakka run. The module is pure TS (no Deno
-// deps) so it runs under vitest here and under `deno test` in CI.
+// artifact metadata from the live @pjsmakka run. The module (and its one
+// dependency, classifySource/source-classification.ts + catalog.ts) is pure TS
+// (no Deno deps) so it runs under vitest here and under `deno test` in CI.
 import { describe, it, expect } from "vitest";
 import {
   isDisprovenReason,
@@ -144,5 +145,65 @@ describe("WP2-#5 independence model (review finding — not just distinct source
       { sourceClass: "username_sweep", url: "https://b" },
       { sourceClass: "human_input" },
     ])).toBe(0);
+  });
+});
+
+// ── Finding #6: countIndependentObservations must fail closed on raw source ──
+describe("finding #6: countIndependentObservations fails closed / uses the canonical classifier", () => {
+  it("missing class entirely (no sourceClass, no source) is excluded", () => {
+    expect(countIndependentObservations([{ url: "https://a" }])).toBe(0);
+  });
+  it("a genuinely unrecognized raw source string is excluded (fails closed, does NOT count merely because it's a distinct string)", () => {
+    expect(countIndependentObservations([
+      { source: "totally_made_up_tool_xyz_not_a_real_provider", url: "https://a" },
+    ])).toBe(0);
+  });
+  it("an unrecognized explicit sourceClass string is excluded (not blindly trusted)", () => {
+    expect(countIndependentObservations([
+      { sourceClass: "not_a_real_class_at_all", url: "https://a" },
+    ])).toBe(0);
+  });
+  it('the exact audit example — source:"gemini_deep_dork" with no sourceClass — no longer slips through as independent', () => {
+    // Before the fix: `sourceClass ?? source ?? "unknown"` used the raw string
+    // "gemini_deep_dork" directly, which isn't literally "unknown"/"ai_summary"/
+    // etc., so NON_CORROBORATING_CLASSES.has("gemini_deep_dork") was false and it
+    // incorrectly counted. classifySource("gemini_deep_dork") correctly resolves
+    // it to "ai_summary" (source-classification.ts's TOOL_CLASS), which IS
+    // non-corroborating — now correctly excluded.
+    expect(countIndependentObservations([
+      { source: "gemini_deep_dork", url: "https://a" },
+    ])).toBe(0);
+  });
+  it("a raw source name the classifier DOES recognize as a real corroborating class still counts", () => {
+    // oathnet_lookup classifies to "breach" — a real, corroborating class — so a
+    // raw provider name that IS genuinely classifiable must still count. Fail
+    // CLOSED means "reject the unrecognized", not "reject everything raw".
+    expect(countIndependentObservations([
+      { source: "oathnet_lookup", url: "https://oathnet.example/hit/1" },
+    ])).toBe(1);
+  });
+  it("two tools backed by the SAME upstream provider/class collapse to one, even with different raw tool names and no explicit sourceClass", () => {
+    // rapidapi_breach_search and breach_check both classify to "breach" — the
+    // exact "shared upstream source, different tool names" case the audit
+    // required: they must NOT each count as independent merely because their
+    // raw tool-name strings differ.
+    expect(countIndependentObservations([
+      { source: "rapidapi_breach_search", domain: "breach-corpus-A" },
+      { source: "breach_check", domain: "breach-corpus-A" },
+    ])).toBe(1);
+  });
+  it("mixed valid explicit classes and invalid/unrecognized entries: only the valid ones count", () => {
+    expect(countIndependentObservations([
+      { sourceClass: "court_record", url: "https://courts.gov/case/9" },
+      { source: "made_up_nonsense_provider" },
+      { sourceClass: "" }, // empty string class
+      { sourceClass: "official_profile_match", url: "https://ig.com/real" },
+    ])).toBe(2);
+  });
+  it("duplicate explicit class, same underlying record, still collapses to one", () => {
+    expect(countIndependentObservations([
+      { sourceClass: "news", url: "https://news.example.com/a" },
+      { sourceClass: "news", url: "https://news.example.com/a" },
+    ])).toBe(1);
   });
 });

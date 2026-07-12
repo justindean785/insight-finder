@@ -5,8 +5,11 @@
 // predicate over an artifact's (kind, value, metadata) so it is unit-testable
 // without a DB or the AI SDK. They NEVER delete a record — they relabel a kind,
 // cap a confidence, or flag a row for the excluded/suppressed list, preserving the
-// audit trail. Integrity primitives (applyEvidenceCaps, source classification,
-// chain-of-custody) are untouched.
+// audit trail. Integrity primitives (applyEvidenceCaps, chain-of-custody) are
+// untouched. The one exception to "no imports" is classifySource below — both it
+// and its own dependency (catalog.ts) are plain, dependency-free TS (no Deno
+// globals, no npm: specifiers), so they resolve fine under vitest too.
+import { classifySource } from "./source-classification.ts";
 
 type Meta = Record<string, unknown> | null | undefined;
 
@@ -171,6 +174,22 @@ const NON_CORROBORATING_CLASSES = new Set<string>([
   "social_review", "infra_shared_host", "threat_intel", "human_input",
 ]);
 
+// Full ALLOWLIST of recognized EXPLICIT source classes — mirrors
+// source-classification.ts's SourceClass union (inlined for the same
+// import-free reason as above). An explicit `sourceClass` value must be one of
+// these to be trusted directly; anything else falls through to classifySource()
+// below. Keep in sync with source-classification.ts's `SourceClass` type when a
+// new class is added there.
+const VALID_SOURCE_CLASSES = new Set<string>([
+  "breach", "threat_intel", "username_sweep", "social_profile_passive", "social_profile_active",
+  "news", "court_record", "official_profile_match", "independent_public", "ai_summary",
+  "infra", "infra_registry", "infra_dns", "infra_scan", "infra_reputation", "infra_passive", "infra_shared_host",
+  "government_property_record", "government_business_registry", "government_business_license",
+  "business_directory", "real_estate_listing", "property_aggregator", "professional_profile",
+  "social_review", "public_record", "web_search", "archive", "unknown",
+  "human_input", // recognized here (source-classification.ts has no human_input class — output-integrity.ts adds it, see NON_CORROBORATING_CLASSES above)
+]);
+
 /** Normalize a URL/domain to its underlying-record identity: drop scheme, www,
  *  archive-wrapper prefixes, query/hash, and trailing slash. So archive/cache/live
  *  copies and repeated fetches of one page fold to a single identity. */
@@ -186,21 +205,48 @@ function normalizeRecordIdentity(raw: string): string {
 }
 
 export interface Observation {
-  /** The observation's source class (preferred). */
+  /** The observation's source class, if already resolved. Trusted directly ONLY
+   *  when it's a member of the canonical SourceClass union (VALID_SOURCE_CLASSES) —
+   *  an arbitrary/misspelled string here is NOT trusted blindly; see resolveClass(). */
   sourceClass?: string;
-  /** Fallback raw source/tool name when sourceClass is absent. */
+  /** Raw source/tool name (e.g. a provider slug like "gemini_deep_dork" or a
+   *  free-text provider label). Used ONLY when sourceClass is absent/unrecognized,
+   *  and ONLY by running it through the canonical classifySource() (the same
+   *  classifier the confidence engine and record path use) — never counted as an
+   *  independent class merely because the raw string differs from another
+   *  observation's. This is what lets two tools backed by the SAME upstream
+   *  provider/dataset (different tool names, same real class) correctly collapse. */
   source?: string;
   url?: string;
   domain?: string;
 }
 
+/** Resolve an observation to its canonical class: trust an explicit, recognized
+ *  sourceClass; otherwise derive one from the raw source/tool name via the
+ *  canonical classifySource(); otherwise "unknown" (fail closed — classifySource
+ *  itself already returns "unknown" for anything it doesn't recognize, and
+ *  "unknown" is in NON_CORROBORATING_CLASSES). */
+function resolveClass(o: Observation): string {
+  if (typeof o.sourceClass === "string") {
+    const explicit = o.sourceClass.toLowerCase().trim();
+    if (explicit && VALID_SOURCE_CLASSES.has(explicit)) return explicit;
+  }
+  if (typeof o.source === "string" && o.source.trim()) return classifySource(o.source);
+  return "unknown";
+}
+
 /** Count DISTINCT independent observations — corroborating classes only, collapsed
  *  by underlying-record identity. Two tools reading the same page, a SERP summary +
- *  its cited page, live + archive, and repeated calls each contribute at most 1. */
+ *  its cited page, live + archive, and repeated calls each contribute at most 1.
+ *  FAIL CLOSED (finding #6): an observation resolves to "unknown" — excluded —
+ *  unless it carries a recognized explicit sourceClass OR a raw source/tool name
+ *  the canonical classifySource() actually recognizes. A raw provider name can
+ *  never be miscounted as independent merely because it differs from another
+ *  observation's raw name; two tools sharing the same upstream class collapse. */
 export function countIndependentObservations(obs: Observation[] | null | undefined): number {
   const ids = new Set<string>();
   for (const o of obs ?? []) {
-    const cls = String(o.sourceClass ?? o.source ?? "unknown").toLowerCase().trim();
+    const cls = resolveClass(o);
     if (NON_CORROBORATING_CLASSES.has(cls)) continue;
     const rec = o.url ? normalizeRecordIdentity(o.url) : o.domain ? normalizeRecordIdentity(o.domain) : `class:${cls}`;
     if (rec) ids.add(rec);

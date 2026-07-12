@@ -20,6 +20,7 @@ import { classifyToolOutcome } from "./tool-outcome.ts";
 import { costForTool } from "./costs.ts";
 import * as circuit from "./circuit.ts";
 import { hashInput, normalizeForHash } from "./safety.ts";
+import { DEFAULT_TOOL_TTL_MS } from "./validation.ts";
 
 type DbLike = {
   from: (t: string) => {
@@ -155,6 +156,11 @@ export interface ProviderExecOpts {
   baseCost?: number;
   cache?: boolean;   // default true
   circuit?: boolean; // default true
+  /** Cache TTL in ms for a successful write-back. Defaults to the canonical
+   *  DEFAULT_TOOL_TTL_MS (24h — same constant cache.ts's wrapper uses) so an
+   *  anchor read expires exactly like a normal cached tool call instead of
+   *  being reused indefinitely. */
+  ttlMs?: number;
 }
 
 export interface ProviderExecResult<T> {
@@ -235,6 +241,7 @@ export async function executeProvider<T>(
   //    poison the cache and suppress a real read once the key/provider returns.
   if (useCache && ok && !resultFree(result) && inputHash) {
     try {
+      const ttl = opts.ttlMs ?? DEFAULT_TOOL_TTL_MS;
       await ctx.adminDb.from("tool_call_cache").upsert({
         user_id: ctx.userId,
         investigation_id: ctx.threadId,
@@ -244,6 +251,10 @@ export async function executeProvider<T>(
         output_json: result ?? {},
         selector_type: opts.selectorType,
         selector_normalized: selector,
+        // Finding #1: a successful write MUST carry an expiry — the lookup above
+        // treats a null expires_at as fresh forever, so omitting this let anchor
+        // reads be reused indefinitely. Same canonical TTL cache.ts's wrapper uses.
+        expires_at: ttl == null ? null : new Date(Date.now() + ttl).toISOString(),
       }, { onConflict: "user_id,tool_name,input_hash" });
     } catch (e) {
       console.warn(`[provider-exec] cache write failed for ${name}:`, (e as Error).message);
