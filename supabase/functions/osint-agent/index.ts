@@ -16,6 +16,7 @@ import {
   geminiDirectGateway, GEMINI_FALLBACK_MODEL_ID, ALLOW_LOVABLE_FALLBACK,
   grokGateway, openAdapterGateway, ORCHESTRATOR_PROVIDER,
   GROK_ORCHESTRATOR_MODEL_ID, OPENADAPTER_ORCHESTRATOR_MODEL_ID,
+  deepseekGateway, DEEPSEEK_ORCHESTRATOR_MODEL_ID,
   degradedTools, deadHosts, resetFirecrawlCreditsLow, INTELBASE_ENABLED,
 } from "./env.ts";
 
