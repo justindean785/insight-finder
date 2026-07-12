@@ -81,7 +81,14 @@ async function recordLaunderedContact(ctx: ToolContext, seedHandleNote: string) 
         kind: "weak_lead",
         value: "530 area code Sacramento/Yuba City",
         source: "barlozblendz Instagram bio",
-        metadata: { note: `${seedHandleNote} appeared in search results near this geographic area` },
+        // sourceProfileHandle() (output-integrity.ts) reads source/source_profile/
+        // handle from the METADATA object, not the artifact's top-level `source` —
+        // it must be duplicated inside metadata for isCrossSubjectContactLaundering
+        // to find it (matches output_integrity_test.ts's proven-working shape).
+        metadata: {
+          source: "barlozblendz Instagram bio",
+          note: `${seedHandleNote} appeared in search results near this geographic area`,
+        },
       }],
     },
     {},
@@ -133,7 +140,10 @@ Deno.test("finding #7: a legitimate, explicitly-linked contact is NOT excluded (
         kind: "weak_lead",
         value: "530 area code",
         source: "barlozblendz Instagram bio",
-        metadata: { note: "pjsmakka tagged barlozblendz in a shared post — explicit link" },
+        metadata: {
+          source: "barlozblendz Instagram bio",
+          note: "pjsmakka tagged barlozblendz in a shared post — explicit link",
+        },
       }],
     },
     {},
@@ -155,7 +165,10 @@ Deno.test("finding #7: missing seed context (no detectedSeedValue, no triage_see
         kind: "weak_lead",
         value: "530 area code",
         source: "barlozblendz Instagram bio",
-        metadata: { note: "some subject appeared in search results near this geographic area" },
+        metadata: {
+          source: "barlozblendz Instagram bio",
+          note: "some subject appeared in search results near this geographic area",
+        },
       }],
     },
     {},
