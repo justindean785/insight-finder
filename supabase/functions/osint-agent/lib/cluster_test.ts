@@ -119,18 +119,24 @@ Deno.test("isSelectorScopeCollision: only 23505 on artifacts_selector_scope_uidx
   assert(!isSelectorScopeCollision(null));
 });
 
-// deno-lint-ignore no-explicit-any
-type AnyErr = any;
+/** The PostgREST error shape the clusterer branches on. Typed precisely rather than
+ *  `any`: eslint lints this file too (it does not honour deno-lint-ignore). */
+type StubErr = { code?: string; message?: string; details?: string } | null;
+type StubBuilder = {
+  select(): StubBuilder;
+  eq(col: string, val: string): Promise<{ data: Array<Record<string, unknown>>; error: StubErr }>;
+  update(vals: unknown): { eq(col: string, id: string): Promise<{ error: StubErr }> };
+  insert(rows: unknown): Promise<{ error: StubErr }>;
+};
 function stubDb(opts: {
   rows: Array<Record<string, unknown>>;
-  updateError?: (id: string) => AnyErr;
+  updateError?: (id: string) => StubErr;
   rpc?: Record<string, { data?: unknown; error?: unknown }>;
 }) {
   const rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
   const admin = {
     from(_t: string) {
-      // deno-lint-ignore no-explicit-any
-      const builder: any = {
+      const builder: StubBuilder = {
         select() { return builder; },
         eq(_c: string, _v: string) { return Promise.resolve({ data: opts.rows, error: null }); },
         update(_vals: unknown) {
@@ -153,7 +159,7 @@ const TWO_ROWS = [
   { id: "a1", kind: "username", value: "alpha", source: "s", confidence: 50, metadata: {} },
   { id: "a2", kind: "email", value: "beta@x.com", source: "s", confidence: 50, metadata: {} },
 ];
-const SEL_COLLISION: AnyErr = { code: "23505", message: 'duplicate key value violates unique constraint "artifacts_selector_scope_uidx"' };
+const SEL_COLLISION: StubErr = { code: "23505", message: 'duplicate key value violates unique constraint "artifacts_selector_scope_uidx"' };
 
 Deno.test("cluster assign: a selector-scope collision is MERGED, not silently skipped; counts accurate", async () => {
   const { admin, rpcCalls } = stubDb({

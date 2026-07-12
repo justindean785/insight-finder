@@ -158,7 +158,31 @@ BEGIN
   _removed2 := public.artifact_consolidate_dupes();
   IF _removed2 <> 0 THEN RAISE EXCEPTION '(7) second consolidation was not idempotent, removed % rows', _removed2; END IF;
 
-  RAISE NOTICE 'selector-scope consolidation (Part A) OK: 21 platforms + distinct subjects/hosts preserved, dupes merged with provenance, conflicting verdicts → recheck, idempotent';
+  -- (8) GLOBAL end-state, not just the fixtures: zero duplicate selector-scope keys
+  --     and zero dangling references anywhere in the table. Asserted while the unique
+  --     index is still DROPPED, so it proves the CONSOLIDATION produced a clean state
+  --     rather than the index merely hiding a dirty one. The key expression below must
+  --     stay identical to artifacts_selector_scope_uidx's.
+  SELECT count(*) INTO _n FROM (
+    SELECT 1
+      FROM public.artifacts
+     GROUP BY thread_id, kind, value,
+              COALESCE(NULLIF(btrim(subject_id), ''), '∅'),
+              public.artifact_selector_scope(kind, value, source, metadata)
+    HAVING count(*) > 1
+  ) dupes;
+  IF _n <> 0 THEN RAISE EXCEPTION '(8) % duplicate selector-scope key groups survived consolidation', _n; END IF;
+
+  SELECT count(*) INTO _n FROM public.evidence_log e
+   WHERE e.artifact_id IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM public.artifacts a WHERE a.id = e.artifact_id);
+  IF _n <> 0 THEN RAISE EXCEPTION '(8) % evidence_log rows dangle at a deleted artifact', _n; END IF;
+
+  SELECT count(*) INTO _n FROM public.artifact_reviews r
+   WHERE NOT EXISTS (SELECT 1 FROM public.artifacts a WHERE a.id = r.artifact_id);
+  IF _n <> 0 THEN RAISE EXCEPTION '(8) % artifact_reviews rows dangle at a deleted artifact', _n; END IF;
+
+  RAISE NOTICE 'selector-scope consolidation (Part A) OK: 21 platforms + distinct subjects/hosts preserved, dupes merged with provenance, conflicting verdicts → recheck, idempotent, zero dup keys + zero dangling refs globally';
 END $$;
 ROLLBACK;  -- restores artifacts_selector_scope_uidx and discards all Part A rows
 
@@ -220,6 +244,7 @@ DECLARE
   _n int; _subj text; _clu text; _conf int; _meta jsonb;
   _rev_state text; _rev_lineage jsonb; _rev_note text;
   _found uuid;
+  _hash_before jsonb; _hash_after jsonb;
 BEGIN
   INSERT INTO public.threads(user_id) VALUES (_uid) RETURNING id INTO _tid;
 
@@ -249,6 +274,12 @@ BEGIN
   SELECT ok INTO _chain_ok FROM public.verify_evidence_chain(_tid);
   IF NOT _chain_ok THEN RAISE EXCEPTION 'setup: evidence chain invalid before merge'; END IF;
 
+  -- (#8) Snapshot every chain field BEFORE the merge. "the chain still verifies" is
+  -- a weaker claim than "the hashes never moved" — a merge that recomputed hashes
+  -- could still self-verify while destroying byte-for-byte custody. Compare exactly.
+  SELECT jsonb_agg(jsonb_build_object('id', id, 'content', content_hash, 'prev', prev_hash, 'chain', chain_hash) ORDER BY seq)
+    INTO _hash_before FROM public.evidence_log WHERE thread_id = _tid;
+
   -- find_artifact_selector_collision: the loser reassigned to subject 'S' collides
   -- with the survivor (same kind/value/scope, subject 'S'); a phantom subject does not.
   SELECT public.find_artifact_selector_collision(_loser, 'S') INTO _found;
@@ -277,6 +308,14 @@ BEGIN
   IF _dangling <> 0 THEN RAISE EXCEPTION 'evidence still points at deleted loser (% rows)', _dangling; END IF;
   SELECT ok INTO _chain_ok FROM public.verify_evidence_chain(_tid);
   IF NOT _chain_ok THEN RAISE EXCEPTION 'evidence chain broke after merge (artifact_id is not hashed — should be untouched)'; END IF;
+
+  -- (#8) …and the chain fields are BYTE-IDENTICAL, not merely self-consistent.
+  SELECT jsonb_agg(jsonb_build_object('id', id, 'content', content_hash, 'prev', prev_hash, 'chain', chain_hash) ORDER BY seq)
+    INTO _hash_after FROM public.evidence_log WHERE thread_id = _tid;
+  IF _hash_after IS DISTINCT FROM _hash_before THEN
+    RAISE EXCEPTION '(#8) merge mutated evidence chain fields — content/prev/chain hashes must be byte-identical.  before=%  after=%',
+      _hash_before, _hash_after;
+  END IF;
 
   -- Conflicting reviews → survivor 'recheck' with full lineage + note history; loser review gone.
   SELECT count(*) INTO _n FROM public.artifact_reviews WHERE artifact_id = _loser;
@@ -313,8 +352,15 @@ BEGIN
     VALUES (_tid_b, _uid, 'username', 'x', 's', 50) RETURNING id INTO _b;
   -- SAME thread as _a but a different user_id column → isolates the cross-user guard
   -- (different users otherwise live in different threads and trip the thread guard).
+  --
+  -- The value MUST differ from _a's. artifacts_selector_scope_uidx keys on
+  -- (thread_id, kind, value, subject, scope) and deliberately does NOT include
+  -- user_id, so a row identical to _a but for its owner is a duplicate BY THE INDEX
+  -- and is rejected at INSERT — before merge_artifact_into's user guard is ever
+  -- reached. A distinct value keeps the row insertable while still exercising the
+  -- guard (same thread, different owner).
   INSERT INTO public.artifacts(thread_id, user_id, kind, value, source, confidence)
-    VALUES (_tid_a, _uid2, 'username', 'x', 's', 50) RETURNING id INTO _u2;
+    VALUES (_tid_a, _uid2, 'username', 'x_other_owner', 's', 50) RETURNING id INTO _u2;
 
   -- cross-thread (same user, different thread) → reject.
   BEGIN
@@ -342,3 +388,56 @@ BEGIN
   RAISE NOTICE 'merge_artifact_into rejection OK: cross-thread and cross-user merges refused, no partial mutation';
 END $$;
 ROLLBACK;
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Part E — the privileged merge surface is NOT reachable by any client role.
+-- Pure catalog inspection (no fixtures, no writes, nothing to roll back).
+-- ══════════════════════════════════════════════════════════════════════════════
+DO $$
+DECLARE
+  _targets text[] := ARRAY['merge_artifact_into','find_artifact_selector_collision','artifact_consolidate_dupes'];
+  _fn record;
+  _seen int := 0;
+BEGIN
+  FOR _fn IN
+    SELECT p.oid,
+           p.proname,
+           pg_get_function_identity_arguments(p.oid) AS args,
+           -- A function whose ACL was never touched is NOT unprivileged: Postgres
+           -- DEFAULTS it to EXECUTE for PUBLIC. COALESCE onto acldefault() so a
+           -- forgotten REVOKE fails this test instead of silently passing it.
+           COALESCE(p.proacl, acldefault('f', p.proowner)) AS acl
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname = 'public' AND p.proname = ANY(_targets)
+  LOOP
+    _seen := _seen + 1;
+
+    -- PUBLIC is grantee OID 0 in the ACL, and is not addressable via has_function_privilege.
+    IF EXISTS (SELECT 1 FROM aclexplode(_fn.acl) a
+                WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE') THEN
+      RAISE EXCEPTION 'privilege leak: PUBLIC can EXECUTE %(%)', _fn.proname, _fn.args;
+    END IF;
+
+    IF has_function_privilege('anon', _fn.oid, 'EXECUTE') THEN
+      RAISE EXCEPTION 'privilege leak: anon can EXECUTE %(%)', _fn.proname, _fn.args;
+    END IF;
+    IF has_function_privilege('authenticated', _fn.oid, 'EXECUTE') THEN
+      RAISE EXCEPTION 'privilege leak: authenticated can EXECUTE %(%)', _fn.proname, _fn.args;
+    END IF;
+
+    -- Positive control: the REVOKEs must not have locked out the runtime caller too.
+    -- The edge function invokes these with the service-role client; if this ever fails,
+    -- every collision-merge would throw permission-denied in production.
+    IF NOT has_function_privilege('service_role', _fn.oid, 'EXECUTE') THEN
+      RAISE EXCEPTION 'service_role LOST EXECUTE on %(%) — the runtime merge path is broken', _fn.proname, _fn.args;
+    END IF;
+  END LOOP;
+
+  -- Guard against the test silently passing because a function was renamed away.
+  IF _seen <> array_length(_targets, 1) THEN
+    RAISE EXCEPTION 'privilege test matched % of % target functions — name drift?', _seen, array_length(_targets, 1);
+  END IF;
+
+  RAISE NOTICE 'privileges (Part E) OK: PUBLIC/anon/authenticated cannot EXECUTE the merge surface; service_role still can';
+END $$;

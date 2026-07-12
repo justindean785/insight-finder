@@ -479,6 +479,18 @@ BEGIN
   RETURN _removed;
 END $$;
 
+-- Maintenance-only surface: this is invoked by THIS migration (as the owner) and by
+-- the service role; no client ever calls it. A function whose ACL is never touched
+-- keeps Postgres' default grant of EXECUTE to PUBLIC, so revoke it explicitly rather
+-- than relying on it being "internal". (It is SECURITY INVOKER and its inner
+-- merge_artifact_into is already service-role-only, so a client call could not have
+-- destroyed data — it would have hit permission-denied mid-merge. It still has no
+-- business being callable.) The owner retains EXECUTE regardless, so the call below
+-- is unaffected.
+REVOKE EXECUTE ON FUNCTION public.artifact_consolidate_dupes() FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.artifact_consolidate_dupes() FROM anon, authenticated;
+GRANT  EXECUTE ON FUNCTION public.artifact_consolidate_dupes() TO service_role;
+
 -- Run the consolidation once now (before the UNIQUE INDEX below can be created).
 SELECT public.artifact_consolidate_dupes();
 
