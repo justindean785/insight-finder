@@ -708,13 +708,28 @@ Deno.serve(async (req) => {
       // Bound each step's generation so a long step can't truncate trailing
       // parallel tool calls and orphan their results (the MissingToolResults crash).
       maxOutputTokens: ORCHESTRATOR_MAX_OUTPUT_TOKENS,
-      // Serial tool calls on the MiniMax orchestrator (see ORCHESTRATOR_PARALLEL_TOOL_CALLS).
-      // Attached ONLY when MiniMax is the live provider — the Gemini fallback / Grok /
-      // OpenAdapter paths ignore a foreign provider-option key and shape tool calls
-      // themselves, so scoping by the "minimax" key keeps their behavior unchanged.
-      providerOptions: (minimaxIsPrimary && !useFallback)
-        ? { minimax: { parallel_tool_calls: ORCHESTRATOR_PARALLEL_TOOL_CALLS } }
-        : undefined,
+      // Provider-specific request fields. Both keys forward under their own
+      // provider name; the SDK drops non-matching keys silently.
+      // - MiniMax primary → serial tool calls (long-standing behavior).
+      // - DeepSeek primary → serial tool calls + thinking disabled for the
+      //   canary. DeepSeek V4 defaults to thinking-mode, and thinking-mode
+      //   requires round-tripping `reasoning_content` across every subsequent
+      //   request; the AI SDK/openai-compatible path has not been proven to
+      //   carry that field through multi-round tool streams, and enabling
+      //   parallel calls compounds the risk of missing/malformed tool-result
+      //   pairing that produced prior failures.
+      providerOptions: useFallback
+        ? undefined
+        : orchChoice.provider === "minimax"
+          ? { minimax: { parallel_tool_calls: ORCHESTRATOR_PARALLEL_TOOL_CALLS } }
+          : orchChoice.provider === "deepseek"
+            ? {
+                deepseek: {
+                  parallel_tool_calls: false,
+                  thinking: { type: "disabled" },
+                },
+              }
+            : undefined,
       system: SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary,
       messages: trimmedMessages,
       tools: wrapToolsWithCache(tools, {
