@@ -134,6 +134,15 @@ export const FALLBACK_MODEL_ID = MODELS.fallback;
 export const XAI_API_KEY = Deno.env.get("XAI_API_KEY") ?? "";
 export const OPENADAPTER_API_KEY = Deno.env.get("OPENADAPTER_API_KEY") ?? "";
 export const OPENADAPTER_BASE_URL = Deno.env.get("OPENADAPTER_BASE_URL") ?? "";
+// DeepSeek — OpenAI-compatible chat completions at api.deepseek.com. When set,
+// DeepSeek takes the lead orchestrator role by default (see orchestrator_select).
+// MiniMax stays configured as a secondary/fallback provider.
+export const DEEPSEEK_API_KEY = Deno.env.get("DEEPSEEK_API_KEY") ?? "";
+// Default to `deepseek-chat` — the latest DeepSeek V3.x chat model, best for
+// agentic tool-calling. Override with DEEPSEEK_ORCHESTRATOR_MODEL_ID
+// (e.g. `deepseek-reasoner` for the R1 reasoning line).
+export const DEEPSEEK_ORCHESTRATOR_MODEL_ID =
+  Deno.env.get("DEEPSEEK_ORCHESTRATOR_MODEL_ID") ?? "deepseek-chat";
 /** Operator override pinning the primary orchestrator provider. */
 export const ORCHESTRATOR_PROVIDER = (Deno.env.get("ORCHESTRATOR_PROVIDER") ?? "").trim().toLowerCase();
 /** Orchestrator model IDs for the alternative providers (overridable).
@@ -142,6 +151,16 @@ export const ORCHESTRATOR_PROVIDER = (Deno.env.get("ORCHESTRATOR_PROVIDER") ?? "
  * with GROK_ORCHESTRATOR_MODEL_ID if xAI's lineup changes. */
 export const GROK_ORCHESTRATOR_MODEL_ID = Deno.env.get("GROK_ORCHESTRATOR_MODEL_ID") ?? "grok-4.3";
 export const OPENADAPTER_ORCHESTRATOR_MODEL_ID = Deno.env.get("OPENADAPTER_ORCHESTRATOR_MODEL_ID") ?? "";
+
+// DeepSeek gateway — OpenAI-compatible.
+export const deepseekGateway = DEEPSEEK_API_KEY
+  ? createOpenAICompatible({
+      name: "deepseek",
+      baseURL: "https://api.deepseek.com/v1",
+      headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}` },
+      fetch: ORCHESTRATOR_FETCH,
+    })
+  : null;
 
 // xAI Grok — OpenAI-compatible chat completions at api.x.ai.
 export const grokGateway = XAI_API_KEY

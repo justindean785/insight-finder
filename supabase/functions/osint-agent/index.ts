@@ -16,6 +16,7 @@ import {
   geminiDirectGateway, GEMINI_FALLBACK_MODEL_ID, ALLOW_LOVABLE_FALLBACK,
   grokGateway, openAdapterGateway, ORCHESTRATOR_PROVIDER,
   GROK_ORCHESTRATOR_MODEL_ID, OPENADAPTER_ORCHESTRATOR_MODEL_ID,
+  deepseekGateway, DEEPSEEK_ORCHESTRATOR_MODEL_ID,
   degradedTools, deadHosts, resetFirecrawlCreditsLow, INTELBASE_ENABLED,
 } from "./env.ts";
 
@@ -442,6 +443,7 @@ Deno.serve(async (req) => {
     // ORCHESTRATOR_PROVIDER pins them, or they're the only provider available).
     const orchChoice = selectOrchestratorProvider({
       pin: ORCHESTRATOR_PROVIDER,
+      deepseek: !!deepseekGateway,
       minimax: minimaxAvailable,
       grok: !!grokGateway,
       openadapter: !!openAdapterGateway,
@@ -557,7 +559,9 @@ Deno.serve(async (req) => {
     }
     // Resolve the primary (non-fallback) model from the selected provider.
     const { model: primaryModel, label: primaryLabel } =
-      orchChoice.provider === "grok"
+      orchChoice.provider === "deepseek"
+        ? { model: deepseekGateway!.chatModel(DEEPSEEK_ORCHESTRATOR_MODEL_ID), label: `${DEEPSEEK_ORCHESTRATOR_MODEL_ID} (DeepSeek)` }
+        : orchChoice.provider === "grok"
         ? { model: grokGateway!.chatModel(GROK_ORCHESTRATOR_MODEL_ID), label: `${GROK_ORCHESTRATOR_MODEL_ID} (xAI Grok)` }
         : orchChoice.provider === "openadapter"
         ? { model: openAdapterGateway!.chatModel(OPENADAPTER_ORCHESTRATOR_MODEL_ID), label: `${OPENADAPTER_ORCHESTRATOR_MODEL_ID} (OpenAdapter)` }
