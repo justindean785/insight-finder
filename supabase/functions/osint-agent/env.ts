@@ -138,11 +138,11 @@ export const OPENADAPTER_BASE_URL = Deno.env.get("OPENADAPTER_BASE_URL") ?? "";
 // DeepSeek takes the lead orchestrator role by default (see orchestrator_select).
 // MiniMax stays configured as a secondary/fallback provider.
 export const DEEPSEEK_API_KEY = Deno.env.get("DEEPSEEK_API_KEY") ?? "";
-// Default to `deepseek-chat` — the latest DeepSeek V3.x chat model, best for
-// agentic tool-calling. Override with DEEPSEEK_ORCHESTRATOR_MODEL_ID
-// (e.g. `deepseek-reasoner` for the R1 reasoning line).
+// Default to `deepseek-v4-pro` — DeepSeek's V4 flagship (1.6T total / 49B
+// active params, 1M-token context). Override with DEEPSEEK_ORCHESTRATOR_MODEL_ID
+// (e.g. `deepseek-v4-flash` for the cheaper/faster variant).
 export const DEEPSEEK_ORCHESTRATOR_MODEL_ID =
-  Deno.env.get("DEEPSEEK_ORCHESTRATOR_MODEL_ID") ?? "deepseek-chat";
+  Deno.env.get("DEEPSEEK_ORCHESTRATOR_MODEL_ID") ?? "deepseek-v4-pro";
 /** Operator override pinning the primary orchestrator provider. */
 export const ORCHESTRATOR_PROVIDER = (Deno.env.get("ORCHESTRATOR_PROVIDER") ?? "").trim().toLowerCase();
 /** Orchestrator model IDs for the alternative providers (overridable).
