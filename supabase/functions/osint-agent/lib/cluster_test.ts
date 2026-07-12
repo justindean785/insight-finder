@@ -1,8 +1,8 @@
 // lib/cluster_test.ts — C-1 acceptance: deterministic, LLM-independent clustering +
 // confidence promotion over the real ccc149bc artifact set (passwords redacted).
 // If these fail, STOP and re-plan — do not patch forward.
-import { assert, assertEquals } from "jsr:@std/assert@^1";
-import { clusterArtifacts, clusterUpdatesFor, parseArtifactsCsv, type Artifact, type ClusterMember, type ClusterResult } from "./cluster.ts";
+import { assert, assertEquals, assertRejects } from "jsr:@std/assert@^1";
+import { applyClusteringToThread, clusterArtifacts, clusterUpdatesFor, isSelectorScopeCollision, parseArtifactsCsv, type Artifact, type ClusterMember, type ClusterResult } from "./cluster.ts";
 
 const CCC = parseArtifactsCsv(Deno.readTextFileSync(new URL("./fixtures/ccc149bc-artifacts.csv", import.meta.url)));
 const E29 = parseArtifactsCsv(Deno.readTextFileSync(new URL("./fixtures/e29aa8c9-artifacts.csv", import.meta.url)));
@@ -107,4 +107,81 @@ Deno.test("C-1: clusterUpdatesFor emits DB updates only for id-carrying rows", (
   assert(core && core.promoted_confidence >= 90 && core.subject_id?.startsWith("subj_"), "confirmed update carries subject_id + ≥90");
   // Excluded rows surface null cluster ids in the update set.
   assert(updates.some((u) => u.cluster_id === null), "excluded rows → null cluster_id update");
+});
+
+// ---- guardrail #6: merge-on-collision for subject reassignment ------------------
+
+Deno.test("isSelectorScopeCollision: only 23505 on artifacts_selector_scope_uidx", () => {
+  assert(isSelectorScopeCollision({ code: "23505", message: 'duplicate key value violates unique constraint "artifacts_selector_scope_uidx"' }));
+  assert(isSelectorScopeCollision({ code: "23505", details: "Key ... artifacts_selector_scope_uidx" }));
+  assert(!isSelectorScopeCollision({ code: "23505", message: 'violates unique constraint "some_other_uidx"' }), "different constraint is not our merge case");
+  assert(!isSelectorScopeCollision({ code: "23503", message: "fk" }), "fk violation is not a selector collision");
+  assert(!isSelectorScopeCollision(null));
+});
+
+// deno-lint-ignore no-explicit-any
+type AnyErr = any;
+function stubDb(opts: {
+  rows: Array<Record<string, unknown>>;
+  updateError?: (id: string) => AnyErr;
+  rpc?: Record<string, { data?: unknown; error?: unknown }>;
+}) {
+  const rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
+  const admin = {
+    from(_t: string) {
+      // deno-lint-ignore no-explicit-any
+      const builder: any = {
+        select() { return builder; },
+        eq(_c: string, _v: string) { return Promise.resolve({ data: opts.rows, error: null }); },
+        update(_vals: unknown) {
+          return { eq(_c: string, id: string) { return Promise.resolve({ error: opts.updateError ? opts.updateError(id) : null }); } };
+        },
+        insert(_rows: unknown) { return Promise.resolve({ error: null }); },
+      };
+      return builder;
+    },
+    rpc(fn: string, args: Record<string, unknown>) {
+      rpcCalls.push({ fn, args });
+      const r = opts.rpc?.[fn] ?? {};
+      return Promise.resolve({ data: r.data ?? null, error: r.error ?? null });
+    },
+  };
+  return { admin, rpcCalls };
+}
+
+const TWO_ROWS = [
+  { id: "a1", kind: "username", value: "alpha", source: "s", confidence: 50, metadata: {} },
+  { id: "a2", kind: "email", value: "beta@x.com", source: "s", confidence: 50, metadata: {} },
+];
+const SEL_COLLISION: AnyErr = { code: "23505", message: 'duplicate key value violates unique constraint "artifacts_selector_scope_uidx"' };
+
+Deno.test("cluster assign: a selector-scope collision is MERGED, not silently skipped; counts accurate", async () => {
+  const { admin, rpcCalls } = stubDb({
+    rows: TWO_ROWS,
+    updateError: (id) => (id === "a1" ? SEL_COLLISION : null),
+    rpc: { find_artifact_selector_collision: { data: "surv1" }, merge_artifact_into: { data: "surv1" } },
+  });
+  const r = await applyClusteringToThread(admin, "thread-1", "user-1");
+  assertEquals(r.collisionMerges, 1, "the collided row is counted as a merge");
+  assertEquals(r.updated, 1, "the non-colliding row is a normal update");
+  const merge = rpcCalls.find((c) => c.fn === "merge_artifact_into");
+  assert(merge && merge.args._loser === "a1" && merge.args._survivor === "surv1", "merge folds the loser into the pre-existing survivor");
+});
+
+Deno.test("cluster assign: a NON-collision DB error is surfaced (thrown), never swallowed", async () => {
+  const { admin } = stubDb({
+    rows: TWO_ROWS,
+    updateError: (id) => (id === "a1" ? { code: "23503", message: "fk violation" } : null),
+  });
+  await assertRejects(() => applyClusteringToThread(admin, "thread-1", "user-1"), Error);
+});
+
+Deno.test("cluster assign: a selector collision with no resolvable survivor is surfaced, not dropped", async () => {
+  const { admin, rpcCalls } = stubDb({
+    rows: TWO_ROWS,
+    updateError: (id) => (id === "a1" ? SEL_COLLISION : null),
+    rpc: { find_artifact_selector_collision: { data: null } },
+  });
+  await assertRejects(() => applyClusteringToThread(admin, "thread-1", "user-1"), Error);
+  assert(!rpcCalls.some((c) => c.fn === "merge_artifact_into"), "never merge when the survivor can't be located");
 });
