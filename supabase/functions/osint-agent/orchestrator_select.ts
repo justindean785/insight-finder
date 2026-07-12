@@ -8,11 +8,13 @@
 // provider is selected only when its key is configured AND it is either pinned
 // via ORCHESTRATOR_PROVIDER or is the only available provider.
 
-export type OrchestratorProvider = "minimax" | "grok" | "openadapter" | "lovable";
+export type OrchestratorProvider = "deepseek" | "minimax" | "grok" | "openadapter" | "lovable";
 
 export interface OrchestratorAvailability {
   /** ORCHESTRATOR_PROVIDER secret, lowercased/trimmed ("" if unset). */
   pin: string;
+  /** DeepSeek gateway configured (DEEPSEEK_API_KEY present). */
+  deepseek: boolean;
   /** MINIMAX_API_KEY configured. */
   minimax: boolean;
   /** xAI/Grok gateway configured (XAI_API_KEY present). */
@@ -24,12 +26,13 @@ export interface OrchestratorAvailability {
 export interface OrchestratorChoice {
   provider: OrchestratorProvider;
   /** Why this provider was chosen — for logs/telemetry. */
-  reason: "pinned" | "default-minimax" | "only-available" | "none-configured";
+  reason: "pinned" | "default-deepseek" | "default-minimax" | "only-available" | "none-configured";
 }
 
 /** Normalize provider aliases a user might set in ORCHESTRATOR_PROVIDER. */
 function normalizePin(pin: string): OrchestratorProvider | "" {
   const p = pin.trim().toLowerCase();
+  if (p === "deepseek") return "deepseek";
   if (p === "grok" || p === "xai") return "grok";
   if (p === "openadapter" || p === "open-adapter") return "openadapter";
   if (p === "minimax") return "minimax";
@@ -41,13 +44,15 @@ function normalizePin(pin: string): OrchestratorProvider | "" {
  *
  * Precedence:
  *   1. A valid pin whose provider is configured → that provider ("pinned").
- *   2. Otherwise MiniMax if configured → "minimax" ("default-minimax").
- *   3. Otherwise the first configured alternative → "only-available".
- *   4. Nothing configured → "minimax" / "none-configured" (caller errors,
+ *   2. Otherwise DeepSeek if configured → "deepseek" ("default-deepseek").
+ *   3. Otherwise MiniMax if configured → "minimax" ("default-minimax").
+ *   4. Otherwise the first configured alternative → "only-available".
+ *   5. Nothing configured → "minimax" / "none-configured" (caller errors,
  *      same contract as before).
  */
 export function selectOrchestratorProvider(a: OrchestratorAvailability): OrchestratorChoice {
   const has: Partial<Record<OrchestratorProvider, boolean>> = {
+    deepseek: a.deepseek,
     minimax: a.minimax,
     grok: a.grok,
     openadapter: a.openadapter,
@@ -55,6 +60,11 @@ export function selectOrchestratorProvider(a: OrchestratorAvailability): Orchest
 
   const pin = normalizePin(a.pin);
   if (pin && has[pin]) return { provider: pin, reason: "pinned" };
+
+  // DeepSeek takes the lead orchestrator role by default when configured —
+  // MiniMax stays wired as a secondary/fallback provider (still runs sub-tools
+  // via minimaxChat) rather than being removed.
+  if (has.deepseek) return { provider: "deepseek", reason: "default-deepseek" };
 
   if (has.minimax) return { provider: "minimax", reason: "default-minimax" };
 

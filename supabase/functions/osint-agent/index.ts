@@ -5,7 +5,6 @@
 
 import { convertToModelMessages, streamText, generateText, stepCountIs, type UIMessage, type ModelMessage } from "npm:ai@6";
 
-import { MODELS, ORCHESTRATOR_TIER } from "./models.ts";
 import { buildWorkflowAddendum } from "./workflow_prompt.ts";
 import * as circuit from "./circuit.ts";
 import { discoverCapabilities, capabilityEnvKeys, gatedToolNames } from "./capabilities.ts";
@@ -16,6 +15,7 @@ import {
   geminiDirectGateway, GEMINI_FALLBACK_MODEL_ID, ALLOW_LOVABLE_FALLBACK,
   grokGateway, openAdapterGateway, ORCHESTRATOR_PROVIDER,
   GROK_ORCHESTRATOR_MODEL_ID, OPENADAPTER_ORCHESTRATOR_MODEL_ID,
+  deepseekGateway, DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID,
   degradedTools, deadHosts, resetFirecrawlCreditsLow, INTELBASE_ENABLED,
 } from "./env.ts";
 
@@ -440,13 +440,18 @@ Deno.serve(async (req) => {
     // configured this is always "minimax" and everything below is byte-for-byte
     // the prior behavior. Grok/OpenAdapter only win when their key is set (and
     // ORCHESTRATOR_PROVIDER pins them, or they're the only provider available).
+    // DeepSeek takes the lead role by default when its key is configured — see
+    // orchestrator_select.ts precedence — with MiniMax staying wired as a
+    // secondary/fallback provider (still runs sub-tools via minimaxChat).
     const orchChoice = selectOrchestratorProvider({
       pin: ORCHESTRATOR_PROVIDER,
+      deepseek: !!deepseekGateway,
       minimax: minimaxAvailable,
       grok: !!grokGateway,
       openadapter: !!openAdapterGateway,
     });
     const minimaxIsPrimary = orchChoice.provider === "minimax";
+    const deepseekIsPrimary = orchChoice.provider === "deepseek";
     // Speed pass: operator can pin the orchestrator to the Lovable AI Gateway
     // (Gemini) via ORCHESTRATOR_PROVIDER=lovable. When pinned, we skip MiniMax
     // entirely — Gemini is faster and supports parallel tool calls natively
@@ -460,10 +465,21 @@ Deno.serve(async (req) => {
       minimaxIsPrimary &&
       (approxPromptChars > MINIMAX_CHAR_BUDGET ||
         trimmedMessages.length > MINIMAX_MSG_BUDGET);
+    // DeepSeek's 1M-token input window is ~5x MiniMax's budget headroom, so the
+    // per-step trimmer (RECENT_WINDOW / TOTAL_PROMPT_CHAR_BUDGET, applied
+    // upstream of this check) is expected to keep prompts well under it in
+    // normal operation. This budget is a safety net against a genuinely
+    // runaway/degenerate context (not a routine trigger): if it's ever hit,
+    // pivot to Gemini rather than risk a slow/costly/failed DeepSeek call.
+    const DEEPSEEK_CHAR_BUDGET = 3_000_000; // ≈750k tokens, headroom under 1M
+    const deepseekWouldOverflow =
+      deepseekIsPrimary && approxPromptChars > DEEPSEEK_CHAR_BUDGET;
     let useFallback = lovablePinned
       ? true
       : minimaxIsPrimary
       ? (!minimaxAvailable || wouldOverflow)
+      : deepseekIsPrimary
+      ? (!DEEPSEEK_API_KEY || deepseekWouldOverflow)
       : false;
     if (minimaxIsPrimary && !minimaxAvailable) {
       // MINIMAX_API_KEY must be set in the deployed environment. Losing it is a
@@ -472,6 +488,11 @@ Deno.serve(async (req) => {
       // via checks.minimax.reason="missing_key").
       console.error(
         "[orchestrator] MINIMAX_API_KEY is not configured — MiniMax primary unavailable, falling back",
+      );
+    }
+    if (deepseekWouldOverflow) {
+      console.warn(
+        `[orchestrator] DeepSeek prompt exceeds safety budget (${approxPromptChars} chars > ${DEEPSEEK_CHAR_BUDGET}) → Gemini fallback for thread ${threadId}`,
       );
     }
     // Which gateway takes a fallback turn. Direct Gemini is the default; the
@@ -549,6 +570,65 @@ Deno.serve(async (req) => {
         );
       }
     }
+    // DeepSeek preflight — mirrors the MiniMax policy above (an ambiguous
+    // timeout never pivots the run; only an explicit HTTP failure from the
+    // provider itself does). Without this, a dead key, a wrong/renamed model
+    // id (400), or an upstream outage would previously commit the whole run to
+    // DeepSeek and die mid-stream with no failover, instead of a clean pivot
+    // to Gemini.
+    if (deepseekIsPrimary && !useFallback && fallbackTarget) {
+      const DEEPSEEK_PREFLIGHT_TIMEOUT_MS = 12_000;
+      const DEEPSEEK_PREFLIGHT_ATTEMPTS = 2;
+      const probeDeepseekOnce = async (): Promise<{ ok: boolean; status: number }> => {
+        try {
+          const ctrl = new AbortController();
+          const timer = setTimeout(() => ctrl.abort(), DEEPSEEK_PREFLIGHT_TIMEOUT_MS);
+          try {
+            const res = await fetch("https://api.deepseek.com/v1/chat/completions", {
+              method: "POST",
+              headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}`, "Content-Type": "application/json" },
+              body: JSON.stringify({
+                model: DEEPSEEK_ORCHESTRATOR_MODEL_ID,
+                messages: [{ role: "user", content: "ping" }],
+                max_tokens: 4,
+                temperature: 0,
+              }),
+              signal: ctrl.signal,
+            });
+            return { ok: res.ok, status: res.status };
+          } finally {
+            clearTimeout(timer);
+          }
+        } catch {
+          // Timeout/abort/network — ambiguous, encoded as status 0 (never pivots).
+          return { ok: false, status: 0 };
+        }
+      };
+      let lastDeepseekProbe: { ok: boolean; status: number } = { ok: false, status: 0 };
+      for (let attempt = 1; attempt <= DEEPSEEK_PREFLIGHT_ATTEMPTS; attempt++) {
+        lastDeepseekProbe = await probeDeepseekOnce();
+        if (lastDeepseekProbe.ok) break;
+        if (attempt < DEEPSEEK_PREFLIGHT_ATTEMPTS) {
+          console.warn(
+            `[orchestrator] deepseek preflight attempt ${attempt}/${DEEPSEEK_PREFLIGHT_ATTEMPTS} failed (status=${lastDeepseekProbe.status}) — retrying`,
+          );
+          await new Promise((r) => setTimeout(r, 250));
+        }
+      }
+      // Explicit HTTP failure (status >= 400, incl. an invalid/renamed model id
+      // → 400/404) pivots the run; a bare timeout (status 0) does not — same
+      // ambiguity policy as the MiniMax preflight.
+      if (!lastDeepseekProbe.ok && lastDeepseekProbe.status >= 400) {
+        useFallback = true;
+        console.warn(
+          `[orchestrator] deepseek preflight failed after ${DEEPSEEK_PREFLIGHT_ATTEMPTS} attempts (status=${lastDeepseekProbe.status}) → Gemini fallback for thread ${threadId}`,
+        );
+      } else if (!lastDeepseekProbe.ok) {
+        console.info(
+          `[orchestrator] deepseek preflight ambiguous (status=${lastDeepseekProbe.status}) after ${DEEPSEEK_PREFLIGHT_ATTEMPTS} attempts — keeping DeepSeek primary for thread ${threadId}`,
+        );
+      }
+    }
     if (useFallback && !fallbackTarget) {
       throw new Error(
         "MiniMax is unavailable and no fallback is configured — set GEMINI_API_KEY " +
@@ -557,7 +637,9 @@ Deno.serve(async (req) => {
     }
     // Resolve the primary (non-fallback) model from the selected provider.
     const { model: primaryModel, label: primaryLabel } =
-      orchChoice.provider === "grok"
+      orchChoice.provider === "deepseek"
+        ? { model: deepseekGateway!.chatModel(DEEPSEEK_ORCHESTRATOR_MODEL_ID), label: `${DEEPSEEK_ORCHESTRATOR_MODEL_ID} (DeepSeek)` }
+        : orchChoice.provider === "grok"
         ? { model: grokGateway!.chatModel(GROK_ORCHESTRATOR_MODEL_ID), label: `${GROK_ORCHESTRATOR_MODEL_ID} (xAI Grok)` }
         : orchChoice.provider === "openadapter"
         ? { model: openAdapterGateway!.chatModel(OPENADAPTER_ORCHESTRATOR_MODEL_ID), label: `${OPENADAPTER_ORCHESTRATOR_MODEL_ID} (OpenAdapter)` }
@@ -704,12 +786,23 @@ Deno.serve(async (req) => {
       // Bound each step's generation so a long step can't truncate trailing
       // parallel tool calls and orphan their results (the MissingToolResults crash).
       maxOutputTokens: ORCHESTRATOR_MAX_OUTPUT_TOKENS,
-      // Serial tool calls on the MiniMax orchestrator (see ORCHESTRATOR_PARALLEL_TOOL_CALLS).
-      // Attached ONLY when MiniMax is the live provider — the Gemini fallback / Grok /
-      // OpenAdapter paths ignore a foreign provider-option key and shape tool calls
-      // themselves, so scoping by the "minimax" key keeps their behavior unchanged.
-      providerOptions: (minimaxIsPrimary && !useFallback)
+      // Provider-specific request fields. Both keys forward under their own
+      // provider name; the SDK drops non-matching keys silently.
+      // - MiniMax primary → serial tool calls (long-standing behavior, see
+      //   ORCHESTRATOR_PARALLEL_TOOL_CALLS).
+      // - DeepSeek primary → serial tool calls + thinking disabled for the
+      //   canary. DeepSeek V4 defaults to thinking-mode, and thinking-mode
+      //   requires round-tripping `reasoning_content` across every subsequent
+      //   request; @ai-sdk/openai-compatible has not been proven to carry that
+      //   field through multi-round streamed tool calls, and enabling parallel
+      //   calls compounds the risk of missing/malformed tool-result pairing
+      //   that produced prior orchestrator failures (MiniMax's exact crash).
+      providerOptions: useFallback
+        ? undefined
+        : minimaxIsPrimary
         ? { minimax: { parallel_tool_calls: ORCHESTRATOR_PARALLEL_TOOL_CALLS } }
+        : deepseekIsPrimary
+        ? { deepseek: { parallel_tool_calls: false, thinking: { type: "disabled" } } }
         : undefined,
       system: SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary,
       messages: trimmedMessages,
@@ -792,8 +885,11 @@ Deno.serve(async (req) => {
           "[orchestrator] stream error:",
           JSON.stringify({
             thread_id: threadId,
-            provider: useFallback ? fallbackTarget!.provider : "minimax",
-            model: useFallback ? fallbackTarget!.modelId : MODELS[ORCHESTRATOR_TIER],
+            // Reflects the ACTUAL primary provider (minimax/deepseek/grok/
+            // openadapter), not hardcoded to "minimax" — a pre-existing gap
+            // that mislabeled every non-MiniMax primary in this log.
+            provider: useFallback ? fallbackTarget!.provider : orchChoice.provider,
+            model: useFallback ? fallbackTarget!.modelId : primaryLabel,
             approx_prompt_chars: approxPromptChars,
             context_overflow: isCtxOverflow,
             // A schema/pairing fault is a builder bug, NOT context overflow —
