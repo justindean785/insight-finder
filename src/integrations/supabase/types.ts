@@ -142,6 +142,45 @@ export type Database = {
           },
         ]
       }
+      client_errors: {
+        Row: {
+          breadcrumbs: Json | null
+          client_ts: string | null
+          created_at: string
+          extra: Json | null
+          id: string
+          message: string
+          source: string
+          stack: string | null
+          url: string | null
+          user_id: string | null
+        }
+        Insert: {
+          breadcrumbs?: Json | null
+          client_ts?: string | null
+          created_at?: string
+          extra?: Json | null
+          id?: string
+          message: string
+          source: string
+          stack?: string | null
+          url?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          breadcrumbs?: Json | null
+          client_ts?: string | null
+          created_at?: string
+          extra?: Json | null
+          id?: string
+          message?: string
+          source?: string
+          stack?: string | null
+          url?: string | null
+          user_id?: string | null
+        }
+        Relationships: []
+      }
       evidence_log: {
         Row: {
           archive_bytes: number | null
