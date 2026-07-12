@@ -1,16 +1,32 @@
--- CI regression (selector-scope dedup, migration 20260711130000): proves the
--- selector-scope identity + provenance-merge does NOT collapse distinct-platform /
--- distinct-subject / distinct-host / distinct-breach observations (the #305
--- data-loss the naive (thread,kind,value,source) key would have caused), that a
--- genuine duplicate collapses to ONE survivor carrying BOTH provenances and the
--- union of source classes, that conflicting analyst verdicts survive as 'recheck'
--- with full lineage, and that the runtime RPC key == the migration key.
+-- CI regression (selector-scope dedup, migration 20260711130000).
 --
--- Runs AFTER migrations, in the "Migrations (psql validation)" job. Part A drops
--- the unique index inside a transaction so it can seed pre-existing duplicates,
--- exercises public.artifact_consolidate_dupes(), then ROLLS BACK — restoring the
--- index and discarding all test rows so later CI steps see a pristine DB. Part B
--- exercises the live RPC with the index in place. Not a migration; never ships.
+-- Every claim below is backed by a fixture in the part named next to it — nothing is
+-- asserted in a header or a NOTICE that the SQL does not actually exercise.
+--
+--   Part A  migration consolidation: distinct PLATFORMS (21) and distinct SUBJECT_IDs
+--           are never collapsed (the #305 data-loss the naive (thread,kind,value,
+--           source) key caused); a true duplicate collapses to ONE survivor carrying
+--           both provenances + the union of source classes + GREATEST confidence;
+--           conflicting analyst verdicts survive as 'recheck' with full lineage;
+--           consolidation is idempotent and leaves zero duplicate keys and zero
+--           dangling refs GLOBALLY. Drops the unique index inside the txn so it can
+--           seed pre-existing duplicates, then ROLLS BACK (restoring the index and
+--           discarding every test row, so later CI steps see a pristine DB).
+--   Part B  the runtime RPC key == the migration key (index in place).
+--   Part C  the canonical merge_artifact_into: survivor subject/cluster preserved,
+--           evidence re-pointed, evidence chain fields BYTE-IDENTICAL across a merge.
+--   Part D  cross-thread and cross-user merges are rejected.
+--   Part E  no client role (PUBLIC/anon/authenticated) can EXECUTE the merge surface;
+--           service_role still can.
+--   Part F  the identity contract: BREACH identity outranks platform/host (distinct
+--           breaches on one provider host / one platform stay separate), distinct
+--           source_url HOSTS stay separate, explicit SELECTORS stay separate — while
+--           the same named breach from two tools, and platform aliases, still merge.
+--   Part G  same-state analyst reviews: agreeing verdicts keep their state but never
+--           discard the loser's note or lineage.
+--
+-- Runs AFTER migrations, in the "Migrations (psql validation)" job. Every part is
+-- wrapped in BEGIN/ROLLBACK. Not a migration; ships no fixtures.
 
 SELECT set_config('request.jwt.claim.sub', 'cccccccc-0000-4000-8000-000000000003', false);
 INSERT INTO auth.users(id, email)
@@ -182,7 +198,10 @@ BEGIN
    WHERE NOT EXISTS (SELECT 1 FROM public.artifacts a WHERE a.id = r.artifact_id);
   IF _n <> 0 THEN RAISE EXCEPTION '(8) % artifact_reviews rows dangle at a deleted artifact', _n; END IF;
 
-  RAISE NOTICE 'selector-scope consolidation (Part A) OK: 21 platforms + distinct subjects/hosts preserved, dupes merged with provenance, conflicting verdicts → recheck, idempotent, zero dup keys + zero dangling refs globally';
+  -- NOTE: this NOTICE claims ONLY what Part A actually seeds. Distinct-host and
+  -- distinct-breach preservation are asserted in Part F, against real fixtures —
+  -- they used to be claimed here with no fixture behind them.
+  RAISE NOTICE 'selector-scope consolidation (Part A) OK: 21 distinct platforms + distinct subject_ids preserved, dupes merged with provenance, conflicting verdicts → recheck, idempotent, zero dup keys + zero dangling refs globally';
 END $$;
 ROLLBACK;  -- restores artifacts_selector_scope_uidx and discards all Part A rows
 
@@ -441,3 +460,150 @@ BEGIN
 
   RAISE NOTICE 'privileges (Part E) OK: PUBLIC/anon/authenticated cannot EXECUTE the merge surface; service_role still can';
 END $$;
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Part F — the IDENTITY CONTRACT of artifact_selector_scope (index IN PLACE).
+--
+-- Regression for a live data-loss bug: breach identity used to sit BEHIND platform
+-- and source_url host in the first-match ladder, so it was never even read whenever
+-- either was present. HIBP reports many DIFFERENT breaches for one email under the
+-- SAME host — every one of them shared a scope and collapsed into a single row.
+-- These fixtures run with artifacts_selector_scope_uidx ENFORCING, so a regression
+-- surfaces either as a 23505 on insert or as a wrong row count.
+-- ══════════════════════════════════════════════════════════════════════════════
+BEGIN;
+DO $$
+DECLARE
+  _uid uuid := 'cccccccc-0000-4000-8000-000000000003';
+  _tid uuid;
+  _n int;
+  _dd boolean;
+BEGIN
+  INSERT INTO public.threads(user_id) VALUES (_uid) RETURNING id INTO _tid;
+
+  -- (F1) same kind/value/subject + SAME provider host + DIFFERENT breach_name → 2.
+  --      This is the exact HIBP shape that the old ladder collapsed.
+  INSERT INTO public.artifacts(thread_id, user_id, kind, value, source, confidence, subject_id, metadata) VALUES
+    (_tid, _uid, 'breach', 'bob@example.com', 'hibp', 50, 's1',
+     '{"source_url":"https://haveibeenpwned.com/breach/Adobe","breach_name":"Adobe"}'::jsonb),
+    (_tid, _uid, 'breach', 'bob@example.com', 'hibp', 50, 's1',
+     '{"source_url":"https://haveibeenpwned.com/breach/LinkedIn","breach_name":"LinkedIn"}'::jsonb);
+  SELECT count(*) INTO _n FROM public.artifacts WHERE thread_id=_tid AND value='bob@example.com';
+  IF _n <> 2 THEN RAISE EXCEPTION '(F1) distinct breach_name on the SAME host collapsed to % row(s)', _n; END IF;
+
+  -- (F2) same kind/value/subject + SAME platform + DIFFERENT breach_id → 2.
+  INSERT INTO public.artifacts(thread_id, user_id, kind, value, source, confidence, subject_id, metadata) VALUES
+    (_tid, _uid, 'credential', 'carol@example.com', 'dehashed', 50, 's1',
+     '{"platform":"linkedin","breach_id":"BR-1"}'::jsonb),
+    (_tid, _uid, 'credential', 'carol@example.com', 'dehashed', 50, 's1',
+     '{"platform":"linkedin","breach_id":"BR-2"}'::jsonb);
+  SELECT count(*) INTO _n FROM public.artifacts WHERE thread_id=_tid AND value='carol@example.com';
+  IF _n <> 2 THEN RAISE EXCEPTION '(F2) distinct breach_id on the SAME platform collapsed to % row(s)', _n; END IF;
+
+  -- (F3) non-breach kind, no platform, DIFFERENT source_url hosts → 2 (host is the
+  --      discriminator only when no platform is declared).
+  INSERT INTO public.artifacts(thread_id, user_id, kind, value, source, confidence, subject_id, metadata) VALUES
+    (_tid, _uid, 'profile', 'dave', 'tool_a', 50, 's1', '{"source_url":"https://alpha.example/dave"}'::jsonb),
+    (_tid, _uid, 'profile', 'dave', 'tool_b', 50, 's1', '{"source_url":"https://beta.example/dave"}'::jsonb);
+  SELECT count(*) INTO _n FROM public.artifacts WHERE thread_id=_tid AND value='dave';
+  IF _n <> 2 THEN RAISE EXCEPTION '(F3) distinct source_url hosts collapsed to % row(s)', _n; END IF;
+
+  -- (F4) explicit selector is an ADDITIONAL discriminator: same platform, selector
+  --      A vs B → 2. (Under the old ladder the selector branch was unreachable
+  --      whenever a platform existed, so these silently merged.)
+  INSERT INTO public.artifacts(thread_id, user_id, kind, value, source, confidence, subject_id, metadata) VALUES
+    (_tid, _uid, 'username', 'erin', 'sweep', 50, 's1', '{"platform":"github","selector":"a"}'::jsonb),
+    (_tid, _uid, 'username', 'erin', 'sweep', 50, 's1', '{"platform":"github","selector":"b"}'::jsonb);
+  SELECT count(*) INTO _n FROM public.artifacts WHERE thread_id=_tid AND value='erin';
+  IF _n <> 2 THEN RAISE EXCEPTION '(F4) distinct explicit selectors collapsed to % row(s)', _n; END IF;
+
+  -- (F5) INTENDED merge still happens: the SAME named breach reported by two
+  --      different tools, from two different hosts, is ONE finding. Platform/host are
+  --      provenance for a breach, not identity. Via the runtime RPC → deduped.
+  PERFORM public.record_artifacts_with_evidence(_tid, jsonb_build_array(
+    jsonb_build_object('kind','breach','value','frank@example.com','source','hibp','subject_id','s1',
+      'metadata', jsonb_build_object('breach_name','Adobe','source_url','https://haveibeenpwned.com/x'))));
+  SELECT deduped INTO _dd FROM public.record_artifacts_with_evidence(_tid, jsonb_build_array(
+    jsonb_build_object('kind','breach','value','frank@example.com','source','dehashed','subject_id','s1',
+      'metadata', jsonb_build_object('breach_name','adobe','source_url','https://dehashed.com/y')))) LIMIT 1;
+  IF NOT _dd THEN RAISE EXCEPTION '(F5) same named breach from two tools did NOT merge'; END IF;
+  SELECT count(*) INTO _n FROM public.artifacts WHERE thread_id=_tid AND value='frank@example.com';
+  IF _n <> 1 THEN RAISE EXCEPTION '(F5) same named breach from two tools left % rows', _n; END IF;
+
+  -- (F6) platform alias folding still merges (twitter.com ≡ x), unchanged by the reorder.
+  PERFORM public.record_artifacts_with_evidence(_tid, jsonb_build_array(
+    jsonb_build_object('kind','username','value','grace','source','sweep',
+      'metadata', jsonb_build_object('platform','twitter.com'))));
+  SELECT deduped INTO _dd FROM public.record_artifacts_with_evidence(_tid, jsonb_build_array(
+    jsonb_build_object('kind','username','value','grace','source','sweep',
+      'metadata', jsonb_build_object('platform','x')))) LIMIT 1;
+  IF NOT _dd THEN RAISE EXCEPTION '(F6) twitter.com/x alias folding regressed — did not merge'; END IF;
+  SELECT count(*) INTO _n FROM public.artifacts WHERE thread_id=_tid AND value='grace';
+  IF _n <> 1 THEN RAISE EXCEPTION '(F6) alias folding left % rows', _n; END IF;
+
+  -- (F7) unnamed breach records never merge (md5-per-observation fallback).
+  INSERT INTO public.artifacts(thread_id, user_id, kind, value, source, confidence, subject_id, metadata) VALUES
+    (_tid, _uid, 'stealer_log', 'heidi@example.com', 'tool_a', 50, 's1', '{"source_url":"https://dump.example/1"}'::jsonb),
+    (_tid, _uid, 'stealer_log', 'heidi@example.com', 'tool_b', 50, 's1', '{"source_url":"https://dump.example/2"}'::jsonb);
+  SELECT count(*) INTO _n FROM public.artifacts WHERE thread_id=_tid AND value='heidi@example.com';
+  IF _n <> 2 THEN RAISE EXCEPTION '(F7) unnamed breach observations on one host collapsed to % row(s)', _n; END IF;
+
+  RAISE NOTICE 'identity contract (Part F) OK: breach identity outranks platform/host (distinct breach_name on one host, distinct breach_id on one platform, unnamed breaches all stay separate); distinct source_url hosts stay separate; explicit selectors stay separate; the SAME named breach from two tools still merges; platform alias folding still merges';
+END $$;
+ROLLBACK;
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Part G — SAME-STATE analyst reviews: the state is uncontested, but the note is
+-- still analyst-authored text and must never be silently discarded. The merge used
+-- to DELETE the loser's review outright in this branch, losing its note entirely and
+-- recording no lineage.
+-- ══════════════════════════════════════════════════════════════════════════════
+BEGIN;
+DO $$
+DECLARE
+  _uid uuid := 'cccccccc-0000-4000-8000-000000000003';
+  _tid uuid;
+  _surv uuid; _loser uuid;
+  _n int; _state text; _note text; _lineage jsonb;
+BEGIN
+  INSERT INTO public.threads(user_id) VALUES (_uid) RETURNING id INTO _tid;
+
+  -- Same kind/value/scope, different subject_id → both coexist under the index.
+  INSERT INTO public.artifacts(thread_id, user_id, kind, value, source, confidence, subject_id, metadata)
+  VALUES (_tid, _uid, 'username', 'ivan', 'github_user', 60, 'S', '{"platform":"github"}'::jsonb)
+  RETURNING id INTO _surv;
+  INSERT INTO public.artifacts(thread_id, user_id, kind, value, source, confidence, subject_id, metadata)
+  VALUES (_tid, _uid, 'username', 'ivan', 'sweep', 40, 'L', '{"platform":"github"}'::jsonb)
+  RETURNING id INTO _loser;
+
+  -- SAME state, DIFFERENT notes — the case that used to lose text.
+  INSERT INTO public.artifact_reviews(thread_id, artifact_id, user_id, state, note) VALUES
+    (_tid, _surv,  _uid, 'confirmed', 'matches the payroll record'),
+    (_tid, _loser, _uid, 'confirmed', 'independently confirmed via the school yearbook');
+
+  PERFORM public.merge_artifact_into(_loser, _surv);
+
+  SELECT count(*) INTO _n FROM public.artifact_reviews
+   WHERE user_id = _uid AND artifact_id IN (_surv, _loser);
+  IF _n <> 1 THEN RAISE EXCEPTION '(G) expected exactly 1 surviving review, got %', _n; END IF;
+  SELECT count(*) INTO _n FROM public.artifact_reviews WHERE artifact_id = _loser;
+  IF _n <> 0 THEN RAISE EXCEPTION '(G) the redundant loser review was not removed'; END IF;
+
+  SELECT state, note, merge_lineage INTO _state, _note, _lineage
+    FROM public.artifact_reviews WHERE user_id = _uid AND artifact_id = _surv;
+
+  -- state is uncontested → it must NOT be escalated to recheck.
+  IF _state <> 'confirmed' THEN RAISE EXCEPTION '(G) agreeing verdicts changed state to %', _state; END IF;
+  -- BOTH notes recoverable.
+  IF _note NOT LIKE '%payroll record%' THEN RAISE EXCEPTION '(G) survivor note lost: %', _note; END IF;
+  IF _note NOT LIKE '%school yearbook%' THEN RAISE EXCEPTION '(G) LOSER note discarded — analyst text destroyed: %', _note; END IF;
+  -- full lineage of both original reviews.
+  IF _lineage IS NULL OR jsonb_array_length(_lineage) <> 2 THEN
+    RAISE EXCEPTION '(G) merge_lineage expected both original reviews, got %', _lineage; END IF;
+  IF NOT (_lineage @> '[{"note":"matches the payroll record"}]'::jsonb
+      AND _lineage @> '[{"note":"independently confirmed via the school yearbook"}]'::jsonb) THEN
+    RAISE EXCEPTION '(G) merge_lineage lost an original review: %', _lineage; END IF;
+
+  RAISE NOTICE 'same-state reviews (Part G) OK: state left unchanged, BOTH notes preserved, full merge_lineage recorded, redundant row removed';
+END $$;
+ROLLBACK;

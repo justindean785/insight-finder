@@ -85,48 +85,73 @@ RETURNS text
 LANGUAGE sql
 IMMUTABLE
 AS $$
-  SELECT CASE
-    -- 1. explicit platform → canonical platform alias
-    WHEN NULLIF(btrim(_metadata->>'platform'), '') IS NOT NULL THEN
-      'plat:' || (CASE lower(btrim(_metadata->>'platform'))
-        WHEN 'twitter/x'    THEN 'twitter'
-        WHEN 'x/twitter'    THEN 'twitter'
-        WHEN 'twitter.com'  THEN 'twitter'
-        WHEN 'x'            THEN 'twitter'
-        WHEN 'x.com'        THEN 'twitter'
-        WHEN 'office365.com' THEN 'office365'
-        WHEN 'xbox_gamertag' THEN 'xbox'
-        WHEN 'xbox live'    THEN 'xbox'
-        ELSE lower(btrim(_metadata->>'platform'))
-      END)
-    -- 2. source_url → host (scheme + leading www. stripped, lowercased)
-    WHEN _metadata->>'source_url' ~* '^https?://' THEN
-      'host:' || regexp_replace(
-                   regexp_replace(
-                     regexp_replace(lower(_metadata->>'source_url'), '^https?://', ''),
-                     '[/?#].*$', ''),
-                   '^www\.', '')
-    -- 3. breach/leak kinds → breach identity; md5 fallback keeps DISTINCT breach
-    --    sites/provenance SEPARATE (never merge) when no named breach is present.
-    WHEN _kind ~* 'breach|leak|exposure|credential|stealer' THEN
-      'breach:' || coalesce(
-        NULLIF(lower(btrim(_metadata->>'breach_name')), ''),
-        NULLIF(lower(btrim(_metadata->>'breach')), ''),
-        NULLIF(lower(btrim(_metadata->>'source_db')), ''),
-        NULLIF(lower(btrim(_metadata->>'source_breach_id')), ''),
-        NULLIF(lower(btrim(_metadata->>'breach_id')), ''),
-        NULLIF(lower(btrim(_metadata->>'source_name')), ''),
-        'h' || substr(md5(
-          coalesce(_metadata->>'source_url', '') || '|' ||
-          coalesce(_source, '')                  || '|' ||
-          coalesce(_metadata::text, '')
-        ), 1, 16))
-    -- 4. explicit selector metadata
-    WHEN NULLIF(btrim(_metadata->>'selector'), '') IS NOT NULL THEN
-      'sel:' || lower(btrim(_metadata->>'selector'))
-    -- 5. no discriminator
-    ELSE ''
-  END
+  -- ══ IDENTITY CONTRACT (conservative: when in doubt, DO NOT merge) ══════════════
+  --
+  -- The scope is  <base> [ '|sel:' <selector> ]  where <base> is decided by ONE
+  -- first-match ladder. Order is load-bearing — read before changing:
+  --
+  --  1. BREACH FAMILY WINS. For breach/leak/exposure/credential/stealer kinds the
+  --     artifact's identity IS THE BREACH — never the platform or the provider host
+  --     that happened to report it. This MUST outrank platform and host: HIBP reports
+  --     many DIFFERENT breaches for one email, all with the same source_url host and
+  --     often the same platform. Ranking host/platform first (as this ladder
+  --     originally did) made every one of them share a scope and collapse into a
+  --     single row — silent, irreversible loss of distinct breach findings.
+  --     Conversely platform/host are only PROVENANCE for a breach, so the same named
+  --     breach found by two different tools (hibp + dehashed) still merges — which is
+  --     the intended dedup.
+  --     No named breach → md5 over url|source|metadata, which is per-observation and
+  --     therefore NEVER merges. Unnamed breach records stay separate by construction.
+  --  2. platform (canonicalized through the alias table).
+  --  3. source_url host — a weaker stand-in for platform, used only when no platform
+  --     is declared. It is deliberately NOT combined with platform: when the platform
+  --     agrees, two tools citing different URLs are the SAME identity and must merge.
+  --  4. nothing to discriminate on → ''.
+  --
+  -- An explicit `selector` is APPENDED to whichever base is chosen (rather than being
+  -- a last-resort branch that any platform/host silently outranked). Two rows that
+  -- declare different selectors are different identities even on the same platform.
+  SELECT
+    (CASE
+      -- 1. breach identity — ahead of platform/host, deliberately (see above)
+      WHEN _kind ~* 'breach|leak|exposure|credential|stealer' THEN
+        'breach:' || coalesce(
+          NULLIF(lower(btrim(_metadata->>'breach_name')), ''),
+          NULLIF(lower(btrim(_metadata->>'breach')), ''),
+          NULLIF(lower(btrim(_metadata->>'source_db')), ''),
+          NULLIF(lower(btrim(_metadata->>'source_breach_id')), ''),
+          NULLIF(lower(btrim(_metadata->>'breach_id')), ''),
+          NULLIF(lower(btrim(_metadata->>'source_name')), ''),
+          'h' || substr(md5(
+            coalesce(_metadata->>'source_url', '') || '|' ||
+            coalesce(_source, '')                  || '|' ||
+            coalesce(_metadata::text, '')
+          ), 1, 16))
+      -- 2. explicit platform → canonical platform alias
+      WHEN NULLIF(btrim(_metadata->>'platform'), '') IS NOT NULL THEN
+        'plat:' || (CASE lower(btrim(_metadata->>'platform'))
+          WHEN 'twitter/x'    THEN 'twitter'
+          WHEN 'x/twitter'    THEN 'twitter'
+          WHEN 'twitter.com'  THEN 'twitter'
+          WHEN 'x'            THEN 'twitter'
+          WHEN 'x.com'        THEN 'twitter'
+          WHEN 'office365.com' THEN 'office365'
+          WHEN 'xbox_gamertag' THEN 'xbox'
+          WHEN 'xbox live'    THEN 'xbox'
+          ELSE lower(btrim(_metadata->>'platform'))
+        END)
+      -- 3. source_url → host (scheme + leading www. stripped, lowercased)
+      WHEN _metadata->>'source_url' ~* '^https?://' THEN
+        'host:' || regexp_replace(
+                     regexp_replace(
+                       regexp_replace(lower(_metadata->>'source_url'), '^https?://', ''),
+                       '[/?#].*$', ''),
+                     '^www\.', '')
+      -- 4. no discriminator
+      ELSE ''
+    END)
+    -- explicit selector: an ADDITIONAL discriminator, never silently outranked.
+    || coalesce('|sel:' || lower(NULLIF(btrim(_metadata->>'selector'), '')), '')
 $$;
 
 -- Normalize metadata->'source_category' (array | scalar string | absent) to a
@@ -338,22 +363,39 @@ BEGIN
   -- full merge_lineage + concatenated notes; never silently pick a winner.
   FOR rev_user IN
     SELECT ar.user_id AS uid,
+           count(*) AS n_reviews,
            count(DISTINCT ar.state) AS distinct_states,
            bool_or(ar.artifact_id = _survivor) AS has_surv,
            jsonb_agg(jsonb_build_object('artifact_id', ar.artifact_id, 'state', ar.state, 'note', ar.note)
                      ORDER BY ar.created_at, ar.id) AS lineage,
-           string_agg(NULLIF(btrim(coalesce(ar.note, '')), ''), E'\n---\n' ORDER BY ar.created_at, ar.id) AS notes
+           string_agg(NULLIF(btrim(coalesce(ar.note, '')), ''), E'\n---\n' ORDER BY ar.created_at, ar.id) AS notes,
+           -- deduped variant for the same-state path: if both analysts' notes are
+           -- byte-identical there is nothing to concatenate, so don't duplicate text.
+           string_agg(DISTINCT NULLIF(btrim(coalesce(ar.note, '')), ''), E'\n---\n') AS notes_dedup
     FROM public.artifact_reviews ar
     WHERE ar.artifact_id IN (_loser, _survivor)
     GROUP BY ar.user_id
   LOOP
     IF rev_user.distinct_states <= 1 THEN
-      IF rev_user.has_surv THEN
-        DELETE FROM public.artifact_reviews WHERE user_id = rev_user.uid AND artifact_id = _loser;
-      ELSE
+      IF NOT rev_user.has_surv THEN
+        -- Only the loser was reviewed → re-point it. Nothing to reconcile.
         UPDATE public.artifact_reviews SET artifact_id = _survivor
           WHERE user_id = rev_user.uid AND artifact_id = _loser;
+      ELSIF rev_user.n_reviews > 1 THEN
+        -- BOTH were reviewed and the verdicts AGREE. The state is uncontested, so it
+        -- stands — but the loser's row still carries analyst-authored text, and
+        -- dropping it is silent destruction of human work. Deleting it outright (as
+        -- this branch originally did) discarded that note with no lineage: "0
+        -- discarded" only ever held for CONFLICTING verdicts. Fold both notes and the
+        -- full lineage onto the survivor BEFORE removing the now-redundant row.
+        UPDATE public.artifact_reviews
+           SET merge_lineage = rev_user.lineage,
+               note          = rev_user.notes_dedup,
+               updated_at    = now()
+         WHERE user_id = rev_user.uid AND artifact_id = _survivor;
+        DELETE FROM public.artifact_reviews WHERE user_id = rev_user.uid AND artifact_id = _loser;
       END IF;
+      -- n_reviews = 1 AND has_surv → only the survivor was reviewed; nothing to do.
     ELSE
       IF rev_user.has_surv THEN
         UPDATE public.artifact_reviews
