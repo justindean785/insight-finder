@@ -22,8 +22,13 @@
 --           breaches on one provider host / one platform stay separate), distinct
 --           source_url HOSTS stay separate, explicit SELECTORS stay separate — while
 --           the same named breach from two tools, and platform aliases, still merge.
---   Part G  same-state analyst reviews: agreeing verdicts keep their state but never
+--   Part G1 same-state analyst reviews: agreeing verdicts keep their state but never
 --           discard the loser's note or lineage.
+--   Part G2 merge_lineage is APPEND-ONLY: a 3-way SEQUENTIAL consolidation keeps all
+--           three original artifact_ids/states/notes (a 2-artifact test cannot catch
+--           the second merge overwriting the first merge's lineage).
+--   Part G3 NULL / whitespace-only notes keep their lineage entries; surviving note
+--           text is neither lost nor invented.
 --
 -- Runs AFTER migrations, in the "Migrations (psql validation)" job. Every part is
 -- wrapped in BEGIN/ROLLBACK. Not a migration; ships no fixtures.
@@ -604,6 +609,121 @@ BEGIN
       AND _lineage @> '[{"note":"independently confirmed via the school yearbook"}]'::jsonb) THEN
     RAISE EXCEPTION '(G) merge_lineage lost an original review: %', _lineage; END IF;
 
-  RAISE NOTICE 'same-state reviews (Part G) OK: state left unchanged, BOTH notes preserved, full merge_lineage recorded, redundant row removed';
+  RAISE NOTICE 'same-state reviews (Part G1) OK: state left unchanged, BOTH notes preserved, full merge_lineage recorded, redundant row removed';
+END $$;
+ROLLBACK;
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Part G2 — merge_lineage is APPEND-ONLY across a MULTI-STAGE consolidation.
+-- Three duplicates merged sequentially (A+B, then survivor+C). Deriving lineage from
+-- only the two live review rows would rebuild it as [survivor, C] on the second merge
+-- and silently destroy the original A and B entries. Two-artifact tests cannot see
+-- this; it needs three.
+-- ══════════════════════════════════════════════════════════════════════════════
+BEGIN;
+DO $$
+DECLARE
+  _uid uuid := 'cccccccc-0000-4000-8000-000000000003';
+  _tid uuid;
+  _a uuid; _b uuid; _c uuid;
+  _n int; _state text; _note text; _lineage jsonb;
+BEGIN
+  INSERT INTO public.threads(user_id) VALUES (_uid) RETURNING id INTO _tid;
+
+  INSERT INTO public.artifacts(thread_id, user_id, kind, value, source, confidence, subject_id, metadata)
+  VALUES (_tid, _uid, 'username', 'judy', 'github_user', 60, 'A', '{"platform":"github"}'::jsonb) RETURNING id INTO _a;
+  INSERT INTO public.artifacts(thread_id, user_id, kind, value, source, confidence, subject_id, metadata)
+  VALUES (_tid, _uid, 'username', 'judy', 'sweep', 50, 'B', '{"platform":"github"}'::jsonb) RETURNING id INTO _b;
+  INSERT INTO public.artifacts(thread_id, user_id, kind, value, source, confidence, subject_id, metadata)
+  VALUES (_tid, _uid, 'username', 'judy', 'other', 40, 'C', '{"platform":"github"}'::jsonb) RETURNING id INTO _c;
+
+  INSERT INTO public.artifact_reviews(thread_id, artifact_id, user_id, state, note) VALUES
+    (_tid, _a, _uid, 'confirmed', 'note-A'),
+    (_tid, _b, _uid, 'confirmed', 'note-B'),
+    (_tid, _c, _uid, 'confirmed', 'note-C');
+
+  PERFORM public.merge_artifact_into(_b, _a);   -- stage 1: lineage = [A, B]
+  PERFORM public.merge_artifact_into(_c, _a);   -- stage 2: MUST become [A, B, C]
+
+  SELECT count(*) INTO _n FROM public.artifact_reviews WHERE user_id = _uid;
+  IF _n <> 1 THEN RAISE EXCEPTION '(G2) expected 1 surviving review, got %', _n; END IF;
+
+  SELECT state, note, merge_lineage INTO _state, _note, _lineage
+    FROM public.artifact_reviews WHERE user_id = _uid AND artifact_id = _a;
+
+  IF _state <> 'confirmed' THEN RAISE EXCEPTION '(G2) agreeing verdicts changed state to %', _state; END IF;
+
+  -- all THREE original lineage entries survive — not just the last merge's two.
+  IF _lineage IS NULL OR jsonb_array_length(_lineage) <> 3 THEN
+    RAISE EXCEPTION '(G2) merge_lineage lost history across the 2nd merge: expected 3 entries, got %', _lineage; END IF;
+  IF NOT (_lineage @> jsonb_build_array(jsonb_build_object('artifact_id', _a))
+      AND _lineage @> jsonb_build_array(jsonb_build_object('artifact_id', _b))
+      AND _lineage @> jsonb_build_array(jsonb_build_object('artifact_id', _c))) THEN
+    RAISE EXCEPTION '(G2) merge_lineage dropped an original artifact_id: %', _lineage; END IF;
+  IF NOT (_lineage @> '[{"note":"note-A"}]'::jsonb
+      AND _lineage @> '[{"note":"note-B"}]'::jsonb
+      AND _lineage @> '[{"note":"note-C"}]'::jsonb) THEN
+    RAISE EXCEPTION '(G2) merge_lineage dropped an original note: %', _lineage; END IF;
+
+  -- and every original note is still recoverable from the note text too.
+  IF _note NOT LIKE '%note-A%' OR _note NOT LIKE '%note-B%' OR _note NOT LIKE '%note-C%' THEN
+    RAISE EXCEPTION '(G2) a note was discarded across the multi-stage merge: %', _note; END IF;
+
+  RAISE NOTICE 'multi-stage lineage (Part G2) OK: 3-way sequential consolidation keeps all 3 original artifact_ids, states and notes — merge_lineage is append-only';
+END $$;
+ROLLBACK;
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Part G3 — NULL / empty notes must not cost us the lineage entry.
+-- ══════════════════════════════════════════════════════════════════════════════
+BEGIN;
+DO $$
+DECLARE
+  _uid uuid := 'cccccccc-0000-4000-8000-000000000003';
+  _tid uuid;
+  _s1 uuid; _l1 uuid; _s2 uuid; _l2 uuid;
+  _note text; _lineage jsonb; _state text;
+BEGIN
+  INSERT INTO public.threads(user_id) VALUES (_uid) RETURNING id INTO _tid;
+
+  -- (G3a) survivor note NULL, loser note present → the loser's text must survive AND
+  --       the NULL-note row must still appear in the lineage.
+  INSERT INTO public.artifacts(thread_id, user_id, kind, value, source, confidence, subject_id, metadata)
+  VALUES (_tid, _uid, 'username', 'karl', 'github_user', 60, 'S', '{"platform":"github"}'::jsonb) RETURNING id INTO _s1;
+  INSERT INTO public.artifacts(thread_id, user_id, kind, value, source, confidence, subject_id, metadata)
+  VALUES (_tid, _uid, 'username', 'karl', 'sweep', 40, 'L', '{"platform":"github"}'::jsonb) RETURNING id INTO _l1;
+  INSERT INTO public.artifact_reviews(thread_id, artifact_id, user_id, state, note) VALUES
+    (_tid, _s1, _uid, 'confirmed', NULL),
+    (_tid, _l1, _uid, 'confirmed', 'the only note');
+
+  PERFORM public.merge_artifact_into(_l1, _s1);
+
+  SELECT state, note, merge_lineage INTO _state, _note, _lineage
+    FROM public.artifact_reviews WHERE user_id = _uid AND artifact_id = _s1;
+  IF _state <> 'confirmed' THEN RAISE EXCEPTION '(G3a) state changed to %', _state; END IF;
+  IF _note IS DISTINCT FROM 'the only note' THEN
+    RAISE EXCEPTION '(G3a) expected the single real note, got %', _note; END IF;
+  IF _lineage IS NULL OR jsonb_array_length(_lineage) <> 2 THEN
+    RAISE EXCEPTION '(G3a) a NULL-note review was dropped from the lineage: %', _lineage; END IF;
+
+  -- (G3b) BOTH notes NULL → no note, but the lineage still records both reviews.
+  INSERT INTO public.artifacts(thread_id, user_id, kind, value, source, confidence, subject_id, metadata)
+  VALUES (_tid, _uid, 'username', 'lena', 'github_user', 60, 'S', '{"platform":"github"}'::jsonb) RETURNING id INTO _s2;
+  INSERT INTO public.artifacts(thread_id, user_id, kind, value, source, confidence, subject_id, metadata)
+  VALUES (_tid, _uid, 'username', 'lena', 'sweep', 40, 'L', '{"platform":"github"}'::jsonb) RETURNING id INTO _l2;
+  INSERT INTO public.artifact_reviews(thread_id, artifact_id, user_id, state, note) VALUES
+    (_tid, _s2, _uid, 'dismissed', NULL),
+    (_tid, _l2, _uid, 'dismissed', '   ');   -- whitespace-only == empty
+
+  PERFORM public.merge_artifact_into(_l2, _s2);
+
+  SELECT note, merge_lineage INTO _note, _lineage
+    FROM public.artifact_reviews WHERE user_id = _uid AND artifact_id = _s2;
+  IF _note IS NOT NULL AND btrim(_note) <> '' THEN
+    RAISE EXCEPTION '(G3b) invented note text out of two empty notes: %', _note; END IF;
+  IF _lineage IS NULL OR jsonb_array_length(_lineage) <> 2 THEN
+    RAISE EXCEPTION '(G3b) empty-note reviews were dropped from the lineage: %', _lineage; END IF;
+
+  RAISE NOTICE 'null/empty notes (Part G3) OK: NULL- and whitespace-note reviews keep their lineage entries; the surviving note text is neither lost nor invented';
 END $$;
 ROLLBACK;

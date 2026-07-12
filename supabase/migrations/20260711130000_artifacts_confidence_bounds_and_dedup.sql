@@ -361,20 +361,53 @@ BEGIN
   -- Re-point analyst reviews (UNIQUE(user_id, artifact_id) → at most one row per
   -- user per artifact). Conflicting verdicts across loser/survivor → recheck +
   -- full merge_lineage + concatenated notes; never silently pick a winner.
+  -- merge_lineage is APPEND-ONLY. Deriving it from just the two live rows would make
+  -- a 3-way consolidation destroy history: A+B merge → survivor.lineage=[A,B]; then
+  -- survivor+C merge would rebuild lineage as [survivor, C] and the original A/B
+  -- entries are gone. So FLATTEN: a row that already carries a merge_lineage
+  -- contributes its historical entries; a row with none contributes itself.
   FOR rev_user IN
-    SELECT ar.user_id AS uid,
+    WITH rev AS (
+      SELECT ar.user_id AS uid, ar.artifact_id, ar.state, ar.note, ar.merge_lineage,
+             ar.created_at, ar.id
+        FROM public.artifact_reviews ar
+       WHERE ar.artifact_id IN (_loser, _survivor)
+    ),
+    lin AS (
+      SELECT r.uid, r.created_at, r.id, x.entry, x.ord
+        FROM rev r
+        CROSS JOIN LATERAL jsonb_array_elements(
+               CASE WHEN jsonb_typeof(r.merge_lineage) = 'array'
+                         AND jsonb_array_length(r.merge_lineage) > 0
+                    THEN r.merge_lineage
+                    ELSE jsonb_build_array(jsonb_build_object(
+                           'artifact_id', to_jsonb(r.artifact_id),
+                           'state',       to_jsonb(r.state),
+                           'note',        to_jsonb(r.note))) END
+             ) WITH ORDINALITY AS x(entry, ord)
+    ),
+    lin_agg AS (
+      SELECT l.uid, jsonb_agg(l.entry ORDER BY l.created_at, l.id, l.ord) AS lineage
+        FROM lin l GROUP BY l.uid
+    ),
+    note_agg AS (
+      -- every note anywhere in the FLATTENED lineage (so historical notes from an
+      -- earlier merge are never dropped), deduped, empties excluded.
+      SELECT s.uid, string_agg(DISTINCT s.n, E'\n---\n') AS notes
+        FROM (SELECT l.uid, NULLIF(btrim(coalesce(l.entry->>'note', '')), '') AS n FROM lin l) s
+       WHERE s.n IS NOT NULL
+       GROUP BY s.uid
+    )
+    SELECT r.uid AS uid,
            count(*) AS n_reviews,
-           count(DISTINCT ar.state) AS distinct_states,
-           bool_or(ar.artifact_id = _survivor) AS has_surv,
-           jsonb_agg(jsonb_build_object('artifact_id', ar.artifact_id, 'state', ar.state, 'note', ar.note)
-                     ORDER BY ar.created_at, ar.id) AS lineage,
-           string_agg(NULLIF(btrim(coalesce(ar.note, '')), ''), E'\n---\n' ORDER BY ar.created_at, ar.id) AS notes,
-           -- deduped variant for the same-state path: if both analysts' notes are
-           -- byte-identical there is nothing to concatenate, so don't duplicate text.
-           string_agg(DISTINCT NULLIF(btrim(coalesce(ar.note, '')), ''), E'\n---\n') AS notes_dedup
-    FROM public.artifact_reviews ar
-    WHERE ar.artifact_id IN (_loser, _survivor)
-    GROUP BY ar.user_id
+           count(DISTINCT r.state) AS distinct_states,
+           bool_or(r.artifact_id = _survivor) AS has_surv,
+           la.lineage AS lineage,
+           na.notes AS notes
+      FROM rev r
+      JOIN lin_agg la ON la.uid = r.uid
+      LEFT JOIN note_agg na ON na.uid = r.uid
+     GROUP BY r.uid, la.lineage, na.notes
   LOOP
     IF rev_user.distinct_states <= 1 THEN
       IF NOT rev_user.has_surv THEN
@@ -390,7 +423,7 @@ BEGIN
         -- full lineage onto the survivor BEFORE removing the now-redundant row.
         UPDATE public.artifact_reviews
            SET merge_lineage = rev_user.lineage,
-               note          = rev_user.notes_dedup,
+               note          = rev_user.notes,
                updated_at    = now()
          WHERE user_id = rev_user.uid AND artifact_id = _survivor;
         DELETE FROM public.artifact_reviews WHERE user_id = rev_user.uid AND artifact_id = _loser;
