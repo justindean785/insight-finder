@@ -179,6 +179,18 @@ BEGIN
   _removed2 := public.artifact_consolidate_dupes();
   IF _removed2 <> 0 THEN RAISE EXCEPTION '(7) second consolidation was not idempotent, removed % rows', _removed2; END IF;
 
+  -- (7b) …and it must not DUPLICATE lineage either. Re-running the consolidation over
+  --      an already-merged survivor could re-append its own history to itself; a row
+  --      count of zero would not notice. Lineage must still be exactly the 2 original
+  --      reviews, the note history unchanged, and the state still recheck.
+  SELECT state, note, merge_lineage INTO _rev_state, _rev_note, _rev_lineage
+    FROM public.artifact_reviews WHERE user_id = _uid AND artifact_id = _aid_a;
+  IF jsonb_array_length(_rev_lineage) <> 2 THEN
+    RAISE EXCEPTION '(7b) idempotent re-run DUPLICATED merge_lineage: expected 2 entries, got %', _rev_lineage; END IF;
+  IF _rev_state <> 'recheck' THEN RAISE EXCEPTION '(7b) idempotent re-run changed state to %', _rev_state; END IF;
+  IF _rev_note NOT LIKE '%looks right%' OR _rev_note NOT LIKE '%wrong person%' THEN
+    RAISE EXCEPTION '(7b) idempotent re-run damaged the note history: %', _rev_note; END IF;
+
   -- (8) GLOBAL end-state, not just the fixtures: zero duplicate selector-scope keys
   --     and zero dangling references anywhere in the table. Asserted while the unique
   --     index is still DROPPED, so it proves the CONSOLIDATION produced a clean state
@@ -637,10 +649,15 @@ BEGIN
   INSERT INTO public.artifacts(thread_id, user_id, kind, value, source, confidence, subject_id, metadata)
   VALUES (_tid, _uid, 'username', 'judy', 'other', 40, 'C', '{"platform":"github"}'::jsonb) RETURNING id INTO _c;
 
-  INSERT INTO public.artifact_reviews(thread_id, artifact_id, user_id, state, note) VALUES
-    (_tid, _a, _uid, 'confirmed', 'note-A'),
-    (_tid, _b, _uid, 'confirmed', 'note-B'),
-    (_tid, _c, _uid, 'confirmed', 'note-C');
+  -- created_at is set EXPLICITLY. The column defaults to now(), which is the
+  -- TRANSACTION timestamp — inserting all three in one txn gives them an identical
+  -- created_at, so ORDER BY (created_at, id, ord) would fall back to the random uuid
+  -- id and lineage order would not follow insertion order. Distinct timestamps make
+  -- the ordering both deterministic AND meaningful, so it can actually be asserted.
+  INSERT INTO public.artifact_reviews(thread_id, artifact_id, user_id, state, note, created_at) VALUES
+    (_tid, _a, _uid, 'confirmed', 'note-A', '2020-01-01T00:00:00Z'),
+    (_tid, _b, _uid, 'confirmed', 'note-B', '2020-01-02T00:00:00Z'),
+    (_tid, _c, _uid, 'confirmed', 'note-C', '2020-01-03T00:00:00Z');
 
   PERFORM public.merge_artifact_into(_b, _a);   -- stage 1: lineage = [A, B]
   PERFORM public.merge_artifact_into(_c, _a);   -- stage 2: MUST become [A, B, C]
@@ -656,20 +673,30 @@ BEGIN
   -- all THREE original lineage entries survive — not just the last merge's two.
   IF _lineage IS NULL OR jsonb_array_length(_lineage) <> 3 THEN
     RAISE EXCEPTION '(G2) merge_lineage lost history across the 2nd merge: expected 3 entries, got %', _lineage; END IF;
-  IF NOT (_lineage @> jsonb_build_array(jsonb_build_object('artifact_id', _a))
-      AND _lineage @> jsonb_build_array(jsonb_build_object('artifact_id', _b))
-      AND _lineage @> jsonb_build_array(jsonb_build_object('artifact_id', _c))) THEN
-    RAISE EXCEPTION '(G2) merge_lineage dropped an original artifact_id: %', _lineage; END IF;
-  IF NOT (_lineage @> '[{"note":"note-A"}]'::jsonb
-      AND _lineage @> '[{"note":"note-B"}]'::jsonb
-      AND _lineage @> '[{"note":"note-C"}]'::jsonb) THEN
-    RAISE EXCEPTION '(G2) merge_lineage dropped an original note: %', _lineage; END IF;
+
+  -- FLAT, not nested: the 2nd merge must splice the prior lineage's entries in, not
+  -- embed the survivor's array (or the survivor row) as a single element.
+  IF EXISTS (SELECT 1 FROM jsonb_array_elements(_lineage) e WHERE jsonb_typeof(e) <> 'object') THEN
+    RAISE EXCEPTION '(G2) merge_lineage is nested — entries must be flat objects: %', _lineage; END IF;
+
+  -- every original artifact_id, STATE and note is recoverable.
+  IF NOT (_lineage @> jsonb_build_array(jsonb_build_object('artifact_id', _a, 'state', 'confirmed', 'note', 'note-A'))
+      AND _lineage @> jsonb_build_array(jsonb_build_object('artifact_id', _b, 'state', 'confirmed', 'note', 'note-B'))
+      AND _lineage @> jsonb_build_array(jsonb_build_object('artifact_id', _c, 'state', 'confirmed', 'note', 'note-C'))) THEN
+    RAISE EXCEPTION '(G2) merge_lineage dropped an original artifact_id/state/note triple: %', _lineage; END IF;
+
+  -- DETERMINISTIC ORDER: oldest review first, and a merged-in history keeps its
+  -- internal order. With distinct created_at the result must be exactly [A, B, C].
+  IF _lineage->0->>'artifact_id' IS DISTINCT FROM _a::text
+     OR _lineage->1->>'artifact_id' IS DISTINCT FROM _b::text
+     OR _lineage->2->>'artifact_id' IS DISTINCT FROM _c::text THEN
+    RAISE EXCEPTION '(G2) merge_lineage order is not deterministic [A,B,C], got %', _lineage; END IF;
 
   -- and every original note is still recoverable from the note text too.
   IF _note NOT LIKE '%note-A%' OR _note NOT LIKE '%note-B%' OR _note NOT LIKE '%note-C%' THEN
     RAISE EXCEPTION '(G2) a note was discarded across the multi-stage merge: %', _note; END IF;
 
-  RAISE NOTICE 'multi-stage lineage (Part G2) OK: 3-way sequential consolidation keeps all 3 original artifact_ids, states and notes — merge_lineage is append-only';
+  RAISE NOTICE 'multi-stage lineage (Part G2) OK: 3-way sequential consolidation keeps all 3 original artifact_id/state/note triples, flat (not nested), in deterministic [A,B,C] order — merge_lineage is append-only';
 END $$;
 ROLLBACK;
 
