@@ -107,19 +107,32 @@ BEGIN
   IF _n <> 1 THEN RAISE EXCEPTION 'RPC-path duplicate was NOT deduped, now % rows', _n; END IF;
 
   -- A DIRECT insert bypassing the RPC (the exact bypass path the audit flagged) —
-  -- the DATABASE constraint itself must now reject it, not just the RPC's app logic.
+  -- same kind/value/source AND same (empty) selector scope — the DATABASE
+  -- constraint itself must now reject it, not just the RPC's app logic.
   BEGIN
     INSERT INTO public.artifacts (thread_id, user_id, kind, value, source, confidence)
     VALUES (_tid, _uid, 'test_dedup', 'same-value', 'providerA', 50);
     RAISE EXCEPTION 'a direct duplicate INSERT bypassing the RPC was NOT rejected by the DB';
   EXCEPTION WHEN unique_violation THEN NULL; END;
 
-  -- A legitimate DISTINCT observation — same kind/value, DIFFERENT source — is
-  -- NOT a duplicate and must succeed (corroboration must never be collapsed).
-  INSERT INTO public.artifacts (thread_id, user_id, kind, value, source, confidence)
-  VALUES (_tid, _uid, 'test_dedup', 'same-value', 'providerB', 50);
+  -- A DIFFERENT tool `source` alone is NOT a distinct observation under the
+  -- selector-scope key (a sweep tool reports one username across many platforms
+  -- under ONE source name) — with no distinguishing selector scope it MUST collide.
+  BEGIN
+    INSERT INTO public.artifacts (thread_id, user_id, kind, value, source, confidence)
+    VALUES (_tid, _uid, 'test_dedup', 'same-value', 'providerB', 50);
+    RAISE EXCEPTION 'a same-value row differing ONLY by tool source was NOT deduped — source must not be a selector scope';
+  EXCEPTION WHEN unique_violation THEN NULL; END;
+
+  -- A legitimately DISTINCT observation carries a DIFFERENT SELECTOR SCOPE — here a
+  -- different metadata.platform. This is the exact data-loss the selector-scope key
+  -- fixes: one username found on N distinct platforms must stay N rows, never 1.
+  INSERT INTO public.artifacts (thread_id, user_id, kind, value, source, confidence, metadata)
+  VALUES (_tid, _uid, 'test_dedup', 'same-value', 'providerA', 50, '{"platform":"github"}'::jsonb);
+  INSERT INTO public.artifacts (thread_id, user_id, kind, value, source, confidence, metadata)
+  VALUES (_tid, _uid, 'test_dedup', 'same-value', 'providerA', 50, '{"platform":"reddit"}'::jsonb);
   SELECT count(*) INTO _n FROM public.artifacts WHERE thread_id = _tid AND kind = 'test_dedup' AND value = 'same-value';
-  IF _n <> 2 THEN RAISE EXCEPTION 'a distinct-source observation was wrongly collapsed, expected 2 rows got %', _n; END IF;
+  IF _n <> 3 THEN RAISE EXCEPTION 'distinct-platform observations were wrongly collapsed, expected 3 rows got %', _n; END IF;
 
   -- NULL source is NULL-safe (COALESCE'd) — two NULL-source dupes still collide.
   INSERT INTO public.artifacts (thread_id, user_id, kind, value, confidence)
@@ -130,7 +143,7 @@ BEGIN
     RAISE EXCEPTION 'a NULL-source duplicate was NOT rejected';
   EXCEPTION WHEN unique_violation THEN NULL; END;
 
-  RAISE NOTICE 'artifacts-integrity OK: confidence bounds enforced with no partial writes, dedup enforced at the DB level (RPC path + direct-insert bypass), distinct-source observations preserved';
+  RAISE NOTICE 'artifacts-integrity OK: confidence bounds enforced with no partial writes, selector-scope dedup enforced at the DB level (RPC path + direct-insert bypass; source is NOT a scope), distinct-platform observations preserved';
 END $$;
 
 -- ── Hash-chain integrity is untouched by any of the above (findings #9/#10 must

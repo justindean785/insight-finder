@@ -70,6 +70,7 @@ export type Database = {
           artifact_id: string
           created_at: string
           id: string
+          merge_lineage: Json | null
           note: string | null
           state: string
           thread_id: string
@@ -80,6 +81,7 @@ export type Database = {
           artifact_id: string
           created_at?: string
           id?: string
+          merge_lineage?: Json | null
           note?: string | null
           state: string
           thread_id: string
@@ -90,6 +92,7 @@ export type Database = {
           artifact_id?: string
           created_at?: string
           id?: string
+          merge_lineage?: Json | null
           note?: string | null
           state?: string
           thread_id?: string

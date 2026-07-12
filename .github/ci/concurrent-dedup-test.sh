@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CI regression (finding #10): proves the artifacts_thread_kind_value_source_uidx
+# CI regression (finding #10): proves the artifacts_selector_scope_uidx
 # unique index enforces deduplication under GENUINE concurrency — two real
 # overlapping Postgres sessions, not two sequential calls in one script. Session 1
 # opens a transaction and holds it for 2s before committing; Session 2 starts its
@@ -53,10 +53,10 @@ if [ "${N}" != "1" ]; then
   exit 1
 fi
 
-if ! grep -q "duplicate key value violates unique constraint \"artifacts_thread_kind_value_source_uidx\"" /tmp/race2.log; then
+if ! grep -q "duplicate key value violates unique constraint \"artifacts_selector_scope_uidx\"" /tmp/race2.log; then
   echo "FAIL: the losing session did not fail with the expected unique-constraint violation — the race may not have been genuine"
   echo "--- session 2 log ---"; cat /tmp/race2.log
   exit 1
 fi
 
-echo "concurrent-dedup-test OK: two genuinely overlapping sessions raced the same duplicate insert, exactly 1 row survived, the loser failed on artifacts_thread_kind_value_source_uidx"
+echo "concurrent-dedup-test OK: two genuinely overlapping sessions raced the same duplicate insert, exactly 1 row survived, the loser failed on artifacts_selector_scope_uidx"

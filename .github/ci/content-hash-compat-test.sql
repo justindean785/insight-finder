@@ -35,7 +35,8 @@ BEGIN
 
   -- Matrix: normal row; NULL confidence + no metadata key (coalesce '{}');
   -- Unicode + emoji + an embedded '|' separator + angle brackets in the value;
-  -- a related-account row; and an EXACT duplicate of row 1 (must dedup).
+  -- a related-account row; and an EXACT duplicate of row 1 (dedupes the ARTIFACT
+  -- but still logs a fresh custody observation — a new observation is always logged).
   _rows := jsonb_build_array(
     jsonb_build_object('kind','username','value','https://instagram.com/pjsmakka','confidence',50,
       'source','anchor_profile_read',
@@ -78,19 +79,28 @@ BEGIN
     END IF;
   END LOOP;
 
-  -- (2) Idempotent dedup: 5 rows in, 1 exact dup → 4 recorded; +1 append = 5.
+  -- (2) Artifact dedup + custody-on-merge: 5 input rows → 4 DISTINCT artifacts
+  --     (row 5 merges into row 1 on the selector-scope identity), but a new
+  --     observation is ALWAYS logged — the merged 5th row too — so 5 custody rows
+  --     + 1 append_evidence = 6.
   SELECT count(*) INTO _n FROM public.evidence_log WHERE thread_id = _tid;
-  IF _n <> 5 THEN RAISE EXCEPTION 'expected 5 evidence rows (4 recorded + 1 append), got %', _n; END IF;
+  IF _n <> 6 THEN RAISE EXCEPTION 'expected 6 evidence rows (5 observations + 1 append), got %', _n; END IF;
+  SELECT count(*) INTO _n FROM public.artifacts WHERE thread_id = _tid;
+  IF _n <> 4 THEN RAISE EXCEPTION 'expected 4 distinct artifacts after dedup, got %', _n; END IF;
 
-  -- (3) Retry idempotency: re-running the same rows records NOTHING new.
+  -- (3) Retry: re-running the same rows creates NO new artifacts (all 5 merge)
+  --     but DOES record a fresh custody observation for each — provenance, not
+  --     idempotent silence. 6 + 5 = 11 evidence rows; artifacts stay 4.
   PERFORM public.record_artifacts_with_evidence(_tid, _rows);
+  SELECT count(*) INTO _n FROM public.artifacts WHERE thread_id = _tid;
+  IF _n <> 4 THEN RAISE EXCEPTION 'retry created new artifacts (dedup merge failed): now % artifacts', _n; END IF;
   SELECT count(*) INTO _n FROM public.evidence_log WHERE thread_id = _tid;
-  IF _n <> 5 THEN RAISE EXCEPTION 'retry duplicated evidence rows: now %', _n; END IF;
+  IF _n <> 11 THEN RAISE EXCEPTION 'retry custody logging wrong: expected 11 evidence rows, got %', _n; END IF;
 
-  -- (4) The combined chain (both writers) must verify with no break.
+  -- (4) The combined chain (both writers, incl. every merge observation) verifies.
   SELECT * INTO _chain FROM public.verify_evidence_chain(_tid);
   IF NOT _chain.ok THEN RAISE EXCEPTION 'evidence chain invalid, first_break=%', _chain.first_break; END IF;
-  IF _chain.total <> 5 THEN RAISE EXCEPTION 'chain total expected 5, got %', _chain.total; END IF;
+  IF _chain.total <> 11 THEN RAISE EXCEPTION 'chain total expected 11, got %', _chain.total; END IF;
 
-  RAISE NOTICE 'content-hash compat OK: % rows, canonical-recomputable, chain valid, dedup+retry idempotent', _chain.total;
+  RAISE NOTICE 'content-hash compat OK: % rows, canonical-recomputable, chain valid, dedup merges artifacts while logging every custody observation', _chain.total;
 END $$;

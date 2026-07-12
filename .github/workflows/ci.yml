@@ -90,6 +90,12 @@ jobs:
       # observations NOT being collapsed.
       - name: Artifacts confidence-bounds + dedup regression
         run: psql --set ON_ERROR_STOP=1 --quiet -f .github/ci/artifacts-integrity-test.sql
+      # Selector-scope dedup + provenance-merge (data-loss fix for #305): distinct
+      # platforms/subjects/hosts/breaches never collapse; a true duplicate merges to
+      # one survivor with unioned provenance/classes + GREATEST confidence;
+      # conflicting analyst verdicts survive as recheck; runtime key == migration key.
+      - name: Artifacts selector-scope dedup + provenance-merge regression
+        run: psql --set ON_ERROR_STOP=1 --quiet -f .github/ci/artifacts-selector-scope-test.sql
       # Genuine CONCURRENT duplicate-insert race (two real overlapping sessions,
       # not sequential calls) — proves the unique index, not just app-level logic.
       - name: Concurrent duplicate-insert regression
