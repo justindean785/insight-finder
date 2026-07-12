@@ -95,6 +95,69 @@ export function oathnetDbnamesUrl(q: string): string {
   return `${BASE}/service/v2/breach/autocomplete/dbnames?q=${encodeURIComponent(q)}`;
 }
 
+// ---- OSINT point lookups (per docs.oathnet.org/guides/osint-lookups) ---------
+// All accept an optional search_id to group the call into an existing search
+// session (docs.oathnet.org/guides/search-sessions) instead of spending a
+// fresh unit of the shared pooled quota.
+
+/** Email account-existence check (Holehe) — which services have an account for this email. */
+export function oathnetHoleheUrl(email: string, searchId?: string): string {
+  const params = new URLSearchParams({ email });
+  if (searchId) params.set("search_id", searchId);
+  return `${BASE}/service/holehe?${params.toString()}`;
+}
+
+/** Google account info (GHunt) — Gmail addresses only. */
+export function oathnetGhuntUrl(email: string, searchId?: string): string {
+  const params = new URLSearchParams({ email });
+  if (searchId) params.set("search_id", searchId);
+  return `${BASE}/service/ghunt?${params.toString()}`;
+}
+
+/** Discord user info by snowflake ID (14-19 digits). */
+export function oathnetDiscordUserInfoUrl(discordId: string, searchId?: string): string {
+  const params = new URLSearchParams({ discord_id: discordId });
+  if (searchId) params.set("search_id", searchId);
+  return `${BASE}/service/discord-userinfo?${params.toString()}`;
+}
+
+/** Discord prior-username history by snowflake ID. */
+export function oathnetDiscordUsernameHistoryUrl(discordId: string, searchId?: string): string {
+  const params = new URLSearchParams({ discord_id: discordId });
+  if (searchId) params.set("search_id", searchId);
+  return `${BASE}/service/discord-username-history?${params.toString()}`;
+}
+
+/** Steam profile by Steam64 ID or custom URL name. */
+export function oathnetSteamUrl(steamId: string, searchId?: string): string {
+  const params = new URLSearchParams({ steam_id: steamId });
+  if (searchId) params.set("search_id", searchId);
+  return `${BASE}/service/steam?${params.toString()}`;
+}
+
+/** Xbox Live profile by gamertag or XUID. */
+export function oathnetXboxUrl(xblId: string, searchId?: string): string {
+  const params = new URLSearchParams({ xbl_id: xblId });
+  if (searchId) params.set("search_id", searchId);
+  return `${BASE}/service/xbox?${params.toString()}`;
+}
+
+/** Roblox user info by user_id OR username (exactly one required). */
+export function oathnetRobloxUrl(opts: { userId?: string; username?: string }, searchId?: string): string {
+  const params = new URLSearchParams();
+  if (opts.userId) params.set("user_id", opts.userId);
+  else if (opts.username) params.set("username", opts.username);
+  if (searchId) params.set("search_id", searchId);
+  return `${BASE}/service/roblox-userinfo?${params.toString()}`;
+}
+
+/** Minecraft username history. */
+export function oathnetMinecraftHistoryUrl(username: string, searchId?: string): string {
+  const params = new URLSearchParams({ username });
+  if (searchId) params.set("search_id", searchId);
+  return `${BASE}/service/mc-history?${params.toString()}`;
+}
+
 /** AI filter creation (POST). Body: { index, query }. Returns a reusable filter_id. */
 export const OATHNET_AI_FILTER_URL = `${BASE}/service/v2/ai/filter`;
 

@@ -1052,24 +1052,49 @@ export function buildReportMarkdown(input: ReportInput): string {
   // fully-CONFIRMED rows we do NOT just print "nothing" while the table shows
   // high-confidence INFERRED/CORRELATED rows — we surface the strongest
   // uncorroborated leads, clearly labelled, without promoting them.
+  // Breach exposure is a fact about the exposure itself (this selector appeared
+  // in this breach corpus) — it stays useful even when the identity-correlation
+  // confidence sits at VERIFY, so it is surfaced unconditionally here rather
+  // than gated behind the CONFIRMED/CORRELATED/INFERRED filter below. This does
+  // NOT change labelForArtifact's confidence/label output (integrity-critical,
+  // per repo CLAUDE.md) — it only decides what gets listed in this section.
+  // Concrete values (password hash, etc.) are never printed in this markdown;
+  // the Report tab's masked click-to-reveal view is the only place those show.
+  const breachFindings = artifacts
+    .filter((a) => a.kind.toLowerCase() === "breach_exposure")
+    .sort((a, b) => (conf(b) ?? 0) - (conf(a) ?? 0))
+    .slice(0, 15);
+
   const keyFindings = (() => {
+    const breachSection = breachFindings.length
+      ? [
+          "**Breach Exposure:**",
+          ...breachFindings.map((a) =>
+            `- \`${sanitizeValueForLabel(a.value, false)}\` _(${lbl(a)}, confidence ${conf(a) ?? "—"}, via ${humanizeSourceChain(a.source)})_`,
+          ),
+        ].join("\n")
+      : "";
     if (confirmed.length) {
-      return confirmed.slice(0, 10).map((a) =>
+      const primary = confirmed.slice(0, 10).map((a) =>
         `- **${a.kind}** — \`${a.value}\` _(source indicates via ${humanizeSourceChain(a.source)}, confidence ${conf(a) ?? "—"})_`,
       ).join("\n");
+      return breachSection ? [primary, "", breachSection].join("\n") : primary;
     }
     const leads = artifacts
       .filter((a) => { const l = lbl(a); return l === "CORRELATED" || l === "INFERRED"; })
       .sort((a, b) => (conf(b) ?? 0) - (conf(a) ?? 0))
       .slice(0, 10);
-    if (!leads.length) return "_No findings recorded yet._";
-    return [
-      "_No fully-corroborated findings yet (none reach CONFIRMED — 2+ independent source classes or analyst review). Strongest uncorroborated leads:_",
-      "",
-      ...leads.map((a) =>
-        `- **${a.kind}** — \`${sanitizeValueForLabel(a.value, false)}\` _(${lbl(a)}, confidence ${conf(a) ?? "—"}, via ${humanizeSourceChain(a.source)})_`,
-      ),
-    ].join("\n");
+    if (!leads.length && !breachSection) return "_No findings recorded yet._";
+    const primary = leads.length
+      ? [
+          "_No fully-corroborated findings yet (none reach CONFIRMED — 2+ independent source classes or analyst review). Strongest uncorroborated leads:_",
+          "",
+          ...leads.map((a) =>
+            `- **${a.kind}** — \`${sanitizeValueForLabel(a.value, false)}\` _(${lbl(a)}, confidence ${conf(a) ?? "—"}, via ${humanizeSourceChain(a.source)})_`,
+          ),
+        ].join("\n")
+      : "_No fully-corroborated findings yet (none reach CONFIRMED — 2+ independent source classes or analyst review)._";
+    return breachSection ? [primary, "", breachSection].join("\n") : primary;
   })();
 
   const entityTable = buildEvidenceMatrixMarkdown(artifacts);

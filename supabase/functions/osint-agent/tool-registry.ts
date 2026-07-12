@@ -49,6 +49,8 @@ import {
   oathnetSubdomainUrl, oathnetDbnamesUrl, OATHNET_AI_FILTER_URL, OATHNET_SCANNER_URLS,
   noteOathnetQuota, oathnetQuotaLeft, oathnetExhausted,
   trimStealerItems, trimVictimItems, summarizeManifest, safeVictimFile,
+  oathnetHoleheUrl, oathnetGhuntUrl, oathnetDiscordUserInfoUrl, oathnetDiscordUsernameHistoryUrl,
+  oathnetSteamUrl, oathnetXboxUrl, oathnetRobloxUrl, oathnetMinecraftHistoryUrl,
 } from "./oathnet.ts";
 import {
   indicia_email, indicia_phone, indicia_person,
@@ -495,6 +497,9 @@ export function buildTools(ctx: ToolContext) {
             "oathnet_stealer_search","oathnet_victims_search","oathnet_victim_manifest",
             "oathnet_victim_file","oathnet_subdomains","oathnet_breach_dbnames","oathnet_ai_filter",
             "oathnet_scanner",
+            // OathNet OSINT point lookups — enrichment for one already-discovered indicator.
+            "oathnet_holehe","oathnet_ghunt","oathnet_discord_userinfo","oathnet_discord_username_history",
+            "oathnet_steam_lookup","oathnet_xbox_lookup","oathnet_roblox_lookup","oathnet_minecraft_history",
             "bosint_email_lookup",
             "serus_darkweb_scan",
             // Indicia — US person/phone/email/address + web-DB breach aggregator.
@@ -877,7 +882,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     oathnet_lookup: tool({
      description:
-       "Query OathNet v2 for breach correlation on a high-value email/username/phone/domain/NAME, or geo+ASN on an IP. For a person's full NAME pass type:'name' (searched as a free-text query across the breach corpus — expect same-name collisions, so treat name-only hits as [VERIFY] until a selector overlaps). A first-class breach source: run it on the seed AND on high-value selectors/names discovered mid-investigation.",
+       "Query OathNet v2 for breach correlation on a high-value email/username/phone/domain/NAME, or geo+ASN on an IP. For a person's full NAME pass type:'name' (searched as a free-text query across the breach corpus — expect same-name collisions, so treat name-only hits as [VERIFY] until a selector overlaps). A first-class breach source: run it on the seed AND on high-value selectors/names discovered mid-investigation. The response includes `concrete_hits` — every real captured value (password, password_hash, ip, username, full_name, phone) per breach hit, flattened out of the raw payload. Record EVERY field on EVERY hit into artifacts, not just one example — do not summarize down to a single sample value.",
       inputSchema: memoSchema("oathnet_lookup", () => z.object({
         type: z.enum(["email", "username", "phone", "ip", "domain", "name"]),
         value: z.string(),
@@ -911,9 +916,58 @@ export function buildTools(ctx: ToolContext) {
             data = { raw: text.slice(0, 4000) };
           }
           noteOathnetQuota(data);
+          // The raw `data` above already carries every concrete value OathNet
+          // returns (password, password_hash, ip, username, full_name, phone,
+          // etc.) per breach hit — this tool never stripped anything. But those
+          // values sit nested inside data.data.results[], and in practice the
+          // model was only ever pulling out ONE value per investigation instead
+          // of reading every hit. Flatten them into an explicit, hard-to-miss
+          // list so every concrete field on every hit gets recorded, not just
+          // whichever one the model happened to notice in the raw JSON.
+          const hits = (data as { data?: { results?: unknown } })?.data?.results;
+          const concreteHits = Array.isArray(hits)
+            ? hits.map((h) => {
+                const rec = (h ?? {}) as Record<string, unknown>;
+                const fields: Record<string, unknown> = {};
+                for (const [k, v] of Object.entries(rec)) {
+                  if (k === "dbname" || v === null || v === undefined || v === "") continue;
+                  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") fields[k] = v;
+                }
+                return { dbname: rec.dbname ?? null, fields };
+              })
+            : [];
+          // Auto-enrich any IP address surfaced in a breach hit via OathNet's
+          // ip-info endpoint (already wired for type:'ip' lookups) — the model
+          // was never reliably following up on breach IPs with a second manual
+          // call, so an IP like MyFitnessPal's landed in context but never got
+          // geolocated. Bounded to 5 unique IPs per call to stay inside the
+          // shared 500/day pooled quota.
+          const breachIps = Array.from(new Set(
+            concreteHits.map((h) => h.fields.ip).filter((v): v is string => typeof v === "string" && v.length > 0),
+          )).slice(0, 5);
+          const ipGeolocation: Record<string, unknown> = {};
+          for (const ip of breachIps) {
+            try {
+              const geoR = await fetchRetry(
+                `https://oathnet.org/api/service/ip-info?ip=${encodeURIComponent(ip)}`,
+                { headers: { "x-api-key": OATHNET_API_KEY } },
+                { retries: 1, timeoutMs: 10_000 },
+              );
+              const geoText = await geoR.text();
+              try { ipGeolocation[ip] = JSON.parse(geoText); } catch { /* skip unparsable geo response */ }
+            } catch { /* geo enrichment is best-effort — a failure here must not fail the breach lookup */ }
+          }
+          const extra = {
+            ...(concreteHits.length
+              ? { concrete_hits: concreteHits, concrete_hits_note: "Every field here (password, password_hash, ip, username, full_name, phone, etc.) is a real captured value, not a category label — record ALL of them across ALL hits, not just one example." }
+              : {}),
+            ...(Object.keys(ipGeolocation).length
+              ? { ip_geolocation: ipGeolocation, ip_geolocation_note: "Auto-enriched from breach-hit IPs. A breach IP's location can meaningfully differ from the subject's known location — record it and flag any mismatch, do not discard it." }
+              : {}),
+          };
           // HTTP 200 with an empty breach payload is a successful negative — not a
           // provider failure (inflated the 23% "failure" rate in beta telemetry).
-          if (r.ok) return { ok: true, status: r.status, data, quota_left: oathnetQuotaLeft() };
+          if (r.ok) return { ok: true, status: r.status, data, ...extra, quota_left: oathnetQuotaLeft() };
           return { ok: false, status: r.status, data, quota_left: oathnetQuotaLeft() };
         } catch (e) {
           return { error: String(e) };
@@ -1094,6 +1148,165 @@ export function buildTools(ctx: ToolContext) {
             quota_left: oathnetQuotaLeft(),
             note: "Independent subdomain source — corroborate against crtsh_subdomains / hackertarget.",
           };
+        } catch (e) { return { error: String(e) }; }
+      },
+    }),
+    // ── OathNet OSINT point lookups (docs.oathnet.org/guides/osint-lookups) ────
+    // Enrichment for a single indicator already discovered elsewhere (a breach
+    // IP, a Discord ID from stealer data, a Gmail address). Same pooled-quota
+    // gate as the rest of the oathnet_* family.
+    oathnet_holehe: tool({
+      description:
+        "OathNet — email ACCOUNT-EXISTENCE check (Holehe). Given an email, returns which online-service domains (twitter.com, amazon.com, spotify.com, etc.) have a registered account under it. Proves the email is IN USE on those services, NOT identity ownership — corroborate with other selectors before treating a hit as confirmed. Run on the seed email AND any email discovered mid-investigation. Shares the pooled OathNet quota.",
+      inputSchema: memoSchema("oathnet_holehe", () => z.object({ email: z.string().email() })),
+      execute: async ({ email }, opts) => {
+        if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
+        if (oathnetExhausted()) return skipStub("oathnet_holehe", `OathNet pooled daily quota exhausted (${oathnetQuotaLeft()} left today).`, { quota_left: oathnetQuotaLeft() });
+        try {
+          const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
+          const r = await fetchRetry(oathnetHoleheUrl(email), { headers: { "x-api-key": OATHNET_API_KEY }, signal }, { retries: 1, timeoutMs: 15_000 });
+          const text = await r.text();
+          let data: unknown;
+          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 2000) }; }
+          noteOathnetQuota(data);
+          if (!r.ok) return { ok: false, status: r.status, error: `oathnet holehe ${r.status}`, quota_left: oathnetQuotaLeft() };
+          return { ok: true, status: r.status, data, quota_left: oathnetQuotaLeft() };
+        } catch (e) { return { error: String(e) }; }
+      },
+    }),
+    oathnet_ghunt: tool({
+      description:
+        "OathNet — Google account info (GHunt) for a GMAIL address ONLY (non-Gmail addresses will not resolve). Returns public Google profile details (name, profile picture, Gaia ID) when the upstream source can resolve them. A negative/404 is common and not an error — Google account discovery frequently fails even for real accounts. Shares the pooled OathNet quota.",
+      inputSchema: memoSchema("oathnet_ghunt", () => z.object({ email: z.string().email().describe("Must be a @gmail.com address") })),
+      execute: async ({ email }, opts) => {
+        if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
+        if (oathnetExhausted()) return skipStub("oathnet_ghunt", `OathNet pooled daily quota exhausted (${oathnetQuotaLeft()} left today).`, { quota_left: oathnetQuotaLeft() });
+        try {
+          const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
+          const r = await fetchRetry(oathnetGhuntUrl(email), { headers: { "x-api-key": OATHNET_API_KEY }, signal }, { retries: 1, timeoutMs: 15_000 });
+          const text = await r.text();
+          let data: unknown;
+          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 2000) }; }
+          noteOathnetQuota(data);
+          if (!r.ok) return { ok: false, status: r.status, error: `oathnet ghunt ${r.status}`, quota_left: oathnetQuotaLeft() };
+          return { ok: true, status: r.status, data, quota_left: oathnetQuotaLeft() };
+        } catch (e) { return { error: String(e) }; }
+      },
+    }),
+    oathnet_discord_userinfo: tool({
+      description:
+        "OathNet — Discord user info by snowflake ID (14-19 digits). Returns username, global display name, avatar, banner, account-creation date, and badges. Run whenever a Discord ID surfaces in breach/stealer data. Shares the pooled OathNet quota.",
+      inputSchema: memoSchema("oathnet_discord_userinfo", () => z.object({ discord_id: z.string().regex(/^\d{14,19}$/, "Discord ID must be 14-19 digits") })),
+      execute: async ({ discord_id }, opts) => {
+        if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
+        if (oathnetExhausted()) return skipStub("oathnet_discord_userinfo", `OathNet pooled daily quota exhausted (${oathnetQuotaLeft()} left today).`, { quota_left: oathnetQuotaLeft() });
+        try {
+          const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
+          const r = await fetchRetry(oathnetDiscordUserInfoUrl(discord_id), { headers: { "x-api-key": OATHNET_API_KEY }, signal }, { retries: 1, timeoutMs: 15_000 });
+          const text = await r.text();
+          let data: unknown;
+          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 2000) }; }
+          noteOathnetQuota(data);
+          if (!r.ok) return { ok: false, status: r.status, error: `oathnet discord-userinfo ${r.status}`, quota_left: oathnetQuotaLeft() };
+          return { ok: true, status: r.status, data, quota_left: oathnetQuotaLeft() };
+        } catch (e) { return { error: String(e) }; }
+      },
+    }),
+    oathnet_discord_username_history: tool({
+      description:
+        "OathNet — prior USERNAME HISTORY for a Discord snowflake ID (14-19 digits). Returns past usernames with change timestamps — useful for linking an account to an older alias seen elsewhere. Shares the pooled OathNet quota.",
+      inputSchema: memoSchema("oathnet_discord_username_history", () => z.object({ discord_id: z.string().regex(/^\d{14,19}$/, "Discord ID must be 14-19 digits") })),
+      execute: async ({ discord_id }, opts) => {
+        if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
+        if (oathnetExhausted()) return skipStub("oathnet_discord_username_history", `OathNet pooled daily quota exhausted (${oathnetQuotaLeft()} left today).`, { quota_left: oathnetQuotaLeft() });
+        try {
+          const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
+          const r = await fetchRetry(oathnetDiscordUsernameHistoryUrl(discord_id), { headers: { "x-api-key": OATHNET_API_KEY }, signal }, { retries: 1, timeoutMs: 15_000 });
+          const text = await r.text();
+          let data: unknown;
+          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 2000) }; }
+          noteOathnetQuota(data);
+          if (!r.ok) return { ok: false, status: r.status, error: `oathnet discord-username-history ${r.status}`, quota_left: oathnetQuotaLeft() };
+          return { ok: true, status: r.status, data, quota_left: oathnetQuotaLeft() };
+        } catch (e) { return { error: String(e) }; }
+      },
+    }),
+    oathnet_steam_lookup: tool({
+      description:
+        "OathNet — Steam profile lookup by Steam64 ID or custom URL name. Returns display name, avatar, profile URL, and account-creation date. Run whenever a Steam ID/handle surfaces in breach/stealer/victim data. Shares the pooled OathNet quota.",
+      inputSchema: memoSchema("oathnet_steam_lookup", () => z.object({ steam_id: z.string().describe("Steam64 ID or custom URL name") })),
+      execute: async ({ steam_id }, opts) => {
+        if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
+        if (oathnetExhausted()) return skipStub("oathnet_steam_lookup", `OathNet pooled daily quota exhausted (${oathnetQuotaLeft()} left today).`, { quota_left: oathnetQuotaLeft() });
+        try {
+          const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
+          const r = await fetchRetry(oathnetSteamUrl(steam_id), { headers: { "x-api-key": OATHNET_API_KEY }, signal }, { retries: 1, timeoutMs: 15_000 });
+          const text = await r.text();
+          let data: unknown;
+          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 2000) }; }
+          noteOathnetQuota(data);
+          if (!r.ok) return { ok: false, status: r.status, error: `oathnet steam ${r.status}`, quota_left: oathnetQuotaLeft() };
+          return { ok: true, status: r.status, data, quota_left: oathnetQuotaLeft() };
+        } catch (e) { return { error: String(e) }; }
+      },
+    }),
+    oathnet_xbox_lookup: tool({
+      description:
+        "OathNet — Xbox Live profile lookup by gamertag or XUID. Returns identity, avatar, gamerscore, account tier, and related profile metadata. Run whenever an Xbox gamertag/XUID surfaces in breach/stealer/victim data. Shares the pooled OathNet quota.",
+      inputSchema: memoSchema("oathnet_xbox_lookup", () => z.object({ xbl_id: z.string().describe("Xbox Live gamertag or XUID") })),
+      execute: async ({ xbl_id }, opts) => {
+        if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
+        if (oathnetExhausted()) return skipStub("oathnet_xbox_lookup", `OathNet pooled daily quota exhausted (${oathnetQuotaLeft()} left today).`, { quota_left: oathnetQuotaLeft() });
+        try {
+          const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
+          const r = await fetchRetry(oathnetXboxUrl(xbl_id), { headers: { "x-api-key": OATHNET_API_KEY }, signal }, { retries: 1, timeoutMs: 15_000 });
+          const text = await r.text();
+          let data: unknown;
+          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 2000) }; }
+          noteOathnetQuota(data);
+          if (!r.ok) return { ok: false, status: r.status, error: `oathnet xbox ${r.status}`, quota_left: oathnetQuotaLeft() };
+          return { ok: true, status: r.status, data, quota_left: oathnetQuotaLeft() };
+        } catch (e) { return { error: String(e) }; }
+      },
+    }),
+    oathnet_roblox_lookup: tool({
+      description:
+        "OathNet — Roblox user info by user_id OR username (provide exactly one). Returns display name, old usernames, join date, avatar, and a linked-Discord hint when present. Run whenever a Roblox ID/username surfaces in breach/stealer/victim data. Shares the pooled OathNet quota.",
+      inputSchema: memoSchema("oathnet_roblox_lookup", () => z.object({
+        user_id: z.string().optional().describe("Roblox user ID"),
+        username: z.string().optional().describe("Roblox username"),
+      }).refine((v) => !!(v.user_id || v.username), { message: "Provide `user_id` or `username`" })),
+      execute: async ({ user_id, username }, opts) => {
+        if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
+        if (oathnetExhausted()) return skipStub("oathnet_roblox_lookup", `OathNet pooled daily quota exhausted (${oathnetQuotaLeft()} left today).`, { quota_left: oathnetQuotaLeft() });
+        try {
+          const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
+          const r = await fetchRetry(oathnetRobloxUrl({ userId: user_id, username }), { headers: { "x-api-key": OATHNET_API_KEY }, signal }, { retries: 1, timeoutMs: 15_000 });
+          const text = await r.text();
+          let data: unknown;
+          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 2000) }; }
+          noteOathnetQuota(data);
+          if (!r.ok) return { ok: false, status: r.status, error: `oathnet roblox-userinfo ${r.status}`, quota_left: oathnetQuotaLeft() };
+          return { ok: true, status: r.status, data, quota_left: oathnetQuotaLeft() };
+        } catch (e) { return { error: String(e) }; }
+      },
+    }),
+    oathnet_minecraft_history: tool({
+      description:
+        "OathNet — Minecraft username history lookup. Returns the UUID and prior usernames with change timestamps for a Minecraft account. Run whenever a Minecraft username surfaces mid-investigation. May be unavailable due to upstream API issues (treat 503 as a soft negative, not a hard failure). Shares the pooled OathNet quota.",
+      inputSchema: memoSchema("oathnet_minecraft_history", () => z.object({ username: z.string().describe("Minecraft account name") })),
+      execute: async ({ username }, opts) => {
+        if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
+        if (oathnetExhausted()) return skipStub("oathnet_minecraft_history", `OathNet pooled daily quota exhausted (${oathnetQuotaLeft()} left today).`, { quota_left: oathnetQuotaLeft() });
+        try {
+          const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
+          const r = await fetchRetry(oathnetMinecraftHistoryUrl(username), { headers: { "x-api-key": OATHNET_API_KEY }, signal }, { retries: 1, timeoutMs: 15_000 });
+          const text = await r.text();
+          let data: unknown;
+          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 2000) }; }
+          noteOathnetQuota(data);
+          if (!r.ok) return { ok: false, status: r.status, error: `oathnet mc-history ${r.status}`, quota_left: oathnetQuotaLeft() };
+          return { ok: true, status: r.status, data, quota_left: oathnetQuotaLeft() };
         } catch (e) { return { error: String(e) }; }
       },
     }),
@@ -1606,7 +1819,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     rapidapi_breach_search: tool({
       description:
-        "PRIMARY + MANDATORY breach source — RapidAPI Email Breach Search (~8000 lookups/month, broadest corpus). MUST be the FIRST breach call on ANY email — the seed OR any email discovered mid-investigation (pivot/contact/breach-derived) — BEFORE breach_check / leakcheck_lookup / oathnet_lookup. For an email, returns the breach corpus it appears in: per-breach id/name, breach date, and the exposed field set (email, password, etc.) with per-field `sensitive` flags. Then corroborate hits with leakcheck_lookup / hibp_lookup / breach_check (independent corpora). A breach hit is an EXPOSURE association — record it as observed/needs_corroboration, never as confirmed identity on its own. Requires RAPIDAPI_KEY in Supabase secrets (host/path overridable via RAPIDAPI_BREACH_HOST/PATH); self-skips when the key is absent.",
+        "PRIMARY + MANDATORY breach source — RapidAPI Email Breach Search (~8000 lookups/month, broadest corpus). MUST be the FIRST breach call on ANY email — the seed OR any email discovered mid-investigation (pivot/contact/breach-derived) — BEFORE breach_check / leakcheck_lookup / oathnet_lookup. For an email, returns the breach corpus it appears in: per-breach id/name, breach date, the exposed field set (email, password, etc.) with per-field `sensitive` flags, AND `exposed_values` — the actual concrete value captured for each exposed field (a real password, hash, IP, etc.) where the upstream API returned one. Record EVERY concrete value from `exposed_values` on EVERY breach hit into that artifact's metadata (not just one example) — do not summarize down to a single sample value. Then corroborate hits with leakcheck_lookup / hibp_lookup / breach_check (independent corpora). A breach hit is an EXPOSURE association — record it as observed/needs_corroboration, never as confirmed identity on its own. Requires RAPIDAPI_KEY in Supabase secrets (host/path overridable via RAPIDAPI_BREACH_HOST/PATH); self-skips when the key is absent.",
       inputSchema: memoSchema("rapidapi_breach_search", () => z.object({ email: z.string().email() })),
       execute: async ({ email }) => {
         const RAPIDAPI_KEY = Deno.env.get("RAPIDAPI_KEY");
@@ -1646,6 +1859,18 @@ export function buildTools(ctx: ToolContext) {
             hibp_id: e.hibp_id ?? null,
             exposed_fields: Array.isArray(e.found)
               ? Array.from(new Set(e.found.map((f) => f.label ?? f.field).filter(Boolean)))
+              : [],
+            // The upstream API returns a concrete `value` per exposed field
+            // (a real password, hash, IP, etc.), not just the field label —
+            // exposed_fields above previously discarded it, so the model only
+            // ever saw ONE captured value across an entire investigation
+            // (whichever it happened to dig out of the raw payload itself).
+            // Surface every concrete value the API actually returned so the
+            // model can record all of them, not just the field categories.
+            exposed_values: Array.isArray(e.found)
+              ? e.found
+                  .filter((f) => f.value !== undefined && f.value !== null && String(f.value).trim() !== "")
+                  .map((f) => ({ field: f.label ?? f.field ?? null, value: f.value, sensitive: f.sensitive === true }))
               : [],
             has_sensitive: Array.isArray(e.found) ? e.found.some((f) => f.sensitive === true) : false,
           }));
