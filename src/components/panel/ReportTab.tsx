@@ -80,7 +80,7 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
     () => toolActivity.events.map((e) => ({ toolName: e.toolName })),
     [toolActivity.events],
   );
-  const toolInvocations = toolActivity.total + toolActivity.hiddenFailed;
+  const toolInvocations = toolActivity.persistedTotal;
 
   const markdown = useMemo(
     () => buildReportMarkdown({

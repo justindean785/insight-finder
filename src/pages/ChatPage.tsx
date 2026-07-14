@@ -89,7 +89,7 @@ export default function ChatPage() {
   // Counts for the tab bar badges. threadId is always defined past the guards
   // below, but the hooks must run unconditionally — they no-op on "".
   const { items } = useThreadArtifacts(threadId ?? "");
-  const activity = useThreadToolActivity(threadId ?? "");
+  const activity = useThreadToolActivity(threadId ?? "", user?.id ?? "");
 
   if (loading) return <div className="min-h-screen grid place-items-center text-muted-foreground">Loading…</div>;
   if (!user) return <Navigate to="/auth" replace />;
@@ -100,7 +100,7 @@ export default function ChatPage() {
   const breachCount = items.filter((a) => a.kind.toLowerCase() === "breach").length;
   const tabCounts = {
     evidence: { value: items.length, alert: breachCount },
-    tools: { value: activity.total, alert: 0 },
+    tools: { value: activity.persistedTotal, alert: 0 },
   };
 
   const content = (

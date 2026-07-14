@@ -47,6 +47,9 @@ export interface ToolEvent {
 
 export interface ThreadToolActivity {
   events: ToolEvent[];
+  /** Every persisted tool call for the thread, including suppressed failures. */
+  persistedTotal: number;
+  /** Visible activity-feed rows (failed calls are intentionally suppressed). */
   total: number;
   hiddenFailed: number;
   ok: number;
@@ -64,6 +67,14 @@ interface ActivityRow {
   ok: boolean | null;
   error_msg: string | null;
   created_at: string;
+}
+
+interface ActivityState {
+  scopeKey: string;
+  events: ToolEvent[];
+  hiddenFailed: number;
+  persistedTotal: number;
+  loading: boolean;
 }
 
 const GATED_RE = /gated|missing.?key|not configured|disabled|unavailable|provider disabled/i;
@@ -104,24 +115,54 @@ function cleanReason(errorMsg: string | null): string | undefined {
  * osint-agent orchestrator does not populate, so the old message-derived feed
  * always read empty. Stays fresh via a realtime subscription on the log.
  */
-export function useThreadToolActivity(threadId: string): ThreadToolActivity {
-  const [events, setEvents] = useState<ToolEvent[]>([]);
-  const [hiddenFailed, setHiddenFailed] = useState(0);
-  const [loading, setLoading] = useState(true);
+export function useThreadToolActivity(threadId: string, accountId?: string): ThreadToolActivity {
+  const scopeKey = `${accountId === undefined ? "unscoped" : accountId}:${threadId}`;
+  const [state, setState] = useState<ActivityState>({
+    scopeKey: "",
+    events: [],
+    hiddenFailed: 0,
+    persistedTotal: 0,
+    loading: true,
+  });
   const channelIdRef = useRef<number>();
   if (channelIdRef.current == null) channelIdRef.current = ++channelSeq;
 
   useEffect(() => {
     let alive = true;
+    let loadSeq = 0;
+    let subscribed = false;
+    let runWasActive = false;
+
+    const emptyState = (): ActivityState => ({
+      scopeKey,
+      events: [],
+      hiddenFailed: 0,
+      persistedTotal: 0,
+      loading: true,
+    });
+    setState(emptyState());
+
+    // An explicitly supplied empty account means auth is unresolved/signed out.
+    // Do not let an old account's count survive while the session changes.
+    if (!threadId || (accountId !== undefined && !accountId)) {
+      setState((current) => ({ ...current, loading: false }));
+      return () => { alive = false; };
+    }
+
     const load = async () => {
-      const { data } = await supabase
+      const requestSeq = ++loadSeq;
+      const { data, error } = await supabase
         .from("tool_usage_log")
         // `outcome` is not in the generated types yet (added by migration) —
         // cast via unknown below to keep typecheck green.
         .select("id,tool_name,outcome,ok,error_msg,created_at")
         .eq("thread_id", threadId)
         .order("created_at", { ascending: true });
-      if (!alive) return;
+      if (!alive || requestSeq !== loadSeq) return;
+      if (error) {
+        setState({ ...emptyState(), loading: false });
+        return;
+      }
       const rows = (data ?? []) as unknown as ActivityRow[];
       const out: ToolEvent[] = rows.map((r) => {
         const { tone, status } = classifyActivityRow(r.outcome, r.ok, r.error_msg);
@@ -140,20 +181,75 @@ export function useThreadToolActivity(threadId: string): ThreadToolActivity {
       // feed (the Tool-Health panel surfaces failures explicitly); carry the
       // count so the surface acknowledges hidden activity instead of reading
       // empty.
-      setHiddenFailed(out.filter((event) => event.status === "failed").length);
-      setEvents(out.filter((event) => event.status !== "failed"));
-      setLoading(false);
+      setState({
+        scopeKey,
+        hiddenFailed: out.filter((event) => event.status === "failed").length,
+        events: out.filter((event) => event.status !== "failed"),
+        persistedTotal: rows.length,
+        loading: false,
+      });
     };
-    load();
+    void load();
+
+    const reloadForThread = (payload: unknown) => {
+      const change = payload as {
+        new?: { thread_id?: string };
+        old?: { thread_id?: string };
+      };
+      const changedThreadId = change.new?.thread_id ?? change.old?.thread_id;
+      if (changedThreadId && changedThreadId !== threadId) return;
+      void load();
+    };
+
+    const reloadOnCompletion = (payload: unknown) => {
+      const change = payload as { new?: { id?: string; status?: string | null } };
+      if (change.new?.id && change.new.id !== threadId) return;
+      if (change.new?.status === "finished" || change.new?.status === "stopped") {
+        void load();
+      }
+    };
+
     const ch = supabase
       .channel(`tool-activity-${threadId}-${channelIdRef.current}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "tool_usage_log", filter: `thread_id=eq.${threadId}` }, load)
-      .subscribe();
-    return () => { alive = false; supabase.removeChannel(ch); };
-  }, [threadId]);
+      .on("postgres_changes", { event: "*", schema: "public", table: "tool_usage_log", filter: `thread_id=eq.${threadId}` }, reloadForThread)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "threads", filter: `id=eq.${threadId}` }, reloadOnCompletion)
+      .subscribe((status) => {
+        if (status !== "SUBSCRIBED") return;
+        // A second SUBSCRIBED means the channel recovered after disconnecting.
+        // Reconcile from persistence in case tool-row events were missed.
+        if (subscribed) void load();
+        subscribed = true;
+      });
+
+    const onRunState = (event: Event) => {
+      const detail = (event as CustomEvent<{ threadId?: string; running?: boolean }>).detail;
+      if (!detail || detail.threadId !== threadId) return;
+      if (detail.running) {
+        runWasActive = true;
+      } else if (runWasActive) {
+        runWasActive = false;
+        void load();
+      }
+    };
+    window.addEventListener("proximity:run-state", onRunState);
+
+    return () => {
+      alive = false;
+      window.removeEventListener("proximity:run-state", onRunState);
+      supabase.removeChannel(ch);
+    };
+  }, [accountId, scopeKey, threadId]);
+
+  // Effects reset after render. Keying the returned snapshot prevents one frame
+  // of the previous thread/account count from leaking during that transition.
+  const current = state.scopeKey === scopeKey
+    ? state
+    : { scopeKey, events: [], hiddenFailed: 0, persistedTotal: 0, loading: true };
+  const { events, hiddenFailed, persistedTotal, loading } = current;
 
   return {
     events,
+    persistedTotal,
     total: events.length,
     hiddenFailed,
     ok: events.filter((e) => e.status === "succeeded").length,
