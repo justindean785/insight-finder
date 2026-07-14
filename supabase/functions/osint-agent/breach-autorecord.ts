@@ -95,7 +95,7 @@ function isSensitive(field: string): boolean {
 // A serus/oathnet row often carries a value like `••••••` when a specific
 // breach is still masked even under reveal. Never persist those — they add
 // no evidence but would pollute the exposure list.
-const MASKED_RE = /^[•\*x·⋅•_]{3,}$/;
+const MASKED_RE = /^[•*x·⋅_]{3,}$/;
 
 function pushValue(
   out: BreachValueRecord[],
