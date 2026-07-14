@@ -26,7 +26,7 @@ export function buildAutoRecordedRow(input: AutoRecordInput): {
   source: string;
   metadata: Record<string, unknown>;
 } {
-  const value = (input.value ?? "").trim();
+  const value = input.value ?? "";
   const cap = applyEvidenceCaps({
     rawConfidence: input.rawConfidence,
     sources: [input.source],
