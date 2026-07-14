@@ -5,6 +5,8 @@ import {
   groupContentKey,
   inferSeedSelector,
 } from "./breach-autorecord.ts";
+import { buildAutoRecordedRow } from "./auto-record-integrity.ts";
+import { scrubArtifactRows } from "./safety.ts";
 
 Deno.test("rapidapi_breach_search — flattens concrete_values with sensitive flag", () => {
   const output = {
@@ -190,6 +192,128 @@ Deno.test("groupContentKey — stable regardless of insertion order", () => {
     exposed_values: [{ field: "username", value: "u", sensitive: false }, { field: "password", value: "abc", sensitive: true }],
   });
   assertEquals(k1, k2);
+});
+
+// ---- End-to-end pipeline glue (the exact sequence index.ts's onStepFinish runs:
+// extract -> group -> dedup -> buildAutoRecordedRow -> scrubArtifactRows) --------
+
+function buildRowsForStep(
+  toolResults: Array<{ toolName: string; input: unknown; output: unknown }>,
+  seenKeys: Set<string>,
+): Record<string, unknown>[] {
+  const records = toolResults.flatMap((tr) =>
+    extractBreachConcreteValues(tr.toolName, tr.output, inferSeedSelector(tr.toolName, tr.input)),
+  );
+  const groups = groupBreachRecordsForArtifacts(records);
+  const rows = groups
+    .filter((g) => {
+      const key = groupContentKey(g);
+      if (seenKeys.has(key)) return false;
+      seenKeys.add(key);
+      return true;
+    })
+    .map((g) =>
+      buildAutoRecordedRow({
+        kind: "breach_exposure",
+        value: g.breach
+          ? `${g.selector ?? "unknown selector"} — ${g.breach} (unmasked)`
+          : `${g.selector ?? "unknown selector"} — breach exposure (unmasked)`,
+        source: "breach_reveal_autorecord",
+        rawConfidence: 70,
+        metadata: {
+          selector: g.selector,
+          breach: g.breach,
+          exposed_values: g.exposed_values,
+          reveal_source: "server_auto_record",
+        },
+      }),
+    );
+  return scrubArtifactRows(rows as unknown as Record<string, unknown>[]);
+}
+
+Deno.test("pipeline: a rapidapi_breach_search step produces a scrub-safe breach_exposure row with real values in metadata", () => {
+  const seen = new Set<string>();
+  const rows = buildRowsForStep(
+    [{
+      toolName: "rapidapi_breach_search",
+      input: { email: "eireannach_99@yahoo.com" },
+      output: {
+        ok: true,
+        data: {
+          email: "eireannach_99@yahoo.com",
+          concrete_values: [
+            { breach: "MySpace", field: "Password", value: "siochain1", sensitive: true },
+          ],
+          breaches: [],
+        },
+      },
+    }],
+    seen,
+  );
+  assertEquals(rows.length, 1);
+  const row = rows[0] as { kind: string; value: string; confidence: number; metadata: Record<string, unknown> };
+  assertEquals(row.kind, "breach_exposure");
+  assert(row.value.includes("MySpace"));
+  // Evidence caps applied — a single breach source can never reach Confirmed.
+  assert(row.confidence < 90, "single breach source must stay capped below Confirmed");
+  const exposed = row.metadata.exposed_values as Array<{ field: string; value: string }>;
+  assertEquals(exposed.length, 1);
+  assertEquals(exposed[0].value, "siochain1");
+  // auto_recorded flag proves this went through buildAutoRecordedRow, not the LLM shim.
+  assertEquals(row.metadata.auto_recorded, true);
+});
+
+Deno.test("pipeline: the SAME hit across two steps (corroborating re-query) is NOT duplicated", () => {
+  const seen = new Set<string>();
+  const stepInput = [{
+    toolName: "serus_darkweb_scan",
+    input: { identifierType: "email", identifierValue: "eireannach_99@yahoo.com" },
+    output: {
+      breaches: [{ breachAuthority: { name: "MySpace" }, isMasked: false, password: "siochain1" }],
+      extractedData: {},
+    },
+  }];
+  const rowsStep1 = buildRowsForStep(stepInput, seen);
+  const rowsStep2 = buildRowsForStep(stepInput, seen); // same tool re-fired next round
+  assertEquals(rowsStep1.length, 1);
+  assertEquals(rowsStep2.length, 0, "identical hit in a later step must be deduped, not re-inserted");
+});
+
+Deno.test("pipeline: a DIFFERENT breach for the same selector across steps produces a SECOND row (no under-merging)", () => {
+  const seen = new Set<string>();
+  const rowsStep1 = buildRowsForStep(
+    [{
+      toolName: "serus_darkweb_scan",
+      input: { identifierType: "email", identifierValue: "eireannach_99@yahoo.com" },
+      output: { breaches: [{ breachAuthority: { name: "MySpace" }, isMasked: false, password: "siochain1" }], extractedData: {} },
+    }],
+    seen,
+  );
+  const rowsStep2 = buildRowsForStep(
+    [{
+      toolName: "serus_darkweb_scan",
+      input: { identifierType: "email", identifierValue: "eireannach_99@yahoo.com" },
+      output: { breaches: [{ breachAuthority: { name: "Evite" }, isMasked: false, full_name: "stevemurphy" }], extractedData: {} },
+    }],
+    seen,
+  );
+  assertEquals(rowsStep1.length, 1);
+  assertEquals(rowsStep2.length, 1);
+  assert((rowsStep1[0] as { value: string }).value.includes("MySpace"));
+  assert((rowsStep2[0] as { value: string }).value.includes("Evite"));
+});
+
+Deno.test("pipeline: masked-only output (no reveal) produces zero rows — never fabricates evidence", () => {
+  const seen = new Set<string>();
+  const rows = buildRowsForStep(
+    [{
+      toolName: "serus_darkweb_scan",
+      input: { identifierType: "email", identifierValue: "x@y.com" },
+      output: { breaches: [{ breachAuthority: { name: "SomeBreach" }, isMasked: true, password: "••••••" }], extractedData: {} },
+    }],
+    seen,
+  );
+  assertEquals(rows.length, 0);
 });
 
 Deno.test("inferSeedSelector — pulls the seed from each tool's canonical arg", () => {
