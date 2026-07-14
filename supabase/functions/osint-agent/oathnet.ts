@@ -162,19 +162,22 @@ const SECRET_KEY_RE =
 export const SECRET_REDACTION = "***REDACTED***";
 
 /** Deep-clone `value`, replacing any secret-keyed field's value with a marker and
- * capping array lengths. Non-secret scalars pass through. Pure + recursion-bounded. */
-export function stripSecrets(value: unknown, arrayCap = 40, depth = 0): unknown {
+ * capping array lengths. Non-secret scalars pass through. Pure + recursion-bounded.
+ * When `reveal` is true (account-authorized full breach reveal) the secret-key
+ * redaction is skipped and raw values pass through — arrays are still capped so
+ * model context stays bounded. */
+export function stripSecrets(value: unknown, arrayCap = 40, depth = 0, reveal = false): unknown {
   if (depth > 6) return "[…]";
   if (Array.isArray(value)) {
-    return value.slice(0, arrayCap).map((v) => stripSecrets(v, arrayCap, depth + 1));
+    return value.slice(0, arrayCap).map((v) => stripSecrets(v, arrayCap, depth + 1, reveal));
   }
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (SECRET_KEY_RE.test(k)) {
+      if (!reveal && SECRET_KEY_RE.test(k)) {
         out[k] = v == null ? v : SECRET_REDACTION;
       } else {
-        out[k] = stripSecrets(v, arrayCap, depth + 1);
+        out[k] = stripSecrets(v, arrayCap, depth + 1, reveal);
       }
     }
     return out;
@@ -185,7 +188,7 @@ export function stripSecrets(value: unknown, arrayCap = 40, depth = 0): unknown 
 /** Trim a stealer_search item list to identity/pivot fields, dropping raw credentials.
  * Keeps log_id (victim pivot), captured domains/subdomains/paths, the username/email
  * pivots, and dates — passwords/cookies/tokens are stripped. */
-export function trimStealerItems(items: unknown, cap = 25): Record<string, unknown>[] {
+export function trimStealerItems(items: unknown, cap = 25, reveal = false): Record<string, unknown>[] {
   if (!Array.isArray(items)) return [];
   return items.slice(0, cap).map((raw) => {
     const it = (raw ?? {}) as Record<string, unknown>;
@@ -200,10 +203,17 @@ export function trimStealerItems(items: unknown, cap = 25): Record<string, unkno
       email: Array.isArray(it.email) ? it.email.slice(0, 10) : it.email,
       pwned_at: it.pwned_at,
       indexed_at: it.indexed_at,
-      // A stealer row implies a captured credential existed; expose that as a boolean,
-      // never the value.
+      // A stealer row implies a captured credential existed; expose that as a boolean.
       credential_present: it.password != null && it.password !== "",
     };
+    if (reveal) {
+      // Account authorized full reveal — surface the raw secret-bearing fields the
+      // row carried (password, cookies, tokens, hash, etc.) instead of stripping.
+      for (const [k, v] of Object.entries(it)) {
+        if (SECRET_KEY_RE.test(k) && v != null && v !== "") keep[k] = v;
+      }
+      return stripSecrets(keep, 40, 0, true) as Record<string, unknown>;
+    }
     // Belt-and-suspenders: run the whole kept object through stripSecrets so any
     // secret-keyed field an upstream schema change adds is caught too.
     return stripSecrets(keep) as Record<string, unknown>;
@@ -270,8 +280,9 @@ const SECRET_LINE_RE =
 /** Mask secret material in a raw text blob (victim file preview). Handles key:value /
  * key=value secret lines and the trailing password of `a:b:pass` / `user:pass` combos.
  * Returns text safe to place in model context. */
-export function maskSecrets(text: string): string {
+export function maskSecrets(text: string, reveal = false): string {
   if (typeof text !== "string" || !text) return "";
+  if (reveal) return text; // account-authorized full reveal — no masking
   return text
     .split(/\r?\n/)
     .map((line) => {
@@ -300,22 +311,25 @@ export function safeVictimFile(opts: {
   sha256?: string;
   previewLines?: number;
   previewChars?: number;
+  reveal?: boolean;
 }): Record<string, unknown> {
   const raw = typeof opts.text === "string" ? opts.text : "";
   const lineCount = raw ? raw.split(/\r?\n/).length : 0;
   const previewLines = opts.previewLines ?? 20;
   const previewChars = opts.previewChars ?? 2000;
-  const masked = maskSecrets(raw.split(/\r?\n/).slice(0, previewLines).join("\n")).slice(0, previewChars);
+  const reveal = !!opts.reveal;
+  const preview = maskSecrets(raw.split(/\r?\n/).slice(0, previewLines).join("\n"), reveal).slice(0, previewChars);
   return {
     log_id: opts.logId,
     file_id: opts.fileId,
     size_bytes: raw.length,
     line_count: lineCount,
     sha256: opts.sha256 ?? null,
-    // Credentials are masked; treat the preview as a redacted excerpt, never evidence
-    // to quote verbatim. Full raw content is available only via the manual archive path.
-    redacted_preview: masked,
-    redaction_note:
-      "Secret values (passwords/cookies/tokens) are masked. This is a redacted excerpt for triage — do NOT record raw credentials as artifacts.",
+    // When reveal is off this is a masked triage excerpt; when the account authorizes
+    // full reveal it carries the raw preview verbatim.
+    [reveal ? "raw_preview" : "redacted_preview"]: preview,
+    redaction_note: reveal
+      ? "Account-authorized full reveal — this preview is UNMASKED (raw passwords/cookies/tokens included). Handle as sensitive."
+      : "Secret values (passwords/cookies/tokens) are masked. This is a redacted excerpt for triage — do NOT record raw credentials as artifacts.",
   };
 }

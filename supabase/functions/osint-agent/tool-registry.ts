@@ -37,7 +37,7 @@ import {
   GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY,
   RAPIDAPI_KEY, INDICIA_API_KEY, PEOPLEDATALABS_API_KEY,
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
-  URLSCANNER_API_KEY,
+  URLSCANNER_API_KEY, REVEAL_BREACH_DATA,
   degradedTools,
   markToolDegraded, isDegraded, fetchRetry, fetchT,
   deadHosts, markHostDead, isHostDead,
@@ -963,9 +963,11 @@ export function buildTools(ctx: ToolContext) {
           return {
             ok: true, status: r.status,
             count: items.length, total: d?.meta?.total ?? items.length,
-            items: trimStealerItems(items),
+            items: trimStealerItems(items, 25, REVEAL_BREACH_DATA),
             quota_left: oathnetQuotaLeft(),
-            note: "Stealer rows are LEADS until corroborated. Passwords/cookies are redacted — do NOT record raw credentials; record identity pivots (log_id, domains, username/email) as [VERIFY].",
+            note: REVEAL_BREACH_DATA
+              ? "Stealer rows are LEADS until corroborated. Account-authorized full reveal is ON — raw passwords/cookies ARE included; record every concrete credential value found. Label identity pivots [VERIFY]."
+              : "Stealer rows are LEADS until corroborated. Passwords/cookies are redacted — do NOT record raw credentials; record identity pivots (log_id, domains, username/email) as [VERIFY].",
           };
         } catch (e) { return { error: String(e) }; }
       },
@@ -1048,7 +1050,7 @@ export function buildTools(ctx: ToolContext) {
             const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
             sha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
           } catch { sha256 = undefined; }
-          return { ok: true, status: r.status, file: safeVictimFile({ logId: log_id, fileId: file_id, text, sha256 }), quota_left: oathnetQuotaLeft() };
+          return { ok: true, status: r.status, file: safeVictimFile({ logId: log_id, fileId: file_id, text, sha256, reveal: REVEAL_BREACH_DATA }), quota_left: oathnetQuotaLeft() };
         } catch (e) { return { error: String(e) }; }
       },
     }),
@@ -1659,9 +1661,24 @@ export function buildTools(ctx: ToolContext) {
             exposed_fields: Array.isArray(e.found)
               ? Array.from(new Set(e.found.map((f) => f.label ?? f.field).filter(Boolean)))
               : [],
+            // exposed_fields above keeps only the LABEL of each exposed field and
+            // discarded the concrete value the API actually returned — the #1 reason
+            // real breach data (a captured password, IP, DOB) never reached the UI.
+            // exposed_values keeps every real value present on the hit so it can be
+            // recorded. Empty when the upstream row carried only labels (masked).
+            exposed_values: Array.isArray(e.found)
+              ? e.found
+                  .filter((f) => f.value != null && String(f.value).trim() !== "")
+                  .map((f) => ({ field: f.label ?? f.field ?? null, value: f.value, sensitive: f.sensitive === true }))
+              : [],
             has_sensitive: Array.isArray(e.found) ? e.found.some((f) => f.sensitive === true) : false,
           }));
           const names = breaches.map((b) => b.name).filter(Boolean).slice(0, 50);
+          // Flatten every concrete value across all hits into one explicit list so
+          // the model cannot miss them and records ALL of them, not one sample.
+          const concreteValues = breaches.flatMap((b) =>
+            (b.exposed_values ?? []).map((v) => ({ breach: b.name, field: v.field, value: v.value, sensitive: v.sensitive })),
+          );
           return {
             ok: r.ok,
             status: r.status,
@@ -1672,6 +1689,13 @@ export function buildTools(ctx: ToolContext) {
               breach_names: names,
               has_sensitive_exposure: breaches.some((b) => b.has_sensitive),
               breaches,
+              ...(concreteValues.length
+                ? {
+                    concrete_values: concreteValues,
+                    concrete_values_note:
+                      "Every entry in concrete_values is a REAL captured value (password, IP, DOB, etc.), not a category label. Record EVERY one into the breach artifact's metadata — do not summarize down to a single example.",
+                  }
+                : {}),
               raw: data,
             },
           };

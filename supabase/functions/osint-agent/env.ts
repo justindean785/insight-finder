@@ -208,6 +208,18 @@ export const JINA_API_KEY = Deno.env.get("JINA_API_KEY"); // optional — r.jina
 // (passwords, tokens) when the key has the `darkweb:reveal` scope.
 export const SERUS_API_KEY = Deno.env.get("SERUS_API_KEY");
 
+// Account-level breach-reveal policy. When ON, the breach surface returns
+// UNMASKED concrete values — serus is queried with reveal=true, rapidapi keeps
+// each exposed field's real value, and the OathNet stealer/victim trimmers keep
+// raw passwords/cookies instead of stripping them. The platform owner explicitly
+// authorized full reveal on their own account for authorized investigations, so
+// this defaults ON for this deployment; set REVEAL_BREACH_DATA=false in the edge
+// secrets to restore masked-by-default behavior. NOTE: serus reveal still requires
+// the SERUS_API_KEY to carry the `darkweb:reveal` scope upstream — this flag opts
+// in, it cannot grant a scope the key does not have (a scopeless key 403s).
+export const REVEAL_BREACH_DATA =
+  (Deno.env.get("REVEAL_BREACH_DATA") ?? "true").trim().toLowerCase() !== "false";
+
 // IPQualityScore — fraud/validity scoring for phone, email, and IP. One key,
 // three endpoints. Directly counters false-positive attribution: invalid /
 // reserved phones, disposable emails, and proxy/VPN IPs come back with low

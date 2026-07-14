@@ -118,6 +118,31 @@ Deno.test("trimStealerItems NEVER emits a raw password; exposes credential_prese
   assertEquals(trimmed[0].username, "user@gmail.com");
 });
 
+Deno.test("REVEAL policy: trimStealerItems(reveal=true) SURFACES the raw password", () => {
+  const items = [{
+    id: "doc_1", log_id: "vic_1", url_str: "https://accounts.google.com/signin",
+    username: "user@gmail.com", password: "SecretPass123",
+    pwned_at: "2024-03-15T10:30:00Z",
+  }];
+  const revealed = trimStealerItems(items, 25, true);
+  const blob = JSON.stringify(revealed);
+  assert(blob.includes("SecretPass123"), "reveal=true must surface the raw password");
+  assertEquals(revealed[0].password, "SecretPass123");
+  assertEquals(revealed[0].credential_present, true);
+  assertEquals(revealed[0].username, "user@gmail.com");
+});
+
+Deno.test("REVEAL policy: stripSecrets(reveal=true) keeps secret values verbatim", () => {
+  const out = stripSecrets({ username: "u", password: "hunter2", session: "abc.def" }, 40, 0, true) as Record<string, unknown>;
+  assertEquals(out.password, "hunter2");
+  assertEquals(out.session, "abc.def");
+});
+
+Deno.test("REVEAL policy: maskSecrets(reveal=true) returns the raw line unmasked", () => {
+  const raw = "user@example.com:hunter2\npassword: topsecret";
+  assertEquals(maskSecrets(raw, true), raw);
+});
+
 Deno.test("trimVictimItems keeps device metadata, no creds", () => {
   const items = [{
     log_id: "vic_2", device_user_str: ["Tyler"], hwids_str: ["HWID-9999"],
