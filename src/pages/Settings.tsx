@@ -6,7 +6,19 @@ import { SwarmMark } from "@/components/ui/swarm-mark";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { SUPPORT_MAILTO } from "@/lib/contact";
+import { DELETE_CONFIRM_PHRASE, isDeleteConfirmed } from "@/lib/delete-account-guard";
 import { toast } from "sonner";
 
 export default function Settings() {
@@ -16,6 +28,8 @@ export default function Settings() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [saving, setSaving] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [deleting, setDeleting] = useState(false);
 
   if (loading) {
     return (
@@ -53,6 +67,22 @@ export default function Settings() {
     setSigningOut(true);
     await supabase.auth.signOut();
     navigate("/auth", { replace: true });
+  };
+
+  const deleteConfirmed = isDeleteConfirmed(deleteConfirmText);
+
+  const deleteAccount = async () => {
+    if (!deleteConfirmed || deleting) return;
+    setDeleting(true);
+    const { error } = await supabase.rpc("delete_own_account");
+    if (error) {
+      setDeleting(false);
+      toast.error(error.message || "Couldn't delete your account — contact support.");
+      return;
+    }
+    await supabase.auth.signOut();
+    navigate("/auth", { replace: true });
+    toast.success("Your account and all associated data have been deleted.");
   };
 
   return (
@@ -129,6 +159,50 @@ export default function Settings() {
           >
             {signingOut ? "Signing out…" : "Sign out"}
           </Button>
+        </div>
+
+        {/* Delete account */}
+        <div className="glass-card rounded-2xl border border-destructive/20 p-6">
+          <h2 className="text-eyebrow uppercase tracking-[0.16em] text-destructive/80 font-mono mb-2">Danger zone</h2>
+          <p className="text-sm text-muted-foreground mb-4">
+            Permanently delete your account and all associated data — investigations, evidence, notes, and uploads. This cannot be undone.
+          </p>
+          <AlertDialog onOpenChange={(open) => { if (!open) setDeleteConfirmText(""); }}>
+            <AlertDialogTrigger asChild>
+              <Button
+                variant="outline"
+                className="h-9 border-destructive/30 text-destructive hover:bg-destructive/10 text-xs"
+              >
+                Delete account
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete your account?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This permanently deletes your account, every investigation thread, evidence, notes, and uploaded
+                  files. There is no way to recover this data afterward. Type <strong>{DELETE_CONFIRM_PHRASE}</strong> to confirm.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <Input
+                autoFocus
+                value={deleteConfirmText}
+                onChange={(e) => setDeleteConfirmText(e.target.value)}
+                placeholder={DELETE_CONFIRM_PHRASE}
+                aria-label={`Type ${DELETE_CONFIRM_PHRASE} to confirm account deletion`}
+              />
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  disabled={!deleteConfirmed || deleting}
+                  onClick={(e) => { e.preventDefault(); deleteAccount(); }}
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                >
+                  {deleting ? "Deleting…" : "Delete account permanently"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       </div>
     </div>

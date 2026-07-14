@@ -37,7 +37,7 @@ export default function Privacy() {
 
             <section>
               <h2 className="text-xs font-medium uppercase tracking-wider text-foreground/80 mb-2">Contact</h2>
-              <p>For questions about this Privacy Policy or to request data deletion, contact the project maintainer through the application.</p>
+              <p>You can permanently delete your account and all associated data at any time from the Danger Zone in Settings. For other questions about this Privacy Policy, contact the project maintainer through the application.</p>
             </section>
           </div>
 
