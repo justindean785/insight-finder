@@ -13,7 +13,37 @@
 // DB-lookup replay is proven live post-deploy via tool_usage_log (cached=true /
 // runtime.selector_reuse) — see the PR summary.
 import { assertEquals } from "jsr:@std/assert@^1";
-import { semanticParams } from "./cache.ts";
+import type { Tool } from "npm:ai@6";
+import type { createClient } from "npm:@supabase/supabase-js@2";
+import { isCacheableToolResult, semanticParams, wrapToolsWithCache } from "./cache.ts";
+import { clearRuntime } from "./runtime-policy.ts";
+
+type SupabaseClient = ReturnType<typeof createClient>;
+
+function fakeSupabase(onUpsert: () => void): SupabaseClient {
+  const q: Record<string, unknown> = {};
+  const chain = () => q;
+  q.select = chain;
+  q.eq = chain;
+  q.in = chain;
+  q.order = chain;
+  q.update = chain;
+  q.limit = chain;
+  q.maybeSingle = () => Promise.resolve({ data: null, error: null });
+  q.insert = () => Promise.resolve({ error: null });
+  q.upsert = () => {
+    onUpsert();
+    return Promise.resolve({ error: null });
+  };
+  return {
+    from: () => q,
+    rpc: () => Promise.resolve({ data: null, error: null }),
+  } as unknown as SupabaseClient;
+}
+
+function makeTool(execute: (input: unknown, opts: unknown) => Promise<unknown>): Tool {
+  return { description: "test tool", execute } as unknown as Tool;
+}
 
 Deno.test("semanticParams: drops pure annotation keys but keeps result-shaping params", () => {
   // purpose/reason/rationale/note/notes are planner annotations — never affect the result.
@@ -35,4 +65,40 @@ Deno.test("semanticParams: a genuinely different semantic param stays distinct (
   const a = semanticParams({ purpose: "verify", country: "US" });
   const b = semanticParams({ purpose: "verify", country: "GB" });
   assertEquals(a.country !== b.country, true, "result-shaping params still differentiate");
+});
+
+Deno.test("cache eligibility: provider skips are retryable, not successful cache entries", () => {
+  assertEquals(isCacheableToolResult({ ok: false, skipped: true, provider_unavailable: true }), false);
+  assertEquals(isCacheableToolResult({ error: "API_KEY not configured" }), false);
+  assertEquals(isCacheableToolResult({ ok: false, status: 500 }), false);
+  assertEquals(isCacheableToolResult({ ok: true, answer: "usable result" }), true);
+});
+
+Deno.test("cache wrapper: a skipped provider result executes live again instead of poisoning the LRU/DB cache", async () => {
+  const threadId = "test-thread-skip-cache-poison";
+  clearRuntime(threadId);
+  let executions = 0;
+  let cacheUpserts = 0;
+  const supabase = fakeSupabase(() => cacheUpserts++);
+  const wrapped = wrapToolsWithCache({
+    dns_records: makeTool(async () => {
+      executions++;
+      return { ok: false, skipped: true, provider_unavailable: true, records: [] };
+    }),
+  }, {
+    investigationId: threadId,
+    userId: "u-skip-cache",
+    supabase,
+    supabaseAdmin: supabase,
+  });
+  const execute = wrapped.dns_records.execute as (input: unknown, opts: unknown) => Promise<unknown>;
+  const input = { domain: "cache-poison.example", purpose: "retry provider", force: true };
+
+  await execute(input, { toolCallId: "skip-1", messages: [] });
+  clearRuntime(threadId);
+  await execute(input, { toolCallId: "skip-2", messages: [] });
+
+  assertEquals(executions, 2, "the second call must retry the provider instead of replaying a skip");
+  assertEquals(cacheUpserts, 0, "retryable skips must never be persisted to tool_call_cache");
+  clearRuntime(threadId);
 });
