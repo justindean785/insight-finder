@@ -13,3 +13,4 @@ Never redact breach-investigation fields (passwords, hashes, salts, ssn, dob, cc
 - [OSINT Integrations](mem://features/integrations) — External APIs and tools used for intelligence gathering
 - [Investigation Scope](mem://features/investigation-scope) — Supported OSINT seed types and UI handling for artifacts
 - [No PII redaction](mem://preferences/redaction) — Do not re-add password/hash/ssn/dob/cc/cvv/otp to SENSITIVE_KEY_RE in osint-agent
+- [Deno tests in web sandbox](mem://ops/deno-tests-in-web-sandbox) — dl.deno.land is egress-blocked; install deno via `npm i deno` + set DENO_CERT to run edge tests locally
