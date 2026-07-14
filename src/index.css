@@ -1353,10 +1353,23 @@ All colors MUST be HSL.
   scrollbar-width: thin;
 }
 .chat-prose table {
+  /* Fill the wrapper when the table is small, but keep a usable minimum so a
+     narrow (mobile) viewport scrolls the `.chat-table-wrap` horizontally
+     instead of crushing the first column down to ~1 char wide. */
   width: 100%;
+  min-width: 30rem;
   border-collapse: collapse;
   font-size: 13px;
   line-height: 1.45;
+}
+/* `.chat-prose` sets `word-break: break-word` so long URLs/values wrap in prose;
+   inside a table that shatters short labels ("records" -> "re/co/rd/s") when a
+   column is squeezed. Keep whole words intact in cells — the wrapper scrolls. */
+.chat-prose th,
+.chat-prose td {
+  overflow-wrap: normal;
+  word-break: normal;
+  hyphens: none;
 }
 .chat-prose thead th {
   text-align: left;
@@ -1368,12 +1381,16 @@ All colors MUST be HSL.
   background: hsl(0 0% 100% / 0.04);
   border-bottom: 1px solid hsl(0 0% 100% / 0.08);
   padding: 8px 12px;
+  white-space: nowrap;
 }
 .chat-prose tbody td {
   text-align: left;
   vertical-align: top;
   padding: 8px 12px;
   border-bottom: 1px solid hsl(0 0% 100% / 0.05);
+}
+.chat-prose tbody td:first-child {
+  white-space: nowrap;
 }
 .chat-prose tbody tr:last-child td { border-bottom: 0; }
 .chat-prose .chat-code-block {

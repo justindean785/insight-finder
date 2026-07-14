@@ -40,23 +40,33 @@ export function scrubArtifactRow(row: Record<string, unknown>): Record<string, u
   const kind = String(row.kind ?? "").toLowerCase();
   const meta: Record<string, unknown> = { ...((row.metadata ?? {}) as Record<string, unknown>) };
 
-  // Minor-safety detection — scan bio/description metadata fields and the
-  // value itself (for name/social/username artifacts that carry a bio context).
-  const haystacks: string[] = [];
+  // Minor-safety detection. The evidence has two strengths:
+  //  • STRONG — an explicit age cue ("i'm 16", "16 y/o") or a minor phrase
+  //    ("high school freshman"). Trustworthy wherever it appears, INCLUDING the
+  //    identifier value itself (a username like "im16yo").
+  //  • SOFT — a bare lone digit 10–17. Only meaningful in genuine bio /
+  //    description PROSE. A bare number inside a username / handle / brand
+  //    ("raheem14", "16shotem", "16ShotEm Visualz") is a birth-year suffix,
+  //    jersey number, or vanity token — NOT an age — so it must never
+  //    self-trigger a minor warning without corroborating age evidence.
+  const bioHaystacks: string[] = [];
   for (const f of BIO_META_FIELDS) {
     const val = meta[f];
-    if (typeof val === "string") haystacks.push(val);
+    if (typeof val === "string") bioHaystacks.push(val);
   }
   // A date-of-birth carries no bio text — its digits are date parts, not ages.
   // Reclassified DOBs land in kind "other", so guard on original_kind too.
   const originalKind = String(meta.original_kind ?? "").toLowerCase();
   const isDob = kind === "dob" || originalKind === "dob";
+  const valueHaystacks: string[] = [];
   if (!isDob && (kind === "username" || kind === "social" || kind === "name" || kind === "other" || kind === "bio")) {
-    if (typeof row.value === "string") haystacks.push(String(row.value));
+    if (typeof row.value === "string") valueHaystacks.push(String(row.value));
   }
   const signals: string[] = [];
   let ageSignal: number | null = null;
-  for (const h of haystacks) {
+  // STRONG cues (age number / bare-age token / minor phrase) fire on bio prose
+  // AND the identifier value.
+  for (const h of [...bioHaystacks, ...valueHaystacks]) {
     if (!h) continue;
     const cueMatch = h.match(MINOR_AGE_NUM_RE) || h.match(MINOR_AGE_BARE_RE);
     if (cueMatch) {
@@ -68,18 +78,19 @@ export function scrubArtifactRow(row: Record<string, unknown>): Record<string, u
     }
     const phraseMatch = h.match(MINOR_PHRASE_RE);
     if (phraseMatch) signals.push(`phrase:${phraseMatch[0].toLowerCase()}`);
-    // Bare digit 10–17 in a short bio (≤120 chars) is a soft signal — but never
-    // on a date-like string, whose month/day (e.g. "1958-10-11" → "10") is not
-    // an age, and never on an SSN-shaped string, whose group number (e.g.
-    // "602-17-1270" → "17") isn't one either. Explicit age cues ("i'm 16",
-    // "16 y/o") still match above.
-    if (!cueMatch && h.length <= 120 && !isDateLike(h) && !isIdLike(h)) {
+  }
+  // SOFT bare-digit signal — bio/description PROSE only, NEVER the identifier
+  // value (that's what caused adult vanity handles like "raheem14" to be flagged
+  // as possible minors). Still skipped on a date-like string (a month/day "10")
+  // and an SSN-shaped string (a group number "17"), and only in short (≤120
+  // char) context. If an explicit age cue already fired, the bare adds nothing.
+  if (ageSignal == null) {
+    for (const h of bioHaystacks) {
+      if (!h || h.length > 120 || isDateLike(h) || isIdLike(h)) continue;
       const bare = h.match(/(?:^|[^\d])(1[0-7])(?:[^\d]|$)/);
       if (bare) {
-        const age = parseInt(bare[1], 10);
-        if (age >= 10 && age <= 17 && !ageSignal) {
-          signals.push(`bare-${age}`);
-        }
+        signals.push(`bare-${parseInt(bare[1], 10)}`);
+        break;
       }
     }
   }

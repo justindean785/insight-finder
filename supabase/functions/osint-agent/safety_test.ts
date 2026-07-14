@@ -52,10 +52,43 @@ Deno.test("real minor-age cue text STILL triggers (detection preserved)", () => 
   const phrase = meta({ kind: "social", value: "someone", metadata: { bio: "just a minor here" } });
   assertEquals(phrase.possible_minor, true);
 
-  // A bare lone age in a short bio (not a date) is still a soft signal.
-  const bare = meta({ kind: "username", value: "16", metadata: {} });
+  // A bare lone age in short bio/description PROSE is still a soft signal.
+  // (Changed from a `value:"16"` username case: a bare number in the identifier
+  // value itself no longer self-flags — see the vanity-handle test below — but a
+  // bare age in genuine bio prose is preserved.)
+  const bare = meta({ kind: "social", value: "coolkid", metadata: { bio: "just turned 16" } });
   assertEquals(bare.possible_minor, true);
   assert((bare.minor_signals as string[]).includes("bare-16"));
+});
+
+Deno.test("numeric vanity handles do NOT self-trigger a minor warning (bare digit in the identifier value)", () => {
+  // Root cause fixed: an adult (DOB 1994) whose handles contain 14/16 —
+  // "raheem14", "16shotem", "16ShotEm Visualz" — was flagged possible_minor +
+  // auto_pivot_blocked from the bare-digit soft signal scanning the VALUE. A
+  // bare number inside a username/handle/brand is a year suffix / vanity token,
+  // not an age; the soft signal is now bio-prose-only.
+  const cases: Array<[string, string]> = [
+    ["username", "raheem14"],
+    ["username", "raheem16"],
+    ["social", "16shotemvisualz"],
+    ["name", "16ShotEm Visualz"],
+    ["username", "16"],
+    ["other", "IMG_3021.png — 16ShotEm Visualz reviews + GitHub @16shotem"],
+  ];
+  for (const [kind, value] of cases) {
+    const m = meta({ kind, value, confidence: 65, metadata: {} });
+    assertEquals(m.possible_minor, undefined, `${kind} "${value}" must not flag minor`);
+    assertEquals(m.auto_pivot_blocked, undefined, `${kind} "${value}" must not block pivots`);
+    assertEquals(m.minor_signals, undefined, `${kind} "${value}" must carry no minor signals`);
+  }
+});
+
+Deno.test("an explicit age cue in the identifier value STILL fires (real signal preserved)", () => {
+  // The tune only drops the SOFT bare-digit signal on the value; an explicit
+  // age cue in the value (a username like "im16yo") is strong and must persist.
+  const m = meta({ kind: "username", value: "im16yo", metadata: {} });
+  assertEquals(m.possible_minor, true);
+  assert((m.minor_signals as string[]).some((s) => s.startsWith("age-")), "explicit age cue in value still fires");
 });
 
 Deno.test("an explicit age cue inside a date-bearing bio still fires", () => {
