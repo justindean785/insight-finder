@@ -1,10 +1,10 @@
-import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 
 // ---------------------------------------------------------------------------
 // shouldFallbackOnStatus / shouldFallbackOnError — pure helpers, no env deps.
 // Static import is safe here.
 // ---------------------------------------------------------------------------
-import { shouldFallbackOnStatus, shouldFallbackOnError, perplexitySearch, visionGenerationConfig } from "./providers.ts";
+import { shouldFallbackOnStatus, shouldFallbackOnError, perplexitySearch, visionGenerationConfig, geminiVision } from "./providers.ts";
 
 // ---------------------------------------------------------------------------
 // visionGenerationConfig — force JSON output for the structured readers, but
@@ -20,6 +20,28 @@ Deno.test("visionGenerationConfig: grounded (reverse-search) read omits JSON mod
   const cfg = visionGenerationConfig(true, 0.2);
   assertEquals(cfg.responseMimeType, undefined, "JSON mode is incompatible with google_search grounding");
   assertEquals(cfg.temperature, 0.2);
+});
+
+// ---------------------------------------------------------------------------
+// geminiVision — a doc-read timeout (or external abort) must be CAUGHT and
+// returned as {ok:false}, not thrown. An uncaught throw here propagated to
+// attachment-intake and silently dropped the attachment.
+// ---------------------------------------------------------------------------
+Deno.test("geminiVision: fetch abort → graceful {ok:false} timeout, not a throw", async () => {
+  const origFetch = globalThis.fetch;
+  const origKey = Deno.env.get("GEMINI_API_KEY");
+  Deno.env.set("GEMINI_API_KEY", "gv-test-key");
+  globalThis.fetch = (() => Promise.reject(new DOMException("The signal has been aborted", "AbortError"))) as typeof globalThis.fetch;
+  try {
+    const res = await geminiVision({ parts: [{ text: "read" }] });
+    assertEquals(res.ok, false);
+    assertEquals(res.status, 0);
+    assertEquals(res.text, "");
+    assert(String((res.raw as { error?: unknown })?.error).includes("timed out"), "abort surfaces as a timeout error");
+  } finally {
+    globalThis.fetch = origFetch;
+    if (origKey === undefined) Deno.env.delete("GEMINI_API_KEY"); else Deno.env.set("GEMINI_API_KEY", origKey);
+  }
 });
 
 Deno.test("shouldFallbackOnStatus: 200 → no fallback", () => {
