@@ -157,6 +157,27 @@ export function providerRole(
   return selected === provider ? "active" : "fallback";
 }
 
+// The orchestrator readiness gate, keyed on the SELECTED provider — symmetric by
+// construction, so it can both FAIL a deployment whose active provider has no key and
+// PASS one whose active provider is keyed but whose (unused) MiniMax fallback is not.
+// Pure so both directions are unit-testable without env or network.
+export function orchestratorGate(
+  provider: OrchestratorProvider,
+  keyPresent: boolean,
+  coreOk: boolean,
+): { check: { ok: boolean; detail?: string; reason?: string }; ok: boolean } {
+  const check = keyPresent
+    ? { ok: true }
+    : {
+      ok: false,
+      detail: `selected orchestrator "${provider}" has no API key configured`,
+      reason: "missing_key",
+    };
+  // Mirrors deriveReadiness's contract (orchestrator && core decide ok; tools do not),
+  // with the orchestrator term now answering "is the ACTIVE provider usable?".
+  return { check, ok: keyPresent && coreOk };
+}
+
 export function deriveReadiness(env: {
   MINIMAX_API_KEY?: string | null;
   SUPABASE_URL?: string | null;
@@ -262,23 +283,24 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   r.checks.deepseek = { ...deepseekCheck, role: providerRole(selected.provider, "deepseek") };
   r.checks.minimax = { ...minimaxCheck, role: providerRole(selected.provider, "minimax") };
 
-  // Reflect the SELECTED provider's key in the orchestrator check + overall ok, so a
-  // missing key for the ACTIVE provider (e.g. DeepSeek selected but DEEPSEEK_API_KEY
-  // unset) is surfaced as a real config failure — NOT masked by a healthy MiniMax key.
+  // Re-gate the orchestrator check on the SELECTED provider's key, in BOTH directions.
+  // deriveReadiness() still hardcodes orchestrator := has(MINIMAX_API_KEY) (its pure
+  // unit tests pin that), which is now the wrong question: MiniMax is the FALLBACK once
+  // DeepSeek is selected. A one-directional override would be a false NEGATIVE — drop
+  // MINIMAX_API_KEY on a healthy DeepSeek-only deployment and the function would report
+  // itself down. So the gate is symmetric: the selected provider's key decides, and
+  // overall ok is recomputed from it (core is the other hard requirement; tools are not).
+  // Losing the MiniMax fallback is NOT hidden by this — it still surfaces as
+  // checks.minimax {ok:false, reason:"missing_key", role:"fallback"}.
   const selectedKeyPresent =
     selected.provider === "deepseek" ? !!DEEPSEEK_API_KEY :
     selected.provider === "minimax" ? !!MINIMAX_API_KEY :
     selected.provider === "grok" ? !!XAI_API_KEY :
     selected.provider === "openadapter" ? !!(OPENADAPTER_API_KEY && OPENADAPTER_BASE_URL) :
     (!!MINIMAX_API_KEY || !!LOVABLE_API_KEY);
-  if (!selectedKeyPresent) {
-    r.checks.orchestrator = {
-      ok: false,
-      detail: `selected orchestrator "${selected.provider}" has no API key configured`,
-      reason: "missing_key",
-    };
-    r.ok = false;
-  }
+  const gate = orchestratorGate(selected.provider, selectedKeyPresent, r.checks.core?.ok === true);
+  r.checks.orchestrator = gate.check;
+  r.ok = gate.ok;
   // Active-provider reachability, surfaced separately (visible) without coupling the
   // 200/503 status to a transient probe blip — a failed probe on a keyed provider still
   // has the MiniMax fallback, matching the existing MiniMax-blip philosophy.

@@ -9,7 +9,41 @@ import {
   checkDeepseek,
   resolveSelectedOrchestrator,
   providerRole,
+  orchestratorGate,
 } from "./health-handler.ts";
+
+// ---- orchestrator gate: SYMMETRIC on the selected provider ------------------------
+// Regression pins for the false-negative this endpoint must never reproduce: the base
+// deriveReadiness() gate hardcodes has(MINIMAX_API_KEY), so a DeepSeek-only deployment
+// (MiniMax fallback key removed) would otherwise report itself DOWN while the actual
+// live orchestrator is healthy.
+
+Deno.test("orchestratorGate: DeepSeek keyed + MiniMax UNKEYED → ok (no false-negative)", () => {
+  const g = orchestratorGate("deepseek", true, true);
+  assertEquals(g.check.ok, true);
+  assertEquals(g.ok, true, "a DeepSeek-only deployment must not report itself down");
+});
+
+Deno.test("orchestratorGate: selected provider UNKEYED → fails, names the provider", () => {
+  const g = orchestratorGate("deepseek", false, true);
+  assertEquals(g.check.ok, false);
+  assertEquals(g.check.reason, "missing_key");
+  assert(g.check.detail?.includes("deepseek"), "detail must name the SELECTED provider");
+  assertEquals(g.ok, false, "a keyless active orchestrator is a real config failure");
+});
+
+Deno.test("orchestratorGate: keyed active provider but core DOWN → not ok", () => {
+  const g = orchestratorGate("deepseek", true, false);
+  assertEquals(g.check.ok, true, "orchestrator itself is fine…");
+  assertEquals(g.ok, false, "…but core is a hard requirement for overall ok");
+});
+
+Deno.test("orchestratorGate: a healthy MiniMax cannot rescue a keyless DeepSeek", () => {
+  // The masking case, stated directly: MiniMax being keyed/healthy is irrelevant to the
+  // gate once DeepSeek is the SELECTED provider. Only DeepSeek's key decides.
+  const g = orchestratorGate("deepseek", false, true);
+  assertEquals(g.ok, false);
+});
 
 // ---- checks.deepseek probe -------------------------------------------------------
 
