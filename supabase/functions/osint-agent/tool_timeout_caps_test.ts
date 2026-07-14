@@ -55,11 +55,14 @@ Deno.test("timeout overrides: chronically-slow tools exceed the 12s default", ()
 });
 
 // Audit F1 (2026-07-08): minimax_correlate timed out at 12,143ms on the 12s default,
-// so the correlation engine produced zero output. Regression-guard the raised cap.
+// so the correlation engine produced zero output — raised to 20s. RECURRENCE
+// 2026-07-09: a real correlation COMPLETED at 22,487ms but the 20s cap had already
+// binned it as a timeout, so the cap was raised again to 30s (cache.ts). Keep this
+// guard in lockstep with that value.
 Deno.test("timeout overrides: minimax_correlate clears the 12s default that killed it", () => {
   assert(
     toolTimeoutMs("minimax_correlate") > DEFAULT_TOOL_TIMEOUT_MS,
     "minimax_correlate must exceed the default cap it was timing out on",
   );
-  assertEquals(toolTimeoutMs("minimax_correlate"), 20_000);
+  assertEquals(toolTimeoutMs("minimax_correlate"), 30_000);
 });

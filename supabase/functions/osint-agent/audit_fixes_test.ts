@@ -62,7 +62,12 @@ Deno.test("infra + trusted class CAN lift past 85", () => {
 });
 
 Deno.test("court_record + news still reaches 95 (unchanged)", () => {
-  const r = applyEvidenceCaps({ rawConfidence: 100, sources: ["pacer_docket", "nytimes_article"] });
+  // Use a source token that actually classifies as `news` (reuters.com). The prior
+  // token `nytimes_article` classifies as `unknown`, and after #282 ("stop
+  // unknown-corroboration") an unknown source no longer supplies the cross-class
+  // boost — so it capped at court_record's 90, not 95. The court_record + news → 95
+  // path itself is unchanged; the test was just asserting it through a non-news token.
+  const r = applyEvidenceCaps({ rawConfidence: 100, sources: ["pacer_docket", "reuters.com"] });
   assertEquals(r.confidence, 95);
 });
 

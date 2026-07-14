@@ -4,11 +4,17 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 
 // Supabase Auth (OAuth 2.1 authorization server) redirects here so the analyst
-// can approve or deny an MCP client that wants to act as them.
+// can approve or deny an MCP client that wants to act as them. Only the fields
+// this page reads are typed; the server may return more.
+type OAuthAuthorizationData = {
+  redirect_url?: string;
+  redirect_to?: string;
+  client?: { name?: string } | null;
+} | null;
 type AuthOAuthNs = {
-  getAuthorizationDetails: (id: string) => Promise<{ data: any; error: { message: string } | null }>;
-  approveAuthorization: (id: string) => Promise<{ data: any; error: { message: string } | null }>;
-  denyAuthorization: (id: string) => Promise<{ data: any; error: { message: string } | null }>;
+  getAuthorizationDetails: (id: string) => Promise<{ data: OAuthAuthorizationData; error: { message: string } | null }>;
+  approveAuthorization: (id: string) => Promise<{ data: OAuthAuthorizationData; error: { message: string } | null }>;
+  denyAuthorization: (id: string) => Promise<{ data: OAuthAuthorizationData; error: { message: string } | null }>;
 };
 function oauth(): AuthOAuthNs {
   return (supabase.auth as unknown as { oauth: AuthOAuthNs }).oauth;
@@ -17,7 +23,7 @@ function oauth(): AuthOAuthNs {
 export default function OAuthConsent() {
   const [params] = useSearchParams();
   const authorizationId = params.get("authorization_id") ?? "";
-  const [details, setDetails] = useState<any>(null);
+  const [details, setDetails] = useState<OAuthAuthorizationData>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 

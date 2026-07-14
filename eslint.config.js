@@ -5,7 +5,11 @@ import reactRefresh from "eslint-plugin-react-refresh";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist"] },
+  // supabase/functions/mcp/index.ts is an auto-generated bundle emitted by the
+  // @lovable.dev/mcp-js Vite plugin (its `var` output trips no-var). The real
+  // source lives in src/lib/mcp/** and is linted there — never hand-edit the
+  // regenerated bundle, so exclude it from linting instead.
+  { ignores: ["dist", "supabase/functions/mcp/index.ts"] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ["**/*.{ts,tsx}"],
