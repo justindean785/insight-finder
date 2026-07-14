@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { captureError } from "@/lib/telemetry";
 import type { InsightsSummary } from "@/pages/InsightsDerived";
@@ -20,15 +20,37 @@ export type InsightsData = {
   toolCallsTotal: number;
 };
 
+type InsightsLoadState = {
+  userId: string | undefined;
+  data: InsightsData | null;
+  loading: boolean;
+  error: string | null;
+};
+
 export function useInsightsData(userId: string | undefined, enabled: boolean) {
-  const [data, setData] = useState<InsightsData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [state, setState] = useState<InsightsLoadState>({
+    userId,
+    data: null,
+    loading: Boolean(enabled && userId),
+    error: null,
+  });
+  const requestGeneration = useRef(0);
+  const activeController = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
     if (!userId) return;
-    setLoading(true);
-    setError(null);
+    const generation = ++requestGeneration.current;
+    activeController.current?.abort();
+    const controller = new AbortController();
+    activeController.current = controller;
+
+    setState((previous) => ({
+      userId,
+      data: previous.userId === userId ? previous.data : null,
+      loading: true,
+      error: null,
+    }));
+
     try {
       // Aggregates come from the RPC (GROUP BY over every row, RLS-scoped to the
       // caller) so they aren't capped at PostgREST's 1,000-row ceiling the way
@@ -37,15 +59,18 @@ export function useInsightsData(userId: string | undefined, enabled: boolean) {
       const [summaryRes, memCountRes, caseCountRes, artifactCountRes] = await Promise.all([
         // Cast: the RPC isn't in the generated Supabase types yet (added in the
         // same change as its migration); it's RLS-scoped to auth.uid().
-        supabase.rpc("get_insights_summary" as never) as unknown as Promise<{
-          data: InsightsSummary | null;
-          error: { message: string } | null;
-        }>,
-        supabase.from("agent_memory").select("id", { count: "exact", head: true }).eq("user_id", userId),
-        supabase.from("threads").select("id", { count: "exact", head: true }).eq("user_id", userId),
-        supabase.from("artifacts").select("id", { count: "exact", head: true }).eq("user_id", userId),
+        (supabase.rpc("get_insights_summary" as never) as unknown as {
+          abortSignal: (signal: AbortSignal) => Promise<{
+            data: InsightsSummary | null;
+            error: { message: string } | null;
+          }>;
+        }).abortSignal(controller.signal),
+        supabase.from("agent_memory").select("id", { count: "exact", head: true }).eq("user_id", userId).abortSignal(controller.signal),
+        supabase.from("threads").select("id", { count: "exact", head: true }).eq("user_id", userId).abortSignal(controller.signal),
+        supabase.from("artifacts").select("id", { count: "exact", head: true }).eq("user_id", userId).abortSignal(controller.signal),
       ]);
 
+      if (controller.signal.aborted || generation !== requestGeneration.current) return;
       if (summaryRes.error) throw new Error(summaryRes.error.message);
       const summary = summaryRes.data;
       if (!summary) throw new Error("Insights summary was empty.");
@@ -57,30 +82,53 @@ export function useInsightsData(userId: string | undefined, enabled: boolean) {
         failed: Math.max(0, t.count - t.ok_count),
       }));
 
-      setData({
-        summary,
-        memoryCount: memCountRes.count ?? 0,
-        caseCountExact: caseCountRes.count ?? 0,
-        artifactCountExact: artifactCountRes.count ?? 0,
-        toolSummaries,
-        toolCallsTotal: summary.tool_calls_total ?? 0,
+      setState({
+        userId,
+        data: {
+          summary,
+          memoryCount: memCountRes.count ?? 0,
+          caseCountExact: caseCountRes.count ?? 0,
+          artifactCountExact: artifactCountRes.count ?? 0,
+          toolSummaries,
+          toolCallsTotal: summary.tool_calls_total ?? 0,
+        },
+        loading: false,
+        error: null,
       });
     } catch (e) {
+      if (controller.signal.aborted || generation !== requestGeneration.current) return;
       captureError(e, "insights.load");
-      setError(e instanceof Error ? e.message : "Could not load insights.");
+      setState({
+        userId,
+        data: null,
+        loading: false,
+        error: e instanceof Error ? e.message : "Could not load insights.",
+      });
     } finally {
-      setLoading(false);
+      if (generation === requestGeneration.current && activeController.current === controller) {
+        activeController.current = null;
+      }
     }
   }, [userId]);
 
   useEffect(() => {
+    requestGeneration.current++;
+    activeController.current?.abort();
+    activeController.current = null;
+
+    setState((previous) => ({
+      userId,
+      data: enabled && userId && previous.userId === userId ? previous.data : null,
+      loading: Boolean(enabled && userId),
+      error: null,
+    }));
+
     if (!enabled || !userId) return;
-    let alive = true;
-    void load().then(() => {
-      if (!alive) return;
-    });
+    void load();
     return () => {
-      alive = false;
+      requestGeneration.current++;
+      activeController.current?.abort();
+      activeController.current = null;
     };
   }, [enabled, userId, load]);
 
@@ -131,5 +179,11 @@ export function useInsightsData(userId: string | undefined, enabled: boolean) {
     return () => window.removeEventListener("focus", onFocus);
   }, [enabled, load]);
 
-  return { data, loading, error, reload: load };
+  const stateMatchesUser = state.userId === userId;
+  return {
+    data: stateMatchesUser ? state.data : null,
+    loading: !enabled || !userId ? false : stateMatchesUser ? state.loading : true,
+    error: stateMatchesUser ? state.error : null,
+    reload: load,
+  };
 }
