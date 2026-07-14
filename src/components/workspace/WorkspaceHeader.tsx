@@ -57,7 +57,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
   const navigate = useNavigate();
   const { user } = useAuth();
   const { items } = useThreadArtifacts(threadId);
-  const activity = useThreadToolActivity(threadId);
+  const activity = useThreadToolActivity(threadId, user?.id ?? "");
   const [thread, setThread] = useState<Thread | null>(null);
   const [creating, setCreating] = useState(false);
   const [integrity, setIntegrity] = useState<{ ok: boolean; total: number; first_break: number | null } | null>(null);
@@ -130,7 +130,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
   const status: "idle" | "active" | "completed" =
     liveRun ? "active"
     : thread?.status === "finished" || thread?.status === "stopped" ? "completed"
-    : artifactCount > 0 || activity.total > 0 ? "completed"
+    : artifactCount > 0 || activity.persistedTotal > 0 ? "completed"
     : "idle";
 
   const display = thread
@@ -211,7 +211,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
                 {status === "active" ? "Running" : "Complete"}
               </span>
               <span className="hidden text-[10px] text-muted-foreground/70 sm:inline tabular-nums">
-                {artifactCount} evidence · {activity.total} tools
+                {artifactCount} evidence · {activity.persistedTotal} tools
               </span>
             </div>
           )}

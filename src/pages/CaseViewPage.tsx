@@ -45,7 +45,7 @@ export default function CaseViewPage() {
   const [metaError, setMetaError] = useState(false);
 
   const { items } = useThreadArtifacts(threadId ?? "");
-  const activity = useThreadToolActivity(threadId ?? "");
+  const activity = useThreadToolActivity(threadId ?? "", user?.id ?? "");
 
   useEffect(() => {
     setTab("report");
@@ -110,7 +110,7 @@ export default function CaseViewPage() {
   const breachCount = items.filter((a) => a.kind.toLowerCase() === "breach").length;
   const tabCounts = {
     evidence: { value: items.length, alert: breachCount },
-    tools: { value: activity.total, alert: 0 },
+    tools: { value: activity.persistedTotal, alert: 0 },
   };
 
   const running = isActiveThreadStatus(meta?.status ?? null);
