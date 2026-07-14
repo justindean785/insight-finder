@@ -443,7 +443,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
         <div className="ml-auto flex items-center gap-3">
           <span className="inline-flex items-center gap-2 text-data text-muted-foreground/70">
             <Activity className="h-3.5 w-3.5" />
-            {graph.stats.nodeCount} entities · {graph.stats.realEdgeCount} real links · {graph.stats.clusterCount} clusters
+            {graph.stats.nodeCount} entit{graph.stats.nodeCount === 1 ? "y" : "ies"} · {graph.stats.realEdgeCount} real link{graph.stats.realEdgeCount === 1 ? "" : "s"} · {graph.stats.clusterCount} cluster{graph.stats.clusterCount === 1 ? "" : "s"}
             {graph.stats.bridgeCount > 0 && <> · {graph.stats.bridgeCount} bridge{graph.stats.bridgeCount > 1 ? "s" : ""}</>}
           </span>
           <StatusLegend />

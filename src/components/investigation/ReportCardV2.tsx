@@ -275,7 +275,7 @@ function Hypotheses({ items }: { items: Hypothesis[] }) {
             className="h-full"
             style={{
               width: `${(h.confidence / total) * 100}%`,
-              background: i === 0 ? "hsl(var(--primary))" : `hsl(var(--muted-foreground) / ${1 - i * 0.3})`,
+              background: i === 0 ? "hsl(var(--primary))" : `hsl(var(--muted-foreground) / ${Math.max(0.2, 1 - i * 0.2)})`,
             }}
             title={`${h.label}: ${h.confidence}`}
           />
