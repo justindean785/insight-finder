@@ -222,6 +222,13 @@ export function assertSafeUrl(rawUrl: string): URL {
 }
 
 // ---- Part-size capping --------------------------------------------------------
+// Keep one persisted assistant turn well below the 2MB request-body ceiling:
+// useChat replays the complete message history on every follow-up, so consuming
+// the whole request budget with one assistant row makes the thread immediately
+// unusable. Real capped turns are ~100KB; 500KB leaves ample replay detail plus
+// headroom for prior turns and the new user message.
+export const MAX_PERSISTED_ASSISTANT_PARTS_BYTES = 500_000;
+
 // A persisted assistant message is a UIMessage: its tool parts have type
 // `tool-<name>` (or `dynamic-tool`), NOT the ModelMessage `tool-call` /
 // `tool-result` discriminators. Match on the UIMessage shape so the caps below
@@ -280,7 +287,7 @@ export function capToolPartPayloads(
 // a whole-message backstop; capToolPartPayloads handles the common single-blob
 // case first, so this rarely engages.
 export function capPartsSize(parts: unknown[], maxBytes: number): unknown[] {
-  const size = (x: unknown) => JSON.stringify(x).length;
+  const size = (x: unknown) => new TextEncoder().encode(JSON.stringify(x)).length;
   if (size(parts) <= maxBytes) return parts;
   const stripped = parts.map((p) => {
     const part = p as Record<string, unknown> | null;
@@ -294,12 +301,52 @@ export function capPartsSize(parts: unknown[], maxBytes: number): unknown[] {
     return part;
   });
   if (size(stripped) <= maxBytes) return stripped;
-  // Last resort: stub any oversized tool part (preserve its original type).
-  return stripped.map((p) => {
-    const part = p as Record<string, unknown> | null;
-    if (part && isUiToolPart(part.type) && size(part) > 100_000) {
-      return { type: part.type, toolCallId: part.toolCallId, toolName: part.toolName, output: { truncated: true } };
+
+  // Stub the largest tool parts until the WHOLE message is actually under the
+  // requested cap. The old last resort only stubbed individual parts >100KB, so
+  // many 50KB parts could collectively remain multi-MB and sail through.
+  const compacted = [...stripped];
+  const toolIndexes = compacted
+    .map((p, index) => ({ index, part: p as Record<string, unknown> | null }))
+    .filter(({ part }) => part && isUiToolPart(part.type))
+    .sort((a, b) => size(b.part) - size(a.part));
+  for (const { index, part } of toolIndexes) {
+    if (size(compacted) <= maxBytes) return compacted;
+    compacted[index] = {
+      type: part!.type,
+      toolCallId: part!.toolCallId,
+      toolName: part!.toolName,
+      state: part!.state,
+      output: { truncated: true },
+    };
+  }
+  if (size(compacted) <= maxBytes) return compacted;
+
+  // Assistant messages should now contain only a modest report plus tiny tool
+  // stubs. Keep a true hard ceiling even for a pathological giant text/reasoning
+  // part: preserve as much user-visible text as fits and drop replay-only detail.
+  const text = compacted
+    .map((p) => {
+      const part = p as Record<string, unknown> | null;
+      return part && (part.type === "text" || part.type === "reasoning") && typeof part.text === "string"
+        ? part.text
+        : "";
+    })
+    .filter(Boolean)
+    .join("\n");
+  const marker = "\n…[assistant details truncated to fit storage budget]";
+  let low = 0;
+  let high = text.length;
+  let fallback: unknown[] = [{ type: "text", text: marker.trimStart() }];
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = [{ type: "text", text: text.slice(0, mid) + marker }];
+    if (size(candidate) <= maxBytes) {
+      fallback = candidate;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
     }
-    return part;
-  });
+  }
+  return fallback;
 }
