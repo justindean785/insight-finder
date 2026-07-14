@@ -623,3 +623,24 @@ Deploy: backend ships via Lovable sync (sync `osint-agent/` → `seeker-spark-se
   `deno check` on changed modules clean (no TS2304). `vitest` **700 pass**; typecheck/eslint/build clean.
 - Files: source-classification.ts, confidence.ts, threat_intel_test.ts, evidence-status.ts, evidence-status.test.ts, tool-display.ts.
 - Deploy: backend ships via Lovable sync (`osint-agent/`→`seeker-spark-search-5362c57c`), not the Vercel merge.
+
+---
+
+## 2026-07-13 — DeepSeek first-pass persistence nudge (prompt + runtime nudge)
+
+**Branch:** `fix/deepseek-persistence-nudge` (off `origin/main` @ 8cbc34b). Scope: **prompt + nudge ONLY** — deterministic recovery extractor deliberately DEFERRED.
+
+**Why:** DeepSeek (live orchestrator) under-emits `record_artifacts` on the first pass — fans out through many discovery calls and defers persistence, often waiting for `minimax_correlate` (which chronically times out). Live thread `32d301d0`: 46 tool calls, 0 `record_artifacts`, `zero_artifacts_at_completion`; later turns recovered to 14 artifacts. Root problem is deferral behavior, NOT provider connectivity/model/key/request-shape (all proven good).
+
+**Changes (4 files + 1 test):**
+- `system-prompt.ts` — Recording section: record incrementally per step (at most one batched `record_artifacts` per orchestration step; don't wait for the final step or `minimax_correlate`); narration is not evidence; domain-minimum categories recorded ONLY when tool-backed (never fabricate a missing category).
+- `orchestrator-finalize.ts` — pure `shouldNudgePersistence(toolCalls, recordCalls, alreadyNudged)` + `buildPersistenceNudgeDirective()` + `PERSISTENCE_NUDGE_TOOL_CALL_THRESHOLD = 5`.
+- `guard.ts` — pure `countModelMessageToolCalls(messages)` → `{toolCalls, recordCalls}`; dedupes by `toolCallId` (no double-count), excludes `UNKNOWN_TOOL_SINK` (repaired/non-executed).
+- `index.ts` — request-scoped `persistenceNudged` latch in the `prepareStep` closure; nudge injected ONCE into the intermediate-step system prompt when `toolCalls>=5 && recordCalls==0`; subordinate to forced-finalize (finalize branch returns first); logs `persistence_nudge_fired`.
+- `persistence_nudge_test.ts` — 21 tests (threshold−1/threshold/latch/no-spam/MiniMax-unchanged/request-isolation/correlate-timeout-non-blocking/no-extraction/no-double-count/sink-excluded/finalize-precedence).
+
+**Change 3 (correlate timeout) — verified already-correct, locked by tests:** `runWithToolTimeout` RESOLVES a schema-safe stub on timeout (never throws) → loop continues, `record_artifacts` still fires; forced-finalize + post-loop C-1 clustering run regardless of correlate; `guard.lastCorrelateOutcome="failed"` preserves the memory downgrade. No cache.ts change (owned by PR #310).
+
+**Gate (local):** targeted nudge tests 21/21; full edge suite 634 pass / **2 pre-existing timer-leak fails** (`crash_resilience_test.ts`, `gemini_parallel_pairing_test.ts` — confirmed identical on clean `origin/main`, untouched by this PR) / 3 ignored; typecheck ✓; build ✓; frontend vitest 900/900 ✓; changed files eslint clean; `deno check` clean (index.ts 47 = 47 baseline, 0 new).
+
+**NOT in scope / gated:** no deterministic extractor; no frontend 0-tools counter fix (`useInsightsData.ts` / counters / realtime — separate FE PR, other owner); no migrations; not stamped/mirror-synced/deployed. Merge + Lovable deploy are JD-gated; live retest per handoff after deploy.

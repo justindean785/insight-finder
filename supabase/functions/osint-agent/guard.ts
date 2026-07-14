@@ -3,6 +3,7 @@
  * routing guards, and Stage-2 fan-out triage gating.
  * Extracted from index.ts (lines 1656–1750).
  */
+import { UNKNOWN_TOOL_SINK } from "./unknown-tool-guard.ts";
 
 // ---- Per-investigation guard state ---------------------------------------------
 // - artifactsSinceCorrelate: new artifacts recorded since last successful minimax_correlate
@@ -68,6 +69,51 @@ export function countRecordArtifactCalls(
       const t = p?.type ?? "";
       if (t.startsWith("tool-") || t === "dynamic-tool") toolCalls++;
       if (t === "tool-record_artifacts" || t === "tool-record_artifact") recordCalls++;
+    }
+  }
+  return { toolCalls, recordCalls };
+}
+
+/**
+ * Count the DISTINCT tool calls and record_artifacts calls a run has accumulated,
+ * across the AI-SDK *model-message* history (`ModelMessage[]`) the orchestrator loop
+ * sees in `prepareStep`. A tool invocation there is a `content` part of type
+ * `tool-call` with a `toolName` + `toolCallId` — distinct from the UI-message shape
+ * (`tool-<name>` parts) that `countRecordArtifactCalls` above reads.
+ *
+ * Guarantees (so the first-pass persistence nudge can't be tripped by phantoms):
+ *  - CUMULATIVE PER REQUEST: it counts over the whole message array passed in, i.e.
+ *    this request's conversation so far. It reads only its argument — no shared state
+ *    — so counts are request-scoped by construction and never bleed across requests.
+ *  - NO DOUBLE COUNTING: each call is keyed by `toolCallId`, so a call echoed across
+ *    messages (or paired with its later tool-result) is counted exactly once. (A
+ *    tool-RESULT part is never counted — only the `tool-call`.)
+ *  - REPAIRED / NON-EXECUTED CALLS EXCLUDED: a hallucinated tool name redirected to
+ *    the `UNKNOWN_TOOL_SINK` by the unknown-tool guard never ran, so it is not fan-out
+ *    and does not count toward the threshold.
+ * Pure + dependency-light so the nudge is unit-testable. */
+export function countModelMessageToolCalls(
+  messages: Array<{ content?: unknown }>,
+): { toolCalls: number; recordCalls: number } {
+  const seen = new Set<string>();
+  let toolCalls = 0;
+  let recordCalls = 0;
+  let synthetic = 0;
+  for (const m of messages ?? []) {
+    const content = (m as { content?: unknown })?.content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content) {
+      const p = part as { type?: string; toolName?: string; toolCallId?: string };
+      if (p?.type !== "tool-call") continue;
+      // Repaired hallucinations never execute — not real fan-out, skip them.
+      if (p.toolName === UNKNOWN_TOOL_SINK) continue;
+      // Dedupe by toolCallId; fall back to a per-part synthetic key when absent so a
+      // missing id degrades to count-once rather than crashing the Set.
+      const key = p.toolCallId ?? `__noid_${synthetic++}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      toolCalls++;
+      if (p.toolName === "record_artifacts" || p.toolName === "record_artifact") recordCalls++;
     }
   }
   return { toolCalls, recordCalls };

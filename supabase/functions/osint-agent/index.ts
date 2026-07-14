@@ -22,7 +22,7 @@ import {
 import { detectSeedServer } from "./validation.ts";
 import { sanitizeToolOutput, capPartsSize, capToolPartPayloads } from "./safety.ts";
 import { sanitizeModelMessages, capToolResultOutputs, summarizeToolResultValue } from "./message-sanitize.ts";
-import { guard, routingGuard, triageState, countRecordArtifactCalls } from "./guard.ts";
+import { guard, routingGuard, triageState, countRecordArtifactCalls, countModelMessageToolCalls } from "./guard.ts";
 import { setupRequest } from "./auth.ts";
 import { minimax, minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider } from "./orchestrator_select.ts";
@@ -39,6 +39,7 @@ import {
   shouldForceFinalize, buildFinalizeDirective, buildPerCycleCompactDirective,
   FINALIZE_ACTIVE_TOOLS, FINALIZE_MAX_STEPS,
   extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt, toolCallCapReached,
+  shouldNudgePersistence, buildPersistenceNudgeDirective,
 } from "./orchestrator-finalize.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
 
@@ -601,6 +602,12 @@ Deno.serve(async (req) => {
     // `capped` once the cap is hit; prepareStep reads it to force finalize. Owned by
     // this per-request closure so concurrent runs on a warm isolate never share it.
     const toolCallBudget = { genuine: 0, capped: false };
+    // First-pass persistence nudge latch (DeepSeek deferral fix). Request-scoped —
+    // owned by this per-request closure, NEVER a module-global, so one run's nudge
+    // state can't leak onto a concurrent run sharing a warm isolate. Flipped true the
+    // one time prepareStep injects buildPersistenceNudgeDirective(), which bounds the
+    // nudge to a single injection per run (no nudge spam).
+    let persistenceNudged = false;
     // Wall-clock start for BOTH the finalize-reserve check (prepareStep) and the hard
     // deadline StopCondition below. Declared here so prepareStep's closure reads it.
     const runStartedAt = Date.now();
@@ -685,9 +692,27 @@ Deno.serve(async (req) => {
         // full dossier is owned solely by the finalize branch above. baseSystemPrompt is
         // byte-identical to the top-level streamText `system`, so this only APPENDS the
         // directive for this step.
+        //
+        // First-pass persistence nudge (DeepSeek deferral fix): count tool calls +
+        // record_artifacts calls in the running conversation. If the model has fanned
+        // out (>= threshold tool calls) but persisted nothing yet, inject a ONE-TIME
+        // directive to record already-supported findings now (don't wait for correlate,
+        // don't fabricate). Counts come from THIS request's stepMessages and the latch
+        // is a closure local, so the nudge state is request-scoped by construction.
+        let intermediateSystem = baseSystemPrompt + buildPerCycleCompactDirective();
+        const { toolCalls: nudgeToolCalls, recordCalls: nudgeRecordCalls } =
+          countModelMessageToolCalls(stepMessages as Array<{ content?: unknown }>);
+        if (shouldNudgePersistence(nudgeToolCalls, nudgeRecordCalls, persistenceNudged)) {
+          persistenceNudged = true;
+          intermediateSystem += buildPersistenceNudgeDirective();
+          console.log(JSON.stringify({
+            event: "persistence_nudge_fired", thread_id: threadId,
+            tool_calls: nudgeToolCalls, record_artifact_calls: nudgeRecordCalls,
+          }));
+        }
         return {
           messages: stepMessagesOut,
-          system: baseSystemPrompt + buildPerCycleCompactDirective(),
+          system: intermediateSystem,
         };
       };
 
