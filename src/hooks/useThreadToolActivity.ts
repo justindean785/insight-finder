@@ -151,11 +151,11 @@ export function useThreadToolActivity(threadId: string, accountId?: string): Thr
 
     const load = async () => {
       const requestSeq = ++loadSeq;
-      const { data, error } = await supabase
+      const { data, error, count } = await supabase
         .from("tool_usage_log")
         // `outcome` is not in the generated types yet (added by migration) —
         // cast via unknown below to keep typecheck green.
-        .select("id,tool_name,outcome,ok,error_msg,created_at")
+        .select("id,tool_name,outcome,ok,error_msg,created_at", { count: "exact" })
         .eq("thread_id", threadId)
         .order("created_at", { ascending: true });
       if (!alive || requestSeq !== loadSeq) return;
@@ -185,7 +185,7 @@ export function useThreadToolActivity(threadId: string, accountId?: string): Thr
         scopeKey,
         hiddenFailed: out.filter((event) => event.status === "failed").length,
         events: out.filter((event) => event.status !== "failed"),
-        persistedTotal: rows.length,
+        persistedTotal: count ?? rows.length,
         loading: false,
       });
     };

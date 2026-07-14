@@ -1,6 +1,12 @@
-import { act, renderHook, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useThreadToolActivity } from "@/hooks/useThreadToolActivity";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  useThreadToolActivity,
+  type ThreadToolActivity,
+} from "@/hooks/useThreadToolActivity";
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 type TestRow = {
   id: string;
@@ -30,6 +36,8 @@ const mock = vi.hoisted(() => ({
   channels: [] as TestChannel[],
   queriedTables: [] as string[],
 }));
+
+const mountedRoots: Root[] = [];
 
 vi.mock("@/integrations/supabase/client", () => ({
   supabase: {
@@ -98,6 +106,49 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function renderActivityHook(threadId: string, accountId: string) {
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  const snapshot: { current: ThreadToolActivity | null } = { current: null };
+
+  function HookHarness(props: { threadId: string; accountId: string }) {
+    snapshot.current = useThreadToolActivity(props.threadId, props.accountId);
+    return null;
+  }
+
+  const render = (props: { threadId: string; accountId: string }) => {
+    act(() => root.render(<HookHarness {...props} />));
+  };
+  render({ threadId, accountId });
+  mountedRoots.push(root);
+
+  return {
+    result: {
+      get current() {
+        if (!snapshot.current) throw new Error("Hook did not render");
+        return snapshot.current;
+      },
+    },
+    rerender: render,
+  };
+}
+
+async function waitFor(assertion: () => void) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 50; attempt++) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+    }
+  }
+  throw lastError;
+}
+
 describe("useThreadToolActivity persisted count", () => {
   beforeEach(() => {
     mock.rowsByThread.clear();
@@ -106,10 +157,16 @@ describe("useThreadToolActivity persisted count", () => {
     mock.queriedTables.length = 0;
   });
 
+  afterEach(() => {
+    for (const root of mountedRoots.splice(0)) {
+      act(() => root.unmount());
+    }
+  });
+
   it("loads all 99 persisted calls even when failures are hidden from the feed", async () => {
     mock.rowsByThread.set("thread-a", rows(99, "failed"));
 
-    const { result } = renderHook(() => useThreadToolActivity("thread-a", "account-a"));
+    const { result } = renderActivityHook("thread-a", "account-a");
 
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.persistedTotal).toBe(99);
@@ -119,7 +176,7 @@ describe("useThreadToolActivity persisted count", () => {
 
   it("realtime insertion increments the active thread only", async () => {
     mock.rowsByThread.set("thread-a", rows(1));
-    const { result } = renderHook(() => useThreadToolActivity("thread-a", "account-a"));
+    const { result } = renderActivityHook("thread-a", "account-a");
     await waitFor(() => expect(result.current.persistedTotal).toBe(1));
 
     mock.rowsByThread.set("thread-a", rows(2));
@@ -130,7 +187,7 @@ describe("useThreadToolActivity persisted count", () => {
 
   it("ignores tool rows announced for another thread", async () => {
     mock.rowsByThread.set("thread-a", rows(1));
-    const { result } = renderHook(() => useThreadToolActivity("thread-a", "account-a"));
+    const { result } = renderActivityHook("thread-a", "account-a");
     await waitFor(() => expect(result.current.persistedTotal).toBe(1));
     const queryCount = mock.queriedTables.length;
 
@@ -144,14 +201,11 @@ describe("useThreadToolActivity persisted count", () => {
   it("clears the previous count immediately while switching threads", async () => {
     mock.rowsByThread.set("thread-a", rows(4));
     const next = deferred<{ data: TestRow[]; error: null }>();
-    const { result, rerender } = renderHook(
-      ({ threadId }) => useThreadToolActivity(threadId, "account-a"),
-      { initialProps: { threadId: "thread-a" } },
-    );
+    const { result, rerender } = renderActivityHook("thread-a", "account-a");
     await waitFor(() => expect(result.current.persistedTotal).toBe(4));
 
     mock.pendingByThread.set("thread-b", next.promise);
-    rerender({ threadId: "thread-b" });
+    rerender({ threadId: "thread-b", accountId: "account-a" });
     expect(result.current.persistedTotal).toBe(0);
     expect(result.current.loading).toBe(true);
 
@@ -161,7 +215,7 @@ describe("useThreadToolActivity persisted count", () => {
 
   it("refetches on run completion to recover missed realtime events", async () => {
     mock.rowsByThread.set("thread-a", rows(1));
-    const { result } = renderHook(() => useThreadToolActivity("thread-a", "account-a"));
+    const { result } = renderActivityHook("thread-a", "account-a");
     await waitFor(() => expect(result.current.persistedTotal).toBe(1));
 
     mock.rowsByThread.set("thread-a", rows(6));
@@ -179,7 +233,7 @@ describe("useThreadToolActivity persisted count", () => {
 
   it("refetches after realtime reconnect", async () => {
     mock.rowsByThread.set("thread-a", rows(1));
-    const { result } = renderHook(() => useThreadToolActivity("thread-a", "account-a"));
+    const { result } = renderActivityHook("thread-a", "account-a");
     await waitFor(() => expect(result.current.persistedTotal).toBe(1));
 
     mock.rowsByThread.set("thread-a", rows(3));
@@ -190,15 +244,12 @@ describe("useThreadToolActivity persisted count", () => {
 
   it("never exposes the previous account count during an account switch", async () => {
     mock.rowsByThread.set("thread-a", rows(5));
-    const { result, rerender } = renderHook(
-      ({ accountId }) => useThreadToolActivity("thread-a", accountId),
-      { initialProps: { accountId: "account-a" } },
-    );
+    const { result, rerender } = renderActivityHook("thread-a", "account-a");
     await waitFor(() => expect(result.current.persistedTotal).toBe(5));
 
     const next = deferred<{ data: TestRow[]; error: null }>();
     mock.pendingByThread.set("thread-a", next.promise);
-    rerender({ accountId: "account-b" });
+    rerender({ threadId: "thread-a", accountId: "account-b" });
     expect(result.current.persistedTotal).toBe(0);
     expect(result.current.loading).toBe(true);
 
@@ -208,7 +259,7 @@ describe("useThreadToolActivity persisted count", () => {
 
   it("does not query or alter the evidence data source", async () => {
     mock.rowsByThread.set("thread-a", rows(1));
-    const { result } = renderHook(() => useThreadToolActivity("thread-a", "account-a"));
+    const { result } = renderActivityHook("thread-a", "account-a");
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     expect(mock.queriedTables).toEqual(["tool_usage_log"]);
