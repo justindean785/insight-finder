@@ -216,6 +216,20 @@ export function semanticParams(params: Record<string, unknown>): Record<string, 
   );
 }
 
+/**
+ * Cache entries must represent usable provider results. Intentional skips are
+ * operationally non-failures for telemetry, but replaying one would suppress a
+ * later live retry after a missing/expired provider key is repaired.
+ */
+export function isCacheableToolResult(result: unknown): boolean {
+  if (!result || typeof result !== "object") return true;
+  const r = result as Record<string, unknown>;
+  if (isIntentionalSkip(r) || r.provider_unavailable === true) return false;
+  if (typeof r.ok === "boolean") return r.ok;
+  if (typeof r.error === "string" && r.error.length > 0) return false;
+  return true;
+}
+
 function normalizedParams(input: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(input).filter(([key]) => !SELECTOR_INPUT_KEYS.has(key)),
@@ -673,7 +687,7 @@ export function wrapToolsWithCache(
         // free, and do not consume provider budgets or count as corroboration.
         if (key) {
           const mem = TOOL_CACHE_LRU.get(key);
-          if (mem && fresh(mem.createdAt)) {
+          if (mem && fresh(mem.createdAt) && isCacheableToolResult(mem.output)) {
             await logUsage(true, true, Date.now() - t0, null, null, false, {
               input: inputJson,
               runtime: { ...cacheRuntime, cache_layer: "thread", stale_cache: false, source_created_at: new Date(mem.createdAt).toISOString() },
@@ -712,8 +726,8 @@ export function wrapToolsWithCache(
                 source_created_at?: string | null;
               };
               const createdAt = new Date(row.created_at).getTime();
-              if (fresh(createdAt, row.expires_at)) {
-                const output = row.output_json;
+              const output = row.output_json;
+              if (fresh(createdAt, row.expires_at) && isCacheableToolResult(output)) {
                 if (key) TOOL_CACHE_LRU.set(key, { output, createdAt });
                 await logUsage(true, true, Date.now() - t0, null, null, false, {
                   input: inputJson,
@@ -775,8 +789,8 @@ export function wrapToolsWithCache(
                 source_created_at?: string | null;
               };
               const createdAt = new Date(row.created_at).getTime();
-              if (fresh(createdAt, row.expires_at)) {
-                const output = row.output_json;
+              const output = row.output_json;
+              if (fresh(createdAt, row.expires_at) && isCacheableToolResult(output)) {
                 if (key) TOOL_CACHE_LRU.set(key, { output, createdAt });
                 await logUsage(true, true, Date.now() - t0, null, null, false, {
                   input: inputJson,
@@ -976,7 +990,7 @@ export function wrapToolsWithCache(
         const createdAtIso = new Date().toISOString();
         // Only cache successful results — caching a failure would poison
         // subsequent calls with the same input.
-        if (ok && hash && key) {
+        if (isCacheableToolResult(result) && hash && key) {
           TOOL_CACHE_LRU.set(key, { output: result, createdAt: Date.now() });
           try {
             const { error: cacheWriteError } = await adminDb.from("tool_call_cache").upsert(
