@@ -1,3 +1,4 @@
+// deno-lint-ignore no-import-prefix no-unversioned-import
 import { assertEquals, assertNotEquals } from "jsr:@std/assert";
 import { normalizeArtifactValue } from "./artifact-normalization.ts";
 
