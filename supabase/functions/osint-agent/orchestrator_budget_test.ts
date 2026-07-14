@@ -18,6 +18,8 @@ import {
   capTotalToBudget,
   elidedToolResultRef,
   deadlineReached,
+  orchestratorStepToolChoice,
+  FORCE_TOOL_CALL_UNTIL_FINALIZE,
 } from "./orchestrator-budget.ts";
 
 // Build a `tool` message carrying one tool-result with a big JSON payload.
@@ -34,6 +36,19 @@ function bigToolMessage(i: number, valueChars: number): ModelMessage {
     ],
   } as unknown as ModelMessage;
 }
+
+Deno.test("premature-stop fix: non-finalize steps force a tool call; finalize stays auto", () => {
+  // The "stops mid-investigation" bug: with toolChoice "auto", the model can end a
+  // step with narration and no tool call ("Now let me run minimax_correlate…"), and
+  // AI SDK v6 terminates the loop — leaving planned NEXT STEPS unrun. Non-finalize
+  // steps must force a tool call so the loop can only exit via the finalize branch
+  // or a budget/deadline StopCondition.
+  assert(FORCE_TOOL_CALL_UNTIL_FINALIZE, "kill-switch must be ON for the fix to apply");
+  assertEquals(orchestratorStepToolChoice(false), "required", "non-finalize step must force a tool call");
+  // The finalize step writes the closing report (text-only) — forcing a tool call
+  // there would block the report, so it must stay auto.
+  assertEquals(orchestratorStepToolChoice(true), "auto", "finalize step must allow a text-only report");
+});
 
 Deno.test("capTotalToBudget: long run stays under the ceiling", () => {
   const msgs: ModelMessage[] = Array.from({ length: 40 }, (_, i) => bigToolMessage(i, 5000));

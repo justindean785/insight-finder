@@ -51,6 +51,31 @@ export const USER_TEXT_CHAR_BUDGET = 12_000;
 // spent on redundant fan-out and dragging p95 wall-clock.
 export const MAX_ORCHESTRATOR_STEPS = 22;
 
+// Premature-stop fix for the "stops mid-investigation" bug. When true, every
+// NON-finalize orchestrator step is forced to emit a tool call (toolChoice
+// "required"), so the AI SDK loop can never terminate on a text-only step —
+// the failure mode where the model narrates its next action ("Now let me run
+// minimax_correlate…") without emitting the call, ending the run with planned
+// NEXT STEPS still pending. The controlled finalize branch (auto tool choice)
+// still produces the closing report, and the 22-step / 4-min budget still bounds
+// the run. A single kill-switch so the behavior can be toggled without a code
+// dive if a provider ever rejects tool_choice:"required".
+export const FORCE_TOOL_CALL_UNTIL_FINALIZE = true;
+
+/**
+ * The AI SDK `toolChoice` for an orchestrator step. Pure so the premature-stop
+ * fix is unit-testable without the streamText closure.
+ *  - Finalize step  → "auto": it writes the closing report, which is a text-only
+ *    step; forcing a tool call there would block the report.
+ *  - Non-finalize   → "required" (when the kill-switch is on): the model MUST emit
+ *    a tool call, so the loop can't terminate on a narration-only step (the
+ *    "stops mid-investigation" bug). With the switch off, falls back to "auto".
+ */
+export function orchestratorStepToolChoice(isFinalizeStep: boolean): "required" | "auto" {
+  if (isFinalizeStep || !FORCE_TOOL_CALL_UNTIL_FINALIZE) return "auto";
+  return "required";
+}
+
 // Hard ceiling on GENUINE (live, non-cached, non-skipped) tool executions per run.
 // Live logs showed a single investigation balloon to 230 tool calls / 747s of
 // tool-time (43× socialfetch_web_read, 38× minimax_web_search) — unbounded run size
