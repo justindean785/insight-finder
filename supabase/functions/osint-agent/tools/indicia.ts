@@ -53,6 +53,26 @@ const INDICIA_BASE = "https://api.indicia.app";
 // so the tool's own fetch times out cleanly before the wrapper cap fires.
 const INDICIA_HTTP_TIMEOUT_MS = 18_000;
 
+// Live audit (thread 0ba426f5…, 2026-07-14): indicia_web_dbs 400'd in 647ms on a
+// bare 10-digit phone ("2133788694") — the endpoint rejects unformatted phone
+// selectors and wants E.164. This is a request-shape bug, not a timeout — the
+// planner passes whatever selector format it discovered the number in, so the
+// tool must normalize before it ever leaves the process. Only a selector that IS
+// a bare phone number (all digits once separators are stripped) is touched;
+// emails and usernames pass through unchanged.
+export function isBarePhoneSelector(value: string): boolean {
+  const stripped = value.replace(/[\s().-]/g, "");
+  return /^\+?\d{10,11}$/.test(stripped);
+}
+export function normalizeBarePhone(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("+")) return trimmed;
+  const digits = trimmed.replace(/\D/g, "");
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  return trimmed;
+}
+
 interface IndiciaToolResult {
   ok?: boolean;
   empty?: boolean;
@@ -246,8 +266,10 @@ export const indicia_phone = tool({
   description:
     "Indicia phone intelligence (api.indicia.app) — US person/broker + web-DB records linked to a phone number. Broker/breach-dump data: LEAD until corroborated. 1 token/call.",
   inputSchema: z.object({ query: z.string().min(7).describe("Phone number (any format).") }),
-  execute: async ({ query }, opts) =>
-    indiciaRequest("/v1/search/intelligence/phone", "phone", { query }, query, getSignal(opts)),
+  execute: async ({ query }, opts) => {
+    const q = isBarePhoneSelector(query) ? normalizeBarePhone(query) : query;
+    return indiciaRequest("/v1/search/intelligence/phone", "phone", { query: q }, q, getSignal(opts));
+  },
 });
 
 /** Name + city/state (US) → person records. 1 token/call. Broker/lead tier. */
@@ -300,8 +322,15 @@ export const indicia_web_dbs = tool({
     query: z.string().min(3).describe("Selector (email, username, phone, …)."),
     services: z.array(z.string()).optional().describe("Optional subset of Indicia web-DB services to query."),
   }),
-  execute: async ({ query, services }, opts) =>
-    indiciaRequest("/v1/search/intelligence/web-dbs", "web-dbs", { query, services }, query, getSignal(opts)),
+  execute: async ({ query, services }, opts) => {
+    // web-dbs is a generic multi-selector endpoint (email/username/phone all
+    // ride the same `query` field) — only reshape it when it's UNAMBIGUOUSLY a
+    // bare phone number (all digits once separators are stripped). Emails and
+    // usernames never match isBarePhoneSelector, so they pass through byte-for-
+    // byte, exactly as before this fix.
+    const q = isBarePhoneSelector(query) ? normalizeBarePhone(query) : query;
+    return indiciaRequest("/v1/search/intelligence/web-dbs", "web-dbs", { query: q, services }, q, getSignal(opts));
+  },
 });
 
 /** Hudson Rock — infostealer/compromised-credential exposure. FREE (0 tokens/call). */

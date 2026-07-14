@@ -2,7 +2,7 @@ import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.t
 import {
   indicia_email, indicia_phone, indicia_person,
   indicia_address, indicia_web_dbs, indicia_hudsonrock,
-  extractIndiciaRecords,
+  extractIndiciaRecords, isBarePhoneSelector, normalizeBarePhone,
 } from "./tools/indicia.ts";
 import { buildTools, type ToolContext } from "./tool-registry.ts";
 import { classifyToolOutcome } from "./tool-outcome.ts";
@@ -200,4 +200,67 @@ Deno.test("indicia_person: explicit state wins over a parsed suffix", async () =
   });
   assertEquals((sentBody as Record<string, unknown>).name, "JOHN SMITH");
   assertEquals((sentBody as Record<string, unknown>).state, "NY");
+});
+
+// Live audit (thread 0ba426f5…): indicia_web_dbs 400'd on a bare 10-digit phone
+// ("2133788694") because the endpoint requires E.164. indicia_phone/web_dbs must
+// normalize a bare-phone-shaped selector before it reaches the request body.
+Deno.test("isBarePhoneSelector: matches bare/separated 10-11 digit phones, not email/username", () => {
+  assert(isBarePhoneSelector("2133788694"));
+  assert(isBarePhoneSelector("12133788694"));
+  assert(isBarePhoneSelector("+12133788694"));
+  assert(isBarePhoneSelector("(213) 378-8694"));
+  assert(isBarePhoneSelector("213-378-8694"));
+  assert(!isBarePhoneSelector("jane@example.com"));
+  assert(!isBarePhoneSelector("stevenm3532"));
+  assert(!isBarePhoneSelector("123")); // too short — not a phone
+});
+
+Deno.test("normalizeBarePhone: bare 10-digit → +1-prefixed E.164; already-formatted passes through", () => {
+  assertEquals(normalizeBarePhone("2133788694"), "+12133788694");
+  assertEquals(normalizeBarePhone("12133788694"), "+12133788694");
+  assertEquals(normalizeBarePhone("+12133788694"), "+12133788694");
+  // Non-US-shaped input is passed through unchanged rather than guessed at.
+  assertEquals(normalizeBarePhone("+442071234567"), "+442071234567");
+});
+
+Deno.test("indicia_phone: bare 10-digit query is normalized to E.164 in the request body", async () => {
+  let sentBody: Record<string, unknown> | null = null;
+  await withStubbedFetch((_url, init) => {
+    sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    return jsonResponse(200, { success: true, data: { web: [{ name: "Jane" }] } });
+  }, async () => {
+    const r = await exec(indicia_phone, { query: "2133788694" });
+    assertEquals(r.ok, true);
+  });
+  assertEquals((sentBody as Record<string, unknown>).query, "+12133788694");
+});
+
+Deno.test("indicia_web_dbs: bare-phone query is normalized; email/username selectors pass through untouched", async () => {
+  let sentBody: Record<string, unknown> | null = null;
+  await withStubbedFetch((_url, init) => {
+    sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    return jsonResponse(200, { success: true, data: { web: [{ name: "Jane" }] } });
+  }, async () => {
+    await exec(indicia_web_dbs, { query: "2133788694" });
+  });
+  assertEquals((sentBody as Record<string, unknown>).query, "+12133788694");
+
+  sentBody = null;
+  await withStubbedFetch((_url, init) => {
+    sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    return jsonResponse(200, { success: true, data: { web: [{ name: "Jane" }] } });
+  }, async () => {
+    await exec(indicia_web_dbs, { query: "eireannach_99@yahoo.com" });
+  });
+  assertEquals((sentBody as Record<string, unknown>).query, "eireannach_99@yahoo.com");
+
+  sentBody = null;
+  await withStubbedFetch((_url, init) => {
+    sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    return jsonResponse(200, { success: true, data: { web: [{ name: "Jane" }] } });
+  }, async () => {
+    await exec(indicia_web_dbs, { query: "stevenm3532" });
+  });
+  assertEquals((sentBody as Record<string, unknown>).query, "stevenm3532");
 });
