@@ -130,6 +130,70 @@ export function buildPerCycleCompactDirective(): string {
   ].join("\n");
 }
 
+// ---- First-pass persistence nudge (DeepSeek deferral fix) ----------------------
+// WHY: DeepSeek (now the live orchestrator) under-emits record_artifacts on the
+// first pass — it fans out through many discovery calls and defers structured
+// persistence, often waiting for minimax_correlate before recording anything. When
+// correlate times out (chronic), the first turn can finish with 0 artifacts even
+// though hard identifiers were already in hand (live thread 32d301d0: 46 tool calls,
+// 0 record_artifacts, zero_artifacts_at_completion). This is a BEHAVIORAL nudge, not
+// a deterministic extractor: it only asks the model to persist what it already has —
+// it never invents artifacts from narration or raw tool output. MiniMax, which
+// records incrementally on its own, never trips it because it records before the
+// threshold (recordCalls > 0 short-circuits the predicate).
+
+// Fire the nudge once a run has made this many tool calls with STILL zero
+// record_artifacts calls — the "fanned out but persisted nothing" signature.
+export const PERSISTENCE_NUDGE_TOOL_CALL_THRESHOLD = 5;
+
+/**
+ * True when the run should be nudged to persist already-supported findings NOW:
+ * it has made >= PERSISTENCE_NUDGE_TOOL_CALL_THRESHOLD tool calls, has recorded
+ * ZERO artifacts so far, and has not already been nudged this run. Pure — the caller
+ * passes request-scoped counts + latch, so no module-global state crosses requests.
+ *
+ * The `alreadyNudged` latch bounds it to one injection per run (no nudge spam); the
+ * `recordArtifactCalls === 0` gate independently stops it the instant any persistence
+ * happens. Either alone ends the nudge; together it fires at most once.
+ */
+export function shouldNudgePersistence(
+  toolCalls: number,
+  recordArtifactCalls: number,
+  alreadyNudged: boolean,
+  threshold: number = PERSISTENCE_NUDGE_TOOL_CALL_THRESHOLD,
+): boolean {
+  if (alreadyNudged) return false;
+  if (recordArtifactCalls > 0) return false;
+  return toolCalls >= threshold;
+}
+
+/**
+ * The system-prompt addendum injected ONCE on an intermediate step when
+ * shouldNudgePersistence() fires. Tells the model to pause broad discovery and
+ * persist the hard findings it ALREADY supports, with exact provenance — without
+ * waiting for minimax_correlate and without fabricating anything from narration.
+ * Integrity-neutral: it only redirects WHEN persistence happens, never WHAT counts
+ * as evidence (confidence/source/custody rules are unchanged).
+ */
+export function buildPersistenceNudgeDirective(): string {
+  return [
+    "",
+    "",
+    "=== PERSIST NOW — you have made several lookups but recorded ZERO artifacts ===",
+    "Pause broad discovery for THIS step and persist what you have already found:",
+    "1. Call record_artifacts now for every hard finding already supported by a tool",
+    "   result this run (confirmed selectors, infra, breach/identity hits).",
+    "2. Preserve exact provenance — set `source` to the tool that produced it and keep",
+    "   `metadata.discovered_via` so chain-of-custody stays intact.",
+    "3. Do NOT wait for minimax_correlate — correlation is optional enrichment, not a",
+    "   precondition for recording. Record first; correlate later.",
+    "4. Record ONLY findings backed by real tool output. Your narration is NOT evidence:",
+    "   do NOT invent, infer, or fabricate artifacts from prose or unrelated data.",
+    "If you genuinely have no tool-supported hard finding yet, say so in one line and",
+    "keep investigating — do not manufacture one to satisfy this instruction.",
+  ].join("\n");
+}
+
 /**
  * The system-prompt addendum appended for the forced finalize step. Tells the model
  * the budget is nearly spent, forbids new lookups, and asks for the report AS ITS
