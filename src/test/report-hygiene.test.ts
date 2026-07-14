@@ -12,6 +12,7 @@ import {
   bucketQualifiesAsCluster,
   sweepRouteQuality,
   dedupeBreachDatasets,
+  formatArtifactDisplayValue,
 } from "@/lib/report-hygiene";
 
 function art(partial: Partial<Artifact> & { kind: string; value: string }): Artifact {
@@ -84,6 +85,20 @@ describe("#3 strip CONFIRMED wording", () => {
     // into "...191 .ph, ..." in the exported report.
     const v = "Phone +19165299191 confirmed in 5 breach corpora: Digido.ph, 1win, Wattpad, Verifications.io, National Public Data";
     expect(sanitizeValueForLabel(v, false)).toBe(v);
+  });
+});
+
+describe("structured artifact values", () => {
+  it("summarizes JSON objects without rendering raw braces", () => {
+    const out = formatArtifactDisplayValue('{"action":"merge","cluster_id":"c-12","confidence":100}');
+    expect(out).toBe("Action: merge · Cluster id: c-12 · Confidence: 100");
+    expect(out).not.toMatch(/[{}]/);
+  });
+
+  it("summarizes structured arrays and preserves ordinary text", () => {
+    expect(formatArtifactDisplayValue('[{"id":1},{"id":2}]')).toBe("2 structured records");
+    expect(formatArtifactDisplayValue("plain finding")).toBe("plain finding");
+    expect(formatArtifactDisplayValue("{not valid json}")).toBe("{not valid json}");
   });
 });
 

@@ -28,10 +28,13 @@ import {
   groupForKind,
   GROUP_LABEL,
   displayKind,
+  extractSourceInfo,
   isReputationArtifact,
   type ConfLabel,
 } from "@/lib/intel";
+import { formatArtifactDisplayValue } from "@/lib/report-hygiene";
 import { toolActionLabel } from "@/lib/tool-display";
+import { tokenizeSourceChain } from "@/lib/report-source-labels";
 import { cn } from "@/lib/utils";
 import type { ReviewState } from "@/lib/review";
 import { extractDisplaySeed } from "@/lib/seed";
@@ -80,7 +83,7 @@ function ArtifactRow({ a }: { a: Artifact }) {
     >
       <td className="px-3 py-2 text-muted-foreground text-eyebrow uppercase tracking-wider">{displayKind(a)}</td>
       <td className={cn("px-3 py-2 font-mono break-words [overflow-wrap:anywhere]", isExcluded && "line-through decoration-muted-foreground/50")}>
-        {a.value}
+        {formatArtifactDisplayValue(a.value)}
         {isInferred && !isExcluded && (
           <span className="ml-2 align-middle rounded border border-conf-possible/40 bg-conf-possible/10 px-1 py-px text-micro font-mono uppercase tracking-wider text-conf-possible no-underline">
             inferred · unverified
@@ -88,7 +91,7 @@ function ArtifactRow({ a }: { a: Artifact }) {
         )}
       </td>
       <td className="px-3 py-2 text-data text-muted-foreground break-words [overflow-wrap:anywhere]" title={a.source ?? undefined}>
-        {a.source ? <SourceBadge source={a.source} size="xs" className="max-w-full whitespace-normal break-words [overflow-wrap:anywhere] text-left !rounded-md" /> : "—"}
+        <SourcePills artifact={a} />
       </td>
       <td className="px-3 py-2">
         <EvidenceStatusBadge status={status.status} label={status.label} tone={status.tone} hint={status.hint} />
@@ -105,6 +108,26 @@ function ArtifactRow({ a }: { a: Artifact }) {
         {m.reason_not_confirmed ? <div className="text-destructive/80">{String(m.reason_not_confirmed)}</div> : null}
       </td>
     </tr>
+  );
+}
+
+function SourcePills({ artifact }: { artifact: Artifact }) {
+  return <SourceBadges sources={extractSourceInfo(artifact).all} />;
+}
+
+function SourceBadges({ sources }: { sources: string[] }) {
+  if (!sources.length) return <>—</>;
+  return (
+    <span className="inline-flex max-w-full flex-wrap gap-1">
+      {sources.map((source) => (
+        <SourceBadge
+          key={source}
+          source={source}
+          size="xs"
+          className="max-w-full whitespace-normal break-words [overflow-wrap:anywhere] text-left !rounded-md"
+        />
+      ))}
+    </span>
   );
 }
 
@@ -449,13 +472,7 @@ function averageConfidence(artifacts: Artifact[]): number {
 function uniqueSources(artifacts: Artifact[]): string[] {
   const sources = new Set<string>();
   for (const a of artifacts) {
-    if (a.source) sources.add(a.source);
-    const metaSources = a.metadata?.sources;
-    if (Array.isArray(metaSources)) {
-      for (const s of metaSources) {
-        if (typeof s === "string" && s.trim()) sources.add(s.trim());
-      }
-    }
+    for (const source of extractSourceInfo(a).all) sources.add(source);
   }
   return Array.from(sources).sort((a, b) => a.localeCompare(b));
 }
@@ -548,8 +565,10 @@ function buildGroupDistribution(artifacts: Artifact[]): ChartDatum[] {
 function buildSourceDistribution(artifacts: Artifact[]): ChartDatum[] {
   const counts = new Map<string, number>();
   for (const a of artifacts) {
-    const source = a.source || "unknown";
-    counts.set(source, (counts.get(source) ?? 0) + 1);
+    const sources = extractSourceInfo(a).all;
+    for (const source of sources.length ? sources : ["unknown"]) {
+      counts.set(source, (counts.get(source) ?? 0) + 1);
+    }
   }
   return Array.from(counts.entries())
     .map(([name, value]) => ({ name: name.length > 18 ? `${name.slice(0, 17)}...` : name, value }))
@@ -1324,7 +1343,9 @@ export function CaseReport({
                   <tr key={i} className="border-t border-border-subtle align-top">
                     <td className="px-3 py-2">{r.site}</td>
                     <td className="px-3 py-2 font-mono break-all">{r.identifier}</td>
-                    <td className="px-3 py-2 text-muted-foreground text-data">{r.source}</td>
+                    <td className="px-3 py-2 text-muted-foreground text-data">
+                      <SourceBadges sources={tokenizeSourceChain(r.source)} />
+                    </td>
                     <td className="px-3 py-2"><ConfPill label={r.label} /></td>
                   </tr>
                 ))}

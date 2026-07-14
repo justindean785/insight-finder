@@ -45,11 +45,11 @@ function normalizeValue(kind: string, raw: string): string {
 
 /** Artifact kinds that represent meta/status rows — surfaced in audit/timeline,
  * not in the user-facing artifact list. */
-const META_KINDS = new Set(["triage_decision"]);
-function isMeta(a: Artifact): boolean {
+const META_KINDS = new Set(["triage_decision", "cluster_decision"]);
+export function isMetaArtifact(a: Artifact): boolean {
   if (META_KINDS.has(a.kind.toLowerCase())) return true;
   const meta = (a.metadata ?? {}) as Record<string, unknown>;
-  return meta.label === "triage_decision";
+  return META_KINDS.has(String(meta.label ?? "").toLowerCase());
 }
 
 function dedupeArtifacts(rows: Artifact[]): Artifact[] {
@@ -333,8 +333,8 @@ export function useThreadArtifacts(threadId: string) {
     if (store) void loadStore(threadId, store);
   };
 
-  const userItems = snap.items.filter((a) => !isMeta(a));
-  const metaItems = snap.items.filter(isMeta);
+  const userItems = snap.items.filter((a) => !isMetaArtifact(a));
+  const metaItems = snap.items.filter(isMetaArtifact);
   return {
     items: userItems,
     metaItems,

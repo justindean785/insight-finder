@@ -58,6 +58,46 @@ export function sanitizeValueForLabel(value: string, isConfirmed: boolean): stri
   return cleaned.length ? cleaned : value.replace(/\bCONFIRMED\b/g, "reported").trim();
 }
 
+function displayJsonKey(key: string): string {
+  const words = key.replace(/[_-]+/g, " ").trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : key;
+}
+
+/**
+ * Keep structured artifact payloads out of analyst-facing report cells.
+ * Canonical values remain untouched for exports and audit; this only produces
+ * a compact presentation string for valid JSON objects/arrays.
+ */
+export function formatArtifactDisplayValue(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed || (!trimmed.startsWith("{") && !trimmed.startsWith("["))) return value;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+
+  if (Array.isArray(parsed)) {
+    if (parsed.length === 0) return "No structured details";
+    if (parsed.every((item) => ["string", "number", "boolean"].includes(typeof item))) {
+      return parsed.map(String).join(", ");
+    }
+    return `${parsed.length} structured record${parsed.length === 1 ? "" : "s"}`;
+  }
+
+  if (parsed && typeof parsed === "object") {
+    const fields = Object.entries(parsed as Record<string, unknown>)
+      .filter(([, item]) => item != null && ["string", "number", "boolean"].includes(typeof item))
+      .slice(0, 4)
+      .map(([key, item]) => `${displayJsonKey(key)}: ${String(item)}`);
+    return fields.length ? fields.join(" · ") : "Structured details";
+  }
+
+  return value;
+}
+
 // ---------------------------------------------------------------------------
 // #6 — Collision quarantine. Artifacts the pipeline already flagged as a
 // namesake/unrelated-entity collision must not seed or strengthen the main

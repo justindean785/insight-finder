@@ -119,13 +119,27 @@ function labelToken(token: string): string {
  * Returns `fallback` (default "tool") when there is nothing to show — never an
  * empty string.
  */
+export function tokenizeSourceChain(
+  raw: string | string[] | null | undefined,
+): string[] {
+  const elements = Array.isArray(raw) ? raw : raw == null ? [] : [raw];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const token of elements.flatMap((s) => String(s).split(/[+,/]/))) {
+    const value = token.trim();
+    const key = value.toLowerCase();
+    if (!value || seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+}
+
 export function humanizeSourceChain(
   raw: string | string[] | null | undefined,
   fallback = "tool",
 ): string {
-  const elements = Array.isArray(raw) ? raw : raw == null ? [] : [raw];
-  const tokens = elements
-    .flatMap((s) => String(s).split(/[+,/]/))
+  const tokens = tokenizeSourceChain(raw)
     .map(labelToken)
     .filter(Boolean);
   // Dedupe case-insensitively, preserving first-seen order.

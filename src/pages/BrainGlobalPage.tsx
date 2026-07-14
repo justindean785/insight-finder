@@ -249,10 +249,10 @@ export default function BrainGlobalPage() {
           </Link>
           <div className="flex-1 min-w-0">
             <h1 className="font-display text-xl tracking-tight text-foreground">
-              AGENT BRAIN · LEARNING LOG
+              AGENT BRAIN · INVESTIGATION MEMORY
             </h1>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Patterns, lessons and source weighting the agent has accumulated across investigations.
+              Saved patterns, lessons, and source context from completed investigations.
             </p>
             <p className="mt-1.5 text-micro text-muted-foreground/80">
               Pin / mute / hide actions on this screen are local view controls — they do not modify
@@ -532,7 +532,7 @@ function MemoriesTab({
           </div>
           <div className="text-sm text-foreground">No memories yet.</div>
           <div className="text-xs text-muted-foreground mt-1 max-w-md mx-auto">
-            Run Insight Finder on a case to start building the agent's knowledge base.
+            Run Insight Finder on a case to save investigation context here.
           </div>
         </div>
       ) : (
@@ -715,7 +715,7 @@ function PatternsTab({
           <TrendingUp className="w-8 h-8 text-muted-foreground mx-auto mb-3" strokeWidth={1.5} />
           <div className="text-sm text-foreground">No patterns yet.</div>
           <div className="text-xs text-muted-foreground mt-1">
-            Patterns emerge as the agent observes cross-case regularities.
+            Saved cross-case patterns will appear here when available.
           </div>
         </div>
       ) : (
@@ -971,7 +971,7 @@ function SourcesTab() {
   return (
     <div className="space-y-5">
       <p className="text-xs text-muted-foreground">
-        Your review marks shift how much the agent trusts each source on future runs.
+        Tool reliability reflects recent run outcomes; review totals summarize your saved case decisions.
       </p>
 
       <div className="flex gap-2 flex-wrap">
@@ -990,7 +990,7 @@ function SourcesTab() {
         {loading ? (
           <div className="p-6 text-center text-xs text-muted-foreground">Computing source reliability…</div>
         ) : rows.length === 0 ? (
-          <div className="p-6 text-center text-xs text-muted-foreground">No source activity yet — run an investigation and each tool's reliability will build up here.</div>
+          <div className="p-6 text-center text-xs text-muted-foreground">No source activity yet — run an investigation to see tool outcomes here.</div>
         ) : (
           <div className="divide-y divide-border-subtle/40">
             {rows.map((r) => <SourceWeightRow key={r.tool} row={r} />)}
@@ -998,7 +998,7 @@ function SourcesTab() {
         )}
       </div>
 
-      <LearnsExplainer />
+      <SavedContextExplainer />
     </div>
   );
 }
@@ -1054,7 +1054,7 @@ function SourceWeightRow({ row }: { row: SourceRow }) {
   );
 }
 
-function LearnsExplainer() {
+function SavedContextExplainer() {
   const Step = ({ Icon, label, sub }: { Icon: typeof Wrench; label: string; sub: string }) => (
     <div className="flex flex-col items-center gap-2 min-w-0 w-24 shrink-0">
       <div className="w-12 h-12 rounded-full grid place-items-center border border-border-subtle bg-surface-1">
@@ -1070,14 +1070,14 @@ function LearnsExplainer() {
       style={{ background: "hsl(var(--brain-card))", border: "1px solid hsl(var(--brain-border))" }}
     >
       <div className="text-eyebrow font-mono uppercase tracking-wider text-muted-foreground mb-4">
-        How the agent learns
+        What this page shows
       </div>
       <div className="flex items-start justify-center gap-2 sm:gap-4">
-        <Step Icon={Wrench} label="Tools" sub="returns results" />
+        <Step Icon={Wrench} label="Tools" sub="return findings" />
         <ArrowRight className="w-4 h-4 mt-4 text-muted-foreground shrink-0" strokeWidth={1.5} />
-        <Step Icon={UserCheck} label="You" sub="confirm or dismiss" />
+        <Step Icon={UserCheck} label="Reviews" sub="save decisions" />
         <ArrowRight className="w-4 h-4 mt-4 text-muted-foreground shrink-0" strokeWidth={1.5} />
-        <Step Icon={Brain} label="Agent" sub="adjusts trust weight" />
+        <Step Icon={Brain} label="Brain" sub="shows saved context" />
       </div>
     </div>
   );
