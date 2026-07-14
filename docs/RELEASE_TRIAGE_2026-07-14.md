@@ -235,3 +235,34 @@ live endpoint is unreadable here; and the git-hardening branch is neither merged
    tests), or hold?
 
 **Nothing is merged, migrated, mirror-synced, or deployed. No production write occurred.**
+
+---
+
+## 9. Actions taken (post-decision, 2026-07-14)
+
+JD approved all four via the release-triage decision prompt. Executed:
+
+1. **Combined #305/#307 → merge-prep.** #307 retargeted `base` → `main` (it's the standalone
+   combined unit; `main` is an ancestor of `8d5714f`). **#305 closed** as superseded-by-#307.
+   #307 left **draft** — final merge is JD's explicit click (no auto-merge).
+2. **DeepSeek → clean split PR opened: #309** (`claude/deepseek-orchestrator-hardening-clean`,
+   cherry-pick of `e6e24db` only; **no** OathNet/breach `87031da`). Typecheck ✓, orchestrator-select
+   22/22 ✓. Draft.
+   - **DeepSeek → revert live orchestrator to MiniMax: BLOCKED on a manual JD step.** The Lovable
+     agent can only *create* secrets, not overwrite; it reports `ORCHESTRATOR_PROVIDER` **already
+     exists** (i.e. DeepSeek is currently the live pin). **JD must:** Project Settings → Secrets →
+     edit `ORCHESTRATOR_PROVIDER` = `minimax` → save, then tell Lovable "done" so it redeploys
+     `osint-agent` and re-checks `?health=1`. `DEEPSEEK_API_KEY` stays set so it can flip back.
+3. **#304 → approved as independent fix.** No code change needed (0 overlap, CI green, rebases
+   clean). Ships via the backend mirror-sync + Lovable deploy path; final merge/deploy is JD's.
+4. **#306 → security fixes implemented + pushed** (`fix/issue-67` `9bc9c97..491c37c`): `sanitizeUrl`
+   (drop fragment + strip auth params, applied at capture source + sink boundary), RLS
+   `WITH CHECK (user_id IS NULL OR user_id = auth.uid())`, field-size caps + DB CHECK, service-role
+   `purge_client_errors(days)` retention. Both review threads **resolved**. Verified: typecheck ✓,
+   sanitize+telemetry tests 17/17 ✓, and the RLS policy + size bound + grants **executed on real
+   local Postgres 16** (spoofing rejected, own-uid/anon accepted, purge service-role-only). Still a
+   draft-equivalent open PR — **not merged**; anon rate-limiting flagged as a follow-up.
+
+**Still requires JD:** (a) manual `ORCHESTRATOR_PROVIDER=minimax` secret edit; (b) final merges of
+#307, #304, #306, #309 (none auto-merged); (c) for #307, the DB migration is a separate approved
+step after merge (§7). Nothing was merged, migrated, mirror-synced, or edge-deployed this session.
