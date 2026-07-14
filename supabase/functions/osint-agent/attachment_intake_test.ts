@@ -111,6 +111,71 @@ Deno.test("runAttachmentIntake: PDF → reads document, records classified selec
   }
 });
 
+Deno.test("runAttachmentIntake: PDF vision read times out → instructed recovery, not silent drop", async () => {
+  const orig = globalThis.fetch;
+  const sink: Row[] = [];
+  globalThis.fetch = ((input: string | URL | Request) => {
+    const url = input instanceof Request ? input.url : String(input);
+    // Gemini generateContent aborts (the live 60s doc-read timeout shape).
+    if (url.includes(GEMINI_HOST)) return Promise.reject(new DOMException("The signal has been aborted", "AbortError"));
+    // Storage byte-fetch succeeds — this is a processing-time abort, not a fetch one.
+    return Promise.resolve(new Response(new Uint8Array([37, 80, 68, 70]), { status: 200, headers: { "content-type": "application/pdf" } }));
+  }) as typeof fetch;
+  try {
+    await withGeminiKey(async () => {
+      const res = await runAttachmentIntake(
+        userMsg("read this\n\nAttached files:\n- [Moneyflyoften.pdf](https://sb.co/sign/mf.pdf?token=abc) (application/pdf, 788 KB)"),
+        stubDeps(sink),
+      );
+      // The old bug: ran=false, empty summary, orchestrator reasons blind.
+      assertEquals(res.ran, true, "must surface the unread doc, not return empty");
+      assertEquals(res.attachments_read, 0);
+      assert(res.summary.includes("READ THESE YOURSELF"), "must instruct the model to read the file");
+      assert(res.summary.includes("Moneyflyoften.pdf"));
+      assert(res.summary.includes("https://sb.co/sign/mf.pdf?token=abc"), "must name the URL to fetch");
+      assertEquals(sink.length, 0, "no artifacts from a failed read");
+    });
+  } finally {
+    globalThis.fetch = orig;
+  }
+});
+
+Deno.test("runAttachmentIntake: one file aborts, another reads → batch not lost (allSettled isolation)", async () => {
+  const orig = globalThis.fetch;
+  const sink: Row[] = [];
+  let geminiCall = 0;
+  globalThis.fetch = ((input: string | URL | Request) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url.includes(GEMINI_HOST)) {
+      geminiCall++;
+      // First Gemini call (image) succeeds; second (doc) aborts.
+      if (geminiCall === 1) {
+        const modelJson = JSON.stringify({ visible_text: "", watermarks: ["leaksite.io"], handles: [], attributes: ["male"], scene: "photo", confidence: 60 });
+        return Promise.resolve(new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: modelJson }] } }] }), { status: 200 }));
+      }
+      return Promise.reject(new DOMException("The signal has been aborted", "AbortError"));
+    }
+    const isPdf = url.includes(".pdf");
+    return Promise.resolve(new Response(new Uint8Array([37, 80, 68, 70]), {
+      status: 200, headers: { "content-type": isPdf ? "application/pdf" : "image/jpeg" },
+    }));
+  }) as typeof fetch;
+  try {
+    await withGeminiKey(async () => {
+      const res = await runAttachmentIntake(
+        userMsg("Attached files:\n- [pic.jpg](https://sb.co/pic.jpg) (image/jpeg, 1 MB)\n- [doc.pdf](https://sb.co/doc.pdf) (application/pdf, 1 MB)"),
+        stubDeps(sink),
+      );
+      assertEquals(res.ran, true);
+      assertEquals(res.attachments_read, 1, "the image still read despite the doc aborting");
+      assert(res.summary.includes("leaksite.io"), "image extraction survived");
+      assert(res.summary.includes("READ THESE YOURSELF") && res.summary.includes("doc.pdf"), "failed doc surfaced for recovery");
+    });
+  } finally {
+    globalThis.fetch = orig;
+  }
+});
+
 Deno.test("runAttachmentIntake: no attachments → no-op", async () => {
   const res = await runAttachmentIntake(userMsg("just a text question, no files"), stubDeps([]));
   assertEquals(res.ran, false);
