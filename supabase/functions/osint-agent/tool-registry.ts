@@ -4408,7 +4408,7 @@ export function buildTools(ctx: ToolContext) {
         // Chain-of-custody linkage (audit F2): capture the inserted artifact ids so
         // each evidence row can reference its artifact (evidence_log.artifact_id).
         // Keyed by kind|value — the same identity the evidence loop below uses.
-        const artIdKey = (kind: unknown, value: unknown) => `${String(kind)} ${String(value)}`;
+        const artIdKey = (kind: unknown, value: unknown) => `${String(kind)}\u0000${String(value)}`;
         const artifactIdByKey = new Map<string, string>();
         const rememberIds = (rowsData: Array<{ id?: unknown; kind?: unknown; value?: unknown }> | null | undefined) => {
           for (const row of rowsData ?? []) {
