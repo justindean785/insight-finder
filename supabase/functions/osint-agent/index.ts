@@ -21,9 +21,11 @@ import {
 } from "./env.ts";
 
 import { detectSeedServer } from "./validation.ts";
-import { sanitizeToolOutput, capPartsSize, capToolPartPayloads } from "./safety.ts";
+import { sanitizeToolOutput, capPartsSize, capToolPartPayloads, scrubArtifactRows } from "./safety.ts";
 import { sanitizeModelMessages, capToolResultOutputs, summarizeToolResultValue } from "./message-sanitize.ts";
-import { guard, routingGuard, triageState, countRecordArtifactCalls, countModelMessageToolCalls } from "./guard.ts";
+import { guard, routingGuard, triageState, countRecordArtifactCalls, countModelMessageToolCalls, bumpArtifacts } from "./guard.ts";
+import { buildAutoRecordedRow } from "./auto-record-integrity.ts";
+import { extractBreachConcreteValues, groupBreachRecordsForArtifacts, groupContentKey, inferSeedSelector } from "./breach-autorecord.ts";
 import { setupRequest } from "./auth.ts";
 import { minimax, minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider } from "./orchestrator_select.ts";
@@ -612,6 +614,11 @@ Deno.serve(async (req) => {
     // one time prepareStep injects buildPersistenceNudgeDirective(), which bounds the
     // nudge to a single injection per run (no nudge spam).
     let persistenceNudged = false;
+    // Part B (breach-value persistence): content-hash guard so the SAME concrete
+    // breach hit (selector+breach+values) is never inserted twice across steps of
+    // this run — a corroborating tool re-querying the same selector mid-run must
+    // not duplicate the artifact. Request-scoped, same reasoning as the latches above.
+    const seenBreachExposureKeys = new Set<string>();
     // Wall-clock start for BOTH the finalize-reserve check (prepareStep) and the hard
     // deadline StopCondition below. Declared here so prepareStep's closure reads it.
     const runStartedAt = Date.now();
@@ -799,7 +806,59 @@ Deno.serve(async (req) => {
       // the old Gemini 2.5 Pro rate ($1.25/$10) over-debited the ledger ~4x on the
       // fallback path. An operator LOVABLE_FALLBACK_MODEL_ID override is best-effort
       // metered at the Flash rate.
-      onStepFinish: ({ usage }) => {
+      onStepFinish: async ({ usage, toolResults }) => {
+        // Part B (breach-value persistence): DeepSeek/MiniMax frequently never
+        // call record_artifacts on a breach hit, so a reveal-capable tool's
+        // concrete unmasked values (password/DOB/full_name/etc.) would otherwise
+        // only ever live in the tool's OWN output — never in artifacts.metadata,
+        // which the Evidence tab and exports actually read. Extract + persist
+        // deterministically here, no model cooperation required. Best-effort:
+        // any failure here must never interrupt the run.
+        try {
+          const records = (toolResults ?? []).flatMap((tr) => {
+            const t = tr as { toolName?: string; input?: unknown; output?: unknown };
+            const toolName = t.toolName ?? "";
+            return extractBreachConcreteValues(toolName, t.output, inferSeedSelector(toolName, t.input));
+          });
+          if (records.length > 0) {
+            const groups = groupBreachRecordsForArtifacts(records);
+            const rows = groups
+              .filter((g) => {
+                const key = groupContentKey(g);
+                if (seenBreachExposureKeys.has(key)) return false;
+                seenBreachExposureKeys.add(key);
+                return true;
+              })
+              .map((g) => {
+                const built = buildAutoRecordedRow({
+                  kind: "breach_exposure",
+                  value: g.breach
+                    ? `${g.selector ?? "unknown selector"} — ${g.breach} (unmasked)`
+                    : `${g.selector ?? "unknown selector"} — breach exposure (unmasked)`,
+                  source: "breach_reveal_autorecord",
+                  rawConfidence: 70,
+                  metadata: {
+                    selector: g.selector,
+                    breach: g.breach,
+                    exposed_values: g.exposed_values,
+                    reveal_source: "server_auto_record",
+                  },
+                });
+                return { thread_id: threadId, user_id: userId, ...built };
+              });
+            if (rows.length > 0) {
+              const safeRows = scrubArtifactRows(rows);
+              const { error } = await supabase.from("artifacts").insert(safeRows);
+              if (!error) {
+                bumpArtifacts(safeRows.length, safeRows.map((r) => String(r.kind)));
+              } else {
+                console.warn("[breach-autorecord] insert failed:", error.message);
+              }
+            }
+          }
+        } catch (e) {
+          console.warn("[breach-autorecord] best-effort persistence failed:", e);
+        }
         // A completed step on the primary provider proves MiniMax is alive —
         // record it so the NEXT turn's preflight probe can be skipped.
         if (!useFallback) markMinimaxHealthy();
