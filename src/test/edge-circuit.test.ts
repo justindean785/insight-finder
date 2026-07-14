@@ -146,10 +146,14 @@ describe("snapshot / applyBaselineDisables / clearThread", () => {
     expect(entry).toMatchObject({ tool: "tool", total: 1, dead: 1 });
   });
 
-  it("pre-disables known-bad tools", () => {
+  it("applyBaselineDisables is a callable no-op (known-bad tools are removed from the runtime, not pre-disabled)", () => {
+    // firecrawl_* and intelbase_email_lookup used to be baseline-disabled here.
+    // They are now dropped from buildTools entirely (never registered / removed
+    // by the readiness gate), so there is nothing left to pre-disable — the hook
+    // is intentionally a no-op (see circuit.ts). It must stay callable and must
+    // NOT spuriously disable a live tool.
     applyBaselineDisables(thread);
-    expect(shouldRun(thread, "firecrawl_search", "x").allow).toBe(false);
-    expect(shouldRun(thread, "intelbase_email_lookup", "x").allow).toBe(false);
+    expect(shouldRun(thread, "leakcheck_lookup", "x").allow).toBe(true);
   });
 
   it("clearThread wipes state", () => {

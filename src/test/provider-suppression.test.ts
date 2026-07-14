@@ -36,11 +36,16 @@ describe("429 suppresses the provider for the same investigation", () => {
 
 describe("timeout suppresses the provider for the same investigation", () => {
   it("blocks the next call, and suppression spans all tools of that provider", () => {
-    recordResult(thread, "bosint_phone_lookup", "sel", "default", { status: "timeout" });
-    expect(shouldRun(thread, "bosint_phone_lookup", "sel").allow).toBe(false);
-    // bosint_email_lookup shares the 'bosint' provider → also suppressed
-    expect(providerForTool("bosint_email_lookup")).toBe("bosint");
-    expect(shouldRun(thread, "bosint_email_lookup", "x").allow).toBe(false);
+    // The six indicia_* endpoints share ONE key/provider, so a timeout on one
+    // suppresses the whole family for the run. (Earlier this asserted through
+    // bosint_phone_lookup, which is no longer a live tool and whose provider
+    // group collapsed to a single member — a degenerate case that can't
+    // exercise "spans all tools". indicia is a live multi-tool group.)
+    recordResult(thread, "indicia_phone", "sel", "default", { status: "timeout" });
+    expect(shouldRun(thread, "indicia_phone", "sel").allow).toBe(false);
+    // indicia_email shares the 'indicia' provider → also suppressed
+    expect(providerForTool("indicia_email")).toBe("indicia");
+    expect(shouldRun(thread, "indicia_email", "x").allow).toBe(false);
   });
 });
 
@@ -95,11 +100,11 @@ describe("suppression resets at the run boundary / has a finite cooldown", () =>
 describe("observability", () => {
   it("exposes active suppressions in a snapshot", () => {
     recordResult(thread, "stolentax_footprint", "sel", "default", { status: "http_429" });
-    recordResult(thread, "bosint_phone_lookup", "sel", "default", { status: "timeout" });
+    recordResult(thread, "indicia_phone", "sel", "default", { status: "timeout" });
     const snap = suppressionSnapshot(thread);
     const providers = snap.map((x) => x.provider).sort();
     expect(providers).toContain("stolentax_footprint");
-    expect(providers).toContain("bosint");
+    expect(providers).toContain("indicia");
     for (const x of snap) expect(x.reason).toMatch(/suppress|429|timeout/i);
   });
 });
