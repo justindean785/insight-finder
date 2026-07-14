@@ -8,10 +8,14 @@ import {
   runWithToolTimeout,
 } from "./cache.ts";
 
-Deno.test("B3 caps: gemini_deep_dork=12s, deepfind_reverse_email=8s, jina_reader_scrape=8s", () => {
+Deno.test("B3 caps: gemini_deep_dork=12s, jina_reader_scrape=8s; deepfind_reverse_email on the 12s default (F2)", () => {
   assertEquals(toolTimeoutMs("gemini_deep_dork"), 12_000);
-  assertEquals(toolTimeoutMs("deepfind_reverse_email"), 8_000);
   assertEquals(toolTimeoutMs("jina_reader_scrape"), 8_000);
+  // F2: the 8s deepfind_reverse_email override was removed — the provider
+  // legitimately needs the 12s default (9/36 failures were timeouts at exactly 8s).
+  assertEquals(toolTimeoutMs("deepfind_reverse_email"), DEFAULT_TOOL_TIMEOUT_MS);
+  // F3: oathnet_lookup raised to 15s (2 timeouts observed at ~12,06ms on the default).
+  assertEquals(toolTimeoutMs("oathnet_lookup"), 15_000);
 });
 
 Deno.test("B3 caps: gemini_deep_dork was cut from its old 30s tail", () => {
