@@ -20,7 +20,12 @@ import {
 } from "./env.ts";
 
 import { detectSeedServer } from "./validation.ts";
-import { sanitizeToolOutput, capPartsSize, capToolPartPayloads } from "./safety.ts";
+import {
+  sanitizeToolOutput,
+  capPartsSize,
+  capToolPartPayloads,
+  MAX_PERSISTED_ASSISTANT_PARTS_BYTES,
+} from "./safety.ts";
 import { sanitizeModelMessages, capToolResultOutputs, summarizeToolResultValue } from "./message-sanitize.ts";
 import { guard, routingGuard, triageState, countRecordArtifactCalls, countModelMessageToolCalls } from "./guard.ts";
 import { setupRequest } from "./auth.ts";
@@ -1002,10 +1007,11 @@ Deno.serve(async (req) => {
           // single oversized tool payload (e.g. a 600KB socialfetch_lookup
           // dump) so one blob can't bloat the row or, replayed by the client
           // every turn, blow the 2MB request-body limit — small outputs pass
-          // through untouched. Then apply the whole-message 3.5MB backstop to
-          // avoid silent PostgREST 500s on multi-MB inserts.
+          // through untouched. Then apply a true whole-message cap well below
+          // the 2MB request limit: useChat replays full history, so allowing one
+          // assistant row to consume that budget makes the next turn 413.
           const cappedParts = capToolPartPayloads(assistant.parts as unknown[]);
-          const safeParts = capPartsSize(cappedParts, 3_500_000);
+          const safeParts = capPartsSize(cappedParts, MAX_PERSISTED_ASSISTANT_PARTS_BYTES);
           const { error: msgErr } = await supabase.from("messages").insert({
             thread_id: threadId,
             user_id: userId,

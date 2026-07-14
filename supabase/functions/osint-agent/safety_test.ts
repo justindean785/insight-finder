@@ -6,7 +6,12 @@
 // false top-of-report safety banner). The fix excludes DOB / date-like values
 // from the bare-age heuristic WITHOUT weakening real minor-age detection.
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { scrubArtifactRow, capToolPartPayloads, capPartsSize } from "./safety.ts";
+import {
+  scrubArtifactRow,
+  capToolPartPayloads,
+  capPartsSize,
+  MAX_PERSISTED_ASSISTANT_PARTS_BYTES,
+} from "./safety.ts";
 
 function meta(row: Record<string, unknown>): Record<string, unknown> {
   return (scrubArtifactRow(row).metadata ?? {}) as Record<string, unknown>;
@@ -164,4 +169,46 @@ Deno.test("capPartsSize: engages on UIMessage tool-<name> parts (regression)", (
   assert(JSON.stringify(parts).length > 3_500_000, "precondition: over cap");
   const capped = capPartsSize(parts, 3_500_000);
   assert(JSON.stringify(capped).length <= 3_500_000, "capPartsSize must bring it under the cap");
+});
+
+Deno.test("capPartsSize: many medium tool parts cannot exceed the replay budget", () => {
+  // Concrete 413 trigger missed by the old implementation: every output is
+  // below the per-part 60KB ceiling and every part is below the old 100KB stub
+  // threshold, but 40 of them collectively exceed setupRequest's 2MB body cap.
+  const mediumOutput = () =>
+    Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`field_${i}`, "x".repeat(500)]));
+  const parts = [
+    { type: "text", text: "Final findings report" },
+    ...Array.from({ length: 40 }, (_, i) => ({
+      type: "tool-medium_lookup",
+      toolCallId: `call-${i}`,
+      toolName: "medium_lookup",
+      state: "output-available",
+      output: mediumOutput(),
+    })),
+  ];
+  const perPartCapped = capToolPartPayloads(parts);
+  assert(
+    new TextEncoder().encode(JSON.stringify(perPartCapped)).length > 2_000_000,
+    "precondition: per-part caps alone still exceed the request limit",
+  );
+
+  const capped = capPartsSize(perPartCapped, MAX_PERSISTED_ASSISTANT_PARTS_BYTES) as Array<Record<string, unknown>>;
+  const bytes = new TextEncoder().encode(JSON.stringify(capped)).length;
+  assert(bytes <= MAX_PERSISTED_ASSISTANT_PARTS_BYTES, `whole message must fit replay budget, got ${bytes}`);
+  assertEquals((capped[0] as { text?: string }).text, "Final findings report");
+  assert(
+    capped.some((p) => (p.output as { truncated?: boolean } | undefined)?.truncated === true),
+    "largest tool parts should be stubbed until the aggregate fits",
+  );
+});
+
+Deno.test("capPartsSize: hard ceiling measures UTF-8 bytes and preserves text prefix", () => {
+  const maxBytes = 2_000;
+  const parts = [{ type: "text", text: "🔎".repeat(2_000) }];
+  const capped = capPartsSize(parts, maxBytes) as Array<{ type?: string; text?: string }>;
+  assert(new TextEncoder().encode(JSON.stringify(capped)).length <= maxBytes);
+  assertEquals(capped[0].type, "text");
+  assert(capped[0].text?.startsWith("🔎"));
+  assert(capped[0].text?.includes("assistant details truncated"));
 });
