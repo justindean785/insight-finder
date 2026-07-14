@@ -220,10 +220,23 @@ export function semanticParams(params: Record<string, unknown>): Record<string, 
  * Cache entries must represent usable provider results. Intentional skips are
  * operationally non-failures for telemetry, but replaying one would suppress a
  * later live retry after a missing/expired provider key is repaired.
+ *
+ * Degenerate results (a bare null/undefined, or the runtime's `{value:null}` wrapper
+ * that attachRuntimeMeta/tagTier produce for a tool that returned nothing) are NOT
+ * usable results — caching one and replaying it would suppress a live retry that
+ * might succeed. This closes the reviewer's "permissive for non-object results" gap
+ * without touching the ok/error/skip classification of real payloads.
  */
 export function isCacheableToolResult(result: unknown): boolean {
-  if (!result || typeof result !== "object") return true;
+  if (result === null || result === undefined) return false;
+  if (typeof result !== "object") return true;
   const r = result as Record<string, unknown>;
+  // The runtime wraps a non-object raw result as `{value:<raw>, _tier, _model,
+  // _runtime}`; a null/undefined `value` with no ok/error is that empty-result shape.
+  if (
+    "value" in r && (r.value === null || r.value === undefined) &&
+    typeof r.ok !== "boolean" && typeof r.error !== "string"
+  ) return false;
   if (isIntentionalSkip(r) || r.provider_unavailable === true) return false;
   if (typeof r.ok === "boolean") return r.ok;
   if (typeof r.error === "string" && r.error.length > 0) return false;
@@ -989,8 +1002,18 @@ export function wrapToolsWithCache(
         }
         const createdAtIso = new Date().toISOString();
         // Only cache successful results — caching a failure would poison
-        // subsequent calls with the same input.
-        if (isCacheableToolResult(result) && hash && key) {
+        // subsequent calls with the same input. TWO gates, both required:
+        //  • ok = deriveOk(result) — the AUTHORITATIVE operational-success signal
+        //    (catches ok:false, error strings, and any failure class deriveOk
+        //    classifies). This is the original guard; it must stay.
+        //  • isCacheableToolResult(result) — additionally excludes INTENTIONAL skips
+        //    / provider_unavailable, which deriveOk deliberately counts as telemetry
+        //    non-failures (so they don't inflate the error metric) but which must NOT
+        //    be cached (replaying one suppresses a live retry after a key is repaired).
+        // Keeping both means a result is cached ONLY when it is both a genuine success
+        // AND a usable (non-skip) result — and the two duplicated predicates can never
+        // drift into caching a failure.
+        if (ok && isCacheableToolResult(result) && hash && key) {
           TOOL_CACHE_LRU.set(key, { output: result, createdAt: Date.now() });
           try {
             const { error: cacheWriteError } = await adminDb.from("tool_call_cache").upsert(
