@@ -330,9 +330,10 @@ export function buildTools(ctx: ToolContext) {
         focus: z.string().optional().describe("Optional steering hint, e.g. 'find social profiles', 'find leaks'"),
       })),
       execute: async ({ query, focus }) => {
-        // Absent key → clean skip (log-only), NOT a raw error string, so the
-        // orchestrator falls through to its other search tools instead of
-        // surfacing "PERPLEXITY_API_KEY not configured" into tool output.
+        // Absent key → skip the Perplexity sub-path silently (log-only). Return a
+        // clean, empty result (NOT an error string) so the orchestrator falls
+        // through to its other search tools (exa_search, google_dorks, …) instead
+        // of surfacing "PERPLEXITY_API_KEY not configured" into tool output.
         if (!PERPLEXITY_API_KEY) {
           console.warn("[minimax_web_search] PERPLEXITY_API_KEY not configured — skipping web-search provider");
           return { ok: false, skipped: true, provider_unavailable: true, answer: "", citations: [] };
@@ -362,12 +363,14 @@ export function buildTools(ctx: ToolContext) {
           });
           if (!r.ok) {
             const body = await r.text().catch(() => "");
-            // Dead/unauthorized key (401) or forbidden (403): the raw upstream body
-            // must NOT leak into tool output (testers saw `perplexity 401: {...}` 5x
-            // in live logs 2026-07-09). Log internally for ops, return a clean skipped
-            // result so the orchestrator falls through to its other search tools.
-            // Non-auth failures (429 / 5xx) are transient — keep the surfaced status
-            // so the planner can still decide on retry.
+            // Dead/unauthorized key (401) or forbidden (403): the Perplexity
+            // sub-path adds no value and its raw upstream error body must NOT
+            // leak into tool output (testers were seeing `perplexity 401: {...}`,
+            // 5× in live logs 2026-07-09). Log the body internally for ops, then
+            // return a clean, empty "skipped" result so the orchestrator falls
+            // through to its other search tools. Non-auth failures (429/5xx) keep
+            // the existing surfaced-status behavior — they are transient, not a
+            // dead key, and the planner uses the status to decide on retry.
             if (r.status === 401 || r.status === 403) {
               console.warn(`[minimax_web_search] perplexity ${r.status} (auth) — skipping provider for query="${query.slice(0,120)}": ${body.slice(0, 300)}`);
               return { ok: false, skipped: true, provider_unavailable: true, answer: "", citations: [] };
@@ -434,7 +437,7 @@ export function buildTools(ctx: ToolContext) {
           metadata: z.unknown().optional(),
         })).max(200)),
       })),
-      execute: async ({ seed, artifacts }, opts) => {
+      execute: async ({ seed, artifacts }) => {
         // Input guard: never spend a paid MiniMax call on an empty/invalid
         // payload. The counter check below tracks how many NEW artifacts were
         // recorded, but the model can still invoke this with no seed or an
@@ -459,15 +462,6 @@ export function buildTools(ctx: ToolContext) {
             user: `Seed: ${seed}\n\nArtifacts:\n${JSON.stringify(artifacts).slice(0, 16000)}`,
             json: true,
             maxTokens: 1500,
-            // Best-effort: forward the wrapper's per-tool timeout AbortSignal (#284
-            // kept the 30s cap so a legitimately-slow ~22.5s completion is still USED).
-            // Without this the correlate model call was orphaned — it kept running
-            // past the cap and could cascade an off-ledger fallback LLM. Forwarding
-            // the signal cancels the in-flight fetch AT the cap and suppresses that
-            // fallback (providers.ts guards on opts.signal?.aborted). Clustering does
-            // not depend on this tool — the deterministic local union-find (index.ts)
-            // runs regardless — so a cancelled correlate costs the run nothing.
-            signal: (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal,
           });
           const parsed = safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content };
           guard.artifactsSinceCorrelate = 0;
@@ -552,20 +546,9 @@ export function buildTools(ctx: ToolContext) {
           // belt-and-suspenders for the planner menu. (The permanently-dead
           // stolentax_footprint / synapsint_lookup / emailrep tools were removed
           // from the codebase entirely in the dead-tool cull.)
-          // deepfind_reverse_email + dork_harvest — CUT 2026-07-09 (beta-launch
-          // low-yield cull). Live logs 2026-07-08→09 (456 calls): deepfind_reverse_email
-          // 92% fail (12/13), every failure an >8000ms timeout; dork_harvest 67% fail
-          // (2/3), 23,219ms avg, and it auto-records junk artifacts (FEC/court PDFs).
-          // Between them they caused 14 of the run's 21 timeout failures. Blocking them
-          // here keeps the pivot planner (toolList → line ~719 prompt) from proposing
-          // them. They are ALSO disabled:true in capabilities.ts so the main-agent
-          // readiness gate drops them from the streamText schema. Runtime execute defs
-          // + catalog entries are LEFT intact — re-enable by removing them from BOTH
-          // this set AND the capabilities.ts disable once the timeouts are fixed.
           const PERMANENT_BLOCK = new Set([
             "hackernews_user",
             "gravatar_profile","ipqualityscore_lookup",
-            "deepfind_reverse_email","dork_harvest",
           ]);
           // Tools the circuit breaker has disabled this investigation (e.g.
           // a provider after consecutive HTTP 500s). Without this the planner
