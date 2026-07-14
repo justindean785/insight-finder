@@ -7,18 +7,21 @@ import {
   DEFAULT_TOOL_TIMEOUT_MS,
   runWithToolTimeout,
 } from "./cache.ts";
+import { isDegraded, degradedTools } from "./env.ts";
 
-Deno.test("B3 caps: gemini_deep_dork=12s, jina_reader_scrape=8s; deepfind_reverse_email on the 12s default (F2)", () => {
-  assertEquals(toolTimeoutMs("gemini_deep_dork"), 12_000);
-  assertEquals(toolTimeoutMs("jina_reader_scrape"), 8_000);
-  // F2: the 8s deepfind_reverse_email override was removed — the provider
-  // legitimately needs the 12s default (9/36 failures were timeouts at exactly 8s).
+Deno.test("caps: gemini_deep_dork=20s, jina_reader_scrape=15s (audit F5); deepfind_reverse_email on the 12s default", () => {
+  // 2026-07-14 audit F5: 12s cut off legit gemini_deep_dork verifications finishing
+  // in the 12–20s band; 8s was too tight for slow-rendering jina targets.
+  assertEquals(toolTimeoutMs("gemini_deep_dork"), 20_000);
+  assertEquals(toolTimeoutMs("jina_reader_scrape"), 15_000);
+  // The 8s deepfind_reverse_email override was removed — the provider legitimately
+  // needs the 12s default (9/36 failures were timeouts at exactly 8s).
   assertEquals(toolTimeoutMs("deepfind_reverse_email"), DEFAULT_TOOL_TIMEOUT_MS);
-  // F3: oathnet_lookup raised to 15s (2 timeouts observed at ~12,06ms on the default).
+  // oathnet_lookup raised to 15s (2 timeouts observed at ~12,06ms on the default).
   assertEquals(toolTimeoutMs("oathnet_lookup"), 15_000);
 });
 
-Deno.test("B3 caps: gemini_deep_dork was cut from its old 30s tail", () => {
+Deno.test("caps: gemini_deep_dork still fast-fails below its old 30s tail", () => {
   assert(toolTimeoutMs("gemini_deep_dork") < 30_000, "gemini_deep_dork must no longer allow a 30s run");
 });
 
@@ -77,4 +80,22 @@ Deno.test("timeout overrides: minimax_correlate clears its real bounded-batch la
     "minimax_correlate cap must clear its ~22.5s observed completion latency",
   );
   assertEquals(toolTimeoutMs("minimax_correlate"), 30_000);
+});
+
+Deno.test("audit F5: minimax_correlate is marked DEGRADED on its first timeout", async () => {
+  degradedTools.delete("minimax_correlate"); // isolate from any prior state
+  const res = await runWithToolTimeout(
+    "minimax_correlate",
+    () => new Promise(() => {}), // never resolves → will hit the cap
+    20,
+  ) as { _tool_timeout?: boolean };
+  assert(res._tool_timeout === true, "must return a schema-safe timeout result");
+  assert(isDegraded("minimax_correlate") !== null, "minimax_correlate must be degraded for the rest of the run");
+  degradedTools.delete("minimax_correlate"); // cleanup — don't leak into other tests
+});
+
+Deno.test("audit F5: an ordinary tool is NOT degraded on a one-off timeout", async () => {
+  degradedTools.delete("jina_reader_scrape");
+  await runWithToolTimeout("jina_reader_scrape", () => new Promise(() => {}), 20);
+  assertEquals(isDegraded("jina_reader_scrape"), null, "only DEGRADE_ON_TIMEOUT tools degrade on timeout");
 });

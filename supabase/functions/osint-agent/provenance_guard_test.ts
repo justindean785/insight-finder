@@ -104,9 +104,16 @@ function makeMockSupabase(): MockSupabase {
     from(_table: string) {
       return {
         insert(rows: unknown) {
-          if (Array.isArray(rows)) insertedArtifacts.push(...(rows as Record<string, unknown>[]));
-          else insertedArtifacts.push(rows as Record<string, unknown>);
-          return Promise.resolve({ error: null });
+          const arr = Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [rows as Record<string, unknown>];
+          const base = insertedArtifacts.length;
+          insertedArtifacts.push(...arr);
+          // Support `.insert(...).select("id, kind, value")` (audit F2 linkage) AND
+          // a bare `await insert(...)`: return a thenable that also exposes select().
+          const data = arr.map((r, i) => ({ id: `art-${base + i}`, kind: r.kind, value: r.value }));
+          return {
+            select: () => Promise.resolve({ data, error: null }),
+            then: (res: (v: unknown) => unknown) => Promise.resolve({ error: null }).then(res),
+          };
         },
         select: () => builder,
         update: () => builder,

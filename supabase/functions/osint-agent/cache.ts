@@ -28,8 +28,19 @@ import {
   type SelectorEvidenceSignal,
   type ToolCostTier,
 } from "./runtime-policy.ts";
+import { markToolDegraded } from "./env.ts";
 
 const SELECTOR_SIGNAL_CACHE = new Map<string, SelectorEvidenceSignal>();
+
+// Tools that should be marked DEGRADED (skipped for the rest of the run) the
+// first time they hit their timeout cap — not merely fail this one call. Reserved
+// for chronically slow tools whose timeout is expensive AND whose retry rarely
+// helps within a single investigation. minimax_correlate is the correlation
+// engine: the 2026-07-14 audit showed it still hitting its 30s cap (completing at
+// ~30.2s), burning 30s per attempt while the planner kept re-suggesting it. One
+// timeout is enough signal to stop paying that tax; artifacts are already recorded
+// so correlation degrading gracefully costs nothing this run.
+const DEGRADE_ON_TIMEOUT = new Set<string>(["minimax_correlate"]);
 
 // ---- Per-tool hard timeout (Phase 2) ------------------------------------------
 // A wall-clock cap around each LIVE tool execution so a single latency-bomb
@@ -49,11 +60,18 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // per-tool AbortSignal into their fetch, so the cap truly cancels the in-flight
   // request (not just abandons the promise). gemini_deep_dork's p95 (~46s) exceeds
   // this cap by design: it becomes a fast-fail corroboration source, not a 30s tax.
-  gemini_deep_dork: 12_000,        // was 30_000 — kill the per-run 30s timeout tail
+  // gemini_deep_dork: 12s cut off legit address/person verifications that finish in
+  // the 12–20s band (audit F5: failed at ~12.1s, verification path left incomplete).
+  // 20s catches those without paying the full ~46s p95 tail — a middle ground between
+  // "fast-fail corroboration" and "lose the verification entirely".
+  gemini_deep_dork: 20_000,        // was 12_000 (audit F5) / originally 30_000
   // deepfind_reverse_email: removed 8s override — falls back to 12s default.
   // The 8s cap caused 9 timeouts in the 2026-07-08 audit; provider legitimately
   // needs headroom for the reverse-email lookup.
-  jina_reader_scrape: 8_000,       // single-page scrape — fail fast, try a lighter source
+  // jina_reader_scrape: 8s was too tight for heavier pages (audit F5: 2 timeouts on
+  // SoundCloud/Bandcamp-style targets that render slowly). 15s clears them while
+  // still failing fast enough to try a lighter source on a genuinely dead page.
+  jina_reader_scrape: 15_000,      // was 8_000 (audit F5)
   dork_harvest: 25_000,     // wraps several web searches — p95 ~17s
   exa_search: 20_000,       // neural search + contents — p95 ~12s
   exa_find_similar: 20_000,
@@ -138,6 +156,11 @@ export function runWithToolTimeout<T>(
       if (settled) return;
       settled = true;
       ctrl.abort();
+      // Sticky degrade for the chronic time-sinks: one timeout is enough to stop
+      // the planner from re-suggesting them for the rest of the run (audit F5).
+      if (DEGRADE_ON_TIMEOUT.has(name)) {
+        markToolDegraded(name, `exceeded ${ms}ms timeout — degraded for the rest of the run`);
+      }
       resolve({
         ok: false,
         error: `${name} exceeded ${ms}ms tool timeout`,

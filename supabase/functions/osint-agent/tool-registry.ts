@@ -4374,8 +4374,49 @@ export function buildTools(ctx: ToolContext) {
           return { ok: false, count: 0, accepted, rejected, hint: "All items failed validation — re-check kinds/values against the rules in the tool description." };
         }
         const safeRows = scrubArtifactRows(rows);
+        // Provenance repair (audit F3): every artifact must carry structured
+        // provenance in metadata — discovered_via (the tool/source that surfaced
+        // it), a source_url when one genuinely exists (else source_tool), and a
+        // short rationale. We REPAIR from what's already known — never reject, since
+        // a tool-derived finding with no URL is still valid evidence. A genuinely
+        // empty provenance is logged (provenance_missing) for observability, not
+        // dropped. This runs before the insert AND before the evidence loop below,
+        // so the evidence rows inherit the same source_url.
+        for (const row of safeRows) {
+          const m = (row.metadata as Record<string, unknown> | null) ?? {};
+          const hadDv = !!m.discovered_via, hadSu = !!m.source_url, hadRa = !!m.rationale;
+          if (!m.discovered_via) m.discovered_via = (row.source as string) || m.source_tool || m.tool || "agent";
+          if (!m.source_url) {
+            const u = m.url || m.profile_url || m.archived_url || null;
+            if (u) m.source_url = u;
+            else if (!m.source_tool) m.source_tool = (row.source as string) || String(m.discovered_via);
+          }
+          if (!m.rationale) {
+            m.rationale = typeof m.reason === "string" && m.reason
+              ? m.reason
+              : `Recorded via ${String(m.discovered_via)} (${String(row.kind)})`;
+          }
+          if (!hadDv || (!hadSu && !m.source_url) || !hadRa) {
+            console.warn("[record_artifacts] provenance_missing repaired: " + JSON.stringify({
+              kind: row.kind, value: String(row.value).slice(0, 80),
+              had: { discovered_via: hadDv, source_url: hadSu, rationale: hadRa },
+            }));
+          }
+          row.metadata = m;
+        }
         let insertedRows = safeRows;
-        const { error } = await supabase.from("artifacts").insert(safeRows);
+        // Chain-of-custody linkage (audit F2): capture the inserted artifact ids so
+        // each evidence row can reference its artifact (evidence_log.artifact_id).
+        // Keyed by kind|value — the same identity the evidence loop below uses.
+        const artIdKey = (kind: unknown, value: unknown) => `${String(kind)} ${String(value)}`;
+        const artifactIdByKey = new Map<string, string>();
+        const rememberIds = (rowsData: Array<{ id?: unknown; kind?: unknown; value?: unknown }> | null | undefined) => {
+          for (const row of rowsData ?? []) {
+            if (row?.id != null) artifactIdByKey.set(artIdKey(row.kind, row.value), String(row.id));
+          }
+        };
+        const { data: insData, error } = await supabase
+          .from("artifacts").insert(safeRows).select("id, kind, value");
         if (error) {
           // Bulk insert failed — fall back to per-row inserts so a single
           // bad row doesn't lose the whole batch of evidence.
@@ -4383,17 +4424,21 @@ export function buildTools(ctx: ToolContext) {
           const surviving: typeof safeRows = [];
           const perRowErrors: Array<{ index: number; error: string }> = [];
           for (let i = 0; i < safeRows.length; i++) {
-            const { error: rowErr } = await supabase.from("artifacts").insert(safeRows[i]);
+            const { data: rowData, error: rowErr } = await supabase
+              .from("artifacts").insert(safeRows[i]).select("id, kind, value");
             if (rowErr) {
               perRowErrors.push({ index: i, error: rowErr.message });
             } else {
               surviving.push(safeRows[i]);
+              rememberIds(rowData as Array<{ id?: unknown; kind?: unknown; value?: unknown }>);
             }
           }
           if (surviving.length === 0) {
             return { ok: false, error: error.message, per_row_errors: perRowErrors, count: 0, accepted: [], rejected };
           }
           insertedRows = surviving;
+        } else {
+          rememberIds(insData as Array<{ id?: unknown; kind?: unknown; value?: unknown }>);
         }
         const safeRowsForFollowup = insertedRows;
         const flagged = safeRows.filter((r) => (r.metadata as { minor_warning?: unknown } | undefined)?.minor_warning).length;
@@ -4514,7 +4559,10 @@ export function buildTools(ctx: ToolContext) {
             const evSource = llmAsserted ? LLM_ASSERTED_PROVENANCE : ((r.source as string) ?? null);
             const { error: evErr } = await supabase.rpc("append_evidence", {
               _thread_id: threadId,
-              _artifact_id: null,
+              // Chain-of-custody linkage (audit F2): point this evidence row at the
+              // artifact it corroborates. Null only if the insert didn't return an
+              // id for this kind|value (procedural/failed row) — never hardcoded.
+              _artifact_id: artifactIdByKey.get(artIdKey(r.kind, r.value)) ?? null,
               _tool_name: evToolName,
               _source: evSource,
               _source_url: typeof sourceUrl === "string" ? sourceUrl : null,
