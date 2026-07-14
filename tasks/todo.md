@@ -623,3 +623,49 @@ Deploy: backend ships via Lovable sync (sync `osint-agent/` → `seeker-spark-se
   `deno check` on changed modules clean (no TS2304). `vitest` **700 pass**; typecheck/eslint/build clean.
 - Files: source-classification.ts, confidence.ts, threat_intel_test.ts, evidence-status.ts, evidence-status.test.ts, tool-display.ts.
 - Deploy: backend ships via Lovable sync (`osint-agent/`→`seeker-spark-search-5362c57c`), not the Vercel merge.
+
+---
+
+# 2026-07-14 — Release Triage & Beta Stabilization (branch `claude/release-triage-beta-stabilization-2ol3m7`)
+
+Full report: `docs/RELEASE_TRIAGE_2026-07-14.md`. Read-only investigation + local audit;
+**no merges, migrations, mirror-syncs, or deploys performed.**
+
+## Verified current state
+- `origin/main` = `8cbc34b` (canonical). Local branch = `main` mirror, clean tree.
+- PRs: #304 `3ab90ce` (non-draft, clean, CI green); #305 `fbd1681` (draft, clean);
+  #306 `9bc9c97` (non-draft, clean, 2 open sec threads); #307 `8d5714f` (draft, clean, CI green).
+- `fbd1681` is an ancestor of `8d5714f` → **combined #305/#307 tree == #307 head**.
+- DeepSeek branch `87031da` = `e6e24db` (DeepSeek) + `87031da` (OathNet/breach contamination).
+- Mirror `seeker-spark-search-5362c57c` HEAD `0bdc5ed6`, `build-info` = `4692afa` (stale).
+- Live health: **egress-blocked** (403 CONNECT to supabase host). DeepSeek NOT provably deployed.
+- Prod DB: dedup + telemetry migrations **NOT applied**; 6,889 artifacts, 457 reviews.
+
+## Release blockers
+- #305 must NOT ship alone (destructive dedup) — only via #307.
+- #306 has 2 unresolved security blockers (auth-token-in-URL; unrestricted RLS `user_id`).
+- DeepSeek: unverifiable deploy + no bounded fallback + scope-mixed branch.
+
+## Commands/tests run (this session)
+- Combined tree (`8d5714f`): typecheck ✓, lint 0-err ✓, `test:coverage` **970/970** ✓, build ✓.
+- Migration on real local Postgres 16 (full CI `migrations` job): 39 migrations + 4 SQL suites +
+  concurrent race + idempotency **all PASS**; grants = service_role-only for merge fns.
+- Prod read-only impact query: 6,889 → 6,387, 502 rows / 376 groups, 1 review repointed, 0 discarded, 0 evidence repoints.
+
+## Results
+- **P0 combined #305/#307 audit: GREEN** (all 16 dedup-integrity dimensions asserted + passing on real PG).
+- **P0 prod read-only impact: reproduced the #307 sim exactly**, and it is safer than claimed.
+- **P0 DeepSeek truth: NOT provably deployed** (build marker unmoved; health unreadable; hardening unmerged).
+- **#304: keep** — 0 overlap, clean safety fix, CI green, bounded recovery.
+- **#306: 2 fixes required** before merge (URL sanitize + RLS + caps + tests).
+- **Stale PRs #119/#198/#233/#242/#248/#278: triaged** (keep/rebase/hold/close) — none actioned; #248/#278 held from beta.
+- **4 decisions surfaced to JD** (see report §8). Awaiting authorization; no code merged.
+
+## State ledger (do not conflate)
+| Item | coded | tested | merged | mirror-synced | migrated | deployed | verified-live |
+|---|---|---|---|---|---|---|---|
+| #305/#307 dedup | yes | **yes (local PG + prod read-only)** | no | no | no | no | no |
+| #304 abort fix | yes | ci-green | no | no | n/a | no | no |
+| #306 telemetry | yes | partial | no | no | no | no | no |
+| DeepSeek (Lovable) | yes | ? | n/a | partial | n/a | unverifiable | **no** |
+| DeepSeek (git e6e24db) | yes | ci? | no | no | n/a | no | no |
