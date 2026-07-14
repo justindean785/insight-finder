@@ -7,7 +7,7 @@
 
 import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
-import { SERUS_API_KEY } from "../env.ts";
+import { SERUS_API_KEY, REVEAL_BREACH_DATA } from "../env.ts";
 import {
   isTerminalStatus,
   parseInitiateResponse,
@@ -32,12 +32,15 @@ export const serus_darkweb_scan = tool({
       .describe("Serus identifier type. `origin` is an IP or hostname; `password` should only be used on a confirmed seed you own or are authorized to test."),
     identifierValue: z.string().min(1).describe("The value to scan. Email format: user@domain.tld. Phone: E.164 with country code preferred."),
     reveal: z.boolean().optional().default(false)
-      .describe("Pass true to request unmasked breach fields (passwords, tokens). Requires the SERUS key to have the darkweb:reveal scope — otherwise Serus returns 403."),
+      .describe("Pass true to request unmasked breach fields (passwords, tokens). Requires the SERUS key to have the darkweb:reveal scope — otherwise Serus returns 403. NOTE: when the account-level REVEAL_BREACH_DATA policy is ON, reveal is forced true regardless of this flag."),
   }),
   execute: async ({ identifierType, identifierValue, reveal }) => {
     if (!SERUS_API_KEY) {
       return { error: "SERUS_API_KEY not configured", code: "serus_key_missing", hint: "Set SERUS_API_KEY in the Supabase edge function secrets and redeploy." };
     }
-    return runSerusScan(identifierType, identifierValue, { reveal });
+    // Account policy: when full-reveal is authorized for this account, always
+    // request unmasked fields — the model does not have to opt in per-call.
+    const effectiveReveal = reveal || REVEAL_BREACH_DATA;
+    return runSerusScan(identifierType, identifierValue, { reveal: effectiveReveal });
   },
 });
