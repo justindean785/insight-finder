@@ -78,6 +78,34 @@ jobs:
             count=$((count + 1))
           done < <(printf '%s\n' supabase/migrations/*.sql | LC_ALL=C sort -t_ -k1,1)
           echo "Applied ${count} migrations cleanly."
+      # Runtime proof (not just DDL): invoke record_artifacts_with_evidence +
+      # append_evidence for real and assert every stored content_hash is
+      # byte-for-byte canonical-recomputable from its columns, the two writers
+      # share one valid verify_evidence_chain chain, and dedup/retry are idempotent.
+      - name: Evidence content-hash + chain compatibility regression
+        run: psql --set ON_ERROR_STOP=1 --quiet -f .github/ci/content-hash-compat-test.sql
+      # Findings #9/#10: confidence bounds (valid/negative/above-max/NaN/Infinity/
+      # empty, no partial writes) + dedup enforced at the DB level, including the
+      # direct-insert bypass path the audit flagged and legitimate distinct-source
+      # observations NOT being collapsed.
+      - name: Artifacts confidence-bounds + dedup regression
+        run: psql --set ON_ERROR_STOP=1 --quiet -f .github/ci/artifacts-integrity-test.sql
+      # Selector-scope dedup + provenance-merge (data-loss fix for #305): distinct
+      # platforms/subjects/hosts/breaches never collapse; a true duplicate merges to
+      # one survivor with unioned provenance/classes + GREATEST confidence;
+      # conflicting analyst verdicts survive as recheck; runtime key == migration key.
+      - name: Artifacts selector-scope dedup + provenance-merge regression
+        run: psql --set ON_ERROR_STOP=1 --quiet -f .github/ci/artifacts-selector-scope-test.sql
+      # Genuine CONCURRENT duplicate-insert race (two real overlapping sessions,
+      # not sequential calls) — proves the unique index, not just app-level logic.
+      - name: Concurrent duplicate-insert regression
+        run: bash .github/ci/concurrent-dedup-test.sh
+      # Re-apply the newest migration a second time — proves it's idempotent, and
+      # that a re-run doesn't disturb the working hash-chain.
+      - name: Migration idempotency (re-run newest migration)
+        run: |
+          psql --set ON_ERROR_STOP=1 --quiet -f supabase/migrations/20260711130000_artifacts_confidence_bounds_and_dedup.sql
+          psql --set ON_ERROR_STOP=1 --quiet -f .github/ci/content-hash-compat-test.sql
 
   edge:
     name: Edge functions (deno test)
@@ -94,5 +122,11 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
+      # Scoped TYPE-CHECK (not just transpilation) on the pure, import-free
+      # integrity modules. Deliberately limited to leaf modules so it catches type
+      # errors in new code WITHOUT pulling in the ~12-157 pre-existing AI-SDK/
+      # Supabase type-graph errors that a whole-project `deno check` would surface.
+      - name: Deno type-check (scoped, new pure modules)
+        run: cd supabase/functions/osint-agent && deno check anchor-parse.ts output-integrity.ts
       - name: Deno edge tests
         run: npm run test:edge

@@ -399,7 +399,17 @@ export function clusterUpdatesFor(arts: Artifact[]): ClusterUpdate[] {
 // this module stays unit-testable with a plain stub (see cluster_test.ts).
 // deno-lint-ignore no-explicit-any
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type DbLike = { from(table: string): any };
+type DbLike = { from(table: string): any; rpc(fn: string, args: Record<string, unknown>): Promise<{ data: any; error: any }> };
+
+/** A PostgREST error is a selector-scope UNIQUE collision iff it is 23505 on the
+ *  artifacts_selector_scope_uidx index — the ONLY case we resolve by merging
+ *  (rather than surfacing). Every other DB error must propagate, never be swallowed. */
+export function isSelectorScopeCollision(err: { code?: string; message?: string; details?: string } | null | undefined): boolean {
+  if (!err) return false;
+  if (err.code !== "23505") return false;
+  const hay = `${err.message ?? ""} ${err.details ?? ""}`;
+  return hay.includes("artifacts_selector_scope_uidx");
+}
 
 /**
  * The C-1 DETERMINISTIC STEP: fetch a thread's artifacts, cluster them locally, and
@@ -417,10 +427,10 @@ export async function applyClusteringToThread(
   // caller threads the run's authenticated user_id — same value every succeeding
   // artifact write (record_artifacts) already uses. Required for the insert to land.
   userId: string,
-): Promise<{ updated: number; subjects: number; merges: number }> {
+): Promise<{ updated: number; subjects: number; merges: number; collisionMerges: number }> {
   const { data, error } = await admin.from("artifacts")
     .select("id,kind,value,source,confidence,metadata").eq("thread_id", threadId);
-  if (error || !Array.isArray(data) || data.length === 0) return { updated: 0, subjects: 0, merges: 0 };
+  if (error || !Array.isArray(data) || data.length === 0) return { updated: 0, subjects: 0, merges: 0, collisionMerges: 0 };
   const arts: Artifact[] = data.map((r) => {
     const row = r as { id: string; kind: string; value: string; source?: string; confidence?: number; metadata?: unknown };
     return {
@@ -436,12 +446,58 @@ export async function applyClusteringToThread(
     return [row.id, meta];
   }));
   let updated = 0;
+  let collisionMerges = 0;
+  // Non-collision DB errors are collected and surfaced AFTER the loop so one bad
+  // row can neither silently vanish (the old `if(!uErr) updated++` swallow) nor
+  // abort clustering of the remaining rows.
+  const unexpected: Array<{ id: string; code?: string; message?: string }> = [];
   for (const m of members) {
     if (!m.id) continue;
     const meta = { ...(metaById.get(m.id) ?? {}), cluster_id: m.cluster_id, subject_id: m.subject_id, promoted_confidence: m.promoted_confidence, confidence_tier: m.tier };
     const { error: uErr } = await admin.from("artifacts")
       .update({ cluster_id: m.cluster_id, subject_id: m.subject_id, metadata: meta }).eq("id", m.id);
-    if (!uErr) updated++;
+    if (!uErr) { updated++; continue; }
+
+    if (isSelectorScopeCollision(uErr)) {
+      // Assigning this subject would collide with a pre-existing same-identity row.
+      // Resolve by MERGING m into that survivor (the destination-subject row) via
+      // the service-role canonical merge — never drop the observation.
+      const { data: survivorId, error: lookErr } = await admin.rpc(
+        "find_artifact_selector_collision", { _loser: m.id, _subject_id: m.subject_id ?? null },
+      );
+      if (lookErr || !survivorId || typeof survivorId !== "string") {
+        console.error(JSON.stringify({
+          event: "cluster_assign_collision_unresolved", thread_id: threadId,
+          artifact_id: m.id, subject_id: m.subject_id, error: lookErr?.message ?? "no survivor row found",
+        }));
+        unexpected.push({ id: m.id, code: uErr.code, message: `collision but no survivor: ${lookErr?.message ?? "not found"}` });
+        continue;
+      }
+      const { error: mergeErr } = await admin.rpc(
+        "merge_artifact_into", { _loser: m.id, _survivor: survivorId },
+      );
+      if (mergeErr) {
+        console.error(JSON.stringify({
+          event: "cluster_assign_merge_failed", thread_id: threadId,
+          loser: m.id, survivor: survivorId, error: mergeErr.message,
+        }));
+        unexpected.push({ id: m.id, code: mergeErr.code, message: mergeErr.message });
+        continue;
+      }
+      collisionMerges++;
+      console.log(JSON.stringify({
+        event: "cluster_assign_collision_merged", thread_id: threadId,
+        loser: m.id, survivor: survivorId, subject_id: m.subject_id,
+      }));
+      continue;
+    }
+
+    // Every other DB error is surfaced, not swallowed.
+    console.error(JSON.stringify({
+      event: "cluster_assign_update_failed", thread_id: threadId,
+      artifact_id: m.id, code: uErr.code, message: uErr.message,
+    }));
+    unexpected.push({ id: m.id, code: uErr.code, message: uErr.message });
   }
   // cluster_decision log (best-effort) — makes a null-cluster outcome debuggable.
   if (decisions.length) {
@@ -453,7 +509,19 @@ export async function applyClusteringToThread(
     }]);
     if (iErr) console.warn("[cluster] cluster_decision insert failed:", iErr);
   }
-  return { updated, subjects: subjects.length, merges: decisions.length };
+  // Surface any non-collision DB errors. The caller treats clustering as
+  // best-effort and swallows, but the failure is now LOUD (per-row structured
+  // telemetry above + this summary throw) instead of the old silent skip. Counts
+  // reflect the work that DID land: `updated` = rows assigned, `collisionMerges` =
+  // rows folded into a pre-existing survivor (a merge, NOT a silent skip).
+  if (unexpected.length) {
+    console.error(JSON.stringify({
+      event: "cluster_assign_errors_surfaced", thread_id: threadId,
+      failures: unexpected.length, updated, collisionMerges, merges: decisions.length,
+    }));
+    throw new Error(`applyClusteringToThread: ${unexpected.length} artifact assignment(s) failed (first: ${unexpected[0].code ?? "?"} ${unexpected[0].message ?? ""})`);
+  }
+  return { updated, subjects: subjects.length, merges: decisions.length, collisionMerges };
 }
 
 // ---- CSV parsing (RFC4180, tolerant) ------------------------------------------

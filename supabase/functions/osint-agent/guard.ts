@@ -2,9 +2,19 @@
  * guard.ts — Per-investigation guard state for rate-limiting reasoning tools,
  * routing guards, and Stage-2 fan-out triage gating.
  * Extracted from index.ts (lines 1656–1750).
+ *
+ * Finding #8: this state used to be a set of mutable MODULE-LEVEL singletons
+ * (`export const guard/routingGuard/triageState = {...}`), reset by the request
+ * handler at the top of each call. On a warm Deno edge isolate serving
+ * concurrent/interleaved requests, that reset (and every subsequent read/write)
+ * raced across requests — one investigation's seed, triage decisions, or
+ * correlate-nudge counter could bleed into another's. `createRequestState()`
+ * below returns a FRESH, request-scoped object; the request handler creates one
+ * per call and threads it explicitly through ToolContext / the cache wrapper —
+ * nothing here is module-level mutable state anymore.
  */
 
-// ---- Per-investigation guard state ---------------------------------------------
+// ---- Per-investigation guard state (now request-scoped — see RequestState) -----
 // - artifactsSinceCorrelate: new artifacts recorded since last successful minimax_correlate
 // - lastCorrelateOutcome: outcome of the MOST RECENT minimax_correlate call this run —
 //   "ok" | "failed" | null (never called). Set by cache.ts's tool wrapper from the
@@ -15,10 +25,10 @@
 //   "unresolved" instead of letting it save as a confident merged identity (audit
 //   e29aa8c9: correlate timed out at 12,143ms, and the very next memory_save wrote a
 //   98-confidence merge across two different people).
-export const guard = {
-  artifactsSinceCorrelate: 0,
-  lastCorrelateOutcome: null as "ok" | "failed" | null,
-};
+export interface GuardState {
+  artifactsSinceCorrelate: number;
+  lastCorrelateOutcome: "ok" | "failed" | null;
+}
 
 // ---- Correlation auto-fire (audit F1, 2026-07-08) ------------------------------
 // The 2026-07-08 pipeline audit found minimax_correlate NEVER fired in the main run
@@ -33,19 +43,20 @@ export const guard = {
 export const CORRELATE_ARTIFACT_THRESHOLD = 8;
 
 /** True once enough new artifacts have accrued since the last successful
- * minimax_correlate to justify a re-correlation pass. Pure — reads guard state. */
-export function correlateDue(): boolean {
-  return guard.artifactsSinceCorrelate >= CORRELATE_ARTIFACT_THRESHOLD;
+ * minimax_correlate to justify a re-correlation pass. Pure — reads the given
+ * request-scoped guard state. */
+export function correlateDue(g: GuardState): boolean {
+  return g.artifactsSinceCorrelate >= CORRELATE_ARTIFACT_THRESHOLD;
 }
 
 /** Nudge surfaced in a record_artifacts result when a correlate pass is due. Returns
  * {} when not due, so it can be spread directly into the tool result (mirrors the
  * memory_hint pattern). */
-export function correlateNudge(): Record<string, unknown> {
-  if (!correlateDue()) return {};
+export function correlateNudge(g: GuardState): Record<string, unknown> {
+  if (!correlateDue(g)) return {};
   return {
     correlate_hint:
-      `${guard.artifactsSinceCorrelate} new artifacts have accrued since the last correlation pass. ` +
+      `${g.artifactsSinceCorrelate} new artifacts have accrued since the last correlation pass. ` +
       `Call minimax_correlate now (pass the seed + the artifacts gathered so far) to cluster, dedup, ` +
       `rescore confidence, and flag same-name collisions / contradictions BEFORE continuing to fan out.`,
   };
@@ -77,11 +88,11 @@ export function countRecordArtifactCalls(
 // memory_recall: max 2 calls per 30s window across the run, and never
 //                repeat the same normalized subject in a single reasoning
 //                step (cleared whenever a new artifact lands).
-export const routingGuard = {
-  artifactsTotal: 0,
-  memoryRecallTimestamps: [] as number[],
-  memoryRecallSubjectsThisStep: new Set<string>(),
-};
+export interface RoutingGuardState {
+  artifactsTotal: number;
+  memoryRecallTimestamps: number[];
+  memoryRecallSubjectsThisStep: Set<string>;
+}
 
 // ---- Two-stage fan-out triage state (email/username seeds) ---------------------
 export const CONSUMER_DOMAINS = new Set<string>([
@@ -113,28 +124,45 @@ export interface TriageState {
   identitySignals: { name: boolean; username: boolean };
 }
 
-export const triageState: TriageState = {
-  ran: false,
-  seed: null,
-  seedType: null,
-  seedDomain: null,
-  cleared: new Set<string>(),
-  reasons: [],
-  skipped: [],
-  identitySignals: { name: false, username: false },
-};
+/** Fresh, request-scoped state bundle. The request handler creates ONE of these
+ *  per request (Deno.serve callback) and threads it explicitly through
+ *  ToolContext / the cache wrapper — never stored at module scope, so
+ *  concurrent/interleaved requests on a warm isolate can never observe or
+ *  mutate each other's guard/routing/triage state (finding #8). */
+export interface RequestState {
+  guard: GuardState;
+  routingGuard: RoutingGuardState;
+  triageState: TriageState;
+}
+
+export function createRequestState(): RequestState {
+  return {
+    guard: { artifactsSinceCorrelate: 0, lastCorrelateOutcome: null },
+    routingGuard: { artifactsTotal: 0, memoryRecallTimestamps: [], memoryRecallSubjectsThisStep: new Set<string>() },
+    triageState: {
+      ran: false,
+      seed: null,
+      seedType: null,
+      seedDomain: null,
+      cleared: new Set<string>(),
+      reasons: [],
+      skipped: [],
+      identitySignals: { name: false, username: false },
+    },
+  };
+}
 
 // ---- Helper functions ----------------------------------------------------------
 
-export function bumpArtifacts(n: number, kinds?: string[]) {
+export function bumpArtifacts(state: RequestState, n: number, kinds?: string[]) {
   if (n <= 0) return;
-  guard.artifactsSinceCorrelate += n;
-  routingGuard.artifactsTotal += n;
+  state.guard.artifactsSinceCorrelate += n;
+  state.routingGuard.artifactsTotal += n;
   // New evidence = new reasoning step; clear per-step dedup for memory_recall.
-  routingGuard.memoryRecallSubjectsThisStep.clear();
+  state.routingGuard.memoryRecallSubjectsThisStep.clear();
   if (kinds) {
-    if (kinds.includes("name")) triageState.identitySignals.name = true;
-    if (kinds.includes("username")) triageState.identitySignals.username = true;
+    if (kinds.includes("name")) state.triageState.identitySignals.name = true;
+    if (kinds.includes("username")) state.triageState.identitySignals.username = true;
   }
 }
 

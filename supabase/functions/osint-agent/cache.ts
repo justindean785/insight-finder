@@ -12,8 +12,9 @@ import { costForTool } from "./costs.ts";
 import { DEFAULT_TOOL_TTL_MS, NO_CACHE_TOOLS, redactSensitiveToolInput, TOOL_TTL_MS } from "./validation.ts";
 import { creditsCharged } from "./billing.ts";
 import { classifyToolOutcome } from "./tool-outcome.ts";
+import { writeToolUsage } from "./provider-exec.ts";
 import * as circuit from "./circuit.ts";
-import { guard } from "./guard.ts";
+import type { GuardState } from "./guard.ts";
 import { shouldSkipForToolCap } from "./orchestrator-finalize.ts";
 import {
   ALWAYS_ALLOW_TOOLS,
@@ -355,6 +356,12 @@ export function wrapToolsWithCache(
     // `capped` is surfaced by index.ts (finalize + telemetry). Optional so callers
     // that don't set it (tests, other entrypoints) are unaffected.
     toolCallBudget?: { genuine: number; capped: boolean };
+    // Request-scoped guard state (finding #8) — the wrapper sets
+    // guard.lastCorrelateOutcome from the FINAL minimax_correlate result. Optional
+    // so existing tests that don't exercise minimax_correlate are unaffected; a
+    // caller that does must supply the request's own requestState.guard, never a
+    // shared/module-level instance.
+    guard?: GuardState;
   },
 ) {
   const wrapped: Record<string, Tool> = {};
@@ -478,7 +485,14 @@ export function wrapToolsWithCache(
     const model = modelForTool(name);
     const baseCost = costForTool(name);
     const scrub = (o: unknown) => (NO_SANITIZE_TOOLS.has(name) ? o : sanitizeToolOutput(o));
-    const logUsage = async (
+    // Billing + telemetry now delegate to the SHARED primitive in provider-exec.ts
+    // (PR #305 review #1) so the streamText tool wrapper and the pre-stream anchor
+    // intake write tool_usage_log + debit credits through ONE implementation. The
+    // two-number accounting (cost_micro_usd = attributed list price; charged_micro_usd
+    // = actual success-only credits) and the outcome classification live there.
+    // Returns the writeToolUsage promise so existing `await logUsage(...)` and
+    // fire-and-forget call sites both keep working unchanged.
+    const logUsage = (
       cached: boolean,
       ok: boolean,
       durationMs: number,
@@ -486,55 +500,13 @@ export function wrapToolsWithCache(
       statusCode: number | null = null,
       freeCall: boolean = false,
       inputJson: Record<string, unknown> | null = null,
-    ) => {
-      // Two distinct numbers, intentionally logged separately:
-      //  • cost_micro_usd   — ATTRIBUTED list price. Logged for every paid,
-      //    non-cached call (incl. failures) so the export can separate charged
-      //    vs. avoided spend. A failed call still carries its list price here.
-      //  • charged_micro_usd — ACTUAL credits consumed. Success-only: cache
-      //    hits, free stubs, and any failure bill 0. This is the user-facing
-      //    "what did this run cost me" number; cost_micro_usd is NOT.
-      // Keeping them separate is what stops a failed-call list price from being
-      // misread as a real charge (the tool_usage_log accounting ambiguity).
-      // `ok` from the caller is GENUINE success (deriveOk / explicit) — billing
-      // keys off it, unchanged. For telemetry we additionally classify the
-      // non-success outcome so governance skips and empty (no-record) results
-      // stop being counted as provider failures: they inflated the beta failure
-      // rate AND falsely tripped the circuit breaker's consecutive-failure guard.
-      // The logged `ok` column is relaxed to "not a hard failure" (skipped/empty
-      // → true); the new `outcome` column keeps the ok/skipped/empty/failed split.
-      const outcome = ok ? "ok" : classifyToolOutcome(errorMsg, statusCode);
-      const okStored = outcome !== "failed";
-      const cost = (cached || freeCall) ? 0 : baseCost;
-      const charged = creditsCharged({ ok, cached, free: freeCall, baseCost });
-      if (charged > 0) ctx.onCost?.(charged);
-      const row: Record<string, unknown> = {
-        user_id: ctx.userId,
-        thread_id: ctx.investigationId,
-        tool_name: name,
-        cost_micro_usd: cost,
-        charged_micro_usd: charged,
-        cached,
-        ok: okStored,
-        outcome,
-        duration_ms: durationMs,
-        error_msg: outcome === "ok" ? null : errorMsg,
-        status_code: outcome === "ok" ? null : statusCode,
-        input_json: inputJson,
-      };
-      try {
-        let { error } = await adminDb.from("tool_usage_log").insert(row);
-        // Deploy-ordering safety: if this ships before the `outcome` column
-        // migration is applied, retry without it so telemetry is never lost.
-        if (error && /outcome/i.test(error.message ?? "")) {
-          const { outcome: _omit, ...legacy } = row;
-          ({ error } = await adminDb.from("tool_usage_log").insert(legacy));
-        }
-        if (error) console.warn(`[tool_usage_log] insert failed for ${name}: ${error.message}`);
-      } catch (e) {
-        console.warn(`[tool_usage_log] insert threw for ${name}:`, e);
-      }
-    };
+    ) =>
+      writeToolUsage(
+        name,
+        baseCost,
+        { userId: ctx.userId, threadId: ctx.investigationId, onCost: ctx.onCost, adminDb },
+        { cached, ok, durationMs, errorMsg, statusCode, freeCall, inputJson },
+      );
     if (NO_CACHE_TOOLS.has(name) || typeof t?.execute !== "function") {
       // Still wrap so we can tag the output with tier/model badges.
       if (typeof t?.execute === "function") {
@@ -938,14 +910,14 @@ export function wrapToolsWithCache(
           // memory_save can tell "correlate failed this cycle" apart from "correlate
           // never ran" — a timeout stub races the tool's own execute() and wins, so
           // this is the only point that sees what the model actually received.
-          if (name === "minimax_correlate") guard.lastCorrelateOutcome = ok ? "ok" : "failed";
+          if (name === "minimax_correlate" && ctx.guard) ctx.guard.lastCorrelateOutcome = ok ? "ok" : "failed";
           circuit.recordResult(ctx.investigationId, name, sel, purpose, {
             status: circuit.classifyResult(result, null),
             artifactCount: 0,
           });
         } catch (e) {
           ok = false;
-          if (name === "minimax_correlate") guard.lastCorrelateOutcome = "failed";
+          if (name === "minimax_correlate" && ctx.guard) ctx.guard.lastCorrelateOutcome = "failed";
           const msg = redactSecrets(String((e as Error)?.message ?? e)).slice(0, 500);
           finishCall(ctx.investigationId, name);
           logUsage(false, false, Date.now() - t0, msg, null, false, {

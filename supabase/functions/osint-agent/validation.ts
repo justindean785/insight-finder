@@ -35,6 +35,16 @@ export function detectSeedServer(input: string): DetectedSeed | null {
   if (PHONE.test(raw)) return { kind: "phone", raw, normalized: raw.replace(/[^\d+]/g, "") };
   if (DOMAIN.test(raw)) return { kind: "domain", raw, normalized: raw.toLowerCase() };
   if (USER.test(raw)) return { kind: "username", raw, normalized: raw.toLowerCase() };
+  // A leading "@" is how people write a social handle (e.g. "@pjsmakka"). The
+  // USER regex excludes "@", so an @-prefixed handle otherwise falls through to
+  // `other` → the bare `unknown` playbook, skipping the entire username
+  // discipline (socialfetch profile read, sweep, breach fan-out) and the anchor
+  // read. Strip a leading "@" and re-test so it routes as a username. Must mirror
+  // detectSeed() in src/lib/seed.ts so cache keys line up.
+  const handleStripped = raw.replace(/^@+/, "");
+  if (handleStripped !== raw && USER.test(handleStripped)) {
+    return { kind: "username", raw, normalized: handleStripped.toLowerCase() };
+  }
   // US street-address heuristic: leading street number + a 2-letter state + a
   // ZIP. Routes to the address playbook + property/business pivot checklist so an
   // address/business seed is not treated as a generic name search.

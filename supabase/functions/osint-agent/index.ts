@@ -22,7 +22,7 @@ import {
 import { detectSeedServer } from "./validation.ts";
 import { sanitizeToolOutput, capPartsSize, capToolPartPayloads } from "./safety.ts";
 import { sanitizeModelMessages, capToolResultOutputs, summarizeToolResultValue } from "./message-sanitize.ts";
-import { guard, routingGuard, triageState, countRecordArtifactCalls } from "./guard.ts";
+import { countRecordArtifactCalls, createRequestState } from "./guard.ts";
 import { setupRequest } from "./auth.ts";
 import { minimax, minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider } from "./orchestrator_select.ts";
@@ -46,6 +46,8 @@ import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { applyClusteringToThread } from "./lib/cluster.ts";
 import { buildTools } from "./tool-registry.ts";
 import { runAttachmentIntake, type AttachmentIntakeResult } from "./attachment-intake.ts";
+import { runAnchorIntake, type AnchorIntakeResult } from "./anchor-intake.ts";
+import { buildAnchorUserMessage } from "./anchor-parse.ts";
 import { isMessageSchemaError, classifyStreamProviderError } from "./stream-error-classify.ts";
 import {
   shouldFallbackAfterMinimaxPreflight,
@@ -96,25 +98,20 @@ Deno.serve(async (req) => {
   deadHosts.clear();
   resetFirecrawlCreditsLow();
 
-  // ---- Reset guard/triage state (module-scoped, must be reset per-request) ----
-  guard.artifactsSinceCorrelate = 0;
-  routingGuard.artifactsTotal = 0;
-  routingGuard.memoryRecallTimestamps = [];
-  routingGuard.memoryRecallSubjectsThisStep.clear();
-  triageState.ran = false;
-  triageState.seed = null;
-  triageState.seedType = null;
-  triageState.seedDomain = null;
-  triageState.cleared.clear();
-  triageState.reasons = [];
-  triageState.skipped = [];
-  triageState.identitySignals.name = false;
-  triageState.identitySignals.username = false;
+  // ---- Request-scoped guard/routing/triage state (finding #8) ----------------
+  // Previously three mutable MODULE-LEVEL singletons, reset here at the top of
+  // the handler. On a warm edge isolate serving overlapping/concurrent requests,
+  // that reset (and every subsequent read/write from tool-registry.ts/cache.ts)
+  // raced: one investigation's seed or triage decisions could bleed into
+  // another's mid-flight request. createRequestState() returns a brand-new
+  // object every call — nothing here is shared across requests anymore. It is
+  // threaded explicitly into buildTools() and wrapToolsWithCache() below.
+  const requestState = createRequestState();
 
   try {
     // ---- setupRequest handles CORS, auth, thread verification, message persistence ----
     const ctx = await setupRequest(req);
-    const { supabase, supabaseAdmin, user, userId, threadId, archiveEnabled, detectedSeedType, messages } = ctx;
+    const { supabase, supabaseAdmin, user, userId, threadId, archiveEnabled, detectedSeedType, detectedSeedValue, messages } = ctx;
     const manualOverrideSelector = extractManualOverrideSelector(messages);
 
     // ---- Per-user credit gate (beta budget protection) ----------------------
@@ -199,7 +196,8 @@ Deno.serve(async (req) => {
     }
 
     const { tools, availableToolsForAudit } = buildTools({
-      supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, messages, manualOverrideSelector,
+      supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, detectedSeedValue, messages, manualOverrideSelector,
+      requestState,
     });
 
     const modelMessages = await convertToModelMessages(messages);
@@ -306,7 +304,7 @@ Deno.serve(async (req) => {
     beginCycle(
       threadId,
       "Classify the seed, reject weak pivots, and select the smallest high-value initial batch.",
-      [`seed:${seedValueRaw}`, `stage2:${triageState.ran ? "open" : "pending"}`],
+      [`seed:${seedValueRaw}`, `stage2:${requestState.triageState.ran ? "open" : "pending"}`],
     );
     // Register this run as an active owner of the thread's circuit state. A
     // double-submit / retry can start a second overlapping run for the same
@@ -423,6 +421,27 @@ Deno.serve(async (req) => {
         }
       }
     };
+
+    // ---- Anchor read (READ the primary profile + SERP BEFORE the breadth sweep) --
+    // When the seed resolves to a handle/profile, deterministically FETCH + READ the
+    // subject's primary social profile AND the search-engine results page before the
+    // model's first turn — so the run leads with the anchor identity recorded as a
+    // READ, instead of constructing the profile URL as INFERRED and burning the run
+    // on a ~95-platform dev-handle sweep. Kicked off here (after onCost is defined so
+    // its paid reads debit credits) to overlap setup; awaited at prompt assembly. An
+    // idempotency guard inside makes a follow-up turn a no-op — no repeat paid calls.
+    const emptyAnchor: AnchorIntakeResult = { ran: false, profile_read: false, serp_read: false, artifacts_inserted: 0, summary: "", untrusted: "" };
+    const anchorSeed = (() => {
+      const head = seedValueRaw.split(/Attached files:/i)[0].trim().split("\n").map((s) => s.trim()).find(Boolean) ?? "";
+      return head ? detectSeedServer(head) : null;
+    })();
+    const anchorPromise: Promise<AnchorIntakeResult> =
+      anchorSeed && (anchorSeed.kind === "username" || anchorSeed.kind === "url" || anchorSeed.kind === "person")
+        ? runAnchorIntake(anchorSeed, { supabase, supabaseAdmin, userId, threadId, onCost }, messages).catch((e): AnchorIntakeResult => {
+            console.warn("[anchor-intake] unexpected rejection:", (e as Error)?.message);
+            return emptyAnchor;
+          })
+        : Promise.resolve(emptyAnchor);
 
     // Primary: MiniMax-M2.7 via direct API (user's Max plan covers 15k req/5h).
     // Fallback: Gemini 2.5 Pro via Lovable AI Gateway, used only if the MiniMax
@@ -588,10 +607,39 @@ Deno.serve(async (req) => {
         `[attachment-intake] read ${intake.attachments_read} file(s), recorded ${intake.artifacts_inserted} lead-tier artifact(s) before reasoning`,
       );
     }
+    // Resolve the anchor read started above (it overlapped the preflight + setup).
+    // Only the TRUSTED summary (directive + structured facts) goes into the system
+    // prompt. The UNTRUSTED fetched prose (bio / SERP answer) is injected as an
+    // isolated data MESSAGE below — never the system prompt — so profile/SERP text
+    // can't reach the model at instruction priority (prompt-injection isolation).
+    // The anchor's TRUSTED summary (directive + structured facts) goes into the
+    // system prompt. Its UNTRUSTED fetched prose is injected as a separate
+    // USER-role DATA message, wrapped in the <untrusted_fetched_content> envelope —
+    // NOT the system prompt (so it can't reach the model at instruction priority)
+    // and, critically, NOT an assistant-role message (audit finding #4: a trailing
+    // assistant-role message is an ASSISTANT PREFILL for providers that support
+    // that semantic — including MiniMax and the Gemini fallback — letting fetched
+    // untrusted content be continued as if the model itself had said it). A
+    // user-role carrier cannot be treated as a completion prefix; the envelope's
+    // own "DATA ONLY" label plus SYSTEM_PROMPT_FULL's standing
+    // UNTRUSTED_DATA_DISCIPLINE directive (system-prompt.ts, applies every turn)
+    // keep it from being read as a user instruction either.
+    const anchor = await anchorPromise;
+    const anchorIntakeSummary = anchor.ran ? anchor.summary : "";
+    const anchorUntrusted = (anchor.ran || anchor.skipped_existing) ? anchor.untrusted : "";
+    const anchorMessage = buildAnchorUserMessage(anchorUntrusted);
+    if (anchorMessage) {
+      trimmedMessages.push(anchorMessage as ModelMessage);
+    }
+    if (anchor.ran) {
+      console.log(
+        `[anchor-intake] profile_read=${anchor.profile_read} serp_read=${anchor.serp_read}, recorded ${anchor.artifacts_inserted} anchor artifact(s) before reasoning`,
+      );
+    }
     // Base orchestrator system prompt, shared by streamText and by the forced
     // finalize step (which appends buildFinalizeDirective() to this exact base).
     const baseSystemPrompt =
-      SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary;
+      SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary + anchorIntakeSummary;
     // Count of forced finalize steps taken (P0 fix A). A StopCondition ends the run
     // once it reaches FINALIZE_MAX_STEPS so the closing synthesis can't loop for the
     // whole reserve window. Incremented in prepareStep when a finalize step is forced.
@@ -621,7 +669,7 @@ Deno.serve(async (req) => {
         // only inside bumpArtifacts() means steps that find zero artifacts
         // never clear the set, silently blocking memory_recall for any
         // previously-queried subject for the rest of the investigation.
-        routingGuard.memoryRecallSubjectsThisStep.clear();
+        requestState.routingGuard.memoryRecallSubjectsThisStep.clear();
         if (!Array.isArray(stepMessages) || stepMessages.length === 0) return {};
         const trimmed: ModelMessage[] = stepMessages.map((m: ModelMessage, idx: number) => {
           const isRecent = idx >= stepMessages.length - STEP_RECENT_WINDOW;
@@ -711,7 +759,7 @@ Deno.serve(async (req) => {
       providerOptions: (minimaxIsPrimary && !useFallback)
         ? { minimax: { parallel_tool_calls: ORCHESTRATOR_PARALLEL_TOOL_CALLS } }
         : undefined,
-      system: SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary,
+      system: SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary + anchorIntakeSummary,
       messages: trimmedMessages,
       tools: wrapToolsWithCache(tools, {
         investigationId: threadId,
@@ -721,6 +769,7 @@ Deno.serve(async (req) => {
         onCost,
         manualOverrideSelector,
         toolCallBudget,
+        guard: requestState.guard,
       }),
       // Unknown-tool guard (Phase B4): the model occasionally emits a tool call
       // for a name that is NOT in the live registry (hallucinations like exify /
@@ -978,7 +1027,7 @@ Deno.serve(async (req) => {
               thread_id: threadId,
               record_artifact_calls: recordCalls,
               tool_calls: toolCalls,
-              in_memory_artifacts: routingGuard.artifactsTotal,
+              in_memory_artifacts: requestState.routingGuard.artifactsTotal,
               seed: seedValueRaw.slice(0, 120),
               // ran lookups but never recorded → almost certainly the record gap,
               // not a genuinely empty case.

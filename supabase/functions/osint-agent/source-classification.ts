@@ -130,6 +130,9 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   // username sweeps
   username_sweep: "username_sweep",
   socialfetch_lookup: "social_profile_passive",
+  // Pre-stream anchor reads (truthful op names for the actual provider called).
+  anchor_profile_read: "social_profile_passive",
+  anchor_serp_read: "ai_summary",
   // search/summary
   minimax_web_search: "ai_summary",
   exa_search: "ai_summary",

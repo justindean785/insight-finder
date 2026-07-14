@@ -69,7 +69,42 @@ export function isCollisionArtifact(a: Artifact): boolean {
   const kind = (a.kind ?? "").toLowerCase();
   if (kind === "excluded_collision") return true;
   const m = (a.metadata ?? {}) as Record<string, unknown>;
-  return m.excluded_collision === true || m.collision === true || m.possible_collision === true;
+  if (m.excluded_collision === true || m.collision === true || m.possible_collision === true) return true;
+  // Backend record-time gates route disproven leads and unlinked cross-subject
+  // contacts here too; also quarantine anything explicitly scoped out of subject.
+  if (m.excluded_from_subject === true) return true;
+  // Defense in depth: a lead whose OWN reason disproves it (not-same-entity /
+  // not-correlated / a DISPROVING collision) — even if it wasn't relabeled at
+  // record time (legacy rows). A bare "collision" is deliberately NOT matched: it
+  // also appears in benign phrases ("no collision detected", "collision cleared").
+  // Only explicitly disproving compounds count. Mirrors output-integrity.ts.
+  const reason = [m.reason, m.disposition, m.reason_not_confirmed]
+    .filter((s): s is string => typeof s === "string")
+    .join(" ");
+  if (/not[_\s-]*(?:the[_\s-]*)?same[_\s-]*(?:entity|person)|not[_\s-]*correlated|(?:same[_\s-]*name|namesake|single[_\s-]*source)[_\s-]*collision|collision[_\s-]*not[_\s-]*correlated/i.test(reason)) return true;
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Related / associated entities. An entity that co-appears with the subject
+// (an account referenced in the subject's bio, or surfaced alongside it in the
+// SERP) is RELATED to the subject — not the subject, and not noise. It carries a
+// `relationship_to_subject` and is rendered in its own section, never promoted
+// to a co-equal candidate identity cluster and never discarded.
+// ---------------------------------------------------------------------------
+
+export function isRelatedEntity(a: Artifact): boolean {
+  const m = (a.metadata ?? {}) as Record<string, unknown>;
+  if (m.related_entity === true) return true;
+  return typeof m.relationship_to_subject === "string" && m.relationship_to_subject.trim().length > 0;
+}
+
+/** Human-readable relationship label, or null. */
+export function relationshipToSubject(a: Artifact): string | null {
+  const m = (a.metadata ?? {}) as Record<string, unknown>;
+  return typeof m.relationship_to_subject === "string" && m.relationship_to_subject.trim()
+    ? m.relationship_to_subject.trim()
+    : null;
 }
 
 // ---------------------------------------------------------------------------
