@@ -120,8 +120,17 @@ export async function runAttachmentIntake(
     // has >1 file, but a mugshot + a PDF used to cost the sum of both reads on the
     // critical path before the first token; Promise.all makes it the max. Order
     // is preserved, so summaries stay in attachment order.
-    interface FileRead { rows: Array<Record<string, unknown>>; summary: string; read: boolean }
-    const perFile = await Promise.all(
+    interface FileRead {
+      rows: Array<Record<string, unknown>>;
+      summary: string;
+      read: boolean;
+      /** Set when a DOCUMENT read failed, so the caller can tell the model to read it itself. */
+      failedDoc?: { name: string; url: string };
+    }
+    // allSettled (not all): one file's unexpected throw must not reject the whole
+    // batch and lose the others. The provider-layer catch already turns a vision
+    // timeout into a graceful {ok:false}, so this is defense-in-depth.
+    const settled = await Promise.allSettled(
       atts.slice(0, MAX_ATTACHMENTS).map(async (a): Promise<FileRead> => {
         const out: FileRead = { rows: [], summary: "", read: false };
         const isImg = isImageAttachment(a) && !PDF_EXT.test(a.name) && !PDF_EXT.test(a.url);
@@ -138,6 +147,10 @@ export async function runAttachmentIntake(
             error: (vis as { error?: unknown } | null)?.error ?? null,
             detail: (vis as { detail?: unknown } | null)?.detail ?? null,
           }));
+          // A failed DOCUMENT read is recoverable: the model can fetch the URL
+          // itself. Flag it so the caller injects an explicit read-it-yourself
+          // directive instead of silently reasoning without the file.
+          if (mode === "document") out.failedDoc = { name: a.name, url: a.url };
           return out;
         }
         out.read = true;
@@ -190,6 +203,24 @@ export async function runAttachmentIntake(
       }),
     );
 
+    const capped = atts.slice(0, MAX_ATTACHMENTS);
+    const perFile: FileRead[] = settled.map((s, i) => {
+      if (s.status === "fulfilled") return s.value;
+      // Unexpected throw for this one file — degrade it alone, keep the rest.
+      const a = capped[i];
+      const isImg = isImageAttachment(a) && !PDF_EXT.test(a.name) && !PDF_EXT.test(a.url);
+      const mode = isImg ? "image" : "document";
+      console.warn(JSON.stringify({
+        event: "attachment_intake_skip", file: a.name, mode,
+        ok: false, status: null,
+        error: s.reason instanceof Error ? s.reason.message : String(s.reason),
+        unexpected: true,
+      }));
+      const out: FileRead = { rows: [], summary: "", read: false };
+      if (mode === "document") out.failedDoc = { name: a.name, url: a.url };
+      return out;
+    });
+
     const rows: Array<Record<string, unknown>> = perFile.flatMap((r) => r.rows);
     const summaries: string[] = perFile.filter((r) => r.read).map((r) => r.summary);
     const read = perFile.filter((r) => r.read).length;
@@ -204,13 +235,25 @@ export async function runAttachmentIntake(
       }
     }
 
-    if (read === 0) return empty;
-    const summary =
-      `\n\n## Attachment intake (read before reasoning)\n` +
-      `${read} uploaded file(s) were read by Gemini vision/document mode and any anchors recorded as LEAD-TIER artifacts (never Confirmed on one pass). ` +
-      `You (the orchestrator) cannot see images directly — rely on this extraction:\n- ` +
-      summaries.join("\n- ");
-    return { ran: true, attachments_read: read, artifacts_inserted: inserted, summary };
+    const failedDocs = perFile.map((r) => r.failedDoc).filter((f): f is { name: string; url: string } => !!f);
+    // Convert a silent degrade into an instructed recovery: name the unread
+    // document(s) and tell the model to fetch them before reasoning, instead of
+    // luck-depending on it choosing jina on its own.
+    const recovery = failedDocs.length
+      ? `\n\n## Unread attachment(s) — READ THESE YOURSELF before answering\n` +
+        `The following uploaded document(s) could NOT be auto-read (the vision read timed out or errored). ` +
+        `Before you reason, call jina_reader_scrape (or gemini_vision) on each URL and use its content:\n- ` +
+        failedDocs.map((f) => `"${f.name}" — ${f.url}`).join("\n- ")
+      : "";
+
+    if (read === 0 && !recovery) return empty;
+    const readSummary = read > 0
+      ? `\n\n## Attachment intake (read before reasoning)\n` +
+        `${read} uploaded file(s) were read by Gemini vision/document mode and any anchors recorded as LEAD-TIER artifacts (never Confirmed on one pass). ` +
+        `You (the orchestrator) cannot see images directly — rely on this extraction:\n- ` +
+        summaries.join("\n- ")
+      : "";
+    return { ran: true, attachments_read: read, artifacts_inserted: inserted, summary: readSummary + recovery };
   } catch (e) {
     console.warn("[attachment-intake] error:", (e as Error).message);
     return empty;
