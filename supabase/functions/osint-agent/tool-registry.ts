@@ -444,7 +444,7 @@ export function buildTools(ctx: ToolContext) {
           metadata: z.unknown().optional(),
         })).max(200)),
       })),
-      execute: async ({ seed, artifacts }) => {
+      execute: async ({ seed, artifacts }, opts) => {
         // Input guard: never spend a paid MiniMax call on an empty/invalid
         // payload. The counter check below tracks how many NEW artifacts were
         // recorded, but the model can still invoke this with no seed or an
@@ -469,6 +469,15 @@ export function buildTools(ctx: ToolContext) {
             user: `Seed: ${seed}\n\nArtifacts:\n${JSON.stringify(artifacts).slice(0, 16000)}`,
             json: true,
             maxTokens: 1500,
+            // Best-effort: forward the wrapper's per-tool timeout AbortSignal (#284
+            // kept the 30s cap so a legitimately-slow ~22.5s completion is still USED).
+            // Without this the correlate model call was orphaned — it kept running
+            // past the cap and could cascade an off-ledger fallback LLM. Forwarding
+            // the signal cancels the in-flight fetch AT the cap and suppresses that
+            // fallback (providers.ts guards on opts.signal?.aborted). Clustering does
+            // not depend on this tool — the deterministic local union-find (index.ts)
+            // runs regardless — so a cancelled correlate costs the run nothing.
+            signal: (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal,
           });
           const parsed = safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content };
           guard.artifactsSinceCorrelate = 0;
