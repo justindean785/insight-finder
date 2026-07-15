@@ -5,6 +5,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { ThreadSidebar } from "@/components/ThreadSidebar";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
+import { FullPageLoader } from "@/components/ui/full-page-loader";
 import {
   Brain, Sparkles, Lightbulb, Star, Network, Zap, PanelLeftOpen,
   Target, ThumbsUp, CreditCard, TrendingUp,
@@ -229,7 +230,7 @@ export default function BrainGlobalPage() {
     return sorted;
   }, [memories, deleted, patternFilter, patternSort]);
 
-  if (loading) return <div className="min-h-screen grid place-items-center text-muted-foreground">Loading…</div>;
+  if (loading) return <FullPageLoader />;
   if (!user) return <Navigate to="/auth" replace />;
 
   const content = (

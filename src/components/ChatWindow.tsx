@@ -10,6 +10,7 @@ import { reflowCollapsedTables } from "@/lib/markdown";
 import { osintAgentUrl } from "@/lib/functionsUrl";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { FullPageLoader } from "@/components/ui/full-page-loader";
 import {
   ArrowDown, ArrowUp, Loader2, ChevronDown, ChevronRight, Wrench, RotateCcw, AlertTriangle,
   StickyNote, CheckCircle2, XCircle, Clock, CircleSlash, Square,
@@ -1145,7 +1146,7 @@ export function ChatWindow({ threadId }: { threadId: string }) {
   }, [threadId]);
 
   if (state.kind === "loading") {
-    return <div className="flex-1 grid place-items-center text-muted-foreground min-w-0">Loading…</div>;
+    return <FullPageLoader fullScreen={false} className="flex-1 min-w-0" />;
   }
   if (state.kind === "notfound") {
     return (
@@ -2094,16 +2095,25 @@ function ChatWindowInner({
                 with confidence tiers.
               </p>
 
-              <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
-                {["jordan.sample@example.com", "elonmusk", "8.8.8.8", "lovable.app"].map((s) => (
-                  <button
-                    key={s}
-                    onClick={() => setInput(s)}
-                    className="rounded-full border border-white/10 bg-white/[0.03] px-3.5 py-1.5 font-mono text-data tabular-nums text-foreground/75 transition-colors hover:border-[hsl(var(--intel-blue)/0.45)] hover:bg-[hsl(var(--intel-blue)/0.07)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--intel-blue)/0.4)]"
-                  >
-                    {s}
-                  </button>
-                ))}
+              <div className="mt-5 w-full max-w-md">
+                <div className="mb-2 text-center font-mono text-eyebrow uppercase tracking-[0.2em] text-muted-foreground/55">
+                  Try an example
+                </div>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  {["jordan.sample@example.com", "elonmusk", "8.8.8.8", "lovable.app"].map((s) => (
+                    <button
+                      key={s}
+                      // Prefill the composer AND focus it so the caret lands in the
+                      // now-populated box — a tap that silently set state read as
+                      // "nothing happened", especially on mobile where the composer
+                      // sits below the fold.
+                      onClick={() => { setInput(s); inputRef.current?.focus(); }}
+                      className="rounded-full border border-white/10 bg-white/[0.03] px-3.5 py-1.5 font-mono text-data tabular-nums text-foreground/75 transition-colors hover:border-[hsl(var(--intel-blue)/0.45)] hover:bg-[hsl(var(--intel-blue)/0.07)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--intel-blue)/0.4)]"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {/* clean hairline steps (à la the references) — understated, no boxes */}

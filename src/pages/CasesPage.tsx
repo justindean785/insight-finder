@@ -5,6 +5,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { AppNav } from "@/components/AppNav";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { FullPageLoader } from "@/components/ui/full-page-loader";
 import { Input } from "@/components/ui/input";
 import {
   ArrowRight,
@@ -185,11 +186,7 @@ export default function CasesPage() {
     }
   };
 
-  if (authLoading) {
-    return (
-      <div className="min-h-screen grid place-items-center text-muted-foreground">Loading…</div>
-    );
-  }
+  if (authLoading) return <FullPageLoader />;
   if (!user) return <Navigate to="/auth" replace />;
 
   return (

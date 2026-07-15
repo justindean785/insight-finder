@@ -5,6 +5,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { SwarmMark } from "@/components/ui/swarm-mark";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { FullPageLoader } from "@/components/ui/full-page-loader";
 import {
   MessageSquare,
   BarChart3,
@@ -107,13 +108,7 @@ export default function HomeHub() {
     }
   };
 
-  if (authLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center text-muted-foreground">
-        Loading…
-      </div>
-    );
-  }
+  if (authLoading) return <FullPageLoader />;
   if (!user) return <Navigate to="/auth" replace />;
 
   const lastCaseLabel = relativeTime(counts.lastCaseAt);
@@ -183,13 +178,18 @@ export default function HomeHub() {
               <Plus className="w-4 h-4" />
               {creating ? "Starting…" : "Start new case"}
             </Button>
-            <Link
-              to="/chat"
-              className="h-10 rounded-xl px-4 inline-flex items-center gap-2 border border-white/12 bg-[linear-gradient(145deg,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] hover:bg-[linear-gradient(145deg,rgba(255,255,255,0.12),rgba(255,255,255,0.045))] text-foreground text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-            >
-              <MessageSquare className="w-4 h-4" />
-              Resume most recent
-            </Link>
+            {/* Only offer "Resume" once there's actually a case to resume — with
+                zero cases this route just creates a fresh thread, duplicating
+                "Start new case" under a misleading label. */}
+            {counts.cases > 0 && (
+              <Link
+                to="/chat"
+                className="h-10 rounded-xl px-4 inline-flex items-center gap-2 border border-white/12 bg-[linear-gradient(145deg,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] hover:bg-[linear-gradient(145deg,rgba(255,255,255,0.12),rgba(255,255,255,0.045))] text-foreground text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+              >
+                <MessageSquare className="w-4 h-4" />
+                Resume most recent
+              </Link>
+            )}
           </div>
           <div className="mt-6 flex flex-wrap items-center gap-2 text-micro font-mono tracking-normal text-muted-foreground">
             <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1">Cases {counts.cases.toLocaleString()}</span>

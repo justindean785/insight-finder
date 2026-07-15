@@ -7,6 +7,7 @@ import { AppNav } from "@/components/AppNav";
 import { ViewWorkspaceTabs, type ViewCaseTab } from "@/components/workspace/ViewWorkspaceTabs";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Button } from "@/components/ui/button";
+import { FullPageLoader } from "@/components/ui/full-page-loader";
 import { supabase } from "@/integrations/supabase/client";
 import { MessageSquare, ArrowLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -75,9 +76,7 @@ export default function CaseViewPage() {
     };
   }, [user, threadId]);
 
-  if (loading) {
-    return <div className="min-h-screen grid place-items-center text-muted-foreground">Loading…</div>;
-  }
+  if (loading) return <FullPageLoader />;
   if (!user) return <Navigate to="/auth" replace />;
   if (!threadId) return <Navigate to="/cases" replace />;
   if (metaLoading) {
@@ -160,11 +159,7 @@ export default function CaseViewPage() {
 
       <main className="flex-1 min-h-0 relative mx-auto w-full max-w-6xl">
         <div className={cn("absolute inset-0", tab === "report" ? "overflow-y-auto" : "")}>
-          <Suspense
-            fallback={
-              <div className="grid place-items-center h-48 text-muted-foreground text-sm">Loading…</div>
-            }
-          >
+          <Suspense fallback={<FullPageLoader fullScreen={false} className="h-48" />}>
             {tab === "evidence" && (
               <ErrorBoundary>
                 <EvidenceTab threadId={threadId} />

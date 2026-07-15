@@ -20,6 +20,7 @@ import { PanelLeftOpen, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { CommandPalette } from "@/components/CommandPalette";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { FullPageLoader } from "@/components/ui/full-page-loader";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 
@@ -91,7 +92,7 @@ export default function ChatPage() {
   const { items } = useThreadArtifacts(threadId ?? "");
   const activity = useThreadToolActivity(threadId ?? "", user?.id ?? "");
 
-  if (loading) return <div className="min-h-screen grid place-items-center text-muted-foreground">Loading…</div>;
+  if (loading) return <FullPageLoader />;
   if (!user) return <Navigate to="/auth" replace />;
   if (!threadId) return <Navigate to="/" replace />;
 
@@ -115,7 +116,7 @@ export default function ChatPage() {
         <ChatWindow threadId={threadId} />
       </div>
       {tab !== "chat" && (
-        <Suspense fallback={<div className="absolute inset-0 grid place-items-center text-muted-foreground text-sm">Loading workspace…</div>}>
+        <Suspense fallback={<FullPageLoader label="Loading workspace" fullScreen={false} className="absolute inset-0" />}>
           {tab === "evidence" && <div role="tabpanel" id="workspace-tabpanel-evidence" aria-labelledby="workspace-tab-evidence" className="absolute inset-0"><ErrorBoundary><EvidenceTab threadId={threadId} viewRequest={evidenceReq} /></ErrorBoundary></div>}
           {tab === "report" && (
             <div role="tabpanel" id="workspace-tabpanel-report" aria-labelledby="workspace-tab-report" className="absolute inset-0 overflow-y-auto">
