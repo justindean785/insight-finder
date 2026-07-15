@@ -14,6 +14,8 @@ import {
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
+import { createClient } from "npm:@supabase/supabase-js@2";
+import { recoverStaleActiveThreads } from "./recovery.ts";
 
 // ---- checks.minimax — is the PRIMARY orchestrator actually reachable? -------
 // `orchestrator.ok` only asserts a key exists; after the MiniMax-primary outage
@@ -316,6 +318,21 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
         { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
+  }
+
+  // Durable stale-run recovery (beta-stopfix02): every health probe also sweeps
+  // threads left "active" by a CPU-killed isolate (stale heartbeat) and finalizes
+  // them with a deterministic report from persisted artifacts. Surfaced as a check.
+  try {
+    if (SUPABASE_URL && SERVICE_KEY) {
+      const admin = createClient(SUPABASE_URL, SERVICE_KEY);
+      const recovered = await recoverStaleActiveThreads(admin, { limit: 20, reason: "stale heartbeat recovered by health sweep" });
+      r.checks.recovery = recovered.errors
+        ? { ok: false, detail: `recovered ${recovered.recovered}; ${recovered.errors} error(s)` }
+        : { ok: true, detail: `recovered ${recovered.recovered} stale active run(s)` };
+    }
+  } catch (e) {
+    r.checks.recovery = { ok: false, detail: String(e).slice(0, 160) };
   }
 
   type ProbeResult = { ok: boolean; latencyMs: number; error?: string };
