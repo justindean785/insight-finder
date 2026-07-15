@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SUPPORT_MAILTO } from "@/lib/contact";
+import { FullPageLoader } from "@/components/ui/full-page-loader";
 import { toast } from "sonner";
 
 export default function Settings() {
@@ -17,11 +18,7 @@ export default function Settings() {
   const [saving, setSaving] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center text-muted-foreground">Loading…</div>
-    );
-  }
+  if (loading) return <FullPageLoader />;
 
   if (!user) {
     return <Navigate to="/auth" replace />;

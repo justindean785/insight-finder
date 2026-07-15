@@ -1,4 +1,5 @@
 import { useAuth } from "@/hooks/useAuth";
+import { FullPageLoader } from "@/components/ui/full-page-loader";
 import Landing from "./Landing";
 import HomeHub from "./HomeHub";
 
@@ -9,13 +10,7 @@ import HomeHub from "./HomeHub";
 export default function IndexRedirect() {
   const { user, loading } = useAuth();
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center text-muted-foreground">
-        Loading…
-      </div>
-    );
-  }
+  if (loading) return <FullPageLoader />;
 
   if (!user) return <Landing />;
   return <HomeHub />;

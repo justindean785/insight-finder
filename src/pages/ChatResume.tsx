@@ -3,6 +3,7 @@ import { Navigate, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { addBreadcrumb, captureError } from "@/lib/telemetry";
+import { FullPageLoader } from "@/components/ui/full-page-loader";
 import { toast } from "sonner";
 
 /**
@@ -53,13 +54,7 @@ export default function ChatResume() {
     };
   }, [user, loading, navigate, attempt]);
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center text-muted-foreground">
-        Loading…
-      </div>
-    );
-  }
+  if (loading) return <FullPageLoader />;
   if (!user) return <Navigate to="/auth" replace />;
 
   if (error) {
@@ -87,9 +82,5 @@ export default function ChatResume() {
     );
   }
 
-  return (
-    <div className="min-h-screen flex items-center justify-center text-muted-foreground">
-      Loading…
-    </div>
-  );
+  return <FullPageLoader label="Opening workspace" />;
 }

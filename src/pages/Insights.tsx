@@ -3,6 +3,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { AppNav } from "@/components/AppNav";
 import { useInsightsData } from "@/hooks/useInsightsData";
 import { Skeleton } from "@/components/ui/skeleton";
+import { FullPageLoader } from "@/components/ui/full-page-loader";
 import {
   Brain,
   Activity,
@@ -53,11 +54,7 @@ export default function Insights() {
   const { data, loading, error } = useInsightsData(user?.id, !!user && !authLoading);
 
   if (authLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center text-muted-foreground">
-        Loading…
-      </div>
-    );
+    return <FullPageLoader />;
   }
   if (!user) return <Navigate to="/auth" replace />;
 

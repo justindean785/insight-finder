@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { SpeedInsights } from "@vercel/speed-insights/react";
+import { FullPageLoader } from "@/components/ui/full-page-loader";
 // Entry/auth routes stay eager — they're tiny and on the first-paint path.
 import IndexRedirect from "./pages/IndexRedirect";
 import Auth from "./pages/Auth";
@@ -45,11 +46,7 @@ const App = () => (
           v7_relativeSplatPath: true,
         }}
       >
-        <Suspense
-          fallback={
-            <div className="min-h-screen flex items-center justify-center text-muted-foreground">Loading…</div>
-          }
-        >
+        <Suspense fallback={<FullPageLoader />}>
           <Routes>
             <Route path="/" element={<IndexRedirect />} />
             <Route path="/auth" element={<Auth />} />

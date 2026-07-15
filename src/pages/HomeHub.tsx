@@ -5,6 +5,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { SwarmMark } from "@/components/ui/swarm-mark";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { FullPageLoader } from "@/components/ui/full-page-loader";
 import {
   MessageSquare,
   BarChart3,
@@ -107,13 +108,7 @@ export default function HomeHub() {
     }
   };
 
-  if (authLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center text-muted-foreground">
-        Loading…
-      </div>
-    );
-  }
+  if (authLoading) return <FullPageLoader />;
   if (!user) return <Navigate to="/auth" replace />;
 
   const lastCaseLabel = relativeTime(counts.lastCaseAt);

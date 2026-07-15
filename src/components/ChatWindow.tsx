@@ -10,6 +10,7 @@ import { reflowCollapsedTables } from "@/lib/markdown";
 import { osintAgentUrl } from "@/lib/functionsUrl";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { FullPageLoader } from "@/components/ui/full-page-loader";
 import {
   ArrowDown, ArrowUp, Loader2, ChevronDown, ChevronRight, Wrench, RotateCcw, AlertTriangle,
   StickyNote, CheckCircle2, XCircle, Clock, CircleSlash, Square,
@@ -1145,7 +1146,7 @@ export function ChatWindow({ threadId }: { threadId: string }) {
   }, [threadId]);
 
   if (state.kind === "loading") {
-    return <div className="flex-1 grid place-items-center text-muted-foreground min-w-0">Loading…</div>;
+    return <FullPageLoader fullScreen={false} className="flex-1 min-w-0" />;
   }
   if (state.kind === "notfound") {
     return (
