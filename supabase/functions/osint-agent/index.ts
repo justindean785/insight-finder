@@ -47,6 +47,7 @@ import {
   shouldNudgePersistence, buildPersistenceNudgeDirective,
 } from "./orchestrator-finalize.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
+import { recoverStaleActiveThreads, startRunHeartbeat } from "./recovery.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { applyClusteringToThread } from "./lib/cluster.ts";
@@ -96,6 +97,9 @@ function extractManualOverrideSelector(messages: UIMessage[]): string | null {
 }
 
 Deno.serve(async (req) => {
+  // Durable run heartbeat handle (beta-stopfix02) — declared here so every terminal
+  // path (onError, persist completion, outer catch) can stop it.
+  let heartbeat: ReturnType<typeof startRunHeartbeat> | null = null;
   if (isHealthProbe(req)) return handleHealthProbe(req);
 
   degradedTools.clear();
@@ -121,6 +125,13 @@ Deno.serve(async (req) => {
     // ---- setupRequest handles CORS, auth, thread verification, message persistence ----
     const ctx = await setupRequest(req);
     const { supabase, supabaseAdmin, user, userId, threadId, archiveEnabled, detectedSeedType, messages } = ctx;
+    // Durable stale-run recovery (beta-stopfix02): fire-and-forget sweep at run
+    // startup — finalizes any thread left "active" by a CPU-killed isolate whose
+    // heartbeat has gone stale. Never blocks this request.
+    recoverStaleActiveThreads(supabaseAdmin, { limit: 10, reason: "stale heartbeat recovered at run startup" })
+      .then((r) => {
+        if (r.recovered || r.errors) console.log(JSON.stringify({ event: "stale_thread_sweeper", ...r }));
+      }, (e) => console.warn("[stale-recovery] startup sweeper failed:", e));
     const manualOverrideSelector = extractManualOverrideSelector(messages);
 
     // ---- Per-user credit gate (beta budget protection) ----------------------
@@ -698,6 +709,10 @@ Deno.serve(async (req) => {
     // Wall-clock start for BOTH the finalize-reserve check (prepareStep) and the hard
     // deadline StopCondition below. Declared here so prepareStep's closure reads it.
     const runStartedAt = Date.now();
+    // Durable run heartbeat (beta-stopfix02): pulse threads.last_heartbeat_at every
+    // 15s and after each tool completes, so a CPU-killed run becomes detectable as
+    // stale and is recovered. Stopped on every terminal path below.
+    heartbeat = startRunHeartbeat(supabaseAdmin, threadId, { startedAt: new Date(runStartedAt) });
     const prepareStep: NonNullable<Parameters<typeof streamText>[0]["prepareStep"]> =
       async ({ messages: stepMessages, stepNumber }) => {
         const { data: threadState } = await supabase
@@ -850,6 +865,7 @@ Deno.serve(async (req) => {
         manualOverrideSelector,
         toolCallBudget,
         shouldStopLiveLookups: () => shouldForceFinalize(Date.now() - runStartedAt, 0),
+        onHeartbeat: () => heartbeat?.pulse(),
       }),
       // Unknown-tool guard (Phase B4): the model occasionally emits a tool call
       // for a name that is NOT in the live registry (hallucinations like exify /
@@ -946,6 +962,7 @@ Deno.serve(async (req) => {
         // clobbered. Artifacts are committed incrementally inside each tool, so
         // none are lost on a tail-end throw.
         try {
+          heartbeat?.stop();
           const { error: updErr } = await supabase
             .from("threads")
             .update({ status: "finished", updated_at: new Date().toISOString() })
@@ -1169,6 +1186,7 @@ Deno.serve(async (req) => {
         // run's suppressions mid-flight. The LRU cap in circuit.ts is the
         // backstop for the paths where this never runs (isolate death,
         // unhandled rejection).
+        heartbeat?.stop();
         circuit.release(threadId);
     };
 
@@ -1228,6 +1246,7 @@ Deno.serve(async (req) => {
       onFinish: persistFinalMessages,
     });
   } catch (e) {
+    heartbeat?.stop();
     // setupRequest throws Response objects for 401/403/400 — return them directly
     if (e instanceof Response) return e;
     console.error("osint-agent error", e);

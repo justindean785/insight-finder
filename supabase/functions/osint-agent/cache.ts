@@ -417,6 +417,7 @@ export function wrapToolsWithCache(
     // that don't set it (tests, other entrypoints) are unaffected.
     toolCallBudget?: { genuine: number; capped: boolean };
     shouldStopLiveLookups?: () => boolean;
+    onHeartbeat?: () => void;
   },
 ) {
   const wrapped: Record<string, Tool> = {};
@@ -612,6 +613,9 @@ export function wrapToolsWithCache(
               // Phase 2: per-tool hard timeout (schema-safe on timeout, no throw);
               // recording/evidence tools (ALWAYS_ALLOW) are exempt. Single thunk so
               // the underlying call isn't duplicated.
+              // Heartbeat pulse (beta-stopfix02): mark meaningful progress before each
+              // underlying tool call so a live run's last_heartbeat_at stays fresh.
+              ctx.onHeartbeat?.();
               out = ALWAYS_ALLOW_TOOLS.has(name)
                 ? await (orig(input, opts) as Promise<unknown>)
                 : await runWithToolTimeout(
@@ -993,6 +997,9 @@ export function wrapToolsWithCache(
         });
 
         // 3) live
+        // Heartbeat pulse (beta-stopfix02): committing to a live call is meaningful
+        // progress — keep last_heartbeat_at fresh so recovery doesn't reap a live run.
+        ctx.onHeartbeat?.();
         // Count this GENUINE live execution against the per-run cap. Placed here (past
         // every cache/circuit/runtime gate, at the point we commit to running live) so
         // cached hits and governor skips never consume the budget — matching the
