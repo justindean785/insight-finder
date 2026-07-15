@@ -3,8 +3,9 @@ import { useNavigate, Navigate, Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { SwarmMark } from "@/components/ui/swarm-mark";
+import { Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { SUPPORT_MAILTO } from "@/lib/contact";
 import { FullPageLoader } from "@/components/ui/full-page-loader";
@@ -73,7 +74,23 @@ export default function Settings() {
             </div>
             <div>
               <span className="text-xs text-muted-foreground">User ID</span>
-              <p className="text-xs font-mono text-muted-foreground">{user.id.slice(0, 12)}…</p>
+              <div className="flex items-center gap-1.5">
+                <p className="text-xs font-mono text-muted-foreground">{user.id.slice(0, 12)}…</p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    navigator.clipboard.writeText(user.id).then(
+                      () => toast.success("User ID copied"),
+                      () => toast.error("Copy failed"),
+                    )
+                  }
+                  aria-label="Copy full user ID"
+                  title="Copy full user ID"
+                  className="rounded p-1 text-muted-foreground/70 transition-colors hover:bg-white/[0.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <Copy className="h-3 w-3" />
+                </button>
+              </div>
             </div>
             {user.created_at && (
               <div>
@@ -92,11 +109,11 @@ export default function Settings() {
           <form onSubmit={changePassword} className="space-y-3.5">
             <div className="space-y-1.5">
               <Label htmlFor="new-pw" className="text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">New password</Label>
-              <Input id="new-pw" type="password" autoComplete="new-password" required minLength={6} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
+              <PasswordInput id="new-pw" autoComplete="new-password" required minLength={6} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="confirm-pw" className="text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">Confirm password</Label>
-              <Input id="confirm-pw" type="password" autoComplete="new-password" required minLength={6} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
+              <PasswordInput id="confirm-pw" autoComplete="new-password" required minLength={6} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
             </div>
             <Button type="submit" disabled={saving} variant="cta" className="h-9 border-0 text-xs font-medium">
               {saving ? "Updating…" : "Update password"}

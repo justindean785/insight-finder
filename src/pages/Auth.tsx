@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -198,7 +199,7 @@ export default function Auth() {
                         Forgot?
                       </button>
                     </div>
-                    <Input id="signin-password" type="password" autoComplete="current-password" required value={siPassword} onChange={(e) => setSiPassword(e.target.value)} />
+                    <PasswordInput id="signin-password" autoComplete="current-password" required value={siPassword} onChange={(e) => setSiPassword(e.target.value)} />
                   </div>
                   <Button
                     type="submit"
@@ -219,7 +220,7 @@ export default function Auth() {
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="signup-password" className="text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">Password</Label>
-                  <Input id="signup-password" type="password" autoComplete="new-password" required minLength={6} value={suPassword} onChange={(e) => setSuPassword(e.target.value)} />
+                  <PasswordInput id="signup-password" autoComplete="new-password" required minLength={6} value={suPassword} onChange={(e) => setSuPassword(e.target.value)} />
                   <p className="text-data text-muted-foreground/70">At least 6 characters</p>
                 </div>
                 <Button
