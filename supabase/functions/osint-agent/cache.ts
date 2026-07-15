@@ -161,7 +161,20 @@ export function runWithToolTimeout<T>(
         _tool_timeout: true,
       });
     }, ms);
-    factory(ctrl.signal).then(
+    // Guard a SYNCHRONOUS throw from factory() — without this the setTimeout
+    // above is never cleared and the run leaks a timer (deno's op-sanitizer
+    // fails crash_resilience / gemini_parallel_pairing on the throwing-tool path).
+    let promise: Promise<T>;
+    try {
+      promise = factory(ctrl.signal);
+    } catch (e) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(e);
+      return;
+    }
+    promise.then(
       (v) => { if (!settled) { settled = true; clearTimeout(timer); resolve(v); } },
       // If the factory rejects AFTER we already resolved a timeout (e.g. the
       // AbortError from our own ctrl.abort()), swallow it — the timeout result
