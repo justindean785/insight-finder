@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "build:dev": "vite build --mode development",
+    "build:generate-types": "node scripts/generate-pivot-loop-types.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json",
     "preview": "vite preview",
@@ -14,6 +15,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:edge": "cd supabase/functions/osint-agent && deno test --no-check --allow-net --allow-env --allow-sys --allow-read *_test.ts",
+    "test:migrations": "cd supabase/functions/osint-agent && deno test --no-check --allow-net --allow-env --allow-sys --allow-read pivot-loop/gating.test.ts",
     "stamp:build": "node scripts/stamp-build.mjs"
   },
   "dependencies": {
