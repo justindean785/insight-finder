@@ -122,8 +122,9 @@ export const GENERAL_MULTI_ORIGIN_TOOLS = new Set<string>([
   "socialfetch_web_read",
 ]);
 
-/** Consecutive timeouts a general multi-origin tool must hit before its whole
- *  provider is suppressed (single-upstream providers still suppress on the first). */
+/** Uninterrupted TIMEOUT outcomes (no success or other-failure in between) a
+ *  general multi-origin tool must hit before its whole provider is suppressed.
+ *  Single-upstream providers still suppress on the first timeout. */
 export const TIMEOUT_SUPPRESS_CONSECUTIVE = 3;
 
 interface Suppression {
@@ -133,7 +134,13 @@ interface Suppression {
 }
 
 interface BreakerState {
+  /** Consecutive NON-OK outcomes of ANY type (400/404/451/429/5xx/timeout).
+   *  Drives the generic 3-failure global guard — NOT timeout suppression. */
   consecutive: number;
+  /** Consecutive TIMEOUT outcomes only — reset by success OR any non-timeout
+   *  failure. Drives multi-origin timeout suppression so a mixed failure run
+   *  (e.g. 404 → 451 → timeout) never counts as "3 consecutive timeouts". */
+  consecutiveTimeouts: number;
   total: number;
   lastAt: number;
   disabledReason?: string;
@@ -257,7 +264,7 @@ function breakerFor(threadId: string, tool: string): BreakerState {
   const s = state(threadId);
   let b = s.breakers.get(tool);
   if (!b) {
-    b = { consecutive: 0, total: 0, lastAt: 0, deadSelectors: new Set(), notFound: new Set() };
+    b = { consecutive: 0, consecutiveTimeouts: 0, total: 0, lastAt: 0, deadSelectors: new Set(), notFound: new Set() };
     s.breakers.set(tool, b);
   }
   return b;
@@ -388,12 +395,19 @@ export function recordResult(
   });
   if (outcome.status === "ok") {
     b.consecutive = 0;
+    b.consecutiveTimeouts = 0;
     b.lastAt = Date.now();
     return;
   }
   b.consecutive++;
   b.total++;
   b.lastAt = Date.now();
+  // Maintain the dedicated timeout streak: a timeout extends it, ANY non-timeout
+  // failure (400/404/451/429/5xx) breaks it. This is what multi-origin timeout
+  // suppression checks — NOT b.consecutive, which counts all failure types and
+  // would let a mixed run (404 → 451 → timeout) masquerade as 3 timeouts.
+  if (outcome.status === "timeout") b.consecutiveTimeouts++;
+  else b.consecutiveTimeouts = 0;
   switch (outcome.status) {
     case "http_402":
       // A 402 is a depleted prepaid balance — provider-wide, not endpoint-local.
@@ -461,17 +475,18 @@ export function recordResult(
       if (GENERAL_MULTI_ORIGIN_TOOLS.has(tool)) {
         // Multi-origin fan-out: one slow page is a PER-URL problem. Dead-list only
         // this URL so other hosts still run, and suppress the whole tool ONLY after
-        // >= TIMEOUT_SUPPRESS_CONSECUTIVE consecutive timeouts (b.consecutive was
-        // already incremented above, so it includes this one). Distinct reason
-        // strings so the audit shows which path fired: a dead-listed selector
-        // surfaces as "selector blacklisted for <tool>" on retry, vs. the
+        // >= TIMEOUT_SUPPRESS_CONSECUTIVE UNINTERRUPTED timeouts. We check the
+        // dedicated b.consecutiveTimeouts (maintained above) — NOT b.consecutive,
+        // which also counts 4xx/5xx and would falsely trip on a mixed failure run.
+        // Distinct reason strings so the audit shows which path fired: a dead-listed
+        // selector surfaces as "selector blacklisted for <tool>" on retry, vs. the
         // consecutive-timeout provider suppression below.
         if (selector) b.deadSelectors.add(selector);
-        if (b.consecutive >= TIMEOUT_SUPPRESS_CONSECUTIVE) {
+        if (b.consecutiveTimeouts >= TIMEOUT_SUPPRESS_CONSECUTIVE) {
           suppressProvider(
             threadId,
             tool,
-            `provider '${providerForTool(tool)}' suppressed — ${b.consecutive} consecutive timeouts`,
+            `provider '${providerForTool(tool)}' suppressed — ${b.consecutiveTimeouts} consecutive timeouts`,
           );
         }
         // else: selector dead-listed (timeout) — tool stays available for other URLs.
@@ -495,7 +510,11 @@ export function recordResult(
     default:
       break;
   }
-  // Global guard: 3 thread-wide failures → disable.
+  // Global guard: 3 thread-wide failures of ANY type → disable. This is a
+  // SEPARATE, generic reliability backstop — distinct from the multi-origin
+  // timeout suppression above (which keys off b.consecutiveTimeouts). A tool that
+  // fails 3 times in a row for mixed reasons (e.g. 404 → 451 → timeout) is
+  // genuinely unhealthy and is still disabled here by design; unchanged.
   if (b.consecutive >= 3 && !b.disabledReason) {
     b.disabledReason = `disabled after ${b.consecutive} consecutive failures`;
   }

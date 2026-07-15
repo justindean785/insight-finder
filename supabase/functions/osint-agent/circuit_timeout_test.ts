@@ -121,3 +121,55 @@ Deno.test("paid single-upstream providers (exa, indicia) keep first-timeout supp
 
   clearThread(thread);
 });
+
+// Mixed-outcome regression: timeout suppression must key off a DEDICATED timeout
+// streak, not b.consecutive (which counts every non-ok outcome). Otherwise a run
+// like 404 → 451 → timeout would falsely read as "3 consecutive timeouts".
+// These assert isProviderSuppressed (the timeout-suppression path specifically);
+// the generic 3-consecutive-failure guard is a SEPARATE mechanism.
+
+Deno.test("mixed: 404 → timeout → timeout does NOT trip timeout suppression (non-timeout doesn't count)", () => {
+  const thread = "t-mix-404tt";
+  clearThread(thread);
+  recordResult(thread, "jina_reader_scrape", "https://a.example", "default", { status: "http_404" });
+  recordResult(thread, "jina_reader_scrape", "https://b.example", "default", { status: "timeout" });
+  recordResult(thread, "jina_reader_scrape", "https://c.example", "default", { status: "timeout" });
+  // Only 2 CONSECUTIVE TIMEOUTS — the 404 is not a timeout.
+  assertEquals(isProviderSuppressed(thread, "jina_reader_scrape").suppressed, false, "a 404 must not count toward the timeout streak");
+  clearThread(thread);
+});
+
+Deno.test("mixed: timeout → 400 → timeout does NOT trip timeout suppression (400 resets the streak)", () => {
+  const thread = "t-mix-t400t";
+  clearThread(thread);
+  recordResult(thread, "jina_reader_scrape", "https://a.example", "default", { status: "timeout" });
+  recordResult(thread, "jina_reader_scrape", "https://b.example", "default", { status: "http_400" });
+  recordResult(thread, "jina_reader_scrape", "https://c.example", "default", { status: "timeout" });
+  // Streak: 1 → reset by the 400 → 1. Never reaches 3.
+  assertEquals(isProviderSuppressed(thread, "jina_reader_scrape").suppressed, false, "a 400 between timeouts must reset the timeout streak");
+  clearThread(thread);
+});
+
+Deno.test("mixed: timeout → timeout → timeout DOES suppress, and the reason reports the true streak", () => {
+  const thread = "t-mix-ttt";
+  clearThread(thread);
+  for (const u of ["a", "b", "c"]) {
+    recordResult(thread, "jina_reader_scrape", `https://${u}.example`, "default", { status: "timeout" });
+  }
+  const sup = isProviderSuppressed(thread, "jina_reader_scrape");
+  assertEquals(sup.suppressed, true, "3 uninterrupted timeouts suppress the tool");
+  assert(typeof sup.reason === "string" && sup.reason.includes("3 consecutive timeouts"), "reason must report the true timeout streak");
+  clearThread(thread);
+});
+
+Deno.test("mixed: timeout → success → timeout → timeout does NOT suppress (success resets the streak)", () => {
+  const thread = "t-mix-tsuctt";
+  clearThread(thread);
+  recordResult(thread, "jina_reader_scrape", "https://a.example", "default", { status: "timeout" });
+  recordResult(thread, "jina_reader_scrape", "https://b.example", "default", { status: "ok", artifactCount: 1 });
+  recordResult(thread, "jina_reader_scrape", "https://c.example", "default", { status: "timeout" });
+  recordResult(thread, "jina_reader_scrape", "https://d.example", "default", { status: "timeout" });
+  // Streak after the success: 0 → 1 → 2. Never reaches 3.
+  assertEquals(isProviderSuppressed(thread, "jina_reader_scrape").suppressed, false, "a success resets the timeout streak");
+  clearThread(thread);
+});
