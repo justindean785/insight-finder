@@ -1904,6 +1904,54 @@ function ChatWindowInner({
     };
   }, [threadId, isLoading]);
 
+  // ---- Auto-sweep stuck runs (client-side stale-run recovery trigger) --------
+  // A live investigation whose backend isolate is CPU-killed leaves the thread
+  // "active" with no final report; nothing server-side finalizes it until the
+  // osint-agent function is next hit (a new request / run start / health probe).
+  // While THIS tab has a run in flight (or has just opened a thread), poll the
+  // function's health endpoint — it runs the server-side stale-run recovery
+  // (recoverStaleActiveThreads), which finalizes any run whose heartbeat has
+  // gone stale (>75s) with a deterministic report from persisted artifacts. So a
+  // killed run self-heals within ~30–75s instead of hanging on "RUNNING"
+  // forever. The recovered report + terminal status then arrive via the realtime
+  // subscriptions. SAFE: recovery only ever touches heartbeat-stale threads — a
+  // healthy run pulses every 15s, so an in-progress investigation is never reaped.
+  useEffect(() => {
+    if (!FUNCTIONS_URL) return;
+    const sweep = () => { void fetch(`${FUNCTIONS_URL}?health=1`, { method: "GET" }).catch(() => {}); };
+    sweep(); // once on open: reap a run already stuck when this thread is loaded
+    if (!isLoading) return;
+    const id = window.setInterval(sweep, 30_000); // while running: reap a mid-flight death
+    return () => window.clearInterval(id);
+  }, [threadId, isLoading]);
+
+  // ---- Stuck-"RUNNING" watchdog ---------------------------------------------
+  // A CPU-killed isolate leaves a half-open SSE that never sends EOF, so useChat
+  // stays "streaming" (isLoading true → header stuck on RUNNING) with no client
+  // watchdog. When the backend marks this thread terminal (the sweeper above, or
+  // any server-side recovery, flips status to finished/stopped), abort the dead
+  // client stream so isLoading clears and the UI reflects the recovered state.
+  const stopRef = useRef(stop);
+  stopRef.current = stop;
+  useEffect(() => {
+    const channel = supabase
+      .channel(`chat-run-watchdog-${threadId}`)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "threads", filter: `id=eq.${threadId}` },
+        (payload) => {
+          const next = (payload.new as { status?: string } | null)?.status;
+          if (next === "finished" || next === "stopped") {
+            try { stopRef.current?.(); } catch { /* stream already closed */ }
+          }
+        },
+      )
+      .subscribe();
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [threadId]);
+
   // Run progress readout for the "Investigating…" indicator: an elapsed timer
   // (plus the current tool step) so an analyst can distinguish a working run
   // from a wedged one instead of staring at a bare pulsing dot.
