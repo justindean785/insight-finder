@@ -101,9 +101,25 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // MODELS.smart (not fast) — this is the misattribution/collision-detection step, where
   // quality outranks a few seconds.
   minimax_correlate: 30_000,
-  // oathnet_lookup: the 2026-07-08 audit showed 2 timeouts at exactly 12,058ms and
-  // 12,075ms — hitting the default 12s cap. Give headroom for legitimate slow responses.
-  oathnet_lookup: 15_000,
+  // OathNet family: every endpoint's own fetch budget is 20s (a couple 15s), but the
+  // outer wrapper cap must sit ABOVE that fetch budget or it guillotines the call
+  // before the fetch's own timeout can return a clean result. The 2026-07-15 live
+  // run proved this: oathnet_lookup ran a 20s fetch but the wrapper killed it at
+  // 12,127ms ("exceeded 12000ms tool timeout"), then ONE timeout tripped the
+  // circuit breaker and suppressed the WHOLE oathnet family for the rest of the
+  // run. Earlier the override was 15s (oathnet_lookup only) — still below the 20s
+  // fetch, and the sibling endpoints had no override at all (12s default). Set the
+  // whole family to 22s (> the 20s fetch) so the fetch governs the timeout, not the
+  // wrapper, and the family isn't nuked on a single slow-but-recoverable call.
+  oathnet_lookup: 22_000,
+  oathnet_stealer_search: 22_000,
+  oathnet_victims_search: 22_000,
+  oathnet_victim_manifest: 22_000,
+  oathnet_victim_file: 22_000,
+  oathnet_subdomains: 22_000,
+  oathnet_breach_dbnames: 22_000,
+  oathnet_ai_filter: 22_000,
+  oathnet_scanner: 22_000,
 };
 export function toolTimeoutMs(name: string): number {
   return TOOL_TIMEOUT_OVERRIDE_MS[name] ?? DEFAULT_TOOL_TIMEOUT_MS;

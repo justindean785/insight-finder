@@ -14,8 +14,16 @@ Deno.test("B3 caps: gemini_deep_dork=12s, jina_reader_scrape=8s; deepfind_revers
   // F2: the 8s deepfind_reverse_email override was removed — the provider
   // legitimately needs the 12s default (9/36 failures were timeouts at exactly 8s).
   assertEquals(toolTimeoutMs("deepfind_reverse_email"), DEFAULT_TOOL_TIMEOUT_MS);
-  // F3: oathnet_lookup raised to 15s (2 timeouts observed at ~12,06ms on the default).
-  assertEquals(toolTimeoutMs("oathnet_lookup"), 15_000);
+  // F3 (2026-07-15): oathnet_lookup AND the whole oathnet family raised to 22s.
+  // The family's own fetch budget is 20s; the wrapper cap must sit ABOVE it or it
+  // guillotines the call before the fetch's timeout can return a clean result. A
+  // live run proved the earlier 15s (oathnet_lookup only) still killed a 20s fetch
+  // at 12,127ms — the sibling endpoints had no override at all (12s default) — and
+  // one timeout then suppressed the whole family for the run.
+  assertEquals(toolTimeoutMs("oathnet_lookup"), 22_000);
+  assertEquals(toolTimeoutMs("oathnet_stealer_search"), 22_000);
+  assertEquals(toolTimeoutMs("oathnet_victims_search"), 22_000);
+  assert(toolTimeoutMs("oathnet_lookup") > 20_000, "oathnet wrapper cap must exceed its 20s fetch budget");
 });
 
 Deno.test("B3 caps: gemini_deep_dork was cut from its old 30s tail", () => {
