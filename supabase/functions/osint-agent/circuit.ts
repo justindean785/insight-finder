@@ -77,7 +77,15 @@ const PROVIDER_TOOLS: Record<string, string[]> = {
   ],
   hunter: ["hunter_domain_search", "hunter_email_finder", "hunter_email_verifier", "hunter_combined"],
   exa: ["exa_search", "exa_find_similar", "exa_get_contents"],
-  minimax: ["minimax_web_search", "minimax_correlate", "minimax_plan_pivots", "minimax_extract"],
+  // minimax_web_search hits Perplexity (a DIFFERENT upstream than the MiniMax
+  // reasoning model — see #293), so a SEARCH timeout/429/5xx must not drag down the
+  // reasoning tools. Keep the search worker on its own "minimax" key; group the
+  // three reasoning tools under "minimax_reason" so they still share suppression
+  // with EACH OTHER (one reasoning key) but are decoupled from the search worker.
+  // Without this, a single minimax_web_search timeout suppressed minimax_correlate
+  // (the identity-merge step) for the whole run, fragmenting the report.
+  minimax: ["minimax_web_search"],
+  minimax_reason: ["minimax_correlate", "minimax_plan_pivots", "minimax_extract"],
   // All six Indicia endpoints share ONE api key + one prepaid balance. A depleted
   // balance (402) or rate-limit (429) on any one endpoint means every sibling is
   // equally dead for the run — group them so one suppression stops the family
@@ -101,6 +109,22 @@ for (const [provider, tools] of Object.entries(PROVIDER_TOOLS)) {
 export function providerForTool(tool: string): string {
   return TOOL_PROVIDER.get(tool) ?? tool;
 }
+
+// General multi-origin fan-out tools: unlike a single-upstream paid API, these
+// hit MANY unrelated hosts across a run (jina scrapes arbitrary URLs;
+// socialfetch_web_read renders arbitrary pages). One slow page is a PER-URL
+// problem, not a dead provider — suppressing the whole tool on the first timeout
+// takes the reader offline for every remaining host. For these, a `timeout`
+// dead-lists only the offending URL and suppresses the tool ONLY after
+// >= TIMEOUT_SUPPRESS_CONSECUTIVE consecutive timeouts (see recordResult).
+export const GENERAL_MULTI_ORIGIN_TOOLS = new Set<string>([
+  "jina_reader_scrape",
+  "socialfetch_web_read",
+]);
+
+/** Consecutive timeouts a general multi-origin tool must hit before its whole
+ *  provider is suppressed (single-upstream providers still suppress on the first). */
+export const TIMEOUT_SUPPRESS_CONSECUTIVE = 3;
 
 interface Suppression {
   reason: string;
@@ -434,10 +458,29 @@ export function recordResult(
       if (selector) b.deadSelectors.add(selector);
       break;
     case "timeout":
-      // A timed-out upstream wastes the full fetch window on every retry —
-      // suppress the provider for the investigation on the first timeout.
-      suppressProvider(threadId, tool, `timeout — provider '${providerForTool(tool)}' suppressed for investigation`);
-      if (b.consecutive >= 2 && selector) b.deadSelectors.add(selector);
+      if (GENERAL_MULTI_ORIGIN_TOOLS.has(tool)) {
+        // Multi-origin fan-out: one slow page is a PER-URL problem. Dead-list only
+        // this URL so other hosts still run, and suppress the whole tool ONLY after
+        // >= TIMEOUT_SUPPRESS_CONSECUTIVE consecutive timeouts (b.consecutive was
+        // already incremented above, so it includes this one). Distinct reason
+        // strings so the audit shows which path fired: a dead-listed selector
+        // surfaces as "selector blacklisted for <tool>" on retry, vs. the
+        // consecutive-timeout provider suppression below.
+        if (selector) b.deadSelectors.add(selector);
+        if (b.consecutive >= TIMEOUT_SUPPRESS_CONSECUTIVE) {
+          suppressProvider(
+            threadId,
+            tool,
+            `provider '${providerForTool(tool)}' suppressed — ${b.consecutive} consecutive timeouts`,
+          );
+        }
+        // else: selector dead-listed (timeout) — tool stays available for other URLs.
+      } else {
+        // Single-upstream provider: a timed-out upstream wastes the full fetch
+        // window on every retry — suppress the provider on the FIRST timeout.
+        suppressProvider(threadId, tool, `timeout — provider '${providerForTool(tool)}' suppressed for investigation`);
+        if (b.consecutive >= 2 && selector) b.deadSelectors.add(selector);
+      }
       break;
     case "http_500":
       // A 5xx is a server-side fault: retrying the same provider mid-run rarely

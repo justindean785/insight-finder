@@ -15,9 +15,13 @@ import {
   providerForTool,
 } from "./circuit.ts";
 
-Deno.test("minimax provider group covers web_search + correlate + plan_pivots + extract", () => {
-  for (const t of ["minimax_web_search", "minimax_correlate", "minimax_plan_pivots", "minimax_extract"]) {
-    assertEquals(providerForTool(t), "minimax", `${t} not in minimax group`);
+Deno.test("minimax_web_search is decoupled from the reasoning tools' provider group", () => {
+  // The search worker (Perplexity upstream) stays on its own "minimax" key; the
+  // three reasoning tools share "minimax_reason" so a SEARCH failure can't suppress
+  // the identity-merge step (minimax_correlate).
+  assertEquals(providerForTool("minimax_web_search"), "minimax");
+  for (const t of ["minimax_correlate", "minimax_plan_pivots", "minimax_extract"]) {
+    assertEquals(providerForTool(t), "minimax_reason", `${t} should be in the minimax_reason group`);
   }
 });
 
@@ -53,9 +57,14 @@ Deno.test("in-flight on one minimax tool also gates siblings (same provider grou
   assertEquals(shouldRun(thread, "minimax_correlate", "batch-1").allow, true);
   markProviderInFlight(thread, "minimax_correlate");
 
-  // minimax_web_search is the same 'minimax' provider — must also be blocked.
+  // minimax_extract shares the "minimax_reason" provider — must also be blocked.
+  const ex = shouldRun(thread, "minimax_extract", "batch-2");
+  assertEquals(ex.allow, false, "extract should be blocked while correlate is in-flight (same reasoning provider)");
+
+  // minimax_web_search is now a DIFFERENT provider — a reasoning tool in-flight
+  // must NOT gate the search worker (decoupling regression guard).
   const ws = shouldRun(thread, "minimax_web_search", "query");
-  assertEquals(ws.allow, false, "web_search should be blocked while correlate is in-flight");
+  assertEquals(ws.allow, true, "web_search must be decoupled from the reasoning in-flight gate");
 
   clearProviderInFlight(thread, "minimax_correlate");
   clearThread(thread);
@@ -115,8 +124,13 @@ Deno.test("quota-401 after in-flight clears still suppresses the provider for th
   const d = shouldRun(thread, "minimax_web_search", "q2");
   assertEquals(d.allow, false, "401 must suppress the minimax provider for the rest of the run");
 
-  // minimax_correlate is in the same provider group — also blocked.
-  assertEquals(shouldRun(thread, "minimax_correlate", "batch").allow, false);
+  // minimax_correlate is now a DIFFERENT provider (minimax_reason) — a SEARCH 401
+  // must NOT suppress the identity-merge step (decoupling regression guard).
+  assertEquals(
+    shouldRun(thread, "minimax_correlate", "batch").allow,
+    true,
+    "correlate must stay available after a minimax_web_search 401",
+  );
 
   clearThread(thread);
 });
