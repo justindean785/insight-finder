@@ -4,6 +4,10 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Plus, LogOut, Trash2, PanelLeftOpen, PanelLeftClose, Search, Brain, CheckCircle2,
   ShieldAlert, Database, Activity, BarChart3, Wallet, FolderOpen,
   Mail, Phone, Globe, Network, User, Hash, FileSearch, type LucideIcon,
@@ -11,6 +15,7 @@ import {
 import { cn } from "@/lib/utils";
 import { detectSeed } from "@/lib/seed";
 import { isActiveThreadStatus } from "@/lib/thread-status";
+import { selectStaleActiveIds } from "@/lib/stale-thread";
 import { SUPPORT_MAILTO } from "@/lib/contact";
 import type { Database as SupabaseDatabase } from "@/integrations/supabase/types";
 
@@ -136,6 +141,8 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   const [newPatternCount, setNewPatternCount] = useState<number>(0);
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [credits, setCredits] = useState<UserCredits | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<Thread | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     if (!user) return;
@@ -148,7 +155,26 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         .select("id,title,updated_at,credits_used,cost_micro_usd,status,seed_type")
         .eq("user_id", user.id)
         .order("updated_at", { ascending: false });
-      setThreads((data as Thread[] | null) ?? []);
+      const threadRows = (data as Thread[] | null) ?? [];
+      setThreads(threadRows);
+
+      // Reconcile runs the backend never finalized. If the edge function is
+      // hard-killed on the CPU-time limit mid-run, its onFinish/onError never
+      // fire, so the thread stays "active" forever and shows as perpetually
+      // running. A live run writes every few seconds; one silent past the
+      // staleness window is dead — flip it to "finished" (guarded on it still
+      // being "active" so a concurrently-finishing run isn't clobbered).
+      const staleIds = selectStaleActiveIds(threadRows);
+      if (staleIds.length > 0) {
+        void supabase
+          .from("threads")
+          .update({ status: "finished" })
+          .in("id", staleIds)
+          .eq("status", "active");
+        setThreads((prev) =>
+          prev.map((t) => (staleIds.includes(t.id) ? { ...t, status: "finished" } : t)),
+        );
+      }
 
       // Beta credit balance (own row only via RLS).
       const { data: creditRow } = await supabase
@@ -256,23 +282,30 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
     navigate(`/chat/${data.id}`);
   };
 
-  const deleteThread = async (id: string, e: React.MouseEvent) => {
+  // Deleting a case is irreversible (cascades to its artifacts/evidence), so
+  // confirm in a styled dialog before destroying it — the native window.confirm
+  // was jarring against the dark UI — and surface any failure instead of
+  // silently navigating away as if it worked.
+  const requestDelete = (t: Thread, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    // Deleting a case is irreversible (cascades to its artifacts/evidence), so
-    // confirm before destroying it and surface any failure instead of silently
-    // navigating away as if it worked.
-    if (typeof window !== "undefined" && !window.confirm("Delete this investigation and all of its evidence? This cannot be undone.")) {
-      return;
-    }
-    const { error } = await supabase.from("threads").delete().eq("id", id);
+    setPendingDelete(t);
+  };
+
+  const confirmDelete = async () => {
+    const target = pendingDelete;
+    if (!target || deleting) return;
+    setDeleting(true);
+    const { error } = await supabase.from("threads").delete().eq("id", target.id);
+    setDeleting(false);
     if (error) {
       toast.error(error.message || "Could not delete the case");
       return;
     }
-    setThreads((prev) => prev.filter((t) => t.id !== id));
+    setThreads((prev) => prev.filter((t) => t.id !== target.id));
+    setPendingDelete(null);
     toast.success("Case deleted");
-    if (id === threadId) navigate("/");
+    if (target.id === threadId) navigate("/");
   };
 
   const signOut = async () => {
@@ -543,7 +576,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
                     key={t.id}
                     t={t}
                     active={t.id === threadId}
-                    onDelete={deleteThread}
+                    onDelete={requestDelete}
                     dim={!isActiveThreadStatus(t.status)}
                     m={metrics[t.id]}
                   />
@@ -578,6 +611,34 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
           </button>
         </div>
       </div>
+
+      <AlertDialog open={!!pendingDelete} onOpenChange={(o) => !o && !deleting && setPendingDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this investigation?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingDelete && (
+                <>
+                  <span className="font-medium text-foreground">
+                    {pendingDelete.title?.trim() || "Untitled case"}
+                  </span>{" "}
+                  and all of its evidence will be permanently deleted. This cannot be undone.
+                </>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => { e.preventDefault(); void confirmDelete(); }}
+              disabled={deleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleting ? "Deleting…" : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -587,7 +648,7 @@ function ThreadRow({
 }: {
   t: Thread;
   active: boolean;
-  onDelete: (id: string, e: React.MouseEvent) => void;
+  onDelete: (t: Thread, e: React.MouseEvent) => void;
   dim?: boolean;
   m?: ThreadMetrics;
 }) {
@@ -648,7 +709,7 @@ function ThreadRow({
       </div>
       <button
         type="button"
-        onClick={(e) => onDelete(t.id, e)}
+        onClick={(e) => onDelete(t, e)}
         className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
         aria-label="Delete case"
       >
