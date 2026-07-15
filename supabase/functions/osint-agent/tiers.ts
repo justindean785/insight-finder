@@ -53,6 +53,7 @@ export const TIER_B: ReadonlyArray<string> = [
   "indicia_address",
   "indicia_web_dbs",
   "indicia_hudsonrock",
+  "pdl_person_enrich",
 ];
 
 export const TIER_C: ReadonlyArray<string> = [

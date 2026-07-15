@@ -89,6 +89,7 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   indicia_address: 2000,
   indicia_web_dbs: 3000,
   indicia_hudsonrock: 0,
+  pdl_person_enrich: 50000,
 
   // ---- Hunter.io ----
   hunter_domain_search: 4000,
