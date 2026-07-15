@@ -796,6 +796,11 @@ Deno.serve(async (req) => {
             event: "persistence_nudge_fired", thread_id: threadId,
             tool_calls: nudgeToolCalls, record_artifact_calls: nudgeRecordCalls,
           }));
+          return {
+            messages: stepMessagesOut,
+            activeTools: [...FINALIZE_ACTIVE_TOOLS],
+            system: intermediateSystem,
+          };
         }
         return {
           messages: stepMessagesOut,
@@ -844,6 +849,7 @@ Deno.serve(async (req) => {
         onCost,
         manualOverrideSelector,
         toolCallBudget,
+        shouldStopLiveLookups: () => shouldForceFinalize(Date.now() - runStartedAt, 0),
       }),
       // Unknown-tool guard (Phase B4): the model occasionally emits a tool call
       // for a name that is NOT in the live registry (hallucinations like exify /

@@ -97,6 +97,24 @@ export function shouldSkipForToolCap(
 }
 
 /**
+ * Runtime-level guard used inside the tool wrapper, not just prepareStep. The AI SDK
+ * only evaluates prepareStep/stopWhen between model steps, so a single late step can
+ * keep launching lookups after the finalize reserve window has opened. Once the
+ * reserve is open, any new NON-recording live lookup is skipped; record_artifacts and
+ * evidence writes stay available so the run can finish cleanly.
+ */
+export function shouldSkipForFinalizeWindow(
+  elapsedMs: number,
+  isRecordingTool: boolean,
+  opts?: { budgetMs?: number; reserveMs?: number },
+): boolean {
+  if (isRecordingTool) return false;
+  const budgetMs = opts?.budgetMs ?? ORCHESTRATOR_WALL_CLOCK_MS;
+  const reserveMs = opts?.reserveMs ?? FINALIZE_RESERVE_MS;
+  return elapsedMs >= budgetMs - reserveMs;
+}
+
+/**
  * The system-prompt addendum appended to every NON-finalize (intermediate) step.
  *
  * WHY: SYSTEM_PROMPT_FULL is injected verbatim on every streamText cycle, and its
@@ -181,13 +199,15 @@ export function buildPersistenceNudgeDirective(): string {
     "",
     "=== PERSIST NOW — you have made several lookups but recorded ZERO artifacts ===",
     "Pause broad discovery for THIS step and persist what you have already found:",
-    "1. Call record_artifacts now for every hard finding already supported by a tool",
+    "1. You may call ONLY record_artifacts in this step. Do not call any lookup,",
+    "   search, scrape, correlate, or enrichment tool until after persistence succeeds.",
+    "2. Call record_artifacts now for every hard finding already supported by a tool",
     "   result this run (confirmed selectors, infra, breach/identity hits).",
-    "2. Preserve exact provenance — set `source` to the tool that produced it and keep",
+    "3. Preserve exact provenance — set `source` to the tool that produced it and keep",
     "   `metadata.discovered_via` so chain-of-custody stays intact.",
-    "3. Do NOT wait for minimax_correlate — correlation is optional enrichment, not a",
+    "4. Do NOT wait for minimax_correlate — correlation is optional enrichment, not a",
     "   precondition for recording. Record first; correlate later.",
-    "4. Record ONLY findings backed by real tool output. Your narration is NOT evidence:",
+    "5. Record ONLY findings backed by real tool output. Your narration is NOT evidence:",
     "   do NOT invent, infer, or fabricate artifacts from prose or unrelated data.",
     "If you genuinely have no tool-supported hard finding yet, say so in one line and",
     "keep investigating — do not manufacture one to satisfy this instruction.",
