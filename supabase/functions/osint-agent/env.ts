@@ -19,6 +19,23 @@ import { createOpenAICompatible } from "npm:@ai-sdk/openai-compatible@1";
 import { MODELS } from "./models.ts";
 import { createIdleTimeoutFetch } from "./fetch_retry.ts";
 
+// ---- Env-backed numeric tuning knobs ----------------------------------------
+/**
+ * Read a positive-integer tuning knob from the environment, ONCE at module load
+ * (call only at module top-level, never per-request — matches how the secrets
+ * below are read). Returns `def` when the variable is unset, empty, non-numeric,
+ * or ≤ 0, and clamps the result to [1, max] so a fat-fingered Supabase secret
+ * can't set an absurd value. Fractional input is floored. The result is a plain
+ * number — safe to log (never PII).
+ */
+export function envInt(name: string, def: number, max: number): number {
+  const raw = (Deno.env.get(name) ?? "").trim();
+  if (raw === "") return def;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return def;
+  return Math.min(Math.floor(n), max);
+}
+
 // Every orchestrator LLM provider (minimax, lovable-ai-gateway, xai-grok,
 // openadapter) is built via createOpenAICompatible with this as its `fetch`.
 // Without it, a stalled stream (upstream opens the connection then goes silent

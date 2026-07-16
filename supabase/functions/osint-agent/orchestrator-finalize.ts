@@ -23,6 +23,7 @@
  * grounded strictly in artifacts already gathered.
  */
 import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN } from "./orchestrator-budget.ts";
+import { envInt } from "./env.ts";
 
 // Reserve the final stretch of the wall-clock budget for a guaranteed synthesis+record
 // step. Once elapsed enters this window the orchestrator stops issuing new lookups and
@@ -40,7 +41,22 @@ import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_
 // guarantee a report — the right call. (Raising/removing the 240s hard deadline
 // itself — plan Fix A2 — still needs a live Supabase edge wall-clock test; not done
 // here.)
-export const FINALIZE_RESERVE_MS = 90_000;
+//
+// Runtime override: env `FINALIZE_RESERVE_MS` (default 90000, clamped ≤ 300000).
+// Hard safety: the reserve can never exceed HALF the wall-clock budget, so raising
+// the reserve (or shrinking the wall-clock) can't collapse the finalize window onto
+// step 0 and starve the run of any real investigation time.
+export const FINALIZE_RESERVE_MS = Math.min(
+  envInt("FINALIZE_RESERVE_MS", 90_000, 300_000),
+  Math.floor(ORCHESTRATOR_WALL_CLOCK_MS / 2),
+);
+
+// Effective finalize timing at cold start (paired with orchestrator_budget_config).
+console.log(JSON.stringify({
+  event: "orchestrator_finalize_config",
+  finalize_reserve_ms: FINALIZE_RESERVE_MS,
+  orchestrator_wall_clock_ms: ORCHESTRATOR_WALL_CLOCK_MS,
+}));
 
 // Cap the forced finalize phase to this many steps (a StopCondition ends the run once
 // reached). 2 lets the model call record_artifacts then write the report from its
