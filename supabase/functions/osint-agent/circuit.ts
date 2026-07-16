@@ -106,7 +106,11 @@ function timeoutSuppressionThreshold(tool: string): number {
   // OathNet has a legitimate 20s internal fetch budget; one outer timeout can be
   // latency noise, not proof the whole quota-shared provider is dead. Require a
   // second timeout before suppressing the family for the rest of the run.
-  return providerForTool(tool) === "oathnet" ? 2 : 1;
+  // jina_reader_scrape (2026-07-16): same tolerance — one slow page render is
+  // noise, not a dead provider; a single timeout was suppressing Jina for the
+  // whole investigation and skipping later valid scrapes.
+  const provider = providerForTool(tool);
+  return provider === "oathnet" || provider === "jina_reader_scrape" ? 2 : 1;
 }
 
 interface Suppression {

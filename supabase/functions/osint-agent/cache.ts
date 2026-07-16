@@ -53,7 +53,12 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // deepfind_reverse_email: removed 8s override — falls back to 12s default.
   // The 8s cap caused 9 timeouts in the 2026-07-08 audit; provider legitimately
   // needs headroom for the reverse-email lookup.
-  jina_reader_scrape: 8_000,       // single-page scrape — fail fast, try a lighter source
+  // jina_reader_scrape: 8s → 18s (2026-07-16, McGovern-run audit). At 8s a slow
+  // but recoverable page render timed out, and that single timeout suppressed the
+  // provider for the rest of the run (2 later valid scrapes skipped). 18s gives
+  // Jina's renderer headroom; the 2-strike circuit tolerance (circuit.ts) is the
+  // other half of the fix.
+  jina_reader_scrape: 18_000,
   dork_harvest: 25_000,     // wraps several web searches — p95 ~17s
   exa_search: 20_000,       // neural search + contents — p95 ~12s
   exa_find_similar: 20_000,
