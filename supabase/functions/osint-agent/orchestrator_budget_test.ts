@@ -14,6 +14,7 @@ import {
   MAX_ORCHESTRATOR_STEPS,
   ORCHESTRATOR_WALL_CLOCK_MS,
   approxMsgChars,
+  capUserTextToBudget,
   capTotalToBudget,
   elidedToolResultRef,
   deadlineReached,
@@ -82,6 +83,22 @@ Deno.test("capTotalToBudget: no-op when already under budget", () => {
   const msgs: ModelMessage[] = [bigToolMessage(0, 100), bigToolMessage(1, 100)];
   const capped = capTotalToBudget(msgs, TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW);
   assertEquals(capped, msgs, "under-budget input must be returned unchanged (same reference)");
+});
+
+Deno.test("capUserTextToBudget: caps huge pasted user JSON", () => {
+  const msgs = [{ role: "user", content: [{ type: "text", text: "{" + "x".repeat(80_000) + "}" }] }] as unknown as ModelMessage[];
+  const capped = capUserTextToBudget(msgs, 12_000) as unknown as Array<{ content: Array<{ text: string }> }>;
+  assert(capped[0].content[0].text.length < 13_000, "huge user paste must be bounded");
+  assertStringIncludes(capped[0].content[0].text, "user input truncated");
+});
+
+Deno.test("capTotalToBudget: also caps huge latest user paste", () => {
+  const msgs = [
+    bigToolMessage(0, 100),
+    { role: "user", content: [{ type: "text", text: "[" + "x".repeat(80_000) + "]" }] },
+  ] as unknown as ModelMessage[];
+  const capped = capTotalToBudget(msgs, 30_000, RECENT_WINDOW);
+  assert(approxMsgChars(capped) <= 30_000, "user paste must not bypass the total budget");
 });
 
 Deno.test("elidedToolResultRef: names tool, size and retrieval path", () => {

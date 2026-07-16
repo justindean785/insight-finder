@@ -8,9 +8,11 @@ import {
   runWithToolTimeout,
 } from "./cache.ts";
 
-Deno.test("B3 caps: gemini_deep_dork=12s, jina_reader_scrape=8s; deepfind_reverse_email on the 12s default (F2)", () => {
+Deno.test("B3 caps: gemini_deep_dork=12s, jina_reader_scrape=18s; deepfind_reverse_email on the 12s default (F2)", () => {
   assertEquals(toolTimeoutMs("gemini_deep_dork"), 12_000);
-  assertEquals(toolTimeoutMs("jina_reader_scrape"), 8_000);
+  // 18s (was 8s): one slow-but-recoverable render must not burn the provider —
+  // paired with the jina 2-strike circuit tolerance (jina_circuit_timeout_test).
+  assertEquals(toolTimeoutMs("jina_reader_scrape"), 18_000);
   // F2: the 8s deepfind_reverse_email override was removed — the provider
   // legitimately needs the 12s default (9/36 failures were timeouts at exactly 8s).
   assertEquals(toolTimeoutMs("deepfind_reverse_email"), DEFAULT_TOOL_TIMEOUT_MS);

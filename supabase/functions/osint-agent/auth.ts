@@ -9,6 +9,7 @@ import type { UIMessage } from "npm:ai@6";
 import { corsHeaders, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY } from "./env.ts";
 import { checkRateLimit as checkRateLimitDistributed, MAX_REQS_PER_MIN, MAX_REQS_PER_HOUR } from "./ratelimit.ts";
 import { detectSeedServer, formatThreadTitle } from "./validation.ts";
+import { recoverStaleThreadById } from "./recovery.ts";
 
 // Hard cap on the parsed request body so an authenticated caller can't inflate
 // DB storage (the `messages` insert below persists `lastUser.parts` verbatim)
@@ -214,6 +215,26 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
       }),
       { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
+  }
+  // If the previous execution for this thread was CPU-killed, close it BEFORE
+  // inserting the new user message so the recovered assistant note belongs to the
+  // interrupted run, not the retry the analyst just sent.
+  try {
+    const recovered = await recoverStaleThreadById(supabaseAdmin, threadId, {
+      reason: "stale heartbeat recovered before new request",
+    });
+    if (recovered.recovered) {
+      console.log(JSON.stringify({
+        event: "stale_thread_recovered_before_request",
+        thread_id: threadId,
+        assistant_inserted: recovered.assistantInserted,
+        artifact_count: recovered.artifactCount,
+      }));
+    } else if (recovered.error) {
+      console.warn("[stale-recovery] current-thread recovery failed:", recovered.error);
+    }
+  } catch (e) {
+    console.warn("[stale-recovery] current-thread recovery threw:", e);
   }
   const archiveEnabled: boolean = !!(thread as { archive_attachments?: boolean }).archive_attachments;
   let detectedSeedType: string = String(

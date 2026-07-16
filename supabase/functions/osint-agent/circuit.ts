@@ -58,7 +58,7 @@ const PROVIDER_TOOLS: Record<string, string[]> = {
     "deepfind_mac_lookup",
     "deepfind_dark_web_link",
   ],
-  bosint: ["bosint_email_lookup"],
+  bosint: ["bosint_email_lookup", "bosint_phone_lookup"],
   // All OathNet tools share ONE api key + ONE 500/day pooled quota. Group them so a
   // 429 (pool exhausted) / 402 / timeout / 5xx on any one endpoint suppresses the whole
   // family for the run instead of each re-firing under its own name and burning the
@@ -100,6 +100,17 @@ for (const [provider, tools] of Object.entries(PROVIDER_TOOLS)) {
 /** The upstream provider a tool belongs to (defaults to the tool itself). */
 export function providerForTool(tool: string): string {
   return TOOL_PROVIDER.get(tool) ?? tool;
+}
+
+function timeoutSuppressionThreshold(tool: string): number {
+  // OathNet has a legitimate 20s internal fetch budget; one outer timeout can be
+  // latency noise, not proof the whole quota-shared provider is dead. Require a
+  // second timeout before suppressing the family for the rest of the run.
+  // jina_reader_scrape (2026-07-16): same tolerance — one slow page render is
+  // noise, not a dead provider; a single timeout was suppressing Jina for the
+  // whole investigation and skipping later valid scrapes.
+  const provider = providerForTool(tool);
+  return provider === "oathnet" || provider === "jina_reader_scrape" ? 2 : 1;
 }
 
 interface Suppression {
@@ -435,9 +446,12 @@ export function recordResult(
       if (selector) b.deadSelectors.add(selector);
       break;
     case "timeout":
-      // A timed-out upstream wastes the full fetch window on every retry —
-      // suppress the provider for the investigation on the first timeout.
-      suppressProvider(threadId, tool, `timeout — provider '${providerForTool(tool)}' suppressed for investigation`);
+      // A timed-out upstream wastes the full fetch window on every retry. Most
+      // providers suppress on the first timeout; OathNet gets one retry because
+      // its normal latency sits near the wrapper budget.
+      if (b.consecutive >= timeoutSuppressionThreshold(tool)) {
+        suppressProvider(threadId, tool, `timeout — provider '${providerForTool(tool)}' suppressed for investigation`);
+      }
       if (b.consecutive >= 2 && selector) b.deadSelectors.add(selector);
       break;
     case "http_500":

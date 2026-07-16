@@ -58,6 +58,7 @@ import {
   minimaxPreflightFailureLabel,
 } from "./minimax-preflight.ts";
 import { evaluateCreditGate, evaluateDailyCapGate, reasonToAbortForCredits } from "./credits.ts";
+import { recoverStaleActiveThreads, startRunHeartbeat } from "./recovery.ts";
 
 // ---- Orchestrator resilience knobs (Phase 1: MissingToolResults crash) --------
 // Explicit per-step output-token ceiling. Root cause of the crash: MiniMax emits
@@ -96,6 +97,8 @@ function extractManualOverrideSelector(messages: UIMessage[]): string | null {
 }
 
 Deno.serve(async (req) => {
+  let heartbeat: ReturnType<typeof startRunHeartbeat> | null = null;
+  let releaseRunState = () => {};
   if (isHealthProbe(req)) return handleHealthProbe(req);
 
   degradedTools.clear();
@@ -121,6 +124,10 @@ Deno.serve(async (req) => {
     // ---- setupRequest handles CORS, auth, thread verification, message persistence ----
     const ctx = await setupRequest(req);
     const { supabase, supabaseAdmin, user, userId, threadId, archiveEnabled, detectedSeedType, messages } = ctx;
+    recoverStaleActiveThreads(supabaseAdmin, { limit: 10, reason: "stale heartbeat recovered at run startup" })
+      .then((r) => {
+        if (r.recovered || r.errors) console.log(JSON.stringify({ event: "stale_thread_sweeper", ...r }));
+      }, (e) => console.warn("[stale-recovery] startup sweeper failed:", e));
     const manualOverrideSelector = extractManualOverrideSelector(messages);
 
     // ---- Per-user credit gate (beta budget protection) ----------------------
@@ -322,6 +329,12 @@ Deno.serve(async (req) => {
     // can't wipe suppressions / premium dedup / capability disables out from
     // under a still-running sibling.
     circuit.acquire(threadId);
+    let runStateReleased = false;
+    releaseRunState = () => {
+      if (runStateReleased) return;
+      runStateReleased = true;
+      circuit.release(threadId);
+    };
     // Bootstrap per-thread circuit breakers (firecrawl/intelbase pre-disabled).
     circuit.applyBaselineDisables(threadId);
     // Startup provider-readiness gate (Phase B1): gate providers that can't run
@@ -698,6 +711,7 @@ Deno.serve(async (req) => {
     // Wall-clock start for BOTH the finalize-reserve check (prepareStep) and the hard
     // deadline StopCondition below. Declared here so prepareStep's closure reads it.
     const runStartedAt = Date.now();
+    heartbeat = startRunHeartbeat(supabaseAdmin, threadId, { startedAt: new Date(runStartedAt) });
     const prepareStep: NonNullable<Parameters<typeof streamText>[0]["prepareStep"]> =
       async ({ messages: stepMessages, stepNumber }) => {
         const { data: threadState } = await supabase
@@ -850,6 +864,7 @@ Deno.serve(async (req) => {
         manualOverrideSelector,
         toolCallBudget,
         shouldStopLiveLookups: () => shouldForceFinalize(Date.now() - runStartedAt, 0),
+        onHeartbeat: () => heartbeat?.pulse(),
       }),
       // Unknown-tool guard (Phase B4): the model occasionally emits a tool call
       // for a name that is NOT in the live registry (hallucinations like exify /
@@ -946,14 +961,17 @@ Deno.serve(async (req) => {
         // clobbered. Artifacts are committed incrementally inside each tool, so
         // none are lost on a tail-end throw.
         try {
+          heartbeat?.stop();
           const { error: updErr } = await supabase
             .from("threads")
-            .update({ status: "finished", updated_at: new Date().toISOString() })
+            .update({ status: "finished", recovery_reason: `stream_error: ${msg.slice(0, 220)}`, updated_at: new Date().toISOString() })
             .eq("id", threadId)
             .eq("status", "active");
           if (updErr) console.warn("[thread status] error-path update failed:", updErr.message);
         } catch (e) {
           console.warn("[thread status] error-path update threw:", e);
+        } finally {
+          releaseRunState();
         }
       },
     });
@@ -1169,7 +1187,8 @@ Deno.serve(async (req) => {
         // run's suppressions mid-flight. The LRU cap in circuit.ts is the
         // backstop for the paths where this never runs (isolate death,
         // unhandled rejection).
-        circuit.release(threadId);
+        heartbeat?.stop();
+        releaseRunState();
     };
 
     // Create a server-owned UI stream branch. Unlike consumeStream(), this
@@ -1228,6 +1247,8 @@ Deno.serve(async (req) => {
       onFinish: persistFinalMessages,
     });
   } catch (e) {
+    heartbeat?.stop();
+    releaseRunState();
     // setupRequest throws Response objects for 401/403/400 — return them directly
     if (e instanceof Response) return e;
     console.error("osint-agent error", e);

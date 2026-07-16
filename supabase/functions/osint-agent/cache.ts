@@ -53,7 +53,12 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // deepfind_reverse_email: removed 8s override — falls back to 12s default.
   // The 8s cap caused 9 timeouts in the 2026-07-08 audit; provider legitimately
   // needs headroom for the reverse-email lookup.
-  jina_reader_scrape: 8_000,       // single-page scrape — fail fast, try a lighter source
+  // jina_reader_scrape: 8s → 18s (2026-07-16, McGovern-run audit). At 8s a slow
+  // but recoverable page render timed out, and that single timeout suppressed the
+  // provider for the rest of the run (2 later valid scrapes skipped). 18s gives
+  // Jina's renderer headroom; the 2-strike circuit tolerance (circuit.ts) is the
+  // other half of the fix.
+  jina_reader_scrape: 18_000,
   dork_harvest: 25_000,     // wraps several web searches — p95 ~17s
   exa_search: 20_000,       // neural search + contents — p95 ~12s
   exa_find_similar: 20_000,
@@ -417,6 +422,7 @@ export function wrapToolsWithCache(
     // that don't set it (tests, other entrypoints) are unaffected.
     toolCallBudget?: { genuine: number; capped: boolean };
     shouldStopLiveLookups?: () => boolean;
+    onHeartbeat?: () => void;
   },
 ) {
   const wrapped: Record<string, Tool> = {};
@@ -612,6 +618,7 @@ export function wrapToolsWithCache(
               // Phase 2: per-tool hard timeout (schema-safe on timeout, no throw);
               // recording/evidence tools (ALWAYS_ALLOW) are exempt. Single thunk so
               // the underlying call isn't duplicated.
+              ctx.onHeartbeat?.();
               out = ALWAYS_ALLOW_TOOLS.has(name)
                 ? await (orig(input, opts) as Promise<unknown>)
                 : await runWithToolTimeout(
@@ -993,6 +1000,7 @@ export function wrapToolsWithCache(
         });
 
         // 3) live
+        ctx.onHeartbeat?.();
         // Count this GENUINE live execution against the per-run cap. Placed here (past
         // every cache/circuit/runtime gate, at the point we commit to running live) so
         // cached hits and governor skips never consume the budget — matching the
