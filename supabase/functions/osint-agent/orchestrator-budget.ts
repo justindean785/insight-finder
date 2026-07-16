@@ -22,6 +22,7 @@
  */
 
 import type { ModelMessage } from "npm:ai@6";
+import { envInt } from "./env.ts";
 
 // ---- Named budget constants -------------------------------------------------
 // Total serialized-char ceiling for the message array handed to the orchestrator.
@@ -56,7 +57,11 @@ export const MAX_ORCHESTRATOR_STEPS = 22;
 // CPU-killed before onFinish, leaving status=active and 0 assistant messages. Clamp
 // to 36 so pathological fan-out is forced into record/report while there is still
 // enough CPU budget left to persist completion.
-export const MAX_TOOL_CALLS_PER_RUN = 36;
+//
+// Runtime override: env `MAX_TOOL_CALLS_PER_RUN` (default 36 — the #327 CPU-kill
+// clamp — clamped ≤ 200). Lets an operator raise their own per-run tool budget
+// via a Supabase secret without a code change; unset/invalid → the 36 default.
+export const MAX_TOOL_CALLS_PER_RUN = envInt("MAX_TOOL_CALLS_PER_RUN", 36, 200);
 
 // Hard wall-clock deadline for a single run (ms). A StopCondition trips once elapsed
 // time exceeds this, ending the run CLEANLY (onFinish persists the partial assistant
@@ -65,7 +70,22 @@ export const MAX_TOOL_CALLS_PER_RUN = 36;
 // Speed pass: 6 min → 4 min. Backstop only — with the step cap + parallel tool
 // calls, healthy runs finish well under this; the 6-min tail was chasing dead
 // providers.
-export const ORCHESTRATOR_WALL_CLOCK_MS = 4 * 60_000;
+//
+// Runtime override: env `ORCHESTRATOR_WALL_CLOCK_MS` (default 240000, clamped
+// ≤ 900000). CAUTION: raising this only widens the window in which the platform
+// CPU/OOM kill can strike mid-run (the isolate-kill death path recovery.ts heals
+// after the fact) — it does NOT make runs safer. Bump modestly (≈600000) for
+// deep operator runs; dial back before onboarding users so their runs stay economical.
+export const ORCHESTRATOR_WALL_CLOCK_MS = envInt("ORCHESTRATOR_WALL_CLOCK_MS", 4 * 60_000, 900_000);
+
+// Emit the effective budget knobs once at cold start so `supabase functions logs`
+// (and anyone debugging a forced-finalize) can see what is actually in force.
+console.log(JSON.stringify({
+  event: "orchestrator_budget_config",
+  max_tool_calls_per_run: MAX_TOOL_CALLS_PER_RUN,
+  orchestrator_wall_clock_ms: ORCHESTRATOR_WALL_CLOCK_MS,
+  max_orchestrator_steps: MAX_ORCHESTRATOR_STEPS,
+}));
 
 /**
  * True once `budgetMs` has elapsed since `startedAt` (both epoch ms). Extracted as a
