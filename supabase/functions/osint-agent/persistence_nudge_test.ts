@@ -120,6 +120,7 @@ Deno.test("counter: tool-RESULT parts are never counted as calls", () => {
 Deno.test("nudge directive: tells the model to record now, before correlate, w/ provenance", () => {
   const d = buildPersistenceNudgeDirective();
   assert(/record_artifacts/.test(d), "must name the record tool");
+  assert(/only record_artifacts/i.test(d), "must restrict the nudged step to record_artifacts");
   assert(/minimax_correlate/i.test(d) && /(not|don't|do not).*wait/i.test(d), "must say do not wait for correlate");
   assert(/provenance|source|discovered_via/i.test(d), "must demand provenance preservation");
 });
