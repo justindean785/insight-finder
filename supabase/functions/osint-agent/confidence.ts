@@ -162,6 +162,67 @@ const NEVER_HIGH = new Set<SourceClass>([
   "property_aggregator",
 ]);
 
+// ── Cross-platform cluster corroboration (kind-gated) ──
+// A rock-solid cross-platform username / social-profile / infrastructure
+// cluster (same handle live on 3+ distinct platforms — YouTube+Twitter+
+// Patreon+Codeforces, cross-branded) is genuinely corroborated even though
+// every hit shares the SAME source class (social_profile_active). Without
+// this exception the cluster caps at 70 (Likely) forever.
+//
+// Narrow by design:
+//  • only applies to CLUSTER kinds (username / social_profile / infrastructure).
+//    REAL-IDENTITY kinds (name/person/etc.) are untouched — they keep the strict
+//    ≥2-distinct-non-social-class rule and the trusted-non-infra ownership guard.
+//  • requires ≥3 DISTINCT platforms observed via social_profile_active sources.
+//  • lifts the cap only to 80 (Likely+), well under the 85 infra-safe ceiling
+//    and the 90 confirmed threshold. Cannot alone reach Confirmed.
+const CLUSTER_KINDS: ReadonlySet<string> = new Set(["username", "social_profile", "infrastructure"]);
+const CLUSTER_CAP = 80;
+// Active-social tool slugs whose platform is fixed by the slug itself (no
+// parenthetical / metadata qualifier needed).
+const IMPLICIT_PLATFORM_BY_SLUG: Record<string, string> = {
+  github_user: "github",
+  reddit_user: "reddit",
+  hackernews_user: "hackernews",
+  cordcat_discord_lookup: "discord",
+  deepfind_telegram_channel: "telegram",
+};
+
+/** Count DISTINCT platforms observed via `social_profile_active`-class sources.
+ *  Reads platform from (in priority order): (a) trailing "(platform)" qualifier
+ *  on the source label, (b) the tool slug's implicit platform, (c) the source
+ *  slug itself as an opaque bucket, (d) metadata.platform / metadata.platforms. */
+function distinctActivePlatforms(
+  rawLabels: string[],
+  meta: Record<string, unknown> | null | undefined,
+): Set<string> {
+  const platforms = new Set<string>();
+  for (const raw of rawLabels) {
+    if (typeof raw !== "string" || !raw.trim()) continue;
+    const lower = raw.toLowerCase().trim();
+    const parenMatch = lower.match(/\(([^)]+)\)\s*$/);
+    const slug = lower.replace(/\s*\([^)]*\)\s*$/, "").trim();
+    if (classifySource(slug) !== "social_profile_active") continue;
+    if (parenMatch) {
+      const p = parenMatch[1].split(/[,;/|\s]+/)[0].trim();
+      if (p) { platforms.add(p); continue; }
+    }
+    if (IMPLICIT_PLATFORM_BY_SLUG[slug]) { platforms.add(IMPLICIT_PLATFORM_BY_SLUG[slug]); continue; }
+    platforms.add(slug);
+  }
+  if (meta) {
+    const p = meta.platform;
+    if (typeof p === "string" && p.trim()) platforms.add(p.trim().toLowerCase());
+    const ps = meta.platforms;
+    if (Array.isArray(ps)) {
+      for (const pp of ps) {
+        if (typeof pp === "string" && pp.trim()) platforms.add(pp.trim().toLowerCase());
+      }
+    }
+  }
+  return platforms;
+}
+
 export interface CapInput {
   rawConfidence: number;
   sources: string[]; // tool/source names
@@ -348,6 +409,22 @@ export function applyEvidenceCaps(input: CapInput): CapResult {
     cap = 95;
   }
 
+  // Kind-gated cross-platform cluster corroboration (see CLUSTER_KINDS comment).
+  // Only fires for username / social_profile / infrastructure kinds when there
+  // are ≥3 DISTINCT platforms observed via social_profile_active sources.
+  // Never applies to real-identity kinds (name/person/etc.).
+  let clusterPlatformCount = 0;
+  if (
+    CLUSTER_KINDS.has(kind) &&
+    uniqClasses.includes("social_profile_active")
+  ) {
+    const platforms = distinctActivePlatforms(sourceLabels, input.metadata);
+    clusterPlatformCount = platforms.size;
+    if (clusterPlatformCount >= 3) {
+      cap = Math.max(cap, CLUSTER_CAP);
+    }
+  }
+
   // Hard ceiling: weak-only sources can never get to 90+.
   if (uniqClasses.length > 0 && uniqClasses.every((c) => NEVER_HIGH.has(c))) {
     cap = Math.min(cap, 65);
@@ -372,6 +449,8 @@ export function applyEvidenceCaps(input: CapInput): CapResult {
   let reason_for_confidence: string;
   if (infraOnly && infraCount >= 2) {
     reason_for_confidence = `infrastructure corroborated across ${infraCount} sub-classes: ${infraCorroborationClasses.join(", ")}`;
+  } else if (clusterPlatformCount >= 3) {
+    reason_for_confidence = `cross-platform cluster corroborated across ${clusterPlatformCount} distinct platforms (social_profile_active)`;
   } else if (corroboratingCount >= 2) {
     reason_for_confidence = `corroborated across ${corroboratingCount} source classes: ${corroboratingClasses.join(", ")}`;
   } else if (corroboratingClasses[0] === "news" && isNameKind) {

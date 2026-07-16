@@ -112,6 +112,9 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   indicia_address: "breach",
   indicia_web_dbs: "breach",
   indicia_hudsonrock: "breach",
+  // People Data Labs — data-broker person aggregator (profiles/employment/emails).
+  // Classed `broker` when available; otherwise treated as `breach` peer to Indicia
+  // — LEAD until independently corroborated, cannot alone reach Confirmed.
   pdl_person_enrich: "breach",
   leakcheck: "breach", // bare alias of leakcheck_lookup seen in compound source strings
   // ── Threat-intel / ransomware-victim exposure ──
@@ -131,27 +134,59 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   // username sweeps
   username_sweep: "username_sweep",
   socialfetch_lookup: "social_profile_passive",
+  // Active readers / profile fetchers. These retrieve identity-bearing content
+  // directly from a live profile page. Classed `social_profile_active` (cap 70)
+  // — strong enough to corroborate but a single active social read must NEVER
+  // alone push a REAL-IDENTITY claim to Confirmed. Corroboration of REAL-NAME
+  // still requires a TRUSTED_NON_INFRA class (official/court/news/independent
+  // public/government) — see confidence.ts.
+  socialfetch_web_read: "social_profile_active",
+  github_user: "social_profile_active",
+  reddit_user: "social_profile_active",
+  hackernews_user: "social_profile_active",
+  cordcat_discord_lookup: "social_profile_active",
+  deepfind_telegram_channel: "social_profile_active",
+  // username_search is the deprecated alias of username_sweep.
+  username_search: "username_sweep",
+  // minimax_extract fetches/extracts structured content from a URL — a direct
+  // observation of a public page, on par with jina_reader_scrape/exa_get_contents.
+  minimax_extract: "independent_public",
   // search/summary
   minimax_web_search: "ai_summary",
   exa_search: "ai_summary",
+  exa_find_similar: "ai_summary",
+  // discovery/synthesis — never counts as new independent corroboration.
+  minimax_correlate: "ai_summary",
+  deepfind_telegram_search: "ai_summary",
+  // Navigator query/search endpoints — aggregator/search surface. If a future
+  // review shows these actually resolve to a breach/record lookup, reclassify.
+  osint_navigator_query: "ai_summary",
+  osint_navigator_search: "ai_summary",
   gemini_deep_dork: "ai_summary",
   gemini_vision: "ai_summary",
   google_dorks: "ai_summary",
   dork_harvest: "ai_summary",
   jina_reader_scrape: "independent_public",
   exa_get_contents: "independent_public",
+  // RapidAPI multi-breach aggregator — breach class.
+  rapidapi_all_breaches: "breach",
   // infra — split into sub-classes so cross-tool corroboration counts (#56)
   whois_lookup: "infra_registry",
   hunter_domain_search: "infra_registry",
+  hunter_email_finder: "infra_registry",
   hunter_email_verifier: "infra_registry",
   hunter_combined: "infra_registry",
   dns_records: "infra_dns",
   crtsh_subdomains: "infra_dns",
+  deepfind_ssl_inspect: "infra_dns",
   ip_intel: "infra_scan",
   ipgeolocation_lookup: "infra_scan",
   shodan_internetdb: "infra_scan",
   http_fingerprint: "infra_scan",
   hackertarget: "infra_scan",
+  deepfind_tech_stack: "infra_scan",
+  deepfind_mac_lookup: "infra_scan",
+  deepfind_url_unshorten: "infra_passive",
   virustotal_lookup: "infra_reputation",
   ipqualityscore_lookup: "infra_reputation",
   // certificate transparency — DNS/infra perspective
@@ -167,6 +202,12 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   // GLEIF LEI registry — official corporate registry, same class as the other
   // company-registry sources. (LEIs are issued by accredited LOUs.)
   gleif_lei_search: "public_record",
+  // Public-record / on-chain observations
+  deepfind_vin_lookup: "public_record",
+  deepfind_aircraft_lookup: "public_record",
+  deepfind_vessel_lookup: "public_record",
+  crypto_wallet: "independent_public",
+  deepfind_transaction_viewer: "independent_public",
   // passive / historical — observe the past, not the live asset
   urlscan_search: "infra_passive",
   wayback_snapshots: "infra_passive",
