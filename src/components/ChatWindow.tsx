@@ -642,6 +642,15 @@ function RunFlowRail({ groups }: { groups: ToolRunGroup[] }) {
         {groups.map((group, index) => {
           const tone = flowToneForGroup(group);
           const isLast = index === groups.length - 1;
+          // De-stutter: when this chip shares the previous chip's stage, drop the
+          // repeated stage word and show just "cycle N", so a constant-stage run
+          // reads "Review cycle 1 → cycle 2 → cycle 3" instead of restating
+          // "Review" on every chip.
+          const humanStage = humanizeStage(group.stage);
+          const prevStage = index > 0 ? humanizeStage(groups[index - 1].stage) : null;
+          const railLabel = prevStage === humanStage && group.cycleId > 0
+            ? `cycle ${group.cycleId}`
+            : cycleSummaryLabel(humanStage, group.cycleId);
           const icon = tone === "completed"
             ? <CheckCircle2 className="h-3.5 w-3.5" />
             : tone === "cached"
@@ -660,7 +669,7 @@ function RunFlowRail({ groups }: { groups: ToolRunGroup[] }) {
             <div key={`flow-${group.key}-${index}`} className="flex shrink-0 items-center gap-1">
               <div className={cn("inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-micro", toneClass)}>
                 {icon}
-                <span className="font-mono tracking-normal">{cycleSummaryLabel(humanizeStage(group.stage), group.cycleId)}</span>
+                <span className="font-mono tracking-normal">{railLabel}</span>
                 <span className="text-eyebrow opacity-80">{group.parts.length}</span>
               </div>
               {!isLast && <span className="h-px w-5 shrink-0 bg-gradient-to-r from-white/25 to-white/5" aria-hidden />}

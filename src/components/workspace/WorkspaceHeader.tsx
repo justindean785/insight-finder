@@ -48,6 +48,20 @@ const KIND_LABEL: Record<SeedKind, string> = {
   other: "Selector",
 };
 
+// The header's "N evidence" must read the chain-verified evidence_log total, NOT
+// the artifact count — they legitimately differ (one artifact can carry several
+// evidence rows, and the artifact list is deduped, so it is the smaller number).
+// Analysts trust this figure, so it has to be the evidence_log count. Fall back
+// to the artifact count only while the integrity probe is still loading, so the
+// header never flashes a false "0 evidence".
+// eslint-disable-next-line react-refresh/only-export-components
+export function pickEvidenceCount(
+  integrity: { total: number } | null,
+  artifactFallback: number,
+): number {
+  return integrity ? integrity.total : artifactFallback;
+}
+
 /**
  * Case command bar — Palantir/Claude workstation style.
  * Three-zone grid: left meta · centered identity · right ops.
@@ -63,6 +77,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
   const [integrity, setIntegrity] = useState<{ ok: boolean; total: number; first_break: number | null } | null>(null);
 
   const artifactCount = items.length;
+  const evidenceCount = pickEvidenceCount(integrity, artifactCount);
 
   const loadIntegrity = useCallback(async () => {
     const [{ count }, { data: v }] = await Promise.all([
@@ -84,9 +99,18 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
     };
     load();
     void loadIntegrity();
+    const onThreadChange = (payload: unknown) => {
+      void load();
+      // When the run reaches a terminal status, re-verify the evidence chain:
+      // evidence_log INSERTs missed during a realtime gap (a CPU-killed isolate
+      // whose socket dropped) would otherwise leave the "N evidence" count frozen
+      // on a finished run — the same self-heal useThreadArtifacts performs.
+      const next = (payload as { new?: { status?: string } | null })?.new?.status;
+      if (next === "finished" || next === "stopped") void loadIntegrity();
+    };
     const ch = supabase
       .channel(`workspace-header-${threadId}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "threads", filter: `id=eq.${threadId}` }, load)
+      .on("postgres_changes", { event: "*", schema: "public", table: "threads", filter: `id=eq.${threadId}` }, onThreadChange)
       .on("postgres_changes", { event: "*", schema: "public", table: "evidence_log", filter: `thread_id=eq.${threadId}` }, () => void loadIntegrity())
       .subscribe();
     return () => { supabase.removeChannel(ch); };
@@ -211,7 +235,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
                 {status === "active" ? "Running" : "Complete"}
               </span>
               <span className="hidden text-[10px] text-muted-foreground/70 sm:inline tabular-nums">
-                {artifactCount} evidence · {activity.persistedTotal} tools
+                {evidenceCount} evidence · {activity.persistedTotal} tools
               </span>
             </div>
           )}
