@@ -51,9 +51,12 @@ export const MAX_ORCHESTRATOR_STEPS = 22;
 // is the dominant "why is it slow". Once a run hits this, the wrapper stops starting
 // new lookups and the orchestrator finalizes with the evidence in hand (see
 // orchestrator-finalize.ts). Recording/evidence tools (ALWAYS_ALLOW) are exempt so
-// the closing record_artifacts + report still run. Cheatsheet target: avg <30/run,
-// so 60 is a generous backstop that only clips the pathological tail. Single tunable.
-export const MAX_TOOL_CALLS_PER_RUN = 60;
+// the closing record_artifacts + report still run. Beta hotfix 2026-07-15: a live
+// username run hit the old 60-call cap, crossed 4 minutes, then the edge runtime was
+// CPU-killed before onFinish, leaving status=active and 0 assistant messages. Clamp
+// to 36 so pathological fan-out is forced into record/report while there is still
+// enough CPU budget left to persist completion.
+export const MAX_TOOL_CALLS_PER_RUN = 36;
 
 // Hard wall-clock deadline for a single run (ms). A StopCondition trips once elapsed
 // time exceeds this, ending the run CLEANLY (onFinish persists the partial assistant

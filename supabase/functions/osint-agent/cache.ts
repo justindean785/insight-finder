@@ -161,7 +161,20 @@ export function runWithToolTimeout<T>(
         _tool_timeout: true,
       });
     }, ms);
-    factory(ctrl.signal).then(
+    // Guard a SYNCHRONOUS throw from factory() — without this the setTimeout
+    // above is never cleared and the run leaks a timer (deno's op-sanitizer
+    // fails crash_resilience / gemini_parallel_pairing on the throwing-tool path).
+    let promise: Promise<T>;
+    try {
+      promise = factory(ctrl.signal);
+    } catch (e) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(e);
+      return;
+    }
+    promise.then(
       (v) => { if (!settled) { settled = true; clearTimeout(timer); resolve(v); } },
       // If the factory rejects AFTER we already resolved a timeout (e.g. the
       // AbortError from our own ctrl.abort()), swallow it — the timeout result
@@ -403,6 +416,7 @@ export function wrapToolsWithCache(
     // `capped` is surfaced by index.ts (finalize + telemetry). Optional so callers
     // that don't set it (tests, other entrypoints) are unaffected.
     toolCallBudget?: { genuine: number; capped: boolean };
+    shouldStopLiveLookups?: () => boolean;
   },
 ) {
   const wrapped: Record<string, Tool> = {};
@@ -864,6 +878,25 @@ export function wrapToolsWithCache(
             ...runtimeMetaBase,
             rejection_reason: "run_capped",
             stage: "CAPPED",
+            cache_layer: "miss",
+            stale_cache: !!staleRecord,
+          });
+        }
+
+        // ---- Finalize-window live-call guard -----------------------------------
+        // prepareStep restricts activeTools once the reserve window opens, but it is
+        // only called between model steps. A long/parallel step can still attempt new
+        // lookups after the window opens; skip them here so CPU is reserved for the
+        // record/report closeout. Recording tools are exempt.
+        if (ctx.shouldStopLiveLookups?.() && !ALWAYS_ALLOW_TOOLS.has(name)) {
+          await logUsage(false, false, Date.now() - t0, "finalize window open; live lookup skipped", null, true, {
+            input: inputJson,
+            runtime: { ...runtimeMetaBase, rejection_reason: "finalize_window", rejection_source: "deadline", stale_cache: !!staleRecord },
+          });
+          return attachRuntimeMeta({ ok: false, skipped: true, finalizing: true, error: "finalize window open; live lookup skipped" }, {
+            ...runtimeMetaBase,
+            rejection_reason: "finalize_window",
+            stage: "REPORT",
             cache_layer: "miss",
             stale_cache: !!staleRecord,
           });

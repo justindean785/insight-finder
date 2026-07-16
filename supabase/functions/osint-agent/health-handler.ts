@@ -1,16 +1,18 @@
 import {
-  corsHeaders, MINIMAX_API_KEY, LOVABLE_API_KEY, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY,
+  corsHeaders, MINIMAX_API_KEY, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY,
   OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
   CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED,
   HIBP_API_KEY, EXA_API_KEY, FIRECRAWL_API_KEY, SERUS_API_KEY,
   GITHUB_API_TOKEN, PERPLEXITY_API_KEY, IPQUALITYSCORE_API_KEY,
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
-  URLSCANNER_API_KEY,
+  URLSCANNER_API_KEY, GEMINI_FALLBACK_MODEL_ID,
   XAI_API_KEY, GROK_ORCHESTRATOR_MODEL_ID,
-  DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID,
-  OSINT_AGENT_PROBE_SECRET, FALLBACK_MODEL_ID,
+  OSINT_AGENT_PROBE_SECRET,
+  DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID, PRIMARY_ORCHESTRATOR_MODEL_ID,
+  ORCHESTRATOR_PROVIDER, LOVABLE_API_KEY, OPENADAPTER_API_KEY, OPENADAPTER_BASE_URL,
 } from "./env.ts";
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
+import { selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
 
 // ---- checks.minimax — is the PRIMARY orchestrator actually reachable? -------
@@ -61,13 +63,14 @@ export async function checkMinimax(deps?: {
   }
 }
 
-// ---- checks.deepseek — is the (now-primary) DeepSeek orchestrator reachable? -
-// Mirrors checkMinimax's contract exactly (ok:true requires a configured key
-// AND a live round-trip, bounded at 5s, one shot). Deliberately does NOT skip
-// the ping on a "recently healthy" warm isolate the way checkMinimax does —
-// there is no deepseekHealthyWithin() cache yet (would require wiring a
-// markDeepseekHealthy() call into the live orchestrator stream path); a future
-// optimization, not required for correctness.
+// ---- checks.deepseek — is the SELECTED-by-default primary orchestrator reachable?
+// DeepSeek is the lead orchestrator when DEEPSEEK_API_KEY is set (orchestrator_select.ts),
+// so a plain ?health=1 must be able to confirm DeepSeek itself answers — independently
+// of checks.minimax, so a healthy MiniMax fallback can NOT mask a DeepSeek outage. The
+// probe pings deepseek in NON-THINKING mode (`thinking:{type:"disabled"}`) — the same
+// shape the live orchestrator uses — so the canary matches production and stays cheap.
+// Reported UNCONDITIONALLY (missing key → ok:false reason:missing_key) so operators can
+// always see whether DeepSeek is actually configured + reachable.
 export type DeepseekCheck = {
   ok: boolean;
   reason?: "missing_key" | "preflight_failed" | "timeout";
@@ -76,24 +79,34 @@ export type DeepseekCheck = {
 
 export async function checkDeepseek(deps?: {
   hasKey?: boolean;
-  fetchImpl?: typeof fetch;
+  apiKey?: string;
+  model?: string;
+  doFetch?: typeof fetch;
 }): Promise<DeepseekCheck> {
   const hasKey = deps?.hasKey ?? !!DEEPSEEK_API_KEY;
   if (!hasKey) {
+    // Config regression when DeepSeek is the intended primary — error-level so it
+    // can't hide behind a quietly-working MiniMax fallback.
+    console.error("[health] DEEPSEEK_API_KEY is not configured — checks.deepseek reason=missing_key");
     return { ok: false, reason: "missing_key" };
   }
-  const doFetch = deps?.fetchImpl ?? fetch;
+  const apiKey = deps?.apiKey ?? DEEPSEEK_API_KEY;
+  const model = deps?.model ?? DEEPSEEK_ORCHESTRATOR_MODEL_ID;
+  const doFetch = deps?.doFetch ?? fetch;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 5_000);
   try {
     const res = await doFetch("https://api.deepseek.com/v1/chat/completions", {
       method: "POST",
-      headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: DEEPSEEK_ORCHESTRATOR_MODEL_ID,
+        model,
         messages: [{ role: "user", content: "ping" }],
         max_tokens: 4,
         temperature: 0,
+        // Non-thinking canary: match the live orchestrator's request shape and keep
+        // the paid health ping to a single cheap token.
+        thinking: { type: "disabled" },
       }),
       signal: ctrl.signal,
     });
@@ -109,10 +122,64 @@ export async function checkDeepseek(deps?: {
   }
 }
 
+// Resolve which orchestrator provider is ACTUALLY selected at runtime + its model,
+// using the same pure selector index.ts uses — so the health endpoint reports the
+// live truth (not a hardcoded guess). Pure; env is injected for testability.
+export function resolveSelectedOrchestrator(env?: {
+  pin?: string;
+  deepseek?: boolean;
+  minimax?: boolean;
+  grok?: boolean;
+  openadapter?: boolean;
+}): { provider: OrchestratorProvider; reason: string; model: string } {
+  const choice = selectOrchestratorProvider({
+    pin: env?.pin ?? ORCHESTRATOR_PROVIDER,
+    deepseek: env?.deepseek ?? !!DEEPSEEK_API_KEY,
+    minimax: env?.minimax ?? !!MINIMAX_API_KEY,
+    grok: env?.grok ?? !!XAI_API_KEY,
+    openadapter: env?.openadapter ?? !!(OPENADAPTER_API_KEY && OPENADAPTER_BASE_URL),
+  });
+  const model =
+    choice.provider === "deepseek" ? DEEPSEEK_ORCHESTRATOR_MODEL_ID :
+    choice.provider === "grok" ? GROK_ORCHESTRATOR_MODEL_ID :
+    choice.provider === "minimax" ? PRIMARY_ORCHESTRATOR_MODEL_ID :
+    "";
+  return { provider: choice.provider, reason: choice.reason, model };
+}
+
+// Role of a provider's diagnostic RELATIVE to the live selection: only the selected
+// provider is "active"; every other configured provider is a "fallback" diagnostic.
+// So MiniMax is labeled "fallback" (never "active") whenever DeepSeek is selected.
+export function providerRole(
+  selected: OrchestratorProvider,
+  provider: OrchestratorProvider,
+): "active" | "fallback" {
+  return selected === provider ? "active" : "fallback";
+}
+
+// The orchestrator readiness gate, keyed on the SELECTED provider — symmetric by
+// construction, so it can both FAIL a deployment whose active provider has no key and
+// PASS one whose active provider is keyed but whose (unused) MiniMax fallback is not.
+// Pure so both directions are unit-testable without env or network.
+export function orchestratorGate(
+  provider: OrchestratorProvider,
+  keyPresent: boolean,
+  coreOk: boolean,
+): { check: { ok: boolean; detail?: string; reason?: string }; ok: boolean } {
+  const check = keyPresent
+    ? { ok: true }
+    : {
+      ok: false,
+      detail: `selected orchestrator "${provider}" has no API key configured`,
+      reason: "missing_key",
+    };
+  // Mirrors deriveReadiness's contract (orchestrator && core decide ok; tools do not),
+  // with the orchestrator term now answering "is the ACTIVE provider usable?".
+  return { check, ok: keyPresent && coreOk };
+}
+
 export function deriveReadiness(env: {
   MINIMAX_API_KEY?: string | null;
-  LOVABLE_API_KEY?: string | null;
-  DEEPSEEK_API_KEY?: string | null;
   SUPABASE_URL?: string | null;
   SUPABASE_SERVICE_ROLE_KEY?: string | null;
   SUPABASE_ANON_KEY?: string | null;
@@ -134,14 +201,9 @@ export function deriveReadiness(env: {
   OPENCORPORATES_API_KEY?: string | null;
   RANSOMWARELIVE_API_KEY?: string | null;
   URLSCANNER_API_KEY?: string | null;
-}): { ok: boolean; checks: Record<string, { ok: boolean; detail?: string; reason?: string }> } {
+}): { ok: boolean; checks: Record<string, { ok: boolean; detail?: string; reason?: string; role?: "active" | "fallback" }> } {
   const has = (v: string | null | undefined) => !!(v && v.length > 0);
-  // Any configured orchestrator provider satisfies readiness — not just
-  // MiniMax/Lovable. DeepSeek is now the default PRIMARY when configured (see
-  // orchestrator_select.ts); without DEEPSEEK_API_KEY here, unsetting
-  // MINIMAX_API_KEY (now a secondary/fallback-only key) would report the whole
-  // function unhealthy even though it's fully functional on DeepSeek.
-  const orchestratorOk = has(env.MINIMAX_API_KEY) || has(env.LOVABLE_API_KEY) || has(env.DEEPSEEK_API_KEY);
+  const orchestratorOk = has(env.MINIMAX_API_KEY);
   const coreOk = has(env.SUPABASE_URL) && has(env.SUPABASE_SERVICE_ROLE_KEY) && has(env.SUPABASE_ANON_KEY);
   const tools = {
     oathnet: has(env.OATHNET_API_KEY),
@@ -164,10 +226,10 @@ export function deriveReadiness(env: {
     urlscanner: has(env.URLSCANNER_API_KEY),
   };
   const enabledOptional = Object.values(tools).filter(Boolean).length;
-  const checks: Record<string, { ok: boolean; detail?: string; reason?: string }> = {
+  const checks: Record<string, { ok: boolean; detail?: string; reason?: string; role?: "active" | "fallback" }> = {
     orchestrator: orchestratorOk
       ? { ok: true }
-      : { ok: false, detail: "Set DEEPSEEK_API_KEY, MINIMAX_API_KEY, or LOVABLE_API_KEY in Supabase secrets" },
+      : { ok: false, detail: "Set MINIMAX_API_KEY in Supabase secrets" },
     core: coreOk
       ? { ok: true }
       : { ok: false, detail: "SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / SUPABASE_ANON_KEY missing" },
@@ -191,7 +253,7 @@ export function isHealthProbe(req: Request): boolean {
 
 export async function handleHealthProbe(req: Request): Promise<Response> {
   const r = deriveReadiness({
-    MINIMAX_API_KEY, LOVABLE_API_KEY, DEEPSEEK_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY,
+    MINIMAX_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY,
     SUPABASE_ANON_KEY,
     OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
     CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, HIBP_API_KEY, EXA_API_KEY,
@@ -203,17 +265,48 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   const u = new URL(req.url);
   const wantProbe = u.searchParams.get("probe") === "1";
 
-  // checks.minimax: live reachability of the primary orchestrator (bounded 5s;
-  // warm-isolate cache short-circuits the paid ping). Extends the existing
-  // checks contract — orchestrator/core/tools keep their exact prior semantics,
-  // and overall ok/status is deliberately NOT coupled to this check (a MiniMax
-  // blip degrades to the Gemini fallback; it does not make the function "down").
-  r.checks.minimax = await checkMinimax();
-  // checks.deepseek: same contract, for the now-default primary orchestrator.
-  // Reported unconditionally (key-not-configured → ok:false reason:missing_key)
-  // so operators can see at a glance whether DeepSeek is actually reachable,
-  // not just whether MiniMax (its secondary/fallback) is.
-  r.checks.deepseek = await checkDeepseek();
+  // Which provider is ACTUALLY selected at runtime (same pure selector index.ts
+  // uses) + its model. This is the DeepSeek STOP-gate signal: selected_provider tells
+  // an operator at a glance whether DeepSeek — not MiniMax — is the live orchestrator.
+  const selected = resolveSelectedOrchestrator();
+
+  // Probe DeepSeek (now-default primary when keyed) AND MiniMax in parallel so the
+  // health response stays bounded. checks.deepseek is reported UNCONDITIONALLY and is
+  // INDEPENDENT of checks.minimax — a healthy MiniMax fallback can never mask a
+  // DeepSeek key-missing / probe failure.
+  const [deepseekCheck, minimaxCheck] = await Promise.all([
+    checkDeepseek(),
+    checkMinimax(),
+  ]);
+  // Role labels: only the SELECTED provider is "active"; the other is a "fallback"
+  // diagnostic. So MiniMax is never labeled active when DeepSeek is selected.
+  r.checks.deepseek = { ...deepseekCheck, role: providerRole(selected.provider, "deepseek") };
+  r.checks.minimax = { ...minimaxCheck, role: providerRole(selected.provider, "minimax") };
+
+  // Re-gate the orchestrator check on the SELECTED provider's key, in BOTH directions.
+  // deriveReadiness() still hardcodes orchestrator := has(MINIMAX_API_KEY) (its pure
+  // unit tests pin that), which is now the wrong question: MiniMax is the FALLBACK once
+  // DeepSeek is selected. A one-directional override would be a false NEGATIVE — drop
+  // MINIMAX_API_KEY on a healthy DeepSeek-only deployment and the function would report
+  // itself down. So the gate is symmetric: the selected provider's key decides, and
+  // overall ok is recomputed from it (core is the other hard requirement; tools are not).
+  // Losing the MiniMax fallback is NOT hidden by this — it still surfaces as
+  // checks.minimax {ok:false, reason:"missing_key", role:"fallback"}.
+  const selectedKeyPresent =
+    selected.provider === "deepseek" ? !!DEEPSEEK_API_KEY :
+    selected.provider === "minimax" ? !!MINIMAX_API_KEY :
+    selected.provider === "grok" ? !!XAI_API_KEY :
+    selected.provider === "openadapter" ? !!(OPENADAPTER_API_KEY && OPENADAPTER_BASE_URL) :
+    (!!MINIMAX_API_KEY || !!LOVABLE_API_KEY);
+  const gate = orchestratorGate(selected.provider, selectedKeyPresent, r.checks.core?.ok === true);
+  r.checks.orchestrator = gate.check;
+  r.ok = gate.ok;
+  // Active-provider reachability, surfaced separately (visible) without coupling the
+  // 200/503 status to a transient probe blip — a failed probe on a keyed provider still
+  // has the MiniMax fallback, matching the existing MiniMax-blip philosophy.
+  const activeCheck = selected.provider === "deepseek" ? deepseekCheck
+    : selected.provider === "minimax" ? minimaxCheck : null;
+  const orchestratorActiveOk = activeCheck ? activeCheck.ok : selectedKeyPresent;
 
   if (wantProbe) {
     const supplied = req.headers.get("x-probe-secret") ?? "";
@@ -263,17 +356,22 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
         clearTimeout(timer);
       }
     };
-    const [mm, lov, gk, ds] = await Promise.all([
-      probeProvider("minimax", !!MINIMAX_API_KEY, (signal) => minimaxChat({ user: "ping", maxTokens: 4, temperature: 0, signal })),
-      probeProvider("lovable", !!LOVABLE_API_KEY, async (signal) => {
-        const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const [ds, mm, gk, gm] = await Promise.all([
+      probeProvider("deepseek", !!DEEPSEEK_API_KEY, async (signal) => {
+        const res = await fetch("https://api.deepseek.com/v1/chat/completions", {
           method: "POST",
-          headers: { "Lovable-API-Key": LOVABLE_API_KEY, "Content-Type": "application/json" },
-          body: JSON.stringify({ model: FALLBACK_MODEL_ID, messages: [{ role: "user", content: "ping" }], max_tokens: 4 }),
+          headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: DEEPSEEK_ORCHESTRATOR_MODEL_ID,
+            messages: [{ role: "user", content: "ping" }],
+            max_tokens: 4,
+            thinking: { type: "disabled" },
+          }),
           signal,
         });
         return { ok: res.ok, status: res.status };
       }),
+      probeProvider("minimax", !!MINIMAX_API_KEY, (signal) => minimaxChat({ user: "ping", maxTokens: 4, temperature: 0, signal })),
       probeProvider("grok", !!XAI_API_KEY, async (signal) => {
         const res = await fetch("https://api.x.ai/v1/chat/completions", {
           method: "POST",
@@ -283,20 +381,20 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
         });
         return { ok: res.ok, status: res.status };
       }),
-      probeProvider("deepseek", !!DEEPSEEK_API_KEY, async (signal) => {
-        const res = await fetch("https://api.deepseek.com/v1/chat/completions", {
+      probeProvider("gemini", !!Deno.env.get("GEMINI_API_KEY"), async (signal) => {
+        const res = await fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
           method: "POST",
-          headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ model: DEEPSEEK_ORCHESTRATOR_MODEL_ID, messages: [{ role: "user", content: "ping" }], max_tokens: 4 }),
+          headers: { Authorization: `Bearer ${Deno.env.get("GEMINI_API_KEY")}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ model: GEMINI_FALLBACK_MODEL_ID, messages: [{ role: "user", content: "ping" }], max_tokens: 4 }),
           signal,
         });
         return { ok: res.ok, status: res.status };
       }),
     ]);
-    providers.minimax = mm;
-    providers.lovable = lov;
-    providers.grok = gk;
     providers.deepseek = ds;
+    providers.minimax = mm;
+    providers.grok = gk;
+    providers.gemini = gm;
   }
   const body: Record<string, unknown> = {
     ok: r.ok,
@@ -307,6 +405,11 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     // `git log` to detect deploy drift. build_committed_at gives the commit date.
     build: BUILD_MARKER,
     build_committed_at: BUILD_COMMITTED_AT,
+    // The live orchestrator selection — the DeepSeek STOP-gate signal.
+    selected_provider: selected.provider,
+    selected_model: selected.model,
+    orchestrator_reason: selected.reason,
+    orchestrator_active_ok: orchestratorActiveOk,
     checks: r.checks,
     intelbase_enabled: INTELBASE_ENABLED,
   };

@@ -147,6 +147,7 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   indicia_address: { requiresKey: "INDICIA_API_KEY" },
   indicia_web_dbs: { requiresKey: "INDICIA_API_KEY" },
   indicia_hudsonrock: { requiresKey: "INDICIA_API_KEY" },
+  pdl_person_enrich: { requiresKey: "PEOPLEDATALABS_API_KEY" },
 };
 
 /** Every env var name the requirements depend on — what the wiring must probe. */

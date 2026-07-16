@@ -325,6 +325,7 @@ export function isHostDead(input: string): boolean {
 // keys the direct-Gemini fallback gateway, which must be declared after it.)
 export const OSINT_NAVIGATOR_API_KEY = Deno.env.get("OSINT_NAVIGATOR_API_KEY");
 export const PERPLEXITY_API_KEY = Deno.env.get("PERPLEXITY_API_KEY");
+export const PEOPLEDATALABS_API_KEY = Deno.env.get("PEOPLEDATALABS_API_KEY");
 
 // ---- fetchRetry (re-exported from fetch_retry.ts) ---------------------------
 // Kept as a re-export so existing `import { fetchRetry } from "./env.ts"`

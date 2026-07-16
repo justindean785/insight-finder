@@ -268,6 +268,7 @@ export function callKey(tool: string, selector: string, purpose: string = "defau
  *  normalized selector) is a free skip — the structural fix for the duplicate
  *  premium charges (leakcheck ×2, oathnet ×2, breach ×3) in the trace audit. */
 export const PREMIUM_TOOLS = new Set<string>([
+  "pdl_person_enrich",
   "oathnet_lookup",
   "leakcheck_lookup",
   "breach_check",
