@@ -37,6 +37,12 @@ export const TOTAL_PROMPT_CHAR_BUDGET = 220_000;
 // about its latest pivots while everything older is available by reference.
 export const RECENT_WINDOW = 10;
 
+// User turns can contain pasted breach JSON / raw dumps. The older tool-result
+// elision below does not touch `role:"user"`, so one latest paste can still push
+// the orchestrator prompt past 500k chars and burn CPU before the agent can close.
+// Keep enough of the paste for selectors/context, but never resend the whole blob.
+export const USER_TEXT_CHAR_BUDGET = 12_000;
+
 // Max orchestrator steps per run (was stepCountIs(50)). A low ceiling plus the
 // wall-clock deadline below collapse the p95 tool-time tail. Named so a test can
 // pin it and so index.ts and any planner share one source of truth.
@@ -106,6 +112,38 @@ export function elidedToolResultRef(toolName: unknown, originalValue: unknown): 
     `full result persisted in the artifact store, retrieve via memory_recall]`;
 }
 
+function capText(text: string, max: number, label: string): string {
+  return text.length <= max
+    ? text
+    : `${text.slice(0, max)}\n…[${label} truncated ${text.length - max} chars to keep this investigation within CPU budget]`;
+}
+
+/**
+ * Bound raw user text payloads before they are sent back through the orchestrator.
+ * Tool results have their own reference elision; this covers pasted JSON/log dumps.
+ */
+export function capUserTextToBudget(
+  msgs: ModelMessage[],
+  maxChars: number = USER_TEXT_CHAR_BUDGET,
+): ModelMessage[] {
+  return msgs.map((m) => {
+    if (m.role !== "user") return m;
+    if (typeof m.content === "string") {
+      return { ...m, content: capText(m.content, maxChars, "user input") } as ModelMessage;
+    }
+    if (!Array.isArray(m.content)) return m;
+    return {
+      ...m,
+      content: (m.content as TrimPart[]).map((part: TrimPart) => {
+        if (part?.type === "text" && typeof part.text === "string") {
+          return { ...part, text: capText(part.text, maxChars, "user input") };
+        }
+        return part;
+      }) as unknown as typeof m.content,
+    } as ModelMessage;
+  });
+}
+
 /**
  * Bound the total serialized size of a ModelMessage[] by eliding the tool-result
  * OUTPUTS of the oldest messages (outside the keepRecent window) first, replacing
@@ -118,6 +156,7 @@ export function capTotalToBudget(
   budget: number,
   keepRecent: number,
 ): ModelMessage[] {
+  msgs = capUserTextToBudget(msgs);
   // O(n), not O(n^2): serialize each message's length ONCE and keep a running
   // total, folding in the delta as each message is elided below — instead of
   // re-summing the whole array every iteration (and again every prepareStep

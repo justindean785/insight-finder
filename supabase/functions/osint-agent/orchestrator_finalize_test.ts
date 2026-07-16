@@ -15,6 +15,7 @@ import {
   buildSalvageSynthesisPrompt,
   toolCallCapReached,
   shouldSkipForToolCap,
+  shouldSkipForFinalizeWindow,
   FINALIZE_ACTIVE_TOOLS,
   FINALIZE_RESERVE_MS,
   FINALIZE_MAX_STEPS,
@@ -111,6 +112,13 @@ Deno.test("shouldSkipForToolCap: skips a live lookup past the cap but NEVER a re
   assertEquals(shouldSkipForToolCap(MAX_TOOL_CALLS_PER_RUN - 1, false), false, "lookup under cap → run");
   // record_artifacts / evidence writes are exempt so capping can't strand evidence.
   assertEquals(shouldSkipForToolCap(MAX_TOOL_CALLS_PER_RUN + 50, true), false, "recording tool past cap → still runs");
+});
+
+Deno.test("shouldSkipForFinalizeWindow: skips late live lookups but never recorders", () => {
+  const openAt = ORCHESTRATOR_WALL_CLOCK_MS - FINALIZE_RESERVE_MS;
+  assertEquals(shouldSkipForFinalizeWindow(openAt - 1, false), false, "before reserve: lookup may run");
+  assertEquals(shouldSkipForFinalizeWindow(openAt, false), true, "reserve open: lookup is skipped");
+  assertEquals(shouldSkipForFinalizeWindow(openAt + 30_000, true), false, "recording tool still runs");
 });
 
 Deno.test("run-cap enforcement: a 61-call run cannot exceed the cap of genuine calls", () => {
