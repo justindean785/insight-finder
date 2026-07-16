@@ -81,8 +81,17 @@ export function deriveToolTone(part: {
   const output = asOutput(part.output);
   if (part.state === "output-error" || part.errorText != null) return "error";
   if (output?.skipped === true) return "skip";
-  // ok:false with a "not found"/empty reason is a clean negative, not an error.
-  if (output?.ok === false) return isCleanEmptyResult(output) ? "ok" : "error";
+  if (output?.ok === false) {
+    // ok:false with a "not found"/empty reason is a clean negative, not an error.
+    if (isCleanEmptyResult(output)) return "ok";
+    // A governance/gated stop (budget/EV/burst gate) or a guard/no-op skip that
+    // surfaced as ok:false WITHOUT the skipped flag is an intentional control
+    // decision, not a fault. Mirror deriveToolStatus's reason check so the cycle
+    // summary buckets it as skipped, not failed.
+    const reason = deriveToolReason(output).toLowerCase();
+    if (GATE_REASON_RE.test(reason) || SKIP_REASON_RE.test(reason)) return "skip";
+    return "error";
+  }
   return part.state === "output-available" ? "ok" : "pending";
 }
 
