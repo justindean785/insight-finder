@@ -1461,9 +1461,20 @@ function ChatWindowInner({
   useEffect(() => { inputRef.current?.focus(); }, [threadId]);
 
   const beginInvestigation = useCallback(async () => {
+    // Stamp last_heartbeat_at alongside status:"active" so a run that starts on a
+    // thread with a stale heartbeat (e.g. a 2nd message after a prior run finished
+    // long ago) does not look heartbeat-stale to the server-side stale-run recovery
+    // (recoverStaleActiveThreads, >75s). Without this, the auto-sweep below fires on
+    // isLoading→true, health hits recovery, the just-started run is reaped to
+    // "finished", and the watchdog aborts its stream — the "starts, then stops" bug.
+    // The server takes over pulsing the heartbeat (~15s) once the run is under way.
     const { error: statusError } = await supabase
       .from("threads")
-      .update({ status: "active", updated_at: new Date().toISOString() })
+      .update({
+        status: "active",
+        updated_at: new Date().toISOString(),
+        last_heartbeat_at: new Date().toISOString(),
+      })
       .eq("id", threadId);
     if (statusError) throw statusError;
     lastUserScrollUpRef.current = 0; // a new run is an implicit "follow the latest"
