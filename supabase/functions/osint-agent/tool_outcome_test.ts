@@ -20,6 +20,7 @@ Deno.test("skipped: governance / budget / concurrency / dedup", () => {
     "paid-call budget exhausted (12 per run)",
     "active-call concurrency limit reached (3)",
     "internal concurrency cap reached (3 parallel calls) — retry momentarily; internal throttle",
+    "provider 'minimax' already has a call in-flight — waiting for its result",
     "leakcheck_lookup skipped — high-cost tool already used this seed (0 new artifacts since, needs corroboration)",
     "weak lead blocked: confidence below 50; single-source lead",
     "expected value 52 below 70",
