@@ -111,6 +111,10 @@ type Store = {
   channel: ReturnType<typeof supabase.channel> | null;
   loading: Promise<void> | null;
   refCount: number;
+  // Whether the realtime channel has completed its first SUBSCRIBED. A second
+  // SUBSCRIBED means the socket recovered after a disconnect, so we reconcile
+  // from persistence in case artifact events were missed while it was down.
+  subscribed: boolean;
   // Throttle: coalesce bursts of realtime events into at most one full
   // reload per THROTTLE_MS. Protects against event storms (e.g. a single
   // scan inserting 50+ rows in <100ms) hammering the DB.
@@ -229,6 +233,7 @@ function acquireStore(threadId: string, listener: (snapshot: StoreSnapshot) => v
       loading: null,
       refCount: 0,
       pendingReload: null,
+      subscribed: false,
     };
     stores.set(threadId, store);
     store.loading = loadStore(threadId, store);
@@ -255,7 +260,28 @@ function acquireStore(threadId: string, listener: (snapshot: StoreSnapshot) => v
           }
         },
       )
-      .subscribe();
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "threads", filter: `id=eq.${threadId}` },
+        (payload) => {
+          // When the run reaches a terminal status, artifact INSERTs made during
+          // a realtime gap (e.g. a CPU-killed isolate whose socket dropped before
+          // the recovery INSERTs landed) may have been missed, freezing the count
+          // (the "0 evidence on a finished run" bug). Reconcile from persistence —
+          // the same self-heal useThreadToolActivity already performs.
+          const next = (payload.new as { status?: string } | null)?.status;
+          if (next === "finished" || next === "stopped") {
+            void loadStore(threadId, store!);
+          }
+        },
+      )
+      .subscribe((status) => {
+        if (status !== "SUBSCRIBED") return;
+        // A second SUBSCRIBED means the channel recovered after disconnecting;
+        // reload in case artifact events were missed while it was down.
+        if (store!.subscribed) void loadStore(threadId, store!);
+        store!.subscribed = true;
+      });
   }
   store.subscribers.add(listener);
   store.refCount += 1;
