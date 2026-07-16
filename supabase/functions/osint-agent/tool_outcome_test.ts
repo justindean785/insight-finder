@@ -21,6 +21,7 @@ Deno.test("skipped: governance / budget / concurrency / dedup", () => {
     "active-call concurrency limit reached (3)",
     "internal concurrency cap reached (3 parallel calls) — retry momentarily; internal throttle",
     "provider 'minimax' already has a call in-flight — waiting for its result",
+    "provider 'jina_reader_scrape' already has a call in-flight — waiting for its result",
     "leakcheck_lookup skipped — high-cost tool already used this seed (0 new artifacts since, needs corroboration)",
     "weak lead blocked: confidence below 50; single-source lead",
     "expected value 52 below 70",
@@ -34,6 +35,8 @@ Deno.test("skipped: governance / budget / concurrency / dedup", () => {
     "unavailable: gated (INTELBASE_ENABLED not enabled)",
     "intelbase gated",
     "HIBP_API_KEY not configured",
+    "finalize window open; live lookup skipped",
+    "run tool-call cap reached",
   ];
   for (const s of skips) assertEquals(classifyToolOutcome(s, null), "skipped", s);
 });
