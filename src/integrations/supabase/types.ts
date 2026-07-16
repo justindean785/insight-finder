@@ -427,6 +427,7 @@ export type Database = {
           created_at: string
           credits_used: number
           id: string
+          last_heartbeat_at: string | null
           seed_type: string | null
           seed_value: string | null
           status: string
@@ -440,6 +441,7 @@ export type Database = {
           created_at?: string
           credits_used?: number
           id?: string
+          last_heartbeat_at?: string | null
           seed_type?: string | null
           seed_value?: string | null
           status?: string
@@ -453,6 +455,7 @@ export type Database = {
           created_at?: string
           credits_used?: number
           id?: string
+          last_heartbeat_at?: string | null
           seed_type?: string | null
           seed_value?: string | null
           status?: string
