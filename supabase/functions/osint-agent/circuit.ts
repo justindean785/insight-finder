@@ -77,7 +77,15 @@ const PROVIDER_TOOLS: Record<string, string[]> = {
   ],
   hunter: ["hunter_domain_search", "hunter_email_finder", "hunter_email_verifier", "hunter_combined"],
   exa: ["exa_search", "exa_find_similar", "exa_get_contents"],
-  minimax: ["minimax_web_search", "minimax_correlate", "minimax_plan_pivots", "minimax_extract"],
+  // minimax_web_search hits Perplexity (a DIFFERENT upstream than the MiniMax
+  // reasoning model — see #293), so a SEARCH timeout/429/5xx must not drag down the
+  // reasoning tools. Keep the search worker on its own "minimax" key; group the
+  // three reasoning tools under "minimax_reason" so they still share suppression
+  // with EACH OTHER (one reasoning key) but are decoupled from the search worker.
+  // Without this, a single minimax_web_search timeout suppressed minimax_correlate
+  // (the identity-merge step) for the whole run, fragmenting the report.
+  minimax: ["minimax_web_search"],
+  minimax_reason: ["minimax_correlate", "minimax_plan_pivots", "minimax_extract"],
   // All six Indicia endpoints share ONE api key + one prepaid balance. A depleted
   // balance (402) or rate-limit (429) on any one endpoint means every sibling is
   // equally dead for the run — group them so one suppression stops the family
@@ -102,6 +110,23 @@ export function providerForTool(tool: string): string {
   return TOOL_PROVIDER.get(tool) ?? tool;
 }
 
+// General multi-origin fan-out tools: unlike a single-upstream paid API, these
+// hit MANY unrelated hosts across a run (jina scrapes arbitrary URLs;
+// socialfetch_web_read renders arbitrary pages). One slow page is a PER-URL
+// problem, not a dead provider — suppressing the whole tool on the first timeout
+// takes the reader offline for every remaining host. For these, a `timeout`
+// dead-lists only the offending URL and suppresses the tool ONLY after
+// >= TIMEOUT_SUPPRESS_CONSECUTIVE consecutive timeouts (see recordResult).
+export const GENERAL_MULTI_ORIGIN_TOOLS = new Set<string>([
+  "jina_reader_scrape",
+  "socialfetch_web_read",
+]);
+
+/** Uninterrupted TIMEOUT outcomes (no success or other-failure in between) a
+ *  general multi-origin tool must hit before its whole provider is suppressed.
+ *  Single-upstream providers still suppress on the first timeout. */
+export const TIMEOUT_SUPPRESS_CONSECUTIVE = 3;
+
 interface Suppression {
   reason: string;
   until: number;
@@ -109,7 +134,13 @@ interface Suppression {
 }
 
 interface BreakerState {
+  /** Consecutive NON-OK outcomes of ANY type (400/404/451/429/5xx/timeout).
+   *  Drives the generic 3-failure global guard — NOT timeout suppression. */
   consecutive: number;
+  /** Consecutive TIMEOUT outcomes only — reset by success OR any non-timeout
+   *  failure. Drives multi-origin timeout suppression so a mixed failure run
+   *  (e.g. 404 → 451 → timeout) never counts as "3 consecutive timeouts". */
+  consecutiveTimeouts: number;
   total: number;
   lastAt: number;
   disabledReason?: string;
@@ -233,7 +264,7 @@ function breakerFor(threadId: string, tool: string): BreakerState {
   const s = state(threadId);
   let b = s.breakers.get(tool);
   if (!b) {
-    b = { consecutive: 0, total: 0, lastAt: 0, deadSelectors: new Set(), notFound: new Set() };
+    b = { consecutive: 0, consecutiveTimeouts: 0, total: 0, lastAt: 0, deadSelectors: new Set(), notFound: new Set() };
     s.breakers.set(tool, b);
   }
   return b;
@@ -365,12 +396,19 @@ export function recordResult(
   });
   if (outcome.status === "ok") {
     b.consecutive = 0;
+    b.consecutiveTimeouts = 0;
     b.lastAt = Date.now();
     return;
   }
   b.consecutive++;
   b.total++;
   b.lastAt = Date.now();
+  // Maintain the dedicated timeout streak: a timeout extends it, ANY non-timeout
+  // failure (400/404/451/429/5xx) breaks it. This is what multi-origin timeout
+  // suppression checks — NOT b.consecutive, which counts all failure types and
+  // would let a mixed run (404 → 451 → timeout) masquerade as 3 timeouts.
+  if (outcome.status === "timeout") b.consecutiveTimeouts++;
+  else b.consecutiveTimeouts = 0;
   switch (outcome.status) {
     case "http_402":
       // A 402 is a depleted prepaid balance — provider-wide, not endpoint-local.
@@ -435,10 +473,30 @@ export function recordResult(
       if (selector) b.deadSelectors.add(selector);
       break;
     case "timeout":
-      // A timed-out upstream wastes the full fetch window on every retry —
-      // suppress the provider for the investigation on the first timeout.
-      suppressProvider(threadId, tool, `timeout — provider '${providerForTool(tool)}' suppressed for investigation`);
-      if (b.consecutive >= 2 && selector) b.deadSelectors.add(selector);
+      if (GENERAL_MULTI_ORIGIN_TOOLS.has(tool)) {
+        // Multi-origin fan-out: one slow page is a PER-URL problem. Dead-list only
+        // this URL so other hosts still run, and suppress the whole tool ONLY after
+        // >= TIMEOUT_SUPPRESS_CONSECUTIVE UNINTERRUPTED timeouts. We check the
+        // dedicated b.consecutiveTimeouts (maintained above) — NOT b.consecutive,
+        // which also counts 4xx/5xx and would falsely trip on a mixed failure run.
+        // Distinct reason strings so the audit shows which path fired: a dead-listed
+        // selector surfaces as "selector blacklisted for <tool>" on retry, vs. the
+        // consecutive-timeout provider suppression below.
+        if (selector) b.deadSelectors.add(selector);
+        if (b.consecutiveTimeouts >= TIMEOUT_SUPPRESS_CONSECUTIVE) {
+          suppressProvider(
+            threadId,
+            tool,
+            `provider '${providerForTool(tool)}' suppressed — ${b.consecutiveTimeouts} consecutive timeouts`,
+          );
+        }
+        // else: selector dead-listed (timeout) — tool stays available for other URLs.
+      } else {
+        // Single-upstream provider: a timed-out upstream wastes the full fetch
+        // window on every retry — suppress the provider on the FIRST timeout.
+        suppressProvider(threadId, tool, `timeout — provider '${providerForTool(tool)}' suppressed for investigation`);
+        if (b.consecutive >= 2 && selector) b.deadSelectors.add(selector);
+      }
       break;
     case "http_500":
       // A 5xx is a server-side fault: retrying the same provider mid-run rarely
@@ -453,7 +511,11 @@ export function recordResult(
     default:
       break;
   }
-  // Global guard: 3 thread-wide failures → disable.
+  // Global guard: 3 thread-wide failures of ANY type → disable. This is a
+  // SEPARATE, generic reliability backstop — distinct from the multi-origin
+  // timeout suppression above (which keys off b.consecutiveTimeouts). A tool that
+  // fails 3 times in a row for mixed reasons (e.g. 404 → 451 → timeout) is
+  // genuinely unhealthy and is still disabled here by design; unchanged.
   if (b.consecutive >= 3 && !b.disabledReason) {
     b.disabledReason = `disabled after ${b.consecutive} consecutive failures`;
   }
