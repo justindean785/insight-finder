@@ -144,6 +144,8 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   detect_contradictions: 0, // examines recorded artifacts for identity/infra conflicts
   tool_audit: 0,            // advisory tool health/utilization summary
   record_finding: 0,        // persists a source-backed finding (bookkeeping)
+  finalize_no_findings: 0, // internal finalize decision; no external call
+  finalize_skip_memory: 0, // internal finalize decision; no external call
   unknown_tool_ignored: 0,  // internal sink for hallucinated tool names (#211) — no external call
 
   // ---- Previously-uncosted registered tools (2026-06-27 audit) ----

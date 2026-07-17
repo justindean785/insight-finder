@@ -42,14 +42,130 @@ import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_
 // here.)
 export const FINALIZE_RESERVE_MS = 90_000;
 
-// Cap the forced finalize phase to this many steps (a StopCondition ends the run once
-// reached). 2 lets the model call record_artifacts then write the report from its
-// result, without looping synthesis for the whole reserve window.
-export const FINALIZE_MAX_STEPS = 2;
+// Emergency backstop for the forced-finalize state machine. The normal path is three
+// generations: persistence decision -> memory decision -> tool-free report. Two extra
+// attempts let a schema-invalid persistence/memory call retry without reopening live
+// lookups forever.
+export const FINALIZE_MAX_STEPS = 5;
 
-// The only tools left active during the forced finalize step: persist any confirmed
-// finding not yet recorded. No new lookups — the budget is spent.
-export const FINALIZE_ACTIVE_TOOLS = ["record_artifacts"] as const;
+// Finalization is deliberately split into explicit phases. `toolChoice: "required"`
+// is applied to the first two phases by index.ts, so a narration-only generation
+// cannot silently end the loop before persistence/memory has been decided.
+export const FINALIZE_PERSIST_ACTIVE_TOOLS = ["record_artifacts", "finalize_no_findings"] as const;
+export const FINALIZE_MEMORY_ACTIVE_TOOLS = ["memory_save", "finalize_skip_memory"] as const;
+export const FINALIZE_REPORT_ACTIVE_TOOLS: readonly string[] = [];
+export const FINALIZE_INTERNAL_TOOLS = new Set(["finalize_no_findings", "finalize_skip_memory"]);
+// Backward-compatible alias used by older focused tests/helpers. New runtime code uses
+// the phase-specific constants above.
+export const FINALIZE_ACTIVE_TOOLS = FINALIZE_PERSIST_ACTIVE_TOOLS;
+
+export function activeToolsOutsideFinalize(toolNames: readonly string[]): string[] {
+  return toolNames.filter((name) => !FINALIZE_INTERNAL_TOOLS.has(name));
+}
+
+export type FinalizePhase = "persist" | "memory" | "report";
+
+export interface FinalizeStepPlan {
+  activeTools: readonly string[];
+  toolChoice: "required" | "none";
+  directive: string;
+}
+
+export interface FinalizeProgress {
+  recordSucceeded: number;
+  noFindingsSucceeded: number;
+  memorySucceeded: number;
+  memorySkipped: number;
+}
+
+type FinalizeMessage = { content?: unknown };
+
+function toolResultValue(output: unknown): unknown {
+  if (!output || typeof output !== "object") return output;
+  const wrapped = output as { value?: unknown };
+  return Object.prototype.hasOwnProperty.call(wrapped, "value") ? wrapped.value : output;
+}
+
+/** Count successful finalize-relevant tool results in AI SDK ModelMessage history. */
+export function countFinalizeProgress(messages: FinalizeMessage[]): FinalizeProgress {
+  const progress: FinalizeProgress = {
+    recordSucceeded: 0,
+    noFindingsSucceeded: 0,
+    memorySucceeded: 0,
+    memorySkipped: 0,
+  };
+  const seen = new Set<string>();
+  let synthetic = 0;
+  for (const message of messages ?? []) {
+    if (!Array.isArray(message?.content)) continue;
+    for (const raw of message.content) {
+      const part = raw as { type?: string; toolName?: string; toolCallId?: string; output?: unknown };
+      if (part.type !== "tool-result" || !part.toolName) continue;
+      const key = part.toolCallId ?? `__finalize_result_${synthetic++}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const value = toolResultValue(part.output);
+      if (!value || typeof value !== "object" || (value as { ok?: unknown }).ok !== true) continue;
+      if (part.toolName === "record_artifacts" || part.toolName === "record_artifact") progress.recordSucceeded++;
+      else if (part.toolName === "finalize_no_findings") progress.noFindingsSucceeded++;
+      else if (part.toolName === "memory_save") progress.memorySucceeded++;
+      else if (part.toolName === "finalize_skip_memory") progress.memorySkipped++;
+    }
+  }
+  return progress;
+}
+
+/** Resolve the next phase using only successful results added after the boundary. */
+export function resolveFinalizePhase(
+  boundary: FinalizeProgress,
+  current: FinalizeProgress,
+): FinalizePhase {
+  const persistenceDecided =
+    current.recordSucceeded > boundary.recordSucceeded ||
+    current.noFindingsSucceeded > boundary.noFindingsSucceeded;
+  if (!persistenceDecided) return "persist";
+  const memoryDecided =
+    current.memorySucceeded > boundary.memorySucceeded ||
+    current.memorySkipped > boundary.memorySkipped;
+  return memoryDecided ? "report" : "memory";
+}
+
+/** Build the enforced SDK configuration for the current finalize phase. */
+export function buildFinalizeStepPlan(phase: FinalizePhase): FinalizeStepPlan {
+  if (phase === "persist") {
+    return {
+      activeTools: FINALIZE_PERSIST_ACTIVE_TOOLS,
+      toolChoice: "required",
+      directive: buildFinalizePersistDirective(),
+    };
+  }
+  if (phase === "memory") {
+    return {
+      activeTools: FINALIZE_MEMORY_ACTIVE_TOOLS,
+      toolChoice: "required",
+      directive: buildFinalizeMemoryDirective(),
+    };
+  }
+  return {
+    activeTools: FINALIZE_REPORT_ACTIVE_TOOLS,
+    toolChoice: "none",
+    directive: buildFinalizeDirective(),
+  };
+}
+
+/**
+ * The emergency attempt cap must not cut off a successful decision before the next
+ * phase can run. A capped failed decision stops and falls through to report salvage;
+ * a capped successful decision gets one continuation so memory/report can complete.
+ */
+export function shouldStopFinalizeAtAttemptCap(
+  finalizeStarted: boolean,
+  stepsRun: number,
+  decisionSucceededThisStep: boolean,
+  maxSteps = FINALIZE_MAX_STEPS,
+): boolean {
+  return finalizeStarted && stepsRun >= maxSteps && !decisionSucceededThisStep;
+}
 
 // A finished run whose final assistant text is shorter than this is treated as
 // having no usable report (the "No report yet" symptom) and is eligible for salvage.
@@ -214,22 +330,49 @@ export function buildPersistenceNudgeDirective(): string {
   ].join("\n");
 }
 
-/**
- * The system-prompt addendum appended for the forced finalize step. Tells the model
- * the budget is nearly spent, forbids new lookups, and asks for the report AS ITS
- * MESSAGE TEXT plus record_artifacts for anything not yet persisted.
- */
-export function buildFinalizeDirective(): string {
+/** Persistence phase: require a real evidence decision, never narration. */
+export function buildFinalizePersistDirective(): string {
   return [
     "",
     "",
     "=== BUDGET NEARLY EXHAUSTED — FINALIZE NOW ===",
     "Your time and step budget for this investigation is almost spent.",
     "Do NOT start any new lookups, pivots, or web searches.",
-    "In THIS step you MUST:",
-    "1. Write your complete final Findings report as your message text — a short summary,",
-    "   the confirmed findings grouped by type with their confidence and source, and any gaps.",
-    "2. Call record_artifacts once for any confirmed finding you have not already recorded.",
+    "This is the PERSISTENCE phase. Do not write narration or the report yet.",
+    "You MUST make exactly one tool call:",
+    "- Call record_artifacts with every tool-supported finding not yet persisted; OR",
+    "- Call finalize_no_findings with a short reason if there is genuinely no additional",
+    "  supported finding to persist.",
+    "Never invent an artifact merely to satisfy this phase.",
+  ].join("\n");
+}
+
+/** Memory phase: save durable learning or explicitly decline it. */
+export function buildFinalizeMemoryDirective(): string {
+  return [
+    "",
+    "",
+    "=== FINALIZE — MEMORY DECISION ===",
+    "Persistence has completed. Do not run lookups and do not write the report yet.",
+    "You MUST make exactly one tool call:",
+    "- Call memory_save with only durable, evidence-supported lessons/connections; OR",
+    "- Call finalize_skip_memory with a short reason when there is no safe durable lesson.",
+    "Do not create a memory from a collision, weak single-source lead, or unsupported inference.",
+  ].join("\n");
+}
+
+/** Report phase: all tool decisions are complete; generate only the closing report. */
+export function buildFinalizeDirective(): string {
+  return [
+    "",
+    "",
+    "=== FINALIZE — WRITE THE REPORT NOW ===",
+    "The persistence and memory decisions are complete.",
+    "Do not call record_artifacts, memory_save, or any other tool in this phase.",
+    "Ignore earlier instructions that say a tool must be called before the report; that",
+    "requirement was satisfied or explicitly skipped in the preceding finalize phases.",
+    "Write the complete final Findings report as message text: a short summary, confirmed",
+    "findings grouped by type with confidence and source, and all material gaps.",
     "Produce the report even if coverage is partial; state uncertainty honestly. Do not fabricate.",
   ].join("\n");
 }

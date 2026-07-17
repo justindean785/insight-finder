@@ -5,6 +5,11 @@
  */
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
+  activeToolsOutsideFinalize,
+  countFinalizeProgress,
+  buildFinalizeStepPlan,
+  buildFinalizeMemoryDirective,
+  buildFinalizePersistDirective,
   shouldForceFinalize,
   buildFinalizeDirective,
   buildPerCycleCompactDirective,
@@ -17,9 +22,14 @@ import {
   shouldSkipForToolCap,
   shouldSkipForFinalizeWindow,
   FINALIZE_ACTIVE_TOOLS,
+  FINALIZE_MEMORY_ACTIVE_TOOLS,
+  FINALIZE_PERSIST_ACTIVE_TOOLS,
+  FINALIZE_REPORT_ACTIVE_TOOLS,
   FINALIZE_RESERVE_MS,
   FINALIZE_MAX_STEPS,
   MIN_REPORT_CHARS,
+  resolveFinalizePhase,
+  shouldStopFinalizeAtAttemptCap,
 } from "./orchestrator-finalize.ts";
 import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN } from "./orchestrator-budget.ts";
 
@@ -62,11 +72,138 @@ Deno.test("finalize constants are sane", () => {
   assertEquals(FINALIZE_ACTIVE_TOOLS.includes("record_artifacts"), true, "record_artifacts stays available to finalize");
 });
 
-Deno.test("buildFinalizeDirective instructs report-then-record and forbids new lookups", () => {
+Deno.test("finalize phases expose only the tool needed for the current decision", () => {
+  assertEquals(FINALIZE_PERSIST_ACTIVE_TOOLS, ["record_artifacts", "finalize_no_findings"]);
+  assertEquals(FINALIZE_MEMORY_ACTIVE_TOOLS, ["memory_save", "finalize_skip_memory"]);
+  assertEquals(FINALIZE_REPORT_ACTIVE_TOOLS, []);
+});
+
+Deno.test("persistence and memory require tool execution; report forbids tools", () => {
+  assertEquals(buildFinalizeStepPlan("persist").toolChoice, "required");
+  assertEquals(buildFinalizeStepPlan("persist").activeTools, FINALIZE_PERSIST_ACTIVE_TOOLS);
+  assertEquals(buildFinalizeStepPlan("memory").toolChoice, "required");
+  assertEquals(buildFinalizeStepPlan("memory").activeTools, FINALIZE_MEMORY_ACTIVE_TOOLS);
+  assertEquals(buildFinalizeStepPlan("report").toolChoice, "none");
+  assertEquals(buildFinalizeStepPlan("report").activeTools, FINALIZE_REPORT_ACTIVE_TOOLS);
+});
+
+Deno.test("attempt cap never cuts off a successful decision before the report", () => {
+  assertEquals(shouldStopFinalizeAtAttemptCap(true, FINALIZE_MAX_STEPS, false), true);
+  assertEquals(shouldStopFinalizeAtAttemptCap(true, FINALIZE_MAX_STEPS, true), false);
+  assertEquals(shouldStopFinalizeAtAttemptCap(true, FINALIZE_MAX_STEPS - 1, false), false);
+  assertEquals(shouldStopFinalizeAtAttemptCap(false, FINALIZE_MAX_STEPS, false), false);
+});
+
+Deno.test("internal finalize decisions are hidden during ordinary investigation steps", () => {
+  assertEquals(
+    activeToolsOutsideFinalize(["google_dorks", "finalize_no_findings", "memory_save", "finalize_skip_memory"]),
+    ["google_dorks", "memory_save"],
+  );
+});
+
+Deno.test("finalize phase advances only after a successful post-boundary tool result", () => {
+  const before = countFinalizeProgress([]);
+  const recordOk = [{
+    role: "tool",
+    content: [{
+      type: "tool-result",
+      toolName: "record_artifacts",
+      toolCallId: "record-1",
+      output: { type: "json", value: { ok: true, count: 2 } },
+    }],
+  }];
+  const memoryOk = [{
+    role: "tool",
+    content: [{
+      type: "tool-result",
+      toolName: "memory_save",
+      toolCallId: "memory-1",
+      output: { type: "json", value: { ok: true, saved: 1 } },
+    }],
+  }];
+
+  assertEquals(resolveFinalizePhase(before, countFinalizeProgress([])), "persist");
+  assertEquals(resolveFinalizePhase(before, countFinalizeProgress(recordOk)), "memory");
+  assertEquals(resolveFinalizePhase(before, countFinalizeProgress([...recordOk, ...memoryOk])), "report");
+});
+
+Deno.test("failed persistence does not advance finalization", () => {
+  const before = countFinalizeProgress([]);
+  const failed = [{
+    role: "tool",
+    content: [{
+      type: "tool-result",
+      toolName: "record_artifacts",
+      toolCallId: "record-bad",
+      output: { type: "json", value: { ok: false, count: 0 } },
+    }],
+  }];
+  assertEquals(resolveFinalizePhase(before, countFinalizeProgress(failed)), "persist");
+});
+
+Deno.test("explicit no-findings and skip-memory decisions reach the report without fabricating", () => {
+  const before = countFinalizeProgress([]);
+  const decisions = [
+    {
+      role: "tool",
+      content: [{
+        type: "tool-result",
+        toolName: "finalize_no_findings",
+        toolCallId: "none-1",
+        output: { type: "json", value: { ok: true, decision: "no_additional_supported_findings" } },
+      }],
+    },
+    {
+      role: "tool",
+      content: [{
+        type: "tool-result",
+        toolName: "finalize_skip_memory",
+        toolCallId: "skip-1",
+        output: { type: "json", value: { ok: true, decision: "memory_skipped" } },
+      }],
+    },
+  ];
+  assertEquals(resolveFinalizePhase(before, countFinalizeProgress(decisions)), "report");
+});
+
+Deno.test("phase directives prohibit narration-only escape and unsupported memory", () => {
+  const persist = buildFinalizePersistDirective().toLowerCase();
+  const memory = buildFinalizeMemoryDirective().toLowerCase();
+  assert(persist.includes("exactly one tool call"));
+  assert(persist.includes("finalize_no_findings"));
+  assert(persist.includes("never invent"));
+  assert(memory.includes("exactly one tool call"));
+  assert(memory.includes("finalize_skip_memory"));
+  assert(memory.includes("weak single-source"));
+});
+
+Deno.test("historical persistence and memory do not satisfy a new finalize window", () => {
+  const historical = [{
+    role: "tool",
+    content: [
+      {
+        type: "tool-result",
+        toolName: "record_artifacts",
+        toolCallId: "old-record",
+        output: { type: "json", value: { ok: true, count: 20 } },
+      },
+      {
+        type: "tool-result",
+        toolName: "memory_save",
+        toolCallId: "old-memory",
+        output: { type: "json", value: { ok: true, saved: 1 } },
+      },
+    ],
+  }];
+  const boundary = countFinalizeProgress(historical);
+  assertEquals(resolveFinalizePhase(boundary, countFinalizeProgress(historical)), "persist");
+});
+
+Deno.test("buildFinalizeDirective is a tool-free report phase", () => {
   const d = buildFinalizeDirective().toLowerCase();
-  assert(d.includes("record_artifacts"), "mentions record_artifacts");
   assert(d.includes("findings report") || d.includes("final") , "asks for the final report");
-  assert(d.includes("no new") || d.includes("not start") || d.includes("do not start"), "forbids new lookups");
+  assert(d.includes("do not call"), "forbids tool calls after persistence and memory decisions");
+  assert(d.includes("memory_save"), "explicitly resolves the base prompt's memory_save conflict");
 });
 
 // ---- Per-cycle compact output directive -----------------------------------------

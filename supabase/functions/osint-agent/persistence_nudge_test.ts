@@ -16,7 +16,7 @@ import { assert, assertEquals } from "jsr:@std/assert@^1";
 import {
   shouldNudgePersistence,
   buildPersistenceNudgeDirective,
-  buildFinalizeDirective,
+  buildFinalizePersistDirective,
   shouldForceFinalize,
   FINALIZE_ACTIVE_TOOLS,
   PERSISTENCE_NUDGE_TOOL_CALL_THRESHOLD,
@@ -237,7 +237,7 @@ Deno.test("correlate timeout: runWithToolTimeout RESOLVES a schema-safe stub, ne
   assertEquals(r._tool_timeout, true, "and flagged as a tool timeout — not a hard crash");
 });
 
-Deno.test("correlate timeout: finalize still forces record_artifacts + report, correlate-independent", () => {
+Deno.test("correlate timeout: finalize still enters the persistence phase, correlate-independent", () => {
   // The forced finalize path (wall-clock reserve / step cap) is evaluated on elapsed
   // time + step, with NO dependency on correlate having succeeded. It keeps
   // record_artifacts active and asks for the report, so a correlate timeout can never
@@ -248,9 +248,9 @@ Deno.test("correlate timeout: finalize still forces record_artifacts + report, c
     (FINALIZE_ACTIVE_TOOLS as readonly string[]).includes("record_artifacts"),
     "record_artifacts stays active during finalize so persistence still happens",
   );
-  const fin = buildFinalizeDirective();
+  const fin = buildFinalizePersistDirective();
   assert(/record_artifacts/.test(fin), "finalize directive still persists un-recorded findings");
-  assert(/report/i.test(fin), "finalize directive still demands the closing report");
+  assert(/exactly one tool call/i.test(fin), "persistence cannot end with narration only");
 });
 
 // ---- Requirement 6: request isolation --------------------------------------------

@@ -41,8 +41,9 @@ import {
   capTotalToBudget, deadlineReached,
 } from "./orchestrator-budget.ts";
 import {
-  shouldForceFinalize, buildFinalizeDirective, buildPerCycleCompactDirective,
-  FINALIZE_ACTIVE_TOOLS, FINALIZE_MAX_STEPS,
+  shouldForceFinalize, buildFinalizeStepPlan, buildPerCycleCompactDirective,
+  activeToolsOutsideFinalize, countFinalizeProgress, resolveFinalizePhase, type FinalizePhase,
+  shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS,
   extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt, toolCallCapReached,
   shouldNudgePersistence, buildPersistenceNudgeDirective,
 } from "./orchestrator-finalize.ts";
@@ -690,13 +691,19 @@ Deno.serve(async (req) => {
       );
     }
     // Base orchestrator system prompt, shared by streamText and by the forced
-    // finalize step (which appends buildFinalizeDirective() to this exact base).
+    // finalize phase (which appends its phase-specific directive to this exact base).
     const baseSystemPrompt =
       SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary;
-    // Count of forced finalize steps taken (P0 fix A). A StopCondition ends the run
-    // once it reaches FINALIZE_MAX_STEPS so the closing synthesis can't loop for the
-    // whole reserve window. Incremented in prepareStep when a finalize step is forced.
+    // The two decision tools exist in the registry so forced-finalize can select them,
+    // but they must never be available during ordinary investigation steps.
+    const normalActiveTools = activeToolsOutsideFinalize(Object.keys(tools));
+    // Explicit forced-finalize state. Completion is based on successful post-boundary
+    // tool results, never on the number of prompts the model has merely seen.
+    let finalizeStarted = false;
     let finalizeStepsRun = 0;
+    let finalizePhase: FinalizePhase | null = null;
+    let finalizeBoundary = countFinalizeProgress([]);
+    let finalizeDecisionSucceededThisStep = false;
     // Per-run genuine-tool-call budget (MAX_TOOL_CALLS_PER_RUN). Passed into
     // wrapToolsWithCache, which increments `genuine` on each live execution and flips
     // `capped` once the cap is hit; prepareStep reads it to force finalize. Owned by
@@ -767,10 +774,9 @@ Deno.serve(async (req) => {
         //  • Run tool-call cap — MAX_TOOL_CALLS_PER_RUN genuine live calls reached
         //    (the wrapper is already skipping new lookups; make the model finalize
         //    instead of burning steps on skipped calls).
-        // Either way: restrict tools to record_artifacts and append the finalize
-        // directive so the model writes its Findings report NOW instead of the
-        // deadline tripping mid-tool-call and leaving "No report yet". A StopCondition
-        // (finalizeStepsRun >= FINALIZE_MAX_STEPS) ends the run after.
+        // Either way: enter the explicit finalize state machine. The persistence and
+        // memory phases require a tool decision, so narration alone cannot terminate
+        // the run. The report phase disables tools and emits only the closing report.
         const capReached = toolCallCapReached(toolCallBudget.genuine);
         if (capReached && !toolCallBudget.capped) {
           toolCallBudget.capped = true;
@@ -779,12 +785,26 @@ Deno.serve(async (req) => {
             genuine_tool_calls: toolCallBudget.genuine, cap: MAX_TOOL_CALLS_PER_RUN,
           }));
         }
-        if (capReached || shouldForceFinalize(Date.now() - runStartedAt, stepNumber ?? 0)) {
+        if (finalizeStarted || capReached || shouldForceFinalize(Date.now() - runStartedAt, stepNumber ?? 0)) {
+          const progress = countFinalizeProgress(stepMessages as Array<{ content?: unknown }>);
+          if (!finalizeStarted) {
+            finalizeStarted = true;
+            finalizeBoundary = progress;
+            console.log(JSON.stringify({
+              event: "finalize_started", thread_id: threadId,
+              trigger: capReached ? "tool_cap" : "time_or_step",
+              step_number: stepNumber ?? 0,
+            }));
+          }
+          finalizePhase = resolveFinalizePhase(finalizeBoundary, progress);
           finalizeStepsRun++;
+          finalizeDecisionSucceededThisStep = false;
+          const finalizePlan = buildFinalizeStepPlan(finalizePhase);
           return {
             messages: stepMessagesOut,
-            activeTools: [...FINALIZE_ACTIVE_TOOLS],
-            system: baseSystemPrompt + buildFinalizeDirective(),
+            activeTools: [...finalizePlan.activeTools],
+            toolChoice: finalizePlan.toolChoice,
+            system: baseSystemPrompt + finalizePlan.directive,
           };
         }
         // Intermediate (non-finalize) step: append the compact per-cycle directive so
@@ -812,12 +832,13 @@ Deno.serve(async (req) => {
           }));
           return {
             messages: stepMessagesOut,
-            activeTools: [...FINALIZE_ACTIVE_TOOLS],
+            activeTools: ["record_artifacts"],
             system: intermediateSystem,
           };
         }
         return {
           messages: stepMessagesOut,
+          activeTools: normalActiveTools,
           system: intermediateSystem,
         };
       };
@@ -826,6 +847,9 @@ Deno.serve(async (req) => {
     // StopCondition receives { steps }; we only need elapsed time, so it's ignored.
     const orchestratorDeadlineReached = () =>
       deadlineReached(Date.now(), runStartedAt, ORCHESTRATOR_WALL_CLOCK_MS);
+    const rawStepLimitReached = stepCountIs(MAX_ORCHESTRATOR_STEPS);
+    const stepLimitReached: typeof rawStepLimitReached = (options) =>
+      !finalizeStarted && rawStepLimitReached(options);
 
     const result = streamText({
       // Top-level orchestrator runs on the smart tier — it's the multi-source
@@ -885,9 +909,14 @@ Deno.serve(async (req) => {
       // budgeted step(s), stop — the model has written its report, so don't spin
       // the remaining reserve window re-synthesizing (and re-recording) artifacts.
       stopWhen: [
-        stepCountIs(MAX_ORCHESTRATOR_STEPS),
-        orchestratorDeadlineReached,
-        () => finalizeStepsRun >= FINALIZE_MAX_STEPS,
+        stepLimitReached,
+        () => !finalizeStarted && orchestratorDeadlineReached(),
+        () => shouldStopFinalizeAtAttemptCap(
+          finalizeStarted,
+          finalizeStepsRun,
+          finalizeDecisionSucceededThisStep,
+          FINALIZE_MAX_STEPS,
+        ),
       ],
       prepareStep,
       // Meter orchestrator LLM token spend per step so threads.cost_micro_usd
@@ -899,7 +928,22 @@ Deno.serve(async (req) => {
       // the old Gemini 2.5 Pro rate ($1.25/$10) over-debited the ledger ~4x on the
       // fallback path. An operator LOVABLE_FALLBACK_MODEL_ID override is best-effort
       // metered at the Flash rate.
-      onStepFinish: ({ usage }) => {
+      onStepFinish: ({ usage, finishReason, toolCalls, toolResults }) => {
+        if (finalizeStarted) {
+          const names = (toolCalls ?? []).map((call: { toolName: string }) => call.toolName);
+          const stepProgress = countFinalizeProgress([{ content: toolResults }]);
+          finalizeDecisionSucceededThisStep = finalizePhase === "persist"
+            ? stepProgress.recordSucceeded + stepProgress.noFindingsSucceeded > 0
+            : finalizePhase === "memory"
+            ? stepProgress.memorySucceeded + stepProgress.memorySkipped > 0
+            : true;
+          console.log(JSON.stringify({
+            event: "finalize_step_finished", thread_id: threadId,
+            phase: finalizePhase, finalize_step: finalizeStepsRun,
+            finish_reason: finishReason, tool_names: names,
+            decision_succeeded: finalizeDecisionSucceededThisStep,
+          }));
+        }
         // A completed step on the primary provider proves MiniMax is alive —
         // record it so the NEXT turn's preflight probe can be skipped.
         if (!useFallback) markMinimaxHealthy();

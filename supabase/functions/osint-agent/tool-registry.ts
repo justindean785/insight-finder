@@ -5049,6 +5049,31 @@ export function buildTools(ctx: ToolContext) {
     return [...new Set((data ?? []).map((r: { tool_name: string }) => r.tool_name))];
   }
 
+  // Internal finalize decision tools. These are exposed only by prepareStep during
+  // their matching forced-finalize phase. They give `toolChoice: required` a safe,
+  // non-fabricating escape when there is nothing valid to persist or remember.
+  (tools as ToolRegistry).finalize_no_findings = tool({
+    description:
+      "Finalize-only decision: declare that every tool-supported finding is already persisted. " +
+      "Never call during normal investigation work.",
+    inputSchema: memoSchema("finalize_no_findings", () => z.object({
+      reason: z.enum(["all_supported_findings_already_persisted", "no_tool_supported_findings"]),
+    }).strict()),
+    execute: ({ reason }: { reason: string }) =>
+      Promise.resolve({ ok: true, decision: "no_additional_supported_findings", reason }),
+  });
+
+  (tools as ToolRegistry).finalize_skip_memory = tool({
+    description:
+      "Finalize-only decision: skip memory_save because no evidence-supported durable lesson is safe to persist. " +
+      "Never call during normal investigation work.",
+    inputSchema: memoSchema("finalize_skip_memory", () => z.object({
+      reason: z.enum(["no_durable_lesson", "evidence_too_weak_or_conflicted"]),
+    }).strict()),
+    execute: ({ reason }: { reason: string }) =>
+      Promise.resolve({ ok: true, decision: "memory_skipped", reason }),
+  });
+
   // Internal sink for the unknown-tool guard (Phase B4). streamText's
   // experimental_repairToolCall redirects any hallucinated / non-registry tool
   // name (e.g. exify, hackerone_lookup) here so it drops without executing the
