@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import { recordAnalystFeedback, actionForReviewState } from "@/lib/analyst-feedback";
 
 /**
  * Analyst review states. Renamed for clarity (Nov 2026):
@@ -220,15 +221,35 @@ export function useReviewStates(threadId: string) {
     async (
       id: string,
       state: ReviewState | null,
-      ctx?: { value?: string; kind?: string },
+      ctx?: { value?: string; kind?: string; confidence?: number; source?: string },
     ) => {
       const c = ensure(threadId);
+      // Capture the analyst's PRIOR judgment before we mutate it — the feedback
+      // event records the transition (prior → resulting).
+      const prior = c.states[id] ?? "new";
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
       if (state == null || state === "new") {
         delete c.states[id];
         emit(threadId);
         await supabase.from("artifact_reviews").delete().eq("artifact_id", id).eq("user_id", user.id);
+        // Reset = RETRACTION. Append an immutable retract event so the resolved
+        // calibration view stops selecting the now-withdrawn terminal judgment
+        // (retract is the latest event → y NULL → the artifact drops out of the
+        // clean calibration set). Only when there was a real judgment to withdraw.
+        if (prior !== "new") {
+          void recordAnalystFeedback({
+            threadId,
+            artifactId: id,
+            action: "retract",
+            priorState: prior,
+            resultingState: "new",
+            reason: null,
+            confidenceBefore: ctx?.confidence ?? null,
+            confidenceAfter: ctx?.confidence ?? null,
+            sourceLineage: { source: ctx?.source ?? null, kind: ctx?.kind ?? null },
+          });
+        }
       } else {
         c.states[id] = state;
         emit(threadId);
@@ -236,6 +257,24 @@ export function useReviewStates(threadId: string) {
           { thread_id: threadId, artifact_id: id, user_id: user.id, state },
           { onConflict: "user_id,artifact_id" },
         );
+        // Ground-truth capture (instrumentation-only): append an immutable
+        // feedback event. Best-effort — never blocks or breaks the review UX,
+        // and changes NO confidence. Confidence is unchanged this milestone, so
+        // before == after (the artifact's stored confidence at judgment time).
+        const action = actionForReviewState(state);
+        if (action) {
+          void recordAnalystFeedback({
+            threadId,
+            artifactId: id,
+            action,
+            priorState: prior,
+            resultingState: state,
+            reason: c.notes[id] ?? null,
+            confidenceBefore: ctx?.confidence ?? null,
+            confidenceAfter: ctx?.confidence ?? null,
+            sourceLineage: { source: ctx?.source ?? null, kind: ctx?.kind ?? null },
+          });
+        }
         // Teach the agent: when an analyst marks an artifact as factually
         // wrong, persist a durable cross-investigation lesson so future
         // runs recall it and skip the bad lead.
@@ -269,7 +308,11 @@ export function useReviewStates(threadId: string) {
   );
 
   const setNote = useCallback(
-    async (id: string, note: string) => {
+    async (
+      id: string,
+      note: string,
+      ctx?: { value?: string; kind?: string; confidence?: number; source?: string },
+    ) => {
       const c = ensure(threadId);
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
@@ -279,11 +322,28 @@ export function useReviewStates(threadId: string) {
       // Need a row to attach a note to; default to "confirmed" if none exists yet.
       const existing = c.states[id];
       const stateToWrite = existing ?? "confirmed";
-      if (!existing) { c.states[id] = stateToWrite; emit(threadId); }
+      const implicitlyConfirmed = !existing;
+      if (implicitlyConfirmed) { c.states[id] = stateToWrite; emit(threadId); }
       await supabase.from("artifact_reviews").upsert(
         { thread_id: threadId, artifact_id: id, user_id: user.id, state: stateToWrite, note: trimmed || null },
         { onConflict: "user_id,artifact_id" },
       );
+      // Adding a note to an unreviewed artifact implicitly confirms it (existing
+      // product behavior). Capture that as a ground-truth confirm event so the
+      // event log + calibration views match what the product shows.
+      if (implicitlyConfirmed) {
+        void recordAnalystFeedback({
+          threadId,
+          artifactId: id,
+          action: "confirm",
+          priorState: "new",
+          resultingState: "confirmed",
+          reason: trimmed || null,
+          confidenceBefore: ctx?.confidence ?? null,
+          confidenceAfter: ctx?.confidence ?? null,
+          sourceLineage: { source: ctx?.source ?? null, kind: ctx?.kind ?? null },
+        });
+      }
     },
     [threadId],
   );

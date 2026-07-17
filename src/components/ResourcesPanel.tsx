@@ -477,7 +477,7 @@ function ArtifactDrawer({
   onClose: () => void;
   onChanged: (a: Artifact) => void;
   reviewGet: (id: string) => ReviewState;
-  reviewSet: (id: string, s: ReviewState | null) => void;
+  reviewSet: (id: string, s: ReviewState | null, ctx?: { value?: string; kind?: string; confidence?: number; source?: string }) => void;
   threadId: string;
 }) {
   // (component body unchanged below)
@@ -502,13 +502,16 @@ function ArtifactDrawerInner({
   onClose: () => void;
   onChanged: (a: Artifact) => void;
   reviewGet: (id: string) => ReviewState;
-  reviewSet: (id: string, s: ReviewState | null) => void;
+  reviewSet: (id: string, s: ReviewState | null, ctx?: { value?: string; kind?: string; confidence?: number; source?: string }) => void;
   threadId: string;
 }) {
   const meta = (artifact.metadata ?? {}) as Record<string, unknown>;
   const metaRows = humanizeArtifactMetadata(meta);
   const falsePositive = meta.false_positive === true;
   const rState = reviewGet(artifact.id);
+  // Ground-truth context passed to every review action so feedback events carry
+  // confidence_before/source (else they're dropped from the by-band calibration).
+  const rctx = { value: artifact.value, kind: artifact.kind, confidence: artifact.confidence, source: artifact.source };
   const src = extractSourceInfo(artifact);
   const review = useReviewStates(threadId);
   const [noteDraft, setNoteDraft] = useState(review.getNote(artifact.id));
@@ -631,14 +634,14 @@ function ArtifactDrawerInner({
               {falsePositive && <span className="px-2 py-0.5 rounded-full bg-destructive/15 text-destructive border border-destructive/40 text-eyebrow uppercase">false positive</span>}
             </div>
             <div className="grid grid-cols-2 gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.025] p-2">
-              <ReviewBtn current={rState} target="confirmed" onClick={() => reviewSet(artifact.id, "confirmed")}>
+              <ReviewBtn current={rState} target="confirmed" onClick={() => reviewSet(artifact.id, "confirmed", rctx)}>
                 <CheckCircle2 className="w-3 h-3" /> Confirm
               </ReviewBtn>
               <ReviewBtn
                 current={rState}
                 target="recheck"
                 onClick={() => {
-                  reviewSet(artifact.id, "recheck");
+                  reviewSet(artifact.id, "recheck", rctx);
                   launchRecheckInChat(threadId, { value: artifact.value, kind: artifact.kind });
                   toast.success("Rechecking in chat…");
                   onClose();
@@ -646,13 +649,13 @@ function ArtifactDrawerInner({
               >
                 <ShieldQuestion className="w-3 h-3" /> Recheck
               </ReviewBtn>
-              <ReviewBtn current={rState} target="dismissed" onClick={() => reviewSet(artifact.id, "dismissed")}>
+              <ReviewBtn current={rState} target="dismissed" onClick={() => reviewSet(artifact.id, "dismissed", rctx)}>
                 <XCircle className="w-3 h-3" /> False
               </ReviewBtn>
-              <ReviewBtn current={rState} target="key" onClick={() => reviewSet(artifact.id, "key")}>
+              <ReviewBtn current={rState} target="key" onClick={() => reviewSet(artifact.id, "key", rctx)}>
                 <Star className="w-3 h-3" /> Key
               </ReviewBtn>
-              <Button size="sm" variant="ghost" className="col-span-2 h-7 px-2 gap-1 text-data" onClick={() => reviewSet(artifact.id, null)}>
+              <Button size="sm" variant="ghost" className="col-span-2 h-7 px-2 gap-1 text-data" onClick={() => reviewSet(artifact.id, null, rctx)}>
                 Reset
               </Button>
             </div>
@@ -672,7 +675,7 @@ function ArtifactDrawerInner({
                 variant="secondary"
                 className="h-6 px-2 text-data"
                 onClick={() => {
-                  review.setNote(artifact.id, noteDraft);
+                  review.setNote(artifact.id, noteDraft, rctx);
                   toast.success("Note saved");
                 }}
               >
