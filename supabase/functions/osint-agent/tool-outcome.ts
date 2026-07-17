@@ -28,7 +28,7 @@ export type ToolOutcome = "ok" | "skipped" | "empty" | "failed";
 // Matching any of these means the tool did not really run (or its result was
 // intentionally discarded) — it must never count as a provider failure.
 const SKIP_RE =
-  /execution plan required|duplicate call|burst limit|same-tool (?:cycle limit|budget)|paid-call (?:cycle limit|budget)|active-call concurrency|internal concurrency cap|high-cost tool already used|weak lead blocked|expected value\s+\d+\s+below|disabled after \d+ consecutive|degraded this run|suppressed for investigation|selector blacklisted|unavailable:\s*(?:disabled|missing_key|gated)|\bgated\b|not configured|provider disabled in config|rate-limited\s*[—-]\s*provider|provider\b[^]*?\bsuppressed|5xx\s*[—-]\s*provider/i;
+  /execution plan required|duplicate call|burst limit|same-tool (?:cycle limit|budget)|paid-call (?:cycle limit|budget)|active-call concurrency|internal concurrency cap|already has a call in-flight|high-cost tool already used|weak lead blocked|expected value\s+\d+\s+below|disabled after \d+ consecutive|degraded this run|suppressed for investigation|selector blacklisted|unavailable:\s*(?:disabled|missing_key|gated)|\bgated\b|not configured|provider disabled in config|rate-limited\s*[—-]\s*provider|provider\b[^]*?\bsuppressed|5xx\s*[—-]\s*provider|finalize window open|run tool-call cap reached/i;
 
 // Tool ran, but the target has no record. A successful negative, not a failure.
 const EMPTY_RE = /no usable result|skipped\s*[—-]\s*no usable result|not found\b/i;
