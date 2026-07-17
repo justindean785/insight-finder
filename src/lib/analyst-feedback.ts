@@ -23,7 +23,7 @@ import type { ReviewState } from "@/lib/review";
 export const CONFIDENCE_MODEL_VERSION = "2026-07-17.baseline";
 
 export type AnalystAction =
-  | "confirm" | "key" | "recheck" | "dismiss" | "wrong" | "reject"
+  | "confirm" | "key" | "recheck" | "dismiss" | "wrong" | "reject" | "retract"
   | "merge" | "split" | "corrected_entity"
   | "accept_pivot" | "reject_pivot" | "manual_tool_selection";
 

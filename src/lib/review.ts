@@ -233,6 +233,23 @@ export function useReviewStates(threadId: string) {
         delete c.states[id];
         emit(threadId);
         await supabase.from("artifact_reviews").delete().eq("artifact_id", id).eq("user_id", user.id);
+        // Reset = RETRACTION. Append an immutable retract event so the resolved
+        // calibration view stops selecting the now-withdrawn terminal judgment
+        // (retract is the latest event → y NULL → the artifact drops out of the
+        // clean calibration set). Only when there was a real judgment to withdraw.
+        if (prior !== "new") {
+          void recordAnalystFeedback({
+            threadId,
+            artifactId: id,
+            action: "retract",
+            priorState: prior,
+            resultingState: "new",
+            reason: null,
+            confidenceBefore: ctx?.confidence ?? null,
+            confidenceAfter: ctx?.confidence ?? null,
+            sourceLineage: { source: ctx?.source ?? null, kind: ctx?.kind ?? null },
+          });
+        }
       } else {
         c.states[id] = state;
         emit(threadId);
@@ -291,7 +308,11 @@ export function useReviewStates(threadId: string) {
   );
 
   const setNote = useCallback(
-    async (id: string, note: string) => {
+    async (
+      id: string,
+      note: string,
+      ctx?: { value?: string; kind?: string; confidence?: number; source?: string },
+    ) => {
       const c = ensure(threadId);
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
@@ -301,11 +322,28 @@ export function useReviewStates(threadId: string) {
       // Need a row to attach a note to; default to "confirmed" if none exists yet.
       const existing = c.states[id];
       const stateToWrite = existing ?? "confirmed";
-      if (!existing) { c.states[id] = stateToWrite; emit(threadId); }
+      const implicitlyConfirmed = !existing;
+      if (implicitlyConfirmed) { c.states[id] = stateToWrite; emit(threadId); }
       await supabase.from("artifact_reviews").upsert(
         { thread_id: threadId, artifact_id: id, user_id: user.id, state: stateToWrite, note: trimmed || null },
         { onConflict: "user_id,artifact_id" },
       );
+      // Adding a note to an unreviewed artifact implicitly confirms it (existing
+      // product behavior). Capture that as a ground-truth confirm event so the
+      // event log + calibration views match what the product shows.
+      if (implicitlyConfirmed) {
+        void recordAnalystFeedback({
+          threadId,
+          artifactId: id,
+          action: "confirm",
+          priorState: "new",
+          resultingState: "confirmed",
+          reason: trimmed || null,
+          confidenceBefore: ctx?.confidence ?? null,
+          confidenceAfter: ctx?.confidence ?? null,
+          sourceLineage: { source: ctx?.source ?? null, kind: ctx?.kind ?? null },
+        });
+      }
     },
     [threadId],
   );

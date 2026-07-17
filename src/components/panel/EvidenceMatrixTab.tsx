@@ -334,7 +334,7 @@ export function EvidenceMatrixTab({
                           {rState !== "new" && (
                             <>
                               <DropdownMenuSeparator />
-                              <DropdownMenuItem onClick={() => review.set(a.id, null)}>
+                              <DropdownMenuItem onClick={() => review.set(a.id, null, { value: a.value, kind: a.kind, confidence: a.confidence, source: a.source })}>
                                 <RotateCcw className="w-3 h-3 mr-2" /> Reset review
                               </DropdownMenuItem>
                             </>

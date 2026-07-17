@@ -24,8 +24,9 @@ in CI; **it has NOT been applied to production** — that waits for review sign-
 | manual tool selection | — | **No write path exists** |
 
 **Consequence for scope:** the event model defines all requested action types
-forward-compatibly, but only `confirm/key/recheck/dismiss/wrong` have a live
-emission point today (wired in this PR). `accept_pivot/reject_pivot/merge/split/
+forward-compatibly. Wired in this PR: `confirm/key/recheck/dismiss/wrong`, plus
+`retract` on reset and an implicit `confirm` when a note first reviews an artifact
+(so the log never diverges from the product state). `accept_pivot/reject_pivot/merge/split/
 corrected_entity/manual_tool_selection` are reserved in the enum and wired when
 those UI actions exist (tracked as the follow-up in §10). `artifact_reviews`
 stays the source of display state; the event log is a **parallel, append-only**
@@ -182,6 +183,12 @@ n=16 and n=218 are not read as equally trustworthy.
   `v_analyst_feedback_clean`.
 - **Immediately-reversed handled:** the resolved view takes `DISTINCT ON (analyst,
   artifact) … ORDER BY seq DESC`, so only the analyst's *final* judgment counts.
+- **Retraction (reset) handled:** resetting a review appends an immutable
+  `retract` event (`resulting_state = new`); as the latest event it supersedes the
+  withdrawn judgment (`y = NULL`) so the artifact drops out of the clean set —
+  while all prior events remain (behavioral test #11). A note added to an
+  unreviewed artifact (which implicitly confirms it in the product) emits a
+  matching `confirm` event so the log never diverges from what the product shows.
 - **Contradictory excluded:** an artifact with different resolved `y` across
   analysts is dropped from the clean view.
 - **Analyst-confirmed ≠ independently-corroborated:** the event records the

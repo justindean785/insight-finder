@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS public.analyst_feedback_events (
   chain_hash                text        NOT NULL,
   created_at                timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT analyst_feedback_action_chk CHECK (action IN (
-    'confirm','key','recheck','dismiss','wrong','reject',
+    'confirm','key','recheck','dismiss','wrong','reject','retract',
     'merge','split','corrected_entity','accept_pivot','reject_pivot','manual_tool_selection'
   )),
   CONSTRAINT analyst_feedback_label_quality_chk CHECK (label_quality IN ('clean','unresolved','contradictory','reversed')),
@@ -146,7 +146,7 @@ BEGIN
     RAISE EXCEPTION 'must be authenticated';
   END IF;
   IF _action NOT IN (
-    'confirm','key','recheck','dismiss','wrong','reject',
+    'confirm','key','recheck','dismiss','wrong','reject','retract',
     'merge','split','corrected_entity','accept_pivot','reject_pivot','manual_tool_selection'
   ) THEN
     RAISE EXCEPTION 'invalid action %', _action;
@@ -312,6 +312,15 @@ SELECT
   round(avg(y)::numeric, 4)   AS confirm_rate
 FROM public.v_analyst_feedback_clean
 GROUP BY confidence_model_version, artifact_kind;
+
+-- Grant SELECT on the calibration views. They are security_invoker, so RLS on the
+-- base table still applies (an analyst sees only their own labels; service_role
+-- sees all) — but without an explicit view grant the querying role gets
+-- "permission denied for view" (only the owner has default privileges).
+GRANT SELECT ON public.v_analyst_feedback_resolved TO authenticated, service_role;
+GRANT SELECT ON public.v_analyst_feedback_clean     TO authenticated, service_role;
+GRANT SELECT ON public.v_calibration_by_band        TO authenticated, service_role;
+GRANT SELECT ON public.v_calibration_by_kind        TO authenticated, service_role;
 
 -- ============================================================================
 -- ROLLBACK (down) — run manually to fully reverse. Kept commented so the

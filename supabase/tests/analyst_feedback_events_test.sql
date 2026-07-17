@@ -213,4 +213,36 @@ BEGIN
   RAISE NOTICE 'PASS 10: hash chain links events';
 END $$;
 
+-- ==========================================================================
+-- 11. Retraction (reset): appends a retract event that supersedes the prior
+--     judgment in the resolved view and drops the artifact from the clean set,
+--     while the full immutable history is preserved.
+-- ==========================================================================
+SET ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub', :'A', false);
+DO $$
+DECLARE r record; yy int;
+BEGIN
+  SELECT * INTO r FROM public.record_analyst_feedback(
+    'aaaaaaaa-0000-0000-0000-000000000001','aaaaaaaa-0000-0000-0000-0000000000f1',
+    'retract','dismissed','new',NULL,62,62,'2026-07-17.baseline','{}'::jsonb);
+  IF r.deduped OR r.seq <> 3 THEN RAISE EXCEPTION 'FAIL 11a: expected retract seq=3, got seq=% deduped=%', r.seq, r.deduped; END IF;
+  SELECT y INTO yy FROM public.v_analyst_feedback_resolved
+   WHERE artifact_id='aaaaaaaa-0000-0000-0000-0000000000f1';
+  IF yy IS NOT NULL THEN RAISE EXCEPTION 'FAIL 11a: retracted artifact must be unresolved (y NULL), got %', yy; END IF;
+  RAISE NOTICE 'PASS 11a: retract appended and supersedes prior judgment';
+END $$;
+RESET ROLE;
+DO $$
+DECLARE cnt bigint; total bigint;
+BEGIN
+  SELECT count(*) INTO cnt FROM public.v_analyst_feedback_clean
+   WHERE artifact_id='aaaaaaaa-0000-0000-0000-0000000000f1';
+  IF cnt <> 0 THEN RAISE EXCEPTION 'FAIL 11b: retracted artifact must be excluded from clean calibration, found %', cnt; END IF;
+  SELECT count(*) INTO total FROM public.analyst_feedback_events
+   WHERE artifact_id='aaaaaaaa-0000-0000-0000-0000000000f1';
+  IF total <> 3 THEN RAISE EXCEPTION 'FAIL 11b: full history must persist (3 events), got %', total; END IF;
+  RAISE NOTICE 'PASS 11b: retracted artifact excluded from calibration; full history preserved';
+END $$;
+
 SELECT 'ALL ANALYST-FEEDBACK BEHAVIORAL TESTS PASSED' AS result;
