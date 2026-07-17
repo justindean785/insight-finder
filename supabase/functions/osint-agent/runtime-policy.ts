@@ -217,6 +217,8 @@ export const ALWAYS_ALLOW_TOOLS = new Set<string>([
   "record_report",
   "append_evidence",
   "memory_save",
+  "finalize_no_findings",
+  "finalize_skip_memory",
 ]);
 
 // Concurrency over the parallel cap QUEUES (escalating backoff) rather than failing.
@@ -529,4 +531,3 @@ export function shouldAllowToolCall(input: ToolCallPolicyInput): ToolCallPolicyD
       : `${input.toolName} eligible.`,
   };
 }
-
