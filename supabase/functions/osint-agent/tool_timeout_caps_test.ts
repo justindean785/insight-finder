@@ -88,3 +88,13 @@ Deno.test("timeout overrides: minimax_correlate clears its real bounded-batch la
   );
   assertEquals(toolTimeoutMs("minimax_correlate"), 30_000);
 });
+
+// 2026-07 prod audit: minimax_plan_pivots (smart-tier planner, 1500 out tokens) had no
+// override and timed out 10× on the 12s default, starving cycles of their next batch.
+Deno.test("timeout overrides: minimax_plan_pivots is budgeted above the 12s default it timed out on", () => {
+  assert(
+    toolTimeoutMs("minimax_plan_pivots") > DEFAULT_TOOL_TIMEOUT_MS,
+    "minimax_plan_pivots must exceed the 12s default it was timing out on",
+  );
+  assertEquals(toolTimeoutMs("minimax_plan_pivots"), 20_000);
+});

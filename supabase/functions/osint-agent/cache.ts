@@ -106,6 +106,17 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // MODELS.smart (not fast) — this is the misattribution/collision-detection step, where
   // quality outranks a few seconds.
   minimax_correlate: 30_000,
+  // minimax_plan_pivots is the SAME class of call as minimax_correlate — a smart-tier
+  // (MODELS.smart) LLM request emitting up to 1500 JSON tokens over the full tool menu
+  // + up to 200 artifacts — but it had NO override, so it sat on the 12s default and
+  // timed out repeatedly in production (tool_usage_log: 10× "exceeded 12000ms tool
+  // timeout"). A timed-out planner returns zero proposed_calls, starving the cycle of
+  // its next pivot batch. Unlike correlate (30s), the planner BLOCKS the orchestration
+  // loop before every non-planner batch, so it gets a tighter 20s budget — enough to
+  // clear the 12s failures with headroom while keeping the loop responsive. Its own
+  // model fetch budget (minimaxChat, 45–60s) sits well above this wrapper cap, so the
+  // wrapper > fetch invariant holds and the fetch, not the wrapper, governs.
+  minimax_plan_pivots: 20_000,
   // OathNet family: every endpoint's own fetch budget is 20s (a couple 15s), but the
   // outer wrapper cap must sit ABOVE that fetch budget or it guillotines the call
   // before the fetch's own timeout can return a clean result. The 2026-07-15 live
