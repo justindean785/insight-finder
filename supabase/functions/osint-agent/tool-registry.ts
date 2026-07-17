@@ -480,9 +480,22 @@ export function buildTools(ctx: ToolContext) {
             signal: (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal,
           });
           const parsed = safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content };
-          guard.artifactsSinceCorrelate = 0;
           return { ok: r.ok, status: r.status, analysis: parsed };
-        } catch (e) { return { error: String(e) }; }
+        } catch (e) {
+          return { error: String(e) };
+        } finally {
+          // Reset the auto-fire nudge counter on ANY completed attempt (success OR
+          // timeout/abort). Previously this reset lived only on the success path, so a
+          // timed-out correlate (the model call races the 30s wrapper cap and loses)
+          // threw past it and left `artifactsSinceCorrelate` latched ≥ the threshold —
+          // the recorder then re-surfaced the "call minimax_correlate now" nudge on
+          // EVERY subsequent record_artifacts, and the model kept re-issuing the same
+          // 30s call that just timed out (prod: "minimax_correlate timed out 3x" in one
+          // investigation). The deterministic local union-find clusters regardless, so
+          // deferring the next correlate until a fresh batch of artifacts accrues is the
+          // correct, non-thrashing behavior — an attempt, not a retry loop.
+          guard.artifactsSinceCorrelate = 0;
+        }
       },
     }),
     minimax_plan_pivots: tool({

@@ -1,36 +1,63 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import {
+  classifyDetailedOutcome,
+  normalizeProviderError,
+  CANONICAL_OUTCOME_META,
+  type CanonicalOutcome,
+} from "@/lib/tool-outcome";
 
 /**
- * Tool health for a thread, read from the AUTHORITATIVE `tool_usage_log.outcome`
- * column (added in #143). This is the durable record of what every tool call
- * actually did — distinct from the chat-derived Activity feed — so analysts can
- * see at a glance which providers failed (e.g. a bad API key, a rejected format)
- * instead of those failures being buried in chat text.
+ * Tool health for a thread, read from the AUTHORITATIVE `tool_usage_log` record
+ * and REFINED through the canonical outcome taxonomy (`src/lib/tool-outcome.ts`).
  *
- * `outcome` buckets: 'ok' | 'failed' | 'skipped' | 'empty'. Skipped = governance
- * (budget/burst caps, gating, missing key); empty = ran fine, no record found;
- * failed = a real provider error worth an analyst's attention.
+ * The stored `outcome` column is coarse (ok/skipped/empty/failed) and — worse —
+ * historically binned TIMEOUTS, RATE-LIMITS, 403/451, and even governance skips
+ * (`already ran for this entity`, `guard not met`) all into `failed`. Reading it
+ * literally is what made the panel "lie": a timed-out heavy call looked identical
+ * to a real provider outage. Here we re-derive the CANONICAL category from the
+ * stored `error_msg` + `status_code` so each call is bucketed honestly, and only
+ * genuine problems (`config_error`/`failed`/`unknown`) count as "needs attention".
  */
-export type ToolOutcome = "ok" | "failed" | "skipped" | "empty";
+export type { CanonicalOutcome } from "@/lib/tool-outcome";
+
+/** Severity order, worst first — drives the row's headline category + sorting. */
+const SEVERITY: CanonicalOutcome[] = [
+  "failed", "config_error", "unknown",
+  "timeout", "rate_limited", "http_denied", "blocked",
+  "cancelled", "skipped", "empty", "success",
+];
+
+function emptyCounts(): Record<CanonicalOutcome, number> {
+  return {
+    success: 0, empty: 0, skipped: 0, cancelled: 0, timeout: 0,
+    rate_limited: 0, http_denied: 0, blocked: 0, config_error: 0, failed: 0, unknown: 0,
+  };
+}
+
+export interface ToolIssue {
+  category: CanonicalOutcome;
+  message: string;
+  statusCode: number | null;
+}
 
 export interface ToolHealthRow {
   toolName: string;
-  ok: number;
-  failed: number;
-  skipped: number;
-  empty: number;
+  counts: Record<CanonicalOutcome, number>;
   total: number;
-  /** Most recent non-empty error message for a failed call, surfaced inline. */
-  lastError: string | null;
-  lastStatusCode: number | null;
+  /** Most severe category present on this tool (for the row tone). */
+  worst: CanonicalOutcome;
+  /** True only for genuine problems (config/failed/unknown). */
+  needsAttention: boolean;
+  /** Most recent needs-attention issue, with a normalized human message. */
+  lastIssue: ToolIssue | null;
 }
 
 export interface ThreadToolHealth {
   rows: ToolHealthRow[];
-  totals: { ok: number; failed: number; skipped: number; empty: number; total: number };
-  /** Tools with at least one hard failure, worst-first. */
-  failing: ToolHealthRow[];
+  totals: Record<CanonicalOutcome, number> & { total: number };
+  /** Tools with a genuine problem (config/failed/unknown), worst-first. */
+  attention: ToolHealthRow[];
   loading: boolean;
   error: string | null;
 }
@@ -44,50 +71,63 @@ interface RawRow {
   created_at: string | null;
 }
 
-/** Fall back to the ok flag for any pre-#143 rows that never got an outcome. */
-function normalizeOutcome(r: RawRow): ToolOutcome {
-  const o = (r.outcome ?? "").toLowerCase();
-  if (o === "ok" || o === "failed" || o === "skipped" || o === "empty") return o;
-  return r.ok ? "ok" : "failed";
+function worstOf(counts: Record<CanonicalOutcome, number>): CanonicalOutcome {
+  for (const cat of SEVERITY) if (counts[cat] > 0) return cat;
+  return "success";
 }
 
 export function aggregateToolHealth(raw: RawRow[]): Omit<ThreadToolHealth, "loading" | "error"> {
   const byTool = new Map<string, ToolHealthRow>();
-  const totals = { ok: 0, failed: 0, skipped: 0, empty: 0, total: 0 };
+  const totals = { ...emptyCounts(), total: 0 };
 
-  // created_at ascending so the last failed row we see is the most recent.
+  // created_at ascending so the last needs-attention row we see is the most recent.
   const sorted = [...raw].sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
 
   for (const r of sorted) {
     const name = r.tool_name?.trim() || "unknown";
-    const outcome = normalizeOutcome(r);
+    // Legacy rows (null outcome) fall back to the ok boolean before refining.
+    const coarse = r.outcome ?? (r.ok === false ? "failed" : "ok");
+    const category = classifyDetailedOutcome(coarse, r.error_msg, r.status_code);
+
     let row = byTool.get(name);
     if (!row) {
-      row = { toolName: name, ok: 0, failed: 0, skipped: 0, empty: 0, total: 0, lastError: null, lastStatusCode: null };
+      row = { toolName: name, counts: emptyCounts(), total: 0, worst: "success", needsAttention: false, lastIssue: null };
       byTool.set(name, row);
     }
-    row[outcome] += 1;
+    row.counts[category] += 1;
     row.total += 1;
-    totals[outcome] += 1;
+    totals[category] += 1;
     totals.total += 1;
-    if (outcome === "failed") {
-      const msg = r.error_msg?.trim();
-      if (msg) row.lastError = msg;
-      if (r.status_code != null) row.lastStatusCode = r.status_code;
+
+    if (CANONICAL_OUTCOME_META[category].needsAttention) {
+      row.needsAttention = true;
+      row.lastIssue = {
+        category,
+        message: normalizeProviderError(name, r.error_msg, r.status_code, category),
+        statusCode: r.status_code ?? null,
+      };
     }
   }
 
-  const rows = [...byTool.values()].sort(
-    (a, b) => b.failed - a.failed || b.total - a.total || a.toolName.localeCompare(b.toolName),
+  const rows = [...byTool.values()];
+  for (const row of rows) row.worst = worstOf(row.counts);
+
+  const sevRank = (c: CanonicalOutcome) => SEVERITY.indexOf(c);
+  rows.sort(
+    (a, b) =>
+      Number(b.needsAttention) - Number(a.needsAttention) ||
+      sevRank(a.worst) - sevRank(b.worst) ||
+      b.total - a.total ||
+      a.toolName.localeCompare(b.toolName),
   );
-  const failing = rows.filter((r) => r.failed > 0);
-  return { rows, totals, failing };
+  const attention = rows.filter((r) => r.needsAttention);
+  return { rows, totals, attention };
 }
 
 export function useThreadToolHealth(threadId: string): ThreadToolHealth {
   const [state, setState] = useState<ThreadToolHealth>({
-    rows: [], totals: { ok: 0, failed: 0, skipped: 0, empty: 0, total: 0 },
-    failing: [], loading: true, error: null,
+    rows: [], totals: { ...emptyCounts(), total: 0 },
+    attention: [], loading: true, error: null,
   });
 
   useEffect(() => {
