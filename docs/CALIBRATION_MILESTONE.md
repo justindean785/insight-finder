@@ -243,9 +243,10 @@ n=16 and n=218 are not read as equally trustworthy.
 2. **Username-merge integrity fix** — wire `merge_guard.ts` + `isGenericHandle`
    into the live cluster merge. This milestone's `falseLinkRate` becomes its
    before/after metric.
-3. **Server-authoritative confidence consolidation (design)** — one score in
-   log-odds; analyst-confirmation as a Bayesian evidence source whose reliability
-   is **read from this milestone's calibration**, not hardcoded.
+3. **Server-authoritative confidence consolidation** — its **first task** is the
+   authoritative prediction + investigation-context snapshot in §11 below, then
+   one score in log-odds with analyst-confirmation as a Bayesian evidence source
+   whose reliability is **read from this milestone's calibration**, not hardcoded.
 4. **Confidence implementation + migration** — bump `CONFIDENCE_MODEL_VERSION`;
    calibration then compares old vs. new model versions directly.
 5. **Tool reward + EIG instrumentation** — "actual gain" per tool call, computed
@@ -255,3 +256,51 @@ n=16 and n=218 are not read as equally trustworthy.
 
 Everything downstream consumes the labels this milestone captures — which is why
 it is first.
+
+---
+
+## 11. Deferred (next milestone, FIRST task): authoritative prediction + context snapshot
+
+**Decision (do NOT do in this PR):** prediction and investigation-context are NOT
+captured client-side at review time, and no partially-populated `prediction` /
+`investigation_context` columns are added to this milestone. Reason: the
+authoritative values (model/provider/reasoning versions, tool/time budget, source
+diversity, run context) only exist at **backend artifact-scoring / orchestration
+time**, not at the analyst's review-button click. Half-populated, client-derived
+fields would create a schema contract before the authoritative source exists,
+inviting duplicate migrations and data that looks complete but is not.
+
+Instead, this is designed **once**, at the authoritative scoring event, as the
+first task of the confidence-consolidation milestone. The snapshot is written when
+the artifact is scored (one migration, one consistent schema) and the analyst
+feedback event references it by artifact/run.
+
+**Future schema (target) — one snapshot per scored artifact:**
+
+| Field | Source (authoritative at) |
+|---|---|
+| `predicted_confidence` | scoring |
+| `predicted_label` (tier) | scoring |
+| `confidence_model_version` | scoring |
+| `model_version` / `provider_versions` / `reasoning_version` | scoring / orchestration |
+| `tool_chain` | orchestration |
+| `entity_type` | thread seed |
+| `investigation_phase` | orchestration |
+| `known_artifact_count` | run state at scoring |
+| `source_diversity` | run state at scoring |
+| `contradiction_count` | run state at scoring |
+| `remaining_tool_budget` / `remaining_time_budget` | orchestration |
+| `run_id` | run |
+| `scored_at` (scoring timestamp) | scoring |
+
+**Authoritative-source rule:** where a backend value exists, it is authoritative.
+No client-derived field is ever treated as authoritative in its place. The feedback
+event's existing `confidence_before` / `confidence_model_version` remain a
+convenience mirror; the snapshot is the system of record for prediction + context.
+
+**Invariants this milestone already guarantees (confirmed before merge):**
+1. Every analyst-feedback event is **immutable and queryable** — UPDATE / DELETE /
+   TRUNCATE are blocked for all roles (behavioral tests 7a/7b/7c).
+2. **"Latest judgment wins" applies only to the derived calibration views**
+   (`v_analyst_feedback_resolved` etc.) — it never deletes or mutates prior events;
+   the full transition timeline is preserved (behavioral test #3).
