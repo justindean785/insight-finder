@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import { recordAnalystFeedback, actionForReviewState } from "@/lib/analyst-feedback";
 
 /**
  * Analyst review states. Renamed for clarity (Nov 2026):
@@ -220,9 +221,12 @@ export function useReviewStates(threadId: string) {
     async (
       id: string,
       state: ReviewState | null,
-      ctx?: { value?: string; kind?: string },
+      ctx?: { value?: string; kind?: string; confidence?: number; source?: string },
     ) => {
       const c = ensure(threadId);
+      // Capture the analyst's PRIOR judgment before we mutate it — the feedback
+      // event records the transition (prior → resulting).
+      const prior = c.states[id] ?? "new";
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
       if (state == null || state === "new") {
@@ -236,6 +240,24 @@ export function useReviewStates(threadId: string) {
           { thread_id: threadId, artifact_id: id, user_id: user.id, state },
           { onConflict: "user_id,artifact_id" },
         );
+        // Ground-truth capture (instrumentation-only): append an immutable
+        // feedback event. Best-effort — never blocks or breaks the review UX,
+        // and changes NO confidence. Confidence is unchanged this milestone, so
+        // before == after (the artifact's stored confidence at judgment time).
+        const action = actionForReviewState(state);
+        if (action) {
+          void recordAnalystFeedback({
+            threadId,
+            artifactId: id,
+            action,
+            priorState: prior,
+            resultingState: state,
+            reason: c.notes[id] ?? null,
+            confidenceBefore: ctx?.confidence ?? null,
+            confidenceAfter: ctx?.confidence ?? null,
+            sourceLineage: { source: ctx?.source ?? null, kind: ctx?.kind ?? null },
+          });
+        }
         // Teach the agent: when an analyst marks an artifact as factually
         // wrong, persist a durable cross-investigation lesson so future
         // runs recall it and skip the bad lead.

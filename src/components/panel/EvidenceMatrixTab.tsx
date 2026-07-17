@@ -303,18 +303,18 @@ export function EvidenceMatrixTab({
                     <div className="flex items-center gap-1">
                       <PrimaryAction icon={CheckCircle2} label="Confirm" tip={REVIEW_HELP.confirmed}
                         active={rState === "confirmed" || rState === "key"} tone="high"
-                        onClick={() => review.set(a.id, "confirmed")} />
+                        onClick={() => review.set(a.id, "confirmed", { value: a.value, kind: a.kind, confidence: a.confidence, source: a.source })} />
                       <PrimaryAction icon={ShieldQuestion} label="Recheck"
                         tip="Sends this exact finding to the chatbot for a fresh, independent re-verification — and flags it as needing another look."
                         active={rState === "recheck"} tone="warn"
                         onClick={() => {
-                          void review.set(a.id, "recheck");
+                          void review.set(a.id, "recheck", { value: a.value, kind: a.kind, confidence: a.confidence, source: a.source });
                           launchRecheckInChat(threadId, { value: a.value, kind: a.kind });
                           toast.success("Rechecking in chat…");
                         }} />
                       <PrimaryAction icon={XCircle} label="False" tip={REVIEW_HELP.dismissed}
                         active={rState === "dismissed"} tone="danger"
-                        onClick={() => review.set(a.id, "dismissed")} />
+                        onClick={() => review.set(a.id, "dismissed", { value: a.value, kind: a.kind, confidence: a.confidence, source: a.source })} />
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button size="sm" variant="ghost" className="h-7 w-7 p-0" aria-label="More review actions">
@@ -322,12 +322,12 @@ export function EvidenceMatrixTab({
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="text-xs">
-                          <DropdownMenuItem onClick={() => review.set(a.id, "key")}>
+                          <DropdownMenuItem onClick={() => review.set(a.id, "key", { value: a.value, kind: a.kind, confidence: a.confidence, source: a.source })}>
                             <Star className="w-3 h-3 mr-2" /> Pin as key finding
                           </DropdownMenuItem>
                           <DropdownMenuItem
                             className="text-destructive focus:text-destructive"
-                            onClick={() => review.set(a.id, "wrong", { value: a.value, kind: a.kind })}
+                            onClick={() => review.set(a.id, "wrong", { value: a.value, kind: a.kind, confidence: a.confidence, source: a.source })}
                           >
                             <Ban className="w-3 h-3 mr-2" /> Mark false &amp; teach agent
                           </DropdownMenuItem>
