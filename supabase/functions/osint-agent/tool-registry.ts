@@ -1002,7 +1002,7 @@ export function buildTools(ctx: ToolContext) {
           return {
             ok: true, status: r.status,
             count: items.length, total: d?.meta?.total ?? items.length,
-            items: trimVictimItems(items),
+            items: trimVictimItems(items, 25, REVEAL_BREACH_DATA),
             quota_left: oathnetQuotaLeft(),
             note: "Victim rows are LEADS until corroborated. Pivot a log_id via oathnet_victim_manifest. Label device identifiers [VERIFY].",
           };

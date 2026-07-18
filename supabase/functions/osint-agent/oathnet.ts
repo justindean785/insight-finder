@@ -222,7 +222,7 @@ export function trimStealerItems(items: unknown, cap = 25, reveal = false): Reco
 
 /** Trim a victims_search item list to device/identity metadata (the OSINT value),
  * which carries no raw credentials. Arrays capped. */
-export function trimVictimItems(items: unknown, cap = 25): Record<string, unknown>[] {
+export function trimVictimItems(items: unknown, cap = 25, reveal = false): Record<string, unknown>[] {
   if (!Array.isArray(items)) return [];
   return items.slice(0, cap).map((raw) => {
     const it = (raw ?? {}) as Record<string, unknown>;
@@ -238,6 +238,14 @@ export function trimVictimItems(items: unknown, cap = 25): Record<string, unknow
       pwned_at: it.pwned_at,
       indexed_at: it.indexed_at,
     };
+    if (reveal) {
+      // Account-authorized full reveal — surface any secret-bearing fields the
+      // victim row carried (parity with trimStealerItems) instead of dropping them.
+      for (const [k, v] of Object.entries(it)) {
+        if (SECRET_KEY_RE.test(k) && v != null && v !== "") keep[k] = v;
+      }
+      return stripSecrets(keep, 40, 0, true) as Record<string, unknown>;
+    }
     return stripSecrets(keep) as Record<string, unknown>;
   });
 }
