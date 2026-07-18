@@ -242,6 +242,11 @@ export const IPV4_RE = /^((25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}(25[0-5]|2[0-4]\d|[
 export const IPV6_RE = /^[0-9a-f:]+$/i;
 export const NAME_RE = /^[\p{L}][\p{L}.\-' ]{1,79}$/u;
 export const PHONE_RE = /^\+?[0-9\-\s().]{6,32}$/;
+// A "username" that is actually a hostname (e.g. a record-site URL bar OCR'd from a
+// screenshot — "app5.lasd.org", "ciris.mt.cdcr.ca.gov") must reclassify to `domain`,
+// never seed a username sweep. Gate on a recognized public suffix so ordinary dotted
+// handles ("john.doe") stay usernames.
+export const KNOWN_TLD_RE = /\.(gov|mil|edu|org|com|net|int|io|co|us|uk|au|ca|de|fr|eu|info|biz)$/i;
 
 export function validateArtifact(kind: string, rawValue: string): ValidateResult {
   const value = (rawValue ?? "").trim();
@@ -309,6 +314,13 @@ export function validateArtifact(kind: string, rawValue: string): ValidateResult
       if (/\s/.test(v)) return { ok: false, reason: "username must not contain whitespace" };
       if (v.length < 2 || v.length > 64) return { ok: false, reason: "username length out of range" };
       if (/[<>"'`]/.test(v)) return { ok: false, reason: "username contains illegal punctuation" };
+      // A dotted hostname is a DOMAIN, not a personal handle. Catches record-site URL
+      // bars OCR'd from screenshots (app5.lasd.org, ciris.mt.cdcr.ca.gov) that would
+      // otherwise become a "username" → identity cluster → username-sweep pivot. Gated
+      // on a recognized public suffix so ordinary dotted handles (john.doe) stay usernames.
+      if (!v.includes("@") && DOMAIN_RE.test(v) && KNOWN_TLD_RE.test(v)) {
+        return { ok: true, kind: "domain", value: v.toLowerCase(), metaPatch: { reclassified_from: "username" } };
+      }
       return { ok: true, kind: "username", value: v.toLowerCase() };
     }
     case "name": {
