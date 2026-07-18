@@ -55,6 +55,21 @@ describe("report #4 — conflict metadata is surfaced in the Collision section",
     expect(md).toContain("ipgeolocation says Bellevue WA");
   });
 
+  it("surfaces a metadata.conflict string (address state mismatch) instead of 'No collisions flagged'", () => {
+    const md = buildReportMarkdown({
+      seedValue: "x@y.com",
+      seedType: "email",
+      artifacts: [
+        artifact({ id: "ad1", kind: "address", value: "302 S Mason Ct, Baltimore MD 21231", metadata: {
+          conflict: "different state than LA and FL addresses",
+        } }),
+      ],
+    });
+    expect(md).toContain("## Collision / Likely Unrelated");
+    expect(md).not.toContain("_No collisions flagged._");
+    expect(md).toContain("different state than LA and FL addresses");
+  });
+
   it("still reads 'No collisions flagged' when there is no conflict metadata", () => {
     const md = buildReportMarkdown({
       seedValue: "x@y.com",

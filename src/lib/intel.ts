@@ -1099,6 +1099,7 @@ export function buildReportMarkdown(input: ReportInput): string {
     if (collisionIds.has(a.id)) return false;
     const m = (a.metadata ?? {}) as Record<string, unknown>;
     return (typeof m.conflict_note === "string" && m.conflict_note.trim().length > 0)
+      || (typeof m.conflict === "string" && m.conflict.trim().length > 0)
       || m.geo_conflict === true
       || collisionText(m) !== null;
   });
@@ -1106,6 +1107,7 @@ export function buildReportMarkdown(input: ReportInput): string {
     const m = (a.metadata ?? {}) as Record<string, unknown>;
     if (typeof m.conflict_note === "string" && m.conflict_note.trim()) return m.conflict_note.trim();
     if (typeof m.geo_conflict_note === "string" && m.geo_conflict_note.trim()) return m.geo_conflict_note.trim();
+    if (typeof m.conflict === "string" && m.conflict.trim()) return m.conflict.trim();
     const ct = collisionText(m);
     if (ct) return ct;
     return "conflicting attributes across sources";
