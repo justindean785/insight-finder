@@ -65,6 +65,45 @@ describe("report #4 — conflict metadata is surfaced in the Collision section",
   });
 });
 
+// Namesake / same-name collision surfacing (Cameron Lawson run): the section must
+// reflect the pipeline's OWN exclusion/collision signals — a profile marked
+// metadata.status:"excluded", and a row whose reason/cluster names a collision —
+// instead of reading "No collisions flagged" while such rows exist.
+describe("report — status:excluded + free-text collisions are surfaced", () => {
+  it("surfaces a metadata.status:'excluded' namesake in the collision section", () => {
+    const md = buildReportMarkdown({
+      seedValue: "cameron elijah lawson",
+      seedType: "name",
+      artifacts: [
+        artifact({ id: "n1", kind: "name", value: "Cameron Elijah Lawson", confidence: 90, source: "court_record" }),
+        artifact({ id: "x1", kind: "social_profile", value: "CameronLawson5 on Twitter/X", confidence: 30, metadata: {
+          status: "excluded",
+          reason_not_confirmed: "Display name is Cameron Jacobs, not Cameron Lawson; excluded",
+        } }),
+      ],
+    });
+    expect(md).toContain("## Collision / Likely Unrelated");
+    expect(md).not.toContain("_No collisions flagged._");
+    expect(md).toContain("CameronLawson5");
+  });
+
+  it("surfaces a free-text same-name collision noted via reason/cluster", () => {
+    const md = buildReportMarkdown({
+      seedValue: "cameron elijah lawson",
+      seedType: "name",
+      artifacts: [
+        artifact({ id: "n1", kind: "name", value: "Cameron Elijah Lawson", confidence: 90, source: "court_record" }),
+        artifact({ id: "t1", kind: "social_profile", value: "CameronLawson on Twitter/X", confidence: 30, metadata: {
+          status: "needs_review",
+          cluster: "B - Tennessee collision",
+          reason_not_confirmed: "Tennessee location conflicts with CA subject; likely same-name collision",
+        } }),
+      ],
+    });
+    expect(md).not.toContain("_No collisions flagged._");
+  });
+});
+
 // #5 — Timeline Summary must not collapse to a single timestamp. Tool-call
 // events all inherit one message timestamp; the evidentiary chronology
 // (artifacts/seed/query/report) carries real per-event times.

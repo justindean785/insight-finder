@@ -1084,16 +1084,30 @@ export function buildReportMarkdown(input: ReportInput): string {
   // an artifact's own metadata said "see Conflicts section". We list them here
   // (without quarantining — they stay in the main network) so the pointer
   // resolves and the analyst sees the discrepancy.
+  // A probable same-name collision the pipeline noted in free text (reason_not_confirmed /
+  // cluster label) WITHOUT excluding the row. These stay in the network but are surfaced
+  // here so the section never reads "No collisions flagged" while such reasoning exists.
+  const COLLISION_TEXT_RE = /\b(collision|namesake|same[-\s]?name|different\s+(?:person|people))\b/i;
+  const collisionText = (m: Record<string, unknown>): string | null => {
+    for (const k of ["reason_not_confirmed", "cluster", "reason"]) {
+      const v = m[k];
+      if (typeof v === "string" && COLLISION_TEXT_RE.test(v)) return v.trim();
+    }
+    return null;
+  };
   const conflictNoted = artifacts.filter((a) => {
     if (collisionIds.has(a.id)) return false;
     const m = (a.metadata ?? {}) as Record<string, unknown>;
     return (typeof m.conflict_note === "string" && m.conflict_note.trim().length > 0)
-      || m.geo_conflict === true;
+      || m.geo_conflict === true
+      || collisionText(m) !== null;
   });
   const conflictNote = (a: Artifact): string => {
     const m = (a.metadata ?? {}) as Record<string, unknown>;
     if (typeof m.conflict_note === "string" && m.conflict_note.trim()) return m.conflict_note.trim();
     if (typeof m.geo_conflict_note === "string" && m.geo_conflict_note.trim()) return m.geo_conflict_note.trim();
+    const ct = collisionText(m);
+    if (ct) return ct;
     return "conflicting attributes across sources";
   };
   const collisionSection = (collisionArtifacts.length === 0 && conflictNoted.length === 0)
