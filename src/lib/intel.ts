@@ -1380,9 +1380,9 @@ function extractStateFromText(s: string | null | undefined): string | null {
   // the ZIP is the authoritative state. (Bug: "302 S Mason Ct, Baltimore MD 21231"
   // was read as Connecticut off the "Ct" street suffix, fabricating a phantom
   // state that then drove a false geographic collision.)
-  const zipAnchored = s.match(/([A-Za-z][A-Za-z.\-]{0,13})\s+\d{5}(?:-\d{4})?\b/);
+  const zipAnchored = s.match(/([A-Za-z][A-Za-z.-]{0,13})\s+\d{5}(?:-\d{4})?\b/);
   if (zipAnchored) {
-    const st = US_STATE_TOKENS[zipAnchored[1].toLowerCase().replace(/[.\-]+/g, "")];
+    const st = US_STATE_TOKENS[zipAnchored[1].toLowerCase().replace(/[.-]+/g, "")];
     if (st) return st;
   }
   // Fallback for strings with no ZIP (clean metadata like "CA", or a name-location
