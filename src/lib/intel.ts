@@ -1374,6 +1374,19 @@ function tokenize(s: string): string[] {
 
 function extractStateFromText(s: string | null | undefined): string | null {
   if (!s) return null;
+  // A US address ends "... <STATE> <ZIP>". Anchor on the 5-digit ZIP so a street
+  // suffix that collides with a 2-letter state code — e.g. "Ct" (Court) → CT,
+  // "Pa"/"Or"/"In" — can't be mistaken for the state. The token immediately before
+  // the ZIP is the authoritative state. (Bug: "302 S Mason Ct, Baltimore MD 21231"
+  // was read as Connecticut off the "Ct" street suffix, fabricating a phantom
+  // state that then drove a false geographic collision.)
+  const zipAnchored = s.match(/([A-Za-z][A-Za-z.\-]{0,13})\s+\d{5}(?:-\d{4})?\b/);
+  if (zipAnchored) {
+    const st = US_STATE_TOKENS[zipAnchored[1].toLowerCase().replace(/[.\-]+/g, "")];
+    if (st) return st;
+  }
+  // Fallback for strings with no ZIP (clean metadata like "CA", or a name-location
+  // seed like "sacramento ca"): first recognized state token.
   for (const tok of tokenize(s)) {
     const st = US_STATE_TOKENS[tok];
     if (st) return st;
