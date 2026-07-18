@@ -326,8 +326,16 @@ export function labelForArtifact(a: Artifact, review?: ReviewAdjustment): ConfLa
   const meta = (a.metadata ?? {}) as Record<string, unknown>;
   if (review === "dismissed" || review === "wrong" || meta.false_positive === true) return "FAILED";
   if (meta.conflict === true || meta.collision === true) return "CONFLICT";
-  // Analyst attestations short-circuit to CONFIRMED.
-  if (review === "confirmed" || review === "key" || meta.reviewed === true) return "CONFIRMED";
+  // Analyst attestations short-circuit to CONFIRMED — EXCEPT for a possible-minor
+  // row. Minor-safety is a HARD FLOOR: attestation must never label-promote a
+  // potential minor to CONFIRMED (which downstream renders/exports as a confirmed
+  // finding — it leads Key Findings, the "Confirmed" KPI/bucket, and skips value
+  // sanitization). adjustedConfidence already caps a possible_minor's number at 55;
+  // skipping the short-circuit makes the LABEL respect that cap too — the row flows
+  // through the source-derived tiers below (max VERIFY at 55), so number and label
+  // stay consistent. The analyst review itself is still recorded.
+  const attested = review === "confirmed" || review === "key" || meta.reviewed === true;
+  if (attested && meta.possible_minor !== true) return "CONFIRMED";
 
   const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
   const allSources = [a.source ?? null, ...metaSources].filter(Boolean) as string[];
