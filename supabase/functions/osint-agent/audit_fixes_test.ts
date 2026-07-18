@@ -116,6 +116,20 @@ Deno.test("inferKind coerces whitespace 'username' to name instead of rejecting"
   assertEquals(inferKind("username", "onerich4life4").kind, "username");
 });
 
+Deno.test("record-site hostnames OCR'd as 'username' reclassify to domain, not a handle", () => {
+  // Regression: gemini_vision read the URL bar of an uploaded CDCR/LASD record page
+  // and recorded the host as a username → identity cluster → username-sweep pivot.
+  for (const host of ["app5.lasd.org", "ciris.mt.cdcr.ca.gov"]) {
+    const v = validateArtifact("username", host);
+    assertEquals(v.ok, true);
+    assertEquals((v as { kind?: string }).kind, "domain", `${host} must reclassify to domain`);
+    assertEquals((v as { metaPatch?: Record<string, unknown> }).metaPatch?.reclassified_from, "username");
+  }
+  // Ordinary handles — including dotted ones without a public suffix — stay usernames.
+  assertEquals(validateArtifact("username", "cameronlawson").kind, "username");
+  assertEquals(validateArtifact("username", "john.doe").kind, "username");
+});
+
 Deno.test("isBioCrossLinkName flags bio-linked names only", () => {
   // The real misidentification: a Facebook name pulled from a SoundCloud bio.
   assertEquals(isBioCrossLinkName("name", { from_bio: true, platform: "facebook" }), true);
