@@ -48,6 +48,7 @@ import {
   oathnetVictimManifestUrl, oathnetVictimFileUrl, oathnetVictimArchiveUrl,
   oathnetSubdomainUrl, oathnetDbnamesUrl, OATHNET_AI_FILTER_URL, OATHNET_SCANNER_URLS,
   noteOathnetQuota, oathnetQuotaLeft, oathnetExhausted,
+  classifyIpBreach, breachHitCount, type IpBreachInput,
   trimStealerItems, trimVictimItems, summarizeManifest, safeVictimFile,
 } from "./oathnet.ts";
 import {
@@ -894,7 +895,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     oathnet_lookup: tool({
      description:
-       "Query OathNet v2 for breach correlation on a high-value email/username/phone/domain/NAME, or geo+ASN on an IP. For a person's full NAME pass type:'name' (searched as a free-text query across the breach corpus — expect same-name collisions, so treat name-only hits as [VERIFY] until a selector overlaps). A first-class breach source: run it on the seed AND on high-value selectors/names discovered mid-investigation.",
+       "Query OathNet v2 for breach correlation on a high-value email/username/phone/domain/NAME, or geo/ASN + breach exposure on an IP. An IP runs ip-info AND a breach-corpus search, returning `breach_status` (hits|clean|failed|timeout|skipped_quota|unknown), `exposure`, and `partial`. Treat 'no breach exposure' as valid ONLY when breach_status is 'clean' (a completed zero-hit search); failed/timeout/skipped/unknown means exposure is UNKNOWN, not clean, and `partial` is true — re-run before concluding. IP breach hits are WEAK, TEMPORAL [VERIFY] leads (a shared/dynamic IP ≠ a person) — never merge identities on an IP match alone. For a person's full NAME pass type:'name' (free-text across the breach corpus — expect same-name collisions, [VERIFY] until a selector overlaps). A first-class breach source: run it on the seed AND on high-value selectors/names discovered mid-investigation.",
       inputSchema: memoSchema("oathnet_lookup", () => z.object({
         type: z.enum(["email", "username", "phone", "ip", "domain", "name"]),
         value: z.string(),
@@ -904,34 +905,72 @@ export function buildTools(ctx: ToolContext) {
       execute: async ({ type, value, dbnames, filter_id }, opts) => {
         if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
         if (oathnetExhausted()) return skipStub("oathnet_lookup", `OathNet pooled daily quota exhausted (${oathnetQuotaLeft()} left today) — the oathnet_* family is soft-disabled for this run.`, { quota_left: oathnetQuotaLeft() });
-        try {
-          // ip → ip-info; domain → email_domain breach; the free-text q-types use the
-          // richer v2 builder only when dbname/filter scoping is requested (else the
-          // existing, unit-tested buildOathnetUrl path is preserved byte-for-byte).
-          const url = (type !== "ip" && type !== "domain" && ((dbnames && dbnames.length) || filter_id))
-            ? oathnetBreachSearchUrl(value, { dbnames, filter_id })
-            : buildOathnetUrl(type, value);
-          const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
-          // OathNet upstream intermittently 502s; fetchRetry retries transient
-          // 5xx/network with backoff so a flaky gateway doesn't hard-fail a
-          // mandatory breach-fan-out call on the first blip. The per-tool timeout
-          // signal aborts the in-flight request instead of leaking the paid call.
-          const r = await fetchRetry(url, {
-            headers: { "x-api-key": OATHNET_API_KEY },
-            signal,
-          }, { retries: 1, timeoutMs: 20_000 });
+        const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
+        // OathNet upstream intermittently 502s; fetchRetry retries transient 5xx/network
+        // with backoff. The per-tool timeout signal aborts the in-flight request (throws)
+        // instead of leaking the paid call.
+        const fetchJson = async (u: string): Promise<{ ok: boolean; status: number; data: unknown }> => {
+          const r = await fetchRetry(u, { headers: { "x-api-key": OATHNET_API_KEY }, signal }, { retries: 1, timeoutMs: 20_000 });
           const text = await r.text();
           let data: unknown;
-          try {
-            data = JSON.parse(text);
-          } catch {
-            data = { raw: text.slice(0, 4000) };
-          }
+          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 4000) }; }
           noteOathnetQuota(data);
+          return { ok: r.ok, status: r.status, data };
+        };
+        try {
+          // An IP needs BOTH surfaces: ip-info (geo/ASN) AND the breach corpus (IP-indexed).
+          // ip-info ALONE reports real leaked-credential exposure as "clean" — root-caused
+          // from a live run where the app said "no breach" while a manual oathnet.org IP
+          // search returned drizly/evony hits. The combined result honours a strict
+          // partial-success contract: "no breach exposure" may be stated ONLY after a
+          // completed, successful breach search returning zero hits — a failed / timed-out /
+          // quota-skipped / unparseable breach search leaves exposure UNKNOWN, not clean.
+          if (type === "ip") {
+            const net = await fetchJson(buildOathnetUrl("ip", value));
+            let breach: { ok: boolean; status: number; data: unknown } | null = null;
+            let input: IpBreachInput;
+            if (oathnetExhausted()) {
+              input = { kind: "skipped_quota" };
+            } else {
+              try {
+                breach = await fetchJson(oathnetBreachSearchUrl(value, { dbnames, filter_id }));
+                input = breach.ok
+                  ? { kind: "ok", hitCount: breachHitCount(breach.data) }
+                  : { kind: "failed", status: breach.status };
+              } catch (e) {
+                const msg = String(e);
+                breach = { ok: false, status: 0, data: { error: msg } };
+                input = /abort|timed?\s*out|timeout|signal|deadline/i.test(msg) ? { kind: "timeout" } : { kind: "failed", status: 0 };
+              }
+            }
+            const v = classifyIpBreach(input);
+            // Overall success requires BOTH the network lookup AND a completed breach
+            // search; anything else is partial/degraded and NEVER asserted as "clean".
+            const ok = net.ok && v.breach_complete;
+            return {
+              ok,
+              partial: !ok,
+              network_ok: net.ok,
+              status: net.status,
+              data: net.data,
+              breach_search: breach,
+              breach_status: v.breach_status,
+              breach_hit_count: input.kind === "ok" ? input.hitCount : null,
+              exposure: v.exposure,
+              note: v.note,
+              quota_left: oathnetQuotaLeft(),
+            };
+          }
+          // domain → email_domain breach; the free-text q-types use the richer v2 builder
+          // only when dbname/filter scoping is requested (else the existing, unit-tested
+          // buildOathnetUrl path is preserved byte-for-byte).
+          const url = (type !== "domain" && ((dbnames && dbnames.length) || filter_id))
+            ? oathnetBreachSearchUrl(value, { dbnames, filter_id })
+            : buildOathnetUrl(type, value);
           // HTTP 200 with an empty breach payload is a successful negative — not a
           // provider failure (inflated the 23% "failure" rate in beta telemetry).
-          if (r.ok) return { ok: true, status: r.status, data, quota_left: oathnetQuotaLeft() };
-          return { ok: false, status: r.status, data, quota_left: oathnetQuotaLeft() };
+          const res = await fetchJson(url);
+          return { ok: res.ok, status: res.status, data: res.data, quota_left: oathnetQuotaLeft() };
         } catch (e) {
           return { error: String(e) };
         }

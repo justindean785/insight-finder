@@ -20,6 +20,8 @@ import {
   summarizeManifest,
   maskSecrets,
   safeVictimFile,
+  classifyIpBreach,
+  breachHitCount,
   SECRET_REDACTION,
 } from "./oathnet.ts";
 
@@ -198,4 +200,79 @@ Deno.test("safeVictimFile returns masked preview + metadata, never raw creds", (
   assertEquals(r.sha256, "deadbeef");
   assertEquals(r.line_count, 4);
   assert(typeof r.redacted_preview === "string");
+});
+
+// ---- IP breach-search partial-success contract --------------------------------
+
+Deno.test("breachHitCount: recognizes shapes; unparseable → null (never 0)", () => {
+  assertEquals(breachHitCount({ data: { items: [1, 2, 3] } }), 3);
+  assertEquals(breachHitCount({ data: { items: [] } }), 0);
+  assertEquals(breachHitCount({ data: { meta: { total: 7 } } }), 7);
+  assertEquals(breachHitCount({ data: [1, 2] }), 2);
+  assertEquals(breachHitCount({ results: [{}, {}, {}] }), 3);
+  assertEquals(breachHitCount({ total: 0 }), 0);
+  assertEquals(breachHitCount({ some_unknown_shape: true }), null, "unparseable must be null, never 0");
+  assertEquals(breachHitCount(null), null);
+  assertEquals(breachHitCount("raw text"), null);
+});
+
+Deno.test("IP breach state — HITS: weak/temporal [VERIFY], never merge", () => {
+  const v = classifyIpBreach({ kind: "ok", hitCount: 4 });
+  assertEquals(v.breach_status, "hits");
+  assertEquals(v.breach_complete, true);
+  assertEquals(v.exposure, "breach_hits");
+  assertStringIncludes(v.note, "same-IP ≠ same-person");
+  assertStringIncludes(v.note, "NEVER merge identities on an IP match alone");
+});
+
+Deno.test("IP breach state — ZERO hits: 'clean' is the ONLY route to no-exposure", () => {
+  const v = classifyIpBreach({ kind: "ok", hitCount: 0 });
+  assertEquals(v.breach_status, "clean");
+  assertEquals(v.breach_complete, true);
+  assertEquals(v.exposure, "no_breach_exposure");
+  assertStringIncludes(v.note, "zero hits");
+});
+
+Deno.test("IP breach state — TIMEOUT: unknown/partial, not clean", () => {
+  const v = classifyIpBreach({ kind: "timeout" });
+  assertEquals(v.breach_status, "timeout");
+  assertEquals(v.breach_complete, false);
+  assertEquals(v.exposure, "unknown");
+  assertStringIncludes(v.note, "UNKNOWN, NOT 'clean'");
+});
+
+Deno.test("IP breach state — QUOTA SKIP: unknown/partial, not clean", () => {
+  const v = classifyIpBreach({ kind: "skipped_quota" });
+  assertEquals(v.breach_status, "skipped_quota");
+  assertEquals(v.breach_complete, false);
+  assertEquals(v.exposure, "unknown");
+  assertStringIncludes(v.note, "UNKNOWN, NOT 'clean'");
+});
+
+Deno.test("IP breach state — provider FAILURE: unknown/partial, not clean", () => {
+  const v = classifyIpBreach({ kind: "failed", status: 502 });
+  assertEquals(v.breach_status, "failed");
+  assertEquals(v.breach_complete, false);
+  assertEquals(v.exposure, "unknown");
+  assertStringIncludes(v.note, "502");
+  assertStringIncludes(v.note, "UNKNOWN, NOT 'clean'");
+});
+
+Deno.test("IP breach state — OK but unrecognized shape: unknown, NEVER clean", () => {
+  const v = classifyIpBreach({ kind: "ok", hitCount: null });
+  assertEquals(v.breach_status, "unknown");
+  assertEquals(v.breach_complete, false);
+  assertEquals(v.exposure, "unknown");
+});
+
+Deno.test("IP overall contract — ok = network_ok AND breach_complete (partial otherwise)", () => {
+  const overall = (networkOk: boolean, complete: boolean) => ({ ok: networkOk && complete, partial: !(networkOk && complete) });
+  // network ok + completed search (hits or confirmed zero) → full success
+  assertEquals(overall(true, classifyIpBreach({ kind: "ok", hitCount: 2 }).breach_complete), { ok: true, partial: false });
+  assertEquals(overall(true, classifyIpBreach({ kind: "ok", hitCount: 0 }).breach_complete), { ok: true, partial: false });
+  // network ok + breach FAILED / QUOTA → partial, NOT success (can't assert clean)
+  assertEquals(overall(true, classifyIpBreach({ kind: "failed", status: 500 }).breach_complete), { ok: false, partial: true });
+  assertEquals(overall(true, classifyIpBreach({ kind: "skipped_quota" }).breach_complete), { ok: false, partial: true });
+  // network FAILURE + breach success → partial (breach data usable, but not a full success)
+  assertEquals(overall(false, classifyIpBreach({ kind: "ok", hitCount: 3 }).breach_complete), { ok: false, partial: true });
 });
