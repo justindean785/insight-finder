@@ -18,6 +18,7 @@ import {
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { detectSeed, formatThreadTitle } from "@/lib/seed";
+import { checkCachedHitSafety, REVIEW_CONFIDENCE_DELTA, type ReviewState } from "@/lib/review";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
 import { isSubmitBlocked } from "@/lib/submit-guard";
@@ -147,8 +148,14 @@ type MessagePartShape = {
   [k: string]: unknown;
 };
 
-/** One artifact stored in an investigation_cache.result_json blob. */
+/**
+ * One artifact stored in an investigation_cache.result_json blob. `id` is the
+ * ORIGIN artifact's id (the row in the source thread that produced this
+ * cache entry) — required to join against artifact_reviews at replay time;
+ * see checkCachedHitSafety() in src/lib/review.ts.
+ */
 type CachedArtifact = {
+  id?: string;
   kind: string;
   value: string;
   confidence: number | null;
@@ -156,8 +163,18 @@ type CachedArtifact = {
   metadata: Record<string, unknown> | null;
 };
 
-/** Shape of investigation_cache.result_json (only the fields we replay). */
+/**
+ * Shape of investigation_cache.result_json (only the fields we replay).
+ * cache_version 2+ carries origin_thread_id — the source thread whose
+ * artifact_reviews must be re-checked before this row is ever replayed
+ * verbatim (a review made AFTER this row was cached is otherwise invisible
+ * to a client-side cache hit, since replay never calls osint-agent). A row
+ * missing cache_version/origin_thread_id is a pre-fix (version-1) row and
+ * MUST be treated as inadmissible — see the isFirstMessage cache-hit block.
+ */
 type CachedInvestigation = {
+  cache_version?: number;
+  origin_thread_id?: string;
   assistant_parts?: unknown[];
   artifacts?: CachedArtifact[];
   [k: string]: unknown;
@@ -1562,13 +1579,42 @@ function ChatWindowInner({
           .gt("expires_at", new Date().toISOString())
           .maybeSingle();
         if (hit) {
-          await renderCachedResult(text, {
-            ...hit,
-            result_json: hit.result_json as CachedInvestigation | null,
-          });
-          setInput("");
-          setAttachments([]);
-          return;
+          const cached = (hit.result_json as CachedInvestigation | null) ?? {};
+          // cache_version 2+ required: an older/unversioned row predates the
+          // origin_thread_id lineage this safety check depends on, so it can
+          // never be proven analyst-clean — treat it as a miss, not a replay.
+          const isVersioned = (cached.cache_version ?? 0) >= 2 && !!cached.origin_thread_id;
+          const safety = isVersioned
+            ? await checkCachedHitSafety(cached.origin_thread_id as string, user.id)
+            : { safe: false, reviewMap: new Map<string, ReviewState>() };
+          if (!safety.safe) {
+            // Poisoned or stale-format row — evict it so the next lookup
+            // doesn't repeat this check, then fall through to a live run.
+            await supabase
+              .from("investigation_cache")
+              .delete()
+              .eq("user_id", user.id)
+              .eq("seed_kind", seed.kind)
+              .eq("seed_value_normalized", seed.normalized);
+          } else {
+            // Safe to replay: no dismissed/wrong review exists for this
+            // origin thread. Still apply any `recheck` downweight so a
+            // suspect-but-not-rejected artifact isn't replayed at full
+            // confidence.
+            const artifacts = (cached.artifacts ?? []).map((a) => {
+              const state = a.id ? safety.reviewMap.get(a.id) : undefined;
+              if (state !== "recheck") return a;
+              const conf = typeof a.confidence === "number" ? a.confidence : 0;
+              return { ...a, confidence: Math.max(0, conf + REVIEW_CONFIDENCE_DELTA.recheck) };
+            });
+            await renderCachedResult(text, {
+              ...hit,
+              result_json: { ...cached, artifacts },
+            });
+            setInput("");
+            setAttachments([]);
+            return;
+          }
         }
       }
     }
@@ -1766,7 +1812,12 @@ function ChatWindowInner({
       if (userErr || !userRow) throw userErr ?? new Error("user message insert returned no row");
       userRowId = userRow.id;
 
-      // 2) clone artifacts into this thread, marked as cached
+      // 2) clone artifacts into this thread, marked as cached. Lineage
+      // (origin_thread_id/origin_artifact_id) is preserved so this clone can
+      // still be traced back to the analyst review that governed it — a
+      // review made against the origin artifact after this point won't
+      // retroactively apply to the clone (it's a new row), but the lineage
+      // at least makes that traceable rather than silently severed.
       if (cachedArtifacts.length > 0) {
         const { error: artErr } = await supabase.from("artifacts").insert(
           cachedArtifacts.map((a) => ({
@@ -1776,7 +1827,12 @@ function ChatWindowInner({
             value: a.value,
             confidence: a.confidence ?? null,
             source: a.source ?? null,
-            metadata: { ...(a.metadata ?? {}), from_cache: true } as never,
+            metadata: {
+              ...(a.metadata ?? {}),
+              from_cache: true,
+              origin_thread_id: cached.origin_thread_id ?? null,
+              origin_artifact_id: a.id ?? null,
+            } as never,
           })) as never,
         );
         if (artErr) throw artErr;

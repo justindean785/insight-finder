@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { recordAnalystFeedback, actionForReviewState } from "@/lib/analyst-feedback";
+import { detectSeed } from "@/lib/seed";
 
 /**
  * Analyst review states. Renamed for clarity (Nov 2026):
@@ -69,6 +70,11 @@ export const REVIEW_CONFIDENCE_DELTA: Record<ReviewState, number> = {
   wrong: -40,   // pull confidence down hard in addition to FAILED override
 };
 
+/** Verdicts that mean "the analyst rejected this" — mirrors reviews.ts on the edge function. */
+export const REJECTED_REVIEW_STATES: ReadonlySet<ReviewState> = new Set(["dismissed", "wrong"]);
+/** A review write in any of these states can make a cached investigation_cache row stale. */
+const CACHE_INVALIDATING_STATES: ReadonlySet<ReviewState> = new Set(["dismissed", "wrong", "recheck"]);
+
 export const REVIEW_CLASS: Record<ReviewState, string> = {
   new: "text-muted-foreground border-border bg-secondary/40",
   confirmed:
@@ -128,7 +134,48 @@ export function launchRecheckInChat(
   );
 }
 
-type Map = Record<string, ReviewState>;
+/**
+ * Is a 7-day investigation_cache hit still safe to replay verbatim?
+ *
+ * THE BUG THIS FIXES: ChatWindow.tsx's cache replay clones cached artifacts
+ * and re-displays the cached assistant narrative WITHOUT ever calling
+ * osint-agent — so no backend review-filtering (see reviews.ts on the edge
+ * function) ever runs on this path. A cache row is snapshotted at run
+ * completion, before the analyst has reviewed anything; if the analyst later
+ * marks a finding dismissed/wrong, the cache still holds (and will replay for
+ * up to 7 days) the stale, now-rejected narrative and artifacts.
+ *
+ * Call this BEFORE rendering a cache hit, keyed on the row's origin_thread_id
+ * (cache_version 2+; see index.ts). Unlike the backend's fail-OPEN review
+ * load (a transient DB hiccup mid-run must not break an active
+ * investigation), this check fails CLOSED: if we can't prove the cached
+ * narrative is still analyst-clean, treat the hit as unsafe and fall through
+ * to a live run. The cost of a false "unsafe" is one extra live run; the cost
+ * of a false "safe" is exactly the incident this fix exists for.
+ */
+export async function checkCachedHitSafety(
+  originThreadId: string,
+  userId: string,
+): Promise<{ safe: boolean; reviewMap: Map<string, ReviewState> }> {
+  try {
+    const { data, error } = await supabase
+      .from("artifact_reviews")
+      .select("artifact_id,state")
+      .eq("thread_id", originThreadId)
+      .eq("user_id", userId);
+    if (error || !Array.isArray(data)) return { safe: false, reviewMap: new Map() };
+    const reviewMap = new Map<string, ReviewState>();
+    for (const r of data as { artifact_id: string; state: ReviewState }[]) {
+      if (r.artifact_id && r.state) reviewMap.set(r.artifact_id, r.state);
+    }
+    const hasRejection = [...reviewMap.values()].some((s) => REJECTED_REVIEW_STATES.has(s));
+    return { safe: !hasRejection, reviewMap };
+  } catch {
+    return { safe: false, reviewMap: new Map() };
+  }
+}
+
+type StateMap = Record<string, ReviewState>;
 type NoteMap = Record<string, string>;
 
 const LEGACY: Record<string, ReviewState> = {
@@ -138,7 +185,7 @@ const LEGACY: Record<string, ReviewState> = {
 };
 
 /** Module-level cache keyed by threadId so multiple hook consumers share state without refetching. */
-const cache = new Map<string, { states: Map; notes: NoteMap; loaded: boolean }>();
+const cache = new Map<string, { states: StateMap; notes: NoteMap; loaded: boolean }>();
 
 function ensure(threadId: string) {
   let c = cache.get(threadId);
@@ -170,6 +217,33 @@ async function migrateLegacy(threadId: string, userId: string) {
   } catch { /* ignore */ }
 }
 
+/**
+ * Best-effort eviction of this thread's seed from the 7-day investigation_cache
+ * when an analyst review changes its admissibility (dismissed/wrong/recheck).
+ * NOT the load-bearing safety guard — checkCachedHitSafety() re-checks reviews
+ * at replay time regardless — this just stops a poisoned row from lingering
+ * for up to 7 days before that read-time check would catch it anyway.
+ */
+async function invalidateInvestigationCache(threadId: string, userId: string) {
+  try {
+    const { data: thread } = await supabase
+      .from("threads")
+      .select("seed_value")
+      .eq("id", threadId)
+      .maybeSingle();
+    const seedText = (thread as { seed_value?: string | null } | null)?.seed_value;
+    if (!seedText) return;
+    const seed = detectSeed(seedText);
+    if (!seed) return;
+    await supabase
+      .from("investigation_cache")
+      .delete()
+      .eq("user_id", userId)
+      .eq("seed_kind", seed.kind)
+      .eq("seed_value_normalized", seed.normalized);
+  } catch { /* best-effort; read-time reconciliation is the real guard */ }
+}
+
 async function loadFromDb(threadId: string) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return;
@@ -192,7 +266,7 @@ async function loadFromDb(threadId: string) {
 
 export function useReviewStates(threadId: string) {
   const c = ensure(threadId);
-  const [map, setMap] = useState<Map>(c.states);
+  const [map, setMap] = useState<StateMap>(c.states);
   const [notes, setNotes] = useState<NoteMap>(c.notes);
   const loadingRef = useRef(false);
 
@@ -257,6 +331,9 @@ export function useReviewStates(threadId: string) {
           { thread_id: threadId, artifact_id: id, user_id: user.id, state },
           { onConflict: "user_id,artifact_id" },
         );
+        if (CACHE_INVALIDATING_STATES.has(state)) {
+          void invalidateInvestigationCache(threadId, user.id);
+        }
         // Ground-truth capture (instrumentation-only): append an immutable
         // feedback event. Best-effort — never blocks or breaks the review UX,
         // and changes NO confidence. Confidence is unchanged this milestone, so

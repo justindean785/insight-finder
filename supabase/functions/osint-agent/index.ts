@@ -1171,11 +1171,14 @@ Deno.serve(async (req) => {
             const detected = detectSeedServer(seedText);
             if (detected) {
               detectedSeedKind = detected.kind;
-              const { data: artsRaw } = await supabase
+              const { data: artsRaw, error: artsErr } = await supabase
                 .from("artifacts")
                 .select("id,kind,value,confidence,source,metadata")
                 .eq("thread_id", threadId)
                 .order("created_at", { ascending: true });
+              if (artsErr) {
+                console.error(JSON.stringify({ event: "investigation_cache_artifacts_read_fail", thread_id: threadId, error: artsErr.message }));
+              } else {
               // Respect analyst verdicts BEFORE caching: a dismissed/wrong artifact
               // must NOT be snapshotted into the 7-day investigation_cache and
               // replayed at full confidence into a future run.
@@ -1186,6 +1189,15 @@ Deno.serve(async (req) => {
               const cachedParts = sanitizeToolOutput(safeParts, 1500);
               const cachedArts = sanitizeToolOutput(arts, 1500);
               const payload = {
+                // cache_version 2: the client (ChatWindow.tsx) MUST re-check
+                // artifact_reviews for origin_thread_id before ever replaying
+                // assistant_parts verbatim — this snapshot reflects analyst
+                // verdicts as of THIS write, not as of a future cache hit. A
+                // reader that doesn't understand cache_version 2 (or an older
+                // unversioned row) must treat the row as inadmissible, not
+                // replay it blind. See src/lib/review.ts checkCachedHitSafety.
+                cache_version: 2,
+                origin_thread_id: threadId,
                 seed: detected,
                 assistant_parts: cachedParts,
                 artifacts: cachedArts,
@@ -1196,7 +1208,7 @@ Deno.serve(async (req) => {
               // service-role admin client (bypasses RLS). Using the user-scoped
               // `supabase` here is what left the cache permanently empty (0 rows,
               // ~0% hit). The artifacts read above is fine on the user client.
-              await supabaseAdmin.from("investigation_cache").upsert(
+              const { error: upsertErr } = await supabaseAdmin.from("investigation_cache").upsert(
                 {
                   user_id: userId,
                   seed_kind: detected.kind,
@@ -1207,6 +1219,10 @@ Deno.serve(async (req) => {
                 },
                 { onConflict: "user_id,seed_kind,seed_value_normalized" },
               );
+              if (upsertErr) {
+                console.error(JSON.stringify({ event: "investigation_cache_upsert_fail", thread_id: threadId, error: upsertErr.message }));
+              }
+              }
             }
           } catch (e) {
             console.error(JSON.stringify({ event: "investigation_cache_fail", thread_id: threadId, error: String(e) }));

@@ -21,8 +21,14 @@
 
 /** Verdicts that mean "the analyst rejected this — do not use it." */
 export const REJECTED_REVIEW_STATES: ReadonlySet<string> = new Set(["dismissed", "wrong"]);
-/** Confidence subtracted from an artifact the analyst flagged `recheck`. */
-export const RECHECK_CONFIDENCE_PENALTY = 40;
+/**
+ * Confidence subtracted from an artifact the analyst flagged `recheck`.
+ * MUST match the canonical delta in src/lib/review.ts
+ * (REVIEW_CONFIDENCE_DELTA.recheck = -20) — that frontend constant is what an
+ * analyst actually sees applied to a `recheck`-flagged artifact everywhere
+ * else in the product, so the backend must apply the identical penalty.
+ */
+export const RECHECK_CONFIDENCE_PENALTY = 20;
 
 export function isRejectedReview(state: string | null | undefined): boolean {
   return !!state && REJECTED_REVIEW_STATES.has(state);

@@ -114,6 +114,10 @@ Deno.test("applyReviewsToArtifacts never drives recheck confidence below zero", 
   assertEquals(out[0].confidence, 0);
 });
 
+Deno.test("RECHECK_CONFIDENCE_PENALTY matches the canonical frontend delta (src/lib/review.ts REVIEW_CONFIDENCE_DELTA.recheck = -20)", () => {
+  assertEquals(RECHECK_CONFIDENCE_PENALTY, 20);
+});
+
 Deno.test("applyReviewsToArtifacts tags confirmed/key but keeps them", () => {
   const rows = [
     { id: "a1", kind: "email", value: "x@y.z", confidence: 90 },
