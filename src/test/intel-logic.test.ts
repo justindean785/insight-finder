@@ -160,6 +160,16 @@ describe("labelForArtifact", () => {
     expect(labelForArtifact(art({ metadata: { reviewed: true } }))).toBe("CONFIRMED");
   });
 
+  it("minor-safety hard floor: attestation never promotes a possible_minor to CONFIRMED", () => {
+    // Bypass fix: adjustedConfidence caps possible_minor at 55, but the label's
+    // attestation short-circuit used to return CONFIRMED regardless — rendering a
+    // potential minor as a confirmed finding. Attestation must not override the floor.
+    const minor = art({ kind: "name", confidence: 40, metadata: { possible_minor: true } });
+    expect(labelForArtifact(minor, "confirmed")).not.toBe("CONFIRMED");
+    expect(labelForArtifact(minor, "key")).not.toBe("CONFIRMED");
+    expect(labelForArtifact(art({ kind: "name", metadata: { possible_minor: true, reviewed: true } }))).not.toBe("CONFIRMED");
+  });
+
   it("caps sweep-only handles at VERIFY", () => {
     expect(labelForArtifact(art({ kind: "username", source: "username_sweep", confidence: 95 }))).toBe("VERIFY");
   });

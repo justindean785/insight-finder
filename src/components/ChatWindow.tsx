@@ -23,6 +23,7 @@ import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
 import { isSubmitBlocked } from "@/lib/submit-guard";
 import { interpretReadinessProbe, type ReadinessBody } from "@/lib/readiness-probe";
 import { dedupeCards } from "@/lib/next-step-cards";
+import { dedupeCheckpoints } from "@/lib/chat-checkpoints";
 import { computePivots } from "@/lib/pivot-engine";
 import { sanitizeChatText } from "@/lib/sanitize-agent-text";
 import { scrollBehavior } from "@/lib/motion";
@@ -2202,8 +2203,10 @@ function ChatWindowInner({
               </div>
             </div>
           )}
-          {messages.map((m, idx) => {
-            const isLastAssistant = m.role === "assistant" && idx === messages.length - 1;
+          {/* Hide mid-run progress checkpoints once the final report lands so the
+              same findings never render twice (see src/lib/chat-checkpoints.ts). */}
+          {dedupeCheckpoints(messages).map((m, idx, arr) => {
+            const isLastAssistant = m.role === "assistant" && idx === arr.length - 1;
             const hasCacheBanner = m.role === "assistant" && (m.parts as MessagePartShape[]).some((p) => p?.type === CACHE_BANNER_TYPE);
             return (
               <MessageView

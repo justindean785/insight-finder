@@ -70,6 +70,11 @@ import {
   type CacheEntry,
 } from "./safety.ts";
 
+// Sanitized progress-checkpoint contract. record_artifacts emits ONLY the
+// display-safe subset (post-scrubArtifactRows) so onStepFinish can surface
+// mid-run findings in chat without ever exposing raw/unsafe values.
+import { emitSafeCheckpoint } from "./incremental-persist.ts";
+
 import {
   guard, routingGuard, CONSUMER_DOMAINS, STAGE2_TOOLS,
   triageState, bumpArtifacts, skipStub, correlateNudge,
@@ -4627,6 +4632,11 @@ export function buildTools(ctx: ToolContext) {
           accepted,
           rejected,
           minor_safety_flags: flagged,
+          // Sanitized, display-safe projection of the POST-scrub rows for the
+          // mid-run progress checkpoint (see ./incremental-persist.ts). Only
+          // allowlisted, non-minor, non-collision, non-secret findings appear
+          // here — never the raw `accepted` value.
+          checkpoint: emitSafeCheckpoint(safeRowsForFollowup),
           evidence_appended,
           ...(memory_hits.length > 0
             ? {
