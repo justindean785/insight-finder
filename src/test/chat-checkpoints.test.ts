@@ -32,6 +32,24 @@ describe("chat-checkpoints — dedupeCheckpoints (report #6: no duplicate rows)"
     expect(out.map((m) => m.id)).toEqual(["u-go", "report", "u-again", "cp2"]);
   });
 
+  it("keeps an earlier killed run's checkpoints despite a LATER turn's normal reply", () => {
+    // Turn 1 was killed (cp1, no final report). Turn 2 is an unrelated Q&A reply.
+    // cp1 is the only surviving evidence of turn 1 and must NOT be hidden by a
+    // later, different turn's ordinary assistant message.
+    const reply = { id: "reply", role: "assistant", parts: [{ type: "text", text: "Sure — here's an answer." }] };
+    const msgs = [user("go"), checkpoint("cp1"), user("unrelated"), reply];
+    const out = dedupeCheckpoints(msgs);
+    expect(out.map((m) => m.id)).toEqual(["u-go", "cp1", "u-unrelated", "reply"]);
+  });
+
+  it("keeps a failed run's checkpoints (a fail sentinel is not a final report)", () => {
+    const fail = { id: "fail", role: "assistant", parts: [{ type: "text", text: "__STATUS__:failed:timeout" }] };
+    const msgs = [user("go"), checkpoint("cp1"), fail];
+    const out = dedupeCheckpoints(msgs);
+    expect(out.some(isCheckpointMessage)).toBe(true);
+    expect(out.map((m) => m.id)).toEqual(["u-go", "cp1", "fail"]);
+  });
+
   it("preserves order and identity of non-checkpoint messages", () => {
     const msgs = [user("a"), report("r1"), user("b")];
     expect(dedupeCheckpoints(msgs)).toEqual(msgs);

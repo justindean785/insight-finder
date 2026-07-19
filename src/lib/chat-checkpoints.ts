@@ -22,10 +22,22 @@ export function isCheckpointMessage(m: MessageLike | null | undefined): boolean 
   return !!m && Array.isArray(m.parts) && m.parts.some((p) => p?._incremental === true);
 }
 
+// Failed-run sentinel (mirrors ChatWindow.tsx FAIL_PREFIX). A failed run's
+// assistant message is NOT a final report — its checkpoints are the surviving
+// partial evidence and must stay visible.
+const FAIL_PREFIX = "__STATUS__:failed:";
+
+function isFailSentinel(m: MessageLike): boolean {
+  if (m?.role !== "assistant" || !Array.isArray(m.parts)) return false;
+  const firstText = m.parts.find((p) => p?.type === "text");
+  return typeof firstText?.text === "string" && firstText.text.startsWith(FAIL_PREFIX);
+}
+
 /** True for a real (final) assistant report: an assistant message that is NOT a
- *  checkpoint and carries at least one non-empty text or tool part. */
+ *  checkpoint, NOT a failed-run sentinel, and carries at least one non-empty
+ *  text or tool part. */
 function isFinalAssistantReport(m: MessageLike): boolean {
-  if (m?.role !== "assistant" || !Array.isArray(m.parts) || isCheckpointMessage(m)) return false;
+  if (m?.role !== "assistant" || !Array.isArray(m.parts) || isCheckpointMessage(m) || isFailSentinel(m)) return false;
   return m.parts.some(
     (p) =>
       (p?.type === "text" && typeof p.text === "string" && p.text.trim().length > 0) ||
@@ -34,20 +46,28 @@ function isFinalAssistantReport(m: MessageLike): boolean {
 }
 
 /**
- * Drop incremental checkpoint messages that are superseded by a later final
- * assistant report. Order and identity of every other message are preserved.
+ * Drop incremental checkpoint messages that are superseded by their run's final
+ * report. Order and identity of every other message are preserved.
  *
- * - No final report yet (run in progress, or killed and not yet recovered):
- *   checkpoints are KEPT so the analyst still sees progress.
- * - A checkpoint AFTER the last final report (a fresh run started in the same
- *   thread) is KEPT — it belongs to the new, not-yet-finished run.
+ * A checkpoint is hidden ONLY when a final assistant report appears later in the
+ * SAME turn — i.e. after it and before the next user message. This is deliberate:
+ * - A checkpoint whose run was killed (no final report before the next user
+ *   message) is KEPT — it is the only surviving evidence of that run.
+ * - A LATER turn's ordinary assistant reply (unrelated to finalization) must NOT
+ *   hide an earlier turn's checkpoints. (This was the bug in the first cut: it
+ *   treated any later non-checkpoint assistant message as "the final report".)
+ * - A failed-run sentinel is not a report (see isFinalAssistantReport), so a
+ *   failed run's checkpoints survive too.
  */
 export function dedupeCheckpoints<T extends MessageLike>(messages: T[]): T[] {
   if (!Array.isArray(messages) || messages.length === 0) return messages;
-  let lastReportIdx = -1;
+  const hide: boolean[] = new Array(messages.length).fill(false);
   for (let i = 0; i < messages.length; i++) {
-    if (isFinalAssistantReport(messages[i])) lastReportIdx = i;
+    if (!isCheckpointMessage(messages[i])) continue;
+    for (let j = i + 1; j < messages.length; j++) {
+      if (messages[j]?.role === "user") break; // next turn started → not superseded
+      if (isFinalAssistantReport(messages[j])) { hide[i] = true; break; }
+    }
   }
-  if (lastReportIdx === -1) return messages; // no final report yet → keep checkpoints
-  return messages.filter((m, i) => !isCheckpointMessage(m) || i > lastReportIdx);
+  return messages.filter((_, i) => !hide[i]);
 }
