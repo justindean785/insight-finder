@@ -42,7 +42,7 @@ import { beginCycle, clearRuntime } from "./runtime-policy.ts";
 import {
   TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW,
   MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN,
-  orchestratorStepToolChoice,
+  buildIntermediateStepPlan,
   capTotalToBudget, deadlineReached,
 } from "./orchestrator-budget.ts";
 import {
@@ -852,30 +852,32 @@ Deno.serve(async (req) => {
             event: "persistence_nudge_fired", thread_id: threadId,
             tool_calls: nudgeToolCalls, record_artifact_calls: nudgeRecordCalls,
           }));
+          // NON-finalize step: the plan (activeTools + toolChoice) comes from the
+          // centralized builder. Without the forced tool choice this branch — the
+          // one whose whole job is to make the model persist evidence — could
+          // itself end the run on a "let me record the artifacts…" narration.
           return {
             messages: stepMessagesOut,
-            activeTools: ["record_artifacts"],
             system: intermediateSystem,
+            ...buildIntermediateStepPlan({ nudgePersistence: true, normalActiveTools: normalActiveTools }),
           };
         }
+        // Premature-stop fix — the "stops mid-investigation" bug. AI SDK v6 ends
+        // the agent loop the instant a step finishes with NO tool call
+        // (finishReason "stop"); toolChoice defaults to "auto", so the model is
+        // free to narrate its next action as prose ("Now let me run
+        // minimax_correlate…") and emit no call — the loop then terminates and
+        // onFinish marks the thread finished with planned NEXT STEPS still pending.
+        // DeepSeek (the openai-compatible orchestrator) does exactly this. Forcing
+        // "required" on every NON-finalize step makes the model emit a tool call
+        // (it may still include text alongside), so the only exits from the loop are
+        // the controlled finalize branch above or a budget/deadline StopCondition —
+        // never a mid-run narration. Bounded by the same 22-step / 4-min budget, so
+        // it can't over-run; the finalize branch owns its own per-phase toolChoice.
         return {
           messages: stepMessagesOut,
-          activeTools: normalActiveTools,
           system: intermediateSystem,
-          // Premature-stop fix — the "stops mid-investigation" bug. AI SDK v6 ends
-          // the agent loop the instant a step finishes with NO tool call
-          // (finishReason "stop"); toolChoice defaults to "auto", so the model is
-          // free to narrate its next action as prose ("Now let me run
-          // minimax_correlate…") and emit no call — the loop then terminates and
-          // onFinish marks the thread finished with planned NEXT STEPS still pending.
-          // DeepSeek (the openai-compatible orchestrator) does exactly this. Forcing
-          // "required" on every NON-finalize step makes the model emit a tool call
-          // (it may still include text alongside), so the only exits from the loop are
-          // the controlled finalize branch above or a budget/deadline StopCondition —
-          // never a mid-run narration. Bounded by the same 22-step / 4-min budget, so
-          // it can't over-run; the finalize branch (auto tool choice) still writes the
-          // closing report.
-          toolChoice: orchestratorStepToolChoice(false),
+          ...buildIntermediateStepPlan({ nudgePersistence: false, normalActiveTools }),
         };
       };
 

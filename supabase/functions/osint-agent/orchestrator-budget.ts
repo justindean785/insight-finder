@@ -76,6 +76,36 @@ export function orchestratorStepToolChoice(isFinalizeStep: boolean): "required" 
   return "required";
 }
 
+export interface IntermediateStepPlan {
+  activeTools: string[];
+  toolChoice: "required" | "auto";
+}
+
+/**
+ * The prepareStep plan for a NON-finalize step. BOTH non-finalize branches — the
+ * persistence nudge and the normal intermediate step — must build their plan
+ * here so `toolChoice` can never be omitted at a call site.
+ *
+ * This exists because omitting it is not a cosmetic slip: a non-finalize return
+ * without `toolChoice` silently defaults to "auto", which is the narration-only
+ * stop bug. The first version of this fix set `toolChoice` on the normal branch
+ * but missed the persistence-nudge branch — i.e. the one path whose entire job is
+ * to force `record_artifacts` was the one that could still let the model narrate
+ * "let me record the artifacts…" and end the run with zero evidence persisted.
+ * Centralizing makes that class of miss structurally impossible.
+ */
+export function buildIntermediateStepPlan(input: {
+  /** persistence nudge fired: restrict the step to recording the evidence */
+  nudgePersistence: boolean;
+  /** the tools the step would otherwise be allowed to use */
+  normalActiveTools: readonly string[];
+}): IntermediateStepPlan {
+  return {
+    activeTools: input.nudgePersistence ? ["record_artifacts"] : [...input.normalActiveTools],
+    toolChoice: orchestratorStepToolChoice(false),
+  };
+}
+
 // Hard ceiling on GENUINE (live, non-cached, non-skipped) tool executions per run.
 // Live logs showed a single investigation balloon to 230 tool calls / 747s of
 // tool-time (43× socialfetch_web_read, 38× minimax_web_search) — unbounded run size
