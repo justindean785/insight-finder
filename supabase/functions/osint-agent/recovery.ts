@@ -129,13 +129,24 @@ async function recoverOneStaleThread(
   );
   if (assistantState.shouldInsert) {
     // Never surface analyst-rejected artifacts in a recovered findings report.
-    // Fails open: on a review-load error the map is empty and rows pass through.
-    const reviewMap = await loadReviewsForThread(db, thread.id, thread.user_id);
-    const liveArtifacts = applyReviewsToArtifacts((artifacts ?? []) as Array<Record<string, unknown>>, reviewMap);
-    const text = buildRecoveredAssistantText(thread, liveArtifacts as RecoveryArtifact[]);
-    const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: [{ type: "text", text }] });
-    if (insertErr) return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: insertErr.message };
-    assistantInserted = true;
+    //
+    // FAIL-CLOSED: if the verdicts can't be read, do NOT write a recovered report
+    // built from unfiltered rows — a recovery report is durable and user-facing,
+    // so a transient error would republish findings the analyst marked FALSE.
+    // The thread is still finalized below; only the report is withheld.
+    const review = await loadReviewsForThread(db, thread.id, thread.user_id);
+    if (!review.ok) {
+      console.warn(JSON.stringify({
+        event: "recovery_report_skipped_review_state_unavailable",
+        thread_id: thread.id, error: review.error,
+      }));
+    } else {
+      const liveArtifacts = applyReviewsToArtifacts((artifacts ?? []) as Array<Record<string, unknown>>, review);
+      const text = buildRecoveredAssistantText(thread, liveArtifacts as RecoveryArtifact[]);
+      const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: [{ type: "text", text }] });
+      if (insertErr) return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: insertErr.message };
+      assistantInserted = true;
+    }
   }
   const { error: updateErr } = await db.from("threads").update({ status: "finished", recovered_at: now.toISOString(), recovery_reason: reason, updated_at: now.toISOString() }).eq("id", thread.id).eq("status", "active");
   if (updateErr) return { recovered: false, assistantInserted, artifactCount: artifactCount ?? 0, error: updateErr.message };

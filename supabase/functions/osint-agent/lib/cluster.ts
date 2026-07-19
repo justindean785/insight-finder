@@ -428,12 +428,23 @@ export async function applyClusteringToThread(
     .select("id,kind,value,source,confidence,metadata").eq("thread_id", threadId);
   if (error || !Array.isArray(data) || data.length === 0) return { updated: 0, subjects: 0, merges: 0 };
   // Drop analyst-rejected artifacts (dismissed/wrong) BEFORE clustering so a
-  // false finding can never seed or merge a subject cluster. Fails open: on a
-  // review-load error the map is empty and this is a no-op. (recheck rows stay
+  // false finding can never seed or merge a subject cluster. (recheck rows stay
   // in the cluster set — a suspect selector may still be legitimately shared —
   // but their confidence is downweighted for any promotion.)
-  const reviewMap = await loadReviewsForThread(admin, threadId, userId);
-  const liveData = applyReviewsToArtifacts(data as Array<Record<string, unknown>>, reviewMap);
+  //
+  // FAIL-CLOSED: if the verdicts cannot be read we must NOT cluster on unfiltered
+  // rows — that is exactly the incident (a dismissed finding re-seeding a subject
+  // cluster) reproduced by a transient DB error. Skip this pass instead; the next
+  // run re-clusters once verdicts are readable again.
+  const review = await loadReviewsForThread(admin, threadId, userId);
+  if (!review.ok) {
+    console.warn(JSON.stringify({
+      event: "clustering_skipped_review_state_unavailable",
+      thread_id: threadId, error: review.error,
+    }));
+    return { updated: 0, subjects: 0, merges: 0 };
+  }
+  const liveData = applyReviewsToArtifacts(data as Array<Record<string, unknown>>, review);
   if (liveData.length === 0) return { updated: 0, subjects: 0, merges: 0 };
   const arts: Artifact[] = liveData.map((r) => {
     const row = r as { id: string; kind: string; value: string; source?: string; confidence?: number; metadata?: unknown };

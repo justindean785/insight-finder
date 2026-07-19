@@ -1095,6 +1095,16 @@ Deno.serve(async (req) => {
             // salvage report and pass them as an explicit DO-NOT-USE block, so the
             // dominant CPU-kill finalize path can't re-promote rejected findings.
             const salvageReviews = await loadReviewsForThread(supabaseAdmin, threadId, userId);
+            // FAIL-CLOSED: verdicts unreadable → do NOT synthesize from unfiltered
+            // rows (that re-promotes rejected findings, i.e. the original incident
+            // reproduced by a DB error). Skip the salvage report entirely.
+            if (!salvageReviews.ok) {
+              console.warn(JSON.stringify({
+                event: "salvage_skipped_review_state_unavailable",
+                thread_id: threadId, error: salvageReviews.error,
+              }));
+              throw new Error("salvage synthesis skipped: analyst review state unavailable");
+            }
             const salvageArts = applyReviewsToArtifacts((salvageArtsRaw ?? []) as Array<Record<string, unknown>>, salvageReviews);
             const salvageRejected = rejectedArtifacts((salvageArtsRaw ?? []) as Array<Record<string, unknown>>, salvageReviews);
             const salvage = await generateText({
@@ -1182,7 +1192,20 @@ Deno.serve(async (req) => {
               // Respect analyst verdicts BEFORE caching: a dismissed/wrong artifact
               // must NOT be snapshotted into the 7-day investigation_cache and
               // replayed at full confidence into a future run.
+              //
+              // FAIL-CLOSED: if verdicts are unreadable, DO NOT write the cache.
+              // A cache row is long-lived (7d) and replayed into future runs, so
+              // snapshotting unfiltered rows would persist the incident well past
+              // the transient error that caused it. Skipping simply means the next
+              // run recomputes live.
               const cacheReviews = await loadReviewsForThread(supabaseAdmin, threadId, userId);
+              if (!cacheReviews.ok) {
+                console.warn(JSON.stringify({
+                  event: "investigation_cache_write_skipped_review_state_unavailable",
+                  thread_id: threadId, error: cacheReviews.error,
+                }));
+                throw new Error("investigation_cache write skipped: analyst review state unavailable");
+              }
               const arts = applyReviewsToArtifacts((artsRaw ?? []) as Array<Record<string, unknown>>, cacheReviews);
               // Cache is long-lived (7d) and is replayed back into a future
               // run's context, so strip credentials / PII / oversized blobs.
