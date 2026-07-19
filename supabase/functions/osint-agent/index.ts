@@ -31,6 +31,9 @@ import {
   collectStepCheckpoint, persistCheckpoint, loadSeenCheckpoints, isIncrementalMessage,
   registerBackground, withTimeout, CHECKPOINT_AWAIT_MS,
 } from "./incremental-persist.ts";
+import {
+  extractStepFindings, persistAutoFindings, loadSeenArtifactKeys,
+} from "./auto-persist-findings.ts";
 import { guard, routingGuard, triageState, countRecordArtifactCalls, countModelMessageToolCalls } from "./guard.ts";
 import { setupRequest } from "./auth.ts";
 import { minimax, minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
@@ -756,6 +759,10 @@ Deno.serve(async (req) => {
     // re-announces the same finding (idempotent).
     const incrementalRunId = new Date(runStartedAt).toISOString();
     const incrementalSeen = await loadSeenCheckpoints(supabase, threadId);
+    // Seed the same dedup set from artifacts already persisted for this thread
+    // so the tool-return auto-persist path (below) never re-inserts a value
+    // that the model already recorded via record_artifacts, and vice versa.
+    for (const k of await loadSeenArtifactKeys(supabase, threadId)) incrementalSeen.add(k);
     const prepareStep: NonNullable<Parameters<typeof streamText>[0]["prepareStep"]> =
       async ({ messages: stepMessages, stepNumber }) => {
         const { data: threadState } = await supabase
@@ -1035,6 +1042,50 @@ Deno.serve(async (req) => {
           );
           registerBackground(cpTask);
           await withTimeout(cpTask, CHECKPOINT_AWAIT_MS);
+        }
+        // Force-persist high-signal findings extracted DIRECTLY from tool
+        // returns, independent of the model calling `record_artifacts`. This
+        // is the primary defense against CPU-kills that occur before the
+        // model gets a chance to record — the artifacts land in
+        // `public.artifacts` immediately and the analyst sees findings even
+        // if the isolate is killed. See ./auto-persist-findings.ts.
+        const autoFindings = extractStepFindings(toolResults as unknown[] | undefined);
+        if (autoFindings.length > 0) {
+          const autoTask = persistAutoFindings(
+            { supabase: supabaseAdmin, threadId, userId, seen: incrementalSeen },
+            autoFindings,
+          ).then(
+            (r) => {
+              if (r.inserted > 0) {
+                console.log(JSON.stringify({
+                  event: "auto_findings_persisted", thread_id: threadId,
+                  inserted: r.inserted, skipped_duplicates: r.skipped_duplicates,
+                  kinds: r.rows.map((row) => String(row.kind)),
+                }));
+                // Also feed these into the incremental checkpoint stream so
+                // the analyst sees them appear in chat mid-run.
+                const cpItems = r.rows.map((row) => ({
+                  kind: String(row.kind ?? ""),
+                  value: String(row.value ?? ""),
+                  source: typeof row.source === "string" ? row.source : null,
+                  confidence: typeof row.confidence === "number" ? row.confidence : null,
+                }));
+                // Insert as a checkpoint MESSAGE. The seen-set is already updated
+                // by persistAutoFindings, so persistCheckpoint's own dedup would
+                // drop everything — temporarily remove them, then re-add.
+                const keys = cpItems.map((i) => `${i.kind.toLowerCase()}:${i.value.trim().toLowerCase()}`);
+                for (const k of keys) incrementalSeen.delete(k);
+                registerBackground(persistCheckpoint(
+                  { supabase, threadId, userId, seen: incrementalSeen, runId: incrementalRunId },
+                  cpItems,
+                ).catch((e) => { console.warn("[auto-persist-findings] checkpoint task failed:", (e as Error)?.message ?? e); return null; }));
+              }
+              return r;
+            },
+            (e) => { console.warn("[auto-persist-findings] task failed:", (e as Error)?.message ?? e); return null; },
+          );
+          registerBackground(autoTask);
+          await withTimeout(autoTask, CHECKPOINT_AWAIT_MS);
         }
         try {
           const u = usage as { inputTokens?: number; promptTokens?: number; outputTokens?: number; completionTokens?: number } | undefined;
