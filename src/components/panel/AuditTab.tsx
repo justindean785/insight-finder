@@ -9,6 +9,12 @@ import { cn } from "@/lib/utils";
 
 const CAP_KEY = (threadId: string) => `proximity:case-cap:${threadId}`;
 
+// Per-case spend TRACKER default (USD). This budget bar is informational only —
+// it is localStorage-backed and never gates or stops a run (see the copy below).
+// Defaulted well above a typical deep investigation so it doesn't false-alarm at
+// ~$1; the analyst can still edit it per case.
+const DEFAULT_CASE_CAP_USD = 25;
+
 function fmtUsd(micro: number) {
   const usd = micro / 1_000_000;
   if (usd <= 0) return "$0";
@@ -21,9 +27,9 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
   const audit = useMemo(() => buildToolAudit(artifacts), [artifacts]);
   const gaps = useMemo(() => inferToolGaps(audit), [audit]);
   const [spentMicro, setSpentMicro] = useState<number>(0);
-  const [capUsd, setCapUsd] = useState<number>(1);
+  const [capUsd, setCapUsd] = useState<number>(DEFAULT_CASE_CAP_USD);
   const [editingCap, setEditingCap] = useState(false);
-  const [capDraft, setCapDraft] = useState<string>("1.00");
+  const [capDraft, setCapDraft] = useState<string>(DEFAULT_CASE_CAP_USD.toFixed(2));
   const [capError, setCapError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -132,8 +138,8 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
             {warn && (
               <div className={"text-data " + (overCap ? "text-destructive" : "text-[hsl(var(--confidence-mid))]")}>
                 {overCap
-                  ? `Over cap by ${fmtUsd(spentMicro - capUsd * 1_000_000)} — consider finishing or raising the cap.`
-                  : "Approaching cap — set a higher cap to resume deeper sweeps."}
+                  ? `Over your $${capUsd.toFixed(2)} spend tracker by ${fmtUsd(spentMicro - capUsd * 1_000_000)} — informational only; the run is not stopped. Raise it to hide this.`
+                  : "Nearing your spend tracker — informational only, not a hard limit."}
               </div>
             )}
           </div>
