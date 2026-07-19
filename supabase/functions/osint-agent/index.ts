@@ -42,6 +42,7 @@ import { beginCycle, clearRuntime } from "./runtime-policy.ts";
 import {
   TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW,
   MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN,
+  buildIntermediateStepPlan,
   capTotalToBudget, deadlineReached,
 } from "./orchestrator-budget.ts";
 import {
@@ -51,6 +52,7 @@ import {
   extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt, toolCallCapReached,
   shouldNudgePersistence, buildPersistenceNudgeDirective,
 } from "./orchestrator-finalize.ts";
+import { loadReviewsForThread, applyReviewsToArtifacts, rejectedArtifacts, renderAnalystRejectionBlock, REVIEW_STATE_UNAVAILABLE_NOTE } from "./reviews.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
@@ -702,8 +704,26 @@ Deno.serve(async (req) => {
     }
     // Base orchestrator system prompt, shared by streamText and by the forced
     // finalize phase (which appends its phase-specific directive to this exact base).
+    // Authoritative analyst-rejection block on EVERY model turn — not just salvage.
+    // Dropping rejected rows from artifact READS is necessary but not sufficient:
+    // an ordinary follow-up turn still carries the prior (false) narrative in the
+    // message history, so without an explicit supersede instruction the model can
+    // and does re-assert a finding the analyst already marked FALSE. baseSystemPrompt
+    // feeds all three paths (intermediate, finalize, salvage), so injecting here
+    // covers every turn.
+    const turnReviews = await loadReviewsForThread(supabaseAdmin, threadId, userId);
+    const analystRejectionBlock = turnReviews.ok
+      ? renderAnalystRejectionBlock(turnReviews.rejectedRows)
+      // Verdicts unreadable: say so rather than implying nothing was rejected.
+      : `\n## ANALYST REVIEW STATE UNAVAILABLE\n${REVIEW_STATE_UNAVAILABLE_NOTE}\n`;
+    if (!turnReviews.ok) {
+      console.warn(JSON.stringify({
+        event: "turn_review_state_unavailable", thread_id: threadId, error: turnReviews.error,
+      }));
+    }
     const baseSystemPrompt =
-      SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary;
+      SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary
+      + analystRejectionBlock;
     // The two decision tools exist in the registry so forced-finalize can select them,
     // but they must never be available during ordinary investigation steps.
     const normalActiveTools = activeToolsOutsideFinalize(Object.keys(tools));
@@ -819,6 +839,10 @@ Deno.serve(async (req) => {
           const finalizePlan = buildFinalizeStepPlan(finalizePhase);
           return {
             messages: stepMessagesOut,
+            // Finalize owns its own toolChoice per phase (persist/memory are
+            // "required" so the closing record_artifacts/memory_save actually
+            // run; the report phase is "auto" because it is a text-only step).
+            // That supersedes this PR's original blanket orchestratorStepToolChoice(true).
             activeTools: [...finalizePlan.activeTools],
             toolChoice: finalizePlan.toolChoice,
             system: baseSystemPrompt + finalizePlan.directive,
@@ -847,16 +871,32 @@ Deno.serve(async (req) => {
             event: "persistence_nudge_fired", thread_id: threadId,
             tool_calls: nudgeToolCalls, record_artifact_calls: nudgeRecordCalls,
           }));
+          // NON-finalize step: the plan (activeTools + toolChoice) comes from the
+          // centralized builder. Without the forced tool choice this branch — the
+          // one whose whole job is to make the model persist evidence — could
+          // itself end the run on a "let me record the artifacts…" narration.
           return {
             messages: stepMessagesOut,
-            activeTools: ["record_artifacts"],
             system: intermediateSystem,
+            ...buildIntermediateStepPlan({ nudgePersistence: true, normalActiveTools: normalActiveTools }),
           };
         }
+        // Premature-stop fix — the "stops mid-investigation" bug. AI SDK v6 ends
+        // the agent loop the instant a step finishes with NO tool call
+        // (finishReason "stop"); toolChoice defaults to "auto", so the model is
+        // free to narrate its next action as prose ("Now let me run
+        // minimax_correlate…") and emit no call — the loop then terminates and
+        // onFinish marks the thread finished with planned NEXT STEPS still pending.
+        // DeepSeek (the openai-compatible orchestrator) does exactly this. Forcing
+        // "required" on every NON-finalize step makes the model emit a tool call
+        // (it may still include text alongside), so the only exits from the loop are
+        // the controlled finalize branch above or a budget/deadline StopCondition —
+        // never a mid-run narration. Bounded by the same 22-step / 4-min budget, so
+        // it can't over-run; the finalize branch owns its own per-phase toolChoice.
         return {
           messages: stepMessagesOut,
-          activeTools: normalActiveTools,
           system: intermediateSystem,
+          ...buildIntermediateStepPlan({ nudgePersistence: false, normalActiveTools }),
         };
       };
 
@@ -1084,17 +1124,33 @@ Deno.serve(async (req) => {
           const { toolCalls: workToolCalls } = countRecordArtifactCalls(finalMessages);
           const existingReport = extractAssistantReportText(finalMessages as unknown as Array<{ role?: string; parts?: Array<{ type?: string; text?: unknown }> }>);
           if (needsReportSalvage(existingReport, workToolCalls)) {
-            const { data: salvageArts } = await supabase
+            const { data: salvageArtsRaw } = await supabase
               .from("artifacts")
-              .select("kind,value,confidence,source")
+              .select("id,kind,value,confidence,source")
               .eq("thread_id", threadId)
               .order("confidence", { ascending: false })
               .limit(200);
+            // Respect analyst verdicts: exclude dismissed/wrong artifacts from the
+            // salvage report and pass them as an explicit DO-NOT-USE block, so the
+            // dominant CPU-kill finalize path can't re-promote rejected findings.
+            const salvageReviews = await loadReviewsForThread(supabaseAdmin, threadId, userId);
+            // FAIL-CLOSED: verdicts unreadable → do NOT synthesize from unfiltered
+            // rows (that re-promotes rejected findings, i.e. the original incident
+            // reproduced by a DB error). Skip the salvage report entirely.
+            if (!salvageReviews.ok) {
+              console.warn(JSON.stringify({
+                event: "salvage_skipped_review_state_unavailable",
+                thread_id: threadId, error: salvageReviews.error,
+              }));
+              throw new Error("salvage synthesis skipped: analyst review state unavailable");
+            }
+            const salvageArts = applyReviewsToArtifacts((salvageArtsRaw ?? []) as Array<Record<string, unknown>>, salvageReviews);
+            const salvageRejected = rejectedArtifacts((salvageArtsRaw ?? []) as Array<Record<string, unknown>>, salvageReviews);
             const salvage = await generateText({
               model: orchestratorModel,
               maxOutputTokens: ORCHESTRATOR_MAX_OUTPUT_TOKENS,
               system: baseSystemPrompt,
-              prompt: buildSalvageSynthesisPrompt(seedValueRaw, (salvageArts ?? []) as Array<Record<string, unknown>>),
+              prompt: buildSalvageSynthesisPrompt(seedValueRaw, salvageArts, salvageRejected),
             });
             const salvageText = (salvage?.text ?? "").trim();
             if (salvageText) {
@@ -1164,16 +1220,46 @@ Deno.serve(async (req) => {
             const detected = detectSeedServer(seedText);
             if (detected) {
               detectedSeedKind = detected.kind;
-              const { data: arts } = await supabase
+              const { data: artsRaw, error: artsErr } = await supabase
                 .from("artifacts")
-                .select("kind,value,confidence,source,metadata")
+                .select("id,kind,value,confidence,source,metadata")
                 .eq("thread_id", threadId)
                 .order("created_at", { ascending: true });
+              if (artsErr) {
+                console.error(JSON.stringify({ event: "investigation_cache_artifacts_read_fail", thread_id: threadId, error: artsErr.message }));
+              } else {
+              // Respect analyst verdicts BEFORE caching: a dismissed/wrong artifact
+              // must NOT be snapshotted into the 7-day investigation_cache and
+              // replayed at full confidence into a future run.
+              //
+              // FAIL-CLOSED: if verdicts are unreadable, DO NOT write the cache.
+              // A cache row is long-lived (7d) and replayed into future runs, so
+              // snapshotting unfiltered rows would persist the incident well past
+              // the transient error that caused it. Skipping simply means the next
+              // run recomputes live.
+              const cacheReviews = await loadReviewsForThread(supabaseAdmin, threadId, userId);
+              if (!cacheReviews.ok) {
+                console.warn(JSON.stringify({
+                  event: "investigation_cache_write_skipped_review_state_unavailable",
+                  thread_id: threadId, error: cacheReviews.error,
+                }));
+                throw new Error("investigation_cache write skipped: analyst review state unavailable");
+              }
+              const arts = applyReviewsToArtifacts((artsRaw ?? []) as Array<Record<string, unknown>>, cacheReviews);
               // Cache is long-lived (7d) and is replayed back into a future
               // run's context, so strip credentials / PII / oversized blobs.
               const cachedParts = sanitizeToolOutput(safeParts, 1500);
-              const cachedArts = sanitizeToolOutput(arts ?? [], 1500);
+              const cachedArts = sanitizeToolOutput(arts, 1500);
               const payload = {
+                // cache_version 2: the client (ChatWindow.tsx) MUST re-check
+                // artifact_reviews for origin_thread_id before ever replaying
+                // assistant_parts verbatim — this snapshot reflects analyst
+                // verdicts as of THIS write, not as of a future cache hit. A
+                // reader that doesn't understand cache_version 2 (or an older
+                // unversioned row) must treat the row as inadmissible, not
+                // replay it blind. See src/lib/review.ts checkCachedHitSafety.
+                cache_version: 2,
+                origin_thread_id: threadId,
                 seed: detected,
                 assistant_parts: cachedParts,
                 artifacts: cachedArts,
@@ -1184,7 +1270,7 @@ Deno.serve(async (req) => {
               // service-role admin client (bypasses RLS). Using the user-scoped
               // `supabase` here is what left the cache permanently empty (0 rows,
               // ~0% hit). The artifacts read above is fine on the user client.
-              await supabaseAdmin.from("investigation_cache").upsert(
+              const { error: upsertErr } = await supabaseAdmin.from("investigation_cache").upsert(
                 {
                   user_id: userId,
                   seed_kind: detected.kind,
@@ -1195,6 +1281,10 @@ Deno.serve(async (req) => {
                 },
                 { onConflict: "user_id,seed_kind,seed_value_normalized" },
               );
+              if (upsertErr) {
+                console.error(JSON.stringify({ event: "investigation_cache_upsert_fail", thread_id: threadId, error: upsertErr.message }));
+              }
+              }
             }
           } catch (e) {
             console.error(JSON.stringify({ event: "investigation_cache_fail", thread_id: threadId, error: String(e) }));

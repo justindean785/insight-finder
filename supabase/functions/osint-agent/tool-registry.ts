@@ -19,6 +19,7 @@ import { applyDateSanity } from "./date-sanity.ts";
 import { computeAxes, sourceConfidence, applyEvidenceCaps, isUnrelatedEntity, EXCLUDED_COLLISION_CONFIDENCE, isBioCrossLinkName, BIO_CROSS_LINK_NAME_CAP, deriveStatus, coerceCoherentStatus, looksDeadEnd } from "./confidence.ts";
 import { queryTypesOf } from "./query-type-router.ts";
 import { isSameSurnameOnlyLead, isListingAgentLead } from "./collision-policy.ts";
+import { loadReviewsForThread, applyReviewsToArtifacts, type ReviewLoad } from "./reviews.ts";
 import { agentMemoryOrFilter } from "./pgrest.ts";
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDomainSource, LLM_ASSERTED_PROVENANCE, countIndependentClasses } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
@@ -155,6 +156,41 @@ function memoSchema<T>(key: string, build: () => T): T {
 
 export function buildTools(ctx: ToolContext) {
   const { supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, messages, manualOverrideSelector } = ctx;
+
+  // Analyst verdicts for this run, loaded at most ONCE and shared by every
+  // artifacts read that feeds the model, scoring, or memory. Reviews are written
+  // between runs, so a per-run snapshot is the correct granularity — and it keeps
+  // this from costing one extra query per tool call.
+  //
+  // EVERY `.from("artifacts").select(...)` read in this file that reaches the
+  // model must go through `filterReviewed()`. Raw reads were how a dismissed
+  // finding kept reaching the planner graph, memory_save, contradiction analysis
+  // and record_finding even after the analyst marked it FALSE.
+  let reviewsPromise: Promise<ReviewLoad> | null = null;
+  const getReviews = (): Promise<ReviewLoad> => {
+    // Cast: this repo ships no generated Supabase DB types, so the client's
+    // builder generics don't structurally satisfy ReviewDb (the same type-graph
+    // state that forces the `.update({...} as never)` casts elsewhere in this
+    // file). The runtime shape is correct — .select().eq()/.in() all exist.
+    reviewsPromise ??= loadReviewsForThread(
+      supabaseAdmin as unknown as Parameters<typeof loadReviewsForThread>[0],
+      threadId,
+      userId,
+    );
+    return reviewsPromise;
+  };
+  /** Drop analyst-rejected rows from a model-facing artifacts read.
+   *  Fail-closed: when verdicts are unreadable this yields [] (the caller's
+   *  feature degrades to "no data") rather than passing rejected rows through. */
+  const filterReviewed = async <T extends Record<string, unknown>>(rows: T[] | null | undefined): Promise<T[]> => {
+    const review = await getReviews();
+    if (!review.ok) {
+      console.warn(JSON.stringify({
+        event: "artifact_read_review_state_unavailable", thread_id: threadId, error: review.error,
+      }));
+    }
+    return applyReviewsToArtifacts(rows, review);
+  };
 
   const tools = {
     list_tools: tool({
@@ -705,10 +741,15 @@ export function buildTools(ctx: ToolContext) {
           try {
             const { data: fullArts } = await supabase
               .from("artifacts")
-              .select("kind,value,confidence,source,metadata")
+              // `id` selected so analyst verdicts can be applied per row.
+              .select("id,kind,value,confidence,source,metadata")
               .eq("thread_id", threadId)
               .order("created_at", { ascending: true });
-            const arts = (fullArts ?? []) as Parameters<typeof buildNodes>[0];
+            // Analyst-rejected artifacts must not shape the planner's relationship
+            // graph — a dismissed node would otherwise keep generating pivot hints.
+            const arts = (await filterReviewed(
+              (fullArts ?? []) as Array<Record<string, unknown>>,
+            )) as unknown as Parameters<typeof buildNodes>[0];
             if (arts.length) {
               const nodes = buildNodes(arts);
               const edges = inferEdges(nodes);
@@ -4497,12 +4538,16 @@ export function buildTools(ctx: ToolContext) {
           const collisionKinds = new Set(["phone", "email", "address"]);
           const candidates = safeRowsForFollowup.filter((r) => collisionKinds.has(String(r.kind)));
           for (const r of candidates) {
-            const { data: peers } = await supabase
+            const { data: peersRaw } = await supabase
               .from("artifacts")
-              .select("value,kind,source,metadata")
+              // `id` selected so analyst verdicts can be applied per row.
+              .select("id,value,kind,source,metadata")
               .eq("thread_id", threadId)
               .eq("kind", String(r.kind))
               .eq("value", String(r.value));
+            // A dismissed artifact must not count as a colliding peer, or a
+            // rejected finding still manufactures a contradiction artifact.
+            const peers = await filterReviewed((peersRaw ?? []) as Array<Record<string, unknown>>);
             const sources = new Set<string>();
             const clusters = new Set<string>();
             type PeerRow = { source?: unknown; metadata?: Record<string, unknown> | null };
@@ -5007,10 +5052,14 @@ export function buildTools(ctx: ToolContext) {
       let toPersist: MemoryEntry[] = entries as unknown as MemoryEntry[];
       let candidates: Array<{ entry: MemoryEntry; reason: string; subjectIds: string[] }> = [];
       try {
-        const { data: artRows } = await supabase
+        const { data: artRowsRaw } = await supabase
           .from("artifacts")
-          .select("kind,value,source,confidence,metadata")
+          // `id` selected so analyst verdicts can be applied per row.
+          .select("id,kind,value,source,confidence,metadata")
           .eq("thread_id", threadId);
+        // Long-term memory is the most durable surface in the product: a rejected
+        // artifact written here outlives the investigation and seeds FUTURE cases.
+        const artRows = await filterReviewed((artRowsRaw ?? []) as Array<Record<string, unknown>>);
         if (Array.isArray(artRows) && artRows.length > 0) {
           const clusterArts: ClusterArtifact[] = artRows.map((r) => {
             const row = r as { kind: string; value: string; source?: string; confidence?: number; metadata?: unknown };
@@ -5184,8 +5233,11 @@ export function buildTools(ctx: ToolContext) {
       if (cluster_artifact_kinds?.length) q = q.in("kind", cluster_artifact_kinds);
       const { data, error } = await q;
       if (error) return { ok: false, error: error.message };
+      // Contradiction analysis is model-facing AND writes contradictions back onto
+      // artifacts. A dismissed row must not generate or receive either.
+      const reviewed = await filterReviewed((data ?? []) as Array<Record<string, unknown>>);
       type Row = { id: string; kind: string; value: string; source: string | null; metadata: Record<string, unknown> | null };
-      const rows = (data ?? []) as Row[];
+      const rows = reviewed as unknown as Row[];
       const findings = detectContradictions(rows as Parameters<typeof detectContradictions>[0]);
 
       // Persist explicit conflicts back onto the involved artifacts so the
@@ -5301,10 +5353,14 @@ export function buildTools(ctx: ToolContext) {
       label: z.enum(["CONFIRMED","CORROBORATED","INFERRED","VERIFY","LOW","DISMISSED"]).default("INFERRED"),
     })),
     execute: async (i) => {
-      const { data: contraRows } = await supabase
+      const { data: contraRowsRaw } = await supabase
         .from("artifacts")
-        .select("kind,value,source,metadata,created_at")
+        // `id` selected so analyst verdicts can be applied per row.
+        .select("id,kind,value,source,metadata,created_at")
         .eq("thread_id", threadId);
+      // record_finding is the headline claim of the whole run — a rejected
+      // artifact must not contribute to (or be docked by) its scoring.
+      const contraRows = await filterReviewed((contraRowsRaw ?? []) as Array<Record<string, unknown>>);
       // Scope the contradiction / advisory penalty to the artifacts that
       // actually belong to THIS finding's identity candidate — its cited
       // artifacts plus their cluster(s) — so a finding for one candidate is not
@@ -5313,7 +5369,7 @@ export function buildTools(ctx: ToolContext) {
       // thread. When the finding cites nothing resolvable we can't attribute a
       // cluster, so fall back to the thread-wide set (conservative: keep the
       // penalty rather than inflate confidence).
-      const allRows = (contraRows ?? []) as Parameters<typeof detectContradictions>[0];
+      const allRows = (contraRows ?? []) as unknown as Parameters<typeof detectContradictions>[0];
       const scopedRows = artifactsForFinding(allRows, i.supporting_artifact_values ?? []);
       const contras = detectContradictions(scopedRows.length > 0 ? scopedRows : allRows);
       // Audit F06: i.corroboration_count was a raw model-supplied integer with no

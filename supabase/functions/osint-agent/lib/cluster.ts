@@ -22,6 +22,12 @@
  *    is capped at 40 and never auto-joined or promoted.
  */
 
+// Analyst verdicts (artifact_reviews) must reach the deterministic cluster
+// engine too: an artifact the analyst marked dismissed/wrong must not seed or
+// merge an identity cluster (it would pull the subject toward the rejected
+// answer). See ../reviews.ts.
+import { loadReviewsForThread, applyReviewsToArtifacts } from "../reviews.ts";
+
 // ---- Confidence tiers (JD's schema) -------------------------------------------
 export const TIERS = { CONFIRMED: 90, LIKELY: 75, POSSIBLE: 50, WEAK: 30 } as const;
 export function tierFor(conf: number): string {
@@ -421,7 +427,26 @@ export async function applyClusteringToThread(
   const { data, error } = await admin.from("artifacts")
     .select("id,kind,value,source,confidence,metadata").eq("thread_id", threadId);
   if (error || !Array.isArray(data) || data.length === 0) return { updated: 0, subjects: 0, merges: 0 };
-  const arts: Artifact[] = data.map((r) => {
+  // Drop analyst-rejected artifacts (dismissed/wrong) BEFORE clustering so a
+  // false finding can never seed or merge a subject cluster. (recheck rows stay
+  // in the cluster set — a suspect selector may still be legitimately shared —
+  // but their confidence is downweighted for any promotion.)
+  //
+  // FAIL-CLOSED: if the verdicts cannot be read we must NOT cluster on unfiltered
+  // rows — that is exactly the incident (a dismissed finding re-seeding a subject
+  // cluster) reproduced by a transient DB error. Skip this pass instead; the next
+  // run re-clusters once verdicts are readable again.
+  const review = await loadReviewsForThread(admin, threadId, userId);
+  if (!review.ok) {
+    console.warn(JSON.stringify({
+      event: "clustering_skipped_review_state_unavailable",
+      thread_id: threadId, error: review.error,
+    }));
+    return { updated: 0, subjects: 0, merges: 0 };
+  }
+  const liveData = applyReviewsToArtifacts(data as Array<Record<string, unknown>>, review);
+  if (liveData.length === 0) return { updated: 0, subjects: 0, merges: 0 };
+  const arts: Artifact[] = liveData.map((r) => {
     const row = r as { id: string; kind: string; value: string; source?: string; confidence?: number; metadata?: unknown };
     return {
       id: row.id, kind: row.kind ?? "", value: row.value ?? "", source: row.source ?? "",
@@ -430,7 +455,7 @@ export async function applyClusteringToThread(
     };
   });
   const { members, subjects, decisions } = clusterArtifacts(arts);
-  const metaById = new Map(data.map((r) => {
+  const metaById = new Map(liveData.map((r) => {
     const row = r as { id: string; metadata?: unknown };
     const meta = (row.metadata && typeof row.metadata === "object") ? row.metadata as Record<string, unknown> : {};
     return [row.id, meta];

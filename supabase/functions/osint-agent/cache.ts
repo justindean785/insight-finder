@@ -12,6 +12,7 @@ import { costForTool } from "./costs.ts";
 import { DEFAULT_TOOL_TTL_MS, NO_CACHE_TOOLS, redactSensitiveToolInput, TOOL_TTL_MS } from "./validation.ts";
 import { creditsCharged } from "./billing.ts";
 import { classifyToolOutcome } from "./tool-outcome.ts";
+import { loadReviewsForThread, applyReviewsToArtifacts, type ReviewLoad } from "./reviews.ts";
 import * as circuit from "./circuit.ts";
 import { guard } from "./guard.ts";
 import { shouldSkipForToolCap } from "./orchestrator-finalize.ts";
@@ -320,6 +321,7 @@ async function loadSelectorEvidence(
   threadId: string,
   selectorType: string,
   normalizedSelector: string,
+  review: ReviewLoad,
 ): Promise<SelectorEvidenceSignal> {
   const key = `${threadId}:${selectorType}:${normalizedSelector}`;
   const cached = SELECTOR_SIGNAL_CACHE.get(key);
@@ -349,11 +351,16 @@ async function loadSelectorEvidence(
         : [selectorType];
     const { data } = await userDb
       .from("artifacts")
-      .select("kind,value,confidence,source,metadata")
+      // `id` selected so analyst verdicts can be applied per row.
+      .select("id,kind,value,confidence,source,metadata")
       .eq("thread_id", threadId)
       .in("kind", likelyKinds)
       .limit(100);
-    const rows = ((data ?? []) as Array<{
+    // Analyst-rejected artifacts must not contribute to a selector's evidence
+    // signal — otherwise a dismissed finding keeps inflating sourceCount /
+    // confidence and steering expected-value and weak-lead scoring.
+    const reviewed = applyReviewsToArtifacts((data ?? []) as Array<Record<string, unknown>>, review);
+    const rows = ((reviewed ?? []) as Array<{
       kind?: string | null;
       value?: string | null;
       confidence?: number | null;
@@ -438,6 +445,20 @@ export function wrapToolsWithCache(
 ) {
   const wrapped: Record<string, Tool> = {};
   const adminDb = ctx.supabaseAdmin ?? ctx.supabase;
+  // Analyst verdicts for this run, loaded at most ONCE and shared by every
+  // selector-evidence computation. Reviews are written between runs, so a per-run
+  // snapshot is the right granularity and costs one query, not one per tool call.
+  let reviewsPromise: Promise<ReviewLoad> | null = null;
+  const getReviews = (): Promise<ReviewLoad> => {
+    // Cast: no generated Supabase DB types in this repo, so the client's builder
+    // generics don't structurally satisfy ReviewDb; the runtime shape is correct.
+    reviewsPromise ??= loadReviewsForThread(
+      adminDb as unknown as Parameters<typeof loadReviewsForThread>[0],
+      ctx.investigationId,
+      ctx.userId,
+    );
+    return reviewsPromise;
+  };
   // Per-run tool_health cache (Phase 2): load the rolling reliability + latency
   // signal ONCE and reuse it across every wrapped tool call this run. Best-effort —
   // if the view is missing (deploy ordering) or the query fails, scoring simply
@@ -682,7 +703,7 @@ export function wrapToolsWithCache(
         // value can reach tool_usage_log.input_json or tool_call_cache.input_json.
         const inputJson = redactSensitiveToolInput(name, normalizeForHash(input)) as unknown as Record<string, unknown>;
         const params = normalizedParams(inp);
-        const signal = await loadSelectorEvidence(ctx.supabase, ctx.investigationId, selectorType, sel);
+        const signal = await loadSelectorEvidence(ctx.supabase, ctx.investigationId, selectorType, sel, await getReviews());
         const weakLead = analyzeWeakLead(signal);
         // Persistent tool-health prior (Phase 2): latency + reliability from the
         // tool_health view, sample-gated inside scoreExpectedValue so a low-sample

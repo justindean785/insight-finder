@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { loadReviewsForThread, applyReviewsToArtifacts } from "./reviews.ts";
 
 export const RUN_HEARTBEAT_INTERVAL_MS = 15_000;
 export const STALE_RUN_AFTER_MS = 75_000;
@@ -19,6 +20,7 @@ export type RecoverableThread = {
 };
 
 export type RecoveryArtifact = {
+  id?: string | null;
   kind?: string | null;
   value?: string | null;
   confidence?: number | null;
@@ -117,7 +119,7 @@ async function recoverOneStaleThread(
   if (!isStaleActiveThread(thread, now.getTime())) return { recovered: false, assistantInserted: false, artifactCount: 0 };
   const [{ data: latestAssistant }, { data: artifacts, count: artifactCount }] = await Promise.all([
     db.from("messages").select("created_at").eq("thread_id", thread.id).eq("role", "assistant").order("created_at", { ascending: false }).limit(1).maybeSingle(),
-    db.from("artifacts").select("kind,value,confidence,source,created_at", { count: "exact" }).eq("thread_id", thread.id).order("confidence", { ascending: false }).order("created_at", { ascending: true }).limit(RECOVERY_ARTIFACT_LIMIT),
+    db.from("artifacts").select("id,kind,value,confidence,source,created_at", { count: "exact" }).eq("thread_id", thread.id).order("confidence", { ascending: false }).order("created_at", { ascending: true }).limit(RECOVERY_ARTIFACT_LIMIT),
   ]);
   let assistantInserted = false;
   const assistantState = shouldInsertRecoveredAssistant(
@@ -126,10 +128,25 @@ async function recoverOneStaleThread(
     now.getTime(),
   );
   if (assistantState.shouldInsert) {
-    const text = buildRecoveredAssistantText(thread, (artifacts ?? []) as RecoveryArtifact[]);
-    const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: [{ type: "text", text }] });
-    if (insertErr) return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: insertErr.message };
-    assistantInserted = true;
+    // Never surface analyst-rejected artifacts in a recovered findings report.
+    //
+    // FAIL-CLOSED: if the verdicts can't be read, do NOT write a recovered report
+    // built from unfiltered rows — a recovery report is durable and user-facing,
+    // so a transient error would republish findings the analyst marked FALSE.
+    // The thread is still finalized below; only the report is withheld.
+    const review = await loadReviewsForThread(db, thread.id, thread.user_id);
+    if (!review.ok) {
+      console.warn(JSON.stringify({
+        event: "recovery_report_skipped_review_state_unavailable",
+        thread_id: thread.id, error: review.error,
+      }));
+    } else {
+      const liveArtifacts = applyReviewsToArtifacts((artifacts ?? []) as Array<Record<string, unknown>>, review);
+      const text = buildRecoveredAssistantText(thread, liveArtifacts as RecoveryArtifact[]);
+      const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: [{ type: "text", text }] });
+      if (insertErr) return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: insertErr.message };
+      assistantInserted = true;
+    }
   }
   const { error: updateErr } = await db.from("threads").update({ status: "finished", recovered_at: now.toISOString(), recovery_reason: reason, updated_at: now.toISOString() }).eq("id", thread.id).eq("status", "active");
   if (updateErr) return { recovered: false, assistantInserted, artifactCount: artifactCount ?? 0, error: updateErr.message };
