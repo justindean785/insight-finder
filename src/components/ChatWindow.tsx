@@ -38,6 +38,12 @@ import {
 import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon, Copy as CopyIcon, ArrowRight } from "lucide-react";
 import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
 import { toolDisplayName, toolActionLabel, humanizeStage } from "@/lib/tool-display";
+import {
+  isTerminalThreadUpdate,
+  mergePersistedChatMessages,
+  shouldAbortClientStream,
+  type TerminalThreadUpdate,
+} from "@/lib/chat-terminal-reconcile";
 
 const SUPABASE_PROJECT_ID = (import.meta.env.VITE_SUPABASE_PROJECT_ID as string | undefined)?.trim();
 // Resolve from the client's SUPABASE_URL (which carries the baked-in default),
@@ -1336,6 +1342,33 @@ function ChatWindowInner({
     },
   });
 
+  // `messages` is not guaranteed to be in the project's Realtime publication.
+  // Reconcile explicitly when the durable thread reaches a terminal state so a
+  // report inserted by normal completion, salvage, or stale-run recovery appears
+  // without requiring a hard reload.
+  const reconcilePersistedMessages = useCallback(async () => {
+    const { data, error: loadError } = await supabase
+      .from("messages")
+      .select("id,role,parts,created_at")
+      .eq("thread_id", threadId)
+      .order("created_at");
+    if (loadError) {
+      console.warn("terminal message reconciliation failed:", loadError.message);
+      return;
+    }
+    const rows = data ?? [];
+    const persisted: UIMessage[] = rows.map((row) => ({
+      id: row.id,
+      role: row.role as "user" | "assistant",
+      parts: row.parts as UIMessage["parts"],
+    }));
+    setMessages((current) => mergePersistedChatMessages(current, persisted));
+    setCreatedAtMap((current) => ({
+      ...current,
+      ...Object.fromEntries(rows.map((row) => [row.id, row.created_at])),
+    }));
+  }, [setMessages, threadId]);
+
   // Reset fail guard on new turn
   useEffect(() => {
     if (status === "submitted" || status === "streaming") failSavedRef.current = false;
@@ -2010,8 +2043,10 @@ function ChatWindowInner({
   // A CPU-killed isolate leaves a half-open SSE that never sends EOF, so useChat
   // stays "streaming" (isLoading true → header stuck on RUNNING) with no client
   // watchdog. When the backend marks this thread terminal (the sweeper above, or
-  // any server-side recovery, flips status to finished/stopped), abort the dead
-  // client stream so isLoading clears and the UI reflects the recovered state.
+  // any server-side recovery, flips status to finished/stopped), reconcile the
+  // durable assistant message. Abort only a stale-recovered or analyst-stopped
+  // stream: normal `finished` and `stream_error` updates can arrive while their
+  // trailing report/error chunk is still flushing, and aborting here drops it.
   const stopRef = useRef(stop);
   stopRef.current = stop;
   useEffect(() => {
@@ -2021,17 +2056,23 @@ function ChatWindowInner({
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "threads", filter: `id=eq.${threadId}` },
         (payload) => {
-          const next = (payload.new as { status?: string } | null)?.status;
-          if (next === "finished" || next === "stopped") {
+          const next = (payload.new as TerminalThreadUpdate | null) ?? {};
+          if (!isTerminalThreadUpdate(next)) return;
+          if (shouldAbortClientStream(next)) {
             try { stopRef.current?.(); } catch { /* stream already closed */ }
           }
+          // Give a healthy browser branch one render turn to receive its trailing
+          // report before merging the same durable row. Stale-recovery/stop paths
+          // have no live tail to flush and reconcile immediately.
+          if (shouldAbortClientStream(next)) void reconcilePersistedMessages();
+          else window.setTimeout(() => void reconcilePersistedMessages(), 500);
         },
       )
       .subscribe();
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [threadId]);
+  }, [reconcilePersistedMessages, threadId]);
 
   // Run progress readout for the "Investigating…" indicator: an elapsed timer
   // (plus the current tool step) so an analyst can distinguish a working run

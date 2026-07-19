@@ -62,6 +62,23 @@ export function pickEvidenceCount(
   return integrity ? integrity.total : artifactFallback;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
+export function deriveWorkspaceStatus(input: {
+  threadStatus: Thread["status"] | undefined;
+  chatRunning: boolean;
+  recentlyActive: boolean;
+  hasEvidence: boolean;
+}): "idle" | "active" | "completed" {
+  // The browser stream is the only signal allowed to override a terminal row:
+  // persistence can mark the thread finished while the final report is still
+  // flushing. Historical tool activity must not keep a recovered/finished run
+  // painted RUNNING after the stream has closed.
+  if (input.chatRunning) return "active";
+  if (input.threadStatus === "finished" || input.threadStatus === "stopped") return "completed";
+  if (input.recentlyActive) return "active";
+  return input.hasEvidence ? "completed" : "idle";
+}
+
 /**
  * Case command bar — Palantir/Claude workstation style.
  * Three-zone grid: left meta · centered identity · right ops.
@@ -161,13 +178,12 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
     return () => clearInterval(id);
   }, [liveRun]);
 
-  // Priority: live stream/tool activity → Running; only then terminal/completed.
-  // Never paint COMPLETE while chat is streaming or tools ran in the last 90s.
-  const status: "idle" | "active" | "completed" =
-    liveRun ? "active"
-    : thread?.status === "finished" || thread?.status === "stopped" ? "completed"
-    : artifactCount > 0 || activity.persistedTotal > 0 ? "completed"
-    : "idle";
+  const status = deriveWorkspaceStatus({
+    threadStatus: thread?.status,
+    chatRunning,
+    recentlyActive,
+    hasEvidence: artifactCount > 0 || activity.persistedTotal > 0,
+  });
 
   const display = thread
     ? extractDisplaySeed(thread.seed_value, thread.seed_type)
