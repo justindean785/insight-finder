@@ -51,7 +51,7 @@ import {
   extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt, toolCallCapReached,
   shouldNudgePersistence, buildPersistenceNudgeDirective,
 } from "./orchestrator-finalize.ts";
-import { loadReviewsForThread, applyReviewsToArtifacts, rejectedArtifacts } from "./reviews.ts";
+import { loadReviewsForThread, applyReviewsToArtifacts, rejectedArtifacts, renderAnalystRejectionBlock, REVIEW_STATE_UNAVAILABLE_NOTE } from "./reviews.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
@@ -703,8 +703,26 @@ Deno.serve(async (req) => {
     }
     // Base orchestrator system prompt, shared by streamText and by the forced
     // finalize phase (which appends its phase-specific directive to this exact base).
+    // Authoritative analyst-rejection block on EVERY model turn — not just salvage.
+    // Dropping rejected rows from artifact READS is necessary but not sufficient:
+    // an ordinary follow-up turn still carries the prior (false) narrative in the
+    // message history, so without an explicit supersede instruction the model can
+    // and does re-assert a finding the analyst already marked FALSE. baseSystemPrompt
+    // feeds all three paths (intermediate, finalize, salvage), so injecting here
+    // covers every turn.
+    const turnReviews = await loadReviewsForThread(supabaseAdmin, threadId, userId);
+    const analystRejectionBlock = turnReviews.ok
+      ? renderAnalystRejectionBlock(turnReviews.rejectedRows)
+      // Verdicts unreadable: say so rather than implying nothing was rejected.
+      : `\n## ANALYST REVIEW STATE UNAVAILABLE\n${REVIEW_STATE_UNAVAILABLE_NOTE}\n`;
+    if (!turnReviews.ok) {
+      console.warn(JSON.stringify({
+        event: "turn_review_state_unavailable", thread_id: threadId, error: turnReviews.error,
+      }));
+    }
     const baseSystemPrompt =
-      SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary;
+      SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary
+      + analystRejectionBlock;
     // The two decision tools exist in the registry so forced-finalize can select them,
     // but they must never be available during ordinary investigation steps.
     const normalActiveTools = activeToolsOutsideFinalize(Object.keys(tools));

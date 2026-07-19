@@ -56,17 +56,22 @@ export function normalizeArtifactKey(kind: unknown, value: unknown): string {
 
 /** Result of loading analyst verdicts. `ok:false` means the verdicts could not be
  *  read — treat as UNAVAILABLE, never as "nothing is rejected". */
+export interface RejectedRow { id: string; kind: string; value: string }
+
 export interface ReviewLoad {
   ok: boolean;
   /** artifact_id → review state */
   byId: Map<string, string>;
   /** normalized kind|value of rejected artifacts (survives re-record under a new id) */
   rejectedKeys: Set<string>;
+  /** the rejected artifacts themselves, for the authoritative DO-NOT-USE block.
+   *  Resolved by the same lookup that builds rejectedKeys — no extra query. */
+  rejectedRows: RejectedRow[];
   error: string | null;
 }
 
 export function emptyReviewLoad(ok: boolean, error: string | null = null): ReviewLoad {
-  return { ok, byId: new Map(), rejectedKeys: new Set(), error };
+  return { ok, byId: new Map(), rejectedKeys: new Set(), rejectedRows: [], error };
 }
 
 type QueryResult = { data: Array<Record<string, unknown>> | null; error: unknown };
@@ -115,6 +120,7 @@ export async function loadReviewsForThread(
     // same finding under a NEW id is still excluded. Best-effort: if this lookup
     // fails we still have id-level enforcement, so the load stays ok.
     const rejectedIds = [...byId.entries()].filter(([, s]) => REJECTED_REVIEW_STATES.has(s)).map(([id]) => id);
+    const rejectedRows: RejectedRow[] = [];
     if (rejectedIds.length > 0) {
       try {
         const { data: arts, error: aErr } = await db
@@ -122,7 +128,14 @@ export async function loadReviewsForThread(
           .select("id,kind,value")
           .in("id", rejectedIds);
         if (!aErr && Array.isArray(arts)) {
-          for (const a of arts) rejectedKeys.add(normalizeArtifactKey(a?.kind, a?.value));
+          for (const a of arts) {
+            rejectedKeys.add(normalizeArtifactKey(a?.kind, a?.value));
+            rejectedRows.push({
+              id: String(a?.id ?? ""),
+              kind: String(a?.kind ?? ""),
+              value: String(a?.value ?? ""),
+            });
+          }
         } else if (aErr) {
           console.warn("[reviews] rejected-key lookup failed (id-level enforcement still active):", errText(aErr));
         }
@@ -130,7 +143,7 @@ export async function loadReviewsForThread(
         console.warn("[reviews] rejected-key lookup threw:", errText(e));
       }
     }
-    return { ok: true, byId, rejectedKeys, error: null };
+    return { ok: true, byId, rejectedKeys, rejectedRows, error: null };
   } catch (e) {
     console.warn("[reviews] loadReviewsForThread failed:", errText(e));
     return emptyReviewLoad(false, errText(e));

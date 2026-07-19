@@ -104,6 +104,17 @@ Deno.test("loadReviewsForThread resolves rejected ids into value-level keys", as
   assertEquals(r.rejectedKeys.has(normalizeArtifactKey("name", "wayne young")), true);
 });
 
+Deno.test("loadReviewsForThread exposes rejectedRows for the DO-NOT-USE block", async () => {
+  const db = stubDb([{ artifact_id: "a1", state: "dismissed" }], null, {
+    artifactRows: [{ id: "a1", kind: "name", value: "Wayne Young" }],
+  });
+  const r = await loadReviewsForThread(db, "t", "u");
+  assertEquals(r.rejectedRows.length, 1);
+  assertEquals(r.rejectedRows[0].value, "Wayne Young");
+  // and it renders straight into the authoritative prompt block
+  assertEquals(renderAnalystRejectionBlock(r.rejectedRows).includes("Wayne Young"), true);
+});
+
 Deno.test("loadReviewsForThread FAILS CLOSED on a query error", async () => {
   const r = await loadReviewsForThread(stubDb(null, { message: "boom" }), "t", "u");
   assertEquals(r.ok, false);
