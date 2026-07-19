@@ -1,7 +1,7 @@
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { detectSeed, extractDisplaySeed } from "@/lib/seed";
 import { toolActionLabel } from "@/lib/tool-display";
-import { humanizeSourceChain } from "@/lib/report-source-labels";
+import { humanizeSourceChain, tokenizeSourceChain } from "@/lib/report-source-labels";
 import { deriveToolStatus, deriveToolReason } from "@/lib/tool-run";
 import {
   clusterDisplayId,
@@ -753,8 +753,8 @@ export type ArtifactSourceInfo = {
 export function extractSourceInfo(a: Artifact): ArtifactSourceInfo {
   const meta = (a.metadata ?? {}) as Record<string, unknown>;
   const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
-  const primary = a.source ?? metaSources[0] ?? "unknown";
-  const all = Array.from(new Set([...(a.source ? [a.source] : []), ...metaSources])).filter(Boolean);
+  const all = tokenizeSourceChain([...(a.source ? [a.source] : []), ...metaSources]);
+  const primary = all[0] ?? "unknown";
   let cacheLayer: CacheLayer = "unknown";
   if (meta.cached === true || meta._cached === true) {
     const layer = String(meta._cache_layer ?? meta.cache_layer ?? "").toLowerCase();

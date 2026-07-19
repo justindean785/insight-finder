@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { humanizeSourceChain } from "@/lib/report-source-labels";
+import { humanizeSourceChain, tokenizeSourceChain } from "@/lib/report-source-labels";
 
 const RAW_SLUG_RE = /\b[a-z0-9]+_[a-z0-9_]+\b/; // any snake_case token
 
@@ -37,6 +37,11 @@ describe("humanizeSourceChain", () => {
 
   it("dedupes repeated sources", () => {
     expect(humanizeSourceChain("username_sweep+username_sweep")).toBe("username sweep");
+  });
+
+  it("tokenizes comma-separated tools into distinct sources", () => {
+    expect(tokenizeSourceChain("breach_check, leakcheck_lookup, breach_check"))
+      .toEqual(["breach_check", "leakcheck_lookup"]);
   });
 
   it("keeps free text / mixed tokens readable", () => {
