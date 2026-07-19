@@ -116,6 +116,18 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
     return () => { supabase.removeChannel(ch); };
   }, [threadId, loadIntegrity]);
 
+  // The evidence_log realtime channel above is currently a no-op: evidence_log is
+  // NOT in the supabase_realtime publication, so its subscription never fires and
+  // the "N evidence" count would freeze at its mount value (0) for the whole run —
+  // even while chain entries accrue. The artifacts table IS published and grows in
+  // lockstep with evidence_log (each record_artifacts → artifact insert +
+  // append_evidence), so re-verify the chain whenever the live artifact count
+  // changes. (Root fix is to publish evidence_log to realtime; this keeps the
+  // header honest regardless.)
+  useEffect(() => {
+    void loadIntegrity();
+  }, [artifactCount, loadIntegrity]);
+
   // Tool log can go quiet for long stretches (MiniMax thinking / provider lag).
   // 12s was too short — header flipped to COMPLETE between tool calls mid-run.
   const ACTIVE_WINDOW_MS = 90_000;

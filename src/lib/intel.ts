@@ -1099,6 +1099,7 @@ export function buildReportMarkdown(input: ReportInput): string {
     if (collisionIds.has(a.id)) return false;
     const m = (a.metadata ?? {}) as Record<string, unknown>;
     return (typeof m.conflict_note === "string" && m.conflict_note.trim().length > 0)
+      || (typeof m.conflict === "string" && m.conflict.trim().length > 0)
       || m.geo_conflict === true
       || collisionText(m) !== null;
   });
@@ -1106,6 +1107,7 @@ export function buildReportMarkdown(input: ReportInput): string {
     const m = (a.metadata ?? {}) as Record<string, unknown>;
     if (typeof m.conflict_note === "string" && m.conflict_note.trim()) return m.conflict_note.trim();
     if (typeof m.geo_conflict_note === "string" && m.geo_conflict_note.trim()) return m.geo_conflict_note.trim();
+    if (typeof m.conflict === "string" && m.conflict.trim()) return m.conflict.trim();
     const ct = collisionText(m);
     if (ct) return ct;
     return "conflicting attributes across sources";
@@ -1374,6 +1376,19 @@ function tokenize(s: string): string[] {
 
 function extractStateFromText(s: string | null | undefined): string | null {
   if (!s) return null;
+  // A US address ends "... <STATE> <ZIP>". Anchor on the 5-digit ZIP so a street
+  // suffix that collides with a 2-letter state code — e.g. "Ct" (Court) → CT,
+  // "Pa"/"Or"/"In" — can't be mistaken for the state. The token immediately before
+  // the ZIP is the authoritative state. (Bug: "302 S Mason Ct, Baltimore MD 21231"
+  // was read as Connecticut off the "Ct" street suffix, fabricating a phantom
+  // state that then drove a false geographic collision.)
+  const zipAnchored = s.match(/([A-Za-z][A-Za-z.-]{0,13})\s+\d{5}(?:-\d{4})?\b/);
+  if (zipAnchored) {
+    const st = US_STATE_TOKENS[zipAnchored[1].toLowerCase().replace(/[.-]+/g, "")];
+    if (st) return st;
+  }
+  // Fallback for strings with no ZIP (clean metadata like "CA", or a name-location
+  // seed like "sacramento ca"): first recognized state token.
   for (const tok of tokenize(s)) {
     const st = US_STATE_TOKENS[tok];
     if (st) return st;

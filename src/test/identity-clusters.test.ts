@@ -373,3 +373,28 @@ describe("buildIdentityClusters handle-only confidence cap (no overstated certai
     expect(c.confidence).toBeGreaterThan(60);
   });
 });
+
+describe("state-from-address parsing (Ct-suffix regression)", () => {
+  it("reads MD, not CT, from a Baltimore address whose street suffix is 'Ct'", () => {
+    const report = buildIdentityClusters(
+      [artifact("address", "302 S Mason Ct, Baltimore MD 21231")],
+      null,
+    );
+    const states = report.clusters.flatMap((c) => c.states);
+    expect(states).toContain("MD");
+    expect(states).not.toContain("CT");
+  });
+
+  it("reads the ZIP-anchored state for LA/FL/OR addresses and is not fooled by street words", () => {
+    const cases: Array<[string, string]> = [
+      ["5533 Hollywood Blvd Apt 424, Los Angeles CA 90028", "CA"],
+      ["625 S 20th Ave Unit 4, Hollywood FL 33020", "FL"],
+      ["123 Park Ave, Portland OR 97201", "OR"],
+      ["1 Main St, Indianapolis IN 46204", "IN"],
+    ];
+    for (const [addr, want] of cases) {
+      const report = buildIdentityClusters([artifact("address", addr)], null);
+      expect(report.clusters.flatMap((c) => c.states)).toContain(want);
+    }
+  });
+});
