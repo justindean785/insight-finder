@@ -27,6 +27,10 @@ import {
   MAX_PERSISTED_ASSISTANT_PARTS_BYTES,
 } from "./safety.ts";
 import { sanitizeModelMessages, capToolResultOutputs, summarizeToolResultValue } from "./message-sanitize.ts";
+import {
+  collectStepCheckpoint, persistCheckpoint, loadSeenCheckpoints, isIncrementalMessage,
+  registerBackground, withTimeout, CHECKPOINT_AWAIT_MS,
+} from "./incremental-persist.ts";
 import { guard, routingGuard, triageState, countRecordArtifactCalls, countModelMessageToolCalls } from "./guard.ts";
 import { setupRequest } from "./auth.ts";
 import { minimax, minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
@@ -216,7 +220,13 @@ Deno.serve(async (req) => {
       supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, messages, manualOverrideSelector,
     });
 
-    const modelMessages = await convertToModelMessages(messages);
+    // Exclude mid-run progress checkpoints from the MODEL context. They are a
+    // UI-only projection of artifacts already persisted; re-feeding their text
+    // into the prompt on every later step/turn would bloat history and raise
+    // CPU-kill pressure. They remain in the chat store for display (and are
+    // collapsed once the final report lands — see src/lib/chat-checkpoints.ts).
+    const modelInputMessages = messages.filter((m) => !isIncrementalMessage(m));
+    const modelMessages = await convertToModelMessages(modelInputMessages);
 
     // #238: older-result cap tightened 4000→1500. Safe only BECAUSE older results
     // now go through selector-preserving summarization (summarizeToolResultValue) —
@@ -719,6 +729,13 @@ Deno.serve(async (req) => {
     // deadline StopCondition below. Declared here so prepareStep's closure reads it.
     const runStartedAt = Date.now();
     heartbeat = startRunHeartbeat(supabaseAdmin, threadId, { startedAt: new Date(runStartedAt) });
+    // Incremental progress-checkpoint state (see ./incremental-persist.ts).
+    // Owned by THIS per-request closure so concurrent runs on a warm isolate
+    // never share dedup state. `incrementalSeen` is seeded from checkpoints
+    // already persisted for this thread, so a re-run / stale-run recovery never
+    // re-announces the same finding (idempotent).
+    const incrementalRunId = new Date(runStartedAt).toISOString();
+    const incrementalSeen = await loadSeenCheckpoints(supabase, threadId);
     const prepareStep: NonNullable<Parameters<typeof streamText>[0]["prepareStep"]> =
       async ({ messages: stepMessages, stepNumber }) => {
         const { data: threadState } = await supabase
@@ -928,7 +945,7 @@ Deno.serve(async (req) => {
       // the old Gemini 2.5 Pro rate ($1.25/$10) over-debited the ledger ~4x on the
       // fallback path. An operator LOVABLE_FALLBACK_MODEL_ID override is best-effort
       // metered at the Flash rate.
-      onStepFinish: ({ usage, finishReason, toolCalls, toolResults }) => {
+      onStepFinish: async ({ usage, finishReason, toolCalls, toolResults }) => {
         if (finalizeStarted) {
           const names = (toolCalls ?? []).map((call: { toolName: string }) => call.toolName);
           const stepProgress = countFinalizeProgress([{ content: toolResults }]);
@@ -947,6 +964,33 @@ Deno.serve(async (req) => {
         // A completed step on the primary provider proves MiniMax is alive —
         // record it so the NEXT turn's preflight probe can be skipped.
         if (!useFallback) markMinimaxHealthy();
+        // Incremental progress checkpoint — surface a SANITIZED projection of the
+        // artifacts recorded this step so findings appear in chat even if the
+        // isolate is CPU-killed before onFinish. Sourced from record_artifacts'
+        // post-scrub `checkpoint` contract (never raw values); allowlist-filtered,
+        // deduped across the run, idempotent across recovery. Reliability: the
+        // write is registered with EdgeRuntime.waitUntil (isolate keep-alive,
+        // SDK-await-independent) AND awaited bounded, so this step's checkpoint is
+        // durable before the next step burns more CPU toward the kill threshold —
+        // while a slow DB can never stall the run. See ./incremental-persist.ts.
+        const cpEmissions = collectStepCheckpoint(toolResults as unknown[] | undefined);
+        if (cpEmissions.length > 0) {
+          const cpTask = persistCheckpoint(
+            { supabase, threadId, userId, seen: incrementalSeen, runId: incrementalRunId },
+            cpEmissions,
+          ).then(
+            (r) => {
+              if (r.inserted) console.log(JSON.stringify({
+                event: "incremental_checkpoint_flushed", thread_id: threadId,
+                count: r.count, checkpoint_id: r.checkpointId,
+              }));
+              return r;
+            },
+            (e) => { console.warn("[incremental-persist] checkpoint task failed:", (e as Error)?.message ?? e); return null; },
+          );
+          registerBackground(cpTask);
+          await withTimeout(cpTask, CHECKPOINT_AWAIT_MS);
+        }
         try {
           const u = usage as { inputTokens?: number; promptTokens?: number; outputTokens?: number; completionTokens?: number } | undefined;
           const inTok = Number(u?.inputTokens ?? u?.promptTokens ?? 0);
