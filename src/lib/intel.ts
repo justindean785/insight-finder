@@ -1025,7 +1025,7 @@ export function buildReportMarkdown(input: ReportInput): string {
 
   const audit = buildToolAudit(artifacts);
   const gaps = inferToolGaps(audit);
-  const clusterReport = buildIdentityClusters(artifacts, seedValue);
+  const clusterReport = buildIdentityClusters(artifacts, seedValue, reviews);
   const isNameSearch = !!detectNameLocationSeed(seedValue);
 
   // Group artifacts for entity table and network connections
@@ -1566,6 +1566,7 @@ function isSharedInfraKey(key: string): boolean {
 export function buildIdentityClusters(
   artifacts: Artifact[],
   seedValue: string | null,
+  reviews?: Record<string, ReviewAdjustment>,
 ): ClusterReport {
   const seedHint = detectNameLocationSeed(seedValue);
   const seedState = seedHint?.state ?? null;
@@ -1647,6 +1648,13 @@ export function buildIdentityClusters(
   const live = artifacts.filter((a) => {
     const m = (a.metadata ?? {}) as Record<string, unknown>;
     if (m.false_positive === true) return false;
+    // Analyst verdict is authoritative. An artifact the analyst marked False
+    // ("dismissed"/"wrong") must NOT seed or strengthen an identity cluster or
+    // its confidence — the same exclusion the Evidence list already applies via
+    // labelForArtifact. Without `reviews` threaded in, clustering silently
+    // re-promoted analyst-dismissed artifacts into CONFIRMED clusters.
+    const rev = reviews?.[a.id];
+    if (rev === "dismissed" || rev === "wrong") return false;
     if (isCollisionArtifact(a)) return false;
     return true;
   });

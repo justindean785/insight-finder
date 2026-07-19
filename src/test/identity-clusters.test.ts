@@ -45,6 +45,45 @@ function profile(
   };
 }
 
+describe("buildIdentityClusters respects analyst dismissals (integrity)", () => {
+  it("an analyst-dismissed email is excluded from identity clusters", () => {
+    // Cross-linked email+phone (each names the other) cluster together.
+    const email = artifact("email", "kota09131989@gmail.com", { phone: "5307638184" });
+    const phone = artifact("phone", "5307638184", { email: "kota09131989@gmail.com" });
+    const arts = [email, phone];
+
+    // Baseline: no review → the pair clusters, so the email appears.
+    const base = buildIdentityClusters(arts, null);
+    expect(base.clusters.flatMap((c) => c.emails)).toContain("kota09131989@gmail.com");
+
+    // Analyst marks the email False → it must NOT seed/strengthen a cluster.
+    const reviews = { [email.id]: "dismissed" as const };
+    const after = buildIdentityClusters(arts, null, reviews);
+    expect(after.clusters.flatMap((c) => c.emails)).not.toContain("kota09131989@gmail.com");
+  });
+
+  it("a cluster built only from dismissed artifacts does not survive as CONFIRMED", () => {
+    const email = artifact("email", "a@dismissed.com", { phone: "5551110000" });
+    const phone = artifact("phone", "5551110000", { email: "a@dismissed.com" });
+    const reviews = { [email.id]: "dismissed" as const, [phone.id]: "wrong" as const };
+    const report = buildIdentityClusters([email, phone], null, reviews);
+    // Dismissed-only evidence yields no surviving identifiers in any cluster.
+    expect(report.clusters.flatMap((c) => [...c.emails, ...c.phones])).toHaveLength(0);
+    expect(report.clusters.every((c) => c.confidence < 85)).toBe(true);
+  });
+
+  it("keeps live evidence while dropping a dismissed sibling in the same bucket", () => {
+    const goodEmail = artifact("email", "real@subject.com", { handle: "realsub" });
+    const goodHandle = artifact("username", "realsub", { email: "real@subject.com" });
+    const wrongEmail = artifact("email", "wrong@person.com", { handle: "realsub" });
+    const reviews = { [wrongEmail.id]: "wrong" as const };
+    const report = buildIdentityClusters([goodEmail, goodHandle, wrongEmail], null, reviews);
+    const emails = report.clusters.flatMap((c) => c.emails);
+    expect(emails).toContain("real@subject.com");
+    expect(emails).not.toContain("wrong@person.com");
+  });
+});
+
 describe("buildIdentityClusters shared-infrastructure splitting", () => {
   it("does not collapse three distinct people bridged by one IP selector", () => {
     const artifacts = [

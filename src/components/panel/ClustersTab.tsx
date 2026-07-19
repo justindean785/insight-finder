@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { buildIdentityClusters, groupForKind, type IdentityCluster } from "@/lib/intel";
+import { useReviewStates } from "@/lib/review";
 import { isSharedInfrastructure } from "@/lib/evidence-status";
 import { captureError } from "@/lib/telemetry";
 import { AlertTriangle, MapPin, Mail, Phone, User as UserIcon, Network, Tag, ShieldCheck, ShieldQuestion, Server } from "lucide-react";
@@ -30,7 +31,21 @@ export function ClustersTab({ threadId, artifacts }: { threadId: string; artifac
     return () => { alive = false; };
   }, [threadId]);
 
-  const report = useMemo(() => buildIdentityClusters(artifacts, seedValue), [artifacts, seedValue]);
+  // Analyst verdicts must reach clustering too — not just the Evidence list and
+  // Report. An artifact marked False ("dismissed"/"wrong") is excluded from
+  // cluster formation and confidence, so a dismissed identity can no longer read
+  // as a CONFIRMED cluster in this graph.
+  const review = useReviewStates(threadId);
+  const reviews = useMemo(() => {
+    const m: Record<string, ReturnType<typeof review.get>> = {};
+    for (const a of artifacts) {
+      const r = review.get(a.id);
+      if (r !== "new") m[a.id] = r;
+    }
+    return m;
+  }, [artifacts, review]);
+
+  const report = useMemo(() => buildIdentityClusters(artifacts, seedValue, reviews), [artifacts, seedValue, reviews]);
 
   if (artifacts.length === 0) {
     return <EmptyState icon={Network} title="No clusters yet" hint="Identity clusters appear once tools return emails, usernames, or phones." />;

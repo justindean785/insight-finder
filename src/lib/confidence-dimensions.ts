@@ -108,7 +108,7 @@ export function buildConfidenceProfile(input: {
   const live = artifacts.filter((a) => !isConflicted(a));
 
   // ── Identity ─────────────────────────────────────────────────────────
-  const clusters = buildIdentityClusters(artifacts, seedValue).clusters;
+  const clusters = buildIdentityClusters(artifacts, seedValue, reviews).clusters;
   const topCluster = clusters.reduce((m, c) => Math.max(m, c.confidence), 0);
   const identityBearing = artifacts.filter((a) => IDENTITY_KINDS.has(a.kind.toLowerCase())).length;
   const identity: ConfidenceDimension = clusters.length
