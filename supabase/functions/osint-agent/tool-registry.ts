@@ -1225,7 +1225,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     socialfetch_lookup: tool({
       description:
-        "Query SocialFetch for normalized public social PROFILES and their content. SUPPORTED platforms: 'tiktok' | 'instagram' | 'twitter' | 'facebook'. kind='profile' (default) = profile metadata; 'videos' (tiktok) / 'posts' (instagram) / 'tweets' (twitter) = a profile's content collection; 'video' (tiktok) = one video by URL/id (pass it as `handle`). Use platform='facebook' with a full profile URL; otherwise pass a bare handle. Returns { ok, found, status, lookupStatus, data, meta, error }; on profile routes lookupStatus is 'found'|'private'|'not_found' — treat 'private'/'not_found' as a NORMAL negative, not an error. For a HARD-BLOCKED host that is NOT one of these four structured platforms (youtube, twitch, reddit, or an arbitrary evidence page), use `socialfetch_web_read` — it fetches server-side, unlike `jina_reader_scrape`, which those origins block. Jina remains the reader for non-blocked hosts. SocialFetch quota is LOW — don't re-burn calls on a nothing-result. Unsupported platforms return an informative no-op instead of crashing.",
+        "Query SocialFetch for normalized public social PROFILES and their content. SUPPORTED platforms: tiktok | instagram | twitter | facebook | linkedin | youtube | reddit | rumble | bluesky | github | google. kind='profile' (default) = profile metadata; 'videos' (tiktok) / 'posts' (instagram) / 'tweets' (twitter) = a profile's content collection; 'video' (tiktok) = one video by URL/id (pass it as `handle`). Pass a bare handle OR a full profile URL — URL inputs (and always facebook/linkedin) are routed via ?url=. Returns { ok, found, status, lookupStatus, data, meta, error }; on profile routes lookupStatus is 'found'|'private'|'not_found' — treat 'private'/'not_found' as a NORMAL negative, not an error. For an arbitrary evidence page (or a host not in the list above), use `socialfetch_web_read` — it fetches server-side, unlike `jina_reader_scrape`, which some origins block. Jina remains the reader for non-blocked hosts. SocialFetch quota is LOW — don't re-burn calls on a nothing-result. Unsupported platforms return an informative no-op instead of crashing.",
       inputSchema: memoSchema("socialfetch_lookup", () => z.object({
         platform: z.string(),
         handle: z.string().describe("Username/handle, full URL for facebook, or video URL/id for tiktok kind='video'"),
@@ -1233,21 +1233,34 @@ export function buildTools(ctx: ToolContext) {
       })),
       execute: async ({ platform, handle, kind }) => {
         const p = String(platform || "").trim().toLowerCase();
-        const SUPPORTED = new Set(["tiktok", "instagram", "twitter", "facebook"]);
+        // SocialFetch's structured per-platform profile API. Kept as an explicit
+        // allow-list (not open-ended) so the planner can't burn paid credits on a
+        // platform SocialFetch doesn't serve — but it now covers every platform
+        // SocialFetch documents, not just the original four. Deeper per-platform
+        // endpoints (posts/search/company/etc.) beyond profile+the existing
+        // collection routes can be added as they're wired.
+        const SUPPORTED = new Set([
+          "tiktok", "instagram", "twitter", "facebook",
+          "linkedin", "youtube", "reddit", "rumble", "bluesky", "github", "google",
+        ]);
         if (!SUPPORTED.has(p)) {
           return {
             ok: false,
             skipped: true,
-            reason: `socialfetch_lookup does not support platform='${platform}'. For a blocked host (youtube/twitch/reddit/arbitrary page) use socialfetch_web_read; otherwise http_fingerprint, wayback_snapshots, or minimax_web_search.`,
+            reason: `socialfetch_lookup does not support platform='${platform}'. For an arbitrary evidence page use socialfetch_web_read; otherwise http_fingerprint, wayback_snapshots, or minimax_web_search.`,
             supported: Array.from(SUPPORTED),
           };
         }
         if (!SOCIALFETCH_API_KEY) return { error: "SOCIALFETCH_API_KEY not configured" };
         try {
           const h = encodeURIComponent(handle);
+          // A full profile URL is addressed via ?url= (SocialFetch's convention,
+          // required for facebook and the natural form for linkedin/company URLs);
+          // a bare handle uses the /profiles/{handle} path.
+          const handleIsUrl = /^https?:\/\//i.test(handle.trim());
           let url: string;
-          if (p === "facebook") {
-            url = `https://api.socialfetch.dev/v1/facebook/profiles?url=${h}`;
+          if (p === "facebook" || (handleIsUrl && kind === "profile")) {
+            url = `https://api.socialfetch.dev/v1/${p}/profiles?url=${h}`;
           } else if (p === "tiktok" && kind === "videos") {
             url = `https://api.socialfetch.dev/v1/tiktok/profiles/${h}/videos`;
           } else if (p === "tiktok" && kind === "video") {
