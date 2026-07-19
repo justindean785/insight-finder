@@ -19,6 +19,7 @@ import { applyDateSanity } from "./date-sanity.ts";
 import { computeAxes, sourceConfidence, applyEvidenceCaps, isUnrelatedEntity, EXCLUDED_COLLISION_CONFIDENCE, isBioCrossLinkName, BIO_CROSS_LINK_NAME_CAP, deriveStatus, coerceCoherentStatus, looksDeadEnd } from "./confidence.ts";
 import { queryTypesOf } from "./query-type-router.ts";
 import { isSameSurnameOnlyLead, isListingAgentLead } from "./collision-policy.ts";
+import { agentMemoryOrFilter } from "./pgrest.ts";
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDomainSource, LLM_ASSERTED_PROVENANCE, countIndependentClasses } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
 import { buildNodes } from "./graph.ts";
@@ -667,7 +668,7 @@ export function buildTools(ctx: ToolContext) {
                 .from("agent_memory")
                 .select("kind,content,confidence")
                 .eq("user_id", userId)
-                .or(`subject.eq.${seedNorm},related_values.cs.{${seedNorm}}`)
+                .or(agentMemoryOrFilter(seedNorm))
                 .order("confidence", { ascending: false })
                 .limit(8);
               const rows = (mem ?? []) as Array<{ kind?: string; content?: string; confidence?: number }>;
@@ -4542,7 +4543,7 @@ export function buildTools(ctx: ToolContext) {
                   .from("agent_memory")
                   .select("id,kind,subject,subject_kind,related_values,content,confidence,hit_count")
                   .eq("user_id", userId)
-                  .or(`subject.eq.${subj},related_values.cs.{${subj}}`)
+                  .or(agentMemoryOrFilter(subj))
                   .order("confidence", { ascending: false })
                   .limit(5);
                 return { subject: subj, count: data?.length ?? 0, memories: data ?? [] };
@@ -4899,7 +4900,7 @@ export function buildTools(ctx: ToolContext) {
         .from("agent_memory")
         .select("id,kind,subject,subject_kind,related_values,content,confidence,source_thread_id,hit_count,last_used_at,created_at")
         .eq("user_id", userId)
-        .or(`subject.eq.${subj},related_values.cs.{${subj}}`)
+        .or(agentMemoryOrFilter(subj))
         .order("confidence", { ascending: false })
         .limit(limit ?? 20);
       if (kind && kind !== "any") q = supabase
@@ -4907,7 +4908,7 @@ export function buildTools(ctx: ToolContext) {
         .select("id,kind,subject,subject_kind,related_values,content,confidence,source_thread_id,hit_count,last_used_at,created_at")
         .eq("user_id", userId)
         .eq("kind", kind)
-        .or(`subject.eq.${subj},related_values.cs.{${subj}}`)
+        .or(agentMemoryOrFilter(subj))
         .order("confidence", { ascending: false })
         .limit(limit ?? 20);
       const { data, error } = await q;
