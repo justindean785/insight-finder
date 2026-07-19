@@ -85,9 +85,9 @@ describe("review state maps", () => {
 // ever calling osint-agent, so backend review-filtering never runs on this
 // path. A dismissed/wrong verdict made AFTER a run was cached could replay,
 // unfiltered, for up to 7 days. checkCachedHitSafety() is the read-time gate
-// that closes this: it must FAIL CLOSED (unlike the backend's fail-open
-// review load) since the cost of a false "safe" here is the exact incident
-// this exists to prevent.
+// that closes this: it must FAIL CLOSED (matches the backend's
+// reviews.ts loadReviewsForThread, which also fails closed) since the cost
+// of a false "safe" here is the exact incident this exists to prevent.
 describe("checkCachedHitSafety", () => {
   beforeEach(() => {
     mock.reviewRows = [];

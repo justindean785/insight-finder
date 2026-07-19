@@ -146,12 +146,13 @@ export function launchRecheckInChat(
  * up to 7 days) the stale, now-rejected narrative and artifacts.
  *
  * Call this BEFORE rendering a cache hit, keyed on the row's origin_thread_id
- * (cache_version 2+; see index.ts). Unlike the backend's fail-OPEN review
- * load (a transient DB hiccup mid-run must not break an active
- * investigation), this check fails CLOSED: if we can't prove the cached
- * narrative is still analyst-clean, treat the hit as unsafe and fall through
- * to a live run. The cost of a false "unsafe" is one extra live run; the cost
- * of a false "safe" is exactly the incident this fix exists for.
+ * (cache_version 2+; see index.ts). Fails CLOSED (matches the backend's
+ * reviews.ts loadReviewsForThread, which also fails closed as of 2026-07-19 —
+ * a transient review-load error must never be treated as "nothing rejected"):
+ * if we can't prove the cached narrative is still analyst-clean, treat the
+ * hit as unsafe and fall through to a live run. The cost of a false "unsafe"
+ * is one extra live run; the cost of a false "safe" is exactly the incident
+ * this fix exists for.
  */
 export async function checkCachedHitSafety(
   originThreadId: string,
