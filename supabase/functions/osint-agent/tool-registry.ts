@@ -20,6 +20,7 @@ import { computeAxes, sourceConfidence, applyEvidenceCaps, isUnrelatedEntity, EX
 import { queryTypesOf } from "./query-type-router.ts";
 import { isSameSurnameOnlyLead, isListingAgentLead } from "./collision-policy.ts";
 import { loadReviewsForThread, applyReviewsToArtifacts, type ReviewLoad } from "./reviews.ts";
+import { agentMemoryOrFilter } from "./pgrest.ts";
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDomainSource, LLM_ASSERTED_PROVENANCE, countIndependentClasses } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
 import { buildNodes } from "./graph.ts";
@@ -699,13 +700,22 @@ export function buildTools(ctx: ToolContext) {
           try {
             const seedNorm = String(seed ?? "").trim().toLowerCase();
             if (seedNorm) {
-              const { data: mem } = await supabase
+              const { data: mem, error: memErr } = await supabase
                 .from("agent_memory")
                 .select("kind,content,confidence")
                 .eq("user_id", userId)
-                .or(`subject.eq.${seedNorm},related_values.cs.{${seedNorm}}`)
+                .or(agentMemoryOrFilter(seedNorm))
                 .order("confidence", { ascending: false })
                 .limit(8);
+              // Surface, never swallow: a discarded error here is indistinguishable
+              // from "no prior memory", which is how the comma/logic-tree defect
+              // stayed invisible for every address seed.
+              if (memErr) {
+                console.warn(JSON.stringify({
+                  event: "memory_recall_failed", site: "seed_triage_hint",
+                  subject: seedNorm, error: memErr.message,
+                }));
+              }
               const rows = (mem ?? []) as Array<{ kind?: string; content?: string; confidence?: number }>;
               if (rows.length) {
                 memoryHint =
@@ -4579,20 +4589,33 @@ export function buildTools(ctx: ToolContext) {
           ),
         ).slice(0, 12);
         let memory_hits: Array<{ subject: string; count: number; memories: unknown[] }> = [];
+        let memory_recall_errors: Array<{ subject: string; error: string | null }> = [];
         if (recallSubjects.length > 0) {
           try {
             const recalled = await Promise.all(
               recallSubjects.map(async (subj) => {
-                const { data } = await supabase
+                const { data, error } = await supabase
                   .from("agent_memory")
                   .select("id,kind,subject,subject_kind,related_values,content,confidence,hit_count")
                   .eq("user_id", userId)
-                  .or(`subject.eq.${subj},related_values.cs.{${subj}}`)
+                  .or(agentMemoryOrFilter(subj))
                   .order("confidence", { ascending: false })
                   .limit(5);
-                return { subject: subj, count: data?.length ?? 0, memories: data ?? [] };
+                // Surface, never swallow. A discarded error reads exactly like
+                // "no prior memory" — that is how the logic-tree defect hid.
+                if (error) {
+                  console.warn(JSON.stringify({
+                    event: "memory_recall_failed", site: "record_artifacts_auto_recall",
+                    subject: subj, error: error.message,
+                  }));
+                }
+                return { subject: subj, count: data?.length ?? 0, memories: data ?? [], error: error?.message ?? null };
               }),
             );
+            // Report failed lookups to the model so a recall OUTAGE is never
+            // presented as a confident "no prior memory".
+            const recall_errors = recalled.filter((r) => r.error).map((r) => ({ subject: r.subject, error: r.error }));
+            if (recall_errors.length > 0) memory_recall_errors = recall_errors;
             memory_hits = recalled.filter((r) => r.count > 0);
             const allIds = memory_hits.flatMap((h) => (h.memories as Array<{ id?: unknown }>).map((m) => m.id));
             if (allIds.length > 0) {
@@ -4688,6 +4711,15 @@ export function buildTools(ctx: ToolContext) {
                 memory_hits,
                 memory_hint:
                   "Prior memory found for some of the artifacts you just recorded. Read `memory_hits` — incorporate confirmed connections/lessons and cite them as [MEMORY] in the final report. Do NOT re-investigate values already covered.",
+              }
+            : {}),
+          // A recall OUTAGE must never be reported to the model as a confident
+          // "no prior memory" — say the lookup failed instead.
+          ...(memory_recall_errors.length > 0
+            ? {
+                memory_recall_errors,
+                memory_recall_warning:
+                  "Prior-memory lookup FAILED for the listed subjects — this is NOT the same as 'no prior memory'. Treat memory as UNKNOWN for them and do not claim a value is new/uncovered on the basis of this result.",
               }
             : {}),
           // Audit F1: once enough new artifacts have accrued since the last correlate,
@@ -4944,7 +4976,7 @@ export function buildTools(ctx: ToolContext) {
         .from("agent_memory")
         .select("id,kind,subject,subject_kind,related_values,content,confidence,source_thread_id,hit_count,last_used_at,created_at")
         .eq("user_id", userId)
-        .or(`subject.eq.${subj},related_values.cs.{${subj}}`)
+        .or(agentMemoryOrFilter(subj))
         .order("confidence", { ascending: false })
         .limit(limit ?? 20);
       if (kind && kind !== "any") q = supabase
@@ -4952,7 +4984,7 @@ export function buildTools(ctx: ToolContext) {
         .select("id,kind,subject,subject_kind,related_values,content,confidence,source_thread_id,hit_count,last_used_at,created_at")
         .eq("user_id", userId)
         .eq("kind", kind)
-        .or(`subject.eq.${subj},related_values.cs.{${subj}}`)
+        .or(agentMemoryOrFilter(subj))
         .order("confidence", { ascending: false })
         .limit(limit ?? 20);
       const { data, error } = await q;
