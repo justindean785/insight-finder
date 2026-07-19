@@ -157,22 +157,65 @@ export function launchRecheckInChat(
 export async function checkCachedHitSafety(
   originThreadId: string,
   userId: string,
-): Promise<{ safe: boolean; reviewMap: Map<string, ReviewState> }> {
+  /** ids of the artifacts in the cached blob — used to find reviews an analyst
+   *  made against a CLONE of this cache entry in some other thread. */
+  cachedArtifactIds: string[] = [],
+): Promise<{ safe: boolean; reviewMap: Map<string, ReviewState>; reason: string }> {
+  const reviewMap = new Map<string, ReviewState>();
   try {
+    // 1. Verdicts recorded against the ORIGIN thread's artifacts.
     const { data, error } = await supabase
       .from("artifact_reviews")
       .select("artifact_id,state")
       .eq("thread_id", originThreadId)
       .eq("user_id", userId);
-    if (error || !Array.isArray(data)) return { safe: false, reviewMap: new Map() };
-    const reviewMap = new Map<string, ReviewState>();
+    if (error || !Array.isArray(data)) return { safe: false, reviewMap, reason: "origin review lookup failed" };
     for (const r of data as { artifact_id: string; state: ReviewState }[]) {
       if (r.artifact_id && r.state) reviewMap.set(r.artifact_id, r.state);
     }
-    const hasRejection = [...reviewMap.values()].some((s) => REJECTED_REVIEW_STATES.has(s));
-    return { safe: !hasRejection, reviewMap };
+
+    // 2. Verdicts recorded against a CLONE of this cache entry in another thread.
+    //    Cache eviction on review is best-effort; if it ever fails, a clone-thread
+    //    "False" would otherwise be invisible here and the poisoned row would keep
+    //    replaying. The read-time check must therefore be the authority, so clone
+    //    verdicts are consulted even when eviction did not happen.
+    const ids = cachedArtifactIds.filter(Boolean);
+    if (ids.length > 0) {
+      const { data: clones, error: cloneErr } = await supabase
+        .from("artifacts")
+        .select("id")
+        .eq("user_id", userId)
+        .in("metadata->>origin_artifact_id", ids);
+      if (cloneErr) return { safe: false, reviewMap, reason: "clone lookup failed" };
+      const cloneIds = (clones ?? []).map((c) => (c as { id?: string }).id).filter(Boolean) as string[];
+      if (cloneIds.length > 0) {
+        const { data: cloneReviews, error: crErr } = await supabase
+          .from("artifact_reviews")
+          .select("artifact_id,state")
+          .eq("user_id", userId)
+          .in("artifact_id", cloneIds);
+        if (crErr || !Array.isArray(cloneReviews)) {
+          return { safe: false, reviewMap, reason: "clone review lookup failed" };
+        }
+        for (const r of cloneReviews as { artifact_id: string; state: ReviewState }[]) {
+          if (r.artifact_id && r.state) reviewMap.set(r.artifact_id, r.state);
+        }
+      }
+    }
+
+    const states = [...reviewMap.values()];
+    const hasRejection = states.some((s) => REJECTED_REVIEW_STATES.has(s));
+    // A `recheck` also blocks replay. Downweighting the cloned ARTIFACT is not
+    // enough: replaying the cache also replays the original assistant narrative
+    // verbatim, and that prose still asserts the finding the analyst flagged as
+    // suspect. There is no way to "downweight" frozen text, so the only correct
+    // response is to bypass the cache and regenerate live.
+    const hasRecheck = states.some((s) => s === "recheck");
+    if (hasRejection) return { safe: false, reviewMap, reason: "analyst rejected an artifact in this cache entry" };
+    if (hasRecheck) return { safe: false, reviewMap, reason: "analyst flagged recheck — stale narrative must not be replayed" };
+    return { safe: true, reviewMap, reason: "no analyst verdicts block replay" };
   } catch {
-    return { safe: false, reviewMap: new Map() };
+    return { safe: false, reviewMap, reason: "review lookup threw" };
   }
 }
 

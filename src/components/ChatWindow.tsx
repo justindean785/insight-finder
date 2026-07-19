@@ -18,7 +18,7 @@ import {
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { detectSeed, formatThreadTitle } from "@/lib/seed";
-import { checkCachedHitSafety, REVIEW_CONFIDENCE_DELTA, type ReviewState } from "@/lib/review";
+import { checkCachedHitSafety, type ReviewState } from "@/lib/review";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
 import { isSubmitBlocked } from "@/lib/submit-guard";
@@ -1585,8 +1585,15 @@ function ChatWindowInner({
           // never be proven analyst-clean — treat it as a miss, not a replay.
           const isVersioned = (cached.cache_version ?? 0) >= 2 && !!cached.origin_thread_id;
           const safety = isVersioned
-            ? await checkCachedHitSafety(cached.origin_thread_id as string, user.id)
-            : { safe: false, reviewMap: new Map<string, ReviewState>() };
+            ? await checkCachedHitSafety(
+                cached.origin_thread_id as string,
+                user.id,
+                // Pass the cached artifact ids so verdicts recorded against a
+                // CLONE of this entry (in another thread) are consulted too —
+                // eviction is best-effort, so this read-time check is the authority.
+                (cached.artifacts ?? []).map((a) => a.id).filter((id): id is string => !!id),
+              )
+            : { safe: false, reviewMap: new Map<string, ReviewState>(), reason: "unversioned cache row" };
           if (!safety.safe) {
             // Poisoned or stale-format row — evict it so the next lookup
             // doesn't repeat this check, then fall through to a live run.
@@ -1597,19 +1604,16 @@ function ChatWindowInner({
               .eq("seed_kind", seed.kind)
               .eq("seed_value_normalized", seed.normalized);
           } else {
-            // Safe to replay: no dismissed/wrong review exists for this
-            // origin thread. Still apply any `recheck` downweight so a
-            // suspect-but-not-rejected artifact isn't replayed at full
-            // confidence.
-            const artifacts = (cached.artifacts ?? []).map((a) => {
-              const state = a.id ? safety.reviewMap.get(a.id) : undefined;
-              if (state !== "recheck") return a;
-              const conf = typeof a.confidence === "number" ? a.confidence : 0;
-              return { ...a, confidence: Math.max(0, conf + REVIEW_CONFIDENCE_DELTA.recheck) };
-            });
+            // Safe to replay: checkCachedHitSafety found NO verdict that blocks it —
+            // neither dismissed/wrong nor recheck, in the origin thread or on any
+            // clone of this entry. A `recheck` no longer replays downweighted: the
+            // cached assistant narrative is frozen prose that would keep asserting
+            // the flagged finding, and text cannot be downweighted — so a recheck
+            // now bypasses the cache and regenerates live (handled by the !safe
+            // branch above).
             await renderCachedResult(text, {
               ...hit,
-              result_json: { ...cached, artifacts },
+              result_json: cached,
             });
             setInput("");
             setAttachments([]);

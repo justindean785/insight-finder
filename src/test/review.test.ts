@@ -8,16 +8,31 @@ import { beforeEach, describe, it, expect, vi } from "vitest";
 const mock = vi.hoisted(() => ({
   reviewRows: [] as Array<{ artifact_id: string; state: string }>,
   reviewError: null as unknown,
+  // Reviews recorded against a CLONE of the cache entry, keyed by clone id.
+  cloneRows: [] as Array<{ id: string }>,
+  cloneReviewRows: [] as Array<{ artifact_id: string; state: string }>,
+  cloneError: null as unknown,
 }));
 
+// Table-aware so the clone lookup (artifacts) and the clone-review lookup
+// (artifact_reviews filtered by artifact_id) can be distinguished. Supports the
+// .in() the clone path uses.
 vi.mock("@/integrations/supabase/client", () => ({
   supabase: {
-    from() {
+    from(table: string) {
+      let usedIn = false;
       const builder = {
         select: () => builder,
         eq: () => builder,
-        then: (resolve: (r: { data: unknown; error: unknown }) => unknown) =>
-          Promise.resolve({ data: mock.reviewRows, error: mock.reviewError }).then(resolve),
+        in: () => { usedIn = true; return builder; },
+        then: (resolve: (r: { data: unknown; error: unknown }) => unknown) => {
+          if (table === "artifacts") {
+            return Promise.resolve({ data: mock.cloneRows, error: mock.cloneError }).then(resolve);
+          }
+          // artifact_reviews: `.in()` is only used for the clone-review lookup.
+          const data = usedIn ? mock.cloneReviewRows : mock.reviewRows;
+          return Promise.resolve({ data, error: mock.reviewError }).then(resolve);
+        },
       };
       return builder;
     },
@@ -92,6 +107,33 @@ describe("checkCachedHitSafety", () => {
   beforeEach(() => {
     mock.reviewRows = [];
     mock.reviewError = null;
+    mock.cloneRows = [];
+    mock.cloneReviewRows = [];
+    mock.cloneError = null;
+  });
+
+  it("CLONE: a verdict on a clone makes the entry unsafe even when the origin is clean", async () => {
+    // Cache eviction on review is best-effort. If it fails, a "False" recorded
+    // against a CLONE of this entry in another thread must still block replay —
+    // the read-time check is the authority, not the eviction.
+    mock.reviewRows = [];                                   // origin thread: clean
+    mock.cloneRows = [{ id: "clone-1" }];                   // a clone of a1 exists
+    mock.cloneReviewRows = [{ artifact_id: "clone-1", state: "dismissed" }];
+    const r = await checkCachedHitSafety("thread-1", "user-1", ["a1"]);
+    expect(r.safe).toBe(false);
+    expect(r.reviewMap.get("clone-1")).toBe("dismissed" satisfies ReviewState);
+  });
+
+  it("CLONE: lookup failure fails CLOSED rather than assuming the clone is clean", async () => {
+    mock.cloneError = { message: "clone lookup boom" };
+    const r = await checkCachedHitSafety("thread-1", "user-1", ["a1"]);
+    expect(r.safe).toBe(false);
+    expect(r.reason).toMatch(/clone/i);
+  });
+
+  it("CLONE: no clones and a clean origin still replays", async () => {
+    const r = await checkCachedHitSafety("thread-1", "user-1", ["a1"]);
+    expect(r.safe).toBe(true);
   });
 
   it("is safe when the origin thread has no reviews at all", async () => {
@@ -112,14 +154,27 @@ describe("checkCachedHitSafety", () => {
     expect(r.safe).toBe(false);
   });
 
-  it("stays safe when reviews exist but are only confirmed/key/recheck (none rejected)", async () => {
+  it("stays safe when reviews are only confirmed/key (nothing blocks replay)", async () => {
     mock.reviewRows = [
       { artifact_id: "a1", state: "confirmed" },
-      { artifact_id: "a2", state: "recheck" },
       { artifact_id: "a3", state: "key" },
     ];
     const r = await checkCachedHitSafety("thread-1", "user-1");
     expect(r.safe).toBe(true);
+  });
+
+  it("is UNSAFE on recheck — a frozen narrative cannot be downweighted", async () => {
+    // Previously a recheck replayed the cache with the cloned artifact's
+    // confidence reduced. That left the original assistant NARRATIVE intact, and
+    // that prose still asserts the finding the analyst flagged as suspect. Text
+    // cannot be downweighted, so a recheck must bypass the cache and regenerate.
+    mock.reviewRows = [
+      { artifact_id: "a1", state: "confirmed" },
+      { artifact_id: "a2", state: "recheck" },
+    ];
+    const r = await checkCachedHitSafety("thread-1", "user-1");
+    expect(r.safe).toBe(false);
+    expect(r.reason).toMatch(/recheck/i);
     expect(r.reviewMap.get("a2")).toBe("recheck" satisfies ReviewState);
   });
 
