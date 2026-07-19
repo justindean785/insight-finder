@@ -45,8 +45,10 @@ describe("chat-checkpoints — dedupeCheckpoints (report #6: no duplicate rows)"
 
   it("is a no-op on empty / non-array input", () => {
     expect(dedupeCheckpoints([])).toEqual([]);
-    // @ts-expect-error runtime guard for defensive callers
-    expect(dedupeCheckpoints(undefined)).toBeUndefined();
+    // Defensive runtime guard for bad callers. Cast (not @ts-expect-error): this
+    // tsconfig has strictNullChecks off, so the bad call isn't a type error and a
+    // directive would be flagged unused (TS2578).
+    expect(dedupeCheckpoints(undefined as unknown as { role?: string }[])).toBeUndefined();
   });
 });
 
