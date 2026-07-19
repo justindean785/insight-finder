@@ -30,10 +30,24 @@ export function pgrestQuote(value: string): string {
   return `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
+/** Braces cannot be represented inside a PostgREST `cs.{...}` array literal.
+ *  Verified against a live PostgREST endpoint (2026-07-19): for the value
+ *  `a}b{c`, BOTH `cs.{"a}b{c"}` and `cs.{"a\}b\{c"}` return
+ *  400 PGRST100 `unexpected "b" expecting "," or ")"` — the array parser stops at
+ *  the inner brace regardless of quoting or escaping. */
+const ARRAY_LITERAL_UNREPRESENTABLE = /[{}]/;
+
 /** The `agent_memory` recall filter: match the subject exactly, OR find the
  *  value among an entry's `related_values`. Single source of truth for every
- *  recall site so the quoting can never drift back out of sync. */
+ *  recall site so the quoting can never drift back out of sync.
+ *
+ *  For a value containing `{`/`}` the containment clause is DROPPED rather than
+ *  emitted broken: including it would 400 the entire filter and lose the subject
+ *  match as well, which is strictly worse than recalling by subject alone. */
 export function agentMemoryOrFilter(subject: string): string {
   const q = pgrestQuote(subject);
+  if (ARRAY_LITERAL_UNREPRESENTABLE.test(String(subject ?? ""))) {
+    return `subject.eq.${q}`;
+  }
   return `subject.eq.${q},related_values.cs.{${q}}`;
 }
