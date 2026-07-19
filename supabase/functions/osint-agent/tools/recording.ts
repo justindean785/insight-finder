@@ -201,14 +201,21 @@ export const record_artifacts = tool({
       try {
         const recalled = await Promise.all(
           recallSubjects.map(async (subj) => {
-            const { data } = await supabase
+            const { data, error } = await supabase
               .from("agent_memory")
               .select("id,kind,subject,subject_kind,related_values,content,confidence,hit_count")
               .eq("user_id", userId)
-              .or(`subject.eq.${subj},related_values.cs.{${subj}}`)
+              .or(agentMemoryOrFilter(subj))
               .order("confidence", { ascending: false })
               .limit(5);
-            return { subject: subj, count: data?.length ?? 0, memories: data ?? [] };
+            // Surface, never swallow — a discarded error reads as "no prior memory".
+            if (error) {
+              console.warn(JSON.stringify({
+                event: "memory_recall_failed", site: "record_artifacts_auto_recall",
+                subject: subj, error: error.message,
+              }));
+            }
+            return { subject: subj, count: data?.length ?? 0, memories: data ?? [], error: error?.message ?? null };
           }),
         );
         memory_hits = recalled.filter((r) => r.count > 0);
