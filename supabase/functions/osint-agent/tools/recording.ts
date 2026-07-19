@@ -146,12 +146,17 @@ export const record_artifacts = tool({
       const collisionKinds = new Set(["phone", "email", "address"]);
       const candidates = safeRowsForFollowup.filter((r) => collisionKinds.has(String(r.kind)));
       for (const r of candidates) {
-        const { data: peers } = await supabase
+        const { data: peersRaw } = await supabase
           .from("artifacts")
-          .select("value,kind,source,metadata")
+          // `id` selected so analyst verdicts can be applied per row.
+          .select("id,value,kind,source,metadata")
           .eq("thread_id", threadId)
           .eq("kind", String(r.kind))
           .eq("value", String(r.value));
+        // Mirrors the live path in ../tool-registry.ts: a dismissed artifact must
+        // not count as a colliding peer, or a rejected finding still manufactures
+        // a contradiction artifact.
+        const peers = await filterReviewed((peersRaw ?? []) as Array<Record<string, unknown>>);
         const sources = new Set<string>();
         const clusters = new Set<string>();
         for (const p of (peers ?? []) as Array<{ source?: unknown; metadata?: Record<string, unknown> | null }>) {
