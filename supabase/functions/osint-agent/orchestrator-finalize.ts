@@ -29,18 +29,15 @@ import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_
 // forces a FINALIZE step, so the run ends with a report instead of tripping the hard
 // deadline mid-tool-call.
 //
-// Widened 45s → 90s: `shouldForceFinalize` is only evaluated at STEP BOUNDARIES
-// (prepareStep). With a 45s window [195s, 240s], a single step that begins before
-// 195s and runs past 240s — e.g. a ~30s minimax_correlate, or a few serial tools —
-// jumps the window entirely: no boundary lands inside it, so finalize is never
-// forced and the hard deadline hard-stops the run mid-tool-chain with NO report
-// (the live "convo stops, no report" bug, thread 92a7d650). A 90s window [150s,
-// 240s] can only be jumped by a single step exceeding 90s, which the per-tool
-// timeouts make very unlikely. Trade-off: long runs stop gathering ~45s earlier to
-// guarantee a report — the right call. (Raising/removing the 240s hard deadline
-// itself — plan Fix A2 — still needs a live Supabase edge wall-clock test; not done
-// here.)
-export const FINALIZE_RESERVE_MS = 90_000;
+// Widened 90s → 150s after the 2026-07-19 production regression: two consecutive
+// DeepSeek runs crossed 20+ visible tool events, never reached onFinish, and were
+// later closed by stale-run recovery. With the old [150s, 240s] window, a step that
+// began before 150s could keep a worker occupied long enough that the three-phase
+// persist → memory → report closeout never ran. Opening at 90s leaves the back half
+// of the budget for deterministic closeout. The runtime wrapper also checks this
+// edge before each live lookup, so a long multi-call step stops launching new work
+// once the closeout window opens while recording tools remain allowed.
+export const FINALIZE_RESERVE_MS = 150_000;
 
 // Emergency backstop for the forced-finalize state machine. The normal path is three
 // generations: persistence decision -> memory decision -> tool-free report. Two extra
@@ -130,6 +127,22 @@ export function resolveFinalizePhase(
   return memoryDecided ? "report" : "memory";
 }
 
+/**
+ * Failed persistence/memory decisions must not consume the entire finalize budget
+ * and stop on a tool-only step. Once the decision budget is exhausted, move to the
+ * tool-free report using the durable artifacts already recorded during the run;
+ * the report can state that persistence/memory closeout was incomplete.
+ */
+export function resolveFinalizePhaseAtAttemptCap(
+  boundary: FinalizeProgress,
+  current: FinalizeProgress,
+  completedAttempts: number,
+  maxSteps = FINALIZE_MAX_STEPS,
+): FinalizePhase {
+  if (completedAttempts >= maxSteps) return "report";
+  return resolveFinalizePhase(boundary, current);
+}
+
 /** Build the enforced SDK configuration for the current finalize phase. */
 export function buildFinalizeStepPlan(phase: FinalizePhase): FinalizeStepPlan {
   if (phase === "persist") {
@@ -154,9 +167,9 @@ export function buildFinalizeStepPlan(phase: FinalizePhase): FinalizeStepPlan {
 }
 
 /**
- * The emergency attempt cap must not cut off a successful decision before the next
- * phase can run. A capped failed decision stops and falls through to report salvage;
- * a capped successful decision gets one continuation so memory/report can complete.
+ * The emergency hard stop leaves one continuation beyond the decision-attempt cap.
+ * prepareStep uses that continuation for a tool-free report, avoiding the former
+ * tool-only stop + best-effort salvage path.
  */
 export function shouldStopFinalizeAtAttemptCap(
   finalizeStarted: boolean,
@@ -164,7 +177,7 @@ export function shouldStopFinalizeAtAttemptCap(
   decisionSucceededThisStep: boolean,
   maxSteps = FINALIZE_MAX_STEPS,
 ): boolean {
-  return finalizeStarted && stepsRun >= maxSteps && !decisionSucceededThisStep;
+  return finalizeStarted && stepsRun > maxSteps && !decisionSucceededThisStep;
 }
 
 // A finished run whose final assistant text is shorter than this is treated as

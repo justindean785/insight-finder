@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pickEvidenceCount } from "@/components/workspace/WorkspaceHeader";
+import { deriveWorkspaceStatus, pickEvidenceCount } from "@/components/workspace/WorkspaceHeader";
 
 describe("pickEvidenceCount — header 'N evidence'", () => {
   it("shows the chain-verified evidence_log total, not the artifact count", () => {
@@ -14,5 +14,25 @@ describe("pickEvidenceCount — header 'N evidence'", () => {
 
   it("falls back to the artifact count only while integrity is still loading", () => {
     expect(pickEvidenceCount(null, 23)).toBe(23);
+  });
+});
+
+describe("deriveWorkspaceStatus", () => {
+  it("lets a live browser stream override an early normal finished update", () => {
+    expect(deriveWorkspaceStatus({
+      threadStatus: "finished",
+      chatRunning: true,
+      recentlyActive: true,
+      hasEvidence: true,
+    })).toBe("active");
+  });
+
+  it("does not paint a terminal run as RUNNING because of old tool activity", () => {
+    expect(deriveWorkspaceStatus({
+      threadStatus: "finished",
+      chatRunning: false,
+      recentlyActive: true,
+      hasEvidence: true,
+    })).toBe("completed");
   });
 });

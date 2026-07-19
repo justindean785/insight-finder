@@ -47,7 +47,7 @@ import {
 } from "./orchestrator-budget.ts";
 import {
   shouldForceFinalize, buildFinalizeStepPlan, buildPerCycleCompactDirective,
-  activeToolsOutsideFinalize, countFinalizeProgress, resolveFinalizePhase, type FinalizePhase,
+  activeToolsOutsideFinalize, countFinalizeProgress, resolveFinalizePhaseAtAttemptCap, type FinalizePhase,
   shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS,
   extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt, toolCallCapReached,
   shouldNudgePersistence, buildPersistenceNudgeDirective,
@@ -833,7 +833,12 @@ Deno.serve(async (req) => {
               step_number: stepNumber ?? 0,
             }));
           }
-          finalizePhase = resolveFinalizePhase(finalizeBoundary, progress);
+          finalizePhase = resolveFinalizePhaseAtAttemptCap(
+            finalizeBoundary,
+            progress,
+            finalizeStepsRun,
+            FINALIZE_MAX_STEPS,
+          );
           finalizeStepsRun++;
           finalizeDecisionSucceededThisStep = false;
           const finalizePlan = buildFinalizeStepPlan(finalizePhase);
