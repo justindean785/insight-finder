@@ -51,6 +51,7 @@ import {
   extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt, toolCallCapReached,
   shouldNudgePersistence, buildPersistenceNudgeDirective,
 } from "./orchestrator-finalize.ts";
+import { loadReviewsForThread, applyReviewsToArtifacts, rejectedArtifacts } from "./reviews.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
@@ -1084,17 +1085,23 @@ Deno.serve(async (req) => {
           const { toolCalls: workToolCalls } = countRecordArtifactCalls(finalMessages);
           const existingReport = extractAssistantReportText(finalMessages as unknown as Array<{ role?: string; parts?: Array<{ type?: string; text?: unknown }> }>);
           if (needsReportSalvage(existingReport, workToolCalls)) {
-            const { data: salvageArts } = await supabase
+            const { data: salvageArtsRaw } = await supabase
               .from("artifacts")
-              .select("kind,value,confidence,source")
+              .select("id,kind,value,confidence,source")
               .eq("thread_id", threadId)
               .order("confidence", { ascending: false })
               .limit(200);
+            // Respect analyst verdicts: exclude dismissed/wrong artifacts from the
+            // salvage report and pass them as an explicit DO-NOT-USE block, so the
+            // dominant CPU-kill finalize path can't re-promote rejected findings.
+            const salvageReviews = await loadReviewsForThread(supabaseAdmin, threadId, userId);
+            const salvageArts = applyReviewsToArtifacts((salvageArtsRaw ?? []) as Array<Record<string, unknown>>, salvageReviews);
+            const salvageRejected = rejectedArtifacts((salvageArtsRaw ?? []) as Array<Record<string, unknown>>, salvageReviews);
             const salvage = await generateText({
               model: orchestratorModel,
               maxOutputTokens: ORCHESTRATOR_MAX_OUTPUT_TOKENS,
               system: baseSystemPrompt,
-              prompt: buildSalvageSynthesisPrompt(seedValueRaw, (salvageArts ?? []) as Array<Record<string, unknown>>),
+              prompt: buildSalvageSynthesisPrompt(seedValueRaw, salvageArts, salvageRejected),
             });
             const salvageText = (salvage?.text ?? "").trim();
             if (salvageText) {
@@ -1164,15 +1171,20 @@ Deno.serve(async (req) => {
             const detected = detectSeedServer(seedText);
             if (detected) {
               detectedSeedKind = detected.kind;
-              const { data: arts } = await supabase
+              const { data: artsRaw } = await supabase
                 .from("artifacts")
-                .select("kind,value,confidence,source,metadata")
+                .select("id,kind,value,confidence,source,metadata")
                 .eq("thread_id", threadId)
                 .order("created_at", { ascending: true });
+              // Respect analyst verdicts BEFORE caching: a dismissed/wrong artifact
+              // must NOT be snapshotted into the 7-day investigation_cache and
+              // replayed at full confidence into a future run.
+              const cacheReviews = await loadReviewsForThread(supabaseAdmin, threadId, userId);
+              const arts = applyReviewsToArtifacts((artsRaw ?? []) as Array<Record<string, unknown>>, cacheReviews);
               // Cache is long-lived (7d) and is replayed back into a future
               // run's context, so strip credentials / PII / oversized blobs.
               const cachedParts = sanitizeToolOutput(safeParts, 1500);
-              const cachedArts = sanitizeToolOutput(arts ?? [], 1500);
+              const cachedArts = sanitizeToolOutput(arts, 1500);
               const payload = {
                 seed: detected,
                 assistant_parts: cachedParts,
