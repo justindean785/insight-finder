@@ -58,7 +58,8 @@ import {
 import { loadReviewsForThread, applyReviewsToArtifacts, rejectedArtifacts, renderAnalystRejectionBlock, REVIEW_STATE_UNAVAILABLE_NOTE } from "./reviews.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
 import {
-  hasDsmlToolCallMarkup, parseDsmlToolCalls, stripDsmlToolCallMarkup, MAX_DSML_RECOVERED_CALLS_PER_STEP,
+  hasDsmlToolCallMarkup, parseDsmlToolCalls, stripDsmlToolCallMarkup, resolveDsmlExecutionPlan,
+  MAX_DSML_RECOVERED_CALLS_PER_STEP,
 } from "./dsml-tool-call-guard.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
@@ -967,6 +968,12 @@ Deno.serve(async (req) => {
     // consumed by the NEXT prepareStep call, then cleared. Request-scoped
     // closure local, matching persistenceNudged's pattern.
     let dsmlRecoveryDirective: string | null = null;
+    // Security-review hardening: exact-text dedup guard so the same DSML block
+    // can never be executed twice even under an unforeseen SDK retry / step
+    // replay. Request-scoped, cheap (a run has at most a handful of DSML
+    // leaks), and defense-in-depth on top of onStepFinish's normal
+    // once-per-completed-step contract.
+    const dsmlRecoveredTexts = new Set<string>();
     const result = streamText({
       // Top-level orchestrator runs on the smart tier — it's the multi-source
       // synthesis step that produces the final report. Per-tool sub-calls use
@@ -1049,26 +1056,65 @@ Deno.serve(async (req) => {
         // Only attempt recovery when the step produced NO real structured tool
         // calls — a step that partially succeeded is left alone, so this can
         // never interfere with (or double-execute alongside) a normal turn.
-        if ((toolCalls ?? []).length === 0 && hasDsmlToolCallMarkup(text)) {
-          const recovered = parseDsmlToolCalls(text).slice(0, MAX_DSML_RECOVERED_CALLS_PER_STEP);
-          const results: Array<{ name: string; ok: boolean }> = [];
-          for (const call of recovered) {
-            const tool = (wrappedTools as Record<string, { execute?: (input: unknown, opts: unknown) => Promise<unknown> }>)[call.name];
-            if (!tool?.execute) { results.push({ name: call.name, ok: false }); continue; }
+        //
+        // SECURITY (reviewed): this is a new model-text-to-tool-execution
+        // boundary, hardened as follows —
+        //  1. Dedup: the exact step text is tracked in dsmlRecoveredTexts, so
+        //     the same block can never execute twice this run.
+        //  2. Registry check: only names present in wrappedTools (the SAME
+        //     registry normal calls use) are considered — unknown names are
+        //     never executed (unknown-tool-guard already gates this identically
+        //     for normal model-issued calls).
+        //  3. Phase allowlist: recovered calls are filtered to the tool names
+        //     actually PERMITTED for the step that just ran (the finalize
+        //     phase's activeTools if finalizeStarted, else normalActiveTools) —
+        //     a DSML leak during the persist/memory finalize phase cannot be
+        //     used to bypass the tool restriction that phase exists to enforce.
+        //  4. Schema validation: parsed args are validated against the tool's
+        //     REAL inputSchema before execution (first as-parsed, then with
+        //     coerceDsmlArgsForValidation as a second attempt for legitimately
+        //     mistyped values like a numeric field arriving as text) — a call
+        //     that fails both is never executed. Fails closed.
+        //  5. Same execution pipeline: recovered calls run through the exact
+        //     wrapped tool.execute() normal calls use, so circuit breakers,
+        //     rate limits, tool-call budget caps, and the per-call auto-persist
+        //     hook all apply identically — nothing bypasses those controls.
+        //  6. Injection scope: `text` here is the MODEL's own generated step
+        //     output (StepResult.text), never raw scraped/tool-result content —
+        //     recovery only fires on what the orchestrator itself produced for
+        //     this turn, not on arbitrary text encountered elsewhere in context.
+        if ((toolCalls ?? []).length === 0 && hasDsmlToolCallMarkup(text) && !dsmlRecoveredTexts.has(text)) {
+          dsmlRecoveredTexts.add(text);
+          const permittedNames = new Set(
+            finalizePhase ? buildFinalizeStepPlan(finalizePhase).activeTools : normalActiveTools,
+          );
+          const parsed = parseDsmlToolCalls(text).slice(0, MAX_DSML_RECOVERED_CALLS_PER_STEP);
+          const plan = resolveDsmlExecutionPlan(
+            parsed,
+            permittedNames,
+            wrappedTools as Record<string, { execute?: unknown; inputSchema?: { safeParse?: (v: unknown) => { success: boolean; data?: unknown } } }>,
+          );
+          const results: Array<{ name: string; ok: boolean; reason?: string }> = [];
+          for (const decision of plan) {
+            if (decision.action === "reject") {
+              results.push({ name: decision.call.name, ok: false, reason: decision.reason });
+              continue;
+            }
+            const tool = (wrappedTools as Record<string, { execute: (input: unknown, opts: unknown) => Promise<unknown> }>)[decision.call.name];
             try {
               const out = await withTimeout(
-                tool.execute(call.args, { toolCallId: `dsml-recovered-${threadId}-${finalizeStepsRun}-${results.length}`, messages: [] }),
+                tool.execute(decision.validatedArgs, { toolCallId: `dsml-recovered-${threadId}-${finalizeStepsRun}-${results.length}`, messages: [] }),
                 CHECKPOINT_AWAIT_MS,
               );
-              results.push({ name: call.name, ok: (out as { ok?: unknown } | null)?.ok !== false });
+              results.push({ name: decision.call.name, ok: (out as { ok?: unknown } | null)?.ok !== false });
             } catch (e) {
-              console.warn(`[dsml-tool-call-guard] recovered call to ${call.name} threw:`, (e as Error)?.message ?? e);
-              results.push({ name: call.name, ok: false });
+              console.warn(`[dsml-tool-call-guard] recovered call to ${decision.call.name} threw:`, (e as Error)?.message ?? e);
+              results.push({ name: decision.call.name, ok: false, reason: "threw" });
             }
           }
           console.log(JSON.stringify({
             event: "dsml_tool_calls_recovered", thread_id: threadId,
-            recovered_count: recovered.length, results,
+            parsed_count: parsed.length, results,
           }));
           if (results.length > 0) {
             const summary = results.map((r) => `${r.name} (${r.ok ? "ok" : "failed"})`).join(", ");
