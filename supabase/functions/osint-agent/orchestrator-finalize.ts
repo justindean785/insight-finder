@@ -112,6 +112,38 @@ export function countFinalizeProgress(messages: FinalizeMessage[]): FinalizeProg
   return progress;
 }
 
+/**
+ * True when the model's MOST RECENT step (the trailing tool-result message, if
+ * any) included a dropped hallucinated-tool call — a call the unknown-tool-guard
+ * redirected to `unknown_tool_ignored` because the requested name isn't in the
+ * live registry (e.g. a model calling "dork_harvest", which doesn't exist; the
+ * real tool is "google_dorks"). Only the LAST message is inspected — not full
+ * history — so a hallucination from earlier in the run (outside finalize) never
+ * permanently flags every later step.
+ *
+ * WHY THIS MATTERS DURING FINALIZE: each retry the state machine allows costs a
+ * full model round-trip. On a run that is already CPU-heavy by the time finalize
+ * starts (long tool-call history, large context), even 2–3 wasted retries on a
+ * stubborn hallucination can exhaust the isolate's CPU budget before the
+ * guaranteed tool-free report phase (the attempt-cap fallback) ever runs —
+ * confirmed in production (thread 9d2e0e6b: finalize started, the model
+ * repeat-hallucinated a non-existent tool across 3 finalize steps in 24s, then
+ * the isolate was CPU-killed with 0 artifacts and 0 assistant messages, well
+ * inside the normal 150s reserve / 5-step attempt budget). This is unambiguous
+ * evidence the model is not going to self-correct — used to jump straight to
+ * the report phase instead of spending the remaining attempt budget hoping it
+ * complies on a later retry.
+ */
+export function stepHadUnknownToolDrop(messages: FinalizeMessage[] | null | undefined): boolean {
+  const last = Array.isArray(messages) && messages.length > 0 ? messages[messages.length - 1] : null;
+  if (!last || !Array.isArray(last.content)) return false;
+  for (const raw of last.content) {
+    const part = raw as { type?: string; toolName?: string };
+    if (part?.type === "tool-result" && part.toolName === "unknown_tool_ignored") return true;
+  }
+  return false;
+}
+
 /** Resolve the next phase using only successful results added after the boundary. */
 export function resolveFinalizePhase(
   boundary: FinalizeProgress,

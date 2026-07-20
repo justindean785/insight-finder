@@ -51,7 +51,7 @@ import {
 import {
   shouldForceFinalize, buildFinalizeStepPlan, buildPerCycleCompactDirective,
   activeToolsOutsideFinalize, countFinalizeProgress, resolveFinalizePhaseAtAttemptCap, type FinalizePhase,
-  shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS,
+  shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS, stepHadUnknownToolDrop,
   extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt, toolCallCapReached,
   shouldNudgePersistence, buildPersistenceNudgeDirective,
 } from "./orchestrator-finalize.ts";
@@ -847,10 +847,25 @@ Deno.serve(async (req) => {
               step_number: stepNumber ?? 0,
             }));
           }
+          // Fast-track straight to the guaranteed tool-free report the instant a
+          // finalize step shows the model hallucinating a non-existent tool
+          // instead of complying with the persist/memory directive — see
+          // stepHadUnknownToolDrop's doc comment for the production evidence.
+          // Treating this step as if the attempt cap were already reached costs
+          // at most one extra decision attempt instead of burning the full
+          // FINALIZE_MAX_STEPS retry budget on a model that has already shown
+          // it won't self-correct.
+          const hallucinatedThisStep = stepHadUnknownToolDrop(stepMessages as Array<{ content?: unknown }>);
+          if (hallucinatedThisStep) {
+            console.log(JSON.stringify({
+              event: "finalize_hallucination_fast_track", thread_id: threadId,
+              step_number: stepNumber ?? 0, finalize_steps_run: finalizeStepsRun,
+            }));
+          }
           finalizePhase = resolveFinalizePhaseAtAttemptCap(
             finalizeBoundary,
             progress,
-            finalizeStepsRun,
+            hallucinatedThisStep ? FINALIZE_MAX_STEPS : finalizeStepsRun,
             FINALIZE_MAX_STEPS,
           );
           finalizeStepsRun++;
