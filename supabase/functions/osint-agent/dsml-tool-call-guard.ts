@@ -112,3 +112,80 @@ export function stripDsmlToolCallMarkup(text: string): string {
 // Cap on how many recovered calls a single step will execute — defense against
 // a corrupted/adversarial block claiming an implausible number of invokes.
 export const MAX_DSML_RECOVERED_CALLS_PER_STEP = 8;
+
+/**
+ * Every DSML parameter value is parsed as a plain string (its `string="true"`/
+ * `"false"` attribute is currently ignored by the parser). Zod schemas that
+ * declare a non-string field (e.g. `num_results: z.number()`) will reject the
+ * literal string "10" even though the model clearly intended the number 10.
+ *
+ * Security-review fix: the caller (index.ts) validates recovered args against
+ * the target tool's REAL inputSchema before executing — never bypassed — so
+ * this coercion cannot itself let anything invalid through; it only gives a
+ * second, schema-checked chance to values that are legitimately typed but
+ * arrived as markup text. Only whole-value JSON parses are attempted (a value
+ * that parses to a number/boolean/array/object) — free-text values (URLs,
+ * search terms) that aren't valid JSON pass through unchanged.
+ */
+export function coerceDsmlArgsForValidation(args: Record<string, string>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    try {
+      const parsed = JSON.parse(value);
+      out[key] = (typeof parsed === "number" || typeof parsed === "boolean" || parsed === null || typeof parsed === "object")
+        ? parsed
+        : value;
+    } catch {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+type DsmlToolLike = {
+  execute?: unknown;
+  inputSchema?: { safeParse?: (v: unknown) => { success: boolean; data?: unknown } };
+};
+
+export type DsmlExecutionDecision =
+  | { call: RecoveredDsmlCall; action: "execute"; validatedArgs: unknown }
+  | { call: RecoveredDsmlCall; action: "reject"; reason: "not permitted in current phase" | "unknown tool" | "schema validation failed" };
+
+/**
+ * Pure decision function for recovered DSML calls — separated from execution
+ * (index.ts) so the three safety guards are independently unit-testable
+ * without a live tool pipeline:
+ *   1. Phase allowlist — call.name must be in `permittedNames` (the tool set
+ *      actually permitted for the step that just ran; during a finalize
+ *      phase this is the phase's restricted set, e.g. only record_artifacts /
+ *      finalize_no_findings — NOT the full registry).
+ *   2. Registry check — call.name must exist in `tools` with a real execute.
+ *   3. Schema validation — args must validate against the tool's REAL
+ *      inputSchema, either as-parsed or after coerceDsmlArgsForValidation;
+ *      a call that fails both is rejected, never executed (fail closed).
+ * Never throws. Order matches the safety rationale: least-trusted check
+ * (is this call even allowed right now) first.
+ */
+export function resolveDsmlExecutionPlan(
+  calls: RecoveredDsmlCall[],
+  permittedNames: ReadonlySet<string>,
+  tools: Record<string, DsmlToolLike>,
+): DsmlExecutionDecision[] {
+  return calls.map((call) => {
+    if (!permittedNames.has(call.name)) {
+      return { call, action: "reject", reason: "not permitted in current phase" };
+    }
+    const tool = tools[call.name];
+    if (!tool || typeof tool.execute !== "function") {
+      return { call, action: "reject", reason: "unknown tool" };
+    }
+    if (!tool.inputSchema?.safeParse) {
+      return { call, action: "execute", validatedArgs: call.args };
+    }
+    const direct = tool.inputSchema.safeParse(call.args);
+    if (direct.success) return { call, action: "execute", validatedArgs: direct.data };
+    const coerced = tool.inputSchema.safeParse(coerceDsmlArgsForValidation(call.args));
+    if (coerced.success) return { call, action: "execute", validatedArgs: coerced.data };
+    return { call, action: "reject", reason: "schema validation failed" };
+  });
+}

@@ -1,8 +1,11 @@
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { z } from "npm:zod@3";
 import {
   hasDsmlToolCallMarkup,
   parseDsmlToolCalls,
   stripDsmlToolCallMarkup,
+  coerceDsmlArgsForValidation,
+  resolveDsmlExecutionPlan,
 } from "./dsml-tool-call-guard.ts";
 
 // Reconstructed from a live production leak (seed "loadq.com") — 4 well-formed
@@ -87,4 +90,94 @@ Deno.test("stripDsmlToolCallMarkup: removes the block entirely, leaving surround
 Deno.test("stripDsmlToolCallMarkup: a no-markup string passes through unchanged", () => {
   const text = "## Findings report\n\nConfirmed: example.com resolves to 1.2.3.4.";
   assertEquals(stripDsmlToolCallMarkup(text), text);
+});
+
+Deno.test("coerceDsmlArgsForValidation: numeric/boolean-looking strings become real types", () => {
+  const coerced = coerceDsmlArgsForValidation({ num_results: "10", verbose: "true", ratio: "1.5" });
+  assertEquals(coerced, { num_results: 10, verbose: true, ratio: 1.5 });
+});
+
+Deno.test("coerceDsmlArgsForValidation: free-text values (URLs, search terms, quoted strings) are left as strings", () => {
+  const coerced = coerceDsmlArgsForValidation({
+    url: "https://loadq.com/",
+    search_terms: '"loadq.com" company OR founder',
+  });
+  assertEquals(coerced, {
+    url: "https://loadq.com/",
+    search_terms: '"loadq.com" company OR founder',
+  });
+});
+
+Deno.test("coerceDsmlArgsForValidation: null and empty string are handled without throwing", () => {
+  const coerced = coerceDsmlArgsForValidation({ a: "null", b: "" });
+  assertEquals(coerced.a, null);
+  assertEquals(coerced.b, ""); // "" is not valid JSON — stays a string
+});
+
+// ---- resolveDsmlExecutionPlan — the three security-review guards -----------
+
+const GOOGLE_DORKS = { execute: () => Promise.resolve({ ok: true }), inputSchema: z.object({ seed: z.string(), kind: z.string() }) };
+const MINIMAX_SEARCH = { execute: () => Promise.resolve({ ok: true }), inputSchema: z.object({ search_terms: z.string(), num_results: z.number() }) };
+const RECORD_ARTIFACTS = { execute: () => Promise.resolve({ ok: true }), inputSchema: z.object({ artifacts: z.array(z.unknown()) }) };
+const TOOLS = { google_dorks: GOOGLE_DORKS, minimax_web_search: MINIMAX_SEARCH, record_artifacts: RECORD_ARTIFACTS };
+
+Deno.test("resolveDsmlExecutionPlan guard 1: rejects a call NOT in the permitted set (finalize-phase bypass)", () => {
+  // Simulates: DSML leaks during the finalize/persist phase, where only
+  // record_artifacts/finalize_no_findings are permitted — google_dorks must
+  // be rejected even though it's a real, registered tool.
+  const permitted = new Set(["record_artifacts", "finalize_no_findings"]);
+  const plan = resolveDsmlExecutionPlan([{ name: "google_dorks", args: { seed: "x", kind: "domain" } }], permitted, TOOLS);
+  assertEquals(plan[0].action, "reject");
+  assertEquals((plan[0] as { reason: string }).reason, "not permitted in current phase");
+});
+
+Deno.test("resolveDsmlExecutionPlan guard 2: rejects a name not in the tool registry", () => {
+  const permitted = new Set(["google_dorks", "dork_harvest"]); // dork_harvest permitted but NOT registered
+  const plan = resolveDsmlExecutionPlan([{ name: "dork_harvest", args: {} }], permitted, TOOLS);
+  assertEquals(plan[0].action, "reject");
+  assertEquals((plan[0] as { reason: string }).reason, "unknown tool");
+});
+
+Deno.test("resolveDsmlExecutionPlan guard 3: validates against the REAL schema — wrong type is rejected, not silently passed", () => {
+  const permitted = new Set(["minimax_web_search"]);
+  // search_terms present, num_results MISSING entirely — genuinely invalid, no coercion can fix it.
+  const plan = resolveDsmlExecutionPlan(
+    [{ name: "minimax_web_search", args: { search_terms: "loadq.com" } }],
+    permitted, TOOLS,
+  );
+  assertEquals(plan[0].action, "reject");
+  assertEquals((plan[0] as { reason: string }).reason, "schema validation failed");
+});
+
+Deno.test("resolveDsmlExecutionPlan guard 3: a numeric field arriving as DSML text is coerced and VALIDATED, not blindly trusted", () => {
+  const permitted = new Set(["minimax_web_search"]);
+  const plan = resolveDsmlExecutionPlan(
+    [{ name: "minimax_web_search", args: { search_terms: "loadq.com", num_results: "10" } }],
+    permitted, TOOLS,
+  );
+  assertEquals(plan[0].action, "execute");
+  assertEquals((plan[0] as { validatedArgs: unknown }).validatedArgs, { search_terms: "loadq.com", num_results: 10 });
+});
+
+Deno.test("resolveDsmlExecutionPlan: a fully valid, permitted, registered call executes with schema-validated args", () => {
+  const permitted = new Set(["google_dorks"]);
+  const plan = resolveDsmlExecutionPlan(
+    [{ name: "google_dorks", args: { seed: "loadq.com", kind: "domain" } }],
+    permitted, TOOLS,
+  );
+  assertEquals(plan[0].action, "execute");
+  assertEquals((plan[0] as { validatedArgs: unknown }).validatedArgs, { seed: "loadq.com", kind: "domain" });
+});
+
+Deno.test("resolveDsmlExecutionPlan: mixed batch — each call judged independently, one bad call doesn't block good ones", () => {
+  const permitted = new Set(["google_dorks", "minimax_web_search"]);
+  const plan = resolveDsmlExecutionPlan(
+    [
+      { name: "google_dorks", args: { seed: "loadq.com", kind: "domain" } }, // valid
+      { name: "dork_harvest", args: {} }, // not registered
+      { name: "minimax_web_search", args: { search_terms: "x" } }, // missing num_results
+    ],
+    permitted, TOOLS,
+  );
+  assertEquals(plan.map((p) => p.action), ["execute", "reject", "reject"]);
 });
