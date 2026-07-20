@@ -130,6 +130,25 @@ describe("stripToolCallMarkup (Phase C1 — leaked tool-call syntax)", () => {
     // (the stray-tag pass may drop the bare token, but the words stay).
     expect(stripToolCallMarkup(text)).toContain("route returns 200");
   });
+
+  it("strips MiniMax's provider-namespaced <minimax:tool_call> leak (exact live case, seed 'dizosint')", () => {
+    const leaked =
+      'Now saving memory and writing the final report: <minimax:tool_call>{"name":"record_artifacts","arguments":{"x":1}}</minimax:tool_call>';
+    const out = stripToolCallMarkup(leaked);
+    expect(out).toBe("Now saving memory and writing the final report:");
+    expect(out).not.toContain("minimax:tool_call");
+    expect(out).not.toContain("record_artifacts");
+  });
+
+  it("strips a stray/unclosed <minimax:tool_call> and an orphan closing tag", () => {
+    expect(stripToolCallMarkup("Report done.\n<minimax:tool_call>{...")).toBe("Report done.");
+    expect(stripToolCallMarkup("Report done.</minimax:tool_call>")).toBe("Report done.");
+  });
+
+  it("does NOT match an unrelated namespaced tag like <mx:tool_callback>", () => {
+    // (?![\\w-]) boundary: `tool_callback` is not `tool_call`, so prose survives.
+    expect(stripToolCallMarkup("See <mx:tool_callback> in the docs.")).toContain("docs");
+  });
 });
 
 describe("sanitizeChatText (chat timeline entry point)", () => {
