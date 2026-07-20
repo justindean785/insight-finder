@@ -7,6 +7,7 @@ import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.t
 import {
   activeToolsOutsideFinalize,
   countFinalizeProgress,
+  stepHadUnknownToolDrop,
   buildFinalizeStepPlan,
   buildFinalizeMemoryDirective,
   buildFinalizePersistDirective,
@@ -319,6 +320,29 @@ Deno.test("run-cap enforcement: a 61-call run cannot exceed the cap of genuine c
 });
 
 // ---- Fix B: report-salvage detection + synthesis prompt --------------------------
+
+Deno.test("stepHadUnknownToolDrop: true when the LAST message carries an unknown_tool_ignored result", () => {
+  const messages = [
+    { role: "assistant", content: [{ type: "tool-call", toolName: "dork_harvest" }] },
+    { role: "tool", content: [{ type: "tool-result", toolName: "unknown_tool_ignored", output: { ok: true, dropped: true } }] },
+  ];
+  assertEquals(stepHadUnknownToolDrop(messages), true);
+});
+
+Deno.test("stepHadUnknownToolDrop: false when the hallucination is from an EARLIER step, not the latest", () => {
+  const messages = [
+    { role: "tool", content: [{ type: "tool-result", toolName: "unknown_tool_ignored" }] },
+    { role: "assistant", content: [{ type: "tool-call", toolName: "record_artifacts" }] },
+    { role: "tool", content: [{ type: "tool-result", toolName: "record_artifacts", output: { ok: true } }] },
+  ];
+  assertEquals(stepHadUnknownToolDrop(messages), false);
+});
+
+Deno.test("stepHadUnknownToolDrop: false on empty/malformed input", () => {
+  assertEquals(stepHadUnknownToolDrop([]), false);
+  assertEquals(stepHadUnknownToolDrop(null), false);
+  assertEquals(stepHadUnknownToolDrop([{ role: "tool" }]), false);
+});
 
 Deno.test("extractAssistantReportText: joins text parts of the LAST assistant message only", () => {
   const msgs = [

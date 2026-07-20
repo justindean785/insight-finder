@@ -16,6 +16,8 @@ import { loadReviewsForThread, applyReviewsToArtifacts, type ReviewLoad } from "
 import * as circuit from "./circuit.ts";
 import { guard } from "./guard.ts";
 import { shouldSkipForToolCap } from "./orchestrator-finalize.ts";
+import { extractFindings, persistAutoFindings, loadSeenArtifactKeys } from "./auto-persist-findings.ts";
+import { withTimeout, CHECKPOINT_AWAIT_MS } from "./incremental-persist.ts";
 import {
   ALWAYS_ALLOW_TOOLS,
   analyzeWeakLead,
@@ -445,6 +447,48 @@ export function wrapToolsWithCache(
 ) {
   const wrapped: Record<string, Tool> = {};
   const adminDb = ctx.supabaseAdmin ?? ctx.supabase;
+  // Per-tool-call durable persistence, IN ADDITION to the per-step onStepFinish
+  // path in index.ts. WHY: the isolate can be CPU-killed mid-step — e.g. partway
+  // through a batch of parallel tool calls the model requested BEFORE finalize
+  // triggered — so onStepFinish never runs for that step and even calls that
+  // already completed successfully are lost (observed: thread 9d2e0e6b, 42 tool
+  // calls including several with real output — github_user-shaped, breach/social
+  // lookups — 0 artifacts, 0 assistant messages, CPU-killed before any step
+  // boundary or finalize decision completed). This hook extracts + persists
+  // findings from EACH successful, non-denylisted tool result the instant it
+  // lands, so a mid-run kill anywhere no longer discards already-gathered
+  // evidence. extractFindings() is a cheap pure function returning [] for the
+  // large majority of calls (denylisted tool or no matching shape) — the DB
+  // round-trip only happens when there is something to persist. Always awaited
+  // (bounded) so the write is durable before the tool call is considered done;
+  // never throws — a persistence failure must never break the tool call. Dedup
+  // is DB-backed (loadSeenArtifactKeys queried fresh each time, not an in-memory
+  // Set) specifically so this per-call path and index.ts's per-step path can
+  // never double-insert the same (kind,value) regardless of call order.
+  const persistLiveFindings = async (name: string, output: unknown): Promise<void> => {
+    const findings = extractFindings(name, output);
+    if (findings.length === 0) return;
+    try {
+      const seen = await loadSeenArtifactKeys(
+        adminDb as unknown as Parameters<typeof loadSeenArtifactKeys>[0],
+        ctx.investigationId,
+      );
+      await withTimeout(
+        persistAutoFindings(
+          {
+            supabase: adminDb as unknown as Parameters<typeof persistAutoFindings>[0]["supabase"],
+            threadId: ctx.investigationId,
+            userId: ctx.userId,
+            seen,
+          },
+          findings.map((f) => ({ ...f, toolName: name })),
+        ),
+        CHECKPOINT_AWAIT_MS,
+      );
+    } catch (e) {
+      console.warn(`[auto-persist-findings] per-call persist failed for ${name}:`, (e as Error)?.message ?? e);
+    }
+  };
   // Analyst verdicts for this run, loaded at most ONCE and shared by every
   // selector-evidence computation. Reviews are written between runs, so a per-run
   // snapshot is the right granularity and costs one query, not one per tool call.
@@ -660,6 +704,7 @@ export function wrapToolsWithCache(
                   );
               ok = deriveOk(out);
               if (!ok) errInfo = extractToolError(out);
+              if (ok) await persistLiveFindings(name, out);
               return tagSkipState(tagTier(scrub(out), tier, model));
             } catch (e) {
               ok = false;
@@ -1148,6 +1193,7 @@ export function wrapToolsWithCache(
             console.warn(`[tool_call_cache] write threw for ${name}:`, error);
           }
         }
+        if (ok) await persistLiveFindings(name, result);
         finishCall(ctx.investigationId, name);
         logUsage(false, ok, Date.now() - t0, errInfo.errorMsg, errInfo.statusCode, isFreeCall(result), {
           input: inputJson,
