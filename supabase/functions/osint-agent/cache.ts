@@ -15,6 +15,8 @@ import { classifyToolOutcome } from "./tool-outcome.ts";
 import * as circuit from "./circuit.ts";
 import { guard } from "./guard.ts";
 import { type ToolCallBudget, reserveToolCall } from "./orchestrator-budget.ts";
+import { extractFindings, loadSeenArtifactKeys, persistAutoFindings } from "./auto-persist-findings.ts";
+import { CHECKPOINT_AWAIT_MS, withTimeout } from "./incremental-persist.ts";
 import {
   ALWAYS_ALLOW_TOOLS,
   analyzeWeakLead,
@@ -430,6 +432,55 @@ export function wrapToolsWithCache(
 ) {
   const wrapped: Record<string, Tool> = {};
   const adminDb = ctx.supabaseAdmin ?? ctx.supabase;
+  // ---- Per-tool-call durable persistence ------------------------------------
+  // IN ADDITION to the per-step onStepFinish path in index.ts, not instead of it.
+  //
+  // WHY: onStepFinish only fires once an ENTIRE step completes. If the isolate is
+  // CPU-killed mid-step — e.g. partway through a batch of parallel tool calls —
+  // onStepFinish never runs for that step and even calls that already returned
+  // real, extractable output are discarded (observed in production: thread
+  // 9d2e0e6b, 42 tool calls, 0 artifacts, 0 assistant messages, killed before any
+  // step boundary completed). This hook persists the instant each call lands, so
+  // a kill anywhere no longer throws away evidence already gathered.
+  //
+  // COST: extractFindings() is a cheap pure function that returns [] for the
+  // large majority of calls (denylisted tool, or no matching shape), so the DB
+  // round-trip only happens when there is genuinely something to persist.
+  //
+  // DEDUP: deliberately DB-backed — loadSeenArtifactKeys is queried fresh each
+  // time rather than kept as an in-memory Set — so this per-call path and
+  // index.ts's per-step path can never double-insert the same (kind,value)
+  // regardless of which runs first.
+  //
+  // SAFETY: only whitelisted kinds survive normalizeFinding, and every row still
+  // goes through buildAutoRecordedRow + scrubArtifactRows (the same integrity
+  // path record_artifacts uses), so no raw payloads, credentials, or masked
+  // breach values can reach the artifacts table by this route. Bounded by
+  // CHECKPOINT_AWAIT_MS and never throws — persistence must not break a tool call.
+  const persistLiveFindings = async (name: string, output: unknown): Promise<void> => {
+    const findings = extractFindings(name, output);
+    if (findings.length === 0) return;
+    try {
+      const seen = await loadSeenArtifactKeys(
+        adminDb as unknown as Parameters<typeof loadSeenArtifactKeys>[0],
+        ctx.investigationId,
+      );
+      await withTimeout(
+        persistAutoFindings(
+          {
+            supabase: adminDb as unknown as Parameters<typeof persistAutoFindings>[0]["supabase"],
+            threadId: ctx.investigationId,
+            userId: ctx.userId,
+            seen,
+          },
+          findings.map((f) => ({ ...f, toolName: name })),
+        ),
+        CHECKPOINT_AWAIT_MS,
+      );
+    } catch (e) {
+      console.warn(`[auto-persist-findings] per-call persist failed for ${name}:`, (e as Error)?.message ?? e);
+    }
+  };
   // Per-run tool_health cache (Phase 2): load the rolling reliability + latency
   // signal ONCE and reuse it across every wrapped tool call this run. Best-effort —
   // if the view is missing (deploy ordering) or the query fails, scoring simply
@@ -631,6 +682,7 @@ export function wrapToolsWithCache(
                   );
               ok = deriveOk(out);
               if (!ok) errInfo = extractToolError(out);
+              if (ok) await persistLiveFindings(name, out);
               return tagSkipState(tagTier(scrub(out), tier, model));
             } catch (e) {
               ok = false;
@@ -1140,6 +1192,7 @@ export function wrapToolsWithCache(
             console.warn(`[tool_call_cache] write threw for ${name}:`, error);
           }
         }
+        if (ok) await persistLiveFindings(name, result);
         finishCall(ctx.investigationId, name);
         logUsage(false, ok, Date.now() - t0, errInfo.errorMsg, errInfo.statusCode, isFreeCall(result), {
           input: inputJson,
