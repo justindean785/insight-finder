@@ -24,7 +24,7 @@ import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
 import { isSubmitBlocked } from "@/lib/submit-guard";
 import { interpretReadinessProbe, type ReadinessBody } from "@/lib/readiness-probe";
 import { dedupeCards } from "@/lib/next-step-cards";
-import { hasReportShape, stripReasoning } from "@/lib/report-shape";
+import { hasReportShape, stripReasoningPerPart } from "@/lib/report-shape";
 import { dedupeCheckpoints } from "@/lib/chat-checkpoints";
 import { computePivots } from "@/lib/pivot-engine";
 import { sanitizeChatText } from "@/lib/sanitize-agent-text";
@@ -2161,11 +2161,17 @@ function ChatWindowInner({
     // "### Run interrupted" recovery stub (or bare reasoning/narration, no
     // synthesis) show follow-up suggestions as if the run had finished —
     // gate on the LATEST turn actually being report-shaped instead.
-    const latestText = (latestAssistant.parts as MessagePartShape[])
-      .filter((part) => part.type === "text")
-      .map((part) => part.text ?? "")
-      .join("\n");
-    if (!hasReportShape(stripReasoning(latestText))) return [];
+    // Strip reasoning PER PART before joining: the backend salvage path
+    // appends the salvaged report as a NEW text part after the truncated
+    // turn's parts, and joining first let an unclosed <think> in an earlier
+    // part swallow that report (REASONING_DANGLING_RE eats to end-of-string),
+    // blanking this gate and hiding the panel on recovered/salvaged runs.
+    const latestText = stripReasoningPerPart(
+      (latestAssistant.parts as MessagePartShape[])
+        .filter((part) => part.type === "text")
+        .map((part) => part.text ?? ""),
+    );
+    if (!hasReportShape(latestText)) return [];
     const out: NextStepSuggestion[] = [];
     const seenLabels = new Set<string>();
     // ONE engine over LIVE state: report recommendations + artifact findings,
