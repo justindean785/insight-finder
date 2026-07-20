@@ -1,10 +1,20 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { loadReviewsForThread, applyReviewsToArtifacts } from "./reviews.ts";
+import { hasReportShape, stripReasoning } from "./orchestrator-finalize.ts";
 
 export const RUN_HEARTBEAT_INTERVAL_MS = 15_000;
 export const STALE_RUN_AFTER_MS = 75_000;
 export const RECOVERY_ARTIFACT_LIMIT = 40;
 export const RECENT_ASSISTANT_WINDOW_MS = 2 * 60_000;
+
+// recovery_reason sentinels for the report-less refresh sweep. A run that is
+// recovered before it accumulated a report-shaped assistant message is flagged
+// REPORTLESS_REASON; the refresh sweep later (once auto-persist / record_artifacts
+// findings are durable) regenerates a real Findings report and flips the flag to
+// REPORT_REFRESHED_REASON. The conditional UPDATE on this column is the atomic
+// claim that makes the sweep race-safe across concurrent isolates.
+export const REPORTLESS_REASON = "recovered_reportless_pending";
+export const REPORT_REFRESHED_REASON = "recovered_report_refreshed";
 
 type DbClient = ReturnType<typeof createClient>;
 
@@ -60,7 +70,21 @@ export function buildRecoveredAssistantText(
     "",
   ];
   if (rows.length === 0) {
-    return [...header, "No confirmed artifacts were recorded before the interruption.", "", "### Gaps", "- The backend stopped before final synthesis completed.", "- Re-run the seed to continue collection."].join("\n");
+    // Deliberately NOT report-shaped (no "report/findings/summary" heading, no
+    // table, no tier labels) so needsFinishedReportRefresh() treats this thread
+    // as still needing a real report once durable artifacts land. Writing a
+    // definitive "## Findings report … No confirmed artifacts were recorded"
+    // here is the bug that made a run which actually found everything look empty:
+    // the stub was written on an early CPU-killed cycle (0 artifacts) and never
+    // refreshed after later cycles persisted findings.
+    return [
+      "### Run interrupted",
+      "",
+      `The investigation for **${escapeCell(seed)}** stopped before it finished, and no findings had been saved at that point.`,
+      lastLive ? `Last heartbeat: ${lastLive}.` : "Last heartbeat was not recorded.",
+      "",
+      "If findings are collected on a follow-up pass they will appear here automatically; you can also re-run the seed to continue.",
+    ].join("\n");
   }
   const table = [
     "| # | Kind | Value | Confidence | Source |",
@@ -122,6 +146,10 @@ async function recoverOneStaleThread(
     db.from("artifacts").select("id,kind,value,confidence,source,created_at", { count: "exact" }).eq("thread_id", thread.id).order("confidence", { ascending: false }).order("created_at", { ascending: true }).limit(RECOVERY_ARTIFACT_LIMIT),
   ]);
   let assistantInserted = false;
+  // Track whether we wrote a REAL findings report (>=1 durable artifact). If not,
+  // flag the thread REPORTLESS_REASON so the refresh sweep regenerates the report
+  // once findings become durable (the CPU-kill-before-finalize case).
+  let realReportWritten = false;
   const assistantState = shouldInsertRecoveredAssistant(
     thread,
     (latestAssistant as { created_at?: string } | null)?.created_at ?? null,
@@ -146,11 +174,36 @@ async function recoverOneStaleThread(
       const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: [{ type: "text", text }] });
       if (insertErr) return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: insertErr.message };
       assistantInserted = true;
+      realReportWritten = (liveArtifacts?.length ?? 0) > 0;
     }
   }
-  const { error: updateErr } = await db.from("threads").update({ status: "finished", recovered_at: now.toISOString(), recovery_reason: reason, updated_at: now.toISOString() }).eq("id", thread.id).eq("status", "active");
+  // When no real findings report was written (0 artifacts at recovery, review
+  // unavailable, or a fresh non-report assistant already present), leave the
+  // thread flagged so the refresh sweep can complete it once findings are durable.
+  const finalReason = realReportWritten ? reason : REPORTLESS_REASON;
+  const { error: updateErr } = await db.from("threads").update({ status: "finished", recovered_at: now.toISOString(), recovery_reason: finalReason, updated_at: now.toISOString() }).eq("id", thread.id).eq("status", "active");
   if (updateErr) return { recovered: false, assistantInserted, artifactCount: artifactCount ?? 0, error: updateErr.message };
   return { recovered: true, assistantInserted, artifactCount: artifactCount ?? 0 };
+}
+
+/** Concatenated text of an assistant message's text parts (recovery-local). */
+function assistantTextFromParts(parts: unknown): string {
+  if (!Array.isArray(parts)) return "";
+  return parts
+    .filter((p) => (p as { type?: string })?.type === "text" && typeof (p as { text?: unknown })?.text === "string")
+    .map((p) => (p as { text: string }).text)
+    .join("\n")
+    .trim();
+}
+
+/**
+ * A finished thread needs a regenerated report when it has >=1 durable artifact
+ * but its latest assistant message carries no report shape (only checkpoints, a
+ * "run interrupted" note, or reasoning). Pure so it unit-tests without a DB.
+ */
+export function needsFinishedReportRefresh(latestAssistantText: string, artifactCount: number): boolean {
+  if (artifactCount <= 0) return false;
+  return !hasReportShape(stripReasoning(latestAssistantText ?? ""));
 }
 
 export async function recoverStaleThreadById(db: DbClient, threadId: string, opts?: { now?: Date; reason?: string }) {
@@ -176,6 +229,81 @@ export async function recoverStaleActiveThreads(db: DbClient, opts?: { now?: Dat
     if (res.assistantInserted) assistantInserted++;
   }
   return { scanned: (data ?? []).length, recovered, assistantInserted, errors };
+}
+
+/**
+ * Refresh sweep: regenerate a real Findings report for threads that were recovered
+ * report-less (flagged REPORTLESS_REASON) but now have durable artifacts. This is
+ * the completion for the dominant failure: the isolate is CPU-killed before it can
+ * write its closing report, recovery finalizes the thread with no report, and later
+ * cycles / auto-persist leave findings durable. Runs at request startup alongside
+ * the stale-active sweep.
+ *
+ * Race-safe: the report is only inserted after an ATOMIC conditional UPDATE claims
+ * the thread (recovery_reason REPORTLESS_REASON -> REPORT_REFRESHED_REASON); a
+ * concurrent isolate that lost the claim inserts nothing. Fail-closed on review
+ * state. Purely ADDITIVE — never deletes or rewrites an existing message/artifact.
+ */
+export async function refreshFinishedThreadReports(db: DbClient, opts?: { now?: Date; limit?: number }) {
+  const now = opts?.now ?? new Date();
+  const { data, error } = await db
+    .from("threads")
+    .select("id,user_id,title,seed_value,status,run_started_at,last_heartbeat_at,updated_at,recovery_reason")
+    .eq("status", "finished")
+    .eq("recovery_reason", REPORTLESS_REASON)
+    .order("updated_at", { ascending: false })
+    .limit(opts?.limit ?? 5);
+  if (error) return { scanned: 0, refreshed: 0, cleared: 0, errors: 1 };
+  let refreshed = 0;
+  let cleared = 0;
+  let errors = 0;
+  for (const thread of (data ?? []) as RecoverableThread[]) {
+    try {
+      const [{ data: latestAssistant }, { data: artifacts, count: artifactCount }] = await Promise.all([
+        db.from("messages").select("parts,created_at").eq("thread_id", thread.id).eq("role", "assistant").order("created_at", { ascending: false }).limit(1).maybeSingle(),
+        db.from("artifacts").select("id,kind,value,confidence,source,created_at", { count: "exact" }).eq("thread_id", thread.id).order("confidence", { ascending: false }).order("created_at", { ascending: true }).limit(RECOVERY_ARTIFACT_LIMIT),
+      ]);
+      const latestText = assistantTextFromParts((latestAssistant as { parts?: unknown } | null)?.parts);
+      if (!needsFinishedReportRefresh(latestText, artifactCount ?? 0)) {
+        // Either a real report already exists or there are no artifacts — stop
+        // revisiting this thread by clearing the flag.
+        await db.from("threads").update({ recovery_reason: REPORT_REFRESHED_REASON, updated_at: now.toISOString() }).eq("id", thread.id).eq("recovery_reason", REPORTLESS_REASON);
+        cleared++;
+        continue;
+      }
+      // Fail-closed: never synthesize from unfiltered rows if verdicts are unreadable.
+      const review = await loadReviewsForThread(db, thread.id, thread.user_id);
+      if (!review.ok) { errors++; continue; }
+      const liveArtifacts = applyReviewsToArtifacts((artifacts ?? []) as Array<Record<string, unknown>>, review);
+      if (liveArtifacts.length === 0) {
+        await db.from("threads").update({ recovery_reason: REPORT_REFRESHED_REASON, updated_at: now.toISOString() }).eq("id", thread.id).eq("recovery_reason", REPORTLESS_REASON);
+        cleared++;
+        continue;
+      }
+      // Atomic claim: only the isolate whose conditional UPDATE matches a row writes
+      // the report, so concurrent sweeps never double-insert.
+      const { data: claimed, error: claimErr } = await db
+        .from("threads")
+        .update({ recovery_reason: REPORT_REFRESHED_REASON, updated_at: now.toISOString() })
+        .eq("id", thread.id)
+        .eq("recovery_reason", REPORTLESS_REASON)
+        .select("id");
+      if (claimErr) { errors++; continue; }
+      if (!claimed || (Array.isArray(claimed) && claimed.length === 0)) continue; // lost the race
+      const text = buildRecoveredAssistantText(thread, liveArtifacts as RecoveryArtifact[]);
+      const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: [{ type: "text", text }] });
+      if (insertErr) {
+        // Best-effort restore so a later sweep retries rather than dropping the report.
+        await db.from("threads").update({ recovery_reason: REPORTLESS_REASON }).eq("id", thread.id).eq("recovery_reason", REPORT_REFRESHED_REASON);
+        errors++;
+        continue;
+      }
+      refreshed++;
+    } catch (_e) {
+      errors++;
+    }
+  }
+  return { scanned: (data ?? []).length, refreshed, cleared, errors };
 }
 
 export async function markRunStarted(db: DbClient, threadId: string, startedAt: Date = new Date()): Promise<void> {
