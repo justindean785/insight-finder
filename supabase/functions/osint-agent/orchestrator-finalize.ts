@@ -22,7 +22,7 @@
  * only guarantees the synthesis STEP happens. The report content stays the model's,
  * grounded strictly in artifacts already gathered.
  */
-import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN } from "./orchestrator-budget.ts";
+import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN, toolCapExceeded } from "./orchestrator-budget.ts";
 
 // Reserve the final stretch of the wall-clock budget for a guaranteed synthesis+record
 // step. Once elapsed enters this window the orchestrator stops issuing new lookups and
@@ -208,8 +208,7 @@ export function shouldSkipForToolCap(
   isRecordingTool: boolean,
   cap: number = MAX_TOOL_CALLS_PER_RUN,
 ): boolean {
-  if (isRecordingTool) return false;
-  return genuineToolCalls >= cap;
+  return toolCapExceeded(genuineToolCalls, isRecordingTool, cap);
 }
 
 /**
