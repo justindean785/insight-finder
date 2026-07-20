@@ -115,6 +115,45 @@ async function recoverOneStaleThread(
   reason: string,
 ): Promise<{ recovered: boolean; assistantInserted: boolean; artifactCount: number; error?: string }> {
   if (!isStaleActiveThread(thread, now.getTime())) return { recovered: false, assistantInserted: false, artifactCount: 0 };
+
+  // ---- ATOMIC CLAIM ---------------------------------------------------------
+  // The ONE step that decides which of several concurrent sweeps (startup sweep,
+  // /health sweep, pre-request sweep) gets to recover this thread. Every entry
+  // point routes through here, so this is the single serialization point.
+  //
+  // It is a real compare-and-swap, not read-then-write: Postgres evaluates the
+  // WHERE clause and mutates the row in one indivisible statement, so at most one
+  // caller's UPDATE can match. `.select("id")` is what makes the CAS observable —
+  // WITHOUT it a zero-row UPDATE returns no error, which is exactly why the old
+  // code had both callers believe they had won.
+  //
+  // The swap is guarded on BOTH conditions this recovery decision rests on:
+  //   status = 'active'          — nobody else has already claimed or finished it
+  //   last_heartbeat_at = <read> — the run has not resumed since we read the row
+  // The heartbeat guard closes the window between the caller's read and this
+  // claim; a run that pulsed in between changes the value, our WHERE matches
+  // nothing, and we correctly decline to recover a thread that is alive again.
+  //
+  // Placed BEFORE the artifact query and the report insert (the old code ran the
+  // status flip LAST, after inserting). A caller that loses never reaches the
+  // insert at all, so a duplicate "Findings report — recovered run" is
+  // structurally impossible rather than merely unlikely.
+  const claimIso = now.toISOString();
+  const claimPatch = { status: "finished", recovered_at: claimIso, recovery_reason: reason, updated_at: claimIso };
+  const claimBase = db.from("threads").update(claimPatch).eq("id", thread.id).eq("status", "active");
+  // `.eq(col, null)` is `col = NULL` in SQL, which is never true — a null
+  // heartbeat has to be matched with IS NULL or the claim can never succeed.
+  const { data: claimed, error: claimErr } = await (
+    thread.last_heartbeat_at == null
+      ? claimBase.is("last_heartbeat_at", null)
+      : claimBase.eq("last_heartbeat_at", thread.last_heartbeat_at)
+  ).select("id");
+  if (claimErr) return { recovered: false, assistantInserted: false, artifactCount: 0, error: claimErr.message };
+  if (!Array.isArray(claimed) || claimed.length === 0) {
+    // Lost the race (or the run resumed) — another caller owns this thread.
+    return { recovered: false, assistantInserted: false, artifactCount: 0 };
+  }
+
   const [{ data: latestAssistant }, { data: artifacts, count: artifactCount }] = await Promise.all([
     db.from("messages").select("created_at").eq("thread_id", thread.id).eq("role", "assistant").order("created_at", { ascending: false }).limit(1).maybeSingle(),
     db.from("artifacts").select("kind,value,confidence,source,created_at", { count: "exact" }).eq("thread_id", thread.id).order("confidence", { ascending: false }).order("created_at", { ascending: true }).limit(RECOVERY_ARTIFACT_LIMIT),
@@ -128,11 +167,27 @@ async function recoverOneStaleThread(
   if (assistantState.shouldInsert) {
     const text = buildRecoveredAssistantText(thread, (artifacts ?? []) as RecoveryArtifact[]);
     const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: [{ type: "text", text }] });
-    if (insertErr) return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: insertErr.message };
+    if (insertErr) {
+      // The claim succeeded but the report did not land. Releasing the claim is
+      // what keeps this RETRYABLE: leaving the thread `finished` would strand it
+      // terminal with no report and no sweep would ever look at it again. We put
+      // it back exactly as we found it — including the original `updated_at`, so
+      // it still reads as stale — and the next sweep re-claims and retries. The
+      // guard on status='finished' means we only ever undo OUR OWN claim.
+      const { error: releaseErr } = await db.from("threads")
+        .update({ status: "active", recovered_at: null, recovery_reason: null, updated_at: thread.updated_at ?? claimIso })
+        .eq("id", thread.id)
+        .eq("status", "finished");
+      if (releaseErr) {
+        // Observable rather than silent: the thread is terminal with no report.
+        console.warn(`[recovery] claim release failed for ${thread.id} after insert error:`, releaseErr.message);
+      }
+      return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: insertErr.message };
+    }
     assistantInserted = true;
   }
-  const { error: updateErr } = await db.from("threads").update({ status: "finished", recovered_at: now.toISOString(), recovery_reason: reason, updated_at: now.toISOString() }).eq("id", thread.id).eq("status", "active");
-  if (updateErr) return { recovered: false, assistantInserted, artifactCount: artifactCount ?? 0, error: updateErr.message };
+  // No trailing status flip: the claim above already finalized the thread, and
+  // repeating it here is what let a losing caller report success.
   return { recovered: true, assistantInserted, artifactCount: artifactCount ?? 0 };
 }
 
