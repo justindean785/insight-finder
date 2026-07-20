@@ -68,7 +68,7 @@ import {
   minimaxPreflightFailureLabel,
 } from "./minimax-preflight.ts";
 import { evaluateCreditGate, evaluateDailyCapGate, reasonToAbortForCredits } from "./credits.ts";
-import { recoverStaleActiveThreads, startRunHeartbeat } from "./recovery.ts";
+import { recoverStaleActiveThreads, refreshFinishedThreadReports, startRunHeartbeat } from "./recovery.ts";
 
 // ---- Orchestrator resilience knobs (Phase 1: MissingToolResults crash) --------
 // Explicit per-step output-token ceiling. Root cause of the crash: MiniMax emits
@@ -138,6 +138,13 @@ Deno.serve(async (req) => {
       .then((r) => {
         if (r.recovered || r.errors) console.log(JSON.stringify({ event: "stale_thread_sweeper", ...r }));
       }, (e) => console.warn("[stale-recovery] startup sweeper failed:", e));
+    // Complete runs that were recovered before a report existed: once findings are
+    // durable (auto-persist / record_artifacts), regenerate the Findings report so
+    // a CPU-killed run no longer shows a report-less / "run interrupted" stub.
+    refreshFinishedThreadReports(supabaseAdmin, { limit: 5 })
+      .then((r) => {
+        if (r.refreshed || r.errors) console.log(JSON.stringify({ event: "reportless_refresh_sweeper", ...r }));
+      }, (e) => console.warn("[reportless-refresh] startup sweeper failed:", e));
     const manualOverrideSelector = extractManualOverrideSelector(messages);
 
     // ---- Per-user credit gate (beta budget protection) ----------------------
