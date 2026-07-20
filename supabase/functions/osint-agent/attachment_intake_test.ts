@@ -78,38 +78,6 @@ Deno.test("runAttachmentIntake: image → records watermark(domain)+handle, attr
   }
 });
 
-Deno.test("runAttachmentIntake: OCR'd record-site URL bar is recorded as domain, not a username", async () => {
-  // Regression: a CDCR/LASD record screenshot has the site host in the URL bar; Gemini
-  // OCRs it into `handles`, and it must NOT become a 'username' (→ identity cluster + sweep).
-  const orig = globalThis.fetch;
-  const sink: Row[] = [];
-  globalThis.fetch = ((input: string | URL | Request) => {
-    const url = input instanceof Request ? input.url : String(input);
-    if (url.includes(GEMINI_HOST)) {
-      const modelJson = JSON.stringify({
-        visible_text: "CDCR CIRIS Inmate Record", watermarks: [],
-        handles: ["ciris.mt.cdcr.ca.gov", "app5.lasd.org"],
-        attributes: [], scene: "an inmate record page", confidence: 70,
-      });
-      return Promise.resolve(new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: modelJson }] } }] }), { status: 200 }));
-    }
-    return Promise.resolve(new Response(new Uint8Array([1, 2, 3, 4]), { status: 200, headers: { "content-type": "image/png" } }));
-  }) as typeof fetch;
-  try {
-    await withGeminiKey(async () => {
-      await runAttachmentIntake(
-        userMsg("who is this?\n\nAttached files:\n- [rec.png](https://sb.co/x.png) (image/png, 1 MB)"),
-        stubDeps(sink),
-      );
-      const kinds = sink.map((r) => r.kind);
-      assert(!kinds.includes("username"), "record-site hostnames must NOT become usernames");
-      assertEquals(kinds.filter((k) => k === "domain").length, 2, "both record hosts recorded as domain");
-    });
-  } finally {
-    globalThis.fetch = orig;
-  }
-});
-
 Deno.test("runAttachmentIntake: PDF → reads document, records classified selectors (extracted_from_document)", async () => {
   const orig = globalThis.fetch;
   const sink: Row[] = [];

@@ -29,15 +29,18 @@ import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_
 // forces a FINALIZE step, so the run ends with a report instead of tripping the hard
 // deadline mid-tool-call.
 //
-// Widened 90s → 150s after the 2026-07-19 production regression: two consecutive
-// DeepSeek runs crossed 20+ visible tool events, never reached onFinish, and were
-// later closed by stale-run recovery. With the old [150s, 240s] window, a step that
-// began before 150s could keep a worker occupied long enough that the three-phase
-// persist → memory → report closeout never ran. Opening at 90s leaves the back half
-// of the budget for deterministic closeout. The runtime wrapper also checks this
-// edge before each live lookup, so a long multi-call step stops launching new work
-// once the closeout window opens while recording tools remain allowed.
-export const FINALIZE_RESERVE_MS = 150_000;
+// Widened 45s → 90s: `shouldForceFinalize` is only evaluated at STEP BOUNDARIES
+// (prepareStep). With a 45s window [195s, 240s], a single step that begins before
+// 195s and runs past 240s — e.g. a ~30s minimax_correlate, or a few serial tools —
+// jumps the window entirely: no boundary lands inside it, so finalize is never
+// forced and the hard deadline hard-stops the run mid-tool-chain with NO report
+// (the live "convo stops, no report" bug, thread 92a7d650). A 90s window [150s,
+// 240s] can only be jumped by a single step exceeding 90s, which the per-tool
+// timeouts make very unlikely. Trade-off: long runs stop gathering ~45s earlier to
+// guarantee a report — the right call. (Raising/removing the 240s hard deadline
+// itself — plan Fix A2 — still needs a live Supabase edge wall-clock test; not done
+// here.)
+export const FINALIZE_RESERVE_MS = 90_000;
 
 // Emergency backstop for the forced-finalize state machine. The normal path is three
 // generations: persistence decision -> memory decision -> tool-free report. Two extra
@@ -112,38 +115,6 @@ export function countFinalizeProgress(messages: FinalizeMessage[]): FinalizeProg
   return progress;
 }
 
-/**
- * True when the model's MOST RECENT step (the trailing tool-result message, if
- * any) included a dropped hallucinated-tool call — a call the unknown-tool-guard
- * redirected to `unknown_tool_ignored` because the requested name isn't in the
- * live registry (e.g. a model calling "dork_harvest", which doesn't exist; the
- * real tool is "google_dorks"). Only the LAST message is inspected — not full
- * history — so a hallucination from earlier in the run (outside finalize) never
- * permanently flags every later step.
- *
- * WHY THIS MATTERS DURING FINALIZE: each retry the state machine allows costs a
- * full model round-trip. On a run that is already CPU-heavy by the time finalize
- * starts (long tool-call history, large context), even 2–3 wasted retries on a
- * stubborn hallucination can exhaust the isolate's CPU budget before the
- * guaranteed tool-free report phase (the attempt-cap fallback) ever runs —
- * confirmed in production (thread 9d2e0e6b: finalize started, the model
- * repeat-hallucinated a non-existent tool across 3 finalize steps in 24s, then
- * the isolate was CPU-killed with 0 artifacts and 0 assistant messages, well
- * inside the normal 150s reserve / 5-step attempt budget). This is unambiguous
- * evidence the model is not going to self-correct — used to jump straight to
- * the report phase instead of spending the remaining attempt budget hoping it
- * complies on a later retry.
- */
-export function stepHadUnknownToolDrop(messages: FinalizeMessage[] | null | undefined): boolean {
-  const last = Array.isArray(messages) && messages.length > 0 ? messages[messages.length - 1] : null;
-  if (!last || !Array.isArray(last.content)) return false;
-  for (const raw of last.content) {
-    const part = raw as { type?: string; toolName?: string };
-    if (part?.type === "tool-result" && part.toolName === "unknown_tool_ignored") return true;
-  }
-  return false;
-}
-
 /** Resolve the next phase using only successful results added after the boundary. */
 export function resolveFinalizePhase(
   boundary: FinalizeProgress,
@@ -157,22 +128,6 @@ export function resolveFinalizePhase(
     current.memorySucceeded > boundary.memorySucceeded ||
     current.memorySkipped > boundary.memorySkipped;
   return memoryDecided ? "report" : "memory";
-}
-
-/**
- * Failed persistence/memory decisions must not consume the entire finalize budget
- * and stop on a tool-only step. Once the decision budget is exhausted, move to the
- * tool-free report using the durable artifacts already recorded during the run;
- * the report can state that persistence/memory closeout was incomplete.
- */
-export function resolveFinalizePhaseAtAttemptCap(
-  boundary: FinalizeProgress,
-  current: FinalizeProgress,
-  completedAttempts: number,
-  maxSteps = FINALIZE_MAX_STEPS,
-): FinalizePhase {
-  if (completedAttempts >= maxSteps) return "report";
-  return resolveFinalizePhase(boundary, current);
 }
 
 /** Build the enforced SDK configuration for the current finalize phase. */
@@ -199,9 +154,9 @@ export function buildFinalizeStepPlan(phase: FinalizePhase): FinalizeStepPlan {
 }
 
 /**
- * The emergency hard stop leaves one continuation beyond the decision-attempt cap.
- * prepareStep uses that continuation for a tool-free report, avoiding the former
- * tool-only stop + best-effort salvage path.
+ * The emergency attempt cap must not cut off a successful decision before the next
+ * phase can run. A capped failed decision stops and falls through to report salvage;
+ * a capped successful decision gets one continuation so memory/report can complete.
  */
 export function shouldStopFinalizeAtAttemptCap(
   finalizeStarted: boolean,
@@ -209,7 +164,7 @@ export function shouldStopFinalizeAtAttemptCap(
   decisionSucceededThisStep: boolean,
   maxSteps = FINALIZE_MAX_STEPS,
 ): boolean {
-  return finalizeStarted && stepsRun > maxSteps && !decisionSucceededThisStep;
+  return finalizeStarted && stepsRun >= maxSteps && !decisionSucceededThisStep;
 }
 
 // A finished run whose final assistant text is shorter than this is treated as
@@ -492,25 +447,13 @@ function truncate(s: string, max: number): string {
  * artifacts already gathered (nothing new is fetched) and forbids fabrication and
  * further tool use, so the salvage report can only restate confirmed evidence.
  */
-export function buildSalvageSynthesisPrompt(
-  seed: string,
-  artifacts: SalvageArtifact[],
-  rejected: SalvageArtifact[] = [],
-): string {
+export function buildSalvageSynthesisPrompt(seed: string, artifacts: SalvageArtifact[]): string {
   const rows = (artifacts ?? []).slice(0, 200).map((a) => {
     const kind = String(a?.kind ?? "?");
     const value = typeof a?.value === "string" ? a.value : JSON.stringify(a?.value ?? "");
     const conf = a?.confidence != null && a?.confidence !== "" ? ` (confidence ${a.confidence})` : "";
     const src = a?.source ? ` [source: ${a.source}]` : "";
     return `- ${kind}: ${truncate(value, 300)}${conf}${src}`;
-  });
-  // Analyst-rejected artifacts (marked False in review). Shown as an explicit
-  // exclusion block — stronger than silently dropping them, because it stops the
-  // model re-deriving the same identity from adjacent evidence.
-  const rejectedRows = (rejected ?? []).slice(0, 100).map((a) => {
-    const kind = String(a?.kind ?? "?");
-    const value = typeof a?.value === "string" ? a.value : JSON.stringify(a?.value ?? "");
-    return `- ${kind}: ${truncate(value, 200)}`;
   });
   return [
     `Investigation seed: ${seed}`,
@@ -523,16 +466,6 @@ export function buildSalvageSynthesisPrompt(
     "- Confirmed findings grouped by type, each with its confidence and source.",
     "- Explicit gaps and unverified leads.",
     "Do not invent anything not present below. Do not call any tools.",
-    ...(rejectedRows.length
-      ? [
-          "",
-          "ANALYST-REJECTED — DO NOT USE. The analyst reviewed this case and marked the",
-          "following artifacts as FALSE. They are NOT the subject: never present them as",
-          "confirmed findings, identity, or the most-likely subject, and do not re-derive",
-          "or re-introduce them from the evidence above:",
-          ...rejectedRows,
-        ]
-      : []),
     rows.length ? "" : "If the set is empty, state plainly that no confirmed findings were recorded.",
     "",
     "Artifacts:",

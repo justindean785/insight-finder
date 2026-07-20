@@ -69,14 +69,6 @@ function selectorKind(s: string): { kind: string; value: string } | null {
   if (!v) return null;
   if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return { kind: "email", value: v.toLowerCase() };
   if (/^https?:\/\/\S+$/i.test(v)) return { kind: "url", value: v };
-  // A dotted hostname OCR'd from a screenshot (a record-site URL bar such as
-  // app5.lasd.org / ciris.mt.cdcr.ca.gov) is a DOMAIN, not a personal handle —
-  // otherwise it becomes a bogus "username" identity cluster + username-sweep pivot.
-  // Gated on a recognized public suffix so ordinary dotted handles (john.doe) stay usernames.
-  const host = domainLike(v);
-  if (host && host === v.toLowerCase() && /\.(gov|mil|edu|org|com|net|int|io|co|us|uk|au|ca|de|fr|eu|info|biz)$/i.test(host)) {
-    return { kind: "domain", value: host };
-  }
   if (/^@?[a-z0-9._-]{3,30}$/i.test(v) && /[a-z]/i.test(v) && !/^\+?\d/.test(v)) return { kind: "username", value: v.replace(/^@/, "") };
   const digits = v.replace(/[^\d]/g, "");
   if (digits.length >= 10 && digits.length <= 15 && /^[\d\s()+.-]+$/.test(v)) return { kind: "phone", value: v };

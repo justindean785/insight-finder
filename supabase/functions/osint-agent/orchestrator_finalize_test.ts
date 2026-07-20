@@ -7,7 +7,6 @@ import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.t
 import {
   activeToolsOutsideFinalize,
   countFinalizeProgress,
-  stepHadUnknownToolDrop,
   buildFinalizeStepPlan,
   buildFinalizeMemoryDirective,
   buildFinalizePersistDirective,
@@ -30,7 +29,6 @@ import {
   FINALIZE_MAX_STEPS,
   MIN_REPORT_CHARS,
   resolveFinalizePhase,
-  resolveFinalizePhaseAtAttemptCap,
   shouldStopFinalizeAtAttemptCap,
 } from "./orchestrator-finalize.ts";
 import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN } from "./orchestrator-budget.ts";
@@ -38,7 +36,7 @@ import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_
 // ---- Fix A: shouldForceFinalize -------------------------------------------------
 
 Deno.test("shouldForceFinalize: opens exactly at the wall-clock reserve window", () => {
-  const edge = ORCHESTRATOR_WALL_CLOCK_MS - FINALIZE_RESERVE_MS; // 240s - 150s = 90s
+  const edge = ORCHESTRATOR_WALL_CLOCK_MS - FINALIZE_RESERVE_MS; // 240s - 90s = 150s
   assertEquals(shouldForceFinalize(edge - 1, 3), false, "1ms before the window stays open for lookups");
   assertEquals(shouldForceFinalize(edge, 3), true, "at the window edge we finalize");
   assertEquals(shouldForceFinalize(edge + 5_000, 3), true, "past the window we finalize");
@@ -89,56 +87,11 @@ Deno.test("persistence and memory require tool execution; report forbids tools",
   assertEquals(buildFinalizeStepPlan("report").activeTools, FINALIZE_REPORT_ACTIVE_TOOLS);
 });
 
-Deno.test("attempt cap leaves one continuation for a tool-free report", () => {
-  assertEquals(shouldStopFinalizeAtAttemptCap(true, FINALIZE_MAX_STEPS, false), false);
-  assertEquals(shouldStopFinalizeAtAttemptCap(true, FINALIZE_MAX_STEPS + 1, false), true);
+Deno.test("attempt cap never cuts off a successful decision before the report", () => {
+  assertEquals(shouldStopFinalizeAtAttemptCap(true, FINALIZE_MAX_STEPS, false), true);
   assertEquals(shouldStopFinalizeAtAttemptCap(true, FINALIZE_MAX_STEPS, true), false);
   assertEquals(shouldStopFinalizeAtAttemptCap(true, FINALIZE_MAX_STEPS - 1, false), false);
   assertEquals(shouldStopFinalizeAtAttemptCap(false, FINALIZE_MAX_STEPS, false), false);
-});
-
-Deno.test("failed finalize decisions fall through to report instead of ending tool-only", () => {
-  const boundary = countFinalizeProgress([]);
-  const noSuccessfulDecisions = countFinalizeProgress([{
-    content: [{
-      type: "tool-result",
-      toolName: "record_artifacts",
-      toolCallId: "record-failed",
-      output: { type: "json", value: { ok: false, error: "all rows rejected" } },
-    }],
-  }]);
-  assertEquals(
-    resolveFinalizePhaseAtAttemptCap(boundary, noSuccessfulDecisions, FINALIZE_MAX_STEPS),
-    "report",
-  );
-});
-
-Deno.test("finalize sequence: five failed decisions schedule one tool-free report continuation", () => {
-  const boundary = countFinalizeProgress([]);
-  const failed = countFinalizeProgress([{
-    content: [{
-      type: "tool-result",
-      toolName: "record_artifacts",
-      toolCallId: "record-failed",
-      output: { type: "json", value: { ok: false } },
-    }],
-  }]);
-
-  for (let completed = 0; completed < FINALIZE_MAX_STEPS; completed++) {
-    assertEquals(resolveFinalizePhaseAtAttemptCap(boundary, failed, completed), "persist");
-    assertEquals(
-      shouldStopFinalizeAtAttemptCap(true, completed + 1, false),
-      false,
-      "a failed decision must not stop before the report continuation",
-    );
-  }
-  const reportPhase = resolveFinalizePhaseAtAttemptCap(
-    boundary,
-    failed,
-    FINALIZE_MAX_STEPS,
-  );
-  assertEquals(reportPhase, "report");
-  assertEquals(buildFinalizeStepPlan(reportPhase).toolChoice, "none");
 });
 
 Deno.test("internal finalize decisions are hidden during ordinary investigation steps", () => {
@@ -321,29 +274,6 @@ Deno.test("run-cap enforcement: a 61-call run cannot exceed the cap of genuine c
 
 // ---- Fix B: report-salvage detection + synthesis prompt --------------------------
 
-Deno.test("stepHadUnknownToolDrop: true when the LAST message carries an unknown_tool_ignored result", () => {
-  const messages = [
-    { role: "assistant", content: [{ type: "tool-call", toolName: "dork_harvest" }] },
-    { role: "tool", content: [{ type: "tool-result", toolName: "unknown_tool_ignored", output: { ok: true, dropped: true } }] },
-  ];
-  assertEquals(stepHadUnknownToolDrop(messages), true);
-});
-
-Deno.test("stepHadUnknownToolDrop: false when the hallucination is from an EARLIER step, not the latest", () => {
-  const messages = [
-    { role: "tool", content: [{ type: "tool-result", toolName: "unknown_tool_ignored" }] },
-    { role: "assistant", content: [{ type: "tool-call", toolName: "record_artifacts" }] },
-    { role: "tool", content: [{ type: "tool-result", toolName: "record_artifacts", output: { ok: true } }] },
-  ];
-  assertEquals(stepHadUnknownToolDrop(messages), false);
-});
-
-Deno.test("stepHadUnknownToolDrop: false on empty/malformed input", () => {
-  assertEquals(stepHadUnknownToolDrop([]), false);
-  assertEquals(stepHadUnknownToolDrop(null), false);
-  assertEquals(stepHadUnknownToolDrop([{ role: "tool" }]), false);
-});
-
 Deno.test("extractAssistantReportText: joins text parts of the LAST assistant message only", () => {
   const msgs = [
     { role: "user", parts: [{ type: "text", text: "seed" }] },
@@ -412,27 +342,13 @@ Deno.test("hasReportShape: heading OR findings table OR ≥2 tier labels", () =>
   assert(!hasReportShape(""), "empty");
 });
 
-Deno.test("FINALIZE_RESERVE_MS opens closeout early enough for the deployed worker", () => {
+Deno.test("FINALIZE_RESERVE_MS widened so a single long step can't jump the window", () => {
   // Regression for thread 92a7d650: a ~30s tool step starting before the reserve
   // opened jumped the old 45s window [195s,240s] and the run hard-stopped with no
   // report. The reserve must be comfortably wider than the longest single step.
-  assert(FINALIZE_RESERVE_MS >= 150_000, `reserve should be ≥150s, got ${FINALIZE_RESERVE_MS}`);
+  assert(FINALIZE_RESERVE_MS >= 90_000, `reserve should be ≥90s, got ${FINALIZE_RESERVE_MS}`);
   const openAt = ORCHESTRATOR_WALL_CLOCK_MS - FINALIZE_RESERVE_MS;
-  assert(openAt <= 90_000, `finalize should open by 90s, opens at ${openAt}`);
-});
-
-Deno.test("production regression: forced-tool runs enter finalize by 90 seconds", () => {
-  // 2026-07-19 production canary: two consecutive DeepSeek runs kept cycling
-  // through required tool calls, stopped before onFinish, and were later closed
-  // by stale-run recovery. The first had already produced 20+ tool events and
-  // durable artifacts, but the old 150s finalize edge left too little worker
-  // lifetime for persist -> memory -> report. Reserve the back half of the 240s
-  // budget so live lookups stop and the three-phase closeout begins by 90s.
-  const openAt = ORCHESTRATOR_WALL_CLOCK_MS - FINALIZE_RESERVE_MS;
-  assert(
-    openAt <= 90_000,
-    `forced-tool closeout must begin by 90s; current edge is ${openAt}ms`,
-  );
+  assert(openAt <= 150_000, `finalize should open by ~150s, opens at ${openAt}`);
 });
 
 Deno.test("buildSalvageSynthesisPrompt: grounds strictly in the passed artifacts, no tools", () => {

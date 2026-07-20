@@ -146,17 +146,12 @@ export const record_artifacts = tool({
       const collisionKinds = new Set(["phone", "email", "address"]);
       const candidates = safeRowsForFollowup.filter((r) => collisionKinds.has(String(r.kind)));
       for (const r of candidates) {
-        const { data: peersRaw } = await supabase
+        const { data: peers } = await supabase
           .from("artifacts")
-          // `id` selected so analyst verdicts can be applied per row.
-          .select("id,value,kind,source,metadata")
+          .select("value,kind,source,metadata")
           .eq("thread_id", threadId)
           .eq("kind", String(r.kind))
           .eq("value", String(r.value));
-        // Mirrors the live path in ../tool-registry.ts: a dismissed artifact must
-        // not count as a colliding peer, or a rejected finding still manufactures
-        // a contradiction artifact.
-        const peers = await filterReviewed((peersRaw ?? []) as Array<Record<string, unknown>>);
         const sources = new Set<string>();
         const clusters = new Set<string>();
         for (const p of (peers ?? []) as Array<{ source?: unknown; metadata?: Record<string, unknown> | null }>) {
@@ -201,21 +196,14 @@ export const record_artifacts = tool({
       try {
         const recalled = await Promise.all(
           recallSubjects.map(async (subj) => {
-            const { data, error } = await supabase
+            const { data } = await supabase
               .from("agent_memory")
               .select("id,kind,subject,subject_kind,related_values,content,confidence,hit_count")
               .eq("user_id", userId)
-              .or(agentMemoryOrFilter(subj))
+              .or(`subject.eq.${subj},related_values.cs.{${subj}}`)
               .order("confidence", { ascending: false })
               .limit(5);
-            // Surface, never swallow — a discarded error reads as "no prior memory".
-            if (error) {
-              console.warn(JSON.stringify({
-                event: "memory_recall_failed", site: "record_artifacts_auto_recall",
-                subject: subj, error: error.message,
-              }));
-            }
-            return { subject: subj, count: data?.length ?? 0, memories: data ?? [], error: error?.message ?? null };
+            return { subject: subj, count: data?.length ?? 0, memories: data ?? [] };
           }),
         );
         memory_hits = recalled.filter((r) => r.count > 0);

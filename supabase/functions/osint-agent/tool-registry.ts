@@ -19,8 +19,6 @@ import { applyDateSanity } from "./date-sanity.ts";
 import { computeAxes, sourceConfidence, applyEvidenceCaps, isUnrelatedEntity, EXCLUDED_COLLISION_CONFIDENCE, isBioCrossLinkName, BIO_CROSS_LINK_NAME_CAP, deriveStatus, coerceCoherentStatus, looksDeadEnd } from "./confidence.ts";
 import { queryTypesOf } from "./query-type-router.ts";
 import { isSameSurnameOnlyLead, isListingAgentLead } from "./collision-policy.ts";
-import { loadReviewsForThread, applyReviewsToArtifacts, type ReviewLoad } from "./reviews.ts";
-import { agentMemoryOrFilter } from "./pgrest.ts";
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDomainSource, LLM_ASSERTED_PROVENANCE, countIndependentClasses } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
 import { buildNodes } from "./graph.ts";
@@ -71,11 +69,6 @@ import {
   sanitizeToolOutput, TOOL_CACHE_LRU, LRU, isPrivateHost, assertSafeUrl,
   type CacheEntry,
 } from "./safety.ts";
-
-// Sanitized progress-checkpoint contract. record_artifacts emits ONLY the
-// display-safe subset (post-scrubArtifactRows) so onStepFinish can surface
-// mid-run findings in chat without ever exposing raw/unsafe values.
-import { emitSafeCheckpoint } from "./incremental-persist.ts";
 
 import {
   guard, routingGuard, CONSUMER_DOMAINS, STAGE2_TOOLS,
@@ -156,41 +149,6 @@ function memoSchema<T>(key: string, build: () => T): T {
 
 export function buildTools(ctx: ToolContext) {
   const { supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, messages, manualOverrideSelector } = ctx;
-
-  // Analyst verdicts for this run, loaded at most ONCE and shared by every
-  // artifacts read that feeds the model, scoring, or memory. Reviews are written
-  // between runs, so a per-run snapshot is the correct granularity — and it keeps
-  // this from costing one extra query per tool call.
-  //
-  // EVERY `.from("artifacts").select(...)` read in this file that reaches the
-  // model must go through `filterReviewed()`. Raw reads were how a dismissed
-  // finding kept reaching the planner graph, memory_save, contradiction analysis
-  // and record_finding even after the analyst marked it FALSE.
-  let reviewsPromise: Promise<ReviewLoad> | null = null;
-  const getReviews = (): Promise<ReviewLoad> => {
-    // Cast: this repo ships no generated Supabase DB types, so the client's
-    // builder generics don't structurally satisfy ReviewDb (the same type-graph
-    // state that forces the `.update({...} as never)` casts elsewhere in this
-    // file). The runtime shape is correct — .select().eq()/.in() all exist.
-    reviewsPromise ??= loadReviewsForThread(
-      supabaseAdmin as unknown as Parameters<typeof loadReviewsForThread>[0],
-      threadId,
-      userId,
-    );
-    return reviewsPromise;
-  };
-  /** Drop analyst-rejected rows from a model-facing artifacts read.
-   *  Fail-closed: when verdicts are unreadable this yields [] (the caller's
-   *  feature degrades to "no data") rather than passing rejected rows through. */
-  const filterReviewed = async <T extends Record<string, unknown>>(rows: T[] | null | undefined): Promise<T[]> => {
-    const review = await getReviews();
-    if (!review.ok) {
-      console.warn(JSON.stringify({
-        event: "artifact_read_review_state_unavailable", thread_id: threadId, error: review.error,
-      }));
-    }
-    return applyReviewsToArtifacts(rows, review);
-  };
 
   const tools = {
     list_tools: tool({
@@ -522,22 +480,9 @@ export function buildTools(ctx: ToolContext) {
             signal: (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal,
           });
           const parsed = safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content };
-          return { ok: r.ok, status: r.status, analysis: parsed };
-        } catch (e) {
-          return { error: String(e) };
-        } finally {
-          // Reset the auto-fire nudge counter on ANY completed attempt (success OR
-          // timeout/abort). Previously this reset lived only on the success path, so a
-          // timed-out correlate (the model call races the 30s wrapper cap and loses)
-          // threw past it and left `artifactsSinceCorrelate` latched ≥ the threshold —
-          // the recorder then re-surfaced the "call minimax_correlate now" nudge on
-          // EVERY subsequent record_artifacts, and the model kept re-issuing the same
-          // 30s call that just timed out (prod: "minimax_correlate timed out 3x" in one
-          // investigation). The deterministic local union-find clusters regardless, so
-          // deferring the next correlate until a fresh batch of artifacts accrues is the
-          // correct, non-thrashing behavior — an attempt, not a retry loop.
           guard.artifactsSinceCorrelate = 0;
-        }
+          return { ok: r.ok, status: r.status, analysis: parsed };
+        } catch (e) { return { error: String(e) }; }
       },
     }),
     minimax_plan_pivots: tool({
@@ -700,22 +645,13 @@ export function buildTools(ctx: ToolContext) {
           try {
             const seedNorm = String(seed ?? "").trim().toLowerCase();
             if (seedNorm) {
-              const { data: mem, error: memErr } = await supabase
+              const { data: mem } = await supabase
                 .from("agent_memory")
                 .select("kind,content,confidence")
                 .eq("user_id", userId)
-                .or(agentMemoryOrFilter(seedNorm))
+                .or(`subject.eq.${seedNorm},related_values.cs.{${seedNorm}}`)
                 .order("confidence", { ascending: false })
                 .limit(8);
-              // Surface, never swallow: a discarded error here is indistinguishable
-              // from "no prior memory", which is how the comma/logic-tree defect
-              // stayed invisible for every address seed.
-              if (memErr) {
-                console.warn(JSON.stringify({
-                  event: "memory_recall_failed", site: "seed_triage_hint",
-                  subject: seedNorm, error: memErr.message,
-                }));
-              }
               const rows = (mem ?? []) as Array<{ kind?: string; content?: string; confidence?: number }>;
               if (rows.length) {
                 memoryHint =
@@ -741,15 +677,10 @@ export function buildTools(ctx: ToolContext) {
           try {
             const { data: fullArts } = await supabase
               .from("artifacts")
-              // `id` selected so analyst verdicts can be applied per row.
-              .select("id,kind,value,confidence,source,metadata")
+              .select("kind,value,confidence,source,metadata")
               .eq("thread_id", threadId)
               .order("created_at", { ascending: true });
-            // Analyst-rejected artifacts must not shape the planner's relationship
-            // graph — a dismissed node would otherwise keep generating pivot hints.
-            const arts = (await filterReviewed(
-              (fullArts ?? []) as Array<Record<string, unknown>>,
-            )) as unknown as Parameters<typeof buildNodes>[0];
+            const arts = (fullArts ?? []) as Parameters<typeof buildNodes>[0];
             if (arts.length) {
               const nodes = buildNodes(arts);
               const edges = inferEdges(nodes);
@@ -1276,7 +1207,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     socialfetch_lookup: tool({
       description:
-        "Query SocialFetch for normalized public social PROFILES and their content. SUPPORTED platforms: tiktok | instagram | twitter | facebook | linkedin | youtube | reddit | rumble | bluesky | github | google. kind='profile' (default) = profile metadata; 'videos' (tiktok) / 'posts' (instagram) / 'tweets' (twitter) = a profile's content collection; 'video' (tiktok) = one video by URL/id (pass it as `handle`). Pass a bare handle OR a full profile URL — URL inputs (and always facebook/linkedin) are routed via ?url=. Returns { ok, found, status, lookupStatus, data, meta, error }; on profile routes lookupStatus is 'found'|'private'|'not_found' — treat 'private'/'not_found' as a NORMAL negative, not an error. For an arbitrary evidence page (or a host not in the list above), use `socialfetch_web_read` — it fetches server-side, unlike `jina_reader_scrape`, which some origins block. Jina remains the reader for non-blocked hosts. SocialFetch quota is LOW — don't re-burn calls on a nothing-result. Unsupported platforms return an informative no-op instead of crashing.",
+        "Query SocialFetch for normalized public social PROFILES and their content. SUPPORTED platforms: 'tiktok' | 'instagram' | 'twitter' | 'facebook'. kind='profile' (default) = profile metadata; 'videos' (tiktok) / 'posts' (instagram) / 'tweets' (twitter) = a profile's content collection; 'video' (tiktok) = one video by URL/id (pass it as `handle`). Use platform='facebook' with a full profile URL; otherwise pass a bare handle. Returns { ok, found, status, lookupStatus, data, meta, error }; on profile routes lookupStatus is 'found'|'private'|'not_found' — treat 'private'/'not_found' as a NORMAL negative, not an error. For a HARD-BLOCKED host that is NOT one of these four structured platforms (youtube, twitch, reddit, or an arbitrary evidence page), use `socialfetch_web_read` — it fetches server-side, unlike `jina_reader_scrape`, which those origins block. Jina remains the reader for non-blocked hosts. SocialFetch quota is LOW — don't re-burn calls on a nothing-result. Unsupported platforms return an informative no-op instead of crashing.",
       inputSchema: memoSchema("socialfetch_lookup", () => z.object({
         platform: z.string(),
         handle: z.string().describe("Username/handle, full URL for facebook, or video URL/id for tiktok kind='video'"),
@@ -1284,34 +1215,21 @@ export function buildTools(ctx: ToolContext) {
       })),
       execute: async ({ platform, handle, kind }) => {
         const p = String(platform || "").trim().toLowerCase();
-        // SocialFetch's structured per-platform profile API. Kept as an explicit
-        // allow-list (not open-ended) so the planner can't burn paid credits on a
-        // platform SocialFetch doesn't serve — but it now covers every platform
-        // SocialFetch documents, not just the original four. Deeper per-platform
-        // endpoints (posts/search/company/etc.) beyond profile+the existing
-        // collection routes can be added as they're wired.
-        const SUPPORTED = new Set([
-          "tiktok", "instagram", "twitter", "facebook",
-          "linkedin", "youtube", "reddit", "rumble", "bluesky", "github", "google",
-        ]);
+        const SUPPORTED = new Set(["tiktok", "instagram", "twitter", "facebook"]);
         if (!SUPPORTED.has(p)) {
           return {
             ok: false,
             skipped: true,
-            reason: `socialfetch_lookup does not support platform='${platform}'. For an arbitrary evidence page use socialfetch_web_read; otherwise http_fingerprint, wayback_snapshots, or minimax_web_search.`,
+            reason: `socialfetch_lookup does not support platform='${platform}'. For a blocked host (youtube/twitch/reddit/arbitrary page) use socialfetch_web_read; otherwise http_fingerprint, wayback_snapshots, or minimax_web_search.`,
             supported: Array.from(SUPPORTED),
           };
         }
         if (!SOCIALFETCH_API_KEY) return { error: "SOCIALFETCH_API_KEY not configured" };
         try {
           const h = encodeURIComponent(handle);
-          // A full profile URL is addressed via ?url= (SocialFetch's convention,
-          // required for facebook and the natural form for linkedin/company URLs);
-          // a bare handle uses the /profiles/{handle} path.
-          const handleIsUrl = /^https?:\/\//i.test(handle.trim());
           let url: string;
-          if (p === "facebook" || (handleIsUrl && kind === "profile")) {
-            url = `https://api.socialfetch.dev/v1/${p}/profiles?url=${h}`;
+          if (p === "facebook") {
+            url = `https://api.socialfetch.dev/v1/facebook/profiles?url=${h}`;
           } else if (p === "tiktok" && kind === "videos") {
             url = `https://api.socialfetch.dev/v1/tiktok/profiles/${h}/videos`;
           } else if (p === "tiktok" && kind === "video") {
@@ -4538,16 +4456,12 @@ export function buildTools(ctx: ToolContext) {
           const collisionKinds = new Set(["phone", "email", "address"]);
           const candidates = safeRowsForFollowup.filter((r) => collisionKinds.has(String(r.kind)));
           for (const r of candidates) {
-            const { data: peersRaw } = await supabase
+            const { data: peers } = await supabase
               .from("artifacts")
-              // `id` selected so analyst verdicts can be applied per row.
-              .select("id,value,kind,source,metadata")
+              .select("value,kind,source,metadata")
               .eq("thread_id", threadId)
               .eq("kind", String(r.kind))
               .eq("value", String(r.value));
-            // A dismissed artifact must not count as a colliding peer, or a
-            // rejected finding still manufactures a contradiction artifact.
-            const peers = await filterReviewed((peersRaw ?? []) as Array<Record<string, unknown>>);
             const sources = new Set<string>();
             const clusters = new Set<string>();
             type PeerRow = { source?: unknown; metadata?: Record<string, unknown> | null };
@@ -4589,33 +4503,20 @@ export function buildTools(ctx: ToolContext) {
           ),
         ).slice(0, 12);
         let memory_hits: Array<{ subject: string; count: number; memories: unknown[] }> = [];
-        let memory_recall_errors: Array<{ subject: string; error: string | null }> = [];
         if (recallSubjects.length > 0) {
           try {
             const recalled = await Promise.all(
               recallSubjects.map(async (subj) => {
-                const { data, error } = await supabase
+                const { data } = await supabase
                   .from("agent_memory")
                   .select("id,kind,subject,subject_kind,related_values,content,confidence,hit_count")
                   .eq("user_id", userId)
-                  .or(agentMemoryOrFilter(subj))
+                  .or(`subject.eq.${subj},related_values.cs.{${subj}}`)
                   .order("confidence", { ascending: false })
                   .limit(5);
-                // Surface, never swallow. A discarded error reads exactly like
-                // "no prior memory" — that is how the logic-tree defect hid.
-                if (error) {
-                  console.warn(JSON.stringify({
-                    event: "memory_recall_failed", site: "record_artifacts_auto_recall",
-                    subject: subj, error: error.message,
-                  }));
-                }
-                return { subject: subj, count: data?.length ?? 0, memories: data ?? [], error: error?.message ?? null };
+                return { subject: subj, count: data?.length ?? 0, memories: data ?? [] };
               }),
             );
-            // Report failed lookups to the model so a recall OUTAGE is never
-            // presented as a confident "no prior memory".
-            const recall_errors = recalled.filter((r) => r.error).map((r) => ({ subject: r.subject, error: r.error }));
-            if (recall_errors.length > 0) memory_recall_errors = recall_errors;
             memory_hits = recalled.filter((r) => r.count > 0);
             const allIds = memory_hits.flatMap((h) => (h.memories as Array<{ id?: unknown }>).map((m) => m.id));
             if (allIds.length > 0) {
@@ -4700,26 +4601,12 @@ export function buildTools(ctx: ToolContext) {
           accepted,
           rejected,
           minor_safety_flags: flagged,
-          // Sanitized, display-safe projection of the POST-scrub rows for the
-          // mid-run progress checkpoint (see ./incremental-persist.ts). Only
-          // allowlisted, non-minor, non-collision, non-secret findings appear
-          // here — never the raw `accepted` value.
-          checkpoint: emitSafeCheckpoint(safeRowsForFollowup),
           evidence_appended,
           ...(memory_hits.length > 0
             ? {
                 memory_hits,
                 memory_hint:
                   "Prior memory found for some of the artifacts you just recorded. Read `memory_hits` — incorporate confirmed connections/lessons and cite them as [MEMORY] in the final report. Do NOT re-investigate values already covered.",
-              }
-            : {}),
-          // A recall OUTAGE must never be reported to the model as a confident
-          // "no prior memory" — say the lookup failed instead.
-          ...(memory_recall_errors.length > 0
-            ? {
-                memory_recall_errors,
-                memory_recall_warning:
-                  "Prior-memory lookup FAILED for the listed subjects — this is NOT the same as 'no prior memory'. Treat memory as UNKNOWN for them and do not claim a value is new/uncovered on the basis of this result.",
               }
             : {}),
           // Audit F1: once enough new artifacts have accrued since the last correlate,
@@ -4976,7 +4863,7 @@ export function buildTools(ctx: ToolContext) {
         .from("agent_memory")
         .select("id,kind,subject,subject_kind,related_values,content,confidence,source_thread_id,hit_count,last_used_at,created_at")
         .eq("user_id", userId)
-        .or(agentMemoryOrFilter(subj))
+        .or(`subject.eq.${subj},related_values.cs.{${subj}}`)
         .order("confidence", { ascending: false })
         .limit(limit ?? 20);
       if (kind && kind !== "any") q = supabase
@@ -4984,7 +4871,7 @@ export function buildTools(ctx: ToolContext) {
         .select("id,kind,subject,subject_kind,related_values,content,confidence,source_thread_id,hit_count,last_used_at,created_at")
         .eq("user_id", userId)
         .eq("kind", kind)
-        .or(agentMemoryOrFilter(subj))
+        .or(`subject.eq.${subj},related_values.cs.{${subj}}`)
         .order("confidence", { ascending: false })
         .limit(limit ?? 20);
       const { data, error } = await q;
@@ -5052,14 +4939,10 @@ export function buildTools(ctx: ToolContext) {
       let toPersist: MemoryEntry[] = entries as unknown as MemoryEntry[];
       let candidates: Array<{ entry: MemoryEntry; reason: string; subjectIds: string[] }> = [];
       try {
-        const { data: artRowsRaw } = await supabase
+        const { data: artRows } = await supabase
           .from("artifacts")
-          // `id` selected so analyst verdicts can be applied per row.
-          .select("id,kind,value,source,confidence,metadata")
+          .select("kind,value,source,confidence,metadata")
           .eq("thread_id", threadId);
-        // Long-term memory is the most durable surface in the product: a rejected
-        // artifact written here outlives the investigation and seeds FUTURE cases.
-        const artRows = await filterReviewed((artRowsRaw ?? []) as Array<Record<string, unknown>>);
         if (Array.isArray(artRows) && artRows.length > 0) {
           const clusterArts: ClusterArtifact[] = artRows.map((r) => {
             const row = r as { kind: string; value: string; source?: string; confidence?: number; metadata?: unknown };
@@ -5233,11 +5116,8 @@ export function buildTools(ctx: ToolContext) {
       if (cluster_artifact_kinds?.length) q = q.in("kind", cluster_artifact_kinds);
       const { data, error } = await q;
       if (error) return { ok: false, error: error.message };
-      // Contradiction analysis is model-facing AND writes contradictions back onto
-      // artifacts. A dismissed row must not generate or receive either.
-      const reviewed = await filterReviewed((data ?? []) as Array<Record<string, unknown>>);
       type Row = { id: string; kind: string; value: string; source: string | null; metadata: Record<string, unknown> | null };
-      const rows = reviewed as unknown as Row[];
+      const rows = (data ?? []) as Row[];
       const findings = detectContradictions(rows as Parameters<typeof detectContradictions>[0]);
 
       // Persist explicit conflicts back onto the involved artifacts so the
@@ -5353,14 +5233,10 @@ export function buildTools(ctx: ToolContext) {
       label: z.enum(["CONFIRMED","CORROBORATED","INFERRED","VERIFY","LOW","DISMISSED"]).default("INFERRED"),
     })),
     execute: async (i) => {
-      const { data: contraRowsRaw } = await supabase
+      const { data: contraRows } = await supabase
         .from("artifacts")
-        // `id` selected so analyst verdicts can be applied per row.
-        .select("id,kind,value,source,metadata,created_at")
+        .select("kind,value,source,metadata,created_at")
         .eq("thread_id", threadId);
-      // record_finding is the headline claim of the whole run — a rejected
-      // artifact must not contribute to (or be docked by) its scoring.
-      const contraRows = await filterReviewed((contraRowsRaw ?? []) as Array<Record<string, unknown>>);
       // Scope the contradiction / advisory penalty to the artifacts that
       // actually belong to THIS finding's identity candidate — its cited
       // artifacts plus their cluster(s) — so a finding for one candidate is not
@@ -5369,7 +5245,7 @@ export function buildTools(ctx: ToolContext) {
       // thread. When the finding cites nothing resolvable we can't attribute a
       // cluster, so fall back to the thread-wide set (conservative: keep the
       // penalty rather than inflate confidence).
-      const allRows = (contraRows ?? []) as unknown as Parameters<typeof detectContradictions>[0];
+      const allRows = (contraRows ?? []) as Parameters<typeof detectContradictions>[0];
       const scopedRows = artifactsForFinding(allRows, i.supporting_artifact_values ?? []);
       const contras = detectContradictions(scopedRows.length > 0 ? scopedRows : allRows);
       // Audit F06: i.corroboration_count was a raw model-supplied integer with no

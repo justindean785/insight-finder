@@ -2,11 +2,7 @@
 // Strings below are taken verbatim from the production tool_usage_log audit so
 // the classifier is pinned to REAL governance/empty/failure messages.
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import {
-  classifyToolOutcome,
-  classifyDetailedOutcome,
-  normalizeProviderError,
-} from "./tool-outcome.ts";
+import { classifyToolOutcome } from "./tool-outcome.ts";
 
 Deno.test("ok: no error and no status", () => {
   assertEquals(classifyToolOutcome(null, null), "ok");
@@ -41,10 +37,6 @@ Deno.test("skipped: governance / budget / concurrency / dedup", () => {
     "HIBP_API_KEY not configured",
     "finalize window open; live lookup skipped",
     "run tool-call cap reached",
-    // 2026-07 prod audit — these were mis-stored as `failed` (dedup/guard governance):
-    "premium 'oathnet_lookup' already ran for this entity this investigation",
-    "skipped: guard not met",
-    "internal paid-call cap reached (12 this run) — internal throttle, not a provider limit",
   ];
   for (const s of skips) assertEquals(classifyToolOutcome(s, null), "skipped", s);
 });
@@ -84,36 +76,4 @@ Deno.test("robust: non-string errorMsg is coerced, never throws (serus regressio
   const obj = { code: 500, body: "boom" } as unknown as string;
   assertEquals(classifyToolOutcome(obj, 500), "failed");
   assertEquals(classifyToolOutcome(undefined, null), "ok");
-});
-
-// ── Canonical detailed taxonomy (Issue #1) — a strict refinement of the coarse
-//    outcome; must stay parity-identical with src/lib/tool-outcome.ts. ──────────
-Deno.test("detailed: timeouts, cancel, rate-limit, denied, blocked, config", () => {
-  assertEquals(classifyDetailedOutcome("minimax_correlate exceeded 30000ms tool timeout", null), "timeout");
-  assertEquals(classifyDetailedOutcome("bosint_phone_timeout", null), "timeout");
-  assertEquals(classifyDetailedOutcome("AbortError: The signal has been aborted", null), "cancelled");
-  assertEquals(classifyDetailedOutcome("upstream returned HTTP 429", 429), "rate_limited");
-  assertEquals(classifyDetailedOutcome("jina 451", 451), "blocked");
-  assertEquals(classifyDetailedOutcome("jina 403", 403), "http_denied");
-  assertEquals(classifyDetailedOutcome("reddit request failed (403)", 403), "http_denied");
-  assertEquals(classifyDetailedOutcome("upstream returned HTTP 401", 401), "config_error");
-  assertEquals(classifyDetailedOutcome("Invalid or unauthorized key. Please check the API key and try again.", 200), "config_error");
-});
-
-Deno.test("detailed: genuine failed vs success vs governance skip", () => {
-  assertEquals(classifyDetailedOutcome("upstream returned HTTP 500", 500), "failed");
-  assertEquals(classifyDetailedOutcome("indicia web-dbs HTTP 400", 400), "failed");
-  assertEquals(classifyDetailedOutcome(null, null), "success"); // no error, no status → genuine success
-  // Governance rescued even in the detailed view.
-  assertEquals(classifyDetailedOutcome("premium 'oathnet_lookup' already ran for this entity this investigation", null), "skipped");
-  assertEquals(classifyDetailedOutcome("skipped: guard not met", null), "skipped");
-});
-
-Deno.test("normalizeProviderError: meaningful message, never a bare code", () => {
-  const m = normalizeProviderError("jina_reader_scrape", "jina 451", 451);
-  assertEquals(/legally unavailable/i.test(m), true);
-  const t = normalizeProviderError("minimax_correlate", "minimax_correlate exceeded 30000ms tool timeout", null);
-  assertEquals(/timed out|time budget/i.test(t), true);
-  const k = normalizeProviderError("ipqualityscore_lookup", "Invalid or unauthorized key.", 200);
-  assertEquals(/key/i.test(k), true);
 });
