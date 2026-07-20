@@ -57,6 +57,9 @@ import {
 } from "./orchestrator-finalize.ts";
 import { loadReviewsForThread, applyReviewsToArtifacts, rejectedArtifacts, renderAnalystRejectionBlock, REVIEW_STATE_UNAVAILABLE_NOTE } from "./reviews.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
+import {
+  hasDsmlToolCallMarkup, parseDsmlToolCalls, stripDsmlToolCallMarkup, MAX_DSML_RECOVERED_CALLS_PER_STEP,
+} from "./dsml-tool-call-guard.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { applyClusteringToThread } from "./lib/cluster.ts";
@@ -789,6 +792,10 @@ Deno.serve(async (req) => {
         // previously-queried subject for the rest of the investigation.
         routingGuard.memoryRecallSubjectsThisStep.clear();
         if (!Array.isArray(stepMessages) || stepMessages.length === 0) return {};
+        // Consume the one-shot DSML-recovery directive queued by the previous
+        // step's onStepFinish (if any), and clear it so it fires only once.
+        const dsmlDirectiveThisStep = dsmlRecoveryDirective ?? "";
+        dsmlRecoveryDirective = null;
         const trimmed: ModelMessage[] = stepMessages.map((m: ModelMessage, idx: number) => {
           const isRecent = idx >= stepMessages.length - STEP_RECENT_WINDOW;
           const max = isRecent ? STEP_RECENT_CHARS : STEP_OLDER_CHARS;
@@ -879,7 +886,7 @@ Deno.serve(async (req) => {
             // That supersedes this PR's original blanket orchestratorStepToolChoice(true).
             activeTools: [...finalizePlan.activeTools],
             toolChoice: finalizePlan.toolChoice,
-            system: baseSystemPrompt + finalizePlan.directive,
+            system: baseSystemPrompt + finalizePlan.directive + dsmlDirectiveThisStep,
           };
         }
         // Intermediate (non-finalize) step: append the compact per-cycle directive so
@@ -895,7 +902,7 @@ Deno.serve(async (req) => {
         // directive to record already-supported findings now (don't wait for correlate,
         // don't fabricate). Counts come from THIS request's stepMessages and the latch
         // is a closure local, so the nudge state is request-scoped by construction.
-        let intermediateSystem = baseSystemPrompt + buildPerCycleCompactDirective();
+        let intermediateSystem = baseSystemPrompt + buildPerCycleCompactDirective() + dsmlDirectiveThisStep;
         const { toolCalls: nudgeToolCalls, recordCalls: nudgeRecordCalls } =
           countModelMessageToolCalls(stepMessages as Array<{ content?: unknown }>);
         if (shouldNudgePersistence(nudgeToolCalls, nudgeRecordCalls, persistenceNudged)) {
@@ -942,6 +949,24 @@ Deno.serve(async (req) => {
     const stepLimitReached: typeof rawStepLimitReached = (options) =>
       !finalizeStarted && rawStepLimitReached(options);
 
+    // Hoisted so onStepFinish (below) can execute DSML-recovered tool calls
+    // through the exact same wrapped pipeline (caching, circuit-breaker,
+    // tool_usage_log, per-call auto-persist) as normal model-issued calls.
+    const wrappedTools = wrapToolsWithCache(tools, {
+      investigationId: threadId,
+      userId,
+      supabase,
+      supabaseAdmin,
+      onCost,
+      manualOverrideSelector,
+      toolCallBudget,
+      shouldStopLiveLookups: () => shouldForceFinalize(Date.now() - runStartedAt, 0),
+      onHeartbeat: () => heartbeat?.pulse(),
+    });
+    // One-shot directive queued by onStepFinish's DSML recovery (below) and
+    // consumed by the NEXT prepareStep call, then cleared. Request-scoped
+    // closure local, matching persistenceNudged's pattern.
+    let dsmlRecoveryDirective: string | null = null;
     const result = streamText({
       // Top-level orchestrator runs on the smart tier — it's the multi-source
       // synthesis step that produces the final report. Per-tool sub-calls use
@@ -970,17 +995,7 @@ Deno.serve(async (req) => {
         : undefined,
       system: SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary,
       messages: trimmedMessages,
-      tools: wrapToolsWithCache(tools, {
-        investigationId: threadId,
-        userId,
-        supabase,
-        supabaseAdmin,
-        onCost,
-        manualOverrideSelector,
-        toolCallBudget,
-        shouldStopLiveLookups: () => shouldForceFinalize(Date.now() - runStartedAt, 0),
-        onHeartbeat: () => heartbeat?.pulse(),
-      }),
+      tools: wrappedTools,
       // Unknown-tool guard (Phase B4): the model occasionally emits a tool call
       // for a name that is NOT in the live registry (hallucinations like exify /
       // hackerone_lookup). Validate the emitted name against the wrapped tool set
@@ -1019,7 +1034,58 @@ Deno.serve(async (req) => {
       // the old Gemini 2.5 Pro rate ($1.25/$10) over-debited the ledger ~4x on the
       // fallback path. An operator LOVABLE_FALLBACK_MODEL_ID override is best-effort
       // metered at the Flash rate.
-      onStepFinish: async ({ usage, finishReason, toolCalls, toolResults }) => {
+      onStepFinish: async ({ usage, finishReason, toolCalls, toolResults, text }) => {
+        // DSML tool-call recovery. DeepSeek (the currently-pinned orchestrator)
+        // has a documented quirk: under certain conditions — observed: several
+        // parallel tool calls in one turn, despite parallel_tool_calls:false
+        // being requested above — it emits its tool-call intent as raw
+        // <｜DSML｜tool_calls>...<｜DSML｜invoke> markup in plain assistant TEXT
+        // instead of structured tool_calls. When that happens the SDK sees ZERO
+        // real tool calls for the step (toolCalls is empty) and the raw markup
+        // just streams to the client as garbled text — confirmed live (seed
+        // "loadq.com"): 4 well-formed intended calls rendered as literal
+        // <｜DSML｜...> tokens in the chat, none of them executed.
+        //
+        // Only attempt recovery when the step produced NO real structured tool
+        // calls — a step that partially succeeded is left alone, so this can
+        // never interfere with (or double-execute alongside) a normal turn.
+        if ((toolCalls ?? []).length === 0 && hasDsmlToolCallMarkup(text)) {
+          const recovered = parseDsmlToolCalls(text).slice(0, MAX_DSML_RECOVERED_CALLS_PER_STEP);
+          const results: Array<{ name: string; ok: boolean }> = [];
+          for (const call of recovered) {
+            const tool = (wrappedTools as Record<string, { execute?: (input: unknown, opts: unknown) => Promise<unknown> }>)[call.name];
+            if (!tool?.execute) { results.push({ name: call.name, ok: false }); continue; }
+            try {
+              const out = await withTimeout(
+                tool.execute(call.args, { toolCallId: `dsml-recovered-${threadId}-${finalizeStepsRun}-${results.length}`, messages: [] }),
+                CHECKPOINT_AWAIT_MS,
+              );
+              results.push({ name: call.name, ok: (out as { ok?: unknown } | null)?.ok !== false });
+            } catch (e) {
+              console.warn(`[dsml-tool-call-guard] recovered call to ${call.name} threw:`, (e as Error)?.message ?? e);
+              results.push({ name: call.name, ok: false });
+            }
+          }
+          console.log(JSON.stringify({
+            event: "dsml_tool_calls_recovered", thread_id: threadId,
+            recovered_count: recovered.length, results,
+          }));
+          if (results.length > 0) {
+            const summary = results.map((r) => `${r.name} (${r.ok ? "ok" : "failed"})`).join(", ");
+            dsmlRecoveryDirective = [
+              "",
+              "",
+              "=== TOOL-CALL FORMAT NOTICE ===",
+              "Your previous turn's tool-call attempt used an unsupported text markup format",
+              "and was NOT natively executed by the runtime. To avoid losing that work, the",
+              `intended calls were run directly on your behalf: ${summary}.`,
+              "Any results are already reflected in your available findings — do not repeat",
+              "these exact calls. For ALL further tool calls, you MUST use the standard",
+              "structured tool-calling interface (the normal function-call mechanism) —",
+              "never emit tool-call syntax as plain text.",
+            ].join("\n");
+          }
+        }
         if (finalizeStarted) {
           const names = (toolCalls ?? []).map((call: { toolName: string }) => call.toolName);
           const stepProgress = countFinalizeProgress([{ content: toolResults }]);
@@ -1186,6 +1252,20 @@ Deno.serve(async (req) => {
     const persistFinalMessages = async ({ messages: finalMessages }: { messages: UIMessage[] }) => {
       if (finalPersisted) return;
       finalPersisted = true;
+      // Scrub any DSML tool-call markup that leaked into assistant text (see
+      // dsml-tool-call-guard.ts) from every message BEFORE any further
+      // processing — both so report-shape detection below (needsReportSalvage /
+      // extractAssistantReportText) never mistakes raw markup for content, and
+      // so what actually gets persisted to `messages` is clean. In-place on the
+      // same array/objects downstream code and the DB insert both use.
+      for (const m of finalMessages) {
+        if (m.role !== "assistant" || !Array.isArray(m.parts)) continue;
+        for (const part of m.parts as Array<{ type?: string; text?: unknown }>) {
+          if (part?.type === "text" && typeof part.text === "string" && hasDsmlToolCallMarkup(part.text)) {
+            part.text = stripDsmlToolCallMarkup(part.text);
+          }
+        }
+      }
       // Capture the detected seed kind so it can be persisted onto the thread
       // row at completion — historically seed_type was only stored in the
       // triage decision JSON and the threads.seed_type column stayed null.
