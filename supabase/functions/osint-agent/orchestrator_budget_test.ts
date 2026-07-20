@@ -18,9 +18,6 @@ import {
   capTotalToBudget,
   elidedToolResultRef,
   deadlineReached,
-  orchestratorStepToolChoice,
-  buildIntermediateStepPlan,
-  FORCE_TOOL_CALL_UNTIL_FINALIZE,
 } from "./orchestrator-budget.ts";
 
 // Build a `tool` message carrying one tool-result with a big JSON payload.
@@ -37,19 +34,6 @@ function bigToolMessage(i: number, valueChars: number): ModelMessage {
     ],
   } as unknown as ModelMessage;
 }
-
-Deno.test("premature-stop fix: non-finalize steps force a tool call; finalize stays auto", () => {
-  // The "stops mid-investigation" bug: with toolChoice "auto", the model can end a
-  // step with narration and no tool call ("Now let me run minimax_correlate…"), and
-  // AI SDK v6 terminates the loop — leaving planned NEXT STEPS unrun. Non-finalize
-  // steps must force a tool call so the loop can only exit via the finalize branch
-  // or a budget/deadline StopCondition.
-  assert(FORCE_TOOL_CALL_UNTIL_FINALIZE, "kill-switch must be ON for the fix to apply");
-  assertEquals(orchestratorStepToolChoice(false), "required", "non-finalize step must force a tool call");
-  // The finalize step writes the closing report (text-only) — forcing a tool call
-  // there would block the report, so it must stay auto.
-  assertEquals(orchestratorStepToolChoice(true), "auto", "finalize step must allow a text-only report");
-});
 
 Deno.test("capTotalToBudget: long run stays under the ceiling", () => {
   const msgs: ModelMessage[] = Array.from({ length: 40 }, (_, i) => bigToolMessage(i, 5000));
@@ -145,62 +129,4 @@ Deno.test("wall-clock deadline is 4 minutes and trips cleanly on elapse", () => 
     true,
     "one ms past the deadline trips the StopCondition",
   );
-});
-
-// ---- prepareStep plan contract -----------------------------------------------
-// The first cut of the premature-stop fix set toolChoice on the NORMAL
-// intermediate return but missed the persistence-nudge return — i.e. the one
-// branch whose entire purpose is to force `record_artifacts` could still let the
-// model narrate "let me record the artifacts…" and end the run with zero evidence
-// persisted (observed live: 38 tool calls, 0 record_artifacts). These tests cover
-// the decision that actually reaches the SDK, not just the pure helper.
-
-Deno.test("intermediate plan: persistence nudge restricts tools AND forces a call", () => {
-  const plan = buildIntermediateStepPlan({
-    nudgePersistence: true,
-    normalActiveTools: ["exa_search", "jina_reader_scrape", "record_artifacts"],
-  });
-  assertEquals(plan.activeTools, ["record_artifacts"]);
-  assertEquals(plan.toolChoice, FORCE_TOOL_CALL_UNTIL_FINALIZE ? "required" : "auto");
-});
-
-Deno.test("intermediate plan: normal step keeps its tools AND forces a call", () => {
-  const tools = ["exa_search", "record_artifacts"];
-  const plan = buildIntermediateStepPlan({ nudgePersistence: false, normalActiveTools: tools });
-  assertEquals(plan.activeTools, tools);
-  assertEquals(plan.toolChoice, FORCE_TOOL_CALL_UNTIL_FINALIZE ? "required" : "auto");
-  // must be a copy — the caller's array is reused across steps
-  assert(plan.activeTools !== tools);
-});
-
-/** Return-object literals in `src`, matched by brace depth. */
-function returnObjectBodies(src: string): string[] {
-  const out: string[] = [];
-  const re = /return \{/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(src)) !== null) {
-    let depth = 1;
-    let i = m.index + m[0].length;
-    for (; i < src.length && depth > 0; i++) {
-      if (src[i] === "{") depth++;
-      else if (src[i] === "}") depth--;
-    }
-    out.push(src.slice(m.index, i));
-  }
-  return out;
-}
-
-Deno.test("CONTRACT: every prepareStep plan sets toolChoice (no narration-only exit)", () => {
-  const src = Deno.readTextFileSync(new URL("./index.ts", import.meta.url));
-  // Every plan handed back to the AI SDK carries `messages: stepMessagesOut`.
-  const plans = returnObjectBodies(src).filter((b) => /messages:\s*stepMessagesOut/.test(b));
-  // finalize + persistence-nudge + normal intermediate
-  assert(plans.length >= 3, `expected >=3 prepareStep plans, found ${plans.length}`);
-  for (const plan of plans) {
-    assert(
-      /toolChoice/.test(plan) || /buildIntermediateStepPlan\(/.test(plan),
-      "a prepareStep plan omits toolChoice, so it defaults to \"auto\" — the narration-only " +
-        `stop bug. Route it through buildIntermediateStepPlan(). Offending plan:\n${plan.slice(0, 240)}`,
-    );
-  }
 });

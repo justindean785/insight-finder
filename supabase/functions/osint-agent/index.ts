@@ -27,13 +27,6 @@ import {
   MAX_PERSISTED_ASSISTANT_PARTS_BYTES,
 } from "./safety.ts";
 import { sanitizeModelMessages, capToolResultOutputs, summarizeToolResultValue } from "./message-sanitize.ts";
-import {
-  collectStepCheckpoint, persistCheckpoint, loadSeenCheckpoints, isIncrementalMessage,
-  registerBackground, withTimeout, CHECKPOINT_AWAIT_MS,
-} from "./incremental-persist.ts";
-import {
-  extractStepFindings, persistAutoFindings, loadSeenArtifactKeys,
-} from "./auto-persist-findings.ts";
 import { guard, routingGuard, triageState, countRecordArtifactCalls, countModelMessageToolCalls } from "./guard.ts";
 import { setupRequest } from "./auth.ts";
 import { minimax, minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
@@ -45,22 +38,16 @@ import { beginCycle, clearRuntime } from "./runtime-policy.ts";
 import {
   TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW,
   MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN,
-  buildIntermediateStepPlan,
   capTotalToBudget, deadlineReached,
 } from "./orchestrator-budget.ts";
 import {
   shouldForceFinalize, buildFinalizeStepPlan, buildPerCycleCompactDirective,
-  activeToolsOutsideFinalize, countFinalizeProgress, resolveFinalizePhaseAtAttemptCap, type FinalizePhase,
-  shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS, stepHadUnknownToolDrop,
+  activeToolsOutsideFinalize, countFinalizeProgress, resolveFinalizePhase, type FinalizePhase,
+  shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS,
   extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt, toolCallCapReached,
   shouldNudgePersistence, buildPersistenceNudgeDirective,
 } from "./orchestrator-finalize.ts";
-import { loadReviewsForThread, applyReviewsToArtifacts, rejectedArtifacts, renderAnalystRejectionBlock, REVIEW_STATE_UNAVAILABLE_NOTE } from "./reviews.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
-import {
-  hasDsmlToolCallMarkup, parseDsmlToolCalls, stripDsmlToolCallMarkup, resolveDsmlExecutionPlan,
-  MAX_DSML_RECOVERED_CALLS_PER_STEP,
-} from "./dsml-tool-call-guard.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { applyClusteringToThread } from "./lib/cluster.ts";
@@ -72,7 +59,7 @@ import {
   minimaxPreflightFailureLabel,
 } from "./minimax-preflight.ts";
 import { evaluateCreditGate, evaluateDailyCapGate, reasonToAbortForCredits } from "./credits.ts";
-import { recoverStaleActiveThreads, refreshFinishedThreadReports, startRunHeartbeat } from "./recovery.ts";
+import { recoverStaleActiveThreads, startRunHeartbeat } from "./recovery.ts";
 
 // ---- Orchestrator resilience knobs (Phase 1: MissingToolResults crash) --------
 // Explicit per-step output-token ceiling. Root cause of the crash: MiniMax emits
@@ -142,13 +129,6 @@ Deno.serve(async (req) => {
       .then((r) => {
         if (r.recovered || r.errors) console.log(JSON.stringify({ event: "stale_thread_sweeper", ...r }));
       }, (e) => console.warn("[stale-recovery] startup sweeper failed:", e));
-    // Complete runs that were recovered before a report existed: once findings are
-    // durable (auto-persist / record_artifacts), regenerate the Findings report so
-    // a CPU-killed run no longer shows a report-less / "run interrupted" stub.
-    refreshFinishedThreadReports(supabaseAdmin, { limit: 5 })
-      .then((r) => {
-        if (r.refreshed || r.errors) console.log(JSON.stringify({ event: "reportless_refresh_sweeper", ...r }));
-      }, (e) => console.warn("[reportless-refresh] startup sweeper failed:", e));
     const manualOverrideSelector = extractManualOverrideSelector(messages);
 
     // ---- Per-user credit gate (beta budget protection) ----------------------
@@ -236,13 +216,7 @@ Deno.serve(async (req) => {
       supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, messages, manualOverrideSelector,
     });
 
-    // Exclude mid-run progress checkpoints from the MODEL context. They are a
-    // UI-only projection of artifacts already persisted; re-feeding their text
-    // into the prompt on every later step/turn would bloat history and raise
-    // CPU-kill pressure. They remain in the chat store for display (and are
-    // collapsed once the final report lands — see src/lib/chat-checkpoints.ts).
-    const modelInputMessages = messages.filter((m) => !isIncrementalMessage(m));
-    const modelMessages = await convertToModelMessages(modelInputMessages);
+    const modelMessages = await convertToModelMessages(messages);
 
     // #238: older-result cap tightened 4000→1500. Safe only BECAUSE older results
     // now go through selector-preserving summarization (summarizeToolResultValue) —
@@ -718,26 +692,8 @@ Deno.serve(async (req) => {
     }
     // Base orchestrator system prompt, shared by streamText and by the forced
     // finalize phase (which appends its phase-specific directive to this exact base).
-    // Authoritative analyst-rejection block on EVERY model turn — not just salvage.
-    // Dropping rejected rows from artifact READS is necessary but not sufficient:
-    // an ordinary follow-up turn still carries the prior (false) narrative in the
-    // message history, so without an explicit supersede instruction the model can
-    // and does re-assert a finding the analyst already marked FALSE. baseSystemPrompt
-    // feeds all three paths (intermediate, finalize, salvage), so injecting here
-    // covers every turn.
-    const turnReviews = await loadReviewsForThread(supabaseAdmin, threadId, userId);
-    const analystRejectionBlock = turnReviews.ok
-      ? renderAnalystRejectionBlock(turnReviews.rejectedRows)
-      // Verdicts unreadable: say so rather than implying nothing was rejected.
-      : `\n## ANALYST REVIEW STATE UNAVAILABLE\n${REVIEW_STATE_UNAVAILABLE_NOTE}\n`;
-    if (!turnReviews.ok) {
-      console.warn(JSON.stringify({
-        event: "turn_review_state_unavailable", thread_id: threadId, error: turnReviews.error,
-      }));
-    }
     const baseSystemPrompt =
-      SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary
-      + analystRejectionBlock;
+      SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary;
     // The two decision tools exist in the registry so forced-finalize can select them,
     // but they must never be available during ordinary investigation steps.
     const normalActiveTools = activeToolsOutsideFinalize(Object.keys(tools));
@@ -752,7 +708,7 @@ Deno.serve(async (req) => {
     // wrapToolsWithCache, which increments `genuine` on each live execution and flips
     // `capped` once the cap is hit; prepareStep reads it to force finalize. Owned by
     // this per-request closure so concurrent runs on a warm isolate never share it.
-    const toolCallBudget = { genuine: 0, reserved: 0, capped: false };
+    const toolCallBudget = { genuine: 0, capped: false };
     // First-pass persistence nudge latch (DeepSeek deferral fix). Request-scoped —
     // owned by this per-request closure, NEVER a module-global, so one run's nudge
     // state can't leak onto a concurrent run sharing a warm isolate. Flipped true the
@@ -763,17 +719,6 @@ Deno.serve(async (req) => {
     // deadline StopCondition below. Declared here so prepareStep's closure reads it.
     const runStartedAt = Date.now();
     heartbeat = startRunHeartbeat(supabaseAdmin, threadId, { startedAt: new Date(runStartedAt) });
-    // Incremental progress-checkpoint state (see ./incremental-persist.ts).
-    // Owned by THIS per-request closure so concurrent runs on a warm isolate
-    // never share dedup state. `incrementalSeen` is seeded from checkpoints
-    // already persisted for this thread, so a re-run / stale-run recovery never
-    // re-announces the same finding (idempotent).
-    const incrementalRunId = new Date(runStartedAt).toISOString();
-    const incrementalSeen = await loadSeenCheckpoints(supabase, threadId);
-    // Seed the same dedup set from artifacts already persisted for this thread
-    // so the tool-return auto-persist path (below) never re-inserts a value
-    // that the model already recorded via record_artifacts, and vice versa.
-    for (const k of await loadSeenArtifactKeys(supabase, threadId)) incrementalSeen.add(k);
     const prepareStep: NonNullable<Parameters<typeof streamText>[0]["prepareStep"]> =
       async ({ messages: stepMessages, stepNumber }) => {
         const { data: threadState } = await supabase
@@ -793,10 +738,6 @@ Deno.serve(async (req) => {
         // previously-queried subject for the rest of the investigation.
         routingGuard.memoryRecallSubjectsThisStep.clear();
         if (!Array.isArray(stepMessages) || stepMessages.length === 0) return {};
-        // Consume the one-shot DSML-recovery directive queued by the previous
-        // step's onStepFinish (if any), and clear it so it fires only once.
-        const dsmlDirectiveThisStep = dsmlRecoveryDirective ?? "";
-        dsmlRecoveryDirective = null;
         const trimmed: ModelMessage[] = stepMessages.map((m: ModelMessage, idx: number) => {
           const isRecent = idx >= stepMessages.length - STEP_RECENT_WINDOW;
           const max = isRecent ? STEP_RECENT_CHARS : STEP_OLDER_CHARS;
@@ -855,39 +796,15 @@ Deno.serve(async (req) => {
               step_number: stepNumber ?? 0,
             }));
           }
-          // Fast-track straight to the guaranteed tool-free report the instant a
-          // finalize step shows the model hallucinating a non-existent tool
-          // instead of complying with the persist/memory directive — see
-          // stepHadUnknownToolDrop's doc comment for the production evidence.
-          // Treating this step as if the attempt cap were already reached costs
-          // at most one extra decision attempt instead of burning the full
-          // FINALIZE_MAX_STEPS retry budget on a model that has already shown
-          // it won't self-correct.
-          const hallucinatedThisStep = stepHadUnknownToolDrop(stepMessages as Array<{ content?: unknown }>);
-          if (hallucinatedThisStep) {
-            console.log(JSON.stringify({
-              event: "finalize_hallucination_fast_track", thread_id: threadId,
-              step_number: stepNumber ?? 0, finalize_steps_run: finalizeStepsRun,
-            }));
-          }
-          finalizePhase = resolveFinalizePhaseAtAttemptCap(
-            finalizeBoundary,
-            progress,
-            hallucinatedThisStep ? FINALIZE_MAX_STEPS : finalizeStepsRun,
-            FINALIZE_MAX_STEPS,
-          );
+          finalizePhase = resolveFinalizePhase(finalizeBoundary, progress);
           finalizeStepsRun++;
           finalizeDecisionSucceededThisStep = false;
           const finalizePlan = buildFinalizeStepPlan(finalizePhase);
           return {
             messages: stepMessagesOut,
-            // Finalize owns its own toolChoice per phase (persist/memory are
-            // "required" so the closing record_artifacts/memory_save actually
-            // run; the report phase is "auto" because it is a text-only step).
-            // That supersedes this PR's original blanket orchestratorStepToolChoice(true).
             activeTools: [...finalizePlan.activeTools],
             toolChoice: finalizePlan.toolChoice,
-            system: baseSystemPrompt + finalizePlan.directive + dsmlDirectiveThisStep,
+            system: baseSystemPrompt + finalizePlan.directive,
           };
         }
         // Intermediate (non-finalize) step: append the compact per-cycle directive so
@@ -903,7 +820,7 @@ Deno.serve(async (req) => {
         // directive to record already-supported findings now (don't wait for correlate,
         // don't fabricate). Counts come from THIS request's stepMessages and the latch
         // is a closure local, so the nudge state is request-scoped by construction.
-        let intermediateSystem = baseSystemPrompt + buildPerCycleCompactDirective() + dsmlDirectiveThisStep;
+        let intermediateSystem = baseSystemPrompt + buildPerCycleCompactDirective();
         const { toolCalls: nudgeToolCalls, recordCalls: nudgeRecordCalls } =
           countModelMessageToolCalls(stepMessages as Array<{ content?: unknown }>);
         if (shouldNudgePersistence(nudgeToolCalls, nudgeRecordCalls, persistenceNudged)) {
@@ -913,32 +830,16 @@ Deno.serve(async (req) => {
             event: "persistence_nudge_fired", thread_id: threadId,
             tool_calls: nudgeToolCalls, record_artifact_calls: nudgeRecordCalls,
           }));
-          // NON-finalize step: the plan (activeTools + toolChoice) comes from the
-          // centralized builder. Without the forced tool choice this branch — the
-          // one whose whole job is to make the model persist evidence — could
-          // itself end the run on a "let me record the artifacts…" narration.
           return {
             messages: stepMessagesOut,
+            activeTools: ["record_artifacts"],
             system: intermediateSystem,
-            ...buildIntermediateStepPlan({ nudgePersistence: true, normalActiveTools: normalActiveTools }),
           };
         }
-        // Premature-stop fix — the "stops mid-investigation" bug. AI SDK v6 ends
-        // the agent loop the instant a step finishes with NO tool call
-        // (finishReason "stop"); toolChoice defaults to "auto", so the model is
-        // free to narrate its next action as prose ("Now let me run
-        // minimax_correlate…") and emit no call — the loop then terminates and
-        // onFinish marks the thread finished with planned NEXT STEPS still pending.
-        // DeepSeek (the openai-compatible orchestrator) does exactly this. Forcing
-        // "required" on every NON-finalize step makes the model emit a tool call
-        // (it may still include text alongside), so the only exits from the loop are
-        // the controlled finalize branch above or a budget/deadline StopCondition —
-        // never a mid-run narration. Bounded by the same 22-step / 4-min budget, so
-        // it can't over-run; the finalize branch owns its own per-phase toolChoice.
         return {
           messages: stepMessagesOut,
+          activeTools: normalActiveTools,
           system: intermediateSystem,
-          ...buildIntermediateStepPlan({ nudgePersistence: false, normalActiveTools }),
         };
       };
 
@@ -950,30 +851,6 @@ Deno.serve(async (req) => {
     const stepLimitReached: typeof rawStepLimitReached = (options) =>
       !finalizeStarted && rawStepLimitReached(options);
 
-    // Hoisted so onStepFinish (below) can execute DSML-recovered tool calls
-    // through the exact same wrapped pipeline (caching, circuit-breaker,
-    // tool_usage_log, per-call auto-persist) as normal model-issued calls.
-    const wrappedTools = wrapToolsWithCache(tools, {
-      investigationId: threadId,
-      userId,
-      supabase,
-      supabaseAdmin,
-      onCost,
-      manualOverrideSelector,
-      toolCallBudget,
-      shouldStopLiveLookups: () => shouldForceFinalize(Date.now() - runStartedAt, 0),
-      onHeartbeat: () => heartbeat?.pulse(),
-    });
-    // One-shot directive queued by onStepFinish's DSML recovery (below) and
-    // consumed by the NEXT prepareStep call, then cleared. Request-scoped
-    // closure local, matching persistenceNudged's pattern.
-    let dsmlRecoveryDirective: string | null = null;
-    // Security-review hardening: exact-text dedup guard so the same DSML block
-    // can never be executed twice even under an unforeseen SDK retry / step
-    // replay. Request-scoped, cheap (a run has at most a handful of DSML
-    // leaks), and defense-in-depth on top of onStepFinish's normal
-    // once-per-completed-step contract.
-    const dsmlRecoveredTexts = new Set<string>();
     const result = streamText({
       // Top-level orchestrator runs on the smart tier — it's the multi-source
       // synthesis step that produces the final report. Per-tool sub-calls use
@@ -1002,7 +879,17 @@ Deno.serve(async (req) => {
         : undefined,
       system: SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary,
       messages: trimmedMessages,
-      tools: wrappedTools,
+      tools: wrapToolsWithCache(tools, {
+        investigationId: threadId,
+        userId,
+        supabase,
+        supabaseAdmin,
+        onCost,
+        manualOverrideSelector,
+        toolCallBudget,
+        shouldStopLiveLookups: () => shouldForceFinalize(Date.now() - runStartedAt, 0),
+        onHeartbeat: () => heartbeat?.pulse(),
+      }),
       // Unknown-tool guard (Phase B4): the model occasionally emits a tool call
       // for a name that is NOT in the live registry (hallucinations like exify /
       // hackerone_lookup). Validate the emitted name against the wrapped tool set
@@ -1041,97 +928,7 @@ Deno.serve(async (req) => {
       // the old Gemini 2.5 Pro rate ($1.25/$10) over-debited the ledger ~4x on the
       // fallback path. An operator LOVABLE_FALLBACK_MODEL_ID override is best-effort
       // metered at the Flash rate.
-      onStepFinish: async ({ usage, finishReason, toolCalls, toolResults, text }) => {
-        // DSML tool-call recovery. DeepSeek (the currently-pinned orchestrator)
-        // has a documented quirk: under certain conditions — observed: several
-        // parallel tool calls in one turn, despite parallel_tool_calls:false
-        // being requested above — it emits its tool-call intent as raw
-        // <｜DSML｜tool_calls>...<｜DSML｜invoke> markup in plain assistant TEXT
-        // instead of structured tool_calls. When that happens the SDK sees ZERO
-        // real tool calls for the step (toolCalls is empty) and the raw markup
-        // just streams to the client as garbled text — confirmed live (seed
-        // "loadq.com"): 4 well-formed intended calls rendered as literal
-        // <｜DSML｜...> tokens in the chat, none of them executed.
-        //
-        // Only attempt recovery when the step produced NO real structured tool
-        // calls — a step that partially succeeded is left alone, so this can
-        // never interfere with (or double-execute alongside) a normal turn.
-        //
-        // SECURITY (reviewed): this is a new model-text-to-tool-execution
-        // boundary, hardened as follows —
-        //  1. Dedup: the exact step text is tracked in dsmlRecoveredTexts, so
-        //     the same block can never execute twice this run.
-        //  2. Registry check: only names present in wrappedTools (the SAME
-        //     registry normal calls use) are considered — unknown names are
-        //     never executed (unknown-tool-guard already gates this identically
-        //     for normal model-issued calls).
-        //  3. Phase allowlist: recovered calls are filtered to the tool names
-        //     actually PERMITTED for the step that just ran (the finalize
-        //     phase's activeTools if finalizeStarted, else normalActiveTools) —
-        //     a DSML leak during the persist/memory finalize phase cannot be
-        //     used to bypass the tool restriction that phase exists to enforce.
-        //  4. Schema validation: parsed args are validated against the tool's
-        //     REAL inputSchema before execution (first as-parsed, then with
-        //     coerceDsmlArgsForValidation as a second attempt for legitimately
-        //     mistyped values like a numeric field arriving as text) — a call
-        //     that fails both is never executed. Fails closed.
-        //  5. Same execution pipeline: recovered calls run through the exact
-        //     wrapped tool.execute() normal calls use, so circuit breakers,
-        //     rate limits, tool-call budget caps, and the per-call auto-persist
-        //     hook all apply identically — nothing bypasses those controls.
-        //  6. Injection scope: `text` here is the MODEL's own generated step
-        //     output (StepResult.text), never raw scraped/tool-result content —
-        //     recovery only fires on what the orchestrator itself produced for
-        //     this turn, not on arbitrary text encountered elsewhere in context.
-        if ((toolCalls ?? []).length === 0 && hasDsmlToolCallMarkup(text) && !dsmlRecoveredTexts.has(text)) {
-          dsmlRecoveredTexts.add(text);
-          const permittedNames = new Set(
-            finalizePhase ? buildFinalizeStepPlan(finalizePhase).activeTools : normalActiveTools,
-          );
-          const parsed = parseDsmlToolCalls(text).slice(0, MAX_DSML_RECOVERED_CALLS_PER_STEP);
-          const plan = resolveDsmlExecutionPlan(
-            parsed,
-            permittedNames,
-            wrappedTools as Record<string, { execute?: unknown; inputSchema?: { safeParse?: (v: unknown) => { success: boolean; data?: unknown } } }>,
-          );
-          const results: Array<{ name: string; ok: boolean; reason?: string }> = [];
-          for (const decision of plan) {
-            if (decision.action === "reject") {
-              results.push({ name: decision.call.name, ok: false, reason: decision.reason });
-              continue;
-            }
-            const tool = (wrappedTools as Record<string, { execute: (input: unknown, opts: unknown) => Promise<unknown> }>)[decision.call.name];
-            try {
-              const out = await withTimeout(
-                tool.execute(decision.validatedArgs, { toolCallId: `dsml-recovered-${threadId}-${finalizeStepsRun}-${results.length}`, messages: [] }),
-                CHECKPOINT_AWAIT_MS,
-              );
-              results.push({ name: decision.call.name, ok: (out as { ok?: unknown } | null)?.ok !== false });
-            } catch (e) {
-              console.warn(`[dsml-tool-call-guard] recovered call to ${decision.call.name} threw:`, (e as Error)?.message ?? e);
-              results.push({ name: decision.call.name, ok: false, reason: "threw" });
-            }
-          }
-          console.log(JSON.stringify({
-            event: "dsml_tool_calls_recovered", thread_id: threadId,
-            parsed_count: parsed.length, results,
-          }));
-          if (results.length > 0) {
-            const summary = results.map((r) => `${r.name} (${r.ok ? "ok" : "failed"})`).join(", ");
-            dsmlRecoveryDirective = [
-              "",
-              "",
-              "=== TOOL-CALL FORMAT NOTICE ===",
-              "Your previous turn's tool-call attempt used an unsupported text markup format",
-              "and was NOT natively executed by the runtime. To avoid losing that work, the",
-              `intended calls were run directly on your behalf: ${summary}.`,
-              "Any results are already reflected in your available findings — do not repeat",
-              "these exact calls. For ALL further tool calls, you MUST use the standard",
-              "structured tool-calling interface (the normal function-call mechanism) —",
-              "never emit tool-call syntax as plain text.",
-            ].join("\n");
-          }
-        }
+      onStepFinish: ({ usage, finishReason, toolCalls, toolResults }) => {
         if (finalizeStarted) {
           const names = (toolCalls ?? []).map((call: { toolName: string }) => call.toolName);
           const stepProgress = countFinalizeProgress([{ content: toolResults }]);
@@ -1150,77 +947,6 @@ Deno.serve(async (req) => {
         // A completed step on the primary provider proves MiniMax is alive —
         // record it so the NEXT turn's preflight probe can be skipped.
         if (!useFallback) markMinimaxHealthy();
-        // Incremental progress checkpoint — surface a SANITIZED projection of the
-        // artifacts recorded this step so findings appear in chat even if the
-        // isolate is CPU-killed before onFinish. Sourced from record_artifacts'
-        // post-scrub `checkpoint` contract (never raw values); allowlist-filtered,
-        // deduped across the run, idempotent across recovery. Reliability: the
-        // write is registered with EdgeRuntime.waitUntil (isolate keep-alive,
-        // SDK-await-independent) AND awaited bounded, so this step's checkpoint is
-        // durable before the next step burns more CPU toward the kill threshold —
-        // while a slow DB can never stall the run. See ./incremental-persist.ts.
-        const cpEmissions = collectStepCheckpoint(toolResults as unknown[] | undefined);
-        if (cpEmissions.length > 0) {
-          const cpTask = persistCheckpoint(
-            { supabase, threadId, userId, seen: incrementalSeen, runId: incrementalRunId },
-            cpEmissions,
-          ).then(
-            (r) => {
-              if (r.inserted) console.log(JSON.stringify({
-                event: "incremental_checkpoint_flushed", thread_id: threadId,
-                count: r.count, checkpoint_id: r.checkpointId,
-              }));
-              return r;
-            },
-            (e) => { console.warn("[incremental-persist] checkpoint task failed:", (e as Error)?.message ?? e); return null; },
-          );
-          registerBackground(cpTask);
-          await withTimeout(cpTask, CHECKPOINT_AWAIT_MS);
-        }
-        // Force-persist high-signal findings extracted DIRECTLY from tool
-        // returns, independent of the model calling `record_artifacts`. This
-        // is the primary defense against CPU-kills that occur before the
-        // model gets a chance to record — the artifacts land in
-        // `public.artifacts` immediately and the analyst sees findings even
-        // if the isolate is killed. See ./auto-persist-findings.ts.
-        const autoFindings = extractStepFindings(toolResults as unknown[] | undefined);
-        if (autoFindings.length > 0) {
-          const autoTask = persistAutoFindings(
-            { supabase: supabaseAdmin, threadId, userId, seen: incrementalSeen },
-            autoFindings,
-          ).then(
-            (r) => {
-              if (r.inserted > 0) {
-                console.log(JSON.stringify({
-                  event: "auto_findings_persisted", thread_id: threadId,
-                  inserted: r.inserted, skipped_duplicates: r.skipped_duplicates,
-                  kinds: r.rows.map((row) => String(row.kind)),
-                }));
-                // Also feed these into the incremental checkpoint stream so
-                // the analyst sees them appear in chat mid-run.
-                const cpItems = r.rows.map((row) => ({
-                  kind: String(row.kind ?? ""),
-                  value: String(row.value ?? ""),
-                  source: typeof row.source === "string" ? row.source : null,
-                  confidence: typeof row.confidence === "number" ? row.confidence : null,
-                }));
-                // Insert as a checkpoint MESSAGE. The seen-set is already updated
-                // by persistAutoFindings, so persistCheckpoint's own dedup would
-                // drop everything — temporarily remove them, then re-add.
-                const keys = cpItems.map((i) => `${i.kind.toLowerCase()}:${i.value.trim().toLowerCase()}`);
-                for (const k of keys) incrementalSeen.delete(k);
-                registerBackground(persistCheckpoint(
-                  { supabase, threadId, userId, seen: incrementalSeen, runId: incrementalRunId },
-                  cpItems,
-                ).catch((e) => { console.warn("[auto-persist-findings] checkpoint task failed:", (e as Error)?.message ?? e); return null; }));
-              }
-              return r;
-            },
-            (e) => { console.warn("[auto-persist-findings] task failed:", (e as Error)?.message ?? e); return null; },
-          );
-          registerBackground(autoTask);
-          await withTimeout(autoTask, CHECKPOINT_AWAIT_MS);
-        }
         try {
           const u = usage as { inputTokens?: number; promptTokens?: number; outputTokens?: number; completionTokens?: number } | undefined;
           const inTok = Number(u?.inputTokens ?? u?.promptTokens ?? 0);
@@ -1298,20 +1024,6 @@ Deno.serve(async (req) => {
     const persistFinalMessages = async ({ messages: finalMessages }: { messages: UIMessage[] }) => {
       if (finalPersisted) return;
       finalPersisted = true;
-      // Scrub any DSML tool-call markup that leaked into assistant text (see
-      // dsml-tool-call-guard.ts) from every message BEFORE any further
-      // processing — both so report-shape detection below (needsReportSalvage /
-      // extractAssistantReportText) never mistakes raw markup for content, and
-      // so what actually gets persisted to `messages` is clean. In-place on the
-      // same array/objects downstream code and the DB insert both use.
-      for (const m of finalMessages) {
-        if (m.role !== "assistant" || !Array.isArray(m.parts)) continue;
-        for (const part of m.parts as Array<{ type?: string; text?: unknown }>) {
-          if (part?.type === "text" && typeof part.text === "string" && hasDsmlToolCallMarkup(part.text)) {
-            part.text = stripDsmlToolCallMarkup(part.text);
-          }
-        }
-      }
       // Capture the detected seed kind so it can be persisted onto the thread
       // row at completion — historically seed_type was only stored in the
       // triage decision JSON and the threads.seed_type column stayed null.
@@ -1328,33 +1040,17 @@ Deno.serve(async (req) => {
           const { toolCalls: workToolCalls } = countRecordArtifactCalls(finalMessages);
           const existingReport = extractAssistantReportText(finalMessages as unknown as Array<{ role?: string; parts?: Array<{ type?: string; text?: unknown }> }>);
           if (needsReportSalvage(existingReport, workToolCalls)) {
-            const { data: salvageArtsRaw } = await supabase
+            const { data: salvageArts } = await supabase
               .from("artifacts")
-              .select("id,kind,value,confidence,source")
+              .select("kind,value,confidence,source")
               .eq("thread_id", threadId)
               .order("confidence", { ascending: false })
               .limit(200);
-            // Respect analyst verdicts: exclude dismissed/wrong artifacts from the
-            // salvage report and pass them as an explicit DO-NOT-USE block, so the
-            // dominant CPU-kill finalize path can't re-promote rejected findings.
-            const salvageReviews = await loadReviewsForThread(supabaseAdmin, threadId, userId);
-            // FAIL-CLOSED: verdicts unreadable → do NOT synthesize from unfiltered
-            // rows (that re-promotes rejected findings, i.e. the original incident
-            // reproduced by a DB error). Skip the salvage report entirely.
-            if (!salvageReviews.ok) {
-              console.warn(JSON.stringify({
-                event: "salvage_skipped_review_state_unavailable",
-                thread_id: threadId, error: salvageReviews.error,
-              }));
-              throw new Error("salvage synthesis skipped: analyst review state unavailable");
-            }
-            const salvageArts = applyReviewsToArtifacts((salvageArtsRaw ?? []) as Array<Record<string, unknown>>, salvageReviews);
-            const salvageRejected = rejectedArtifacts((salvageArtsRaw ?? []) as Array<Record<string, unknown>>, salvageReviews);
             const salvage = await generateText({
               model: orchestratorModel,
               maxOutputTokens: ORCHESTRATOR_MAX_OUTPUT_TOKENS,
               system: baseSystemPrompt,
-              prompt: buildSalvageSynthesisPrompt(seedValueRaw, salvageArts, salvageRejected),
+              prompt: buildSalvageSynthesisPrompt(seedValueRaw, (salvageArts ?? []) as Array<Record<string, unknown>>),
             });
             const salvageText = (salvage?.text ?? "").trim();
             if (salvageText) {
@@ -1424,46 +1120,16 @@ Deno.serve(async (req) => {
             const detected = detectSeedServer(seedText);
             if (detected) {
               detectedSeedKind = detected.kind;
-              const { data: artsRaw, error: artsErr } = await supabase
+              const { data: arts } = await supabase
                 .from("artifacts")
-                .select("id,kind,value,confidence,source,metadata")
+                .select("kind,value,confidence,source,metadata")
                 .eq("thread_id", threadId)
                 .order("created_at", { ascending: true });
-              if (artsErr) {
-                console.error(JSON.stringify({ event: "investigation_cache_artifacts_read_fail", thread_id: threadId, error: artsErr.message }));
-              } else {
-              // Respect analyst verdicts BEFORE caching: a dismissed/wrong artifact
-              // must NOT be snapshotted into the 7-day investigation_cache and
-              // replayed at full confidence into a future run.
-              //
-              // FAIL-CLOSED: if verdicts are unreadable, DO NOT write the cache.
-              // A cache row is long-lived (7d) and replayed into future runs, so
-              // snapshotting unfiltered rows would persist the incident well past
-              // the transient error that caused it. Skipping simply means the next
-              // run recomputes live.
-              const cacheReviews = await loadReviewsForThread(supabaseAdmin, threadId, userId);
-              if (!cacheReviews.ok) {
-                console.warn(JSON.stringify({
-                  event: "investigation_cache_write_skipped_review_state_unavailable",
-                  thread_id: threadId, error: cacheReviews.error,
-                }));
-                throw new Error("investigation_cache write skipped: analyst review state unavailable");
-              }
-              const arts = applyReviewsToArtifacts((artsRaw ?? []) as Array<Record<string, unknown>>, cacheReviews);
               // Cache is long-lived (7d) and is replayed back into a future
               // run's context, so strip credentials / PII / oversized blobs.
               const cachedParts = sanitizeToolOutput(safeParts, 1500);
-              const cachedArts = sanitizeToolOutput(arts, 1500);
+              const cachedArts = sanitizeToolOutput(arts ?? [], 1500);
               const payload = {
-                // cache_version 2: the client (ChatWindow.tsx) MUST re-check
-                // artifact_reviews for origin_thread_id before ever replaying
-                // assistant_parts verbatim — this snapshot reflects analyst
-                // verdicts as of THIS write, not as of a future cache hit. A
-                // reader that doesn't understand cache_version 2 (or an older
-                // unversioned row) must treat the row as inadmissible, not
-                // replay it blind. See src/lib/review.ts checkCachedHitSafety.
-                cache_version: 2,
-                origin_thread_id: threadId,
                 seed: detected,
                 assistant_parts: cachedParts,
                 artifacts: cachedArts,
@@ -1474,7 +1140,7 @@ Deno.serve(async (req) => {
               // service-role admin client (bypasses RLS). Using the user-scoped
               // `supabase` here is what left the cache permanently empty (0 rows,
               // ~0% hit). The artifacts read above is fine on the user client.
-              const { error: upsertErr } = await supabaseAdmin.from("investigation_cache").upsert(
+              await supabaseAdmin.from("investigation_cache").upsert(
                 {
                   user_id: userId,
                   seed_kind: detected.kind,
@@ -1485,10 +1151,6 @@ Deno.serve(async (req) => {
                 },
                 { onConflict: "user_id,seed_kind,seed_value_normalized" },
               );
-              if (upsertErr) {
-                console.error(JSON.stringify({ event: "investigation_cache_upsert_fail", thread_id: threadId, error: upsertErr.message }));
-              }
-              }
             }
           } catch (e) {
             console.error(JSON.stringify({ event: "investigation_cache_fail", thread_id: threadId, error: String(e) }));

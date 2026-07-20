@@ -15,7 +15,7 @@ import {
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
-import { recoverStaleActiveThreads, refreshFinishedThreadReports } from "./recovery.ts";
+import { recoverStaleActiveThreads } from "./recovery.ts";
 
 // ---- checks.minimax — is the PRIMARY orchestrator actually reachable? -------
 // `orchestrator.ok` only asserts a key exists; after the MiniMax-primary outage
@@ -327,17 +327,6 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
       r.checks.recovery = recovered.errors
         ? { ok: false, detail: `recovered ${recovered.recovered}; ${recovered.errors} error(s)` }
         : { ok: true, detail: `recovered ${recovered.recovered} stale active run(s)` };
-      // Complete runs recovered report-less (no findings existed yet when the
-      // stale-active sweep above finalized them) once their findings became
-      // durable. Previously this only ran inside authenticated setupRequest
-      // (index.ts), so a thread flagged recovered_reportless_pending stayed
-      // stuck until a signed-in user started a NEW investigation — /health is
-      // polled continuously by the frontend without auth, so wiring it here
-      // closes that gap without requiring any user action.
-      const refreshed = await refreshFinishedThreadReports(admin, { limit: 5 });
-      r.checks.report_refresh = refreshed.errors
-        ? { ok: false, detail: `refreshed ${refreshed.refreshed}; ${refreshed.errors} error(s)` }
-        : { ok: true, detail: `refreshed ${refreshed.refreshed} report(s), cleared ${refreshed.cleared}` };
     }
   } catch (e) {
     r.checks.recovery = { ok: false, detail: String(e).slice(0, 160) };
