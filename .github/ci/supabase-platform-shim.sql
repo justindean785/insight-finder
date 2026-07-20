@@ -83,3 +83,48 @@ BEGIN
     CREATE PUBLICATION supabase_realtime;
   END IF;
 END $$;
+
+-- pg_cron / pg_net: CI's vanilla postgres:15 image has neither extension binary
+-- available, so migrations guard `CREATE EXTENSION` on pg_available_extensions
+-- and skip it here. These stubs stand in for cron.schedule/cron.unschedule/
+-- net.http_get so a migration's SCHEDULING CALL is still syntax-checked by CI
+-- (not merely skipped) even though no real cron job ever fires against this
+-- throwaway database.
+CREATE SCHEMA IF NOT EXISTS cron;
+
+CREATE TABLE IF NOT EXISTS cron.job (
+  jobid bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  jobname text UNIQUE,
+  schedule text,
+  command text,
+  active boolean DEFAULT true
+);
+
+CREATE OR REPLACE FUNCTION cron.schedule(job_name text, schedule text, command text) RETURNS bigint
+LANGUAGE sql
+AS $$
+  INSERT INTO cron.job (jobname, schedule, command)
+  VALUES (job_name, schedule, command)
+  ON CONFLICT (jobname) DO UPDATE SET schedule = EXCLUDED.schedule, command = EXCLUDED.command
+  RETURNING jobid;
+$$;
+
+CREATE OR REPLACE FUNCTION cron.unschedule(job_name text) RETURNS boolean
+LANGUAGE sql
+AS $$
+  DELETE FROM cron.job WHERE jobname = job_name;
+  SELECT true;
+$$;
+
+CREATE SCHEMA IF NOT EXISTS net;
+
+CREATE OR REPLACE FUNCTION net.http_get(
+  url text,
+  params jsonb DEFAULT '{}'::jsonb,
+  headers jsonb DEFAULT '{}'::jsonb,
+  timeout_milliseconds integer DEFAULT 5000
+) RETURNS bigint
+LANGUAGE sql
+AS $$
+  SELECT 0::bigint;
+$$;

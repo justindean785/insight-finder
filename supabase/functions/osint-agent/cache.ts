@@ -440,7 +440,10 @@ export function wrapToolsWithCache(
     // genuine live execution and (b) short-circuit new lookups once the cap is hit.
     // `capped` is surfaced by index.ts (finalize + telemetry). Optional so callers
     // that don't set it (tests, other entrypoints) are unaffected.
-    toolCallBudget?: { genuine: number; capped: boolean };
+    // `reserved` is incremented SYNCHRONOUSLY at the cap-check gate (no await
+    // between check and increment) — see the gate below for why `genuine`
+    // alone isn't race-safe under parallel tool-call dispatch.
+    toolCallBudget?: { genuine: number; reserved: number; capped: boolean };
     shouldStopLiveLookups?: () => boolean;
     onHeartbeat?: () => void;
   },
@@ -952,7 +955,18 @@ export function wrapToolsWithCache(
         // (ALWAYS_ALLOW) are exempt via shouldSkipForToolCap, so the closing
         // record_artifacts is never starved and no collected evidence is stranded.
         // This is the hard backstop; prepareStep also forces synthesis once capped.
-        if (ctx.toolCallBudget && shouldSkipForToolCap(ctx.toolCallBudget.genuine, ALWAYS_ALLOW_TOOLS.has(name))) {
+        // Race hardening: check-and-reserve against `.reserved`, incremented
+        // RIGHT HERE with no `await` in between, so it is atomic relative to
+        // JS's single-threaded event loop even though the wrapper is async.
+        // `.genuine` (below, past every gate) is check-then-await-then-increment
+        // and is NOT safe against this — a step that dispatches several tool
+        // calls in parallel could have all of them read the same pre-increment
+        // `.genuine` value before any of them reaches its own increment (the
+        // gap includes `startCall`'s rate-limit `waitMs` await), letting the
+        // run overshoot MAX_TOOL_CALLS_PER_RUN. `.reserved` closes that gap;
+        // `.genuine` is kept as-is for its existing accurate-accounting role
+        // (telemetry / finalize-trigger reads only calls that truly ran live).
+        if (ctx.toolCallBudget && shouldSkipForToolCap(ctx.toolCallBudget.reserved, ALWAYS_ALLOW_TOOLS.has(name))) {
           ctx.toolCallBudget.capped = true;
           await logUsage(false, false, Date.now() - t0, "run tool-call cap reached", null, true, {
             input: inputJson,
@@ -966,6 +980,7 @@ export function wrapToolsWithCache(
             stale_cache: !!staleRecord,
           });
         }
+        if (ctx.toolCallBudget && !ALWAYS_ALLOW_TOOLS.has(name)) ctx.toolCallBudget.reserved++;
 
         // ---- Finalize-window live-call guard -----------------------------------
         // prepareStep restricts activeTools once the reserve window opens, but it is

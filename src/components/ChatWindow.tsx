@@ -24,6 +24,7 @@ import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
 import { isSubmitBlocked } from "@/lib/submit-guard";
 import { interpretReadinessProbe, type ReadinessBody } from "@/lib/readiness-probe";
 import { dedupeCards } from "@/lib/next-step-cards";
+import { hasReportShape, stripReasoning } from "@/lib/report-shape";
 import { dedupeCheckpoints } from "@/lib/chat-checkpoints";
 import { computePivots } from "@/lib/pivot-engine";
 import { sanitizeChatText } from "@/lib/sanitize-agent-text";
@@ -2153,8 +2154,18 @@ function ChatWindowInner({
   // `messages` updates dozens of times per second during streaming.
   const suggestions = useMemo(() => {
     if (isLoading || messages.length === 0) return [] as NextStepSuggestion[];
-    const hasAssistant = messages.some((m) => m.role === "assistant");
-    if (!hasAssistant) return [];
+    const latestAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+    if (!latestAssistant) return [];
+    // "Next Steps" implies the investigation reached a real closing report.
+    // Checking "any assistant message exists" let an interrupted run's
+    // "### Run interrupted" recovery stub (or bare reasoning/narration, no
+    // synthesis) show follow-up suggestions as if the run had finished —
+    // gate on the LATEST turn actually being report-shaped instead.
+    const latestText = (latestAssistant.parts as MessagePartShape[])
+      .filter((part) => part.type === "text")
+      .map((part) => part.text ?? "")
+      .join("\n");
+    if (!hasReportShape(stripReasoning(latestText))) return [];
     const out: NextStepSuggestion[] = [];
     const seenLabels = new Set<string>();
     // ONE engine over LIVE state: report recommendations + artifact findings,
