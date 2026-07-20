@@ -752,7 +752,7 @@ Deno.serve(async (req) => {
     // wrapToolsWithCache, which increments `genuine` on each live execution and flips
     // `capped` once the cap is hit; prepareStep reads it to force finalize. Owned by
     // this per-request closure so concurrent runs on a warm isolate never share it.
-    const toolCallBudget = { genuine: 0, capped: false };
+    const toolCallBudget = { genuine: 0, reserved: 0, capped: false };
     // First-pass persistence nudge latch (DeepSeek deferral fix). Request-scoped —
     // owned by this per-request closure, NEVER a module-global, so one run's nudge
     // state can't leak onto a concurrent run sharing a warm isolate. Flipped true the

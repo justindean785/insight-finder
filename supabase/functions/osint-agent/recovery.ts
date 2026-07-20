@@ -141,14 +141,40 @@ async function recoverOneStaleThread(
   reason: string,
 ): Promise<{ recovered: boolean; assistantInserted: boolean; artifactCount: number; error?: string }> {
   if (!isStaleActiveThread(thread, now.getTime())) return { recovered: false, assistantInserted: false, artifactCount: 0 };
+
+  // ATOMIC CLAIM — the ONLY step that decides which of several concurrent
+  // sweeps (e.g. a scheduled sweep tick overlapping a /health-triggered one,
+  // or two overlapping health probes) gets to recover this thread. The
+  // conditional UPDATE (status must still be 'active') can match a row for at
+  // most one caller; `.select("id")` proves whether THIS caller's update
+  // actually won. Deliberately placed BEFORE the artifact query and report
+  // insert (not after, as before this fix) — a caller that loses the claim
+  // never reaches the insert at all, so a duplicate "Findings report —
+  // recovered run" message becomes structurally impossible, not just a
+  // duplicate status flip. `recovery_reason` starts as REPORTLESS_REASON and
+  // is only upgraded to the real `reason` once a genuine report is confirmed
+  // written below — so a claim that errors out partway never leaves a
+  // finished-with-no-report thread mislabeled as fully recovered.
+  const { data: claimed, error: claimErr } = await db
+    .from("threads")
+    .update({ status: "finished", recovered_at: now.toISOString(), recovery_reason: REPORTLESS_REASON, updated_at: now.toISOString() })
+    .eq("id", thread.id)
+    .eq("status", "active")
+    .select("id");
+  if (claimErr) return { recovered: false, assistantInserted: false, artifactCount: 0, error: claimErr.message };
+  if (!Array.isArray(claimed) || claimed.length === 0) {
+    return { recovered: false, assistantInserted: false, artifactCount: 0 }; // lost the race — another caller already claimed it
+  }
+
   const [{ data: latestAssistant }, { data: artifacts, count: artifactCount }] = await Promise.all([
     db.from("messages").select("created_at").eq("thread_id", thread.id).eq("role", "assistant").order("created_at", { ascending: false }).limit(1).maybeSingle(),
     db.from("artifacts").select("id,kind,value,confidence,source,created_at", { count: "exact" }).eq("thread_id", thread.id).order("confidence", { ascending: false }).order("created_at", { ascending: true }).limit(RECOVERY_ARTIFACT_LIMIT),
   ]);
   let assistantInserted = false;
   // Track whether we wrote a REAL findings report (>=1 durable artifact). If not,
-  // flag the thread REPORTLESS_REASON so the refresh sweep regenerates the report
-  // once findings become durable (the CPU-kill-before-finalize case).
+  // the thread stays REPORTLESS_REASON (already set by the claim above) so the
+  // refresh sweep regenerates the report once findings become durable (the
+  // CPU-kill-before-finalize case).
   let realReportWritten = false;
   const assistantState = shouldInsertRecoveredAssistant(
     thread,
@@ -161,7 +187,8 @@ async function recoverOneStaleThread(
     // FAIL-CLOSED: if the verdicts can't be read, do NOT write a recovered report
     // built from unfiltered rows — a recovery report is durable and user-facing,
     // so a transient error would republish findings the analyst marked FALSE.
-    // The thread is still finalized below; only the report is withheld.
+    // The thread is still finalized (already claimed above); only the report
+    // is withheld, and it stays REPORTLESS_REASON for a later sweep to retry.
     const review = await loadReviewsForThread(db, thread.id, thread.user_id);
     if (!review.ok) {
       console.warn(JSON.stringify({
@@ -172,17 +199,20 @@ async function recoverOneStaleThread(
       const liveArtifacts = applyReviewsToArtifacts((artifacts ?? []) as Array<Record<string, unknown>>, review);
       const text = buildRecoveredAssistantText(thread, liveArtifacts as RecoveryArtifact[]);
       const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: [{ type: "text", text }] });
-      if (insertErr) return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: insertErr.message };
+      if (insertErr) return { recovered: true, assistantInserted: false, artifactCount: artifactCount ?? 0, error: insertErr.message };
       assistantInserted = true;
       realReportWritten = (liveArtifacts?.length ?? 0) > 0;
     }
   }
-  // When no real findings report was written (0 artifacts at recovery, review
-  // unavailable, or a fresh non-report assistant already present), leave the
-  // thread flagged so the refresh sweep can complete it once findings are durable.
-  const finalReason = realReportWritten ? reason : REPORTLESS_REASON;
-  const { error: updateErr } = await db.from("threads").update({ status: "finished", recovered_at: now.toISOString(), recovery_reason: finalReason, updated_at: now.toISOString() }).eq("id", thread.id).eq("status", "active");
-  if (updateErr) return { recovered: false, assistantInserted, artifactCount: artifactCount ?? 0, error: updateErr.message };
+  // Upgrade recovery_reason to the real `reason` ONLY once a genuine report
+  // (>=1 artifact) is confirmed written — matches the pre-atomic-claim
+  // behavior exactly (REPORTLESS_REASON whenever assistantInserted is false
+  // OR the written report had 0 artifacts), just applied as a follow-up
+  // instead of the original single combined update.
+  if (realReportWritten) {
+    const { error: reasonErr } = await db.from("threads").update({ recovery_reason: reason }).eq("id", thread.id);
+    if (reasonErr) console.warn(`[recovery] reason upgrade failed for ${thread.id}:`, reasonErr.message);
+  }
   return { recovered: true, assistantInserted, artifactCount: artifactCount ?? 0 };
 }
 
