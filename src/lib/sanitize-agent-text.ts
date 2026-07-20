@@ -68,6 +68,19 @@ const TOOLCALL_STRAY_RE = new RegExp(`<\\s*/?\\s*(?:antml:)?(?:${TOOLCALL_TAGS})
 // hallucinated tool. Anchored to a markdown heading (leading #) so a legitimate
 // prose line that merely contains the phrase is never stripped.
 const NOT_A_REAL_TOOL_RE = /^[ \t]{0,3}#{1,6}[ \t]+[^\n]*\bnot a real tool\b[^\n]*$/gim;
+// Provider-namespaced tool-call containers leaked as literal text — e.g. MiniMax's
+//   Now writing the final report: <minimax:tool_call>{…}</minimax:tool_call>
+// (and stray/unclosed variants mid-stream). Same class as the <function_calls>/
+// <invoke> leaks above, just a different vendor's syntax. Matches `<ns:tool_call>`
+// where ns is a provider prefix (minimax, deepseek, …); the (?![\w-]) bound stops
+// unrelated tags like `<x:tool_callback>` from ever matching. Structured/real tool
+// calls arrive as separate `tool-*` parts and are untouched — this only cleans text.
+const NS_TOOLCALL_BLOCK_RE = /<\s*[a-z][\w-]*:tool_call(?![\w-])[^>]*>[\s\S]*?<\s*\/\s*[a-z][\w-]*:tool_call\s*>/gi;
+// Trailing UNCLOSED <ns:tool_call>… still streaming, bounded to the next blank line
+// or end so it can't swallow a real finding that follows in the same message.
+const NS_TOOLCALL_OPEN_RE = /<\s*[a-z][\w-]*:tool_call(?![\w-])[^>]*>[\s\S]*?(?=\n[ \t]*\n|$)/gi;
+// Any stray namespaced tool_call tag fragment (orphan open/close) left behind.
+const NS_TOOLCALL_STRAY_RE = /<\s*\/?\s*[a-z][\w-]*:tool_call(?![\w-])[^>]*>/gi;
 
 /**
  * Remove raw tool-call markup the model leaked into its text body so it never
@@ -81,8 +94,11 @@ export function stripToolCallMarkup(text: string): string {
   return text
     .replace(FN_CALLS_BLOCK_RE, "")
     .replace(INVOKE_BLOCK_RE, "")
+    .replace(NS_TOOLCALL_BLOCK_RE, "")
     .replace(TOOLCALL_OPEN_RE, "")
+    .replace(NS_TOOLCALL_OPEN_RE, "")
     .replace(TOOLCALL_STRAY_RE, "")
+    .replace(NS_TOOLCALL_STRAY_RE, "")
     .replace(NOT_A_REAL_TOOL_RE, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
