@@ -169,4 +169,32 @@ Let me also call detect_contradictions to check for any issues.
       detail: "Michael M Cero · likely namesake, not the same person",
     });
   });
+
+  it("returns [] on the recovered-run shape — it legitimately has no pivots section", () => {
+    // Pins the H2 finding: the deterministic recovered-run message
+    // (supabase/functions/osint-agent/recovery.ts buildRecoveredAssistantText —
+    // shape inferred from code, no operator message available) emits an
+    // artifact table with NO "Recommended … pivots" heading. Empty-in/empty-out
+    // is CORRECT parser behavior; recovered-run pivots come from the
+    // artifact-derived path (computePivots/buildPivots), not this parser.
+    const recovered = [
+      "## Findings report — recovered run",
+      "",
+      "The investigation for **jane@example.com** was interrupted before the agent could write its closing response. The saved evidence below was recovered from durable artifacts already written during the run.",
+      "Last heartbeat: 2026-07-20T10:00:00.000Z.",
+      "",
+      "### Recovered findings",
+      "| # | Kind | Value | Confidence | Source |",
+      "|---:|---|---|---:|---|",
+      "| 1 | email | jane@example.com | 90 | breach_check |",
+      "| 2 | username | jdoe88 | 60 | username_sweep |",
+      "",
+      "Recovered 2 artifacts.",
+      "",
+      "### Gaps",
+      "- The run was closed by stale-run recovery, so this is not a full model-written synthesis.",
+      "- Treat unresolved leads as pending until a follow-up run verifies them.",
+    ].join("\n");
+    expect(extractRecommendedPivots(recovered)).toEqual([]);
+  });
 });
