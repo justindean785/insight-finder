@@ -458,6 +458,17 @@ export function wrapToolsWithCache(
   // breach values can reach the artifacts table by this route. Bounded by
   // CHECKPOINT_AWAIT_MS and never throws — persistence must not break a tool call.
   const persistLiveFindings = async (name: string, output: unknown): Promise<void> => {
+    // Recording/evidence/finalize tools own their own persistence path — scanning
+    // their output would double-record the very artifacts they just wrote.
+    // auto-persist-findings.ts documents this intent ("never memory / recording /
+    // planner tools") but its hand-maintained AUTO_PERSIST_TOOL_DENYLIST only
+    // names record_artifacts / record_artifact / memory_save; record_evidence,
+    // record_finding, record_report, append_evidence, finalize_no_findings and
+    // finalize_skip_memory are all missing from it. Gating on ALWAYS_ALLOW_TOOLS —
+    // the canonical "this is a recording tool" set — closes that gap and stays
+    // correct automatically as recording tools are added, instead of relying on
+    // two lists staying in sync.
+    if (ALWAYS_ALLOW_TOOLS.has(name)) return;
     const findings = extractFindings(name, output);
     if (findings.length === 0) return;
     try {
@@ -682,8 +693,13 @@ export function wrapToolsWithCache(
                   );
               ok = deriveOk(out);
               if (!ok) errInfo = extractToolError(out);
-              if (ok) await persistLiveFindings(name, out);
-              return tagSkipState(tagTier(scrub(out), tier, model));
+              // Extract from the SCRUBBED output, exactly as the cached path
+              // below does — the two paths must not disagree about what a tool
+              // result contains, and scrubbing first keeps raw provider payloads
+              // out of the extractor entirely.
+              const safeOut = tagSkipState(tagTier(scrub(out), tier, model));
+              if (ok) await persistLiveFindings(name, safeOut);
+              return safeOut;
             } catch (e) {
               ok = false;
               const redacted = redactSecrets(String((e as Error)?.message ?? e)).slice(0, 500);

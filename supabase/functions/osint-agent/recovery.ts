@@ -31,6 +31,16 @@ export type RecoveryAssistantState = {
   reason: "none" | "no_assistant" | "assistant_before_run" | "assistant_stale";
 };
 
+/**
+ * The generated Database types are not wired into this client, so supabase-js
+ * infers every `.update()` payload parameter as `never`. Funnelling the claim
+ * and its release through one helper keeps that cast in a single place instead
+ * of repeating it at each call site.
+ */
+function threadsUpdate(db: DbClient, patch: Record<string, unknown>) {
+  return db.from("threads").update(patch as never);
+}
+
 export function isStaleActiveThread(thread: RecoverableThread, nowMs: number = Date.now(), staleMs: number = STALE_RUN_AFTER_MS): boolean {
   if (thread.status !== "active") return false;
   const heartbeat = thread.last_heartbeat_at ? new Date(thread.last_heartbeat_at).getTime() : NaN;
@@ -140,7 +150,7 @@ async function recoverOneStaleThread(
   // structurally impossible rather than merely unlikely.
   const claimIso = now.toISOString();
   const claimPatch = { status: "finished", recovered_at: claimIso, recovery_reason: reason, updated_at: claimIso };
-  const claimBase = db.from("threads").update(claimPatch).eq("id", thread.id).eq("status", "active");
+  const claimBase = threadsUpdate(db, claimPatch).eq("id", thread.id).eq("status", "active");
   // `.eq(col, null)` is `col = NULL` in SQL, which is never true — a null
   // heartbeat has to be matched with IS NULL or the claim can never succeed.
   const { data: claimed, error: claimErr } = await (
@@ -174,8 +184,7 @@ async function recoverOneStaleThread(
       // it back exactly as we found it — including the original `updated_at`, so
       // it still reads as stale — and the next sweep re-claims and retries. The
       // guard on status='finished' means we only ever undo OUR OWN claim.
-      const { error: releaseErr } = await db.from("threads")
-        .update({ status: "active", recovered_at: null, recovery_reason: null, updated_at: thread.updated_at ?? claimIso })
+      const { error: releaseErr } = await threadsUpdate(db, { status: "active", recovered_at: null, recovery_reason: null, updated_at: thread.updated_at ?? claimIso })
         .eq("id", thread.id)
         .eq("status", "finished");
       if (releaseErr) {

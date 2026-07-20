@@ -162,6 +162,27 @@ Deno.test("auto-persist: cached and live results normalize to the SAME candidate
   assertEquals(live.length > 0, true);
 });
 
+Deno.test("auto-persist: recording/evidence tools never auto-persist, even the ones missing from the name denylist", async () => {
+  // record_evidence, record_finding, record_report, append_evidence,
+  // finalize_no_findings and finalize_skip_memory are all in ALWAYS_ALLOW_TOOLS
+  // (they own their own persistence) but are NOT in AUTO_PERSIST_TOOL_DENYLIST.
+  // The wrapper gates on ALWAYS_ALLOW_TOOLS so they cannot double-record the
+  // artifacts they just wrote. Pins that guard against a future regression.
+  const recordingTools = [
+    "record_evidence", "record_finding", "record_report",
+    "append_evidence", "finalize_no_findings", "finalize_skip_memory",
+  ];
+  for (const [i, tool] of recordingTools.entries()) {
+    const inserted = await runOnce(tool, `shape-rec-${i}`, () => ({
+      ok: true,
+      // Deliberately finding-shaped: without the guard this WOULD extract.
+      user: { login: "octocat", html_url: "https://github.com/octocat" },
+      items: [{ url: "https://example.com/a", email: "someone@example.com" }],
+    }));
+    assertEquals(inserted.length, 0, `${tool} is a recording tool and must never auto-persist`);
+  }
+});
+
 Deno.test("auto-persist: every denylisted tool stays denylisted through the wrapper", async () => {
   for (const [i, tool] of ["record_artifacts", "memory_recall", "dork_harvest", "gemini_vision"].entries()) {
     const inserted = await runOnce(tool, `shape-deny-${i}`, () => ({
