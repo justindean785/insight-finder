@@ -64,6 +64,11 @@ jobs:
       # supabase_realtime publication) so the real migrations can run.
       - name: Apply Supabase platform shim
         run: psql --set ON_ERROR_STOP=1 --quiet -f .github/ci/supabase-platform-shim.sql
+      # Production installs pgcrypto in the `extensions` schema, never `public`.
+      # Fail loudly if that parity is broken — a public.digest would re-mask the
+      # record_analyst_feedback digest() regression (fixed forward in 20260718000000).
+      - name: Assert pgcrypto schema parity
+        run: psql --set ON_ERROR_STOP=1 --quiet -f .github/ci/assert-pgcrypto-parity.sql
       - name: Apply migrations in timestamp order
         run: |
           set -euo pipefail
@@ -78,6 +83,34 @@ jobs:
             count=$((count + 1))
           done < <(printf '%s\n' supabase/migrations/*.sql | LC_ALL=C sort -t_ -k1,1)
           echo "Applied ${count} migrations cleanly."
+      # Runtime proof (not just DDL): run every supabase/tests/*.sql behavioral
+      # test against the migrated schema. Deterministic + fail-fast: files are
+      # sorted, ON_ERROR_STOP=1 aborts on the first failed assertion, and the job
+      # fails if the required tests are missing or fewer than expected run (no
+      # silent skip / bypass). NOTE: keep this step alongside #307's
+      # ".github/ci/content-hash-compat-test" step when the branches meet — the two
+      # are complementary, not a replacement.
+      - name: Behavioral SQL tests (exercise RPCs on the migrated schema)
+        run: |
+          set -euo pipefail
+          required=(
+            supabase/tests/analyst_feedback_events_test.sql
+            supabase/tests/grants_least_privilege_test.sql
+          )
+          for f in "${required[@]}"; do
+            [ -f "$f" ] || { echo "ERROR: required behavioral test missing: $f"; exit 1; }
+          done
+          count=0
+          while IFS= read -r t; do
+            echo "==> ${t}"
+            psql --set ON_ERROR_STOP=1 --quiet -f "${t}"
+            count=$((count + 1))
+          done < <(printf '%s\n' supabase/tests/*.sql | LC_ALL=C sort)
+          echo "Ran ${count} behavioral SQL test file(s)."
+          if [ "${count}" -lt "${#required[@]}" ]; then
+            echo "ERROR: expected at least ${#required[@]} behavioral tests, ran ${count} — cannot silently skip."
+            exit 1
+          fi
 
   edge:
     name: Edge functions (deno test)
