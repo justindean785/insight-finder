@@ -42,8 +42,9 @@
 // DeepSeek's special-token separator is the FULLWIDTH VERTICAL LINE (U+FF5C, ｜),
 // matching its other reserved tokens (e.g. <｜begin▁of▁sentence｜>). Accept a
 // plain ASCII "|" too, defensively, in case a specific serving/gateway layer
-// normalizes it.
-const SEP = "[｜|]";
+// normalizes it. The "+" quantifier handles both single-separator (｜DSML｜)
+// and double-separator (｜｜DSML｜｜) variants observed in different model versions.
+const SEP = "[｜|]+";
 const TOOL_CALLS_BLOCK_RE = new RegExp(`<${SEP}DSML${SEP}tool_calls>([\\s\\S]*?)<\\/${SEP}DSML${SEP}tool_calls>`, "i");
 const INVOKE_RE = new RegExp(`<${SEP}DSML${SEP}invoke\\s+name="([^"]+)"\\s*>([\\s\\S]*?)<\\/${SEP}DSML${SEP}invoke>`, "gi");
 const PARAMETER_RE = new RegExp(`<${SEP}DSML${SEP}parameter\\s+name="([^"]+)"[^>]*>([\\s\\S]*?)<\\/${SEP}DSML${SEP}parameter>`, "gi");
