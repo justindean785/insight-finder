@@ -39,6 +39,32 @@ Deno.test("hasDsmlToolCallMarkup: also matches the plain-ASCII-pipe variant", ()
   assertEquals(hasDsmlToolCallMarkup(ascii), true);
 });
 
+// Double-separator variant observed in production (fingerprint.to investigation,
+// 2026-07-20): DeepSeek emits ｜｜DSML｜｜ instead of ｜DSML｜.
+const DOUBLE_SEP_SAMPLE =
+  '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="record_artifacts">' +
+  '<｜｜DSML｜｜parameter name="artifacts" string="false">[{"kind":"domain","value":"fingerprint.to"}]</｜｜DSML｜｜parameter>' +
+  '</｜｜DSML｜｜invoke></｜｜DSML｜｜tool_calls>';
+
+Deno.test("hasDsmlToolCallMarkup: detects double-separator ｜｜DSML｜｜ variant", () => {
+  assertEquals(hasDsmlToolCallMarkup(DOUBLE_SEP_SAMPLE), true);
+});
+
+Deno.test("parseDsmlToolCalls: recovers calls from double-separator ｜｜DSML｜｜ variant", () => {
+  const calls = parseDsmlToolCalls(DOUBLE_SEP_SAMPLE);
+  assertEquals(calls.length, 1);
+  assertEquals(calls[0].name, "record_artifacts");
+  assertEquals(calls[0].args.artifacts, '[{"kind":"domain","value":"fingerprint.to"}]');
+});
+
+Deno.test("stripDsmlToolCallMarkup: strips double-separator variant cleanly", () => {
+  const text = `Findings below.\n\n${DOUBLE_SEP_SAMPLE}\n\nEnd.`;
+  const stripped = stripDsmlToolCallMarkup(text);
+  assert(!hasDsmlToolCallMarkup(stripped), "no DSML tokens should remain");
+  assert(stripped.includes("Findings below."));
+  assert(stripped.includes("End."));
+});
+
 Deno.test("parseDsmlToolCalls: recovers all 4 calls with correct names + args from the live sample", () => {
   const calls = parseDsmlToolCalls(LIVE_SAMPLE);
   assertEquals(calls.length, 4);
