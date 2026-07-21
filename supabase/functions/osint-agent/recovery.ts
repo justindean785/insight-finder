@@ -1,4 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { agentMemorySubjectsOrFilter } from "./pgrest.ts";
+import { loadReviewsForThread, applyReviewsToArtifacts, filterMemoriesByReviews } from "./reviews.ts";
 
 export const RUN_HEARTBEAT_INTERVAL_MS = 15_000;
 export const STALE_RUN_AFTER_MS = 75_000;
@@ -21,6 +23,7 @@ export type RecoverableThread = {
 };
 
 export type RecoveryArtifact = {
+  id?: string | null;
   kind?: string | null;
   value?: string | null;
   confidence?: number | null;
@@ -261,7 +264,7 @@ async function loadRecoveryMemories(
   // Prefer memories tied to this user's subjects overlapping recovered values.
   // Best-effort: failures return [] so recovery still inserts the artifact stub.
   try {
-    const orFilter = cleaned.map((s) => `subject.eq.${s}`).join(",");
+    const orFilter = agentMemorySubjectsOrFilter(cleaned);
     const { data, error } = await db
       .from("agent_memory")
       .select("kind,subject,content,confidence")
@@ -347,10 +350,28 @@ async function recoverOneStaleThread(
     // Lost the race (or the run resumed) — another caller owns this thread.
     return { recovered: false, assistantInserted: false, artifactCount: 0 };
   }
+  const releaseClaim = async (failure: string): Promise<void> => {
+    const releasePatch = staleActive
+      ? { status: "active", recovered_at: null, recovery_reason: null, updated_at: thread.updated_at ?? claimIso }
+      : {
+          status: "finished",
+          recovered_at: thread.recovered_at,
+          recovery_reason: thread.recovery_reason,
+          updated_at: thread.updated_at ?? thread.recovered_at ?? claimIso,
+        };
+    const { error: releaseErr } = await threadsUpdate(db, releasePatch)
+      .eq("id", thread.id)
+      .eq("status", "finished")
+      .eq("recovered_at", claimIso)
+      .eq("recovery_reason", claimToken);
+    if (releaseErr) {
+      console.warn(`[recovery] claim release failed for ${thread.id} after ${failure}:`, releaseErr.message);
+    }
+  };
 
   const [{ data: latestAssistant }, { data: artifacts, count: artifactCount }] = await Promise.all([
     db.from("messages").select("created_at").eq("thread_id", thread.id).eq("role", "assistant").order("created_at", { ascending: false }).limit(1).maybeSingle(),
-    db.from("artifacts").select("kind,value,confidence,source,created_at", { count: "exact" }).eq("thread_id", thread.id).order("confidence", { ascending: false }).order("created_at", { ascending: true }).limit(RECOVERY_ARTIFACT_LIMIT),
+    db.from("artifacts").select("id,kind,value,confidence,source,created_at", { count: "exact" }).eq("thread_id", thread.id).order("confidence", { ascending: false }).order("created_at", { ascending: true }).limit(RECOVERY_ARTIFACT_LIMIT),
   ]);
   let assistantInserted = false;
   const assistantState = shouldInsertRecoveredAssistant(
@@ -359,12 +380,37 @@ async function recoverOneStaleThread(
     now.getTime(),
   );
   if (assistantState.shouldInsert) {
-    const arts = (artifacts ?? []) as RecoveryArtifact[];
+    const review = await loadReviewsForThread(
+      db as unknown as Parameters<typeof loadReviewsForThread>[0],
+      thread.id,
+      thread.user_id,
+    );
+    if (!review.ok) {
+      console.warn(JSON.stringify({
+        event: "recovery_report_skipped_review_state_unavailable",
+        thread_id: thread.id,
+        error: review.error,
+      }));
+      await releaseClaim("review lookup failure");
+      return {
+        recovered: false,
+        assistantInserted: false,
+        artifactCount: artifactCount ?? 0,
+        error: "analyst review state unavailable",
+      };
+    }
+    const arts = applyReviewsToArtifacts(
+      (artifacts ?? []) as Array<Record<string, unknown>>,
+      review,
+    ) as RecoveryArtifact[];
     const subjects = [
       thread.seed_value ?? "",
       ...arts.map((a) => String(a.value ?? "")),
     ];
-    const memories = await loadRecoveryMemories(db, thread.user_id, subjects);
+    const memories = filterMemoriesByReviews(
+      await loadRecoveryMemories(db, thread.user_id, subjects) as Array<Record<string, unknown>>,
+      review,
+    ) as RecoveryMemory[];
     const text = buildRecoveredAssistantText(thread, arts, memories);
     const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: [{ type: "text", text }] });
     if (insertErr) {
@@ -375,23 +421,7 @@ async function recoverOneStaleThread(
       // it still reads as stale — and the next sweep re-claims and retries. The
       // Guard on the claim token + timestamp so a delayed failure can never
       // release a newer recovery owner's claim.
-      const releasePatch = staleActive
-        ? { status: "active", recovered_at: null, recovery_reason: null, updated_at: thread.updated_at ?? claimIso }
-        : {
-            status: "finished",
-            recovered_at: thread.recovered_at,
-            recovery_reason: thread.recovery_reason,
-            updated_at: thread.updated_at ?? thread.recovered_at ?? claimIso,
-          };
-      const { error: releaseErr } = await threadsUpdate(db, releasePatch)
-        .eq("id", thread.id)
-        .eq("status", "finished")
-        .eq("recovered_at", claimIso)
-        .eq("recovery_reason", claimToken);
-      if (releaseErr) {
-        // Observable rather than silent: the thread is terminal with no report.
-        console.warn(`[recovery] claim release failed for ${thread.id} after insert error:`, releaseErr.message);
-      }
+      await releaseClaim("insert error");
       return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: insertErr.message };
     }
     assistantInserted = true;

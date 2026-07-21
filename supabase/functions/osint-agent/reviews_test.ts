@@ -15,6 +15,7 @@
 import { assertEquals } from "jsr:@std/assert@^1";
 import {
   applyReviewsToArtifacts,
+  filterMemoriesByReviews,
   emptyReviewLoad,
   isRejectedReview,
   loadReviewsForThread,
@@ -24,6 +25,24 @@ import {
   renderAnalystRejectionBlock,
   type ReviewLoad,
 } from "./reviews.ts";
+
+Deno.test("integrity-critical runtime boundaries wire the canonical review filter", async () => {
+  const files = [
+    "./index.ts",
+    "./cache.ts",
+    "./tool-registry.ts",
+    "./lib/cluster.ts",
+    "./recovery.ts",
+  ];
+  for (const relative of files) {
+    const source = await Deno.readTextFile(new URL(relative, import.meta.url));
+    assertEquals(
+      source.includes("loadReviewsForThread") && source.includes("applyReviewsToArtifacts"),
+      true,
+      `${relative} must load and apply analyst reviews`,
+    );
+  }
+});
 
 type Rows = Array<Record<string, unknown>> | null;
 
@@ -65,7 +84,11 @@ function stubDb(
 }
 
 const load = (byId: Record<string, string>, rejectedKeys: string[] = []): ReviewLoad => ({
-  ok: true, byId: new Map(Object.entries(byId)), rejectedKeys: new Set(rejectedKeys), error: null,
+  ok: true,
+  byId: new Map(Object.entries(byId)),
+  rejectedKeys: new Set(rejectedKeys),
+  rejectedRows: [],
+  error: null,
 });
 
 Deno.test("isRejectedReview only treats dismissed/wrong as rejection", () => {
@@ -129,14 +152,14 @@ Deno.test("loadReviewsForThread FAILS CLOSED when db.from throws", async () => {
   assertEquals(String(r.error).includes("db down"), true);
 });
 
-Deno.test("a failed rejected-key lookup keeps ok:true (id-level enforcement survives)", async () => {
+Deno.test("a failed rejected-key lookup fails closed against id-less replays", async () => {
   const db = stubDb([{ artifact_id: "a1", state: "dismissed" }], null, {
     artifactError: { message: "artifacts read failed" },
   });
   const r = await loadReviewsForThread(db, "t", "u");
-  assertEquals(r.ok, true);                 // verdicts WERE readable
-  assertEquals(r.byId.get("a1"), "dismissed");
-  assertEquals(r.rejectedKeys.size, 0);     // keys unavailable, ids still enforced
+  assertEquals(r.ok, false);
+  assertEquals(r.byId.size, 0);
+  assertEquals(String(r.error).includes("artifacts read failed"), true);
 });
 
 Deno.test("applyReviewsToArtifacts DROPS dismissed and wrong", () => {
@@ -147,6 +170,21 @@ Deno.test("applyReviewsToArtifacts DROPS dismissed and wrong", () => {
   ];
   const out = applyReviewsToArtifacts(rows, load({ a1: "dismissed", a3: "wrong" }));
   assertEquals(out.map((r) => r.id), ["a2"]);
+});
+
+Deno.test("filterMemoriesByReviews drops memories that restate rejected evidence", () => {
+  const review = load(
+    { a1: "wrong" },
+    [normalizeArtifactKey("name", "Rejected Person")],
+  );
+  review.rejectedRows = [{ id: "a1", kind: "name", value: "Rejected Person" }];
+  const rows = [
+    { id: "m1", subject: "rejected person", content: "identity link" },
+    { id: "m2", subject: "seed", related_values: ["Rejected Person"], content: "connection" },
+    { id: "m3", subject: "seed", content: "Rejected Person was previously inferred" },
+    { id: "m4", subject: "seed", content: "Independent safe lesson" },
+  ];
+  assertEquals(filterMemoriesByReviews(rows, review).map((row) => row.id), ["m4"]);
 });
 
 Deno.test("BYPASS CLOSED: same kind+value under a NEW id is still dropped", () => {

@@ -18,6 +18,7 @@ type FakeOpts = {
   failInsert?: boolean;
   /** Simulate an isolate dying after claim but before report insertion. */
   abandonedClaim?: boolean;
+  reviewState?: "confirmed" | "recheck" | "dismissed" | "wrong";
 };
 
 function buildDb(threadId: string, userId: string, now: Date, opts: FakeOpts = {}) {
@@ -97,7 +98,12 @@ function buildDb(threadId: string, userId: string, now: Date, opts: FakeOpts = {
           count: 1,
         });
       }
-      if (table === "artifact_reviews") return inert({ data: [], error: null });
+      if (table === "artifact_reviews") {
+        return inert({
+          data: opts.reviewState ? [{ artifact_id: "a1", state: opts.reviewState }] : [],
+          error: null,
+        });
+      }
       throw new Error(`unexpected table: ${table}`);
     },
   } as unknown as SupabaseClient;
@@ -201,6 +207,26 @@ Deno.test("recovery claim: an isolate death between claim and insert is reclaime
   assertEquals(threadRow.status, "finished");
   assertEquals(threadRow.recovery_reason, "reclaimed abandoned recovery",
     "the temporary claim token is replaced only after the report lands");
+});
+
+Deno.test("recovery report excludes an artifact the analyst marked wrong", async () => {
+  const now = new Date();
+  const { db, insertedMessages } = buildDb(
+    "thread-reviewed-wrong",
+    "user-reviewed-wrong",
+    now,
+    { reviewState: "wrong" },
+  );
+
+  const res = await recoverStaleThreadById(db, "thread-reviewed-wrong", {
+    now,
+    reason: "review-filter test",
+  });
+  assertEquals(res.recovered, true);
+  assertEquals(insertedMessages.length, 1);
+  const serialized = JSON.stringify(insertedMessages[0]);
+  assertEquals(serialized.includes("hit@example.com"), false,
+    "analyst-rejected evidence must not reappear in recovery output");
 });
 
 Deno.test("recovery claim: a thread with a NULL heartbeat is claimed via IS NULL, not = NULL", async () => {

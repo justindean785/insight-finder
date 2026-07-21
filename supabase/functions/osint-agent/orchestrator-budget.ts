@@ -51,6 +51,32 @@ export const USER_TEXT_CHAR_BUDGET = 12_000;
 // spent on redundant fan-out and dragging p95 wall-clock.
 export const MAX_ORCHESTRATOR_STEPS = 22;
 
+// A non-finalize step must emit a tool call. With SDK default "auto", DeepSeek
+// can narrate "Now let me run X" as prose and the agent loop stops immediately.
+export const FORCE_TOOL_CALL_UNTIL_FINALIZE = true;
+
+export function orchestratorStepToolChoice(isFinalizeStep: boolean): "required" | "auto" {
+  if (isFinalizeStep || !FORCE_TOOL_CALL_UNTIL_FINALIZE) return "auto";
+  return "required";
+}
+
+export interface IntermediateStepPlan {
+  activeTools: string[];
+  toolChoice: "required" | "auto";
+}
+
+/** One builder for every non-finalize prepareStep branch, so toolChoice cannot
+ * silently fall back to "auto" on the persistence-nudge path. */
+export function buildIntermediateStepPlan(input: {
+  nudgePersistence: boolean;
+  normalActiveTools: readonly string[];
+}): IntermediateStepPlan {
+  return {
+    activeTools: input.nudgePersistence ? ["record_artifacts"] : [...input.normalActiveTools],
+    toolChoice: orchestratorStepToolChoice(false),
+  };
+}
+
 // Hard ceiling on GENUINE (live, non-cached, non-skipped) tool executions per run.
 // Live logs showed a single investigation balloon to 230 tool calls / 747s of
 // tool-time (43× socialfetch_web_read, 38× minimax_web_search) — unbounded run size

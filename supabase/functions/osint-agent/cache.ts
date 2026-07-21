@@ -17,6 +17,7 @@ import { guard } from "./guard.ts";
 import { type ToolCallBudget, reserveToolCall } from "./orchestrator-budget.ts";
 import { extractFindings, loadSeenArtifactKeys, persistAutoFindings } from "./auto-persist-findings.ts";
 import { CHECKPOINT_AWAIT_MS, withTimeout } from "./incremental-persist.ts";
+import { loadReviewsForThread, applyReviewsToArtifacts, type ReviewLoad } from "./reviews.ts";
 import {
   ALWAYS_ALLOW_TOOLS,
   analyzeWeakLead,
@@ -315,8 +316,13 @@ async function loadSelectorEvidence(
   threadId: string,
   selectorType: string,
   normalizedSelector: string,
+  review: ReviewLoad,
 ): Promise<SelectorEvidenceSignal> {
-  const key = `${threadId}:${selectorType}:${normalizedSelector}`;
+  const reviewSignature = [
+    ...[...review.byId.entries()].map(([id, state]) => `${id}:${state}`),
+    ...[...review.rejectedKeys].map((value) => `key:${value}`),
+  ].sort().join("|");
+  const key = `${threadId}:${selectorType}:${normalizedSelector}:${review.ok}:${reviewSignature}`;
   const cached = SELECTOR_SIGNAL_CACHE.get(key);
   if (cached) return cached;
   const empty: SelectorEvidenceSignal = {
@@ -344,11 +350,15 @@ async function loadSelectorEvidence(
         : [selectorType];
     const { data } = await userDb
       .from("artifacts")
-      .select("kind,value,confidence,source,metadata")
+      .select("id,kind,value,confidence,source,metadata")
       .eq("thread_id", threadId)
       .in("kind", likelyKinds)
       .limit(100);
-    const rows = ((data ?? []) as Array<{
+    const reviewed = applyReviewsToArtifacts(
+      (data ?? []) as Array<Record<string, unknown>>,
+      review,
+    );
+    const rows = (reviewed as Array<{
       kind?: string | null;
       value?: string | null;
       confidence?: number | null;
@@ -436,6 +446,15 @@ export function wrapToolsWithCache(
 ) {
   const wrapped: Record<string, Tool> = {};
   const adminDb = ctx.supabaseAdmin ?? ctx.supabase;
+  let reviewsPromise: Promise<ReviewLoad> | null = null;
+  const getReviews = (): Promise<ReviewLoad> => {
+    reviewsPromise ??= loadReviewsForThread(
+      adminDb as unknown as Parameters<typeof loadReviewsForThread>[0],
+      ctx.investigationId,
+      ctx.userId,
+    );
+    return reviewsPromise;
+  };
   // ---- Per-tool-call durable persistence ------------------------------------
   // IN ADDITION to the per-step onStepFinish path in index.ts, not instead of it.
   //
@@ -749,7 +768,13 @@ export function wrapToolsWithCache(
         // value can reach tool_usage_log.input_json or tool_call_cache.input_json.
         const inputJson = redactSensitiveToolInput(name, normalizeForHash(input)) as unknown as Record<string, unknown>;
         const params = normalizedParams(inp);
-        const signal = await loadSelectorEvidence(ctx.supabase, ctx.investigationId, selectorType, sel);
+        const signal = await loadSelectorEvidence(
+          ctx.supabase,
+          ctx.investigationId,
+          selectorType,
+          sel,
+          await getReviews(),
+        );
         const weakLead = analyzeWeakLead(signal);
         // Persistent tool-health prior (Phase 2): latency + reliability from the
         // tool_health view, sample-gated inside scoreExpectedValue so a low-sample

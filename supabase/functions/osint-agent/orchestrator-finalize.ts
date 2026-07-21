@@ -467,13 +467,22 @@ function truncate(s: string, max: number): string {
  * artifacts already gathered (nothing new is fetched) and forbids fabrication and
  * further tool use, so the salvage report can only restate confirmed evidence.
  */
-export function buildSalvageSynthesisPrompt(seed: string, artifacts: SalvageArtifact[]): string {
+export function buildSalvageSynthesisPrompt(
+  seed: string,
+  artifacts: SalvageArtifact[],
+  rejected: SalvageArtifact[] = [],
+): string {
   const rows = (artifacts ?? []).slice(0, 200).map((a) => {
     const kind = String(a?.kind ?? "?");
     const value = typeof a?.value === "string" ? a.value : JSON.stringify(a?.value ?? "");
     const conf = a?.confidence != null && a?.confidence !== "" ? ` (confidence ${a.confidence})` : "";
     const src = a?.source ? ` [source: ${a.source}]` : "";
     return `- ${kind}: ${truncate(value, 300)}${conf}${src}`;
+  });
+  const rejectedRows = (rejected ?? []).slice(0, 100).map((a) => {
+    const kind = String(a?.kind ?? "?");
+    const value = typeof a?.value === "string" ? a.value : JSON.stringify(a?.value ?? "");
+    return `- ${kind}: ${truncate(value, 200)}`;
   });
   return [
     `Investigation seed: ${seed}`,
@@ -486,6 +495,14 @@ export function buildSalvageSynthesisPrompt(seed: string, artifacts: SalvageArti
     "- Confirmed findings grouped by type, each with its confidence and source.",
     "- Explicit gaps and unverified leads.",
     "Do not invent anything not present below. Do not call any tools.",
+    ...(rejectedRows.length
+      ? [
+          "",
+          "ANALYST-REJECTED — DO NOT USE. A human analyst marked these artifacts FALSE.",
+          "Never present, cite, rank, or re-derive them as the subject or supporting evidence:",
+          ...rejectedRows,
+        ]
+      : []),
     rows.length ? "" : "If the set is empty, state plainly that no confirmed findings were recorded.",
     "",
     "Artifacts:",

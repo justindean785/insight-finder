@@ -117,8 +117,9 @@ export async function loadReviewsForThread(
     }
 
     // Resolve rejected ids → normalized kind|value so a later re-record of the
-    // same finding under a NEW id is still excluded. Best-effort: if this lookup
-    // fails we still have id-level enforcement, so the load stays ok.
+    // same finding under a NEW id is still excluded. This is integrity-critical:
+    // model-supplied artifact copies have no original id, so an id-only partial
+    // load would let a rejected value back into planning/memory.
     const rejectedIds = [...byId.entries()].filter(([, s]) => REJECTED_REVIEW_STATES.has(s)).map(([id]) => id);
     const rejectedRows: RejectedRow[] = [];
     if (rejectedIds.length > 0) {
@@ -136,11 +137,9 @@ export async function loadReviewsForThread(
               value: String(a?.value ?? ""),
             });
           }
-        } else if (aErr) {
-          console.warn("[reviews] rejected-key lookup failed (id-level enforcement still active):", errText(aErr));
-        }
+        } else if (aErr) return emptyReviewLoad(false, errText(aErr));
       } catch (e) {
-        console.warn("[reviews] rejected-key lookup threw:", errText(e));
+        return emptyReviewLoad(false, errText(e));
       }
     }
     return { ok: true, byId, rejectedKeys, rejectedRows, error: null };
@@ -194,6 +193,30 @@ export function applyReviewsToArtifacts<T extends Record<string, unknown>>(
     }
   }
   return out;
+}
+
+/** Exclude durable memories that directly restate an analyst-rejected value.
+ * Memory rows have no artifact_id, so enforcement is value-based across subject,
+ * related_values, and content. */
+export function filterMemoriesByReviews<T extends Record<string, unknown>>(
+  rows: T[] | null | undefined,
+  review: ReviewLoad,
+): T[] {
+  if (!Array.isArray(rows) || !review.ok) return [];
+  const rejectedValues = review.rejectedRows
+    .map((row) => String(row.value ?? "").trim().toLowerCase().replace(/\s+/g, " "))
+    .filter((value) => value.length >= 3);
+  if (rejectedValues.length === 0) return rows;
+  return rows.filter((row) => {
+    const subject = String(row.subject ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+    const related = Array.isArray(row.related_values)
+      ? row.related_values.map((value) => String(value).trim().toLowerCase().replace(/\s+/g, " "))
+      : [];
+    const content = String(row.content ?? "").toLowerCase().replace(/\s+/g, " ");
+    return !rejectedValues.some((value) =>
+      subject === value || related.includes(value) || content.includes(value)
+    );
+  });
 }
 
 /**

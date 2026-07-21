@@ -1,5 +1,5 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { agentMemoryOrFilter, pgrestQuote } from "./pgrest.ts";
+import { agentMemoryOrFilter, agentMemorySubjectsOrFilter, pgrestQuote } from "./pgrest.ts";
 
 /** Count the top-level (unquoted) commas in a PostgREST logic tree. A well-formed
  *  two-condition `or` filter has exactly one. This is what actually broke: an
@@ -69,9 +69,44 @@ Deno.test("brace values drop the cs.{...} clause instead of emitting a 400", () 
   assertEquals(topLevelCommas(filter), 0); // single condition
 });
 
+Deno.test("multiple subjects remain separate, fully quoted OR clauses", () => {
+  const subjects = [
+    "1677 iroquois rd, rocklin, ca 95765",
+    "(916) 435-8887",
+    'Alice "Ace" Example',
+  ];
+  const filter = agentMemorySubjectsOrFilter(subjects);
+  assertEquals(topLevelCommas(filter), 5, "three two-clause subjects produce six OR clauses");
+  for (const subject of subjects) {
+    assertEquals(filter.includes(pgrestQuote(subject)), true);
+  }
+});
+
+Deno.test("one unrepresentable or injection-shaped subject does not suppress valid subjects", () => {
+  const filter = agentMemorySubjectsOrFilter([
+    "a}b{c",
+    'x",subject.eq.attacker',
+    "alice@example.com",
+  ]);
+  assertEquals(filter.includes('subject.eq."a}b{c"'), true);
+  assertEquals(filter.includes("related_values.cs.{alice@example.com}"), true);
+  assertEquals(filter.includes('subject.eq."x\\",subject.eq.attacker"'), true);
+  // brace subject contributes one clause; the other two contribute two each.
+  assertEquals(topLevelCommas(filter), 4);
+});
+
 Deno.test("empty / nullish input is safe", () => {
   assertEquals(pgrestQuote(""), "");
   assertEquals(topLevelCommas(agentMemoryOrFilter("")), 1);
+});
+
+Deno.test("runtime memory reads use the canonical safe filter", async () => {
+  const registry = await Deno.readTextFile(new URL("./tool-registry.ts", import.meta.url));
+  const recovery = await Deno.readTextFile(new URL("./recovery.ts", import.meta.url));
+  assertEquals((registry.match(/agentMemoryOrFilter\(/g) ?? []).length >= 4, true);
+  assertEquals(registry.includes(".or(`subject.eq.${"), false);
+  assertEquals(recovery.includes("agentMemorySubjectsOrFilter(cleaned)"), true);
+  assertEquals(recovery.includes("cleaned.map((s) => `subject.eq.${s}`)"), false);
 });
 
 // ---- Real PostgREST parser canary --------------------------------------------

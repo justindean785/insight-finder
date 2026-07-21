@@ -391,3 +391,15 @@ Deno.test("buildSalvageSynthesisPrompt: tolerates zero artifacts", () => {
   assert(p.includes("bob@example.com"), "still includes the seed");
   assert(typeof p === "string" && p.length > 0, "produces a usable prompt");
 });
+
+Deno.test("buildSalvageSynthesisPrompt: explicitly forbids analyst-rejected evidence", () => {
+  const p = buildSalvageSynthesisPrompt(
+    "seed",
+    [{ kind: "username", value: "supported-user", confidence: 70 }],
+    [{ kind: "name", value: "Rejected Person", confidence: 95 }],
+  );
+  assert(p.includes("supported-user"));
+  assert(p.includes("ANALYST-REJECTED"));
+  assert(p.includes("Rejected Person"));
+  assert(/never present|do not use/i.test(p));
+});
