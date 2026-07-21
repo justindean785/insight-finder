@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasReportShape, selectClosingAssistantProse, stripReasoning, stripReasoningPerPart } from "@/lib/report-shape";
+import { hasReportShape, joinAssistantTranscript, selectClosingAssistantProse, stripReasoning, stripReasoningPerPart } from "@/lib/report-shape";
 
 describe("stripReasoning", () => {
   it("removes a closed <think> block", () => {
@@ -66,6 +66,32 @@ describe("selectClosingAssistantProse", () => {
       "Opening sweep.",
       "Checking the final bounded pivot.",
     ])).toBe("Checking the final bounded pivot.");
+  });
+});
+
+describe("joinAssistantTranscript (chat bubble — full transcript, nothing hidden)", () => {
+  it("joins every non-empty step in order with blank lines (keeps narration AND the closing report)", () => {
+    expect(joinAssistantTranscript([
+      "Let me run the opening breach sweep.",
+      "New seed: Marina Mondot. Let me investigate.",
+      "## Findings report\n\n- [VERIFY] supported observation.",
+    ])).toBe(
+      "Let me run the opening breach sweep.\n\nNew seed: Marina Mondot. Let me investigate.\n\n## Findings report\n\n- [VERIFY] supported observation.",
+    );
+  });
+
+  it("drops empty / whitespace-only parts", () => {
+    expect(joinAssistantTranscript(["Step one.", "", "  ", "Step two."])).toBe("Step one.\n\nStep two.");
+  });
+
+  it("collapses ADJACENT duplicate parts (SDK re-emit) but keeps a later non-adjacent repeat", () => {
+    expect(joinAssistantTranscript(["Same.", "Same.", "Different.", "Same."]))
+      .toBe("Same.\n\nDifferent.\n\nSame.");
+  });
+
+  it("returns empty string for no parts", () => {
+    expect(joinAssistantTranscript([])).toBe("");
+    expect(joinAssistantTranscript(["", "   "])).toBe("");
   });
 });
 
