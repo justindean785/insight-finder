@@ -16,6 +16,8 @@ export type RecoverableThread = {
   run_started_at?: string | null;
   last_heartbeat_at?: string | null;
   updated_at?: string | null;
+  recovered_at?: string | null;
+  recovery_reason?: string | null;
 };
 
 export type RecoveryArtifact = {
@@ -284,7 +286,16 @@ async function recoverOneStaleThread(
   now: Date,
   reason: string,
 ): Promise<{ recovered: boolean; assistantInserted: boolean; artifactCount: number; error?: string }> {
-  if (!isStaleActiveThread(thread, now.getTime())) return { recovered: false, assistantInserted: false, artifactCount: 0 };
+  const staleActive = isStaleActiveThread(thread, now.getTime());
+  const priorClaimAt = thread.recovered_at ? new Date(thread.recovered_at).getTime() : NaN;
+  const staleClaim =
+    thread.status === "finished" &&
+    String(thread.recovery_reason ?? "").startsWith("recovery_claim:") &&
+    Number.isFinite(priorClaimAt) &&
+    now.getTime() - priorClaimAt > STALE_RUN_AFTER_MS;
+  if (!staleActive && !staleClaim) {
+    return { recovered: false, assistantInserted: false, artifactCount: 0 };
+  }
 
   // ---- ATOMIC CLAIM ---------------------------------------------------------
   // The ONE step that decides which of several concurrent sweeps (startup sweep,
@@ -309,15 +320,28 @@ async function recoverOneStaleThread(
   // insert at all, so a duplicate "Findings report — recovered run" is
   // structurally impossible rather than merely unlikely.
   const claimIso = now.toISOString();
-  const claimPatch = { status: "finished", recovered_at: claimIso, recovery_reason: reason, updated_at: claimIso };
-  const claimBase = threadsUpdate(db, claimPatch).eq("id", thread.id).eq("status", "active");
-  // `.eq(col, null)` is `col = NULL` in SQL, which is never true — a null
-  // heartbeat has to be matched with IS NULL or the claim can never succeed.
-  const { data: claimed, error: claimErr } = await (
-    thread.last_heartbeat_at == null
-      ? claimBase.is("last_heartbeat_at", null)
-      : claimBase.eq("last_heartbeat_at", thread.last_heartbeat_at)
-  ).select("id");
+  const claimToken = `recovery_claim:${crypto.randomUUID()}`;
+  const claimPatch = {
+    status: "finished",
+    recovered_at: claimIso,
+    recovery_reason: claimToken,
+    updated_at: claimIso,
+  };
+  const claimQuery = staleActive
+    ? (() => {
+        const base = threadsUpdate(db, claimPatch).eq("id", thread.id).eq("status", "active");
+        // `.eq(col, null)` is `col = NULL` in SQL, which is never true — a null
+        // heartbeat has to be matched with IS NULL or the claim can never succeed.
+        return thread.last_heartbeat_at == null
+          ? base.is("last_heartbeat_at", null)
+          : base.eq("last_heartbeat_at", thread.last_heartbeat_at);
+      })()
+    : threadsUpdate(db, claimPatch)
+      .eq("id", thread.id)
+      .eq("status", "finished")
+      .eq("recovered_at", thread.recovered_at)
+      .eq("recovery_reason", thread.recovery_reason);
+  const { data: claimed, error: claimErr } = await claimQuery.select("id");
   if (claimErr) return { recovered: false, assistantInserted: false, artifactCount: 0, error: claimErr.message };
   if (!Array.isArray(claimed) || claimed.length === 0) {
     // Lost the race (or the run resumed) — another caller owns this thread.
@@ -349,10 +373,21 @@ async function recoverOneStaleThread(
       // terminal with no report and no sweep would ever look at it again. We put
       // it back exactly as we found it — including the original `updated_at`, so
       // it still reads as stale — and the next sweep re-claims and retries. The
-      // guard on status='finished' means we only ever undo OUR OWN claim.
-      const { error: releaseErr } = await threadsUpdate(db, { status: "active", recovered_at: null, recovery_reason: null, updated_at: thread.updated_at ?? claimIso })
+      // Guard on the claim token + timestamp so a delayed failure can never
+      // release a newer recovery owner's claim.
+      const releasePatch = staleActive
+        ? { status: "active", recovered_at: null, recovery_reason: null, updated_at: thread.updated_at ?? claimIso }
+        : {
+            status: "finished",
+            recovered_at: thread.recovered_at,
+            recovery_reason: thread.recovery_reason,
+            updated_at: thread.updated_at ?? thread.recovered_at ?? claimIso,
+          };
+      const { error: releaseErr } = await threadsUpdate(db, releasePatch)
         .eq("id", thread.id)
-        .eq("status", "finished");
+        .eq("status", "finished")
+        .eq("recovered_at", claimIso)
+        .eq("recovery_reason", claimToken);
       if (releaseErr) {
         // Observable rather than silent: the thread is terminal with no report.
         console.warn(`[recovery] claim release failed for ${thread.id} after insert error:`, releaseErr.message);
@@ -361,14 +396,33 @@ async function recoverOneStaleThread(
     }
     assistantInserted = true;
   }
-  // No trailing status flip: the claim above already finalized the thread, and
-  // repeating it here is what let a losing caller report success.
+  // Convert the temporary lease token into the durable recovery reason. If the
+  // isolate dies before this point, the finished `recovery_claim:*` row is
+  // deliberately reclaimable by a later sweep after one lease interval.
+  const { data: finalized, error: finalizeErr } = await threadsUpdate(db, {
+    recovery_reason: reason,
+    recovered_at: claimIso,
+    updated_at: claimIso,
+  })
+    .eq("id", thread.id)
+    .eq("status", "finished")
+    .eq("recovered_at", claimIso)
+    .eq("recovery_reason", claimToken)
+    .select("id");
+  if (finalizeErr || !Array.isArray(finalized) || finalized.length === 0) {
+    return {
+      recovered: false,
+      assistantInserted,
+      artifactCount: artifactCount ?? 0,
+      error: finalizeErr?.message ?? "recovery claim ownership lost before finalization",
+    };
+  }
   return { recovered: true, assistantInserted, artifactCount: artifactCount ?? 0 };
 }
 
 export async function recoverStaleThreadById(db: DbClient, threadId: string, opts?: { now?: Date; reason?: string }) {
   const now = opts?.now ?? new Date();
-  const { data, error } = await db.from("threads").select("id,user_id,title,seed_value,status,run_started_at,last_heartbeat_at,updated_at").eq("id", threadId).maybeSingle();
+  const { data, error } = await db.from("threads").select("id,user_id,title,seed_value,status,run_started_at,last_heartbeat_at,updated_at,recovered_at,recovery_reason").eq("id", threadId).maybeSingle();
   if (error) return { recovered: false, assistantInserted: false, artifactCount: 0, error: error.message };
   if (!data) return { recovered: false, assistantInserted: false, artifactCount: 0 };
   return recoverOneStaleThread(db, data as RecoverableThread, now, opts?.reason ?? "stale heartbeat recovered before new request");
@@ -377,18 +431,25 @@ export async function recoverStaleThreadById(db: DbClient, threadId: string, opt
 export async function recoverStaleActiveThreads(db: DbClient, opts?: { now?: Date; limit?: number; reason?: string }) {
   const now = opts?.now ?? new Date();
   const cutoff = new Date(now.getTime() - STALE_RUN_AFTER_MS).toISOString();
-  const { data, error } = await db.from("threads").select("id,user_id,title,seed_value,status,run_started_at,last_heartbeat_at,updated_at").eq("status", "active").or(`last_heartbeat_at.lt.${cutoff},and(last_heartbeat_at.is.null,updated_at.lt.${cutoff})`).order("updated_at", { ascending: true }).limit(opts?.limit ?? 20);
-  if (error) throw new Error(error.message);
+  const limit = opts?.limit ?? 20;
+  const columns = "id,user_id,title,seed_value,status,run_started_at,last_heartbeat_at,updated_at,recovered_at,recovery_reason";
+  const [{ data: active, error: activeError }, { data: abandonedClaims, error: claimError }] = await Promise.all([
+    db.from("threads").select(columns).eq("status", "active").or(`last_heartbeat_at.lt.${cutoff},and(last_heartbeat_at.is.null,updated_at.lt.${cutoff})`).order("updated_at", { ascending: true }).limit(limit),
+    db.from("threads").select(columns).eq("status", "finished").like("recovery_reason", "recovery_claim:%").lt("recovered_at", cutoff).order("recovered_at", { ascending: true }).limit(limit),
+  ]);
+  if (activeError) throw new Error(activeError.message);
+  if (claimError) throw new Error(claimError.message);
+  const rows = [...(active ?? []), ...(abandonedClaims ?? [])].slice(0, limit) as RecoverableThread[];
   let recovered = 0;
   let assistantInserted = 0;
   let errors = 0;
-  for (const row of (data ?? []) as RecoverableThread[]) {
+  for (const row of rows) {
     const res = await recoverOneStaleThread(db, row, now, opts?.reason ?? "stale heartbeat recovered by sweeper");
     if (res.error) errors++;
     if (res.recovered) recovered++;
     if (res.assistantInserted) assistantInserted++;
   }
-  return { scanned: (data ?? []).length, recovered, assistantInserted, errors };
+  return { scanned: rows.length, recovered, assistantInserted, errors };
 }
 
 export async function markRunStarted(db: DbClient, threadId: string, startedAt: Date = new Date()): Promise<void> {

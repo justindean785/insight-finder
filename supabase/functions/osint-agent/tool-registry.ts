@@ -1221,6 +1221,7 @@ export function buildTools(ctx: ToolContext) {
           return {
             ok: false,
             skipped: true,
+            circuit_benign_skip: true,
             reason: `socialfetch_lookup does not support platform='${platform}'. For a blocked host (youtube/twitch/reddit/arbitrary page) use socialfetch_web_read; otherwise http_fingerprint, wayback_snapshots, or minimax_web_search.`,
             supported: Array.from(SUPPORTED),
           };
@@ -3615,7 +3616,7 @@ export function buildTools(ctx: ToolContext) {
         if (isHostDead(parsed.hostname)) return { skipped: true, reason: "host does not resolve (NXDOMAIN) — skipped", url: raw };
         // Skip hosts that always 451/403 through Jina — save the ~8s dead round-trip.
         if (isJinaHardBlocked(parsed.hostname)) {
-          return { error: "jina 451", status: 451, url: parsed.toString(), skipped: true, hint: "origin hard-blocks Jina — use socialfetch_web_read (server-side markdown) for this host, or wayback_snapshots / a direct-API tool" };
+          return { error: "jina 451", status: 451, url: parsed.toString(), skipped: true, circuit_benign_skip: true, selector_local: true, hint: "origin hard-blocks Jina — use socialfetch_web_read (server-side markdown) for this host, or wayback_snapshots / a direct-API tool" };
         }
         // Rebuild a clean URL; r.jina.ai expects the raw URL appended.
         const clean = parsed.toString();
@@ -3637,7 +3638,9 @@ export function buildTools(ctx: ToolContext) {
               status: r.status,
               url: clean,
               hint,
-              ...(isJinaOriginBlockStatus(r.status) ? { skipped: true, selector_local: true } : {}),
+              ...(isJinaOriginBlockStatus(r.status)
+                ? { skipped: true, circuit_benign_skip: true, selector_local: true }
+                : {}),
             };
           }
           const text = await r.text();

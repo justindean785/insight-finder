@@ -77,12 +77,18 @@ describe("classifyResult", () => {
     expect(classifyResult({ error: "API not configured" }, null)).toBe("ok");
   });
 
-  it("treats skipped:true as ok so unsupported-platform no-ops do not poison keys", () => {
+  it("only treats explicitly benign selector-local skips as ok", () => {
     expect(classifyResult({
       ok: false,
       skipped: true,
+      circuit_benign_skip: true,
       reason: "socialfetch_lookup does not support platform='github'",
     }, null)).toBe("ok");
+    expect(classifyResult({
+      ok: false,
+      skipped: true,
+      reason: "run tool-call cap reached",
+    }, null)).toBe("other");
   });
 });
 

@@ -514,11 +514,10 @@ export function classifyResult(result: unknown, threw: unknown): FailureKind {
   }
   if (!result || typeof result !== "object") return "ok";
   const r = result as Record<string, unknown>;
-  // Explicit skipped:true (unsupported platform, governance gate, etc.) is an
-  // intentional no-op — never poison the circuit key as "other" (cdf02ff8:
-  // unsupported socialfetch platforms classified as other then blocked later
-  // same-handle calls via "duplicate call: prior other").
-  if (r.skipped === true) return "ok";
+  // Only a tool-owned, selector-local benign skip counts as circuit success.
+  // A broad `skipped:true => ok` rule incorrectly marks budget/finalize/
+  // governance/disabled-tool controls as healthy provider outcomes.
+  if (r.skipped === true && r.circuit_benign_skip === true) return "ok";
   if (r.ok === false || typeof r.error === "string") {
     const status = typeof r.status === "number" ? r.status
       : typeof r.status_code === "number" ? r.status_code

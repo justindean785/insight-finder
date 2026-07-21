@@ -16,6 +16,8 @@ type FakeOpts = {
   stale?: boolean;
   /** Force the recovered-report insert to fail, exercising the rollback path. */
   failInsert?: boolean;
+  /** Simulate an isolate dying after claim but before report insertion. */
+  abandonedClaim?: boolean;
 };
 
 function buildDb(threadId: string, userId: string, now: Date, opts: FakeOpts = {}) {
@@ -28,10 +30,12 @@ function buildDb(threadId: string, userId: string, now: Date, opts: FakeOpts = {
     user_id: userId,
     title: "claim-test",
     seed_value: "claim-test.example",
-    status: opts.status ?? "active",
+    status: opts.abandonedClaim ? "finished" : (opts.status ?? "active"),
     run_started_at: stamp,
     last_heartbeat_at: stamp,
     updated_at: stamp,
+    recovered_at: opts.abandonedClaim ? stamp : null,
+    recovery_reason: opts.abandonedClaim ? "recovery_claim:dead-isolate" : null,
   };
   const insertedMessages: Array<Record<string, unknown>> = [];
   let updateCount = 0;
@@ -144,7 +148,7 @@ Deno.test("recovery claim: an already-terminal thread is never touched", async (
   assertEquals(res.recovered, false, "a finished thread is not recoverable");
   assertEquals(insertedMessages.length, 0, "no report may be inserted for a terminal thread");
   assertEquals(threadRow.status, "finished", "status must be left exactly as found");
-  assertEquals(threadRow.recovered_at, undefined, "no recovery metadata may be written");
+  assertEquals(threadRow.recovered_at, null, "no recovery metadata may be written");
 });
 
 Deno.test("recovery claim: a FRESH active thread is never claimed, even by many callers", async () => {
@@ -175,6 +179,28 @@ Deno.test("recovery claim: a failed report insert releases the claim, leaving a 
   assertEquals(threadRow.status, "active", "the claim must be released on insert failure");
   assertEquals(threadRow.recovered_at, null, "recovery metadata must be rolled back too");
   assertEquals(threadRow.recovery_reason, null);
+});
+
+Deno.test("recovery claim: an isolate death between claim and insert is reclaimed after the lease", async () => {
+  const now = new Date();
+  const { db, insertedMessages, threadRow } = buildDb(
+    "thread-abandoned-claim",
+    "user-abandoned",
+    now,
+    { abandonedClaim: true },
+  );
+
+  const res = await recoverStaleThreadById(db, "thread-abandoned-claim", {
+    now,
+    reason: "reclaimed abandoned recovery",
+  });
+
+  assertEquals(res.recovered, true);
+  assertEquals(res.assistantInserted, true);
+  assertEquals(insertedMessages.length, 1, "the abandoned claim is retried and receives its report");
+  assertEquals(threadRow.status, "finished");
+  assertEquals(threadRow.recovery_reason, "reclaimed abandoned recovery",
+    "the temporary claim token is replaced only after the report lands");
 });
 
 Deno.test("recovery claim: a thread with a NULL heartbeat is claimed via IS NULL, not = NULL", async () => {

@@ -48,21 +48,26 @@ Deno.test("two socialfetch platforms on same handle both allow after first ok", 
   clearThread(thread);
 });
 
-Deno.test("classifyResult treats skipped:true as ok (no prior-other poison)", () => {
+Deno.test("classifyResult only treats explicit benign skips as ok", () => {
   assertEquals(
     classifyResult({
       ok: false,
       skipped: true,
+      circuit_benign_skip: true,
       reason: "socialfetch_lookup does not support platform='github'",
     }, null),
     "ok",
+  );
+  assertEquals(
+    classifyResult({ ok: false, skipped: true, reason: "run tool-call cap reached" }, null),
+    "other",
   );
   const thread = "t-sf-skip-ok";
   clearThread(thread);
   const gh = "github|profile|walidalamriki";
   const ig = "instagram|profile|walidalamriki";
   recordResult(thread, "socialfetch_lookup", gh, "default", {
-    status: classifyResult({ ok: false, skipped: true, reason: "unsupported" }, null),
+    status: classifyResult({ ok: false, skipped: true, circuit_benign_skip: true, reason: "unsupported" }, null),
   });
   assertEquals(shouldRun(thread, "socialfetch_lookup", ig).allow, true);
   // Same platform+kind after a skipped ok still allows (artifactCount 0) — only
