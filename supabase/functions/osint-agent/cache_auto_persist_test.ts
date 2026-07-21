@@ -82,7 +82,9 @@ async function runOnce(
   return { inserted };
 }
 
-Deno.test("auto-persist: a github_user success persists an artifact via the LIVE (non-cache) execute path", async () => {
+// QUARANTINED 2026-07-21 — orphaned by #370 rollback of #369; unskip when the per-call
+// auto-persist hook (persistLiveFindings/extractFindings) re-lands in cache.ts. See issue #373.
+Deno.test.ignore("auto-persist: a github_user success persists an artifact via the LIVE (non-cache) execute path", async () => {
   const { inserted } = await runOnce(
     "github_user",
     "live-github",

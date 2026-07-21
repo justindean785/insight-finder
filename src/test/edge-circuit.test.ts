@@ -77,7 +77,9 @@ describe("classifyResult", () => {
     expect(classifyResult({ error: "API not configured" }, null)).toBe("ok");
   });
 
-  it("only treats explicitly benign selector-local skips as ok", () => {
+  // QUARANTINED 2026-07-21 — orphaned by #370 rollback of #369; unskip when classifyResult
+  // honors circuit_benign_skip:true again (SocialFetch benign-skip). See issue #373.
+  it.skip("only treats explicitly benign selector-local skips as ok", () => {
     expect(classifyResult({
       ok: false,
       skipped: true,
