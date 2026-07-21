@@ -1070,6 +1070,20 @@ Deno.serve(async (req) => {
         } catch (e) {
           console.warn("[report-salvage] backstop failed (non-fatal):", String(e));
         }
+        // Detect the seed kind cheaply up front (pure string check — no network,
+        // no isolate-kill risk) so seed_type can be stamped in the SAME terminal
+        // status update below, and reused by the best-effort cache upsert after
+        // it. Historically this was computed inside the cache block, which ran
+        // BEFORE the status write.
+        const firstUser = finalMessages.find((m) => m.role === "user");
+        const seedText = ((firstUser?.parts ?? []) as Array<{ type: string; text?: string }>)
+          .filter((p) => p.type === "text").map((p) => p.text ?? "").join(" ").trim();
+        const detectedSeed = detectSeedServer(seedText);
+        detectedSeedKind = detectedSeed ? detectedSeed.kind : null;
+
+        // The report row must be durable BEFORE the status flip. Captured here so
+        // the best-effort cache upsert (moved after the status write) can reuse it.
+        let safePartsForCache: unknown[] | null = null;
         if (assistant) {
           // Cap `messages.parts` payload before persisting. First shrink any
           // single oversized tool payload (e.g. a 600KB socialfetch_lookup
@@ -1080,6 +1094,7 @@ Deno.serve(async (req) => {
           // assistant row to consume that budget makes the next turn 413.
           const cappedParts = capToolPartPayloads(assistant.parts as unknown[]);
           const safeParts = capPartsSize(cappedParts, MAX_PERSISTED_ASSISTANT_PARTS_BYTES);
+          safePartsForCache = safeParts as unknown[];
           const { error: msgErr } = await supabase.from("messages").insert({
             thread_id: threadId,
             user_id: userId,
@@ -1089,10 +1104,54 @@ Deno.serve(async (req) => {
           if (msgErr) {
             console.error(JSON.stringify({ event: "assistant_message_insert_fail", thread_id: threadId, error: msgErr.message }));
           }
+        }
+        // Durable end-of-run signal that this run finalized because it hit the
+        // per-run tool-call cap (vs. a natural finish). Visible in edge logs; the
+        // capped lookups also carry run_capped:true in tool_usage_log (rejection_reason).
+        if (toolCallBudget.capped) {
+          console.log(JSON.stringify({
+            event: "run_capped_finalize", thread_id: threadId,
+            genuine_tool_calls: toolCallBudget.genuine, cap: MAX_TOOL_CALLS_PER_RUN,
+          }));
+        }
+        // ---- FLIP STATUS TO "finished" IMMEDIATELY after the report is durable ----
+        // The assistant report row (above) is now saved. Advance the thread to
+        // its terminal status BEFORE any further best-effort work (cost RPC,
+        // cache upsert, zero-artifact telemetry, clustering). Those previously
+        // ran first, so a CPU/OOM/wall-clock isolate kill anywhere in that tail
+        // left the thread stuck `status=active` even though a real report was
+        // already written — and stale-run recovery then posted a "recovered run"
+        // stub OVER it (the production hang symptom). Writing status here closes
+        // that window: once report + finished status are both persisted, a tail
+        // kill can only drop best-effort enrichment, never strand the run active.
+        const { error: statusErr } = await supabase
+          .from("threads")
+          .update({
+            // "finished" is the allowed terminal status (threads_status_check =
+            // active|finished) AND the value the UI treats as complete
+            // (WorkspaceHeader/ThreadSidebar). The prior "completed" was rejected
+            // by the DB constraint, leaving successful runs stuck on "active".
+            status: "finished",
+            updated_at: new Date().toISOString(),
+            ...(detectedSeedKind ? { seed_type: detectedSeedKind } : {}),
+          })
+          .eq("id", threadId)
+          .eq("status", "active");
+        if (statusErr) {
+          console.warn("[thread status] completion update failed:", statusErr.message);
+        }
+        // ---- Best-effort tail (runs AFTER the terminal status write) ----
+        // Everything below is enrichment: losing any of it to a tail kill only
+        // costs cache warmth / cost-delta accuracy / clustering, never the run's
+        // completion. Keep the ordering, just no longer gate `status:"finished"`
+        // behind it.
+        if (assistant) {
           // Atomic cost increment — only the remaining delta past the last
           // mid-run checkpoint. No read-modify-write fallback: a racy fallback
           // is worse than a missed write, since two parallel runs can silently
-          // overwrite each other's totals.
+          // overwrite each other's totals. Moved after the status write: a lost
+          // final delta only slightly under-counts cost (already checkpointed
+          // mid-run), whereas stranding the thread `active` was the whole bug.
           {
             const finalDelta = runCostMicroUsd - lastCheckpointMicroUsd;
             if (finalDelta > 0) {
@@ -1114,12 +1173,7 @@ Deno.serve(async (req) => {
 
           // ---- Persist investigation cache (per seed, per user) ----
           try {
-            const firstUser = finalMessages.find((m) => m.role === "user");
-            const seedText = ((firstUser?.parts ?? []) as Array<{ type: string; text?: string }>)
-              .filter((p) => p.type === "text").map((p) => p.text ?? "").join(" ").trim();
-            const detected = detectSeedServer(seedText);
-            if (detected) {
-              detectedSeedKind = detected.kind;
+            if (detectedSeed && safePartsForCache) {
               const { data: arts } = await supabase
                 .from("artifacts")
                 .select("kind,value,confidence,source,metadata")
@@ -1127,10 +1181,10 @@ Deno.serve(async (req) => {
                 .order("created_at", { ascending: true });
               // Cache is long-lived (7d) and is replayed back into a future
               // run's context, so strip credentials / PII / oversized blobs.
-              const cachedParts = sanitizeToolOutput(safeParts, 1500);
+              const cachedParts = sanitizeToolOutput(safePartsForCache, 1500);
               const cachedArts = sanitizeToolOutput(arts ?? [], 1500);
               const payload = {
-                seed: detected,
+                seed: detectedSeed,
                 assistant_parts: cachedParts,
                 artifacts: cachedArts,
                 finished_at: new Date().toISOString(),
@@ -1143,8 +1197,8 @@ Deno.serve(async (req) => {
               await supabaseAdmin.from("investigation_cache").upsert(
                 {
                   user_id: userId,
-                  seed_kind: detected.kind,
-                  seed_value_normalized: detected.normalized,
+                  seed_kind: detectedSeed.kind,
+                  seed_value_normalized: detectedSeed.normalized,
                   result_json: payload as unknown as Record<string, unknown>,
                   created_at: new Date().toISOString(),
                   expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
@@ -1182,31 +1236,6 @@ Deno.serve(async (req) => {
           }
         } catch (e) {
           console.warn("[safety-net] zero-artifact check failed:", e);
-        }
-        // Durable end-of-run signal that this run finalized because it hit the
-        // per-run tool-call cap (vs. a natural finish). Visible in edge logs; the
-        // capped lookups also carry run_capped:true in tool_usage_log (rejection_reason).
-        if (toolCallBudget.capped) {
-          console.log(JSON.stringify({
-            event: "run_capped_finalize", thread_id: threadId,
-            genuine_tool_calls: toolCallBudget.genuine, cap: MAX_TOOL_CALLS_PER_RUN,
-          }));
-        }
-        const { error: statusErr } = await supabase
-          .from("threads")
-          .update({
-            // "finished" is the allowed terminal status (threads_status_check =
-            // active|finished) AND the value the UI treats as complete
-            // (WorkspaceHeader/ThreadSidebar). The prior "completed" was rejected
-            // by the DB constraint, leaving successful runs stuck on "active".
-            status: "finished",
-            updated_at: new Date().toISOString(),
-            ...(detectedSeedKind ? { seed_type: detectedSeedKind } : {}),
-          })
-          .eq("id", threadId)
-          .eq("status", "active");
-        if (statusErr) {
-          console.warn("[thread status] completion update failed:", statusErr.message);
         }
         // C-1: DETERMINISTIC clustering + confidence promotion — the last step of the
         // run, executed REGARDLESS of whether the LLM correlate tool succeeded, failed,
