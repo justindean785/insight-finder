@@ -28,6 +28,12 @@ dist-ssr
 .env.local
 .env.*.local
 
+# Local credential files — never commit API keys
+.indicia-key
+*.apikey
+.secrets
+.secrets.*
+
 # Vercel local link metadata (projectId/orgId — do not commit)
 .vercel
 
