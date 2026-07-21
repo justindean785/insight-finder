@@ -24,7 +24,7 @@ import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
 import { isSubmitBlocked } from "@/lib/submit-guard";
 import { interpretReadinessProbe, type ReadinessBody } from "@/lib/readiness-probe";
 import { dedupeCards } from "@/lib/next-step-cards";
-import { hasReportShape, selectClosingAssistantProse, stripReasoningPerPart } from "@/lib/report-shape";
+import { hasReportShape, joinAssistantTranscript, stripReasoningPerPart } from "@/lib/report-shape";
 import { dedupeCheckpoints } from "@/lib/chat-checkpoints";
 import { computePivots } from "@/lib/pivot-engine";
 import { sanitizeChatText } from "@/lib/sanitize-agent-text";
@@ -1037,8 +1037,13 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIM
     );
   }
   // Single joined prose block so tool cards and the reply share one width stack.
+  // Render the FULL assistant transcript — every model step's narration in order,
+  // ending with the closing report — not just one "closing" part. Collapsing to a
+  // single part hid every earlier step, so during a live run each new step's prose
+  // visually REPLACED the previous one and the chat looked erased (operator report
+  // 2026-07-21). Tool cycles already render as their own blocks above this.
   const prose = reflowCollapsedTables(
-    selectClosingAssistantProse(
+    joinAssistantTranscript(
       parts
         .filter((p) => p.type === "text")
         .map((p) => stripThinkTags(p.text ?? "")),

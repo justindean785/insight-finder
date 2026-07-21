@@ -52,3 +52,20 @@ export function selectClosingAssistantProse(texts: string[]): string {
   const reports = clean.filter(hasReportShape);
   return reports.at(-1) ?? clean.at(-1) ?? "";
 }
+
+/**
+ * Render the assistant's prose as a running transcript: every non-empty model-step
+ * narration in order, joined with a blank line so consecutive steps read as separate
+ * paragraphs. Adjacent duplicates (the AI SDK can re-emit an unchanged part across
+ * streamed steps) are collapsed.
+ *
+ * This is what the chat bubble uses INSTEAD of selectClosingAssistantProse: collapsing
+ * to a single "closing" part hid every earlier step, so during a live run each new
+ * step's prose visually REPLACED the previous one and the transcript looked erased
+ * (operator report 2026-07-21). Callers pass parts already cleaned for display (e.g.
+ * sanitizeChatText); this only trims, de-dupes adjacent repeats, and joins.
+ */
+export function joinAssistantTranscript(cleanedTexts: string[]): string {
+  const nonEmpty = (cleanedTexts ?? []).map((t) => (t ?? "").trim()).filter(Boolean);
+  return nonEmpty.filter((t, i) => t !== nonEmpty[i - 1]).join("\n\n");
+}
