@@ -26,6 +26,15 @@ import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
 import { selectPivots, proposedCallToCandidate, type PivotCandidate, type ProposedCall } from "./graph_pivots.ts";
 import { renderPivotChecklistForPrompt } from "./pivot-checklists.ts";
 import { unknownToolNudge } from "./unknown-tool-guard.ts";
+import { isJinaOriginBlockStatus } from "./jina-policy.ts";
+import { agentMemoryOrFilter } from "./pgrest.ts";
+import {
+  loadReviewsForThread,
+  applyReviewsToArtifacts,
+  filterMemoriesByReviews,
+  normalizeArtifactKey,
+  type ReviewLoad,
+} from "./reviews.ts";
 import type { QueryType } from "./query-type-router.ts";
 import { DNS_TYPES, VIRTUAL_TYPE_MAP, isVirtualType, resolveVirtualHost, filterTxtByPrefix } from "./tools/dns-virtual.ts";
 
@@ -149,6 +158,29 @@ function memoSchema<T>(key: string, build: () => T): T {
 
 export function buildTools(ctx: ToolContext) {
   const { supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, messages, manualOverrideSelector } = ctx;
+
+  let reviewsPromise: Promise<ReviewLoad> | null = null;
+  const getReviews = (): Promise<ReviewLoad> => {
+    reviewsPromise ??= loadReviewsForThread(
+      supabaseAdmin as unknown as Parameters<typeof loadReviewsForThread>[0],
+      threadId,
+      userId,
+    );
+    return reviewsPromise;
+  };
+  const filterReviewed = async <T extends Record<string, unknown>>(
+    rows: T[] | null | undefined,
+  ): Promise<T[]> => {
+    const review = await getReviews();
+    if (!review.ok) {
+      console.warn(JSON.stringify({
+        event: "artifact_read_review_state_unavailable",
+        thread_id: threadId,
+        error: review.error,
+      }));
+    }
+    return applyReviewsToArtifacts(rows, review);
+  };
 
   const tools = {
     list_tools: tool({
@@ -451,9 +483,11 @@ export function buildTools(ctx: ToolContext) {
         // empty / malformed `artifacts` array — correlating nothing is pure
         // waste. Gate on the actual inputs, not just the counter.
         const cleanSeed = typeof seed === "string" ? seed.trim() : "";
-        const validArtifacts = Array.isArray(artifacts)
-          ? artifacts.filter((a) => a && typeof a.value === "string" && a.value.trim().length > 0)
-          : [];
+        const validArtifacts = await filterReviewed(
+          Array.isArray(artifacts)
+            ? artifacts.filter((a) => a && typeof a.value === "string" && a.value.trim().length > 0)
+            : [],
+        );
         if (!cleanSeed || validArtifacts.length === 0) {
           return skipStub(
             "minimax_correlate",
@@ -466,7 +500,7 @@ export function buildTools(ctx: ToolContext) {
             model: MODELS.smart,
             system:
               "You are an OSINT correlation engine focused on avoiding identity misattribution. Given a seed and artifacts list, reply ONLY with JSON: {clusters:[{label:string,artifacts:string[],locations:string[],core_identifiers:string[],confidence:number,warning?:string}],duplicates:[{canonical:string,aliases:string[]}],rescored:[{value:string,new_confidence:number,reason:string}],contradictions:[{a:string,b:string,reason:string}],same_name_collisions:[{cluster_a:string,cluster_b:string,reason:string}],strongest_leads:string[]}. Rules: do not merge same-name people without 2 strong overlapping identifiers (exact email, exact phone, exact profile URL, exact address, exact DOB + another match); split clusters on conflicting geography (different US state, different phone area code, IP geo vs claimed address); breach-only attributes are verification leads, not confirmed identity facts.",
-            user: `Seed: ${seed}\n\nArtifacts:\n${JSON.stringify(artifacts).slice(0, 16000)}`,
+            user: `Seed: ${seed}\n\nArtifacts:\n${JSON.stringify(validArtifacts).slice(0, 16000)}`,
             json: true,
             maxTokens: 1500,
             // Best-effort: forward the wrapper's per-tool timeout AbortSignal (#284
@@ -496,6 +530,9 @@ export function buildTools(ctx: ToolContext) {
       })),
       execute: async ({ seed, already_queried, artifacts, budget_remaining }) => {
         try {
+          const reviewedArtifacts = await filterReviewed(
+            (artifacts ?? []) as Array<Record<string, unknown>>,
+          );
           const baseToolList = [
             // Breach + identity
             "rapidapi_breach_search","rapidapi_all_breaches",
@@ -645,14 +682,18 @@ export function buildTools(ctx: ToolContext) {
           try {
             const seedNorm = String(seed ?? "").trim().toLowerCase();
             if (seedNorm) {
-              const { data: mem } = await supabase
+              const { data: mem, error: memoryError } = await supabase
                 .from("agent_memory")
                 .select("kind,content,confidence")
                 .eq("user_id", userId)
-                .or(`subject.eq.${seedNorm},related_values.cs.{${seedNorm}}`)
+                .or(agentMemoryOrFilter(seedNorm))
                 .order("confidence", { ascending: false })
                 .limit(8);
-              const rows = (mem ?? []) as Array<{ kind?: string; content?: string; confidence?: number }>;
+              if (memoryError) throw new Error(memoryError.message);
+              const rows = filterMemoriesByReviews(
+                (mem ?? []) as Array<Record<string, unknown>>,
+                await getReviews(),
+              ) as Array<{ kind?: string; content?: string; confidence?: number }>;
               if (rows.length) {
                 memoryHint =
                   `\n\nPRIOR MEMORY for this subject (weight these — lessons / known false-positives / confirmed links from earlier investigations):\n` +
@@ -677,10 +718,12 @@ export function buildTools(ctx: ToolContext) {
           try {
             const { data: fullArts } = await supabase
               .from("artifacts")
-              .select("kind,value,confidence,source,metadata")
+              .select("id,kind,value,confidence,source,metadata")
               .eq("thread_id", threadId)
               .order("created_at", { ascending: true });
-            const arts = (fullArts ?? []) as Parameters<typeof buildNodes>[0];
+            const arts = (await filterReviewed(
+              (fullArts ?? []) as Array<Record<string, unknown>>,
+            )) as unknown as Parameters<typeof buildNodes>[0];
             if (arts.length) {
               const nodes = buildNodes(arts);
               const edges = inferEdges(nodes);
@@ -757,7 +800,7 @@ export function buildTools(ctx: ToolContext) {
             model: MODELS.smart,
             system:
               `You are the execution planner for a forensic OSINT runtime. ONLY propose tools from this EXACT list (names must match verbatim — do not invent or rename): ${toolList.join(", ")}.\n\n${NAME_SEED_PLANNER_RULES}\n\nRUNTIME RULES:\n- Stage choices: TRIAGE, REVIEW, TARGETED_PIVOT, VERIFY, REPORT.\n- Propose ALL independent, non-redundant pivots that can run in PARALLEL this cycle (free/low-cost especially) so the investigation finishes in FEWER cycles. Only serialize a pivot when it depends on a prior pivot's result.\n- Respect the hard total-call and concurrency ceilings enforced by the runtime.\n- Weak-lead and expected-value signals are advisory. Do not turn them into prerequisites or retry loops.\n- Prefer the cheapest tool that can answer the current question: run FREE/LOW-cost validation before spending on EXPENSIVE/premium tools (see TOOL COST TIERS in the context below). Cost is advisory — never drop a uniquely high-value lead just because it is expensive.\n- When a finding is breach-derived or otherwise confidence-capped, propose ONE independent, trusted NON-infrastructure source to corroborate it and lift the cap, rather than re-running the same breach source.\n- Cached results NEVER count as corroboration. If a fresh cache hit would satisfy the question, prefer it over a live call.\n- If evidence is weak, explain that in the reason and keep the result [VERIFY].\n\nReply ONLY with JSON matching this exact shape:\n{\n  "stage":"TRIAGE|REVIEW|TARGETED_PIVOT|VERIFY|REPORT",\n  "goal":"string",\n  "current_findings":["string"],\n  "proposed_calls":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "params_preview":{},\n    "expected_value":0,\n    "cost_tier":"free|low|expensive",\n    "reason":"string",\n    "stop_condition":"string",\n    "cache_status":"thread|user|stale|miss"\n  }],\n  "calls_rejected":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "expected_value":0,\n    "reason":"string",\n    "cost_tier":"free|low|expensive",\n    "weak_lead":true,\n    "stale_cache":false,\n    "manual_override":false\n  }]\n}\nOrder proposed_calls by expected_value descending. Respect budget_remaining as the max number of proposed_calls.`,
-            user: `Seed: ${seed}\nBudget remaining: ${budget_remaining}\nAlready queried: ${JSON.stringify(already_queried).slice(0,4000)}\nArtifacts so far: ${JSON.stringify(artifacts).slice(0,8000)}\n\n${costGuide}${relationshipHint}${pivotHint}${memoryHint}`,
+            user: `Seed: ${seed}\nBudget remaining: ${budget_remaining}\nAlready queried: ${JSON.stringify(already_queried).slice(0,4000)}\nArtifacts so far: ${JSON.stringify(reviewedArtifacts).slice(0,8000)}\n\n${costGuide}${relationshipHint}${pivotHint}${memoryHint}`,
             json: true,
             maxTokens: 1500,
           });
@@ -1220,6 +1263,7 @@ export function buildTools(ctx: ToolContext) {
           return {
             ok: false,
             skipped: true,
+            circuit_benign_skip: true,
             reason: `socialfetch_lookup does not support platform='${platform}'. For a blocked host (youtube/twitch/reddit/arbitrary page) use socialfetch_web_read; otherwise http_fingerprint, wayback_snapshots, or minimax_web_search.`,
             supported: Array.from(SUPPORTED),
           };
@@ -3614,7 +3658,7 @@ export function buildTools(ctx: ToolContext) {
         if (isHostDead(parsed.hostname)) return { skipped: true, reason: "host does not resolve (NXDOMAIN) — skipped", url: raw };
         // Skip hosts that always 451/403 through Jina — save the ~8s dead round-trip.
         if (isJinaHardBlocked(parsed.hostname)) {
-          return { error: "jina 451", status: 451, url: parsed.toString(), skipped: true, hint: "origin hard-blocks Jina — use socialfetch_web_read (server-side markdown) for this host, or wayback_snapshots / a direct-API tool" };
+          return { error: "jina 451", status: 451, url: parsed.toString(), skipped: true, circuit_benign_skip: true, selector_local: true, hint: "origin hard-blocks Jina — use socialfetch_web_read (server-side markdown) for this host, or wayback_snapshots / a direct-API tool" };
         }
         // Rebuild a clean URL; r.jina.ai expects the raw URL appended.
         const clean = parsed.toString();
@@ -3631,7 +3675,15 @@ export function buildTools(ctx: ToolContext) {
               : r.status === 451 || r.status === 403
                 ? "origin blocked — try wayback_snapshots or a different result"
                 : undefined;
-            return { error: `jina ${r.status}`, status: r.status, url: clean, hint };
+            return {
+              error: `jina ${r.status}`,
+              status: r.status,
+              url: clean,
+              hint,
+              ...(isJinaOriginBlockStatus(r.status)
+                ? { skipped: true, circuit_benign_skip: true, selector_local: true }
+                : {}),
+            };
           }
           const text = await r.text();
           return { ok: true, url: clean, markdown: text.slice(0, maxChars), truncated: text.length > maxChars };
@@ -4280,6 +4332,14 @@ export function buildTools(ctx: ToolContext) {
           .max(200)),
       })),
       execute: async ({ artifacts }) => {
+        const recordingReviews = await getReviews();
+        if (!recordingReviews.ok) {
+          return {
+            ok: false,
+            skipped: true,
+            error: "analyst review state unavailable — artifact recording blocked",
+          };
+        }
         const accepted: Array<{ index: number; kind: string; value: string }> = [];
         const rejected: Array<{ index: number; reason: string; kind: string; value: string }> = [];
         const rows: Array<Record<string, unknown>> = [];
@@ -4295,6 +4355,15 @@ export function buildTools(ctx: ToolContext) {
           const v = validateArtifact(inferred.kind, a.value);
           if (!v.ok) {
             rejected.push({ index: i, reason: v.reason, kind: a.kind, value: a.value });
+            return;
+          }
+          if (recordingReviews.rejectedKeys.has(normalizeArtifactKey(v.kind, v.value))) {
+            rejected.push({
+              index: i,
+              reason: "analyst previously marked this artifact false/dismissed",
+              kind: v.kind,
+              value: v.value,
+            });
             return;
           }
           // Apply conservative confidence caps based on source class.
@@ -4456,12 +4525,15 @@ export function buildTools(ctx: ToolContext) {
           const collisionKinds = new Set(["phone", "email", "address"]);
           const candidates = safeRowsForFollowup.filter((r) => collisionKinds.has(String(r.kind)));
           for (const r of candidates) {
-            const { data: peers } = await supabase
+            const { data: peersRaw } = await supabase
               .from("artifacts")
-              .select("value,kind,source,metadata")
+              .select("id,value,kind,source,metadata")
               .eq("thread_id", threadId)
               .eq("kind", String(r.kind))
               .eq("value", String(r.value));
+            const peers = await filterReviewed(
+              (peersRaw ?? []) as Array<Record<string, unknown>>,
+            );
             const sources = new Set<string>();
             const clusters = new Set<string>();
             type PeerRow = { source?: unknown; metadata?: Record<string, unknown> | null };
@@ -4507,14 +4579,19 @@ export function buildTools(ctx: ToolContext) {
           try {
             const recalled = await Promise.all(
               recallSubjects.map(async (subj) => {
-                const { data } = await supabase
+                const { data, error } = await supabase
                   .from("agent_memory")
                   .select("id,kind,subject,subject_kind,related_values,content,confidence,hit_count")
                   .eq("user_id", userId)
-                  .or(`subject.eq.${subj},related_values.cs.{${subj}}`)
+                  .or(agentMemoryOrFilter(subj))
                   .order("confidence", { ascending: false })
                   .limit(5);
-                return { subject: subj, count: data?.length ?? 0, memories: data ?? [] };
+                if (error) throw new Error(error.message);
+                const memories = filterMemoriesByReviews(
+                  (data ?? []) as Array<Record<string, unknown>>,
+                  await getReviews(),
+                );
+                return { subject: subj, count: memories.length, memories };
               }),
             );
             memory_hits = recalled.filter((r) => r.count > 0);
@@ -4630,6 +4707,17 @@ export function buildTools(ctx: ToolContext) {
         const inferred = inferKind(kind, value);
         const v = validateArtifact(inferred.kind, value);
         if (!v.ok) return { ok: false, rejected: true, reason: v.reason };
+        const recordingReviews = await getReviews();
+        if (!recordingReviews.ok) {
+          return { ok: false, skipped: true, error: "analyst review state unavailable — artifact recording blocked" };
+        }
+        if (recordingReviews.rejectedKeys.has(normalizeArtifactKey(v.kind, v.value))) {
+          return {
+            ok: false,
+            rejected: true,
+            reason: "analyst previously marked this artifact false/dismissed",
+          };
+        }
         const effSources = [source ?? "", ...((metadata?.sources ?? []) as Iterable<unknown>)].filter(Boolean) as string[];
         const cap = applyEvidenceCaps({
           rawConfidence: confidence ?? 50,
@@ -4863,7 +4951,7 @@ export function buildTools(ctx: ToolContext) {
         .from("agent_memory")
         .select("id,kind,subject,subject_kind,related_values,content,confidence,source_thread_id,hit_count,last_used_at,created_at")
         .eq("user_id", userId)
-        .or(`subject.eq.${subj},related_values.cs.{${subj}}`)
+        .or(agentMemoryOrFilter(subj))
         .order("confidence", { ascending: false })
         .limit(limit ?? 20);
       if (kind && kind !== "any") q = supabase
@@ -4871,16 +4959,19 @@ export function buildTools(ctx: ToolContext) {
         .select("id,kind,subject,subject_kind,related_values,content,confidence,source_thread_id,hit_count,last_used_at,created_at")
         .eq("user_id", userId)
         .eq("kind", kind)
-        .or(`subject.eq.${subj},related_values.cs.{${subj}}`)
+        .or(agentMemoryOrFilter(subj))
         .order("confidence", { ascending: false })
         .limit(limit ?? 20);
       const { data, error } = await q;
       if (error) return { ok: false, error: error.message };
-      const memories = data ?? [];
+      const memories = filterMemoriesByReviews(
+        (data ?? []) as Array<Record<string, unknown>>,
+        await getReviews(),
+      );
       // Best-effort: mark surfaced memories as recently used so they
       // bubble up next time and so stale unused ones can be pruned.
       if (memories.length > 0) {
-        const ids = memories.map((m: { id: unknown }) => m.id);
+        const ids = memories.map((m) => m.id);
         // Atomic hit_count + last_used_at bump (no read-modify-write race).
         supabase.rpc("bump_memory_hits", { _ids: ids }).then(() => {}, () => {});
       }
@@ -4929,6 +5020,25 @@ export function buildTools(ctx: ToolContext) {
       ),
     })),
     execute: async ({ entries, scope }) => {
+      const memoryReviews = await getReviews();
+      if (!memoryReviews.ok) {
+        return {
+          ok: false,
+          skipped: true,
+          error: "analyst review state unavailable — memory_save blocked",
+        };
+      }
+      const rejectedValues = memoryReviews.rejectedRows
+        .map((row) => String(row.value ?? "").trim().toLowerCase())
+        .filter((value) => value.length >= 3);
+      const proposedEntries = (entries as unknown as MemoryEntry[]).filter((entry) => {
+        const subject = String(entry.subject ?? "").trim().toLowerCase();
+        const related = (entry.related_values ?? []).map((value) => String(value).trim().toLowerCase());
+        const content = String(entry.content ?? "").toLowerCase();
+        return !rejectedValues.some((value) =>
+          subject === value || related.includes(value) || content.includes(value)
+        );
+      });
       // C-2: gate every entry through the deterministic C-1-subject consolidation
       // check BEFORE it can reach agent_memory. agent_memory's own upsert ratchets
       // confidence with GREATEST(old,new) — it never goes back down — so this is the
@@ -4936,13 +5046,16 @@ export function buildTools(ctx: ToolContext) {
       // whose cross-selector claim is unverifiable while minimax_correlate failed
       // this cycle) is never written as a confident merge; it's logged to
       // memory_merge_candidates for review instead (never silently dropped).
-      let toPersist: MemoryEntry[] = entries as unknown as MemoryEntry[];
+      let toPersist: MemoryEntry[] = proposedEntries;
       let candidates: Array<{ entry: MemoryEntry; reason: string; subjectIds: string[] }> = [];
       try {
-        const { data: artRows } = await supabase
+        const { data: artRowsRaw } = await supabase
           .from("artifacts")
-          .select("kind,value,source,confidence,metadata")
+          .select("id,kind,value,source,confidence,metadata")
           .eq("thread_id", threadId);
+        const artRows = await filterReviewed(
+          (artRowsRaw ?? []) as Array<Record<string, unknown>>,
+        );
         if (Array.isArray(artRows) && artRows.length > 0) {
           const clusterArts: ClusterArtifact[] = artRows.map((r) => {
             const row = r as { kind: string; value: string; source?: string; confidence?: number; metadata?: unknown };
@@ -4953,7 +5066,7 @@ export function buildTools(ctx: ToolContext) {
             };
           });
           const correlateFailed = guard.lastCorrelateOutcome === "failed";
-          const reviewed = reviewMemoryBatch(entries as unknown as MemoryEntry[], clusterArts, correlateFailed);
+          const reviewed = reviewMemoryBatch(proposedEntries, clusterArts, correlateFailed);
           toPersist = reviewed.toPersist;
           candidates = reviewed.candidates;
         }
@@ -5116,8 +5229,9 @@ export function buildTools(ctx: ToolContext) {
       if (cluster_artifact_kinds?.length) q = q.in("kind", cluster_artifact_kinds);
       const { data, error } = await q;
       if (error) return { ok: false, error: error.message };
+      const reviewed = await filterReviewed((data ?? []) as Array<Record<string, unknown>>);
       type Row = { id: string; kind: string; value: string; source: string | null; metadata: Record<string, unknown> | null };
-      const rows = (data ?? []) as Row[];
+      const rows = reviewed as unknown as Row[];
       const findings = detectContradictions(rows as Parameters<typeof detectContradictions>[0]);
 
       // Persist explicit conflicts back onto the involved artifacts so the
@@ -5233,10 +5347,40 @@ export function buildTools(ctx: ToolContext) {
       label: z.enum(["CONFIRMED","CORROBORATED","INFERRED","VERIFY","LOW","DISMISSED"]).default("INFERRED"),
     })),
     execute: async (i) => {
-      const { data: contraRows } = await supabase
+      const findingReviews = await getReviews();
+      if (!findingReviews.ok) {
+        return { ok: false, skipped: true, error: "analyst review state unavailable — record_finding blocked" };
+      }
+      const rejectedValues = findingReviews.rejectedRows
+        .map((row) => String(row.value ?? "").trim().toLowerCase())
+        .filter((value) => value.length >= 3);
+      const claimText = [i.conclusion, ...(i.drivers ?? [])].join(" ").toLowerCase();
+      if (rejectedValues.some((value) => claimText.includes(value))) {
+        return {
+          ok: false,
+          rejected: true,
+          reason: "finding references an analyst-rejected artifact",
+        };
+      }
+      const requestedSupportingValues = i.supporting_artifact_values ?? [];
+      const safeSupportingValues = requestedSupportingValues.filter((candidate) => {
+        const normalized = String(candidate).trim().toLowerCase();
+        return !rejectedValues.includes(normalized);
+      });
+      if (requestedSupportingValues.length > 0 && safeSupportingValues.length === 0) {
+        return {
+          ok: false,
+          rejected: true,
+          reason: "all supporting artifacts were rejected by the analyst",
+        };
+      }
+      const { data: contraRowsRaw } = await supabase
         .from("artifacts")
-        .select("kind,value,source,metadata,created_at")
+        .select("id,kind,value,source,metadata,created_at")
         .eq("thread_id", threadId);
+      const contraRows = await filterReviewed(
+        (contraRowsRaw ?? []) as Array<Record<string, unknown>>,
+      );
       // Scope the contradiction / advisory penalty to the artifacts that
       // actually belong to THIS finding's identity candidate — its cited
       // artifacts plus their cluster(s) — so a finding for one candidate is not
@@ -5245,8 +5389,8 @@ export function buildTools(ctx: ToolContext) {
       // thread. When the finding cites nothing resolvable we can't attribute a
       // cluster, so fall back to the thread-wide set (conservative: keep the
       // penalty rather than inflate confidence).
-      const allRows = (contraRows ?? []) as Parameters<typeof detectContradictions>[0];
-      const scopedRows = artifactsForFinding(allRows, i.supporting_artifact_values ?? []);
+      const allRows = (contraRows ?? []) as unknown as Parameters<typeof detectContradictions>[0];
+      const scopedRows = artifactsForFinding(allRows, safeSupportingValues);
       const contras = detectContradictions(scopedRows.length > 0 ? scopedRows : allRows);
       // Audit F06: i.corroboration_count was a raw model-supplied integer with no
       // independence check — a single ai_summary-class source claiming
@@ -5279,7 +5423,7 @@ export function buildTools(ctx: ToolContext) {
           unresolved: i.unresolved ?? [],
           next_pivots: i.next_pivots ?? [],
           supporting_sources: i.supporting_sources,
-          supporting_artifact_values: i.supporting_artifact_values ?? [],
+          supporting_artifact_values: safeSupportingValues,
           confidence_axes: axes,
           source_reliability: sourceConfidence(i.supporting_sources),
         },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasReportShape, stripReasoning, stripReasoningPerPart } from "@/lib/report-shape";
+import { hasReportShape, selectClosingAssistantProse, stripReasoning, stripReasoningPerPart } from "@/lib/report-shape";
 
 describe("stripReasoning", () => {
   it("removes a closed <think> block", () => {
@@ -49,6 +49,23 @@ describe("hasReportShape", () => {
 
   it("false on empty/null-ish input", () => {
     expect(hasReportShape("")).toBe(false);
+  });
+});
+
+describe("selectClosingAssistantProse", () => {
+  it("shows one closing report instead of concatenating repeated model-step narration", () => {
+    expect(selectClosingAssistantProse([
+      "Let me run the opening breach sweep.",
+      "New seed: Marina Mondot. Let me investigate.",
+      "## Findings report\n\n- [VERIFY] supported observation.",
+    ])).toBe("## Findings report\n\n- [VERIFY] supported observation.");
+  });
+
+  it("shows the latest status while no report exists yet", () => {
+    expect(selectClosingAssistantProse([
+      "Opening sweep.",
+      "Checking the final bounded pivot.",
+    ])).toBe("Checking the final bounded pivot.");
   });
 });
 

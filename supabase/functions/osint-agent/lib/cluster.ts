@@ -22,6 +22,8 @@
  *    is capped at 40 and never auto-joined or promoted.
  */
 
+import { loadReviewsForThread, applyReviewsToArtifacts } from "../reviews.ts";
+
 // ---- Confidence tiers (JD's schema) -------------------------------------------
 export const TIERS = { CONFIRMED: 90, LIKELY: 75, POSSIBLE: 50, WEAK: 30 } as const;
 export function tierFor(conf: number): string {
@@ -421,7 +423,22 @@ export async function applyClusteringToThread(
   const { data, error } = await admin.from("artifacts")
     .select("id,kind,value,source,confidence,metadata").eq("thread_id", threadId);
   if (error || !Array.isArray(data) || data.length === 0) return { updated: 0, subjects: 0, merges: 0 };
-  const arts: Artifact[] = data.map((r) => {
+  const review = await loadReviewsForThread(
+    admin as unknown as Parameters<typeof loadReviewsForThread>[0],
+    threadId,
+    userId,
+  );
+  if (!review.ok) {
+    console.warn(JSON.stringify({
+      event: "clustering_skipped_review_state_unavailable",
+      thread_id: threadId,
+      error: review.error,
+    }));
+    return { updated: 0, subjects: 0, merges: 0 };
+  }
+  const liveData = applyReviewsToArtifacts(data as Array<Record<string, unknown>>, review);
+  if (liveData.length === 0) return { updated: 0, subjects: 0, merges: 0 };
+  const arts: Artifact[] = liveData.map((r) => {
     const row = r as { id: string; kind: string; value: string; source?: string; confidence?: number; metadata?: unknown };
     return {
       id: row.id, kind: row.kind ?? "", value: row.value ?? "", source: row.source ?? "",
@@ -430,7 +447,7 @@ export async function applyClusteringToThread(
     };
   });
   const { members, subjects, decisions } = clusterArtifacts(arts);
-  const metaById = new Map(data.map((r) => {
+  const metaById = new Map(liveData.map((r) => {
     const row = r as { id: string; metadata?: unknown };
     const meta = (row.metadata && typeof row.metadata === "object") ? row.metadata as Record<string, unknown> : {};
     return [row.id, meta];

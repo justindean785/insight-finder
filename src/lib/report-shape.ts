@@ -39,3 +39,16 @@ export function hasReportShape(text: string): boolean {
   if (TABLE_SEPARATOR_RE.test(t)) return true;
   return (t.match(TIER_LABEL_RE) ?? []).length >= 2;
 }
+
+/**
+ * AI SDK creates one text part per model step. Show one closing prose block,
+ * not the concatenation of every intermediate "let me..." plan. Prefer the
+ * final report-shaped part; while a run is still progressing, show its latest
+ * non-empty status part.
+ */
+export function selectClosingAssistantProse(texts: string[]): string {
+  const clean = (texts ?? []).map((text) => stripReasoning(text)).filter(Boolean);
+  if (clean.length === 0) return "";
+  const reports = clean.filter(hasReportShape);
+  return reports.at(-1) ?? clean.at(-1) ?? "";
+}
