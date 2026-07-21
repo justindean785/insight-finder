@@ -77,7 +77,20 @@ const PROVIDER_TOOLS: Record<string, string[]> = {
   ],
   hunter: ["hunter_domain_search", "hunter_email_finder", "hunter_email_verifier", "hunter_combined"],
   exa: ["exa_search", "exa_find_similar", "exa_get_contents"],
-  minimax: ["minimax_web_search", "minimax_correlate", "minimax_plan_pivots", "minimax_extract"],
+  // minimax_web_search hits Perplexity (a DIFFERENT upstream than the MiniMax
+  // reasoning model — see #293), so a SEARCH timeout/429/5xx must not drag down
+  // the reasoning tools. Keep the search worker on its own "minimax" key.
+  minimax: ["minimax_web_search"],
+  // The MiniMax reasoning endpoints share one upstream model/key, so a quota/auth
+  // failure on one should suppress the family. minimax_correlate is the identity-
+  // merge step; grouping it with minimax_extract lets a 402/429 on either suppress
+  // both (correct) WITHOUT a search-worker failure touching it.
+  // minimax_plan_pivots is DELIBERATELY excluded (maps to its own provider): in the
+  // live tool-health data it times out on ~9 of 10 calls, and a timeout suppresses
+  // the whole provider group — so keeping it here would let the broken planner
+  // suppress minimax_correlate on nearly every run, re-creating the exact report
+  // fragmentation this split fixes. Ungrouped, its timeouts stay isolated to itself.
+  minimax_reason: ["minimax_correlate", "minimax_extract"],
   // All six Indicia endpoints share ONE api key + one prepaid balance. A depleted
   // balance (402) or rate-limit (429) on any one endpoint means every sibling is
   // equally dead for the run — group them so one suppression stops the family
@@ -102,15 +115,32 @@ export function providerForTool(tool: string): string {
   return TOOL_PROVIDER.get(tool) ?? tool;
 }
 
+// General multi-origin fan-out tools: unlike a single-upstream paid API, these
+// hit MANY unrelated hosts across a run (jina scrapes arbitrary URLs;
+// socialfetch_web_read renders arbitrary pages). One slow page is a PER-URL
+// problem, not a dead provider — suppressing the whole tool on the first timeout
+// takes the reader offline for every remaining host, and gating parallel reads of
+// different URLs behind the single-provider in-flight lock drops legitimate
+// sibling scrapes. For these, a `timeout` dead-lists only the offending URL and
+// suppresses the tool ONLY after >= TIMEOUT_SUPPRESS_CONSECUTIVE consecutive
+// timeouts (see recordResult), and the in-flight gate is bypassed (see shouldRun).
+export const GENERAL_MULTI_ORIGIN_TOOLS = new Set<string>([
+  "jina_reader_scrape",
+  "socialfetch_web_read",
+]);
+
+/** Uninterrupted TIMEOUT outcomes (no success or other-failure in between) a
+ *  general multi-origin tool must hit before its whole provider is suppressed.
+ *  Single-upstream providers still suppress on the first timeout (oathnet: two). */
+export const TIMEOUT_SUPPRESS_CONSECUTIVE = 3;
+
 function timeoutSuppressionThreshold(tool: string): number {
   // OathNet has a legitimate 20s internal fetch budget; one outer timeout can be
   // latency noise, not proof the whole quota-shared provider is dead. Require a
   // second timeout before suppressing the family for the rest of the run.
-  // jina_reader_scrape (2026-07-16): same tolerance — one slow page render is
-  // noise, not a dead provider; a single timeout was suppressing Jina for the
-  // whole investigation and skipping later valid scrapes.
-  const provider = providerForTool(tool);
-  return provider === "oathnet" || provider === "jina_reader_scrape" ? 2 : 1;
+  // (jina_reader_scrape / socialfetch_web_read are multi-origin fan-out tools
+  // handled by the GENERAL_MULTI_ORIGIN_TOOLS path in recordResult, not here.)
+  return providerForTool(tool) === "oathnet" ? 2 : 1;
 }
 
 interface Suppression {
@@ -120,7 +150,13 @@ interface Suppression {
 }
 
 interface BreakerState {
+  /** Consecutive NON-OK outcomes of ANY type (400/404/451/429/5xx/timeout).
+   *  Drives the generic 3-failure global guard — NOT timeout suppression. */
   consecutive: number;
+  /** Consecutive TIMEOUT outcomes only — reset by success OR any non-timeout
+   *  failure. Drives multi-origin timeout suppression so a mixed failure run
+   *  (e.g. 404 → 451 → timeout) never counts as "3 consecutive timeouts". */
+  consecutiveTimeouts: number;
   total: number;
   lastAt: number;
   disabledReason?: string;
@@ -244,7 +280,7 @@ function breakerFor(threadId: string, tool: string): BreakerState {
   const s = state(threadId);
   let b = s.breakers.get(tool);
   if (!b) {
-    b = { consecutive: 0, total: 0, lastAt: 0, deadSelectors: new Set(), notFound: new Set() };
+    b = { consecutive: 0, consecutiveTimeouts: 0, total: 0, lastAt: 0, deadSelectors: new Set(), notFound: new Set() };
     s.breakers.set(tool, b);
   }
   return b;
@@ -318,7 +354,13 @@ export function shouldRun(
   // (they bypass timeouts too — evidence writes must never be blocked).
   const provider = providerForTool(tool);
   const s = THREADS.get(threadId);
-  if (s && s.inFlight.has(provider)) {
+  // Multi-origin fan-out tools (jina, socialfetch_web_read) legitimately run
+  // several reads of DIFFERENT URLs in the same step. They don't share a single
+  // upstream quota, so the in-flight provider lock — meant to stop a same-step
+  // burst racing past a PAID provider's suppression — would instead drop valid
+  // sibling scrapes. Exempt them; same-URL repeats are still caught by the dedup
+  // gate below (callKey includes the selector).
+  if (s && s.inFlight.has(provider) && !GENERAL_MULTI_ORIGIN_TOOLS.has(tool)) {
     return { allow: false, reason: `provider '${provider}' already has a call in-flight — waiting for its result` };
   }
   if (b.disabledUntil && now < b.disabledUntil) {
@@ -376,12 +418,19 @@ export function recordResult(
   });
   if (outcome.status === "ok") {
     b.consecutive = 0;
+    b.consecutiveTimeouts = 0;
     b.lastAt = Date.now();
     return;
   }
   b.consecutive++;
   b.total++;
   b.lastAt = Date.now();
+  // Maintain the dedicated timeout streak: a timeout extends it, ANY non-timeout
+  // failure (400/404/451/429/5xx) breaks it. This is what multi-origin timeout
+  // suppression checks — NOT b.consecutive, which counts all failure types and
+  // would let a mixed run (404 → 451 → timeout) masquerade as 3 timeouts.
+  if (outcome.status === "timeout") b.consecutiveTimeouts++;
+  else b.consecutiveTimeouts = 0;
   switch (outcome.status) {
     case "http_402":
       // A 402 is a depleted prepaid balance — provider-wide, not endpoint-local.
@@ -446,13 +495,31 @@ export function recordResult(
       if (selector) b.deadSelectors.add(selector);
       break;
     case "timeout":
-      // A timed-out upstream wastes the full fetch window on every retry. Most
-      // providers suppress on the first timeout; OathNet gets one retry because
-      // its normal latency sits near the wrapper budget.
-      if (b.consecutive >= timeoutSuppressionThreshold(tool)) {
-        suppressProvider(threadId, tool, `timeout — provider '${providerForTool(tool)}' suppressed for investigation`);
+      if (GENERAL_MULTI_ORIGIN_TOOLS.has(tool)) {
+        // Multi-origin fan-out: one slow page is a PER-URL problem. Dead-list only
+        // this URL so other hosts still run, and suppress the whole tool ONLY after
+        // >= TIMEOUT_SUPPRESS_CONSECUTIVE UNINTERRUPTED timeouts. We check the
+        // dedicated b.consecutiveTimeouts (maintained above) — NOT b.consecutive,
+        // which also counts 4xx/5xx and would falsely trip on a mixed failure run.
+        if (selector) b.deadSelectors.add(selector);
+        if (b.consecutiveTimeouts >= TIMEOUT_SUPPRESS_CONSECUTIVE) {
+          suppressProvider(
+            threadId,
+            tool,
+            `provider '${providerForTool(tool)}' suppressed — ${b.consecutiveTimeouts} consecutive timeouts`,
+          );
+        }
+        // else: selector dead-listed (timeout) — tool stays available for other URLs.
+      } else {
+        // Single-upstream provider: a timed-out upstream wastes the full fetch
+        // window on every retry. Most providers suppress on the FIRST timeout;
+        // OathNet gets one retry (timeoutSuppressionThreshold) because its normal
+        // latency sits near the wrapper budget.
+        if (b.consecutive >= timeoutSuppressionThreshold(tool)) {
+          suppressProvider(threadId, tool, `timeout — provider '${providerForTool(tool)}' suppressed for investigation`);
+        }
+        if (b.consecutive >= 2 && selector) b.deadSelectors.add(selector);
       }
-      if (b.consecutive >= 2 && selector) b.deadSelectors.add(selector);
       break;
     case "http_500":
       // A 5xx is a server-side fault: retrying the same provider mid-run rarely
