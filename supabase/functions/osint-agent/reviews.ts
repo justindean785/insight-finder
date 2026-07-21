@@ -245,7 +245,7 @@ export function rejectedArtifacts<T extends Record<string, unknown>>(
  * does re-assert a finding the analyst already marked FALSE.
  * Returns "" when there is nothing to say.
  */
-export function renderAnalystRejectionBlock<T extends Record<string, unknown>>(
+export function renderAnalystRejectionBlock<T extends { kind?: unknown; value?: unknown }>(
   rejected: T[] | null | undefined,
 ): string {
   if (!Array.isArray(rejected) || rejected.length === 0) return "";

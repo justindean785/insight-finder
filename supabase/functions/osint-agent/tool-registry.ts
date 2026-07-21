@@ -4971,7 +4971,7 @@ export function buildTools(ctx: ToolContext) {
       // Best-effort: mark surfaced memories as recently used so they
       // bubble up next time and so stale unused ones can be pruned.
       if (memories.length > 0) {
-        const ids = memories.map((m: { id: unknown }) => m.id);
+        const ids = memories.map((m) => m.id);
         // Atomic hit_count + last_used_at bump (no read-modify-write race).
         supabase.rpc("bump_memory_hits", { _ids: ids }).then(() => {}, () => {});
       }
