@@ -109,14 +109,20 @@ export async function sweepUsername(username: string): Promise<SweepResult> {
     { name: "Codeforces", url: `https://codeforces.com/profile/${u}`, absent: 404 },
     { name: "LeetCode", url: `https://leetcode.com/${u}/`, absent: 404 },
     { name: "HackerRank", url: `https://www.hackerrank.com/${u}`, absent: 404 },
-    { name: "HackTheBox", url: `https://app.hackthebox.com/profile/${u}`, absent: 404 },
+    // HackTheBox BLOCKLISTED 2026-07 (cdf02ff8): `/profile/${username}` is an SPA
+    // shell that returns HTTP 200 for missing users; numeric `/users/{id}` is the
+    // real public URL shape. Do NOT re-add with status-only absent:404. Re-add only
+    // with a verified body-content probe against a known-live + known-missing page.
     { name: "TryHackMe", url: `https://tryhackme.com/p/${u}`, absent: 404 },
     { name: "Kaggle", url: `https://www.kaggle.com/${u}`, absent: 404 },
     { name: "Bitbucket", url: `https://bitbucket.org/${u}/`, absent: 404 },
     { name: "Codepen", url: `https://codepen.io/${u}`, absent: 404 },
     { name: "JsFiddle", url: `https://jsfiddle.net/user/${u}/`, absent: 404 },
     { name: "npm", url: `https://www.npmjs.com/~${u}`, absent: 404 },
-    { name: "PyPI", url: `https://pypi.org/user/${u}/`, absent: 404 },
+    // PyPI BLOCKLISTED 2026-07 (cdf02ff8): soft-404 returns HTTP 200 with a
+    // "User not found" body. Status-only absent:404 false-positives every miss.
+    // Re-add only after a live probe confirms an absent-content marker on both a
+    // known-missing and known-live profile (Cloudflare blocked verification here).
     { name: "RubyGems", url: `https://rubygems.org/profiles/${u}`, absent: 404 },
     { name: "DockerHub", url: `https://hub.docker.com/u/${u}`, absent: 404 },
     { name: "StackOverflow", url: `https://stackoverflow.com/users/${u}`, absent: 404 },

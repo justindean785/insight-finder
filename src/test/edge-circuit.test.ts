@@ -76,6 +76,14 @@ describe("classifyResult", () => {
     expect(classifyResult({ ok: false, error: "tool disabled" }, null)).toBe("ok");
     expect(classifyResult({ error: "API not configured" }, null)).toBe("ok");
   });
+
+  it("treats skipped:true as ok so unsupported-platform no-ops do not poison keys", () => {
+    expect(classifyResult({
+      ok: false,
+      skipped: true,
+      reason: "socialfetch_lookup does not support platform='github'",
+    }, null)).toBe("ok");
+  });
 });
 
 describe("shouldRun / recordResult", () => {

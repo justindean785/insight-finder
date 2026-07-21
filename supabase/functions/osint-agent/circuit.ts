@@ -102,6 +102,14 @@ export function providerForTool(tool: string): string {
   return TOOL_PROVIDER.get(tool) ?? tool;
 }
 
+/** Max concurrent in-flight calls allowed per provider on one investigation.
+ *  Most providers stay at 1 (anti-stampede). jina_reader_scrape allows 3 so a
+ *  same-step URL burst does not hard-drop sibling scrapes (cdf02ff8: 13/24
+ *  dropped with concurrency 1 and no queue). */
+export function maxProviderInFlight(provider: string): number {
+  return provider === "jina_reader_scrape" ? 3 : 1;
+}
+
 function timeoutSuppressionThreshold(tool: string): number {
   // OathNet has a legitimate 20s internal fetch budget; one outer timeout can be
   // latency noise, not proof the whole quota-shared provider is dead. Require a
@@ -144,12 +152,14 @@ interface ThreadState {
   calls: Map<string, CallRecord>;
   /** provider name → active suppression for this investigation */
   suppressions: Map<string, Suppression>;
-  /** Providers with at least one call currently executing (started, not yet
+  /** Providers → count of calls currently executing (started, not yet
    *  recorded via recordResult). Used to prevent a same-step parallel burst
-   *  from dispatching multiple calls to the same provider before any of them
-   *  returns — the scenario where parallel_tool_calls:false is ignored by the
-   *  model/gateway and several calls race past shouldRun simultaneously. */
-  inFlight: Set<string>;
+   *  from dispatching more than maxProviderInFlight(provider) calls before any
+   *  of them returns — the scenario where parallel_tool_calls:false is ignored
+   *  by the model/gateway and several calls race past shouldRun simultaneously.
+   *  Count map (not a Set) so jina_reader_scrape can allow a small concurrent
+   *  window without reopening unbounded parallel bursts for other providers. */
+  inFlight: Map<string, number>;
   /** Number of in-flight runs that have acquire()'d this thread. The shared
    *  state is only torn down by release() once this returns to 0, so an
    *  overlapping run (double-submit / retry — setupRequest verifies ownership
@@ -181,7 +191,7 @@ function state(threadId: string): ThreadState {
     THREADS.set(threadId, existing);
     return existing;
   }
-  const s: ThreadState = { breakers: new Map(), calls: new Map(), suppressions: new Map(), inFlight: new Set(), active: 0 };
+  const s: ThreadState = { breakers: new Map(), calls: new Map(), suppressions: new Map(), inFlight: new Map(), active: 0 };
   THREADS.set(threadId, s);
   // Evict the least-recently-used thread(s) when over the cap. Iterate in LRU
   // order (oldest first) and drop the oldest entries until back under the cap,
@@ -274,6 +284,25 @@ export function callKey(tool: string, selector: string, purpose: string = "defau
   return `${tool}::${selector}::${purpose}`;
 }
 
+/** Circuit/dedup selector for shouldRun/recordResult. Multi-platform tools must
+ *  include platform (+ content kind) so parallel socialfetch calls on the same
+ *  handle across instagram/twitch/… do not collapse to one callKey (cdf02ff8).
+ *  Evidence/cache lookups keep using the plain entity selector. */
+export function circuitSelectorFor(
+  tool: string,
+  input: Record<string, unknown>,
+  entitySel: string,
+): string {
+  if (tool === "socialfetch_lookup") {
+    const platform = String(input.platform ?? "").trim().toLowerCase() || "unknown";
+    const contentKind = String(input.kind ?? "profile").trim().toLowerCase() || "profile";
+    const handleRaw = String(input.handle ?? input.username ?? "").trim();
+    const handle = normalizeSelector("username", handleRaw) || entitySel;
+    return `${platform}|${contentKind}|${handle}`;
+  }
+  return entitySel;
+}
+
 /** Expensive providers that should run at most once per normalized entity in an
  *  investigation. After one successful call for an entity, a repeat (same
  *  normalized selector) is a free skip — the structural fix for the duplicate
@@ -309,16 +338,19 @@ export function shouldRun(
   if (sup.suppressed) {
     return { allow: false, reason: sup.reason ?? `provider ${sup.provider} suppressed`, until: sup.until };
   }
-  // In-flight provider gate: if a call for this provider is already executing
+  // In-flight provider gate: if this provider is at its concurrency ceiling
   // (started but not yet returned), block same-step siblings. This is the
   // defensive layer against a same-step parallel burst when parallel_tool_calls
   // is ignored by the gateway (e.g. Lovable fallback). Without this, several
   // calls race past shouldRun simultaneously, all making live requests before
   // the first 401/suppression is recorded. ALWAYS_ALLOW_TOOLS bypass this gate
   // (they bypass timeouts too — evidence writes must never be blocked).
+  // Note: the reason says "waiting" historically, but this path is a hard skip
+  // (no queue) — siblings are dropped, not deferred.
   const provider = providerForTool(tool);
   const s = THREADS.get(threadId);
-  if (s && s.inFlight.has(provider)) {
+  const inFlightCount = s?.inFlight.get(provider) ?? 0;
+  if (s && inFlightCount >= maxProviderInFlight(provider)) {
     return { allow: false, reason: `provider '${provider}' already has a call in-flight — waiting for its result` };
   }
   if (b.disabledUntil && now < b.disabledUntil) {
@@ -482,6 +514,11 @@ export function classifyResult(result: unknown, threw: unknown): FailureKind {
   }
   if (!result || typeof result !== "object") return "ok";
   const r = result as Record<string, unknown>;
+  // Explicit skipped:true (unsupported platform, governance gate, etc.) is an
+  // intentional no-op — never poison the circuit key as "other" (cdf02ff8:
+  // unsupported socialfetch platforms classified as other then blocked later
+  // same-handle calls via "duplicate call: prior other").
+  if (r.skipped === true) return "ok";
   if (r.ok === false || typeof r.error === "string") {
     const status = typeof r.status === "number" ? r.status
       : typeof r.status_code === "number" ? r.status_code
@@ -565,11 +602,18 @@ export function disableTool(threadId: string, tool: string, reason: string): voi
  *  Call this immediately after shouldRun returns allow:true, before the live
  *  request is dispatched. Pair with clearProviderInFlight() on completion. */
 export function markProviderInFlight(threadId: string, tool: string): void {
-  state(threadId).inFlight.add(providerForTool(tool));
+  const provider = providerForTool(tool);
+  const s = state(threadId);
+  s.inFlight.set(provider, (s.inFlight.get(provider) ?? 0) + 1);
 }
 
-/** Clear the in-flight marker for a provider once its call has returned
+/** Clear one in-flight slot for a provider once its call has returned
  *  (success or error). Call this before or alongside recordResult(). */
 export function clearProviderInFlight(threadId: string, tool: string): void {
-  THREADS.get(threadId)?.inFlight.delete(providerForTool(tool));
+  const s = THREADS.get(threadId);
+  if (!s) return;
+  const provider = providerForTool(tool);
+  const next = (s.inFlight.get(provider) ?? 0) - 1;
+  if (next <= 0) s.inFlight.delete(provider);
+  else s.inFlight.set(provider, next);
 }

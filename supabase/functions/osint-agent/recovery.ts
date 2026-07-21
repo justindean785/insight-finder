@@ -26,6 +26,13 @@ export type RecoveryArtifact = {
   created_at?: string | null;
 };
 
+export type RecoveryMemory = {
+  kind?: string | null;
+  subject?: string | null;
+  content?: string | null;
+  confidence?: number | null;
+};
+
 export type RecoveryAssistantState = {
   shouldInsert: boolean;
   reason: "none" | "no_assistant" | "assistant_before_run" | "assistant_stale";
@@ -41,6 +48,56 @@ function threadsUpdate(db: DbClient, patch: Record<string, unknown>) {
   return db.from("threads").update(patch as never);
 }
 
+/** Human-readable next-pivot actions by artifact kind — mirrors the completed
+ *  report shape from buildReportMarkdown / SUGGESTED_TOOLS_BY_KIND (intel.ts)
+ *  without importing the frontend module into the edge runtime. */
+const RECOVERY_PIVOT_ACTIONS_BY_KIND: Record<string, string[]> = {
+  email: [
+    "Verifying email deliverability",
+    "Checking linked avatar data",
+    "Reviewing restricted indicators",
+    "Evaluating sensitive-source indicators",
+  ],
+  username: [
+    "Checking developer profile traces",
+    "Reviewing community activity history",
+    "Reviewing tech community footprint",
+    "Building targeted search queries",
+  ],
+  phone: [
+    "Checking phone association",
+    "Reviewing restricted indicators",
+    "Cross-checking breach exposure",
+  ],
+  ip: [
+    "Gathering IP intelligence",
+    "Fingerprinting exposed services",
+    "Running network reconnaissance",
+  ],
+  domain: [
+    "Reviewing domain registration",
+    "Checking DNS and certificates",
+    "Scanning related infrastructure",
+  ],
+  url: [
+    "Fingerprinting the page",
+    "Checking archive history",
+    "Reviewing URL reputation",
+  ],
+  social_profile: [
+    "Pulling the live profile",
+    "Corroborating the handle across platforms",
+  ],
+  name: [
+    "Running independent identity checks",
+    "Building targeted search queries",
+  ],
+  address: [
+    "Corroborating with property records",
+    "Cross-checking associated residents",
+  ],
+};
+
 export function isStaleActiveThread(thread: RecoverableThread, nowMs: number = Date.now(), staleMs: number = STALE_RUN_AFTER_MS): boolean {
   if (thread.status !== "active") return false;
   const heartbeat = thread.last_heartbeat_at ? new Date(thread.last_heartbeat_at).getTime() : NaN;
@@ -53,9 +110,66 @@ function escapeCell(value: unknown): string {
   return String(value ?? "—").replace(/\|/g, "\\|").replace(/\s+/g, " ").trim().slice(0, 220) || "—";
 }
 
+/** Build kind-grouped + value-concrete next-pivot lines for a recovered run.
+ *  Heading uses "Pivots" (not only "Steps") so frontend extractRecommendedPivots
+ *  can populate the Next Steps rail. */
+export function buildRecoveredNextPivots(
+  artifacts: RecoveryArtifact[],
+  memories: RecoveryMemory[] = [],
+): string[] {
+  const byKind = new Map<string, RecoveryArtifact[]>();
+  for (const a of artifacts) {
+    const kind = String(a.kind ?? "").trim().toLowerCase();
+    const value = String(a.value ?? "").trim();
+    if (!kind || !value) continue;
+    if (!RECOVERY_PIVOT_ACTIONS_BY_KIND[kind]) continue;
+    const list = byKind.get(kind) ?? [];
+    if (list.some((x) => String(x.value).trim().toLowerCase() === value.toLowerCase())) continue;
+    list.push(a);
+    byKind.set(kind, list);
+  }
+  const lines: string[] = [];
+  // Concrete value pivots FIRST so extractRecommendedPivots (6-card cap) prefers
+  // actionable Investigate/Corroborate lines over kind-summary rows.
+  const concrete: string[] = [];
+  for (const [kind, arts] of byKind) {
+    for (const a of arts.slice(0, 2)) {
+      const value = String(a.value ?? "").trim();
+      if (!value) continue;
+      const actions = RECOVERY_PIVOT_ACTIONS_BY_KIND[kind] ?? [];
+      const hint = actions.slice(0, 2).join("; ") || "corroborate with independent sources";
+      if (kind === "username" || kind === "social_profile") {
+        concrete.push(`- Corroborate username ${value} across platforms — ${hint}`);
+      } else if (kind === "email" || kind === "phone" || kind === "ip" || kind === "domain") {
+        concrete.push(`- Investigate ${value} — recovered ${kind} lead; ${hint}`);
+      } else {
+        concrete.push(`- Review ${value} — recovered ${kind} lead; ${hint}`);
+      }
+      if (concrete.length >= 4) break;
+    }
+    if (concrete.length >= 4) break;
+  }
+  lines.push(...concrete);
+  // Kind-grouped consider lines (reference report shape from phone seed run).
+  for (const [kind, actions] of Object.entries(RECOVERY_PIVOT_ACTIONS_BY_KIND)) {
+    if (!byKind.has(kind)) continue;
+    lines.push(`- **${kind}** — consider: ${actions.join(", ")}`);
+  }
+  for (const m of memories.slice(0, 5)) {
+    const subject = String(m.subject ?? "").trim();
+    const content = String(m.content ?? "").trim().replace(/\s+/g, " ").slice(0, 160);
+    if (!subject || !content) continue;
+    // Avoid secret-like memory content in the public stub.
+    if (/\b(password|passcode|secret|token|cookie|session|credential|ssn|cvv)\b/i.test(content)) continue;
+    lines.push(`- Review ${subject} — [MEMORY] ${content}`);
+  }
+  return lines;
+}
+
 export function buildRecoveredAssistantText(
   thread: Pick<RecoverableThread, "seed_value" | "title" | "last_heartbeat_at" | "run_started_at">,
   artifacts: RecoveryArtifact[],
+  memories: RecoveryMemory[] = [],
 ): string {
   const seed = thread.seed_value?.trim() || thread.title?.trim() || "this investigation";
   const lastLive = thread.last_heartbeat_at ?? thread.run_started_at ?? null;
@@ -67,8 +181,24 @@ export function buildRecoveredAssistantText(
     lastLive ? `Last heartbeat: ${lastLive}.` : "Last heartbeat was not recorded.",
     "",
   ];
+  const pivotLines = buildRecoveredNextPivots(rows, memories);
+  const pivotsSection = pivotLines.length > 0
+    ? ["## Recommended Next Pivots", ...pivotLines, ""]
+    : [
+      "## Recommended Next Pivots",
+      "- Re-run the seed to continue collection — no durable artifact kinds were available to derive pivots.",
+      "",
+    ];
   if (rows.length === 0) {
-    return [...header, "No confirmed artifacts were recorded before the interruption.", "", "### Gaps", "- The backend stopped before final synthesis completed.", "- Re-run the seed to continue collection."].join("\n");
+    return [
+      ...header,
+      "No confirmed artifacts were recorded before the interruption.",
+      "",
+      ...pivotsSection,
+      "### Gaps",
+      "- The backend stopped before final synthesis completed.",
+      "- Re-run the seed to continue collection.",
+    ].join("\n");
   }
   const table = [
     "| # | Kind | Value | Confidence | Source |",
@@ -82,6 +212,7 @@ export function buildRecoveredAssistantText(
     "",
     rows.length === artifacts.length ? `Recovered ${rows.length} artifact${rows.length === 1 ? "" : "s"}.` : `Showing top ${rows.length} of ${artifacts.length} recovered artifacts.`,
     "",
+    ...pivotsSection,
     "### Gaps",
     "- The run was closed by stale-run recovery, so this is not a full model-written synthesis.",
     "- Treat unresolved leads as pending until a follow-up run verifies them.",
@@ -116,6 +247,35 @@ export function shouldInsertRecoveredAssistant(
   }
 
   return { shouldInsert: false, reason: "none" };
+}
+
+async function loadRecoveryMemories(
+  db: DbClient,
+  userId: string,
+  subjects: string[],
+): Promise<RecoveryMemory[]> {
+  const cleaned = [...new Set(subjects.map((s) => s.trim().toLowerCase()).filter((s) => s.length >= 2))].slice(0, 12);
+  if (cleaned.length === 0) return [];
+  // Prefer memories tied to this user's subjects overlapping recovered values.
+  // Best-effort: failures return [] so recovery still inserts the artifact stub.
+  try {
+    const orFilter = cleaned.map((s) => `subject.eq.${s}`).join(",");
+    const { data, error } = await db
+      .from("agent_memory")
+      .select("kind,subject,content,confidence")
+      .eq("user_id", userId)
+      .or(orFilter)
+      .order("confidence", { ascending: false })
+      .limit(8);
+    if (error) {
+      console.warn("[recovery] agent_memory lookup failed:", error.message);
+      return [];
+    }
+    return (data ?? []) as RecoveryMemory[];
+  } catch (e) {
+    console.warn("[recovery] agent_memory lookup threw:", e);
+    return [];
+  }
 }
 
 async function recoverOneStaleThread(
@@ -175,7 +335,13 @@ async function recoverOneStaleThread(
     now.getTime(),
   );
   if (assistantState.shouldInsert) {
-    const text = buildRecoveredAssistantText(thread, (artifacts ?? []) as RecoveryArtifact[]);
+    const arts = (artifacts ?? []) as RecoveryArtifact[];
+    const subjects = [
+      thread.seed_value ?? "",
+      ...arts.map((a) => String(a.value ?? "")),
+    ];
+    const memories = await loadRecoveryMemories(db, thread.user_id, subjects);
+    const text = buildRecoveredAssistantText(thread, arts, memories);
     const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: [{ type: "text", text }] });
     if (insertErr) {
       // The claim succeeded but the report did not land. Releasing the claim is

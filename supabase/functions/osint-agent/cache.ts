@@ -203,7 +203,11 @@ export function withTimeoutSignal(opts: unknown, signal: AbortSignal): unknown {
   return { ...((opts as Record<string, unknown>) ?? {}), abortSignal: merged };
 }
 
-function detectSelectorType(input: Record<string, unknown>): string {
+function detectSelectorType(tool: string, input: Record<string, unknown>): string {
+  // socialfetch_lookup's `kind` is a content mode (profile/videos/posts/…), NOT
+  // a selector type — treating it as the type hint skipped username normalization
+  // (@-strip) and made multi-platform calls share inconsistent keys (cdf02ff8).
+  if (tool === "socialfetch_lookup") return "username";
   const hinted = String(input.kind ?? input.selector_type ?? "").trim().toLowerCase();
   if (hinted) return hinted;
   if (typeof input.email === "string") return "email";
@@ -729,9 +733,12 @@ export function wrapToolsWithCache(
         const t0 = Date.now();
         // ---- Circuit breaker + dedup gate ----
         const inp = (input ?? {}) as Record<string, unknown>;
-        const selectorType = detectSelectorType(inp);
+        const selectorType = detectSelectorType(name, inp);
         const selectorValue = detectSelectorValue(inp);
         const sel = circuit.normalizeSelector(selectorType, selectorValue);
+        // Circuit key may be richer than the entity selector (platform|kind|handle
+        // for socialfetch_lookup). Evidence/cache still key on `sel`.
+        const circuitSel = circuit.circuitSelectorFor(name, inp, sel);
         const purpose = String(inp.purpose ?? "default");
         const force = inp.force === true;
         const overrideSelector = ctx.manualOverrideSelector
@@ -1001,11 +1008,11 @@ export function wrapToolsWithCache(
           });
         }
 
-        const decision = circuit.shouldRun(ctx.investigationId, name, sel, purpose, { force });
+        const decision = circuit.shouldRun(ctx.investigationId, name, circuitSel, purpose, { force });
         if (!decision.allow) {
           noteRejectedCall(ctx.investigationId, {
             tool_name: name,
-            selector: sel,
+            selector: circuitSel,
             selector_type: selectorType,
             expected_value: expectedValue,
             reason: decision.reason,
@@ -1016,7 +1023,7 @@ export function wrapToolsWithCache(
           });
           await logUsage(false, false, Date.now() - t0, decision.reason, null, true, {
             input: inputJson,
-            runtime: { ...runtimeMetaBase, rejection_reason: decision.reason, rejection_source: "circuit" },
+            runtime: { ...runtimeMetaBase, rejection_reason: decision.reason, rejection_source: "circuit", circuit_selector: circuitSel },
           });
           return attachRuntimeMeta({ ok: false, skipped: true, error: decision.reason, _breaker: true }, {
             ...runtimeMetaBase,
@@ -1024,13 +1031,16 @@ export function wrapToolsWithCache(
             stage: "TRIAGE",
             cache_layer: "miss",
             stale_cache: !!staleRecord,
+            circuit_selector: circuitSel,
           });
         }
-        const familyKey = `${name}::${selectorType}::${sel}`;
+        // Use circuitSel so multi-platform socialfetch calls on one handle are
+        // distinct query families (platform|kind|handle), not suppressed as dupes.
+        const familyKey = `${name}::${selectorType}::${circuitSel}`;
         const runtimeDecision = startCall({
           threadId: ctx.investigationId,
           toolName: name,
-          selector: sel,
+          selector: circuitSel,
           selectorType,
           costTier: costTierForTool(baseCost),
           expectedValue,
@@ -1130,7 +1140,7 @@ export function wrapToolsWithCache(
           // this is the only point that sees what the model actually received.
           if (name === "minimax_correlate") guard.lastCorrelateOutcome = ok ? "ok" : "failed";
           circuit.clearProviderInFlight(ctx.investigationId, name);
-          circuit.recordResult(ctx.investigationId, name, sel, purpose, {
+          circuit.recordResult(ctx.investigationId, name, circuitSel, purpose, {
             status: circuit.classifyResult(result, null),
             artifactCount: 0,
             errorMessage: errInfo.errorMsg ?? undefined,
@@ -1145,7 +1155,7 @@ export function wrapToolsWithCache(
             input: inputJson,
             runtime: { ...runtimeMetaBase, stage: runtimeDecision.stage, cycle_id: runtimeDecision.cycleId, cache_layer: "miss", stale_cache: !!staleRecord },
           });
-          circuit.recordResult(ctx.investigationId, name, sel, purpose, {
+          circuit.recordResult(ctx.investigationId, name, circuitSel, purpose, {
             status: circuit.classifyResult(null, e),
             artifactCount: 0,
             errorMessage: msg,

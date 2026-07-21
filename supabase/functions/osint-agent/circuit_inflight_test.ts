@@ -120,3 +120,38 @@ Deno.test("quota-401 after in-flight clears still suppresses the provider for th
 
   clearThread(thread);
 });
+
+Deno.test("jina_reader_scrape allows 3 concurrent in-flight calls then blocks the 4th", () => {
+  const thread = "t-jina-concurrency-3";
+  clearThread(thread);
+
+  assertEquals(shouldRun(thread, "jina_reader_scrape", "https://a.example.com").allow, true);
+  markProviderInFlight(thread, "jina_reader_scrape");
+  assertEquals(shouldRun(thread, "jina_reader_scrape", "https://b.example.com").allow, true);
+  markProviderInFlight(thread, "jina_reader_scrape");
+  assertEquals(shouldRun(thread, "jina_reader_scrape", "https://c.example.com").allow, true);
+  markProviderInFlight(thread, "jina_reader_scrape");
+
+  const fourth = shouldRun(thread, "jina_reader_scrape", "https://d.example.com");
+  assertEquals(fourth.allow, false, "4th parallel jina scrape must be blocked at concurrency 3");
+  assertEquals(
+    fourth.allow === false && "reason" in fourth && typeof fourth.reason === "string" && fourth.reason.includes("in-flight"),
+    true,
+  );
+
+  clearProviderInFlight(thread, "jina_reader_scrape");
+  assertEquals(shouldRun(thread, "jina_reader_scrape", "https://d.example.com").allow, true, "slot frees after one clear");
+
+  clearProviderInFlight(thread, "jina_reader_scrape");
+  clearProviderInFlight(thread, "jina_reader_scrape");
+  clearThread(thread);
+});
+
+Deno.test("other providers still hard-cap at 1 concurrent in-flight call", () => {
+  const thread = "t-non-jina-cap-1";
+  clearThread(thread);
+  markProviderInFlight(thread, "oathnet_lookup");
+  assertEquals(shouldRun(thread, "oathnet_lookup", "a@example.com").allow, false);
+  clearProviderInFlight(thread, "oathnet_lookup");
+  clearThread(thread);
+});

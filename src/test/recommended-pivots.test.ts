@@ -170,13 +170,10 @@ Let me also call detect_contradictions to check for any issues.
     });
   });
 
-  it("returns [] on the recovered-run shape — it legitimately has no pivots section", () => {
-    // Pins the H2 finding: the deterministic recovered-run message
-    // (supabase/functions/osint-agent/recovery.ts buildRecoveredAssistantText —
-    // shape inferred from code, no operator message available) emits an
-    // artifact table with NO "Recommended … pivots" heading. Empty-in/empty-out
-    // is CORRECT parser behavior; recovered-run pivots come from the
-    // artifact-derived path (computePivots/buildPivots), not this parser.
+  it("parses Recommended Next Pivots from the recovered-run stub", () => {
+    // cdf02ff8 Fix 4: recovery stub now emits a pivots section (kind-grouped
+    // consider lines + concrete Investigate/Corroborate lines) so the Next
+    // Steps rail is non-empty after a CPU-kill recovery.
     const recovered = [
       "## Findings report — recovered run",
       "",
@@ -191,10 +188,19 @@ Let me also call detect_contradictions to check for any issues.
       "",
       "Recovered 2 artifacts.",
       "",
+      "## Recommended Next Pivots",
+      "- Investigate jane@example.com — recovered email lead; Verifying email deliverability; Checking linked avatar data",
+      "- Corroborate username jdoe88 across platforms — Checking developer profile traces; Reviewing community activity history",
+      "- **email** — consider: Verifying email deliverability, Checking linked avatar data",
+      "- **username** — consider: Checking developer profile traces, Building targeted search queries",
+      "",
       "### Gaps",
       "- The run was closed by stale-run recovery, so this is not a full model-written synthesis.",
       "- Treat unresolved leads as pending until a follow-up run verifies them.",
     ].join("\n");
-    expect(extractRecommendedPivots(recovered)).toEqual([]);
+    const pivots = extractRecommendedPivots(recovered);
+    expect(pivots.length).toBeGreaterThan(0);
+    expect(pivots.map((p) => p.value)).toContain("jane@example.com");
+    expect(pivots.some((p) => /jdoe88/i.test(p.value) || /jdoe88/i.test(p.label))).toBe(true);
   });
 });
