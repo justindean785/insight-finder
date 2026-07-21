@@ -45,7 +45,7 @@ import {
   shouldForceFinalize, buildFinalizeStepPlan, buildPerCycleCompactDirective,
   activeToolsOutsideFinalize, countFinalizeProgress, resolveFinalizePhase, type FinalizePhase,
   shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS,
-  extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt, toolCallCapReached,
+  extractAssistantReportText, collapseAssistantTextParts, needsReportSalvage, buildSalvageSynthesisPrompt, toolCallCapReached,
   shouldNudgePersistence, buildPersistenceNudgeDirective,
 } from "./orchestrator-finalize.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
@@ -54,6 +54,7 @@ import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { applyClusteringToThread } from "./lib/cluster.ts";
 import { buildTools } from "./tool-registry.ts";
 import { runAttachmentIntake, type AttachmentIntakeResult } from "./attachment-intake.ts";
+import { buildSeedMemoryContext, normalizeMemorySeed, type SeedMemoryRow } from "./memory-context.ts";
 import { isMessageSchemaError, classifyStreamProviderError } from "./stream-error-classify.ts";
 import {
   shouldFallbackAfterMinimaxPreflight,
@@ -691,10 +692,55 @@ Deno.serve(async (req) => {
         `[attachment-intake] read ${intake.attachments_read} file(s), recorded ${intake.artifacts_inserted} lead-tier artifact(s) before reasoning`,
       );
     }
+    // Memory must not depend on the model remembering to call memory_recall.
+    // Load exact-subject and related-value lessons for the latest user pivot and
+    // inject a compact context into every ordinary + finalize generation.
+    let seedMemoryContext = "";
+    try {
+      const latestUser = [...((messages ?? []) as Array<{ role?: string; parts?: Array<{ type?: string; text?: string }> }>)]
+        .reverse()
+        .find((message) => message?.role === "user");
+      const latestSeed = (latestUser?.parts ?? [])
+        .filter((part) => part?.type === "text")
+        .map((part) => part?.text ?? "")
+        .join(" ")
+        .trim();
+      const memorySubject = normalizeMemorySeed(latestSeed);
+      if (memorySubject) {
+        const [bySubject, byRelated] = await Promise.all([
+          supabase
+            .from("agent_memory")
+            .select("kind,subject,content,confidence")
+            .eq("user_id", userId)
+            .eq("subject", memorySubject)
+            .order("confidence", { ascending: false })
+            .limit(8),
+          supabase
+            .from("agent_memory")
+            .select("kind,subject,content,confidence")
+            .eq("user_id", userId)
+            .contains("related_values", [memorySubject])
+            .order("confidence", { ascending: false })
+            .limit(8),
+        ]);
+        if (bySubject.error) console.warn("[memory-context] subject lookup failed:", bySubject.error.message);
+        if (byRelated.error) console.warn("[memory-context] related lookup failed:", byRelated.error.message);
+        seedMemoryContext = buildSeedMemoryContext([
+          ...((bySubject.data ?? []) as SeedMemoryRow[]),
+          ...((byRelated.data ?? []) as SeedMemoryRow[]),
+        ]);
+        if (seedMemoryContext) {
+          console.log(JSON.stringify({ event: "seed_memory_injected", thread_id: threadId, subject: memorySubject }));
+        }
+      }
+    } catch (e) {
+      console.warn("[memory-context] preload failed (non-fatal):", String(e));
+    }
     // Base orchestrator system prompt, shared by streamText and by the forced
     // finalize phase (which appends its phase-specific directive to this exact base).
     const baseSystemPrompt =
-      SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary;
+      SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) +
+      visionIntakeSummary + seedMemoryContext;
     // The two decision tools exist in the registry so forced-finalize can select them,
     // but they must never be available during ordinary investigation steps.
     const normalActiveTools = activeToolsOutsideFinalize(Object.keys(tools));
@@ -879,7 +925,7 @@ Deno.serve(async (req) => {
         : deepseekIsPrimary
         ? { deepseek: { parallel_tool_calls: false, thinking: { type: "disabled" } } }
         : undefined,
-      system: SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary,
+      system: baseSystemPrompt,
       messages: trimmedMessages,
       tools: wrapToolsWithCache(tools, {
         investigationId: threadId,
@@ -1073,6 +1119,10 @@ Deno.serve(async (req) => {
           console.warn("[report-salvage] backstop failed (non-fatal):", String(e));
         }
         if (assistant) {
+          // A multi-step tool loop emits one text part per model turn. Keep the
+          // tool trace, but persist only the closing report/status prose so the
+          // UI does not replay every intermediate plan as duplicate reports.
+          assistant.parts = collapseAssistantTextParts(assistant.parts ?? []) as typeof assistant.parts;
           // Cap `messages.parts` payload before persisting. First shrink any
           // single oversized tool payload (e.g. a 600KB socialfetch_lookup
           // dump) so one blob can't bloat the row or, replayed by the client

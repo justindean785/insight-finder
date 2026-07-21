@@ -24,7 +24,7 @@ import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
 import { isSubmitBlocked } from "@/lib/submit-guard";
 import { interpretReadinessProbe, type ReadinessBody } from "@/lib/readiness-probe";
 import { dedupeCards } from "@/lib/next-step-cards";
-import { hasReportShape, stripReasoningPerPart } from "@/lib/report-shape";
+import { hasReportShape, selectClosingAssistantProse, stripReasoningPerPart } from "@/lib/report-shape";
 import { dedupeCheckpoints } from "@/lib/chat-checkpoints";
 import { computePivots } from "@/lib/pivot-engine";
 import { sanitizeChatText } from "@/lib/sanitize-agent-text";
@@ -1038,12 +1038,11 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIM
   }
   // Single joined prose block so tool cards and the reply share one width stack.
   const prose = reflowCollapsedTables(
-    parts
-      .filter((p) => p.type === "text")
-      .map((p) => stripThinkTags(p.text ?? ""))
-      .filter(Boolean)
-      .join("\n\n")
-      .trim(),
+    selectClosingAssistantProse(
+      parts
+        .filter((p) => p.type === "text")
+        .map((p) => stripThinkTags(p.text ?? "")),
+    ),
   );
   const timeLabel = createdAt
     ? new Date(createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })

@@ -14,6 +14,7 @@ import {
   buildFinalizeDirective,
   buildPerCycleCompactDirective,
   extractAssistantReportText,
+  collapseAssistantTextParts,
   needsReportSalvage,
   stripReasoning,
   hasReportShape,
@@ -290,6 +291,28 @@ Deno.test("extractAssistantReportText: joins text parts of the LAST assistant me
 Deno.test("extractAssistantReportText: returns empty string when no assistant text", () => {
   assertEquals(extractAssistantReportText([{ role: "assistant", parts: [{ type: "tool-x" }] }]), "");
   assertEquals(extractAssistantReportText([]), "");
+});
+
+Deno.test("collapseAssistantTextParts: keeps tools and only the closing report", () => {
+  const parts = [
+    { type: "text", text: "Let me run the opening sweep." },
+    { type: "tool-username_sweep", state: "output-available" },
+    { type: "text", text: "New seed: Marina. Let me check the breach sources." },
+    { type: "tool-memory_save", state: "output-available" },
+    { type: "text", text: "## Findings report\n\n- [VERIFY] One supported observation." },
+  ];
+  assertEquals(collapseAssistantTextParts(parts), [
+    { type: "tool-username_sweep", state: "output-available" },
+    { type: "tool-memory_save", state: "output-available" },
+    { type: "text", text: "## Findings report\n\n- [VERIFY] One supported observation." },
+  ]);
+});
+
+Deno.test("collapseAssistantTextParts: falls back to last prose when report synthesis is absent", () => {
+  assertEquals(collapseAssistantTextParts([
+    { type: "text", text: "Opening sweep." },
+    { type: "text", text: "Last bounded status update." },
+  ]), [{ type: "text", text: "Last bounded status update." }]);
 });
 
 Deno.test("needsReportSalvage: gap = work happened but no REPORT SHAPE (not mere length)", () => {

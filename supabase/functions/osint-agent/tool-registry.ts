@@ -26,6 +26,7 @@ import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
 import { selectPivots, proposedCallToCandidate, type PivotCandidate, type ProposedCall } from "./graph_pivots.ts";
 import { renderPivotChecklistForPrompt } from "./pivot-checklists.ts";
 import { unknownToolNudge } from "./unknown-tool-guard.ts";
+import { isJinaOriginBlockStatus } from "./jina-policy.ts";
 import type { QueryType } from "./query-type-router.ts";
 import { DNS_TYPES, VIRTUAL_TYPE_MAP, isVirtualType, resolveVirtualHost, filterTxtByPrefix } from "./tools/dns-virtual.ts";
 
@@ -3631,7 +3632,13 @@ export function buildTools(ctx: ToolContext) {
               : r.status === 451 || r.status === 403
                 ? "origin blocked — try wayback_snapshots or a different result"
                 : undefined;
-            return { error: `jina ${r.status}`, status: r.status, url: clean, hint };
+            return {
+              error: `jina ${r.status}`,
+              status: r.status,
+              url: clean,
+              hint,
+              ...(isJinaOriginBlockStatus(r.status) ? { skipped: true, selector_local: true } : {}),
+            };
           }
           const text = await r.text();
           return { ok: true, url: clean, markdown: text.slice(0, maxChars), truncated: text.length > maxChars };
