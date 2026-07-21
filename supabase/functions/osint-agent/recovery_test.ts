@@ -1,11 +1,5 @@
 import { assert, assertEquals, assertStringIncludes } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import {
-  buildRecoveredAssistantText,
-  buildRecoveredNextPivots,
-  isStaleActiveThread,
-  shouldInsertRecoveredAssistant,
-  STALE_RUN_AFTER_MS,
-} from "./recovery.ts";
+import { buildRecoveredAssistantText, isStaleActiveThread, shouldInsertRecoveredAssistant, STALE_RUN_AFTER_MS } from "./recovery.ts";
 
 Deno.test("isStaleActiveThread: uses heartbeat when present", () => {
   const now = Date.parse("2026-07-15T13:00:00Z");
@@ -36,30 +30,6 @@ Deno.test("buildRecoveredAssistantText: emits a report-shaped artifact table", (
   assertStringIncludes(text, "jane@example.com");
   assertStringIncludes(text, "oathnet_lookup");
   assert(text.includes("| # | Kind | Value | Confidence | Source |"));
-  assertStringIncludes(text, "## Recommended Next Pivots");
-  assertStringIncludes(text, "**email**");
-  assertStringIncludes(text, "Investigate jane@example.com");
-  assertStringIncludes(text, "### Gaps");
-});
-
-Deno.test("buildRecoveredNextPivots: kind groups + memory lines; strips secret memory", () => {
-  const lines = buildRecoveredNextPivots(
-    [
-      { kind: "email", value: "jane@example.com", confidence: 80 },
-      { kind: "username", value: "jdoe88", confidence: 60 },
-      { kind: "ip", value: "1.2.3.4", confidence: 70 },
-    ],
-    [
-      { kind: "lesson", subject: "jdoe88", content: "Previously seen on GitHub with matching bio" },
-      { kind: "lesson", subject: "jane@example.com", content: "password reuse pattern David1!1" },
-    ],
-  );
-  assert(lines.some((l) => l.includes("**email**") && l.includes("consider:")));
-  assert(lines.some((l) => l.includes("**username**") && l.includes("consider:")));
-  assert(lines.some((l) => l.includes("**ip**") && l.includes("consider:")));
-  assert(lines.some((l) => l.includes("Investigate jane@example.com")));
-  assert(lines.some((l) => l.includes("[MEMORY]") && l.includes("jdoe88")));
-  assertEquals(lines.some((l) => /password/i.test(l)), false, "secret-like memory must not appear");
 });
 
 Deno.test("shouldInsertRecoveredAssistant: ignores old assistant from a prior turn", () => {

@@ -14,10 +14,7 @@ import { creditsCharged } from "./billing.ts";
 import { classifyToolOutcome } from "./tool-outcome.ts";
 import * as circuit from "./circuit.ts";
 import { guard } from "./guard.ts";
-import { type ToolCallBudget, reserveToolCall } from "./orchestrator-budget.ts";
-import { extractFindings, loadSeenArtifactKeys, persistAutoFindings } from "./auto-persist-findings.ts";
-import { CHECKPOINT_AWAIT_MS, withTimeout } from "./incremental-persist.ts";
-import { loadReviewsForThread, applyReviewsToArtifacts, type ReviewLoad } from "./reviews.ts";
+import { shouldSkipForToolCap } from "./orchestrator-finalize.ts";
 import {
   ALWAYS_ALLOW_TOOLS,
   analyzeWeakLead,
@@ -204,11 +201,7 @@ export function withTimeoutSignal(opts: unknown, signal: AbortSignal): unknown {
   return { ...((opts as Record<string, unknown>) ?? {}), abortSignal: merged };
 }
 
-function detectSelectorType(tool: string, input: Record<string, unknown>): string {
-  // socialfetch_lookup's `kind` is a content mode (profile/videos/posts/…), NOT
-  // a selector type — treating it as the type hint skipped username normalization
-  // (@-strip) and made multi-platform calls share inconsistent keys (cdf02ff8).
-  if (tool === "socialfetch_lookup") return "username";
+function detectSelectorType(input: Record<string, unknown>): string {
   const hinted = String(input.kind ?? input.selector_type ?? "").trim().toLowerCase();
   if (hinted) return hinted;
   if (typeof input.email === "string") return "email";
@@ -316,13 +309,8 @@ async function loadSelectorEvidence(
   threadId: string,
   selectorType: string,
   normalizedSelector: string,
-  review: ReviewLoad,
 ): Promise<SelectorEvidenceSignal> {
-  const reviewSignature = [
-    ...[...review.byId.entries()].map(([id, state]) => `${id}:${state}`),
-    ...[...review.rejectedKeys].map((value) => `key:${value}`),
-  ].sort().join("|");
-  const key = `${threadId}:${selectorType}:${normalizedSelector}:${review.ok}:${reviewSignature}`;
+  const key = `${threadId}:${selectorType}:${normalizedSelector}`;
   const cached = SELECTOR_SIGNAL_CACHE.get(key);
   if (cached) return cached;
   const empty: SelectorEvidenceSignal = {
@@ -350,15 +338,11 @@ async function loadSelectorEvidence(
         : [selectorType];
     const { data } = await userDb
       .from("artifacts")
-      .select("id,kind,value,confidence,source,metadata")
+      .select("kind,value,confidence,source,metadata")
       .eq("thread_id", threadId)
       .in("kind", likelyKinds)
       .limit(100);
-    const reviewed = applyReviewsToArtifacts(
-      (data ?? []) as Array<Record<string, unknown>>,
-      review,
-    );
-    const rows = (reviewed as Array<{
+    const rows = ((data ?? []) as Array<{
       kind?: string | null;
       value?: string | null;
       confidence?: number | null;
@@ -436,85 +420,13 @@ export function wrapToolsWithCache(
     // genuine live execution and (b) short-circuit new lookups once the cap is hit.
     // `capped` is surfaced by index.ts (finalize + telemetry). Optional so callers
     // that don't set it (tests, other entrypoints) are unaffected.
-    // `reserved` is claimed SYNCHRONOUSLY at the cap-check gate via
-    // reserveToolCall() (no await between check and increment) — see the gate
-    // below for why `genuine` alone isn't race-safe under parallel dispatch.
-    toolCallBudget?: ToolCallBudget;
+    toolCallBudget?: { genuine: number; capped: boolean };
     shouldStopLiveLookups?: () => boolean;
     onHeartbeat?: () => void;
   },
 ) {
   const wrapped: Record<string, Tool> = {};
   const adminDb = ctx.supabaseAdmin ?? ctx.supabase;
-  let reviewsPromise: Promise<ReviewLoad> | null = null;
-  const getReviews = (): Promise<ReviewLoad> => {
-    reviewsPromise ??= loadReviewsForThread(
-      adminDb as unknown as Parameters<typeof loadReviewsForThread>[0],
-      ctx.investigationId,
-      ctx.userId,
-    );
-    return reviewsPromise;
-  };
-  // ---- Per-tool-call durable persistence ------------------------------------
-  // IN ADDITION to the per-step onStepFinish path in index.ts, not instead of it.
-  //
-  // WHY: onStepFinish only fires once an ENTIRE step completes. If the isolate is
-  // CPU-killed mid-step — e.g. partway through a batch of parallel tool calls —
-  // onStepFinish never runs for that step and even calls that already returned
-  // real, extractable output are discarded (observed in production: thread
-  // 9d2e0e6b, 42 tool calls, 0 artifacts, 0 assistant messages, killed before any
-  // step boundary completed). This hook persists the instant each call lands, so
-  // a kill anywhere no longer throws away evidence already gathered.
-  //
-  // COST: extractFindings() is a cheap pure function that returns [] for the
-  // large majority of calls (denylisted tool, or no matching shape), so the DB
-  // round-trip only happens when there is genuinely something to persist.
-  //
-  // DEDUP: deliberately DB-backed — loadSeenArtifactKeys is queried fresh each
-  // time rather than kept as an in-memory Set — so this per-call path and
-  // index.ts's per-step path can never double-insert the same (kind,value)
-  // regardless of which runs first.
-  //
-  // SAFETY: only whitelisted kinds survive normalizeFinding, and every row still
-  // goes through buildAutoRecordedRow + scrubArtifactRows (the same integrity
-  // path record_artifacts uses), so no raw payloads, credentials, or masked
-  // breach values can reach the artifacts table by this route. Bounded by
-  // CHECKPOINT_AWAIT_MS and never throws — persistence must not break a tool call.
-  const persistLiveFindings = async (name: string, output: unknown): Promise<void> => {
-    // Recording/evidence/finalize tools own their own persistence path — scanning
-    // their output would double-record the very artifacts they just wrote.
-    // auto-persist-findings.ts documents this intent ("never memory / recording /
-    // planner tools") but its hand-maintained AUTO_PERSIST_TOOL_DENYLIST only
-    // names record_artifacts / record_artifact / memory_save; record_evidence,
-    // record_finding, record_report, append_evidence, finalize_no_findings and
-    // finalize_skip_memory are all missing from it. Gating on ALWAYS_ALLOW_TOOLS —
-    // the canonical "this is a recording tool" set — closes that gap and stays
-    // correct automatically as recording tools are added, instead of relying on
-    // two lists staying in sync.
-    if (ALWAYS_ALLOW_TOOLS.has(name)) return;
-    const findings = extractFindings(name, output);
-    if (findings.length === 0) return;
-    try {
-      const seen = await loadSeenArtifactKeys(
-        adminDb as unknown as Parameters<typeof loadSeenArtifactKeys>[0],
-        ctx.investigationId,
-      );
-      await withTimeout(
-        persistAutoFindings(
-          {
-            supabase: adminDb as unknown as Parameters<typeof persistAutoFindings>[0]["supabase"],
-            threadId: ctx.investigationId,
-            userId: ctx.userId,
-            seen,
-          },
-          findings.map((f) => ({ ...f, toolName: name })),
-        ),
-        CHECKPOINT_AWAIT_MS,
-      );
-    } catch (e) {
-      console.warn(`[auto-persist-findings] per-call persist failed for ${name}:`, (e as Error)?.message ?? e);
-    }
-  };
   // Per-run tool_health cache (Phase 2): load the rolling reliability + latency
   // signal ONCE and reuse it across every wrapped tool call this run. Best-effort —
   // if the view is missing (deploy ordering) or the query fails, scoring simply
@@ -716,13 +628,7 @@ export function wrapToolsWithCache(
                   );
               ok = deriveOk(out);
               if (!ok) errInfo = extractToolError(out);
-              // Extract from the SCRUBBED output, exactly as the cached path
-              // below does — the two paths must not disagree about what a tool
-              // result contains, and scrubbing first keeps raw provider payloads
-              // out of the extractor entirely.
-              const safeOut = tagSkipState(tagTier(scrub(out), tier, model));
-              if (ok) await persistLiveFindings(name, safeOut);
-              return safeOut;
+              return tagSkipState(tagTier(scrub(out), tier, model));
             } catch (e) {
               ok = false;
               const redacted = redactSecrets(String((e as Error)?.message ?? e)).slice(0, 500);
@@ -752,12 +658,9 @@ export function wrapToolsWithCache(
         const t0 = Date.now();
         // ---- Circuit breaker + dedup gate ----
         const inp = (input ?? {}) as Record<string, unknown>;
-        const selectorType = detectSelectorType(name, inp);
+        const selectorType = detectSelectorType(inp);
         const selectorValue = detectSelectorValue(inp);
         const sel = circuit.normalizeSelector(selectorType, selectorValue);
-        // Circuit key may be richer than the entity selector (platform|kind|handle
-        // for socialfetch_lookup). Evidence/cache still key on `sel`.
-        const circuitSel = circuit.circuitSelectorFor(name, inp, sel);
         const purpose = String(inp.purpose ?? "default");
         const force = inp.force === true;
         const overrideSelector = ctx.manualOverrideSelector
@@ -768,13 +671,7 @@ export function wrapToolsWithCache(
         // value can reach tool_usage_log.input_json or tool_call_cache.input_json.
         const inputJson = redactSensitiveToolInput(name, normalizeForHash(input)) as unknown as Record<string, unknown>;
         const params = normalizedParams(inp);
-        const signal = await loadSelectorEvidence(
-          ctx.supabase,
-          ctx.investigationId,
-          selectorType,
-          sel,
-          await getReviews(),
-        );
+        const signal = await loadSelectorEvidence(ctx.supabase, ctx.investigationId, selectorType, sel);
         const weakLead = analyzeWeakLead(signal);
         // Persistent tool-health prior (Phase 2): latency + reliability from the
         // tool_health view, sample-gated inside scoreExpectedValue so a low-sample
@@ -975,33 +872,11 @@ export function wrapToolsWithCache(
         // so the step keeps a valid tool-call/result pair and the model finalizes with
         // what it has. Checked here — AFTER cache hits (still served free) and before
         // the live call — so cached corroboration never costs budget. Recording tools
-        // (ALWAYS_ALLOW) are exempt via reserveToolCall, so the closing
+        // (ALWAYS_ALLOW) are exempt via shouldSkipForToolCap, so the closing
         // record_artifacts is never starved and no collected evidence is stranded.
         // This is the hard backstop; prepareStep also forces synthesis once capped.
-        //
-        // RACE HARDENING: admission is a single check-AND-reserve. The old gate
-        // read `.genuine` here and only incremented it much further down, past
-        // several awaits (a usage-log write, the circuit/runtime gates, and
-        // startCall's rate-limit backoff). A model step that dispatches tool
-        // calls in parallel (ORCHESTRATOR_PARALLEL_TOOL_CALLS) had every call in
-        // the batch read the same pre-increment value and pass, overshooting the
-        // cap. reserveToolCall() claims the slot synchronously at the moment of
-        // the check, so the batch serializes on the event loop and exactly the
-        // remaining slots are admitted. `.genuine` keeps its accounting-only role.
-        //
-        // A reservation is PERMANENT once granted — it is never handed back if a
-        // later gate (finalize window, circuit breaker, runtime policy) rejects
-        // the call. That is deliberate: `.reserved` counts ADMITTED ATTEMPTS, not
-        // completed calls. An admitted call has already paid the expensive part of
-        // this path (cache probe + usage-log write + circuit evaluation), and the
-        // gates that reject after admission are themselves DEDUP gates — a run
-        // spending its budget on redundant lookups is exactly a run that should
-        // finalize. Releasing slots would also reopen this race: with sequential
-        // arrivals, each rejected call would return its slot and the cap would
-        // never be reached.
-        const isRecordingTool = ALWAYS_ALLOW_TOOLS.has(name);
-        const budget = ctx.toolCallBudget;
-        if (budget && !reserveToolCall(budget, isRecordingTool)) {
+        if (ctx.toolCallBudget && shouldSkipForToolCap(ctx.toolCallBudget.genuine, ALWAYS_ALLOW_TOOLS.has(name))) {
+          ctx.toolCallBudget.capped = true;
           await logUsage(false, false, Date.now() - t0, "run tool-call cap reached", null, true, {
             input: inputJson,
             runtime: { ...runtimeMetaBase, rejection_reason: "run_capped", rejection_source: "run_cap", stale_cache: !!staleRecord },
@@ -1014,6 +889,7 @@ export function wrapToolsWithCache(
             stale_cache: !!staleRecord,
           });
         }
+
         // ---- Finalize-window live-call guard -----------------------------------
         // prepareStep restricts activeTools once the reserve window opens, but it is
         // only called between model steps. A long/parallel step can still attempt new
@@ -1033,11 +909,11 @@ export function wrapToolsWithCache(
           });
         }
 
-        const decision = circuit.shouldRun(ctx.investigationId, name, circuitSel, purpose, { force });
+        const decision = circuit.shouldRun(ctx.investigationId, name, sel, purpose, { force });
         if (!decision.allow) {
           noteRejectedCall(ctx.investigationId, {
             tool_name: name,
-            selector: circuitSel,
+            selector: sel,
             selector_type: selectorType,
             expected_value: expectedValue,
             reason: decision.reason,
@@ -1048,7 +924,7 @@ export function wrapToolsWithCache(
           });
           await logUsage(false, false, Date.now() - t0, decision.reason, null, true, {
             input: inputJson,
-            runtime: { ...runtimeMetaBase, rejection_reason: decision.reason, rejection_source: "circuit", circuit_selector: circuitSel },
+            runtime: { ...runtimeMetaBase, rejection_reason: decision.reason, rejection_source: "circuit" },
           });
           return attachRuntimeMeta({ ok: false, skipped: true, error: decision.reason, _breaker: true }, {
             ...runtimeMetaBase,
@@ -1056,16 +932,13 @@ export function wrapToolsWithCache(
             stage: "TRIAGE",
             cache_layer: "miss",
             stale_cache: !!staleRecord,
-            circuit_selector: circuitSel,
           });
         }
-        // Use circuitSel so multi-platform socialfetch calls on one handle are
-        // distinct query families (platform|kind|handle), not suppressed as dupes.
-        const familyKey = `${name}::${selectorType}::${circuitSel}`;
+        const familyKey = `${name}::${selectorType}::${sel}`;
         const runtimeDecision = startCall({
           threadId: ctx.investigationId,
           toolName: name,
-          selector: circuitSel,
+          selector: sel,
           selectorType,
           costTier: costTierForTool(baseCost),
           expectedValue,
@@ -1134,7 +1007,7 @@ export function wrapToolsWithCache(
         // outcome semantics the wrapper already uses. Recording/evidence tools are
         // exempt so evidence writes don't eat the lookup budget. A live timeout/error
         // still counts: it genuinely ran and consumed time/quota.
-        if (budget && !isRecordingTool) budget.genuine++;
+        if (ctx.toolCallBudget && !ALWAYS_ALLOW_TOOLS.has(name)) ctx.toolCallBudget.genuine++;
         let ok = true;
         let result: unknown;
         let errInfo: { errorMsg: string | null; statusCode: number | null } = { errorMsg: null, statusCode: null };
@@ -1165,7 +1038,7 @@ export function wrapToolsWithCache(
           // this is the only point that sees what the model actually received.
           if (name === "minimax_correlate") guard.lastCorrelateOutcome = ok ? "ok" : "failed";
           circuit.clearProviderInFlight(ctx.investigationId, name);
-          circuit.recordResult(ctx.investigationId, name, circuitSel, purpose, {
+          circuit.recordResult(ctx.investigationId, name, sel, purpose, {
             status: circuit.classifyResult(result, null),
             artifactCount: 0,
             errorMessage: errInfo.errorMsg ?? undefined,
@@ -1180,7 +1053,7 @@ export function wrapToolsWithCache(
             input: inputJson,
             runtime: { ...runtimeMetaBase, stage: runtimeDecision.stage, cycle_id: runtimeDecision.cycleId, cache_layer: "miss", stale_cache: !!staleRecord },
           });
-          circuit.recordResult(ctx.investigationId, name, circuitSel, purpose, {
+          circuit.recordResult(ctx.investigationId, name, sel, purpose, {
             status: circuit.classifyResult(null, e),
             artifactCount: 0,
             errorMessage: msg,
@@ -1243,7 +1116,6 @@ export function wrapToolsWithCache(
             console.warn(`[tool_call_cache] write threw for ${name}:`, error);
           }
         }
-        if (ok) await persistLiveFindings(name, result);
         finishCall(ctx.investigationId, name);
         logUsage(false, ok, Date.now() - t0, errInfo.errorMsg, errInfo.statusCode, isFreeCall(result), {
           input: inputJson,

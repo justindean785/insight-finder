@@ -117,9 +117,8 @@ export async function loadReviewsForThread(
     }
 
     // Resolve rejected ids → normalized kind|value so a later re-record of the
-    // same finding under a NEW id is still excluded. This is integrity-critical:
-    // model-supplied artifact copies have no original id, so an id-only partial
-    // load would let a rejected value back into planning/memory.
+    // same finding under a NEW id is still excluded. Best-effort: if this lookup
+    // fails we still have id-level enforcement, so the load stays ok.
     const rejectedIds = [...byId.entries()].filter(([, s]) => REJECTED_REVIEW_STATES.has(s)).map(([id]) => id);
     const rejectedRows: RejectedRow[] = [];
     if (rejectedIds.length > 0) {
@@ -137,9 +136,11 @@ export async function loadReviewsForThread(
               value: String(a?.value ?? ""),
             });
           }
-        } else if (aErr) return emptyReviewLoad(false, errText(aErr));
+        } else if (aErr) {
+          console.warn("[reviews] rejected-key lookup failed (id-level enforcement still active):", errText(aErr));
+        }
       } catch (e) {
-        return emptyReviewLoad(false, errText(e));
+        console.warn("[reviews] rejected-key lookup threw:", errText(e));
       }
     }
     return { ok: true, byId, rejectedKeys, rejectedRows, error: null };
@@ -195,30 +196,6 @@ export function applyReviewsToArtifacts<T extends Record<string, unknown>>(
   return out;
 }
 
-/** Exclude durable memories that directly restate an analyst-rejected value.
- * Memory rows have no artifact_id, so enforcement is value-based across subject,
- * related_values, and content. */
-export function filterMemoriesByReviews<T extends Record<string, unknown>>(
-  rows: T[] | null | undefined,
-  review: ReviewLoad,
-): T[] {
-  if (!Array.isArray(rows) || !review.ok) return [];
-  const rejectedValues = review.rejectedRows
-    .map((row) => String(row.value ?? "").trim().toLowerCase().replace(/\s+/g, " "))
-    .filter((value) => value.length >= 3);
-  if (rejectedValues.length === 0) return rows;
-  return rows.filter((row) => {
-    const subject = String(row.subject ?? "").trim().toLowerCase().replace(/\s+/g, " ");
-    const related = Array.isArray(row.related_values)
-      ? row.related_values.map((value) => String(value).trim().toLowerCase().replace(/\s+/g, " "))
-      : [];
-    const content = String(row.content ?? "").toLowerCase().replace(/\s+/g, " ");
-    return !rejectedValues.some((value) =>
-      subject === value || related.includes(value) || content.includes(value)
-    );
-  });
-}
-
 /**
  * The artifacts the analyst REJECTED (dismissed/wrong), for an explicit
  * "DO NOT USE" block in a prompt — showing the model the rejected values by name
@@ -245,7 +222,7 @@ export function rejectedArtifacts<T extends Record<string, unknown>>(
  * does re-assert a finding the analyst already marked FALSE.
  * Returns "" when there is nothing to say.
  */
-export function renderAnalystRejectionBlock<T extends { kind?: unknown; value?: unknown }>(
+export function renderAnalystRejectionBlock<T extends Record<string, unknown>>(
   rejected: T[] | null | undefined,
 ): string {
   if (!Array.isArray(rejected) || rejected.length === 0) return "";

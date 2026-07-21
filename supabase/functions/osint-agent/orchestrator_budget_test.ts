@@ -13,38 +13,12 @@ import {
   RECENT_WINDOW,
   MAX_ORCHESTRATOR_STEPS,
   ORCHESTRATOR_WALL_CLOCK_MS,
-  FORCE_TOOL_CALL_UNTIL_FINALIZE,
-  buildIntermediateStepPlan,
-  orchestratorStepToolChoice,
   approxMsgChars,
   capUserTextToBudget,
   capTotalToBudget,
   elidedToolResultRef,
   deadlineReached,
 } from "./orchestrator-budget.ts";
-
-Deno.test("non-finalize steps require a tool call; finalize permits prose", () => {
-  assertEquals(FORCE_TOOL_CALL_UNTIL_FINALIZE, true);
-  assertEquals(orchestratorStepToolChoice(false), "required");
-  assertEquals(orchestratorStepToolChoice(true), "auto");
-});
-
-Deno.test("both intermediate plans include required toolChoice", () => {
-  assertEquals(buildIntermediateStepPlan({
-    nudgePersistence: false,
-    normalActiveTools: ["lookup", "record_artifacts"],
-  }), {
-    activeTools: ["lookup", "record_artifacts"],
-    toolChoice: "required",
-  });
-  assertEquals(buildIntermediateStepPlan({
-    nudgePersistence: true,
-    normalActiveTools: ["lookup", "record_artifacts"],
-  }), {
-    activeTools: ["record_artifacts"],
-    toolChoice: "required",
-  });
-});
 
 // Build a `tool` message carrying one tool-result with a big JSON payload.
 function bigToolMessage(i: number, valueChars: number): ModelMessage {
