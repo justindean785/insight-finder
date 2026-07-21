@@ -22,7 +22,7 @@
  * only guarantees the synthesis STEP happens. The report content stays the model's,
  * grounded strictly in artifacts already gathered.
  */
-import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN, toolCapExceeded } from "./orchestrator-budget.ts";
+import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN } from "./orchestrator-budget.ts";
 
 // Reserve the final stretch of the wall-clock budget for a guaranteed synthesis+record
 // step. Once elapsed enters this window the orchestrator stops issuing new lookups and
@@ -208,7 +208,8 @@ export function shouldSkipForToolCap(
   isRecordingTool: boolean,
   cap: number = MAX_TOOL_CALLS_PER_RUN,
 ): boolean {
-  return toolCapExceeded(genuineToolCalls, isRecordingTool, cap);
+  if (isRecordingTool) return false;
+  return genuineToolCalls >= cap;
 }
 
 /**
@@ -393,27 +394,6 @@ export function extractAssistantReportText(finalMessages: ReportMsg[]): string {
     .trim();
 }
 
-/**
- * Keep tool evidence while collapsing inter-step narration to one closing prose
- * block. AI SDK emits a text part for every model step; persisting/rendering all
- * of them made repeated investigation plans look like three final reports.
- *
- * Prefer the last report-shaped part (the forced-finalize/salvage output). If a
- * provider ends without report shape, retain only its last non-empty prose part
- * rather than replaying every "let me now..." narration block.
- */
-export function collapseAssistantTextParts<T extends ReportPart>(parts: T[]): T[] {
-  const nonText = (parts ?? []).filter((part) => part?.type !== "text");
-  const textParts = (parts ?? []).filter(
-    (part) => part?.type === "text" && typeof part.text === "string" && stripReasoning(part.text).length > 0,
-  );
-  if (textParts.length <= 1) return parts ?? [];
-
-  const reportParts = textParts.filter((part) => hasReportShape(stripReasoning(part.text as string)));
-  const closing = reportParts.at(-1) ?? textParts.at(-1);
-  return closing ? [...nonText, closing] : nonText;
-}
-
 // MiniMax emits reasoning wrapped in <think>…</think>. Strip closed blocks AND a
 // dangling (truncation-severed) opener so only the model's ACTUAL output text is
 // measured. Verified necessary: a truncated turn carried 11.6k chars of text —
@@ -467,22 +447,13 @@ function truncate(s: string, max: number): string {
  * artifacts already gathered (nothing new is fetched) and forbids fabrication and
  * further tool use, so the salvage report can only restate confirmed evidence.
  */
-export function buildSalvageSynthesisPrompt(
-  seed: string,
-  artifacts: SalvageArtifact[],
-  rejected: SalvageArtifact[] = [],
-): string {
+export function buildSalvageSynthesisPrompt(seed: string, artifacts: SalvageArtifact[]): string {
   const rows = (artifacts ?? []).slice(0, 200).map((a) => {
     const kind = String(a?.kind ?? "?");
     const value = typeof a?.value === "string" ? a.value : JSON.stringify(a?.value ?? "");
     const conf = a?.confidence != null && a?.confidence !== "" ? ` (confidence ${a.confidence})` : "";
     const src = a?.source ? ` [source: ${a.source}]` : "";
     return `- ${kind}: ${truncate(value, 300)}${conf}${src}`;
-  });
-  const rejectedRows = (rejected ?? []).slice(0, 100).map((a) => {
-    const kind = String(a?.kind ?? "?");
-    const value = typeof a?.value === "string" ? a.value : JSON.stringify(a?.value ?? "");
-    return `- ${kind}: ${truncate(value, 200)}`;
   });
   return [
     `Investigation seed: ${seed}`,
@@ -495,14 +466,6 @@ export function buildSalvageSynthesisPrompt(
     "- Confirmed findings grouped by type, each with its confidence and source.",
     "- Explicit gaps and unverified leads.",
     "Do not invent anything not present below. Do not call any tools.",
-    ...(rejectedRows.length
-      ? [
-          "",
-          "ANALYST-REJECTED — DO NOT USE. A human analyst marked these artifacts FALSE.",
-          "Never present, cite, rank, or re-derive them as the subject or supporting evidence:",
-          ...rejectedRows,
-        ]
-      : []),
     rows.length ? "" : "If the set is empty, state plainly that no confirmed findings were recorded.",
     "",
     "Artifacts:",

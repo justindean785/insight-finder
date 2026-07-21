@@ -38,31 +38,21 @@ import { beginCycle, clearRuntime } from "./runtime-policy.ts";
 import {
   TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW,
   MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN,
-  buildIntermediateStepPlan, capTotalToBudget, deadlineReached,
-  type ToolCallBudget,
+  capTotalToBudget, deadlineReached,
 } from "./orchestrator-budget.ts";
 import {
   shouldForceFinalize, buildFinalizeStepPlan, buildPerCycleCompactDirective,
   activeToolsOutsideFinalize, countFinalizeProgress, resolveFinalizePhase, type FinalizePhase,
   shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS,
-  extractAssistantReportText, collapseAssistantTextParts, needsReportSalvage, buildSalvageSynthesisPrompt, toolCallCapReached,
+  extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt, toolCallCapReached,
   shouldNudgePersistence, buildPersistenceNudgeDirective,
 } from "./orchestrator-finalize.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
-import {
-  loadReviewsForThread,
-  applyReviewsToArtifacts,
-  filterMemoriesByReviews,
-  rejectedArtifacts,
-  renderAnalystRejectionBlock,
-  REVIEW_STATE_UNAVAILABLE_NOTE,
-} from "./reviews.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { applyClusteringToThread } from "./lib/cluster.ts";
 import { buildTools } from "./tool-registry.ts";
 import { runAttachmentIntake, type AttachmentIntakeResult } from "./attachment-intake.ts";
-import { buildSeedMemoryContext, normalizeMemorySeed, type SeedMemoryRow } from "./memory-context.ts";
 import { isMessageSchemaError, classifyStreamProviderError } from "./stream-error-classify.ts";
 import {
   shouldFallbackAfterMinimaxPreflight,
@@ -700,71 +690,10 @@ Deno.serve(async (req) => {
         `[attachment-intake] read ${intake.attachments_read} file(s), recorded ${intake.artifacts_inserted} lead-tier artifact(s) before reasoning`,
       );
     }
-    const turnReviews = await loadReviewsForThread(
-      supabaseAdmin as unknown as Parameters<typeof loadReviewsForThread>[0],
-      threadId,
-      userId,
-    );
-    // Memory must not depend on the model remembering to call memory_recall.
-    // Load exact-subject and related-value lessons for the latest user pivot and
-    // inject a compact context into every ordinary + finalize generation.
-    let seedMemoryContext = "";
-    try {
-      const latestUser = [...((messages ?? []) as Array<{ role?: string; parts?: Array<{ type?: string; text?: string }> }>)]
-        .reverse()
-        .find((message) => message?.role === "user");
-      const latestSeed = (latestUser?.parts ?? [])
-        .filter((part) => part?.type === "text")
-        .map((part) => part?.text ?? "")
-        .join(" ")
-        .trim();
-      const memorySubject = normalizeMemorySeed(latestSeed);
-      if (memorySubject) {
-        const [bySubject, byRelated] = await Promise.all([
-          supabase
-            .from("agent_memory")
-            .select("kind,subject,content,confidence")
-            .eq("user_id", userId)
-            .eq("subject", memorySubject)
-            .order("confidence", { ascending: false })
-            .limit(8),
-          supabase
-            .from("agent_memory")
-            .select("kind,subject,content,confidence")
-            .eq("user_id", userId)
-            .contains("related_values", [memorySubject])
-            .order("confidence", { ascending: false })
-            .limit(8),
-        ]);
-        if (bySubject.error) console.warn("[memory-context] subject lookup failed:", bySubject.error.message);
-        if (byRelated.error) console.warn("[memory-context] related lookup failed:", byRelated.error.message);
-        const reviewedMemories = filterMemoriesByReviews([
-          ...((bySubject.data ?? []) as Array<Record<string, unknown>>),
-          ...((byRelated.data ?? []) as Array<Record<string, unknown>>),
-        ], turnReviews) as SeedMemoryRow[];
-        seedMemoryContext = buildSeedMemoryContext(reviewedMemories);
-        if (seedMemoryContext) {
-          console.log(JSON.stringify({ event: "seed_memory_injected", thread_id: threadId, subject: memorySubject }));
-        }
-      }
-    } catch (e) {
-      console.warn("[memory-context] preload failed (non-fatal):", String(e));
-    }
     // Base orchestrator system prompt, shared by streamText and by the forced
     // finalize phase (which appends its phase-specific directive to this exact base).
-    const analystRejectionBlock = turnReviews.ok
-      ? renderAnalystRejectionBlock(turnReviews.rejectedRows)
-      : `\n## ANALYST REVIEW STATE UNAVAILABLE\n${REVIEW_STATE_UNAVAILABLE_NOTE}\n`;
-    if (!turnReviews.ok) {
-      console.warn(JSON.stringify({
-        event: "turn_review_state_unavailable",
-        thread_id: threadId,
-        error: turnReviews.error,
-      }));
-    }
     const baseSystemPrompt =
-      SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) +
-      visionIntakeSummary + seedMemoryContext + analystRejectionBlock;
+      SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary;
     // The two decision tools exist in the registry so forced-finalize can select them,
     // but they must never be available during ordinary investigation steps.
     const normalActiveTools = activeToolsOutsideFinalize(Object.keys(tools));
@@ -776,11 +705,10 @@ Deno.serve(async (req) => {
     let finalizeBoundary = countFinalizeProgress([]);
     let finalizeDecisionSucceededThisStep = false;
     // Per-run genuine-tool-call budget (MAX_TOOL_CALLS_PER_RUN). Passed into
-    // wrapToolsWithCache, which atomically claims a `reserved` slot at the admission
-    // gate, increments `genuine` on each live execution and flips `capped` once the
-    // cap is hit; prepareStep reads it to force finalize. Owned by this per-request
-    // closure so concurrent runs on a warm isolate never share it.
-    const toolCallBudget: ToolCallBudget = { genuine: 0, reserved: 0, capped: false };
+    // wrapToolsWithCache, which increments `genuine` on each live execution and flips
+    // `capped` once the cap is hit; prepareStep reads it to force finalize. Owned by
+    // this per-request closure so concurrent runs on a warm isolate never share it.
+    const toolCallBudget = { genuine: 0, capped: false };
     // First-pass persistence nudge latch (DeepSeek deferral fix). Request-scoped —
     // owned by this per-request closure, NEVER a module-global, so one run's nudge
     // state can't leak onto a concurrent run sharing a warm isolate. Flipped true the
@@ -904,20 +832,14 @@ Deno.serve(async (req) => {
           }));
           return {
             messages: stepMessagesOut,
+            activeTools: ["record_artifacts"],
             system: intermediateSystem,
-            ...buildIntermediateStepPlan({
-              nudgePersistence: true,
-              normalActiveTools,
-            }),
           };
         }
         return {
           messages: stepMessagesOut,
+          activeTools: normalActiveTools,
           system: intermediateSystem,
-          ...buildIntermediateStepPlan({
-            nudgePersistence: false,
-            normalActiveTools,
-          }),
         };
       };
 
@@ -955,7 +877,7 @@ Deno.serve(async (req) => {
         : deepseekIsPrimary
         ? { deepseek: { parallel_tool_calls: false, thinking: { type: "disabled" } } }
         : undefined,
-      system: baseSystemPrompt,
+      system: SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary,
       messages: trimmedMessages,
       tools: wrapToolsWithCache(tools, {
         investigationId: threadId,
@@ -1118,33 +1040,17 @@ Deno.serve(async (req) => {
           const { toolCalls: workToolCalls } = countRecordArtifactCalls(finalMessages);
           const existingReport = extractAssistantReportText(finalMessages as unknown as Array<{ role?: string; parts?: Array<{ type?: string; text?: unknown }> }>);
           if (needsReportSalvage(existingReport, workToolCalls)) {
-            const { data: salvageArtsRaw } = await supabase
+            const { data: salvageArts } = await supabase
               .from("artifacts")
-              .select("id,kind,value,confidence,source")
+              .select("kind,value,confidence,source")
               .eq("thread_id", threadId)
               .order("confidence", { ascending: false })
               .limit(200);
-            const salvageReviews = await loadReviewsForThread(
-              supabaseAdmin as unknown as Parameters<typeof loadReviewsForThread>[0],
-              threadId,
-              userId,
-            );
-            if (!salvageReviews.ok) {
-              console.warn(JSON.stringify({
-                event: "salvage_skipped_review_state_unavailable",
-                thread_id: threadId,
-                error: salvageReviews.error,
-              }));
-              throw new Error("salvage synthesis skipped: analyst review state unavailable");
-            }
-            const salvageRows = (salvageArtsRaw ?? []) as Array<Record<string, unknown>>;
-            const salvageArts = applyReviewsToArtifacts(salvageRows, salvageReviews);
-            const salvageRejected = rejectedArtifacts(salvageRows, salvageReviews);
             const salvage = await generateText({
               model: orchestratorModel,
               maxOutputTokens: ORCHESTRATOR_MAX_OUTPUT_TOKENS,
               system: baseSystemPrompt,
-              prompt: buildSalvageSynthesisPrompt(seedValueRaw, salvageArts, salvageRejected),
+              prompt: buildSalvageSynthesisPrompt(seedValueRaw, (salvageArts ?? []) as Array<Record<string, unknown>>),
             });
             const salvageText = (salvage?.text ?? "").trim();
             if (salvageText) {
@@ -1165,10 +1071,6 @@ Deno.serve(async (req) => {
           console.warn("[report-salvage] backstop failed (non-fatal):", String(e));
         }
         if (assistant) {
-          // A multi-step tool loop emits one text part per model turn. Keep the
-          // tool trace, but persist only the closing report/status prose so the
-          // UI does not replay every intermediate plan as duplicate reports.
-          assistant.parts = collapseAssistantTextParts(assistant.parts ?? []) as typeof assistant.parts;
           // Cap `messages.parts` payload before persisting. First shrink any
           // single oversized tool payload (e.g. a 600KB socialfetch_lookup
           // dump) so one blob can't bloat the row or, replayed by the client
@@ -1218,36 +1120,16 @@ Deno.serve(async (req) => {
             const detected = detectSeedServer(seedText);
             if (detected) {
               detectedSeedKind = detected.kind;
-              const { data: artsRaw, error: artsErr } = await supabase
+              const { data: arts } = await supabase
                 .from("artifacts")
-                .select("id,kind,value,confidence,source,metadata")
+                .select("kind,value,confidence,source,metadata")
                 .eq("thread_id", threadId)
                 .order("created_at", { ascending: true });
-              if (artsErr) throw new Error(`artifact read failed: ${artsErr.message}`);
-              const cacheReviews = await loadReviewsForThread(
-                supabaseAdmin as unknown as Parameters<typeof loadReviewsForThread>[0],
-                threadId,
-                userId,
-              );
-              if (!cacheReviews.ok) {
-                console.warn(JSON.stringify({
-                  event: "investigation_cache_write_skipped_review_state_unavailable",
-                  thread_id: threadId,
-                  error: cacheReviews.error,
-                }));
-                throw new Error("investigation_cache write skipped: analyst review state unavailable");
-              }
-              const arts = applyReviewsToArtifacts(
-                (artsRaw ?? []) as Array<Record<string, unknown>>,
-                cacheReviews,
-              );
               // Cache is long-lived (7d) and is replayed back into a future
               // run's context, so strip credentials / PII / oversized blobs.
               const cachedParts = sanitizeToolOutput(safeParts, 1500);
-              const cachedArts = sanitizeToolOutput(arts, 1500);
+              const cachedArts = sanitizeToolOutput(arts ?? [], 1500);
               const payload = {
-                cache_version: 2,
-                origin_thread_id: threadId,
                 seed: detected,
                 assistant_parts: cachedParts,
                 artifacts: cachedArts,
@@ -1258,7 +1140,7 @@ Deno.serve(async (req) => {
               // service-role admin client (bypasses RLS). Using the user-scoped
               // `supabase` here is what left the cache permanently empty (0 rows,
               // ~0% hit). The artifacts read above is fine on the user client.
-              const { error: cacheUpsertError } = await supabaseAdmin.from("investigation_cache").upsert(
+              await supabaseAdmin.from("investigation_cache").upsert(
                 {
                   user_id: userId,
                   seed_kind: detected.kind,
@@ -1269,7 +1151,6 @@ Deno.serve(async (req) => {
                 },
                 { onConflict: "user_id,seed_kind,seed_value_normalized" },
               );
-              if (cacheUpsertError) throw new Error(cacheUpsertError.message);
             }
           } catch (e) {
             console.error(JSON.stringify({ event: "investigation_cache_fail", thread_id: threadId, error: String(e) }));

@@ -14,7 +14,6 @@ import {
   buildFinalizeDirective,
   buildPerCycleCompactDirective,
   extractAssistantReportText,
-  collapseAssistantTextParts,
   needsReportSalvage,
   stripReasoning,
   hasReportShape,
@@ -293,28 +292,6 @@ Deno.test("extractAssistantReportText: returns empty string when no assistant te
   assertEquals(extractAssistantReportText([]), "");
 });
 
-Deno.test("collapseAssistantTextParts: keeps tools and only the closing report", () => {
-  const parts = [
-    { type: "text", text: "Let me run the opening sweep." },
-    { type: "tool-username_sweep", state: "output-available" },
-    { type: "text", text: "New seed: Marina. Let me check the breach sources." },
-    { type: "tool-memory_save", state: "output-available" },
-    { type: "text", text: "## Findings report\n\n- [VERIFY] One supported observation." },
-  ];
-  assertEquals(collapseAssistantTextParts(parts), [
-    { type: "tool-username_sweep", state: "output-available" },
-    { type: "tool-memory_save", state: "output-available" },
-    { type: "text", text: "## Findings report\n\n- [VERIFY] One supported observation." },
-  ]);
-});
-
-Deno.test("collapseAssistantTextParts: falls back to last prose when report synthesis is absent", () => {
-  assertEquals(collapseAssistantTextParts([
-    { type: "text", text: "Opening sweep." },
-    { type: "text", text: "Last bounded status update." },
-  ]), [{ type: "text", text: "Last bounded status update." }]);
-});
-
 Deno.test("needsReportSalvage: gap = work happened but no REPORT SHAPE (not mere length)", () => {
   assertEquals(needsReportSalvage("", 12), true, "12 tool calls, empty report → salvage");
   assertEquals(needsReportSalvage("too short", 12), true, "short + no report shape → salvage");
@@ -390,16 +367,4 @@ Deno.test("buildSalvageSynthesisPrompt: tolerates zero artifacts", () => {
   const p = buildSalvageSynthesisPrompt("bob@example.com", []);
   assert(p.includes("bob@example.com"), "still includes the seed");
   assert(typeof p === "string" && p.length > 0, "produces a usable prompt");
-});
-
-Deno.test("buildSalvageSynthesisPrompt: explicitly forbids analyst-rejected evidence", () => {
-  const p = buildSalvageSynthesisPrompt(
-    "seed",
-    [{ kind: "username", value: "supported-user", confidence: 70 }],
-    [{ kind: "name", value: "Rejected Person", confidence: 95 }],
-  );
-  assert(p.includes("supported-user"));
-  assert(p.includes("ANALYST-REJECTED"));
-  assert(p.includes("Rejected Person"));
-  assert(/never present|do not use/i.test(p));
 });

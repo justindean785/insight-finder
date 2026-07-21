@@ -51,14 +51,3 @@ export function agentMemoryOrFilter(subject: string): string {
   }
   return `subject.eq.${q},related_values.cs.{${q}}`;
 }
-
-/** Combine several subjects into one PostgREST OR tree without ever
- * interpolating a raw structural character. A brace-bearing subject safely
- * degrades to exact-subject matching while the other subjects retain their
- * related_values clauses. */
-export function agentMemorySubjectsOrFilter(subjects: readonly string[]): string {
-  return (subjects ?? [])
-    .map((subject) => agentMemoryOrFilter(String(subject ?? "")))
-    .filter(Boolean)
-    .join(",");
-}

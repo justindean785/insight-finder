@@ -51,32 +51,6 @@ export const USER_TEXT_CHAR_BUDGET = 12_000;
 // spent on redundant fan-out and dragging p95 wall-clock.
 export const MAX_ORCHESTRATOR_STEPS = 22;
 
-// A non-finalize step must emit a tool call. With SDK default "auto", DeepSeek
-// can narrate "Now let me run X" as prose and the agent loop stops immediately.
-export const FORCE_TOOL_CALL_UNTIL_FINALIZE = true;
-
-export function orchestratorStepToolChoice(isFinalizeStep: boolean): "required" | "auto" {
-  if (isFinalizeStep || !FORCE_TOOL_CALL_UNTIL_FINALIZE) return "auto";
-  return "required";
-}
-
-export interface IntermediateStepPlan {
-  activeTools: string[];
-  toolChoice: "required" | "auto";
-}
-
-/** One builder for every non-finalize prepareStep branch, so toolChoice cannot
- * silently fall back to "auto" on the persistence-nudge path. */
-export function buildIntermediateStepPlan(input: {
-  nudgePersistence: boolean;
-  normalActiveTools: readonly string[];
-}): IntermediateStepPlan {
-  return {
-    activeTools: input.nudgePersistence ? ["record_artifacts"] : [...input.normalActiveTools],
-    toolChoice: orchestratorStepToolChoice(false),
-  };
-}
-
 // Hard ceiling on GENUINE (live, non-cached, non-skipped) tool executions per run.
 // Live logs showed a single investigation balloon to 230 tool calls / 747s of
 // tool-time (43× socialfetch_web_read, 38× minimax_web_search) — unbounded run size
@@ -89,81 +63,6 @@ export function buildIntermediateStepPlan(input: {
 // to 36 so pathological fan-out is forced into record/report while there is still
 // enough CPU budget left to persist completion.
 export const MAX_TOOL_CALLS_PER_RUN = 36;
-
-/**
- * Per-run tool-call budget, shared by reference between index.ts and the cache
- * wrapper.
- *
- * TWO counters, deliberately:
- *   `reserved` — slots CLAIMED. The admission gate reads and writes only this.
- *                Incremented synchronously by reserveToolCall() at the moment of
- *                the check, so it can never be observed stale (see below).
- *   `genuine`  — live executions that actually BEGAN. Accounting only (telemetry
- *                and prepareStep's finalize trigger); never gates admission.
- *
- * They stay equal in steady state because every path that reserves a slot but
- * then rejects the call before dispatch calls releaseToolCall().
- */
-export type ToolCallBudget = {
-  genuine: number;
-  reserved: number;
-  capped: boolean;
-};
-
-/**
- * Atomically claim one live tool-call slot. Returns true if the call may run.
- *
- * ATOMICITY: this function contains NO `await`. JavaScript is single-threaded and
- * a synchronous function body cannot be interleaved, so the read of `reserved`
- * and its increment happen as one indivisible step even though every caller is
- * an async tool wrapper. That is the whole point of the API being check-AND-
- * reserve rather than a separate `canRun()` + `increment()`: with two calls, any
- * `await` a caller happens to place between them (the old gate had several — a
- * usage-log write and a rate-limit backoff) reopens the race that let a batch of
- * `Promise.all`-dispatched tool calls all read the same pre-increment value and
- * collectively overshoot the cap.
- *
- * Recording/evidence tools (ALWAYS_ALLOW) are exempt: they are admitted without
- * consuming a slot, so the closing record_artifacts can never be starved.
- */
-export function reserveToolCall(
-  budget: ToolCallBudget,
-  isRecordingTool: boolean,
-  cap: number = MAX_TOOL_CALLS_PER_RUN,
-): boolean {
-  if (!toolCapExceeded(budget.reserved, isRecordingTool, cap)) {
-    if (!isRecordingTool) budget.reserved++;
-    return true;
-  }
-  budget.capped = true;
-  return false;
-}
-
-/**
- * The cap rule itself, isolated so the admission gate (reserveToolCall) and the
- * finalize trigger (orchestrator-finalize's shouldSkipForToolCap, which reads
- * `genuine`) can never drift apart. Recording tools are never capped.
- */
-export function toolCapExceeded(
-  count: number,
-  isRecordingTool: boolean,
-  cap: number = MAX_TOOL_CALLS_PER_RUN,
-): boolean {
-  if (isRecordingTool) return false;
-  return count >= cap;
-}
-
-/**
- * A reservation is PERMANENT: there is deliberately no release primitive. A call
- * admitted here but rejected by a later gate (finalize window, circuit breaker,
- * runtime policy) keeps its slot, so `reserved` counts ADMITTED ATTEMPTS rather
- * than completed calls. Two reasons: the gates that reject after admission are
- * dedup/suppression gates (a run spending budget on redundant lookups is exactly
- * one that should finalize), and releasing would reopen the race — with
- * sequential arrivals each rejected call would hand its slot back and the cap
- * would never be reached. `genuine` remains the accurate did-it-actually-run
- * counter for telemetry.
- */
 
 // Hard wall-clock deadline for a single run (ms). A StopCondition trips once elapsed
 // time exceeds this, ending the run CLEANLY (onFinish persists the partial assistant
