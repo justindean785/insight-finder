@@ -201,3 +201,92 @@ Deno.test("indicia_person: explicit state wins over a parsed suffix", async () =
   assertEquals((sentBody as Record<string, unknown>).name, "JOHN SMITH");
   assertEquals((sentBody as Record<string, unknown>).state, "NY");
 });
+
+// ---------------------------------------------------------------------------
+// Regression: prod telemetry 2026-07-21 showed indicia_web_dbs failing 31/42
+// calls with HTTP 400 and indicia_phone 33/135. Both were contract bugs, not
+// vendor faults:
+//   • web_dbs — `services` is declared optional at every layer but the API
+//     rejects a body without it. 31/31 failures omitted it; 10/10 calls that
+//     included it returned 200.
+//   • phone  — all 100 successful calls were PURE DIGITS of length 10-11.
+//     26 of 33 400s carried non-digit characters (12 leading "+", 15 with
+//     "()- ."); the other 7 were 8-9 digits, i.e. genuinely unusable.
+// ---------------------------------------------------------------------------
+
+const WEB_DB_DEFAULTS = ["leakcheck", "snusbase", "cloudsint"];
+
+Deno.test("indicia_web_dbs: omitted services defaults to all three corpora (HTTP 400 regression)", async () => {
+  let sentBody: Record<string, unknown> | null = null;
+  await withStubbedFetch((_url, init) => {
+    sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    return jsonResponse(200, { success: true, data: { web: [{ a: 1 }] } });
+  }, async () => {
+    await exec(indicia_web_dbs, { query: "jane@example.com" });
+  });
+  assert(sentBody !== null, "expected a request body");
+  assertEquals((sentBody as Record<string, unknown>).services, WEB_DB_DEFAULTS);
+});
+
+Deno.test("indicia_web_dbs: empty services array also falls back to defaults", async () => {
+  let sentBody: Record<string, unknown> | null = null;
+  await withStubbedFetch((_url, init) => {
+    sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    return jsonResponse(200, { success: true, data: { web: [{ a: 1 }] } });
+  }, async () => {
+    await exec(indicia_web_dbs, { query: "jane@example.com", services: [] });
+  });
+  assertEquals((sentBody as Record<string, unknown>).services, WEB_DB_DEFAULTS);
+});
+
+Deno.test("indicia_web_dbs: an explicit services subset is respected, not overridden", async () => {
+  let sentBody: Record<string, unknown> | null = null;
+  await withStubbedFetch((_url, init) => {
+    sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    return jsonResponse(200, { success: true, data: { web: [{ a: 1 }] } });
+  }, async () => {
+    await exec(indicia_web_dbs, { query: "jane@example.com", services: ["snusbase"] });
+  });
+  assertEquals((sentBody as Record<string, unknown>).services, ["snusbase"]);
+});
+
+Deno.test("indicia_phone: strips formatting characters before the API call", async () => {
+  let sentBody: Record<string, unknown> | null = null;
+  await withStubbedFetch((_url, init) => {
+    sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    return jsonResponse(200, { success: true, data: { web: [{ a: 1 }] } });
+  }, async () => {
+    await exec(indicia_phone, { query: "(555) 123-4567" });
+  });
+  assertEquals((sentBody as Record<string, unknown>).query, "5551234567");
+});
+
+Deno.test("indicia_phone: E.164 '+1 …' normalizes to bare digits", async () => {
+  let sentBody: Record<string, unknown> | null = null;
+  await withStubbedFetch((_url, init) => {
+    sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    return jsonResponse(200, { success: true, data: { web: [{ a: 1 }] } });
+  }, async () => {
+    await exec(indicia_phone, { query: "+1 (555) 123-4567" });
+  });
+  assertEquals((sentBody as Record<string, unknown>).query, "15551234567");
+});
+
+Deno.test("indicia_phone: unusable digit count is SKIPPED without spending a call", async () => {
+  for (const bad of ["555-1234", "12345678901234", "abcdefg"]) {
+    let called = false;
+    await withStubbedFetch(() => {
+      called = true;
+      return jsonResponse(200, { success: true, data: {} });
+    }, async () => {
+      const r = await exec(indicia_phone, { query: bad });
+      // Matches the sibling skip path (missing INDICIA_API_KEY): an early return
+      // carries `error` and omits `ok` entirely rather than setting ok:false.
+      assert(!r.ok, `${bad}: must not report ok`);
+      // Pre-call rejection is an intentional skip, NOT a vendor failure — it must
+      // never count against the tool's reliability score in tool_health.
+      assertEquals(classifyToolOutcome(r.error, r.status), "skipped", `${bad}: outcome`);
+    });
+    assertEquals(called, false, `${bad}: no HTTP call may be made`);
+  }
+});

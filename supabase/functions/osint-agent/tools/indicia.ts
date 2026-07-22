@@ -53,6 +53,21 @@ const INDICIA_BASE = "https://api.indicia.app";
 // so the tool's own fetch times out cleanly before the wrapper cap fires.
 const INDICIA_HTTP_TIMEOUT_MS = 18_000;
 
+/** Web-DB corpora queried when the caller names none. The endpoint requires a
+ *  non-empty `services` list — omitting it is an unconditional HTTP 400. */
+const WEB_DB_SERVICES = ["leakcheck", "snusbase", "cloudsint"];
+
+/** Reduce a phone selector to the bare digits the Indicia phone endpoint
+ *  accepts: 10 digits, or 11 with a leading US country code. Returns null when
+ *  the number cannot be used, so the caller can skip instead of spending a call
+ *  on a request the API will reject. */
+function normalizeUsPhone(raw: string): string | null {
+  const digits = String(raw ?? "").replace(/\D/g, "");
+  if (digits.length === 10) return digits;
+  if (digits.length === 11 && digits.startsWith("1")) return digits;
+  return null;
+}
+
 interface IndiciaToolResult {
   ok?: boolean;
   empty?: boolean;
@@ -245,9 +260,36 @@ export const indicia_email = tool({
 export const indicia_phone = tool({
   description:
     "Indicia phone intelligence (api.indicia.app) — US person/broker + web-DB records linked to a phone number. Broker/breach-dump data: LEAD until corroborated. 1 token/call.",
-  inputSchema: z.object({ query: z.string().min(7).describe("Phone number (any format).") }),
-  execute: async ({ query }, opts) =>
-    indiciaRequest("/v1/search/intelligence/phone", "phone", { query }, query, getSignal(opts)),
+  inputSchema: z.object({
+    query: z.string().min(7).describe("Phone number (any format — normalized to bare digits before the call)."),
+  }),
+  execute: async ({ query }, opts) => {
+    // Every one of the 100 successful live calls sent PURE DIGITS of length
+    // 10-11; 26 of 33 HTTP 400s carried non-digit characters (12 leading "+",
+    // 15 with "()- ."). Normalize, and refuse the rest rather than spending a
+    // call on a guaranteed 400.
+    const normalized = normalizeUsPhone(query);
+    if (!normalized) {
+      const digitCount = query.replace(/\D/g, "").length;
+      // "gated" phrasing routes this through classifyToolOutcome as SKIPPED, not
+      // failed — a selector we declined to send is not a vendor fault and must
+      // not count against this tool's reliability score in tool_health.
+      // Deliberately reports the digit COUNT, never the number itself (PII).
+      return {
+        error: `indicia phone: gated — selector is not a usable US phone number ` +
+          `(expected 10 digits, or 11 with a leading country code; got ${digitCount})`,
+        source: "indicia",
+        endpoint: "phone",
+      };
+    }
+    return indiciaRequest(
+      "/v1/search/intelligence/phone",
+      "phone",
+      { query: normalized },
+      normalized,
+      getSignal(opts),
+    );
+  },
 });
 
 /** Name + city/state (US) → person records. 1 token/call. Broker/lead tier. */
@@ -298,10 +340,26 @@ export const indicia_web_dbs = tool({
     "Indicia web-DB breach aggregator (api.indicia.app) — queries multiple breach corpora (leakcheck, snusbase, cloudsint, …) for a selector. Breach-dump data: LEAD until corroborated, never auto-pivot leaked passwords. 1-2 tokens/call.",
   inputSchema: z.object({
     query: z.string().min(3).describe("Selector (email, username, phone, …)."),
-    services: z.array(z.string()).optional().describe("Optional subset of Indicia web-DB services to query."),
+    services: z.array(z.string()).default(WEB_DB_SERVICES)
+      .describe(`Subset of Indicia web-DB services. Omit to query all of: ${WEB_DB_SERVICES.join(", ")}.`),
   }),
-  execute: async ({ query, services }, opts) =>
-    indiciaRequest("/v1/search/intelligence/web-dbs", "web-dbs", { query, services }, query, getSignal(opts)),
+  execute: async ({ query, services }, opts) => {
+    // The web-dbs endpoint REJECTS a body with no `services` (HTTP 400). It was
+    // declared optional at every layer — catalog, schema, description — so the
+    // model omitted it on 31 of 42 live calls and every single one failed
+    // (2026-07-21 telemetry: 31/31 omissions → 400, 10/10 inclusions → 200).
+    // Defaulted HERE and not only in the zod schema: execute() is called
+    // directly in tests and by any path that skips schema parsing, and an
+    // explicit `services: []` would satisfy .default() while still 400ing.
+    const resolved = services?.length ? services : WEB_DB_SERVICES;
+    return indiciaRequest(
+      "/v1/search/intelligence/web-dbs",
+      "web-dbs",
+      { query, services: resolved },
+      query,
+      getSignal(opts),
+    );
+  },
 });
 
 /** Hudson Rock — infostealer/compromised-credential exposure. FREE (0 tokens/call). */
