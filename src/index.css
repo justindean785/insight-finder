@@ -1116,12 +1116,14 @@ All colors MUST be HSL.
    42rem strip floating in empty space). Max width scales with viewport. */
 .chat-column {
   width: 100%;
-  max-width: min(100%, 56rem); /* 896px — workstation density */
+  max-width: min(100%, 44rem); /* 704px — readable prose width (was 56rem/896px:
+                                  #323 "workstation density" spanned prose too wide
+                                  on ultrawide displays) */
   margin-inline: auto;
 }
 @media (min-width: 1400px) {
   .chat-column {
-    max-width: min(100%, 64rem); /* 1024px on wide monitors */
+    max-width: min(100%, 48rem); /* 768px on wide monitors (was 64rem/1024px) */
   }
 }
 
