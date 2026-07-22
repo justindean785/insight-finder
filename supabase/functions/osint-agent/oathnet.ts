@@ -151,6 +151,84 @@ export function resetOathnetQuota(): void {
   oathnetLeftToday = null;
 }
 
+// ---- IP breach-search result contract ----------------------------------------
+// An IP seed needs BOTH ip-info (geo/ASN) AND a breach-corpus search — ip-info
+// alone cannot clear breach exposure. The combined result must be HONEST about
+// partial states: "no breach exposure" may be asserted ONLY after a completed,
+// successful breach search that returned zero hits. A failed / timed-out /
+// quota-skipped / unparseable breach search leaves exposure UNKNOWN, never "clean".
+
+/** Count breach records in an OathNet breach-search payload across known response
+ * shapes. Returns a non-negative count when it can be POSITIVELY determined, or
+ * `null` when the shape is unrecognized — callers MUST treat null as "unknown
+ * exposure", never "clean". */
+export function breachHitCount(payload: unknown): number | null {
+  if (!payload || typeof payload !== "object") return null;
+  const p = payload as Record<string, unknown>;
+  const asArr = (v: unknown): number | null => (Array.isArray(v) ? v.length : null);
+  const asNum = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const d = p.data;
+  if (d && typeof d === "object") {
+    const dd = d as Record<string, unknown>;
+    const items = asArr(dd.items);
+    if (items !== null) return items;
+    const total = asNum((dd.meta as { total?: unknown } | undefined)?.total);
+    if (total !== null) return total;
+    const arr = asArr(d);
+    if (arr !== null) return arr;
+  }
+  for (const k of ["results", "records", "items", "hits"]) {
+    const arr = asArr(p[k]);
+    if (arr !== null) return arr;
+  }
+  for (const k of ["total", "count"]) {
+    const n = asNum(p[k]);
+    if (n !== null) return n;
+  }
+  return null;
+}
+
+/** The ways an IP's breach search can terminate. `ok` carries the hit count
+ * (`null` = a successful HTTP response but an unrecognized shape → unknown). */
+export type IpBreachInput =
+  | { kind: "skipped_quota" }
+  | { kind: "timeout" }
+  | { kind: "failed"; status: number }
+  | { kind: "ok"; hitCount: number | null };
+
+export interface IpBreachVerdict {
+  breach_status: "hits" | "clean" | "failed" | "timeout" | "skipped_quota" | "unknown";
+  /** True ONLY when a breach search actually completed (hits, or a confirmed zero). */
+  breach_complete: boolean;
+  exposure: "breach_hits" | "no_breach_exposure" | "unknown";
+  note: string;
+}
+
+const IP_HITS_NOTE =
+  "IP breach HITS found — WEAK, TEMPORAL [VERIFY] leads. A residential/dynamic IP is shared and reassigned over time, so same-IP ≠ same-person. Record any emails/usernames/phones as NEW pivots labeled [VERIFY]; corroborate with an independent selector. NEVER merge identities on an IP match alone.";
+const IP_CLEAN_NOTE =
+  "IP breach search COMPLETED with zero hits — no breach exposure found for this IP. (An IP is shared/temporal, so absence is not proof about a specific person.)";
+const ipUnknownNote = (why: string): string =>
+  `IP breach search ${why} — breach exposure is UNKNOWN, NOT 'clean'. This is a PARTIAL result; re-run the breach search before concluding anything about exposure.`;
+
+/** Map an IP breach-search termination to an honest verdict. Pure + total. */
+export function classifyIpBreach(input: IpBreachInput): IpBreachVerdict {
+  switch (input.kind) {
+    case "skipped_quota":
+      return { breach_status: "skipped_quota", breach_complete: false, exposure: "unknown", note: ipUnknownNote("was SKIPPED (OathNet quota exhausted)") };
+    case "timeout":
+      return { breach_status: "timeout", breach_complete: false, exposure: "unknown", note: ipUnknownNote("TIMED OUT") };
+    case "failed":
+      return { breach_status: "failed", breach_complete: false, exposure: "unknown", note: ipUnknownNote(`FAILED (provider HTTP ${input.status})`) };
+    case "ok":
+      if (input.hitCount === null)
+        return { breach_status: "unknown", breach_complete: false, exposure: "unknown", note: ipUnknownNote("returned an unrecognized shape") };
+      if (input.hitCount > 0)
+        return { breach_status: "hits", breach_complete: true, exposure: "breach_hits", note: IP_HITS_NOTE };
+      return { breach_status: "clean", breach_complete: true, exposure: "no_breach_exposure", note: IP_CLEAN_NOTE };
+  }
+}
+
 // ---- Credential / PII redaction ----------------------------------------------
 
 // Field names whose VALUES are raw secrets and must never reach model context or an
