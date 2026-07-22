@@ -158,6 +158,19 @@ Deno.test("trimVictimItems keeps device metadata, no creds", () => {
   assertEquals(trimmed[0].total_docs, 54);
 });
 
+Deno.test("REVEAL policy: trimVictimItems(reveal=true) SURFACES secret-bearing victim fields", () => {
+  const items = [{
+    log_id: "vic_2", device_user_str: ["Tyler"], device_ips: ["73.45.123.89"],
+    total_docs: 54, password: "leaked", cookies: "sessionid=x",
+  }];
+  const revealed = trimVictimItems(items, 25, true);
+  const blob = JSON.stringify(revealed);
+  assert(blob.includes("leaked"), "reveal=true must surface raw victim credentials");
+  assertEquals(revealed[0].password, "leaked");
+  assertEquals(revealed[0].cookies, "sessionid=x");
+  assertEquals(revealed[0].log_id, "vic_2");
+});
+
 Deno.test("summarizeManifest keeps tree structure only, no file contents", () => {
   const m = {
     log_id: "vic_2", log_name: "xX_DragonSlayer_Xx",
