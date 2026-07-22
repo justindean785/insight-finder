@@ -198,6 +198,30 @@ export function toolCallCapReached(genuineToolCalls: number, cap: number = MAX_T
 }
 
 /**
+ * Soft finalize threshold — ~80% of the genuine tool-call budget. Forces the
+ * closing synthesis IN-STREAM before the run reaches the hard cap.
+ *
+ * WHY a soft trigger (not just the hard cap): production runs routinely trail off
+ * a few calls short of MAX_TOOL_CALLS_PER_RUN — the model (DeepSeek especially)
+ * narrates "let me pull X next" as its final text WITHOUT emitting the tool call,
+ * so the agent loop ends with no report. The only catch left is the post-run
+ * salvage generateText, which is itself CPU-killed on exactly these heavy runs →
+ * "0 findings, no report, no pivot". Forcing the report phase at ~80% of the tool
+ * budget makes a heavy run synthesize while it still has budget + a warm context,
+ * instead of dying in the tail. Deliberately TOOL-COUNT based (not a lower
+ * step/time budget) so only the CPU-heavy population finalizes early; light runs
+ * never reach it and keep their full depth.
+ */
+export const FINALIZE_SOFT_TOOL_CALLS = Math.max(1, Math.floor(MAX_TOOL_CALLS_PER_RUN * 0.8));
+
+export function shouldSoftFinalizeOnToolCalls(
+  genuineToolCalls: number,
+  softCap: number = FINALIZE_SOFT_TOOL_CALLS,
+): boolean {
+  return genuineToolCalls >= softCap;
+}
+
+/**
  * Decides whether the tool-cache wrapper should short-circuit a specific live call
  * because the run cap is hit. Recording/evidence tools are NEVER skipped (the
  * closing record_artifacts must run), so the cap can't strand collected evidence.
