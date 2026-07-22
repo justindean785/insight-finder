@@ -40,6 +40,7 @@ import {
   TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW,
   MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN,
   capTotalToBudget, deadlineReached,
+  type ToolCallBudget,
 } from "./orchestrator-budget.ts";
 import {
   shouldForceFinalize, buildFinalizeStepPlan, buildPerCycleCompactDirective,
@@ -706,10 +707,11 @@ Deno.serve(async (req) => {
     let finalizeBoundary = countFinalizeProgress([]);
     let finalizeDecisionSucceededThisStep = false;
     // Per-run genuine-tool-call budget (MAX_TOOL_CALLS_PER_RUN). Passed into
-    // wrapToolsWithCache, which increments `genuine` on each live execution and flips
-    // `capped` once the cap is hit; prepareStep reads it to force finalize. Owned by
-    // this per-request closure so concurrent runs on a warm isolate never share it.
-    const toolCallBudget = { genuine: 0, capped: false };
+    // wrapToolsWithCache, which atomically claims a `reserved` slot at the admission
+    // gate, increments `genuine` on each live execution and flips `capped` once the
+    // cap is hit; prepareStep reads it to force finalize. Owned by this per-request
+    // closure so concurrent runs on a warm isolate never share it.
+    const toolCallBudget: ToolCallBudget = { genuine: 0, reserved: 0, capped: false };
     // First-pass persistence nudge latch (DeepSeek deferral fix). Request-scoped —
     // owned by this per-request closure, NEVER a module-global, so one run's nudge
     // state can't leak onto a concurrent run sharing a warm isolate. Flipped true the

@@ -14,7 +14,7 @@ import { creditsCharged } from "./billing.ts";
 import { classifyToolOutcome } from "./tool-outcome.ts";
 import * as circuit from "./circuit.ts";
 import { guard } from "./guard.ts";
-import { shouldSkipForToolCap } from "./orchestrator-finalize.ts";
+import { type ToolCallBudget, reserveToolCall } from "./orchestrator-budget.ts";
 import {
   ALWAYS_ALLOW_TOOLS,
   analyzeWeakLead,
@@ -420,7 +420,10 @@ export function wrapToolsWithCache(
     // genuine live execution and (b) short-circuit new lookups once the cap is hit.
     // `capped` is surfaced by index.ts (finalize + telemetry). Optional so callers
     // that don't set it (tests, other entrypoints) are unaffected.
-    toolCallBudget?: { genuine: number; capped: boolean };
+    // `reserved` is claimed SYNCHRONOUSLY at the cap-check gate via
+    // reserveToolCall() (no await between check and increment) — see the gate
+    // below for why `genuine` alone isn't race-safe under parallel dispatch.
+    toolCallBudget?: ToolCallBudget;
     shouldStopLiveLookups?: () => boolean;
     onHeartbeat?: () => void;
   },
@@ -872,11 +875,33 @@ export function wrapToolsWithCache(
         // so the step keeps a valid tool-call/result pair and the model finalizes with
         // what it has. Checked here — AFTER cache hits (still served free) and before
         // the live call — so cached corroboration never costs budget. Recording tools
-        // (ALWAYS_ALLOW) are exempt via shouldSkipForToolCap, so the closing
+        // (ALWAYS_ALLOW) are exempt via reserveToolCall, so the closing
         // record_artifacts is never starved and no collected evidence is stranded.
         // This is the hard backstop; prepareStep also forces synthesis once capped.
-        if (ctx.toolCallBudget && shouldSkipForToolCap(ctx.toolCallBudget.genuine, ALWAYS_ALLOW_TOOLS.has(name))) {
-          ctx.toolCallBudget.capped = true;
+        //
+        // RACE HARDENING: admission is a single check-AND-reserve. The old gate
+        // read `.genuine` here and only incremented it much further down, past
+        // several awaits (a usage-log write, the circuit/runtime gates, and
+        // startCall's rate-limit backoff). A model step that dispatches tool
+        // calls in parallel (ORCHESTRATOR_PARALLEL_TOOL_CALLS) had every call in
+        // the batch read the same pre-increment value and pass, overshooting the
+        // cap. reserveToolCall() claims the slot synchronously at the moment of
+        // the check, so the batch serializes on the event loop and exactly the
+        // remaining slots are admitted. `.genuine` keeps its accounting-only role.
+        //
+        // A reservation is PERMANENT once granted — it is never handed back if a
+        // later gate (finalize window, circuit breaker, runtime policy) rejects
+        // the call. That is deliberate: `.reserved` counts ADMITTED ATTEMPTS, not
+        // completed calls. An admitted call has already paid the expensive part of
+        // this path (cache probe + usage-log write + circuit evaluation), and the
+        // gates that reject after admission are themselves DEDUP gates — a run
+        // spending its budget on redundant lookups is exactly a run that should
+        // finalize. Releasing slots would also reopen this race: with sequential
+        // arrivals, each rejected call would return its slot and the cap would
+        // never be reached.
+        const isRecordingTool = ALWAYS_ALLOW_TOOLS.has(name);
+        const budget = ctx.toolCallBudget;
+        if (budget && !reserveToolCall(budget, isRecordingTool)) {
           await logUsage(false, false, Date.now() - t0, "run tool-call cap reached", null, true, {
             input: inputJson,
             runtime: { ...runtimeMetaBase, rejection_reason: "run_capped", rejection_source: "run_cap", stale_cache: !!staleRecord },
@@ -889,7 +914,6 @@ export function wrapToolsWithCache(
             stale_cache: !!staleRecord,
           });
         }
-
         // ---- Finalize-window live-call guard -----------------------------------
         // prepareStep restricts activeTools once the reserve window opens, but it is
         // only called between model steps. A long/parallel step can still attempt new
@@ -1007,7 +1031,7 @@ export function wrapToolsWithCache(
         // outcome semantics the wrapper already uses. Recording/evidence tools are
         // exempt so evidence writes don't eat the lookup budget. A live timeout/error
         // still counts: it genuinely ran and consumed time/quota.
-        if (ctx.toolCallBudget && !ALWAYS_ALLOW_TOOLS.has(name)) ctx.toolCallBudget.genuine++;
+        if (budget && !isRecordingTool) budget.genuine++;
         let ok = true;
         let result: unknown;
         let errInfo: { errorMsg: string | null; statusCode: number | null } = { errorMsg: null, statusCode: null };
