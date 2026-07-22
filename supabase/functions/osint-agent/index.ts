@@ -20,6 +20,7 @@ import {
 } from "./env.ts";
 
 import { detectSeedServer } from "./validation.ts";
+import { extractStepFindings, persistAutoFindings, loadSeenArtifactKeys } from "./auto-persist-findings.ts";
 import {
   sanitizeToolOutput,
   capPartsSize,
@@ -943,6 +944,45 @@ Deno.serve(async (req) => {
             finish_reason: finishReason, tool_names: names,
             decision_succeeded: finalizeDecisionSucceededThisStep,
           }));
+        }
+        // ---- Auto-persist backstop (per-step, detached) ----
+        // The model frequently narrates findings WITHOUT calling record_artifacts,
+        // and long runs are CPU-killed before the finalize path can read tool output
+        // — both leave the Evidence board empty ("N evidence, 0 artifacts", the
+        // production symptom on this build). Extract a conservative, scrubbed subset
+        // of THIS step's tool results and record them as low-confidence auto_recorded
+        // rows, independent of record_artifacts (which the model may never call).
+        //
+        // Detached + best-effort BY DESIGN. The auto-persist hook that awaited a DB
+        // round-trip on EVERY tool call shipped in the #369 deploy that hung prod
+        // ("no agent responses", emergency rollback 4c92abd). This pass is instead
+        // handed to EdgeRuntime.waitUntil (or left as a floating promise) so it can
+        // NEVER block or stall generation — a failure or slow write only drops
+        // enrichment, never the run. Skipped once finalize starts (the finalize path
+        // owns persistence then). Dedup is DB-backed (loadSeenArtifactKeys re-read per
+        // pass) so it never double-inserts a value record_artifacts or an earlier step
+        // already wrote; the module also scrubs, caps, and denylists (never throws).
+        if (!finalizeStarted && Array.isArray(toolResults) && toolResults.length > 0) {
+          const stepFindings = extractStepFindings(toolResults as unknown[]);
+          if (stepFindings.length > 0) {
+            const autoPersistTask = (async () => {
+              try {
+                const seen = await loadSeenArtifactKeys(supabase, threadId);
+                const res = await persistAutoFindings({ supabase, threadId, userId, seen }, stepFindings);
+                if (res.inserted > 0) {
+                  console.log(JSON.stringify({
+                    event: "auto_persist_step", thread_id: threadId,
+                    inserted: res.inserted, skipped_duplicates: res.skipped_duplicates,
+                  }));
+                }
+              } catch (e) {
+                console.warn("[auto-persist] step backstop failed (non-fatal):", String(e));
+              }
+            })();
+            const ert = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
+            if (ert && typeof ert.waitUntil === "function") ert.waitUntil(autoPersistTask);
+            else void autoPersistTask;
+          }
         }
         // A completed step on the primary provider proves MiniMax is alive —
         // record it so the NEXT turn's preflight probe can be skipped.
