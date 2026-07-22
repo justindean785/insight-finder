@@ -45,6 +45,7 @@ import {
   activeToolsOutsideFinalize, countFinalizeProgress, resolveFinalizePhase, type FinalizePhase,
   shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS,
   extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt, toolCallCapReached,
+  shouldSoftFinalizeOnToolCalls,
   shouldNudgePersistence, buildPersistenceNudgeDirective,
 } from "./orchestrator-finalize.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
@@ -785,15 +786,22 @@ Deno.serve(async (req) => {
             genuine_tool_calls: toolCallBudget.genuine, cap: MAX_TOOL_CALLS_PER_RUN,
           }));
         }
-        if (finalizeStarted || capReached || shouldForceFinalize(Date.now() - runStartedAt, stepNumber ?? 0)) {
+        // Deterministic finalize gate: force the in-stream report phase at ~80% of
+        // the tool-call budget so a heavy run synthesizes BEFORE it trails off near
+        // the hard cap (the model narrating "let me pull X next" without emitting the
+        // call → loop ends with no report) or dies in the post-run salvage. Only the
+        // CPU-heavy population trips this; light runs keep their full depth.
+        const softFinalize = shouldSoftFinalizeOnToolCalls(toolCallBudget.genuine);
+        if (finalizeStarted || capReached || softFinalize || shouldForceFinalize(Date.now() - runStartedAt, stepNumber ?? 0)) {
           const progress = countFinalizeProgress(stepMessages as Array<{ content?: unknown }>);
           if (!finalizeStarted) {
             finalizeStarted = true;
             finalizeBoundary = progress;
             console.log(JSON.stringify({
               event: "finalize_started", thread_id: threadId,
-              trigger: capReached ? "tool_cap" : "time_or_step",
+              trigger: capReached ? "tool_cap" : softFinalize ? "soft_tool_cap" : "time_or_step",
               step_number: stepNumber ?? 0,
+              genuine_tool_calls: toolCallBudget.genuine,
             }));
           }
           finalizePhase = resolveFinalizePhase(finalizeBoundary, progress);
@@ -887,7 +895,9 @@ Deno.serve(async (req) => {
         onCost,
         manualOverrideSelector,
         toolCallBudget,
-        shouldStopLiveLookups: () => shouldForceFinalize(Date.now() - runStartedAt, 0),
+        shouldStopLiveLookups: () =>
+          shouldForceFinalize(Date.now() - runStartedAt, 0) ||
+          shouldSoftFinalizeOnToolCalls(toolCallBudget.genuine),
         onHeartbeat: () => heartbeat?.pulse(),
       }),
       // Unknown-tool guard (Phase B4): the model occasionally emits a tool call

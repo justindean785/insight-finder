@@ -19,6 +19,8 @@ import {
   hasReportShape,
   buildSalvageSynthesisPrompt,
   toolCallCapReached,
+  shouldSoftFinalizeOnToolCalls,
+  FINALIZE_SOFT_TOOL_CALLS,
   shouldSkipForToolCap,
   shouldSkipForFinalizeWindow,
   FINALIZE_ACTIVE_TOOLS,
@@ -241,6 +243,20 @@ Deno.test("toolCallCapReached: trips at the cap, not before", () => {
   assertEquals(toolCallCapReached(MAX_TOOL_CALLS_PER_RUN), true, "at the cap → finalize");
   assertEquals(toolCallCapReached(MAX_TOOL_CALLS_PER_RUN + 10), true, "past the cap → finalize");
   assertEquals(toolCallCapReached(5, 5), true, "honors an explicit cap override");
+});
+
+Deno.test("shouldSoftFinalizeOnToolCalls: forces finalize at ~80% of the tool budget, before the hard cap", () => {
+  // Soft cap must sit strictly below the hard cap so heavy runs synthesize in-stream
+  // instead of trailing off / dying in the post-run salvage.
+  assert(FINALIZE_SOFT_TOOL_CALLS < MAX_TOOL_CALLS_PER_RUN, "soft cap must be below the hard cap");
+  assert(FINALIZE_SOFT_TOOL_CALLS >= 1, "soft cap must admit at least one call of headroom");
+  assertEquals(shouldSoftFinalizeOnToolCalls(FINALIZE_SOFT_TOOL_CALLS - 1), false, "one under the soft cap keeps working");
+  assertEquals(shouldSoftFinalizeOnToolCalls(FINALIZE_SOFT_TOOL_CALLS), true, "at the soft cap → finalize in-stream");
+  assertEquals(shouldSoftFinalizeOnToolCalls(MAX_TOOL_CALLS_PER_RUN), true, "at/over the hard cap → still finalize");
+  assertEquals(shouldSoftFinalizeOnToolCalls(5, 5), true, "honors an explicit soft-cap override");
+  // Regression guard for the reported failure: a run that trails off at 34/36 calls
+  // (just shy of the hard cap) must already be in the forced finalize phase.
+  assertEquals(shouldSoftFinalizeOnToolCalls(34), true, "a 34-call run is past the soft cap → report forced");
 });
 
 Deno.test("shouldSkipForToolCap: skips a live lookup past the cap but NEVER a recording tool", () => {
