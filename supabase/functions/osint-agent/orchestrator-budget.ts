@@ -51,6 +51,46 @@ export const USER_TEXT_CHAR_BUDGET = 12_000;
 // spent on redundant fan-out and dragging p95 wall-clock.
 export const MAX_ORCHESTRATOR_STEPS = 22;
 
+// ---- Intermediate (non-finalize) step plan -------------------------------------
+// A non-finalize step must emit a tool call. With the SDK default toolChoice "auto",
+// an openai-compatible orchestrator (DeepSeek) can narrate "Now let me run X" as prose
+// and emit no call; AI SDK v6 ends the agent loop the instant a step finishes with no
+// tool call, so the run stops mid-investigation with planned pivots still pending.
+//
+// It also silently defeats the persistence nudge: that branch narrows activeTools to
+// ["record_artifacts"], but under "auto" the model can answer with text instead of
+// calling it, so a run can reach finalize having recorded nothing.
+//
+// Set to false to disable forcing without reverting this module (kill switch).
+export const FORCE_TOOL_CALL_UNTIL_FINALIZE = true;
+
+export function orchestratorStepToolChoice(isFinalizeStep: boolean): "required" | "auto" {
+  if (isFinalizeStep || !FORCE_TOOL_CALL_UNTIL_FINALIZE) return "auto";
+  return "required";
+}
+
+export interface IntermediateStepPlan {
+  activeTools: string[];
+  toolChoice: "required" | "auto";
+}
+
+/**
+ * ONE builder for EVERY non-finalize prepareStep branch. Both the normal branch and
+ * the persistence-nudge branch must go through this, so `toolChoice` cannot silently
+ * fall back to "auto" on one path while the other forces — which is exactly how the
+ * nudge became a no-op. `intermediate_step_plan_test.ts` fails if any non-finalize
+ * plan omits the required tool choice.
+ */
+export function buildIntermediateStepPlan(input: {
+  nudgePersistence: boolean;
+  normalActiveTools: readonly string[];
+}): IntermediateStepPlan {
+  return {
+    activeTools: input.nudgePersistence ? ["record_artifacts"] : [...input.normalActiveTools],
+    toolChoice: orchestratorStepToolChoice(false),
+  };
+}
+
 // Hard ceiling on GENUINE (live, non-cached, non-skipped) tool executions per run.
 // Live logs showed a single investigation balloon to 230 tool calls / 747s of
 // tool-time (43× socialfetch_web_read, 38× minimax_web_search) — unbounded run size

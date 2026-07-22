@@ -39,7 +39,7 @@ import { beginCycle, clearRuntime } from "./runtime-policy.ts";
 import {
   TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW,
   MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN,
-  capTotalToBudget, deadlineReached,
+  capTotalToBudget, deadlineReached, buildIntermediateStepPlan,
 } from "./orchestrator-budget.ts";
 import {
   shouldForceFinalize, buildFinalizeStepPlan, buildPerCycleCompactDirective,
@@ -833,14 +833,20 @@ Deno.serve(async (req) => {
           }));
           return {
             messages: stepMessagesOut,
-            activeTools: ["record_artifacts"],
             system: intermediateSystem,
+            ...buildIntermediateStepPlan({
+              nudgePersistence: true,
+              normalActiveTools,
+            }),
           };
         }
         return {
           messages: stepMessagesOut,
-          activeTools: normalActiveTools,
           system: intermediateSystem,
+          ...buildIntermediateStepPlan({
+            nudgePersistence: false,
+            normalActiveTools,
+          }),
         };
       };
 
