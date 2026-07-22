@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertStringIncludes } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { buildRecoveredAssistantText, isStaleActiveThread, shouldInsertRecoveredAssistant, STALE_RUN_AFTER_MS } from "./recovery.ts";
+import { assistantPartsToText, buildRecoveredAssistantText, isStaleActiveThread, RECENT_ASSISTANT_WINDOW_MS, shouldInsertRecoveredAssistant, STALE_RUN_AFTER_MS } from "./recovery.ts";
 
 Deno.test("isStaleActiveThread: uses heartbeat when present", () => {
   const now = Date.parse("2026-07-15T13:00:00Z");
@@ -47,4 +47,58 @@ Deno.test("shouldInsertRecoveredAssistant: does not duplicate a fresh assistant 
     "2026-07-15T14:44:30Z",
     Date.parse("2026-07-15T14:45:12Z"),
   ), { shouldInsert: false, reason: "none" });
+});
+
+Deno.test("shouldInsertRecoveredAssistant: NEVER stubs over a this-run report even when the sweeper runs long after it", () => {
+  // The exact finalize-gate window: report inserted, status flip lost to a tail
+  // kill, and a stray heartbeat pulsed AFTER the report so `now - assistantMs`
+  // exceeds the recency window — the timing heuristic alone would (wrongly)
+  // re-stub. The report-shape guard must veto that.
+  const runStarted = "2026-07-15T14:42:54Z";
+  const reportText = "## Findings report\n\n| # | Kind | Value |\n|---:|---|---|\n| 1 | email | a@b.com |";
+  assertEquals(shouldInsertRecoveredAssistant(
+    { run_started_at: runStarted, last_heartbeat_at: "2026-07-15T14:44:40Z", updated_at: "2026-07-15T14:44:40Z" },
+    "2026-07-15T14:44:20Z", // report written during the run, before the last heartbeat pulse
+    Date.parse("2026-07-15T14:50:00Z"), // sweeper runs 5+ min later → past the 2-min window
+    RECENT_ASSISTANT_WINDOW_MS,
+    reportText,
+  ), { shouldInsert: false, reason: "report_present" });
+});
+
+Deno.test("shouldInsertRecoveredAssistant: still stubs when the this-run assistant is mid-run narration, not a report", () => {
+  // A this-run assistant part that carries NO report shape (only inter-step
+  // narration) must fall through to the staleness heuristics and still recover.
+  const runStarted = "2026-07-15T14:42:54Z";
+  const narration = "Going deeper into the breach corpora now, checking a few more sources.";
+  assertEquals(shouldInsertRecoveredAssistant(
+    { run_started_at: runStarted, last_heartbeat_at: "2026-07-15T14:47:00Z", updated_at: "2026-07-15T14:47:00Z" },
+    "2026-07-15T14:44:20Z",
+    Date.parse("2026-07-15T14:50:00Z"),
+    RECENT_ASSISTANT_WINDOW_MS,
+    narration,
+  ), { shouldInsert: true, reason: "assistant_stale" });
+});
+
+Deno.test("shouldInsertRecoveredAssistant: a prior-turn report does NOT suppress a genuine stub", () => {
+  // Report-shaped text but the assistant predates run start (a previous turn's
+  // report). This run produced nothing → the before-run check must win over the
+  // report-shape guard so recovery still stubs.
+  const reportText = "## Findings report\n\n[Confirmed] a@b.com\n[Verify] c@d.com";
+  assertEquals(shouldInsertRecoveredAssistant(
+    { run_started_at: "2026-07-15T14:42:54Z", last_heartbeat_at: "2026-07-15T14:43:55Z", updated_at: "2026-07-15T14:43:55Z" },
+    "2026-07-15T14:30:37Z", // before run start
+    Date.parse("2026-07-15T14:45:12Z"),
+    RECENT_ASSISTANT_WINDOW_MS,
+    reportText,
+  ), { shouldInsert: true, reason: "assistant_before_run" });
+});
+
+Deno.test("assistantPartsToText: joins text parts, ignores tool/non-text parts and bad input", () => {
+  assertEquals(
+    assistantPartsToText([{ type: "text", text: "hello" }, { type: "tool-call", toolName: "x" }, { type: "text", text: "world" }]),
+    "hello\nworld",
+  );
+  assertEquals(assistantPartsToText(null), "");
+  assertEquals(assistantPartsToText("nope"), "");
+  assertEquals(assistantPartsToText([{ type: "text" }]), "");
 });

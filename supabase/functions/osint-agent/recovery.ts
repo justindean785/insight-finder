@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { hasReportShape, stripReasoning } from "./orchestrator-finalize.ts";
 
 export const RUN_HEARTBEAT_INTERVAL_MS = 15_000;
 export const STALE_RUN_AFTER_MS = 75_000;
@@ -28,8 +29,17 @@ export type RecoveryArtifact = {
 
 export type RecoveryAssistantState = {
   shouldInsert: boolean;
-  reason: "none" | "no_assistant" | "assistant_before_run" | "assistant_stale";
+  reason: "none" | "no_assistant" | "assistant_before_run" | "assistant_stale" | "report_present";
 };
+
+/** Join an assistant message's text parts into one string for report-shape checks. */
+export function assistantPartsToText(parts: unknown): string {
+  if (!Array.isArray(parts)) return "";
+  return (parts as Array<{ type?: unknown; text?: unknown }>)
+    .filter((p) => p?.type === "text")
+    .map((p) => (typeof p?.text === "string" ? p.text : ""))
+    .join("\n");
+}
 
 export function isStaleActiveThread(thread: RecoverableThread, nowMs: number = Date.now(), staleMs: number = STALE_RUN_AFTER_MS): boolean {
   if (thread.status !== "active") return false;
@@ -83,6 +93,7 @@ export function shouldInsertRecoveredAssistant(
   latestAssistantCreatedAt?: string | null,
   nowMs: number = Date.now(),
   recentWindowMs: number = RECENT_ASSISTANT_WINDOW_MS,
+  latestAssistantText?: string | null,
 ): RecoveryAssistantState {
   if (!latestAssistantCreatedAt) return { shouldInsert: true, reason: "no_assistant" };
   const assistantMs = new Date(latestAssistantCreatedAt).getTime();
@@ -91,6 +102,19 @@ export function shouldInsertRecoveredAssistant(
   const runStartMs = thread.run_started_at ? new Date(thread.run_started_at).getTime() : NaN;
   if (Number.isFinite(runStartMs) && assistantMs < runStartMs) {
     return { shouldInsert: true, reason: "assistant_before_run" };
+  }
+
+  // A closing REPORT from THIS run is already durably saved. The finalize path
+  // now inserts the assistant report immediately before flipping status to
+  // "finished"; a tail kill between those two writes leaves a real report on a
+  // thread still marked `active`. Never overwrite it with a recovery stub — the
+  // timing heuristics below can misfire when the sweeper runs well after the
+  // report was written (e.g. a stray heartbeat pulsed after the insert, pushing
+  // `now - assistantMs` past the window). This is scoped to this-run assistants:
+  // the prior-turn case already returned above, so a stale earlier report cannot
+  // suppress a genuine stub.
+  if (latestAssistantText && hasReportShape(stripReasoning(latestAssistantText))) {
+    return { shouldInsert: false, reason: "report_present" };
   }
 
   const liveMs = thread.last_heartbeat_at
@@ -116,14 +140,17 @@ async function recoverOneStaleThread(
 ): Promise<{ recovered: boolean; assistantInserted: boolean; artifactCount: number; error?: string }> {
   if (!isStaleActiveThread(thread, now.getTime())) return { recovered: false, assistantInserted: false, artifactCount: 0 };
   const [{ data: latestAssistant }, { data: artifacts, count: artifactCount }] = await Promise.all([
-    db.from("messages").select("created_at").eq("thread_id", thread.id).eq("role", "assistant").order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    db.from("messages").select("created_at,parts").eq("thread_id", thread.id).eq("role", "assistant").order("created_at", { ascending: false }).limit(1).maybeSingle(),
     db.from("artifacts").select("kind,value,confidence,source,created_at", { count: "exact" }).eq("thread_id", thread.id).order("confidence", { ascending: false }).order("created_at", { ascending: true }).limit(RECOVERY_ARTIFACT_LIMIT),
   ]);
   let assistantInserted = false;
+  const latestAssistantRow = latestAssistant as { created_at?: string; parts?: unknown } | null;
   const assistantState = shouldInsertRecoveredAssistant(
     thread,
-    (latestAssistant as { created_at?: string } | null)?.created_at ?? null,
+    latestAssistantRow?.created_at ?? null,
     now.getTime(),
+    RECENT_ASSISTANT_WINDOW_MS,
+    assistantPartsToText(latestAssistantRow?.parts),
   );
   if (assistantState.shouldInsert) {
     const text = buildRecoveredAssistantText(thread, (artifacts ?? []) as RecoveryArtifact[]);
