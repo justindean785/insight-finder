@@ -38,7 +38,7 @@ import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_
 // ---- Fix A: shouldForceFinalize -------------------------------------------------
 
 Deno.test("shouldForceFinalize: opens exactly at the wall-clock reserve window", () => {
-  const edge = ORCHESTRATOR_WALL_CLOCK_MS - FINALIZE_RESERVE_MS; // 240s - 90s = 150s
+  const edge = ORCHESTRATOR_WALL_CLOCK_MS - FINALIZE_RESERVE_MS; // 180s - 90s = 90s
   assertEquals(shouldForceFinalize(edge - 1, 3), false, "1ms before the window stays open for lookups");
   assertEquals(shouldForceFinalize(edge, 3), true, "at the window edge we finalize");
   assertEquals(shouldForceFinalize(edge + 5_000, 3), true, "past the window we finalize");

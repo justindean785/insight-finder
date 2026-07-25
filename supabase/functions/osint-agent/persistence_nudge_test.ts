@@ -19,8 +19,10 @@ import {
   buildFinalizePersistDirective,
   shouldForceFinalize,
   FINALIZE_ACTIVE_TOOLS,
+  FINALIZE_RESERVE_MS,
   PERSISTENCE_NUDGE_TOOL_CALL_THRESHOLD,
 } from "./orchestrator-finalize.ts";
+import { ORCHESTRATOR_WALL_CLOCK_MS } from "./orchestrator-budget.ts";
 import { countModelMessageToolCalls } from "./guard.ts";
 import { UNKNOWN_TOOL_SINK } from "./unknown-tool-guard.ts";
 import { runWithToolTimeout } from "./cache.ts";
@@ -185,7 +187,10 @@ function prepareStepDecision(
 }
 
 Deno.test("forced-finalize takes precedence: the nudge cannot replace finalization", () => {
-  const finalizeEdge = 240_000 - 90_000; // reserve window open → finalize due
+  // Derive from the live constants — hardcoding the budget meant this test kept
+  // asserting against a 240s budget after it was recalibrated to the measured
+  // 180s platform ceiling, silently testing a time the run can no longer reach.
+  const finalizeEdge = ORCHESTRATOR_WALL_CLOCK_MS - FINALIZE_RESERVE_MS; // reserve window open → finalize due
   // Nudge conditions ALSO hold (many calls, 0 records, not yet nudged) — finalize still wins.
   assertEquals(
     prepareStepDecision(finalizeEdge, 3, false, 20, 0, false),
@@ -242,7 +247,7 @@ Deno.test("correlate timeout: finalize still enters the persistence phase, corre
   // time + step, with NO dependency on correlate having succeeded. It keeps
   // record_artifacts active and asks for the report, so a correlate timeout can never
   // strand collected evidence or suppress the closing synthesis.
-  const edge = 240_000 - 90_000; // reserve window opens regardless of correlate state
+  const edge = ORCHESTRATOR_WALL_CLOCK_MS - FINALIZE_RESERVE_MS; // reserve window opens regardless of correlate state
   assert(shouldForceFinalize(edge, 3), "finalize is time/step driven, not correlate driven");
   assert(
     (FINALIZE_ACTIVE_TOOLS as readonly string[]).includes("record_artifacts"),
