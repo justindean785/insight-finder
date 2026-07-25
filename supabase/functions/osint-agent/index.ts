@@ -39,13 +39,13 @@ import { beginCycle, clearRuntime } from "./runtime-policy.ts";
 import {
   TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW,
   MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN,
-  capTotalToBudget, deadlineReached,
+  capTotalToBudget, deadlineReached, isToolBudgetExhausted,
 } from "./orchestrator-budget.ts";
 import {
   shouldForceFinalize, buildFinalizeStepPlan, buildPerCycleCompactDirective,
   activeToolsOutsideFinalize, countFinalizeProgress, resolveFinalizePhase, type FinalizePhase,
   shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS,
-  extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt, toolCallCapReached,
+  extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt,
   shouldNudgePersistence, buildPersistenceNudgeDirective,
 } from "./orchestrator-finalize.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
@@ -709,7 +709,12 @@ Deno.serve(async (req) => {
     // wrapToolsWithCache, which increments `genuine` on each live execution and flips
     // `capped` once the cap is hit; prepareStep reads it to force finalize. Owned by
     // this per-request closure so concurrent runs on a warm isolate never share it.
-    const toolCallBudget = { genuine: 0, capped: false };
+    const toolCallBudget = { genuine: 0, reserved: 0, capped: false };
+    // Separate one-shot latch for the run_capped telemetry: `capped` is now flipped at
+    // ADMISSION (reserveToolCall), before this prepareStep closure runs, so the old
+    // `capReached && !capped` gate would never log. This latch fires the event exactly
+    // once, the first step prepareStep observes an exhausted budget.
+    let capLogged = false;
     // First-pass persistence nudge latch (DeepSeek deferral fix). Request-scoped —
     // owned by this per-request closure, NEVER a module-global, so one run's nudge
     // state can't leak onto a concurrent run sharing a warm isolate. Flipped true the
@@ -778,11 +783,16 @@ Deno.serve(async (req) => {
         // Either way: enter the explicit finalize state machine. The persistence and
         // memory phases require a tool decision, so narration alone cannot terminate
         // the run. The report phase disables tools and emits only the closing report.
-        const capReached = toolCallCapReached(toolCallBudget.genuine);
-        if (capReached && !toolCallBudget.capped) {
-          toolCallBudget.capped = true;
+        // Budget exhausted = reservation cap reached (admission) OR completed-call cap
+        // (backstop). Keying off isToolBudgetExhausted — not `genuine` alone — closes
+        // the #377 decoupling: a run that spent its budget on reserved-but-rejected
+        // calls is still forced to finalize instead of looping on rejected admissions.
+        const capReached = isToolBudgetExhausted(toolCallBudget);
+        if (capReached && !capLogged) {
+          capLogged = true;
           console.log(JSON.stringify({
             event: "run_capped", thread_id: threadId,
+            reserved_tool_calls: toolCallBudget.reserved,
             genuine_tool_calls: toolCallBudget.genuine, cap: MAX_TOOL_CALLS_PER_RUN,
           }));
         }

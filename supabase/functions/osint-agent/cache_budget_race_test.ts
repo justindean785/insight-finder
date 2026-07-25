@@ -45,9 +45,10 @@ function makeTool(): Tool {
   return { description: "test tool", execute: async () => { await Promise.resolve(); return { ok: true }; } } as unknown as Tool;
 }
 
-// QUARANTINED 2026-07-21 — orphaned by #370 rollback of #369; unskip when the atomic
-// tool-call budget reservation (toolCallBudget.reserved) re-lands. See issue #373.
-Deno.test.ignore("budget race: N concurrent calls at the cap boundary — exactly the remaining slots are admitted, never more", async () => {
+// RE-LANDED 2026-07-24 (PR A) — atomic tool-call budget reservation restored after the
+// #366/#370 rollback orphaned it. Reserve-on-start (toolCallBudget.reserved) bounds a
+// parallel fan-out to the cap. See issue #373.
+Deno.test("budget race: N concurrent calls at the cap boundary — exactly the remaining slots are admitted, never more", async () => {
   const threadId = "budget-race-1";
   clearRuntime(threadId);
   const supabase = fakeSupabase();
