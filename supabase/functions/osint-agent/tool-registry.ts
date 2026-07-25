@@ -26,6 +26,27 @@ import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
 import { selectPivots, proposedCallToCandidate, type PivotCandidate, type ProposedCall } from "./graph_pivots.ts";
 import { renderPivotChecklistForPrompt } from "./pivot-checklists.ts";
 import { unknownToolNudge } from "./unknown-tool-guard.ts";
+
+/**
+ * TOOL_NAME_ALIASES — DeepSeek (and occasionally other providers) hallucinate a
+ * plausible-sounding generic tool name instead of our actual registry name
+ * (2026-07-25 production audit, thread d98deb37, build 6d76133: 7 calls hit
+ * unknown_tool_ignored for names like this). Checked BEFORE the unknown-tool
+ * sink so a known drift pattern is silently redirected to the real tool instead
+ * of being dropped and burning a step. Genuinely-unknown names (not in this map)
+ * still fall through to unknown_tool_ignored at zero cost — this map only
+ * shortcuts KNOWN alias drift, it does not change the zero-cost guarantee for
+ * truly novel hallucinations.
+ *
+ * Add more entries here as new alias drift is observed in production telemetry —
+ * keep the right-hand side pointed at a real, currently-registered tool name.
+ */
+export const TOOL_NAME_ALIASES: Record<string, string> = {
+  web_search: "minimax_web_search",
+  google_search: "google_dorks",
+  scrape_url: "jina_reader_scrape",
+  fetch_url: "jina_reader_scrape",
+};
 import type { QueryType } from "./query-type-router.ts";
 import { DNS_TYPES, VIRTUAL_TYPE_MAP, isVirtualType, resolveVirtualHost, filterTxtByPrefix } from "./tools/dns-virtual.ts";
 
@@ -122,9 +143,28 @@ const JINA_HARD_BLOCK_HOSTS = [
   "facebook.com",
   "youtube.com",
   "youtu.be",
+  // 2026-07-25 production audit (thread d98deb37, 100-call Jina sample across
+  // 7 threads): pinterest.com timed out 3/3 attempts at the 18s cap — it's
+  // JS-heavy and login-gated, so Jina hangs until the wrapper kills it. Same
+  // failure-every-time pattern as the hosts above.
+  "pinterest.com",
+  // Oregon judicial/SOR portals are SPA/heavy-render and timed out or 422'd
+  // every attempt in the same sample (webportal.courts.oregon.gov: 2 timeouts
+  // + 1 422). Structured record lookups belong to a direct-API tool or manual
+  // review, not a markdown scrape.
+  "webportal.courts.oregon.gov",
 ];
 function isJinaHardBlocked(hostname: string): boolean {
   return JINA_HARD_BLOCK_HOSTS.some((h) => hostname === h || hostname.endsWith(`.${h}`));
+}
+
+// Google SERP pages specifically (not all of google.com — docs/drive/maps etc.
+// are different concerns) reliably time out through Jina: consent/interstitial
+// walls make r.jina.ai churn until the 18s cap. 3/3 in the same 2026-07-25
+// sample. SERP-style queries should go through minimax_web_search/exa_search
+// instead of scraping Google directly.
+function isJinaGoogleSearchDeadEnd(hostname: string, pathname: string): boolean {
+  return (hostname === "google.com" || hostname.endsWith(".google.com")) && pathname === "/search";
 }
 
 // ---------------------------------------------------------------------------
@@ -3610,11 +3650,42 @@ export function buildTools(ctx: ToolContext) {
           return { error: "non_http_url", skipped: true, url: raw };
         }
         parsed.hash = ""; // r.jina.ai 422s on fragments
+        // Malformed-selector guard (2026-07-25 production audit, thread d98deb37):
+        // the model occasionally passes a natural-language search query — not a
+        // real URL path — in the pathname/query (e.g. a DeepSeek hallucination like
+        // "https://r.jina.ai/find John Smith twitter account" or a query string
+        // whose value is a full sentence). z.string().url() lets these through
+        // because they're still syntactically valid URLs; Jina then wastes a live
+        // round-trip and 422s. Reject locally, zero-cost, BEFORE the provider call:
+        // decode the pathname + query and flag it if it reads like prose (several
+        // whitespace-separated words, no path-like punctuation) rather than a
+        // selector/slug/query-param fragment.
+        const decodedTail = decodeURIComponent(`${parsed.pathname}${parsed.search}`).replace(/[+]/g, " ");
+        const words = decodedTail.trim().split(/\s+/).filter(Boolean);
+        const looksLikePath = /[/._-]/.test(decodedTail.replace(/^\/+/, "").split(/[?=&\s]/)[0] ?? "");
+        if (words.length >= 4 && !looksLikePath) {
+          return {
+            error: "malformed_selector",
+            skipped: true,
+            url: raw,
+            hint: "this looks like a natural-language search query, not a URL path/selector — use google_dorks or minimax_web_search to find the real page URL first, then scrape that",
+          };
+        }
         // Skip a host already proven dead (NXDOMAIN) this investigation.
         if (isHostDead(parsed.hostname)) return { skipped: true, reason: "host does not resolve (NXDOMAIN) — skipped", url: raw };
         // Skip hosts that always 451/403 through Jina — save the ~8s dead round-trip.
         if (isJinaHardBlocked(parsed.hostname)) {
           return { error: "jina 451", status: 451, url: parsed.toString(), skipped: true, hint: "origin hard-blocks Jina — use socialfetch_web_read (server-side markdown) for this host, or wayback_snapshots / a direct-API tool" };
+        }
+        // Google SERP pages reliably time out through Jina (consent walls) rather
+        // than fail fast — skip instantly instead of eating the full 18s cap.
+        if (isJinaGoogleSearchDeadEnd(parsed.hostname, parsed.pathname)) {
+          return {
+            error: "jina search dead-end",
+            skipped: true,
+            url: parsed.toString(),
+            hint: "r.jina.ai cannot reliably render Google SERPs (consent/interstitial walls) — use minimax_web_search or exa_search for search-style queries instead of scraping a Google search URL",
+          };
         }
         // Rebuild a clean URL; r.jina.ai expects the raw URL appended.
         const clean = parsed.toString();

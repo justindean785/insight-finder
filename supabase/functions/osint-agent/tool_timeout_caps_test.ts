@@ -8,8 +8,11 @@ import {
   runWithToolTimeout,
 } from "./cache.ts";
 
-Deno.test("B3 caps: gemini_deep_dork=12s, jina_reader_scrape=18s; deepfind_reverse_email on the 12s default (F2)", () => {
-  assertEquals(toolTimeoutMs("gemini_deep_dork"), 12_000);
+Deno.test("B3 caps: gemini_deep_dork=20s, jina_reader_scrape=18s; deepfind_reverse_email on the 12s default (F2)", () => {
+  // 2026-07-25 audit: gemini_deep_dork hit its 12s cap mid-response too often
+  // (2 timeout failures / 2 in-flight skips of 8 attempts in the audited run).
+  // Raised 12s -> 20s, matching the prior recalibration ceiling.
+  assertEquals(toolTimeoutMs("gemini_deep_dork"), 20_000);
   // 18s (was 8s): one slow-but-recoverable render must not burn the provider —
   // paired with the multi-origin circuit policy (jina dead-lists only the slow URL
   // and suppresses only after 3 consecutive timeouts; see circuit_timeout_test.ts).
@@ -87,5 +90,9 @@ Deno.test("timeout overrides: minimax_correlate clears its real bounded-batch la
     toolTimeoutMs("minimax_correlate") >= 25_000,
     "minimax_correlate cap must clear its ~22.5s observed completion latency",
   );
-  assertEquals(toolTimeoutMs("minimax_correlate"), 30_000);
+  // 2026-07-25 audit: still timed out (1 of 2 calls, at ~30s) even at the 30s cap —
+  // it's identity consolidation, not raw search, so raised 30s -> 60s to stop
+  // discarding completed correlations and stop the model compensating with more
+  // raw searches when correlate fails.
+  assertEquals(toolTimeoutMs("minimax_correlate"), 60_000);
 });

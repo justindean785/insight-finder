@@ -39,20 +39,21 @@ import { beginCycle, clearRuntime } from "./runtime-policy.ts";
 import {
   TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW,
   MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN,
-  capTotalToBudget, deadlineReached,
+  capTotalToBudget, deadlineReached, isToolBudgetExhausted, buildIntermediateStepPlan,
 } from "./orchestrator-budget.ts";
 import {
   shouldForceFinalize, buildFinalizeStepPlan, buildPerCycleCompactDirective,
   activeToolsOutsideFinalize, countFinalizeProgress, resolveFinalizePhase, type FinalizePhase,
   shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS,
-  extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt, toolCallCapReached,
+  extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt,
+  shouldSoftFinalizeOnToolCalls,
   shouldNudgePersistence, buildPersistenceNudgeDirective,
 } from "./orchestrator-finalize.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { applyClusteringToThread } from "./lib/cluster.ts";
-import { buildTools } from "./tool-registry.ts";
+import { buildTools, TOOL_NAME_ALIASES } from "./tool-registry.ts";
 import { runAttachmentIntake, type AttachmentIntakeResult } from "./attachment-intake.ts";
 import { isMessageSchemaError, classifyStreamProviderError } from "./stream-error-classify.ts";
 import {
@@ -709,7 +710,12 @@ Deno.serve(async (req) => {
     // wrapToolsWithCache, which increments `genuine` on each live execution and flips
     // `capped` once the cap is hit; prepareStep reads it to force finalize. Owned by
     // this per-request closure so concurrent runs on a warm isolate never share it.
-    const toolCallBudget = { genuine: 0, capped: false };
+    const toolCallBudget = { genuine: 0, reserved: 0, capped: false };
+    // Separate one-shot latch for the run_capped telemetry: `capped` is now flipped at
+    // ADMISSION (reserveToolCall), before this prepareStep closure runs, so the old
+    // `capReached && !capped` gate would never log. This latch fires the event exactly
+    // once, the first step prepareStep observes an exhausted budget.
+    let capLogged = false;
     // First-pass persistence nudge latch (DeepSeek deferral fix). Request-scoped —
     // owned by this per-request closure, NEVER a module-global, so one run's nudge
     // state can't leak onto a concurrent run sharing a warm isolate. Flipped true the
@@ -778,23 +784,35 @@ Deno.serve(async (req) => {
         // Either way: enter the explicit finalize state machine. The persistence and
         // memory phases require a tool decision, so narration alone cannot terminate
         // the run. The report phase disables tools and emits only the closing report.
-        const capReached = toolCallCapReached(toolCallBudget.genuine);
-        if (capReached && !toolCallBudget.capped) {
-          toolCallBudget.capped = true;
+        // Budget exhausted = reservation cap reached (admission) OR completed-call cap
+        // (backstop). Keying off isToolBudgetExhausted — not `genuine` alone — closes
+        // the #377 decoupling: a run that spent its budget on reserved-but-rejected
+        // calls is still forced to finalize instead of looping on rejected admissions.
+        const capReached = isToolBudgetExhausted(toolCallBudget);
+        if (capReached && !capLogged) {
+          capLogged = true;
           console.log(JSON.stringify({
             event: "run_capped", thread_id: threadId,
+            reserved_tool_calls: toolCallBudget.reserved,
             genuine_tool_calls: toolCallBudget.genuine, cap: MAX_TOOL_CALLS_PER_RUN,
           }));
         }
-        if (finalizeStarted || capReached || shouldForceFinalize(Date.now() - runStartedAt, stepNumber ?? 0)) {
+        // Deterministic finalize gate: force the in-stream report phase at ~80% of
+        // the tool-call budget so a heavy run synthesizes BEFORE it trails off near
+        // the hard cap (the model narrating "let me pull X next" without emitting the
+        // call → loop ends with no report) or dies in the post-run salvage. Only the
+        // CPU-heavy population trips this; light runs keep their full depth.
+        const softFinalize = shouldSoftFinalizeOnToolCalls(toolCallBudget.genuine);
+        if (finalizeStarted || capReached || softFinalize || shouldForceFinalize(Date.now() - runStartedAt, stepNumber ?? 0)) {
           const progress = countFinalizeProgress(stepMessages as Array<{ content?: unknown }>);
           if (!finalizeStarted) {
             finalizeStarted = true;
             finalizeBoundary = progress;
             console.log(JSON.stringify({
               event: "finalize_started", thread_id: threadId,
-              trigger: capReached ? "tool_cap" : "time_or_step",
+              trigger: capReached ? "tool_cap" : softFinalize ? "soft_tool_cap" : "time_or_step",
               step_number: stepNumber ?? 0,
+              genuine_tool_calls: toolCallBudget.genuine,
             }));
           }
           finalizePhase = resolveFinalizePhase(finalizeBoundary, progress);
@@ -833,14 +851,20 @@ Deno.serve(async (req) => {
           }));
           return {
             messages: stepMessagesOut,
-            activeTools: ["record_artifacts"],
             system: intermediateSystem,
+            ...buildIntermediateStepPlan({
+              nudgePersistence: true,
+              normalActiveTools,
+            }),
           };
         }
         return {
           messages: stepMessagesOut,
-          activeTools: normalActiveTools,
           system: intermediateSystem,
+          ...buildIntermediateStepPlan({
+            nudgePersistence: false,
+            normalActiveTools,
+          }),
         };
       };
 
@@ -888,7 +912,9 @@ Deno.serve(async (req) => {
         onCost,
         manualOverrideSelector,
         toolCallBudget,
-        shouldStopLiveLookups: () => shouldForceFinalize(Date.now() - runStartedAt, 0),
+        shouldStopLiveLookups: () =>
+          shouldForceFinalize(Date.now() - runStartedAt, 0) ||
+          shouldSoftFinalizeOnToolCalls(toolCallBudget.genuine),
         onHeartbeat: () => heartbeat?.pulse(),
       }),
       // Unknown-tool guard (Phase B4): the model occasionally emits a tool call
@@ -899,8 +925,16 @@ Deno.serve(async (req) => {
       // tool, never surfaces the invented name — and the model gets a terse nudge.
       // A KNOWN tool with bad input returns null here (SDK handles it normally).
       experimental_repairToolCall: async ({ toolCall, tools: liveTools }) => {
-        const decision = repairUnknownTool(toolCall.toolName, Object.keys(liveTools ?? {}));
+        const decision = repairUnknownTool(toolCall.toolName, Object.keys(liveTools ?? {}), TOOL_NAME_ALIASES);
         if (!decision.redirect) return null;
+        if (decision.aliased) {
+          // Known alias drift (e.g. "web_search" -> "minimax_web_search"): redirect
+          // to the REAL tool and keep the model's original input untouched — the
+          // real tool's own schema/execute validates it normally. Do NOT rewrite
+          // input to { requested } here, that shape is only for the sink tool.
+          console.warn(`[unknown-tool-guard] aliased "${toolCall.toolName}" -> "${decision.toolName}"`);
+          return { ...toolCall, toolName: decision.toolName };
+        }
         console.warn(`[unknown-tool-guard] dropped hallucinated tool "${toolCall.toolName}"`);
         return { ...toolCall, toolName: decision.toolName, input: JSON.stringify({ requested: decision.requested }) };
       },

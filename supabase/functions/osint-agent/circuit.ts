@@ -23,7 +23,7 @@ export type FailureKind =
 
 export type BreakerDecision =
   | { allow: true }
-  | { allow: false; reason: string; until?: number };
+  | { allow: false; reason: string; until?: number; duplicateInFlight?: boolean };
 
 // ---- Investigation-level provider suppression (Phase 8) --------------------
 // When a provider returns a 429 or times out, it's suppressed for the rest of
@@ -186,6 +186,15 @@ interface ThreadState {
    *  returns — the scenario where parallel_tool_calls:false is ignored by the
    *  model/gateway and several calls race past shouldRun simultaneously. */
   inFlight: Set<string>;
+  /** Exact (tool + normalized-selector + purpose) call keys currently executing.
+   *  Finer-grained than `inFlight` (which is provider-level and also blocks
+   *  legitimate different-selector siblings on the same provider). Used so an
+   *  identical duplicate call — e.g. two same-step minimax_web_search calls for
+   *  the same query — is recognized as a TRUE duplicate and given an explicit
+   *  "don't retry" signal, instead of the generic provider-busy reason that
+   *  DeepSeek was observed retrying into a collision loop (2026-07-25 audit,
+   *  thread d98deb37: 23 skipped in-flight collisions). */
+  inFlightCalls: Set<string>;
   /** Number of in-flight runs that have acquire()'d this thread. The shared
    *  state is only torn down by release() once this returns to 0, so an
    *  overlapping run (double-submit / retry — setupRequest verifies ownership
@@ -217,7 +226,7 @@ function state(threadId: string): ThreadState {
     THREADS.set(threadId, existing);
     return existing;
   }
-  const s: ThreadState = { breakers: new Map(), calls: new Map(), suppressions: new Map(), inFlight: new Set(), active: 0 };
+  const s: ThreadState = { breakers: new Map(), calls: new Map(), suppressions: new Map(), inFlight: new Set(), inFlightCalls: new Set(), active: 0 };
   THREADS.set(threadId, s);
   // Evict the least-recently-used thread(s) when over the cap. Iterate in LRU
   // order (oldest first) and drop the oldest entries until back under the cap,
@@ -354,6 +363,18 @@ export function shouldRun(
   // (they bypass timeouts too — evidence writes must never be blocked).
   const provider = providerForTool(tool);
   const s = THREADS.get(threadId);
+  // Exact-duplicate gate: an IDENTICAL (tool, normalized-selector, purpose) call
+  // is already executing. This is a TRUE duplicate (not just same-provider
+  // contention), so it gets its own reason with duplicateInFlight:true — the
+  // caller (cache.ts) uses this to tag the skip distinctly and to avoid
+  // encouraging a retry. Checked before the coarser provider-level gate below.
+  if (selector && s && isCallInFlight(threadId, tool, selector, purpose)) {
+    return {
+      allow: false,
+      duplicateInFlight: true,
+      reason: `duplicate call: an identical '${tool}' call for this selector is already in flight this step — its result will be used, do not retry`,
+    };
+  }
   // Multi-origin fan-out tools (jina, socialfetch_web_read) legitimately run
   // several reads of DIFFERENT URLs in the same step. They don't share a single
   // upstream quota, so the in-flight provider lock — meant to stop a same-step
@@ -422,7 +443,18 @@ export function recordResult(
     b.lastAt = Date.now();
     return;
   }
-  b.consecutive++;
+  // http_400/http_422 are deterministic PER-SELECTOR outcomes (bad/unprocessable
+  // input for this exact URL) — the switch below already dead-lists just that
+  // selector rather than touching provider health. They must NOT also feed the
+  // shared `b.consecutive` streak: the global "disabled after 3 consecutive
+  // failures" guard further down doesn't distinguish failure kind, so 3
+  // unrelated malformed URLs in a row (e.g. jina_reader_scrape fed 3 different
+  // bad court-portal links) would silently disable the tool for the rest of the
+  // run even though nothing about the tool/provider itself is unhealthy. 2026-
+  // 07-25 audit (thread d98deb37) mixed 1×422 with 7 timeouts — one selector
+  // away from tripping exactly this. `b.total` still counts it for telemetry.
+  const isPerSelectorDeterministic = outcome.status === "http_400" || outcome.status === "http_422";
+  if (!isPerSelectorDeterministic) b.consecutive++;
   b.total++;
   b.lastAt = Date.now();
   // Maintain the dedicated timeout streak: a timeout extends it, ANY non-timeout
@@ -549,6 +581,16 @@ export function classifyResult(result: unknown, threw: unknown): FailureKind {
   }
   if (!result || typeof result !== "object") return "ok";
   const r = result as Record<string, unknown>;
+  // A result the TOOL ITSELF marked `skipped: true` never reached the provider —
+  // it's a local admission/validation decision (malformed input, host known-dead,
+  // hard-blocked origin, etc.), not an observed provider outcome. It must not
+  // count toward this tool's consecutive-failure/degradation score even when it
+  // also carries an HTTP-shaped `status` (e.g. the Jina hard-block skip reuses
+  // 451 as a hint code). This is checked BEFORE the status-code branch below so
+  // a locally-skipped result can never fall through to a `http_*` FailureKind.
+  // Real provider responses never set `skipped` themselves (see jina_reader_scrape:
+  // only its local preflight checks do) so this cannot mask a genuine failure.
+  if (r.skipped === true) return "ok";
   if (r.ok === false || typeof r.error === "string") {
     const status = typeof r.status === "number" ? r.status
       : typeof r.status_code === "number" ? r.status_code
@@ -639,4 +681,28 @@ export function markProviderInFlight(threadId: string, tool: string): void {
  *  (success or error). Call this before or alongside recordResult(). */
 export function clearProviderInFlight(threadId: string, tool: string): void {
   THREADS.get(threadId)?.inFlight.delete(providerForTool(tool));
+}
+
+/** Build the exact-call dedup key used by markCallInFlight/isCallInFlight. */
+export function inFlightCallKey(tool: string, selector: string, purpose: string): string {
+  return `${tool}::${selector}::${purpose}`;
+}
+
+/** True if an IDENTICAL (tool, normalized-selector, purpose) call is already
+ *  executing for this investigation. Distinct from the coarser provider-level
+ *  `inFlight` gate — this catches genuine duplicates (same query fired twice
+ *  in one step) so they can be suppressed locally with a clear "already
+ *  running, don't retry" signal instead of the generic provider-busy reason. */
+export function isCallInFlight(threadId: string, tool: string, selector: string, purpose: string): boolean {
+  return THREADS.get(threadId)?.inFlightCalls.has(inFlightCallKey(tool, selector, purpose)) ?? false;
+}
+
+/** Mark an exact call as in-flight. Pair with clearCallInFlight() on completion. */
+export function markCallInFlight(threadId: string, tool: string, selector: string, purpose: string): void {
+  state(threadId).inFlightCalls.add(inFlightCallKey(tool, selector, purpose));
+}
+
+/** Clear the exact-call in-flight marker once the call has returned. */
+export function clearCallInFlight(threadId: string, tool: string, selector: string, purpose: string): void {
+  THREADS.get(threadId)?.inFlightCalls.delete(inFlightCallKey(tool, selector, purpose));
 }
