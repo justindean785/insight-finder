@@ -162,12 +162,27 @@ export function isToolBudgetExhausted(
 
 // Hard wall-clock deadline for a single run (ms). A StopCondition trips once elapsed
 // time exceeds this, ending the run CLEANLY (onFinish persists the partial assistant
-// + artifacts and marks the thread finished) instead of grinding to the step cap. A
-// catastrophic-tail backstop (audit observed a 17.6-min max), not a routine limiter.
-// Speed pass: 6 min → 4 min. Backstop only — with the step cap + parallel tool
-// calls, healthy runs finish well under this; the 6-min tail was chasing dead
-// providers.
-export const ORCHESTRATOR_WALL_CLOCK_MS = 4 * 60_000;
+// + artifacts and marks the thread finished) instead of grinding to the step cap.
+//
+// MUST NOT EXCEED THE PLATFORM'S OWN ISOLATE LIFETIME. This is not a free "backstop"
+// dial: `shouldForceFinalize` opens the finalize window at
+// (ORCHESTRATOR_WALL_CLOCK_MS - FINALIZE_RESERVE_MS), so setting it ABOVE what the
+// runtime actually grants pushes the finalize window past the point where the isolate
+// is already dead — the run never gets to write its report at all.
+//
+// RECALIBRATED 2026-07-25 (4 min -> 3 min) from production telemetry, n=63 runs:
+// `max(last_heartbeat_at - run_started_at)` is 180.02s with a hard ceiling there
+// (only 3 runs touch 180s, none exceed it) — the platform kills the isolate at 180s.
+// The prior 240s value was 60s of budget that never existed, which put the finalize
+// window at 240-90=150s: PAST the death point for 55 of 63 runs (87%), so 87% of runs
+// died mid-investigation with artifacts persisted but NO report, and 51% had to be
+// closed out by the stale-run recovery stub. Matching the real 180s ceiling moves the
+// finalize window to 180-90=90s, inside the lifetime of the large majority of runs.
+//
+// Depth note: this trades tail depth for a report actually existing. Runs now begin
+// synthesizing at ~90s of tool work instead of ~150s. A report at 19 tool calls beats
+// no report at 19 tool calls, which is what the 240s setting was really producing.
+export const ORCHESTRATOR_WALL_CLOCK_MS = 3 * 60_000;
 
 /**
  * True once `budgetMs` has elapsed since `startedAt` (both epoch ms). Extracted as a

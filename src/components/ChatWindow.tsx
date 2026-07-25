@@ -2005,6 +2005,12 @@ function ChatWindowInner({
   };
 
   const isLoading = status === "submitted" || status === "streaming";
+  // Watchdog-only ref: the terminal-status realtime handler below is set up in
+  // an effect with a stable dependency array (see stopRef further down), so its
+  // closure would otherwise see a stale `isLoading` from whenever the effect
+  // last ran. Updated every render, read only inside the fallback timer.
+  const isLoadingRef = useRef(isLoading);
+  isLoadingRef.current = isLoading;
 
   // Broadcast live run state so the case header never shows COMPLETE while
   // the chat stream is still open (tool_usage_log can lag 12s+ between calls).
@@ -2039,7 +2045,23 @@ function ChatWindowInner({
     if (!FUNCTIONS_URL) return;
     const sweep = () => { void fetch(`${FUNCTIONS_URL}?health=1`, { method: "GET" }).catch(() => {}); };
     sweep(); // once on open: reap a run already stuck when this thread is loaded
-    if (!isLoading) return;
+    if (!isLoading) {
+      // TRAILING sweeps after the stream ends. The immediate sweep above usually
+      // fires too EARLY to help: when an isolate dies mid-run the client stream
+      // ends within a few seconds, at which point the thread's heartbeat is only
+      // ~15-30s stale — under recovery's 75s staleness bar — so the sweep runs
+      // and correctly declines to reap a run that might still be alive. Without
+      // a retry nothing re-probes (the 30s interval below only runs while
+      // loading), so a genuinely dead run sat `active` with artifacts and NO
+      // report until the 15-minute scheduled cron happened by. Observed on
+      // thread 1e74893c: died 15:35:43, stream ended ~15:36, still `active` and
+      // unrecovered 8+ minutes later. These two delayed probes cross the 75s
+      // bar and close that window to ~90s. Harmless when the run ended normally
+      // — recovery only ever touches heartbeat-stale threads.
+      const t1 = window.setTimeout(sweep, 30_000);
+      const t2 = window.setTimeout(sweep, 90_000);
+      return () => { window.clearTimeout(t1); window.clearTimeout(t2); };
+    }
     const id = window.setInterval(sweep, 30_000); // while running: reap a mid-flight death
     return () => window.clearInterval(id);
   }, [threadId, isLoading]);
@@ -2069,8 +2091,29 @@ function ChatWindowInner({
           // Give a healthy browser branch one render turn to receive its trailing
           // report before merging the same durable row. Stale-recovery/stop paths
           // have no live tail to flush and reconcile immediately.
-          if (shouldAbortClientStream(next)) void reconcilePersistedMessages();
-          else window.setTimeout(() => void reconcilePersistedMessages(), 500);
+          if (shouldAbortClientStream(next)) {
+            void reconcilePersistedMessages();
+          } else {
+            window.setTimeout(() => void reconcilePersistedMessages(), 500);
+            // Fallback for a normal `finished` update: the 500ms reconcile above
+            // assumes the browser's OWN stream connection will independently
+            // deliver its own completion frame shortly after, flipping useChat's
+            // `status` out of "streaming"/"submitted" on its own. If that
+            // connection silently died first — a network blip, a backgrounded/
+            // throttled tab, a proxy timeout — no terminal SSE frame ever
+            // arrives and `isLoading` is stuck true forever, even though the DB
+            // (and by now the reconciled `messages` array) already show the run
+            // is done. Give it a generous grace window, then force it terminal
+            // if it's still loading. By the time this fires the durable report
+            // has already been merged in above, so this can only clear a stuck
+            // loading flag — it never discards content a live stream is still
+            // flushing (that case already resolved `isLoading` on its own).
+            window.setTimeout(() => {
+              if (isLoadingRef.current) {
+                try { stopRef.current?.(); } catch { /* stream already closed */ }
+              }
+            }, 8_000);
+          }
         },
       )
       .subscribe();

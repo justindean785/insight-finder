@@ -115,8 +115,18 @@ Deno.test("step cap is the named ~22 ceiling", () => {
   assertEquals(MAX_ORCHESTRATOR_STEPS, 22);
 });
 
-Deno.test("wall-clock deadline is 4 minutes and trips cleanly on elapse", () => {
-  assertEquals(ORCHESTRATOR_WALL_CLOCK_MS, 4 * 60_000);
+Deno.test("wall-clock deadline is 3 minutes and trips cleanly on elapse", () => {
+  // Pinned to the MEASURED platform isolate ceiling (180s), not an arbitrary
+  // backstop. Telemetry 2026-07-25 (n=63): max(last_heartbeat - run_started) =
+  // 180.02s, hard ceiling. The budget must never exceed this — the finalize
+  // window opens at (budget - FINALIZE_RESERVE_MS), so an over-large budget
+  // pushes finalize past the point the isolate is already dead and the run
+  // produces no report at all. At 240s that was happening to 87% of runs.
+  assertEquals(ORCHESTRATOR_WALL_CLOCK_MS, 3 * 60_000);
+  assert(
+    ORCHESTRATOR_WALL_CLOCK_MS <= 180_000,
+    "budget must not exceed the measured 180s platform isolate ceiling",
+  );
   const start = 1_000_000;
   assertEquals(deadlineReached(start, start, ORCHESTRATOR_WALL_CLOCK_MS), false);
   assertEquals(
