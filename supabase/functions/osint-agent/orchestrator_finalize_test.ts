@@ -35,11 +35,15 @@ import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_
 
 // ---- Fix A: shouldForceFinalize -------------------------------------------------
 
-Deno.test("shouldForceFinalize: opens exactly at the wall-clock reserve window", () => {
+Deno.test("shouldForceFinalize: HARD wall-clock backstop opens exactly at the reserve window", () => {
   const edge = ORCHESTRATOR_WALL_CLOCK_MS - FINALIZE_RESERVE_MS; // 240s - 90s = 150s
-  assertEquals(shouldForceFinalize(edge - 1, 3), false, "1ms before the window stays open for lookups");
-  assertEquals(shouldForceFinalize(edge, 3), true, "at the window edge we finalize");
-  assertEquals(shouldForceFinalize(edge + 5_000, 3), true, "past the window we finalize");
+  // Isolate the hard backstop: PR B's soft triggers open finalize far earlier (~70s /
+  // 20 admitted calls — see early_finalize_test.ts), so disable them here to pin the
+  // hard-window edge behavior that must remain the catastrophic-tail guarantee.
+  const off = { forceEarly: false };
+  assertEquals(shouldForceFinalize(edge - 1, 3, off), false, "1ms before the window stays open for lookups");
+  assertEquals(shouldForceFinalize(edge, 3, off), true, "at the window edge we finalize");
+  assertEquals(shouldForceFinalize(edge + 5_000, 3, off), true, "past the window we finalize");
 });
 
 Deno.test("shouldForceFinalize: forces on the last allowed step regardless of time", () => {

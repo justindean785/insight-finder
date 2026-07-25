@@ -796,7 +796,7 @@ Deno.serve(async (req) => {
             genuine_tool_calls: toolCallBudget.genuine, cap: MAX_TOOL_CALLS_PER_RUN,
           }));
         }
-        if (finalizeStarted || capReached || shouldForceFinalize(Date.now() - runStartedAt, stepNumber ?? 0)) {
+        if (finalizeStarted || capReached || shouldForceFinalize(Date.now() - runStartedAt, stepNumber ?? 0, { admittedCalls: toolCallBudget.reserved })) {
           const progress = countFinalizeProgress(stepMessages as Array<{ content?: unknown }>);
           if (!finalizeStarted) {
             finalizeStarted = true;
@@ -898,7 +898,7 @@ Deno.serve(async (req) => {
         onCost,
         manualOverrideSelector,
         toolCallBudget,
-        shouldStopLiveLookups: () => shouldForceFinalize(Date.now() - runStartedAt, 0),
+        shouldStopLiveLookups: () => shouldForceFinalize(Date.now() - runStartedAt, 0, { admittedCalls: toolCallBudget.reserved }),
         onHeartbeat: () => heartbeat?.pulse(),
       }),
       // Unknown-tool guard (Phase B4): the model occasionally emits a tool call

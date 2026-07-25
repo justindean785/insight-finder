@@ -42,6 +42,47 @@ import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_
 // here.)
 export const FINALIZE_RESERVE_MS = 90_000;
 
+// ---- PR B: deterministic EARLY closeout (multi-trigger) ------------------------
+// Production reality (last-5-run audit): the edge invocation is terminated at
+// ~90-120s of wall-clock — well INSIDE the 240s budget — so the 150s (240s − 90s
+// reserve) window above never opens and 5/5 runs were closed by the recovery sweeper
+// with no model-written report. Rather than raise the (still-unverified) hard
+// deadline, force the in-stream FINALIZE state machine to open on the EARLIEST of a
+// SOFT admitted-call limit or a SOFT elapsed budget — both well inside the real
+// window. Env-configurable so canary values can be tuned without a redeploy, and
+// behind FORCE_EARLY_FINALIZE so it can be disabled instantly if it over-fires.
+function envRaw(name: string): string | undefined {
+  try {
+    return (globalThis as { Deno?: { env?: { get(k: string): string | undefined } } }).Deno?.env?.get(name);
+  } catch {
+    return undefined; // env access not granted (a --no-allow-env test) → fall back to default
+  }
+}
+// Clamp on read; Math.max(min, floor) fixes the (0,1)->0 gap so a fractional value
+// can't silently disable a limit. Missing/garbage/out-of-range → the default.
+function envIntClamped(name: string, def: number, min: number, max: number): number {
+  const raw = envRaw(name);
+  if (raw == null || raw.trim() === "") return def;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return def;
+  return Math.min(Math.max(Math.floor(n), min), max);
+}
+
+// Force finalize once this many tool calls have been ADMITTED (reserved) this run.
+// 20 catches every run size that died in prod (24/26/30/44/74 attempted); the old
+// 0.8*cap ≈ 28 gate missed the 24- and 26-call runs. Range [1, MAX_TOOL_CALLS_PER_RUN].
+export const FINALIZE_SOFT_TOOL_CALLS = envIntClamped("FINALIZE_SOFT_TOOL_CALLS", 20, 1, MAX_TOOL_CALLS_PER_RUN);
+
+// Force finalize once this many ms have elapsed, independent of call count — a run can
+// burn the window on a few slow upstream calls. 70s leaves headroom to synthesize +
+// persist before the ~90-120s termination. Range [10s, wall-clock budget].
+export const FINALIZE_SOFT_ELAPSED_MS = envIntClamped("FINALIZE_SOFT_ELAPSED_MS", 70_000, 10_000, ORCHESTRATOR_WALL_CLOCK_MS);
+
+// Kill switch: FORCE_EARLY_FINALIZE=false disables BOTH soft triggers and reverts to
+// the hard 150s / step-cap backstops only. Default ON.
+export const FORCE_EARLY_FINALIZE =
+  (envRaw("FORCE_EARLY_FINALIZE") ?? "true").trim().toLowerCase() !== "false";
+
 // Emergency backstop for the forced-finalize state machine. The normal path is three
 // generations: persistence decision -> memory decision -> tool-free report. Two extra
 // attempts let a schema-invalid persistence/memory call retry without reopening live
@@ -180,12 +221,28 @@ export const MIN_REPORT_CHARS = 200;
 export function shouldForceFinalize(
   elapsedMs: number,
   stepNumber: number,
-  opts?: { budgetMs?: number; reserveMs?: number; maxSteps?: number },
+  opts?: {
+    admittedCalls?: number;
+    budgetMs?: number; reserveMs?: number; maxSteps?: number;
+    softToolCalls?: number; softElapsedMs?: number; forceEarly?: boolean;
+  },
 ): boolean {
   const budgetMs = opts?.budgetMs ?? ORCHESTRATOR_WALL_CLOCK_MS;
   const reserveMs = opts?.reserveMs ?? FINALIZE_RESERVE_MS;
   const maxSteps = opts?.maxSteps ?? MAX_ORCHESTRATOR_STEPS;
-  return elapsedMs >= budgetMs - reserveMs || stepNumber >= maxSteps - 1;
+  // Hard backstops — always active, the catastrophic-tail guarantee.
+  if (elapsedMs >= budgetMs - reserveMs || stepNumber >= maxSteps - 1) return true;
+
+  // Soft EARLY triggers (PR B) — open the finalize window while enough of the real
+  // (~90-120s) invocation remains to synthesize + persist. Kill-switchable.
+  const forceEarly = opts?.forceEarly ?? FORCE_EARLY_FINALIZE;
+  if (!forceEarly) return false;
+  const softToolCalls = opts?.softToolCalls ?? FINALIZE_SOFT_TOOL_CALLS;
+  const softElapsedMs = opts?.softElapsedMs ?? FINALIZE_SOFT_ELAPSED_MS;
+  const admittedCalls = opts?.admittedCalls ?? 0;
+  if (admittedCalls >= softToolCalls) return true;   // fanned out enough — report now
+  if (elapsedMs >= softElapsedMs) return true;        // burned the window — report now
+  return false;
 }
 
 /**
