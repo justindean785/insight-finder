@@ -49,7 +49,12 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // per-tool AbortSignal into their fetch, so the cap truly cancels the in-flight
   // request (not just abandons the promise). gemini_deep_dork's p95 (~46s) exceeds
   // this cap by design: it becomes a fast-fail corroboration source, not a 30s tax.
-  gemini_deep_dork: 12_000,        // was 30_000 — kill the per-run 30s timeout tail
+  // RAISED 2026-07-25 (production audit, thread d98deb37, build 6d76133): the 12s
+  // cap was clipping the fast-fail window too aggressively and driving retries/
+  // collisions rather than clean fast fails. 20s keeps it well below the ~46s p95
+  // (still a fast-fail relative to a full 30s+ tax) while giving legitimate fast
+  // responses room to land instead of tripping the cap mid-flight.
+  gemini_deep_dork: 20_000,        // was 12_000 — 12s cap fired mid-response too often
   // deepfind_reverse_email: removed 8s override — falls back to 12s default.
   // The 8s cap caused 9 timeouts in the 2026-07-08 audit; provider legitimately
   // needs headroom for the reverse-email lookup.
@@ -104,8 +109,12 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // bounded — this is calibration, not open-ended bumping. 30s (= the serus precedent, the
   // highest existing cap) clears the observed 22.5s with headroom. We deliberately keep
   // MODELS.smart (not fast) — this is the misattribution/collision-detection step, where
-  // quality outranks a few seconds.
-  minimax_correlate: 30_000,
+  // quality outranks a few seconds. RAISED 2026-07-25 (production audit, thread
+  // d98deb37, build 6d76133): 30s still clipped completed correlation calls on
+  // heavy runs (large artifact batches near the 200-entry ceiling push the smart
+  // model's response time past 30s). 60s gives headroom above the observed tail
+  // without unbounded growth — input is still hard-capped at 16k chars/1500 tokens.
+  minimax_correlate: 60_000,
   // OathNet family: every endpoint's own fetch budget is 20s (a couple 15s), but the
   // outer wrapper cap must sit ABOVE that fetch budget or it guillotines the call
   // before the fetch's own timeout can return a clean result. The 2026-07-15 live
@@ -927,7 +936,20 @@ export function wrapToolsWithCache(
             input: inputJson,
             runtime: { ...runtimeMetaBase, rejection_reason: decision.reason, rejection_source: "circuit" },
           });
-          return attachRuntimeMeta({ ok: false, skipped: true, error: decision.reason, _breaker: true }, {
+          // duplicateInFlight: this is a TRUE duplicate of a call already running
+          // this step (fix 4, 2026-07-25 audit), not a provider-busy/backoff skip.
+          // Tag distinctly (duplicate_suppressed) so it's never mistaken for a
+          // provider failure by health/degradation scoring — recordResult/
+          // recordFailure are never called on this path (we return before
+          // reaching them), so the circuit breaker doesn't see this as an
+          // outcome at all, only as an admission-time local suppression.
+          return attachRuntimeMeta({
+            ok: false,
+            skipped: true,
+            error: decision.reason,
+            _breaker: true,
+            ...(decision.duplicateInFlight ? { duplicate_suppressed: true } : {}),
+          }, {
             ...runtimeMetaBase,
             rejection_reason: decision.reason,
             stage: "TRIAGE",
@@ -982,6 +1004,12 @@ export function wrapToolsWithCache(
         // set. ALWAYS_ALLOW_TOOLS bypass this (same exemption as the timeout gate).
         if (!ALWAYS_ALLOW_TOOLS.has(name)) {
           circuit.markProviderInFlight(ctx.investigationId, name);
+          // Exact-duplicate gate (fix 4, 2026-07-25 audit): mark THIS specific
+          // (tool, selector, purpose) as in-flight too, so a same-step sibling
+          // making the identical call gets the clearer duplicateInFlight reason
+          // from shouldRun instead of the generic provider-busy one. Cleared
+          // alongside clearProviderInFlight on every exit path below.
+          if (sel) circuit.markCallInFlight(ctx.investigationId, name, sel, purpose);
         }
         if (runtimeDecision.waitMs > 0) {
           await new Promise((resolve) => setTimeout(resolve, runtimeDecision.waitMs));
@@ -1039,6 +1067,7 @@ export function wrapToolsWithCache(
           // this is the only point that sees what the model actually received.
           if (name === "minimax_correlate") guard.lastCorrelateOutcome = ok ? "ok" : "failed";
           circuit.clearProviderInFlight(ctx.investigationId, name);
+          if (sel) circuit.clearCallInFlight(ctx.investigationId, name, sel, purpose);
           circuit.recordResult(ctx.investigationId, name, sel, purpose, {
             status: circuit.classifyResult(result, null),
             artifactCount: 0,
@@ -1049,6 +1078,7 @@ export function wrapToolsWithCache(
           if (name === "minimax_correlate") guard.lastCorrelateOutcome = "failed";
           const msg = redactSecrets(String((e as Error)?.message ?? e)).slice(0, 500);
           circuit.clearProviderInFlight(ctx.investigationId, name);
+          if (sel) circuit.clearCallInFlight(ctx.investigationId, name, sel, purpose);
           finishCall(ctx.investigationId, name);
           logUsage(false, false, Date.now() - t0, msg, null, false, {
             input: inputJson,

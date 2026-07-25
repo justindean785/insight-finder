@@ -53,7 +53,7 @@ import { repairUnknownTool } from "./unknown-tool-guard.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { applyClusteringToThread } from "./lib/cluster.ts";
-import { buildTools } from "./tool-registry.ts";
+import { buildTools, TOOL_NAME_ALIASES } from "./tool-registry.ts";
 import { runAttachmentIntake, type AttachmentIntakeResult } from "./attachment-intake.ts";
 import { isMessageSchemaError, classifyStreamProviderError } from "./stream-error-classify.ts";
 import {
@@ -925,8 +925,16 @@ Deno.serve(async (req) => {
       // tool, never surfaces the invented name — and the model gets a terse nudge.
       // A KNOWN tool with bad input returns null here (SDK handles it normally).
       experimental_repairToolCall: async ({ toolCall, tools: liveTools }) => {
-        const decision = repairUnknownTool(toolCall.toolName, Object.keys(liveTools ?? {}));
+        const decision = repairUnknownTool(toolCall.toolName, Object.keys(liveTools ?? {}), TOOL_NAME_ALIASES);
         if (!decision.redirect) return null;
+        if (decision.aliased) {
+          // Known alias drift (e.g. "web_search" -> "minimax_web_search"): redirect
+          // to the REAL tool and keep the model's original input untouched — the
+          // real tool's own schema/execute validates it normally. Do NOT rewrite
+          // input to { requested } here, that shape is only for the sink tool.
+          console.warn(`[unknown-tool-guard] aliased "${toolCall.toolName}" -> "${decision.toolName}"`);
+          return { ...toolCall, toolName: decision.toolName };
+        }
         console.warn(`[unknown-tool-guard] dropped hallucinated tool "${toolCall.toolName}"`);
         return { ...toolCall, toolName: decision.toolName, input: JSON.stringify({ requested: decision.requested }) };
       },
