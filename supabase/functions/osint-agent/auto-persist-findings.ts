@@ -53,10 +53,14 @@ export const AUTO_PERSIST_TOOL_DENYLIST = new Set<string>([
   "attribution_check", "date_sanity_check",
 ]);
 
-/** Kinds we will auto-persist. Nothing sensitive is on this list. */
+/** Kinds we will auto-persist. Nothing sensitive is on this list — the identity
+ *  kinds below (name/address/organization/username) are the SUBJECT's resolved
+ *  identity, the whole point of the investigation; breach payloads (passwords,
+ *  hashes, SSNs, PINs) are NEVER mapped to a kind and so never become artifacts. */
 const ALLOWED_KINDS = new Set<string>([
   "url", "email", "breach", "social_account", "github_repo", "github_account",
   "phone", "domain", "ip_address", "leak_paste", "document",
+  "name", "address", "organization", "username",
 ]);
 
 const EMAIL_RE = /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i;
@@ -118,6 +122,31 @@ export function normalizeFinding(kind: string, value: unknown): { kind: string; 
     case "social_account": {
       if (v.length > 200) return null;
       return { kind: k, value: v };
+    }
+    case "name": {
+      const nm = v.replace(/\s+/g, " ").trim();
+      if (nm.length < 3 || nm.length > 120) return null;
+      if (!/[A-Za-z]/.test(nm)) return null;   // must contain letters
+      if (/^\d+$/.test(nm)) return null;       // never a bare number
+      return { kind: "name", value: nm };
+    }
+    case "address": {
+      const ad = v.replace(/\s+/g, " ").trim();
+      if (ad.length < 6 || ad.length > 200) return null;
+      if (!/\d/.test(ad) || !/[A-Za-z]/.test(ad)) return null; // a real address has both
+      return { kind: "address", value: ad };
+    }
+    case "organization": {
+      const org = v.replace(/\s+/g, " ").trim();
+      if (org.length < 2 || org.length > 200) return null;
+      if (!/[A-Za-z0-9]/.test(org)) return null;
+      return { kind: "organization", value: org };
+    }
+    case "username": {
+      const un = v.replace(/^@+/, "").trim();
+      if (un.length < 2 || un.length > 120) return null;
+      if (/\s/.test(un)) return null;          // usernames have no whitespace
+      return { kind: "username", value: un };
     }
   }
   return null;
@@ -194,16 +223,16 @@ export function extractFindings(toolName: string, output: unknown): ExtractedFin
     }
   }
 
-  // 5) socialfetch_lookup — surface the profile URL if the platform confirmed a hit.
-  if (toolName === "socialfetch_lookup" && o.ok === true) {
+  // 5) socialfetch_lookup — the real hit shape is data.profile (object). The
+  //    earlier heuristic read data.url/profile_url/o.url, which the current API
+  //    never returns, so confirmed profiles were silently dropped on killed runs.
+  if (toolName === "socialfetch_lookup") {
     const data = o.data as Record<string, unknown> | null;
-    const profileUrl = (data as { url?: unknown; profile_url?: unknown })?.url
-      ?? (data as { profile_url?: unknown })?.profile_url
-      ?? o.url;
-    pushUrl(findings, profileUrl, { tool: toolName, via: "profile" });
-    const handle = (data as { username?: unknown })?.username;
-    if (typeof handle === "string") {
-      push("social_account", handle, { via: "socialfetch" }, 55);
+    const profile = (data?.profile ?? data) as Record<string, unknown> | null;
+    if (profile && typeof profile === "object") {
+      pushUrl(findings, profile.url ?? profile.profile_url ?? profile.link ?? o.url, { tool: toolName, via: "profile" });
+      const handle = profile.username ?? profile.handle ?? profile.screen_name;
+      if (typeof handle === "string") push("social_account", handle, { via: "socialfetch" }, 55);
     }
   }
 
@@ -223,6 +252,101 @@ export function extractFindings(toolName: string, output: unknown): ExtractedFin
   if (Array.isArray(subs)) {
     for (const s of subs.slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
       push("domain", s, { via: "cert_transparency" }, 45);
+    }
+  }
+
+  // 8) indicia_person / indicia_phone / indicia_email — the subject's resolved
+  //    identity. Killed runs relied ENTIRELY on the model to record these, so a
+  //    CPU-kill before synthesis lost the whole person. Third-party `associates`
+  //    and the `children` COUNT are deliberately not surfaced (non-subject PII).
+  if (/^indicia_/.test(toolName)) {
+    const records = Array.isArray(o.records) ? o.records : [];
+    for (const rec of records.slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
+      if (!rec || typeof rec !== "object") continue;
+      const r = rec as Record<string, unknown>;
+      push("name", r.name, { via: "indicia" }, 45);
+      if (Array.isArray(r.aka)) for (const a of r.aka.slice(0, 5)) push("name", a, { via: "indicia_aka" }, 40);
+      if (Array.isArray(r.emails)) for (const e of r.emails) push("email", e, { via: "indicia" }, 50);
+      if (Array.isArray(r.phones)) for (const p of r.phones) push("phone", p, { via: "indicia" }, 50);
+      push("address", r.currentAddress, { via: "indicia_current" }, 50);
+      if (Array.isArray(r.pastAddresses)) for (const a of r.pastAddresses) push("address", a, { via: "indicia_past" }, 40);
+    }
+  }
+
+  // 9) serus_darkweb_scan — extractedData holds the PARSED leak fields (never
+  //    passwords/hashes); breaches[] the breach names.
+  if (toolName === "serus_darkweb_scan") {
+    const ed = o.extractedData as Record<string, unknown> | null;
+    if (ed && typeof ed === "object") {
+      if (Array.isArray(ed.emails)) for (const e of ed.emails) push("email", e, { via: "serus" }, 45);
+      if (Array.isArray(ed.phones)) for (const p of ed.phones) push("phone", String(p ?? ""), { via: "serus" }, 45);
+      if (Array.isArray(ed.names)) for (const n of ed.names) push("name", n, { via: "serus" }, 40);
+      if (Array.isArray(ed.usernames)) for (const u of ed.usernames) push("username", u, { via: "serus" }, 45);
+    }
+    if (Array.isArray(o.breaches)) {
+      for (const b of o.breaches.slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
+        const bo = b as Record<string, unknown> | null;
+        const name = typeof b === "string" ? b : (bo?.name ?? bo?.Name ?? bo?.title ?? bo?.source);
+        push("breach", name, { via: "serus_breach" }, 55);
+      }
+    }
+  }
+
+  // 10) breach_check / leakcheck_lookup — data.sources[] are the breach names.
+  if (toolName === "breach_check" || toolName === "leakcheck_lookup") {
+    const data = o.data as Record<string, unknown> | null;
+    const sources = data && Array.isArray(data.sources) ? data.sources : [];
+    for (const s of sources.slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
+      const so = s as Record<string, unknown> | null;
+      const name = typeof s === "string" ? s : (so?.name ?? so?.Name ?? so?.title);
+      push("breach", name, { via: toolName }, 55);
+    }
+  }
+
+  // 11) oathnet_lookup — data.data.dbname_info keys/Title are the breaches;
+  //     data.data.items[] are leaked records. ONLY whitelisted identity fields
+  //     are read — password / password_hash / ssn / pin / encrypted_cc / salt
+  //     are never referenced, so they can never become artifacts.
+  if (toolName === "oathnet_lookup") {
+    const dd = ((o.data as Record<string, unknown> | null)?.data) as Record<string, unknown> | null;
+    if (dd && typeof dd === "object") {
+      const dbInfo = dd.dbname_info as Record<string, unknown> | null;
+      if (dbInfo && typeof dbInfo === "object") {
+        for (const [domain, info] of Object.entries(dbInfo).slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
+          const title = (info as Record<string, unknown>)?.Title;
+          push("breach", (typeof title === "string" && title) ? title : domain, { via: "oathnet_db" }, 55);
+        }
+      }
+      const items = Array.isArray(dd.items) ? dd.items : [];
+      for (const it of items.slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
+        if (!it || typeof it !== "object") continue;
+        const row = it as Record<string, unknown>;
+        push("email", row.email, { via: "oathnet" }, 45);
+        const phoneRaw = row.phone_number ?? row.phone_national ?? row.phone_number2;
+        if (phoneRaw != null) push("phone", String(phoneRaw), { via: "oathnet" }, 45);
+        const fullName = row.full_name ?? row.display_name
+          ?? [row.first_name, row.middle_name, row.last_name].filter((x) => typeof x === "string" && x).join(" ");
+        push("name", fullName, { via: "oathnet" }, 40);
+        push("username", row.username, { via: "oathnet" }, 45);
+        push("ip_address", row.ip, { via: "oathnet" }, 40);
+        if (typeof row.linkedin === "string") pushUrl(findings, row.linkedin, { tool: toolName, via: "oathnet_linkedin" });
+        const addr = [row.address_street, row.address_street2, row.address_city ?? row.city,
+          row.address_state ?? row.state, row.address_postcode ?? row.postal_code ?? row.zip]
+          .filter((x) => typeof x === "string" && x).join(" ");
+        push("address", addr, { via: "oathnet" }, 45);
+      }
+    }
+  }
+
+  // 12) username_sweep — found[] are CONFIRMED profile hits (status 2xx). The
+  //     profile URL is the finding; it lives in `found`, not items/results/matches,
+  //     so it was previously dropped.
+  if (toolName === "username_sweep" && Array.isArray(o.found)) {
+    for (const hit of o.found.slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
+      if (!hit || typeof hit !== "object") continue;
+      const h = hit as Record<string, unknown>;
+      if (h.found === false) continue;
+      pushUrl(findings, h.url, { tool: toolName, via: "username_sweep" });
     }
   }
 
