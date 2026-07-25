@@ -2005,6 +2005,12 @@ function ChatWindowInner({
   };
 
   const isLoading = status === "submitted" || status === "streaming";
+  // Watchdog-only ref: the terminal-status realtime handler below is set up in
+  // an effect with a stable dependency array (see stopRef further down), so its
+  // closure would otherwise see a stale `isLoading` from whenever the effect
+  // last ran. Updated every render, read only inside the fallback timer.
+  const isLoadingRef = useRef(isLoading);
+  isLoadingRef.current = isLoading;
 
   // Broadcast live run state so the case header never shows COMPLETE while
   // the chat stream is still open (tool_usage_log can lag 12s+ between calls).
@@ -2069,8 +2075,29 @@ function ChatWindowInner({
           // Give a healthy browser branch one render turn to receive its trailing
           // report before merging the same durable row. Stale-recovery/stop paths
           // have no live tail to flush and reconcile immediately.
-          if (shouldAbortClientStream(next)) void reconcilePersistedMessages();
-          else window.setTimeout(() => void reconcilePersistedMessages(), 500);
+          if (shouldAbortClientStream(next)) {
+            void reconcilePersistedMessages();
+          } else {
+            window.setTimeout(() => void reconcilePersistedMessages(), 500);
+            // Fallback for a normal `finished` update: the 500ms reconcile above
+            // assumes the browser's OWN stream connection will independently
+            // deliver its own completion frame shortly after, flipping useChat's
+            // `status` out of "streaming"/"submitted" on its own. If that
+            // connection silently died first — a network blip, a backgrounded/
+            // throttled tab, a proxy timeout — no terminal SSE frame ever
+            // arrives and `isLoading` is stuck true forever, even though the DB
+            // (and by now the reconciled `messages` array) already show the run
+            // is done. Give it a generous grace window, then force it terminal
+            // if it's still loading. By the time this fires the durable report
+            // has already been merged in above, so this can only clear a stuck
+            // loading flag — it never discards content a live stream is still
+            // flushing (that case already resolved `isLoading` on its own).
+            window.setTimeout(() => {
+              if (isLoadingRef.current) {
+                try { stopRef.current?.(); } catch { /* stream already closed */ }
+              }
+            }, 8_000);
+          }
         },
       )
       .subscribe();
