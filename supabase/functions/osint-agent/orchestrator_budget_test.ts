@@ -115,17 +115,21 @@ Deno.test("step cap is the named ~22 ceiling", () => {
   assertEquals(MAX_ORCHESTRATOR_STEPS, 22);
 });
 
-Deno.test("wall-clock deadline is 3 minutes and trips cleanly on elapse", () => {
-  // Pinned to the MEASURED platform isolate ceiling (180s), not an arbitrary
-  // backstop. Telemetry 2026-07-25 (n=63): max(last_heartbeat - run_started) =
-  // 180.02s, hard ceiling. The budget must never exceed this — the finalize
-  // window opens at (budget - FINALIZE_RESERVE_MS), so an over-large budget
-  // pushes finalize past the point the isolate is already dead and the run
-  // produces no report at all. At 240s that was happening to 87% of runs.
-  assertEquals(ORCHESTRATOR_WALL_CLOCK_MS, 3 * 60_000);
+Deno.test("wall-clock deadline is 4 minutes (restored last-known-good 6d76133)", () => {
+  // RESTORED 180s -> 240s after #385's 180s recalibration was found to cause a
+  // regression (2026-07-25). The budget is NOT the platform kill limit — the
+  // platform terminates the isolate at a VARIABLE ~90-135s regardless. The budget
+  // only sets when FORCED finalize opens: (budget - FINALIZE_RESERVE_MS). At 180s
+  // that opened forced-finalize at 90s, INSIDE the kill zone, hijacking the model
+  // mid-investigation into a multi-step finalize that dies before completing → no
+  // report ("worked the other day, not anymore"). At 240s forced-finalize opens at
+  // 150s — OUTSIDE the kill zone — so it acts as a rarely-firing safety net and the
+  // model concludes on its own (stream updates, then summarize), as it did in the
+  // last-known-good build 6d76133 which had NO soft-cap and NO early-closeout.
+  assertEquals(ORCHESTRATOR_WALL_CLOCK_MS, 4 * 60_000);
   assert(
-    ORCHESTRATOR_WALL_CLOCK_MS <= 180_000,
-    "budget must not exceed the measured 180s platform isolate ceiling",
+    ORCHESTRATOR_WALL_CLOCK_MS - 90_000 >= 135_000,
+    "forced-finalize (budget - reserve) must open OUTSIDE the ~90-135s platform kill zone",
   );
   const start = 1_000_000;
   assertEquals(deadlineReached(start, start, ORCHESTRATOR_WALL_CLOCK_MS), false);

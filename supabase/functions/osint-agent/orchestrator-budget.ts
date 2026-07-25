@@ -182,7 +182,7 @@ export function isToolBudgetExhausted(
 // Depth note: this trades tail depth for a report actually existing. Runs now begin
 // synthesizing at ~90s of tool work instead of ~150s. A report at 19 tool calls beats
 // no report at 19 tool calls, which is what the 240s setting was really producing.
-export const ORCHESTRATOR_WALL_CLOCK_MS = 3 * 60_000;
+export const ORCHESTRATOR_WALL_CLOCK_MS = 4 * 60_000;
 
 /**
  * True once `budgetMs` has elapsed since `startedAt` (both epoch ms). Extracted as a
