@@ -52,17 +52,24 @@ export const USER_TEXT_CHAR_BUDGET = 12_000;
 export const MAX_ORCHESTRATOR_STEPS = 22;
 
 // ---- Intermediate (non-finalize) step plan -------------------------------------
-// A non-finalize step must emit a tool call. With the SDK default toolChoice "auto",
-// an openai-compatible orchestrator (DeepSeek) can narrate "Now let me run X" as prose
-// and emit no call; AI SDK v6 ends the agent loop the instant a step finishes with no
-// tool call, so the run stops mid-investigation with planned pivots still pending.
+// DISABLED (2026-07-25) — this was the 07-21 completion regression.
 //
-// It also silently defeats the persistence nudge: that branch narrows activeTools to
-// ["record_artifacts"], but under "auto" the model can answer with text instead of
-// calling it, so a run can reach finalize having recorded nothing.
+// Forcing toolChoice:"required" on every non-finalize step was meant to stop the
+// model from narrating "Now let me run X" and ending the loop with pivots pending.
+// But AI SDK v6 also ends the loop naturally when the model writes its FINAL report
+// as a text-only step — so forcing a tool call every step removed the ONLY natural
+// way to conclude. The run then had to reach the forced-finalize state machine
+// (240s/step-22/cap), which is past the platform's ~90-135s kill window, so 75% of
+// runs churned tools until killed and were recovered into a stub. Measured cliff:
+// self-completion 61%->25%, natural conclusion moved from ~7 tool calls to never.
 //
-// Set to false to disable forcing without reverting this module (kill switch).
-export const FORCE_TOOL_CALL_UNTIL_FINALIZE = true;
+// The last-known-good build 6d76133 ran with this OFF (implicit "auto") and produced
+// 65-83% real reports. The premature-ending risk it guards against is now covered by
+// the detached auto-persist backstop (#380 + person-tool coverage), which secures
+// findings even if the model narrates without calling record_artifacts.
+//
+// Kill switch: set back to true to re-enable forcing.
+export const FORCE_TOOL_CALL_UNTIL_FINALIZE = false;
 
 export function orchestratorStepToolChoice(isFinalizeStep: boolean): "required" | "auto" {
   if (isFinalizeStep || !FORCE_TOOL_CALL_UNTIL_FINALIZE) return "auto";
