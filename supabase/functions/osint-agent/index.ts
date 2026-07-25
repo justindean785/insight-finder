@@ -46,7 +46,7 @@ import {
   activeToolsOutsideFinalize, countFinalizeProgress, resolveFinalizePhase, type FinalizePhase,
   shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS,
   extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt,
-  shouldSoftFinalizeOnToolCalls,
+  shouldSoftFinalizeOnToolCalls, shouldEarlyCloseout,
   shouldNudgePersistence, buildPersistenceNudgeDirective,
 } from "./orchestrator-finalize.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
@@ -803,15 +803,23 @@ Deno.serve(async (req) => {
         // call → loop ends with no report) or dies in the post-run salvage. Only the
         // CPU-heavy population trips this; light runs keep their full depth.
         const softFinalize = shouldSoftFinalizeOnToolCalls(toolCallBudget.genuine);
-        if (finalizeStarted || capReached || softFinalize || shouldForceFinalize(Date.now() - runStartedAt, stepNumber ?? 0)) {
+        // PR B — deterministic EARLY closeout. The platform ends the invocation at
+        // ~90-135s, well before the 180s the 90s reserve assumes, so finalize opened
+        // too late to complete (21 evidence items, no report). Open it at the earliest
+        // of ~65s elapsed OR ~20 genuine calls (env-tunable, kill-switchable) so the
+        // multi-step report phase runs while runtime remains.
+        const elapsedMsNow = Date.now() - runStartedAt;
+        const earlyClose = shouldEarlyCloseout(elapsedMsNow, toolCallBudget.genuine);
+        if (finalizeStarted || capReached || softFinalize || earlyClose || shouldForceFinalize(elapsedMsNow, stepNumber ?? 0)) {
           const progress = countFinalizeProgress(stepMessages as Array<{ content?: unknown }>);
           if (!finalizeStarted) {
             finalizeStarted = true;
             finalizeBoundary = progress;
             console.log(JSON.stringify({
               event: "finalize_started", thread_id: threadId,
-              trigger: capReached ? "tool_cap" : softFinalize ? "soft_tool_cap" : "time_or_step",
+              trigger: capReached ? "tool_cap" : softFinalize ? "soft_tool_cap" : earlyClose ? "early_closeout" : "time_or_step",
               step_number: stepNumber ?? 0,
+              elapsed_ms: elapsedMsNow,
               genuine_tool_calls: toolCallBudget.genuine,
             }));
           }
@@ -914,7 +922,8 @@ Deno.serve(async (req) => {
         toolCallBudget,
         shouldStopLiveLookups: () =>
           shouldForceFinalize(Date.now() - runStartedAt, 0) ||
-          shouldSoftFinalizeOnToolCalls(toolCallBudget.genuine),
+          shouldSoftFinalizeOnToolCalls(toolCallBudget.genuine) ||
+          shouldEarlyCloseout(Date.now() - runStartedAt, toolCallBudget.genuine),
         onHeartbeat: () => heartbeat?.pulse(),
       }),
       // Unknown-tool guard (Phase B4): the model occasionally emits a tool call

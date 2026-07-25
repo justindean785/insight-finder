@@ -227,6 +227,58 @@ export function shouldSoftFinalizeOnToolCalls(
   return genuineToolCalls >= softCap;
 }
 
+// ---- Deterministic early closeout (PR B) ------------------------------------
+// The platform terminates the invocation at ~90-135s (measured in prod), NOT the
+// 180s ORCHESTRATOR_WALL_CLOCK_MS the reserve is calibrated to. So the 90s
+// finalize open leaves only ~15-45s — too little for the multi-step finalize
+// (persist → memory → report) to complete before the run dies, producing the
+// "21 evidence items, no report, recovered stub" failure. This opens the finalize
+// window at the EARLIEST of a short elapsed budget OR a modest admitted-call count,
+// so the report phase runs while ample runtime remains. Both dials are env-tunable
+// and the whole mechanism is behind a kill switch (EARLY_CLOSEOUT_ENABLED=false
+// restores the prior 90s/soft-cap-only behavior). Reads are guarded so unit tests
+// run without --allow-env (they fall back to the canary defaults, or pass opts).
+function envNumSafe(key: string, dflt: number): number {
+  try {
+    const v = Number(Deno.env.get(key));
+    return Number.isFinite(v) && v > 0 ? v : dflt;
+  } catch {
+    return dflt;
+  }
+}
+function envFlagSafe(key: string, dflt: boolean): boolean {
+  try {
+    const v = Deno.env.get(key);
+    if (v == null || v === "") return dflt;
+    return v.toLowerCase() !== "false" && v !== "0";
+  } catch {
+    return dflt;
+  }
+}
+
+/** Canary defaults: finalize at 65s elapsed OR 20 admitted genuine tool calls. */
+export const EARLY_CLOSEOUT_DEFAULT_MS = 65_000;
+export const EARLY_CLOSEOUT_DEFAULT_CALLS = 20;
+
+/**
+ * True once the run should enter its closing synthesis EARLY — before the old
+ * 90s/soft-cap triggers — because it has either spent enough of the real
+ * invocation window (elapsed) or admitted enough live tool calls to have material
+ * worth reporting. Pure: the caller passes elapsed + genuine-call count; env
+ * overrides are read only when opts are omitted (prod path).
+ */
+export function shouldEarlyCloseout(
+  elapsedMs: number,
+  genuineToolCalls: number,
+  opts?: { enabled?: boolean; elapsedMs?: number; calls?: number },
+): boolean {
+  const enabled = opts?.enabled ?? envFlagSafe("EARLY_CLOSEOUT_ENABLED", true);
+  if (!enabled) return false;
+  const tMs = opts?.elapsedMs ?? envNumSafe("EARLY_CLOSEOUT_MS", EARLY_CLOSEOUT_DEFAULT_MS);
+  const nCalls = opts?.calls ?? envNumSafe("EARLY_CLOSEOUT_CALLS", EARLY_CLOSEOUT_DEFAULT_CALLS);
+  return elapsedMs >= tMs || genuineToolCalls >= nCalls;
+}
+
 /**
  * Decides whether the tool-cache wrapper should short-circuit a specific live call
  * because the run cap is hit. Recording/evidence tools are NEVER skipped (the
