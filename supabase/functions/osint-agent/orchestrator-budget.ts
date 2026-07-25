@@ -64,6 +64,62 @@ export const MAX_ORCHESTRATOR_STEPS = 22;
 // enough CPU budget left to persist completion.
 export const MAX_TOOL_CALLS_PER_RUN = 36;
 
+/**
+ * Atomically RESERVE a tool-call slot at admission — BEFORE `execute()` runs — so a
+ * batch of tool calls dispatched in parallel by one model step (Promise.all fan-out)
+ * cannot collectively overshoot the cap.
+ *
+ * WHY it must reserve, not count completions: the old gate read `toolCallBudget.genuine`
+ * and incremented it only AFTER the live call fully completed — separated from the check
+ * by several awaits. Under a parallel batch, every call read the same pre-increment
+ * `genuine` before any of them incremented it, so the run overshot the cap (a live run
+ * fanned out to 74 calls). This function does the read-check-increment with NO await in
+ * between, so it is indivisible on JS's single thread even though the calling wrapper is
+ * async — a batch contends for one authoritative counter.
+ *
+ * Recording/finalize tools (ALWAYS_ALLOW) are EXEMPT: they never consume a slot and are
+ * always admitted, so the closing record_artifacts is never starved. Sets `capped` the
+ * moment the cap is reached so the finalize trigger can key off RESERVATION (not
+ * completed calls) — a run whose budget is spent on reserved-but-failed calls must still
+ * be forced to finalize. A reserved slot is never released (a failed/slow call still
+ * consumed a step's worth of the runtime), which is the intended, budget-protecting
+ * behaviour.
+ *
+ * @returns true = admitted (slot reserved), false = rejected (cap reached).
+ */
+export function reserveToolCall(
+  budget: { reserved: number; capped: boolean },
+  isRecordingTool: boolean,
+  cap: number = MAX_TOOL_CALLS_PER_RUN,
+): boolean {
+  if (isRecordingTool) return true;
+  if (budget.reserved >= cap) {
+    budget.capped = true;
+    return false;
+  }
+  budget.reserved++;
+  if (budget.reserved >= cap) budget.capped = true;
+  return true;
+}
+
+/**
+ * The finalize trigger's tool-budget cap signal. TRUE once the budget is exhausted by
+ * RESERVATION (admission) — via the `capped` latch reserveToolCall flips, or the raw
+ * reserved count — OR, as a backstop, by completed (`genuine`) calls.
+ *
+ * Keying force-finalize off THIS (not `genuine` alone) is the correction to the #377
+ * decoupling: admission caps on `reserved`, so a run that spent its budget on
+ * reserved-but-rejected calls has `genuine < cap` yet must still be forced to finalize
+ * instead of looping forever on rejected admissions. Admission and finalization now
+ * share one authoritative counter.
+ */
+export function isToolBudgetExhausted(
+  budget: { genuine: number; reserved: number; capped: boolean },
+  cap: number = MAX_TOOL_CALLS_PER_RUN,
+): boolean {
+  return budget.capped || budget.reserved >= cap || budget.genuine >= cap;
+}
+
 // Hard wall-clock deadline for a single run (ms). A StopCondition trips once elapsed
 // time exceeds this, ending the run CLEANLY (onFinish persists the partial assistant
 // + artifacts and marks the thread finished) instead of grinding to the step cap. A

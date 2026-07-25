@@ -14,7 +14,7 @@ import { creditsCharged } from "./billing.ts";
 import { classifyToolOutcome } from "./tool-outcome.ts";
 import * as circuit from "./circuit.ts";
 import { guard } from "./guard.ts";
-import { shouldSkipForToolCap } from "./orchestrator-finalize.ts";
+import { reserveToolCall } from "./orchestrator-budget.ts";
 import {
   ALWAYS_ALLOW_TOOLS,
   analyzeWeakLead,
@@ -420,7 +420,7 @@ export function wrapToolsWithCache(
     // genuine live execution and (b) short-circuit new lookups once the cap is hit.
     // `capped` is surfaced by index.ts (finalize + telemetry). Optional so callers
     // that don't set it (tests, other entrypoints) are unaffected.
-    toolCallBudget?: { genuine: number; capped: boolean };
+    toolCallBudget?: { genuine: number; reserved: number; capped: boolean };
     shouldStopLiveLookups?: () => boolean;
     onHeartbeat?: () => void;
   },
@@ -875,13 +875,14 @@ export function wrapToolsWithCache(
         // (ALWAYS_ALLOW) are exempt via shouldSkipForToolCap, so the closing
         // record_artifacts is never starved and no collected evidence is stranded.
         // This is the hard backstop; prepareStep also forces synthesis once capped.
-        if (ctx.toolCallBudget && shouldSkipForToolCap(ctx.toolCallBudget.genuine, ALWAYS_ALLOW_TOOLS.has(name))) {
-          ctx.toolCallBudget.capped = true;
+        if (ctx.toolCallBudget && !reserveToolCall(ctx.toolCallBudget, ALWAYS_ALLOW_TOOLS.has(name))) {
+          // reserveToolCall already flipped `capped`. Reservation (not completed-call
+          // count) is now the admission gate, so a parallel fan-out cannot overshoot.
           await logUsage(false, false, Date.now() - t0, "run tool-call cap reached", null, true, {
             input: inputJson,
             runtime: { ...runtimeMetaBase, rejection_reason: "run_capped", rejection_source: "run_cap", stale_cache: !!staleRecord },
           });
-          return attachRuntimeMeta({ ok: false, skipped: true, run_capped: true, error: "run tool-call cap reached" }, {
+          return attachRuntimeMeta({ ok: false, skipped: true, run_capped: true, reason: "budget_exceeded", error: "run tool-call cap reached" }, {
             ...runtimeMetaBase,
             rejection_reason: "run_capped",
             stage: "CAPPED",
