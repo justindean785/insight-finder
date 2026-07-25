@@ -443,7 +443,18 @@ export function recordResult(
     b.lastAt = Date.now();
     return;
   }
-  b.consecutive++;
+  // http_400/http_422 are deterministic PER-SELECTOR outcomes (bad/unprocessable
+  // input for this exact URL) — the switch below already dead-lists just that
+  // selector rather than touching provider health. They must NOT also feed the
+  // shared `b.consecutive` streak: the global "disabled after 3 consecutive
+  // failures" guard further down doesn't distinguish failure kind, so 3
+  // unrelated malformed URLs in a row (e.g. jina_reader_scrape fed 3 different
+  // bad court-portal links) would silently disable the tool for the rest of the
+  // run even though nothing about the tool/provider itself is unhealthy. 2026-
+  // 07-25 audit (thread d98deb37) mixed 1×422 with 7 timeouts — one selector
+  // away from tripping exactly this. `b.total` still counts it for telemetry.
+  const isPerSelectorDeterministic = outcome.status === "http_400" || outcome.status === "http_422";
+  if (!isPerSelectorDeterministic) b.consecutive++;
   b.total++;
   b.lastAt = Date.now();
   // Maintain the dedicated timeout streak: a timeout extends it, ANY non-timeout
@@ -570,6 +581,16 @@ export function classifyResult(result: unknown, threw: unknown): FailureKind {
   }
   if (!result || typeof result !== "object") return "ok";
   const r = result as Record<string, unknown>;
+  // A result the TOOL ITSELF marked `skipped: true` never reached the provider —
+  // it's a local admission/validation decision (malformed input, host known-dead,
+  // hard-blocked origin, etc.), not an observed provider outcome. It must not
+  // count toward this tool's consecutive-failure/degradation score even when it
+  // also carries an HTTP-shaped `status` (e.g. the Jina hard-block skip reuses
+  // 451 as a hint code). This is checked BEFORE the status-code branch below so
+  // a locally-skipped result can never fall through to a `http_*` FailureKind.
+  // Real provider responses never set `skipped` themselves (see jina_reader_scrape:
+  // only its local preflight checks do) so this cannot mask a genuine failure.
+  if (r.skipped === true) return "ok";
   if (r.ok === false || typeof r.error === "string") {
     const status = typeof r.status === "number" ? r.status
       : typeof r.status_code === "number" ? r.status_code

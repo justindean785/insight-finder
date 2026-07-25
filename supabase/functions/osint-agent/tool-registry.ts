@@ -143,9 +143,28 @@ const JINA_HARD_BLOCK_HOSTS = [
   "facebook.com",
   "youtube.com",
   "youtu.be",
+  // 2026-07-25 production audit (thread d98deb37, 100-call Jina sample across
+  // 7 threads): pinterest.com timed out 3/3 attempts at the 18s cap — it's
+  // JS-heavy and login-gated, so Jina hangs until the wrapper kills it. Same
+  // failure-every-time pattern as the hosts above.
+  "pinterest.com",
+  // Oregon judicial/SOR portals are SPA/heavy-render and timed out or 422'd
+  // every attempt in the same sample (webportal.courts.oregon.gov: 2 timeouts
+  // + 1 422). Structured record lookups belong to a direct-API tool or manual
+  // review, not a markdown scrape.
+  "webportal.courts.oregon.gov",
 ];
 function isJinaHardBlocked(hostname: string): boolean {
   return JINA_HARD_BLOCK_HOSTS.some((h) => hostname === h || hostname.endsWith(`.${h}`));
+}
+
+// Google SERP pages specifically (not all of google.com — docs/drive/maps etc.
+// are different concerns) reliably time out through Jina: consent/interstitial
+// walls make r.jina.ai churn until the 18s cap. 3/3 in the same 2026-07-25
+// sample. SERP-style queries should go through minimax_web_search/exa_search
+// instead of scraping Google directly.
+function isJinaGoogleSearchDeadEnd(hostname: string, pathname: string): boolean {
+  return (hostname === "google.com" || hostname.endsWith(".google.com")) && pathname === "/search";
 }
 
 // ---------------------------------------------------------------------------
@@ -3657,6 +3676,16 @@ export function buildTools(ctx: ToolContext) {
         // Skip hosts that always 451/403 through Jina — save the ~8s dead round-trip.
         if (isJinaHardBlocked(parsed.hostname)) {
           return { error: "jina 451", status: 451, url: parsed.toString(), skipped: true, hint: "origin hard-blocks Jina — use socialfetch_web_read (server-side markdown) for this host, or wayback_snapshots / a direct-API tool" };
+        }
+        // Google SERP pages reliably time out through Jina (consent walls) rather
+        // than fail fast — skip instantly instead of eating the full 18s cap.
+        if (isJinaGoogleSearchDeadEnd(parsed.hostname, parsed.pathname)) {
+          return {
+            error: "jina search dead-end",
+            skipped: true,
+            url: parsed.toString(),
+            hint: "r.jina.ai cannot reliably render Google SERPs (consent/interstitial walls) — use minimax_web_search or exa_search for search-style queries instead of scraping a Google search URL",
+          };
         }
         // Rebuild a clean URL; r.jina.ai expects the raw URL appended.
         const clean = parsed.toString();

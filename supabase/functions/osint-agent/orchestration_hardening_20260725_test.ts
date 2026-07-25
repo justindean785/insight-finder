@@ -1,7 +1,9 @@
-// Regression tests for the 5 production-audit fixes bundled into the
+// Regression tests for the production-audit fixes bundled into the
 // claude/osint-agent-orchestration-hardening branch (2026-07-25, thread
 // d98deb37, build 6d76133: 202 tool calls vs target ~60, 17 failed, 23 skipped
-// in-flight collisions, 7 unknown_tool_ignored).
+// in-flight collisions, 7 unknown_tool_ignored) plus a follow-up Jina scan
+// sample (100 calls / 7 threads, same date) that surfaced 3 more dead-end
+// URL classes and a circuit-scoring gap.
 //
 // Covers:
 //  1. minimax_correlate timeout raised 30s -> 60s
@@ -10,6 +12,15 @@
 //  4. exact-duplicate in-flight suppression (distinct from provider-level gate)
 //  5. TOOL_NAME_ALIASES redirect for known DeepSeek hallucinations; unknown
 //     names still hit the zero-cost sink.
+//  6. jina_reader_scrape skiplist: pinterest.com, webportal.courts.oregon.gov,
+//     and google.com/search added — each timed out/422'd every attempt in the
+//     100-call sample (8/11 failures across just these 3 URL classes).
+//  7. circuit.classifyResult trusts `skipped: true` unconditionally, so ANY
+//     locally-skipped result (malformed selector, hard-blocked host, dead
+//     host, the new google-search dead-end) is "ok" for degradation scoring
+//     even when it also carries an HTTP-shaped status code — closing the gap
+//     where the malformed-selector guard (fix 3) was still incrementing the
+//     tool's consecutive-failure counter despite being billed/tagged as free.
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { toolTimeoutMs, TOOL_TIMEOUT_OVERRIDE_MS } from "./cache.ts";
 import {
@@ -21,9 +32,12 @@ import {
   isCallInFlight,
   clearThread,
   normalizeSelector,
+  classifyResult,
+  recordResult,
+  snapshot,
 } from "./circuit.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
-import { TOOL_NAME_ALIASES } from "./tool-registry.ts";
+import { TOOL_NAME_ALIASES, buildTools, type ToolContext } from "./tool-registry.ts";
 
 // ---- Fix 1: minimax_correlate timeout -------------------------------------
 
@@ -161,4 +175,102 @@ Deno.test("TOOL_NAME_ALIASES: an alias whose target is NOT currently registered 
   const known = new Set(["unknown_tool_ignored"]); // minimax_web_search NOT registered here
   const decision = repairUnknownTool("web_search", known, TOOL_NAME_ALIASES);
   assertEquals(decision, { redirect: true, toolName: "unknown_tool_ignored", requested: "web_search" });
+});
+
+// ---- Fix 6: jina_reader_scrape skiplist additions --------------------------
+
+function stubCtx(): ToolContext {
+  return {
+    supabase: {}, supabaseAdmin: {}, userId: "t", threadId: "t-jina-skiplist",
+    archiveEnabled: false, detectedSeedType: "url", messages: [], manualOverrideSelector: null,
+  } as unknown as ToolContext;
+}
+type ExecTool = { execute: (i: unknown, o: unknown) => Promise<Record<string, unknown>> };
+function jinaTool(): ExecTool {
+  const { tools } = buildTools(stubCtx());
+  return (tools as Record<string, ExecTool>).jina_reader_scrape;
+}
+
+Deno.test("jina skiplist: pinterest.com skips instantly without hitting the network", async () => {
+  const origFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = (() => { fetchCalls++; throw new Error("network must NOT be hit"); }) as typeof fetch;
+  try {
+    const r = await jinaTool().execute({ url: "https://pinterest.com/dano_hillin/" }, {});
+    assertEquals(r.skipped, true);
+    assertEquals(fetchCalls, 0);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+Deno.test("jina skiplist: webportal.courts.oregon.gov skips instantly without hitting the network", async () => {
+  const origFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = (() => { fetchCalls++; throw new Error("network must NOT be hit"); }) as typeof fetch;
+  try {
+    const r = await jinaTool().execute({ url: "https://webportal.courts.oregon.gov/portal/" }, {});
+    assertEquals(r.skipped, true);
+    assertEquals(fetchCalls, 0);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+Deno.test("jina skiplist: a Google SERP URL (google.com/search) skips instantly", async () => {
+  const origFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = (() => { fetchCalls++; throw new Error("network must NOT be hit"); }) as typeof fetch;
+  try {
+    const r = await jinaTool().execute({ url: "https://www.google.com/search?q=daniel+deroest+oregon" }, {});
+    assertEquals(r.skipped, true);
+    assertEquals(fetchCalls, 0);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+Deno.test("jina skiplist: a non-search google.com path is NOT blocked (path-scoped, not host-wide)", async () => {
+  const origFetch = globalThis.fetch;
+  let hit = "";
+  globalThis.fetch = ((input: string | URL | Request) => {
+    hit = String(input);
+    return Promise.resolve(new Response("clean markdown", { status: 200 }));
+  }) as typeof fetch;
+  try {
+    const r = await jinaTool().execute({ url: "https://www.google.com/maps/place/somewhere" }, {});
+    assertEquals(r.ok, true);
+    assert(hit.includes("google.com/maps"), "a non-/search google.com path must still reach Jina");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+// ---- Fix 7: locally-skipped results never count as circuit degradation ----
+
+Deno.test("classifyResult: skipped:true is always 'ok' even when it carries an HTTP-shaped status (jina hard-block reuses 451)", () => {
+  assertEquals(classifyResult({ error: "jina 451", status: 451, skipped: true }, null), "ok");
+  assertEquals(classifyResult({ error: "malformed_selector", skipped: true }, null), "ok");
+  assertEquals(classifyResult({ error: "jina search dead-end", skipped: true }, null), "ok");
+});
+
+Deno.test("classifyResult: a REAL (non-skipped) provider 451/403 still classifies as a failure — the skip check cannot mask genuine outcomes", () => {
+  assertEquals(classifyResult({ error: "jina 451", status: 451 }, null), "http_451");
+  assertEquals(classifyResult({ error: "jina 403", status: 403 }, null), "http_403");
+});
+
+Deno.test("recordResult: a locally-skipped Jina result does not increment the tool's consecutive-failure counter", () => {
+  const thread = "t-skip-no-degrade";
+  clearThread(thread);
+  // Three consecutive locally-skipped calls (as if the model kept retrying a
+  // hard-blocked/malformed URL) must NOT move the breaker toward suppression.
+  for (let i = 0; i < 3; i++) {
+    recordResult(thread, "jina_reader_scrape", `sel-${i}`, "default", {
+      status: classifyResult({ error: "jina 451", status: 451, skipped: true }, null),
+    });
+  }
+  const snap = snapshot(thread).find((s) => s.tool === "jina_reader_scrape");
+  assertEquals(snap?.consecutive ?? 0, 0, "locally-skipped results must not accumulate as consecutive failures");
+  assertEquals(snap?.total ?? 0, 0, "locally-skipped results must not count toward total failures either");
+  clearThread(thread);
 });
