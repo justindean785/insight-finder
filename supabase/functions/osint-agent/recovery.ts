@@ -185,14 +185,52 @@ async function recoverOneStaleThread(
     RECENT_ASSISTANT_WINDOW_MS,
     assistantPartsToText(latestAssistantRow?.parts),
   );
-  if (assistantState.shouldInsert) {
+  if (!assistantState.shouldInsert) {
+    // Nothing to stub, but the thread is genuinely stale — still close it out.
+    const { error: closeErr } = await db.from("threads").update({ status: "finished", recovered_at: now.toISOString(), recovery_reason: reason, updated_at: now.toISOString() }).eq("id", thread.id).eq("status", "active");
+    if (closeErr) return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: closeErr.message };
+    return { recovered: true, assistantInserted: false, artifactCount: artifactCount ?? 0 };
+  }
+
+  // ---- CLAIM BEFORE WRITING (2026-07-26 race fix) ----
+  // The stub insert used to run FIRST, unguarded, with the status compare-and-set
+  // after it. A live run that finalized in between then lost the race in the worst
+  // possible way: its own status flip won, our UPDATE no-opped (so recovered_at and
+  // recovery_reason stayed NULL), but the "Findings report — recovered run" stub was
+  // ALREADY inserted — landing on top of a complete investigation with no marker
+  // explaining it. Observed on thread 01b9567f: a full fingerprint.to report at
+  // 14:40:11, a recovery stub moments later, recovery_reason NULL.
+  //
+  // Claiming first makes the stub strictly conditional on winning the compare-and-set:
+  // if `finished` was already written by the real run, we claim nothing and write
+  // nothing.
+  const { data: claimed, error: claimErr } = await db
+    .from("threads")
+    .update({ status: "finished", recovered_at: now.toISOString(), recovery_reason: reason, updated_at: now.toISOString() })
+    .eq("id", thread.id).eq("status", "active").select("id");
+  if (claimErr) return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: claimErr.message };
+  if (!claimed || (claimed as unknown[]).length === 0) {
+    // Someone else finalized this thread first. Their report stands; say nothing.
+    return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0 };
+  }
+
+  // Re-read the latest assistant AFTER the claim. The run may have inserted its real
+  // report between our first read and the claim — that report must still veto the
+  // stub, and only a post-claim read can see it.
+  const { data: freshAssistant } = await db
+    .from("messages").select("created_at,parts").eq("thread_id", thread.id).eq("role", "assistant")
+    .order("created_at", { ascending: false }).limit(1).maybeSingle();
+  const freshRow = freshAssistant as { created_at?: string; parts?: unknown } | null;
+  const freshState = shouldInsertRecoveredAssistant(
+    thread, freshRow?.created_at ?? null, now.getTime(), RECENT_ASSISTANT_WINDOW_MS,
+    assistantPartsToText(freshRow?.parts),
+  );
+  if (freshState.shouldInsert) {
     const text = buildRecoveredAssistantText(thread, (artifacts ?? []) as RecoveryArtifact[]);
     const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: [{ type: "text", text }] });
-    if (insertErr) return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: insertErr.message };
+    if (insertErr) return { recovered: true, assistantInserted: false, artifactCount: artifactCount ?? 0, error: insertErr.message };
     assistantInserted = true;
   }
-  const { error: updateErr } = await db.from("threads").update({ status: "finished", recovered_at: now.toISOString(), recovery_reason: reason, updated_at: now.toISOString() }).eq("id", thread.id).eq("status", "active");
-  if (updateErr) return { recovered: false, assistantInserted, artifactCount: artifactCount ?? 0, error: updateErr.message };
   return { recovered: true, assistantInserted, artifactCount: artifactCount ?? 0 };
 }
 

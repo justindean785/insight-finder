@@ -109,9 +109,11 @@ function buildFakeDb(threadId: string, userId: string, now: Date) {
   return { db, insertedMessages };
 }
 
-// QUARANTINED 2026-07-21 — orphaned by #370 rollback of #369; unskip when the atomic
-// recovery-claim front-gate (UPDATE ... WHERE status='active') re-lands in recovery.ts. See issue #373.
-Deno.test.ignore("recovery race: two concurrent sweeps on the same stale thread produce exactly ONE recovered report", async () => {
+// UNQUARANTINED 2026-07-26 — the atomic recovery-claim front-gate this test was
+// waiting on (issue #373) has re-landed in recovery.ts: recoverOneStaleThread now
+// runs `UPDATE ... WHERE status='active'` with `.select("id")` BEFORE writing any
+// stub, and writes nothing unless the claim matched a row.
+Deno.test("recovery race: two concurrent sweeps on the same stale thread produce exactly ONE recovered report", async () => {
   const threadId = "thread-race-1";
   const userId = "user-race-1";
   const now = new Date();
