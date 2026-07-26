@@ -19,6 +19,9 @@ import {
   elidedToolResultRef,
   deadlineReached,
 } from "./orchestrator-budget.ts";
+// The finalize open time is (ORCHESTRATOR_WALL_CLOCK_MS - FINALIZE_RESERVE_MS); import the
+// reserve so the guard below is coupled to the real constant, not a hardcoded copy of it.
+import { FINALIZE_RESERVE_MS } from "./orchestrator-finalize.ts";
 
 // Build a `tool` message carrying one tool-result with a big JSON payload.
 function bigToolMessage(i: number, valueChars: number): ModelMessage {
@@ -115,22 +118,34 @@ Deno.test("step cap is the named ~22 ceiling", () => {
   assertEquals(MAX_ORCHESTRATOR_STEPS, 22);
 });
 
-Deno.test("wall-clock deadline is 4 minutes (restored last-known-good 6d76133)", () => {
-  // RESTORED 180s -> 240s after #385's 180s recalibration was found to cause a
-  // regression (2026-07-25). The budget is NOT the platform kill limit — the
-  // platform terminates the isolate at a VARIABLE ~90-135s regardless. The budget
-  // only sets when FORCED finalize opens: (budget - FINALIZE_RESERVE_MS). At 180s
-  // that opened forced-finalize at 90s, INSIDE the kill zone, hijacking the model
-  // mid-investigation into a multi-step finalize that dies before completing → no
-  // report ("worked the other day, not anymore"). At 240s forced-finalize opens at
-  // 150s — OUTSIDE the kill zone — so it acts as a rarely-firing safety net and the
-  // model concludes on its own (stream updates, then summarize), as it did in the
-  // last-known-good build 6d76133 which had NO soft-cap and NO early-closeout.
-  assertEquals(ORCHESTRATOR_WALL_CLOCK_MS, 4 * 60_000);
+Deno.test("wall-clock deadline is the measured 180s platform ceiling; forced-finalize opens inside the isolate", () => {
+  // RESOLVED 2026-07-25 against live prod (docs/ops/kill-window-measurement.sql), per
+  // generation (last_heartbeat_at - run_started_at), separated by outcome/resume and with
+  // the max rows inspected: HARD CEILING 180s (recovered p99 178s, max 180.0, zero >=200s);
+  // killed runs die across 30-180s with p50 ~108-113s, modal 90-135s. So "180s" and
+  // "~90-135s" were the MAX and the MODE of ONE distribution — not a contradiction; the
+  // 90-135s-as-ceiling reading is retracted. The 240s the branch briefly set is refuted:
+  // it opened forced-finalize at 240-90=150s (past the median death → never fired for most
+  // kills) and its 240s clean-stop is past the 180s ceiling (never fired at all).
+  assertEquals(ORCHESTRATOR_WALL_CLOCK_MS, 3 * 60_000);
+
+  // Couple the guard to the CONSTANT, not a hardcoded 90_000: if FINALIZE_RESERVE_MS is
+  // ever re-widened (it already went 45s -> 90s), this recomputes instead of silently
+  // passing. Forced-finalize opens at (budget - reserve) = 90s here — below the ~108s
+  // median death (so it catches the later half of kills) and above the ~60s median
+  // completion of healthy runs (so it rarely hijacks a run that would self-conclude).
+  const forcedFinalizeOpensMs = ORCHESTRATOR_WALL_CLOCK_MS - FINALIZE_RESERVE_MS;
   assert(
-    ORCHESTRATOR_WALL_CLOCK_MS - 90_000 >= 135_000,
-    "forced-finalize (budget - reserve) must open OUTSIDE the ~90-135s platform kill zone",
+    forcedFinalizeOpensMs < 180_000,
+    `forced-finalize must open BEFORE the measured 180s isolate ceiling, else it never fires (opens at ${forcedFinalizeOpensMs}ms)`,
   );
+  // MATCHED PAIR — this assertion and orchestrator_finalize_test.ts ("shouldForceFinalize
+  // opens exactly at the wall-clock reserve window") pin the open time into a narrow
+  // corridor, with the current value near its lower edge. Widening FINALIZE_RESERVE_MS
+  // past ~90s pushes the open time back toward the modal kill window, so change the
+  // budget and the reserve together and re-check against the telemetry above.
+  assertEquals(forcedFinalizeOpensMs, 90_000, "current calibration opens forced-finalize at 90s");
+
   const start = 1_000_000;
   assertEquals(deadlineReached(start, start, ORCHESTRATOR_WALL_CLOCK_MS), false);
   assertEquals(

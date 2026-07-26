@@ -59,8 +59,9 @@ export const MAX_ORCHESTRATOR_STEPS = 22;
 // But AI SDK v6 also ends the loop naturally when the model writes its FINAL report
 // as a text-only step — so forcing a tool call every step removed the ONLY natural
 // way to conclude. The run then had to reach the forced-finalize state machine
-// (240s/step-22/cap), which is past the platform's ~90-135s kill window, so 75% of
-// runs churned tools until killed and were recovered into a stub. Measured cliff:
+// (wall-clock reserve / step-22 / tool-cap), which the majority of killed runs never
+// reached in time, so ~75% churned tools until killed and were recovered into a stub.
+// Measured cliff:
 // self-completion 61%->25%, natural conclusion moved from ~7 tool calls to never.
 //
 // The last-known-good build 6d76133 ran with this OFF (implicit "auto") and produced
@@ -171,25 +172,56 @@ export function isToolBudgetExhausted(
 // time exceeds this, ending the run CLEANLY (onFinish persists the partial assistant
 // + artifacts and marks the thread finished) instead of grinding to the step cap.
 //
+// HONEST NOTE: with the budget now AT the measured platform ceiling, this clean-stop
+// StopCondition (index.ts deadlineReached) is not expected to trigger during normal
+// operation. In observed production telemetry, invocations do not survive beyond the
+// platform's effective lifetime (~180s measured by heartbeat), so elapsed rarely crosses
+// the budget before the isolate is gone — an empirical observation, not a guarantee. It
+// stays as a vestigial safety net; the reachable exits are model self-conclusion, the
+// forced-finalize window at 90s (shouldForceFinalize), and the step/tool caps.
+//
 // MUST NOT EXCEED THE PLATFORM'S OWN ISOLATE LIFETIME. This is not a free "backstop"
 // dial: `shouldForceFinalize` opens the finalize window at
 // (ORCHESTRATOR_WALL_CLOCK_MS - FINALIZE_RESERVE_MS), so setting it ABOVE what the
 // runtime actually grants pushes the finalize window past the point where the isolate
 // is already dead — the run never gets to write its report at all.
 //
-// RECALIBRATED 2026-07-25 (4 min -> 3 min) from production telemetry, n=63 runs:
-// `max(last_heartbeat_at - run_started_at)` is 180.02s with a hard ceiling there
-// (only 3 runs touch 180s, none exceed it) — the platform kills the isolate at 180s.
-// The prior 240s value was 60s of budget that never existed, which put the finalize
-// window at 240-90=150s: PAST the death point for 55 of 63 runs (87%), so 87% of runs
-// died mid-investigation with artifacts persisted but NO report, and 51% had to be
-// closed out by the stale-run recovery stub. Matching the real 180s ceiling moves the
-// finalize window to 180-90=90s, inside the lifetime of the large majority of runs.
+// SET TO THE MEASURED 180s CEILING. Resolved 2026-07-25 against live prod, measuring
+// ONE run generation as `last_heartbeat_at - run_started_at` (the heartbeat span, NOT
+// thread age and NOT summed tool durations), separated by outcome and resume-state and
+// with the max rows inspected individually (SQL saved in docs/ops/kill-window-measurement.sql):
+//   * HARD CEILING 180s — recovered/killed runs: p99 178s, max 180.0s, ZERO runs >=200s.
+//     Verified on the max rows: a killed run heartbeats 180s then dies, even when the
+//     thread is later recovered (thread age 1157s, heartbeat span still 180s); a
+//     7-generation thread aged 1708s still measured 165s for its latest run — thread age
+//     does NOT leak in. The platform terminates the isolate at ~180s; nothing survives it.
+//     NOT our own artifact: under the PRIOR 240s budget — where deadlineReached could not
+//     truncate the heartbeat at 180s — the max was STILL exactly 180.0s and 0/58 runs
+//     exceeded 180.5s (cross-era split by the 180s deploy time; query in the SQL). So the
+//     180s is the platform's, not our StopCondition's. Caveat: the heartbeat pulses every
+//     ~15s, so "180s" is measured to within one interval — the true ceiling is in
+//     [180, 195); we calibrate to the lower bound (the safe direction: finalize opens
+//     earlier, never later).
+//   * Killed runs die across 30-180s: p50 ~108-113s, plurality in the 90-135s window,
+//     ~30% survive to 135-180s. Resumed and non-resumed kills share the SAME distribution
+//     (p50 113 vs 115), so resumption is not inflating the ceiling. So "~90-135s" is the
+//     MODAL DEATH window, NOT a second ceiling — the two figures once carried here and in
+//     orchestrator-finalize.ts were the MAX vs the MODE of ONE distribution, not a
+//     contradiction. (The ~90-135s-as-ceiling reading, which had justified an even
+//     earlier 65s closeout, is retracted by this production sample.)
+// The 240s value briefly set on this branch (0c23856) is refuted: it opened forced
+// finalize at 240-90=150s — PAST the 108.5s median death, so it never fired for the
+// majority of killed runs — and its 240s clean-stop sits past the 180s ceiling, so it
+// never fired at all. Restoring 180s puts forced-finalize at 180-90=90s: below the
+// 108.5s median death (it catches the later half of kills) and above the 60s median
+// completion of healthy runs (it rarely hijacks a run that would self-conclude — which,
+// with FORCE_TOOL_CALL_UNTIL_FINALIZE=false, is now the common path).
 //
-// Depth note: this trades tail depth for a report actually existing. Runs now begin
-// synthesizing at ~90s of tool work instead of ~150s. A report at 19 tool calls beats
-// no report at 19 tool calls, which is what the 240s setting was really producing.
-export const ORCHESTRATOR_WALL_CLOCK_MS = 4 * 60_000;
+// Depth note: this trades tail depth for a report actually existing — synthesis is
+// forced at ~90s of tool work rather than never. If forced-finalize at 90s ever proves
+// too aggressive for healthy runs, NARROW FINALIZE_RESERVE_MS (never inflate this budget
+// past the 180s ceiling); telemetry says do NOT push the open time past ~108s.
+export const ORCHESTRATOR_WALL_CLOCK_MS = 3 * 60_000;
 
 /**
  * True once `budgetMs` has elapsed since `startedAt` (both epoch ms). Extracted as a

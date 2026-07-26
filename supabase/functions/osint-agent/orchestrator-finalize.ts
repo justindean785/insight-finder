@@ -197,87 +197,16 @@ export function toolCallCapReached(genuineToolCalls: number, cap: number = MAX_T
   return genuineToolCalls >= cap;
 }
 
-/**
- * Soft finalize threshold — ~80% of the genuine tool-call budget. Forces the
- * closing synthesis IN-STREAM before the run reaches the hard cap.
- *
- * WHY a soft trigger (not just the hard cap): production runs routinely trail off
- * a few calls short of MAX_TOOL_CALLS_PER_RUN — the model (DeepSeek especially)
- * narrates "let me pull X next" as its final text WITHOUT emitting the tool call,
- * so the agent loop ends with no report. The only catch left is the post-run
- * salvage generateText, which is itself CPU-killed on exactly these heavy runs →
- * "0 findings, no report, no pivot". Forcing the report phase at ~80% of the tool
- * budget makes a heavy run synthesize while it still has budget + a warm context,
- * instead of dying in the tail. Deliberately TOOL-COUNT based (not a lower
- * step/time budget) so only the CPU-heavy population finalizes early; light runs
- * never reach it and keep their full depth.
- *
- * Recording tools stay exempt the same way they're exempt from the hard cap: this
- * function only gates ENTRY into the finalize state machine, it never counts
- * against or blocks record_artifacts/memory_save calls directly — those are
- * exempted downstream via shouldSkipForToolCap's isRecordingTool param and via
- * FINALIZE_ACTIVE_TOOLS keeping recording tools active during finalize.
- */
-export const FINALIZE_SOFT_TOOL_CALLS = Math.max(1, Math.floor(MAX_TOOL_CALLS_PER_RUN * 0.8));
-
-export function shouldSoftFinalizeOnToolCalls(
-  genuineToolCalls: number,
-  softCap: number = FINALIZE_SOFT_TOOL_CALLS,
-): boolean {
-  return genuineToolCalls >= softCap;
-}
-
-// ---- Deterministic early closeout (PR B) ------------------------------------
-// The platform terminates the invocation at ~90-135s (measured in prod), NOT the
-// 180s ORCHESTRATOR_WALL_CLOCK_MS the reserve is calibrated to. So the 90s
-// finalize open leaves only ~15-45s — too little for the multi-step finalize
-// (persist → memory → report) to complete before the run dies, producing the
-// "21 evidence items, no report, recovered stub" failure. This opens the finalize
-// window at the EARLIEST of a short elapsed budget OR a modest admitted-call count,
-// so the report phase runs while ample runtime remains. Both dials are env-tunable
-// and the whole mechanism is behind a kill switch (EARLY_CLOSEOUT_ENABLED=false
-// restores the prior 90s/soft-cap-only behavior). Reads are guarded so unit tests
-// run without --allow-env (they fall back to the canary defaults, or pass opts).
-function envNumSafe(key: string, dflt: number): number {
-  try {
-    const v = Number(Deno.env.get(key));
-    return Number.isFinite(v) && v > 0 ? v : dflt;
-  } catch {
-    return dflt;
-  }
-}
-function envFlagSafe(key: string, dflt: boolean): boolean {
-  try {
-    const v = Deno.env.get(key);
-    if (v == null || v === "") return dflt;
-    return v.toLowerCase() !== "false" && v !== "0";
-  } catch {
-    return dflt;
-  }
-}
-
-/** Canary defaults: finalize at 65s elapsed OR 20 admitted genuine tool calls. */
-export const EARLY_CLOSEOUT_DEFAULT_MS = 65_000;
-export const EARLY_CLOSEOUT_DEFAULT_CALLS = 20;
-
-/**
- * True once the run should enter its closing synthesis EARLY — before the old
- * 90s/soft-cap triggers — because it has either spent enough of the real
- * invocation window (elapsed) or admitted enough live tool calls to have material
- * worth reporting. Pure: the caller passes elapsed + genuine-call count; env
- * overrides are read only when opts are omitted (prod path).
- */
-export function shouldEarlyCloseout(
-  elapsedMs: number,
-  genuineToolCalls: number,
-  opts?: { enabled?: boolean; elapsedMs?: number; calls?: number },
-): boolean {
-  const enabled = opts?.enabled ?? envFlagSafe("EARLY_CLOSEOUT_ENABLED", true);
-  if (!enabled) return false;
-  const tMs = opts?.elapsedMs ?? envNumSafe("EARLY_CLOSEOUT_MS", EARLY_CLOSEOUT_DEFAULT_MS);
-  const nCalls = opts?.calls ?? envNumSafe("EARLY_CLOSEOUT_CALLS", EARLY_CLOSEOUT_DEFAULT_CALLS);
-  return elapsedMs >= tMs || genuineToolCalls >= nCalls;
-}
+// REMOVED 2026-07-25: shouldSoftFinalizeOnToolCalls / FINALIZE_SOFT_TOOL_CALLS and the
+// deterministic early-closeout (shouldEarlyCloseout + EARLY_CLOSEOUT_ENABLED/_MS/_CALLS
+// env dials) were DELETED, not just unwired. The finalize-restore already unwired them
+// (index.ts references none of them), yet they shipped in b743e42 as a documented
+// incident dial — so an operator setting EARLY_CLOSEOUT_* post-deploy would get a silent
+// no-op, which is worse than not having the control. The reachable entry into the
+// finalize state machine is now ONLY: the wall-clock reserve window (shouldForceFinalize,
+// opens at ORCHESTRATOR_WALL_CLOCK_MS - FINALIZE_RESERVE_MS = 90s), the step cap
+// (MAX_ORCHESTRATOR_STEPS), and the tool-call cap (isToolBudgetExhausted / toolCallCapReached).
+// Recover from git history if an earlier tool-count/time backstop is ever needed again.
 
 /**
  * Decides whether the tool-cache wrapper should short-circuit a specific live call

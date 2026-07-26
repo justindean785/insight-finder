@@ -47,7 +47,7 @@ There is **ONE place to work: this repo, `justindean785/insight-finder`** (local
 
 ## Edge function internals (gotchas)
 - **Live tool defs are in `supabase/functions/osint-agent/tool-registry.ts`** (`buildTools`), **not** inline in `index.ts` (which now only orchestrates the request). The god-file refactor moved them; `index.ts` has zero tool defs. The catalog↔runtime contract test (`src/test/catalog-guidance.test.ts`) reads `tool-registry.ts` (with an `index.ts` fallback) to assert every `catalog.ts` entry has a runtime def — keep `catalog.ts` and `tool-registry.ts` in sync when adding a tool. (Any older `tools/*.ts` files are stale mirrors, not the runtime source.)
-- Tests: `cd supabase/functions/osint-agent && deno test --allow-net --no-check`. `deno check index.ts` has ~12–157 **pre-existing** AI-SDK/Supabase type-graph errors — not a gate; verify your change adds none.
+- Tests: `cd supabase/functions/osint-agent && deno test --allow-net --allow-env --allow-sys --no-check`. (The old `--allow-net --no-check` form left env/sys perms off, inflating the failure count — measured 2026-07-25: `--allow-net --no-check` = 546 pass/57 fail vs `--allow-net --allow-env` = 754 pass/24 fail; the 24 remaining are environmental — missing API keys + sandboxed network, e.g. `readiness_gate_test`, `breach_request_test` — not real.) `deno check index.ts` has ~12–157 **pre-existing** AI-SDK/Supabase type-graph errors — not a gate; verify your change adds none.
 - Frontend tests: `npx vitest run` from repo root.
 
 ## Evidence-integrity rules (do not change without explicit approval)

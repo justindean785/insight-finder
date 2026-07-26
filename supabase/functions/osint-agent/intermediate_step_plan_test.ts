@@ -19,7 +19,7 @@ import {
   orchestratorStepToolChoice,
   FORCE_TOOL_CALL_UNTIL_FINALIZE,
 } from "./orchestrator-budget.ts";
-import { buildFinalizeStepPlan } from "./orchestrator-finalize.ts";
+import { buildFinalizeStepPlan, needsReportSalvage } from "./orchestrator-finalize.ts";
 
 const NORMAL_TOOLS = ["whois_lookup", "dns_records", "record_artifacts"];
 
@@ -72,4 +72,31 @@ Deno.test("kill switch: forcing ships DISABLED; flipping it back on re-forces in
   // is "auto" while the flag is false, and would return "required" if flipped back on.
   assertEquals(orchestratorStepToolChoice(false), "auto");
   assertEquals(orchestratorStepToolChoice(true), "auto");
+});
+
+Deno.test("narration-only regression: flag OFF lets a step conclude with text, and a narration-only ending still yields a report", () => {
+  // The exact regression FORCE_TOOL_CALL_UNTIL_FINALIZE=true was added to prevent: with
+  // forcing OFF an intermediate step may emit narration with NO tool call and END the
+  // agent loop. This pins the safety chain that makes that non-fatal, so flipping the
+  // flag off cannot reopen "investigation stops with no closing report":
+  //   1. intermediate steps allow a text-only conclusion (toolChoice "auto"), AND
+  //   2. a narration-only ending after real work triggers the post-loop salvage
+  //      (needsReportSalvage), AND
+  //   3. the salvage/report phase is tool-free so it can actually write the report.
+  // This is the UNIT half only — the three-gate rule still requires a real-UI canary
+  // proving a LIVE narration-only step ends with a visible closing report post-deploy.
+  const intermediate = buildIntermediateStepPlan({ nudgePersistence: false, normalActiveTools: NORMAL_TOOLS });
+  assertEquals(intermediate.toolChoice, "auto", "flag off → a text-only conclusion is allowed");
+
+  const narrationOnly = "Now let me pull the WHOIS and pivot on the registrant email next.";
+  assert(
+    needsReportSalvage(narrationOnly, 8),
+    "a narration-only ending after real work (8 tool calls) MUST trigger the salvage backstop",
+  );
+  assertEquals(
+    needsReportSalvage("## Findings report\n\n| selector | tier |\n|:--|:--|\n| a | Confirmed |", 8),
+    false,
+    "a genuine report shape does NOT trigger salvage",
+  );
+  assertEquals(buildFinalizeStepPlan("report").toolChoice, "none", "the salvage/report phase must be tool-free");
 });
