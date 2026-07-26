@@ -76,7 +76,11 @@ describe("groupForKind", () => {
   });
 
   it("every group in GROUP_ORDER has a non-empty label", () => {
-    expect(GROUP_ORDER).toHaveLength(8);
+    // Derive from GROUP_LABEL rather than pinning a magic count: the intent of
+    // this test is label coverage + no duplicates, and a hardcoded length just
+    // fails on every legitimate new bucket without catching anything real.
+    expect(GROUP_ORDER).toHaveLength(Object.keys(GROUP_LABEL).length);
+    expect(new Set(GROUP_ORDER).size).toBe(GROUP_ORDER.length);
     for (const g of GROUP_ORDER) {
       expect(typeof GROUP_LABEL[g]).toBe("string");
       expect(GROUP_LABEL[g].length).toBeGreaterThan(0);

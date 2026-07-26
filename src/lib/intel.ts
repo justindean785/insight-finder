@@ -22,7 +22,8 @@ export type Group =
   | "breach"
   | "web"
   | "crypto"
-  | "other";
+  | "other"
+  | "low_signal";
 
 export const GROUP_LABEL: Record<Group, string> = {
   identity: "Identity",
@@ -33,6 +34,7 @@ export const GROUP_LABEL: Record<Group, string> = {
   web: "Web / Archive",
   crypto: "Crypto",
   other: "Other",
+  low_signal: "Low-signal / Unattributed",
 };
 
 export const GROUP_ORDER: Group[] = [
@@ -44,6 +46,9 @@ export const GROUP_ORDER: Group[] = [
   "web",
   "crypto",
   "other",
+  // Always last: rows that are real tool output but carry no attribution to the
+  // subject. They stay visible and auditable, but never lead the board.
+  "low_signal",
 ];
 
 const KIND_TO_GROUP: Record<string, Group> = {
@@ -83,6 +88,7 @@ const KIND_TO_GROUP: Record<string, Group> = {
   wallet: "crypto",
   crypto: "crypto",
   tx: "crypto",
+  combolist_row: "low_signal",
 };
 
 export function groupForKind(kind: string): Group {
@@ -114,6 +120,14 @@ const BREACH_ONLY_SOURCES = new Set([
   "oathnet",
   "intelbase",
   "snusbase",
+  // Added 2026-07-26. Both stamp `source_category:["breach"]` on every row they
+  // emit, but neither was listed here — so isBreachSource() returned false and
+  // the breach-only confidence caps below never applied to them. serus is the
+  // tool that produced 26 of the 30 "names" in case 44f6f429, none of which were
+  // the subject's.
+  "serus_darkweb_scan",
+  "serus",
+  "rapidapi_breach_search",
 ]);
 
 // Sweep-only sources only prove that a username string is taken on a site —
@@ -182,16 +196,53 @@ export function isReputationArtifact(a: { kind: string; source: string | null; m
   return REPUTATION_SOURCE_RE.test(a.source ?? "");
 }
 
+// Identity kinds that a breach corpus alone cannot establish. Deliberately the
+// SENSITIVE_KINDS subset that names a PERSON — `username`/`email` are excluded
+// because a handle or address seen in a leak is a legitimate pivot, whereas the
+// name column of a combolist row says nothing about who was searched for.
+const CORPUS_IDENTITY_KINDS = new Set(["name", "person"]);
+
 /**
- * Display kind for an artifact. Remaps a row the model mis-kinded as `breach`
- * but which actually came from a reputation source to `threat_reputation`, so
- * VirusTotal/URLScan results never render under Breach / Exposure.
+ * True when a name/person row's ONLY provenance is a breach corpus — i.e. it is
+ * a row lifted out of a combolist, not an identity attributed to the subject.
+ *
+ * WHY this is not merely a confidence question: a combolist record's name column
+ * belongs to whoever owned that leaked account, which is usually not the person
+ * being investigated. In case 44f6f429 this produced 26 such rows — password-shaped
+ * strings (`Coke4404`, `Forget123`), a raw hex token (`6e295e85`), and third
+ * parties' real names — each promoted to its own candidate identity cluster and
+ * rendered as an alias of the subject. Capping their confidence at 40 did not stop
+ * them from filling the Identity board or from being exported.
+ *
+ * The rule is provenance-based rather than shape-based on purpose: a shape
+ * heuristic ("looks like a password") would still admit a real third party's name,
+ * which is the case that actually matters for privacy.
+ *
+ * A row corroborated by ANY non-breach source is left alone — that is exactly the
+ * second source class the confidence model already requires.
+ */
+export function isUnattributedCorpusName(a: { kind: string; source: string | null; metadata: Record<string, unknown> | null }): boolean {
+  if (!CORPUS_IDENTITY_KINDS.has(a.kind.toLowerCase())) return false;
+  const meta = (a.metadata ?? {}) as Record<string, unknown>;
+  const sources = Array.isArray(meta.sources) ? meta.sources.map((s) => String(s)) : [];
+  const all = sources.length ? sources : [a.source ?? ""];
+  return all.length > 0 && all.every((s) => isBreachSource(s));
+}
+
+/**
+ * Display kind for an artifact. Two remaps:
+ *  - a row the model mis-kinded as `breach` but which came from a reputation
+ *    source → `threat_reputation`, so VirusTotal/URLScan never render under
+ *    Breach / Exposure;
+ *  - a name/person row whose only provenance is a breach corpus → `combolist_row`,
+ *    so unattributed leak rows never render as the subject's identity.
  */
 export function displayKind(a: { kind: string; source: string | null; metadata: Record<string, unknown> | null }): string {
   const kind = a.kind.toLowerCase();
   if ((kind === "breach" || kind === "breach_exposure") && isReputationArtifact(a)) {
     return "threat_reputation";
   }
+  if (isUnattributedCorpusName(a)) return "combolist_row";
   return a.kind;
 }
 

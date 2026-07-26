@@ -32,6 +32,7 @@ const GROUP_COLOR: Record<Group, string> = {
   web: "hsl(var(--confidence-high))",
   crypto: "hsl(var(--warning))",
   other: "hsl(var(--muted-foreground))",
+  low_signal: "hsl(var(--muted-foreground) / 0.55)",
 };
 
 function relativeTime(iso: string | null): string {

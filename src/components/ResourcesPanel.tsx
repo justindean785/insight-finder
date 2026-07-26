@@ -3,7 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import {
   Mail, Globe, User as UserIcon, Network, ShieldAlert, Image as ImgIcon, Tag,
   Copy, CheckCircle2, XCircle, Star, ShieldQuestion, EyeOff, ChevronRight, Radar,
-  AlertTriangle, RotateCcw, Loader2,
+  AlertTriangle, RotateCcw, Loader2, Layers,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -14,7 +14,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useThreadArtifacts, type Artifact } from "@/hooks/useThreadArtifacts";
 import {
-  groupForKind, GROUP_LABEL, GROUP_ORDER, type Group,
+  groupForKind, GROUP_LABEL, GROUP_ORDER, type Group, displayKind,
   extractSourceInfo, CACHE_LAYER_LABEL, CACHE_LAYER_CLASS,
 } from "@/lib/intel";
 import { evidenceStatus, EVIDENCE_STATUS_RANK } from "@/lib/evidence-status";
@@ -35,6 +35,7 @@ const GROUP_ICON: Record<Group, React.ComponentType<{ className?: string }>> = {
   web: Globe,
   crypto: ImgIcon,
   other: Tag,
+  low_signal: Layers,
 };
 
 // Provenance string shown under a row / in a cluster header.
@@ -98,8 +99,14 @@ function ArtifactsList({
   const grouped = useMemo(() => {
     const byGroup = {} as Record<Group, Record<string, Artifact[]>>;
     for (const a of filtered) {
-      const g = groupForKind(a.kind);
-      ((byGroup[g] ??= {})[a.kind] ??= []).push(a);
+      // Group on the DISPLAY kind, not the raw one. The raw kind is what the
+      // model/extractor asserted; displayKind() is what it actually is once
+      // provenance is taken into account — a VirusTotal row mis-kinded `breach`,
+      // or a combolist row mis-kinded `name`. Grouping on `a.kind` here meant
+      // both remaps existed and were unit-tested but never reached this board.
+      const dk = displayKind(a);
+      const g = groupForKind(dk);
+      ((byGroup[g] ??= {})[dk] ??= []).push(a);
     }
     const conf = (a: Artifact) => {
       const fp = ((a.metadata ?? {}) as Record<string, unknown>).false_positive === true;
