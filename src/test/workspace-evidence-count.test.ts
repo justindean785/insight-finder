@@ -35,4 +35,60 @@ describe("deriveWorkspaceStatus", () => {
       hasEvidence: true,
     })).toBe("completed");
   });
+
+  // `finished` is written on three paths that are NOT the same thing: a clean
+  // finalize, the stream-error path (onError), and stale-run recovery. Painting all
+  // three green is how a fabricated "recovered run" stub and a genuine report became
+  // visually identical in production.
+  it("shows a recovered run as INTERRUPTED, never as a green COMPLETE", () => {
+    expect(deriveWorkspaceStatus({
+      threadStatus: "finished",
+      chatRunning: false,
+      recentlyActive: false,
+      hasEvidence: false,
+      recoveredAt: "2026-07-26T00:20:43.070Z",
+      recoveryReason: "stale heartbeat recovered by health sweep",
+    })).toBe("interrupted");
+  });
+
+  it("shows a stream-error run as INTERRUPTED (recovery_reason without recovered_at)", () => {
+    expect(deriveWorkspaceStatus({
+      threadStatus: "finished",
+      chatRunning: false,
+      recentlyActive: false,
+      hasEvidence: true,
+      recoveryReason: "stream_error: provider disconnected",
+    })).toBe("interrupted");
+  });
+
+  it("shows a run that failed the completion contract as INTERRUPTED", () => {
+    expect(deriveWorkspaceStatus({
+      threadStatus: "finished",
+      chatRunning: false,
+      recentlyActive: false,
+      hasEvidence: true,
+      recoveryReason: "incomplete: run ended without a durable report",
+    })).toBe("interrupted");
+  });
+
+  it("still shows a clean finalize as COMPLETE", () => {
+    expect(deriveWorkspaceStatus({
+      threadStatus: "finished",
+      chatRunning: false,
+      recentlyActive: false,
+      hasEvidence: true,
+      recoveredAt: null,
+      recoveryReason: null,
+    })).toBe("completed");
+  });
+
+  it("a live stream still overrides an interrupted row", () => {
+    expect(deriveWorkspaceStatus({
+      threadStatus: "finished",
+      chatRunning: true,
+      recentlyActive: true,
+      hasEvidence: true,
+      recoveryReason: "stream_error: transient",
+    })).toBe("active");
+  });
 });

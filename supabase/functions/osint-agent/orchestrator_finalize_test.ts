@@ -15,6 +15,10 @@ import {
   buildPerCycleCompactDirective,
   extractAssistantReportText,
   needsReportSalvage,
+  meetsCompletionContract,
+  hasNoFindingsDecision,
+  MIN_TERMINAL_REPORT_CHARS,
+  SALVAGE_ON_ZERO_TOOL_CALLS,
   stripReasoning,
   hasReportShape,
   buildSalvageSynthesisPrompt,
@@ -318,8 +322,73 @@ Deno.test("needsReportSalvage: gap = work happened but no REPORT SHAPE (not mere
   );
 });
 
-Deno.test("needsReportSalvage: a genuinely empty case (no tool calls) is left alone", () => {
-  assertEquals(needsReportSalvage("", 0), false, "no work done → not the report gap");
+Deno.test("needsReportSalvage: zero-tool-call runs are classified, not blanket-skipped (P0-B)", () => {
+  // THE PRODUCTION FAILURE (thread 40f8a6eb, 2026-07-26): the analyst sent the seed
+  // `jdean785`, the model emitted the 10-character text "I'll start" with no tool
+  // call, the SDK ended the loop on finishReason:"stop", and THAT became the run's
+  // durable final message with the thread flipped to a green COMPLETE. The old
+  // `toolCalls <= 0 -> return false` bail made the salvage backstop structurally
+  // blind to exactly this case.
+  assertEquals(needsReportSalvage("I'll start", 0), true, "10-char stub → salvage");
+  assertEquals(needsReportSalvage("", 0), true, "no text at all → salvage");
+
+  // But a COMPLETE conversational reply with no tool calls is a legitimate terminal
+  // message and must be left alone — this is the real 907-char reply from the same
+  // thread, one turn earlier. Salvaging it would staple a bogus Findings report onto
+  // a plain answer.
+  const conversational =
+    "I don't have any context about what's been discovered in this conversation — " +
+    "this appears to be a fresh session with no prior investigation state carried over. " +
+    "To help you, I need a seed to investigate. What are you looking into? For example: " +
+    "an email address, a username or handle, a phone number, a domain or URL, a person's " +
+    "name plus location, a crypto wallet, an IP address, or attached files with leads in them. " +
+    "Drop a seed and I'll run the investigation from TRIAGE through REPORT.";
+  assert(conversational.length > MIN_TERMINAL_REPORT_CHARS, "fixture must clear the length floor");
+  assertEquals(needsReportSalvage(conversational, 0), false, "complete conversational reply → leave alone");
+
+  // REGRESSION PIN — why there is no future-intent regex (see orchestrator-finalize.ts).
+  // A pattern matching promises of work ("let me now run…") was implemented and this
+  // fixture killed it: the reply above legitimately CLOSES with "Drop a seed and I'll
+  // run the investigation from TRIAGE through REPORT". Inferring intent from prose
+  // fabricates a Findings report on top of a plain answer. If someone reintroduces
+  // that heuristic, the assertion above fails.
+  assert(/I'll run the investigation/.test(conversational), "fixture must retain the trap phrase");
+
+  assertEquals(SALVAGE_ON_ZERO_TOOL_CALLS, true, "kill switch must ship on");
+});
+
+Deno.test("needsReportSalvage: artifacts prove the investigating phase even with no tool parts", () => {
+  // Tool parts can be trimmed out of the message history on a long run; artifacts
+  // already on the thread still prove work happened, so a report is owed.
+  assertEquals(needsReportSalvage("short narration", 0, { artifactCount: 7 }), true);
+});
+
+Deno.test("needsReportSalvage: an explicit no-findings decision is terminal, never papered over", () => {
+  // A validated finalize_no_findings IS a real outcome. Synthesizing a report over it
+  // would invent a conclusion the run deliberately declined to make.
+  assertEquals(needsReportSalvage("", 12, { hadNoFindingsDecision: true }), false);
+  assertEquals(needsReportSalvage("I'll start", 0, { hadNoFindingsDecision: true }), false);
+});
+
+Deno.test("meetsCompletionContract: only a report or an explicit no-findings decision may present as complete", () => {
+  const report = { role: "assistant", parts: [{ type: "text", text: "## Findings report\n\n| a | b |\n|:--|:--|\n| 1 | 2 |" }] };
+  const stub = { role: "assistant", parts: [{ type: "text", text: "I'll start" }] };
+  const decision = { role: "assistant", parts: [{ type: "tool-finalize_no_findings" }] };
+
+  assertEquals(meetsCompletionContract([report]), true, "durable report → complete");
+  assertEquals(meetsCompletionContract([decision]), true, "explicit no-findings → complete");
+  assertEquals(meetsCompletionContract([stub]), false, "unfinished stub → NOT complete");
+  assertEquals(meetsCompletionContract([]), false, "no assistant message at all → NOT complete");
+
+  // Scoping: a PRIOR turn's report must not let this turn's stub pass the contract.
+  assertEquals(meetsCompletionContract([report, stub]), false, "last assistant wins");
+});
+
+Deno.test("hasNoFindingsDecision: scoped to the last assistant, not thread history", () => {
+  const decision = { role: "assistant", parts: [{ type: "tool-finalize_no_findings" }] };
+  const later = { role: "assistant", parts: [{ type: "text", text: "hi" }] };
+  assertEquals(hasNoFindingsDecision([decision]), true);
+  assertEquals(hasNoFindingsDecision([decision, later]), false, "a prior turn's decision does not carry over");
 });
 
 Deno.test("stripReasoning: removes closed AND dangling <think> blocks", () => {

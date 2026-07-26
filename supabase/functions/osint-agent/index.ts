@@ -47,6 +47,7 @@ import {
   shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS,
   extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt,
   shouldNudgePersistence, buildPersistenceNudgeDirective,
+  hasNoFindingsDecision, meetsCompletionContract, INCOMPLETE_RUN_REASON,
 } from "./orchestrator-finalize.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
 
@@ -715,6 +716,7 @@ Deno.serve(async (req) => {
     // `capReached && !capped` gate would never log. This latch fires the event exactly
     // once, the first step prepareStep observes an exhausted budget.
     let capLogged = false;
+    let openingGateLogged = false;
     // First-pass persistence nudge latch (DeepSeek deferral fix). Request-scoped —
     // owned by this per-request closure, NEVER a module-global, so one run's nudge
     // state can't leak onto a concurrent run sharing a warm isolate. Flipped true the
@@ -725,6 +727,21 @@ Deno.serve(async (req) => {
     // deadline StopCondition below. Declared here so prepareStep's closure reads it.
     const runStartedAt = Date.now();
     heartbeat = startRunHeartbeat(supabaseAdmin, threadId, { startedAt: new Date(runStartedAt) });
+    // P0-B opening gate. Did the analyst's LATEST turn ask for an investigation?
+    // `detectedSeedType`/`seedValueRaw` both read the FIRST user message, which on a
+    // long-lived thread is not what this turn is about (production thread 40f8a6eb
+    // opened with a question and only later carried the `jdean785` seed). A parseable
+    // seed in the latest turn is the structural signal that work — not conversation —
+    // is expected, so a text-only stop at step 1 would be a premature termination.
+    const latestUserAsksForInvestigation = (() => {
+      const users = ((messages ?? []) as Array<{ role?: string; parts?: Array<{ type?: string; text?: string }> }>)
+        .filter((m) => m?.role === "user");
+      const last = users[users.length - 1];
+      const text = (last?.parts ?? [])
+        .filter((p) => p?.type === "text").map((p) => p?.text ?? "").join(" ").trim();
+      return text ? Boolean(detectSeedServer(text)) : false;
+    })();
+
     const prepareStep: NonNullable<Parameters<typeof streamText>[0]["prepareStep"]> =
       async ({ messages: stepMessages, stepNumber }) => {
         const { data: threadState } = await supabase
@@ -863,8 +880,19 @@ Deno.serve(async (req) => {
             ...buildIntermediateStepPlan({
               nudgePersistence: true,
               normalActiveTools,
+              openingPhase: false,
             }),
           };
+        }
+        // Opening phase = this RUN has admitted no tool call yet (run-scoped by
+        // construction: toolCallBudget is a per-request closure, so a prior turn's
+        // calls can never leak in) AND the analyst asked for an investigation.
+        const openingPhase = latestUserAsksForInvestigation && toolCallBudget.reserved === 0;
+        if (openingPhase && !openingGateLogged) {
+          openingGateLogged = true;
+          console.log(JSON.stringify({
+            event: "opening_tool_gate", thread_id: threadId, step_number: stepNumber ?? 0,
+          }));
         }
         return {
           messages: stepMessagesOut,
@@ -872,6 +900,7 @@ Deno.serve(async (req) => {
           ...buildIntermediateStepPlan({
             nudgePersistence: false,
             normalActiveTools,
+            openingPhase,
           }),
         };
       };
@@ -1119,14 +1148,21 @@ Deno.serve(async (req) => {
         // step still emitted no text.
         try {
           const { toolCalls: workToolCalls } = countRecordArtifactCalls(finalMessages);
-          const existingReport = extractAssistantReportText(finalMessages as unknown as Array<{ role?: string; parts?: Array<{ type?: string; text?: unknown }> }>);
-          if (needsReportSalvage(existingReport, workToolCalls)) {
-            const { data: salvageArts } = await supabase
-              .from("artifacts")
-              .select("kind,value,confidence,source")
-              .eq("thread_id", threadId)
-              .order("confidence", { ascending: false })
-              .limit(200);
+          const reportMsgs = finalMessages as unknown as Array<{ role?: string; parts?: Array<{ type?: string; text?: unknown }> }>;
+          const existingReport = extractAssistantReportText(reportMsgs);
+          // Artifacts already on the thread also prove the run was investigating, so
+          // fetch the count BEFORE deciding: a run whose tool parts were trimmed out
+          // of the message history still deserves a report.
+          const { data: salvageArts } = await supabase
+            .from("artifacts")
+            .select("kind,value,confidence,source")
+            .eq("thread_id", threadId)
+            .order("confidence", { ascending: false })
+            .limit(200);
+          if (needsReportSalvage(existingReport, workToolCalls, {
+            artifactCount: (salvageArts ?? []).length,
+            hadNoFindingsDecision: hasNoFindingsDecision(reportMsgs),
+          })) {
             const salvage = await generateText({
               model: orchestratorModel,
               maxOutputTokens: ORCHESTRATOR_MAX_OUTPUT_TOKENS,
@@ -1205,6 +1241,21 @@ Deno.serve(async (req) => {
         // stub OVER it (the production hang symptom). Writing status here closes
         // that window: once report + finished status are both persisted, a tail
         // kill can only drop best-effort enrichment, never strand the run active.
+        // ---- P0-B COMPLETION CONTRACT ----
+        // A run may present as normally complete ONLY if it left a durable
+        // report-shaped assistant message or an explicit no-findings decision.
+        // Production shipped a thread whose entire final message was "I'll start"
+        // (10 chars) and still showed a green COMPLETE. When the contract is not
+        // met we still write the terminal status — leaving it `active` would strand
+        // the UI on "Running" and re-arm stale-run recovery — but we stamp
+        // recovery_reason so the UI renders Interrupted instead of Complete.
+        const contractMet = meetsCompletionContract(finalMessages as unknown as Array<{ role?: string; parts?: Array<{ type?: string; text?: unknown }> }>);
+        if (!contractMet) {
+          console.warn(JSON.stringify({
+            event: "completion_contract_unmet", thread_id: threadId,
+            assistant_chars: (assistant ? extractAssistantReportText([assistant as unknown as { role?: string; parts?: Array<{ type?: string; text?: unknown }> }]) : "").length,
+          }));
+        }
         const { error: statusErr } = await supabase
           .from("threads")
           .update({
@@ -1213,6 +1264,9 @@ Deno.serve(async (req) => {
             // (WorkspaceHeader/ThreadSidebar). The prior "completed" was rejected
             // by the DB constraint, leaving successful runs stuck on "active".
             status: "finished",
+            // Clear on the happy path so a thread that previously failed and is now
+            // re-run doesn't keep showing a stale Interrupted badge.
+            recovery_reason: contractMet ? null : INCOMPLETE_RUN_REASON,
             updated_at: new Date().toISOString(),
             ...(detectedSeedKind ? { seed_type: detectedSeedKind } : {}),
           })

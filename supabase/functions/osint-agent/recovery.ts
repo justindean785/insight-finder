@@ -41,8 +41,41 @@ export function assistantPartsToText(parts: unknown): string {
     .join("\n");
 }
 
+/**
+ * Kill switch for the run-marker eligibility gate (P0-A, 2026-07-26). Set back to
+ * `false` to restore the old behavior where ANY heartbeat-stale `active` thread was
+ * recoverable — including one that never ran. Only flip this to debug the gate.
+ */
+export const REQUIRE_RUN_MARKER_FOR_RECOVERY = true;
+
+/**
+ * Did a run ever actually START on this thread?
+ *
+ * THE P0-A INVARIANT: a thread with no run marker is NOT an interrupted
+ * investigation — it is a blank thread nobody has used yet, and recovering it
+ * fabricates a "Findings report — recovered run" for a run that never happened.
+ *
+ * A blank thread is born `status='active'` (the `threads.status` column default,
+ * and `WorkspaceHeader.createInvestigation` inserts only `user_id`), with both
+ * timestamps NULL. `isStaleActiveThread` then falls back to `updated_at` — which
+ * for a blank thread equals its creation time — so ~90s after the analyst clicks
+ * "New", the thread reads as a 90s-dead run and the health sweep reaps it. In
+ * production this produced 14 ghost recoveries on threads that had never received
+ * a single user message, and left 192 of 264 threads eligible for the same.
+ *
+ * `run_started_at` and `last_heartbeat_at` are written ONLY by `markRunStarted` /
+ * `startRunHeartbeat`, so either one proves a real invocation began. Verified in
+ * production: zero rows carry a heartbeat without `run_started_at`, so this is the
+ * exact boundary between "ran" and "never ran" — not a heuristic.
+ */
+export function hasRunMarker(thread: Pick<RecoverableThread, "run_started_at" | "last_heartbeat_at">): boolean {
+  return Boolean(thread.run_started_at || thread.last_heartbeat_at);
+}
+
 export function isStaleActiveThread(thread: RecoverableThread, nowMs: number = Date.now(), staleMs: number = STALE_RUN_AFTER_MS): boolean {
   if (thread.status !== "active") return false;
+  // Never-started threads are not interrupted runs — see hasRunMarker.
+  if (REQUIRE_RUN_MARKER_FOR_RECOVERY && !hasRunMarker(thread)) return false;
   const heartbeat = thread.last_heartbeat_at ? new Date(thread.last_heartbeat_at).getTime() : NaN;
   const fallback = thread.updated_at ? new Date(thread.updated_at).getTime() : NaN;
   const lastLive = Number.isFinite(heartbeat) ? heartbeat : fallback;
@@ -174,7 +207,16 @@ export async function recoverStaleThreadById(db: DbClient, threadId: string, opt
 export async function recoverStaleActiveThreads(db: DbClient, opts?: { now?: Date; limit?: number; reason?: string }) {
   const now = opts?.now ?? new Date();
   const cutoff = new Date(now.getTime() - STALE_RUN_AFTER_MS).toISOString();
-  const { data, error } = await db.from("threads").select("id,user_id,title,seed_value,status,run_started_at,last_heartbeat_at,updated_at").eq("status", "active").or(`last_heartbeat_at.lt.${cutoff},and(last_heartbeat_at.is.null,updated_at.lt.${cutoff})`).order("updated_at", { ascending: true }).limit(opts?.limit ?? 20);
+  let query = db.from("threads").select("id,user_id,title,seed_value,status,run_started_at,last_heartbeat_at,updated_at").eq("status", "active");
+  // Mirror hasRunMarker in the QUERY, not just the per-row check. Two reasons:
+  // correctness is already covered by isStaleActiveThread, but the sweep is
+  // LIMITed — and never-started threads are the oldest `active` rows on the table,
+  // so under `order(updated_at asc)` they were filling the entire 20-row budget and
+  // starving the genuinely-dead runs this sweeper exists to reap.
+  if (REQUIRE_RUN_MARKER_FOR_RECOVERY) {
+    query = query.or("run_started_at.not.is.null,last_heartbeat_at.not.is.null");
+  }
+  const { data, error } = await query.or(`last_heartbeat_at.lt.${cutoff},and(last_heartbeat_at.is.null,updated_at.lt.${cutoff})`).order("updated_at", { ascending: true }).limit(opts?.limit ?? 20);
   if (error) throw new Error(error.message);
   let recovered = 0;
   let assistantInserted = 0;

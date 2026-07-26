@@ -2012,6 +2012,17 @@ function ChatWindowInner({
   const isLoadingRef = useRef(isLoading);
   isLoadingRef.current = isLoading;
 
+  // Has this thread ever carried a run or a message? A brand-new thread is created
+  // with `status='active'` (the DB column default) and no heartbeat, so the health
+  // sweep below used to reap it as a 90s-dead investigation and post a "recovered
+  // run" report into a chat the analyst had not typed a single word into. The server
+  // now refuses to recover a thread with no run marker (see hasRunMarker in
+  // recovery.ts) — this is the belt-and-braces half: an untouched thread never asks
+  // for a sweep in the first place. Read at CALL time via a ref so the delayed
+  // sweeps re-evaluate instead of capturing a stale mount-time value.
+  const threadHasActivityRef = useRef(false);
+  if (isLoading || messages.length > 0) threadHasActivityRef.current = true;
+
   // Broadcast live run state so the case header never shows COMPLETE while
   // the chat stream is still open (tool_usage_log can lag 12s+ between calls).
   useEffect(() => {
@@ -2043,7 +2054,12 @@ function ChatWindowInner({
   // healthy run pulses every 15s, so an in-progress investigation is never reaped.
   useEffect(() => {
     if (!FUNCTIONS_URL) return;
-    const sweep = () => { void fetch(`${FUNCTIONS_URL}?health=1`, { method: "GET" }).catch(() => {}); };
+    const sweep = () => {
+      // Nothing has ever run here — there is no stuck run of ours to reap, and a
+      // sweep from a blank thread is exactly what produced the ghost recoveries.
+      if (!threadHasActivityRef.current) return;
+      void fetch(`${FUNCTIONS_URL}?health=1`, { method: "GET" }).catch(() => {});
+    };
     sweep(); // once on open: reap a run already stuck when this thread is loaded
     if (!isLoading) {
       // TRAILING sweeps after the stream ends. The immediate sweep above usually
