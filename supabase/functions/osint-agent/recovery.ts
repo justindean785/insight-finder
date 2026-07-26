@@ -187,9 +187,12 @@ async function recoverOneStaleThread(
   );
   if (!assistantState.shouldInsert) {
     // Nothing to stub, but the thread is genuinely stale — still close it out.
-    const { error: closeErr } = await db.from("threads").update({ status: "finished", recovered_at: now.toISOString(), recovery_reason: reason, updated_at: now.toISOString() }).eq("id", thread.id).eq("status", "active");
+    // `.select("id")` is REQUIRED: without it a lost status race is indistinguishable
+    // from a won one and this branch reported recovered:true for a thread it never
+    // claimed, inflating the sweeper's recovered count with phantom recoveries.
+    const { data: closed, error: closeErr } = await db.from("threads").update({ status: "finished", recovered_at: now.toISOString(), recovery_reason: reason, updated_at: now.toISOString() }).eq("id", thread.id).eq("status", "active").select("id");
     if (closeErr) return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: closeErr.message };
-    return { recovered: true, assistantInserted: false, artifactCount: artifactCount ?? 0 };
+    return { recovered: !!closed && (closed as unknown[]).length > 0, assistantInserted: false, artifactCount: artifactCount ?? 0 };
   }
 
   // ---- CLAIM BEFORE WRITING (2026-07-26 race fix) ----
@@ -225,12 +228,36 @@ async function recoverOneStaleThread(
     thread, freshRow?.created_at ?? null, now.getTime(), RECENT_ASSISTANT_WINDOW_MS,
     assistantPartsToText(freshRow?.parts),
   );
-  if (freshState.shouldInsert) {
-    const text = buildRecoveredAssistantText(thread, (artifacts ?? []) as RecoveryArtifact[]);
-    const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: [{ type: "text", text }] });
-    if (insertErr) return { recovered: true, assistantInserted: false, artifactCount: artifactCount ?? 0, error: insertErr.message };
-    assistantInserted = true;
+  if (!freshState.shouldInsert) {
+    // ---- RELEASE THE CLAIM (2026-07-26, blocker 1) ----
+    // A real report landed between our first read and the claim. Suppressing the stub
+    // is necessary but NOT sufficient: the claim already stamped recovered_at /
+    // recovery_reason, and the live run's own completion UPDATE is guarded on
+    // status='active' — which we just consumed — so it can no longer clear them. The
+    // thread would sit `finished` + recovery metadata and render Interrupted even
+    // though the investigation completed normally and durably.
+    //
+    // Release by clearing ONLY our own stamp: the WHERE ties back to the exact
+    // recovered_at + recovery_reason we wrote, so a different recovery worker's claim
+    // is never cleared. `status` stays "finished" — that part is correct, the run IS
+    // over; only the "this was interrupted" label is wrong.
+    const { error: releaseErr } = await db
+      .from("threads")
+      .update({ recovered_at: null, recovery_reason: null, updated_at: now.toISOString() })
+      .eq("id", thread.id)
+      .eq("recovered_at", now.toISOString())
+      .eq("recovery_reason", reason);
+    if (releaseErr) {
+      return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: releaseErr.message };
+    }
+    // Not a recovery: a durable report exists and the thread is labelled complete.
+    return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0 };
   }
+
+  const text = buildRecoveredAssistantText(thread, (artifacts ?? []) as RecoveryArtifact[]);
+  const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: [{ type: "text", text }] });
+  if (insertErr) return { recovered: true, assistantInserted: false, artifactCount: artifactCount ?? 0, error: insertErr.message };
+  assistantInserted = true;
   return { recovered: true, assistantInserted, artifactCount: artifactCount ?? 0 };
 }
 

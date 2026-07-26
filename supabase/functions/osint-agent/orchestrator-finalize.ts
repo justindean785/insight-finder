@@ -491,6 +491,40 @@ export function meetsCompletionContract(finalMessages: ReportMsg[]): boolean {
   return hasReportShape(stripReasoning(extractAssistantReportText(finalMessages)));
 }
 
+/** `recovery_reason` when the terminal assistant row could not be written at all. */
+export const REPORT_PERSIST_FAILED_REASON = "incomplete: final report could not be saved";
+
+/**
+ * The single decision point for a run's terminal DB state.
+ *
+ * DURABILITY IS PART OF THE CONTRACT. `meetsCompletionContract` inspects the
+ * in-memory message; that is necessary but not sufficient, because a perfectly
+ * report-shaped `finalMessages` whose INSERT failed is not a durable report — the
+ * analyst reloads and finds nothing. The old code logged the insert error, fell
+ * through, and still wrote a green `finished`, which is precisely the claim the
+ * contract exists to make and the one case where it was silently false.
+ *
+ * `status` is always "finished" (threads_status_check allows only active|finished,
+ * and leaving a dead run `active` strands the UI on "Running" and re-arms stale-run
+ * recovery). Honesty rides in `recovery_reason`, which the header renders as
+ * Interrupted.
+ *
+ * Pure so every branch — salvage returned empty, salvage returned prose, salvage
+ * threw, the insert failed — is unit-testable without a live model or DB.
+ */
+export function resolveTerminalState(input: {
+  assistantRowPersisted: boolean;
+  finalMessages: ReportMsg[];
+}): { status: "finished"; recoveryReason: string | null } {
+  if (!input.assistantRowPersisted) {
+    return { status: "finished", recoveryReason: REPORT_PERSIST_FAILED_REASON };
+  }
+  return {
+    status: "finished",
+    recoveryReason: meetsCompletionContract(input.finalMessages) ? null : INCOMPLETE_RUN_REASON,
+  };
+}
+
 /**
  * The "No report yet" gap: the run DID work (made tool calls) but produced no
  * closing REPORT — only reasoning + inter-step narration, cut off before synthesis.

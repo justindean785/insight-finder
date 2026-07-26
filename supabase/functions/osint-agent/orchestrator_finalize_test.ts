@@ -17,6 +17,8 @@ import {
   needsReportSalvage,
   meetsCompletionContract,
   hasNoFindingsDecision,
+  resolveTerminalState,
+  REPORT_PERSIST_FAILED_REASON,
   MIN_TERMINAL_REPORT_CHARS,
   SALVAGE_ON_ZERO_TOOL_CALLS,
   stripReasoning,
@@ -382,6 +384,53 @@ Deno.test("meetsCompletionContract: only a report or an explicit no-findings dec
 
   // Scoping: a PRIOR turn's report must not let this turn's stub pass the contract.
   assertEquals(meetsCompletionContract([report, stub]), false, "last assistant wins");
+});
+
+Deno.test("resolveTerminalState: a report that FAILED to persist can never be a green COMPLETE", () => {
+  // BLOCKER 2. The contract claims "durable report". Evaluating it from the
+  // in-memory message meant a perfectly report-shaped finalMessages whose INSERT
+  // failed still wrote status=finished with recovery_reason=null — the analyst
+  // reloads and the report is simply gone, shown as a successful investigation.
+  const report = { role: "assistant", parts: [{ type: "text", text: "## Findings report\n\n| a | b |\n|:--|:--|\n| 1 | 2 |" }] };
+  assertEquals(
+    resolveTerminalState({ assistantRowPersisted: false, finalMessages: [report] }),
+    { status: "finished", recoveryReason: REPORT_PERSIST_FAILED_REASON },
+    "report-shaped but not persisted → Interrupted",
+  );
+  assertEquals(
+    resolveTerminalState({ assistantRowPersisted: true, finalMessages: [report] }),
+    { status: "finished", recoveryReason: null },
+    "report-shaped AND persisted → normal completion",
+  );
+});
+
+Deno.test("resolveTerminalState: every salvage failure mode lands Interrupted, never COMPLETE", () => {
+  // The salvage backstop is best-effort and its exception is swallowed. Each way it
+  // can come up short must still produce an honest terminal state.
+  const cases: Array<[string, unknown]> = [
+    ["salvage returned empty text", { role: "assistant", parts: [{ type: "text", text: "" }] }],
+    ["salvage returned non-report prose", { role: "assistant", parts: [{ type: "text", text: "Let me now run the core breach and cross-platform tools in parallel." }] }],
+    // A thrown salvage leaves the pre-salvage stub as the terminal message.
+    ["salvage threw; stub remains", { role: "assistant", parts: [{ type: "text", text: "I'll start" }] }],
+    // A thrown salvage with no assistant at all leaves nothing.
+    ["no assistant message at all", null],
+  ];
+  for (const [label, msg] of cases) {
+    const finalMessages = (msg ? [msg] : []) as Array<{ role?: string; parts?: Array<{ type?: string; text?: unknown }> }>;
+    assertEquals(
+      resolveTerminalState({ assistantRowPersisted: !!msg, finalMessages }).recoveryReason !== null,
+      true,
+      `${label} → must NOT present as complete`,
+    );
+  }
+
+  // …and the one case that legitimately completes without a report.
+  const decision = [{ role: "assistant", parts: [{ type: "tool-finalize_no_findings" }] }];
+  assertEquals(
+    resolveTerminalState({ assistantRowPersisted: true, finalMessages: decision }).recoveryReason,
+    null,
+    "a durably persisted explicit no-findings decision IS a normal completion",
+  );
 });
 
 Deno.test("hasNoFindingsDecision: scoped to the last assistant, not thread history", () => {

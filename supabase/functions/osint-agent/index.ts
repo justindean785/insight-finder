@@ -47,7 +47,7 @@ import {
   shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS,
   extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt,
   shouldNudgePersistence, buildPersistenceNudgeDirective,
-  hasNoFindingsDecision, meetsCompletionContract, INCOMPLETE_RUN_REASON,
+  hasNoFindingsDecision, resolveTerminalState,
 } from "./orchestrator-finalize.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
 
@@ -1201,6 +1201,12 @@ Deno.serve(async (req) => {
         // The report row must be durable BEFORE the status flip. Captured here so
         // the best-effort cache upsert (moved after the status write) can reuse it.
         let safePartsForCache: unknown[] | null = null;
+        // Did the terminal assistant row ACTUALLY land in the DB? The completion
+        // contract is about durability, so it cannot be evaluated from the in-memory
+        // message alone: a report-shaped `finalMessages` whose INSERT failed used to
+        // log the error, fall through, and still write a green `finished` — exactly
+        // the "durable report" claim the contract is supposed to make.
+        let assistantRowPersisted = false;
         if (assistant) {
           // Cap `messages.parts` payload before persisting. First shrink any
           // single oversized tool payload (e.g. a 600KB socialfetch_lookup
@@ -1220,6 +1226,8 @@ Deno.serve(async (req) => {
           });
           if (msgErr) {
             console.error(JSON.stringify({ event: "assistant_message_insert_fail", thread_id: threadId, error: msgErr.message }));
+          } else {
+            assistantRowPersisted = true;
           }
         }
         // Durable end-of-run signal that this run finalized because it hit the
@@ -1249,10 +1257,15 @@ Deno.serve(async (req) => {
         // met we still write the terminal status — leaving it `active` would strand
         // the UI on "Running" and re-arm stale-run recovery — but we stamp
         // recovery_reason so the UI renders Interrupted instead of Complete.
-        const contractMet = meetsCompletionContract(finalMessages as unknown as Array<{ role?: string; parts?: Array<{ type?: string; text?: unknown }> }>);
-        if (!contractMet) {
+        const terminal = resolveTerminalState({
+          assistantRowPersisted,
+          finalMessages: finalMessages as unknown as Array<{ role?: string; parts?: Array<{ type?: string; text?: unknown }> }>,
+        });
+        if (terminal.recoveryReason) {
           console.warn(JSON.stringify({
             event: "completion_contract_unmet", thread_id: threadId,
+            reason: terminal.recoveryReason,
+            assistant_row_persisted: assistantRowPersisted,
             assistant_chars: (assistant ? extractAssistantReportText([assistant as unknown as { role?: string; parts?: Array<{ type?: string; text?: unknown }> }]) : "").length,
           }));
         }
@@ -1263,10 +1276,10 @@ Deno.serve(async (req) => {
             // active|finished) AND the value the UI treats as complete
             // (WorkspaceHeader/ThreadSidebar). The prior "completed" was rejected
             // by the DB constraint, leaving successful runs stuck on "active".
-            status: "finished",
+            status: terminal.status,
             // Clear on the happy path so a thread that previously failed and is now
             // re-run doesn't keep showing a stale Interrupted badge.
-            recovery_reason: contractMet ? null : INCOMPLETE_RUN_REASON,
+            recovery_reason: terminal.recoveryReason,
             updated_at: new Date().toISOString(),
             ...(detectedSeedKind ? { seed_type: detectedSeedKind } : {}),
           })
