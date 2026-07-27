@@ -48,6 +48,10 @@ import {
   extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt,
   shouldNudgePersistence, buildPersistenceNudgeDirective,
 } from "./orchestrator-finalize.ts";
+import {
+  loadReviewsForThread, applyReviewsToArtifacts,
+  renderAnalystRejectionBlock, REVIEW_STATE_UNAVAILABLE_NOTE,
+} from "./reviews.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
@@ -693,8 +697,38 @@ Deno.serve(async (req) => {
     }
     // Base orchestrator system prompt, shared by streamText and by the forced
     // finalize phase (which appends its phase-specific directive to this exact base).
+    // ---- ANALYST VERDICTS (restored 2026-07-27) ----
+    // This wiring existed at 021a956 and was deleted as collateral damage by the
+    // 07-20 emergency rollback (0595d8e / 4c92abd). reviews.ts and its tests
+    // survived; every call site did not — so for a week the UI wrote verdicts that
+    // nothing ever read. Production has 628 artifact_reviews rows and the agent has
+    // never seen one of them. That is the whole reason marking a finding true/false
+    // changed nothing about the next pivot.
+    //
+    // Dropping rejected rows from artifact READS is necessary but not sufficient:
+    // an ordinary follow-up turn still carries the prior (false) narrative in the
+    // message history, so without an explicit supersede instruction the model can
+    // and does re-assert a finding the analyst already marked FALSE. baseSystemPrompt
+    // feeds all three paths (intermediate, finalize, salvage), so injecting here
+    // covers every turn.
+    const turnReviews = await loadReviewsForThread(supabaseAdmin, threadId, userId);
+    const analystRejectionBlock = turnReviews.ok
+      ? renderAnalystRejectionBlock(turnReviews.rejectedRows)
+      // Verdicts unreadable: say so rather than implying nothing was rejected.
+      : `\n## ANALYST REVIEW STATE UNAVAILABLE\n${REVIEW_STATE_UNAVAILABLE_NOTE}\n`;
+    if (!turnReviews.ok) {
+      console.warn(JSON.stringify({
+        event: "turn_review_state_unavailable", thread_id: threadId, error: turnReviews.error,
+      }));
+    } else if (turnReviews.rejectedRows.length > 0) {
+      console.log(JSON.stringify({
+        event: "analyst_rejections_applied", thread_id: threadId,
+        rejected: turnReviews.rejectedRows.length, reviewed: turnReviews.byId.size,
+      }));
+    }
     const baseSystemPrompt =
-      SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary;
+      SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary
+      + analystRejectionBlock;
     // The two decision tools exist in the registry so forced-finalize can select them,
     // but they must never be available during ordinary investigation steps.
     const normalActiveTools = activeToolsOutsideFinalize(Object.keys(tools));
@@ -1123,15 +1157,34 @@ Deno.serve(async (req) => {
           if (needsReportSalvage(existingReport, workToolCalls)) {
             const { data: salvageArts } = await supabase
               .from("artifacts")
-              .select("kind,value,confidence,source")
+              // `id` is required so analyst verdicts match at the ROW level, not
+              // only by kind|value. Both levels are enforced below.
+              .select("id,kind,value,confidence,source")
               .eq("thread_id", threadId)
               .order("confidence", { ascending: false })
               .limit(200);
+            // Respect analyst verdicts in the salvage report. This is the dominant
+            // CPU-kill finalize path, so skipping it re-promotes rejected findings
+            // into the closing report the analyst actually reads.
+            // FAIL-CLOSED: verdicts unreadable → skip salvage rather than synthesize
+            // from unfiltered rows (a DB error would otherwise reproduce the exact
+            // incident this guard exists for).
+            const salvageReviews = await loadReviewsForThread(supabaseAdmin, threadId, userId);
+            if (!salvageReviews.ok) {
+              console.warn(JSON.stringify({
+                event: "salvage_skipped_review_state_unavailable",
+                thread_id: threadId, error: salvageReviews.error,
+              }));
+              throw new Error("salvage synthesis skipped: analyst review state unavailable");
+            }
+            const cleanSalvageArts = applyReviewsToArtifacts(
+              (salvageArts ?? []) as Array<Record<string, unknown>>, salvageReviews,
+            );
             const salvage = await generateText({
               model: orchestratorModel,
               maxOutputTokens: ORCHESTRATOR_MAX_OUTPUT_TOKENS,
               system: baseSystemPrompt,
-              prompt: buildSalvageSynthesisPrompt(seedValueRaw, (salvageArts ?? []) as Array<Record<string, unknown>>),
+              prompt: buildSalvageSynthesisPrompt(seedValueRaw, cleanSalvageArts),
             });
             const salvageText = (salvage?.text ?? "").trim();
             if (salvageText) {
