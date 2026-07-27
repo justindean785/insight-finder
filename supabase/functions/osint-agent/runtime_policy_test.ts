@@ -3,6 +3,8 @@ import {
   clearRuntime,
   runtimeLimits,
   startCall,
+  MAX_TOTAL_CALLS,
+  MAX_PAID_CALLS,
 } from "./runtime-policy.ts";
 
 const DEFAULT_LIMITS = { ...runtimeLimits };
@@ -87,11 +89,28 @@ Deno.test("weak-lead analysis does not hard-block a pivot", () => {
   assertEquals(decision.allow, true);
 });
 
-// ---- Configurable runtime limits (default unlimited) -------------------------
+// ---- Configurable runtime limits (ENFORCED BY DEFAULT) -----------------------
+// INVERTED 2026-07-27. This block previously asserted "paid cap is unlimited by
+// default — many paid calls all allow:true", i.e. it pinned the defect as intended
+// behavior and went green while production ran a 262-call, $3.05 investigation
+// against a documented ceiling of 30 calls / 12 paid.
+//
+// The caps were off for TWO independent reasons: the enforcement block in startCall
+// is gated on `stopOnBudgetExhausted` (defaulted false), and every check inside it
+// is guarded by Number.isFinite() — which the Infinity defaults fail. MAX_TOTAL_CALLS
+// and MAX_PAID_CALLS were exported constants that the enforcing code never read.
 
-Deno.test("(1) paid cap is unlimited by default — many paid calls all allow:true", () => {
+Deno.test("(1) run caps are ENFORCED by default — no env configuration required", () => {
   restoreLimits();
   clearRuntime("t-limits");
+  // The defaults must equal the documented constants, not Infinity.
+  assertEquals(runtimeLimits.maxTotalToolCallsPerRun, MAX_TOTAL_CALLS);
+  assertEquals(runtimeLimits.maxPaidCallsPerRun, MAX_PAID_CALLS);
+  assertEquals(runtimeLimits.stopOnBudgetExhausted, true);
+
+  // A run that tries to burn 50 paid calls must be stopped at the paid ceiling.
+  let allowed = 0;
+  let blocked = 0;
   for (let i = 0; i < 50; i++) {
     const d = startCall(baseInput({
       threadId: "t-limits",
@@ -100,8 +119,28 @@ Deno.test("(1) paid cap is unlimited by default — many paid calls all allow:tr
       familyKey: `paid_${i}::v`,
       now: i * 1000,
     }));
-    assertEquals(d.allow, true);
+    if (d.allow) allowed++; else blocked++;
   }
+  assertEquals(allowed, MAX_PAID_CALLS, "paid calls must stop at MAX_PAID_CALLS");
+  assertEquals(blocked, 50 - MAX_PAID_CALLS, "the rest must be refused, not queued");
+});
+
+Deno.test("(1b) the documented total ceiling actually stops a runaway run", () => {
+  restoreLimits();
+  clearRuntime("t-total");
+  // Free tools so the PAID cap is not what stops it — this pins the TOTAL ceiling.
+  let allowed = 0;
+  for (let i = 0; i < 120; i++) {
+    const d = startCall(baseInput({
+      threadId: "t-total",
+      toolName: `free_${i}`,
+      costTier: "free",
+      familyKey: `free_${i}::v`,
+      now: i * 1000,
+    }));
+    if (d.allow) allowed++;
+  }
+  assertEquals(allowed, MAX_TOTAL_CALLS, "a runaway run must stop at MAX_TOTAL_CALLS");
 });
 
 Deno.test("(2) cap enabled + paid exhausted, record_artifacts still allow:true (essential bypass)", () => {

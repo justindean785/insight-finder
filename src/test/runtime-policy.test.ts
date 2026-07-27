@@ -280,11 +280,20 @@ describe("runtime-policy: per-run hard stops (cap enabled)", () => {
   });
 });
 
-// ---- Configurable limits: unlimited by default, essential bypass, queueing ----
+// ---- Configurable limits: ENFORCED by default, essential bypass, queueing ----
 describe("runtime-policy: configurable limits", () => {
   afterEach(restoreLimits);
 
-  it("(1) paid cap is UNLIMITED by default — many paid calls all allow:true", () => {
+  // INVERTED 2026-07-27, together with its Deno twin in runtime_policy_test.ts.
+  // Both previously asserted "paid cap is UNLIMITED by default" — pinning the
+  // defect as intended behavior. They stayed green while production ran a
+  // 262-call, $3.05 investigation against a documented ceiling of 30/12.
+  it("(1) run caps are ENFORCED by default — no env configuration required", () => {
+    expect(runtimeLimits.maxTotalToolCallsPerRun).toBe(MAX_TOTAL_CALLS);
+    expect(runtimeLimits.maxPaidCallsPerRun).toBe(MAX_PAID_CALLS);
+    expect(runtimeLimits.stopOnBudgetExhausted).toBe(true);
+
+    let allowed = 0;
     for (let i = 0; i < 50; i++) {
       const d = startCall(base({
         toolName: `paid_${i}`,
@@ -292,9 +301,10 @@ describe("runtime-policy: configurable limits", () => {
         familyKey: `paid_${i}::email::foo`,
         now: i * MIN_START_GAP_MS,
       }));
-      expect(d.allow).toBe(true);
+      if (d.allow) allowed++;
       finishCall(THREAD, `paid_${i}`);
     }
+    expect(allowed).toBe(MAX_PAID_CALLS);
   });
 
   it("(2) cap ENABLED + paid exhausted, but record_artifacts still allow:true (essential bypass)", () => {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { recordAnalystFeedback, actionForReviewState } from "@/lib/analyst-feedback";
 import { detectSeed } from "@/lib/seed";
+import { toast } from "sonner";
 
 /**
  * Analyst review states. Renamed for clarity (Nov 2026):
@@ -371,10 +372,25 @@ export function useReviewStates(threadId: string) {
       } else {
         c.states[id] = state;
         emit(threadId);
-        await supabase.from("artifact_reviews").upsert(
+        const { error: reviewErr } = await supabase.from("artifact_reviews").upsert(
           { thread_id: threadId, artifact_id: id, user_id: user.id, state },
           { onConflict: "user_id,artifact_id" },
         );
+        // A verdict that does not persist is worse than no verdict at all: the
+        // analyst believes the agent has been told, and it has not. This error was
+        // previously discarded, which is how state='wrong' failed a CHECK
+        // constraint on EVERY write for months while the UI showed a green mark
+        // and a memory lesson was still written on the next line. 649 review rows
+        // existed and not one of them was 'wrong'.
+        // Roll the optimistic local state back and tell the analyst, so a silent
+        // write failure can never masquerade as a recorded judgment again.
+        if (reviewErr) {
+          if (prior === "new") delete c.states[id]; else c.states[id] = prior;
+          emit(threadId);
+          console.error("[review] verdict did not persist", { artifactId: id, state, error: reviewErr.message });
+          toast.error(`Could not save "${state}" — the mark was not recorded. ${reviewErr.message}`);
+          return;
+        }
         if (CACHE_INVALIDATING_STATES.has(state)) {
           void invalidateInvestigationCache(threadId, user.id);
         }

@@ -23,6 +23,8 @@
  */
 
 // ---- Confidence tiers (JD's schema) -------------------------------------------
+import { loadReviewsForThread, applyReviewsToArtifacts } from "../reviews.ts";
+
 export const TIERS = { CONFIRMED: 90, LIKELY: 75, POSSIBLE: 50, WEAK: 30 } as const;
 export function tierFor(conf: number): string {
   if (conf >= TIERS.CONFIRMED) return "Confirmed";
@@ -421,7 +423,23 @@ export async function applyClusteringToThread(
   const { data, error } = await admin.from("artifacts")
     .select("id,kind,value,source,confidence,metadata").eq("thread_id", threadId);
   if (error || !Array.isArray(data) || data.length === 0) return { updated: 0, subjects: 0, merges: 0 };
-  const arts: Artifact[] = data.map((r) => {
+  // Analyst verdicts gate identity resolution. A rejected finding left in this set
+  // does not merely reappear — it RE-SEEDS the union-find, so a value the analyst
+  // said is NOT the subject can pull genuine artifacts into its cluster and be
+  // promoted as the most-likely identity. Filtering here is why the rejection has
+  // to reach clustering and not just the prompt.
+  // FAIL-CLOSED: verdicts unreadable → cluster nothing rather than cluster on
+  // unfiltered rows.
+  const reviews = await loadReviewsForThread(admin as unknown as Parameters<typeof loadReviewsForThread>[0], threadId, userId);
+  if (!reviews.ok) {
+    console.warn(JSON.stringify({
+      event: "clustering_skipped_review_state_unavailable", thread_id: threadId, error: reviews.error,
+    }));
+    return { updated: 0, subjects: 0, merges: 0 };
+  }
+  const kept = applyReviewsToArtifacts(data as Array<Record<string, unknown>>, reviews);
+  if (kept.length === 0) return { updated: 0, subjects: 0, merges: 0 };
+  const arts: Artifact[] = kept.map((r) => {
     const row = r as { id: string; kind: string; value: string; source?: string; confidence?: number; metadata?: unknown };
     return {
       id: row.id, kind: row.kind ?? "", value: row.value ?? "", source: row.source ?? "",

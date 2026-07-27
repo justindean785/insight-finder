@@ -177,3 +177,85 @@ describe("evidenceStatus — never overstates, always textual", () => {
     expect(EVIDENCE_STATUS_RANK.lead).toBeLessThan(EVIDENCE_STATUS_RANK.rejected);
   });
 });
+
+describe("data broker records are never presented as breach disclosures", () => {
+  // THE LIVE INCIDENT (case a2192c55, 2026-07-26): one `indicia_address` lookup
+  // returned eleven people associated with an address. Every one rendered
+  // "Breach/exposure · single-source" at 45-50% — a false factual claim that a
+  // private citizen's data appeared in a breach. One was a bank-fraud
+  // investigator, in a bank-fraud case. Broker association != breach disclosure.
+  const brokerName = art({
+    kind: "name",
+    value: "Some Uninvolved Person",
+    confidence: 45,
+    source: "indicia_address",
+    metadata: { source_category: ["data_broker"] },
+  });
+
+  it("labels an indicia_address hit as a data broker record, not breach/exposure", () => {
+    const s = evidenceStatus(brokerName);
+    expect(s.basis).toContain("Data broker record");
+    expect(s.basis).toContain("not breach data");
+    expect(s.basis).not.toContain("Breach/exposure");
+  });
+
+  it("still forces analyst review — the weight is unchanged by the rename", () => {
+    expect(evidenceStatus(brokerName).status).toBe("manual_review");
+  });
+
+  it("keeps a genuine breach corpus hit labelled as breach/exposure", () => {
+    const breach = art({
+      kind: "breach",
+      value: "SomeCorp",
+      confidence: 55,
+      source: "rapidapi_breach_search",
+      metadata: { source_category: ["breach"] },
+    });
+    const s = evidenceStatus(breach);
+    expect(s.basis).toContain("Breach/exposure");
+    expect(s.status).toBe("manual_review");
+  });
+});
+
+describe("analyst-confirmed findings name their actual basis", () => {
+  // NOT a bug, and worth recording so it is not "fixed" again: a single-source
+  // artifact CAN legitimately read Verified when an analyst attests to it —
+  // STATUS_HINT.verified promises exactly that. On case a2192c55 the 12 "Verified"
+  // chips were 11 `confirmed` + 1 `key` review rows: the analyst's own decisions,
+  // working correctly. An earlier attempt to force single-source out of Verified
+  // would have silently demoted those attestations.
+  // The real defect was narrower: the chip read "Single-source · unknown" beside a
+  // green Verified, which looks like corroborated EVIDENCE rather than a human
+  // vouching. Name the basis instead.
+  const singleSource = art({
+    kind: "name",
+    value: "Dioban J. Pineda-Urdaneta",
+    confidence: 50,
+    source: "ada_county_sheriff_press_release",
+    metadata: { source_category: ["news"] },
+  });
+
+  it("says Analyst-confirmed rather than implying corroboration", () => {
+    const s = evidenceStatus(singleSource, "confirmed");
+    expect(s.status).toBe("verified");
+    expect(s.basis).toContain("Analyst-confirmed");
+    expect(s.basis).toContain("single-source");
+  });
+
+  it("treats a persisted metadata.reviewed attestation the same way", () => {
+    const reviewed = art({
+      kind: "name",
+      value: "Attested Person",
+      confidence: 50,
+      source: "news_article",
+      metadata: { source_category: ["news"], reviewed: true },
+    });
+    expect(evidenceStatus(reviewed).basis).toContain("Analyst-confirmed");
+  });
+
+  it("leaves an unreviewed single-source finding as-is", () => {
+    const s = evidenceStatus(singleSource);
+    expect(s.status).not.toBe("verified");
+    expect(s.basis).toContain("Single-source");
+  });
+});

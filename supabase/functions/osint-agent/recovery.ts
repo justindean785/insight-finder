@@ -1,5 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { hasReportShape, stripReasoning } from "./orchestrator-finalize.ts";
+import { loadReviewsForThread, applyReviewsToArtifacts } from "./reviews.ts";
 
 export const RUN_HEARTBEAT_INTERVAL_MS = 15_000;
 export const STALE_RUN_AFTER_MS = 75_000;
@@ -141,8 +142,24 @@ async function recoverOneStaleThread(
   if (!isStaleActiveThread(thread, now.getTime())) return { recovered: false, assistantInserted: false, artifactCount: 0 };
   const [{ data: latestAssistant }, { data: artifacts, count: artifactCount }] = await Promise.all([
     db.from("messages").select("created_at,parts").eq("thread_id", thread.id).eq("role", "assistant").order("created_at", { ascending: false }).limit(1).maybeSingle(),
-    db.from("artifacts").select("kind,value,confidence,source,created_at", { count: "exact" }).eq("thread_id", thread.id).order("confidence", { ascending: false }).order("created_at", { ascending: true }).limit(RECOVERY_ARTIFACT_LIMIT),
+    db.from("artifacts").select("id,kind,value,confidence,source,created_at", { count: "exact" }).eq("thread_id", thread.id).order("confidence", { ascending: false }).order("created_at", { ascending: true }).limit(RECOVERY_ARTIFACT_LIMIT),
   ]);
+  // Analyst verdicts apply to the recovery stub too. The stub is a REPORT the
+  // analyst reads, built straight from durable artifacts — so without this a
+  // finding already marked FALSE comes back as a recovered "finding", on a run the
+  // analyst never even got to see finish. Best-effort here (unlike the run paths):
+  // if verdicts are unreadable we still recover, because suppressing the stub
+  // entirely would strand a genuinely dead run with no report at all — but we log
+  // it, and applyReviewsToArtifacts returns [] on !ok so nothing rejected leaks.
+  const recoveryReviews = await loadReviewsForThread(db as unknown as Parameters<typeof loadReviewsForThread>[0], thread.id, thread.user_id);
+  if (!recoveryReviews.ok) {
+    console.warn(JSON.stringify({
+      event: "recovery_review_state_unavailable", thread_id: thread.id, error: recoveryReviews.error,
+    }));
+  }
+  const reviewedArtifacts = recoveryReviews.ok
+    ? applyReviewsToArtifacts((artifacts ?? []) as Array<Record<string, unknown>>, recoveryReviews)
+    : (artifacts ?? []);
   let assistantInserted = false;
   const latestAssistantRow = latestAssistant as { created_at?: string; parts?: unknown } | null;
   const assistantState = shouldInsertRecoveredAssistant(
@@ -153,7 +170,7 @@ async function recoverOneStaleThread(
     assistantPartsToText(latestAssistantRow?.parts),
   );
   if (assistantState.shouldInsert) {
-    const text = buildRecoveredAssistantText(thread, (artifacts ?? []) as RecoveryArtifact[]);
+    const text = buildRecoveredAssistantText(thread, reviewedArtifacts as RecoveryArtifact[]);
     const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: [{ type: "text", text }] });
     if (insertErr) return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: insertErr.message };
     assistantInserted = true;

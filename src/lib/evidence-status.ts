@@ -100,6 +100,7 @@ const CLASS_LABEL: Record<string, string> = {
   infra_shared_host: "shared host",
   infra: "infrastructure",
   breach: "breach",
+  data_broker: "data broker",
   ai_summary: "AI summary",
   username_sweep: "username sweep",
   social_profile_passive: "passive profile",
@@ -201,12 +202,20 @@ export function evidenceStatus(a: Artifact, review?: ReviewAdjustment): Evidence
   // read as a credential breach of the subject. Keyed on the backend's
   // authoritative source_category so it can't be confused with breach/exposure.
   const threatIntel = classes.includes("threat_intel");
+  // People-search / broker records (Indicia person|address|phone, PDL). Review-only
+  // like breach, but NOT breach — see the data_broker note in source-classification.
+  // Checked BEFORE breachRelated so a broker row can never fall into that branch.
+  const dataBroker = !reputation && !threatIntel && classes.includes("data_broker");
   const breachRelated =
-    !reputation && !threatIntel &&
+    !reputation && !threatIntel && !dataBroker &&
     (kind === "breach" || kind === "breach_exposure" ||
       classes.includes("breach") ||
       (allSources.length > 0 && allSources.some((s) => isBreachSource(s))));
-  const analystConfirmed = review === "confirmed" || review === "key";
+  // Mirrors labelForArtifact's `attested`: a persisted `metadata.reviewed` is an
+  // analyst attestation just as much as the local review state. Both must count,
+  // or the single-source guard below would silently demote genuinely attested
+  // findings back to "Needs corroboration".
+  const analystConfirmed = review === "confirmed" || review === "key" || meta.reviewed === true;
   const shared = isSharedInfrastructure(a);
 
   let status: EvidenceDisplayStatus;
@@ -227,6 +236,10 @@ export function evidenceStatus(a: Artifact, review?: ReviewAdjustment): Evidence
       // Ransomware-victim / threat-intel exposure is review-only — it says an
       // organization was hit, not that this is the subject. Never auto-confirmed.
       base = "manual_review";
+    } else if (dataBroker && (base === "verified" || base === "probable" || base === "needs_corroboration" || base === "lead")) {
+      // A broker association is "these records were filed near each other" — it is
+      // never identity proof and must be analyst-reviewed, exactly like breach.
+      base = "manual_review";
     } else if (breachRelated && (base === "probable" || base === "needs_corroboration" || base === "lead")) {
       base = "manual_review";
     } else if (infraOnly && (base === "verified" || base === "probable")) {
@@ -238,7 +251,14 @@ export function evidenceStatus(a: Artifact, review?: ReviewAdjustment): Evidence
 
   // Evidence-basis subtext.
   let basis: string;
-  if (status === "shared_infrastructure") {
+  if (status === "verified" && analystConfirmed && !multi) {
+    // An analyst attestation is a legitimate route to Verified on a single source
+    // (STATUS_HINT.verified says so). But rendering it as a bare
+    // "Single-source · unknown" next to a green Verified chip reads as if the
+    // EVIDENCE were corroborated, which it is not — it means a human vouched for
+    // it. Name the actual basis so the two are never confused.
+    basis = `Analyst-confirmed · single-source · ${classLabel(classes[0] ?? "unknown")}`;
+  } else if (status === "shared_infrastructure") {
     basis = "Shared infrastructure · not ownership proof";
   } else if (status === "rejected") {
     basis = "Excluded from findings";
@@ -248,6 +268,9 @@ export function evidenceStatus(a: Artifact, review?: ReviewAdjustment): Evidence
     basis = `Threat/reputation signal · ${multi ? "multi-source" : "single-source"}`;
   } else if (threatIntel && status === "manual_review") {
     basis = `Threat intel · not identity proof · ${multi ? "multi-source" : "single-source"}`;
+  } else if (dataBroker && status === "manual_review") {
+    // Must never read "Breach/exposure" — it is a broker record, not a disclosure.
+    basis = `Data broker record · not breach data · ${multi ? "multi-source" : "single-source"}`;
   } else if (breachRelated && status === "manual_review") {
     basis = `Breach/exposure · ${multi ? "multi-source" : "single-source"}`;
   } else {

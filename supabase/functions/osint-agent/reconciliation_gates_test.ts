@@ -20,7 +20,10 @@ import { handleHealthProbe } from "./health-handler.ts";
 //  integration test — PEOPLEDATALABS_API_KEY — out of scope for a unit run.)
 Deno.test("GATE1 PDL smoke: pdl_person_enrich fully wired across every layer", () => {
   assert(TOOL_CATALOG.tools.some((t) => t.name === "pdl_person_enrich"), "in catalog");
-  assertEquals(classifySource("pdl_person_enrich"), "breach", "classed 'breach' (LEAD, never Confirmed alone)");
+  // Reclassified breach -> data_broker 2026-07-26. PDL is a person aggregator, not
+  // a breach corpus; the class carries an identical cap + NEVER_HIGH ceiling, so it
+  // is still a LEAD that can never reach Confirmed alone (pinned in indicia_test.ts).
+  assertEquals(classifySource("pdl_person_enrich"), "data_broker", "classed 'data_broker' (LEAD, never Confirmed alone)");
   assert(isPremiumTool("pdl_person_enrich"), "premium tool");
   assertEquals(TOOL_COSTS_MICRO_USD["pdl_person_enrich"], 50000, "cost entry");
   assert(TIER_B.includes("pdl_person_enrich"), "in TIER_B");

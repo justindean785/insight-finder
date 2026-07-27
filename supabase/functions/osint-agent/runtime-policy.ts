@@ -153,7 +153,13 @@ export const MAX_TOTAL_CALLS = 30;
 // Speed pass: raised 6→10 to cut wall-clock further once the orchestrator emits
 // parallel tool calls (Gemini path). Queue still spaces starts (MIN_START_GAP_MS)
 // and backs off on real 429s — wider just means more in flight at once.
-export const MAX_CONCURRENT_CALLS = 10;
+// Lowered 10 -> 3 (2026-07-27). Ten concurrent starts with a 100ms gap is what
+// produced the observed burst: a single planning cycle could dispatch a full
+// provider fan-out before any result came back, so nothing the first call learned
+// could inform the other nine. Three keeps real parallelism for genuinely
+// independent pivots while forcing the loop to re-plan on evidence. Raise via
+// MAX_PARALLEL_TOOLS if a specific run needs it.
+export const MAX_CONCURRENT_CALLS = 3;
 export const MAX_PAID_CALLS = 12;
 
 // ---- Configurable runtime limits ---------------------------------------------
@@ -199,12 +205,31 @@ function envBool(name: string, fallback: boolean): boolean {
 }
 
 // EXPORTED MUTABLE config — tests mutate this directly to enable caps.
+// Hard per-tool ceiling. Declared here (not with the other same-tool constants
+// further down) because `runtimeLimits` below reads it — a const referenced
+// before its declaration is a temporal-dead-zone throw at module import.
+export const MAX_SAME_TOOL_CALLS = 16;
+
+// ---- ENFORCED BY DEFAULT (2026-07-27) ----
+// These used to default to Infinity with `stopOnBudgetExhausted:false`, which meant
+// the run caps were off for TWO independent reasons: the enforcement block in
+// startCall is gated on the flag, and even when reached every check is guarded by
+// Number.isFinite() — which Infinity fails. So MAX_TOTAL_CALLS/MAX_PAID_CALLS below
+// were documented, exported, and never read by the code that enforces them.
+//
+// Production consequence: a single investigation ran 262 tool calls and cost $3.05
+// against a documented ceiling of 30 calls / 12 paid. Five runs = 482 calls, $4.54.
+//
+// Defaults now equal the documented constants, so the caps hold with no deploy-time
+// env configuration. The env vars still override for incident response, and tests
+// still mutate `runtimeLimits` directly. Recording/finalize tools are exempt via
+// ALWAYS_ALLOW_TOOLS, so a closing record_artifacts can never be starved by a cap.
 export const runtimeLimits = {
-  maxPaidCallsPerRun: envNumber("MAX_PAID_CALLS_PER_RUN", Number.POSITIVE_INFINITY),
-  maxTotalToolCallsPerRun: envNumber("MAX_TOTAL_TOOL_CALLS_PER_RUN", Number.POSITIVE_INFINITY),
+  maxPaidCallsPerRun: envNumber("MAX_PAID_CALLS_PER_RUN", MAX_PAID_CALLS),
+  maxTotalToolCallsPerRun: envNumber("MAX_TOTAL_TOOL_CALLS_PER_RUN", MAX_TOTAL_CALLS),
   maxParallelTools: envNumber("MAX_PARALLEL_TOOLS", MAX_CONCURRENT_CALLS),
-  maxSameToolCallsPerRun: envNumber("MAX_SAME_TOOL_CALLS_PER_RUN", Number.POSITIVE_INFINITY),
-  stopOnBudgetExhausted: envBool("STOP_ON_BUDGET_EXHAUSTED", false),
+  maxSameToolCallsPerRun: envNumber("MAX_SAME_TOOL_CALLS_PER_RUN", MAX_SAME_TOOL_CALLS),
+  stopOnBudgetExhausted: envBool("STOP_ON_BUDGET_EXHAUSTED", true),
 };
 
 // Tools that record/persist evidence — NEVER throttled by runaway budgets, so a
@@ -232,7 +257,6 @@ export const MAX_CONCURRENCY_BACKOFF_MS = 5000;
 // highest-value tool while property/registry pivots were still pending.)
 export const SAME_TOOL_SOFT_LIMIT = 6;
 export const SAME_TOOL_COOLDOWN_MS = 400;
-export const MAX_SAME_TOOL_CALLS = 16;
 // Speed pass: env-tunable, default lowered 600→200ms so cycles start faster.
 // Still a real gap between call starts (queue spacing); raise via MIN_START_GAP_MS
 // if a provider's per-second limit needs more breathing room.
