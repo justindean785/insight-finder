@@ -147,6 +147,39 @@ Deno.test("extractFindings: username_sweep salvages confirmed profile hits", () 
   assert(values(out, "url").some((u) => /twitch\.tv/.test(u)));
 });
 
+Deno.test("extractFindings: a full sweep collapses to ONE footprint artifact, URLs kept", () => {
+  // Measured on the youngcl17@gmail.com run: 62 of 103 artifacts (60%) were sweep
+  // URLs — pypi/weibo/hashnode account-existence checks each shown to the analyst
+  // as separate evidence at confidence 30. Evidence read 99+ and the report closed
+  // with "Key Findings: No findings recorded yet.": the breach hits and alternate
+  // handles were buried under noise. A sweep hit proves a string is REGISTERED,
+  // never who owns it, so the footprint is the finding and the URLs are its detail.
+  const found = ["twitch.tv", "pypi.org", "weibo.com", "hashnode.com", "500px.com"]
+    .map((site) => ({ url: `https://${site}/youngcl17`, site, found: true, status: 200 }));
+  const out = extractFindings("username_sweep", { hits: 5, total: 99, username: "youngcl17", found });
+
+  assertEquals(values(out, "url").length, 0, "individual platform URLs must not each become an artifact");
+  const fp = out.filter((f) => f.kind === "social_footprint");
+  assertEquals(fp.length, 1, "exactly one footprint artifact per swept handle");
+  assert(/youngcl17/.test(fp[0].value) && /5 platform registrations/.test(fp[0].value));
+  // Collapsing the ARTIFACT must not lose the underlying data.
+  assertEquals((fp[0].context as { urls?: string[] }).urls?.length, 5);
+});
+
+Deno.test("extractFindings: a thin sweep stays as individual URLs", () => {
+  // Below the threshold a couple of hits are legible on their own — collapsing
+  // them would hide detail without removing any meaningful noise.
+  const out = extractFindings("username_sweep", {
+    hits: 2, total: 99, username: "thin",
+    found: [
+      { url: "https://www.twitch.tv/thin", site: "Twitch", found: true, status: 200 },
+      { url: "https://t.me/thin", site: "Telegram", found: true, status: 200 },
+    ],
+  });
+  assertEquals(values(out, "url").length, 2);
+  assertEquals(out.filter((f) => f.kind === "social_footprint").length, 0);
+});
+
 // ---- socialfetch_lookup — real shape is data.profile -----------------------
 Deno.test("extractFindings: socialfetch_lookup reads data.profile when found", () => {
   const out = extractFindings("socialfetch_lookup", {

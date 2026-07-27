@@ -157,6 +157,11 @@ function pushUrl(out: ExtractedFinding[], url: unknown, ctx: Record<string, unkn
   if (n) out.push({ kind: n.kind, value: n.value, context: ctx, rawConfidence: 30 });
 }
 
+/** Kill switch: false restores one artifact per swept platform URL. */
+export const SWEEP_COLLAPSE_ENABLED = true;
+/** Below this many hits, individual URLs are still legible — don't collapse. */
+export const SWEEP_COLLAPSE_MIN_HITS = 3;
+
 /** Extract findings from a single tool call's parsed output. Never throws. */
 export function extractFindings(toolName: string, output: unknown): ExtractedFinding[] {
   if (AUTO_PERSIST_TOOL_DENYLIST.has(toolName)) return [];
@@ -342,11 +347,53 @@ export function extractFindings(toolName: string, output: unknown): ExtractedFin
   //     profile URL is the finding; it lives in `found`, not items/results/matches,
   //     so it was previously dropped.
   if (toolName === "username_sweep" && Array.isArray(o.found)) {
+    // COLLAPSED 2026-07-27 — one artifact per HANDLE, not one per platform.
+    //
+    // This used to emit a separate `url` artifact for every 2xx platform hit. A
+    // sweep returns ~20, and a run that sweeps four handles therefore persisted
+    // ~80 rows of pypi.org/user/<h>, weibo.com/<h>, hashnode.com/@<h> — each
+    // presented to the analyst as an individual piece of evidence at confidence
+    // 30. Measured on the youngcl17@gmail.com run: 62 of 103 artifacts (60%) were
+    // sweep URLs, the Evidence badge read 99+, and the report closed with
+    // "Key Findings: No findings recorded yet." The real signals — the breach
+    // hits and three alternate handles — were buried under account-existence
+    // checks.
+    //
+    // A sweep hit is NOT independent evidence. It proves a string is registered on
+    // a site, nothing about who owns it, which is why every one of these caps at
+    // username_sweep confidence anyway. The FOOTPRINT is the finding; the
+    // individual URLs are its supporting detail and belong in metadata, where the
+    // model and the analyst can still read every one of them.
+    const hits: string[] = [];
     for (const hit of o.found.slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
       if (!hit || typeof hit !== "object") continue;
       const h = hit as Record<string, unknown>;
       if (h.found === false) continue;
-      pushUrl(findings, h.url, { tool: toolName, via: "username_sweep" });
+      const n = normalizeFinding("url", h.url);
+      if (n) hits.push(n.value);
+    }
+    if (hits.length > 0) {
+      const handle = String(o.username ?? o.handle ?? o.query ?? "").trim();
+      if (SWEEP_COLLAPSE_ENABLED && handle && hits.length >= SWEEP_COLLAPSE_MIN_HITS) {
+        findings.push({
+          kind: "social_footprint",
+          value: `${handle} — ${hits.length} platform registration${hits.length === 1 ? "" : "s"}`,
+          context: {
+            tool: toolName,
+            via: "username_sweep",
+            handle,
+            platform_count: hits.length,
+            // Every URL is preserved here — collapsing the ARTIFACT must not lose
+            // the underlying data, only stop it inflating the evidence count.
+            urls: hits,
+          },
+          rawConfidence: 30,
+        });
+      } else {
+        // Below the collapse threshold (or no handle to group under): a couple of
+        // hits are legible on their own and worth surfacing individually.
+        for (const u of hits) pushUrl(findings, u, { tool: toolName, via: "username_sweep" });
+      }
     }
   }
 
