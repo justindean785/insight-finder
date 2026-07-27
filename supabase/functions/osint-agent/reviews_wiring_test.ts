@@ -103,3 +103,48 @@ Deno.test("analyst verdicts: the recovery stub excludes rejected findings", () =
     "the stub must be built from review-filtered artifacts, not the raw fetch",
   );
 });
+
+// ---- Confidence write-through (2026-07-27) ----
+import {
+  applyReviewsToArtifacts, emptyReviewLoad, reviewConfidenceDelta,
+  CONFIRMED_CONFIDENCE_BOOST, KEY_CONFIDENCE_BOOST, RECHECK_CONFIDENCE_PENALTY,
+  ATTESTED_CONFIDENCE_CEILING,
+} from "./reviews.ts";
+import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
+
+function loadWith(state: string) {
+  const l = emptyReviewLoad(true);
+  l.byId.set("a1", state);
+  return l;
+}
+const row = (confidence: number) => [{ id: "a1", kind: "email", value: "x@y.z", confidence }];
+
+Deno.test("attestation moves the NUMBER, not just the label", () => {
+  // Production showed a green "Verified" chip beside an unchanged 45%: the label
+  // came from the review, the number never did, so confirmed findings sorted BELOW
+  // unconfirmed ones. The frontend advertised +20/+25 and the backend applied
+  // neither.
+  assertEquals(applyReviewsToArtifacts(row(45), loadWith("confirmed"))[0].confidence, 45 + CONFIRMED_CONFIDENCE_BOOST);
+  assertEquals(applyReviewsToArtifacts(row(45), loadWith("key"))[0].confidence, 45 + KEY_CONFIDENCE_BOOST);
+  assertEquals(applyReviewsToArtifacts(row(45), loadWith("recheck"))[0].confidence, 45 - RECHECK_CONFIDENCE_PENALTY);
+});
+
+Deno.test("attestation cannot manufacture corroboration", () => {
+  // Confirming attests to RELEVANCE, not to a second independent source. A weak
+  // single-source row must not reach absolute proof by clicking.
+  assertEquals(
+    applyReviewsToArtifacts(row(85), loadWith("key"))[0].confidence,
+    ATTESTED_CONFIDENCE_CEILING,
+    "boost must be bounded by the attestation ceiling",
+  );
+  assertEquals(applyReviewsToArtifacts(row(5), loadWith("recheck"))[0].confidence, 0, "never negative");
+});
+
+Deno.test("backend deltas match the frontend contract exactly", () => {
+  // src/lib/review.ts REVIEW_CONFIDENCE_DELTA — if these drift, the UI promises a
+  // score the agent does not apply, which is the bug this fixes.
+  assertEquals(reviewConfidenceDelta("confirmed"), 20);
+  assertEquals(reviewConfidenceDelta("key"), 25);
+  assertEquals(reviewConfidenceDelta("recheck"), -20);
+  assertEquals(reviewConfidenceDelta("new"), 0);
+});
