@@ -143,7 +143,7 @@ export function normalizeFinding(kind: string, value: unknown): { kind: string; 
       // still available to the model in the tool output — this only stops it being
       // durably recorded AS a name.
       if (/\d/.test(nm)) return null;
-      if (/[_@\/\\]/.test(nm)) return null;
+      if (/[_@/\\]/.test(nm)) return null;
       return { kind: "name", value: nm };
     }
     case "address": {
