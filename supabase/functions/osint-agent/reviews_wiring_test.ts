@@ -66,3 +66,40 @@ Deno.test("analyst verdicts: salvage reads artifact ids so verdicts match at row
     "the salvage artifact select must include id for row-level verdict matching",
   );
 });
+
+const CLUSTER = await Deno.readTextFile(new URL("./lib/cluster.ts", import.meta.url));
+const RECOVERY = await Deno.readTextFile(new URL("./recovery.ts", import.meta.url));
+
+// An automated review caught the FIRST restore as incomplete: the prompt block and
+// salvage were re-wired, but a rejected finding could still re-seed clustering, be
+// cached into a FUTURE run, and come back in a recovery stub. Commit 021a956 was
+// titled "review-filter every model/scoring/memory artifacts read" — every, not some.
+Deno.test("analyst verdicts: clustering does not re-seed identity from rejected rows", () => {
+  // Worst of the remaining paths: clustering is union-find, so a rejected value
+  // does not merely reappear — it PULLS genuine artifacts into its cluster and can
+  // be promoted as the most-likely identity.
+  assertStringIncludes(CLUSTER, "loadReviewsForThread(", "clustering must load verdicts");
+  assertStringIncludes(CLUSTER, "applyReviewsToArtifacts(", "clustering must filter on them");
+  assertStringIncludes(CLUSTER, "clustering_skipped_review_state_unavailable", "must fail closed");
+});
+
+Deno.test("analyst verdicts: the investigation cache is filtered before it is written", () => {
+  // Widest blast radius of any read. The cache is replayed into a DIFFERENT, FUTURE
+  // investigation where the rejection does not apply to that thread — so a value
+  // marked FALSE can resurface as prior intelligence in a run with no record of it
+  // ever being rejected.
+  assertStringIncludes(INDEX, "cache_skipped_review_state_unavailable", "cache must fail closed");
+  assert(
+    /Persist investigation cache[\s\S]{0,3000}applyReviewsToArtifacts\(/.test(INDEX),
+    "the cache write must filter artifacts through analyst verdicts",
+  );
+});
+
+Deno.test("analyst verdicts: the recovery stub excludes rejected findings", () => {
+  // The stub is a REPORT the analyst reads, built straight from durable artifacts.
+  assertStringIncludes(RECOVERY, "loadReviewsForThread(", "recovery must load verdicts");
+  assert(
+    /buildRecoveredAssistantText\(thread,\s*reviewedArtifacts/.test(RECOVERY),
+    "the stub must be built from review-filtered artifacts, not the raw fetch",
+  );
+});

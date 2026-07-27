@@ -1310,13 +1310,33 @@ Deno.serve(async (req) => {
             if (detectedSeed && safePartsForCache) {
               const { data: arts } = await supabase
                 .from("artifacts")
-                .select("kind,value,confidence,source,metadata")
+                // `id` so analyst verdicts match per-row, not only by kind|value.
+                .select("id,kind,value,confidence,source,metadata")
                 .eq("thread_id", threadId)
                 .order("created_at", { ascending: true });
               // Cache is long-lived (7d) and is replayed back into a future
               // run's context, so strip credentials / PII / oversized blobs.
+              //
+              // AND filter analyst verdicts BEFORE caching. This is the widest
+              // blast radius of any read: a rejected finding written into the
+              // cache is replayed into a DIFFERENT, FUTURE investigation, where
+              // the rejection no longer applies to that thread — so a value the
+              // analyst marked FALSE can resurface as prior intelligence in a run
+              // that has no record of it ever being rejected. Cache with
+              // unavailable verdicts is skipped entirely rather than poisoned.
+              const cacheReviews = await loadReviewsForThread(supabaseAdmin, threadId, userId);
+              if (!cacheReviews.ok) {
+                console.warn(JSON.stringify({
+                  event: "cache_skipped_review_state_unavailable",
+                  thread_id: threadId, error: cacheReviews.error,
+                }));
+                throw new Error("investigation cache skipped: analyst review state unavailable");
+              }
+              const cleanArts = applyReviewsToArtifacts(
+                (arts ?? []) as Array<Record<string, unknown>>, cacheReviews,
+              );
               const cachedParts = sanitizeToolOutput(safePartsForCache, 1500);
-              const cachedArts = sanitizeToolOutput(arts ?? [], 1500);
+              const cachedArts = sanitizeToolOutput(cleanArts, 1500);
               const payload = {
                 seed: detectedSeed,
                 assistant_parts: cachedParts,
