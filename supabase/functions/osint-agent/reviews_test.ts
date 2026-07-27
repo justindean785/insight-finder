@@ -20,6 +20,9 @@ import {
   loadReviewsForThread,
   normalizeArtifactKey,
   RECHECK_CONFIDENCE_PENALTY,
+  CONFIRMED_CONFIDENCE_BOOST,
+  KEY_CONFIDENCE_BOOST,
+  ATTESTED_CONFIDENCE_CEILING,
   rejectedArtifacts,
   renderAnalystRejectionBlock,
   type ReviewLoad,
@@ -168,7 +171,7 @@ Deno.test("BYPASS CLOSED: value-level key from the DB drops a re-record even whe
   assertEquals(out.length, 0);
 });
 
-Deno.test("applyReviewsToArtifacts downweights recheck, floors at zero, tags states", () => {
+Deno.test("applyReviewsToArtifacts applies every review delta, floors at zero, tags states", () => {
   const out = applyReviewsToArtifacts(
     [{ id: "a1", kind: "e", value: "v", confidence: 50 }, { id: "a2", kind: "e", value: "w", confidence: 5 }],
     load({ a1: "recheck", a2: "recheck" }),
@@ -176,9 +179,23 @@ Deno.test("applyReviewsToArtifacts downweights recheck, floors at zero, tags sta
   assertEquals(out[0].confidence, 50 - RECHECK_CONFIDENCE_PENALTY);
   assertEquals(out[0].review_state, "recheck");
   assertEquals(out[1].confidence, 0);
+
+  // UPDATED 2026-07-27: `confirmed` used to be tagged WITHOUT touching confidence,
+  // and this test pinned that. The frontend advertised +20/+25
+  // (src/lib/review.ts REVIEW_CONFIDENCE_DELTA) while the backend applied neither,
+  // so production showed a green "Verified" chip beside an unchanged 45% and
+  // confirmed findings sorted BELOW unconfirmed ones.
   const kept = applyReviewsToArtifacts([{ id: "a1", kind: "e", value: "v", confidence: 50 }], load({ a1: "confirmed" }));
-  assertEquals(kept[0].confidence, 50);
+  assertEquals(kept[0].confidence, 50 + CONFIRMED_CONFIDENCE_BOOST);
   assertEquals(kept[0].review_state, "confirmed");
+
+  const keyed = applyReviewsToArtifacts([{ id: "a1", kind: "e", value: "v", confidence: 50 }], load({ a1: "key" }));
+  assertEquals(keyed[0].confidence, 50 + KEY_CONFIDENCE_BOOST);
+
+  // An attestation is a statement about RELEVANCE, not a second independent
+  // source, so it must not manufacture corroboration past the ceiling.
+  const capped = applyReviewsToArtifacts([{ id: "a1", kind: "e", value: "v", confidence: 85 }], load({ a1: "key" }));
+  assertEquals(capped[0].confidence, ATTESTED_CONFIDENCE_CEILING);
 });
 
 Deno.test("applyReviewsToArtifacts is identity when nothing is reviewed", () => {
