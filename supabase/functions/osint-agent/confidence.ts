@@ -72,6 +72,10 @@ export function computeAxes(input: {
 // with #16's caps so the table is exhaustive over the merged SourceClass union.
 const CLASS_CAP: Record<SourceClass, number> = {
   breach: 60,
+  // Deliberately IDENTICAL to breach. data_broker was split out of breach purely
+  // so the UI stops calling a people-search record a breach disclosure; the
+  // evidence weight must not move with the rename. Keep these two in lockstep.
+  data_broker: 60,
   // Threat-intel (ransomware-victim exposure) is weaker than a breach as a
   // signal about a PERSON: it says an organization was hit. Capped below breach.
   threat_intel: 50,
@@ -152,6 +156,8 @@ const TRUSTED_NON_INFRA = new Set<SourceClass>([
 // (post-#56 main set, plus #16's weak free-text classes.)
 const NEVER_HIGH = new Set<SourceClass>([
   "breach",
+  // Same ceiling as breach — see CLASS_CAP. A broker association is never proof.
+  "data_broker",
   "threat_intel",
   "username_sweep",
   "social_profile_passive",

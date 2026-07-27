@@ -41,6 +41,40 @@ export const REJECTED_REVIEW_STATES: ReadonlySet<string> = new Set(["dismissed",
  */
 export const RECHECK_CONFIDENCE_PENALTY = 20;
 
+/**
+ * Confidence ADDED for an analyst attestation. MUST match the canonical deltas in
+ * src/lib/review.ts (REVIEW_CONFIDENCE_DELTA.confirmed = +20, .key = +25).
+ *
+ * These existed on the frontend and were never applied by the backend: this module
+ * implemented only the `recheck` penalty, so the UI promised a scoring effect the
+ * agent never delivered. In production that surfaced as a green "Verified" chip
+ * sitting next to an unchanged 45% — the label moved, the number never did, and
+ * confirmed findings therefore sorted BELOW unconfirmed ones.
+ */
+export const CONFIRMED_CONFIDENCE_BOOST = 20;
+export const KEY_CONFIDENCE_BOOST = 25;
+
+/**
+ * Ceiling for an attestation-boosted artifact.
+ *
+ * An analyst confirming a finding attests to RELEVANCE — that this row belongs to
+ * the subject. It is not a second independent source, so it must not manufacture
+ * corroboration: a single weak-provenance row cannot become absolute proof by
+ * clicking. Provenance caps (applyEvidenceCaps: breach/data_broker 60,
+ * username_sweep 45, ...) are applied at RECORD time and remain the ceiling for
+ * what the evidence itself supports; this bound stops the human boost from
+ * overshooting into the Confirmed band on its own.
+ */
+export const ATTESTED_CONFIDENCE_CEILING = 90;
+
+/** Confidence delta for a review state — the single place the backend decides. */
+export function reviewConfidenceDelta(state: string | null | undefined): number {
+  if (state === "confirmed") return CONFIRMED_CONFIDENCE_BOOST;
+  if (state === "key") return KEY_CONFIDENCE_BOOST;
+  if (state === "recheck") return -RECHECK_CONFIDENCE_PENALTY;
+  return 0;
+}
+
 export function isRejectedReview(state: string | null | undefined): boolean {
   return !!state && REJECTED_REVIEW_STATES.has(state);
 }
@@ -184,9 +218,15 @@ export function applyReviewsToArtifacts<T extends Record<string, unknown>>(
     const state = id ? review.byId.get(id) : undefined;
     if (state && REJECTED_REVIEW_STATES.has(state)) continue;
     if (rejectedKeys.has(normalizeArtifactKey(r.kind, r.value))) continue; // same value, new id
-    if (state === "recheck") {
+    if (state === "recheck" || state === "confirmed" || state === "key") {
+      // Apply the SAME deltas the frontend advertises. Previously only `recheck`
+      // was honoured, so a confirmed finding kept its original number forever.
       const c = typeof r.confidence === "number" ? r.confidence : Number(r.confidence) || 0;
-      out.push({ ...r, confidence: Math.max(0, c - RECHECK_CONFIDENCE_PENALTY), review_state: state });
+      const delta = reviewConfidenceDelta(state);
+      const bounded = delta > 0
+        ? Math.min(ATTESTED_CONFIDENCE_CEILING, c + delta)
+        : Math.max(0, c + delta);
+      out.push({ ...r, confidence: bounded, review_state: state });
     } else if (state) {
       out.push({ ...r, review_state: state });
     } else {

@@ -49,6 +49,10 @@ import {
   shouldNudgePersistence, buildPersistenceNudgeDirective,
   hasNoFindingsDecision, resolveTerminalState,
 } from "./orchestrator-finalize.ts";
+import {
+  loadReviewsForThread, applyReviewsToArtifacts,
+  renderAnalystRejectionBlock, REVIEW_STATE_UNAVAILABLE_NOTE,
+} from "./reviews.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
@@ -694,8 +698,38 @@ Deno.serve(async (req) => {
     }
     // Base orchestrator system prompt, shared by streamText and by the forced
     // finalize phase (which appends its phase-specific directive to this exact base).
+    // ---- ANALYST VERDICTS (restored 2026-07-27) ----
+    // This wiring existed at 021a956 and was deleted as collateral damage by the
+    // 07-20 emergency rollback (0595d8e / 4c92abd). reviews.ts and its tests
+    // survived; every call site did not — so for a week the UI wrote verdicts that
+    // nothing ever read. Production has 628 artifact_reviews rows and the agent has
+    // never seen one of them. That is the whole reason marking a finding true/false
+    // changed nothing about the next pivot.
+    //
+    // Dropping rejected rows from artifact READS is necessary but not sufficient:
+    // an ordinary follow-up turn still carries the prior (false) narrative in the
+    // message history, so without an explicit supersede instruction the model can
+    // and does re-assert a finding the analyst already marked FALSE. baseSystemPrompt
+    // feeds all three paths (intermediate, finalize, salvage), so injecting here
+    // covers every turn.
+    const turnReviews = await loadReviewsForThread(supabaseAdmin, threadId, userId);
+    const analystRejectionBlock = turnReviews.ok
+      ? renderAnalystRejectionBlock(turnReviews.rejectedRows)
+      // Verdicts unreadable: say so rather than implying nothing was rejected.
+      : `\n## ANALYST REVIEW STATE UNAVAILABLE\n${REVIEW_STATE_UNAVAILABLE_NOTE}\n`;
+    if (!turnReviews.ok) {
+      console.warn(JSON.stringify({
+        event: "turn_review_state_unavailable", thread_id: threadId, error: turnReviews.error,
+      }));
+    } else if (turnReviews.rejectedRows.length > 0) {
+      console.log(JSON.stringify({
+        event: "analyst_rejections_applied", thread_id: threadId,
+        rejected: turnReviews.rejectedRows.length, reviewed: turnReviews.byId.size,
+      }));
+    }
     const baseSystemPrompt =
-      SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary;
+      SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary
+      + analystRejectionBlock;
     // The two decision tools exist in the registry so forced-finalize can select them,
     // but they must never be available during ordinary investigation steps.
     const normalActiveTools = activeToolsOutsideFinalize(Object.keys(tools));
@@ -1153,21 +1187,44 @@ Deno.serve(async (req) => {
           // Artifacts already on the thread also prove the run was investigating, so
           // fetch the count BEFORE deciding: a run whose tool parts were trimmed out
           // of the message history still deserves a report.
+          // `id` is required so analyst verdicts match at the ROW level, not only by
+          // kind|value. Both levels are enforced below.
           const { data: salvageArts } = await supabase
             .from("artifacts")
-            .select("kind,value,confidence,source")
+            .select("id,kind,value,confidence,source")
             .eq("thread_id", threadId)
             .order("confidence", { ascending: false })
             .limit(200);
+          // The DECISION to salvage uses the raw count deliberately. It answers "did
+          // this run actually investigate?", and a run whose every finding the analyst
+          // later rejected still investigated — it just needs a report saying so.
+          // Only the SYNTHESIS below is verdict-filtered.
           if (needsReportSalvage(existingReport, workToolCalls, {
             artifactCount: (salvageArts ?? []).length,
             hadNoFindingsDecision: hasNoFindingsDecision(reportMsgs),
           })) {
+            // Respect analyst verdicts in the salvage report. This is the dominant
+            // CPU-kill finalize path, so skipping it re-promotes rejected findings
+            // into the closing report the analyst actually reads.
+            // FAIL-CLOSED: verdicts unreadable → skip salvage rather than synthesize
+            // from unfiltered rows (a DB error would otherwise reproduce the exact
+            // incident this guard exists for).
+            const salvageReviews = await loadReviewsForThread(supabaseAdmin, threadId, userId);
+            if (!salvageReviews.ok) {
+              console.warn(JSON.stringify({
+                event: "salvage_skipped_review_state_unavailable",
+                thread_id: threadId, error: salvageReviews.error,
+              }));
+              throw new Error("salvage synthesis skipped: analyst review state unavailable");
+            }
+            const cleanSalvageArts = applyReviewsToArtifacts(
+              (salvageArts ?? []) as Array<Record<string, unknown>>, salvageReviews,
+            );
             const salvage = await generateText({
               model: orchestratorModel,
               maxOutputTokens: ORCHESTRATOR_MAX_OUTPUT_TOKENS,
               system: baseSystemPrompt,
-              prompt: buildSalvageSynthesisPrompt(seedValueRaw, (salvageArts ?? []) as Array<Record<string, unknown>>),
+              prompt: buildSalvageSynthesisPrompt(seedValueRaw, cleanSalvageArts),
             });
             const salvageText = (salvage?.text ?? "").trim();
             if (salvageText) {
@@ -1324,13 +1381,33 @@ Deno.serve(async (req) => {
             if (detectedSeed && safePartsForCache) {
               const { data: arts } = await supabase
                 .from("artifacts")
-                .select("kind,value,confidence,source,metadata")
+                // `id` so analyst verdicts match per-row, not only by kind|value.
+                .select("id,kind,value,confidence,source,metadata")
                 .eq("thread_id", threadId)
                 .order("created_at", { ascending: true });
               // Cache is long-lived (7d) and is replayed back into a future
               // run's context, so strip credentials / PII / oversized blobs.
+              //
+              // AND filter analyst verdicts BEFORE caching. This is the widest
+              // blast radius of any read: a rejected finding written into the
+              // cache is replayed into a DIFFERENT, FUTURE investigation, where
+              // the rejection no longer applies to that thread — so a value the
+              // analyst marked FALSE can resurface as prior intelligence in a run
+              // that has no record of it ever being rejected. Cache with
+              // unavailable verdicts is skipped entirely rather than poisoned.
+              const cacheReviews = await loadReviewsForThread(supabaseAdmin, threadId, userId);
+              if (!cacheReviews.ok) {
+                console.warn(JSON.stringify({
+                  event: "cache_skipped_review_state_unavailable",
+                  thread_id: threadId, error: cacheReviews.error,
+                }));
+                throw new Error("investigation cache skipped: analyst review state unavailable");
+              }
+              const cleanArts = applyReviewsToArtifacts(
+                (arts ?? []) as Array<Record<string, unknown>>, cacheReviews,
+              );
               const cachedParts = sanitizeToolOutput(safePartsForCache, 1500);
-              const cachedArts = sanitizeToolOutput(arts ?? [], 1500);
+              const cachedArts = sanitizeToolOutput(cleanArts, 1500);
               const payload = {
                 seed: detectedSeed,
                 assistant_parts: cachedParts,
