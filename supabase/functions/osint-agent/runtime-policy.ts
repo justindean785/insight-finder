@@ -153,7 +153,13 @@ export const MAX_TOTAL_CALLS = 30;
 // Speed pass: raised 6→10 to cut wall-clock further once the orchestrator emits
 // parallel tool calls (Gemini path). Queue still spaces starts (MIN_START_GAP_MS)
 // and backs off on real 429s — wider just means more in flight at once.
-export const MAX_CONCURRENT_CALLS = 10;
+// Lowered 10 -> 3 (2026-07-27). Ten concurrent starts with a 100ms gap is what
+// produced the observed burst: a single planning cycle could dispatch a full
+// provider fan-out before any result came back, so nothing the first call learned
+// could inform the other nine. Three keeps real parallelism for genuinely
+// independent pivots while forcing the loop to re-plan on evidence. Raise via
+// MAX_PARALLEL_TOOLS if a specific run needs it.
+export const MAX_CONCURRENT_CALLS = 3;
 export const MAX_PAID_CALLS = 12;
 
 // ---- Configurable runtime limits ---------------------------------------------
