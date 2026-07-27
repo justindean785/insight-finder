@@ -42,8 +42,41 @@ export function assistantPartsToText(parts: unknown): string {
     .join("\n");
 }
 
+/**
+ * Kill switch for the run-marker eligibility gate (P0-A, 2026-07-26). Set back to
+ * `false` to restore the old behavior where ANY heartbeat-stale `active` thread was
+ * recoverable — including one that never ran. Only flip this to debug the gate.
+ */
+export const REQUIRE_RUN_MARKER_FOR_RECOVERY = true;
+
+/**
+ * Did a run ever actually START on this thread?
+ *
+ * THE P0-A INVARIANT: a thread with no run marker is NOT an interrupted
+ * investigation — it is a blank thread nobody has used yet, and recovering it
+ * fabricates a "Findings report — recovered run" for a run that never happened.
+ *
+ * A blank thread is born `status='active'` (the `threads.status` column default,
+ * and `WorkspaceHeader.createInvestigation` inserts only `user_id`), with both
+ * timestamps NULL. `isStaleActiveThread` then falls back to `updated_at` — which
+ * for a blank thread equals its creation time — so ~90s after the analyst clicks
+ * "New", the thread reads as a 90s-dead run and the health sweep reaps it. In
+ * production this produced 14 ghost recoveries on threads that had never received
+ * a single user message, and left 192 of 264 threads eligible for the same.
+ *
+ * `run_started_at` and `last_heartbeat_at` are written ONLY by `markRunStarted` /
+ * `startRunHeartbeat`, so either one proves a real invocation began. Verified in
+ * production: zero rows carry a heartbeat without `run_started_at`, so this is the
+ * exact boundary between "ran" and "never ran" — not a heuristic.
+ */
+export function hasRunMarker(thread: Pick<RecoverableThread, "run_started_at" | "last_heartbeat_at">): boolean {
+  return Boolean(thread.run_started_at || thread.last_heartbeat_at);
+}
+
 export function isStaleActiveThread(thread: RecoverableThread, nowMs: number = Date.now(), staleMs: number = STALE_RUN_AFTER_MS): boolean {
   if (thread.status !== "active") return false;
+  // Never-started threads are not interrupted runs — see hasRunMarker.
+  if (REQUIRE_RUN_MARKER_FOR_RECOVERY && !hasRunMarker(thread)) return false;
   const heartbeat = thread.last_heartbeat_at ? new Date(thread.last_heartbeat_at).getTime() : NaN;
   const fallback = thread.updated_at ? new Date(thread.updated_at).getTime() : NaN;
   const lastLive = Number.isFinite(heartbeat) ? heartbeat : fallback;
@@ -169,14 +202,82 @@ async function recoverOneStaleThread(
     RECENT_ASSISTANT_WINDOW_MS,
     assistantPartsToText(latestAssistantRow?.parts),
   );
-  if (assistantState.shouldInsert) {
-    const text = buildRecoveredAssistantText(thread, reviewedArtifacts as RecoveryArtifact[]);
-    const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: [{ type: "text", text }] });
-    if (insertErr) return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: insertErr.message };
-    assistantInserted = true;
+  if (!assistantState.shouldInsert) {
+    // Nothing to stub, but the thread is genuinely stale — still close it out.
+    // `.select("id")` is REQUIRED: without it a lost status race is indistinguishable
+    // from a won one and this branch reported recovered:true for a thread it never
+    // claimed, inflating the sweeper's recovered count with phantom recoveries.
+    const { data: closed, error: closeErr } = await db.from("threads").update({ status: "finished", recovered_at: now.toISOString(), recovery_reason: reason, updated_at: now.toISOString() }).eq("id", thread.id).eq("status", "active").select("id");
+    if (closeErr) return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: closeErr.message };
+    return { recovered: !!closed && (closed as unknown[]).length > 0, assistantInserted: false, artifactCount: artifactCount ?? 0 };
   }
-  const { error: updateErr } = await db.from("threads").update({ status: "finished", recovered_at: now.toISOString(), recovery_reason: reason, updated_at: now.toISOString() }).eq("id", thread.id).eq("status", "active");
-  if (updateErr) return { recovered: false, assistantInserted, artifactCount: artifactCount ?? 0, error: updateErr.message };
+
+  // ---- CLAIM BEFORE WRITING (2026-07-26 race fix) ----
+  // The stub insert used to run FIRST, unguarded, with the status compare-and-set
+  // after it. A live run that finalized in between then lost the race in the worst
+  // possible way: its own status flip won, our UPDATE no-opped (so recovered_at and
+  // recovery_reason stayed NULL), but the "Findings report — recovered run" stub was
+  // ALREADY inserted — landing on top of a complete investigation with no marker
+  // explaining it. Observed on thread 01b9567f: a full fingerprint.to report at
+  // 14:40:11, a recovery stub moments later, recovery_reason NULL.
+  //
+  // Claiming first makes the stub strictly conditional on winning the compare-and-set:
+  // if `finished` was already written by the real run, we claim nothing and write
+  // nothing.
+  const { data: claimed, error: claimErr } = await db
+    .from("threads")
+    .update({ status: "finished", recovered_at: now.toISOString(), recovery_reason: reason, updated_at: now.toISOString() })
+    .eq("id", thread.id).eq("status", "active").select("id");
+  if (claimErr) return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: claimErr.message };
+  if (!claimed || (claimed as unknown[]).length === 0) {
+    // Someone else finalized this thread first. Their report stands; say nothing.
+    return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0 };
+  }
+
+  // Re-read the latest assistant AFTER the claim. The run may have inserted its real
+  // report between our first read and the claim — that report must still veto the
+  // stub, and only a post-claim read can see it.
+  const { data: freshAssistant } = await db
+    .from("messages").select("created_at,parts").eq("thread_id", thread.id).eq("role", "assistant")
+    .order("created_at", { ascending: false }).limit(1).maybeSingle();
+  const freshRow = freshAssistant as { created_at?: string; parts?: unknown } | null;
+  const freshState = shouldInsertRecoveredAssistant(
+    thread, freshRow?.created_at ?? null, now.getTime(), RECENT_ASSISTANT_WINDOW_MS,
+    assistantPartsToText(freshRow?.parts),
+  );
+  if (!freshState.shouldInsert) {
+    // ---- RELEASE THE CLAIM (2026-07-26, blocker 1) ----
+    // A real report landed between our first read and the claim. Suppressing the stub
+    // is necessary but NOT sufficient: the claim already stamped recovered_at /
+    // recovery_reason, and the live run's own completion UPDATE is guarded on
+    // status='active' — which we just consumed — so it can no longer clear them. The
+    // thread would sit `finished` + recovery metadata and render Interrupted even
+    // though the investigation completed normally and durably.
+    //
+    // Release by clearing ONLY our own stamp: the WHERE ties back to the exact
+    // recovered_at + recovery_reason we wrote, so a different recovery worker's claim
+    // is never cleared. `status` stays "finished" — that part is correct, the run IS
+    // over; only the "this was interrupted" label is wrong.
+    const { error: releaseErr } = await db
+      .from("threads")
+      .update({ recovered_at: null, recovery_reason: null, updated_at: now.toISOString() })
+      .eq("id", thread.id)
+      .eq("recovered_at", now.toISOString())
+      .eq("recovery_reason", reason);
+    if (releaseErr) {
+      return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: releaseErr.message };
+    }
+    // Not a recovery: a durable report exists and the thread is labelled complete.
+    return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0 };
+  }
+
+  // reviewedArtifacts, NOT the raw fetch: the stub is a REPORT the analyst reads, so a
+  // finding they marked FALSE must not come back inside it. applyReviewsToArtifacts
+  // returns [] when the verdicts are unreadable, so this fails closed.
+  const text = buildRecoveredAssistantText(thread, reviewedArtifacts as RecoveryArtifact[]);
+  const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: [{ type: "text", text }] });
+  if (insertErr) return { recovered: true, assistantInserted: false, artifactCount: artifactCount ?? 0, error: insertErr.message };
+  assistantInserted = true;
   return { recovered: true, assistantInserted, artifactCount: artifactCount ?? 0 };
 }
 
@@ -191,7 +292,16 @@ export async function recoverStaleThreadById(db: DbClient, threadId: string, opt
 export async function recoverStaleActiveThreads(db: DbClient, opts?: { now?: Date; limit?: number; reason?: string }) {
   const now = opts?.now ?? new Date();
   const cutoff = new Date(now.getTime() - STALE_RUN_AFTER_MS).toISOString();
-  const { data, error } = await db.from("threads").select("id,user_id,title,seed_value,status,run_started_at,last_heartbeat_at,updated_at").eq("status", "active").or(`last_heartbeat_at.lt.${cutoff},and(last_heartbeat_at.is.null,updated_at.lt.${cutoff})`).order("updated_at", { ascending: true }).limit(opts?.limit ?? 20);
+  let query = db.from("threads").select("id,user_id,title,seed_value,status,run_started_at,last_heartbeat_at,updated_at").eq("status", "active");
+  // Mirror hasRunMarker in the QUERY, not just the per-row check. Two reasons:
+  // correctness is already covered by isStaleActiveThread, but the sweep is
+  // LIMITed — and never-started threads are the oldest `active` rows on the table,
+  // so under `order(updated_at asc)` they were filling the entire 20-row budget and
+  // starving the genuinely-dead runs this sweeper exists to reap.
+  if (REQUIRE_RUN_MARKER_FOR_RECOVERY) {
+    query = query.or("run_started_at.not.is.null,last_heartbeat_at.not.is.null");
+  }
+  const { data, error } = await query.or(`last_heartbeat_at.lt.${cutoff},and(last_heartbeat_at.is.null,updated_at.lt.${cutoff})`).order("updated_at", { ascending: true }).limit(opts?.limit ?? 20);
   if (error) throw new Error(error.message);
   let recovered = 0;
   let assistantInserted = 0;

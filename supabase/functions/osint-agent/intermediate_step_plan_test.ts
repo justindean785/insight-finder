@@ -18,6 +18,7 @@ import {
   buildIntermediateStepPlan,
   orchestratorStepToolChoice,
   FORCE_TOOL_CALL_UNTIL_FINALIZE,
+  REQUIRE_TOOL_CALL_IN_OPENING_PHASE,
 } from "./orchestrator-budget.ts";
 import { buildFinalizeStepPlan, needsReportSalvage } from "./orchestrator-finalize.ts";
 
@@ -64,6 +65,52 @@ Deno.test("finalize steps: report phase free to emit text; persist/memory still 
   assertEquals(buildFinalizeStepPlan("report").toolChoice, "none");
   assertEquals(buildFinalizeStepPlan("persist").toolChoice, "required");
   assertEquals(buildFinalizeStepPlan("memory").toolChoice, "required");
+});
+
+Deno.test("P0-B opening gate: the FIRST step of a seeded run may not end on narration", () => {
+  // THE PRODUCTION FAILURE (thread 40f8a6eb): seed `jdean785` -> the model emitted
+  // "I'll start" (10 chars, no tool call) -> SDK ended the loop at step 1 -> that
+  // stub became the run's final message and the thread went COMPLETE. The analyst
+  // had to type "go" to make the investigation happen at all.
+  assertEquals(REQUIRE_TOOL_CALL_IN_OPENING_PHASE, true, "opening gate must ship on");
+  assertEquals(
+    orchestratorStepToolChoice(false, { openingPhase: true }),
+    "required",
+    "opening step of a seeded run must emit a tool call",
+  );
+  const opening = buildIntermediateStepPlan({
+    nudgePersistence: false, normalActiveTools: NORMAL_TOOLS, openingPhase: true,
+  });
+  assertEquals(opening.toolChoice, "required");
+  assertEquals(opening.activeTools, [...NORMAL_TOOLS], "the gate must not narrow the toolset");
+});
+
+Deno.test("P0-B opening gate: releases the moment work starts — this is NOT the 07-21 forcing regression", () => {
+  // The 07-21 regression forced a tool call on EVERY intermediate step, which removed
+  // the model's only natural way to conclude (a text-only report) and cratered
+  // self-completion 61% -> 25%. The opening gate must apply to the opening step ONLY.
+  assertEquals(
+    orchestratorStepToolChoice(false, { openingPhase: false }),
+    "auto",
+    "once any tool has been admitted, steps are free to conclude with text",
+  );
+  const later = buildIntermediateStepPlan({
+    nudgePersistence: false, normalActiveTools: NORMAL_TOOLS, openingPhase: false,
+  });
+  assertEquals(later.toolChoice, "auto", "the natural text-only report exit is preserved");
+  // Finalize is never forced, opening phase or not.
+  assertEquals(orchestratorStepToolChoice(true, { openingPhase: true }), "auto");
+});
+
+Deno.test("P0-B opening gate: never forces a choice on the persistence-nudge step", () => {
+  // The nudge narrows activeTools to record_artifacts alone, whose schema requires
+  // >= 1 artifact. Forcing there pressures the model to fabricate an artifact or fail
+  // validation — the #384 P1 review defect. The gate must yield to the nudge.
+  const nudge = buildIntermediateStepPlan({
+    nudgePersistence: true, normalActiveTools: NORMAL_TOOLS, openingPhase: true,
+  });
+  assertEquals(nudge.activeTools, ["record_artifacts"]);
+  assertEquals(nudge.toolChoice, "auto", "no forced choice when the only tool requires an artifact");
 });
 
 Deno.test("kill switch: forcing ships DISABLED; flipping it back on re-forces intermediate steps", () => {

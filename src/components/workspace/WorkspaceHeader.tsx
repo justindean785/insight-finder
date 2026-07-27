@@ -16,6 +16,10 @@ type Thread = {
   status: "active" | "finished" | "stopped" | null;
   credits_used: number;
   cost_micro_usd: number | null;
+  // Written by stale-run recovery, the stream-error path, and the completion
+  // contract. Either being set means this run did NOT finish normally.
+  recovered_at: string | null;
+  recovery_reason: string | null;
 };
 
 function fmtUsd(micro: number | null | undefined): string {
@@ -68,13 +72,24 @@ export function deriveWorkspaceStatus(input: {
   chatRunning: boolean;
   recentlyActive: boolean;
   hasEvidence: boolean;
-}): "idle" | "active" | "completed" {
+  /** Set by stale-run recovery. */
+  recoveredAt?: string | null;
+  /** Set by stale-run recovery, the stream error path, or an unmet completion
+   *  contract (see INCOMPLETE_RUN_REASON in the edge function). */
+  recoveryReason?: string | null;
+}): "idle" | "active" | "completed" | "interrupted" {
   // The browser stream is the only signal allowed to override a terminal row:
   // persistence can mark the thread finished while the final report is still
   // flushing. Historical tool activity must not keep a recovered/finished run
   // painted RUNNING after the stream has closed.
   if (input.chatRunning) return "active";
-  if (input.threadStatus === "finished" || input.threadStatus === "stopped") return "completed";
+  if (input.threadStatus === "finished" || input.threadStatus === "stopped") {
+    // `finished` is written on THREE paths that are not the same thing: a clean
+    // finalize, a stream error (onError), and stale-run recovery. Only the first is
+    // a success. Reporting all three as a green COMPLETE is how a failed run and a
+    // fabricated "recovered run" stub both looked identical to a real report.
+    return input.recoveredAt || input.recoveryReason ? "interrupted" : "completed";
+  }
   if (input.recentlyActive) return "active";
   return input.hasEvidence ? "completed" : "idle";
 }
@@ -109,10 +124,13 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
     const load = async () => {
       const { data } = await supabase
         .from("threads")
-        .select("id,seed_value,seed_type,status,credits_used,cost_micro_usd")
+        .select("id,seed_value,seed_type,status,credits_used,cost_micro_usd,recovered_at,recovery_reason")
         .eq("id", threadId)
         .maybeSingle();
-      setThread(data as Thread | null);
+      // `recovered_at` / `recovery_reason` were added by migration and are not in
+      // the generated types yet — same cast-via-unknown the tool_usage_log
+      // `outcome` column needs (see useThreadToolActivity).
+      setThread(data as unknown as Thread | null);
     };
     load();
     void loadIntegrity();
@@ -183,6 +201,8 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
     chatRunning,
     recentlyActive,
     hasEvidence: artifactCount > 0 || activity.persistedTotal > 0,
+    recoveredAt: thread?.recovered_at,
+    recoveryReason: thread?.recovery_reason,
   });
 
   const display = thread
@@ -239,6 +259,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
               className={cn(
                 "h-1.5 w-1.5 shrink-0 rounded-full",
                 status === "completed" && "bg-[hsl(var(--confidence-high))] shadow-[0_0_8px_hsl(var(--confidence-high)/0.65)]",
+                status === "interrupted" && "bg-[hsl(var(--warning))] shadow-[0_0_8px_hsl(var(--warning)/0.55)]",
                 status === "active" && "bg-[hsl(var(--info))] shadow-[0_0_8px_hsl(var(--info)/0.55)] animate-pulse",
                 status === "idle" && "bg-muted-foreground/70",
               )}
@@ -257,10 +278,12 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
                 className={cn(
                   "rounded-full border px-2 py-px text-[9px] font-semibold uppercase tracking-[0.16em]",
                   status === "completed" && "border-[hsl(var(--confidence-high)/0.35)] bg-[hsl(var(--confidence-high)/0.1)] text-[hsl(var(--confidence-high))]",
+                  status === "interrupted" && "border-[hsl(var(--warning)/0.35)] bg-[hsl(var(--warning)/0.1)] text-[hsl(var(--warning))]",
                   status === "active" && "border-[hsl(var(--info)/0.35)] bg-[hsl(var(--info)/0.1)] text-[hsl(var(--info))]",
                 )}
+                title={status === "interrupted" ? (thread?.recovery_reason ?? "This run did not finish normally") : undefined}
               >
-                {status === "active" ? "Running" : "Complete"}
+                {status === "active" ? "Running" : status === "interrupted" ? "Interrupted" : "Complete"}
               </span>
               <span className="hidden text-[10px] text-muted-foreground/70 sm:inline tabular-nums">
                 {evidenceCount} evidence · {activity.persistedTotal} tools

@@ -72,8 +72,39 @@ export const MAX_ORCHESTRATOR_STEPS = 22;
 // Kill switch: set back to true to re-enable forcing.
 export const FORCE_TOOL_CALL_UNTIL_FINALIZE = false;
 
-export function orchestratorStepToolChoice(isFinalizeStep: boolean): "required" | "auto" {
-  if (isFinalizeStep || !FORCE_TOOL_CALL_UNTIL_FINALIZE) return "auto";
+/**
+ * Phase-aware OPENING gate (P0-B, 2026-07-26). This is NOT a return to the 07-21
+ * regression above — read the difference carefully before touching it.
+ *
+ *   FORCE_TOOL_CALL_UNTIL_FINALIZE forced a tool call on EVERY intermediate step,
+ *   which removed the model's only natural way to end (a text-only final report)
+ *   and cratered self-completion 61% -> 25%.
+ *
+ *   This gate forces a tool call on the OPENING step ONLY — while the run has
+ *   admitted ZERO tool calls AND the analyst's latest message is a parseable seed
+ *   (i.e. they asked for an investigation, not a question). The instant any tool
+ *   is admitted the gate releases and every later step is "auto", so the natural
+ *   text-only report exit is fully preserved.
+ *
+ * WHY: with everything on "auto", production observed a seed turn (`jdean785`)
+ * where the model emitted the 10-character text "I'll start", no tool call, and
+ * the SDK ended the loop on finishReason:"stop" at step 1. That was persisted as
+ * the run's final message and the thread went COMPLETE — the analyst had to type
+ * "go" to make the investigation actually happen. `stopWhen` cannot prevent this
+ * (it only ADDS stop conditions; the SDK's natural stop is not vetoable), so the
+ * opening step is the one place the loop must not be allowed to end on narration.
+ *
+ * Kill switch: set to false to restore pure "auto" on every intermediate step.
+ */
+export const REQUIRE_TOOL_CALL_IN_OPENING_PHASE = true;
+
+export function orchestratorStepToolChoice(
+  isFinalizeStep: boolean,
+  opts?: { openingPhase?: boolean },
+): "required" | "auto" {
+  if (isFinalizeStep) return "auto";
+  if (REQUIRE_TOOL_CALL_IN_OPENING_PHASE && opts?.openingPhase) return "required";
+  if (!FORCE_TOOL_CALL_UNTIL_FINALIZE) return "auto";
   return "required";
 }
 
@@ -92,10 +123,19 @@ export interface IntermediateStepPlan {
 export function buildIntermediateStepPlan(input: {
   nudgePersistence: boolean;
   normalActiveTools: readonly string[];
+  /** True only while the run has admitted zero tool calls AND the analyst asked
+   *  for an investigation — see REQUIRE_TOOL_CALL_IN_OPENING_PHASE. */
+  openingPhase?: boolean;
 }): IntermediateStepPlan {
   return {
     activeTools: input.nudgePersistence ? ["record_artifacts"] : [...input.normalActiveTools],
-    toolChoice: orchestratorStepToolChoice(false),
+    // The persistence nudge narrows activeTools to record_artifacts alone, whose
+    // schema requires >= 1 artifact. Forcing a tool choice there would pressure the
+    // model to fabricate an artifact or fail validation (the #384 P1 review defect),
+    // so the opening gate never applies on a nudge step.
+    toolChoice: orchestratorStepToolChoice(false, {
+      openingPhase: input.openingPhase && !input.nudgePersistence,
+    }),
   };
 }
 

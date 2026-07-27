@@ -432,6 +432,100 @@ export function hasReportShape(text: string): boolean {
 }
 
 /**
+ * Kill switch for the P0-B salvage widening. `false` restores the old
+ * `toolCalls <= 0 -> never salvage` bail that let a 10-character stub become a
+ * run's durable final message.
+ */
+export const SALVAGE_ON_ZERO_TOOL_CALLS = true;
+
+/**
+ * A terminal assistant message shorter than this cannot be a complete answer —
+ * not a report, not a no-findings decision, not a conversational reply. The
+ * production stub that triggered this was 10 characters ("I'll start"); the
+ * shortest legitimate conversational terminal observed on the same thread was
+ * 907. The gap is wide, so this floor sits well clear of both.
+ */
+export const MIN_TERMINAL_REPORT_CHARS = 200;
+
+// DELIBERATELY NOT IMPLEMENTED: a "future-intent narration" regex.
+//
+// The obvious idea is to detect promises of work ("Let me now run the core breach
+// tools in parallel") and treat them as non-terminal. It was written, and its own
+// unit test killed it: the pattern also matches the perfectly legitimate closing
+// line "Drop a seed and I'll run the investigation from TRIAGE through REPORT" — a
+// complete conversational reply that production actually sent. A false positive
+// there staples a fabricated Findings report onto a plain answer, which is a worse
+// failure than the one being fixed.
+//
+// So intent is NOT inferred from prose. The decision rests on structural signals
+// only: report shape, investigating-vs-idle phase, and the length floor. Anything
+// those cannot classify falls through to the completion contract
+// (meetsCompletionContract) and is labelled Interrupted rather than silently
+// presented as a clean COMPLETE. Honest labelling beats a guess at intent.
+
+/**
+ * `threads.recovery_reason` marker for a run that reached its terminal write
+ * WITHOUT satisfying the completion contract. The status column is constrained to
+ * active|finished, so the honest signal rides in recovery_reason and the UI renders
+ * it as Interrupted rather than a green COMPLETE.
+ */
+export const INCOMPLETE_RUN_REASON = "incomplete: run ended without a durable report";
+
+/** Did the LAST assistant message carry an explicit finalize_no_findings decision?
+ *  Scoped to the last assistant on purpose — same scope as extractAssistantReportText
+ *  — so a previous turn's decision cannot mark this run terminal. */
+export function hasNoFindingsDecision(finalMessages: ReportMsg[]): boolean {
+  const assistant = [...(finalMessages ?? [])].reverse().find((m) => m?.role === "assistant");
+  if (!assistant || !Array.isArray(assistant.parts)) return false;
+  return assistant.parts.some((p) => p?.type === "tool-finalize_no_findings");
+}
+
+/**
+ * THE P0-B COMPLETION CONTRACT. A run may present as normally complete only when it
+ * left behind a durable, report-shaped assistant message OR an explicit validated
+ * no-findings decision. Anything else — unfinished "let me now run…" narration, a
+ * stub, a salvage that failed — is an incomplete run and must be labelled as one.
+ */
+export function meetsCompletionContract(finalMessages: ReportMsg[]): boolean {
+  if (hasNoFindingsDecision(finalMessages)) return true;
+  return hasReportShape(stripReasoning(extractAssistantReportText(finalMessages)));
+}
+
+/** `recovery_reason` when the terminal assistant row could not be written at all. */
+export const REPORT_PERSIST_FAILED_REASON = "incomplete: final report could not be saved";
+
+/**
+ * The single decision point for a run's terminal DB state.
+ *
+ * DURABILITY IS PART OF THE CONTRACT. `meetsCompletionContract` inspects the
+ * in-memory message; that is necessary but not sufficient, because a perfectly
+ * report-shaped `finalMessages` whose INSERT failed is not a durable report — the
+ * analyst reloads and finds nothing. The old code logged the insert error, fell
+ * through, and still wrote a green `finished`, which is precisely the claim the
+ * contract exists to make and the one case where it was silently false.
+ *
+ * `status` is always "finished" (threads_status_check allows only active|finished,
+ * and leaving a dead run `active` strands the UI on "Running" and re-arms stale-run
+ * recovery). Honesty rides in `recovery_reason`, which the header renders as
+ * Interrupted.
+ *
+ * Pure so every branch — salvage returned empty, salvage returned prose, salvage
+ * threw, the insert failed — is unit-testable without a live model or DB.
+ */
+export function resolveTerminalState(input: {
+  assistantRowPersisted: boolean;
+  finalMessages: ReportMsg[];
+}): { status: "finished"; recoveryReason: string | null } {
+  if (!input.assistantRowPersisted) {
+    return { status: "finished", recoveryReason: REPORT_PERSIST_FAILED_REASON };
+  }
+  return {
+    status: "finished",
+    recoveryReason: meetsCompletionContract(input.finalMessages) ? null : INCOMPLETE_RUN_REASON,
+  };
+}
+
+/**
  * The "No report yet" gap: the run DID work (made tool calls) but produced no
  * closing REPORT — only reasoning + inter-step narration, cut off before synthesis.
  * A genuinely empty case (no tool calls) is left alone — nothing to synthesize.
@@ -440,11 +534,32 @@ export function hasReportShape(text: string): boolean {
  * The old `< MIN_REPORT_CHARS` gate missed the common failure (lots of narration,
  * no report); this checks for a positive report signal instead.
  */
-export function needsReportSalvage(reportText: string, toolCalls: number): boolean {
-  if (toolCalls <= 0) return false;
+export function needsReportSalvage(
+  reportText: string,
+  toolCalls: number,
+  opts?: { artifactCount?: number; hadNoFindingsDecision?: boolean },
+): boolean {
   const body = stripReasoning(reportText);
   if (hasReportShape(body)) return false;   // a real report block exists — leave it
-  return true;                               // work done, but no report → salvage
+  // An explicit, validated finalize_no_findings decision IS a terminal outcome.
+  // Never paper over it with a synthesized report.
+  if (opts?.hadNoFindingsDecision) return false;
+
+  // Investigating phase: the run did work (tool calls, or artifacts already on the
+  // thread) but never synthesized. Always salvage — this is the original case.
+  if (toolCalls > 0 || (opts?.artifactCount ?? 0) > 0) return true;
+
+  if (!SALVAGE_ON_ZERO_TOOL_CALLS) return false;   // legacy behavior
+
+  // Zero work done. A complete conversational answer is a legitimate terminal
+  // message here (e.g. "I don't have context on that — give me a seed", 907 chars,
+  // no tools), so length is the discriminator: the production failure was the
+  // 10-character stub "I'll start", which cannot be a complete answer to anything.
+  if (body.length < MIN_TERMINAL_REPORT_CHARS) return true;
+  // A substantial reply with no work behind it is a conversational answer. Intent is
+  // deliberately NOT inferred from prose here (see the note above hasReportShape);
+  // anything this misjudges is caught honestly by meetsCompletionContract.
+  return false;
 }
 
 type SalvageArtifact = { kind?: unknown; value?: unknown; confidence?: unknown; source?: unknown };
