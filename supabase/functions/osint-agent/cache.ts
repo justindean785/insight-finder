@@ -12,6 +12,7 @@ import { costForTool } from "./costs.ts";
 import { DEFAULT_TOOL_TTL_MS, NO_CACHE_TOOLS, redactSensitiveToolInput, TOOL_TTL_MS } from "./validation.ts";
 import { creditsCharged } from "./billing.ts";
 import { classifyToolOutcome } from "./tool-outcome.ts";
+import { extractFindings } from "./auto-persist-findings.ts";
 import * as circuit from "./circuit.ts";
 import { guard } from "./guard.ts";
 import { reserveToolCall } from "./orchestrator-budget.ts";
@@ -411,6 +412,37 @@ async function loadSelectorEvidence(
   }
 }
 
+/**
+ * Structural yield of a single tool call: how many findings the extractor can pull
+ * out of this output.
+ *
+ * WHY THIS EXISTS: tool_health scores reliability and latency, and its ok_pct drops
+ * the 'empty' outcome from both the numerator and the denominator — so a tool that
+ * returns HTTP 200 and nothing useful is invisible to scoring rather than
+ * penalised. Production 2026-07-27: google_dorks logged 309 calls at 99.7% ok for
+ * 5 artifacts. This is the number that tells those calls apart.
+ *
+ * Returns `undefined` — NOT 0 — when yield could not be measured. The ranking views
+ * exclude NULL and count 0, and conflating the two would make every unmeasurable
+ * tool look dead.
+ *
+ * NEVER THROWS. This is telemetry on the hot path of every tool call; a malformed
+ * payload reaching the extractor must not be able to fail an investigation.
+ */
+/** tool_usage_log columns added by a migration that may not have run yet. Lower-case:
+ *  matched against the Postgres error text, which quotes the column name verbatim. */
+export const OPTIONAL_USAGE_COLUMNS = ["outcome", "extracted_findings"] as const;
+
+export function countExtractableFindings(toolName: string, output: unknown): number | undefined {
+  if (output == null) return undefined;
+  try {
+    const findings = extractFindings(toolName, output);
+    return Array.isArray(findings) ? findings.length : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // ---- Central tool cache wrapper ------------------------------------------------
 // Wraps every tool with a three-layer cache (memory → db → live), cost tracking,
 // telemetry logging, and optional auto-evidence mirroring. All 77 tools flow
@@ -563,6 +595,11 @@ export function wrapToolsWithCache(
       statusCode: number | null = null,
       freeCall: boolean = false,
       inputJson: Record<string, unknown> | null = null,
+      // Structural yield for THIS call: how many findings extractFindings() could
+      // pull out of the output. `undefined` means "not measured" and is stored as
+      // NULL, which the ranking views exclude — deliberately NOT 0, because
+      // "we didn't look" and "we looked and it was empty" must not be conflated.
+      extractedFindings?: number,
     ) => {
       // Two distinct numbers, intentionally logged separately:
       //  • cost_micro_usd   — ATTRIBUTED list price. Logged for every paid,
@@ -598,14 +635,22 @@ export function wrapToolsWithCache(
         error_msg: outcome === "ok" ? null : errorMsg,
         status_code: outcome === "ok" ? null : statusCode,
         input_json: inputJson,
+        extracted_findings: typeof extractedFindings === "number" ? extractedFindings : null,
       };
       try {
         let { error } = await adminDb.from("tool_usage_log").insert(row);
-        // Deploy-ordering safety: if this ships before the `outcome` column
-        // migration is applied, retry without it so telemetry is never lost.
-        if (error && /outcome/i.test(error.message ?? "")) {
-          const { outcome: _omit, ...legacy } = row;
-          ({ error } = await adminDb.from("tool_usage_log").insert(legacy));
+        // Deploy-ordering safety. A build and its migration ship separately (the
+        // edge function deploys via Lovable, the migration via SQL), so either can
+        // land first. If the insert names a column that does not exist yet, strip
+        // exactly that column and retry once: losing one optional field beats
+        // losing the whole telemetry row, which is what makes these views work.
+        if (error) {
+          const missing = OPTIONAL_USAGE_COLUMNS.filter((c) => error!.message?.toLowerCase().includes(c));
+          if (missing.length > 0) {
+            const legacy: Record<string, unknown> = { ...row };
+            for (const c of missing) delete legacy[c];
+            ({ error } = await adminDb.from("tool_usage_log").insert(legacy));
+          }
         }
         if (error) console.warn(`[tool_usage_log] insert failed for ${name}: ${error.message}`);
       } catch (e) {
@@ -1039,6 +1084,10 @@ export function wrapToolsWithCache(
         if (ctx.toolCallBudget && !ALWAYS_ALLOW_TOOLS.has(name)) ctx.toolCallBudget.genuine++;
         let ok = true;
         let result: unknown;
+        // undefined until a live result is actually seen. Stays undefined on the
+        // throw path, so a crashed call logs NULL (unmeasured) rather than 0
+        // (measured, found nothing) — see countExtractableFindings.
+        let liveYield: number | undefined;
         let errInfo: { errorMsg: string | null; statusCode: number | null } = { errorMsg: null, statusCode: null };
         try {
           // Phase 2: bound the live call with a per-tool hard timeout (returns a
@@ -1066,11 +1115,18 @@ export function wrapToolsWithCache(
           // never ran" — a timeout stub races the tool's own execute() and wins, so
           // this is the only point that sees what the model actually received.
           if (name === "minimax_correlate") guard.lastCorrelateOutcome = ok ? "ok" : "failed";
+          // Structural yield, measured once and used twice. This is the ONLY point
+          // that sees the tool's real output before it is handed to the model.
+          liveYield = countExtractableFindings(name, result);
           circuit.clearProviderInFlight(ctx.investigationId, name);
           if (sel) circuit.clearCallInFlight(ctx.investigationId, name, sel, purpose);
           circuit.recordResult(ctx.investigationId, name, sel, purpose, {
             status: circuit.classifyResult(result, null),
-            artifactCount: 0,
+            // Was hardcoded 0 since this hook was written, which also made
+            // circuit.ts's `prior.artifactCount > 0` dedup branch unreachable from
+            // the wrapper. Passing the real count both fixes that branch and gives
+            // the breaker a yield signal alongside its failure signal.
+            artifactCount: liveYield ?? 0,
             errorMessage: errInfo.errorMsg ?? undefined,
           });
         } catch (e) {
@@ -1158,7 +1214,7 @@ export function wrapToolsWithCache(
             stale_cache: !!staleRecord,
             source_created_at: createdAtIso,
           },
-        });
+        }, liveYield);
         if (AUTO_EVIDENCE_TOOLS.has(name)) {
           // Fire-and-forget: never let auto-evidence block the tool result.
           autoAppendToolEvidence(ctx.supabase, ctx, name, input, result).catch(() => {});
