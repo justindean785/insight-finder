@@ -209,3 +209,20 @@ Deno.test("extractFindings: a Ray-Martinez-style tool mix now salvages findings"
   assert(indicia.length > 0, "indicia_person must salvage");
   assert(oathnet.some((f) => f.kind === "breach"), "oathnet must salvage the breach");
 });
+
+Deno.test("normalizeFinding: handle-shaped junk is never recorded as a person's name", () => {
+  // From the youngcl17@gmail.com run: a dark-web scan's "name" field carried
+  // these, and all three were persisted as people at confidence 40, then seeded
+  // identity clusters and appeared in the report's Identity section.
+  for (const junk of ["Daycron123", "Napster6", "Dreamcast6", "lgit123", "user_name", "a@b.c"]) {
+    assertEquals(normalizeFinding("name", junk), null, `${junk} must not be a name`);
+  }
+});
+
+Deno.test("normalizeFinding: real names still pass", () => {
+  // The fix must not cost genuine data — these came from the same run.
+  assertEquals(normalizeFinding("name", "cameron lawson")?.value, "cameron lawson");
+  assertEquals(normalizeFinding("name", "Cameron")?.value, "Cameron");
+  assertEquals(normalizeFinding("name", "  Mary   Jane  O'Neill ")?.value, "Mary Jane O'Neill");
+  assertEquals(normalizeFinding("name", "Jean-Luc Picard")?.value, "Jean-Luc Picard");
+});

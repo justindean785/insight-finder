@@ -128,6 +128,22 @@ export function normalizeFinding(kind: string, value: unknown): { kind: string; 
       if (nm.length < 3 || nm.length > 120) return null;
       if (!/[A-Za-z]/.test(nm)) return null;   // must contain letters
       if (/^\d+$/.test(nm)) return null;       // never a bare number
+      // HANDLE-SHAPED VALUES ARE NOT PEOPLE (2026-07-27).
+      // Breach corpora return a bag of loosely-labelled fields, and the "name"
+      // column routinely carries usernames, display names and password-adjacent
+      // junk. The old rules — has a letter, isn't a bare number — accepted all of
+      // it, so a dark-web scan on youngcl17@gmail.com persisted `Daycron123`,
+      // `Napster6` and `Dreamcast6` as PERSON NAMES at confidence 40, and an
+      // earlier case recorded the literal string "Do Forget To Subscribe".
+      // Those then seed identity clusters and appear in the report's Identity
+      // section as candidate people.
+      // Real person names do not contain digits, and do not carry handle/path
+      // punctuation. Rejecting here is the safe direction: a false negative loses
+      // one weak artifact, a false positive invents a human being. The value is
+      // still available to the model in the tool output — this only stops it being
+      // durably recorded AS a name.
+      if (/\d/.test(nm)) return null;
+      if (/[_@\/\\]/.test(nm)) return null;
       return { kind: "name", value: nm };
     }
     case "address": {
