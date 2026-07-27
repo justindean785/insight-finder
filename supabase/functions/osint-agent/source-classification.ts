@@ -35,6 +35,16 @@ import { TOOL_CATALOG } from "./catalog.ts";
 export type SourceClass =
   // ── original internal-tool classes (do not rename: TOOL_CLASS + tests rely on these)
   | "breach"
+  // People-search / data-broker aggregators (Indicia person|address|phone, PDL).
+  // SPLIT OUT OF `breach` 2026-07-26. These carry byte-identical caps to breach
+  // (CLASS_CAP 60 + NEVER_HIGH) — the integrity contract is unchanged — but they
+  // are NOT breach corpora, and labelling them as such made the UI assert that
+  // uninvolved third parties' data "appeared in a breach". On a live case eleven
+  // people pulled in by one address lookup were each rendered
+  // "Breach/exposure · single-source"; one was a bank-fraud investigator, in a
+  // bank-fraud case. A broker association is "this record was filed near that
+  // record", never a breach disclosure. Same weight, honest name.
+  | "data_broker"
   // Ransomware-victim / threat-intel exposure (ransomware.live etc.). Distinct
   // from "breach": it reports that an ORGANIZATION was hit, which is weak as a
   // signal about a PERSON's identity. Capped below breach + NEVER_HIGH so it can
@@ -102,20 +112,23 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   deepfind_email_breach: "breach",
   deepfind_dark_web_link: "breach",
   serus_darkweb_scan: "breach",
-  // Indicia (api.indicia.app) — data-broker + breach-dump aggregator. ALL SIX
-  // classify as `breach` (CLASS_CAP 60, in NEVER_HIGH) so a single Indicia hit is a
-  // LEAD capped at ≤60 and can never alone reach Confirmed — even person/address
-  // people-search results, which are broker records, not verified identity.
+  // Indicia (api.indicia.app). The SIX split by what they actually query, not by
+  // vendor. Both classes cap at 60 and sit in NEVER_HIGH, so a single Indicia hit
+  // is still a LEAD that can never alone reach Confirmed — the caps are identical
+  // and unchanged. Only the label differs, because the label is a factual claim.
+  //   person|address|phone → people-search/broker records ("who else is filed
+  //     near this address"). Reporting these as breach data asserts a disclosure
+  //     that never happened, about people who are usually not the subject.
+  //   email|web_dbs|hudsonrock → genuinely query breach/stealer corpora.
+  indicia_person: "data_broker",
+  indicia_address: "data_broker",
+  indicia_phone: "data_broker",
   indicia_email: "breach",
-  indicia_phone: "breach",
-  indicia_person: "breach",
-  indicia_address: "breach",
   indicia_web_dbs: "breach",
   indicia_hudsonrock: "breach",
   // People Data Labs — data-broker person aggregator (profiles/employment/emails).
-  // Classed `broker` when available; otherwise treated as `breach` peer to Indicia
-  // — LEAD until independently corroborated, cannot alone reach Confirmed.
-  pdl_person_enrich: "breach",
+  // Now has a class that says so; weight is unchanged (same cap as breach).
+  pdl_person_enrich: "data_broker",
   leakcheck: "breach", // bare alias of leakcheck_lookup seen in compound source strings
   // ── Threat-intel / ransomware-victim exposure ──
   // ransomware.live and the dead deepfind_ransomware_exposure report that an

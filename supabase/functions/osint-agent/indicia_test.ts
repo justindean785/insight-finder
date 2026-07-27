@@ -46,10 +46,40 @@ Deno.test("indicia: exactly the 6 approved tools are registered; face/geo/gmail/
   }
 });
 
-Deno.test("indicia: source class is 'breach' for all six (lead tier)", () => {
-  for (const n of INDICIA_TOOLS) {
-    assertEquals(classifySource(n), "breach", `${n} must classify as breach`);
+// SPLIT 2026-07-26 — by what each endpoint actually queries, not by vendor.
+// person|address|phone are people-search/broker lookups; email|web_dbs|hudsonrock
+// hit real breach/stealer corpora. Both classes carry the SAME cap and NEVER_HIGH
+// ceiling (pinned below), so this is a labelling fix with no weight change.
+const INDICIA_BROKER_TOOLS = ["indicia_person", "indicia_address", "indicia_phone"];
+const INDICIA_BREACH_TOOLS = ["indicia_email", "indicia_web_dbs", "indicia_hudsonrock"];
+
+Deno.test("indicia: broker endpoints classify as data_broker, breach endpoints as breach", () => {
+  // WHY THIS SPLIT EXISTS: classing an address/person lookup as `breach` made the
+  // UI render "Breach/exposure" for every person a broker returns for an address.
+  // On a live case that put eleven uninvolved people — including a bank-fraud
+  // investigator, in a bank-fraud case — under a false breach-disclosure claim.
+  for (const n of INDICIA_BROKER_TOOLS) {
+    assertEquals(classifySource(n), "data_broker", `${n} is a people-search lookup, not breach data`);
   }
+  for (const n of INDICIA_BREACH_TOOLS) {
+    assertEquals(classifySource(n), "breach", `${n} queries breach corpora`);
+  }
+  assertEquals(classifySource("pdl_person_enrich"), "data_broker", "PDL is a person aggregator");
+});
+
+Deno.test("indicia: the data_broker split did NOT weaken any cap (integrity contract)", () => {
+  // The rename must be weight-neutral. If someone ever loosens data_broker's cap
+  // or drops it from NEVER_HIGH, this fails — a relabel must never become a
+  // promotion.
+  for (const n of [...INDICIA_BROKER_TOOLS, ...INDICIA_BREACH_TOOLS, "pdl_person_enrich"]) {
+    const broker = applyEvidenceCaps({ rawConfidence: 95, sources: [n] });
+    assert(broker.confidence <= 65, `${n}: ${broker.confidence} must stay ≤65 after the split`);
+    assert(!!broker.reason_not_confirmed, `${n}: reason_not_confirmed must still be set`);
+  }
+  // Byte-for-byte parity between the two classes on the same raw input.
+  const asBroker = applyEvidenceCaps({ rawConfidence: 95, sources: ["indicia_address"] });
+  const asBreach = applyEvidenceCaps({ rawConfidence: 95, sources: ["indicia_web_dbs"] });
+  assertEquals(asBroker.confidence, asBreach.confidence, "data_broker and breach must cap identically");
 });
 
 Deno.test("indicia: a single hit can NEVER reach Confirmed (capped ≤65, not-confirmed reason set)", () => {
@@ -58,7 +88,12 @@ Deno.test("indicia: a single hit can NEVER reach Confirmed (capped ≤65, not-co
     assert(r.confidence <= 65, `${n}: confidence ${r.confidence} must be ≤65`);
     assert(r.confidence < 90, `${n}: a single hit must stay below the Confirmed threshold`);
     assert(!!r.reason_not_confirmed, `${n}: reason_not_confirmed must be set`);
-    assert(r.source_classes.includes("breach"), `${n}: classed breach`);
+    // Either lead-tier class is acceptable here; the split is asserted above. What
+    // this test guards is the CEILING, which must hold for both.
+    assert(
+      r.source_classes.includes("breach") || r.source_classes.includes("data_broker"),
+      `${n}: must be classed breach or data_broker (lead tier)`,
+    );
   }
 });
 
