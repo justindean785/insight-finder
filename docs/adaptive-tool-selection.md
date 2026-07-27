@@ -48,7 +48,9 @@ Three independent reasons, all verified against production on 2026-07-27:
      carrying a real cooldown timestamp (`:50`).
 
    **Wiring it as-is would make selection worse, not better.** Treat it as a scoring
-   skeleton worth keeping and a catalog worth deleting.
+   skeleton worth keeping and a catalog worth deleting. (The zero-call-sites claim
+   was adversarially verified four ways — no import, no re-export, no dynamic
+   import, no differently-named wrapper — and held.)
 
 3. **The fan-out is not what it looks like.** Measured across the 8 most recent
    threads (653 non-bookkeeping calls): tool calls arrive in bursts of **1 (288
@@ -87,6 +89,58 @@ catalog.
 **hardcoded to `0` on every wrapper call path**, which also makes circuit.ts's
 `prior.artifactCount > 0` dedup branch unreachable. Step 1 below is largely a matter of
 passing the real number through a hook that is already there.
+
+### Prompt-level instruction has already been tried, and it does not work
+
+This is the strongest argument for doing selection in code, and it was found by
+trying to refute the claim that the prompt is vague about batch size. It isn't:
+
+- `system-prompt.ts:27` — "Prefer the SMALLEST high-value batch … Do NOT
+  burst-fan-out, and do NOT fan a derived handle across dozens of low-signal
+  platforms — **pick the 2-3 platforms most likely to carry the real identity**."
+- `system-prompt.ts:30` — interpolates the live numbers: "YOU HAVE A REAL,
+  ENFORCED BUDGET: 30 total tool calls, 12 paid, 16 per individual tool…"
+- `tool-registry.ts:799` — the planner sub-prompt: "at most 3 per cycle".
+
+The model is already told, in the same request, to pick 2–3. It still takes ~82
+sequential steps choosing from the full registry. **Adding more prose will not fix
+this.** The narrowing has to happen in `activeTools`, where it is not optional.
+
+### Evidence-based narrowing already exists — this follows a precedent
+
+`buildIntermediateStepPlan` already narrows `activeTools` to a single tool on a
+NON-finalize step, driven purely by run state: `shouldNudgePersistence`
+(`orchestrator-finalize.ts:304`) fires when the run has made ≥5 tool calls and
+recorded ZERO artifacts, counted from live step history. So the mechanism, the
+trigger shape, and the call site all exist. Yield-ranked narrowing is a second
+input to a decision the code already makes — not a new concept bolted on.
+
+### Candidate data is in better shape than first mapped
+
+`tool-routing-policy.ts`'s own catalog is unusable (above), but seed-type → tool
+mappings DO exist and DO reach the runtime programmatically:
+
+- `playbooks.ts:35` `EMAIL_PIVOTS` — `Record<artifactKind, string[]>`, e.g.
+  `username: ["socialfetch_lookup", "github_user", "reddit_user", "username_sweep"]`.
+  Exactly the opener set this design needs, already written.
+- `playbookFor()` is read in code — not just rendered as prose — by `coverage.ts:44`
+  (drives the coverage audit), `tool-registry.ts:770` and `:5264`.
+- `catalog.ts:124` `TOOL_CATALOG.fan_outs` — a per-seed fan-out recipe keyed by
+  email / username / phone / ip / domain / url / name.
+
+Three overlapping vocabularies is its own problem, but candidate generation does
+not start from nothing.
+
+### Two run caps now exist, and the newer one binds first
+
+- `MAX_TOOL_CALLS_PER_RUN = 36` — pre-existing, enforced at admission by
+  `reserveToolCall` (`cache.ts:887`), synchronous read-check-increment so a
+  parallel batch cannot overshoot. Recording tools are exempt.
+- `MAX_TOTAL_CALLS = 30` — `runtimeLimits`, enabled 2026-07-27.
+
+30 trips before 36, so the newer cap is the effective one. Also enforced: 22 steps
+and a 180s wall clock. The earned-budget change below should reconcile these rather
+than add a fourth number.
 
 ## The reward signal
 
