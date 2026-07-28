@@ -207,9 +207,21 @@ async function recoverOneStaleThread(
     // `.select("id")` is REQUIRED: without it a lost status race is indistinguishable
     // from a won one and this branch reported recovered:true for a thread it never
     // claimed, inflating the sweeper's recovered count with phantom recoveries.
-    const { data: closed, error: closeErr } = await db.from("threads").update({ status: "finished", recovered_at: now.toISOString(), recovery_reason: reason, updated_at: now.toISOString() }).eq("id", thread.id).eq("status", "active").select("id");
+    const reportAlreadyDurable = assistantState.reason === "report_present";
+    const { data: closed, error: closeErr } = await db
+      .from("threads")
+      .update({
+        status: "finished",
+        recovered_at: reportAlreadyDurable ? null : now.toISOString(),
+        recovery_reason: reportAlreadyDurable ? null : reason,
+        updated_at: now.toISOString(),
+      })
+      .eq("id", thread.id)
+      .eq("status", "active")
+      .select("id");
     if (closeErr) return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: closeErr.message };
-    return { recovered: !!closed && (closed as unknown[]).length > 0, assistantInserted: false, artifactCount: artifactCount ?? 0 };
+    const claimed = !!closed && (closed as unknown[]).length > 0;
+    return { recovered: claimed && !reportAlreadyDurable, assistantInserted: false, artifactCount: artifactCount ?? 0 };
   }
 
   // ---- CLAIM BEFORE WRITING (2026-07-26 race fix) ----

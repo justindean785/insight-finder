@@ -222,7 +222,7 @@ function buildFakeDbLive(threadId: string, userId: string, now: Date) {
 // The existing races above pit two SWEEPS against each other and cannot catch this,
 // because neither of them inserts a real report mid-flight. This fake does.
 // ---------------------------------------------------------------------------
-function buildFakeDbLiveFinalize(threadId: string, userId: string, now: Date) {
+function buildFakeDbLiveFinalize(threadId: string, userId: string, now: Date, reportInitiallyPresent = false) {
   const staleHeartbeat = new Date(now.getTime() - STALE_RUN_AFTER_MS - 5_000).toISOString();
   const threadRow: Record<string, unknown> = {
     id: threadId,
@@ -239,7 +239,7 @@ function buildFakeDbLiveFinalize(threadId: string, userId: string, now: Date) {
     created_at: new Date(now.getTime() - 500).toISOString(),
     parts: [{ type: "text", text: "## Fingerprint.to Investigation Report\n\n| # | Finding |\n|---|---|\n| 1 | domain |" }],
   };
-  const messages: Array<Record<string, unknown>> = [];
+  const messages: Array<Record<string, unknown>> = reportInitiallyPresent ? [liveReport] : [];
   const insertedMessages: Array<Record<string, unknown>> = [];
   let threadUpdates = 0;
 
@@ -259,7 +259,7 @@ function buildFakeDbLiveFinalize(threadId: string, userId: string, now: Date) {
           threadUpdates++;
           // THE INTERLEAVING: the live run inserts its real report just before our
           // claim commits — after recovery's first read saw an empty thread.
-          if (threadUpdates === 1) messages.push(liveReport);
+          if (threadUpdates === 1 && !reportInitiallyPresent) messages.push(liveReport);
           const matches = filters.every(([col, val]) => threadRow[col] === val);
           if (matches) {
             Object.assign(threadRow, pendingUpdate);
@@ -299,11 +299,17 @@ function buildFakeDbLiveFinalize(threadId: string, userId: string, now: Date) {
         node.then = (resolve: (v: unknown) => void) => resolve(value);
         return node;
       }
+      if (table === "artifact_reviews") {
+        const node: Record<string, unknown> = {};
+        for (const m of ["select", "eq"]) node[m] = () => node;
+        node.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null });
+        return node;
+      }
       throw new Error(`unexpected table in fake db: ${table}`);
     },
   } as unknown as ReturnType<typeof createClient>;
 
-  return { db, insertedMessages, threadRow };
+  return { db, insertedMessages, messages, threadRow };
 }
 
 Deno.test("recovery vs live finalization: a report arriving during the claim must NOT leave the thread Interrupted", async () => {
@@ -318,6 +324,39 @@ Deno.test("recovery vs live finalization: a report arriving during the claim mus
   assertEquals(threadRow.recovered_at, null, "recovered_at must be cleared or the run renders Interrupted");
   assertEquals(threadRow.recovery_reason, null, "recovery_reason must be cleared");
   assertEquals(threadRow.status, "finished", "status stays terminal — the run really is over");
+});
+
+Deno.test("an already-durable report is atomically closed as a clean completion", async () => {
+  const now = new Date("2026-07-28T16:00:00.000Z");
+  const { db, insertedMessages, threadRow } = buildFakeDbLiveFinalize("t-report-present", "u1", now, true);
+
+  const res = await recoverStaleThreadById(db, "t-report-present", {
+    now,
+    reason: "stale heartbeat recovered by health sweep",
+  });
+
+  assertEquals(insertedMessages.length, 0, "the existing durable report suppresses a recovery stub");
+  assertEquals(res.recovered, false, "a durable report is a clean completion, not a recovery");
+  assertEquals(threadRow.status, "finished", "the conditional active-status claim still closes the thread");
+  assertEquals(threadRow.recovered_at, null, "clean completion must not carry recovery metadata");
+  assertEquals(threadRow.recovery_reason, null, "clean completion must not render Interrupted");
+});
+
+Deno.test("a non-report early close preserves interruption metadata", async () => {
+  const now = new Date("2026-07-28T16:00:00.000Z");
+  const { db, insertedMessages, messages, threadRow } = buildFakeDbLiveFinalize("t-recent-assistant", "u1", now, true);
+  messages[0].parts = [{ type: "text", text: "I am checking one more source now." }];
+
+  const res = await recoverStaleThreadById(db, "t-recent-assistant", {
+    now,
+    reason: "stale heartbeat recovered by health sweep",
+  });
+
+  assertEquals(insertedMessages.length, 0, "a recent assistant suppresses the recovery stub");
+  assertEquals(res.recovered, true, "a non-report early close remains an interrupted recovery");
+  assertEquals(threadRow.status, "finished");
+  assertEquals(threadRow.recovered_at, now.toISOString());
+  assertEquals(threadRow.recovery_reason, "stale heartbeat recovered by health sweep");
 });
 
 Deno.test("recovery release only clears its OWN claim, never another worker's", async () => {
