@@ -359,6 +359,151 @@ Deno.test("a non-report early close preserves interruption metadata", async () =
   assertEquals(threadRow.recovery_reason, "stale heartbeat recovered by health sweep");
 });
 
+// ---------------------------------------------------------------------------
+// PR #387 review, P2: the claim + stub write is NOT atomic. If the sweeper wins
+// the status claim but the recovery-stub INSERT then fails, the thread used to
+// stay `finished` + recovery metadata forever — and because the sweep scans only
+// status='active' rows, no future sweep could ever retry it. The fix rolls back
+// exactly that claim (keyed on the recovered_at + recovery_reason it wrote) so
+// the thread reopens for the next sweep, without touching a newer claim.
+// ---------------------------------------------------------------------------
+function buildFakeDbInsertFail(threadId: string, userId: string, now: Date) {
+  const staleHeartbeat = new Date(now.getTime() - STALE_RUN_AFTER_MS - 5_000).toISOString();
+  const threadRow: Record<string, unknown> = {
+    id: threadId,
+    user_id: userId,
+    title: "insert-fail-test",
+    seed_value: "insert-fail.example",
+    status: "active",
+    run_started_at: staleHeartbeat,
+    last_heartbeat_at: staleHeartbeat,
+    updated_at: staleHeartbeat,
+  };
+  const insertedMessages: Array<Record<string, unknown>> = [];
+  const control = {
+    failInserts: true,
+    insertAttempts: 0,
+    // Runs INSIDE the failed insert, before recovery's rollback — the hook point
+    // for simulating a newer claim landing in that window.
+    onFailedInsert: null as (() => void) | null,
+  };
+
+  function threadsChain() {
+    const filters: Array<[string, unknown]> = [];
+    let pendingUpdate: Record<string, unknown> | null = null;
+    const node: Record<string, unknown> = {
+      select: () => node,
+      eq: (col: string, val: unknown) => { filters.push([col, val]); return node; },
+      update: (patch: Record<string, unknown>) => { pendingUpdate = patch; return node; },
+      maybeSingle: () => {
+        const matches = filters.every(([col, val]) => threadRow[col] === val);
+        return Promise.resolve({ data: matches ? { ...threadRow } : null, error: null });
+      },
+      then: (resolve: (v: { data: unknown; error: unknown }) => void) => {
+        const matches = filters.every(([col, val]) => threadRow[col] === val);
+        if (pendingUpdate) {
+          if (matches) {
+            Object.assign(threadRow, pendingUpdate);
+            resolve({ data: [{ id: threadId }], error: null });
+          } else {
+            resolve({ data: [], error: null });
+          }
+          return;
+        }
+        resolve({ data: matches ? [{ ...threadRow }] : [], error: null });
+      },
+    };
+    return node;
+  }
+
+  const db = {
+    from: (table: string) => {
+      if (table === "threads") return threadsChain();
+      if (table === "messages") {
+        const node: Record<string, unknown> = {};
+        for (const m of ["select", "eq", "in", "order", "limit"]) node[m] = () => node;
+        node.maybeSingle = () => Promise.resolve({ data: insertedMessages.length ? insertedMessages[insertedMessages.length - 1] : null, error: null });
+        node.then = (resolve: (v: unknown) => void) => resolve({ data: insertedMessages, error: null });
+        node.insert = (row: Record<string, unknown>) => {
+          control.insertAttempts++;
+          if (control.failInserts) {
+            control.onFailedInsert?.();
+            return Promise.resolve({ error: { message: "simulated transient insert failure" } });
+          }
+          insertedMessages.push(row);
+          return Promise.resolve({ error: null });
+        };
+        return node;
+      }
+      if (table === "artifacts") {
+        const node: Record<string, unknown> = {};
+        for (const m of ["select", "eq", "in", "order", "limit"]) node[m] = () => node;
+        const value = { data: [{ id: "a1", kind: "email", value: "found@insert-fail.example", confidence: 0.9, source: "test", created_at: now.toISOString() }], error: null, count: 1 };
+        node.maybeSingle = () => Promise.resolve(value);
+        node.then = (resolve: (v: unknown) => void) => resolve(value);
+        return node;
+      }
+      if (table === "artifact_reviews") {
+        const node: Record<string, unknown> = {};
+        for (const m of ["select", "eq"]) node[m] = () => node;
+        node.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null });
+        return node;
+      }
+      throw new Error(`unexpected table in fake db: ${table}`);
+    },
+  } as unknown as ReturnType<typeof createClient>;
+
+  return { db, insertedMessages, threadRow, control };
+}
+
+Deno.test("stub-insert failure releases the exact claim so a later sweep can retry", async () => {
+  const now = new Date("2026-07-29T10:00:00.000Z");
+  const { db, insertedMessages, threadRow, control } = buildFakeDbInsertFail("t-insert-fail", "u1", now);
+
+  const failed = await recoverStaleThreadById(db, "t-insert-fail", { now, reason: "sweep A" });
+
+  assertEquals(failed.recovered, false, "a failed stub write is not a recovery");
+  assertEquals(failed.assistantInserted, false);
+  assertEquals(failed.error, "simulated transient insert failure");
+  assertEquals(insertedMessages.length, 0);
+  // THE FIX: the claim must be rolled back, not left permanently consumed.
+  assertEquals(threadRow.status, "active", "the thread must reopen so the sweep can retry");
+  assertEquals(threadRow.recovered_at, null, "the failed worker's stamp must be cleared");
+  assertEquals(threadRow.recovery_reason, null);
+
+  // A later sweep (insert now healthy) must complete the recovery end-to-end.
+  control.failInserts = false;
+  const later = new Date(now.getTime() + 60_000);
+  const retried = await recoverStaleThreadById(db, "t-insert-fail", { now: later, reason: "sweep B" });
+  assertEquals(retried.recovered, true, "the reopened thread must be recoverable by the next sweep");
+  assertEquals(retried.assistantInserted, true);
+  assertEquals(insertedMessages.length, 1, "exactly one recovered report after the retry");
+  assertEquals(threadRow.status, "finished");
+  assertEquals(threadRow.recovery_reason, "sweep B");
+});
+
+Deno.test("stub-insert failure must NOT clear a changed/newer claim", async () => {
+  const now = new Date("2026-07-29T10:00:00.000Z");
+  const newerStamp = new Date(now.getTime() + 5_000).toISOString();
+  const { db, threadRow, control } = buildFakeDbInsertFail("t-insert-fail-2", "u1", now);
+  // While our insert is failing, a newer owner replaces the claim (e.g. a restarted
+  // run went stale again and a later sweep re-claimed it).
+  control.onFailedInsert = () => {
+    threadRow.recovered_at = newerStamp;
+    threadRow.recovery_reason = "newer worker's claim";
+  };
+
+  const failed = await recoverStaleThreadById(db, "t-insert-fail-2", { now, reason: "sweep A" });
+
+  assertEquals(failed.recovered, false);
+  assertEquals(failed.error, "simulated transient insert failure");
+  // The rollback is keyed on OUR recovered_at + recovery_reason, so the newer
+  // owner's state must survive the failed worker untouched.
+  assertEquals(threadRow.status, "finished", "the newer claim's terminal status is not reopened");
+  assertEquals(threadRow.recovered_at, newerStamp, "the newer claim's stamp is not cleared");
+  assertEquals(threadRow.recovery_reason, "newer worker's claim");
+});
+
 Deno.test("recovery release only clears its OWN claim, never another worker's", async () => {
   const now = new Date();
   const { db, threadRow } = buildFakeDbLiveFinalize("t-live-final-2", "u1", now);

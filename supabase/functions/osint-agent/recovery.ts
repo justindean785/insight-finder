@@ -288,7 +288,36 @@ async function recoverOneStaleThread(
   // returns [] when the verdicts are unreadable, so this fails closed.
   const text = buildRecoveredAssistantText(thread, reviewedArtifacts as RecoveryArtifact[]);
   const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: [{ type: "text", text }] });
-  if (insertErr) return { recovered: true, assistantInserted: false, artifactCount: artifactCount ?? 0, error: insertErr.message };
+  if (insertErr) {
+    // ---- ROLL BACK THE CLAIM ON STUB-INSERT FAILURE (PR #387 review, P2) ----
+    // The claim above already flipped status to "finished", but the recovered report
+    // never landed. Left as-is, no sweep will ever retry — the sweep scans only
+    // status='active' rows — so a transient insert failure permanently strands a
+    // genuinely interrupted run: closed, stamped as recovered, with no report.
+    // Reopen the thread so the next sweep re-runs the whole claim + stub sequence.
+    //
+    // The WHERE is keyed on the exact recovered_at + recovery_reason THIS claim wrote
+    // (the same token the durable-report release above uses): if the row no longer
+    // carries our stamp — a new run restarted via markRunStarted, or a later worker
+    // owns it — the UPDATE matches nothing and their state is untouched.
+    const { data: released, error: rollbackErr } = await db
+      .from("threads")
+      .update({ status: "active", recovered_at: null, recovery_reason: null, updated_at: now.toISOString() })
+      .eq("id", thread.id)
+      .eq("recovered_at", now.toISOString())
+      .eq("recovery_reason", reason)
+      .select("id");
+    if (rollbackErr) {
+      // Claim stands but the stub is missing — the pre-rollback failure mode.
+      // recovered:true is honest here: the close DID commit and will render Interrupted.
+      return { recovered: true, assistantInserted: false, artifactCount: artifactCount ?? 0, error: `${insertErr.message}; claim rollback failed: ${rollbackErr.message}` };
+    }
+    console.warn(JSON.stringify({
+      event: "recovery_stub_insert_failed", thread_id: thread.id,
+      claim_released: !!released && (released as unknown[]).length > 0, error: insertErr.message,
+    }));
+    return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: insertErr.message };
+  }
   assistantInserted = true;
   return { recovered: true, assistantInserted, artifactCount: artifactCount ?? 0 };
 }
