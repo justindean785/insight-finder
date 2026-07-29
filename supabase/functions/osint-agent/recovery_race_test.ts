@@ -470,12 +470,22 @@ Deno.test("stub-insert failure releases the exact claim so a later sweep can ret
   assertEquals(threadRow.status, "active", "the thread must reopen so the sweep can retry");
   assertEquals(threadRow.recovered_at, null, "the failed worker's stamp must be cleared");
   assertEquals(threadRow.recovery_reason, null);
+  // Codex review on this PR (P2): the reopened row must NOT be immediately stale —
+  // last_heartbeat_at must be bumped to `now`, not left at its old value, or a
+  // concurrent sweep (a different request's health-check, a cron tick) can re-claim
+  // this thread and insert a recovered-run stub before the failed request's own
+  // startRunHeartbeat gets a chance to stamp a genuinely fresh run marker.
+  assertEquals(threadRow.last_heartbeat_at, now.toISOString(), "the heartbeat must be bumped so the row isn't instantly re-stale");
+  const immediatelyAfter = await recoverStaleThreadById(db, "t-insert-fail", { now, reason: "concurrent sweep" });
+  assertEquals(immediatelyAfter.recovered, false, "a concurrent sweep must NOT be able to re-recover this thread right away");
+  assertEquals(insertedMessages.length, 0, "no stub must land from a sweep racing the still-in-flight request");
 
-  // A later sweep (insert now healthy) must complete the recovery end-to-end.
+  // A later sweep — genuinely past STALE_RUN_AFTER_MS, i.e. the in-flight request
+  // never came back to refresh the heartbeat — must still complete the recovery.
   control.failInserts = false;
-  const later = new Date(now.getTime() + 60_000);
+  const later = new Date(now.getTime() + STALE_RUN_AFTER_MS + 5_000);
   const retried = await recoverStaleThreadById(db, "t-insert-fail", { now: later, reason: "sweep B" });
-  assertEquals(retried.recovered, true, "the reopened thread must be recoverable by the next sweep");
+  assertEquals(retried.recovered, true, "the reopened thread must be recoverable once it is genuinely stale again");
   assertEquals(retried.assistantInserted, true);
   assertEquals(insertedMessages.length, 1, "exactly one recovered report after the retry");
   assertEquals(threadRow.status, "finished");

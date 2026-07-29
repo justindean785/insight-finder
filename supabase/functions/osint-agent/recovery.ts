@@ -300,9 +300,24 @@ async function recoverOneStaleThread(
     // (the same token the durable-report release above uses): if the row no longer
     // carries our stamp — a new run restarted via markRunStarted, or a later worker
     // owns it — the UPDATE matches nothing and their state is untouched.
+    //
+    // last_heartbeat_at MUST be bumped to `now` here too (Codex review on this PR,
+    // P2): isStaleActiveThread checks last_heartbeat_at FIRST and only falls back to
+    // updated_at when the heartbeat is null, so reopening with a fresh updated_at but
+    // a stale, untouched last_heartbeat_at leaves the row immediately re-eligible for
+    // ANY concurrent sweep (the health-check sweep in index.ts, a cron tick, another
+    // request) — not just the one that failed. When this recovery runs as the
+    // pre-request check inside setupRequest, that race lets a concurrent sweep win,
+    // recover the thread, and insert the recovered-run stub AFTER the analyst's new
+    // message that setupRequest is about to write, misattributing the prior run's
+    // report onto the new turn. Bumping the heartbeat holds the thread "live" for one
+    // more STALE_RUN_AFTER_MS window — long enough for this request's own
+    // startRunHeartbeat to stamp a genuinely fresh run marker — while still leaving it
+    // eligible again if this request never gets that far (crashes, insert keeps
+    // failing) and the run really is abandoned.
     const { data: released, error: rollbackErr } = await db
       .from("threads")
-      .update({ status: "active", recovered_at: null, recovery_reason: null, updated_at: now.toISOString() })
+      .update({ status: "active", recovered_at: null, recovery_reason: null, last_heartbeat_at: now.toISOString(), updated_at: now.toISOString() })
       .eq("id", thread.id)
       .eq("recovered_at", now.toISOString())
       .eq("recovery_reason", reason)
