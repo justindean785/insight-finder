@@ -138,6 +138,38 @@ Deno.test("shouldInsertRecoveredAssistant: a prior-turn report does NOT suppress
   ), { shouldInsert: true, reason: "assistant_before_run" });
 });
 
+Deno.test("shouldInsertRecoveredAssistant: a durable finalize_no_findings decision suppresses the stub", () => {
+  // I-2's OTHER terminal outcome. The decision lives in a tool PART, not text, so
+  // assistantPartsToText yields "" and the report-shape guard cannot see it. Without
+  // the parts-level check this run gets stamped Interrupted despite completing validly.
+  const noFindingsParts = [
+    { type: "text", text: "No further corroboration was available." },
+    { type: "tool-finalize_no_findings", state: "output-available", output: { ok: true, reason: "no additional leads" } },
+  ];
+  assertEquals(shouldInsertRecoveredAssistant(
+    { run_started_at: "2026-07-15T14:42:54Z", last_heartbeat_at: "2026-07-15T14:43:55Z", updated_at: "2026-07-15T14:43:55Z" },
+    "2026-07-15T14:43:50Z",
+    Date.parse("2026-07-15T14:52:12Z"), // well past the recent-assistant window
+    RECENT_ASSISTANT_WINDOW_MS,
+    assistantPartsToText(noFindingsParts),
+    noFindingsParts,
+  ), { shouldInsert: false, reason: "no_findings_present" });
+});
+
+Deno.test("shouldInsertRecoveredAssistant: a PRIOR-turn no-findings decision does NOT suppress a genuine stub", () => {
+  // Same scoping rule the report-shape guard obeys: a decision from an earlier turn
+  // must not mark THIS run terminal, so the before-run check still wins.
+  const noFindingsParts = [{ type: "tool-finalize_no_findings", state: "output-available", output: { ok: true } }];
+  assertEquals(shouldInsertRecoveredAssistant(
+    { run_started_at: "2026-07-15T14:42:54Z", last_heartbeat_at: "2026-07-15T14:43:55Z", updated_at: "2026-07-15T14:43:55Z" },
+    "2026-07-15T14:30:37Z", // before run start
+    Date.parse("2026-07-15T14:45:12Z"),
+    RECENT_ASSISTANT_WINDOW_MS,
+    assistantPartsToText(noFindingsParts),
+    noFindingsParts,
+  ), { shouldInsert: true, reason: "assistant_before_run" });
+});
+
 Deno.test("assistantPartsToText: joins text parts, ignores tool/non-text parts and bad input", () => {
   assertEquals(
     assistantPartsToText([{ type: "text", text: "hello" }, { type: "tool-call", toolName: "x" }, { type: "text", text: "world" }]),

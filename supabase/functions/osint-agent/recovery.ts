@@ -1,5 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { hasReportShape, stripReasoning } from "./orchestrator-finalize.ts";
+import { hasNoFindingsDecision, hasReportShape, stripReasoning } from "./orchestrator-finalize.ts";
 import { loadReviewsForThread, applyReviewsToArtifacts } from "./reviews.ts";
 
 export const RUN_HEARTBEAT_INTERVAL_MS = 15_000;
@@ -30,7 +30,7 @@ export type RecoveryArtifact = {
 
 export type RecoveryAssistantState = {
   shouldInsert: boolean;
-  reason: "none" | "no_assistant" | "assistant_before_run" | "assistant_stale" | "report_present";
+  reason: "none" | "no_assistant" | "assistant_before_run" | "assistant_stale" | "report_present" | "no_findings_present";
 };
 
 /** Join an assistant message's text parts into one string for report-shape checks. */
@@ -128,6 +128,7 @@ export function shouldInsertRecoveredAssistant(
   nowMs: number = Date.now(),
   recentWindowMs: number = RECENT_ASSISTANT_WINDOW_MS,
   latestAssistantText?: string | null,
+  latestAssistantParts?: unknown,
 ): RecoveryAssistantState {
   if (!latestAssistantCreatedAt) return { shouldInsert: true, reason: "no_assistant" };
   const assistantMs = new Date(latestAssistantCreatedAt).getTime();
@@ -149,6 +150,20 @@ export function shouldInsertRecoveredAssistant(
   // suppress a genuine stub.
   if (latestAssistantText && hasReportShape(stripReasoning(latestAssistantText))) {
     return { shouldInsert: false, reason: "report_present" };
+  }
+
+  // The OTHER half of the I-2 completion contract. A run may also terminate legitimately
+  // with an explicit `finalize_no_findings` decision instead of a report — and that
+  // decision lives in a `tool-finalize_no_findings` PART, which assistantPartsToText
+  // drops on the floor (it keeps only `type === "text"`). Without this, an isolate that
+  // died after persisting a valid no-findings assistant row but before the status flip
+  // got stamped with recovery metadata and rendered Interrupted, even though
+  // meetsCompletionContract accepts it. Delegating to hasNoFindingsDecision — rather
+  // than re-implementing the part scan here — keeps recovery and the finalize contract
+  // in agreement by construction, so when that helper is tightened to require a
+  // successful, schema-valid output this path inherits the fix automatically.
+  if (latestAssistantParts && hasNoFindingsDecision([{ role: "assistant", parts: latestAssistantParts } as unknown as Parameters<typeof hasNoFindingsDecision>[0][number]])) {
+    return { shouldInsert: false, reason: "no_findings_present" };
   }
 
   const liveMs = thread.last_heartbeat_at
@@ -201,13 +216,16 @@ async function recoverOneStaleThread(
     now.getTime(),
     RECENT_ASSISTANT_WINDOW_MS,
     assistantPartsToText(latestAssistantRow?.parts),
+    latestAssistantRow?.parts,
   );
   if (!assistantState.shouldInsert) {
     // Nothing to stub, but the thread is genuinely stale — still close it out.
     // `.select("id")` is REQUIRED: without it a lost status race is indistinguishable
     // from a won one and this branch reported recovered:true for a thread it never
     // claimed, inflating the sweeper's recovered count with phantom recoveries.
-    const reportAlreadyDurable = assistantState.reason === "report_present";
+    // Both halves of the completion contract count as a clean finish, not a recovery:
+    // a durable report-shaped message OR an explicit finalize_no_findings decision.
+    const reportAlreadyDurable = assistantState.reason === "report_present" || assistantState.reason === "no_findings_present";
     const { data: closed, error: closeErr } = await db
       .from("threads")
       .update({
@@ -256,6 +274,7 @@ async function recoverOneStaleThread(
   const freshState = shouldInsertRecoveredAssistant(
     thread, freshRow?.created_at ?? null, now.getTime(), RECENT_ASSISTANT_WINDOW_MS,
     assistantPartsToText(freshRow?.parts),
+    freshRow?.parts,
   );
   if (!freshState.shouldInsert) {
     // ---- RELEASE THE CLAIM (2026-07-26, blocker 1) ----

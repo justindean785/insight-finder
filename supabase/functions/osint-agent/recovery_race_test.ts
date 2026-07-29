@@ -342,6 +342,28 @@ Deno.test("an already-durable report is atomically closed as a clean completion"
   assertEquals(threadRow.recovery_reason, null, "clean completion must not render Interrupted");
 });
 
+Deno.test("a durable finalize_no_findings run is closed as a clean completion, not Interrupted", async () => {
+  const now = new Date("2026-07-28T16:00:00.000Z");
+  const { db, insertedMessages, messages, threadRow } = buildFakeDbLiveFinalize("t-no-findings", "u1", now, true);
+  // The terminal assistant carries the no-findings DECISION as a tool part — there is
+  // no report-shaped text for hasReportShape to match on.
+  messages[0].parts = [
+    { type: "text", text: "Nothing further surfaced." },
+    { type: "tool-finalize_no_findings", state: "output-available", output: { ok: true, reason: "no additional leads" } },
+  ];
+
+  const res = await recoverStaleThreadById(db, "t-no-findings", {
+    now,
+    reason: "stale heartbeat recovered by health sweep",
+  });
+
+  assertEquals(insertedMessages.length, 0, "a valid no-findings decision must suppress the recovery stub");
+  assertEquals(res.recovered, false, "an explicit no-findings decision is a clean completion, not a recovery");
+  assertEquals(threadRow.status, "finished");
+  assertEquals(threadRow.recovered_at, null, "a validated no-findings run must not carry recovery metadata");
+  assertEquals(threadRow.recovery_reason, null, "a validated no-findings run must not render Interrupted");
+});
+
 Deno.test("a non-report early close preserves interruption metadata", async () => {
   const now = new Date("2026-07-28T16:00:00.000Z");
   const { db, insertedMessages, messages, threadRow } = buildFakeDbLiveFinalize("t-recent-assistant", "u1", now, true);
