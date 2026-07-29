@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertStringIncludes } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { assistantPartsToText, buildRecoveredAssistantText, hasRunMarker, isStaleActiveThread, RECENT_ASSISTANT_WINDOW_MS, REQUIRE_RUN_MARKER_FOR_RECOVERY, shouldInsertRecoveredAssistant, STALE_RUN_AFTER_MS } from "./recovery.ts";
+import { assistantPartsToText, buildRecoveredAssistantText, hasRunMarker, hasSuccessfulNoFindingsPart, isStaleActiveThread, RECENT_ASSISTANT_WINDOW_MS, REQUIRE_RUN_MARKER_FOR_RECOVERY, shouldInsertRecoveredAssistant, STALE_RUN_AFTER_MS } from "./recovery.ts";
 
 Deno.test("P0-A: a blank thread that never ran is NEVER recovery-eligible", () => {
   // THE PRODUCTION GHOST (thread 40f8a6eb, 2026-07-26 00:19:10Z). Reproduces the
@@ -154,6 +154,46 @@ Deno.test("shouldInsertRecoveredAssistant: a durable finalize_no_findings decisi
     assistantPartsToText(noFindingsParts),
     noFindingsParts,
   ), { shouldInsert: false, reason: "no_findings_present" });
+});
+
+Deno.test("shouldInsertRecoveredAssistant: a FAILED or half-executed no-findings call does NOT count as complete", () => {
+  // Presence of the part is not success. The AI SDK leaves a tool part behind for a call
+  // that errored or never returned; admitting those would paint an unfinished run green.
+  const live = { run_started_at: "2026-07-15T14:42:54Z", last_heartbeat_at: "2026-07-15T14:43:55Z", updated_at: "2026-07-15T14:43:55Z" };
+  const at = "2026-07-15T14:43:50Z";
+  const nowMs = Date.parse("2026-07-15T14:52:12Z"); // past the recent-assistant window
+
+  const rejected: Array<[string, unknown]> = [
+    ["output-error", [{ type: "tool-finalize_no_findings", state: "output-error", errorText: "schema validation failed" }]],
+    ["input-available (never returned)", [{ type: "tool-finalize_no_findings", state: "input-available", input: { reason: "x" } }]],
+    ["output-available but ok:false", [{ type: "tool-finalize_no_findings", state: "output-available", output: { ok: false, error: "refused" } }]],
+    ["output-available but no ok field", [{ type: "tool-finalize_no_findings", state: "output-available", output: { reason: "x" } }]],
+    ["truncated output (ok erased)", [{ type: "tool-finalize_no_findings", state: "output-available", output: { _truncated: true, preview: "…" } }]],
+  ];
+  for (const [label, parts] of rejected) {
+    assertEquals(
+      shouldInsertRecoveredAssistant(live, at, nowMs, RECENT_ASSISTANT_WINDOW_MS, assistantPartsToText(parts), parts).reason !== "no_findings_present",
+      true,
+      `${label} must not be accepted as a durable no-findings completion`,
+    );
+  }
+
+  // And a different tool's successful part must never be mistaken for one.
+  const otherTool = [{ type: "tool-record_artifacts", state: "output-available", output: { ok: true } }];
+  assertEquals(
+    shouldInsertRecoveredAssistant(live, at, nowMs, RECENT_ASSISTANT_WINDOW_MS, assistantPartsToText(otherTool), otherTool).reason !== "no_findings_present",
+    true,
+    "a successful record_artifacts is not a no-findings decision",
+  );
+});
+
+Deno.test("hasSuccessfulNoFindingsPart: accepts only a succeeded decision, tolerates junk input", () => {
+  assertEquals(hasSuccessfulNoFindingsPart([{ type: "tool-finalize_no_findings", state: "output-available", output: { ok: true } }]), true);
+  assertEquals(hasSuccessfulNoFindingsPart([{ type: "tool-finalize_no_findings", state: "output-error" }]), false);
+  assertEquals(hasSuccessfulNoFindingsPart([{ type: "text", text: "no findings" }]), false);
+  assertEquals(hasSuccessfulNoFindingsPart(null), false);
+  assertEquals(hasSuccessfulNoFindingsPart("nope"), false);
+  assertEquals(hasSuccessfulNoFindingsPart([null, undefined, 42]), false);
 });
 
 Deno.test("shouldInsertRecoveredAssistant: a PRIOR-turn no-findings decision does NOT suppress a genuine stub", () => {

@@ -1,5 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { hasNoFindingsDecision, hasReportShape, stripReasoning } from "./orchestrator-finalize.ts";
+import { hasReportShape, stripReasoning } from "./orchestrator-finalize.ts";
 import { loadReviewsForThread, applyReviewsToArtifacts } from "./reviews.ts";
 
 export const RUN_HEARTBEAT_INTERVAL_MS = 15_000;
@@ -122,6 +122,38 @@ export function buildRecoveredAssistantText(
   ].join("\n");
 }
 
+/**
+ * Did this assistant row carry a finalize_no_findings decision that ACTUALLY SUCCEEDED?
+ *
+ * Deliberately stricter than the shared `hasNoFindingsDecision`, which matches on the
+ * part's `type` alone. Presence is not success: the AI SDK still leaves a
+ * `tool-finalize_no_findings` part when the call finished in `output-error` or never
+ * got past `input-available`, and treating those as terminal would let recovery clear
+ * `recovery_reason` and present a run that never finalized as a clean completion —
+ * exactly the false-green I-2 exists to prevent.
+ *
+ * The asymmetry is safe in this direction: recovery demanding more than the finalize
+ * contract can only mislabel a genuine completion as Interrupted (honest, and visible),
+ * never the reverse. The shared helper is tightened separately — this predicate then
+ * becomes redundant rather than wrong.
+ *
+ * Not defended against here: `capToolPartPayloads` replaces an oversized `output` with
+ * a `{_truncated}` preview, which would erase `ok`. A finalize_no_findings output is a
+ * small `{ok, reason}` object, orders of magnitude under the 50KB cap threshold, so it
+ * cannot realistically be truncated.
+ */
+export function hasSuccessfulNoFindingsPart(parts: unknown): boolean {
+  if (!Array.isArray(parts)) return false;
+  return parts.some((raw) => {
+    const part = raw as { type?: unknown; state?: unknown; output?: unknown } | null;
+    if (!part || typeof part !== "object") return false;
+    if (part.type !== "tool-finalize_no_findings") return false;
+    if (part.state !== "output-available") return false;
+    const output = part.output as { ok?: unknown } | null;
+    return !!output && typeof output === "object" && output.ok === true;
+  });
+}
+
 export function shouldInsertRecoveredAssistant(
   thread: Pick<RecoverableThread, "run_started_at" | "last_heartbeat_at" | "updated_at">,
   latestAssistantCreatedAt?: string | null,
@@ -157,12 +189,12 @@ export function shouldInsertRecoveredAssistant(
   // decision lives in a `tool-finalize_no_findings` PART, which assistantPartsToText
   // drops on the floor (it keeps only `type === "text"`). Without this, an isolate that
   // died after persisting a valid no-findings assistant row but before the status flip
-  // got stamped with recovery metadata and rendered Interrupted, even though
-  // meetsCompletionContract accepts it. Delegating to hasNoFindingsDecision — rather
-  // than re-implementing the part scan here — keeps recovery and the finalize contract
-  // in agreement by construction, so when that helper is tightened to require a
-  // successful, schema-valid output this path inherits the fix automatically.
-  if (latestAssistantParts && hasNoFindingsDecision([{ role: "assistant", parts: latestAssistantParts } as unknown as Parameters<typeof hasNoFindingsDecision>[0][number]])) {
+  // got stamped with recovery metadata and rendered Interrupted.
+  //
+  // Gated on the call having SUCCEEDED, not merely having been emitted — see
+  // hasSuccessfulNoFindingsPart. A failed or half-executed finalize_no_findings is not a
+  // terminal outcome, and admitting one here would paint an unfinished run green.
+  if (hasSuccessfulNoFindingsPart(latestAssistantParts)) {
     return { shouldInsert: false, reason: "no_findings_present" };
   }
 

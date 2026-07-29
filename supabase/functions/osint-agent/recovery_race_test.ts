@@ -364,6 +364,26 @@ Deno.test("a durable finalize_no_findings run is closed as a clean completion, n
   assertEquals(threadRow.recovery_reason, null, "a validated no-findings run must not render Interrupted");
 });
 
+Deno.test("a FAILED finalize_no_findings run is still labelled Interrupted, not clean", async () => {
+  const now = new Date("2026-07-28T16:00:00.000Z");
+  const { db, messages, threadRow } = buildFakeDbLiveFinalize("t-no-findings-failed", "u1", now, true);
+  // The decision was emitted but the call errored — the run never actually finalized.
+  messages[0].parts = [
+    { type: "text", text: "Wrapping up." },
+    { type: "tool-finalize_no_findings", state: "output-error", errorText: "schema validation failed" },
+  ];
+
+  const res = await recoverStaleThreadById(db, "t-no-findings-failed", {
+    now,
+    reason: "stale heartbeat recovered by health sweep",
+  });
+
+  assertEquals(res.recovered, true, "a failed no-findings call is not a terminal outcome");
+  assertEquals(threadRow.status, "finished");
+  assertEquals(threadRow.recovered_at, now.toISOString(), "recovery metadata must be retained");
+  assertEquals(threadRow.recovery_reason, "stale heartbeat recovered by health sweep", "the run must still render Interrupted");
+});
+
 Deno.test("a non-report early close preserves interruption metadata", async () => {
   const now = new Date("2026-07-28T16:00:00.000Z");
   const { db, insertedMessages, messages, threadRow } = buildFakeDbLiveFinalize("t-recent-assistant", "u1", now, true);
