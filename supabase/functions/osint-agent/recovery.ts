@@ -213,6 +213,40 @@ export function shouldInsertRecoveredAssistant(
   return { shouldInsert: false, reason: "none" };
 }
 
+/**
+ * Pin a compare-and-set to the EXACT run this sweep read (2026-07-29 review, P1).
+ *
+ * `status = 'active'` alone is an ABA compare: `markRunStarted` also writes
+ * `status: "active"`, so a brand-new run that began between our read and our UPDATE
+ * still satisfies it. The sweeper would then close the NEW run using the OLD run's
+ * evidence — and on the clean-completion path it also clears both interruption
+ * markers, so the live run reads as normally complete. Worse, it is self-concealing:
+ * the new run's own heartbeat pulses and terminal update are themselves guarded on
+ * `status = 'active'`, so once we flip it to `finished` they all silently no-op and
+ * the run never corrects the record.
+ *
+ * Adding the run markers we originally read turns the CAS into a proper optimistic
+ * concurrency check. It rejects both hazards at once, because `markRunStarted` moves
+ * `run_started_at` and a live-but-pulsing isolate moves `last_heartbeat_at` — either
+ * shift means the row is no longer the stale run we decided to reap, so we claim
+ * nothing and write nothing.
+ *
+ * NULL markers must be compared with `.is`, not `.eq` — PostgREST renders `eq.null`
+ * as a literal that never matches. A row with neither marker cannot reach here at all
+ * (hasRunMarker gates it), so at most one of the two is null in practice.
+ */
+function withRunMarkerGuard<Q>(query: Q, thread: RecoverableThread): Q {
+  let next = query as unknown as {
+    eq: (col: string, value: unknown) => unknown;
+    is: (col: string, value: unknown) => unknown;
+  };
+  for (const col of ["run_started_at", "last_heartbeat_at"] as const) {
+    const value = thread[col];
+    next = (value == null ? next.is(col, null) : next.eq(col, value)) as typeof next;
+  }
+  return next as unknown as Q;
+}
+
 async function recoverOneStaleThread(
   db: DbClient,
   thread: RecoverableThread,
@@ -258,17 +292,19 @@ async function recoverOneStaleThread(
     // Both halves of the completion contract count as a clean finish, not a recovery:
     // a durable report-shaped message OR an explicit finalize_no_findings decision.
     const reportAlreadyDurable = assistantState.reason === "report_present" || assistantState.reason === "no_findings_present";
-    const { data: closed, error: closeErr } = await db
-      .from("threads")
-      .update({
-        status: "finished",
-        recovered_at: reportAlreadyDurable ? null : now.toISOString(),
-        recovery_reason: reportAlreadyDurable ? null : reason,
-        updated_at: now.toISOString(),
-      })
-      .eq("id", thread.id)
-      .eq("status", "active")
-      .select("id");
+    const { data: closed, error: closeErr } = await withRunMarkerGuard(
+      db
+        .from("threads")
+        .update({
+          status: "finished",
+          recovered_at: reportAlreadyDurable ? null : now.toISOString(),
+          recovery_reason: reportAlreadyDurable ? null : reason,
+          updated_at: now.toISOString(),
+        })
+        .eq("id", thread.id)
+        .eq("status", "active"),
+      thread,
+    ).select("id");
     if (closeErr) return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: closeErr.message };
     const claimed = !!closed && (closed as unknown[]).length > 0;
     return { recovered: claimed && !reportAlreadyDurable, assistantInserted: false, artifactCount: artifactCount ?? 0 };
@@ -286,10 +322,16 @@ async function recoverOneStaleThread(
   // Claiming first makes the stub strictly conditional on winning the compare-and-set:
   // if `finished` was already written by the real run, we claim nothing and write
   // nothing.
-  const { data: claimed, error: claimErr } = await db
-    .from("threads")
-    .update({ status: "finished", recovered_at: now.toISOString(), recovery_reason: reason, updated_at: now.toISOString() })
-    .eq("id", thread.id).eq("status", "active").select("id");
+  // Run-marker guarded for the same reason as the clean-close CAS above: without it a
+  // run that STARTED between our read and this claim gets closed and stubbed — the
+  // ghost-recovery-on-a-live-run failure, arrived at from the opposite direction.
+  const { data: claimed, error: claimErr } = await withRunMarkerGuard(
+    db
+      .from("threads")
+      .update({ status: "finished", recovered_at: now.toISOString(), recovery_reason: reason, updated_at: now.toISOString() })
+      .eq("id", thread.id).eq("status", "active"),
+    thread,
+  ).select("id");
   if (claimErr) return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: claimErr.message };
   if (!claimed || (claimed as unknown[]).length === 0) {
     // Someone else finalized this thread first. Their report stands; say nothing.

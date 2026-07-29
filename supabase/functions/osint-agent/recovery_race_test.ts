@@ -41,6 +41,11 @@ function buildFakeDb(threadId: string, userId: string, now: Date) {
         filters.push([col, val]);
         return node;
       },
+      // PostgREST `.is(col, null)`; the fake's filter compare is identity, so alias it.
+      is: (col: string, val: unknown) => {
+        filters.push([col, val]);
+        return node;
+      },
       update: (patch: Record<string, unknown>) => {
         pendingUpdate = patch;
         return node;
@@ -170,6 +175,11 @@ function buildFakeDbLive(threadId: string, userId: string, now: Date) {
         filters.push([col, val]);
         return node;
       },
+      // PostgREST `.is(col, null)`; the fake's filter compare is identity, so alias it.
+      is: (col: string, val: unknown) => {
+        filters.push([col, val]);
+        return node;
+      },
       update: (patch: Record<string, unknown>) => {
         pendingUpdate = patch;
         return node;
@@ -249,6 +259,7 @@ function buildFakeDbLiveFinalize(threadId: string, userId: string, now: Date, re
     const node: Record<string, unknown> = {
       select: () => node,
       eq: (col: string, val: unknown) => { filters.push([col, val]); return node; },
+      is: (col: string, val: unknown) => { filters.push([col, val]); return node; },
       update: (patch: Record<string, unknown>) => { pendingUpdate = patch; return node; },
       maybeSingle: () => {
         const matches = filters.every(([col, val]) => threadRow[col] === val);
@@ -436,6 +447,7 @@ function buildFakeDbInsertFail(threadId: string, userId: string, now: Date) {
     const node: Record<string, unknown> = {
       select: () => node,
       eq: (col: string, val: unknown) => { filters.push([col, val]); return node; },
+      is: (col: string, val: unknown) => { filters.push([col, val]); return node; },
       update: (patch: Record<string, unknown>) => { pendingUpdate = patch; return node; },
       maybeSingle: () => {
         const matches = filters.every(([col, val]) => threadRow[col] === val);
@@ -554,6 +566,140 @@ Deno.test("stub-insert failure must NOT clear a changed/newer claim", async () =
   assertEquals(threadRow.status, "finished", "the newer claim's terminal status is not reopened");
   assertEquals(threadRow.recovered_at, newerStamp, "the newer claim's stamp is not cleared");
   assertEquals(threadRow.recovery_reason, "newer worker's claim");
+});
+
+// ---------------------------------------------------------------------------
+// 2026-07-29 review, P1: the ABA hazard in the status-only compare-and-set.
+// `markRunStarted` also writes status:"active", so a run that STARTS between the
+// sweep's read and its UPDATE still satisfies `.eq("status","active")`. The sweep
+// would close that brand-new run using the previous run's evidence — and because
+// the new run's own heartbeats and terminal update are themselves guarded on
+// status='active', they all silently no-op afterwards, so the live run is left
+// permanently mislabelled with nothing able to correct it.
+// ---------------------------------------------------------------------------
+function buildFakeDbRestartRace(threadId: string, userId: string, now: Date, opts?: { withReport?: boolean }) {
+  const staleHeartbeat = new Date(now.getTime() - STALE_RUN_AFTER_MS - 5_000).toISOString();
+  const restartedAt = new Date(now.getTime() - 1_000).toISOString();
+  const threadRow: Record<string, unknown> = {
+    id: threadId,
+    user_id: userId,
+    title: "restart-race",
+    seed_value: "restart-race.example",
+    status: "active",
+    run_started_at: staleHeartbeat,
+    last_heartbeat_at: staleHeartbeat,
+    updated_at: staleHeartbeat,
+    recovered_at: null,
+    recovery_reason: null,
+  };
+  // A prior run's durable report, so the clean-close branch is the one exercised.
+  const messages: Array<Record<string, unknown>> = opts?.withReport
+    ? [{
+      created_at: new Date(now.getTime() - 500).toISOString(),
+      parts: [{ type: "text", text: "## Prior Investigation Report\n\n| # | Finding |\n|---|---|\n| 1 | domain |" }],
+    }]
+    : [];
+  const insertedMessages: Array<Record<string, unknown>> = [];
+  let restarted = false;
+
+  function threadsChain() {
+    const filters: Array<[string, unknown]> = [];
+    let pendingUpdate: Record<string, unknown> | null = null;
+    const node: Record<string, unknown> = {
+      select: () => node,
+      eq: (col: string, val: unknown) => { filters.push([col, val]); return node; },
+      is: (col: string, val: unknown) => { filters.push([col, val]); return node; },
+      update: (patch: Record<string, unknown>) => { pendingUpdate = patch; return node; },
+      maybeSingle: () => {
+        const matches = filters.every(([col, val]) => threadRow[col] === val);
+        return Promise.resolve({ data: matches ? { ...threadRow } : null, error: null });
+      },
+      then: (resolve: (v: { data: unknown; error: unknown }) => void) => {
+        if (pendingUpdate) {
+          // THE INTERLEAVING: a new request calls markRunStarted just before our
+          // claim commits — status stays "active", but the run markers move.
+          if (!restarted) {
+            restarted = true;
+            threadRow.status = "active";
+            threadRow.run_started_at = restartedAt;
+            threadRow.last_heartbeat_at = restartedAt;
+            threadRow.recovered_at = null;
+            threadRow.recovery_reason = null;
+          }
+          const matches = filters.every(([col, val]) => threadRow[col] === val);
+          if (matches) {
+            Object.assign(threadRow, pendingUpdate);
+            resolve({ data: [{ id: threadId }], error: null });
+          } else {
+            resolve({ data: [], error: null });
+          }
+          return;
+        }
+        const matches = filters.every(([col, val]) => threadRow[col] === val);
+        resolve({ data: matches ? [{ ...threadRow }] : [], error: null });
+      },
+    };
+    return node;
+  }
+
+  const db = {
+    from: (table: string) => {
+      if (table === "threads") return threadsChain();
+      if (table === "messages") {
+        const node: Record<string, unknown> = {};
+        for (const m of ["select", "eq", "in", "order", "limit"]) node[m] = () => node;
+        node.maybeSingle = () => Promise.resolve({ data: messages.length ? messages[messages.length - 1] : null, error: null });
+        node.then = (resolve: (v: unknown) => void) => resolve({ data: messages, error: null });
+        node.insert = (row: Record<string, unknown>) => { insertedMessages.push(row); messages.push(row); return Promise.resolve({ error: null }); };
+        return node;
+      }
+      if (table === "artifacts") {
+        const node: Record<string, unknown> = {};
+        for (const m of ["select", "eq", "in", "order", "limit"]) node[m] = () => node;
+        const value = { data: [{ kind: "domain", value: "restart-race.example", confidence: 0.75, source: "whois_lookup", created_at: now.toISOString() }], error: null, count: 1 };
+        node.maybeSingle = () => Promise.resolve(value);
+        node.then = (resolve: (v: unknown) => void) => resolve(value);
+        return node;
+      }
+      if (table === "artifact_reviews") {
+        const node: Record<string, unknown> = {};
+        for (const m of ["select", "eq"]) node[m] = () => node;
+        node.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null });
+        return node;
+      }
+      throw new Error(`unexpected table in fake db: ${table}`);
+    },
+  } as unknown as ReturnType<typeof createClient>;
+
+  return { db, insertedMessages, threadRow, restartedAt };
+}
+
+Deno.test("a run RESTARTED between read and clean-close must not be claimed with the old run's report", async () => {
+  const now = new Date("2026-07-29T12:00:00.000Z");
+  const { db, insertedMessages, threadRow, restartedAt } = buildFakeDbRestartRace("t-restart-clean", "u1", now, { withReport: true });
+
+  const res = await recoverStaleThreadById(db, "t-restart-clean", { now, reason: "sweep A" });
+
+  assertEquals(res.recovered, false, "the sweep must lose the CAS against a restarted run");
+  assertEquals(insertedMessages.length, 0);
+  // The decisive assertions: the NEW run must survive untouched and still be runnable.
+  assertEquals(threadRow.status, "active", "the live run must NOT be closed by a stale sweep");
+  assertEquals(threadRow.run_started_at, restartedAt, "the new run marker must be preserved");
+  assertEquals(threadRow.last_heartbeat_at, restartedAt);
+});
+
+Deno.test("a run RESTARTED between read and the stub claim must not be closed or stubbed", async () => {
+  const now = new Date("2026-07-29T12:00:00.000Z");
+  // No prior report → the stub-claim path, the other CAS, is the one exercised.
+  const { db, insertedMessages, threadRow, restartedAt } = buildFakeDbRestartRace("t-restart-stub", "u1", now);
+
+  const res = await recoverStaleThreadById(db, "t-restart-stub", { now, reason: "sweep A" });
+
+  assertEquals(res.recovered, false, "the sweep must lose the CAS against a restarted run");
+  assertEquals(insertedMessages.length, 0, "no recovery stub may land on a live run");
+  assertEquals(threadRow.status, "active", "the live run must NOT be closed by a stale sweep");
+  assertEquals(threadRow.run_started_at, restartedAt);
+  assertEquals(threadRow.recovery_reason, null, "the live run must not be stamped Interrupted");
 });
 
 Deno.test("recovery release only clears its OWN claim, never another worker's", async () => {
