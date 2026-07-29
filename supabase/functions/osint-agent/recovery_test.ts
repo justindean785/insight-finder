@@ -1,5 +1,6 @@
 import { assert, assertEquals, assertStringIncludes } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { assistantPartsToText, buildRecoveredAssistantText, hasRunMarker, hasSuccessfulNoFindingsPart, isStaleActiveThread, RECENT_ASSISTANT_WINDOW_MS, REQUIRE_RUN_MARKER_FOR_RECOVERY, shouldInsertRecoveredAssistant, STALE_RUN_AFTER_MS } from "./recovery.ts";
+import { assistantPartsToText, buildRecoveredAssistantText, hasRunMarker, hasSuccessfulNoFindingsPart, isRecoveryGeneratedReport, isStaleActiveThread, RECENT_ASSISTANT_WINDOW_MS, RECOVERED_REPORT_HEADING, REQUIRE_RUN_MARKER_FOR_RECOVERY, shouldInsertRecoveredAssistant, STALE_RUN_AFTER_MS } from "./recovery.ts";
+import { hasReportShape, stripReasoning } from "./orchestrator-finalize.ts";
 
 Deno.test("P0-A: a blank thread that never ran is NEVER recovery-eligible", () => {
   // THE PRODUCTION GHOST (thread 40f8a6eb, 2026-07-26 00:19:10Z). Reproduces the
@@ -208,6 +209,34 @@ Deno.test("shouldInsertRecoveredAssistant: a PRIOR-turn no-findings decision doe
     assistantPartsToText(noFindingsParts),
     noFindingsParts,
   ), { shouldInsert: true, reason: "assistant_before_run" });
+});
+
+Deno.test("shouldInsertRecoveredAssistant: our OWN recovery stub is not mistaken for a durable report", () => {
+  // The stub is report-shaped by construction, so hasReportShape matches it. It must
+  // still suppress a second stub, but under a distinct reason so the caller does not
+  // clear the interruption metadata the stub itself is reporting.
+  const stub = buildRecoveredAssistantText(
+    { seed_value: "acme.example", title: null, last_heartbeat_at: "2026-07-15T14:43:55Z", run_started_at: "2026-07-15T14:42:54Z" },
+    [{ kind: "email", value: "a@b.com", confidence: 0.9, source: "test", created_at: "2026-07-15T14:43:00Z" }],
+  );
+  assert(hasReportShape(stripReasoning(stub)), "precondition: the stub really is report-shaped");
+
+  assertEquals(shouldInsertRecoveredAssistant(
+    { run_started_at: "2026-07-15T14:42:54Z", last_heartbeat_at: "2026-07-15T14:43:55Z", updated_at: "2026-07-15T14:43:55Z" },
+    "2026-07-15T14:43:56Z",
+    Date.parse("2026-07-15T14:52:12Z"),
+    RECENT_ASSISTANT_WINDOW_MS,
+    stub,
+  ), { shouldInsert: false, reason: "recovered_stub_present" });
+});
+
+Deno.test("isRecoveryGeneratedReport: matches only our own stub heading", () => {
+  assert(isRecoveryGeneratedReport(RECOVERED_REPORT_HEADING + "\n\nsome table"));
+  // A genuine model-written report that merely shares the leading words must not match.
+  assertEquals(isRecoveryGeneratedReport("## Findings report\n\n| # | Kind |\n|---|---|\n| 1 | email |"), false);
+  assertEquals(isRecoveryGeneratedReport(""), false);
+  assertEquals(isRecoveryGeneratedReport(null), false);
+  assertEquals(isRecoveryGeneratedReport(undefined), false);
 });
 
 Deno.test("assistantPartsToText: joins text parts, ignores tool/non-text parts and bad input", () => {

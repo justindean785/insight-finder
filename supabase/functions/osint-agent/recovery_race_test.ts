@@ -395,6 +395,40 @@ Deno.test("a FAILED finalize_no_findings run is still labelled Interrupted, not 
   assertEquals(threadRow.recovery_reason, "stale heartbeat recovered by health sweep", "the run must still render Interrupted");
 });
 
+Deno.test("a re-swept recovery stub must NOT clear its own interruption metadata", async () => {
+  // The retry-that-never-ran path: the client flips a recovered thread back to active
+  // and refreshes only the heartbeat, leaving the stub as the latest assistant. If the
+  // retry dies before the server stamps a new run, the next sweep sees a report-shaped
+  // message that WE wrote — and must not treat it as proof of a durable completion.
+  const now = new Date("2026-07-28T16:00:00.000Z");
+  const { db, insertedMessages, messages, threadRow } = buildFakeDbLiveFinalize("t-restubbed", "u1", now, true);
+  messages[0].parts = [{
+    type: "text",
+    text: [
+      "## Findings report — recovered run",
+      "",
+      "The investigation for **acme.example** was interrupted before the agent could write its closing response.",
+      "",
+      "### Recovered findings",
+      "| # | Kind | Value | Confidence | Source |",
+      "|---:|---|---|---:|---|",
+      "| 1 | email | a@b.com | 0.9 | test |",
+    ].join("\n"),
+  }];
+
+  const res = await recoverStaleThreadById(db, "t-restubbed", {
+    now,
+    reason: "stale heartbeat recovered by health sweep",
+  });
+
+  assertEquals(insertedMessages.length, 0, "one recovery notice is enough — never stub twice");
+  assertEquals(res.recovered, true, "re-closing an interrupted run is still a recovery");
+  assertEquals(threadRow.status, "finished");
+  // THE FIX: our own stub must not be read as a durable report and used to clear these.
+  assertEquals(threadRow.recovered_at, now.toISOString(), "interruption metadata must survive the re-sweep");
+  assertEquals(threadRow.recovery_reason, "stale heartbeat recovered by health sweep", "the run must still render Interrupted");
+});
+
 Deno.test("a non-report early close preserves interruption metadata", async () => {
   const now = new Date("2026-07-28T16:00:00.000Z");
   const { db, insertedMessages, messages, threadRow } = buildFakeDbLiveFinalize("t-recent-assistant", "u1", now, true);

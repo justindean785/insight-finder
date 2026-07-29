@@ -30,7 +30,7 @@ export type RecoveryArtifact = {
 
 export type RecoveryAssistantState = {
   shouldInsert: boolean;
-  reason: "none" | "no_assistant" | "assistant_before_run" | "assistant_stale" | "report_present" | "no_findings_present";
+  reason: "none" | "no_assistant" | "assistant_before_run" | "assistant_stale" | "report_present" | "no_findings_present" | "recovered_stub_present";
 };
 
 /** Join an assistant message's text parts into one string for report-shape checks. */
@@ -87,6 +87,36 @@ function escapeCell(value: unknown): string {
   return String(value ?? "—").replace(/\|/g, "\\|").replace(/\s+/g, " ").trim().slice(0, 220) || "—";
 }
 
+/**
+ * The heading every recovery stub carries. Exported and used as the single source for
+ * both writing and recognising the stub, so the two cannot drift apart.
+ */
+export const RECOVERED_REPORT_HEADING = "## Findings report — recovered run";
+
+/**
+ * Did WE write this "report"? (2026-07-29 review, P2.)
+ *
+ * A recovery stub is itself report-shaped — it opens with a `##` heading and renders an
+ * artifact table — so `hasReportShape` matches it. That is harmless while every
+ * early-close stamps recovery metadata, but the clean-completion branch made it
+ * dangerous: on a re-sweep the stub would be read as a durable report and used to CLEAR
+ * the very `recovered_at` / `recovery_reason` it exists to record, turning an
+ * interrupted run green.
+ *
+ * The path is reachable: the client's retry flips a recovered thread back to `active`
+ * and refreshes only the heartbeat, leaving the stale `run_started_at`, the recovery
+ * metadata, and the stub in place. If the retry then fails before the server stamps a
+ * new run, the next sweep sees exactly this shape — a run that never ran, about to be
+ * painted Complete by its own interruption notice.
+ *
+ * Matching on the literal heading is a STRUCTURAL signal (the marker we ourselves
+ * emit), not an inference about what the prose means — the distinction this codebase
+ * settled after the future-intent regex was removed.
+ */
+export function isRecoveryGeneratedReport(text: string | null | undefined): boolean {
+  return typeof text === "string" && text.includes(RECOVERED_REPORT_HEADING);
+}
+
 export function buildRecoveredAssistantText(
   thread: Pick<RecoverableThread, "seed_value" | "title" | "last_heartbeat_at" | "run_started_at">,
   artifacts: RecoveryArtifact[],
@@ -95,7 +125,7 @@ export function buildRecoveredAssistantText(
   const lastLive = thread.last_heartbeat_at ?? thread.run_started_at ?? null;
   const rows = artifacts.slice(0, RECOVERY_ARTIFACT_LIMIT);
   const header = [
-    "## Findings report — recovered run",
+    RECOVERED_REPORT_HEADING,
     "",
     `The investigation for **${escapeCell(seed)}** was interrupted before the agent could write its closing response. The saved evidence below was recovered from durable artifacts already written during the run.`,
     lastLive ? `Last heartbeat: ${lastLive}.` : "Last heartbeat was not recorded.",
@@ -181,6 +211,13 @@ export function shouldInsertRecoveredAssistant(
   // the prior-turn case already returned above, so a stale earlier report cannot
   // suppress a genuine stub.
   if (latestAssistantText && hasReportShape(stripReasoning(latestAssistantText))) {
+    // Still suppress the stub — one recovery notice is enough, never two — but report a
+    // distinct reason so the caller does NOT treat our own stub as proof of a durable
+    // completion and clear the interruption metadata it carries. See
+    // isRecoveryGeneratedReport.
+    if (isRecoveryGeneratedReport(latestAssistantText)) {
+      return { shouldInsert: false, reason: "recovered_stub_present" };
+    }
     return { shouldInsert: false, reason: "report_present" };
   }
 
