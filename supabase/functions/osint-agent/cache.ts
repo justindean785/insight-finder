@@ -145,6 +145,31 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // budget so the fetch governs the timeout, not the wrapper.
   fofa_search: 22_000,        // > its 20s fetchT budget
   markdown_extract: 32_000,   // > its 30s fetchT budget; PDF/XLSX conversion is genuinely slow
+  // ---------------------------------------------------------------------------
+  // Backfill 2026-07-30: tool_timeout_contract_test.ts scans every tool in
+  // tool-registry.ts and asserts its wrapper cap EXCEEDS its own fetchT budget.
+  // That scan found nine pre-existing violations of the rule the oathnet and
+  // socialfetch_web_read comments above already state. They are fixed here so
+  // the contract holds with ZERO exceptions — a contract with an allowlist is
+  // not a contract, and each of these reproduces the documented failure: the
+  // wrapper fires first, the tool's own timeout never returns a clean result,
+  // the finished work is discarded, and one timeout trips the circuit breaker
+  // for the rest of the run.
+  //
+  // Four had a real deficit (own fetch budget well above the 12s default):
+  leakcheck_lookup: 22_000,        // own fetch 20s
+  rapidapi_breach_search: 22_000,  // own fetch 20s
+  rapidapi_all_breaches: 22_000,   // own fetch 20s
+  census_geocode: 17_000,          // own fetch 15s
+  // Five were exactly TIED at 12s == 12s, which is a race, not a margin: whether
+  // the wrapper or the fetch wins is a scheduling coin-flip, so the same call
+  // sometimes yields a clean provider error and sometimes a circuit-breaking
+  // wrapper timeout. 14s lets the fetch's own timeout always govern.
+  github_user: 14_000,
+  crypto_wallet: 14_000,
+  shodan_internetdb: 14_000,
+  hackertarget: 14_000,
+  urlscan_search: 14_000,
 };
 export function toolTimeoutMs(name: string): number {
   return TOOL_TIMEOUT_OVERRIDE_MS[name] ?? DEFAULT_TOOL_TIMEOUT_MS;

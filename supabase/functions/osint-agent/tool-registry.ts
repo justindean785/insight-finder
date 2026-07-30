@@ -2164,8 +2164,19 @@ export function buildTools(ctx: ToolContext) {
       description:
         "FOFA (en.fofa.info) internet-asset search — attacker-surface / infra discovery by query syntax. Supports fields like domain=\"x.com\", ip=\"1.2.3.4\", host=\"sub.x.com\", cert=\"x.com\", title=\"...\", body=\"...\", icon_hash=\"...\", org=\"...\", asn=\"...\". Returns host, ip, port, title, domain, server, country. Use to enumerate hosts/ports/certs tied to a domain, IP, or favicon hash — a stronger infra pivot than crt.sh alone. Consumes FOFA points per result: keep size small (default 20).",
       inputSchema: memoSchema("fofa_search", () => z.object({
-        query: z.string().min(3).describe('FOFA query syntax, e.g. domain="example.com" or icon_hash="-247388890"'),
-        size: z.number().int().min(1).max(100).optional(),
+        // .max(512) is a correctness bound, not a style choice: the qbase64 encoder
+        // below spreads the encoded bytes into String.fromCharCode, which throws
+        // RangeError past roughly 150k chars. A FOFA query is a short field
+        // expression; 512 is generous for the documented syntax.
+        query: z.string().min(3).max(512).describe('FOFA query syntax, e.g. domain="example.com" or icon_hash="-247388890"'),
+        // Capped at 25, not 100, because cost is charged FLAT per call
+        // (costForTool takes only a name — see costs.ts) while FOFA meters
+        // fpoints PER RETURNED ROW against a finite prepaid pool. At size 100 a
+        // call really costs ~5x its 4000 micro-USD ledger entry, so the budget
+        // under-reports spend exactly when a run is burning the most. 25 keeps
+        // the gap to ~1.25x and matches the "keep size small" guidance that until
+        // now lived only in the description string, where nothing enforced it.
+        size: z.number().int().min(1).max(25).optional(),
       })),
       execute: async ({ query, size }) => {
         const KEY = Deno.env.get("FOFA_API_KEY");
@@ -2186,7 +2197,10 @@ export function buildTools(ctx: ToolContext) {
           }
           const cols = fields.split(",");
           const results = (data.results ?? []).map((row) =>
-            Object.fromEntries(cols.map((c, i) => [c, row[i]]))
+            // `?? null` because FOFA can return a row shorter than the requested
+            // field list; without it those keys carry `undefined`, which JSON.stringify
+            // DROPS entirely, so a partial row silently reads as a complete one.
+            Object.fromEntries(cols.map((c, i) => [c, row[i] ?? null]))
           );
           return { ok: true, source: "fofa.v1", query, total: data.size ?? results.length, results };
         } catch (e) { return { error: String(e) }; }
@@ -2196,7 +2210,15 @@ export function buildTools(ctx: ToolContext) {
       description:
         "markdown.new converter — turns a remote document/page URL into clean Markdown text (no auth, 500/day). Handles .pdf .docx .odt .xlsx .xls .ods .csv .json .xml .txt .md .html and images (.jpg/.png/.webp/.svg via AI summarization). Use as the PREFERRED reader for document URLs (PDF/Office/spreadsheet) and as the FALLBACK when jina_reader_scrape fails or returns junk. Do NOT use it on login-walled social platforms (instagram/x/tiktok/linkedin/youtube) — they return nothing.",
       inputSchema: memoSchema("markdown_extract", () => z.object({
-        url: z.string().url().describe("Public URL of the document or page to convert"),
+        // z.string().url() accepts ANY parseable scheme — file:, ftp:, data: — and
+        // this URL is handed to a third-party converter that performs the fetch on
+        // our behalf. Constrain to http/https so the only thing we can ask it to
+        // retrieve is a web document.
+        url: z.string().url()
+          .refine((u) => /^https?:$/.test(new URL(u).protocol), {
+            message: "url must be http or https",
+          })
+          .describe("Public http(s) URL of the document or page to convert"),
       })),
       execute: async ({ url }) => {
         try {
