@@ -555,10 +555,19 @@ export function buildTools(ctx: ToolContext) {
     minimax_plan_pivots: tool({
       description:
         "Plan the next bounded investigation cycle. Returns structured JSON with stage, goal, current_findings, proposed_calls[], and calls_rejected[]. Use it before any non-planner pivot batch so the investigation stays budgeted, cache-aware, and evidence-led.",
+      // Payload caps lowered from 200/200 (2026-07-30 production audit). The
+      // planner's latency scales with how much context it has to read, and at the
+      // old ceilings it structurally ran 15-25s against a 12s wrapper cap. The
+      // timeout override in cache.ts is half the fix; this is the other half —
+      // raising the cap alone would just pay for an oversized prompt. A pivot
+      // planner does not need the entire artifact set to choose the next batch:
+      // it needs enough context to avoid re-querying and to see the current shape
+      // of the evidence, which 60/80 covers. Keeping the payload bounded is also
+      // what keeps the 45s override honest calibration rather than a blank cheque.
       inputSchema: memoSchema("minimax_plan_pivots", () => z.object({
         seed: z.string(),
-        already_queried: z.array(z.string()).max(200).default([]),
-        artifacts: z.preprocess(coerceArtifactsInput, z.array(z.object({ kind: z.string(), value: z.string() })).max(200)),
+        already_queried: z.array(z.string()).max(80).default([]),
+        artifacts: z.preprocess(coerceArtifactsInput, z.array(z.object({ kind: z.string(), value: z.string() })).max(60)),
         budget_remaining: z.number().int().min(0).max(100).default(30),
       })),
       execute: async ({ seed, already_queried, artifacts, budget_remaining }) => {
