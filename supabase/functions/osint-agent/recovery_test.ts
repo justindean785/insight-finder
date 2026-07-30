@@ -1,6 +1,6 @@
 import { assert, assertEquals, assertStringIncludes } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { assistantPartsToText, buildRecoveredAssistantText, hasRunMarker, isStaleActiveThread, RECENT_ASSISTANT_WINDOW_MS, REQUIRE_RUN_MARKER_FOR_RECOVERY, shouldInsertRecoveredAssistant, STALE_RUN_AFTER_MS } from "./recovery.ts";
-import { hasReportShape } from "./orchestrator-finalize.ts";
+import { assistantPartsToText, buildRecoveredAssistantText, hasRunMarker, hasSuccessfulNoFindingsPart, isRecoveryGeneratedReport, isStaleActiveThread, RECENT_ASSISTANT_WINDOW_MS, RECOVERED_REPORT_HEADING, REQUIRE_RUN_MARKER_FOR_RECOVERY, shouldInsertRecoveredAssistant, STALE_RUN_AFTER_MS } from "./recovery.ts";
+import { hasReportShape, stripReasoning } from "./orchestrator-finalize.ts";
 
 Deno.test("P0-A: a blank thread that never ran is NEVER recovery-eligible", () => {
   // THE PRODUCTION GHOST (thread 40f8a6eb, 2026-07-26 00:19:10Z). Reproduces the
@@ -146,6 +146,106 @@ Deno.test("shouldInsertRecoveredAssistant: a prior-turn report does NOT suppress
     RECENT_ASSISTANT_WINDOW_MS,
     reportText,
   ), { shouldInsert: true, reason: "assistant_before_run" });
+});
+
+Deno.test("shouldInsertRecoveredAssistant: a durable finalize_no_findings decision suppresses the stub", () => {
+  // I-2's OTHER terminal outcome. The decision lives in a tool PART, not text, so
+  // assistantPartsToText yields "" and the report-shape guard cannot see it. Without
+  // the parts-level check this run gets stamped Interrupted despite completing validly.
+  const noFindingsParts = [
+    { type: "text", text: "No further corroboration was available." },
+    { type: "tool-finalize_no_findings", state: "output-available", output: { ok: true, reason: "no additional leads" } },
+  ];
+  assertEquals(shouldInsertRecoveredAssistant(
+    { run_started_at: "2026-07-15T14:42:54Z", last_heartbeat_at: "2026-07-15T14:43:55Z", updated_at: "2026-07-15T14:43:55Z" },
+    "2026-07-15T14:43:50Z",
+    Date.parse("2026-07-15T14:52:12Z"), // well past the recent-assistant window
+    RECENT_ASSISTANT_WINDOW_MS,
+    assistantPartsToText(noFindingsParts),
+    noFindingsParts,
+  ), { shouldInsert: false, reason: "no_findings_present" });
+});
+
+Deno.test("shouldInsertRecoveredAssistant: a FAILED or half-executed no-findings call does NOT count as complete", () => {
+  // Presence of the part is not success. The AI SDK leaves a tool part behind for a call
+  // that errored or never returned; admitting those would paint an unfinished run green.
+  const live = { run_started_at: "2026-07-15T14:42:54Z", last_heartbeat_at: "2026-07-15T14:43:55Z", updated_at: "2026-07-15T14:43:55Z" };
+  const at = "2026-07-15T14:43:50Z";
+  const nowMs = Date.parse("2026-07-15T14:52:12Z"); // past the recent-assistant window
+
+  const rejected: Array<[string, unknown]> = [
+    ["output-error", [{ type: "tool-finalize_no_findings", state: "output-error", errorText: "schema validation failed" }]],
+    ["input-available (never returned)", [{ type: "tool-finalize_no_findings", state: "input-available", input: { reason: "x" } }]],
+    ["output-available but ok:false", [{ type: "tool-finalize_no_findings", state: "output-available", output: { ok: false, error: "refused" } }]],
+    ["output-available but no ok field", [{ type: "tool-finalize_no_findings", state: "output-available", output: { reason: "x" } }]],
+    ["truncated output (ok erased)", [{ type: "tool-finalize_no_findings", state: "output-available", output: { _truncated: true, preview: "…" } }]],
+  ];
+  for (const [label, parts] of rejected) {
+    assertEquals(
+      shouldInsertRecoveredAssistant(live, at, nowMs, RECENT_ASSISTANT_WINDOW_MS, assistantPartsToText(parts), parts).reason !== "no_findings_present",
+      true,
+      `${label} must not be accepted as a durable no-findings completion`,
+    );
+  }
+
+  // And a different tool's successful part must never be mistaken for one.
+  const otherTool = [{ type: "tool-record_artifacts", state: "output-available", output: { ok: true } }];
+  assertEquals(
+    shouldInsertRecoveredAssistant(live, at, nowMs, RECENT_ASSISTANT_WINDOW_MS, assistantPartsToText(otherTool), otherTool).reason !== "no_findings_present",
+    true,
+    "a successful record_artifacts is not a no-findings decision",
+  );
+});
+
+Deno.test("hasSuccessfulNoFindingsPart: accepts only a succeeded decision, tolerates junk input", () => {
+  assertEquals(hasSuccessfulNoFindingsPart([{ type: "tool-finalize_no_findings", state: "output-available", output: { ok: true } }]), true);
+  assertEquals(hasSuccessfulNoFindingsPart([{ type: "tool-finalize_no_findings", state: "output-error" }]), false);
+  assertEquals(hasSuccessfulNoFindingsPart([{ type: "text", text: "no findings" }]), false);
+  assertEquals(hasSuccessfulNoFindingsPart(null), false);
+  assertEquals(hasSuccessfulNoFindingsPart("nope"), false);
+  assertEquals(hasSuccessfulNoFindingsPart([null, undefined, 42]), false);
+});
+
+Deno.test("shouldInsertRecoveredAssistant: a PRIOR-turn no-findings decision does NOT suppress a genuine stub", () => {
+  // Same scoping rule the report-shape guard obeys: a decision from an earlier turn
+  // must not mark THIS run terminal, so the before-run check still wins.
+  const noFindingsParts = [{ type: "tool-finalize_no_findings", state: "output-available", output: { ok: true } }];
+  assertEquals(shouldInsertRecoveredAssistant(
+    { run_started_at: "2026-07-15T14:42:54Z", last_heartbeat_at: "2026-07-15T14:43:55Z", updated_at: "2026-07-15T14:43:55Z" },
+    "2026-07-15T14:30:37Z", // before run start
+    Date.parse("2026-07-15T14:45:12Z"),
+    RECENT_ASSISTANT_WINDOW_MS,
+    assistantPartsToText(noFindingsParts),
+    noFindingsParts,
+  ), { shouldInsert: true, reason: "assistant_before_run" });
+});
+
+Deno.test("shouldInsertRecoveredAssistant: our OWN recovery stub is not mistaken for a durable report", () => {
+  // The stub is report-shaped by construction, so hasReportShape matches it. It must
+  // still suppress a second stub, but under a distinct reason so the caller does not
+  // clear the interruption metadata the stub itself is reporting.
+  const stub = buildRecoveredAssistantText(
+    { seed_value: "acme.example", title: null, last_heartbeat_at: "2026-07-15T14:43:55Z", run_started_at: "2026-07-15T14:42:54Z" },
+    [{ kind: "email", value: "a@b.com", confidence: 0.9, source: "test", created_at: "2026-07-15T14:43:00Z" }],
+  );
+  assert(hasReportShape(stripReasoning(stub)), "precondition: the stub really is report-shaped");
+
+  assertEquals(shouldInsertRecoveredAssistant(
+    { run_started_at: "2026-07-15T14:42:54Z", last_heartbeat_at: "2026-07-15T14:43:55Z", updated_at: "2026-07-15T14:43:55Z" },
+    "2026-07-15T14:43:56Z",
+    Date.parse("2026-07-15T14:52:12Z"),
+    RECENT_ASSISTANT_WINDOW_MS,
+    stub,
+  ), { shouldInsert: false, reason: "recovered_stub_present" });
+});
+
+Deno.test("isRecoveryGeneratedReport: matches only our own stub heading", () => {
+  assert(isRecoveryGeneratedReport(RECOVERED_REPORT_HEADING + "\n\nsome table"));
+  // A genuine model-written report that merely shares the leading words must not match.
+  assertEquals(isRecoveryGeneratedReport("## Findings report\n\n| # | Kind |\n|---|---|\n| 1 | email |"), false);
+  assertEquals(isRecoveryGeneratedReport(""), false);
+  assertEquals(isRecoveryGeneratedReport(null), false);
+  assertEquals(isRecoveryGeneratedReport(undefined), false);
 });
 
 Deno.test("assistantPartsToText: joins text parts, ignores tool/non-text parts and bad input", () => {

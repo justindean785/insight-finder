@@ -88,7 +88,7 @@ export function classifyRecoveryRow(a: RecoveryArtifact): RecoveryRowClass {
 
 export type RecoveryAssistantState = {
   shouldInsert: boolean;
-  reason: "none" | "no_assistant" | "assistant_before_run" | "assistant_stale" | "report_present";
+  reason: "none" | "no_assistant" | "assistant_before_run" | "assistant_stale" | "report_present" | "no_findings_present" | "recovered_stub_present";
 };
 
 /** Join an assistant message's text parts into one string for report-shape checks. */
@@ -145,6 +145,55 @@ function escapeCell(value: unknown): string {
   return String(value ?? "—").replace(/\|/g, "\\|").replace(/\s+/g, " ").trim().slice(0, 220) || "—";
 }
 
+/**
+ * The heading every recovery stub carries. Exported and used as the single source for
+ * both writing and recognising the stub, so the two cannot drift apart.
+ */
+// Value updated by the #396 merge: the stub no longer calls itself a findings
+// report. The CONSTANT is what matters to isRecoveryGeneratedReport below — it
+// must stay byte-identical to the heading buildRecoveredAssistantText emits, or
+// a recovery stub stops recognising itself and clears the very interruption
+// metadata it exists to record.
+export const RECOVERED_REPORT_HEADING = "## Interrupted run — recovered evidence";
+
+/**
+ * Headings earlier builds wrote. Recognition MUST outlive a rename, or the day the
+ * heading changes every stub already sitting in `messages` stops being recognised as
+ * ours — and the very next re-sweep of one of those threads reads it as a durable
+ * report and clears the interruption metadata it exists to record. That is a silent
+ * data-integrity regression affecting rows written before the deploy, so this list is
+ * append-only: never remove an entry, even long after the rename.
+ */
+export const LEGACY_RECOVERED_REPORT_HEADINGS: readonly string[] = [
+  "## Findings report — recovered run",
+];
+
+/**
+ * Did WE write this "report"? (2026-07-29 review, P2.)
+ *
+ * A recovery stub is itself report-shaped — it opens with a `##` heading and renders an
+ * artifact table — so `hasReportShape` matches it. That is harmless while every
+ * early-close stamps recovery metadata, but the clean-completion branch made it
+ * dangerous: on a re-sweep the stub would be read as a durable report and used to CLEAR
+ * the very `recovered_at` / `recovery_reason` it exists to record, turning an
+ * interrupted run green.
+ *
+ * The path is reachable: the client's retry flips a recovered thread back to `active`
+ * and refreshes only the heartbeat, leaving the stale `run_started_at`, the recovery
+ * metadata, and the stub in place. If the retry then fails before the server stamps a
+ * new run, the next sweep sees exactly this shape — a run that never ran, about to be
+ * painted Complete by its own interruption notice.
+ *
+ * Matching on the literal heading is a STRUCTURAL signal (the marker we ourselves
+ * emit), not an inference about what the prose means — the distinction this codebase
+ * settled after the future-intent regex was removed.
+ */
+export function isRecoveryGeneratedReport(text: string | null | undefined): boolean {
+  if (typeof text !== "string") return false;
+  return text.includes(RECOVERED_REPORT_HEADING) ||
+    LEGACY_RECOVERED_REPORT_HEADINGS.some((h) => text.includes(h));
+}
+
 export function buildRecoveredAssistantText(
   thread: Pick<RecoverableThread, "seed_value" | "title" | "last_heartbeat_at" | "run_started_at">,
   artifacts: RecoveryArtifact[],
@@ -167,7 +216,7 @@ export function buildRecoveredAssistantText(
   const shownCandidates = shown.filter((a) => classifyRecoveryRow(a) === "candidate");
 
   const header = [
-    "## Interrupted run — recovered evidence",
+    RECOVERED_REPORT_HEADING,
     "",
     `The investigation for **${escapeCell(seed)}** was interrupted before the agent could write its closing response. **This is not a findings report.** The rows below are whatever was already durably written when the run stopped, presented as-is.`,
     lastLive ? `Last heartbeat: ${lastLive}.` : "Last heartbeat was not recorded.",
@@ -266,12 +315,45 @@ export function buildRecoveredAssistantText(
   return out.join("\n");
 }
 
+/**
+ * Did this assistant row carry a finalize_no_findings decision that ACTUALLY SUCCEEDED?
+ *
+ * Deliberately stricter than the shared `hasNoFindingsDecision`, which matches on the
+ * part's `type` alone. Presence is not success: the AI SDK still leaves a
+ * `tool-finalize_no_findings` part when the call finished in `output-error` or never
+ * got past `input-available`, and treating those as terminal would let recovery clear
+ * `recovery_reason` and present a run that never finalized as a clean completion —
+ * exactly the false-green I-2 exists to prevent.
+ *
+ * The asymmetry is safe in this direction: recovery demanding more than the finalize
+ * contract can only mislabel a genuine completion as Interrupted (honest, and visible),
+ * never the reverse. The shared helper is tightened separately — this predicate then
+ * becomes redundant rather than wrong.
+ *
+ * Not defended against here: `capToolPartPayloads` replaces an oversized `output` with
+ * a `{_truncated}` preview, which would erase `ok`. A finalize_no_findings output is a
+ * small `{ok, reason}` object, orders of magnitude under the 50KB cap threshold, so it
+ * cannot realistically be truncated.
+ */
+export function hasSuccessfulNoFindingsPart(parts: unknown): boolean {
+  if (!Array.isArray(parts)) return false;
+  return parts.some((raw) => {
+    const part = raw as { type?: unknown; state?: unknown; output?: unknown } | null;
+    if (!part || typeof part !== "object") return false;
+    if (part.type !== "tool-finalize_no_findings") return false;
+    if (part.state !== "output-available") return false;
+    const output = part.output as { ok?: unknown } | null;
+    return !!output && typeof output === "object" && output.ok === true;
+  });
+}
+
 export function shouldInsertRecoveredAssistant(
   thread: Pick<RecoverableThread, "run_started_at" | "last_heartbeat_at" | "updated_at">,
   latestAssistantCreatedAt?: string | null,
   nowMs: number = Date.now(),
   recentWindowMs: number = RECENT_ASSISTANT_WINDOW_MS,
   latestAssistantText?: string | null,
+  latestAssistantParts?: unknown,
 ): RecoveryAssistantState {
   if (!latestAssistantCreatedAt) return { shouldInsert: true, reason: "no_assistant" };
   const assistantMs = new Date(latestAssistantCreatedAt).getTime();
@@ -292,7 +374,28 @@ export function shouldInsertRecoveredAssistant(
   // the prior-turn case already returned above, so a stale earlier report cannot
   // suppress a genuine stub.
   if (latestAssistantText && hasReportShape(stripReasoning(latestAssistantText))) {
+    // Still suppress the stub — one recovery notice is enough, never two — but report a
+    // distinct reason so the caller does NOT treat our own stub as proof of a durable
+    // completion and clear the interruption metadata it carries. See
+    // isRecoveryGeneratedReport.
+    if (isRecoveryGeneratedReport(latestAssistantText)) {
+      return { shouldInsert: false, reason: "recovered_stub_present" };
+    }
     return { shouldInsert: false, reason: "report_present" };
+  }
+
+  // The OTHER half of the I-2 completion contract. A run may also terminate legitimately
+  // with an explicit `finalize_no_findings` decision instead of a report — and that
+  // decision lives in a `tool-finalize_no_findings` PART, which assistantPartsToText
+  // drops on the floor (it keeps only `type === "text"`). Without this, an isolate that
+  // died after persisting a valid no-findings assistant row but before the status flip
+  // got stamped with recovery metadata and rendered Interrupted.
+  //
+  // Gated on the call having SUCCEEDED, not merely having been emitted — see
+  // hasSuccessfulNoFindingsPart. A failed or half-executed finalize_no_findings is not a
+  // terminal outcome, and admitting one here would paint an unfinished run green.
+  if (hasSuccessfulNoFindingsPart(latestAssistantParts)) {
+    return { shouldInsert: false, reason: "no_findings_present" };
   }
 
   const liveMs = thread.last_heartbeat_at
@@ -308,6 +411,40 @@ export function shouldInsertRecoveredAssistant(
   }
 
   return { shouldInsert: false, reason: "none" };
+}
+
+/**
+ * Pin a compare-and-set to the EXACT run this sweep read (2026-07-29 review, P1).
+ *
+ * `status = 'active'` alone is an ABA compare: `markRunStarted` also writes
+ * `status: "active"`, so a brand-new run that began between our read and our UPDATE
+ * still satisfies it. The sweeper would then close the NEW run using the OLD run's
+ * evidence — and on the clean-completion path it also clears both interruption
+ * markers, so the live run reads as normally complete. Worse, it is self-concealing:
+ * the new run's own heartbeat pulses and terminal update are themselves guarded on
+ * `status = 'active'`, so once we flip it to `finished` they all silently no-op and
+ * the run never corrects the record.
+ *
+ * Adding the run markers we originally read turns the CAS into a proper optimistic
+ * concurrency check. It rejects both hazards at once, because `markRunStarted` moves
+ * `run_started_at` and a live-but-pulsing isolate moves `last_heartbeat_at` — either
+ * shift means the row is no longer the stale run we decided to reap, so we claim
+ * nothing and write nothing.
+ *
+ * NULL markers must be compared with `.is`, not `.eq` — PostgREST renders `eq.null`
+ * as a literal that never matches. A row with neither marker cannot reach here at all
+ * (hasRunMarker gates it), so at most one of the two is null in practice.
+ */
+function withRunMarkerGuard<Q>(query: Q, thread: RecoverableThread): Q {
+  let next = query as unknown as {
+    eq: (col: string, value: unknown) => unknown;
+    is: (col: string, value: unknown) => unknown;
+  };
+  for (const col of ["run_started_at", "last_heartbeat_at"] as const) {
+    const value = thread[col];
+    next = (value == null ? next.is(col, null) : next.eq(col, value)) as typeof next;
+  }
+  return next as unknown as Q;
 }
 
 async function recoverOneStaleThread(
@@ -383,15 +520,32 @@ async function recoverOneStaleThread(
     now.getTime(),
     RECENT_ASSISTANT_WINDOW_MS,
     assistantPartsToText(latestAssistantRow?.parts),
+    latestAssistantRow?.parts,
   );
   if (!assistantState.shouldInsert) {
     // Nothing to stub, but the thread is genuinely stale — still close it out.
     // `.select("id")` is REQUIRED: without it a lost status race is indistinguishable
     // from a won one and this branch reported recovered:true for a thread it never
     // claimed, inflating the sweeper's recovered count with phantom recoveries.
-    const { data: closed, error: closeErr } = await db.from("threads").update({ status: "finished", recovered_at: now.toISOString(), recovery_reason: reason, updated_at: now.toISOString() }).eq("id", thread.id).eq("status", "active").select("id");
+    // Both halves of the completion contract count as a clean finish, not a recovery:
+    // a durable report-shaped message OR an explicit finalize_no_findings decision.
+    const reportAlreadyDurable = assistantState.reason === "report_present" || assistantState.reason === "no_findings_present";
+    const { data: closed, error: closeErr } = await withRunMarkerGuard(
+      db
+        .from("threads")
+        .update({
+          status: "finished",
+          recovered_at: reportAlreadyDurable ? null : now.toISOString(),
+          recovery_reason: reportAlreadyDurable ? null : reason,
+          updated_at: now.toISOString(),
+        })
+        .eq("id", thread.id)
+        .eq("status", "active"),
+      thread,
+    ).select("id");
     if (closeErr) return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: closeErr.message };
-    return { recovered: !!closed && (closed as unknown[]).length > 0, assistantInserted: false, artifactCount: artifactCount ?? 0 };
+    const claimed = !!closed && (closed as unknown[]).length > 0;
+    return { recovered: claimed && !reportAlreadyDurable, assistantInserted: false, artifactCount: artifactCount ?? 0 };
   }
 
   // ---- CLAIM BEFORE WRITING (2026-07-26 race fix) ----
@@ -406,10 +560,16 @@ async function recoverOneStaleThread(
   // Claiming first makes the stub strictly conditional on winning the compare-and-set:
   // if `finished` was already written by the real run, we claim nothing and write
   // nothing.
-  const { data: claimed, error: claimErr } = await db
-    .from("threads")
-    .update({ status: "finished", recovered_at: now.toISOString(), recovery_reason: reason, updated_at: now.toISOString() })
-    .eq("id", thread.id).eq("status", "active").select("id");
+  // Run-marker guarded for the same reason as the clean-close CAS above: without it a
+  // run that STARTED between our read and this claim gets closed and stubbed — the
+  // ghost-recovery-on-a-live-run failure, arrived at from the opposite direction.
+  const { data: claimed, error: claimErr } = await withRunMarkerGuard(
+    db
+      .from("threads")
+      .update({ status: "finished", recovered_at: now.toISOString(), recovery_reason: reason, updated_at: now.toISOString() })
+      .eq("id", thread.id).eq("status", "active"),
+    thread,
+  ).select("id");
   if (claimErr) return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: claimErr.message };
   if (!claimed || (claimed as unknown[]).length === 0) {
     // Someone else finalized this thread first. Their report stands; say nothing.
@@ -426,6 +586,7 @@ async function recoverOneStaleThread(
   const freshState = shouldInsertRecoveredAssistant(
     thread, freshRow?.created_at ?? null, now.getTime(), RECENT_ASSISTANT_WINDOW_MS,
     assistantPartsToText(freshRow?.parts),
+    freshRow?.parts,
   );
   if (!freshState.shouldInsert) {
     // ---- RELEASE THE CLAIM (2026-07-26, blocker 1) ----
@@ -458,7 +619,51 @@ async function recoverOneStaleThread(
   // returns [] when the verdicts are unreadable, so this fails closed.
   const text = buildRecoveredAssistantText(thread, reviewedArtifacts as RecoveryArtifact[]);
   const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: [{ type: "text", text }] });
-  if (insertErr) return { recovered: true, assistantInserted: false, artifactCount: artifactCount ?? 0, error: insertErr.message };
+  if (insertErr) {
+    // ---- ROLL BACK THE CLAIM ON STUB-INSERT FAILURE (PR #387 review, P2) ----
+    // The claim above already flipped status to "finished", but the recovered report
+    // never landed. Left as-is, no sweep will ever retry — the sweep scans only
+    // status='active' rows — so a transient insert failure permanently strands a
+    // genuinely interrupted run: closed, stamped as recovered, with no report.
+    // Reopen the thread so the next sweep re-runs the whole claim + stub sequence.
+    //
+    // The WHERE is keyed on the exact recovered_at + recovery_reason THIS claim wrote
+    // (the same token the durable-report release above uses): if the row no longer
+    // carries our stamp — a new run restarted via markRunStarted, or a later worker
+    // owns it — the UPDATE matches nothing and their state is untouched.
+    //
+    // last_heartbeat_at MUST be bumped to `now` here too (Codex review on this PR,
+    // P2): isStaleActiveThread checks last_heartbeat_at FIRST and only falls back to
+    // updated_at when the heartbeat is null, so reopening with a fresh updated_at but
+    // a stale, untouched last_heartbeat_at leaves the row immediately re-eligible for
+    // ANY concurrent sweep (the health-check sweep in index.ts, a cron tick, another
+    // request) — not just the one that failed. When this recovery runs as the
+    // pre-request check inside setupRequest, that race lets a concurrent sweep win,
+    // recover the thread, and insert the recovered-run stub AFTER the analyst's new
+    // message that setupRequest is about to write, misattributing the prior run's
+    // report onto the new turn. Bumping the heartbeat holds the thread "live" for one
+    // more STALE_RUN_AFTER_MS window — long enough for this request's own
+    // startRunHeartbeat to stamp a genuinely fresh run marker — while still leaving it
+    // eligible again if this request never gets that far (crashes, insert keeps
+    // failing) and the run really is abandoned.
+    const { data: released, error: rollbackErr } = await db
+      .from("threads")
+      .update({ status: "active", recovered_at: null, recovery_reason: null, last_heartbeat_at: now.toISOString(), updated_at: now.toISOString() })
+      .eq("id", thread.id)
+      .eq("recovered_at", now.toISOString())
+      .eq("recovery_reason", reason)
+      .select("id");
+    if (rollbackErr) {
+      // Claim stands but the stub is missing — the pre-rollback failure mode.
+      // recovered:true is honest here: the close DID commit and will render Interrupted.
+      return { recovered: true, assistantInserted: false, artifactCount: artifactCount ?? 0, error: `${insertErr.message}; claim rollback failed: ${rollbackErr.message}` };
+    }
+    console.warn(JSON.stringify({
+      event: "recovery_stub_insert_failed", thread_id: thread.id,
+      claim_released: !!released && (released as unknown[]).length > 0, error: insertErr.message,
+    }));
+    return { recovered: false, assistantInserted: false, artifactCount: artifactCount ?? 0, error: insertErr.message };
+  }
   assistantInserted = true;
   return { recovered: true, assistantInserted, artifactCount: artifactCount ?? 0 };
 }
