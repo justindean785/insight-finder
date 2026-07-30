@@ -20,13 +20,71 @@ export type RecoverableThread = {
   updated_at?: string | null;
 };
 
+export type RecoveryArtifactMetadata = {
+  /** "observed" | "needs_corroboration" | "excluded" | … */
+  status?: string | null;
+  reason_not_confirmed?: string | null;
+  source_category?: string[] | string | null;
+  /** Set by auto-persist-findings.ts on every machine-extracted row. */
+  auto_recorded?: boolean | null;
+  auto_persist_source?: string | null;
+  [k: string]: unknown;
+};
+
 export type RecoveryArtifact = {
   kind?: string | null;
   value?: string | null;
   confidence?: number | null;
   source?: string | null;
   created_at?: string | null;
+  metadata?: RecoveryArtifactMetadata | null;
 };
+
+/** Artifact kinds that are control/telemetry records, never evidence. Matched
+ *  STRUCTURALLY on `kind` — never by sniffing the rendered value for a title
+ *  string, which would misfire on a legitimate finding that merely mentions one
+ *  of these words. */
+export const NON_EVIDENCE_KINDS = new Set<string>([
+  "triage_decision",
+  "coverage_audit",
+  "tool_audit",
+]);
+
+/** Artifact kinds that ARE the exclusion record itself. */
+export const EXCLUDED_KINDS = new Set<string>([
+  "excluded_collision",
+  "excluded_collision_summary",
+]);
+
+/** metadata.status values meaning "this row was ruled out". */
+export const EXCLUDED_STATUSES = new Set<string>(["excluded", "excluded_collision", "rejected"]);
+
+export type RecoveryRowClass = "excluded" | "non_evidence" | "candidate" | "reviewed";
+
+/**
+ * Classify one artifact for rendering. The recovered report is a document an
+ * analyst reads as evidence, so the distinctions that matter are: was this row
+ * ruled out, is it bookkeeping, and did a MODEL ever look at it.
+ *
+ * `auto_recorded: true` (written by auto-persist-findings.ts) is the reliable
+ * negative signal for that last question. In the 2026-07-30 incident the model
+ * called record_artifacts ZERO times, so every published row was extractor
+ * output — yet the report presented all 27 as "Recovered findings".
+ *
+ * Conservative on missing metadata: a legacy row with no metadata at all cannot
+ * be shown to have been model-reviewed, so it is a CANDIDATE, not a finding.
+ */
+export function classifyRecoveryRow(a: RecoveryArtifact): RecoveryRowClass {
+  const kind = String(a.kind ?? "").trim();
+  const md = (a.metadata ?? {}) as RecoveryArtifactMetadata;
+  const status = String(md.status ?? "").trim().toLowerCase();
+
+  if (EXCLUDED_KINDS.has(kind) || EXCLUDED_STATUSES.has(status)) return "excluded";
+  if (NON_EVIDENCE_KINDS.has(kind)) return "non_evidence";
+  if (md.auto_recorded === true || typeof md.auto_persist_source === "string") return "candidate";
+  if (a.metadata == null) return "candidate";
+  return "reviewed";
+}
 
 export type RecoveryAssistantState = {
   shouldInsert: boolean;
@@ -93,33 +151,119 @@ export function buildRecoveredAssistantText(
 ): string {
   const seed = thread.seed_value?.trim() || thread.title?.trim() || "this investigation";
   const lastLive = thread.last_heartbeat_at ?? thread.run_started_at ?? null;
-  const rows = artifacts.slice(0, RECOVERY_ARTIFACT_LIMIT);
+  const classified = artifacts.map((a) => ({ a, cls: classifyRecoveryRow(a) }));
+  const reviewed = classified.filter((r) => r.cls === "reviewed").map((r) => r.a);
+  const candidates = classified.filter((r) => r.cls === "candidate").map((r) => r.a);
+  const excluded = classified.filter((r) => r.cls === "excluded").map((r) => r.a);
+  const suppressed = classified.filter((r) => r.cls === "non_evidence").length;
+
+  // Reviewed evidence FIRST, always — never interleaved with candidates and never
+  // outranked by a bulk row that merely carries a bigger number. A hardcoded
+  // extractor literal (breach rows are pushed at a flat 55) must not sort above a
+  // model-reviewed finding at 45. Ordering within each section stays
+  // confidence-descending, which is meaningful among peers.
+  const shown = [...reviewed, ...candidates].slice(0, RECOVERY_ARTIFACT_LIMIT);
+  const shownReviewed = shown.filter((a) => classifyRecoveryRow(a) === "reviewed");
+  const shownCandidates = shown.filter((a) => classifyRecoveryRow(a) === "candidate");
+
   const header = [
-    "## Findings report — recovered run",
+    "## Interrupted run — recovered evidence",
     "",
-    `The investigation for **${escapeCell(seed)}** was interrupted before the agent could write its closing response. The saved evidence below was recovered from durable artifacts already written during the run.`,
+    `The investigation for **${escapeCell(seed)}** was interrupted before the agent could write its closing response. **This is not a findings report.** The rows below are whatever was already durably written when the run stopped, presented as-is.`,
     lastLive ? `Last heartbeat: ${lastLive}.` : "Last heartbeat was not recorded.",
     "",
   ];
-  if (rows.length === 0) {
-    return [...header, "No confirmed artifacts were recorded before the interruption.", "", "### Gaps", "- The backend stopped before final synthesis completed.", "- Re-run the seed to continue collection."].join("\n");
-  }
-  const table = [
-    "| # | Kind | Value | Confidence | Source |",
-    "|---:|---|---|---:|---|",
-    ...rows.map((a, i) => `| ${i + 1} | ${escapeCell(a.kind)} | ${escapeCell(a.value)} | ${a.confidence ?? "—"} | ${escapeCell(a.source)} |`),
+
+  const renderTable = (rows: RecoveryArtifact[]) => [
+    "| # | Kind | Value | Confidence | Status | Source |",
+    "|---:|---|---|---:|---|---|",
+    ...rows.map((a, i) => {
+      const md = (a.metadata ?? {}) as RecoveryArtifactMetadata;
+      const status = md.status ? escapeCell(md.status) : "—";
+      return `| ${i + 1} | ${escapeCell(a.kind)} | ${escapeCell(a.value)} | ${a.confidence ?? "—"} | ${status} | ${escapeCell(a.source)} |`;
+    }),
   ];
-  return [
-    ...header,
-    "### Recovered findings",
-    ...table,
-    "",
-    rows.length === artifacts.length ? `Recovered ${rows.length} artifact${rows.length === 1 ? "" : "s"}.` : `Showing top ${rows.length} of ${artifacts.length} recovered artifacts.`,
+
+  const caveats = (rows: RecoveryArtifact[]): string[] => {
+    const reasons = new Set<string>();
+    for (const a of rows) {
+      const r = (a.metadata as RecoveryArtifactMetadata | null)?.reason_not_confirmed;
+      if (typeof r === "string" && r.trim()) reasons.add(r.trim());
+    }
+    if (reasons.size === 0) return [];
+    return ["", "Why these are not confirmed:", ...[...reasons].map((r) => `- ${r}`)];
+  };
+
+  const out = [...header];
+
+  if (shownReviewed.length > 0) {
+    out.push("### Model-reviewed findings", ...renderTable(shownReviewed), ...caveats(shownReviewed), "");
+  }
+
+  if (shownCandidates.length > 0) {
+    out.push(
+      "### Machine-extracted candidates — UNREVIEWED",
+      "",
+      "Written automatically by the tool-output extractor. **No model or analyst judgement was applied to these rows**, and they have not been checked for same-name collisions or subject relevance. Treat them as leads to verify, not as findings.",
+      "",
+      ...renderTable(shownCandidates),
+      ...caveats(shownCandidates),
+      "",
+    );
+  }
+
+  if (shownReviewed.length === 0) {
+    out.push(
+      candidates.length > 0
+        ? "**No model-reviewed findings exist for this run.** Every row above is unreviewed extractor output."
+        : "**No evidence was durably recorded before the interruption.**",
+      "",
+    );
+  }
+
+  if (excluded.length > 0) {
+    // Disclose WHAT was ruled out by kind, not just how many — a bare count is
+    // unauditable ("ruled out 12 things" tells the analyst nothing about whether
+    // the exclusion was reasonable). Values are deliberately NOT reprinted: the
+    // codebase already treats `breach` values as unsafe to project into chat
+    // history, and an excluded collision row is by definition a THIRD PARTY's
+    // data — reprinting it in an "appendix" would republish exactly the PII the
+    // exclusion exists to keep out of the report. The rows stay in the artifacts
+    // table, so the Evidence board remains the auditable surface for values.
+    const byKind = new Map<string, number>();
+    for (const a of excluded) {
+      const k = String(a.kind ?? "unknown");
+      byKind.set(k, (byKind.get(k) ?? 0) + 1);
+    }
+    const breakdown = [...byKind.entries()].sort((x, y) => y[1] - x[1]).map(([k, n]) => `${n}× ${k}`).join(", ");
+    out.push(
+      `${excluded.length} row${excluded.length === 1 ? " was" : "s were"} ruled out (same-name collision or explicit exclusion) and ${excluded.length === 1 ? "is" : "are"} not shown: ${breakdown}. Values are withheld because an excluded row is another person's data; inspect them on the Evidence board if the exclusion needs review.`,
+      "",
+    );
+  }
+  if (suppressed > 0) {
+    out.push(`${suppressed} control/telemetry record${suppressed === 1 ? "" : "s"} (triage decisions, audits) omitted — these are not evidence.`, "");
+  }
+
+  const totalEligible = reviewed.length + candidates.length;
+  // "### Recovery summary" is load-bearing, not decoration: hasReportShape()
+  // matches a heading containing report|findings|summary|… or a markdown table.
+  // The stub MUST stay report-shaped so shouldInsertRecoveredAssistant sees
+  // `report_present` on a re-sweep and does not stack a second stub. With rows
+  // present the tables satisfy that; with ZERO rows there is no table and the new
+  // top heading ("Interrupted run — recovered evidence") deliberately avoids the
+  // word "report", so this heading is what keeps the empty case shaped.
+  out.push("### Recovery summary");
+  out.push(
+    shown.length === totalEligible
+      ? `${shown.length} recovered row${shown.length === 1 ? "" : "s"}: ${shownReviewed.length} model-reviewed, ${shownCandidates.length} unreviewed.`
+      : `Showing ${shown.length} of ${totalEligible} recovered rows: ${shownReviewed.length} model-reviewed, ${shownCandidates.length} unreviewed.`,
     "",
     "### Gaps",
     "- The run was closed by stale-run recovery, so this is not a full model-written synthesis.",
     "- Treat unresolved leads as pending until a follow-up run verifies them.",
-  ].join("\n");
+  );
+  return out.join("\n");
 }
 
 export function shouldInsertRecoveredAssistant(
@@ -175,7 +319,13 @@ async function recoverOneStaleThread(
   if (!isStaleActiveThread(thread, now.getTime())) return { recovered: false, assistantInserted: false, artifactCount: 0 };
   const [{ data: latestAssistant }, { data: artifacts, count: artifactCount }] = await Promise.all([
     db.from("messages").select("created_at,parts").eq("thread_id", thread.id).eq("role", "assistant").order("created_at", { ascending: false }).limit(1).maybeSingle(),
-    db.from("artifacts").select("id,kind,value,confidence,source,created_at", { count: "exact" }).eq("thread_id", thread.id).order("confidence", { ascending: false }).order("created_at", { ascending: true }).limit(RECOVERY_ARTIFACT_LIMIT),
+    // `metadata` is REQUIRED, not optional enrichment: status,
+    // reason_not_confirmed, source_category and the collision/exclusion flags all
+    // live there. Omitting it is what made the recovered report unable to tell an
+    // excluded same-name collision from a finding, or extractor output from
+    // model-reviewed evidence — every integrity field the recording layer had
+    // already computed was simply not fetched.
+    db.from("artifacts").select("id,kind,value,confidence,source,created_at,metadata", { count: "exact" }).eq("thread_id", thread.id).order("confidence", { ascending: false }).order("created_at", { ascending: true }).limit(RECOVERY_ARTIFACT_LIMIT),
   ]);
   // Analyst verdicts apply to the recovery stub too. The stub is a REPORT the
   // analyst reads, built straight from durable artifacts — so without this a
@@ -193,6 +343,38 @@ async function recoverOneStaleThread(
   const reviewedArtifacts = recoveryReviews.ok
     ? applyReviewsToArtifacts((artifacts ?? []) as Array<Record<string, unknown>>, recoveryReviews)
     : (artifacts ?? []);
+
+  // ---- FORENSICS FOR THE NEXT NATURAL FAILURE ----
+  // The 2026-07-30 run death is UNRESOLVED and reproduced on a re-run. Diagnosing
+  // it after the fact was blocked by two things, both fixable here at zero cost
+  // and without a paid canary:
+  //   (a) resumeThread() overwrites run_started_at/last_heartbeat_at and NULLs
+  //       recovered_at/recovery_reason, so the moment an analyst retypes into the
+  //       thread the dead run's lifecycle snapshot is gone. Emitting it at
+  //       recovery time preserves it in the log regardless.
+  //   (b) the heartbeat is NOT on a fixed cadence — pulse() also fires on tool
+  //       events — so the interval cannot be reconstructed afterwards and any
+  //       tick-lattice arithmetic is invalid. Record the real elapsed values.
+  // Deliberately no PII: ids, timestamps and counts only, never seed_value/title.
+  const runStartMs = thread.run_started_at ? new Date(thread.run_started_at).getTime() : NaN;
+  const lastBeatMs = thread.last_heartbeat_at ? new Date(thread.last_heartbeat_at).getTime() : NaN;
+  console.log(JSON.stringify({
+    event: "run_death_forensics",
+    thread_id: thread.id,
+    reason,
+    run_started_at: thread.run_started_at ?? null,
+    last_heartbeat_at: thread.last_heartbeat_at ?? null,
+    // Elapsed run life. Compare against ORCHESTRATOR_WALL_CLOCK_MS (180s) to tell
+    // "hit the ceiling" from "died early", and against FINALIZE_RESERVE_MS to tell
+    // whether the forced-finalize window had even opened.
+    run_elapsed_ms: Number.isFinite(runStartMs) && Number.isFinite(lastBeatMs) ? lastBeatMs - runStartMs : null,
+    // How long the corpse sat before a sweep found it. STALE_RUN_AFTER_MS is a
+    // FLOOR, not a schedule — the sweep is opportunistic, so this is unbounded.
+    silent_ms: Number.isFinite(lastBeatMs) ? now.getTime() - lastBeatMs : null,
+    artifact_count: artifactCount ?? 0,
+    had_run_marker: !!(thread.run_started_at || thread.last_heartbeat_at),
+    terminal_writer: "stale_recovery",
+  }));
   let assistantInserted = false;
   const latestAssistantRow = latestAssistant as { created_at?: string; parts?: unknown } | null;
   const assistantState = shouldInsertRecoveredAssistant(
