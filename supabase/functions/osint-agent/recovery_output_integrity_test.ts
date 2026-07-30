@@ -80,6 +80,11 @@ Deno.test("excluded_collision rows never render", () => {
   assert(!out.includes("Wayne Young"), "a row with status=excluded_collision was rendered");
   assert(!out.includes("12 excluded same-name matches"), "a collision summary row was rendered");
   assert(/3 rows were ruled out/.test(out), "the exclusion count must still be disclosed, not hidden");
+  // Auditability without republication: the analyst is told WHAT was ruled out by
+  // kind, but the values stay withheld — an excluded collision row is by
+  // definition another person's data.
+  assert(/excluded_collision/.test(out) && /1× name/.test(out), "exclusion breakdown by kind is missing");
+  assert(/Values are withheld/.test(out), "the reason values are withheld must be stated");
 });
 
 Deno.test("triage_decision never renders as evidence", () => {

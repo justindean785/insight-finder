@@ -222,7 +222,24 @@ export function buildRecoveredAssistantText(
   }
 
   if (excluded.length > 0) {
-    out.push(`${excluded.length} row${excluded.length === 1 ? " was" : "s were"} ruled out (same-name collision or explicit exclusion) and ${excluded.length === 1 ? "is" : "are"} not shown.`, "");
+    // Disclose WHAT was ruled out by kind, not just how many — a bare count is
+    // unauditable ("ruled out 12 things" tells the analyst nothing about whether
+    // the exclusion was reasonable). Values are deliberately NOT reprinted: the
+    // codebase already treats `breach` values as unsafe to project into chat
+    // history, and an excluded collision row is by definition a THIRD PARTY's
+    // data — reprinting it in an "appendix" would republish exactly the PII the
+    // exclusion exists to keep out of the report. The rows stay in the artifacts
+    // table, so the Evidence board remains the auditable surface for values.
+    const byKind = new Map<string, number>();
+    for (const a of excluded) {
+      const k = String(a.kind ?? "unknown");
+      byKind.set(k, (byKind.get(k) ?? 0) + 1);
+    }
+    const breakdown = [...byKind.entries()].sort((x, y) => y[1] - x[1]).map(([k, n]) => `${n}× ${k}`).join(", ");
+    out.push(
+      `${excluded.length} row${excluded.length === 1 ? " was" : "s were"} ruled out (same-name collision or explicit exclusion) and ${excluded.length === 1 ? "is" : "are"} not shown: ${breakdown}. Values are withheld because an excluded row is another person's data; inspect them on the Evidence board if the exclusion needs review.`,
+      "",
+    );
   }
   if (suppressed > 0) {
     out.push(`${suppressed} control/telemetry record${suppressed === 1 ? "" : "s"} (triage decisions, audits) omitted — these are not evidence.`, "");
