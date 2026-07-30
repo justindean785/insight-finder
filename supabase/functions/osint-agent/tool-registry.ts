@@ -110,6 +110,10 @@ import { okWithSuccessFlag, isHackertargetApiError, isCrtshOk, dohTypeError, blo
 import { enforceNameSeedPriority, enforceFallbackToolPolicy, NAME_SEED_PLANNER_RULES } from "./planner-guidance.ts";
 import { sweepUsername } from "./sweeper.ts";
 import { trimExaResults, archiveAttachment } from "./archiver.ts";
+// Single source of truth for provider gating. list_tools derives its disabled
+// set from this so a tool marked `disabled: true` cannot stay advertised to the
+// model after the runtime has removed it.
+import { PROVIDER_REQUIREMENTS } from "./capabilities.ts";
 
 type ToolRegistry = Record<string, unknown>;
 type ExecutableTool = {
@@ -226,6 +230,29 @@ export function buildTools(ctx: ToolContext) {
             name: "gemini_vision",
             reason: "GEMINI_API_KEY not configured — image/document reading (vision) is unavailable; record attachments as URLs only.",
           });
+        }
+        // Config-disabled providers (`disabled: true` in capabilities.ts's
+        // PROVIDER_REQUIREMENTS) were NEVER gated here — only the key-presence
+        // checks above were, so the "Fix #4" parity note applies to exactly half
+        // the problem. A tool the runtime had deliberately removed stayed in the
+        // catalog the model reads, complete with its `when_to_use` instruction, so
+        // the model kept calling it; the name is absent from the live registry, so
+        // repairUnknownTool redirected it to the sink, which returned ok:true.
+        //
+        // Measured before this fix: dork_harvest, deepfind_reverse_email and
+        // ipqualityscore_lookup were all disabled AND still advertised, and
+        // unknown_tool_ignored logged 127 calls between 2026-07-09 (hours after
+        // dork_harvest was disabled) and 2026-07-30 — 127 of 127 recorded ok. Each
+        // burned a step, was cached, and surfaced in the evidence export as e.g.
+        // "dork_harvest(completed)", telling an analyst that document/leak dorking
+        // had run when it never executed.
+        //
+        // Deriving the list rather than hand-maintaining it means the next tool
+        // disabled in config is gated here for free.
+        for (const [name, req] of Object.entries(PROVIDER_REQUIREMENTS)) {
+          if (req.disabled && !disabled.some((d) => d.name === name)) {
+            disabled.push({ name, reason: "disabled in provider configuration — do not call it." });
+          }
         }
         const disabledNames = new Set(disabled.map((d) => d.name));
         const filtered = {
