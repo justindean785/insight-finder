@@ -187,6 +187,44 @@ function memoSchema<T>(key: string, build: () => T): T {
   return cached as T;
 }
 
+/**
+ * Canonicalize a SocialFetch platform argument.
+ *
+ * SocialFetch's four structured platforms are keyed 'tiktok' | 'instagram' |
+ * 'twitter' | 'facebook', but the model reaches for the name the site actually
+ * uses today ('x') or for the host it found the profile on ('x.com',
+ * 'instagram.com'). Previously the value was only lowercased, so every one of
+ * those spellings missed the SUPPORTED set and returned the unsupported no-op —
+ * a silent miss on a corroborated handle, not an error the model could react to.
+ *
+ * Deliberately narrow: this maps spellings of the SAME four supported platforms.
+ * It must never map an unsupported host (youtube, reddit, twitch) onto a
+ * supported key — those genuinely are not SocialFetch profile routes and must
+ * keep falling through to the no-op that redirects to socialfetch_web_read.
+ */
+export function normalizeSocialPlatform(platform: unknown): string {
+  const raw = String(platform ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .replace(/\/.*$/, "");
+  const ALIASES: Record<string, string> = {
+    x: "twitter",
+    "x.com": "twitter",
+    "twitter.com": "twitter",
+    tweet: "twitter",
+    ig: "instagram",
+    "instagram.com": "instagram",
+    "tiktok.com": "tiktok",
+    tt: "tiktok",
+    fb: "facebook",
+    "facebook.com": "facebook",
+    "fb.com": "facebook",
+  };
+  return ALIASES[raw] ?? raw;
+}
+
 export function buildTools(ctx: ToolContext) {
   const { supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, messages, manualOverrideSelector } = ctx;
 
@@ -1254,7 +1292,13 @@ export function buildTools(ctx: ToolContext) {
         kind: z.enum(["profile", "videos", "posts", "tweets", "video"]).default("profile"),
       })),
       execute: async ({ platform, handle, kind }) => {
-        const p = String(platform || "").trim().toLowerCase();
+        // Normalize common aliases BEFORE the support check. Without this, the
+        // single most likely spelling of the platform — `x`, the site's actual
+        // current name — fell straight through to the unsupported no-op, so a
+        // corroborated X/Twitter handle silently produced nothing and burned the
+        // step. Also accepts bare domains, since the model frequently passes the
+        // host it found the profile on rather than the platform key.
+        const p = normalizeSocialPlatform(platform);
         const SUPPORTED = new Set(["tiktok", "instagram", "twitter", "facebook"]);
         if (!SUPPORTED.has(p)) {
           return {
