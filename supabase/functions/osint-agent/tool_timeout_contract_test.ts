@@ -25,8 +25,11 @@ const SRC = Deno.readTextFileSync(new URL("./tool-registry.ts", import.meta.url)
 
 /** Every `name: tool({ … })` inline definition, with its source body. */
 function toolBodies(): Array<{ name: string; body: string }> {
+  // Indentation-agnostic (`\s{2,}`, not a fixed four spaces) so re-formatting or
+  // re-nesting buildTools does not silently drop tools from the scan. Verified
+  // against a simulated re-indent of the whole registry.
   const starts: Array<{ name: string; at: number }> = [];
-  for (const m of SRC.matchAll(/^ {4}([a-z_]+): tool\(\{/gm)) {
+  for (const m of SRC.matchAll(/^\s{2,}([a-z_]+): tool\(\{/gm)) {
     starts.push({ name: m[1], at: m.index! });
   }
   return starts.map((s, i) => ({
