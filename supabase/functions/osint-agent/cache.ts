@@ -115,6 +115,25 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // model's response time past 30s). 60s gives headroom above the observed tail
   // without unbounded growth — input is still hard-capped at 16k chars/1500 tokens.
   minimax_correlate: 60_000,
+  // minimax_plan_pivots — SAME provider and SAME smart tier as minimax_correlate
+  // above, but it had no entry here at all, so it inherited the 12s default while
+  // structurally taking 15-25s. Production `tool_usage_log` (2026-07-30): EVERY
+  // recorded failure is our own wrapper firing — `exceeded 12000ms tool timeout`
+  // n=12 at avg 12,164ms — not one provider error. Daily average latency ran
+  // 15.0-20.8s across 7/25-7/28, and the single success took 17,276ms. We were
+  // capping a smart-tier planning call at roughly half its natural duration.
+  //
+  // This is the correlate recurrence repeating on its sibling: as documented
+  // above, execute() does not forward the wrapper signal, so the model call runs
+  // to completion regardless — the cap does not save the time, it just discards
+  // the finished plan and books it as a failure. That is why the symptom looked
+  // like "the planner is broken" rather than "the planner is slow".
+  //
+  // 45s (not correlate's 60s) because this call's payload is now hard-capped
+  // materially smaller — 60 artifacts / 80 already-queried below vs correlate's
+  // 200 — so its tail is correspondingly shorter. Calibration against observed
+  // latency, not open-ended bumping.
+  minimax_plan_pivots: 45_000,
   // OathNet family: every endpoint's own fetch budget is 20s (a couple 15s), but the
   // outer wrapper cap must sit ABOVE that fetch budget or it guillotines the call
   // before the fetch's own timeout can return a clean result. The 2026-07-15 live
