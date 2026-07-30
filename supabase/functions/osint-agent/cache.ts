@@ -134,6 +134,17 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   oathnet_breach_dbnames: 22_000,
   oathnet_ai_filter: 22_000,
   oathnet_scanner: 22_000,
+  // FOFA / markdown.new — added with the tools themselves (backport of the Lovable
+  // mirror's 8df15d2). Both ship their OWN fetch budget (fofa_search 20s,
+  // markdown_extract 30s) and neither forwards the wrapper signal, so without an
+  // override here the 12s default reproduces the exact failure the oathnet and
+  // socialfetch_web_read comments above describe: the wrapper guillotines the call
+  // before the tool's own fetch timeout can return a clean result, the completed
+  // work is discarded, and ONE such timeout trips the circuit breaker and suppresses
+  // the tool for the rest of the run. Each cap sits just above its tool's fetch
+  // budget so the fetch governs the timeout, not the wrapper.
+  fofa_search: 22_000,        // > its 20s fetchT budget
+  markdown_extract: 32_000,   // > its 30s fetchT budget; PDF/XLSX conversion is genuinely slow
 };
 export function toolTimeoutMs(name: string): number {
   return TOOL_TIMEOUT_OVERRIDE_MS[name] ?? DEFAULT_TOOL_TIMEOUT_MS;
