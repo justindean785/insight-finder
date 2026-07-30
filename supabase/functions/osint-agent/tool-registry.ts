@@ -110,6 +110,10 @@ import { okWithSuccessFlag, isHackertargetApiError, isCrtshOk, dohTypeError, blo
 import { enforceNameSeedPriority, enforceFallbackToolPolicy, NAME_SEED_PLANNER_RULES } from "./planner-guidance.ts";
 import { sweepUsername } from "./sweeper.ts";
 import { trimExaResults, archiveAttachment } from "./archiver.ts";
+// Single source of truth for provider gating. list_tools derives its disabled
+// set from this so a tool marked `disabled: true` cannot stay advertised to the
+// model after the runtime has removed it.
+import { PROVIDER_REQUIREMENTS } from "./capabilities.ts";
 
 type ToolRegistry = Record<string, unknown>;
 type ExecutableTool = {
@@ -226,6 +230,29 @@ export function buildTools(ctx: ToolContext) {
             name: "gemini_vision",
             reason: "GEMINI_API_KEY not configured — image/document reading (vision) is unavailable; record attachments as URLs only.",
           });
+        }
+        // Config-disabled providers (`disabled: true` in capabilities.ts's
+        // PROVIDER_REQUIREMENTS) were NEVER gated here — only the key-presence
+        // checks above were, so the "Fix #4" parity note applies to exactly half
+        // the problem. A tool the runtime had deliberately removed stayed in the
+        // catalog the model reads, complete with its `when_to_use` instruction, so
+        // the model kept calling it; the name is absent from the live registry, so
+        // repairUnknownTool redirected it to the sink, which returned ok:true.
+        //
+        // Measured before this fix: dork_harvest, deepfind_reverse_email and
+        // ipqualityscore_lookup were all disabled AND still advertised, and
+        // unknown_tool_ignored logged 127 calls between 2026-07-09 (hours after
+        // dork_harvest was disabled) and 2026-07-30 — 127 of 127 recorded ok. Each
+        // burned a step, was cached, and surfaced in the evidence export as e.g.
+        // "dork_harvest(completed)", telling an analyst that document/leak dorking
+        // had run when it never executed.
+        //
+        // Deriving the list rather than hand-maintaining it means the next tool
+        // disabled in config is gated here for free.
+        for (const [name, req] of Object.entries(PROVIDER_REQUIREMENTS)) {
+          if (req.disabled && !disabled.some((d) => d.name === name)) {
+            disabled.push({ name, reason: "disabled in provider configuration — do not call it." });
+          }
         }
         const disabledNames = new Set(disabled.map((d) => d.name));
         const filtered = {
@@ -2129,6 +2156,70 @@ export function buildTools(ctx: ToolContext) {
               type_description: attrs.type_description,
               raw: data,
             },
+          };
+        } catch (e) { return { error: String(e) }; }
+      },
+    }),
+    fofa_search: tool({
+      description:
+        "FOFA (en.fofa.info) internet-asset search — attacker-surface / infra discovery by query syntax. Supports fields like domain=\"x.com\", ip=\"1.2.3.4\", host=\"sub.x.com\", cert=\"x.com\", title=\"...\", body=\"...\", icon_hash=\"...\", org=\"...\", asn=\"...\". Returns host, ip, port, title, domain, server, country. Use to enumerate hosts/ports/certs tied to a domain, IP, or favicon hash — a stronger infra pivot than crt.sh alone. Consumes FOFA points per result: keep size small (default 20).",
+      inputSchema: memoSchema("fofa_search", () => z.object({
+        query: z.string().min(3).describe('FOFA query syntax, e.g. domain="example.com" or icon_hash="-247388890"'),
+        size: z.number().int().min(1).max(100).optional(),
+      })),
+      execute: async ({ query, size }) => {
+        const KEY = Deno.env.get("FOFA_API_KEY");
+        if (!KEY) return { error: "FOFA_API_KEY not configured" };
+        const fields = "host,ip,port,protocol,domain,title,server,country_name,as_organization";
+        try {
+          const qbase64 = btoa(String.fromCharCode(...new TextEncoder().encode(query)));
+          const url = `https://en.fofa.info/api/v1/search/all?key=${encodeURIComponent(KEY)}` +
+            `&qbase64=${encodeURIComponent(qbase64)}&size=${size ?? 20}&fields=${fields}`;
+          const r = await fetchT(url, { headers: { Accept: "application/json" } }, 20_000);
+          const data = await r.json().catch(() => ({})) as {
+            error?: boolean; errmsg?: string; size?: number; results?: string[][];
+          };
+          // FOFA signals failure with {"error":true,"errmsg":"..."} at HTTP 200 —
+          // never let that masquerade as "0 assets found".
+          if (!r.ok || data?.error) {
+            return { error: `fofa ${r.status}: ${data?.errmsg ?? "request failed"}`, status: r.status };
+          }
+          const cols = fields.split(",");
+          const results = (data.results ?? []).map((row) =>
+            Object.fromEntries(cols.map((c, i) => [c, row[i]]))
+          );
+          return { ok: true, source: "fofa.v1", query, total: data.size ?? results.length, results };
+        } catch (e) { return { error: String(e) }; }
+      },
+    }),
+    markdown_extract: tool({
+      description:
+        "markdown.new converter — turns a remote document/page URL into clean Markdown text (no auth, 500/day). Handles .pdf .docx .odt .xlsx .xls .ods .csv .json .xml .txt .md .html and images (.jpg/.png/.webp/.svg via AI summarization). Use as the PREFERRED reader for document URLs (PDF/Office/spreadsheet) and as the FALLBACK when jina_reader_scrape fails or returns junk. Do NOT use it on login-walled social platforms (instagram/x/tiktok/linkedin/youtube) — they return nothing.",
+      inputSchema: memoSchema("markdown_extract", () => z.object({
+        url: z.string().url().describe("Public URL of the document or page to convert"),
+      })),
+      execute: async ({ url }) => {
+        try {
+          const r = await fetchT("https://markdown.new/", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify({ url }),
+          }, 30_000);
+          const data = await r.json().catch(() => ({})) as {
+            success?: boolean; title?: string; content?: string; error?: string; tokens?: number;
+          };
+          if (!r.ok || data?.success === false) {
+            return { error: `markdown.new ${r.status}: ${data?.error ?? "conversion failed"}`, status: r.status };
+          }
+          const content = String(data.content ?? "");
+          return {
+            ok: true,
+            source: "markdown.new",
+            url,
+            title: data.title,
+            tokens: data.tokens,
+            truncated: content.length > 12000,
+            content: content.slice(0, 12000),
           };
         } catch (e) { return { error: String(e) }; }
       },
@@ -5099,6 +5190,7 @@ export function buildTools(ctx: ToolContext) {
     ...(PEOPLEDATALABS_API_KEY ? ["pdl_person_enrich"] : []),
     ...(Deno.env.get("DEEPFIND_API_KEY") ? ["deepfind_reverse_email","deepfind_disposable_email","deepfind_ssl_inspect","deepfind_tech_stack","deepfind_url_unshorten","deepfind_telegram_channel","deepfind_telegram_search","deepfind_vin_lookup","deepfind_aircraft_lookup","deepfind_vessel_lookup","deepfind_mac_lookup","deepfind_dark_web_link","deepfind_email_breach","deepfind_transaction_viewer"] : []),
     ...(Deno.env.get("VIRUSTOTAL_API_KEY") ? ["virustotal_lookup"] : []),
+    ...(Deno.env.get("FOFA_API_KEY") ? ["fofa_search"] : []),
     ...(Deno.env.get("IPGEOLOCATION_API_KEY") ? ["ipgeolocation_lookup"] : []),
     // ipqualityscore_lookup CUT 2026-07-05 (dead key; disabled in capabilities.ts).
     ...(RAPIDAPI_KEY ? ["rapidapi_breach_search", "rapidapi_all_breaches"] : []),
@@ -5108,7 +5200,7 @@ export function buildTools(ctx: ToolContext) {
     "whois_lookup","dns_records","crtsh_subdomains","wayback_snapshots","archive_url","http_fingerprint",
     "ip_intel","shodan_internetdb","hackertarget","urlscan_search","gravatar_profile","hibp_lookup",
     "google_dorks","dork_harvest","username_sweep","github_user","reddit_user","hackernews_user",
-    "minimax_web_search","jina_reader_scrape",
+    "minimax_web_search","jina_reader_scrape","markdown_extract",
   ]));
 
   async function callsForThread(): Promise<string[]> {

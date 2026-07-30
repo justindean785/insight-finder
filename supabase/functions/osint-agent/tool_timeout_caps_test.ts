@@ -96,3 +96,38 @@ Deno.test("timeout overrides: minimax_correlate clears its real bounded-batch la
   // raw searches when correlate fails.
   assertEquals(toolTimeoutMs("minimax_correlate"), 60_000);
 });
+
+// Backport of the Lovable mirror's 8df15d2 (fofa_search + markdown_extract). Both
+// tools arrived with NO entry in TOOL_TIMEOUT_OVERRIDE_MS, so both inherited the 12s
+// default while carrying their own, larger fetch budgets — the precise shape of the
+// oathnet_lookup regression the table's comments already document: the wrapper fires
+// first, the tool's own timeout never gets to return a clean result, the completed
+// work is discarded, and one such timeout trips the circuit breaker for the rest of
+// the run. Read the fetch budgets off the live source so this test tracks the real
+// call sites rather than a copy of them that can silently drift.
+Deno.test("timeout overrides: fofa_search and markdown_extract clear their own fetch budgets", () => {
+  const src = Deno.readTextFileSync(new URL("./tool-registry.ts", import.meta.url));
+
+  const budgetFor = (toolName: string): number => {
+    const block = src.slice(src.indexOf(`    ${toolName}: tool({`));
+    assert(block.length > 0, `${toolName} not found in tool-registry.ts`);
+    // First fetchT(...) trailing timeout argument inside the tool's own definition.
+    const m = block.slice(0, 3000).match(/\}, (\d[\d_]*)\);/);
+    assert(m, `${toolName} has no fetchT timeout argument — call shape changed`);
+    return Number(m[1].replace(/_/g, ""));
+  };
+
+  for (const name of ["fofa_search", "markdown_extract"]) {
+    const cap = toolTimeoutMs(name);
+    const fetchBudget = budgetFor(name);
+    assert(
+      cap > DEFAULT_TOOL_TIMEOUT_MS,
+      `${name} must not sit on the ${DEFAULT_TOOL_TIMEOUT_MS}ms default — its own fetch runs ${fetchBudget}ms`,
+    );
+    assert(
+      cap > fetchBudget,
+      `${name} wrapper cap (${cap}ms) must exceed its own fetch budget (${fetchBudget}ms), ` +
+      `or the wrapper guillotines the call before the fetch can return cleanly`,
+    );
+  }
+});

@@ -68,14 +68,23 @@ Deno.test("isStaleActiveThread: ignores terminal threads", () => {
 });
 
 Deno.test("buildRecoveredAssistantText: emits a report-shaped artifact table", () => {
+  // UPDATED 2026-07-30. This test previously asserted the heading "Findings
+  // report" and a 5-column table. Both were changed deliberately: the stub is not
+  // a findings report, and the table now carries a Status column so
+  // metadata.status reaches the reader. The row below has NO metadata, so under
+  // the new contract it is an unreviewed candidate, not a finding — see
+  // recovery_output_integrity_test.ts for the full contract.
   const text = buildRecoveredAssistantText(
     { seed_value: "jane@example.com", last_heartbeat_at: "2026-07-15T12:00:00Z" },
     [{ kind: "email", value: "jane@example.com", confidence: 88, source: "oathnet_lookup" }],
   );
-  assertStringIncludes(text, "Findings report");
+  assertStringIncludes(text, "Interrupted run — recovered evidence");
   assertStringIncludes(text, "jane@example.com");
   assertStringIncludes(text, "oathnet_lookup");
-  assert(text.includes("| # | Kind | Value | Confidence | Source |"));
+  assert(text.includes("| # | Kind | Value | Confidence | Status | Source |"));
+  // Still report-shaped, which is what the original test's name was really
+  // guarding: duplicate-stub suppression depends on it.
+  assert(hasReportShape(text));
 });
 
 Deno.test("shouldInsertRecoveredAssistant: ignores old assistant from a prior turn", () => {

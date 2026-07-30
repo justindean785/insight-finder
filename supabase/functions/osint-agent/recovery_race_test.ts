@@ -14,7 +14,7 @@
 // let both callers "win" and defeat the entire point of the test.
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import type { createClient } from "npm:@supabase/supabase-js@2";
-import { recoverStaleThreadById, STALE_RUN_AFTER_MS } from "./recovery.ts";
+import { LEGACY_RECOVERED_REPORT_HEADINGS, RECOVERED_REPORT_HEADING, recoverStaleThreadById, STALE_RUN_AFTER_MS } from "./recovery.ts";
 
 type SupabaseClient = ReturnType<typeof createClient>;
 
@@ -405,7 +405,7 @@ Deno.test("a re-swept recovery stub must NOT clear its own interruption metadata
   messages[0].parts = [{
     type: "text",
     text: [
-      "## Findings report — recovered run",
+      RECOVERED_REPORT_HEADING,
       "",
       "The investigation for **acme.example** was interrupted before the agent could write its closing response.",
       "",
@@ -427,6 +427,39 @@ Deno.test("a re-swept recovery stub must NOT clear its own interruption metadata
   // THE FIX: our own stub must not be read as a durable report and used to clear these.
   assertEquals(threadRow.recovered_at, now.toISOString(), "interruption metadata must survive the re-sweep");
   assertEquals(threadRow.recovery_reason, "stale heartbeat recovered by health sweep", "the run must still render Interrupted");
+});
+
+Deno.test("a LEGACY-heading recovery stub is still recognised as ours", async () => {
+  // Migration hazard, found when the heading was renamed in #396. Every stub already
+  // sitting in `messages` carries the OLD heading. If recognition only matched the
+  // CURRENT one, the first re-sweep after that deploy would read a pre-existing stub as
+  // a durable report and clear the interruption metadata it exists to record — silently,
+  // on historical rows. LEGACY_RECOVERED_REPORT_HEADINGS is append-only for this reason.
+  const now = new Date("2026-07-28T16:00:00.000Z");
+  const { db, insertedMessages, messages, threadRow } = buildFakeDbLiveFinalize("t-legacy-stub", "u1", now, true);
+  messages[0].parts = [{
+    type: "text",
+    text: [
+      LEGACY_RECOVERED_REPORT_HEADINGS[0],
+      "",
+      "The investigation for **acme.example** was interrupted before the agent could write its closing response.",
+      "",
+      "### Recovered findings",
+      "| # | Kind | Value | Confidence | Source |",
+      "|---:|---|---|---:|---|",
+      "| 1 | email | a@b.com | 0.9 | test |",
+    ].join("\n"),
+  }];
+
+  const res = await recoverStaleThreadById(db, "t-legacy-stub", {
+    now,
+    reason: "stale heartbeat recovered by health sweep",
+  });
+
+  assertEquals(insertedMessages.length, 0, "one recovery notice is enough — never stub twice");
+  assertEquals(res.recovered, true);
+  assertEquals(threadRow.recovered_at, now.toISOString(), "a legacy stub must not clear interruption metadata");
+  assertEquals(threadRow.recovery_reason, "stale heartbeat recovered by health sweep");
 });
 
 Deno.test("a non-report early close preserves interruption metadata", async () => {

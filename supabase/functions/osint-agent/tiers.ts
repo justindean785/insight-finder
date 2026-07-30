@@ -27,6 +27,7 @@ export const TIER_A: ReadonlyArray<string> = [
 
 export const TIER_B: ReadonlyArray<string> = [
   "virustotal_lookup",
+  "fofa_search",
   "cordcat_lookup",
   "parallax_lookup",
   "urlscan_search",
@@ -65,6 +66,7 @@ export const TIER_C: ReadonlyArray<string> = [
   "reddit_user",
   "hackernews_user",
   "jina_reader_scrape",
+  "markdown_extract",
   "minimax_web_search",
 ];
 

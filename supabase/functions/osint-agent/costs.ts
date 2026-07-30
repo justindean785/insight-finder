@@ -123,6 +123,11 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   ip_intel: 1000,
   ipgeolocation_lookup: 1000,
   virustotal_lookup: 2000,
+  // FOFA — points-metered (fpoints per returned row, ~free-tier 1000/mo pool).
+  // Treat a default size:20 query as ~$0.004.
+  fofa_search: 4000,
+  // markdown.new — free, no auth (500/day per IP).
+  markdown_extract: 0,
   dork_harvest: 3000,         // wraps several web searches (+ up to 3 Gemini reads)
   gemini_deep_dork: 2000,     // 1 Gemini 2.5 Flash call w/ google_search grounding
   gemini_vision: 2000,        // 1 Gemini Flash multimodal call (image or PDF page)
