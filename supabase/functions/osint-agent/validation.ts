@@ -160,6 +160,13 @@ export const NO_CACHE_TOOLS = new Set<string>([
   "record_artifacts",
   "record_evidence",
   "hibp_pwned_passwords_kanon",
+  // The unknown-tool sink is a DROP, not a result. Caching it made the drop
+  // sticky for the TTL: a hallucinated (or config-disabled) name resolved from
+  // cache on every later attempt in the window, so the model got the same
+  // "ignored" nudge back instantly and the run kept spending steps on it. The
+  // production trace that surfaced this shows the sink rendering as a CACHED
+  // step. Nothing about a dropped call is worth replaying.
+  "unknown_tool_ignored",
 ]);
 
 // Tools whose raw input is sensitive and must be REDACTED before it is written
