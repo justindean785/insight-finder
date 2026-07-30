@@ -105,6 +105,7 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   deepfind_email_breach: { requiresKey: "DEEPFIND_API_KEY" },
   deepfind_transaction_viewer: { requiresKey: "DEEPFIND_API_KEY" },
   virustotal_lookup: { requiresKey: "VIRUSTOTAL_API_KEY" },
+  fofa_search: { requiresKey: "FOFA_API_KEY" },
   ipgeolocation_lookup: { requiresKey: "IPGEOLOCATION_API_KEY" },
   gemini_deep_dork: { requiresKey: "GEMINI_API_KEY" },
   gemini_vision: { requiresKey: "GEMINI_API_KEY" },

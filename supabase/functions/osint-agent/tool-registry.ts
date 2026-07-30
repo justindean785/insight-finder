@@ -2133,6 +2133,70 @@ export function buildTools(ctx: ToolContext) {
         } catch (e) { return { error: String(e) }; }
       },
     }),
+    fofa_search: tool({
+      description:
+        "FOFA (en.fofa.info) internet-asset search — attacker-surface / infra discovery by query syntax. Supports fields like domain=\"x.com\", ip=\"1.2.3.4\", host=\"sub.x.com\", cert=\"x.com\", title=\"...\", body=\"...\", icon_hash=\"...\", org=\"...\", asn=\"...\". Returns host, ip, port, title, domain, server, country. Use to enumerate hosts/ports/certs tied to a domain, IP, or favicon hash — a stronger infra pivot than crt.sh alone. Consumes FOFA points per result: keep size small (default 20).",
+      inputSchema: memoSchema("fofa_search", () => z.object({
+        query: z.string().min(3).describe('FOFA query syntax, e.g. domain="example.com" or icon_hash="-247388890"'),
+        size: z.number().int().min(1).max(100).optional(),
+      })),
+      execute: async ({ query, size }) => {
+        const KEY = Deno.env.get("FOFA_API_KEY");
+        if (!KEY) return { error: "FOFA_API_KEY not configured" };
+        const fields = "host,ip,port,protocol,domain,title,server,country_name,as_organization";
+        try {
+          const qbase64 = btoa(String.fromCharCode(...new TextEncoder().encode(query)));
+          const url = `https://en.fofa.info/api/v1/search/all?key=${encodeURIComponent(KEY)}` +
+            `&qbase64=${encodeURIComponent(qbase64)}&size=${size ?? 20}&fields=${fields}`;
+          const r = await fetchT(url, { headers: { Accept: "application/json" } }, 20_000);
+          const data = await r.json().catch(() => ({})) as {
+            error?: boolean; errmsg?: string; size?: number; results?: string[][];
+          };
+          // FOFA signals failure with {"error":true,"errmsg":"..."} at HTTP 200 —
+          // never let that masquerade as "0 assets found".
+          if (!r.ok || data?.error) {
+            return { error: `fofa ${r.status}: ${data?.errmsg ?? "request failed"}`, status: r.status };
+          }
+          const cols = fields.split(",");
+          const results = (data.results ?? []).map((row) =>
+            Object.fromEntries(cols.map((c, i) => [c, row[i]]))
+          );
+          return { ok: true, source: "fofa.v1", query, total: data.size ?? results.length, results };
+        } catch (e) { return { error: String(e) }; }
+      },
+    }),
+    markdown_extract: tool({
+      description:
+        "markdown.new converter — turns a remote document/page URL into clean Markdown text (no auth, 500/day). Handles .pdf .docx .odt .xlsx .xls .ods .csv .json .xml .txt .md .html and images (.jpg/.png/.webp/.svg via AI summarization). Use as the PREFERRED reader for document URLs (PDF/Office/spreadsheet) and as the FALLBACK when jina_reader_scrape fails or returns junk. Do NOT use it on login-walled social platforms (instagram/x/tiktok/linkedin/youtube) — they return nothing.",
+      inputSchema: memoSchema("markdown_extract", () => z.object({
+        url: z.string().url().describe("Public URL of the document or page to convert"),
+      })),
+      execute: async ({ url }) => {
+        try {
+          const r = await fetchT("https://markdown.new/", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify({ url }),
+          }, 30_000);
+          const data = await r.json().catch(() => ({})) as {
+            success?: boolean; title?: string; content?: string; error?: string; tokens?: number;
+          };
+          if (!r.ok || data?.success === false) {
+            return { error: `markdown.new ${r.status}: ${data?.error ?? "conversion failed"}`, status: r.status };
+          }
+          const content = String(data.content ?? "");
+          return {
+            ok: true,
+            source: "markdown.new",
+            url,
+            title: data.title,
+            tokens: data.tokens,
+            truncated: content.length > 12000,
+            content: content.slice(0, 12000),
+          };
+        } catch (e) { return { error: String(e) }; }
+      },
+    }),
     ipgeolocation_lookup: tool({
       description:
         "IPGeolocation.io enrichment for an IP (https://api.ipgeolocation.io). Returns geo, ISP, organization, ASN, connection type (residential/mobile/dch/etc), currency, timezone, calling code. Use as a SECONDARY corroborating source after ip_intel — they agree → high confidence; they disagree → flag VPN/proxy. Free tier: 1000/day.",
@@ -5099,6 +5163,7 @@ export function buildTools(ctx: ToolContext) {
     ...(PEOPLEDATALABS_API_KEY ? ["pdl_person_enrich"] : []),
     ...(Deno.env.get("DEEPFIND_API_KEY") ? ["deepfind_reverse_email","deepfind_disposable_email","deepfind_ssl_inspect","deepfind_tech_stack","deepfind_url_unshorten","deepfind_telegram_channel","deepfind_telegram_search","deepfind_vin_lookup","deepfind_aircraft_lookup","deepfind_vessel_lookup","deepfind_mac_lookup","deepfind_dark_web_link","deepfind_email_breach","deepfind_transaction_viewer"] : []),
     ...(Deno.env.get("VIRUSTOTAL_API_KEY") ? ["virustotal_lookup"] : []),
+    ...(Deno.env.get("FOFA_API_KEY") ? ["fofa_search"] : []),
     ...(Deno.env.get("IPGEOLOCATION_API_KEY") ? ["ipgeolocation_lookup"] : []),
     // ipqualityscore_lookup CUT 2026-07-05 (dead key; disabled in capabilities.ts).
     ...(RAPIDAPI_KEY ? ["rapidapi_breach_search", "rapidapi_all_breaches"] : []),
@@ -5108,7 +5173,7 @@ export function buildTools(ctx: ToolContext) {
     "whois_lookup","dns_records","crtsh_subdomains","wayback_snapshots","archive_url","http_fingerprint",
     "ip_intel","shodan_internetdb","hackertarget","urlscan_search","gravatar_profile","hibp_lookup",
     "google_dorks","dork_harvest","username_sweep","github_user","reddit_user","hackernews_user",
-    "minimax_web_search","jina_reader_scrape",
+    "minimax_web_search","jina_reader_scrape","markdown_extract",
   ]));
 
   async function callsForThread(): Promise<string[]> {

@@ -203,6 +203,7 @@ export function deriveReadiness(env: {
   OPENCORPORATES_API_KEY?: string | null;
   RANSOMWARELIVE_API_KEY?: string | null;
   URLSCANNER_API_KEY?: string | null;
+  FOFA_API_KEY?: string | null;
 }): { ok: boolean; checks: Record<string, { ok: boolean; detail?: string; reason?: string; role?: "active" | "fallback" }> } {
   const has = (v: string | null | undefined) => !!(v && v.length > 0);
   const orchestratorOk = has(env.MINIMAX_API_KEY);
@@ -226,6 +227,13 @@ export function deriveReadiness(env: {
     opencorporates: has(env.OPENCORPORATES_API_KEY),
     ransomwarelive: has(env.RANSOMWARELIVE_API_KEY),
     urlscanner: has(env.URLSCANNER_API_KEY),
+    // Listing FOFA here is deliberate: /health's `${enabled}/${total} optional tool
+    // APIs configured` is the one deploy signal that does NOT depend on build-info.ts
+    // being restamped. When 8df15d2 added fofa_search to the mirror without touching
+    // this file or the build marker, BOTH signals stayed frozen at their old values,
+    // so a green /health was consistent with the deploy having happened and with it
+    // never having been attempted. Any tool added with a new key belongs here.
+    fofa: has(env.FOFA_API_KEY),
   };
   const enabledOptional = Object.values(tools).filter(Boolean).length;
   const checks: Record<string, { ok: boolean; detail?: string; reason?: string; role?: "active" | "fallback" }> = {
@@ -263,6 +271,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
     URLSCANNER_API_KEY,
     RAPIDAPI_KEY: Deno.env.get("RAPIDAPI_KEY"),
+    FOFA_API_KEY: Deno.env.get("FOFA_API_KEY"),
   });
   const u = new URL(req.url);
   const wantProbe = u.searchParams.get("probe") === "1";
