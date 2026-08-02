@@ -96,7 +96,13 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // Serus darkweb scan POLLS upstream until the scan finishes — POLL_INTERVAL_MS
   // (2.5s) × POLL_MAX_RETRIES (10) = ~25s by design (serus_core.ts), so a 12s cap
   // guaranteed a timeout on every non-trivial scan. 30s sits above the poll window.
-  serus_darkweb_scan: 30_000,
+  // Serus is a POLLING tool: its cost is transitive, not a single fetch. It
+  // enforces SERUS_OPERATION_DEADLINE_MS = 40s end-to-end (25s intended polling
+  // window + 15s network headroom) and now honours this wrapper's AbortSignal.
+  // The cap must exceed that deadline so the INTERNAL bound is what fires --
+  // asserted in tool_timeout_contract_test.ts. At the old 30s the wrapper fired
+  // first and Serus kept polling unsupervised.
+  serus_darkweb_scan: 45_000,
   // minimax_correlate is the correlation engine — it sends the whole artifact batch
   // (up to 200 entries / 16k chars) to the smart-tier model for a 1500-token JSON
   // clustering+rescoring response. The 2026-07-08 pipeline audit caught it timing out

@@ -20,6 +20,7 @@
 // mode this file exists to close.
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { DEFAULT_TOOL_TIMEOUT_MS, toolTimeoutMs } from "./cache.ts";
+import { SERUS_OPERATION_DEADLINE_MS, SERUS_REQUEST_TIMEOUT_MS } from "./tools/serus_core.ts";
 import { UNKNOWN_TOOL_SINK } from "./unknown-tool-guard.ts";
 
 const SRC = Deno.readTextFileSync(new URL("./tool-registry.ts", import.meta.url));
@@ -184,7 +185,12 @@ function moduleFetchBudgetMs(modulePath: string): number | null {
 // wrapper cap is the entire budget. If serus ever gains one, this entry must be
 // updated deliberately — the test will fail until it is.
 const EXPECTED_INJECTED: ReadonlyArray<{ name: string; module: string; budgetMs: number | null }> = [
-  { name: "serus_darkweb_scan", module: "./tools/serus.ts",           budgetMs: null   },
+  // NOT null. serus.ts delegates to serus_core.ts, whose cost is TRANSITIVE:
+  // 10 polls x 2500ms is a 25s window on its own, plus fetchRetry per-attempt
+  // network time. The previous `null` asserted "this module has no internal
+  // timeout", which was false and hid the largest budget in the table. It is now
+  // an explicit, exported, end-to-end deadline.
+  { name: "serus_darkweb_scan", module: "./tools/serus_core.ts",      budgetMs: 40_000 },
   { name: "indicia_email",      module: "./tools/indicia.ts",         budgetMs: 18_000 },
   { name: "indicia_phone",      module: "./tools/indicia.ts",         budgetMs: 18_000 },
   { name: "indicia_person",     module: "./tools/indicia.ts",         budgetMs: 18_000 },
@@ -208,28 +214,66 @@ Deno.test("timeout contract: the injected-tool set is exactly the expected nine"
   );
 });
 
+// serus_darkweb_scan is imported from ./tools/serus.ts, but its budget lives one
+// hop further on in ./tools/serus_core.ts. Declaring the indirection explicitly
+// beats letting the scanner silently follow (or fail to follow) it.
+const BUDGET_INDIRECTION: Readonly<Record<string, string>> = {
+  serus_darkweb_scan: "./tools/serus.ts",
+};
+
 Deno.test("timeout contract: every injected tool resolves to its expected module", () => {
   for (const { name, module } of EXPECTED_INJECTED) {
     const t = injectedTools().find((x) => x.name === name);
     assert(t, `${name} is no longer attached to the registry`);
     const mod = moduleForSymbol(t!.symbol);
     assert(mod, `${name}: symbol ${t!.symbol} resolves to no import — a rename would silently drop it from the contract`);
-    assertEquals(mod, module, `${name} moved module`);
+    assertEquals(mod, BUDGET_INDIRECTION[name] ?? module, `${name} moved module`);
   }
 });
 
 Deno.test("timeout contract: every injected tool's internal budget is exactly as measured", () => {
   for (const { name, module, budgetMs } of EXPECTED_INJECTED) {
-    const actual = moduleFetchBudgetMs(module);
+    // Serus is asserted against its NAMED EXPORT, not a regex scrape — a scraper
+    // that cannot follow serus.ts -> serus_core.ts is exactly how this entry came
+    // to claim `null`, and a regex that can silently stop matching is how the
+    // whole contract goes vacuous.
+    const actual = name === "serus_darkweb_scan" ? SERUS_OPERATION_DEADLINE_MS : moduleFetchBudgetMs(module);
     assertEquals(
       actual,
       budgetMs,
-      budgetMs === null
-        ? `${name}: ${module} was expected to have NO static internal timeout, but one was found (${actual}ms). ` +
-          `Its wrapper cap must now be re-checked against it.`
-        : `${name}: expected a ${budgetMs}ms budget in ${module}, measured ${actual}`,
+      `${name}: expected a ${budgetMs}ms budget in ${module}, measured ${actual}`,
     );
   }
+});
+
+Deno.test("timeout contract: the Serus deadline is a real exported constant, not a comment", () => {
+  assertEquals(typeof SERUS_OPERATION_DEADLINE_MS, "number");
+  assertEquals(SERUS_OPERATION_DEADLINE_MS, 40_000);
+  assertEquals(SERUS_REQUEST_TIMEOUT_MS, 12_000);
+  assert(
+    SERUS_REQUEST_TIMEOUT_MS < SERUS_OPERATION_DEADLINE_MS,
+    "a single request may not be allowed to consume the whole operation deadline",
+  );
+  assert(
+    toolTimeoutMs("serus_darkweb_scan") > SERUS_OPERATION_DEADLINE_MS,
+    `serus wrapper cap ${toolTimeoutMs("serus_darkweb_scan")}ms must EXCEED its ${SERUS_OPERATION_DEADLINE_MS}ms internal deadline, ` +
+      `or the wrapper fires first and Serus keeps polling unsupervised`,
+  );
+});
+
+Deno.test("timeout contract: the Serus tool actually forwards the wrapper's abort signal", () => {
+  // A deadline that the wrapper cannot reach is not a bound. Pinned at source
+  // because the failure is silent: execute() simply ignored its second argument.
+  const src = Deno.readTextFileSync(new URL("./tools/serus.ts", import.meta.url));
+  assert(
+    /execute:\s*async\s*\([^)]*\},\s*opts\s*\)/.test(src),
+    "serus execute() no longer accepts the AI SDK options argument — the abort signal cannot reach runSerusScan",
+  );
+  assert(/abortSignal/.test(src), "serus execute() no longer forwards abortSignal");
+  const core = Deno.readTextFileSync(new URL("./tools/serus_core.ts", import.meta.url));
+  assert(/signal\?:\s*AbortSignal/.test(core), "runSerusScan no longer accepts a signal");
+  assert(/sleep\(intervalMs,\s*signal\)/.test(core), "the poll sleep is no longer abortable");
+  assert(/headers,\s*signal\s*\}/.test(core), "poll requests no longer carry the signal");
 });
 
 Deno.test("timeout contract: injected tools clear their own fetch budget — no silent skips", () => {
