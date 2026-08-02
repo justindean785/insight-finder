@@ -127,6 +127,15 @@ export function providerForTool(tool: string): string {
 export const GENERAL_MULTI_ORIGIN_TOOLS = new Set<string>([
   "jina_reader_scrape",
   "socialfetch_web_read",
+  // gemini_vision is here for the same OUTCOME, via a different argument — see
+  // the PR discussion. It is NOT multi-origin: every call goes to one upstream
+  // (Gemini). What varies is the INPUT. A 17MB arrest-report PDF times out where
+  // a 200KB screenshot returns in two seconds, so a timeout is a property of the
+  // document, not evidence that Gemini is down. Production 2026-08-02, thread
+  // e66255da: gemini_vision went OK 6 / timed-out 1 / rate-limited 2 in a single
+  // run — a healthy provider with one oversized document. Under the strict path
+  // that single timeout suppresses vision for every remaining attachment.
+  "gemini_vision",
 ]);
 
 /** Uninterrupted TIMEOUT outcomes (no success or other-failure in between) a
