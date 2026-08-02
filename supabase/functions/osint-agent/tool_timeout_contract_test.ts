@@ -170,45 +170,98 @@ function moduleFetchBudgetMs(modulePath: string): number | null {
   return budgets.length ? Math.max(...budgets) : null;
 }
 
-Deno.test("timeout contract: the injected-tool scan actually resolves modules", () => {
-  const injected = injectedTools();
-  assert(injected.length >= 9, `expected >= 9 injected tools, found ${injected.length}`);
-  // Named anchors with their MEASURED budgets — a silent resolution failure here
-  // would make the contract below vacuous for exactly the tools it was blind to.
-  for (const [name, expected] of [["gemini_vision", 25_000], ["pdl_person_enrich", 18_000]] as const) {
-    const t = injected.find((x) => x.name === name);
-    assert(t, `${name} not found among injected tools`);
+// EXHAUSTIVE, EXACT expectations for every injected tool.
+//
+// The previous revision anchored only gemini_vision and pdl_person_enrich and
+// let the contract loop `continue` past anything it could not resolve. Seven
+// tools could therefore have vanished from coverage — a renamed export, a moved
+// module — while both tests stayed green. That is the same blind spot this PR
+// exists to close, one level up, so it is closed here rather than deferred.
+//
+// `budgetMs: null` is not "unknown", it is the asserted claim that the module
+// has NO static internal timeout. serus.ts is the only such case: it contains no
+// TIMEOUT constant, no setTimeout, no AbortSignal and no fetchT call, so its
+// wrapper cap is the entire budget. If serus ever gains one, this entry must be
+// updated deliberately — the test will fail until it is.
+const EXPECTED_INJECTED: ReadonlyArray<{ name: string; module: string; budgetMs: number | null }> = [
+  { name: "serus_darkweb_scan", module: "./tools/serus.ts",           budgetMs: null   },
+  { name: "indicia_email",      module: "./tools/indicia.ts",         budgetMs: 18_000 },
+  { name: "indicia_phone",      module: "./tools/indicia.ts",         budgetMs: 18_000 },
+  { name: "indicia_person",     module: "./tools/indicia.ts",         budgetMs: 18_000 },
+  { name: "indicia_address",    module: "./tools/indicia.ts",         budgetMs: 18_000 },
+  { name: "indicia_web_dbs",    module: "./tools/indicia.ts",         budgetMs: 18_000 },
+  { name: "indicia_hudsonrock", module: "./tools/indicia.ts",         budgetMs: 18_000 },
+  { name: "pdl_person_enrich",  module: "./tools/peopledatalabs.ts",  budgetMs: 18_000 },
+  { name: "gemini_vision",      module: "./tools/gemini_vision.ts",   budgetMs: 25_000 },
+];
+
+Deno.test("timeout contract: the injected-tool set is exactly the expected nine", () => {
+  // A tenth injected tool added without a measured budget must fail here rather
+  // than silently join the registry outside the contract.
+  const found = injectedTools().map((t) => t.name).sort();
+  assertEquals(
+    found,
+    EXPECTED_INJECTED.map((t) => t.name).sort(),
+    "the injected-tool set changed. Add the new tool to EXPECTED_INJECTED with its MEASURED " +
+      "internal budget (or null if it genuinely has none) and give it a TOOL_TIMEOUT_OVERRIDE_MS " +
+      "entry above that budget.",
+  );
+});
+
+Deno.test("timeout contract: every injected tool resolves to its expected module", () => {
+  for (const { name, module } of EXPECTED_INJECTED) {
+    const t = injectedTools().find((x) => x.name === name);
+    assert(t, `${name} is no longer attached to the registry`);
     const mod = moduleForSymbol(t!.symbol);
-    assert(mod, `${name}: could not resolve module for symbol ${t!.symbol}`);
+    assert(mod, `${name}: symbol ${t!.symbol} resolves to no import — a rename would silently drop it from the contract`);
+    assertEquals(mod, module, `${name} moved module`);
+  }
+});
+
+Deno.test("timeout contract: every injected tool's internal budget is exactly as measured", () => {
+  for (const { name, module, budgetMs } of EXPECTED_INJECTED) {
+    const actual = moduleFetchBudgetMs(module);
     assertEquals(
-      moduleFetchBudgetMs(mod!),
-      expected,
-      `${name}: expected a ${expected}ms budget in ${mod}`,
+      actual,
+      budgetMs,
+      budgetMs === null
+        ? `${name}: ${module} was expected to have NO static internal timeout, but one was found (${actual}ms). ` +
+          `Its wrapper cap must now be re-checked against it.`
+        : `${name}: expected a ${budgetMs}ms budget in ${module}, measured ${actual}`,
     );
   }
 });
 
-Deno.test("timeout contract: injected tools also clear their own fetch budget", () => {
+Deno.test("timeout contract: injected tools clear their own fetch budget — no silent skips", () => {
   const violations: string[] = [];
-  for (const { name, symbol } of injectedTools()) {
-    const mod = moduleForSymbol(symbol);
-    if (!mod) continue;
-    const own = moduleFetchBudgetMs(mod);
-    if (own === null) continue;
+  for (const { name, module, budgetMs } of EXPECTED_INJECTED) {
     const cap = toolTimeoutMs(name);
-    if (cap <= own) {
+    if (budgetMs === null) {
+      // No internal budget: the wrapper cap IS the budget. It must still be a
+      // deliberate value, not the 12s default a heavy paid call would inherit.
+      if (cap === DEFAULT_TOOL_TIMEOUT_MS) {
+        violations.push(`${name}: has no internal timeout and inherits the ${cap}ms default — needs a deliberate override`);
+      }
+      continue;
+    }
+    if (cap <= budgetMs) {
       violations.push(
-        `${name}: wrapper cap ${cap}ms ${cap === own ? "TIES" : "is BELOW"} its own ${own}ms ` +
-        `fetch budget in ${mod}` +
+        `${name}: wrapper cap ${cap}ms ${cap === budgetMs ? "TIES" : "is BELOW"} its own ${budgetMs}ms fetch budget in ${module}` +
         (cap === DEFAULT_TOOL_TIMEOUT_MS ? " (inheriting the default — needs an override)" : ""),
       );
     }
   }
   assert(
     violations.length === 0,
-    `${violations.length} INJECTED tool(s) violate the wrapper-above-fetch contract. These are ` +
-    `attached after buildTools() and their budgets live in tools/*.ts, which is why the inline ` +
-    `scan misses them. Add an override in TOOL_TIMEOUT_OVERRIDE_MS (cache.ts):\n  - ` +
-    violations.join("\n  - "),
+    `${violations.length} INJECTED tool(s) violate the wrapper-above-fetch contract. These are attached ` +
+    `after buildTools() and their budgets live in tools/*.ts, which is why the inline scan misses them. ` +
+    `Add an override in TOOL_TIMEOUT_OVERRIDE_MS (cache.ts):\n  - ` + violations.join("\n  - "),
   );
+});
+
+Deno.test("timeout contract: the two caps this PR sets are pinned exactly", () => {
+  assertEquals(toolTimeoutMs("gemini_vision"), 45_000);
+  assertEquals(toolTimeoutMs("pdl_person_enrich"), 20_000);
+  assert(toolTimeoutMs("gemini_vision") > 25_000, "gemini_vision cap no longer clears its 25s fetch budget");
+  assert(toolTimeoutMs("pdl_person_enrich") > 18_000, "pdl_person_enrich cap no longer clears its 18s fetch budget");
 });
