@@ -334,17 +334,29 @@ export function stripNulCharacters<T>(value: T): T {
     // Keys needing no scrubbing are inviolable (rule 1), so they must be known
     // before any scrubbed key is allowed to claim a slot.
     const cleanKeys = new Set(entries.map(([k]) => k).filter((k) => !k.includes(NUL_CHAR)));
-    const out: Record<string, unknown> = {};
+    // Pairs + Object.fromEntries, NOT `out[key] = v` on a literal. Bracket
+    // assignment routes the key "__proto__" through Object.prototype's inherited
+    // SETTER on some V8 versions: the key never becomes an own property, it
+    // vanishes from JSON.stringify, and the value silently becomes the output's
+    // prototype. `__proto__` is a perfectly legal JSON key -- an HTTP response
+    // body can contain one -- so that is evidence loss, not a security nicety.
+    // Measured: Node 22 / V8 12 loses the key; Deno 2.9.4 / V8 15 does not. The
+    // deployed edge runtime's V8 version is not ours to pin, so the construction
+    // must be correct under BOTH. Object.fromEntries defines own data properties
+    // on every engine tested.
+    const pairs: Array<[string, unknown]> = [];
+    const claimed = new Set<string>();
     for (const [k, v] of entries) {
       // A poisoned KEY fails the insert just as hard as a poisoned value.
       const key = k.replace(NUL_RE, "");
       if (key !== k) {
         // rule 2: never displace a clean key. rule 3: first scrubbed key wins.
-        if (cleanKeys.has(key) || Object.prototype.hasOwnProperty.call(out, key)) continue;
+        if (cleanKeys.has(key) || claimed.has(key)) continue;
       }
-      out[key] = stripNulCharacters(v);
+      claimed.add(key);
+      pairs.push([key, stripNulCharacters(v)]);
     }
-    return out as unknown as T;
+    return Object.fromEntries(pairs) as unknown as T;
   }
   return value;
 }

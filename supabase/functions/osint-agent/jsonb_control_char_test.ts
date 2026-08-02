@@ -187,3 +187,73 @@ Deno.test("both persistence boundaries are wired, not just the message insert", 
   assert(/output_json: stripNulCharacters\(/.test(cache), "tool_call_cache output_json is not scrubbed");
   assert(/input_json: stripNulCharacters\(/.test(cache), "tool_call_cache input_json is not scrubbed");
 });
+
+// ── `__proto__` is a legal JSON key and must survive as OWN DATA ─────────────
+//
+// Review finding. The object branch previously rebuilt via `out[key] = v` on an
+// object literal. On engines where Object.prototype's inherited `__proto__`
+// accessor is live (measured: Node 22 / V8 12; NOT Deno 2.9.4 / V8 15), that
+// assignment invokes the SETTER: no own property is created, the key vanishes
+// from JSON.stringify, and the value becomes the output's prototype. An HTTP
+// response body can legitimately contain a "__proto__" key, so that is silent
+// evidence loss.
+//
+// These assertions are deliberately engine-independent: they check for an own
+// DATA descriptor rather than relying on whichever semantics this runtime has,
+// so they fail under the broken construction on any engine.
+//
+// The fixture is built with JSON.parse, never an object literal — `{"__proto__":…}`
+// has special literal semantics and would not reproduce the real input shape.
+Deno.test("a clean __proto__ key survives as an own data property and serializes", () => {
+  const input = JSON.parse('{"__proto__":{"marker":"evidence"},"plain":"ok"}');
+  const out = stripNulCharacters(input) as Record<string, unknown>;
+
+  const desc = Object.getOwnPropertyDescriptor(out, "__proto__");
+  assert(desc, "__proto__ is not an own property — it was routed through the prototype setter");
+  assert("value" in desc!, "__proto__ became an accessor rather than a data property");
+  assertEquals((desc!.value as Record<string, unknown>).marker, "evidence");
+  assertEquals(desc!.enumerable, true, "__proto__ must be enumerable or it will not serialize");
+
+  assert(Object.keys(out).includes("__proto__"));
+  assertEquals(JSON.stringify(out), JSON.stringify(input), "payload was not byte-identical");
+});
+
+Deno.test("a clean __proto__ value does NOT become the output's prototype", () => {
+  const input = JSON.parse('{"__proto__":{"marker":"evidence"}}');
+  const out = stripNulCharacters(input) as Record<string, unknown>;
+  const proto = Object.getPrototypeOf(out) as Record<string, unknown> | null;
+  assertEquals(proto, Object.prototype, "the output's prototype was replaced by evidence data");
+  assertEquals((proto as Record<string, unknown>).marker, undefined);
+});
+
+Deno.test("a NUL-poisoned key that scrubs to __proto__ survives when uncontested", () => {
+  const poisoned: Record<string, unknown> = {};
+  poisoned["__pro" + NUL + "to__"] = { marker: "from-poisoned" };
+  const out = stripNulCharacters(poisoned) as Record<string, unknown>;
+  const desc = Object.getOwnPropertyDescriptor(out, "__proto__");
+  assert(desc && "value" in desc, "scrubbed __proto__ key was lost to the prototype setter");
+  assertEquals((desc!.value as Record<string, unknown>).marker, "from-poisoned");
+});
+
+Deno.test("a clean __proto__ beats a poisoned collision, in either insertion order", () => {
+  // rule 1 must hold for __proto__ exactly as for any other key.
+  const scrubbedFirst: Record<string, unknown> = {};
+  scrubbedFirst["__pro" + NUL + "to__"] = "from-poisoned";
+  scrubbedFirst["__proto__"] = "already-clean";
+  const a = stripNulCharacters(scrubbedFirst) as Record<string, unknown>;
+  assertEquals(Object.getOwnPropertyDescriptor(a, "__proto__")?.value, "already-clean");
+
+  const cleanFirst: Record<string, unknown> = {};
+  cleanFirst["__proto__"] = "already-clean";
+  cleanFirst["__pro" + NUL + "to__"] = "from-poisoned";
+  const b = stripNulCharacters(cleanFirst) as Record<string, unknown>;
+  assertEquals(Object.getOwnPropertyDescriptor(b, "__proto__")?.value, "already-clean");
+});
+
+Deno.test("__proto__ nested deep inside a parts payload also survives", () => {
+  const parts = JSON.parse(
+    '[{"type":"tool-http_fingerprint","output":{"headers":{"__proto__":"x-weird-header"},"ok":true}}]',
+  );
+  const out = stripNulCharacters(parts);
+  assertEquals(JSON.stringify(out), JSON.stringify(parts));
+});
