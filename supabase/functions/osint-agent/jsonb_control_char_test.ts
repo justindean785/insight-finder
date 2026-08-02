@@ -14,14 +14,36 @@ import { stripJsonbUnsafeControlChars } from "./safety.ts";
 const NUL = String.fromCharCode(0);
 const BEL = String.fromCharCode(7);
 const DEL = String.fromCharCode(127);
+const TAB = String.fromCharCode(9);
+const LF = String.fromCharCode(10);
+const CR = String.fromCharCode(13);
 
 Deno.test("strips NUL from a string leaf — the exact production failure", () => {
   assertEquals(stripJsonbUnsafeControlChars("Server: nginx" + NUL + NUL), "Server: nginx");
 });
 
 Deno.test("PRESERVES tab, newline and carriage return — they are legal and meaningful", () => {
-  const s = "line1' + B + 'nline2' + B + 'tcol' + B + 'r";
+  // This test previously asserted on the LITERAL text "line1' + B + 'nline2…" —
+  // a botched concatenation that got embedded as characters. It contained no
+  // tab, LF or CR at all, so it passed while testing nothing. Build them from
+  // char codes and prove each one individually survives, so a regex that ate
+  // one of the three could not hide behind the other two.
+  assertEquals(stripJsonbUnsafeControlChars("a" + TAB + "b"), "a" + TAB + "b");
+  assertEquals(stripJsonbUnsafeControlChars("a" + LF + "b"), "a" + LF + "b");
+  assertEquals(stripJsonbUnsafeControlChars("a" + CR + "b"), "a" + CR + "b");
+
+  // …and together, in the CRLF + tab-column shape real HTTP responses carry.
+  const s = "line1" + CR + LF + "line2" + TAB + "col" + LF;
   assertEquals(stripJsonbUnsafeControlChars(s), s);
+  // 5 + CR + LF + 5 + TAB + 3 + LF. If a future edit flattens the control
+  // characters back into literal text the way the original did, this trips.
+  assertEquals(s.length, 17, "fixture lost its control characters — it is not testing what it claims");
+
+  // A NUL adjacent to legal whitespace: the NUL goes, the whitespace stays.
+  assertEquals(
+    stripJsonbUnsafeControlChars("a" + TAB + NUL + LF + "b"),
+    "a" + TAB + LF + "b",
+  );
 });
 
 Deno.test("strips the rest of C0 and DEL", () => {
@@ -38,13 +60,39 @@ Deno.test("scrubs deep inside the assistant.parts shape that actually failed", (
     },
   ];
   const clean = stripJsonbUnsafeControlChars(parts);
-  assertEquals(JSON.stringify(clean).includes(NUL), false, "a NUL survived the scrub");
+
+  // The previous assertion here was JSON.stringify(clean).includes(NUL) === false.
+  // That can never be true: JSON.stringify escapes NUL to the six-character
+  // sequence \u0000, so a raw NUL byte is absent from its output whether or not
+  // the scrub ran. It passed against completely unscrubbed input. Assert the
+  // concrete leaves instead — those are what Postgres actually rejected.
+  assertEquals((clean[0] as Record<string, unknown>).text, "## Findings report");
+  const out = (clean[1] as Record<string, Record<string, unknown>>).output;
+  assertEquals((out.headers as Record<string, unknown>).server, "nginx");
+  assertEquals((out.body as string[])[0], "x");
+
+  // And the serialized form must not carry the ESCAPED sequence either — that is
+  // the literal text Postgres refuses with "unsupported Unicode escape sequence".
+  assert(
+    !JSON.stringify(clean).includes("\\u0000"),
+    "an escaped NUL survived into the JSONB payload — this is the exact byte Postgres rejects",
+  );
+
   // Shape must be preserved exactly — this runs on every persisted message.
   assertEquals(clean.length, 2);
   assertEquals((clean[1] as Record<string, unknown>).state, "output-available");
-  const out = (clean[1] as Record<string, Record<string, unknown>>).output;
   assertEquals(out.ok, true);
   assertEquals((out.body as string[])[1], "y");
+});
+
+Deno.test("guard: the old vacuous assertion would have passed on UNSCRUBBED input", () => {
+  // Pins WHY the assertion above changed, so it cannot be reverted to the cheap
+  // form. Raw, deliberately un-scrubbed input still contains no bare NUL once
+  // serialized — proving the old check had no power to fail.
+  const poisoned = [{ type: "text", text: "report" + NUL }];
+  assertEquals(JSON.stringify(poisoned).includes(NUL), false);
+  // The escaped form, by contrast, IS present — which is what we now assert on.
+  assert(JSON.stringify(poisoned).includes("\\u0000"));
 });
 
 Deno.test("scrubs poisoned KEYS, not just values", () => {
