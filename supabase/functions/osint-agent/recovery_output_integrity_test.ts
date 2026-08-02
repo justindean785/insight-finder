@@ -169,3 +169,62 @@ Deno.test("a populated stub stays report-shaped (duplicate-insert suppression)",
     assert(hasReportShape(buildRecoveredAssistantText(THREAD, rows)), "stub lost report shape");
   }
 });
+
+// ── The stub must not present its own page cap as the thread total ───────────
+//
+// Follow-up to the code review of the PR above. The query fetches
+// `count: "exact"` alongside a page capped at RECOVERY_ARTIFACT_LIMIT, but the
+// count was never passed to the builder — so a thread holding 55 artifacts got a
+// stub that said "40 recovered rows", stating a completeness it had not earned.
+Deno.test("when the thread holds more artifacts than the page cap, the stub says so", () => {
+  const page = Array.from({ length: 40 }, (_, i) => autoPersisted({ value: `row-${i}@example.com` }));
+  const out = buildRecoveredAssistantText(THREAD, page, 55);
+  assert(/only the first 40 of 55 artifacts/.test(out), `missing truncation disclosure:\n${out}`);
+  assert(/15 were not examined/.test(out), `missing unexamined count:\n${out}`);
+  assert(/never read by recovery/.test(out), "truncation was not carried into Gaps");
+  assert(hasReportShape(out), "truncated stub lost report shape");
+});
+
+Deno.test("a thread that fits inside the page cap makes no truncation claim", () => {
+  const out = buildRecoveredAssistantText(THREAD, [modelRecorded(), autoPersisted()], 2);
+  assert(!/not examined/.test(out), `claimed truncation on a complete fetch:\n${out}`);
+  assert(!/never read by recovery/.test(out));
+});
+
+Deno.test("an absent count makes no claim either way (back-compat)", () => {
+  for (const count of [undefined, null]) {
+    const out = buildRecoveredAssistantText(THREAD, [modelRecorded()], count);
+    assert(!/not examined/.test(out), `invented a truncation claim from a ${count} count`);
+  }
+});
+
+Deno.test("the singular case reads correctly", () => {
+  const page = Array.from({ length: 40 }, (_, i) => autoPersisted({ value: `row-${i}@example.com` }));
+  const out = buildRecoveredAssistantText(THREAD, page, 41);
+  assert(/1 was not examined/.test(out), `bad singular agreement:\n${out}`);
+  assert(/1 artifact on this thread/.test(out));
+});
+
+// ── NULL-confidence rows must not eat the page cap from the top ──────────────
+//
+// Postgres orders NULLs FIRST under `ORDER BY confidence DESC`. Without
+// `nullsFirst: false` every unscored row sorted ABOVE the highest-confidence
+// finding and consumed the 40-row limit before a single real one was fetched.
+Deno.test("the artifact query pushes NULL confidence last", async () => {
+  const src = await Deno.readTextFile(new URL("./recovery.ts", import.meta.url));
+  const orderLine = src.split("\n").find((l) => l.includes(`.order("confidence"`));
+  assert(orderLine, "confidence ordering disappeared from recovery.ts");
+  assert(
+    /nullsFirst:\s*false/.test(orderLine!),
+    "recovery's confidence ordering lost `nullsFirst: false` — NULL-confidence rows will sort above real findings and eat the page cap",
+  );
+});
+
+Deno.test("the exact row count is passed into the builder, not just fetched", async () => {
+  const src = await Deno.readTextFile(new URL("./recovery.ts", import.meta.url));
+  assert(/count:\s*"exact"/.test(src), "recovery stopped requesting an exact count");
+  assert(
+    /buildRecoveredAssistantText\([^)]*artifactCount/.test(src),
+    "the exact count is fetched but never handed to buildRecoveredAssistantText — the stub can only see its own page",
+  );
+});

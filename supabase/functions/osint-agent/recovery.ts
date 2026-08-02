@@ -197,6 +197,15 @@ export function isRecoveryGeneratedReport(text: string | null | undefined): bool
 export function buildRecoveredAssistantText(
   thread: Pick<RecoverableThread, "seed_value" | "title" | "last_heartbeat_at" | "run_started_at">,
   artifacts: RecoveryArtifact[],
+  /**
+   * The TRUE number of artifact rows on the thread, from the `count: "exact"`
+   * head of the same query. `artifacts` is capped at RECOVERY_ARTIFACT_LIMIT, so
+   * without this the stub can only see its own page and will report the cap as
+   * if it were the total — production showed "40 recovered rows" for a thread
+   * holding 55. Optional so existing callers/tests keep working; when absent the
+   * summary simply makes no claim about rows it never saw.
+   */
+  totalArtifactCount?: number | null,
 ): string {
   const seed = thread.seed_value?.trim() || thread.title?.trim() || "this investigation";
   const lastLive = thread.last_heartbeat_at ?? thread.run_started_at ?? null;
@@ -307,11 +316,32 @@ export function buildRecoveredAssistantText(
     shown.length === totalEligible
       ? `${shown.length} recovered row${shown.length === 1 ? "" : "s"}: ${shownReviewed.length} model-reviewed, ${shownCandidates.length} unreviewed.`
       : `Showing ${shown.length} of ${totalEligible} recovered rows: ${shownReviewed.length} model-reviewed, ${shownCandidates.length} unreviewed.`,
+  );
+
+  // `totalEligible` is derived from the FETCHED page, which is capped at
+  // RECOVERY_ARTIFACT_LIMIT. When the thread holds more artifacts than the page,
+  // every count above describes a sample — say so. A stub that silently presents
+  // its own page cap as the thread total is the same class of dishonesty this
+  // whole file exists to prevent: reporting completeness it has not earned.
+  const fetched = artifacts.length;
+  const unexamined = typeof totalArtifactCount === "number" && totalArtifactCount > fetched
+    ? totalArtifactCount - fetched
+    : 0;
+  if (unexamined > 0) {
+    out.push(
+      `Recovery examined only the first ${fetched} of ${totalArtifactCount} artifacts on this thread (highest-confidence first); ${unexamined} ${unexamined === 1 ? "was" : "were"} not examined by this pass. The Evidence board holds the complete record.`,
+    );
+  }
+
+  out.push(
     "",
     "### Gaps",
     "- The run was closed by stale-run recovery, so this is not a full model-written synthesis.",
     "- Treat unresolved leads as pending until a follow-up run verifies them.",
   );
+  if (unexamined > 0) {
+    out.push(`- ${unexamined} artifact${unexamined === 1 ? "" : "s"} on this thread were never read by recovery and are not represented above.`);
+  }
   return out.join("\n");
 }
 
@@ -462,7 +492,12 @@ async function recoverOneStaleThread(
     // excluded same-name collision from a finding, or extractor output from
     // model-reviewed evidence — every integrity field the recording layer had
     // already computed was simply not fetched.
-    db.from("artifacts").select("id,kind,value,confidence,source,created_at,metadata", { count: "exact" }).eq("thread_id", thread.id).order("confidence", { ascending: false }).order("created_at", { ascending: true }).limit(RECOVERY_ARTIFACT_LIMIT),
+    //
+    // `nullsFirst: false` is not cosmetic. Postgres orders NULLs FIRST under
+    // `ORDER BY confidence DESC`, so every row with no confidence score sorted
+    // ABOVE the highest-confidence real finding and ate the 40-row page cap from
+    // the top — the one thing the ordering exists to prevent.
+    db.from("artifacts").select("id,kind,value,confidence,source,created_at,metadata", { count: "exact" }).eq("thread_id", thread.id).order("confidence", { ascending: false, nullsFirst: false }).order("created_at", { ascending: true }).limit(RECOVERY_ARTIFACT_LIMIT),
   ]);
   // Analyst verdicts apply to the recovery stub too. The stub is a REPORT the
   // analyst reads, built straight from durable artifacts — so without this a
@@ -617,7 +652,7 @@ async function recoverOneStaleThread(
   // reviewedArtifacts, NOT the raw fetch: the stub is a REPORT the analyst reads, so a
   // finding they marked FALSE must not come back inside it. applyReviewsToArtifacts
   // returns [] when the verdicts are unreadable, so this fails closed.
-  const text = buildRecoveredAssistantText(thread, reviewedArtifacts as RecoveryArtifact[]);
+  const text = buildRecoveredAssistantText(thread, reviewedArtifacts as RecoveryArtifact[], artifactCount ?? null);
   const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: [{ type: "text", text }] });
   if (insertErr) {
     // ---- ROLL BACK THE CLAIM ON STUB-INSERT FAILURE (PR #387 review, P2) ----
