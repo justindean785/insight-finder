@@ -22,6 +22,30 @@ const TAB = String.fromCharCode(9);
 const LF = String.fromCharCode(10);
 const CR = String.fromCharCode(13);
 
+/**
+ * Walk a structure and report every path whose KEY or STRING VALUE still holds a
+ * real NUL.
+ *
+ * Replaces a `JSON.stringify(x).includes(...)` substring check, which review
+ * correctly called brittle: a legitimate payload containing the literal
+ * six-character TEXT for an escaped NUL serialises with its backslash doubled,
+ * and the result STILL contains the searched substring — so a valid evidence
+ * string would have failed the test. Checking the structure directly tests the
+ * real invariant ("no NUL survives anywhere") instead of an artefact of
+ * serialisation.
+ */
+function nulPaths(value: unknown, path = "$"): string[] {
+  if (typeof value === "string") return value.includes(NUL) ? [path] : [];
+  if (Array.isArray(value)) return value.flatMap((v, i) => nulPaths(v, `${path}[${i}]`));
+  if (value && typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>).flatMap(([k, v]) => [
+      ...(k.includes(NUL) ? [`${path}.<key:${JSON.stringify(k)}>`] : []),
+      ...nulPaths(v, `${path}.${k}`),
+    ]);
+  }
+  return [];
+}
+
 Deno.test("strips NUL from a string leaf — the exact production failure", () => {
   assertEquals(stripNulCharacters("Server: nginx" + NUL + NUL), "Server: nginx");
 });
@@ -142,11 +166,11 @@ Deno.test("scrubs deep inside the assistant.parts shape that actually failed", (
   assertEquals((out.headers as Record<string, unknown>).server, "nginx");
   assertEquals((out.body as string[])[0], "x");
 
-  // And the serialized form must not carry the ESCAPED sequence either — that is
-  // the literal text Postgres refuses with "unsupported Unicode escape sequence".
-  assert(
-    !JSON.stringify(clean).includes("\\u0000"),
-    "an escaped NUL survived into the JSONB payload — this is the exact byte Postgres rejects",
+  // Structural check, not a substring check on serialised output — see nulPaths.
+  assertEquals(
+    nulPaths(clean),
+    [],
+    "a NUL survived somewhere in the payload — this is the exact byte Postgres rejects",
   );
 
   // Shape must be preserved exactly — this runs on every persisted message.
@@ -178,14 +202,39 @@ Deno.test("leaves clean payloads byte-identical and preserves non-string types",
   assertEquals(JSON.stringify(stripNulCharacters(input)), JSON.stringify(input));
 });
 
-Deno.test("both persistence boundaries are wired, not just the message insert", () => {
-  // The cache write failed FIRST in production. Fixing only index.ts would leave
-  // that early signal broken and the cache un-writable for the offending tool.
-  const idx = Deno.readTextFileSync(new URL("./index.ts", import.meta.url));
-  const cache = Deno.readTextFileSync(new URL("./cache.ts", import.meta.url));
-  assert(/stripNulCharacters\(/.test(idx), "index.ts message insert is not scrubbed");
-  assert(/output_json: stripNulCharacters\(/.test(cache), "tool_call_cache output_json is not scrubbed");
-  assert(/input_json: stripNulCharacters\(/.test(cache), "tool_call_cache input_json is not scrubbed");
+Deno.test("EVERY persistence boundary is wired, not just the final report", () => {
+  // Review finding: the first revision scrubbed only index.ts's final assistant
+  // insert plus the two cache writes, while THREE other messages.parts inserts
+  // went unscrubbed. A NUL arriving via a user message, a mid-run checkpoint or
+  // the recovery stub would have failed the insert identically. The PR claims
+  // "before every persist", so every persist is checked here by name.
+  const read = (f: string) => Deno.readTextFileSync(new URL(`./${f}`, import.meta.url));
+  const boundaries: Array<[string, RegExp, string]> = [
+    ["index.ts", /stripNulCharacters\(/, "final assistant report insert"],
+    ["cache.ts", /output_json: stripNulCharacters\(/, "tool_call_cache output_json"],
+    ["cache.ts", /input_json: stripNulCharacters\(/, "tool_call_cache input_json"],
+    ["auth.ts", /parts: stripNulCharacters\(/, "user message insert"],
+    ["incremental-persist.ts", /parts: stripNulCharacters\(/, "mid-run checkpoint insert"],
+    ["recovery.ts", /parts: stripNulCharacters\(/, "recovery stub insert"],
+  ];
+  const unscrubbed = boundaries.filter(([f, re]) => !re.test(read(f))).map(([f, , what]) => `${f} (${what})`);
+  assertEquals(unscrubbed, [], `unscrubbed JSONB persistence boundaries: ${unscrubbed.join(", ")}`);
+});
+
+Deno.test("no messages.insert call site escapes the scrub", () => {
+  // Counts the call sites rather than only naming them, so a NEW insert added
+  // later fails this test instead of silently becoming the next incident.
+  const files = ["index.ts", "auth.ts", "incremental-persist.ts", "recovery.ts"];
+  let inserts = 0;
+  for (const f of files) {
+    const src = Deno.readTextFileSync(new URL(`./${f}`, import.meta.url));
+    inserts += [...src.matchAll(/from\("messages"\)\s*\.insert\(/g)].length;
+  }
+  assertEquals(
+    inserts,
+    4,
+    `expected 4 known messages.insert call sites, found ${inserts} — a new one must be scrubbed and added to the boundary table above`,
+  );
 });
 
 // ── `__proto__` is a legal JSON key and must survive as OWN DATA ─────────────
@@ -256,4 +305,27 @@ Deno.test("__proto__ nested deep inside a parts payload also survives", () => {
   );
   const out = stripNulCharacters(parts);
   assertEquals(JSON.stringify(out), JSON.stringify(parts));
+});
+
+Deno.test("the NUL detector does not false-positive on literal escape TEXT", () => {
+  // Review finding: the previous substring assertion would have failed on this
+  // perfectly valid payload, because JSON.stringify doubles the backslash and
+  // the result still contains the searched substring.
+  const legit = { note: "the provider escapes NUL as " + "\\u0000" + " in its docs" };
+  assertEquals(legit.note.includes(NUL), false, "fixture must contain no real NUL");
+  assertEquals(nulPaths(legit), [], "detector false-positived on literal escape TEXT");
+  assertEquals(
+    JSON.stringify(stripNulCharacters(legit)),
+    JSON.stringify(legit),
+    "a valid payload containing the literal text was altered",
+  );
+});
+
+Deno.test("the NUL detector actually finds NULs, in values AND keys", () => {
+  // A detector that never fires is worse than none. Prove both directions.
+  assertEquals(nulPaths({ a: "x" + NUL }), ["$.a"]);
+  assertEquals(nulPaths([{ b: ["ok", "bad" + NUL] }]), ["$[0].b[1]"]);
+  const poisonedKey: Record<string, unknown> = {};
+  poisonedKey["k" + NUL] = "v";
+  assertEquals(nulPaths(poisonedKey).length, 1);
 });

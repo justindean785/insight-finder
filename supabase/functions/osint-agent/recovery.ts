@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { stripNulCharacters } from "./safety.ts";
 import { hasReportShape, stripReasoning } from "./orchestrator-finalize.ts";
 import { loadReviewsForThread, applyReviewsToArtifacts } from "./reviews.ts";
 
@@ -683,7 +684,7 @@ async function recoverOneStaleThread(
   // reviews_wiring_test.ts pattern-matches that exact shape to prove the stub is
   // built from review-filtered artifacts. Wrapping the arguments breaks it.
   const text = buildRecoveredAssistantText(thread, reviewedArtifacts as RecoveryArtifact[], artifactCount ?? null, (artifacts ?? []).length);
-  const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: [{ type: "text", text }] });
+  const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: stripNulCharacters([{ type: "text", text }]) });
   if (insertErr) {
     // ---- ROLL BACK THE CLAIM ON STUB-INSERT FAILURE (PR #387 review, P2) ----
     // The claim above already flipped status to "finished", but the recovered report

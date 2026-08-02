@@ -5,6 +5,7 @@
  */
 
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { stripNulCharacters } from "./safety.ts";
 import type { UIMessage } from "npm:ai@6";
 import { corsHeaders, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY } from "./env.ts";
 import { checkRateLimit as checkRateLimitDistributed, MAX_REQS_PER_MIN, MAX_REQS_PER_HOUR } from "./ratelimit.ts";
@@ -248,7 +249,10 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
       thread_id: threadId,
       user_id: userId,
       role: "user",
-      parts: lastUser.parts as unknown,
+      // A NUL in a USER message fails the insert exactly as one in an assistant
+      // message does — the 2026-08-02 incident just happened to arrive via a
+      // tool. Every messages.parts boundary is scrubbed, not only the report.
+      parts: stripNulCharacters(lastUser.parts) as unknown,
     });
 
     // Generate/refresh title from first user message if thread title is default
