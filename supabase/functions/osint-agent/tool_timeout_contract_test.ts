@@ -18,8 +18,9 @@
 // real call sites and cannot drift. There is deliberately NO allowlist: an
 // exception list would let the next violation in silently, which is the failure
 // mode this file exists to close.
-import { assert } from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { DEFAULT_TOOL_TIMEOUT_MS, toolTimeoutMs } from "./cache.ts";
+import { UNKNOWN_TOOL_SINK } from "./unknown-tool-guard.ts";
 
 const SRC = Deno.readTextFileSync(new URL("./tool-registry.ts", import.meta.url));
 
@@ -114,6 +115,100 @@ Deno.test("timeout contract: every tool's wrapper cap exceeds its own fetch budg
     `abort a call the provider was about to answer, the completed work is discarded, and one ` +
     `such timeout trips the circuit breaker for the rest of the run. Add an override in ` +
     `TOOL_TIMEOUT_OVERRIDE_MS (cache.ts) ABOVE the tool's own budget:\n  - ` +
+    violations.join("\n  - "),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// INJECTED tools — the blind spot this test shipped with.
+//
+// buildTools() defines most tools inline, but nine are attached afterwards as
+// `(tools as ToolRegistry).x = x`, importing the implementation from tools/*.ts.
+// The inline scan above sees NEITHER the declaration NOR the fetch budget, so
+// those nine were entirely outside a contract that reported "zero exceptions".
+//
+// Production, 2026-08-02: gemini_vision (own fetch 25s) inherited the 12s default
+// and died at 12,228ms reading a 17MB PDF. Scanning all nine then turned up a
+// SECOND violation nobody had reported — pdl_person_enrich, own fetch 18s.
+//
+// Coverage is now: inline defs (above) + injected defs resolved through their
+// import to the helper module (below). What remains outside is a tool whose HTTP
+// lives behind a further indirection; the anchors keep that honest.
+
+/** `(tools as X).name = symbol` -> { name, symbol }. */
+function injectedTools(): Array<{ name: string; symbol: string }> {
+  return [...SRC.matchAll(/\(tools as [A-Za-z]+\)\.([a-z_0-9]+)\s*=\s*([A-Za-z_0-9]+);/g)]
+    .map((m) => ({ name: m[1], symbol: m[2] }))
+    .filter((t) => t.name !== UNKNOWN_TOOL_SINK);
+}
+
+/** Resolve an imported symbol to the module path it came from. */
+function moduleForSymbol(symbol: string): string | null {
+  for (const m of SRC.matchAll(/import\s*\{([^}]*)\}\s*from\s*"(\.\/[^"]+)"/g)) {
+    const names = m[1].split(",").map((x) => x.trim().split(/\s+as\s+/)[0].trim());
+    if (names.includes(symbol)) return m[2];
+  }
+  return null;
+}
+
+/**
+ * A helper module's own fetch budget: the largest `fetchT(…, N)` trailing
+ * argument OR `const *TIMEOUT*_MS = N`. Both forms appear across tools/*.ts
+ * (gemini_vision uses a bare setTimeout on VISION_FETCH_TIMEOUT_MS, not fetchT).
+ */
+function moduleFetchBudgetMs(modulePath: string): number | null {
+  let body: string;
+  try {
+    body = Deno.readTextFileSync(new URL(modulePath, import.meta.url));
+  } catch {
+    return null;
+  }
+  const budgets = [
+    ...[...body.matchAll(/\}\s*,\s*(\d[\d_]{3,})\s*\)/g)].map((m) => m[1]),
+    ...[...body.matchAll(/[A-Z_]*TIMEOUT[A-Z_]*_MS\s*=\s*(\d[\d_]{3,})/g)].map((m) => m[1]),
+  ].map((x) => Number(x.replace(/_/g, "")));
+  return budgets.length ? Math.max(...budgets) : null;
+}
+
+Deno.test("timeout contract: the injected-tool scan actually resolves modules", () => {
+  const injected = injectedTools();
+  assert(injected.length >= 9, `expected >= 9 injected tools, found ${injected.length}`);
+  // Named anchors with their MEASURED budgets — a silent resolution failure here
+  // would make the contract below vacuous for exactly the tools it was blind to.
+  for (const [name, expected] of [["gemini_vision", 25_000], ["pdl_person_enrich", 18_000]] as const) {
+    const t = injected.find((x) => x.name === name);
+    assert(t, `${name} not found among injected tools`);
+    const mod = moduleForSymbol(t!.symbol);
+    assert(mod, `${name}: could not resolve module for symbol ${t!.symbol}`);
+    assertEquals(
+      moduleFetchBudgetMs(mod!),
+      expected,
+      `${name}: expected a ${expected}ms budget in ${mod}`,
+    );
+  }
+});
+
+Deno.test("timeout contract: injected tools also clear their own fetch budget", () => {
+  const violations: string[] = [];
+  for (const { name, symbol } of injectedTools()) {
+    const mod = moduleForSymbol(symbol);
+    if (!mod) continue;
+    const own = moduleFetchBudgetMs(mod);
+    if (own === null) continue;
+    const cap = toolTimeoutMs(name);
+    if (cap <= own) {
+      violations.push(
+        `${name}: wrapper cap ${cap}ms ${cap === own ? "TIES" : "is BELOW"} its own ${own}ms ` +
+        `fetch budget in ${mod}` +
+        (cap === DEFAULT_TOOL_TIMEOUT_MS ? " (inheriting the default — needs an override)" : ""),
+      );
+    }
+  }
+  assert(
+    violations.length === 0,
+    `${violations.length} INJECTED tool(s) violate the wrapper-above-fetch contract. These are ` +
+    `attached after buildTools() and their budgets live in tools/*.ts, which is why the inline ` +
+    `scan misses them. Add an override in TOOL_TIMEOUT_OVERRIDE_MS (cache.ts):\n  - ` +
     violations.join("\n  - "),
   );
 });

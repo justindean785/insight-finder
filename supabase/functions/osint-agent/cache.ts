@@ -189,6 +189,20 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   shodan_internetdb: 14_000,
   hackertarget: 14_000,
   urlscan_search: 14_000,
+  // ---------------------------------------------------------------------------
+  // INJECTED tools — attached after buildTools() via `(tools as ToolRegistry).x = x`
+  // rather than defined inline, with their fetch budgets in tools/*.ts. The
+  // wrapper-above-fetch contract test could not see EITHER fact, so these two
+  // sat in violation while the test reported zero exceptions. Found 2026-08-02
+  // when gemini_vision died at 12,228ms on a 17MB PDF in production.
+  gemini_vision: 45_000,      // own fetch 25s (VISION_FETCH_TIMEOUT_MS) — and that
+                              // budget covers only the FETCH; Gemini inference runs
+                              // after it, so the cap needs headroom above 25s, not
+                              // merely 27s. Observed successful vision calls run
+                              // 4.7-6.5s; the 45s ceiling is for large documents.
+  pdl_person_enrich: 20_000,  // own fetch 18s (PDL_HTTP_TIMEOUT_MS). Not in the
+                              // 2026-08-02 report — found by scanning all nine
+                              // injected tools rather than only the one that failed.
 };
 export function toolTimeoutMs(name: string): number {
   return TOOL_TIMEOUT_OVERRIDE_MS[name] ?? DEFAULT_TOOL_TIMEOUT_MS;
