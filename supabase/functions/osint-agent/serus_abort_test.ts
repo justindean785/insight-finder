@@ -15,8 +15,15 @@ import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.t
 // would capture an unset key and every call would short-circuit on
 // `serus_key_missing` before reaching a single fetch. Set it first, then load
 // the module dynamically.
+const PRIOR_SERUS_KEY = Deno.env.get("SERUS_API_KEY");
 Deno.env.set("SERUS_API_KEY", "test-key");
 const { runSerusScan, SERUS_OPERATION_DEADLINE_MS } = await import("./tools/serus_core.ts");
+// Restore IMMEDIATELY after the import. env.ts snapshots the key at
+// module-evaluation time, so serus_core.ts has already captured it — but leaving
+// it set would leak into later test modules in the same process and quietly
+// invalidate their missing-key cases (e.g. serus_test.ts).
+if (PRIOR_SERUS_KEY === undefined) Deno.env.delete("SERUS_API_KEY");
+else Deno.env.set("SERUS_API_KEY", PRIOR_SERUS_KEY);
 
 const realFetch = globalThis.fetch;
 function restore() { globalThis.fetch = realFetch; }
@@ -152,4 +159,56 @@ Deno.test("cancellation reaches an in-flight POLL request, not just the initiate
     `the abort never reached an in-flight POLL request (aborted url: ${abortedUrl}) — poll fetches are not carrying the signal`,
   );
   assertEquals(res.ok, false);
+});
+
+Deno.test("a signal that is ALREADY aborted stops the scan before any request", async () => {
+  // Review finding: the outer signal was only subscribed via addEventListener, so
+  // a signal that had already fired never reached the internal controller and the
+  // scan initiated anyway.
+  let calls = 0;
+  globalThis.fetch = ((_u: string | URL | Request, _i?: RequestInit) => {
+    calls++;
+    return Promise.resolve(new Response(JSON.stringify({ id: "scan-1" }), { status: 200 }));
+  }) as typeof fetch;
+
+  const ctrl = new AbortController();
+  ctrl.abort();                       // already cancelled before the call
+  const res = await runSerusScan("email", "a@b.c", { signal: ctrl.signal });
+  restore();
+
+  assertEquals(calls, 0, `issued ${calls} request(s) for an already-cancelled caller`);
+  assertEquals(res.ok, false);
+  assertEquals(res.status, "timeout");
+});
+
+Deno.test("a cancelled scan reports as a deadline, never as a provider failure", async () => {
+  // Review finding: the final-attempt poll catch returned `poll_failed`, blaming
+  // Serus for our own cancellation. That misclassification can trip the circuit
+  // breaker and suppress a healthy provider for the rest of the run.
+  globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+    const u = String(url);
+    if (u.endsWith("/darkweb/scans") && init?.method === "POST") {
+      return Promise.resolve(new Response(JSON.stringify({ id: "scan-1" }), { status: 200 }));
+    }
+    return new Promise<Response>((_res, rej) => {
+      const sig = init?.signal;
+      const fail = () => rej(new DOMException("Aborted", "AbortError"));
+      if (sig?.aborted) { fail(); return; }
+      sig?.addEventListener("abort", fail, { once: true });
+    });
+  }) as typeof fetch;
+
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 60);
+  const res = await runSerusScan("email", "a@b.c", { signal: ctrl.signal, intervalMs: 10, maxRetries: 1 });
+  clearTimeout(t);
+  restore();
+
+  const err = res.error as Record<string, unknown> | undefined;
+  assertEquals(err?.code, "serus_deadline", `cancellation reported as ${JSON.stringify(err)}`);
+  assertEquals(err?.error, "aborted");
+  assert(
+    String(err?.message ?? "").includes("no further polling"),
+    "the abort payload lost its message — serusErrorPayload would have flattened it to http_0",
+  );
 });

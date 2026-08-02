@@ -225,7 +225,11 @@ export async function runSerusScan(
   const ctrl = new AbortController();
   const deadlineTimer = setTimeout(() => ctrl.abort(), deadlineMs);
   const onOuterAbort = () => ctrl.abort();
-  options.signal?.addEventListener("abort", onOuterAbort, { once: true });
+  // If the caller's signal ALREADY fired before we got here, addEventListener
+  // would never run and this scan would initiate and poll for a request nobody
+  // is waiting on. Check first, then subscribe.
+  if (options.signal?.aborted) ctrl.abort();
+  else options.signal?.addEventListener("abort", onOuterAbort, { once: true });
   const signal = ctrl.signal;
   const remainingMs = () => Math.max(0, deadlineMs - (Date.now() - startedAt));
   const requestTimeoutMs = () => Math.max(1, Math.min(SERUS_REQUEST_TIMEOUT_MS, remainingMs()));
@@ -233,16 +237,23 @@ export async function runSerusScan(
     clearTimeout(deadlineTimer);
     options.signal?.removeEventListener("abort", onOuterAbort);
   };
+  // Built literally, NOT via serusErrorPayload(0, {...}): that helper reads
+  // body.error.code / body.error.message (nested), so a flat object like this one
+  // is discarded and the result degrades to a generic http_0. A cancellation that
+  // reports as an anonymous transport failure is exactly the misreporting this
+  // work exists to remove.
   const abortedResult = () => ({
     ok: false,
     status: "timeout" as const,
     scanId: undefined,
     identifierType,
-    error: serusErrorPayload(0, {
-      error: "aborted",
+    error: {
+      error: "aborted" as const,
       code: "serus_deadline",
+      status: 0,
       message: `Serus scan stopped after ${Date.now() - startedAt}ms (deadline ${deadlineMs}ms) — no further polling was issued.`,
-    }),
+      hint: "The caller cancelled or the internal deadline elapsed. This is not a provider fault and must not count against Serus.",
+    },
   });
 
   // try/finally rather than a releaseBudget() before every return: the deadline
@@ -298,6 +309,10 @@ export async function runSerusScan(
       try {
         poll = await fetchRetry(buildScanUrl(scanId), { method: "GET", headers, signal }, { retries: 1, timeoutMs: requestTimeoutMs() });
       } catch (e) {
+        // A cancelled poll is NOT a provider failure. Reporting it as
+        // `poll_failed` would blame Serus for our own deadline and can trip the
+        // circuit breaker, suppressing a healthy provider for the rest of the run.
+        if (signal.aborted) return abortedResult();
         if (attempt === maxRetries - 1) {
           return {
             ok: false,

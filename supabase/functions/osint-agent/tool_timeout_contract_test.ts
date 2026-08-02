@@ -179,17 +179,17 @@ function moduleFetchBudgetMs(modulePath: string): number | null {
 // module — while both tests stayed green. That is the same blind spot this PR
 // exists to close, one level up, so it is closed here rather than deferred.
 //
-// `budgetMs: null` is not "unknown", it is the asserted claim that the module
-// has NO static internal timeout. serus.ts is the only such case: it contains no
-// TIMEOUT constant, no setTimeout, no AbortSignal and no fetchT call, so its
-// wrapper cap is the entire budget. If serus ever gains one, this entry must be
-// updated deliberately — the test will fail until it is.
-const EXPECTED_INJECTED: ReadonlyArray<{ name: string; module: string; budgetMs: number | null }> = [
-  // NOT null. serus.ts delegates to serus_core.ts, whose cost is TRANSITIVE:
-  // 10 polls x 2500ms is a 25s window on its own, plus fetchRetry per-attempt
-  // network time. The previous `null` asserted "this module has no internal
-  // timeout", which was false and hid the largest budget in the table. It is now
-  // an explicit, exported, end-to-end deadline.
+// Every entry carries a MEASURED budget. `null` is deliberately not permitted by
+// the type: it previously meant "this module has no static internal timeout",
+// which was asserted for serus and was false — serus.ts delegates to
+// serus_core.ts, where a 25s polling window lives. A nullable field invites that
+// mistake back, so a tool with no measurable budget cannot be expressed here at
+// all; it has to grow an explicit exported constant first.
+const EXPECTED_INJECTED: ReadonlyArray<{ name: string; module: string; budgetMs: number }> = [
+  // Serus's cost is TRANSITIVE: 10 polls x 2500ms is a 25s window on its own,
+  // plus fetchRetry per-attempt network time. Its budget is the exported
+  // SERUS_OPERATION_DEADLINE_MS, and serus.ts now accepts and forwards the
+  // wrapper's AbortSignal so that deadline is actually enforceable.
   { name: "serus_darkweb_scan", module: "./tools/serus_core.ts",      budgetMs: 40_000 },
   { name: "indicia_email",      module: "./tools/indicia.ts",         budgetMs: 18_000 },
   { name: "indicia_phone",      module: "./tools/indicia.ts",         budgetMs: 18_000 },
@@ -280,14 +280,6 @@ Deno.test("timeout contract: injected tools clear their own fetch budget — no 
   const violations: string[] = [];
   for (const { name, module, budgetMs } of EXPECTED_INJECTED) {
     const cap = toolTimeoutMs(name);
-    if (budgetMs === null) {
-      // No internal budget: the wrapper cap IS the budget. It must still be a
-      // deliberate value, not the 12s default a heavy paid call would inherit.
-      if (cap === DEFAULT_TOOL_TIMEOUT_MS) {
-        violations.push(`${name}: has no internal timeout and inherits the ${cap}ms default — needs a deliberate override`);
-      }
-      continue;
-    }
     if (cap <= budgetMs) {
       violations.push(
         `${name}: wrapper cap ${cap}ms ${cap === budgetMs ? "TIES" : "is BELOW"} its own ${budgetMs}ms fetch budget in ${module}` +
