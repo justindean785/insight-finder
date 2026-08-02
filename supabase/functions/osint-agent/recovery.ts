@@ -206,6 +206,22 @@ export function buildRecoveredAssistantText(
    * summary simply makes no claim about rows it never saw.
    */
   totalArtifactCount?: number | null,
+  /**
+   * How many rows the QUERY actually fetched, before analyst-review filtering.
+   *
+   * This is NOT `artifacts.length`. The caller passes `reviewedArtifacts` — the
+   * fetched page after `applyReviewsToArtifacts` has dropped rows the analyst
+   * marked FALSE. Deriving "unexamined" from the post-review array therefore
+   * counted every analyst-dismissed row as one recovery never looked at: raw 55,
+   * fetched 40, 10 dismissed => "25 were not examined" when the true answer is
+   * 15. Recovery examined all 40; the analyst rejected 10 of them, which is the
+   * opposite of unexamined.
+   *
+   * Defaults to `artifacts.length`, which is exactly right whenever no review
+   * filtering occurred, so callers and fixtures that pass no reviews are
+   * unaffected.
+   */
+  fetchedCount?: number | null,
 ): string {
   const seed = thread.seed_value?.trim() || thread.title?.trim() || "this investigation";
   const lastLive = thread.last_heartbeat_at ?? thread.run_started_at ?? null;
@@ -323,7 +339,11 @@ export function buildRecoveredAssistantText(
   // every count above describes a sample — say so. A stub that silently presents
   // its own page cap as the thread total is the same class of dishonesty this
   // whole file exists to prevent: reporting completeness it has not earned.
-  const fetched = artifacts.length;
+  // `fetched` must be the RAW page size, not artifacts.length — see the
+  // fetchedCount doc above. Using the post-review array here attributed
+  // analyst-dismissed rows to "never examined", which is both wrong and exactly
+  // backwards: a dismissed row is one the analyst looked at hardest.
+  const fetched = typeof fetchedCount === "number" ? fetchedCount : artifacts.length;
   const unexamined = typeof totalArtifactCount === "number" && totalArtifactCount > fetched
     ? totalArtifactCount - fetched
     : 0;
@@ -652,7 +672,17 @@ async function recoverOneStaleThread(
   // reviewedArtifacts, NOT the raw fetch: the stub is a REPORT the analyst reads, so a
   // finding they marked FALSE must not come back inside it. applyReviewsToArtifacts
   // returns [] when the verdicts are unreadable, so this fails closed.
-  const text = buildRecoveredAssistantText(thread, reviewedArtifacts as RecoveryArtifact[], artifactCount ?? null);
+  // Three DIFFERENT counts, and conflating any two of them produces a false
+  // disclosure:
+  //   artifactCount              raw exact total on the thread            (55)
+  //   (artifacts ?? []).length   what this query fetched, capped at 40    (40)
+  //   reviewedArtifacts.length   what survived analyst review             (30)
+  // "Unexamined" is total minus FETCHED. Passing the reviewed array as the
+  // fetched size reported 25 unexamined for that example instead of 15.
+  // NB: kept on one line with `(thread, reviewedArtifacts` adjacent because
+  // reviews_wiring_test.ts pattern-matches that exact shape to prove the stub is
+  // built from review-filtered artifacts. Wrapping the arguments breaks it.
+  const text = buildRecoveredAssistantText(thread, reviewedArtifacts as RecoveryArtifact[], artifactCount ?? null, (artifacts ?? []).length);
   const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: [{ type: "text", text }] });
   if (insertErr) {
     // ---- ROLL BACK THE CLAIM ON STUB-INSERT FAILURE (PR #387 review, P2) ----
