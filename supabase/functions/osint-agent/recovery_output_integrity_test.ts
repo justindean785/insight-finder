@@ -169,3 +169,122 @@ Deno.test("a populated stub stays report-shaped (duplicate-insert suppression)",
     assert(hasReportShape(buildRecoveredAssistantText(THREAD, rows)), "stub lost report shape");
   }
 });
+
+// ── The stub must not present its own page cap as the thread total ───────────
+//
+// Follow-up to the code review of the PR above. The query fetches
+// `count: "exact"` alongside a page capped at RECOVERY_ARTIFACT_LIMIT, but the
+// count was never passed to the builder — so a thread holding 55 artifacts got a
+// stub that said "40 recovered rows", stating a completeness it had not earned.
+Deno.test("when the thread holds more artifacts than the page cap, the stub says so", () => {
+  const page = Array.from({ length: 40 }, (_, i) => autoPersisted({ value: `row-${i}@example.com` }));
+  const out = buildRecoveredAssistantText(THREAD, page, 55);
+  assert(/only the first 40 of 55 artifacts/.test(out), `missing truncation disclosure:\n${out}`);
+  assert(/15 were not examined/.test(out), `missing unexamined count:\n${out}`);
+  assert(/never read by recovery/.test(out), "truncation was not carried into Gaps");
+  assert(hasReportShape(out), "truncated stub lost report shape");
+});
+
+Deno.test("a thread that fits inside the page cap makes no truncation claim", () => {
+  const out = buildRecoveredAssistantText(THREAD, [modelRecorded(), autoPersisted()], 2);
+  assert(!/not examined/.test(out), `claimed truncation on a complete fetch:\n${out}`);
+  assert(!/never read by recovery/.test(out));
+});
+
+Deno.test("an absent count makes no claim either way (back-compat)", () => {
+  for (const count of [undefined, null]) {
+    const out = buildRecoveredAssistantText(THREAD, [modelRecorded()], count);
+    assert(!/not examined/.test(out), `invented a truncation claim from a ${count} count`);
+  }
+});
+
+Deno.test("the singular case reads correctly", () => {
+  const page = Array.from({ length: 40 }, (_, i) => autoPersisted({ value: `row-${i}@example.com` }));
+  const out = buildRecoveredAssistantText(THREAD, page, 41);
+  assert(/1 was not examined/.test(out), `bad singular agreement:\n${out}`);
+  assert(/1 artifact on this thread/.test(out));
+});
+
+// ── NULL-confidence rows must not eat the page cap from the top ──────────────
+//
+// Postgres orders NULLs FIRST under `ORDER BY confidence DESC`. Without
+// `nullsFirst: false` every unscored row sorted ABOVE the highest-confidence
+// finding and consumed the 40-row limit before a single real one was fetched.
+Deno.test("the artifact query pushes NULL confidence last", async () => {
+  const src = await Deno.readTextFile(new URL("./recovery.ts", import.meta.url));
+  const orderLine = src.split("\n").find((l) => l.includes(`.order("confidence"`));
+  assert(orderLine, "confidence ordering disappeared from recovery.ts");
+  assert(
+    /nullsFirst:\s*false/.test(orderLine!),
+    "recovery's confidence ordering lost `nullsFirst: false` — NULL-confidence rows will sort above real findings and eat the page cap",
+  );
+});
+
+Deno.test("the exact row count is passed into the builder, not just fetched", async () => {
+  const src = await Deno.readTextFile(new URL("./recovery.ts", import.meta.url));
+  assert(/count:\s*"exact"/.test(src), "recovery stopped requesting an exact count");
+  assert(
+    /buildRecoveredAssistantText\([^)]*artifactCount/.test(src),
+    "the exact count is fetched but never handed to buildRecoveredAssistantText — the stub can only see its own page",
+  );
+});
+
+// ── "Unexamined" is total minus FETCHED, never total minus DISPLAYED ─────────
+//
+// Review of the shipped fix: the caller passes `reviewedArtifacts` — the fetched
+// page after applyReviewsToArtifacts drops rows the analyst marked FALSE — and
+// the builder derived `fetched` from that array. Every analyst-dismissed row was
+// therefore counted as one recovery never looked at. That is not merely off by
+// N; it is backwards. A dismissed row is one the analyst examined most closely.
+Deno.test("analyst-dismissed rows are NOT reported as unexamined", () => {
+  // Raw total 55, query fetched 40, reviews suppressed 10 => 30 displayed.
+  const displayed = Array.from({ length: 30 }, (_, i) => autoPersisted({ value: `kept-${i}@example.com` }));
+  const out = buildRecoveredAssistantText(THREAD, displayed, 55, 40);
+
+  assert(/only the first 40 of 55 artifacts/.test(out), `wrong fetched figure:\n${out}`);
+  assert(/15 were not examined/.test(out), `expected 15 unexamined:\n${out}`);
+  assert(!/25 were not examined/.test(out), "analyst-dismissed rows were counted as unexamined");
+  assert(/15 artifacts on this thread were never read by recovery/.test(out));
+});
+
+Deno.test("with no reviews applied, displayed == fetched and the figure is unchanged", () => {
+  const page = Array.from({ length: 40 }, (_, i) => autoPersisted({ value: `row-${i}@example.com` }));
+  const out = buildRecoveredAssistantText(THREAD, page, 55, 40);
+  assert(/15 were not examined/.test(out), `regression in the no-review path:\n${out}`);
+});
+
+Deno.test("omitting fetchedCount falls back to the array length (back-compat)", () => {
+  const page = Array.from({ length: 40 }, (_, i) => autoPersisted({ value: `row-${i}@example.com` }));
+  // Identical to passing 40 explicitly, because no reviews were applied.
+  assertEquals(
+    buildRecoveredAssistantText(THREAD, page, 55),
+    buildRecoveredAssistantText(THREAD, page, 55, 40),
+  );
+});
+
+Deno.test("reviews that suppress the ENTIRE page still report only the true gap", () => {
+  // Every fetched row dismissed. Recovery still examined 40 of 55.
+  const out = buildRecoveredAssistantText(THREAD, [], 55, 40);
+  assert(/15 were not examined/.test(out), `wrong gap on a fully-suppressed page:\n${out}`);
+  assert(!/55 were not examined/.test(out), "an empty display array was read as an empty fetch");
+  assert(hasReportShape(out), "fully-suppressed stub lost report shape");
+});
+
+Deno.test("a fetch that reached the whole thread claims no gap, whatever reviews did", () => {
+  const displayed = Array.from({ length: 12 }, (_, i) => autoPersisted({ value: `kept-${i}@example.com` }));
+  const out = buildRecoveredAssistantText(THREAD, displayed, 20, 20);
+  assert(!/not examined/.test(out), `invented a gap when the fetch was complete:\n${out}`);
+});
+
+Deno.test("the call site passes the RAW page length, not the reviewed array", async () => {
+  const src = await Deno.readTextFile(new URL("./recovery.ts", import.meta.url));
+  // Anchor on the CALL, not the `export function` declaration — indexOf on the
+  // bare name finds the declaration first and the guard passes vacuously.
+  const at = src.indexOf("const text = buildRecoveredAssistantText(");
+  assert(at !== -1, "the recovery call site moved or was renamed");
+  const call = src.slice(at, at + 400);
+  assert(
+    /\(artifacts \?\? \[\]\)\.length/.test(call),
+    "the fetched-count argument is no longer the raw query result — analyst-dismissed rows will be miscounted as unexamined again",
+  );
+});

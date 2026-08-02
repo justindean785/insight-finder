@@ -101,6 +101,54 @@ describe("normalizeProviderError — meaningful, never a bare HTTP code (Issue #
     expect(normalizeProviderError("synapsint_lookup", null, 500)).toMatch(/server error|upstream/i);
     expect(normalizeProviderError("github_user", null, null)).toMatch(/without reporting|logs/i);
   });
+
+  // Production, thread e66255da: markdown_extract was surfaced in the Tool-Health
+  // panel as "Provider server error (HTTP 500) — an upstream outage on the
+  // provider's side. Retry later." The actual stored error_msg was
+  // "markdown.new 500: File too large (17MB). Maximum size is 10MB" — a
+  // deterministic input-size rejection that will fail identically forever. The
+  // generic sentence both hid the cause and gave the analyst false hope.
+  it("a 5xx carrying a non-retryable input problem is not sold as an outage", () => {
+    const msg = normalizeProviderError(
+      "markdown_extract",
+      "markdown.new 500: File too large (17MB). Maximum size is 10MB",
+      500,
+    );
+    expect(msg).toMatch(/File too large \(17MB\)/);
+    expect(msg).toMatch(/Maximum size is 10MB/);
+    expect(msg).not.toMatch(/upstream outage/i);
+    expect(msg).not.toMatch(/retry later/i);
+    expect(msg).toMatch(/retrying the same input will fail the same way/i);
+  });
+
+  it("a 5xx with a genuine upstream message keeps the provider's words AND the retry advice", () => {
+    const msg = normalizeProviderError("synapsint_lookup", "upstream returned HTTP 502 bad gateway", 502);
+    expect(msg).toMatch(/bad gateway/i);
+    expect(msg).toMatch(/retry later/i);
+  });
+
+  it("a 5xx with no message at all still falls back to the generic outage sentence", () => {
+    const msg = normalizeProviderError("synapsint_lookup", null, 500);
+    expect(msg).toMatch(/upstream outage/i);
+    expect(msg).toMatch(/retry later/i);
+  });
+
+  it("a 400 keeps the provider's explanation instead of guessing at 'unsupported selector'", () => {
+    const msg = normalizeProviderError(
+      "hunter_email_finder",
+      "hunter 400: domain parameter is required",
+      400,
+    );
+    expect(msg).toMatch(/domain parameter is required/);
+    expect(msg).not.toMatch(/upstream outage/i);
+    expect(msg).not.toMatch(/unsupported selector/i);
+  });
+
+  // The taxonomy is unchanged — this fix is about wording, not classification.
+  it("classification of these rows is unchanged", () => {
+    expect(classifyDetailedOutcome("failed", "markdown.new 500: File too large (17MB). Maximum size is 10MB", 500)).toBe("failed");
+    expect(classifyDetailedOutcome("failed", "hunter 400: domain parameter is required", 400)).toBe("failed");
+  });
 });
 
 describe("aggregateToolHealth — honest per-tool rollup (Issue #1)", () => {
