@@ -12,7 +12,7 @@ const corsHeaders = {
 };
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
+const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY");
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 // ---------- mirrored defenses ----------
@@ -225,13 +225,14 @@ Deno.serve(async (req) => {
     if (!authHeader?.startsWith("Bearer ")) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
-    // Fail closed (not just incidentally) if SUPABASE_ANON_KEY is unset —
-    // mirrors osint-agent/auth.ts. Without this, createClient(URL, undefined)
-    // only fails later, by accident, when auth.getUser() errors — audit F19.
+    // F19 fail-closed: without an anon key we cannot build a user-scoped client,
+    // so we cannot verify identity or the admin role. Refuse rather than fall
+    // through to any privileged path.
     if (!SUPABASE_ANON_KEY) {
+      console.error("[security-test-lab] ANON_KEY_MISSING: refusing request (fail-closed)");
       return new Response(
-        JSON.stringify({ error: "Service Misconfigured", code: "ANON_KEY_MISSING" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        JSON.stringify({ error: "ANON_KEY_MISSING", detail: "SUPABASE_ANON_KEY is not configured; refusing to run without user-scoped auth." }),
+        { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
     const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
