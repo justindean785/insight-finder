@@ -25,7 +25,7 @@ import {
   sanitizeToolOutput,
   capPartsSize,
   capToolPartPayloads,
-  stripJsonbUnsafeControlChars,
+  stripNulCharacters,
   MAX_PERSISTED_ASSISTANT_PARTS_BYTES,
 } from "./safety.ts";
 import { sanitizeModelMessages, capToolResultOutputs, summarizeToolResultValue } from "./message-sanitize.ts";
@@ -1278,7 +1278,7 @@ Deno.serve(async (req) => {
           // helpers do can reintroduce one. A single NUL anywhere in this tree
           // fails the insert outright and discards the whole finished report —
           // production, 2026-08-02, 12,736 characters lost. See safety.ts.
-          const safeParts = stripJsonbUnsafeControlChars(
+          const safeParts = stripNulCharacters(
             capPartsSize(cappedParts, MAX_PERSISTED_ASSISTANT_PARTS_BYTES),
           );
           safePartsForCache = safeParts as unknown[];

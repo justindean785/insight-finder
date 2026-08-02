@@ -6,7 +6,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import type { Tool } from "npm:ai@6";
-import { hashInput, normalizeForHash, sanitizeToolOutput, stripJsonbUnsafeControlChars, TOOL_CACHE_LRU } from "./safety.ts";
+import { hashInput, normalizeForHash, sanitizeToolOutput, stripNulCharacters, TOOL_CACHE_LRU } from "./safety.ts";
 import { tierForTool, modelForTool, type Tier } from "./models.ts";
 import { costForTool } from "./costs.ts";
 import { DEFAULT_TOOL_TTL_MS, NO_CACHE_TOOLS, redactSensitiveToolInput, TOOL_TTL_MS } from "./validation.ts";
@@ -1190,8 +1190,8 @@ export function wrapToolsWithCache(
                 // reached assistant.parts and destroyed the final report. Fixing
                 // only the message insert would leave that early signal broken
                 // and the cache silently un-writable for the offending tool.
-                input_json: stripJsonbUnsafeControlChars(inputJson),
-                output_json: stripJsonbUnsafeControlChars(
+                input_json: stripNulCharacters(inputJson),
+                output_json: stripNulCharacters(
                   result as unknown as Record<string, unknown>,
                 ),
                 selector_normalized: sel || null,
