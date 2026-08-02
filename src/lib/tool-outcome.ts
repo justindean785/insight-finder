@@ -94,6 +94,17 @@ const RATELIMIT_RE = /\brate[\s-]?limit/i;
 const CONFIG_RE = /invalid (?:or unauthorized )?(?:api )?key|unauthorized key|api[\s-]?key|missing[\s_-]?key|not configured|no api key|payment required|insufficient (?:credit|balance)|quota exceeded/i;
 const DENIED_RE = /\bforbidden\b|access denied/i;
 
+// A 5xx does NOT always mean "the provider is down". Providers routinely answer
+// a deterministic, non-retryable input problem with a 500 — markdown.new returns
+// `markdown.new 500: File too large (17MB). Maximum size is 10MB` for an
+// oversized PDF. Painting every 5xx as "an upstream outage — retry later" tells
+// the analyst to re-run a call that can never succeed, and discards the one line
+// that says why. Kept deliberately narrow: only phrases that describe the
+// REQUEST being out of bounds, never a generic "conversion failed"/"error"
+// (those really can be transient).
+const NON_RETRYABLE_5XX_RE =
+  /too large|too big|maximum size|max(?:imum)? (?:file )?(?:size|length)|size limit|exceeds? the (?:maximum|limit|size)|payload too|unsupported (?:file|format|content|media|type)|malformed|invalid (?:url|input|file|document|format)/i;
+
 /**
  * Refine a coarse stored outcome (`ok`/`skipped`/`empty`/`failed`, or null for
  * legacy rows) + its error/status into ONE canonical category.
@@ -183,8 +194,22 @@ export function normalizeProviderError(
       if (code === 402 || /payment|quota|credit|balance/i.test(raw)) return `Provider quota/billing limit reached${code ? ` (HTTP ${code})` : ""} — top up or wait for the quota to reset.`;
       return `Provider authentication failed (HTTP ${code ?? 401}) — the API key is missing or unauthorized.`;
     case "failed":
-      if (code != null && code >= 500) return `Provider server error (HTTP ${code}) — an upstream outage on the provider's side. Retry later.`;
-      if (code === 400 || code === 422) return `Provider rejected the request (HTTP ${code}) — likely an unsupported selector type or malformed input for this tool, not an outage.`;
+      // Never throw away the provider's own words. `raw` is the only place the
+      // actual cause survives; the generic sentence is a fallback for when the
+      // provider gave us nothing, not a replacement for what it did give us.
+      if (code != null && code >= 500) {
+        if (short && NON_RETRYABLE_5XX_RE.test(raw)) {
+          return `Provider rejected the input (HTTP ${code}) — ${short}. A limit of the request itself, not an outage: retrying the same input will fail the same way.`;
+        }
+        return short
+          ? `Provider server error (HTTP ${code}) — ${short}. Likely an upstream fault; retry later.`
+          : `Provider server error (HTTP ${code}) — an upstream outage on the provider's side. Retry later.`;
+      }
+      if (code === 400 || code === 422) {
+        return short
+          ? `Provider rejected the request (HTTP ${code}) — ${short}. Not an outage; the input or selector is wrong for this tool.`
+          : `Provider rejected the request (HTTP ${code}) — likely an unsupported selector type or malformed input for this tool, not an outage.`;
+      }
       return short || `${toolName} failed with a provider error.`;
     case "unknown":
       return `${toolName} failed without reporting an error message or status code — check the edge function logs for this call.`;

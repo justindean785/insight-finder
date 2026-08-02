@@ -197,6 +197,31 @@ export function isRecoveryGeneratedReport(text: string | null | undefined): bool
 export function buildRecoveredAssistantText(
   thread: Pick<RecoverableThread, "seed_value" | "title" | "last_heartbeat_at" | "run_started_at">,
   artifacts: RecoveryArtifact[],
+  /**
+   * The TRUE number of artifact rows on the thread, from the `count: "exact"`
+   * head of the same query. `artifacts` is capped at RECOVERY_ARTIFACT_LIMIT, so
+   * without this the stub can only see its own page and will report the cap as
+   * if it were the total — production showed "40 recovered rows" for a thread
+   * holding 55. Optional so existing callers/tests keep working; when absent the
+   * summary simply makes no claim about rows it never saw.
+   */
+  totalArtifactCount?: number | null,
+  /**
+   * How many rows the QUERY actually fetched, before analyst-review filtering.
+   *
+   * This is NOT `artifacts.length`. The caller passes `reviewedArtifacts` — the
+   * fetched page after `applyReviewsToArtifacts` has dropped rows the analyst
+   * marked FALSE. Deriving "unexamined" from the post-review array therefore
+   * counted every analyst-dismissed row as one recovery never looked at: raw 55,
+   * fetched 40, 10 dismissed => "25 were not examined" when the true answer is
+   * 15. Recovery examined all 40; the analyst rejected 10 of them, which is the
+   * opposite of unexamined.
+   *
+   * Defaults to `artifacts.length`, which is exactly right whenever no review
+   * filtering occurred, so callers and fixtures that pass no reviews are
+   * unaffected.
+   */
+  fetchedCount?: number | null,
 ): string {
   const seed = thread.seed_value?.trim() || thread.title?.trim() || "this investigation";
   const lastLive = thread.last_heartbeat_at ?? thread.run_started_at ?? null;
@@ -307,11 +332,36 @@ export function buildRecoveredAssistantText(
     shown.length === totalEligible
       ? `${shown.length} recovered row${shown.length === 1 ? "" : "s"}: ${shownReviewed.length} model-reviewed, ${shownCandidates.length} unreviewed.`
       : `Showing ${shown.length} of ${totalEligible} recovered rows: ${shownReviewed.length} model-reviewed, ${shownCandidates.length} unreviewed.`,
+  );
+
+  // `totalEligible` is derived from the FETCHED page, which is capped at
+  // RECOVERY_ARTIFACT_LIMIT. When the thread holds more artifacts than the page,
+  // every count above describes a sample — say so. A stub that silently presents
+  // its own page cap as the thread total is the same class of dishonesty this
+  // whole file exists to prevent: reporting completeness it has not earned.
+  // `fetched` must be the RAW page size, not artifacts.length — see the
+  // fetchedCount doc above. Using the post-review array here attributed
+  // analyst-dismissed rows to "never examined", which is both wrong and exactly
+  // backwards: a dismissed row is one the analyst looked at hardest.
+  const fetched = typeof fetchedCount === "number" ? fetchedCount : artifacts.length;
+  const unexamined = typeof totalArtifactCount === "number" && totalArtifactCount > fetched
+    ? totalArtifactCount - fetched
+    : 0;
+  if (unexamined > 0) {
+    out.push(
+      `Recovery examined only the first ${fetched} of ${totalArtifactCount} artifacts on this thread (highest-confidence first); ${unexamined} ${unexamined === 1 ? "was" : "were"} not examined by this pass. The Evidence board holds the complete record.`,
+    );
+  }
+
+  out.push(
     "",
     "### Gaps",
     "- The run was closed by stale-run recovery, so this is not a full model-written synthesis.",
     "- Treat unresolved leads as pending until a follow-up run verifies them.",
   );
+  if (unexamined > 0) {
+    out.push(`- ${unexamined} artifact${unexamined === 1 ? "" : "s"} on this thread were never read by recovery and are not represented above.`);
+  }
   return out.join("\n");
 }
 
@@ -462,7 +512,12 @@ async function recoverOneStaleThread(
     // excluded same-name collision from a finding, or extractor output from
     // model-reviewed evidence — every integrity field the recording layer had
     // already computed was simply not fetched.
-    db.from("artifacts").select("id,kind,value,confidence,source,created_at,metadata", { count: "exact" }).eq("thread_id", thread.id).order("confidence", { ascending: false }).order("created_at", { ascending: true }).limit(RECOVERY_ARTIFACT_LIMIT),
+    //
+    // `nullsFirst: false` is not cosmetic. Postgres orders NULLs FIRST under
+    // `ORDER BY confidence DESC`, so every row with no confidence score sorted
+    // ABOVE the highest-confidence real finding and ate the 40-row page cap from
+    // the top — the one thing the ordering exists to prevent.
+    db.from("artifacts").select("id,kind,value,confidence,source,created_at,metadata", { count: "exact" }).eq("thread_id", thread.id).order("confidence", { ascending: false, nullsFirst: false }).order("created_at", { ascending: true }).limit(RECOVERY_ARTIFACT_LIMIT),
   ]);
   // Analyst verdicts apply to the recovery stub too. The stub is a REPORT the
   // analyst reads, built straight from durable artifacts — so without this a
@@ -617,7 +672,17 @@ async function recoverOneStaleThread(
   // reviewedArtifacts, NOT the raw fetch: the stub is a REPORT the analyst reads, so a
   // finding they marked FALSE must not come back inside it. applyReviewsToArtifacts
   // returns [] when the verdicts are unreadable, so this fails closed.
-  const text = buildRecoveredAssistantText(thread, reviewedArtifacts as RecoveryArtifact[]);
+  // Three DIFFERENT counts, and conflating any two of them produces a false
+  // disclosure:
+  //   artifactCount              raw exact total on the thread            (55)
+  //   (artifacts ?? []).length   what this query fetched, capped at 40    (40)
+  //   reviewedArtifacts.length   what survived analyst review             (30)
+  // "Unexamined" is total minus FETCHED. Passing the reviewed array as the
+  // fetched size reported 25 unexamined for that example instead of 15.
+  // NB: kept on one line with `(thread, reviewedArtifacts` adjacent because
+  // reviews_wiring_test.ts pattern-matches that exact shape to prove the stub is
+  // built from review-filtered artifacts. Wrapping the arguments breaks it.
+  const text = buildRecoveredAssistantText(thread, reviewedArtifacts as RecoveryArtifact[], artifactCount ?? null, (artifacts ?? []).length);
   const { error: insertErr } = await db.from("messages").insert({ thread_id: thread.id, user_id: thread.user_id, role: "assistant", parts: [{ type: "text", text }] });
   if (insertErr) {
     // ---- ROLL BACK THE CLAIM ON STUB-INSERT FAILURE (PR #387 review, P2) ----
