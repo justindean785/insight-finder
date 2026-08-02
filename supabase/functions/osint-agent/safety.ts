@@ -274,8 +274,11 @@ function isUiToolPart(type: unknown): boolean {
  * Written with unicode escapes on purpose: embedding the literal bytes makes this
  * source file itself binary to grep and diff.
  */
+/* eslint-disable no-control-regex -- stripping these characters is the entire
+   point of this expression; see the incident note above. */
 // deno-lint-ignore no-control-regex
 const JSONB_UNSAFE_CONTROL_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+/* eslint-enable no-control-regex */
 
 /**
  * Recursively strip JSONB-unsafe control characters from every string leaf.
