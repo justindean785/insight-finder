@@ -248,6 +248,61 @@ function isUiToolPart(type: unknown): boolean {
   return typeof type === "string" && (type.startsWith("tool-") || type === "dynamic-tool");
 }
 
+/**
+ * Control characters Postgres will not accept inside a JSONB string.
+ *
+ * THE INCIDENT (2026-08-02, thread e66255da). `http_fingerprint` fetched a host
+ * whose response contained a literal NUL. It rode into `assistant.parts`, and the
+ * insert failed:
+ *
+ *   [tool_call_cache] write failed for http_fingerprint: unsupported Unicode escape sequence
+ *   assistant_message_insert_fail  error: "unsupported Unicode escape sequence"
+ *   completion_contract_unmet  assistant_row_persisted: false  assistant_chars: 12736
+ *
+ * A COMPLETE 12,736-character final report was produced and then thrown away by a
+ * one-character validation error, after 28 minutes and $0.97 of tool spend. The
+ * cache write had already failed the same way two minutes earlier; nothing acted
+ * on that warning because nothing was watching for it.
+ *
+ * NUL is the byte Postgres names explicitly, but the whole C0 range is unsafe to
+ * round-trip through JSONB, so this strips C0 except the three whitespace
+ * characters that are legal and meaningful in text (tab, newline, carriage
+ * return), plus DEL. Scrubbing is deliberately silent: a control byte carries no
+ * analytic value, and the alternative -- as production proved -- is losing the
+ * entire report.
+ *
+ * Written with unicode escapes on purpose: embedding the literal bytes makes this
+ * source file itself binary to grep and diff.
+ */
+// deno-lint-ignore no-control-regex
+const JSONB_UNSAFE_CONTROL_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+
+/**
+ * Recursively strip JSONB-unsafe control characters from every string leaf.
+ *
+ * Applied at the PERSISTENCE boundary rather than at each tool return, so a write
+ * path added later cannot bypass it. Structure, key order, types and numbers are
+ * preserved exactly -- only string contents change, and only by removing bytes
+ * that cannot be stored at all.
+ */
+export function stripJsonbUnsafeControlChars<T>(value: T): T {
+  if (typeof value === "string") {
+    return value.replace(JSONB_UNSAFE_CONTROL_RE, "") as unknown as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) => stripJsonbUnsafeControlChars(v)) as unknown as T;
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      // A poisoned KEY fails the insert just as hard as a poisoned value.
+      out[k.replace(JSONB_UNSAFE_CONTROL_RE, "")] = stripJsonbUnsafeControlChars(v);
+    }
+    return out as unknown as T;
+  }
+  return value;
+}
+
 // Per-part payload cap applied to a UIMessage.parts array BEFORE it is written
 // to `messages.parts`. A single tool (e.g. socialfetch_lookup returning a full
 // video dump) can emit a 600KB+ `output.data`; stored verbatim it bloats the
