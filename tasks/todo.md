@@ -644,3 +644,29 @@ Deploy: backend ships via Lovable sync (sync `osint-agent/` → `seeker-spark-se
 **Gate (local):** targeted nudge tests 21/21; full edge suite 634 pass / **2 pre-existing timer-leak fails** (`crash_resilience_test.ts`, `gemini_parallel_pairing_test.ts` — confirmed identical on clean `origin/main`, untouched by this PR) / 3 ignored; typecheck ✓; build ✓; frontend vitest 900/900 ✓; changed files eslint clean; `deno check` clean (index.ts 47 = 47 baseline, 0 new).
 
 **NOT in scope / gated:** no deterministic extractor; no frontend 0-tools counter fix (`useInsightsData.ts` / counters / realtime — separate FE PR, other owner); no migrations; not stamped/mirror-synced/deployed. Merge + Lovable deploy are JD-gated; live retest per handoff after deploy.
+
+
+---
+
+## 2026-08-03 — Codex UI command-center pass
+
+**Branch:** `codex/ui-command-center-20260803` from `main` @ `a23fbc9`. Frontend-only. No backend, migrations, mirror sync, deployment, or merge.
+
+### Plan
+
+- [x] Capture the current Lovable/auth surface and inspect the current GitHub `main` frontend.
+- [x] Audit production-visible mock/demo data and branding drift.
+- [ ] Rebuild the signed-out gateway as a premium, responsive analyst operations surface.
+- [ ] Add restrained instrument-panel utilities and reduced-motion/performance safeguards.
+- [ ] Polish branded route loading and empty-state presentation without changing data semantics.
+- [ ] Add focused rendering/contract tests for the changed surfaces.
+- [ ] Run CI-equivalent typecheck, lint, unit tests, and build.
+- [ ] Open a draft PR; verify the Vercel preview at desktop and mobile widths.
+- [ ] Record results, evidence, and remaining risks here.
+
+### Guardrails
+
+- Preserve evidence counts, confidence tiers, chain-of-custody semantics, source labels, review states, run-state logic, and all backend contracts.
+- No production mock metrics or fake case data.
+- Keep `ReportPreview` dev-only and excluded from the production bundle.
+- Do not merge, deploy, sync Lovable mirrors, or edit Claude-owned backend paths.
