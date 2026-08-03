@@ -830,10 +830,44 @@ describe("bulk-result rows do not become the subject's identity", () => {
     const unassigned = md.split("## Unassigned Observations")[1]?.split("\n## ")[0] ?? "";
     expect(unassigned).toContain("Ron Daoust");
     expect(unassigned).toContain("unrelated@corp.example");
-    expect(unassigned).toMatch(/NOT linked to the subject/i);
+    // Observable claim only: no RECORDED link, association UNRESOLVED. Absence
+    // of provenance is not proof of no relationship, and the wording must not
+    // assert the stronger fact.
+    expect(unassigned).toMatch(/no recorded link/i);
+    expect(unassigned).toMatch(/UNRESOLVED — not disproved/i);
     // Retained, not deleted — the Artifact Table still carries every row.
     const table = md.split("## Artifact / Entity Table")[1]?.split("\n## ")[0] ?? "";
     expect(table).toContain("Ron Daoust");
+  });
+
+  // SIDE B of the audit. Identity-cluster membership must NOT be the authority
+  // for subject association: most non-identity kinds generate no merge signal
+  // at all (`signalsFor` keys only email/phone/handle/address/ip/wallet/parent),
+  // so a domain, legal record, breach or URL cannot enter a cluster even when it
+  // IS the seed. Using cluster membership as the gate would quarantine real
+  // subject-linked evidence — the mirror image of the bug being fixed.
+  it("keeps seed-linked NON-identity evidence in the subject graph", () => {
+    const md = buildReportMarkdown({
+      seedValue: "example.com",
+      seedType: "domain",
+      artifacts: [
+        // Value-identical to the seed: this IS the subject.
+        art({ id: "d", kind: "domain", value: "example.com", source: "whois" }),
+        // Explicitly linked by metadata, though its kind never clusters.
+        art({ id: "l", kind: "legal_record", value: "Case 12-345", source: "court_search", metadata: { parent: "example.com" } }),
+        art({ id: "u", kind: "url", value: "https://example.com/about", source: "web_search", metadata: { queried_selector: "example.com" } }),
+        // A genuine bulk neighbour with no link of any kind.
+        art({ id: "x", kind: "email", value: "stranger@other.example", source: "oathnet_lookup" }),
+      ],
+    });
+    const network = md.split("## Network Connections")[1]?.split("\n## ")[0] ?? "";
+    const unassigned = md.split("## Unassigned Observations")[1]?.split("\n## ")[0] ?? "";
+    expect(network).toContain("example.com");
+    expect(network).toContain("Case 12-345");
+    expect(network).toContain("https://example.com/about");
+    // Side A still holds in the same fixture.
+    expect(network).not.toContain("stranger@other.example");
+    expect(unassigned).toContain("stranger@other.example");
   });
 
   it("leads Recommended Next Steps with resolving the association", () => {

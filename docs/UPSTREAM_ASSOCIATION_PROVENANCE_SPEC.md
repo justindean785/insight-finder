@@ -129,6 +129,64 @@ fixed, because fixing dead code silently is how it later ships unreviewed.
 
 ---
 
+## 4a. Audit: can identity-cluster membership stand in for subject association?
+
+**No.** Asked and answered empirically, not by inspection.
+
+`signalsFor` (intel.ts) emits merge keys for only: `email`, `phone`,
+`username`/`handle` (plus `metadata.handle`), `address`, `ip`, `wallet`, and
+`metadata.parent`/`parent_seed`/`seed`. Everything else produces **no key**, and
+`bucketQualifiesAsCluster` rejects a singleton with `keys.size === 0`.
+
+| Group / kind | Can enter a cluster? | Survives the predicate as a seed-linked singleton? | Verdict |
+|---|---|---|---|
+| email, phone, address, ip, wallet | yes | yes | clusters normally |
+| username / handle / social with `metadata.handle` | yes | yes | clusters normally |
+| name / person | no key of its own | yes — `NAME_KINDS` short-circuit | clusters normally |
+| **domain / DNS / hosting** | **no** | **no** | would be quarantined |
+| **legal / public record** | only via `metadata.parent` | **no** without it | would be quarantined |
+| **threat / reputation** | **no** | **no** | would be quarantined |
+| **breach / corpus observation** | **no** | **no** | would be quarantined |
+| **url / web / archive** | **no** | **no** | would be quarantined |
+| **source-conflict rows** | **no** | **no** | would be quarantined |
+
+The failing case is not hypothetical: with seed `example.com`, a `domain`
+artifact whose value IS `example.com` produced no merge key, reached no cluster,
+and was removed from Network Connections and listed as unassigned — the domain
+quarantined out of its own investigation.
+
+**Resolution.** `isSubjectLinked` is now its own exported contract, independent
+of clustering, and the graph admits a row by EITHER route:
+
+```
+inSubjectGraph(a) = clusteredIds.has(a.id)          // corroboration
+                 || isSubjectLinked(a, seedValue)   // association
+```
+
+The four concerns stay separate, as they must:
+
+- **association** (`isSubjectLinked`) — is this row tied to the queried selector?
+- **corroboration** (cluster membership) — is it backed by a second signal?
+- **identity clustering** — which rows are identity CANDIDATES?
+- **Unassigned Observations** — retained rows whose association is genuinely
+  unresolved.
+
+Pinned by two tests that must both hold: an unrelated bulk neighbour stays out
+of the graph, and seed-linked `domain` / `legal_record` / `url` rows stay in.
+Mutation-verified — collapsing the gate back to cluster membership fails the
+second.
+
+**Wording.** The section states only what is observed: "no recorded link …
+association UNRESOLVED — not disproved". Absence of provenance is not proof of
+absent relationship, and the earlier phrasing ("neither corroborated nor tied to
+the selector") asserted both halves when only one was established.
+
+**Residual limitation, honestly stated:** a genuinely subject-linked row that
+carries no recorded link and does not corroborate — an IP discovered for the
+subject's domain, say — still lands in Unassigned. That is the upstream
+provenance gap (§2) surfacing, not a display bug, and the wording is calibrated
+to it.
+
 ## 5. What PR #410 does and does not establish
 
 **Does:** analyst-rejected, pipeline-excluded and unlinked single-artifact rows

@@ -1234,9 +1234,17 @@ export function buildReportMarkdown(input: ReportInput): string {
   // presented as their contact/social/identity connection merely because a bulk
   // breach response returned it. Those rows go to an explicit unassigned
   // surface instead of being laundered into the graph.
-  const assignedIds = new Set(clusterReport.clusters.flatMap((c) => c.artifacts.map((a) => a.id)));
-  const unassignedRows = seedValue ? artifacts.filter((a) => !assignedIds.has(a.id)) : [];
-  const graphArtifacts = seedValue ? artifacts.filter((a) => assignedIds.has(a.id)) : artifacts;
+  // TWO independent routes in, because they answer different questions:
+  //   association  — `isSubjectLinked`: this row is tied to the queried selector
+  //   corroboration — it reached a displayed identity cluster
+  // Identity-cluster membership ALONE is not a valid association test. Most
+  // kinds cannot cluster at all (`signalsFor` keys only email/phone/handle/
+  // address/ip/wallet/parent), so gating on it quarantined a domain out of its
+  // own investigation's graph. Verified by test, not assumed.
+  const clusteredIds = new Set(clusterReport.clusters.flatMap((c) => c.artifacts.map((a) => a.id)));
+  const inSubjectGraph = (a: Artifact): boolean => clusteredIds.has(a.id) || isSubjectLinked(a, seedValue);
+  const unassignedRows = seedValue ? artifacts.filter((a) => !inSubjectGraph(a)) : [];
+  const graphArtifacts = seedValue ? artifacts.filter(inSubjectGraph) : artifacts;
 
   // Group artifacts for entity table and network connections
   const byGroup = new Map<Group, Artifact[]>();
@@ -1378,7 +1386,11 @@ export function buildReportMarkdown(input: ReportInput): string {
   const unassignedSection = unassignedRows.length === 0
     ? "_Every retained observation is linked to the subject or corroborated._"
     : [
-        `_${unassignedRows.length} retained observation${unassignedRows.length === 1 ? " is" : "s are"} NOT linked to the subject. They reached no identity cluster: neither corroborated by a second signal nor tied to the queried selector. Bulk breach and person-search responses return whole rows of other people's fields — these are listed for audit, and must not be treated as the subject's contacts, identities or network without establishing a link._`,
+        // Says only what was actually observed. "Not linked" and "not
+        // corroborated" are separate facts and only the RECORDED-link half is
+        // established here — absence of a recorded link is not proof of no
+        // relationship, it is absence of provenance.
+        `_${unassignedRows.length} retained observation${unassignedRows.length === 1 ? " carries" : "s carry"} no recorded link to \`${display.selector}\` and reached no corroborated identity cluster, so ${unassignedRows.length === 1 ? "its" : "their"} association with the subject is UNRESOLVED — not disproved. Bulk breach and person-search responses return whole rows of other people's fields alongside the match. Listed here for audit; do not treat as the subject's contacts, identities or network until a link is established._`,
         "",
         ...unassignedRows.slice(0, 40).map((a) =>
           `- ${mdCodeSpan(sanitizeValueForLabel(a.value, false))} — ${mdEscape(displayKind(a))} _(via ${mdEscape(humanizeSourceChain(a.source))})_`,
@@ -1959,6 +1971,41 @@ function isSharedInfraKey(key: string): boolean {
  * (email / phone / username / address / parent-seed). Then we split any
  * cluster that spans conflicting US states.
  */
+/**
+ * Is this row explicitly tied to what we searched for?
+ *
+ * ASSOCIATION, and nothing else. Deliberately independent of identity
+ * clustering, which answers a different question: clustering decides which rows
+ * form identity CANDIDATES, and most kinds cannot participate in it at all —
+ * `signalsFor` only keys email / phone / handle / address / ip / wallet / parent.
+ * A domain, legal record, breach row or URL therefore never enters a cluster
+ * even when it IS the seed. Using cluster membership as an association proxy
+ * quarantined a domain out of its own investigation's network graph — the
+ * mirror image of the bug this work exists to fix.
+ *
+ * Recognised as a link: value identity (exact or handle-normalised), or a
+ * metadata field naming the queried selector. Sharing a SOURCE with the seed is
+ * NOT a link — that is precisely the bulk-batch fallacy.
+ *
+ * The extractor does not yet write most of these fields (see
+ * docs/UPSTREAM_ASSOCIATION_PROVENANCE_SPEC.md). Until it does, a bulk
+ * neighbour's honest answer is "no recorded link", which is what quarantines it.
+ */
+export function isSubjectLinked(a: Artifact, seedValue: string | null): boolean {
+  const seed = (seedValue ?? "").trim().toLowerCase();
+  if (!seed) return false;
+  const v = (a.value ?? "").trim().toLowerCase();
+  if (v === seed) return true;
+  const seedHandle = normalizeHandle(seedValue ?? "");
+  if (seedHandle && normalizeHandle(a.value ?? "") === seedHandle) return true;
+  const m = (a.metadata ?? {}) as Record<string, unknown>;
+  for (const k of ["parent", "parent_seed", "seed", "queried_selector", "matched_value", "selector"]) {
+    const raw = m[k];
+    if (typeof raw === "string" && raw.trim().toLowerCase() === seed) return true;
+  }
+  return false;
+}
+
 export function buildIdentityClusters(
   artifacts: Artifact[],
   seedValue: string | null,
@@ -2229,29 +2276,8 @@ export function buildIdentityClusters(
     return { artifacts: group, emails, usernames, phones, addresses, ips, names, states, areaCodes, sources, confidence, warnings: [], mergeReasons };
   };
 
-  /**
-   * Is this row explicitly tied to what we searched for?
-   *
-   * Value identity or a metadata field naming the queried selector. Sharing a
-   * source with the seed is NOT a link — that is exactly the bulk-batch
-   * fallacy. Note the extractor does not yet write most of these fields; until
-   * it does (see the upstream remediation spec) the honest answer for a bulk
-   * neighbour is "no link", which is what quarantines it.
-   */
   const seedMatchKey = (seedValue ?? "").trim().toLowerCase();
-  const seedHandleKey = normalizeHandle(seedValue ?? "");
-  const linksToSeed = (a: Artifact): boolean => {
-    if (!seedMatchKey) return false;
-    const v = (a.value ?? "").trim().toLowerCase();
-    if (v === seedMatchKey) return true;
-    if (seedHandleKey && normalizeHandle(a.value ?? "") === seedHandleKey) return true;
-    const m = (a.metadata ?? {}) as Record<string, unknown>;
-    for (const k of ["parent", "parent_seed", "seed", "queried_selector", "matched_value", "selector"]) {
-      const raw = m[k];
-      if (typeof raw === "string" && raw.trim().toLowerCase() === seedMatchKey) return true;
-    }
-    return false;
-  };
+  const linksToSeed = (a: Artifact): boolean => isSubjectLinked(a, seedValue);
 
   const out: IdentityCluster[] = [];
   let idx = 0;
