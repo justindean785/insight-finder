@@ -33,6 +33,7 @@ function seedIcon(seedType: string | null, title: string): LucideIcon {
 }
 import { toast } from "sonner";
 import { SwarmMark } from "@/components/ui/swarm-mark";
+import { isBreachKind } from "@/lib/breach-kinds";
 
 /** Upper bound on the global artifact rows pulled to compute per-thread
  *  sidebar badges. When this is hit the badges become a *sample*, not totals,
@@ -220,7 +221,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
       for (const a of rows) {
         const m = agg[a.thread_id] ?? { artifacts: 0, breaches: 0, lowConf: 0 };
         m.artifacts++;
-        if (a.kind?.toLowerCase() === "breach") m.breaches++;
+        if (isBreachKind(a.kind)) m.breaches++;
         if ((a.confidence ?? 0) < 50) m.lowConf++;
         agg[a.thread_id] = m;
       }

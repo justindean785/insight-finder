@@ -70,6 +70,10 @@ const KIND_TO_GROUP: Record<string, Group> = {
   host: "infrastructure",
   cert: "infrastructure",
   breach: "breach",
+  // The auto-persist collapse emits breach_exposure instead of many `breach`
+  // rows; without this the collapsed row silently fell through to "other".
+  breach_exposure: "breach",
+  credential_exposure: "breach",
   password: "breach",
   hash: "breach",
   leak: "breach",
