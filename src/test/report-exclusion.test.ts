@@ -296,11 +296,9 @@ describe("count terminology reconciles", () => {
 });
 
 // ---------------------------------------------------------------------------
-// intel.ts:1070 — an adjusted number must not be attributed to the source.
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // A pasted JSON/schema blob must not become a person-name seed.
+// (The confidence-attribution banner that used to sit here was empty — its
+// tests live under "Key Findings confidence attribution" further down.)
 // ---------------------------------------------------------------------------
 
 describe("structured-blob seed gate", () => {

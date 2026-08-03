@@ -62,6 +62,18 @@ describe("import boundaries — the exclusion primitive stays at the bottom", ()
     expect(imports).toContain("@/lib/artifact-exclusion");
   });
 
+  it("structured-input.ts is also a leaf, and imports nothing at runtime", () => {
+    // Same reason as artifact-exclusion.ts: both seed.ts and intel.ts consult it,
+    // so it must not be able to reach either of them.
+    expect(valueImports(read("lib/structured-input.ts"))).toEqual([]);
+  });
+
+  it("seed.ts depends on the structured-input primitive, not on intel.ts", () => {
+    const imports = valueImports(read("lib/seed.ts"));
+    expect(imports).toContain("@/lib/structured-input");
+    expect(imports).not.toContain("@/lib/intel");
+  });
+
   it("the primitive does not import React or the Supabase client", () => {
     const src = read("lib/artifact-exclusion.ts");
     expect(src).not.toMatch(/from ["']react["']/);

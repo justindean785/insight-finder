@@ -1,5 +1,5 @@
 import type { Artifact } from "@/hooks/useThreadArtifacts";
-import { detectSeed, extractDisplaySeed } from "@/lib/seed";
+import { detectSeed, extractDisplaySeed, STRUCTURED_INPUT_SELECTOR } from "@/lib/seed";
 import { toolActionLabel } from "@/lib/tool-display";
 import { humanizeSourceChain, tokenizeSourceChain } from "@/lib/report-source-labels";
 import { deriveToolStatus, deriveToolReason } from "@/lib/tool-run";
@@ -22,6 +22,7 @@ import {
   isPipelineExcluded as isPipelineExcludedPrimitive,
   isRejectedReviewState,
 } from "@/lib/artifact-exclusion";
+import { classifyStructuredInput } from "@/lib/structured-input";
 
 /** Analyst-grade group buckets for artifact kinds. */
 export type Group =
@@ -1193,6 +1194,20 @@ export function buildReportMarkdown(input: ReportInput): string {
   const low = artifacts.filter((a) => lbl(a) === "LOW");
   const failed = artifacts.filter((a) => lbl(a) === "FAILED");
 
+  // ONE certainty level, computed once, consumed by Executive Summary, Candidate
+  // Identity Clusters, Network Connections and Recommended Next Steps.
+  //
+  // Each of those surfaces used to phrase certainty for itself, which is how the
+  // live dossier could print "no fully-corroborated findings yet" in Key Findings
+  // while the summary and identity prose beside it presented a candidate as the
+  // subject. Candidate information may still be DISPLAYED — it is evidence — but
+  // no surface may assert or imply that a candidate IS the subject while this is
+  // true. `CONFIRMED` is the same bar Key Findings uses: 2+ independent source
+  // classes, or an analyst verdict.
+  const nothingCorroborated = confirmed.length === 0;
+  const UNCORROBORATED_NOTICE =
+    "_No finding is corroborated in this investigation — nothing reaches CONFIRMED (2+ independent source classes, or analyst review). Everything below is a CANDIDATE observation: displayed because it was returned, NOT established as the subject. Association still needs to be resolved before any of it is treated as the subject's._";
+
   const reviewTally = (() => {
     let verified = 0, rejected = 0, needs = 0;
     // Counted over ALL rows, not the analysed subset: this tally reports what
@@ -1291,6 +1306,10 @@ export function buildReportMarkdown(input: ReportInput): string {
       parts.push(`${audit.rejectedCount} returned row${audit.rejectedCount === 1 ? " was" : "s were"} excluded from analysis and are not counted above.`);
     }
     if (confirmed.length) parts.push(`${confirmed.length} finding${confirmed.length === 1 ? "" : "s"} observed in multiple sources or analyst-reviewed.`);
+    // Say it, rather than leaving it to be inferred from the absence of the
+    // sentence above. A summary that lists candidate identities without this
+    // reads as though one of them had been established.
+    else parts.push(`No finding is corroborated: nothing reaches CONFIRMED (2+ independent source classes, or analyst review), so every identity and connection reported below is a candidate observation rather than an established fact about the subject.`);
     if (verify.length + low.length) parts.push(`${verify.length + low.length} item${verify.length + low.length === 1 ? "" : "s"} need verification before reporting.`);
     if (failed.length) parts.push(`${failed.length} item${failed.length === 1 ? "" : "s"} marked as false positive.`);
     if (reviewSummaryBits.length) {
@@ -1457,7 +1476,11 @@ export function buildReportMarkdown(input: ReportInput): string {
     if (reputation.length) {
       sections.push(`**Threat / Reputation**\n` + reputation.map(line).join("\n"));
     }
-    return sections.length ? sections.join("\n\n") : "_No correlated entities yet._";
+    if (!sections.length) return "_No correlated entities yet._";
+    // "Network Connections" names these as the subject's graph. With nothing
+    // corroborated, that heading alone over-claims — state the certainty level
+    // in the same words the other surfaces use.
+    return (nothingCorroborated ? [UNCORROBORATED_NOTICE, ...sections] : sections).join("\n\n");
   })();
 
   const timeline = (() => {
@@ -1580,10 +1603,20 @@ export function buildReportMarkdown(input: ReportInput): string {
         `- **Resolve identity association first** — ${unassignedRows.length} retained observation${unassignedRows.length === 1 ? " is" : "s are"} not linked to \`${display.selector}\`. Establish which record, if any, belongs to the subject before pivoting off any of them; expanding from an unlinked record propagates the association error rather than testing it.`,
       ]
     : [];
+  // Contract item 5, remainder: with nothing corroborated, a next-steps list that
+  // opens with "consider these tools" implicitly endorses expanding from whatever
+  // candidate is on screen — treating association as already proven. The
+  // corroboration step therefore leads (after the association step, which is the
+  // sharper problem when it applies) rather than sitting under the tool gaps.
+  const corroborateFirst = nothingCorroborated && total > 0
+    ? [
+        `- **Corroborate before expanding** — no observation reaches CONFIRMED, so no candidate identity or connection below is established as the subject's. Seek a second independent source class for the strongest candidate before pivoting off it; expanding an uncorroborated candidate compounds the assumption instead of testing it.`,
+      ]
+    : [];
   const gapSteps = gaps.map((g) => `- **${g.kind}** — consider: ${g.suggested.map((t) => toolActionLabel(t)).join(", ")}`);
-  const nextSteps = associationFirst.length === 0 && gapSteps.length === 0
+  const nextSteps = associationFirst.length === 0 && corroborateFirst.length === 0 && gapSteps.length === 0
     ? "_No additional tool groups suggested._"
-    : [...associationFirst, ...gapSteps].join("\n");
+    : [...associationFirst, ...corroborateFirst, ...gapSteps].join("\n");
 
   const sourceAppendix = audit.tools.length === 0
     ? "_None._"
@@ -1635,6 +1668,27 @@ export function buildReportMarkdown(input: ReportInput): string {
         ? " _(ambiguous — a dotted token with an unrecognised suffix. Treated as a handle so it stays searchable; it is NOT established as a domain. Confirm the selector type before relying on domain-shaped tooling.)_"
         : ""
     }`,
+    // The persisted type is what the BACKEND recorded and what the investigation
+    // was actually routed on. When it disagrees with the analysis above, showing
+    // only one of them would either rewrite history or repeat an unsupported
+    // claim — so both are stated and neither is adopted.
+    ...(display.typeDisagreement
+      ? [
+          `- **Recorded type (backend):** ${display.persistedKind} — **DISAGREES** with the analysis above. The investigation was routed using the recorded type; this report does not adopt either reading as settled. Resolve the selector type before relying on type-specific tooling or treating type-derived pivots as established.`,
+        ]
+      : []),
+    // A structured payload is retained as provenance rather than mined for a
+    // subject. Saying nothing here would make the submission look like it never
+    // happened; naming a JSON key as the "subject" is the bug this replaced.
+    ...(display.structured
+      ? [
+          `- **Submitted input:** structured payload — ${display.structured.summary}.${
+            display.selector === STRUCTURED_INPUT_SELECTOR
+              ? " No selector could be defensibly extracted from it, and no subject identity has been derived from its contents."
+              : " The selector above was extracted from it; no subject identity has been derived from its remaining contents."
+          }`,
+        ]
+      : []),
     ...(clusterReport.seedName ? [`- **Detected subject:** ${clusterReport.seedName}`] : []),
     ...(clusterReport.seedState ? [`- **Detected location target:** ${clusterReport.seedState}`] : []),
     // recorded = analyzed + excluded, by construction. Printing the ANALYSED
@@ -1653,7 +1707,11 @@ export function buildReportMarkdown(input: ReportInput): string {
       : []),
     "",
     `## Candidate Identity Clusters`,
-    buildClusterSection(clusterReport, { includeWarnings: false }),
+    buildClusterSection(clusterReport, {
+      includeWarnings: false,
+      uncorroborated: nothingCorroborated,
+      uncorroboratedNotice: UNCORROBORATED_NOTICE,
+    }),
     "",
     `## Key Findings`,
     keyFindings,
@@ -1812,20 +1870,10 @@ function stripUrls(s: string): string {
  * "John Smith, Sacramento, CA 95814" is a legitimate name-and-location seed.
  */
 export function looksLikeStructuredBlob(s: string): boolean {
-  const t = s.trim();
-  if (!t) return false;
-  if (/^[[{]/.test(t)) {
-    try {
-      const parsed = JSON.parse(t);
-      if (parsed && typeof parsed === "object") return true;
-    } catch {
-      // A truncated or malformed paste won't parse — fall through to the shape check.
-    }
-    if (/["':]/.test(t)) return true; // opens like JSON and carries JSON punctuation
-  }
-  if (/<\/?[a-z][\w-]*(\s[^>]*)?>/i.test(t)) return true; // HTML / XML markup
-  // Dense JSON/markup punctuation. Quotes and brackets, not commas.
-  return (t.match(/[{}[\]"<>]/g) ?? []).length >= 4;
+  // Single implementation, in the leaf module, so the seed layer and the report
+  // layer cannot drift on what counts as structured. This wrapper stays because
+  // callers only ever want the boolean.
+  return classifyStructuredInput(s).structured;
 }
 
 /** Best-effort name + location detection from a free-form seed string. */
@@ -2420,10 +2468,25 @@ function clusterLabel(idx: number, c: Omit<IdentityCluster, "id" | "label" | "ma
 /** Render an identity-cluster section + collision warning for the markdown report. */
 export function buildClusterSection(
   report: ClusterReport,
-  opts: { includeWarnings?: boolean } = {},
+  opts: {
+    includeWarnings?: boolean;
+    /**
+     * Nothing in the investigation reaches CONFIRMED. The clusters are still
+     * shown — they are evidence — but the section must say outright that none of
+     * them is established as the subject, or a named cluster at confidence 88
+     * reads as an identification.
+     */
+    uncorroborated?: boolean;
+    /** Notice text, supplied by the caller so every surface uses one wording. */
+    uncorroboratedNotice?: string;
+  } = {},
 ): string {
   if (report.clusters.length === 0) return "_No identity clusters extracted yet._";
   const parts: string[] = [];
+  if (opts.uncorroborated && opts.uncorroboratedNotice) {
+    parts.push(opts.uncorroboratedNotice);
+    parts.push("");
+  }
   // The full report renders these warnings once at the top, so it opts out here
   // to avoid printing the banner twice; standalone callers keep them by default.
   if ((opts.includeWarnings ?? true) && report.warnings.length) {
