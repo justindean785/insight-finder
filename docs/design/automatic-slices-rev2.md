@@ -275,6 +275,106 @@ instrumentation a hard PR 1 prerequisite.
 
 ---
 
+## D. Integration map findings (added after an 8-surface read of `main`)
+
+A parallel read of the actual integration surface produced three corrections and one
+live defect. Each was re-verified by hand before being written here.
+
+### D1 — a correction to A1: `toolCapExceeded` is **not** on `main`
+
+A1 said `main` has "`reserveToolCall`, `isToolBudgetExhausted`, `toolCapExceeded`". Wrong
+on the third:
+
+```
+$ git show origin/main:.../orchestrator-budget.ts | grep -n toolCapExceeded
+  (no output)
+```
+
+`toolCapExceeded` and `type ToolCallBudget` are **#377's** symbols and exist nowhere on
+`main`. The parity conclusion is unchanged — `main` is still the strict superset of what
+matters, and both PRs should still close — but #377 is further from `main` than A1
+implied: its `capped`-only-on-rejection semantics *regress* against `main`, and its test
+directly contradicts `main`'s (`tool_budget_reserve_test.ts:24` asserts `capped === true`
+on the call that fills the cap; #377 asserts `false`).
+
+### D2 — LIVE DEFECT: a second tool wrapper with no admission gates at all
+
+`cache.ts:690` takes a completely separate path for `NO_CACHE_TOOLS`:
+
+```ts
+if (NO_CACHE_TOOLS.has(name) || typeof t?.execute !== "function") {
+  … execute: async (input, opts) => {   // timeout + heartbeat + tier tag + usage log
+```
+
+That wrapper has **no budget reservation, no circuit breaker, no `startCall`, and no
+finalize-window guard**. Membership (`validation.ts:157`) is `triage_seed`,
+`record_artifact`, `record_artifacts`, `record_evidence`,
+`hibp_pwned_passwords_kanon`, `unknown_tool_ignored`.
+
+Three are `ALWAYS_ALLOW` and exempt by design. Two cost 0. **`triage_seed` costs
+800 µUSD (`costs.ts:43`) and is NOT in `ALWAYS_ALLOW_TOOLS` (`runtime-policy.ts:237`).**
+It is a paid tool with zero admission control, today, on `main`, deployed.
+
+Realized exposure is small — 104 calls across 73 threads, $0.076 lifetime — so this is a
+correctness hole rather than a cost emergency. But it defeats the premise of PR 1: "the
+DB row lock is the only authority" is false while a paid tool reaches the provider
+without ever asking. **PR 1 must either route this wrapper through `reserve_tool_call`
+or ship a test pinning "every `NO_CACHE_TOOLS` member is cost 0 or `ALWAYS_ALLOW`".**
+Preference: route it, and add the test as the backstop.
+
+### D3 — a `CHECK` cannot enforce the one-way latch
+
+B7 and both prior reviews say "`CHECK`-enforced one-way latch". A `CHECK` constraint is
+row-local and cannot see `OLD`, so it can pin the *value domain* of the state column and
+nothing more. The transition guard needs a `BEFORE UPDATE` trigger — precedent already in
+this schema at `20260717000000_analyst_feedback_events.sql:71` — or a `WHERE`-guarded
+`UPDATE` inside the RPC, precedent `withRunMarkerGuard` (`recovery.ts:489`). B7's
+specification already named the trigger; this records *why* the `CHECK` alone is
+insufficient so it is not "simplified" back later.
+
+### D4 — #381 is not overlapping work; it is a deliberate deletion
+
+Rev 1 §1d listed #381 (deterministic finalize gate) as overlapping PR 3. It landed in
+`cb429f8` and was then **deliberately removed** by `e8313e5`, with a tombstone at
+`orchestrator-finalize.ts:200` and the rationale at `index.ts:852`. CLAUDE.md's
+termination-oscillation section forbids relitigating it. **#381 should be closed, not
+scheduled.**
+
+### D5 — serialize on a row lock, not an advisory lock
+
+Two incompatible advisory-lock namespaces already hash the same `thread_id`:
+`hashtextextended(_thread_id::text, 0)` (`20260717000000_analyst_feedback_events.sql:169`)
+and `hashtext(_thread_id::text)` (an unmerged security migration). A third would be a
+silent no-op against both. `SELECT … FROM investigation_runs WHERE id = ? FOR UPDATE`
+sidesteps the collision entirely and is what B1's corrected contract already specifies.
+
+### D6 — migration mechanics
+
+- **14-digit timestamp filename.** The repo mixes 8- and 14-digit forms
+  (`20260629_user_credits.sql`), which is exactly the ordering hazard `ci.yml`'s sort
+  comment calls out. Highest existing prefix is `20260727180000`.
+- **`artifacts.run_id` must be nullable with no NOT NULL.** Precedent
+  `20260709000000_artifacts_cluster_ids.sql`; the reason is recorded in code at
+  `lib/cluster.ts:416`, where a silently-dropped column previously produced a `23502` that
+  broke every `cluster_decision` insert in production.
+- Order within the file follows the project idiom: grants → `ENABLE ROW LEVEL SECURITY` →
+  policies → indexes → triggers.
+
+### D7 — sequencing: ship `finish_reason` alone, first
+
+`finishReason` is already on the SDK's `onStepFinish` event (`ai@6` emits one per step);
+`index.ts:1037` reads it and `index.ts:1049` writes it **only** behind
+`if (finalizeStarted)`. An ordinary investigate step ending `finishReason:"stop"` leaves
+**zero** trace anywhere. Widening that destructure and logging unconditionally is
+log-only, test-neutral, and touches no admission logic.
+
+Because `finish_reason` is now the retry predicate (B8), it should ship and run **alone**
+for long enough to establish a pre-change baseline, before the reservation work changes
+admission behaviour. Splitting it out also means the riskiest part of PR 1 is not gated
+on it.
+
+---
+
 ## C. Consolidated open blockers
 
 1. **PR 1's schema cannot reach production through this repo** (A2). Needs a decision on
@@ -283,6 +383,9 @@ instrumentation a hard PR 1 prerequisite.
 3. **Model-step cost accounting** (B4) — required before any cost-ceiling claim.
 4. **Headless-worker ceiling** — still unmeasured; gates `max_slices` and lease duration.
 5. **Retry attempt count** (B8) — blocked on an agreed duplicate-rate definition.
-6. **#377 / #383** — recommend closing both as superseded by #384; not authorised, not done.
+6. **#377 / #383 / #381** — recommend closing all three: #377 and #383 superseded by
+   #384, #381 deliberately deleted by `e8313e5` (D4). Not authorised, not done.
+7. **`NO_CACHE_TOOLS` admission gap** (D2) — a paid tool bypasses every cap on `main`
+   today. Must be closed inside PR 1 or PR 1's authority claim is false.
 
 No implementation. #408 stays draft pending review of this revision.
