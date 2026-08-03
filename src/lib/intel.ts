@@ -16,6 +16,7 @@ import {
   buildEvidenceViews,
   REPORT_EXCLUSION_REASONS,
   EXCLUSION_REASON_LABEL,
+  type ExclusionReason,
 } from "@/lib/exclusion";
 import { isPipelineExcluded as isPipelineExcludedPrimitive } from "@/lib/artifact-exclusion";
 
@@ -1006,9 +1007,34 @@ export function buildEvidenceMatrixMarkdown(
   /** Analyst verdicts by artifact id. Without these the matrix showed a
    *  rejected row under its original source-derived label. */
   reviews?: Record<string, ReviewAdjustment>,
+  opts?: {
+    /**
+     * Which exclusion reasons remove a row from the table. Defaults to ALL of
+     * them. `buildReportMarkdown` overrides this with
+     * `REPORT_EXCLUSION_REASONS` so collision rows stay in the entity table —
+     * they already have their own report section, and dropping them here too
+     * would break the recorded = analyzed + excluded reconciliation.
+     */
+    reasons?: readonly ExclusionReason[];
+    /**
+     * Append a labelled audit appendix listing what was removed. The standalone
+     * export wants it (it is the whole artifact); the in-report entity table
+     * does not, because the report already has an Excluded from Analysis
+     * section of its own.
+     */
+    includeExcludedAppendix?: boolean;
+  },
 ): string {
-  if (artifacts.length === 0) return "_No evidence recorded._";
-  const rows = artifacts.map((a) => {
+  // A rejected or pipeline-excluded row is not ordinary evidence wearing a
+  // FAILED label — FAILED is what a tool failure looks like, and mixing the two
+  // made an analyst verdict indistinguishable from an outage.
+  const { analysisArtifacts, excludedArtifacts } = buildEvidenceViews(
+    artifacts,
+    reviews,
+    { reasons: opts?.reasons },
+  );
+  if (analysisArtifacts.length === 0 && !excludedArtifacts.length) return "_No evidence recorded._";
+  const rows = analysisArtifacts.map((a) => {
     const label = labelForArtifact(a, reviews?.[a.id]);
     // #3: strip promotional "CONFIRMED" wording from the VALUE when the row is
     // not actually backend-CONFIRMED (render-only; artifact untouched).
@@ -1027,10 +1053,27 @@ export function buildEvidenceMatrixMarkdown(
     // inside the span and the cell stays intact.
     return `| ${mdEscape(mdCodeSpan(value))} | ${kind} | ${mdEscape(humanizeSourceChain(a.source, "—"))} | ${label} | ${a.confidence ?? "—"} | ${new Date(a.created_at).toISOString()} |`;
   });
+  const table = analysisArtifacts.length
+    ? [
+        "| Value | Kind | Source | Label | Confidence | First seen |",
+        "| --- | --- | --- | --- | --- | --- |",
+        ...rows,
+      ]
+    : ["_No evidence remains for analysis._"];
+  if (!opts?.includeExcludedAppendix || excludedArtifacts.length === 0) return table.join("\n");
   return [
-    "| Value | Kind | Source | Label | Confidence | First seen |",
-    "| --- | --- | --- | --- | --- | --- |",
-    ...rows,
+    ...table,
+    "",
+    "**Excluded from analysis** — retained for audit, not evidence.",
+    "",
+    ...excludedArtifacts.map(({ artifact: a, reason, redacted, displayValue }) => {
+      // `displayValue` is already the redacted placeholder for a possible-minor
+      // row: the exclusion is the point, the child's identifier is not.
+      const shown = redacted ? displayValue : sanitizeValueForLabel(displayValue, false);
+      return `- ${mdCodeSpan(shown)} — ${mdEscape(displayKind(a))} — **${EXCLUSION_REASON_LABEL[reason]}**${
+        redacted ? " _(value redacted — possible minor)_" : ""
+      } _(via ${mdEscape(humanizeSourceChain(a.source))})_`;
+    }),
   ].join("\n");
 }
 
@@ -1195,7 +1238,14 @@ export function buildReportMarkdown(input: ReportInput): string {
     ].join("\n");
   })();
 
-  const entityTable = buildEvidenceMatrixMarkdown(artifacts, reviews);
+  // `artifacts` is already the analysis view, so the partition inside is a
+  // no-op — except for collision rows, which REPORT_EXCLUSION_REASONS
+  // deliberately keeps (they have their own section, and dropping them here
+  // would break recorded = analyzed + excluded). No appendix: the report has
+  // its own "## Excluded from Analysis" section.
+  const entityTable = buildEvidenceMatrixMarkdown(artifacts, reviews, {
+    reasons: REPORT_EXCLUSION_REASONS,
+  });
 
   // #6: collision-flagged artifacts (namesakes / unrelated entities) are
   // quarantined into their own section and kept out of the main network.

@@ -89,7 +89,14 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
     }),
     [seed, artifacts, messages, reviews, reportType, toolActivityList, toolInvocations],
   );
-  const matrixMd = useMemo(() => buildEvidenceMatrixMarkdown(artifacts, reviews), [artifacts, reviews]);
+  // The copyable matrix is a standalone artifact, so it carries its own
+  // labelled audit appendix. Before this it was built from the UNPARTITIONED
+  // list, putting analyst-rejected rows in the evidence table under a FAILED
+  // label — indistinguishable from a tool that failed.
+  const matrixMd = useMemo(
+    () => buildEvidenceMatrixMarkdown(artifacts, reviews, { includeExcludedAppendix: true }),
+    [artifacts, reviews],
+  );
 
   const copy = (text: string, label: string) =>
     navigator.clipboard.writeText(text).then(() => toast.success(label), () => toast.error("Copy failed"));

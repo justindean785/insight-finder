@@ -17,6 +17,7 @@ import {
 } from "@/lib/intel";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import type { ReviewState } from "@/lib/review";
+import { REDACTED_MINOR_PLACEHOLDER } from "@/lib/artifact-exclusion";
 
 const art = (over: Partial<Artifact> = {}): Artifact => ({
   id: "1",
@@ -125,11 +126,25 @@ describe("buildToolAudit — rejected rows must not count as high-confidence", (
   });
 });
 
-describe("buildEvidenceMatrixMarkdown — rejected rows must render FAILED", () => {
-  it("renders the review-adjusted label", () => {
-    const rows = [art({ id: "x", confidence: 90, source: "github_user" })];
+// SUPERSEDED BY CONTRACT ITEM 9 — recorded here rather than deleted, because
+// the change is deliberate. The original assertion was "a rejected row renders
+// FAILED in the matrix", which pinned the intent that a rejected row must never
+// appear under its original source-derived label. Item 9 strengthens that: a
+// FAILED label is what a TOOL FAILURE looks like, so leaving analyst verdicts
+// in the evidence table wearing it made a dismissal indistinguishable from an
+// outage. The row now leaves the table entirely.
+describe("buildEvidenceMatrixMarkdown — rejected rows leave the evidence table", () => {
+  const rows = [art({ id: "x", value: "REJECTED_VALUE", confidence: 90, source: "github_user" })];
+
+  it("does not render the rejected row as ordinary evidence", () => {
     const md = buildEvidenceMatrixMarkdown(rows, { x: "wrong" });
-    expect(md).toContain("FAILED");
+    expect(md).not.toContain("REJECTED_VALUE");
+    expect(md).not.toContain("FAILED");
+  });
+
+  it("still scores it FAILED where scoring is what is being asked", () => {
+    // The label logic is unchanged; only the matrix's presentation moved.
+    expect(labelForArtifact(rows[0], "wrong")).toBe("FAILED");
   });
 });
 
@@ -534,6 +549,73 @@ describe("collision header and collision section cannot contradict", () => {
 
   it("explains the unresolved separation indicators in the section", () => {
     expect(collisionSection(md())).toMatch(/separation indicator|may belong to different people/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Contract item 9. The standalone Evidence Matrix (ReportTab's copy button) was
+// built from the UNPARTITIONED artifact list, so analyst-rejected and
+// pipeline-excluded rows sat in the ordinary evidence table wearing a FAILED
+// label — indistinguishable from a tool that failed.
+// ---------------------------------------------------------------------------
+
+describe("evidence matrix — excluded rows are not ordinary evidence", () => {
+  const kept = art({ id: "keep", kind: "email", value: "kept@example.com" });
+  const rejected = art({ id: "bad", kind: "username", value: "REJECTED_HANDLE", source: "github_user" });
+  const excludedKind = art({ id: "px", kind: "excluded", value: "PIPELINE_EXCLUDED", source: "whois" });
+  const minor = art({
+    id: "m", kind: "account", value: "MINOR_IDENTIFIER",
+    source: "web_search", metadata: { possible_minor: true },
+  });
+  const build = () =>
+    buildEvidenceMatrixMarkdown(
+      [kept, rejected, excludedKind, minor],
+      { bad: "wrong", m: "dismissed" },
+      { includeExcludedAppendix: true },
+    );
+
+  /** Table rows only — everything before the audit appendix. */
+  const tableRows = (md: string) =>
+    md.split("\n").filter((l) => l.trim().startsWith("|")).slice(2);
+
+  it("keeps rejected and pipeline-excluded rows out of the table", () => {
+    const rows = tableRows(build()).join("\n");
+    expect(rows).toContain("kept@example.com");
+    expect(rows).not.toContain("REJECTED_HANDLE");
+    expect(rows).not.toContain("PIPELINE_EXCLUDED");
+  });
+
+  it("retains them in an explicitly labelled audit appendix", () => {
+    const md = build();
+    expect(md).toContain("Excluded from analysis");
+    const appendix = md.split("Excluded from analysis")[1] ?? "";
+    expect(appendix).toContain("REJECTED_HANDLE");
+    expect(appendix).toContain("Rejected by analyst");
+  });
+
+  it("redacts a possible-minor value in the appendix", () => {
+    const md = build();
+    expect(md).not.toContain("MINOR_IDENTIFIER");
+    expect(md).toContain(REDACTED_MINOR_PLACEHOLDER);
+  });
+
+  it("omits the appendix when not asked for one", () => {
+    const md = buildEvidenceMatrixMarkdown([kept, rejected], { bad: "wrong" });
+    expect(md).not.toContain("Excluded from analysis");
+    expect(md).not.toContain("REJECTED_HANDLE");
+  });
+
+  it("leaves the in-report entity table's collision handling alone", () => {
+    // Collision rows keep their own report section, so the report's own call
+    // must not strip them from the entity table as well — that would break the
+    // recorded = analyzed + excluded reconciliation.
+    const md = buildReportMarkdown({
+      seedValue: "seed@example.com",
+      seedType: "email",
+      artifacts: [kept, art({ id: "col", kind: "name", value: "NAMESAKE_ROW", metadata: { collision: true } })],
+    });
+    const table = md.split("## Artifact / Entity Table")[1]?.split("\n## ")[0] ?? "";
+    expect(table).toContain("NAMESAKE_ROW");
   });
 });
 
