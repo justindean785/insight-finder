@@ -1091,7 +1091,13 @@ export function buildReportMarkdown(input: ReportInput): string {
 
   const audit = buildToolAudit(artifacts, reviews);
   const gaps = inferToolGaps(audit);
-  const clusterReport = buildIdentityClusters(artifacts, seedValue, reviews);
+  // MUST receive the UNPARTITIONED set. buildIdentityClusters filters analyst
+  // verdicts internally (see `live`, ~line 1782) so clusters still exclude
+  // rejected rows — but its minor-safety scan and the adult×minor SAFETY
+  // COLLISION check read this raw parameter. Passing the partitioned list let an
+  // analyst delete a child-safety warning by dismissing the possible_minor row,
+  // while the appendix went on printing that row's raw value.
+  const clusterReport = buildIdentityClusters(dedupedArtifacts, seedValue, reviews);
   const isNameSearch = !!detectNameLocationSeed(seedValue);
 
   // Group artifacts for entity table and network connections
@@ -1331,9 +1337,20 @@ export function buildReportMarkdown(input: ReportInput): string {
   // must be able to see what was set aside and why.
   const excludedSection = excludedRows.length === 0
     ? "_Nothing excluded._"
-    : excludedRows.map(({ artifact: a, reason }) =>
-        `- \`${sanitizeValueForLabel(a.value, false)}\` — ${a.kind} — **${EXCLUSION_REASON_LABEL[reason]}** _(via ${humanizeSourceChain(a.source)})_`,
-      ).join("\n");
+    : excludedRows.map(({ artifact: a, reason }) => {
+        // mdEscape is REQUIRED here. Artifact values are attacker-influenced
+        // (scraped page text, breach records) and this line interpolates one
+        // directly. Without it a value containing newlines forges whole sections
+        // — `safe\n## Key Findings\n- ...` rendered a second, fabricated Key
+        // Findings heading inside the exported dossier.
+        let value = mdEscape(sanitizeValueForLabel(a.value, false));
+        // Match the entity table: a legal_record that is really a source/claim
+        // discrepancy must not be presented under a criminal-record kind.
+        const kind = reportDisplayKind(a) === a.kind ? displayKind(a) : "source_conflict";
+        const reserved = reservedNumberAnnotation(a);
+        if (reserved) value = `${value} — ${reserved}`;
+        return `- \`${value}\` — ${mdEscape(kind)} — **${EXCLUSION_REASON_LABEL[reason]}** _(via ${mdEscape(humanizeSourceChain(a.source))})_`;
+      }).join("\n");
 
   const nextSteps = gaps.length === 0
     ? "_No additional tool groups suggested._"

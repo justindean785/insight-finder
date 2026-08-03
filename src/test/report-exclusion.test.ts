@@ -15,6 +15,7 @@ import {
   detectNameLocationSeed,
 } from "@/lib/intel";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
+import type { ReviewState } from "@/lib/review";
 
 const art = (over: Partial<Artifact> = {}): Artifact => ({
   id: "1",
@@ -237,8 +238,92 @@ describe("structured-blob seed gate", () => {
     const got = detectNameLocationSeed("Samantha Pridgen Sacramento CA");
     expect(got).not.toBeNull();
     expect(got?.state).toBe("CA");
-    expect(got?.name).toBeTruthy();
-    expect(got?.name).not.toContain("schema");
+    // Positive assertion. The previous form was `not.toContain("schema")`, which
+    // could never fail: "schema" is not in the input and no code path injects it.
+    // Note the city token survives — only US STATE tokens are stripped from the
+    // name, so "sacramento" is retained. Pinning the real value rather than a
+    // flattering one.
+    expect(got?.name).toBe("samantha pridgen sacramento");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Minor safety must survive exclusion. Regression for the defect where
+// partitioning starved buildIdentityClusters' safety scan.
+// ---------------------------------------------------------------------------
+
+describe("minor-safety warnings survive exclusion", () => {
+  const minor = art({
+    id: "M", kind: "name", value: "Synthetic Minor (age 15)",
+    confidence: 60, source: "whois",
+    metadata: { possible_minor: true },
+  });
+  const adult = art({
+    id: "A", kind: "social", value: "https://onlyfans.com/synthetic",
+    confidence: 60, source: "web_search",
+  });
+  const build = (reviews?: Record<string, ReviewState>, extra: Artifact[] = []) =>
+    buildReportMarkdown({
+      seedValue: "seed@example.com", seedType: "email",
+      artifacts: [minor, ...extra], reviews,
+    });
+
+  const MINOR_BANNER = /Possible minor-related signal detected/;
+  const COLLISION = /SAFETY COLLISION/;
+
+  it("keeps the minor banner when the row is analyst-dismissed", () => {
+    expect(build()).toMatch(MINOR_BANNER);
+    // The natural analyst action — "this is a minor, not our subject" — must not
+    // delete the warning that tells the next reader a minor is implicated.
+    expect(build({ M: "dismissed" })).toMatch(MINOR_BANNER);
+  });
+
+  it("keeps the minor banner when the row is pipeline-excluded", () => {
+    const excludedMinor = art({
+      id: "M2", kind: "excluded", value: "Synthetic Minor (age 15)",
+      confidence: 60, source: "whois", metadata: { possible_minor: true },
+    });
+    const md = buildReportMarkdown({
+      seedValue: "seed@example.com", seedType: "email", artifacts: [excludedMinor],
+    });
+    expect(md).toMatch(MINOR_BANNER);
+  });
+
+  it("keeps the adult x minor SAFETY COLLISION warning when the minor row is dismissed", () => {
+    expect(build(undefined, [adult])).toMatch(COLLISION);
+    expect(build({ M: "dismissed" }, [adult])).toMatch(COLLISION);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Excluded appendix renders attacker-influenced values. It must not let
+// them forge report structure.
+// ---------------------------------------------------------------------------
+
+describe("Excluded appendix escaping", () => {
+  const build = (value: string) =>
+    buildReportMarkdown({
+      seedValue: "seed@example.com", seedType: "email",
+      artifacts: [art({ id: "x", kind: "email", value, source: "whois" })],
+      reviews: { x: "dismissed" },
+    });
+
+  it("does not let a newline payload forge a second heading", () => {
+    const md = build("safe\n## Key Findings\n- **name** — `INJECTED`");
+    // Exactly one Key Findings heading — the real one.
+    expect(md.match(/^## Key Findings$/gm)?.length ?? 0).toBe(1);
+    expect(md).not.toMatch(/^- \*\*name\*\* — `INJECTED`$/m);
+  });
+
+  it("collapses newlines rather than dropping the row", () => {
+    const md = build("line-one\nline-two");
+    const appendix = md.split("## Excluded from Analysis")[1] ?? "";
+    expect(appendix).toContain("line-one line-two");
+  });
+
+  it("escapes pipes so the value cannot break a table row", () => {
+    const md = build("a|b");
+    expect(md.split("## Excluded from Analysis")[1] ?? "").toContain("a\\|b");
   });
 });
 
