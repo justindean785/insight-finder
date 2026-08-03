@@ -20,6 +20,54 @@ const ETH_RE = /^0x[a-f0-9]{40}$/i;
 const BTC_RE = /^(?:bc1|[13])[a-z0-9]{25,62}$/i;
 const USERNAME_RE = /^[a-z0-9_.-]{2,40}$/i;
 
+/**
+ * Generic TLDs we are willing to treat as proof of a hostname.
+ *
+ * Deliberately a list, not a pattern. A dot is NOT evidence of a domain: the
+ * live `Ronny.doe` investigation was typed "domain" purely because the token
+ * contained one, which then steered tool selection and the report narrative at
+ * a person. Two-letter TLDs are accepted by LENGTH rather than enumeration,
+ * because every two-letter TLD is a ccTLD.
+ *
+ * Being conservative here is the safe direction: an unrecognised suffix falls
+ * through to the username branch (preserving dotted handles) instead of
+ * asserting a domain we cannot defend.
+ */
+const KNOWN_GTLDS = new Set([
+  "com", "net", "org", "edu", "gov", "mil", "int", "info", "biz", "name", "pro",
+  "aero", "coop", "museum", "asia", "jobs", "mobi", "tel", "travel", "xxx",
+  "app", "dev", "page", "site", "online", "website", "store", "shop", "tech",
+  "xyz", "top", "icu", "cloud", "digital", "media", "news", "blog", "email",
+  "link", "click", "live", "life", "world", "today", "space", "fun", "art",
+  "design", "studio", "games", "group", "team", "zone", "company", "solutions",
+  "services", "network", "systems", "center", "expert", "guru", "ninja",
+  "social", "chat", "community", "money", "finance", "capital", "exchange",
+  "market", "trade", "business", "agency", "academy", "school", "college",
+  "university", "institute", "education", "health", "care", "clinic", "fitness",
+  "photo", "photography", "gallery", "video", "music", "band", "film", "movie",
+  "software", "codes", "computer", "host", "hosting", "domains", "wiki", "one",
+  "plus", "pub", "run", "sh", "gg", "dog", "cat", "bar", "ltd", "llc", "inc",
+]);
+
+/**
+ * Does this trailing label defensibly denote a TLD?
+ *
+ * Exported for the report-side selector checks and pinned by
+ * src/test/seed-classification.test.ts.
+ */
+export function isLikelyTld(label: string): boolean {
+  const l = label.trim().toLowerCase();
+  if (!/^[a-z]{2,24}$/.test(l)) return false;
+  return l.length === 2 || KNOWN_GTLDS.has(l);
+}
+
+/** Hostname grammar AND a defensible TLD — not merely "contains a dot". */
+export function isLikelyDomain(value: string): boolean {
+  const v = value.trim();
+  if (!DOMAIN_RE.test(v)) return false;
+  return isLikelyTld(v.split(".").pop() ?? "");
+}
+
 // --- Display-seed extraction --------------------------------------------
 // A thread's seed_value can be a clean selector ("casey.rivera@example.com") OR a
 // pasted blob (e.g. raw OATHNET output). detectSeed() only classifies a clean
@@ -57,8 +105,12 @@ export function extractDisplaySeed(
   if (phone && phone.replace(/\D/g, "").length >= 10) {
     return { selector: phone, kind: "phone", title: phone };
   }
+  // Same TLD rule as detectSeed — otherwise the blob path re-invents the very
+  // domain certainty the token grammar refuses to assert.
   const domain = raw.match(DOMAIN_ANYWHERE)?.[0];
-  if (domain) return { selector: domain.toLowerCase(), kind: "domain", title: domain.toLowerCase() };
+  if (domain && isLikelyDomain(domain)) {
+    return { selector: domain.toLowerCase(), kind: "domain", title: domain.toLowerCase() };
+  }
 
   // Fallback: first clean fragment, truncated.
   const frag = raw.split(/\n|·|—|={2,}/).map((s) => s.trim()).find(Boolean) ?? raw;
@@ -117,7 +169,10 @@ export function detectSeed(input: string): DetectedSeed | null {
     const digits = raw.replace(/[^\d+]/g, "");
     return { kind: "phone", raw, normalized: digits };
   }
-  if (DOMAIN_RE.test(raw)) return { kind: "domain", raw, normalized: raw.toLowerCase() };
+  // A dotted token is only a domain when its last label is a defensible TLD.
+  // Otherwise it falls through to the username branch, which is what preserves
+  // handles like `Ronny.doe` / `John.Smith`.
+  if (isLikelyDomain(raw)) return { kind: "domain", raw, normalized: raw.toLowerCase() };
   if (USERNAME_RE.test(raw)) return { kind: "username", raw, normalized: raw.toLowerCase() };
   return { kind: "other", raw, normalized: raw.toLowerCase() };
 }
