@@ -301,6 +301,26 @@ describe("minor-safety warnings survive exclusion", () => {
 // them forge report structure.
 // ---------------------------------------------------------------------------
 
+// A backslash is NOT an escape inside a CommonMark code span, so a value is made
+// inert by FENCING (a run of backticks longer than any run inside it), not by
+// escaping. These assert structural inertness, not a literal encoding.
+const PAYLOADS: Array<[string, string]> = [
+  ["inline backtick", "a`b"],
+  ["code-span breakout attempt", "x` — **PWNED** — `y"],
+  ["triple-backtick fenced block", "a```\n```js\nalert(1)\n```"],
+  ["markdown link", "[click](https://evil.example/steal)"],
+  ["markdown image", "![img](https://evil.example/x.png)"],
+  ["html-like", "<script>alert(1)</script>"],
+  ["table delimiters", "a|b|c"],
+  ["combined heading+backtick+newline", "`\n## Key Findings\n- **name** — `INJECTED`\n### Sub"],
+];
+
+/** A section's body — everything up to the next ATX heading. */
+const sectionBody = (md: string, heading: string): string => {
+  const after = md.split(`${heading}\n`)[1] ?? "";
+  return after.split(/\n#{1,6} /)[0] ?? "";
+};
+
 describe("Excluded appendix escaping", () => {
   const build = (value: string) =>
     buildReportMarkdown({
@@ -321,20 +341,6 @@ describe("Excluded appendix escaping", () => {
     const appendix = md.split("## Excluded from Analysis")[1] ?? "";
     expect(appendix).toContain("line-one line-two");
   });
-
-  // A backslash is NOT an escape inside a CommonMark code span, so the value is
-  // made inert by fencing (a run of backticks longer than any run inside it),
-  // not by escaping. These assert structural inertness, not a literal encoding.
-  const PAYLOADS: Array<[string, string]> = [
-    ["inline backtick", "a`b"],
-    ["code-span breakout attempt", "x` — **PWNED** — `y"],
-    ["triple-backtick fenced block", "a```\n```js\nalert(1)\n```"],
-    ["markdown link", "[click](https://evil.example/steal)"],
-    ["markdown image", "![img](https://evil.example/x.png)"],
-    ["html-like", "<script>alert(1)</script>"],
-    ["table delimiters", "a|b|c"],
-    ["combined heading+backtick+newline", "`\n## Key Findings\n- **name** — `INJECTED`\n### Sub"],
-  ];
 
   /** The appendix SECTION body only — up to the next heading. */
   const appendixBody = (md: string): string => {
@@ -366,6 +372,61 @@ describe("Excluded appendix escaping", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// The same hardening must hold for RETAINED rows. The appendix was fenced first
+// only because that is where the exclusion work landed — but Key Findings,
+// Network Connections and the evidence table interpolate the same
+// attacker-influenced values, and a retained row is the likelier carrier. The
+// appendix suite above asserted document-wide heading integrity while building
+// only excluded rows, so it stated the invariant more broadly than it held.
+// ---------------------------------------------------------------------------
+
+describe("retained-row escaping", () => {
+  // Not rejected: this row flows through every analytical section.
+  const build = (value: string) =>
+    buildReportMarkdown({
+      seedValue: "seed@example.com",
+      seedType: "email",
+      artifacts: [art({ id: "x", kind: "username", value, source: "github_user" })],
+    });
+
+  it.each(PAYLOADS)("renders %s inertly in the analytical sections", (_label, payload) => {
+    const md = build(payload);
+    // No forged block-level structure anywhere in the document.
+    expect(md.match(/^## Key Findings$/gm)?.length ?? 0).toBe(1);
+    expect(md.match(/^## Network Connections$/gm)?.length ?? 0).toBe(1);
+    for (const heading of ["## Key Findings", "## Network Connections"]) {
+      const body = sectionBody(md, heading);
+      expect(body).not.toMatch(/^#{1,6} /m);
+      expect(body).not.toMatch(/^```/m);
+    }
+    // Carried verbatim inside the fence — inert, not silently dropped.
+    expect(md).toContain(payload.replace(/[\r\n]+/g, " "));
+    // Fenced by the safe helper, not by a naive pair of backticks. The naive
+    // form is what lets `x` — **PWNED** — `y` close the span early and render
+    // bold text: a breakout that leaves block structure intact, so the
+    // structural assertions above cannot see it.
+    expect(md).toContain(mdCodeSpan(payload));
+  });
+
+  it.each(PAYLOADS)("keeps %s inside a single inert evidence-matrix cell", (_label, payload) => {
+    const md = buildEvidenceMatrixMarkdown([
+      art({ id: "x", kind: "email", value: payload, source: "whois" }),
+    ]);
+    const rows = md.split("\n").filter((l) => l.trim().startsWith("|"));
+    // header + delimiter + exactly one data row: a newline payload must not
+    // forge extra rows, and a pipe payload must not forge extra columns.
+    expect(rows).toHaveLength(3);
+    const pipes = (s: string) => (s.match(/(?<!\\)\|/g) ?? []).length;
+    expect(pipes(rows[2])).toBe(pipes(rows[0]));
+    // The value cell had NO code span at all, so [x](url) and ![img](url)
+    // rendered as a live link and a remote image in the exported .md.
+    const valueCell = rows[2].split(/(?<!\\)\|/)[1]?.trim() ?? "";
+    expect(valueCell).toMatch(/^`+/);
+    expect(valueCell).toMatch(/`+$/);
+  });
+});
+
 describe("Key Findings confidence attribution", () => {
   it("does not present a review-adjusted score as what the source indicated", () => {
     const a = art({
@@ -384,5 +445,40 @@ describe("Key Findings confidence attribution", () => {
     });
     // The old wording read: "source indicates via X, confidence <adjusted>".
     expect(md).not.toMatch(/source indicates via [^,]+, confidence \d+/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The tool audit is an ATTEMPT trail, not an evidence list. Excluding rejected
+// rows from its INPUT as well as its scoring is a double exclusion: the tool
+// disappears from the audit entirely, which is the one thing an audit must not
+// do. buildToolAudit already applies the verdicts internally.
+// ---------------------------------------------------------------------------
+
+describe("buildReportMarkdown — tool coverage is an attempt trail", () => {
+  const rows = [
+    art({ id: "o1", kind: "email", value: "a@example.com", source: "oathnet_lookup" }),
+    art({ id: "o2", kind: "phone", value: "+15550001111", source: "oathnet_lookup" }),
+  ];
+  const section = (reviews?: Record<string, ReviewState>) =>
+    buildReportMarkdown({
+      seedValue: "ronnydoe",
+      seedType: "username",
+      artifacts: rows,
+      reviews,
+    })
+      .split("## Tool Coverage Summary")[1]
+      ?.split("\n## ")[0] ?? "";
+
+  it("still lists a tool whose every row the analyst rejected", () => {
+    const out = section({ o1: "dismissed", o2: "dismissed" });
+    expect(out).not.toContain("_No tools produced artifacts._");
+    expect(out).toContain("2 results");
+  });
+
+  it("does not let those rejected rows count as high-confidence coverage", () => {
+    // The other half of the contract: visible in the trail, worth nothing as
+    // evidence. buildToolAudit applies the verdicts via labelForArtifact.
+    expect(section({ o1: "dismissed", o2: "dismissed" })).toContain("0 high-confidence");
   });
 });

@@ -1019,7 +1019,13 @@ export function buildEvidenceMatrixMarkdown(
     // #8: a legal_record that is really a source/claim discrepancy displays as
     // source_conflict so a reporting disagreement isn't shown as a criminal record.
     const kind = reportDisplayKind(a) === a.kind ? displayKind(a) : "source_conflict";
-    return `| ${mdEscape(value)} | ${kind} | ${mdEscape(humanizeSourceChain(a.source, "—"))} | ${label} | ${a.confidence ?? "—"} | ${new Date(a.created_at).toISOString()} |`;
+    // The value cell carries an attacker-influenced string. `mdEscape` alone
+    // only handles the table grammar (| and newlines) — it leaves the cell
+    // parsed as ordinary Markdown, so `[x](url)` rendered a live link and
+    // `![img](url)` a remote image in the exported .md. Fence it first, then
+    // escape pipes: GFM splits a row on UNescaped pipes, so `\|` survives
+    // inside the span and the cell stays intact.
+    return `| ${mdEscape(mdCodeSpan(value))} | ${kind} | ${mdEscape(humanizeSourceChain(a.source, "—"))} | ${label} | ${a.confidence ?? "—"} | ${new Date(a.created_at).toISOString()} |`;
   });
   return [
     "| Value | Kind | Source | Label | Confidence | First seen |",
@@ -1098,7 +1104,13 @@ export function buildReportMarkdown(input: ReportInput): string {
     return { verified, rejected, needs };
   })();
 
-  const audit = buildToolAudit(artifacts, reviews);
+  // ATTEMPT TRAIL — deliberately the UNPARTITIONED set. `buildToolAudit` already
+  // applies the analyst verdicts internally (labelForArtifact), which is what
+  // stops a rejected row inflating a tool's high-confidence tally. Filtering the
+  // INPUT as well is a double exclusion: a tool whose every row was rejected
+  // disappeared from the audit entirely and the section read "_No tools produced
+  // artifacts._" — erasing the very work the analyst had just reviewed.
+  const audit = buildToolAudit(dedupedArtifacts, reviews);
   const gaps = inferToolGaps(audit);
   // MUST receive the UNPARTITIONED set. buildIdentityClusters filters analyst
   // verdicts internally (see `live`, ~line 1782) so clusters still exclude
@@ -1166,7 +1178,7 @@ export function buildReportMarkdown(input: ReportInput): string {
         // `conf(a)` is the REVIEW-ADJUSTED score, not what the source asserted,
         // so it must not sit inside the "source indicates" clause. Attribute the
         // observation to the source and the score to the assessment separately.
-        `- **${a.kind}** — \`${a.value}\` _(source indicates via ${humanizeSourceChain(a.source)}; assessed confidence ${conf(a) ?? "—"})_`,
+        `- **${a.kind}** — ${mdCodeSpan(a.value)} _(source indicates via ${humanizeSourceChain(a.source)}; assessed confidence ${conf(a) ?? "—"})_`,
       ).join("\n");
     }
     const leads = artifacts
@@ -1178,7 +1190,7 @@ export function buildReportMarkdown(input: ReportInput): string {
       "_No fully-corroborated findings yet (none reach CONFIRMED — 2+ independent source classes or analyst review). Strongest uncorroborated leads:_",
       "",
       ...leads.map((a) =>
-        `- **${a.kind}** — \`${sanitizeValueForLabel(a.value, false)}\` _(${lbl(a)}, confidence ${conf(a) ?? "—"}, via ${humanizeSourceChain(a.source)})_`,
+        `- **${a.kind}** — ${mdCodeSpan(sanitizeValueForLabel(a.value, false))} _(${lbl(a)}, confidence ${conf(a) ?? "—"}, via ${humanizeSourceChain(a.source)})_`,
       ),
     ].join("\n");
   })();
@@ -1231,7 +1243,7 @@ export function buildReportMarkdown(input: ReportInput): string {
               "_These artifacts were flagged as namesakes / unrelated entities. They do NOT belong to the subject and do NOT strengthen the main network._",
               "",
               ...collisionArtifacts.map((a) =>
-                `- \`${sanitizeValueForLabel(a.value, false)}\` — ${reportDisplayKind(a) === a.kind ? displayKind(a) : "source_conflict"} _(${labelForArtifact(a)}, via ${humanizeSourceChain(a.source)})_`,
+                `- ${mdCodeSpan(sanitizeValueForLabel(a.value, false))} — ${reportDisplayKind(a) === a.kind ? displayKind(a) : "source_conflict"} _(${labelForArtifact(a)}, via ${humanizeSourceChain(a.source)})_`,
               ),
             ]
           : []),
@@ -1241,7 +1253,7 @@ export function buildReportMarkdown(input: ReportInput): string {
               "_Conflicts noted across sources — may indicate different people or data errors. Corroborate before merging; these rows are NOT auto-quarantined._",
               "",
               ...conflictNoted.map((a) =>
-                `- \`${sanitizeValueForLabel(a.value, false)}\` — ${conflictNote(a)} _(via ${humanizeSourceChain(a.source)})_`,
+                `- ${mdCodeSpan(sanitizeValueForLabel(a.value, false))} — ${conflictNote(a)} _(via ${humanizeSourceChain(a.source)})_`,
               ),
             ]
           : []),
@@ -1249,7 +1261,7 @@ export function buildReportMarkdown(input: ReportInput): string {
 
   const network = (() => {
     const sections: string[] = [];
-    const line = (a: Artifact) => `- \`${sanitizeValueForLabel(a.value, lbl(a) === "CONFIRMED")}\` _(observed via ${humanizeSourceChain(a.source)})_`;
+    const line = (a: Artifact) => `- ${mdCodeSpan(sanitizeValueForLabel(a.value, lbl(a) === "CONFIRMED"))} _(observed via ${humanizeSourceChain(a.source)})_`;
     // Threat/reputation rows (VirusTotal, IPQS, EmailRep…) are pulled into their
     // own section regardless of which group they land in — they may be
     // mis-kinded as `breach` (→ breach group) OR correctly kinded as
@@ -1283,7 +1295,9 @@ export function buildReportMarkdown(input: ReportInput): string {
     // artifacts, report) carries real per-event timestamps, so render that.
     const chronology = items.filter((t) => t.type !== "tool_result");
     return (chronology.length ? chronology : items).slice(-15).map((t) =>
-      `- \`${new Date(t.time).toISOString()}\` — **${t.type}** — ${t.title}${t.source ? ` _(via ${humanizeSourceChain(t.source)})_` : ""}`,
+      // `t.title` is an artifact value / message summary — attacker-influenced,
+      // so it is fenced rather than interpolated raw.
+      `- \`${new Date(t.time).toISOString()}\` — **${t.type}** — ${mdCodeSpan(t.title)}${t.source ? ` _(via ${humanizeSourceChain(t.source)})_` : ""}`,
     ).join("\n");
   })();
 
@@ -2145,17 +2159,21 @@ export function buildClusterSection(
     for (const w of report.warnings.slice(1)) parts.push(`> ${w}`);
     parts.push("");
   }
+  // Every value below is attacker-influenced (it came out of a tool response).
+  // Fence each one; a heading only needs the newline collapse, since a `#` that
+  // is not at the start of a line is inert.
+  const fenced = (vals: string[], sep = ", "): string => vals.map((v) => mdCodeSpan(v)).join(sep);
   for (const c of report.clusters) {
-    parts.push(`### ${c.label}`);
+    parts.push(`### ${String(c.label ?? "").replace(/[\r\n]+/g, " ")}`);
     parts.push(`- **Confidence:** ${c.confidence}`);
     if (c.matchesSeedLocation === true) parts.push(`- **Seed location match:** yes`);
     else if (c.matchesSeedLocation === false) parts.push(`- **Seed location match:** no — possible different person`);
-    if (c.emails.length) parts.push(`- **Emails:** ${c.emails.join(", ")}`);
-    if (c.usernames.length) parts.push(`- **Usernames:** ${c.usernames.join(", ")}`);
-    if (c.phones.length) parts.push(`- **Phones:** ${c.phones.join(", ")} ${c.areaCodes.length ? `(area ${c.areaCodes.join(", ")})` : ""}`.trim());
-    if (c.addresses.length) parts.push(`- **Addresses:** ${c.addresses.join(" • ")}`);
-    if (c.states.length) parts.push(`- **States observed:** ${c.states.join(", ")}`);
-    if (c.ips.length) parts.push(`- **IPs:** ${c.ips.join(", ")}`);
+    if (c.emails.length) parts.push(`- **Emails:** ${fenced(c.emails)}`);
+    if (c.usernames.length) parts.push(`- **Usernames:** ${fenced(c.usernames)}`);
+    if (c.phones.length) parts.push(`- **Phones:** ${fenced(c.phones)} ${c.areaCodes.length ? `(area ${c.areaCodes.join(", ")})` : ""}`.trim());
+    if (c.addresses.length) parts.push(`- **Addresses:** ${fenced(c.addresses, " • ")}`);
+    if (c.states.length) parts.push(`- **States observed:** ${fenced(c.states)}`);
+    if (c.ips.length) parts.push(`- **IPs:** ${fenced(c.ips)}`);
     if (c.sources.length) parts.push(`- **Source tools:** ${humanizeSourceChain(c.sources)}`);
     if (c.mergeReasons.length) parts.push(`- **Merge reasons:** ${c.mergeReasons.join("; ")}`);
     if (c.warnings.length) parts.push(`- **Warnings:** ${c.warnings.join(" / ")}`);
