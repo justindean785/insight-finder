@@ -1559,9 +1559,19 @@ export function buildReportMarkdown(input: ReportInput): string {
         return `- ${value} — ${mdEscape(kind)} — **${EXCLUSION_REASON_LABEL[reason]}**${redactNote} _(via ${mdEscape(humanizeSourceChain(a.source))})_`;
       }).join("\n");
 
-  const nextSteps = gaps.length === 0
+  // Contract item 5: when rows were returned but none is linked to the subject,
+  // the priority is deciding WHICH record is the subject — not fanning out from
+  // records that may belong to other people. The live dossier's next steps
+  // skipped that question entirely and recommended expanding unrelated pivots.
+  const associationFirst = unassignedRows.length > 0
+    ? [
+        `- **Resolve identity association first** — ${unassignedRows.length} retained observation${unassignedRows.length === 1 ? " is" : "s are"} not linked to \`${display.selector}\`. Establish which record, if any, belongs to the subject before pivoting off any of them; expanding from an unlinked record propagates the association error rather than testing it.`,
+      ]
+    : [];
+  const gapSteps = gaps.map((g) => `- **${g.kind}** — consider: ${g.suggested.map((t) => toolActionLabel(t)).join(", ")}`);
+  const nextSteps = associationFirst.length === 0 && gapSteps.length === 0
     ? "_No additional tool groups suggested._"
-    : gaps.map((g) => `- **${g.kind}** — consider: ${g.suggested.map((t) => toolActionLabel(t)).join(", ")}`).join("\n");
+    : [...associationFirst, ...gapSteps].join("\n");
 
   const sourceAppendix = audit.tools.length === 0
     ? "_None._"

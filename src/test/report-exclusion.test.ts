@@ -836,6 +836,17 @@ describe("bulk-result rows do not become the subject's identity", () => {
     expect(table).toContain("Ron Daoust");
   });
 
+  it("leads Recommended Next Steps with resolving the association", () => {
+    // The live dossier skipped the actual priority — deciding which record, if
+    // any, is the subject — and recommended expanding unrelated pivots instead.
+    const md = buildReportMarkdown({
+      seedValue: SEED, seedType: "username", artifacts: [linked, ...neighbours],
+    });
+    const steps = md.split("## Recommended Next Steps")[1]?.split("\n## ")[0] ?? "";
+    const first = steps.split("\n").find((l) => l.startsWith("- ")) ?? "";
+    expect(first).toMatch(/Resolve identity association first/i);
+  });
+
   it("counts the suppressed rows exactly, and says why in those terms", () => {
     const w = report().warnings.find((x) => /not shown as standalone identity clusters/i.test(x)) ?? "";
     expect(w).toContain(`${neighbours.length} `);
