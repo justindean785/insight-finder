@@ -6,12 +6,25 @@ const read = (path: string) => readFileSync(resolve(process.cwd(), path), "utf-8
 
 describe("analyst access gateway contract", () => {
   const auth = read("src/pages/Auth.tsx");
+  const landing = read("src/pages/Landing.tsx");
+  const homeHub = read("src/pages/HomeHub.tsx");
 
   it("uses the canonical product identity and professional workflow language", () => {
     expect(auth).toContain("Insight Finder");
     expect(auth).toContain("Turn fragments into defensible intelligence.");
     expect(auth).toContain("Corroboration before conclusion");
     expect(auth).not.toMatch(/Swarmbot/i);
+  });
+
+
+  it("keeps public and authenticated entry points aligned to investigation language", () => {
+    expect(landing).toContain("From open-source signals to");
+    expect(landing).toContain("defensible intelligence.");
+    expect(landing).toContain("Source-aware");
+    expect(homeHub).toContain('title="Investigate"');
+    expect(homeHub).toContain('cta="Open workspace"');
+    expect(landing).not.toMatch(/investigator beta|chat-driven|swarm harvests/i);
+    expect(homeHub).not.toMatch(/title="Chat"|open the chat|let the swarm work/i);
   });
 
   it("does not present fabricated operational metrics", () => {
