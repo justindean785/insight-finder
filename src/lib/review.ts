@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { recordAnalystFeedback, actionForReviewState } from "@/lib/analyst-feedback";
 import { detectSeed } from "@/lib/seed";
@@ -495,4 +495,28 @@ export function useReviewStates(threadId: string) {
   }, [threadId]);
 
   return { map, notes, get, getNote, set, setNote, clear };
+}
+
+/**
+ * The analyst's verdicts for a specific artifact list, keyed by artifact id and
+ * shaped for the report builders' `reviews` parameter.
+ *
+ * `"new"` is omitted so the map means "rows with an actual verdict". Extracted
+ * because the Report, Timeline and Audit tabs each need it — and the two that
+ * didn't have it were rendering analyst-rejected rows as live evidence.
+ */
+export function useArtifactReviewMap(
+  threadId: string,
+  artifacts: Array<{ id: string }>,
+): Record<string, ReviewState> {
+  const review = useReviewStates(threadId);
+  const { get } = review;
+  return useMemo(() => {
+    const m: Record<string, ReviewState> = {};
+    for (const a of artifacts) {
+      const r = get(a.id);
+      if (r !== "new") m[a.id] = r;
+    }
+    return m;
+  }, [artifacts, get]);
 }

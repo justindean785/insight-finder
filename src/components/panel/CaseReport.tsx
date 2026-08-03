@@ -371,7 +371,7 @@ function buildHunterNotes(artifacts: Artifact[], seedValue: string | null): Hunt
   return notes;
 }
 
-function buildUnknowns(artifacts: Artifact[]): string[] {
+function buildUnknowns(artifacts: Artifact[], reviews?: Record<string, ReviewState>): string[] {
   const out: string[] = [];
   const groups = new Set(artifacts.map((a) => groupForKind(a.kind)));
   if (!artifacts.some((a) => a.kind.toLowerCase() === "address")) {
@@ -387,7 +387,7 @@ function buildUnknowns(artifacts: Artifact[]): string[] {
   if (hashes.length) {
     out.push(`${hashes.length} password hash${hashes.length === 1 ? "" : "es"} recovered but uncracked — plaintext unknown.`);
   }
-  const audit = buildToolAudit(artifacts);
+  const audit = buildToolAudit(artifacts, reviews);
   const gaps = inferToolGaps(audit);
   for (const g of gaps.slice(0, 2)) {
     out.push(`Coverage gap on ${g.kind}: ${g.suggested.slice(0, 3).map((t) => toolActionLabel(t)).join(", ")} not yet attempted.`);
@@ -834,6 +834,9 @@ export function CaseReport({
   seedValue,
   seedType,
   artifacts,
+  // Declared on the prop type and passed by ReportTab, but never destructured —
+  // so every analyst verdict was dropped on the floor in this view.
+  reviews,
   messages,
   reportType = "full",
 }: {
@@ -858,7 +861,7 @@ export function CaseReport({
   const identity = useMemo(() => buildIdentityRows(artifacts), [artifacts]);
   const registrations = useMemo(() => buildRegistrationRows(artifacts), [artifacts]);
   const hunterNotes = useMemo(() => buildHunterNotes(artifacts, seedValue), [artifacts, seedValue]);
-  const unknowns = useMemo(() => buildUnknowns(artifacts), [artifacts]);
+  const unknowns = useMemo(() => buildUnknowns(artifacts, reviews), [artifacts, reviews]);
   const risk = useMemo(() => computeRisk(artifacts), [artifacts]);
   const radar = useMemo(() => buildAnalyticRadar(artifacts, risk.level), [artifacts, risk.level]);
   const groupDistribution = useMemo(() => buildGroupDistribution(artifacts), [artifacts]);
@@ -879,7 +882,7 @@ export function CaseReport({
   const verdict = useMemo(() => reportVerdict(confidenceFindings, independenceFindings), [confidenceFindings, independenceFindings]);
   const avgConfidence = useMemo(() => averageConfidence(artifacts), [artifacts]);
 
-  const audit = buildToolAudit(artifacts);
+  const audit = buildToolAudit(artifacts, reviews);
 
   // Evidence-strength buckets per the new audit rules.
   const buckets = useMemo(() => {

@@ -12,6 +12,11 @@ import {
   reservedNumberAnnotation,
   dedupeBreachDatasets,
 } from "@/lib/report-hygiene";
+import {
+  partitionExcluded,
+  REPORT_EXCLUSION_REASONS,
+  EXCLUSION_REASON_LABEL,
+} from "@/lib/exclusion";
 
 /** Analyst-grade group buckets for artifact kinds. */
 export type Group =
@@ -201,6 +206,23 @@ export function isSensitiveKind(kind: string, meta?: Record<string, unknown>): b
   return false;
 }
 
+/** Kinds the pipeline writes when it has already decided a row is not the subject. */
+const PIPELINE_EXCLUDED_KINDS = new Set(["excluded", "excluded_collision"]);
+
+/**
+ * The pipeline's definitive "this is not the subject" signal.
+ *
+ * Kept here (rather than in exclusion.ts) so `labelForArtifact` can consult it
+ * without intel.ts importing exclusion.ts — the dependency runs one way only.
+ * Deliberately narrower than `isCollisionArtifact`: it does NOT match
+ * `metadata.collision`, so an ordinary conflict row still labels CONFLICT.
+ */
+export function isPipelineExcluded(a: { kind: string; metadata: Record<string, unknown> | null }): boolean {
+  if (PIPELINE_EXCLUDED_KINDS.has((a.kind ?? "").toLowerCase())) return true;
+  const m = (a.metadata ?? {}) as Record<string, unknown>;
+  return typeof m.status === "string" && m.status.toLowerCase() === "excluded";
+}
+
 // Back-compat alias for internal callers.
 
 /**
@@ -325,6 +347,12 @@ function distinctSourceCount(sources: string[]): number {
 export function labelForArtifact(a: Artifact, review?: ReviewAdjustment): ConfLabel {
   const meta = (a.metadata ?? {}) as Record<string, unknown>;
   if (review === "dismissed" || review === "wrong" || meta.false_positive === true) return "FAILED";
+  // A row the pipeline already excluded is not a lead awaiting verification —
+  // it is a decided negative. Without this it fell through to the source-derived
+  // tiers below and rendered VERIFY, inviting an analyst to chase a namesake the
+  // pipeline had already ruled out. Narrower than isCollisionArtifact on purpose
+  // so `metadata.collision` keeps its CONFLICT label on the next line.
+  if (isPipelineExcluded(a)) return "FAILED";
   if (meta.conflict === true || meta.collision === true) return "CONFLICT";
   // Analyst attestations short-circuit to CONFIRMED — EXCEPT for a possible-minor
   // row. Minor-safety is a HARD FLOOR: attestation must never label-promote a
@@ -578,6 +606,9 @@ export function buildTimelineItems(
   artifacts: Artifact[],
   seed: { value: string | null; type: string | null; createdAt?: string | null } | null,
   messages?: Array<{ id: string; role: string; created_at: string; summary: string; toolCalls: Array<{ toolName: string; resultSummary?: string }> }>,
+  /** Analyst verdicts by artifact id. Without these a rejected row rendered as
+   *  an ordinary evidentiary event on the chronology. */
+  reviews?: Record<string, ReviewAdjustment>,
 ): TimelineItem[] {
   const items: TimelineItem[] = [];
 
@@ -648,7 +679,12 @@ export function buildTimelineItems(
     const meta = (a.metadata ?? {}) as Record<string, unknown>;
     const isTriage = a.kind.toLowerCase() === "triage" || meta.triage === true || String(a.source ?? "").toLowerCase().includes("triage");
     const isCache = meta.cached === true || meta._cached === true || meta.cache === true;
-    const isFailed = meta.false_positive === true || meta.failed === true || meta.skipped === true;
+    const review = reviews?.[a.id];
+    // An analyst rejection (and a pipeline exclusion) resolve to FAILED via
+    // labelForArtifact; both belong on the chronology as failed events, not as
+    // ordinary evidence.
+    const rejected = labelForArtifact(a, review) === "FAILED";
+    const isFailed = rejected || meta.false_positive === true || meta.failed === true || meta.skipped === true;
 
     let type: TimelineEventType = "artifact";
     let explanation = `Recorded ${a.kind} from ${a.source ?? "unknown source"}.`;
@@ -657,7 +693,9 @@ export function buildTimelineItems(
       explanation = "Triage decision recorded.";
     } else if (isFailed) {
       type = "failed";
-      explanation = meta.skipped === true
+      explanation = review === "dismissed" || review === "wrong"
+        ? "Rejected by analyst review."
+        : meta.skipped === true
         ? "Source skipped by gate."
         : "Marked as failed / false positive.";
     } else if (isCache) {
@@ -700,7 +738,12 @@ export type ToolAudit = {
   kindsCovered: Set<string>;
 };
 
-export function buildToolAudit(artifacts: Artifact[]): ToolAudit {
+export function buildToolAudit(
+  artifacts: Artifact[],
+  /** Analyst verdicts by artifact id. Without these, a rejected row still
+   *  counted toward a tool's high-confidence tally, overstating coverage. */
+  reviews?: Record<string, ReviewAdjustment>,
+): ToolAudit {
   const map = new Map<string, ToolAuditEntry>();
   let cachedCount = 0;
   let failedCount = 0;
@@ -709,7 +752,7 @@ export function buildToolAudit(artifacts: Artifact[]): ToolAudit {
   for (const a of artifacts) {
     const tool = (a.source ?? "unknown").trim() || "unknown";
     const meta = (a.metadata ?? {}) as Record<string, unknown>;
-    const label = labelForArtifact(a);
+    const label = labelForArtifact(a, reviews?.[a.id]);
     const cached = meta.cached === true || meta._cached === true;
     const failed = label === "FAILED" || meta.skipped === true || meta.failed === true;
 
@@ -901,12 +944,15 @@ export function extractFailedAndSkipped(messages: RawMessage[]): FailedToolEntry
 // ---- Investigation summary --------------------------------------------
 
 export function buildInvestigationSummary(input: ReportInput): string {
-  const { seedValue, seedType, artifacts } = input;
-  const audit = buildToolAudit(artifacts);
-  const confirmed = artifacts.filter((a) => labelForArtifact(a) === "CONFIRMED").length;
-  const verify = artifacts.filter((a) => labelForArtifact(a) === "VERIFY").length;
-  const low = artifacts.filter((a) => labelForArtifact(a) === "LOW").length;
-  const failed = artifacts.filter((a) => labelForArtifact(a) === "FAILED").length;
+  // `reviews` was already on ReportInput and simply went unread here, so the
+  // summary counted analyst-rejected rows as confirmed/verify.
+  const { seedValue, seedType, artifacts, reviews } = input;
+  const lbl = (a: Artifact): ConfLabel => labelForArtifact(a, reviews?.[a.id]);
+  const audit = buildToolAudit(artifacts, reviews);
+  const confirmed = artifacts.filter((a) => lbl(a) === "CONFIRMED").length;
+  const verify = artifacts.filter((a) => lbl(a) === "VERIFY").length;
+  const low = artifacts.filter((a) => lbl(a) === "LOW").length;
+  const failed = artifacts.filter((a) => lbl(a) === "FAILED").length;
   return [
     `Investigation summary`,
     `  Seed: ${seedValue ?? "—"} (${seedType ?? "unknown"})`,
@@ -946,10 +992,15 @@ function mdEscape(v: string): string {
   return v.replace(/\|/g, "\\|").replace(/\n+/g, " ");
 }
 
-export function buildEvidenceMatrixMarkdown(artifacts: Artifact[]): string {
+export function buildEvidenceMatrixMarkdown(
+  artifacts: Artifact[],
+  /** Analyst verdicts by artifact id. Without these the matrix showed a
+   *  rejected row under its original source-derived label. */
+  reviews?: Record<string, ReviewAdjustment>,
+): string {
   if (artifacts.length === 0) return "_No evidence recorded._";
   const rows = artifacts.map((a) => {
-    const label = labelForArtifact(a);
+    const label = labelForArtifact(a, reviews?.[a.id]);
     // #3: strip promotional "CONFIRMED" wording from the VALUE when the row is
     // not actually backend-CONFIRMED (render-only; artifact untouched).
     let value = sanitizeValueForLabel(a.value, label === "CONFIRMED");
@@ -997,7 +1048,19 @@ export function buildReportMarkdown(input: ReportInput): string {
   // Collapse breach datasets recorded twice under name variants from the same
   // source pair (conservative — see dedupeBreachDatasets) so the Artifact Table
   // and Network Connections don't double-list one breach.
-  const artifacts = dedupeBreachDatasets(input.artifacts);
+  const dedupedArtifacts = dedupeBreachDatasets(input.artifacts);
+  // Rows the analyst rejected (or the pipeline excluded) are removed from every
+  // analytical section and listed in the Excluded appendix instead. They are not
+  // dropped — the appendix keeps the audit trail. `collision` is NOT partitioned
+  // here: it already has its own "Collision / Likely Unrelated" section below,
+  // and excluding it here would empty that section.
+  const { included: artifacts, excluded: excludedRows } = partitionExcluded(
+    dedupedArtifacts,
+    reviews,
+    { reasons: REPORT_EXCLUSION_REASONS },
+  );
+  // Counts describe what was ANALYSED. Excluded rows are reported separately so
+  // the header can't overstate the evidence base.
   const total = artifacts.length;
 
   // Analyst review wins over source-derived label/confidence so a marked
@@ -1014,7 +1077,10 @@ export function buildReportMarkdown(input: ReportInput): string {
 
   const reviewTally = (() => {
     let verified = 0, rejected = 0, needs = 0;
-    for (const a of artifacts) {
+    // Counted over ALL rows, not the analysed subset: this tally reports what
+    // the analyst DID, so a rejected row must still be counted as rejected even
+    // though it has been partitioned out of the analytical sections.
+    for (const a of dedupedArtifacts) {
       const r = rev(a);
       if (r === "confirmed" || r === "key") verified++;
       else if (r === "dismissed" || r === "wrong") rejected++;
@@ -1023,7 +1089,7 @@ export function buildReportMarkdown(input: ReportInput): string {
     return { verified, rejected, needs };
   })();
 
-  const audit = buildToolAudit(artifacts);
+  const audit = buildToolAudit(artifacts, reviews);
   const gaps = inferToolGaps(audit);
   const clusterReport = buildIdentityClusters(artifacts, seedValue, reviews);
   const isNameSearch = !!detectNameLocationSeed(seedValue);
@@ -1036,8 +1102,26 @@ export function buildReportMarkdown(input: ReportInput): string {
     byGroup.get(g)!.push(a);
   }
 
+  const reviewSummaryBits = (() => {
+    const bits: string[] = [];
+    if (reviewTally.verified) bits.push(`${reviewTally.verified} analyst-verified`);
+    if (reviewTally.rejected) bits.push(`${reviewTally.rejected} analyst-rejected`);
+    if (reviewTally.needs) bits.push(`${reviewTally.needs} flagged for recheck`);
+    return bits;
+  })();
+
   const exec = (() => {
     if (total === 0) {
+      // "Nothing was recorded" and "everything recorded was excluded" are very
+      // different claims. Saying the former when rows exist but were rejected
+      // would erase the analyst's own work from the summary.
+      if (excludedRows.length) {
+        const parts = [
+          `No artifacts remain for analysis: all ${excludedRows.length} recorded observation${excludedRows.length === 1 ? " was" : "s were"} excluded (see the Excluded from Analysis appendix).`,
+        ];
+        if (reviewSummaryBits.length) parts.push(`Analyst review: ${reviewSummaryBits.join(", ")}.`);
+        return parts.join(" ");
+      }
       return `No artifacts have been recorded for this investigation yet. The agent has not produced any observations against the seed.`;
     }
     const parts: string[] = [];
@@ -1045,12 +1129,8 @@ export function buildReportMarkdown(input: ReportInput): string {
     if (confirmed.length) parts.push(`${confirmed.length} finding${confirmed.length === 1 ? "" : "s"} observed in multiple sources or analyst-reviewed.`);
     if (verify.length + low.length) parts.push(`${verify.length + low.length} item${verify.length + low.length === 1 ? "" : "s"} need verification before reporting.`);
     if (failed.length) parts.push(`${failed.length} item${failed.length === 1 ? "" : "s"} marked as false positive.`);
-    if (reviewTally.verified || reviewTally.rejected || reviewTally.needs) {
-      const bits: string[] = [];
-      if (reviewTally.verified) bits.push(`${reviewTally.verified} analyst-verified`);
-      if (reviewTally.rejected) bits.push(`${reviewTally.rejected} analyst-rejected`);
-      if (reviewTally.needs) bits.push(`${reviewTally.needs} flagged for recheck`);
-      parts.push(`Analyst review: ${bits.join(", ")}.`);
+    if (reviewSummaryBits.length) {
+      parts.push(`Analyst review: ${reviewSummaryBits.join(", ")}.`);
     }
     parts.push("All findings are presented as observations from named sources, not as confirmed identity claims.");
     return parts.join(" ");
@@ -1063,7 +1143,10 @@ export function buildReportMarkdown(input: ReportInput): string {
   const keyFindings = (() => {
     if (confirmed.length) {
       return confirmed.slice(0, 10).map((a) =>
-        `- **${a.kind}** — \`${a.value}\` _(source indicates via ${humanizeSourceChain(a.source)}, confidence ${conf(a) ?? "—"})_`,
+        // `conf(a)` is the REVIEW-ADJUSTED score, not what the source asserted,
+        // so it must not sit inside the "source indicates" clause. Attribute the
+        // observation to the source and the score to the assessment separately.
+        `- **${a.kind}** — \`${a.value}\` _(source indicates via ${humanizeSourceChain(a.source)}; assessed confidence ${conf(a) ?? "—"})_`,
       ).join("\n");
     }
     const leads = artifacts
@@ -1080,7 +1163,7 @@ export function buildReportMarkdown(input: ReportInput): string {
     ].join("\n");
   })();
 
-  const entityTable = buildEvidenceMatrixMarkdown(artifacts);
+  const entityTable = buildEvidenceMatrixMarkdown(artifacts, reviews);
 
   // #6: collision-flagged artifacts (namesakes / unrelated entities) are
   // quarantined into their own section and kept out of the main network.
@@ -1146,7 +1229,7 @@ export function buildReportMarkdown(input: ReportInput): string {
 
   const network = (() => {
     const sections: string[] = [];
-    const line = (a: Artifact) => `- \`${sanitizeValueForLabel(a.value, labelForArtifact(a) === "CONFIRMED")}\` _(observed via ${humanizeSourceChain(a.source)})_`;
+    const line = (a: Artifact) => `- \`${sanitizeValueForLabel(a.value, lbl(a) === "CONFIRMED")}\` _(observed via ${humanizeSourceChain(a.source)})_`;
     // Threat/reputation rows (VirusTotal, IPQS, EmailRep…) are pulled into their
     // own section regardless of which group they land in — they may be
     // mis-kinded as `breach` (→ breach group) OR correctly kinded as
@@ -1170,6 +1253,7 @@ export function buildReportMarkdown(input: ReportInput): string {
       artifacts,
       seedValue ? { value: seedValue, type: seedType, createdAt: null } : null,
       messages,
+      reviews,
     );
     if (items.length === 0) return "_No events recorded._";
     // Tool-call events all inherit their parent message's single timestamp — a
@@ -1242,6 +1326,15 @@ export function buildReportMarkdown(input: ReportInput): string {
     return parts.length ? parts.join("\n") : "_No obvious gaps detected._";
   })();
 
+  // Excluded rows are removed from every analytical section above. They are
+  // listed here so the exclusion is auditable rather than silent — an analyst
+  // must be able to see what was set aside and why.
+  const excludedSection = excludedRows.length === 0
+    ? "_Nothing excluded._"
+    : excludedRows.map(({ artifact: a, reason }) =>
+        `- \`${sanitizeValueForLabel(a.value, false)}\` — ${a.kind} — **${EXCLUSION_REASON_LABEL[reason]}** _(via ${humanizeSourceChain(a.source)})_`,
+      ).join("\n");
+
   const nextSteps = gaps.length === 0
     ? "_No additional tool groups suggested._"
     : gaps.map((g) => `- **${g.kind}** — consider: ${g.suggested.map((t) => toolActionLabel(t)).join(", ")}`).join("\n");
@@ -1265,6 +1358,11 @@ export function buildReportMarkdown(input: ReportInput): string {
       `## Recommended Next Steps`,
       nextSteps,
       "",
+      // The brief has no appendix, so state the exclusion count inline rather
+      // than let excluded rows vanish without a trace.
+      ...(excludedRows.length
+        ? [`_${excludedRows.length} row${excludedRows.length === 1 ? "" : "s"} excluded from analysis — see the Full Dossier for the itemised appendix._`, ""]
+        : []),
       `---`,
       `_Condensed brief — switch to the Full Dossier report type for the complete analysis. Observations from named sources; no identity claim is confirmed without independent corroboration._`,
     ].join("\n");
@@ -1289,6 +1387,9 @@ export function buildReportMarkdown(input: ReportInput): string {
     ...(clusterReport.seedName ? [`- **Detected subject:** ${clusterReport.seedName}`] : []),
     ...(clusterReport.seedState ? [`- **Detected location target:** ${clusterReport.seedState}`] : []),
     `- **Artifacts recorded:** ${total}`,
+    ...(excludedRows.length
+      ? [`- **Excluded from analysis:** ${excludedRows.length} _(see appendix)_`]
+      : []),
     "",
     `## Candidate Identity Clusters`,
     buildClusterSection(clusterReport, { includeWarnings: false }),
@@ -1336,6 +1437,9 @@ export function buildReportMarkdown(input: ReportInput): string {
     "",
     `## Recommended Next Steps`,
     nextSteps,
+    "",
+    `## Excluded from Analysis`,
+    excludedSection,
     "",
     `## Source Appendix`,
     sourceAppendix,
@@ -1433,10 +1537,40 @@ function stripUrls(s: string): string {
     .replace(/\b[a-z0-9-]+\.(?:com|net|org|be|tv|io|co|gg|ly|app|gov|edu)(?:\/\S*)?/gi, " ");
 }
 
+/**
+ * A pasted JSON / markup blob is data, not a person.
+ *
+ * A pasted array once tokenized into the "subject" `module dhgate schemamodule`,
+ * which then led the report and labelled every un-named cluster. Structured text
+ * must yield NO name rather than a plausible-looking phantom one.
+ *
+ * Deliberately conservative: commas are NOT counted as structural, because
+ * "John Smith, Sacramento, CA 95814" is a legitimate name-and-location seed.
+ */
+export function looksLikeStructuredBlob(s: string): boolean {
+  const t = s.trim();
+  if (!t) return false;
+  if (/^[[{]/.test(t)) {
+    try {
+      const parsed = JSON.parse(t);
+      if (parsed && typeof parsed === "object") return true;
+    } catch {
+      // A truncated or malformed paste won't parse — fall through to the shape check.
+    }
+    if (/["':]/.test(t)) return true; // opens like JSON and carries JSON punctuation
+  }
+  if (/<\/?[a-z][\w-]*(\s[^>]*)?>/i.test(t)) return true; // HTML / XML markup
+  // Dense JSON/markup punctuation. Quotes and brackets, not commas.
+  return (t.match(/[{}[\]"<>]/g) ?? []).length >= 4;
+}
+
 /** Best-effort name + location detection from a free-form seed string. */
 export function detectNameLocationSeed(seedValue: string | null): { name: string | null; state: string | null } | null {
   if (!seedValue) return null;
   if (detectSeed(seedValue)?.kind !== "other") return null; // structured seed → not a name search
+  // A JSON/schema paste is not a person-name search. Without this its tokens
+  // became the report's "Detected subject".
+  if (looksLikeStructuredBlob(seedValue)) return null;
   // Strip embedded URL(s) BEFORE deriving a name. A clean URL seed is already
   // caught by the kind check above; this covers mixed "<handle> https://…" seeds
   // where the URL would otherwise dominate the tokenized name.

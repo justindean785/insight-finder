@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { buildToolAudit, inferToolGaps } from "@/lib/intel";
+import { useArtifactReviewMap } from "@/lib/review";
 import { toolDisplayName, toolActionLabel } from "@/lib/tool-display";
 import { Wrench, AlertTriangle, RotateCcw, Compass, Lightbulb, Wallet, Pencil, Check } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
@@ -24,7 +25,10 @@ function fmtUsd(micro: number) {
 }
 
 export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts: Artifact[] }) {
-  const audit = useMemo(() => buildToolAudit(artifacts), [artifacts]);
+  // Tool coverage must reflect analyst verdicts — without these, a rejected row
+  // still counted toward a tool's high-confidence tally and overstated coverage.
+  const reviews = useArtifactReviewMap(threadId ?? "", artifacts);
+  const audit = useMemo(() => buildToolAudit(artifacts, reviews), [artifacts, reviews]);
   const gaps = useMemo(() => inferToolGaps(audit), [audit]);
   const [spentMicro, setSpentMicro] = useState<number>(0);
   const [capUsd, setCapUsd] = useState<number>(DEFAULT_CASE_CAP_USD);

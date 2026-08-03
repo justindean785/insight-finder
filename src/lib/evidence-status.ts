@@ -218,11 +218,19 @@ export function evidenceStatus(a: Artifact, review?: ReviewAdjustment): Evidence
   const analystConfirmed = review === "confirmed" || review === "key" || meta.reviewed === true;
   const shared = isSharedInfrastructure(a);
 
+  // An analyst verdict is the most specific and most accountable signal, so it
+  // outranks everything. Below it, "shared infrastructure" is preferred over a
+  // bare "rejected": `excluded_collision` now labels FAILED (it is a decided
+  // negative, not a lead), but telling the analyst *why* — a shared host is not
+  // ownership proof — is strictly more useful than the generic status.
+  const analystRejected = review === "dismissed" || review === "wrong" || meta.false_positive === true;
   let status: EvidenceDisplayStatus;
-  if (label === "FAILED") {
+  if (analystRejected) {
     status = "rejected";
   } else if (shared) {
     status = "shared_infrastructure";
+  } else if (label === "FAILED") {
+    status = "rejected";
   } else if (label === "CONFLICT") {
     status = "contradicted";
   } else {

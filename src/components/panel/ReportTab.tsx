@@ -89,7 +89,7 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
     }),
     [seed, artifacts, messages, reviews, reportType, toolActivityList, toolInvocations],
   );
-  const matrixMd = useMemo(() => buildEvidenceMatrixMarkdown(artifacts), [artifacts]);
+  const matrixMd = useMemo(() => buildEvidenceMatrixMarkdown(artifacts, reviews), [artifacts, reviews]);
 
   const copy = (text: string, label: string) =>
     navigator.clipboard.writeText(text).then(() => toast.success(label), () => toast.error("Copy failed"));

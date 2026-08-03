@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { buildTimelineItems, type TimelineEventType } from "@/lib/intel";
+import { useArtifactReviewMap } from "@/lib/review";
 import { useThreadMessages } from "@/hooks/useThreadMessages";
 import { captureError } from "@/lib/telemetry";
 import { Database, ShieldQuestion, Wrench, XCircle, RotateCcw, FileCheck, Flag, Clock } from "lucide-react";
@@ -50,9 +51,13 @@ export function TimelineTab({ threadId, artifacts }: { threadId: string; artifac
 
   const messages = useThreadMessages(threadId);
 
+  // Without reviews a rejected artifact rendered on the chronology as ordinary
+  // evidence rather than a failed event.
+  const reviews = useArtifactReviewMap(threadId, artifacts);
+
   const items = useMemo(
-    () => buildTimelineItems(artifacts, seed, messages),
-    [artifacts, seed, messages],
+    () => buildTimelineItems(artifacts, seed, messages, reviews),
+    [artifacts, seed, messages, reviews],
   );
 
   if (items.length === 0) {
