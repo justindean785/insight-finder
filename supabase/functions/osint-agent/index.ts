@@ -25,6 +25,7 @@ import {
   sanitizeToolOutput,
   capPartsSize,
   capToolPartPayloads,
+  stripNulCharacters,
   MAX_PERSISTED_ASSISTANT_PARTS_BYTES,
 } from "./safety.ts";
 import { sanitizeModelMessages, capToolResultOutputs, summarizeToolResultValue } from "./message-sanitize.ts";
@@ -1273,7 +1274,13 @@ Deno.serve(async (req) => {
           // the 2MB request limit: useChat replays full history, so allowing one
           // assistant row to consume that budget makes the next turn 413.
           const cappedParts = capToolPartPayloads(assistant.parts as unknown[]);
-          const safeParts = capPartsSize(cappedParts, MAX_PERSISTED_ASSISTANT_PARTS_BYTES);
+          // Strip JSONB-unsafe control characters LAST, so nothing the capping
+          // helpers do can reintroduce one. A single NUL anywhere in this tree
+          // fails the insert outright and discards the whole finished report —
+          // production, 2026-08-02, 12,736 characters lost. See safety.ts.
+          const safeParts = stripNulCharacters(
+            capPartsSize(cappedParts, MAX_PERSISTED_ASSISTANT_PARTS_BYTES),
+          );
           safePartsForCache = safeParts as unknown[];
           const { error: msgErr } = await supabase.from("messages").insert({
             thread_id: threadId,

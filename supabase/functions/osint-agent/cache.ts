@@ -6,7 +6,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import type { Tool } from "npm:ai@6";
-import { hashInput, normalizeForHash, sanitizeToolOutput, TOOL_CACHE_LRU } from "./safety.ts";
+import { hashInput, normalizeForHash, sanitizeToolOutput, stripNulCharacters, TOOL_CACHE_LRU } from "./safety.ts";
 import { tierForTool, modelForTool, type Tier } from "./models.ts";
 import { costForTool } from "./costs.ts";
 import { DEFAULT_TOOL_TTL_MS, NO_CACHE_TOOLS, redactSensitiveToolInput, TOOL_TTL_MS } from "./validation.ts";
@@ -1183,8 +1183,17 @@ export function wrapToolsWithCache(
                 investigation_id: ctx.investigationId,
                 tool_name: name,
                 input_hash: hash,
-                input_json: inputJson,
-                output_json: result as unknown as Record<string, unknown>,
+                // Both JSONB columns are scrubbed: this is the write that failed
+                // FIRST in the 2026-08-02 incident ("[tool_call_cache] write
+                // failed for http_fingerprint: unsupported Unicode escape
+                // sequence"), two minutes before the same poisoned payload
+                // reached assistant.parts and destroyed the final report. Fixing
+                // only the message insert would leave that early signal broken
+                // and the cache silently un-writable for the offending tool.
+                input_json: stripNulCharacters(inputJson),
+                output_json: stripNulCharacters(
+                  result as unknown as Record<string, unknown>,
+                ),
                 selector_normalized: sel || null,
                 selector_type: selectorType || null,
                 params_hash: paramsHash,

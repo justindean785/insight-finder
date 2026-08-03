@@ -248,6 +248,119 @@ function isUiToolPart(type: unknown): boolean {
   return typeof type === "string" && (type.startsWith("tool-") || type === "dynamic-tool");
 }
 
+/**
+ * Control characters Postgres will not accept inside a JSONB string.
+ *
+ * THE INCIDENT (2026-08-02, thread e66255da). `http_fingerprint` fetched a host
+ * whose response contained a literal NUL. It rode into `assistant.parts`, and the
+ * insert failed:
+ *
+ *   [tool_call_cache] write failed for http_fingerprint: unsupported Unicode escape sequence
+ *   assistant_message_insert_fail  error: "unsupported Unicode escape sequence"
+ *   completion_contract_unmet  assistant_row_persisted: false  assistant_chars: 12736
+ *
+ * A COMPLETE 12,736-character final report was produced and then thrown away by a
+ * one-character validation error, after 28 minutes and $0.97 of tool spend. The
+ * cache write had already failed the same way two minutes earlier; nothing acted
+ * on that warning because nothing was watching for it.
+ *
+ * SCOPE: U+0000 ONLY. This is NOT a JSONB validator.
+ *
+ * An earlier revision stripped the whole C0 range plus DEL, on the assumption
+ * that "control bytes are unsafe to round-trip through JSONB". That assumption
+ * was wrong, and in an evidence system silently deleting storable bytes is its
+ * own kind of data loss. Measured against a real server (PostgreSQL 16.13;
+ * reproducer: docs/reproducers/jsonb-nul.sql):
+ *
+ *   U+0000                       REJECTED in values AND keys
+ *                                ERROR: unsupported Unicode escape sequence
+ *   U+0001 U+0007 U+0008 U+000B
+ *   U+000C U+000E U+001F U+007F  ACCEPTED, and round-trip byte-exact
+ *                                (BEL and DEL verified: length 3, middle
+ *                                 codepoint 7 and 127 respectively)
+ *
+ * Postgres rejects U+0000 because its `text` type cannot represent a NUL, not
+ * because JSON forbids it -- every other control character escapes cleanly and
+ * survives. So this removes exactly the one character with a demonstrated
+ * failure, and preserves everything else including TAB/LF/CR.
+ *
+ * Do not widen this set on the strength of a regex or a plausible argument. Add
+ * a character only with a psql reproducer showing that exact codepoint failing.
+ *
+ * Written with a unicode escape on purpose: embedding the literal byte makes
+ * this source file itself binary to grep and diff.
+ */
+/* eslint-disable no-control-regex -- stripping this character is the entire
+   point of this expression; see the incident note above. */
+// deno-lint-ignore no-control-regex
+const NUL_RE = /\u0000/g;
+// Same character, non-regex form: NUL_RE is /g and .test() on a /g regex is
+// stateful across calls, which would make key classification order-dependent.
+const NUL_CHAR = String.fromCharCode(0);
+/* eslint-enable no-control-regex */
+
+/**
+ * Recursively remove U+0000 from every string leaf and every object key.
+ *
+ * Applied at the PERSISTENCE boundary rather than at each tool return, so a write
+ * path added later cannot bypass it. Structure, key order, types and numbers are
+ * preserved exactly -- only NUL is removed, and only because it cannot be stored
+ * at all.
+ *
+ * KEY COLLISION: scrubbing a key can make it equal one already present, e.g.
+ *   { "head\u0000er": "a", "header": "b" }  ->  both want the key "header".
+ * No resolution is lossless inside a JSON object, so the rule is stated
+ * explicitly rather than left to whichever entry Object.entries happens to
+ * yield last:
+ *
+ *   1. A key that was ALREADY CLEAN always keeps its value. Sanitising must
+ *      never destroy data that was valid and storable to begin with.
+ *   2. A scrubbed key takes the slot only if no clean key claims it.
+ *   3. Among several scrubbed keys landing on the same slot, the first wins.
+ *
+ * Pinned by test. Do not "simplify" to plain last-write-wins: that lets a value
+ * which only collided BECAUSE of scrubbing overwrite one that never needed
+ * scrubbing at all.
+ */
+export function stripNulCharacters<T>(value: T): T {
+  if (typeof value === "string") {
+    return value.replace(NUL_RE, "") as unknown as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) => stripNulCharacters(v)) as unknown as T;
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    // Keys needing no scrubbing are inviolable (rule 1), so they must be known
+    // before any scrubbed key is allowed to claim a slot.
+    const cleanKeys = new Set(entries.map(([k]) => k).filter((k) => !k.includes(NUL_CHAR)));
+    // Pairs + Object.fromEntries, NOT `out[key] = v` on a literal. Bracket
+    // assignment routes the key "__proto__" through Object.prototype's inherited
+    // SETTER on some V8 versions: the key never becomes an own property, it
+    // vanishes from JSON.stringify, and the value silently becomes the output's
+    // prototype. `__proto__` is a perfectly legal JSON key -- an HTTP response
+    // body can contain one -- so that is evidence loss, not a security nicety.
+    // Measured: Node 22 / V8 12 loses the key; Deno 2.9.4 / V8 15 does not. The
+    // deployed edge runtime's V8 version is not ours to pin, so the construction
+    // must be correct under BOTH. Object.fromEntries defines own data properties
+    // on every engine tested.
+    const pairs: Array<[string, unknown]> = [];
+    const claimed = new Set<string>();
+    for (const [k, v] of entries) {
+      // A poisoned KEY fails the insert just as hard as a poisoned value.
+      const key = k.replace(NUL_RE, "");
+      if (key !== k) {
+        // rule 2: never displace a clean key. rule 3: first scrubbed key wins.
+        if (cleanKeys.has(key) || claimed.has(key)) continue;
+      }
+      claimed.add(key);
+      pairs.push([key, stripNulCharacters(v)]);
+    }
+    return Object.fromEntries(pairs) as unknown as T;
+  }
+  return value;
+}
+
 // Per-part payload cap applied to a UIMessage.parts array BEFORE it is written
 // to `messages.parts`. A single tool (e.g. socialfetch_lookup returning a full
 // video dump) can emit a 600KB+ `output.data`; stored verbatim it bloats the

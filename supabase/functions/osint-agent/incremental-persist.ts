@@ -39,6 +39,8 @@
 /** Milliseconds the caller will block on a checkpoint insert before moving on.
  *  The underlying promise keeps running (held by `registerBackground`); this
  *  bound only stops a slow DB from stalling the investigation. */
+import { stripNulCharacters } from "./safety.ts";
+
 export const CHECKPOINT_AWAIT_MS = 4000;
 
 /** Max findings listed in a single checkpoint message (kill-safety, not display). */
@@ -263,7 +265,9 @@ export async function persistCheckpoint(
       thread_id: ctx.threadId,
       user_id: ctx.userId,
       role: "assistant",
-      parts: [
+      // Checkpoint inserts carry tool-derived text and hit the same JSONB
+      // constraint as the final report.
+      parts: stripNulCharacters([
         {
           type: "text",
           text,
@@ -275,7 +279,7 @@ export async function persistCheckpoint(
           _run_id: ctx.runId ?? null,
           _checkpoint_keys: keys,
         },
-      ] as unknown,
+      ]) as unknown,
     });
     if (error) {
       console.warn("[incremental-persist] insert failed:", error.message);
