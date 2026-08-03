@@ -1181,6 +1181,11 @@ export function buildReportMarkdown(input: ReportInput): string {
   const rev = (a: Artifact): ReviewAdjustment => reviews?.[a.id];
   const lbl = (a: Artifact): ConfLabel => labelForArtifact(a, rev(a));
   const conf = (a: Artifact): number | null => (rev(a) ? adjustedConfidence(a, rev(a)) : a.confidence);
+  /** " ; analyst review: key" — the analyst's act, never folded into a score. */
+  const reviewClause = (a: Artifact): string => {
+    const r = rev(a);
+    return r ? `; analyst review: ${r}` : "";
+  };
 
   const confirmed = artifacts.filter((a) => lbl(a) === "CONFIRMED");
   const inferred = artifacts.filter((a) => lbl(a) === "INFERRED");
@@ -1288,7 +1293,11 @@ export function buildReportMarkdown(input: ReportInput): string {
         // `conf(a)` is the REVIEW-ADJUSTED score, not what the source asserted,
         // so it must not sit inside the "source indicates" clause. Attribute the
         // observation to the source and the score to the assessment separately.
-        `- **${a.kind}** — ${mdCodeSpan(a.value)} _(source indicates via ${humanizeSourceChain(a.source)}; assessed confidence ${conf(a) ?? "—"})_`,
+        // Three separate facts, said separately: what the source reported, what
+        // the EVIDENCE scored (the stored number), and what the analyst did.
+        // Folding the review-adjusted score in as "confidence" presented an
+        // assessment as if the source had asserted it.
+        `- **${a.kind}** — ${mdCodeSpan(a.value)} _(source indicates via ${humanizeSourceChain(a.source)}; evidence confidence: ${a.confidence ?? "—"}${reviewClause(a)})_`,
       ).join("\n");
     }
     const leads = artifacts
@@ -1300,7 +1309,7 @@ export function buildReportMarkdown(input: ReportInput): string {
       "_No fully-corroborated findings yet (none reach CONFIRMED — 2+ independent source classes or analyst review). Strongest uncorroborated leads:_",
       "",
       ...leads.map((a) =>
-        `- **${a.kind}** — ${mdCodeSpan(sanitizeValueForLabel(a.value, false))} _(${lbl(a)}, confidence ${conf(a) ?? "—"}, via ${humanizeSourceChain(a.source)})_`,
+        `- **${a.kind}** — ${mdCodeSpan(sanitizeValueForLabel(a.value, false))} _(${lbl(a)}; evidence confidence: ${a.confidence ?? "—"}${reviewClause(a)}; via ${humanizeSourceChain(a.source)})_`,
       ),
     ].join("\n");
   })();

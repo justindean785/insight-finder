@@ -761,6 +761,49 @@ describe("Key Findings confidence attribution", () => {
     // The old wording read: "source indicates via X, confidence <adjusted>".
     expect(md).not.toMatch(/source indicates via [^,]+, confidence \d+/);
   });
+
+  // Contract item 7 — positive assertions. Not attributing the adjusted score
+  // to the source is only half of it; the report must SAY what the evidence
+  // scored and what the analyst did, as two separate facts.
+  const reviewed = (review: ReviewState) =>
+    buildReportMarkdown({
+      seedValue: "k@example.com",
+      seedType: "email",
+      artifacts: [art({
+        id: "k", kind: "email", value: "k@example.com", confidence: 70, source: "github_user",
+        metadata: { source_category: ["public_record", "social_profile_direct"] },
+      })],
+      reviews: { k: review },
+    });
+  const keyFindings = (md: string) => md.split("## Key Findings")[1]?.split("\n## ")[0] ?? "";
+
+  it("reports the stored evidence confidence and the analyst review separately", () => {
+    const kf = keyFindings(reviewed("key"));
+    expect(kf).toMatch(/evidence confidence:? 70/i);
+    expect(kf).toMatch(/analyst review:? key/i);
+  });
+
+  it("never presents the review-adjusted number as the evidence confidence", () => {
+    // "key" adds +25 → 95. That is an assessment, not what the source scored.
+    const kf = keyFindings(reviewed("key"));
+    expect(kf).not.toMatch(/evidence confidence:? 95/i);
+  });
+
+  it("omits the analyst-review clause when there is no verdict", () => {
+    const md = buildReportMarkdown({
+      seedValue: "k@example.com",
+      seedType: "email",
+      artifacts: [art({
+        id: "k", kind: "email", value: "k@example.com", confidence: 70, source: "github_user",
+        metadata: { source_category: ["public_record", "social_profile_direct"] },
+      })],
+    });
+    // Scoped to the BULLET: the leads-branch preamble legitimately contains the
+    // phrase "…2+ independent source classes or analyst review".
+    const bullet = keyFindings(md).split("\n").find((l) => l.startsWith("- ")) ?? "";
+    expect(bullet).toMatch(/evidence confidence:? 70/i);
+    expect(bullet).not.toMatch(/analyst review:/i);
+  });
 });
 
 // ---------------------------------------------------------------------------
