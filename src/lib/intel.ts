@@ -1456,7 +1456,17 @@ export function buildReportMarkdown(input: ReportInput): string {
     `- **Type:** ${display.kind}`,
     ...(clusterReport.seedName ? [`- **Detected subject:** ${clusterReport.seedName}`] : []),
     ...(clusterReport.seedState ? [`- **Detected location target:** ${clusterReport.seedState}`] : []),
-    `- **Artifacts recorded:** ${total}`,
+    // recorded = analyzed + excluded, by construction. Printing the ANALYSED
+    // count under the word "recorded" — directly above "Excluded from analysis:
+    // N" — invited the reader to subtract the exclusions a second time.
+    `- **Artifacts recorded:** ${dedupedArtifacts.length}`,
+    `- **Artifacts analyzed:** ${total}${
+      collisionArtifacts.length
+        // Collision rows are NOT partitioned out (they have their own section),
+        // so they sit inside "analyzed". Nobody can infer that — say it.
+        ? ` _(includes ${collisionArtifacts.length} quarantined as namesake / likely-unrelated — see Collision / Likely Unrelated)_`
+        : ""
+    }`,
     ...(excludedRows.length
       ? [`- **Excluded from analysis:** ${excludedRows.length} _(see appendix)_`]
       : []),

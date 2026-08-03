@@ -1221,7 +1221,14 @@ export function CaseReport({
           independently corroborated.
         </p>
         <div className="mt-3 grid gap-2 sm:grid-cols-3">
-          <MiniAssessment label="Evidence volume" value={`${analysisArtifacts.length}`} hint="artifacts retained for analysis after exclusions" />
+          {/* recorded = analyzed + excluded, spelled out. Showing only the
+              analysed count next to an exclusions notice invited the reader to
+              subtract the exclusions a second time. */}
+          <MiniAssessment
+            label="Evidence volume"
+            value={`${analysisArtifacts.length}`}
+            hint={`${safetyArtifacts.length} recorded = ${analysisArtifacts.length} analyzed + ${excludedArtifacts.length} excluded`}
+          />
           <MiniAssessment label="Independent sources" value={`${effectiveSources}`} hint={`${sources.length} source label${sources.length === 1 ? "" : "s"} → ${effectiveSources} independent (mirrors & duplicate datasets collapsed)`} />
           <MiniAssessment label="Tool coverage" value={`${audit.tools.length}`} hint="tools represented in this case artifact set" />
         </div>

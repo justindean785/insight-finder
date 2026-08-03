@@ -209,6 +209,15 @@ describe("CaseReport — analyst-rejected rows are not evidence", () => {
     expect(text).toContain(REDACTED_MINOR_PLACEHOLDER);
   });
 
+  it("reconciles recorded = analyzed + excluded rather than showing one number", () => {
+    // 11 rows recorded, 3 analysed, 8 excluded. Showing only the analysed count
+    // beside an exclusions notice invites the reader to subtract twice.
+    const text = renderReport().textContent ?? "";
+    expect(text).toContain("11 recorded");
+    expect(text).toContain("3 analyzed");
+    expect(text).toContain("8 excluded");
+  });
+
   it("still raises the safety flag for a REJECTED possible-minor row", () => {
     // Safety warnings read the full population, never the analysis view — a
     // dismissal must not delete the warning that a minor is implicated.

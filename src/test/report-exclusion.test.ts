@@ -192,9 +192,78 @@ describe("buildReportMarkdown — rejected rows are excluded, not hidden", () =>
     expect(appendix).toContain("REJECTED_HANDLE");
   });
 
-  it("does not double-count the rejected row in the artifact total", () => {
-    // The header total must describe what was analysed.
-    expect(md()).toMatch(/\*\*Artifacts recorded:\*\* 1\b/);
+  it("does not double-count the rejected row in the analysed total", () => {
+    // "recorded" is the population; "analyzed" is what survived the partition.
+    // Printing the analysed count under the word "recorded" — directly above
+    // "Excluded from analysis: 1" — invited the reader to subtract twice.
+    expect(md()).toMatch(/\*\*Artifacts analyzed:\*\* 1\b/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Contract item 10: recorded = analyzed + excluded, stated in those words.
+// ---------------------------------------------------------------------------
+
+describe("count terminology reconciles", () => {
+  const counts = (md: string) => {
+    const seed = md.split("## Seed Details")[1]?.split("\n## ")[0] ?? "";
+    const num = (re: RegExp) => {
+      const m = seed.match(re);
+      return m ? Number(m[1]) : null;
+    };
+    return {
+      seed,
+      recorded: num(/\*\*Artifacts recorded:\*\* (\d+)/),
+      analyzed: num(/\*\*Artifacts analyzed:\*\* (\d+)/),
+      excluded: num(/\*\*Excluded from analysis:\*\* (\d+)/),
+    };
+  };
+
+  it("prints all three counts and they reconcile", () => {
+    const md = buildReportMarkdown({
+      seedValue: "seed@example.com",
+      seedType: "email",
+      artifacts: [
+        art({ id: "keep", kind: "email", value: "kept@example.com" }),
+        art({ id: "bad1", kind: "username", value: "REJ1", source: "github_user" }),
+        art({ id: "bad2", kind: "username", value: "REJ2", source: "github_user" }),
+      ],
+      reviews: { bad1: "wrong", bad2: "dismissed" },
+    });
+    const c = counts(md);
+    expect(c.recorded).toBe(3);
+    expect(c.analyzed).toBe(1);
+    expect(c.excluded).toBe(2);
+    expect(c.recorded).toBe((c.analyzed ?? 0) + (c.excluded ?? 0));
+  });
+
+  it("says explicitly how collision rows are counted", () => {
+    // Collision rows are NOT partitioned out (they have their own section), so
+    // they sit inside "analyzed". A reader cannot infer that; say it.
+    const md = buildReportMarkdown({
+      seedValue: "seed@example.com",
+      seedType: "email",
+      artifacts: [
+        art({ id: "keep", kind: "email", value: "kept@example.com" }),
+        art({ id: "col", kind: "name", value: "Someone Else", metadata: { collision: true } }),
+      ],
+    });
+    const c = counts(md);
+    expect(c.recorded).toBe(2);
+    expect(c.analyzed).toBe(2);
+    expect(c.seed).toMatch(/quarantined as namesake/i);
+  });
+
+  it("still reconciles when nothing is excluded", () => {
+    const md = buildReportMarkdown({
+      seedValue: "seed@example.com",
+      seedType: "email",
+      artifacts: [art({ id: "keep", kind: "email", value: "kept@example.com" })],
+    });
+    const c = counts(md);
+    expect(c.recorded).toBe(1);
+    expect(c.analyzed).toBe(1);
+    expect(c.excluded ?? 0).toBe(0);
   });
 });
 
