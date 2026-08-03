@@ -124,6 +124,97 @@ interface RuntimeThreadState {
 
 const THREADS = new Map<string, RuntimeThreadState>();
 
+/**
+ * The DURABLE slice of RuntimeThreadState — the three counters the runaway-cost
+ * backstops are enforced against.
+ *
+ * ⛔ THE BUDGET IS SCOPED TO THE INVESTIGATION, NOT TO THE HTTP REQUEST.
+ * `THREADS` above is module-scope state inside one edge-function isolate, and
+ * `index.ts` calls `clearRuntime(threadId)` at the top of every request. So for as
+ * long as those two facts held alone, "12 paid calls per investigation" actually
+ * meant "12 paid calls per invocation": a run killed at the 180s isolate ceiling
+ * and resumed with a "Continue" started again from zero. Three Continues = a real
+ * ceiling of 36 (measured: 32 paid calls on a nominal cap of 12).
+ *
+ * `hydrateRuntimeBudget` reloads these counters from the database at request
+ * setup, and the persister registered via `registerBudgetPersister` writes them
+ * back as they move, so the cap survives an isolate death. `clearRuntime` still
+ * wipes stage / cycle / plan / activeCalls — those genuinely ARE per-invocation.
+ */
+export interface RuntimeBudgetSnapshot {
+  totalCalls: number;
+  paidCalls: number;
+  toolCounts: Record<string, number>;
+}
+
+/** Called synchronously from startCall the moment a counter moves. MUST NOT throw
+ *  and MUST NOT block — the implementation in budget-store.ts queues a coalesced,
+ *  fire-and-forget write. startCall stays synchronous; that is deliberate. */
+export type BudgetPersister = (threadId: string, snapshot: RuntimeBudgetSnapshot) => void;
+
+// Keyed by threadId rather than a single module-global: one isolate serves many
+// concurrent requests, and a global would send thread A's spend to thread B's
+// writer.
+const BUDGET_PERSISTERS = new Map<string, BudgetPersister>();
+
+export function registerBudgetPersister(threadId: string, fn: BudgetPersister): void {
+  BUDGET_PERSISTERS.set(threadId, fn);
+}
+
+/** Unregister only if `fn` is still the registered persister. Two overlapping runs
+ *  on one thread (double-submit / retry) both register; without the identity check
+ *  the FIRST to finish would tear down the SECOND's writer and the still-running
+ *  sibling would stop accounting for its spend. */
+export function unregisterBudgetPersister(threadId: string, fn?: BudgetPersister): void {
+  if (fn && BUDGET_PERSISTERS.get(threadId) !== fn) return;
+  BUDGET_PERSISTERS.delete(threadId);
+}
+
+function toCount(value: unknown): number {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.floor(n);
+}
+
+/** Read the durable counters for a thread. Never creates budget — a thread with no
+ *  state reads as all zeroes. */
+export function readRuntimeBudget(threadId: string): RuntimeBudgetSnapshot {
+  const state = THREADS.get(threadId);
+  if (!state) return { totalCalls: 0, paidCalls: 0, toolCounts: {} };
+  return {
+    totalCalls: state.totalCalls,
+    paidCalls: state.paidCalls,
+    toolCounts: Object.fromEntries(state.toolCounts),
+  };
+}
+
+/**
+ * Load persisted spend into the isolate's counters.
+ *
+ * MONOTONIC: every field takes the MAXIMUM of what is already in memory and what
+ * the snapshot carries. A stale row, an out-of-order read, or a racing sibling run
+ * that has already spent more must never hand budget back — handing budget back is
+ * the entire bug this exists to close. A `null`/`undefined` snapshot (no row yet,
+ * or a failed read) is a no-op, so a database problem cannot silently reset a
+ * live run's counters either.
+ */
+export function hydrateRuntimeBudget(
+  threadId: string,
+  snapshot: Partial<RuntimeBudgetSnapshot> | null | undefined,
+): void {
+  if (!snapshot) return;
+  const state = getThread(threadId);
+  state.totalCalls = Math.max(state.totalCalls, toCount(snapshot.totalCalls));
+  state.paidCalls = Math.max(state.paidCalls, toCount(snapshot.paidCalls));
+  const counts = snapshot.toolCounts;
+  if (counts && typeof counts === "object") {
+    for (const [tool, raw] of Object.entries(counts)) {
+      if (!tool) continue;
+      state.toolCounts.set(tool, Math.max(state.toolCounts.get(tool) ?? 0, toCount(raw)));
+    }
+  }
+}
+
 // Runaway-cost backstops, enforced PER RUN (per investigation thread) — NOT per
 // cycle and NOT advisory. startCall refuses once any of these is hit; that is
 // the only place the runtime says "no". Everything else (which tool, in what
@@ -144,7 +235,34 @@ const THREADS = new Map<string, RuntimeThreadState>();
 // backstops. Lower concurrency + a wider start gap keep bursts under common
 // provider limits (e.g. stolen.tax = 2 req/s); tighter budgets stop the agent
 // grinding low-value fan-out on a no-match seed.
-export const MAX_TOTAL_CALLS = 30;
+//
+// ⚠️ RE-BASELINED 2026-08-03, TOGETHER WITH THE DURABLE BUDGET — READ THIS BEFORE
+// "RESTORING" THE OLD NUMBERS.
+//
+// These constants were tuned while the counters lived only in isolate memory and
+// `clearRuntime` wiped them at the top of every request, so the value written here
+// was consumed ONCE PER INVOCATION. A real investigation spans several invocations
+// (the isolate is killed at the 180s ceiling and the analyst continues), so the
+// EFFECTIVE ceiling was `value × invocations` — unbounded in principle, and 32 paid
+// calls against a nominal 12 in the last measured production run.
+//
+// Making the counters durable moves the cap to where the comment above always
+// claimed it was: the whole investigation. Left at 30/12 that change would have
+// been a silent ~3× cut in investigation depth — the caps would suddenly bind at
+// what used to be one third of a run. The defaults are therefore multiplied by the
+// 3 invocations a full investigation was observed to take, which makes this change
+// COST-NEUTRAL rather than a cut or an increase:
+//
+//     total     30 × 3 = 90     (observed spend across a full 3-invocation run)
+//     paid      12 × 3 = 36     (observed 32 — the cap now genuinely binds at 36)
+//     same-tool 16 → 24         (NOT ×3: same-selector repetition is the lowest-value
+//                                spend there is, and 24 is already a runaway figure)
+//
+// The change is pinned by runtime_policy_test.ts so it cannot drift back silently.
+// If you want a CHEAPER product, lower these deliberately and say so — but do not
+// lower them by accident by "reverting to the documented values", because the
+// documented values were never what production actually spent.
+export const MAX_TOTAL_CALLS = 90;
 // Speed pass: raised 3→6 to cut wall-clock (fewer, wider cycles). This is the
 // default for runtimeLimits.maxParallelTools (env MAX_PARALLEL_TOOLS overrides)
 // AND the concurrency figure quoted in the system prompt. The queue still spaces
@@ -160,7 +278,7 @@ export const MAX_TOTAL_CALLS = 30;
 // independent pivots while forcing the loop to re-plan on evidence. Raise via
 // MAX_PARALLEL_TOOLS if a specific run needs it.
 export const MAX_CONCURRENT_CALLS = 3;
-export const MAX_PAID_CALLS = 12;
+export const MAX_PAID_CALLS = 36;
 
 // ---- Configurable runtime limits ---------------------------------------------
 // Hard caps are now configurable and DEFAULT TO UNLIMITED investigation depth.
@@ -208,7 +326,9 @@ function envBool(name: string, fallback: boolean): boolean {
 // Hard per-tool ceiling. Declared here (not with the other same-tool constants
 // further down) because `runtimeLimits` below reads it — a const referenced
 // before its declaration is a temporal-dead-zone throw at module import.
-export const MAX_SAME_TOOL_CALLS = 16;
+// Per-run ceiling for one tool. See the re-baselining note on MAX_TOTAL_CALLS:
+// raised 16 → 24 with the durable budget, deliberately NOT ×3.
+export const MAX_SAME_TOOL_CALLS = 24;
 
 // ---- ENFORCED BY DEFAULT (2026-07-27) ----
 // These used to default to Infinity with `stopOnBudgetExhausted:false`, which meant
@@ -284,6 +404,16 @@ function getThread(threadId: string): RuntimeThreadState {
   return state;
 }
 
+/**
+ * Drop this isolate's state for a thread.
+ *
+ * ⚠️ This is NOT "start a new investigation's budget". `index.ts` calls it at the
+ * top of every request — including the "Continue" after an isolate kill — and then
+ * immediately calls `hydrateRuntimeBudget` to reload the persisted spend. What this
+ * clears is the genuinely per-invocation state: stage, cycleId, plan, activeCalls,
+ * pacing. Removing the rehydrate call in index.ts silently restores the unbounded
+ * per-request budget; `runtime_budget_wiring_test.ts` fails if it goes missing.
+ */
 export function clearRuntime(threadId: string): void {
   THREADS.delete(threadId);
 }
@@ -471,6 +601,24 @@ export function startCall(input: RuntimeDecisionInput): RuntimeDecision {
   state.toolCounts.set(input.toolName, sameToolCount + 1);
   state.familyCalls.add(input.familyKey);
   state.lastStartAt = scheduledStartAt;
+  // Push the moved counters at the durable store. Synchronous and fire-and-forget
+  // by contract (see BudgetPersister): startCall is on the tool-admission hot path
+  // and must not become async, and a persistence problem must never refuse a call
+  // the budget actually allows — so the queue call is wrapped and its failure
+  // swallowed. Under-counting on a database outage is the correct failure mode;
+  // refusing a paid the analyst is entitled to is not.
+  const persist = BUDGET_PERSISTERS.get(input.threadId);
+  if (persist) {
+    try {
+      persist(input.threadId, {
+        totalCalls: state.totalCalls,
+        paidCalls: state.paidCalls,
+        toolCounts: Object.fromEntries(state.toolCounts),
+      });
+    } catch {
+      // ignored on purpose — see above
+    }
+  }
   return { allow: true, stage: state.stage, cycleId: state.cycleId, waitMs };
 }
 

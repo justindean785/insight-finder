@@ -200,3 +200,38 @@ export const HYPOTHESIS_AND_SOURCE_DISCIPLINE = `
 - detect_contradictions already flags shared-infra / mirror / same-name false-links — run it before record_finding, and let record_finding's server-side confidence stand rather than asserting a higher number than the effective corroboration supports.`;
 
 export const SYSTEM_PROMPT_FULL = SYSTEM_PROMPT + IDENTITY_CLUSTER_RULES + PERSON_SEARCH_RULES + HYPOTHESIS_AND_SOURCE_DISCIPLINE;
+
+/**
+ * Tell the model what the investigation has ALREADY spent.
+ *
+ * Now that the budget survives a "Continue" (see runtime-policy.ts), a continuation
+ * can open with most of the run's allowance gone. The static budget line above
+ * quotes the FULL figures, so without this the model plans a twelve-pivot sweep it
+ * cannot execute, watches the runtime refuse call after call, and the analyst sees
+ * another run that "just stopped" — the same symptom the durable budget was built
+ * to fix, arriving by a different route.
+ *
+ * This states a measured fact and nothing else. It does not instruct the model to
+ * stop, and it must not: the run-termination invariants are explicit that a stop
+ * decision is never taken from prose. When the allowance is gone it points at the
+ * recording/finalize tools, which are exempt from every cap and therefore always
+ * available — writing the report from what was already gathered is the correct
+ * move, not an early exit.
+ *
+ * Returns "" for a fresh investigation so the ordinary first request is unchanged.
+ */
+export function buildBudgetStatusBlock(spent: { totalCalls: number; paidCalls: number }): string {
+  const total = Math.max(0, Math.floor(spent.totalCalls || 0));
+  const paid = Math.max(0, Math.floor(spent.paidCalls || 0));
+  if (total <= 0 && paid <= 0) return "";
+  const totalLeft = Math.max(0, MAX_TOTAL_CALLS - total);
+  const paidLeft = Math.max(0, MAX_PAID_CALLS - paid);
+  const header =
+    `\n\n## Budget already spent on THIS investigation\nEarlier requests on this thread have used ${total} of ${MAX_TOTAL_CALLS} tool calls and ${paid} of ${MAX_PAID_CALLS} paid calls. The budget is scoped to the investigation, not to this message, so continuing does NOT refill it. Remaining: ${totalLeft} total, ${paidLeft} paid.`;
+  if (paidLeft === 0 || totalLeft === 0) {
+    return header +
+      ` The allowance is spent. Recording and finalize tools are exempt from every cap and remain available — write the report from the evidence already gathered, state plainly which lines of enquiry were left open, and do not describe the remaining tools as rate-limited or quota-exhausted, because they are neither.`;
+  }
+  return header +
+    ` Spend what is left on the single question that most changes the conclusion.`;
+}

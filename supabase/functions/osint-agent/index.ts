@@ -34,9 +34,17 @@ import { setupRequest } from "./auth.ts";
 import { minimax, minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider } from "./orchestrator_select.ts";
 import { FINDING_LABELS } from "./catalog.ts";
-import { SYSTEM_PROMPT_FULL } from "./system-prompt.ts";
+import { buildBudgetStatusBlock, SYSTEM_PROMPT_FULL } from "./system-prompt.ts";
 import { wrapToolsWithCache } from "./cache.ts";
-import { beginCycle, clearRuntime } from "./runtime-policy.ts";
+import {
+  beginCycle,
+  type BudgetPersister,
+  clearRuntime,
+  hydrateRuntimeBudget,
+  registerBudgetPersister,
+  unregisterBudgetPersister,
+} from "./runtime-policy.ts";
+import { type BudgetDbClient, createBudgetWriter, loadThreadRunBudget } from "./budget-store.ts";
 import {
   TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW,
   MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN,
@@ -313,7 +321,45 @@ Deno.serve(async (req) => {
     // boundary — same mechanism as the analyst Stop button — instead of the
     // debit failure being silently discarded while paid tool calls continue.
     let creditExhaustReason: string | null = null;
+    // Drop this isolate's per-invocation state (stage, cycle, plan, pacing) …
     clearRuntime(threadId);
+    // … then put the INVESTIGATION-scoped spend straight back. Without this pair
+    // the runaway-cost caps are per-HTTP-request, which is to say absent: a run
+    // killed at the 180s isolate ceiling and resumed with "Continue" restarted its
+    // 36-paid-call budget from zero every time. Reads through the ADMIN client —
+    // thread_run_budget is a spend control with no tenant write policy, so the
+    // user-scoped client can read it but must never be the thing that moves it.
+    // Fails open (see budget-store.ts): a hydrate failure logs and hydrates
+    // nothing rather than refusing calls the analyst is entitled to.
+    // The cast is the single adaptation point between supabase-js (whose `rpc`
+    // params type is `undefined` without generated Database types) and
+    // budget-store's two-method structural client. See BudgetDbClient.
+    const budgetDb = supabaseAdmin as unknown as BudgetDbClient;
+    const persistedBudget = await loadThreadRunBudget(budgetDb, threadId);
+    hydrateRuntimeBudget(threadId, persistedBudget);
+    const budgetWriter = createBudgetWriter(budgetDb, threadId);
+    // Thread-guarded as well as thread-keyed: registerBudgetPersister already
+    // routes by threadId, and this second check means a future refactor of that
+    // routing cannot silently bill one investigation for another's calls.
+    const budgetPersister: BudgetPersister = (tid, snapshot) => {
+      if (tid !== threadId) return;
+      budgetWriter.queue(snapshot);
+    };
+    registerBudgetPersister(threadId, budgetPersister);
+    // Empty string for a fresh investigation; on a continuation it states what the
+    // earlier requests already spent, so the model does not plan pivots the runtime
+    // will refuse. Fact only — never an instruction to stop (see the note on the
+    // builder, and the run-termination invariants in CLAUDE.md).
+    const budgetStatusBlock = buildBudgetStatusBlock(persistedBudget ?? { totalCalls: 0, paidCalls: 0 });
+    console.log(JSON.stringify({
+      event: "run_budget_hydrated",
+      thread_id: threadId,
+      // null ⇒ a brand-new investigation OR a failed read; the warn line from
+      // budget-store.ts distinguishes the two.
+      hydrated: persistedBudget !== null,
+      total_calls: persistedBudget?.totalCalls ?? 0,
+      paid_calls: persistedBudget?.paidCalls ?? 0,
+    }));
     // Seed breadcrumb for the cycle log — the first user message's text.
     const seedValueRaw = (() => {
       const fu = ((messages ?? []) as Array<{ role?: string; parts?: Array<{ type?: string; text?: string }> }>)
@@ -342,6 +388,13 @@ Deno.serve(async (req) => {
       if (runStateReleased) return;
       runStateReleased = true;
       circuit.release(threadId);
+      // Stop accounting for this run and land whatever the debounce still holds.
+      // Identity-checked so a sibling run on the same thread keeps its own writer.
+      unregisterBudgetPersister(threadId, budgetPersister);
+      // Fire-and-forget: releaseRunState is called from synchronous teardown paths
+      // (including the stream onError `finally`). The bulk of the spend was already
+      // written during the run; this only chases the last debounce window.
+      void budgetWriter.flush();
     };
     // Bootstrap per-thread circuit breakers (firecrawl/intelbase pre-disabled).
     circuit.applyBaselineDisables(threadId);
@@ -730,7 +783,7 @@ Deno.serve(async (req) => {
     }
     const baseSystemPrompt =
       SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary
-      + analystRejectionBlock;
+      + analystRejectionBlock + budgetStatusBlock;
     // The two decision tools exist in the registry so forced-finalize can select them,
     // but they must never be available during ordinary investigation steps.
     const normalActiveTools = activeToolsOutsideFinalize(Object.keys(tools));
@@ -974,7 +1027,7 @@ Deno.serve(async (req) => {
         : deepseekIsPrimary
         ? { deepseek: { parallel_tool_calls: false, thinking: { type: "disabled" } } }
         : undefined,
-      system: SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary,
+      system: SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary + budgetStatusBlock,
       messages: trimmedMessages,
       tools: wrapToolsWithCache(tools, {
         investigationId: threadId,
@@ -1493,6 +1546,21 @@ Deno.serve(async (req) => {
         // backstop for the paths where this never runs (isolate death,
         // unhandled rejection).
         heartbeat?.stop();
+        // On the CLEAN finish path we can afford to await the budget flush, so the
+        // investigation's final spend is durable before the run is declared over.
+        // (releaseRunState below also flushes, but fire-and-forget — that one is
+        // for the error/teardown paths that cannot await.)
+        try {
+          await budgetWriter.flush();
+          const budgetStats = budgetWriter.stats();
+          console.log(JSON.stringify({
+            event: "run_budget_flushed",
+            thread_id: threadId,
+            ...budgetStats,
+          }));
+        } catch (e) {
+          console.warn("[run budget] final flush failed (non-fatal):", String(e));
+        }
         releaseRunState();
     };
 
