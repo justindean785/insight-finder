@@ -71,7 +71,7 @@ if (meta.possible_minor === true) return Math.max(0, Math.min(55, base + d + bon
 
 The comment at `intel.ts:337` states the coupling: *"adjustedConfidence already caps a possible_minor's number at 55; skipping the short-circuit makes the LABEL respect that cap too."*
 
-**Deleting `adjustedConfidence` deletes half of a child-safety guard.** A `possible_minor` row with stored confidence ≥70 would then flow through the ladder to INFERNED or higher.
+**Deleting `adjustedConfidence` deletes half of a child-safety guard.** A `possible_minor` row with stored confidence ≥70 would then flow through the ladder to INFERRED or higher.
 
 **And the existing test would not catch it** — `src/test/intel-logic.test.ts:163` uses `confidence: 40`, already below the clamp, so it passes either way. Vacuous.
 
