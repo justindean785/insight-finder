@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,91 @@ import { ArrowRight, Fingerprint, Network, ScanSearch, ShieldCheck } from "lucid
 // re-show the button once the Google client id/secret are configured — the click
 // handler still pre-flights, so it can never strand a user on the raw error page.
 const googleEnabled = import.meta.env.VITE_ENABLE_GOOGLE_OAUTH === "true";
+
+const OperationsBrief = memo(function OperationsBrief() {
+  return (
+  <section className="relative hidden overflow-hidden border-r border-white/[0.07] p-10 lg:flex lg:flex-col xl:p-14">
+  <div aria-hidden className="signal-sweep pointer-events-none absolute inset-0 opacity-60" />
+  <div aria-hidden className="pointer-events-none absolute -left-24 top-12 h-72 w-72 rounded-full bg-[hsl(var(--intel-blue)/0.08)] blur-[90px]" />
+  
+  <header className="relative flex items-center justify-between">
+  <div className="flex items-center gap-3">
+  <div className="grid h-11 w-11 place-items-center rounded-xl border border-white/10 bg-white/[0.045] shadow-[inset_0_1px_0_rgba(255,255,255,0.07)]">
+  <SwarmMark className="h-7 w-7" />
+  </div>
+  <div>
+  <div className="font-display text-lg font-semibold tracking-tight">Insight Finder</div>
+  <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">Analyst operations platform</div>
+  </div>
+  </div>
+  <span className="rounded-full border border-[hsl(var(--success)/0.28)] bg-[hsl(var(--success-muted))] px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.18em] text-[hsl(var(--success))]">
+  Secure access
+  </span>
+  </header>
+  
+  <div className="relative my-auto max-w-[590px] py-12">
+  <div className="mb-5 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.24em] text-[hsl(var(--intel-blue))]">
+  <span className="h-px w-8 bg-[hsl(var(--intel-blue)/0.65)]" />
+  Intelligence workspace
+  </div>
+  <h1 className="max-w-[560px] font-display text-[clamp(2.6rem,4.8vw,4.7rem)] font-semibold leading-[0.98] tracking-[-0.045em]">
+  Turn fragments into defensible intelligence.
+  </h1>
+  <p className="mt-6 max-w-[540px] text-[15px] leading-7 text-muted-foreground">
+  Investigate selectors, preserve provenance, resolve contradictions, and produce reports built for review—not just discovery.
+  </p>
+  
+  <div className="mt-10 grid gap-2.5">
+  <div className="instrument-panel group flex items-center gap-4 rounded-xl px-4 py-3.5">
+  <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-[hsl(var(--intel-blue)/0.24)] bg-[hsl(var(--intel-blue)/0.08)] text-[hsl(var(--intel-blue))]">
+  <ScanSearch className="h-4 w-4" strokeWidth={1.7} aria-hidden />
+  </div>
+  <div className="min-w-0 flex-1">
+  <div className="text-sm font-medium">Selector-led investigation</div>
+  <div className="mt-0.5 text-xs text-muted-foreground">Pivot across people, accounts, domains, infrastructure, and documents.</div>
+  </div>
+  <ArrowRight className="h-4 w-4 text-muted-foreground/50 transition-transform group-hover:translate-x-0.5" aria-hidden />
+  </div>
+  <div className="instrument-panel group flex items-center gap-4 rounded-xl px-4 py-3.5">
+  <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-[hsl(var(--success)/0.24)] bg-[hsl(var(--success-muted))] text-[hsl(var(--success))]">
+  <Network className="h-4 w-4" strokeWidth={1.7} aria-hidden />
+  </div>
+  <div className="min-w-0 flex-1">
+  <div className="text-sm font-medium">Corroboration before conclusion</div>
+  <div className="mt-0.5 text-xs text-muted-foreground">Separate leads from verified findings with source-aware confidence.</div>
+  </div>
+  <ArrowRight className="h-4 w-4 text-muted-foreground/50 transition-transform group-hover:translate-x-0.5" aria-hidden />
+  </div>
+  <div className="instrument-panel group flex items-center gap-4 rounded-xl px-4 py-3.5">
+  <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-[hsl(var(--warning)/0.24)] bg-[hsl(var(--warning-muted))] text-[hsl(var(--warning))]">
+  <ShieldCheck className="h-4 w-4" strokeWidth={1.7} aria-hidden />
+  </div>
+  <div className="min-w-0 flex-1">
+  <div className="text-sm font-medium">Evidence with an audit trail</div>
+  <div className="mt-0.5 text-xs text-muted-foreground">Review state, custody history, and source provenance remain attached.</div>
+  </div>
+  <ArrowRight className="h-4 w-4 text-muted-foreground/50 transition-transform group-hover:translate-x-0.5" aria-hidden />
+  </div>
+  </div>
+  </div>
+  
+  <footer className="relative grid grid-cols-3 divide-x divide-white/[0.07] border-t border-white/[0.07] pt-5">
+  <div className="pr-4">
+  <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground">Method</div>
+  <div className="mt-1 text-xs text-foreground/85">Evidence-first</div>
+  </div>
+  <div className="px-4">
+  <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground">Review</div>
+  <div className="mt-1 text-xs text-foreground/85">Human-controlled</div>
+  </div>
+  <div className="pl-4">
+  <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground">Output</div>
+  <div className="mt-1 text-xs text-foreground/85">Audit-ready</div>
+  </div>
+  </footer>
+  </section>
+  );
+});
 
 export default function Auth() {
   const navigate = useNavigate();
@@ -112,86 +197,7 @@ export default function Auth() {
       <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[hsl(var(--intel-blue)/0.7)] to-transparent" />
 
       <div className="relative mx-auto grid min-h-[calc(100dvh-1.5rem)] w-full max-w-[1180px] overflow-hidden rounded-[26px] border border-white/[0.08] bg-[hsl(var(--surface-0)/0.86)] shadow-[0_40px_140px_-52px_rgba(0,0,0,0.95)] backdrop-blur-xl sm:min-h-[calc(100dvh-3rem)] lg:grid-cols-[1.08fr_0.92fr]">
-        <section className="relative hidden overflow-hidden border-r border-white/[0.07] p-10 lg:flex lg:flex-col xl:p-14">
-          <div aria-hidden className="signal-sweep pointer-events-none absolute inset-0 opacity-60" />
-          <div aria-hidden className="pointer-events-none absolute -left-24 top-12 h-72 w-72 rounded-full bg-[hsl(var(--intel-blue)/0.08)] blur-[90px]" />
-
-          <header className="relative flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="grid h-11 w-11 place-items-center rounded-xl border border-white/10 bg-white/[0.045] shadow-[inset_0_1px_0_rgba(255,255,255,0.07)]">
-                <SwarmMark className="h-7 w-7" />
-              </div>
-              <div>
-                <div className="font-display text-lg font-semibold tracking-tight">Insight Finder</div>
-                <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">Analyst operations platform</div>
-              </div>
-            </div>
-            <span className="rounded-full border border-[hsl(var(--success)/0.28)] bg-[hsl(var(--success-muted))] px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.18em] text-[hsl(var(--success))]">
-              Secure access
-            </span>
-          </header>
-
-          <div className="relative my-auto max-w-[590px] py-12">
-            <div className="mb-5 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.24em] text-[hsl(var(--intel-blue))]">
-              <span className="h-px w-8 bg-[hsl(var(--intel-blue)/0.65)]" />
-              Intelligence workspace
-            </div>
-            <h1 className="max-w-[560px] font-display text-[clamp(2.6rem,4.8vw,4.7rem)] font-semibold leading-[0.98] tracking-[-0.045em]">
-              Turn fragments into defensible intelligence.
-            </h1>
-            <p className="mt-6 max-w-[540px] text-[15px] leading-7 text-muted-foreground">
-              Investigate selectors, preserve provenance, resolve contradictions, and produce reports built for review—not just discovery.
-            </p>
-
-            <div className="mt-10 grid gap-2.5">
-              <div className="instrument-panel group flex items-center gap-4 rounded-xl px-4 py-3.5">
-                <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-[hsl(var(--intel-blue)/0.24)] bg-[hsl(var(--intel-blue)/0.08)] text-[hsl(var(--intel-blue))]">
-                  <ScanSearch className="h-4 w-4" strokeWidth={1.7} aria-hidden />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm font-medium">Selector-led investigation</div>
-                  <div className="mt-0.5 text-xs text-muted-foreground">Pivot across people, accounts, domains, infrastructure, and documents.</div>
-                </div>
-                <ArrowRight className="h-4 w-4 text-muted-foreground/50 transition-transform group-hover:translate-x-0.5" aria-hidden />
-              </div>
-              <div className="instrument-panel group flex items-center gap-4 rounded-xl px-4 py-3.5">
-                <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-[hsl(var(--success)/0.24)] bg-[hsl(var(--success-muted))] text-[hsl(var(--success))]">
-                  <Network className="h-4 w-4" strokeWidth={1.7} aria-hidden />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm font-medium">Corroboration before conclusion</div>
-                  <div className="mt-0.5 text-xs text-muted-foreground">Separate leads from verified findings with source-aware confidence.</div>
-                </div>
-                <ArrowRight className="h-4 w-4 text-muted-foreground/50 transition-transform group-hover:translate-x-0.5" aria-hidden />
-              </div>
-              <div className="instrument-panel group flex items-center gap-4 rounded-xl px-4 py-3.5">
-                <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-[hsl(var(--warning)/0.24)] bg-[hsl(var(--warning-muted))] text-[hsl(var(--warning))]">
-                  <ShieldCheck className="h-4 w-4" strokeWidth={1.7} aria-hidden />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm font-medium">Evidence with an audit trail</div>
-                  <div className="mt-0.5 text-xs text-muted-foreground">Review state, custody history, and source provenance remain attached.</div>
-                </div>
-                <ArrowRight className="h-4 w-4 text-muted-foreground/50 transition-transform group-hover:translate-x-0.5" aria-hidden />
-              </div>
-            </div>
-          </div>
-
-          <footer className="relative grid grid-cols-3 divide-x divide-white/[0.07] border-t border-white/[0.07] pt-5">
-            <div className="pr-4">
-              <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground">Method</div>
-              <div className="mt-1 text-xs text-foreground/85">Evidence-first</div>
-            </div>
-            <div className="px-4">
-              <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground">Review</div>
-              <div className="mt-1 text-xs text-foreground/85">Human-controlled</div>
-            </div>
-            <div className="pl-4">
-              <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground">Output</div>
-              <div className="mt-1 text-xs text-foreground/85">Audit-ready</div>
-            </div>
-          </footer>
-        </section>
+        <OperationsBrief />
 
         <section className="relative flex min-h-[680px] items-center justify-center p-5 sm:p-10 lg:min-h-0 xl:p-14">
           <div aria-hidden className="pointer-events-none absolute inset-0 bg-[radial-gradient(80%_50%_at_50%_0%,hsl(var(--intel-blue)/0.08),transparent_72%)]" />
