@@ -1235,7 +1235,16 @@ export function buildReportMarkdown(input: ReportInput): string {
     if (ct) return ct;
     return "conflicting attributes across sources";
   };
-  const collisionSection = (collisionArtifacts.length === 0 && conflictNoted.length === 0)
+  // A cluster-level collision has no artifact-level marker of its own — it is a
+  // determination ABOUT the clusters. It must still reach this section, or the
+  // report warns of a same-name collision in the header and declares
+  // "_No collisions flagged._" here, which is an invalid report state.
+  const clusterCollisionReasons = clusterReport.collision ? clusterReport.collisionReasons : [];
+  const collisionSection = (
+    collisionArtifacts.length === 0
+    && conflictNoted.length === 0
+    && clusterCollisionReasons.length === 0
+  )
     ? "_No collisions flagged._"
     : [
         ...(collisionArtifacts.length
@@ -1255,6 +1264,14 @@ export function buildReportMarkdown(input: ReportInput): string {
               ...conflictNoted.map((a) =>
                 `- ${mdCodeSpan(sanitizeValueForLabel(a.value, false))} — ${conflictNote(a)} _(via ${humanizeSourceChain(a.source)})_`,
               ),
+            ]
+          : []),
+        ...(clusterCollisionReasons.length
+          ? [
+              ...(collisionArtifacts.length || conflictNoted.length ? [""] : []),
+              "_Unresolved separation indicators across identity clusters — this is what the header warning refers to. No individual row was quarantined, so the clusters below may belong to different people. Resolve which records belong to the subject before treating any of them as the subject's evidence._",
+              "",
+              ...clusterCollisionReasons.map((r) => `- ${r}`),
             ]
           : []),
       ].join("\n");
@@ -1661,6 +1678,16 @@ export type IdentityCluster = {
 export type ClusterReport = {
   clusters: IdentityCluster[];
   collision: boolean;
+  /**
+   * WHY `collision` is true, one entry per indicator that fired.
+   *
+   * The header warning and the "Collision / Likely Unrelated" section must be
+   * two renderings of ONE result. Before this existed the header read the
+   * cluster-level `collision` flag while the section read only artifact-level
+   * markers, so a report could warn of a same-name collision and then declare
+   * "_No collisions flagged._" in the same document.
+   */
+  collisionReasons: string[];
   warnings: string[];
   seedName: string | null;
   seedState: string | null;
@@ -2071,6 +2098,12 @@ export function buildIdentityClusters(
   })();
   const conflictingAreaCodes = new Set(out.flatMap((c) => c.areaCodes)).size > 1;
   const collision = dupeName || conflictingStates || conflictingEmailRegions || conflictingAreaCodes;
+  // Keep the reasons alongside the flag so every surface tells the same story.
+  const collisionReasons: string[] = [];
+  if (dupeName) collisionReasons.push("Two or more identity clusters carry the same person name.");
+  if (conflictingStates) collisionReasons.push("Clusters place the subject in different states.");
+  if (conflictingEmailRegions) collisionReasons.push("Clusters with distinct email addresses claim different states.");
+  if (conflictingAreaCodes) collisionReasons.push("Phone area codes across clusters disagree.");
 
   const warnings: string[] = [];
   for (const key of sharedInfraKeys) {
@@ -2130,7 +2163,7 @@ export function buildIdentityClusters(
     return b.confidence - a.confidence;
   });
 
-  return { clusters: out, collision, warnings, seedName, seedState };
+  return { clusters: out, collision, collisionReasons, warnings, seedName, seedState };
 }
 
 function clusterLabel(idx: number, c: Omit<IdentityCluster, "id" | "label" | "matchesSeedLocation">, seedName: string | null): string {

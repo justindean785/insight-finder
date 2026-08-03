@@ -427,6 +427,47 @@ describe("retained-row escaping", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// One collision result, one story. The live Ronny.doe dossier warned
+// "Potential same-name collision detected" in the header and then said
+// "_No collisions flagged._" in the collision section — an invalid report
+// state. The header reads the CLUSTER-level determination
+// (`ClusterReport.collision`); the section only ever read ARTIFACT-level
+// markers, so a cluster-level collision left the section empty.
+// ---------------------------------------------------------------------------
+
+describe("collision header and collision section cannot contradict", () => {
+  // Two same-name clusters joined by nothing: a cluster-level collision with no
+  // artifact carrying a collision/conflict marker of its own.
+  const md = () =>
+    buildReportMarkdown({
+      seedValue: "Ronny Doe",
+      seedType: "person",
+      artifacts: [
+        art({ id: "n1", kind: "name", value: "Ronny Doe", source: "breach_lookup" }),
+        art({ id: "e1", kind: "email", value: "ronny.doe@example.com", source: "breach_lookup" }),
+        art({ id: "n2", kind: "name", value: "Ronny Doe", source: "people_search" }),
+        art({ id: "e2", kind: "email", value: "rdoe@other.example", source: "people_search" }),
+      ],
+    });
+
+  const collisionSection = (out: string) =>
+    out.split("## Collision / Likely Unrelated")[1]?.split("\n## ")[0] ?? "";
+
+  it("emits the header collision warning for this fixture", () => {
+    // Guard: if this stops holding, the test below would pass vacuously.
+    expect(md()).toContain("Potential same-name collision detected");
+  });
+
+  it("does not claim no collisions were flagged while warning of one", () => {
+    expect(collisionSection(md())).not.toContain("_No collisions flagged._");
+  });
+
+  it("explains the unresolved separation indicators in the section", () => {
+    expect(collisionSection(md())).toMatch(/separation indicator|may belong to different people/i);
+  });
+});
+
 describe("Key Findings confidence attribution", () => {
   it("does not present a review-adjusted score as what the source indicated", () => {
     const a = art({
