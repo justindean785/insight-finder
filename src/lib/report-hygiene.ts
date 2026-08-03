@@ -183,16 +183,52 @@ const NAME_KINDS = new Set(["name", "person"]);
  *  - lone handle-only hit from username_sweep → suppressed unless corroborated
  *  - lone artifact with email/phone/address/ip/non-sweep handle → qualifies
  */
-export function bucketQualifiesAsCluster(group: Artifact[], strongKeys?: Set<string>): boolean {
+/**
+ * May this bucket be DISPLAYED as a candidate identity cluster?
+ *
+ * Two ways to qualify, and only two:
+ *   1. Corroboration — two or more artifacts merged on a strong signal.
+ *   2. An explicit link to the seed.
+ *
+ * What is deliberately NOT sufficient: having a durable selector. A bulk breach
+ * or person-search response returns a whole ROW of fields — other people's
+ * names, emails, phones, addresses — and the extractor flattens each into its
+ * own artifact with no record of what linked it to the queried selector. Under
+ * the old rule a lone NAME always qualified and any lone artifact with a
+ * durable selector qualified, so those neighbours each became a "candidate
+ * identity" for the subject. One live report turned ~24 unrelated rows into the
+ * subject's identities, contacts and network.
+ *
+ * A source being a breach dataset is not evidence that every field it returned
+ * belongs to the searched person.
+ */
+export function bucketQualifiesAsCluster(
+  group: Artifact[],
+  strongKeys?: Set<string>,
+  opts?: {
+    /** Does this bucket contain a row explicitly tied to the queried selector? */
+    seedLinked?: boolean;
+    /**
+     * Is the linkage question even answerable? Only when there IS a seed. With
+     * no seed there is nothing to be unlinked FROM, so applying the gate would
+     * suppress every single-artifact bucket on the strength of a judgement we
+     * are not in a position to make.
+     */
+    assessLinkage?: boolean;
+  },
+): boolean {
   if (group.length === 0) return false;
   if (group.length >= 2) return true;
+  // Single artifact from here down.
+  if (opts?.assessLinkage && !opts.seedLinked) return false;
   const a = group[0];
   if (NAME_KINDS.has((a.kind ?? "").toLowerCase())) return true;
   const keys = strongKeys ?? new Set<string>();
   if (keys.size === 0) return false; // no durable selector → not a cluster
-  // A lone handle is not enough on its own when it's a sweep-only existence hit.
+  // A lone handle is not enough on its own when it's a sweep-only existence
+  // hit — UNLESS it is the seed itself, which is the thing being investigated.
   const onlyHandleKeys = Array.from(keys).every((k) => k.startsWith("handle:"));
-  if (onlyHandleKeys && isUsernameSweepSource(a.source)) return false;
+  if (onlyHandleKeys && isUsernameSweepSource(a.source) && !opts?.seedLinked) return false;
   return true;
 }
 

@@ -2191,6 +2191,30 @@ export function buildIdentityClusters(
     return { artifacts: group, emails, usernames, phones, addresses, ips, names, states, areaCodes, sources, confidence, warnings: [], mergeReasons };
   };
 
+  /**
+   * Is this row explicitly tied to what we searched for?
+   *
+   * Value identity or a metadata field naming the queried selector. Sharing a
+   * source with the seed is NOT a link — that is exactly the bulk-batch
+   * fallacy. Note the extractor does not yet write most of these fields; until
+   * it does (see the upstream remediation spec) the honest answer for a bulk
+   * neighbour is "no link", which is what quarantines it.
+   */
+  const seedMatchKey = (seedValue ?? "").trim().toLowerCase();
+  const seedHandleKey = normalizeHandle(seedValue ?? "");
+  const linksToSeed = (a: Artifact): boolean => {
+    if (!seedMatchKey) return false;
+    const v = (a.value ?? "").trim().toLowerCase();
+    if (v === seedMatchKey) return true;
+    if (seedHandleKey && normalizeHandle(a.value ?? "") === seedHandleKey) return true;
+    const m = (a.metadata ?? {}) as Record<string, unknown>;
+    for (const k of ["parent", "parent_seed", "seed", "queried_selector", "matched_value", "selector"]) {
+      const raw = m[k];
+      if (typeof raw === "string" && raw.trim().toLowerCase() === seedMatchKey) return true;
+    }
+    return false;
+  };
+
   const out: IdentityCluster[] = [];
   let idx = 0;
   // Cluster-explosion guard: a single weak artifact with no durable selector
@@ -2200,7 +2224,10 @@ export function buildIdentityClusters(
   let suppressedWeakSingletons = 0;
   for (const b of buckets) {
     if (b.artifacts.length === 0) continue;
-    if (!bucketQualifiesAsCluster(b.artifacts, b.keys)) {
+    if (!bucketQualifiesAsCluster(b.artifacts, b.keys, {
+      assessLinkage: seedMatchKey.length > 0,
+      seedLinked: b.artifacts.some(linksToSeed),
+    })) {
       suppressedWeakSingletons += b.artifacts.length;
       continue;
     }
@@ -2259,7 +2286,11 @@ export function buildIdentityClusters(
   }
   if (suppressedWeakSingletons > 0) {
     warnings.push(
-      `${suppressedWeakSingletons} weak single-artifact signal${suppressedWeakSingletons === 1 ? "" : "s"} (account-existence checks, sweep-only handles, breach rows) are listed in the Artifact Table but are NOT shown as standalone identity clusters — they lack a durable selector or corroboration.`,
+      // Describes the predicate that ACTUALLY ran, over the exact suppressed
+      // set. The old wording said these rows "lack a durable selector", which
+      // was false of most of them — a bulk-batch email or phone has one; what
+      // it lacks is any link to the subject.
+      `${suppressedWeakSingletons} single-artifact observation${suppressedWeakSingletons === 1 ? " is" : "s are"} listed in the Artifact Table but NOT shown as standalone identity clusters: ${suppressedWeakSingletons === 1 ? "it is" : "they are"} neither corroborated by a second signal nor explicitly linked to the seed. Bulk breach and person-search responses return whole rows of other people's fields; a durable selector alone does not make one the subject's.`,
     );
   }
   if (collision) {

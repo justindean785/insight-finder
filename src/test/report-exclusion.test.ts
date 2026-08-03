@@ -6,6 +6,7 @@ import {
 } from "@/lib/exclusion";
 import {
   labelForArtifact,
+  buildIdentityClusters,
   buildToolAudit,
   buildEvidenceMatrixMarkdown,
   buildTimelineItems,
@@ -739,6 +740,75 @@ describe("report — attempted tools and evidentiary sources are reported separa
     expect(section.split("\n").filter((l) => l.startsWith("- "))).toHaveLength(2);
     expect(section).toMatch(/1 excluded/);
     expect(section).not.toMatch(/1 failed/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Contract items 3 + 4. A bulk breach/person-search response returns a whole
+// ROW of fields — other people's names, emails, phones, addresses. The
+// extractor flattens them into standalone artifacts carrying only
+// `source_category: breach` and no record-level link to the queried selector.
+// `bucketQualifiesAsCluster` then promoted each one to a candidate identity
+// cluster: a lone NAME always qualified, and any lone artifact with a durable
+// selector qualified. The live Ronny.doe dossier turned ~24 unrelated rows into
+// the subject's candidate identities, contacts and network — while its own
+// prose claimed weak single-artifact signals were NOT shown as clusters.
+//
+// A source being a breach dataset is not evidence that every field it returned
+// belongs to the searched person.
+// ---------------------------------------------------------------------------
+
+describe("bulk-result rows do not become the subject's identity", () => {
+  const SEED = "ronnydoe";
+  // One row explicitly tied to the seed.
+  const linked = art({
+    id: "linked", kind: "username", value: "ronnydoe", source: "username_sweep",
+    metadata: { source_category: ["username_sweep"] },
+  });
+  // Neighbours from the same bulk OathNet batch — no linkage of any kind.
+  const neighbours = [
+    art({ id: "n1", kind: "name", value: "Ron Daoust", source: "oathnet_lookup", metadata: { source_category: ["breach"] } }),
+    art({ id: "n2", kind: "name", value: "Ronny Beerling van der Doe", source: "oathnet_lookup", metadata: { source_category: ["breach"] } }),
+    art({ id: "n3", kind: "email", value: "unrelated@corp.example", source: "oathnet_lookup", metadata: { source_category: ["breach"] } }),
+    art({ id: "n4", kind: "phone", value: "+2250700000000", source: "oathnet_lookup", metadata: { source_category: ["breach"] } }),
+    art({ id: "n5", kind: "address", value: "528 Lacroix Bay Rd Westmeath ON", source: "oathnet_lookup", metadata: { source_category: ["breach"] } }),
+  ];
+
+  const report = () => buildIdentityClusters([linked, ...neighbours], SEED);
+
+  it("does not promote an unlinked bulk-batch name to a candidate cluster", () => {
+    const labels = report().clusters.map((c) => c.label).join(" | ");
+    expect(labels).not.toContain("Ron Daoust");
+    expect(labels).not.toContain("Ronny Beerling van der Doe");
+  });
+
+  it("does not promote an unlinked email, phone or address either", () => {
+    const all = report().clusters.flatMap((c) => [...c.emails, ...c.phones, ...c.addresses]);
+    expect(all).not.toContain("unrelated@corp.example");
+    expect(all).not.toContain("+2250700000000");
+    expect(all).not.toContain("528 Lacroix Bay Rd Westmeath ON");
+  });
+
+  it("still clusters the row that is actually linked to the seed", () => {
+    // Guard: the predicate must not simply suppress everything.
+    expect(report().clusters.length).toBeGreaterThan(0);
+    expect(report().clusters.flatMap((c) => c.usernames)).toContain("ronnydoe");
+  });
+
+  it("every displayed cluster satisfies the documented display predicate", () => {
+    for (const c of report().clusters) {
+      const corroborated = c.artifacts.length >= 2;
+      const seedLinked = [...c.usernames, ...c.emails, ...c.phones]
+        .some((v) => v.toLowerCase() === SEED);
+      expect(corroborated || seedLinked).toBe(true);
+    }
+  });
+
+  it("counts the suppressed rows exactly, and says why in those terms", () => {
+    const w = report().warnings.find((x) => /not shown as standalone identity clusters/i.test(x)) ?? "";
+    expect(w).toContain(`${neighbours.length} `);
+    // The prose must describe the predicate that actually ran.
+    expect(w).toMatch(/corroboration|linked to the seed/i);
   });
 });
 
