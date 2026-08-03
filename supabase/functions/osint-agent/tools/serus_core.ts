@@ -9,6 +9,26 @@ const SERUS_BASE = "https://api.serus.ai/v1";
 const POLL_INTERVAL_MS = 2500;
 const POLL_MAX_RETRIES = 10;
 
+/**
+ * The END-TO-END deadline for one Serus operation, enforced inside runSerusScan.
+ *
+ * Serus is a POLLING tool, so its real cost is transitive and was invisible to
+ * the timeout contract: 10 polls x 2500ms is a 25s nominal window on its own,
+ * and every initiate/poll/reveal request additionally goes through fetchRetry,
+ * whose per-attempt default is 15s. Nothing bounded the total, and nothing
+ * carried the wrapper's AbortSignal down here -- so a wrapper timeout could
+ * return while this function kept sleeping and issuing requests. That is
+ * orphaned work: credits spent, results discarded, provider still being hit.
+ *
+ * 40s = the 25s intended polling window + 15s of network headroom. The wrapper
+ * cap in cache.ts MUST exceed this so the internal deadline is what fires; that
+ * relationship is asserted by tool_timeout_contract_test.ts.
+ */
+export const SERUS_OPERATION_DEADLINE_MS = 40_000;
+
+/** Per-request ceiling; also clamped to whatever remains of the deadline. */
+export const SERUS_REQUEST_TIMEOUT_MS = 12_000;
+
 function buildScanUrl(scanId: string, reveal = false): string {
   return reveal
     ? `${SERUS_BASE}/darkweb/scans/${scanId}?reveal=true`
@@ -140,12 +160,38 @@ export function shapeTerminalResult(
   };
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/**
+ * Abortable sleep. The previous `new Promise(r => setTimeout(r, ms))` could not
+ * be interrupted, so a cancelled run still waited out the full poll interval and
+ * then issued another request. Rejects promptly on abort so the caller can stop.
+ */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
+  return new Promise<void>((resolve, reject) => {
+    const tid = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(tid);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 export async function runSerusScan(
   identifierType: string,
   identifierValue: string,
-  options: { reveal?: boolean; maxRetries?: number; intervalMs?: number } = {},
+  options: {
+    reveal?: boolean;
+    maxRetries?: number;
+    intervalMs?: number;
+    /** The tool wrapper's AbortSignal. Forwarded to every request and sleep. */
+    signal?: AbortSignal;
+    /** Override the end-to-end deadline (tests). */
+    deadlineMs?: number;
+  } = {},
 ): Promise<{
   ok: boolean;
   status: "success" | "failed" | "timeout" | "error";
@@ -170,120 +216,181 @@ export async function runSerusScan(
   const maxRetries = options.maxRetries ?? POLL_MAX_RETRIES;
   const intervalMs = options.intervalMs ?? POLL_INTERVAL_MS;
   const initiatedAt = new Date().toISOString();
-  if (identifierType === "phone") {
-    identifierValue = normalizePhoneForSerus(identifierValue);
-  }
 
-  let headers: HeadersInit;
+  // Own deadline, combined with the wrapper's signal. Either firing stops all
+  // in-flight and future work -- the whole point is that nothing outlives the
+  // call that asked for it.
+  const deadlineMs = options.deadlineMs ?? SERUS_OPERATION_DEADLINE_MS;
+  const startedAt = Date.now();
+  const ctrl = new AbortController();
+  const deadlineTimer = setTimeout(() => ctrl.abort(), deadlineMs);
+  const onOuterAbort = () => ctrl.abort();
+  // If the caller's signal ALREADY fired before we got here, addEventListener
+  // would never run and this scan would initiate and poll for a request nobody
+  // is waiting on. Check first, then subscribe.
+  if (options.signal?.aborted) ctrl.abort();
+  else options.signal?.addEventListener("abort", onOuterAbort, { once: true });
+  const signal = ctrl.signal;
+  const remainingMs = () => Math.max(0, deadlineMs - (Date.now() - startedAt));
+  const requestTimeoutMs = () => Math.max(1, Math.min(SERUS_REQUEST_TIMEOUT_MS, remainingMs()));
+  const releaseBudget = () => {
+    clearTimeout(deadlineTimer);
+    options.signal?.removeEventListener("abort", onOuterAbort);
+  };
+  // Built literally, NOT via serusErrorPayload(0, {...}): that helper reads
+  // body.error.code / body.error.message (nested), so a flat object like this one
+  // is discarded and the result degrades to a generic http_0. A cancellation that
+  // reports as an anonymous transport failure is exactly the misreporting this
+  // work exists to remove.
+  const abortedResult = () => ({
+    ok: false,
+    status: "timeout" as const,
+    scanId: undefined,
+    identifierType,
+    error: {
+      error: "aborted" as const,
+      code: "serus_deadline",
+      status: 0,
+      message: `Serus scan stopped after ${Date.now() - startedAt}ms (deadline ${deadlineMs}ms) — no further polling was issued.`,
+      hint: "The caller cancelled or the internal deadline elapsed. This is not a provider fault and must not count against Serus.",
+    },
+  });
+
+  // try/finally rather than a releaseBudget() before every return: the deadline
+  // timer must be cleared on EVERY path or Deno's test runner reports a leaked
+  // timer op, and a missed path would also leave a live abort timer behind.
   try {
-    headers = serusHeaders();
-  } catch (e) {
-    const err = e as { code?: string; message?: string };
-    return { ok: false, status: "error", error: { error: "config", code: err?.code ?? "serus_key_missing", status: 0, message: err?.message ?? "", hint: "Set SERUS_API_KEY in the Supabase edge function secrets." } };
-  }
+    if (identifierType === "phone") {
+      identifierValue = normalizePhoneForSerus(identifierValue);
+    }
 
-  let init: Response;
-  try {
-    init = await fetchRetry(`${SERUS_BASE}/darkweb/scans`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ identifierType, identifierValue }),
-    }, { retries: 1 });
-  } catch (e) {
-    return { ok: false, status: "error", error: { error: "network", code: "initiate_failed", status: 0, message: String(e), hint: "Network error reaching api.serus.ai. Check Supabase edge function outbound network." } };
-  }
-  const initText = await init.text();
-  let initData: InitiateResponse;
-  try { initData = JSON.parse(initText); } catch { initData = {}; }
-  if (!init.ok || !initData.id) {
-    let body: unknown = initText;
-    try { body = JSON.parse(initText); } catch { /* keep raw */ }
-    return { ok: false, status: "error", error: serusErrorPayload(init.status, body) };
-  }
-  const scanId = initData.id;
-
-  let last: PollResponse | null = null;
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    await sleep(intervalMs);
-    let poll: Response;
+    let headers: HeadersInit;
     try {
-      poll = await fetchRetry(buildScanUrl(scanId), { method: "GET", headers }, { retries: 1 });
+      headers = serusHeaders();
     } catch (e) {
-      if (attempt === maxRetries - 1) {
-        return {
-          ok: false,
-          status: "timeout",
-          scanId,
-          identifierType,
-          initiatedAt,
-          revealRequested,
-          error: { error: "network", code: "poll_failed", status: 0, message: String(e), hint: "Poll failed after retries. The scan may still be running on Serus; you can re-poll manually with GET /v1/darkweb/scans/<id>." },
-        };
-      }
-      continue;
+      const err = e as { code?: string; message?: string };
+      return { ok: false, status: "error", error: { error: "config", code: err?.code ?? "serus_key_missing", status: 0, message: err?.message ?? "", hint: "Set SERUS_API_KEY in the Supabase edge function secrets." } };
     }
-    const pollText = await poll.text();
-    let data: PollResponse;
-    try { data = JSON.parse(pollText); } catch { data = { status: "failed" }; }
-    if (!poll.ok) {
-      let body: unknown = pollText;
-      try { body = JSON.parse(pollText); } catch { /* keep raw */ }
-      return { ok: false, status: "error", scanId, identifierType, revealRequested, error: serusErrorPayload(poll.status, body) };
-    }
-    last = data;
-    if (isTerminalStatus(data)) break;
-  }
 
-  if (!last || !isTerminalStatus(last)) {
-    return {
-      ok: false,
-      skipped: true,
-      status: "timeout",
-      scanId,
-      identifierType,
-      initiatedAt,
-      revealRequested,
-      error: { error: "timeout", code: "poll_exhausted", status: 0, message: `Scan did not complete within ${maxRetries * intervalMs / 1000}s.`, hint: "Re-poll manually with the scanId, or increase maxRetries." },
-    };
-  }
-
-  let terminal = last;
-  if (revealRequested && terminal.status === "success") {
+    let init: Response;
     try {
-      const revealRes = await fetchRetry(buildScanUrl(scanId, true), { method: "GET", headers }, { retries: 1 });
-      const revealText = await revealRes.text();
-      if (!revealRes.ok) {
-        let body: unknown = revealText;
-        try { body = JSON.parse(revealText); } catch { /* keep raw */ }
+      init = await fetchRetry(`${SERUS_BASE}/darkweb/scans`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ identifierType, identifierValue }),
+        signal,
+      }, { retries: 1, timeoutMs: requestTimeoutMs() });
+    } catch (e) {
+      if (signal.aborted) return abortedResult();
+      return { ok: false, status: "error", error: { error: "network", code: "initiate_failed", status: 0, message: String(e), hint: "Network error reaching api.serus.ai. Check Supabase edge function outbound network." } };
+    }
+    const initText = await init.text();
+    let initData: InitiateResponse;
+    try { initData = JSON.parse(initText); } catch { initData = {}; }
+    if (!init.ok || !initData.id) {
+      let body: unknown = initText;
+      try { body = JSON.parse(initText); } catch { /* keep raw */ }
+      return { ok: false, status: "error", error: serusErrorPayload(init.status, body) };
+    }
+    const scanId = initData.id;
+
+    let last: PollResponse | null = null;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      // Stop BEFORE sleeping and again before issuing: a cancelled run must not
+      // start another poll, which is the orphaned-work case.
+      if (signal.aborted) return abortedResult();
+      try {
+        await sleep(intervalMs, signal);
+      } catch {
+        return abortedResult();
+      }
+      if (signal.aborted) return abortedResult();
+      let poll: Response;
+      try {
+        poll = await fetchRetry(buildScanUrl(scanId), { method: "GET", headers, signal }, { retries: 1, timeoutMs: requestTimeoutMs() });
+      } catch (e) {
+        // A cancelled poll is NOT a provider failure. Reporting it as
+        // `poll_failed` would blame Serus for our own deadline and can trip the
+        // circuit breaker, suppressing a healthy provider for the rest of the run.
+        if (signal.aborted) return abortedResult();
+        if (attempt === maxRetries - 1) {
+          return {
+            ok: false,
+            status: "timeout",
+            scanId,
+            identifierType,
+            initiatedAt,
+            revealRequested,
+            error: { error: "network", code: "poll_failed", status: 0, message: String(e), hint: "Poll failed after retries. The scan may still be running on Serus; you can re-poll manually with GET /v1/darkweb/scans/<id>." },
+          };
+        }
+        continue;
+      }
+      const pollText = await poll.text();
+      let data: PollResponse;
+      try { data = JSON.parse(pollText); } catch { data = { status: "failed" }; }
+      if (!poll.ok) {
+        let body: unknown = pollText;
+        try { body = JSON.parse(pollText); } catch { /* keep raw */ }
+        return { ok: false, status: "error", scanId, identifierType, revealRequested, error: serusErrorPayload(poll.status, body) };
+      }
+      last = data;
+      if (isTerminalStatus(data)) break;
+    }
+
+    if (!last || !isTerminalStatus(last)) {
+      return {
+        ok: false,
+        skipped: true,
+        status: "timeout",
+        scanId,
+        identifierType,
+        initiatedAt,
+        revealRequested,
+        error: { error: "timeout", code: "poll_exhausted", status: 0, message: `Scan did not complete within ${maxRetries * intervalMs / 1000}s.`, hint: "Re-poll manually with the scanId, or increase maxRetries." },
+      };
+    }
+
+    let terminal = last;
+    if (revealRequested && terminal.status === "success") {
+      try {
+        const revealRes = await fetchRetry(buildScanUrl(scanId, true), { method: "GET", headers, signal }, { retries: 1, timeoutMs: requestTimeoutMs() });
+        const revealText = await revealRes.text();
+        if (!revealRes.ok) {
+          let body: unknown = revealText;
+          try { body = JSON.parse(revealText); } catch { /* keep raw */ }
+          return {
+            ...shapeTerminalResult(terminal, scanId, initiatedAt, false),
+            revealRequested: true,
+            revealError: serusErrorPayload(revealRes.status, body),
+          };
+        }
+        try {
+          const revealData = JSON.parse(revealText) as PollResponse;
+          if (isTerminalStatus(revealData)) terminal = revealData;
+        } catch {
+          // Keep masked terminal result if the reveal body is malformed.
+        }
+      } catch (e) {
         return {
           ...shapeTerminalResult(terminal, scanId, initiatedAt, false),
           revealRequested: true,
-          revealError: serusErrorPayload(revealRes.status, body),
+          revealError: {
+            error: "network",
+            code: "reveal_failed",
+            status: 0,
+            message: String(e),
+            hint: "Masked scan completed, but the optional reveal fetch failed. Retry reveal only if unmasked fields are still required.",
+          },
         };
       }
-      try {
-        const revealData = JSON.parse(revealText) as PollResponse;
-        if (isTerminalStatus(revealData)) terminal = revealData;
-      } catch {
-        // Keep masked terminal result if the reveal body is malformed.
-      }
-    } catch (e) {
-      return {
-        ...shapeTerminalResult(terminal, scanId, initiatedAt, false),
-        revealRequested: true,
-        revealError: {
-          error: "network",
-          code: "reveal_failed",
-          status: 0,
-          message: String(e),
-          hint: "Masked scan completed, but the optional reveal fetch failed. Retry reveal only if unmasked fields are still required.",
-        },
-      };
     }
-  }
 
-  return {
-    ...shapeTerminalResult(terminal, scanId, initiatedAt, revealRequested && terminal.status === "success"),
-    revealRequested,
-  };
+    return {
+      ...shapeTerminalResult(terminal, scanId, initiatedAt, revealRequested && terminal.status === "success"),
+      revealRequested,
+    };
+  } finally {
+    releaseBudget();
+  }
 }

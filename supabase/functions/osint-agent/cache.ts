@@ -96,7 +96,13 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // Serus darkweb scan POLLS upstream until the scan finishes — POLL_INTERVAL_MS
   // (2.5s) × POLL_MAX_RETRIES (10) = ~25s by design (serus_core.ts), so a 12s cap
   // guaranteed a timeout on every non-trivial scan. 30s sits above the poll window.
-  serus_darkweb_scan: 30_000,
+  // Serus is a POLLING tool: its cost is transitive, not a single fetch. It
+  // enforces SERUS_OPERATION_DEADLINE_MS = 40s end-to-end (25s intended polling
+  // window + 15s network headroom) and now honours this wrapper's AbortSignal.
+  // The cap must exceed that deadline so the INTERNAL bound is what fires --
+  // asserted in tool_timeout_contract_test.ts. At the old 30s the wrapper fired
+  // first and Serus kept polling unsupervised.
+  serus_darkweb_scan: 45_000,
   // minimax_correlate is the correlation engine — it sends the whole artifact batch
   // (up to 200 entries / 16k chars) to the smart-tier model for a 1500-token JSON
   // clustering+rescoring response. The 2026-07-08 pipeline audit caught it timing out
@@ -189,6 +195,20 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   shodan_internetdb: 14_000,
   hackertarget: 14_000,
   urlscan_search: 14_000,
+  // ---------------------------------------------------------------------------
+  // INJECTED tools — attached after buildTools() via `(tools as ToolRegistry).x = x`
+  // rather than defined inline, with their fetch budgets in tools/*.ts. The
+  // wrapper-above-fetch contract test could not see EITHER fact, so these two
+  // sat in violation while the test reported zero exceptions. Found 2026-08-02
+  // when gemini_vision died at 12,228ms on a 17MB PDF in production.
+  gemini_vision: 45_000,      // own fetch 25s (VISION_FETCH_TIMEOUT_MS) — and that
+                              // budget covers only the FETCH; Gemini inference runs
+                              // after it, so the cap needs headroom above 25s, not
+                              // merely 27s. Observed successful vision calls run
+                              // 4.7-6.5s; the 45s ceiling is for large documents.
+  pdl_person_enrich: 20_000,  // own fetch 18s (PDL_HTTP_TIMEOUT_MS). Not in the
+                              // 2026-08-02 report — found by scanning all nine
+                              // injected tools rather than only the one that failed.
 };
 export function toolTimeoutMs(name: string): number {
   return TOOL_TIMEOUT_OVERRIDE_MS[name] ?? DEFAULT_TOOL_TIMEOUT_MS;

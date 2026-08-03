@@ -18,8 +18,10 @@
 // real call sites and cannot drift. There is deliberately NO allowlist: an
 // exception list would let the next violation in silently, which is the failure
 // mode this file exists to close.
-import { assert } from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { DEFAULT_TOOL_TIMEOUT_MS, toolTimeoutMs } from "./cache.ts";
+import { SERUS_OPERATION_DEADLINE_MS, SERUS_REQUEST_TIMEOUT_MS } from "./tools/serus_core.ts";
+import { UNKNOWN_TOOL_SINK } from "./unknown-tool-guard.ts";
 
 const SRC = Deno.readTextFileSync(new URL("./tool-registry.ts", import.meta.url));
 
@@ -116,4 +118,186 @@ Deno.test("timeout contract: every tool's wrapper cap exceeds its own fetch budg
     `TOOL_TIMEOUT_OVERRIDE_MS (cache.ts) ABOVE the tool's own budget:\n  - ` +
     violations.join("\n  - "),
   );
+});
+
+// ---------------------------------------------------------------------------
+// INJECTED tools — the blind spot this test shipped with.
+//
+// buildTools() defines most tools inline, but nine are attached afterwards as
+// `(tools as ToolRegistry).x = x`, importing the implementation from tools/*.ts.
+// The inline scan above sees NEITHER the declaration NOR the fetch budget, so
+// those nine were entirely outside a contract that reported "zero exceptions".
+//
+// Production, 2026-08-02: gemini_vision (own fetch 25s) inherited the 12s default
+// and died at 12,228ms reading a 17MB PDF. Scanning all nine then turned up a
+// SECOND violation nobody had reported — pdl_person_enrich, own fetch 18s.
+//
+// Coverage is now: inline defs (above) + injected defs resolved through their
+// import to the helper module (below). What remains outside is a tool whose HTTP
+// lives behind a further indirection; the anchors keep that honest.
+
+/** `(tools as X).name = symbol` -> { name, symbol }. */
+function injectedTools(): Array<{ name: string; symbol: string }> {
+  return [...SRC.matchAll(/\(tools as [A-Za-z]+\)\.([a-z_0-9]+)\s*=\s*([A-Za-z_0-9]+);/g)]
+    .map((m) => ({ name: m[1], symbol: m[2] }))
+    .filter((t) => t.name !== UNKNOWN_TOOL_SINK);
+}
+
+/** Resolve an imported symbol to the module path it came from. */
+function moduleForSymbol(symbol: string): string | null {
+  for (const m of SRC.matchAll(/import\s*\{([^}]*)\}\s*from\s*"(\.\/[^"]+)"/g)) {
+    const names = m[1].split(",").map((x) => x.trim().split(/\s+as\s+/)[0].trim());
+    if (names.includes(symbol)) return m[2];
+  }
+  return null;
+}
+
+/**
+ * A helper module's own fetch budget: the largest `fetchT(…, N)` trailing
+ * argument OR `const *TIMEOUT*_MS = N`. Both forms appear across tools/*.ts
+ * (gemini_vision uses a bare setTimeout on VISION_FETCH_TIMEOUT_MS, not fetchT).
+ */
+function moduleFetchBudgetMs(modulePath: string): number | null {
+  let body: string;
+  try {
+    body = Deno.readTextFileSync(new URL(modulePath, import.meta.url));
+  } catch {
+    return null;
+  }
+  const budgets = [
+    ...[...body.matchAll(/\}\s*,\s*(\d[\d_]{3,})\s*\)/g)].map((m) => m[1]),
+    ...[...body.matchAll(/[A-Z_]*TIMEOUT[A-Z_]*_MS\s*=\s*(\d[\d_]{3,})/g)].map((m) => m[1]),
+  ].map((x) => Number(x.replace(/_/g, "")));
+  return budgets.length ? Math.max(...budgets) : null;
+}
+
+// EXHAUSTIVE, EXACT expectations for every injected tool.
+//
+// The previous revision anchored only gemini_vision and pdl_person_enrich and
+// let the contract loop `continue` past anything it could not resolve. Seven
+// tools could therefore have vanished from coverage — a renamed export, a moved
+// module — while both tests stayed green. That is the same blind spot this PR
+// exists to close, one level up, so it is closed here rather than deferred.
+//
+// Every entry carries a MEASURED budget. `null` is deliberately not permitted by
+// the type: it previously meant "this module has no static internal timeout",
+// which was asserted for serus and was false — serus.ts delegates to
+// serus_core.ts, where a 25s polling window lives. A nullable field invites that
+// mistake back, so a tool with no measurable budget cannot be expressed here at
+// all; it has to grow an explicit exported constant first.
+const EXPECTED_INJECTED: ReadonlyArray<{ name: string; module: string; budgetMs: number }> = [
+  // Serus's cost is TRANSITIVE: 10 polls x 2500ms is a 25s window on its own,
+  // plus fetchRetry per-attempt network time. Its budget is the exported
+  // SERUS_OPERATION_DEADLINE_MS, and serus.ts now accepts and forwards the
+  // wrapper's AbortSignal so that deadline is actually enforceable.
+  { name: "serus_darkweb_scan", module: "./tools/serus_core.ts",      budgetMs: 40_000 },
+  { name: "indicia_email",      module: "./tools/indicia.ts",         budgetMs: 18_000 },
+  { name: "indicia_phone",      module: "./tools/indicia.ts",         budgetMs: 18_000 },
+  { name: "indicia_person",     module: "./tools/indicia.ts",         budgetMs: 18_000 },
+  { name: "indicia_address",    module: "./tools/indicia.ts",         budgetMs: 18_000 },
+  { name: "indicia_web_dbs",    module: "./tools/indicia.ts",         budgetMs: 18_000 },
+  { name: "indicia_hudsonrock", module: "./tools/indicia.ts",         budgetMs: 18_000 },
+  { name: "pdl_person_enrich",  module: "./tools/peopledatalabs.ts",  budgetMs: 18_000 },
+  { name: "gemini_vision",      module: "./tools/gemini_vision.ts",   budgetMs: 25_000 },
+];
+
+Deno.test("timeout contract: the injected-tool set is exactly the expected nine", () => {
+  // A tenth injected tool added without a measured budget must fail here rather
+  // than silently join the registry outside the contract.
+  const found = injectedTools().map((t) => t.name).sort();
+  assertEquals(
+    found,
+    EXPECTED_INJECTED.map((t) => t.name).sort(),
+    "the injected-tool set changed. Add the new tool to EXPECTED_INJECTED with its MEASURED " +
+      "internal budget (or null if it genuinely has none) and give it a TOOL_TIMEOUT_OVERRIDE_MS " +
+      "entry above that budget.",
+  );
+});
+
+// serus_darkweb_scan is imported from ./tools/serus.ts, but its budget lives one
+// hop further on in ./tools/serus_core.ts. Declaring the indirection explicitly
+// beats letting the scanner silently follow (or fail to follow) it.
+const BUDGET_INDIRECTION: Readonly<Record<string, string>> = {
+  serus_darkweb_scan: "./tools/serus.ts",
+};
+
+Deno.test("timeout contract: every injected tool resolves to its expected module", () => {
+  for (const { name, module } of EXPECTED_INJECTED) {
+    const t = injectedTools().find((x) => x.name === name);
+    assert(t, `${name} is no longer attached to the registry`);
+    const mod = moduleForSymbol(t!.symbol);
+    assert(mod, `${name}: symbol ${t!.symbol} resolves to no import — a rename would silently drop it from the contract`);
+    assertEquals(mod, BUDGET_INDIRECTION[name] ?? module, `${name} moved module`);
+  }
+});
+
+Deno.test("timeout contract: every injected tool's internal budget is exactly as measured", () => {
+  for (const { name, module, budgetMs } of EXPECTED_INJECTED) {
+    // Serus is asserted against its NAMED EXPORT, not a regex scrape — a scraper
+    // that cannot follow serus.ts -> serus_core.ts is exactly how this entry came
+    // to claim `null`, and a regex that can silently stop matching is how the
+    // whole contract goes vacuous.
+    const actual = name === "serus_darkweb_scan" ? SERUS_OPERATION_DEADLINE_MS : moduleFetchBudgetMs(module);
+    assertEquals(
+      actual,
+      budgetMs,
+      `${name}: expected a ${budgetMs}ms budget in ${module}, measured ${actual}`,
+    );
+  }
+});
+
+Deno.test("timeout contract: the Serus deadline is a real exported constant, not a comment", () => {
+  assertEquals(typeof SERUS_OPERATION_DEADLINE_MS, "number");
+  assertEquals(SERUS_OPERATION_DEADLINE_MS, 40_000);
+  assertEquals(SERUS_REQUEST_TIMEOUT_MS, 12_000);
+  assert(
+    SERUS_REQUEST_TIMEOUT_MS < SERUS_OPERATION_DEADLINE_MS,
+    "a single request may not be allowed to consume the whole operation deadline",
+  );
+  assert(
+    toolTimeoutMs("serus_darkweb_scan") > SERUS_OPERATION_DEADLINE_MS,
+    `serus wrapper cap ${toolTimeoutMs("serus_darkweb_scan")}ms must EXCEED its ${SERUS_OPERATION_DEADLINE_MS}ms internal deadline, ` +
+      `or the wrapper fires first and Serus keeps polling unsupervised`,
+  );
+});
+
+Deno.test("timeout contract: the Serus tool actually forwards the wrapper's abort signal", () => {
+  // A deadline that the wrapper cannot reach is not a bound. Pinned at source
+  // because the failure is silent: execute() simply ignored its second argument.
+  const src = Deno.readTextFileSync(new URL("./tools/serus.ts", import.meta.url));
+  assert(
+    /execute:\s*async\s*\([^)]*\},\s*opts\s*\)/.test(src),
+    "serus execute() no longer accepts the AI SDK options argument — the abort signal cannot reach runSerusScan",
+  );
+  assert(/abortSignal/.test(src), "serus execute() no longer forwards abortSignal");
+  const core = Deno.readTextFileSync(new URL("./tools/serus_core.ts", import.meta.url));
+  assert(/signal\?:\s*AbortSignal/.test(core), "runSerusScan no longer accepts a signal");
+  assert(/sleep\(intervalMs,\s*signal\)/.test(core), "the poll sleep is no longer abortable");
+  assert(/headers,\s*signal\s*\}/.test(core), "poll requests no longer carry the signal");
+});
+
+Deno.test("timeout contract: injected tools clear their own fetch budget — no silent skips", () => {
+  const violations: string[] = [];
+  for (const { name, module, budgetMs } of EXPECTED_INJECTED) {
+    const cap = toolTimeoutMs(name);
+    if (cap <= budgetMs) {
+      violations.push(
+        `${name}: wrapper cap ${cap}ms ${cap === budgetMs ? "TIES" : "is BELOW"} its own ${budgetMs}ms fetch budget in ${module}` +
+        (cap === DEFAULT_TOOL_TIMEOUT_MS ? " (inheriting the default — needs an override)" : ""),
+      );
+    }
+  }
+  assert(
+    violations.length === 0,
+    `${violations.length} INJECTED tool(s) violate the wrapper-above-fetch contract. These are attached ` +
+    `after buildTools() and their budgets live in tools/*.ts, which is why the inline scan misses them. ` +
+    `Add an override in TOOL_TIMEOUT_OVERRIDE_MS (cache.ts):\n  - ` + violations.join("\n  - "),
+  );
+});
+
+Deno.test("timeout contract: the two caps this PR sets are pinned exactly", () => {
+  assertEquals(toolTimeoutMs("gemini_vision"), 45_000);
+  assertEquals(toolTimeoutMs("pdl_person_enrich"), 20_000);
+  assert(toolTimeoutMs("gemini_vision") > 25_000, "gemini_vision cap no longer clears its 25s fetch budget");
+  assert(toolTimeoutMs("pdl_person_enrich") > 18_000, "pdl_person_enrich cap no longer clears its 18s fetch budget");
 });

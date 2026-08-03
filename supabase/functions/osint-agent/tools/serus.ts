@@ -9,6 +9,8 @@ import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { SERUS_API_KEY, REVEAL_BREACH_DATA } from "../env.ts";
 import {
+  SERUS_OPERATION_DEADLINE_MS,
+  SERUS_REQUEST_TIMEOUT_MS,
   isTerminalStatus,
   parseInitiateResponse,
   runSerusScan,
@@ -17,6 +19,8 @@ import {
 } from "./serus_core.ts";
 
 export {
+  SERUS_OPERATION_DEADLINE_MS,
+  SERUS_REQUEST_TIMEOUT_MS,
   isTerminalStatus,
   parseInitiateResponse,
   runSerusScan,
@@ -34,13 +38,21 @@ export const serus_darkweb_scan = tool({
     reveal: z.boolean().optional().default(false)
       .describe("Pass true to request unmasked breach fields (passwords, tokens). Requires the SERUS key to have the darkweb:reveal scope — otherwise Serus returns 403. NOTE: when the account-level REVEAL_BREACH_DATA policy is ON, reveal is forced true regardless of this flag."),
   }),
-  execute: async ({ identifierType, identifierValue, reveal }) => {
+  // `opts` (2nd arg) carries the AI SDK's abortSignal. It was previously not
+  // accepted at all, so the wrapper's timeout signal never reached runSerusScan:
+  // a 30s wrapper cap could return while Serus kept sleeping and polling for
+  // another ~25s+, spending credits on a result nobody would read. Forwarding it
+  // is what makes the wrapper cap a real bound rather than a reporting deadline.
+  execute: async ({ identifierType, identifierValue, reveal }, opts) => {
     if (!SERUS_API_KEY) {
       return { error: "SERUS_API_KEY not configured", code: "serus_key_missing", hint: "Set SERUS_API_KEY in the Supabase edge function secrets and redeploy." };
     }
     // Account policy: when full-reveal is authorized for this account, always
     // request unmasked fields — the model does not have to opt in per-call.
     const effectiveReveal = reveal || REVEAL_BREACH_DATA;
-    return runSerusScan(identifierType, identifierValue, { reveal: effectiveReveal });
+    return runSerusScan(identifierType, identifierValue, {
+      reveal: effectiveReveal,
+      signal: (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal,
+    });
   },
 });
