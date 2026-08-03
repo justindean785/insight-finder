@@ -105,18 +105,10 @@ export function formatArtifactDisplayValue(value: string): string {
 // section.
 // ---------------------------------------------------------------------------
 
-export function isCollisionArtifact(a: Artifact): boolean {
-  const kind = (a.kind ?? "").toLowerCase();
-  if (kind === "excluded_collision") return true;
-  const m = (a.metadata ?? {}) as Record<string, unknown>;
-  // metadata.status === "excluded" is the pipeline's definitive "not the subject"
-  // signal (a namesake / unrelated entity). It must quarantine like an excluded_collision
-  // so a same-name profile can neither seed the subject's identity clusters nor let the
-  // report read "No collisions flagged" while such rows exist. (The React Evidence panel
-  // already buckets status:"excluded" as excluded — this aligns the markdown report + clustering.)
-  if (typeof m.status === "string" && m.status.toLowerCase() === "excluded") return true;
-  return m.excluded_collision === true || m.collision === true || m.possible_collision === true;
-}
+// Moved to @/lib/artifact-exclusion (zero-dependency primitive) so that
+// exclusion.ts can use it without importing this module. Re-exported unchanged
+// for the 6 existing importers.
+export { isCollisionArtifact } from "@/lib/artifact-exclusion";
 
 // ---------------------------------------------------------------------------
 // #7 — Reserved / fictional phone numbers (e.g. NANPA 555-01xx). The backend

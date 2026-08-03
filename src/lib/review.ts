@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { REJECTED_REVIEW_STATE_VALUES } from "@/lib/artifact-exclusion";
 import { supabase } from "@/integrations/supabase/client";
 import { recordAnalystFeedback, actionForReviewState } from "@/lib/analyst-feedback";
 import { detectSeed } from "@/lib/seed";
@@ -72,7 +73,9 @@ export const REVIEW_CONFIDENCE_DELTA: Record<ReviewState, number> = {
 };
 
 /** Verdicts that mean "the analyst rejected this" — mirrors reviews.ts on the edge function. */
-export const REJECTED_REVIEW_STATES: ReadonlySet<ReviewState> = new Set(["dismissed", "wrong"]);
+// Canonical definition lives in @/lib/artifact-exclusion so pure-logic modules
+// never have to import this React module to learn what "rejected" means.
+export const REJECTED_REVIEW_STATES = REJECTED_REVIEW_STATE_VALUES as ReadonlySet<ReviewState>;
 /** A review write in any of these states can make a cached investigation_cache row stale. */
 const CACHE_INVALIDATING_STATES: ReadonlySet<ReviewState> = new Set(["dismissed", "wrong", "recheck"]);
 

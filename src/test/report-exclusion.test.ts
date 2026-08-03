@@ -13,6 +13,7 @@ import {
   buildReportMarkdown,
   looksLikeStructuredBlob,
   detectNameLocationSeed,
+  mdCodeSpan,
 } from "@/lib/intel";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import type { ReviewState } from "@/lib/review";
@@ -321,9 +322,47 @@ describe("Excluded appendix escaping", () => {
     expect(appendix).toContain("line-one line-two");
   });
 
-  it("escapes pipes so the value cannot break a table row", () => {
-    const md = build("a|b");
-    expect(md.split("## Excluded from Analysis")[1] ?? "").toContain("a\\|b");
+  // A backslash is NOT an escape inside a CommonMark code span, so the value is
+  // made inert by fencing (a run of backticks longer than any run inside it),
+  // not by escaping. These assert structural inertness, not a literal encoding.
+  const PAYLOADS: Array<[string, string]> = [
+    ["inline backtick", "a`b"],
+    ["code-span breakout attempt", "x` — **PWNED** — `y"],
+    ["triple-backtick fenced block", "a```\n```js\nalert(1)\n```"],
+    ["markdown link", "[click](https://evil.example/steal)"],
+    ["markdown image", "![img](https://evil.example/x.png)"],
+    ["html-like", "<script>alert(1)</script>"],
+    ["table delimiters", "a|b|c"],
+    ["combined heading+backtick+newline", "`\n## Key Findings\n- **name** — `INJECTED`\n### Sub"],
+  ];
+
+  /** The appendix SECTION body only — up to the next heading. */
+  const appendixBody = (md: string): string => {
+    const after = md.split("## Excluded from Analysis")[1] ?? "";
+    return after.split(/\n#{1,6} /)[0] ?? "";
+  };
+
+  it.each(PAYLOADS)("renders %s inertly", (_label, payload) => {
+    const md = build(payload);
+    const appendix = appendixBody(md);
+    // No forged block-level structure anywhere in the document.
+    expect(md.match(/^## Key Findings$/gm)?.length ?? 0).toBe(1);
+    expect(appendix).not.toMatch(/^#{1,6} /m);
+    expect(appendix).not.toMatch(/^```/m);
+    // The appendix bullet is still a single well-formed line.
+    const bullet = appendix.split("\n").find((l) => l.trim().startsWith("- ")) ?? "";
+    expect(bullet).toContain("Rejected by analyst");
+    // And the payload is carried verbatim inside the fence (nothing silently dropped).
+    expect(bullet).toContain(payload.replace(/[\r\n]+/g, " "));
+  });
+
+  it("chooses a fence longer than the longest backtick run in the value", () => {
+    expect(mdCodeSpan("a`b")).toBe("``a`b``");
+    expect(mdCodeSpan("a``b")).toBe("```a``b```");
+    // Pads when the value starts/ends with a backtick, so the fence stays parseable.
+    expect(mdCodeSpan("`x`")).toBe("`` `x` ``");
+    // Newlines cannot survive inside a code span — collapsed, not dropped.
+    expect(mdCodeSpan("a\nb")).toBe("`a b`");
   });
 });
 

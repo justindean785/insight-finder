@@ -1,36 +1,27 @@
 /**
- * One predicate for "this row must not be presented as evidence".
+ * The evidence-view contract: which rows may act as evidence, which must keep
+ * driving safety warnings, and which are retained only for audit.
  *
- * Composed from the taxonomy that ALREADY exists — no new states are invented:
- *   - `REJECTED_REVIEW_STATES` (src/lib/review.ts) — the analyst said no.
- *   - `isCollisionArtifact`    (src/lib/report-hygiene.ts) — the pipeline said
- *     "namesake / unrelated entity".
- *   - `isPipelineExcluded`     (src/lib/intel.ts) — the `excluded` /
- *     `excluded_collision` kinds and `metadata.status = "excluded"`.
- *
- * Why this module exists: the report builders each re-derived a partial version
- * of "should this show?", and three of them derived none at all, which is how
- * analyst-rejected rows kept surfacing in the Evidence Matrix, Tool Coverage
- * and Timeline. One predicate, one place to change it.
- *
- * Import direction is deliberately acyclic: this module depends on intel.ts and
- * report-hygiene.ts, never the reverse.
+ * Composed from the zero-dependency primitives in `artifact-exclusion.ts`.
+ * This module imports NO report builder and NOT `intel.ts` — see the direction
+ * diagram there. `src/test/import-boundaries.test.ts` enforces it.
  */
 import type { Artifact } from "@/hooks/useThreadArtifacts";
-import { REJECTED_REVIEW_STATES, type ReviewState } from "@/lib/review";
-import { isCollisionArtifact } from "@/lib/report-hygiene";
-import { isPipelineExcluded } from "@/lib/intel";
+import type { ReviewState } from "@/lib/review";
+import {
+  isCollisionArtifact,
+  isPipelineExcluded,
+  isPossibleMinor,
+  isRejectedReviewState,
+  REDACTED_MINOR_PLACEHOLDER,
+} from "@/lib/artifact-exclusion";
 
-/** A review verdict as the report builders see it — possibly absent. */
 export type ReviewLike = ReviewState | null | undefined;
-
-/** Reviews keyed by artifact id, matching `ReportInput.reviews`. */
 export type ReviewMap = Record<string, ReviewLike>;
 
 /**
  * Why a row was excluded. Ordered by authority: an analyst verdict outranks a
- * pipeline heuristic, because it is the more specific and more accountable
- * signal.
+ * pipeline heuristic, because it is more specific and more accountable.
  */
 export type ExclusionReason =
   | "analyst_rejected"
@@ -43,15 +34,10 @@ export const EXCLUSION_REASON_LABEL: Record<ExclusionReason, string> = {
   pipeline_excluded: "Excluded by pipeline",
 };
 
-/** True when the analyst's verdict rejects the row (`dismissed` or `wrong`). */
 export function isRejectedReview(review?: ReviewLike): boolean {
-  return !!review && REJECTED_REVIEW_STATES.has(review as ReviewState);
+  return isRejectedReviewState(review ?? null);
 }
 
-/**
- * The single reason this row must not be presented as evidence, or null when
- * it is presentable.
- */
 export function exclusionReason(
   a: Artifact,
   review?: ReviewLike,
@@ -66,6 +52,36 @@ export function isExcludedArtifact(a: Artifact, review?: ReviewLike): boolean {
   return exclusionReason(a, review) !== null;
 }
 
+export type ExcludedArtifact = {
+  artifact: Artifact;
+  reason: ExclusionReason;
+  /** True when the value must not be printed in the ordinary dossier. */
+  redacted: boolean;
+  /** Value safe to display in an audit surface — redacted for possible minors. */
+  displayValue: string;
+};
+
+/**
+ * The three views every report surface must choose between.
+ *
+ * These are NOT three filters of convenience — they encode three different
+ * obligations, and conflating any two of them has already caused a defect:
+ *
+ * - `analysisArtifacts` — may influence identity, confidence, KPIs, evidence
+ *   tables, charts, risk, pivots and evidentiary coverage.
+ * - `safetyArtifacts` — the FULL population. Safety warnings (possible-minor,
+ *   adult x minor collision) must be computed from this, never from
+ *   `analysisArtifacts`. Rejecting a minor row must not delete the warning that
+ *   a minor is implicated.
+ * - `excludedArtifacts` — retained for audit, with possible-minor values
+ *   redacted so the ordinary dossier never prints a rejected minor's identifier.
+ */
+export type EvidenceViews = {
+  analysisArtifacts: Artifact[];
+  safetyArtifacts: Artifact[];
+  excludedArtifacts: ExcludedArtifact[];
+};
+
 /** Every exclusion reason — the default for surfaces with no other handling. */
 export const ALL_EXCLUSION_REASONS: readonly ExclusionReason[] = [
   "analyst_rejected",
@@ -74,34 +90,59 @@ export const ALL_EXCLUSION_REASONS: readonly ExclusionReason[] = [
 ];
 
 /**
- * Reasons that apply to the main markdown report. `collision` is deliberately
- * ABSENT: `buildReportMarkdown` already quarantines collision rows into their
- * own "Collision / Likely Unrelated" section, and excluding them here as well
- * would empty that section rather than fix anything.
+ * Reasons that remove a row from the ANALYSIS view in the markdown report.
+ *
+ * `collision` is absent because `buildReportMarkdown` already quarantines
+ * collision rows into a dedicated "Collision / Likely Unrelated" section;
+ * partitioning them here as well would empty that section. This carve-out is
+ * pinned by a test — see report-exclusion.test.ts "collision section survives".
  */
 export const REPORT_EXCLUSION_REASONS: readonly ExclusionReason[] = [
   "analyst_rejected",
   "pipeline_excluded",
 ];
 
-export type ExcludedArtifact = { artifact: Artifact; reason: ExclusionReason };
+/**
+ * Build the three views in one pass.
+ *
+ * `safetyArtifacts` is always the complete input, by construction — it is
+ * returned so call sites name the obligation explicitly rather than reaching
+ * for whichever array happens to be in scope.
+ */
+export function buildEvidenceViews(
+  artifacts: Artifact[],
+  reviews?: ReviewMap,
+  opts?: { reasons?: readonly ExclusionReason[] },
+): EvidenceViews {
+  const active = new Set(opts?.reasons ?? ALL_EXCLUSION_REASONS);
+  const analysisArtifacts: Artifact[] = [];
+  const excludedArtifacts: ExcludedArtifact[] = [];
+  for (const a of artifacts) {
+    const reason = exclusionReason(a, reviews?.[a.id]);
+    if (reason && active.has(reason)) {
+      const redacted = isPossibleMinor(a);
+      excludedArtifacts.push({
+        artifact: a,
+        reason,
+        redacted,
+        displayValue: redacted ? REDACTED_MINOR_PLACEHOLDER : a.value,
+      });
+    } else {
+      analysisArtifacts.push(a);
+    }
+  }
+  return { analysisArtifacts, safetyArtifacts: artifacts, excludedArtifacts };
+}
 
 /**
- * Split rows into what may be analysed and what may not. Total is preserved —
- * excluded rows are surfaced in an appendix, never silently dropped.
+ * Back-compat shim over `buildEvidenceViews`. Prefer the three-view form at new
+ * call sites — it forces the caller to say which obligation it is serving.
  */
 export function partitionExcluded(
   artifacts: Artifact[],
   reviews?: ReviewMap,
   opts?: { reasons?: readonly ExclusionReason[] },
 ): { included: Artifact[]; excluded: ExcludedArtifact[] } {
-  const active = new Set(opts?.reasons ?? ALL_EXCLUSION_REASONS);
-  const included: Artifact[] = [];
-  const excluded: ExcludedArtifact[] = [];
-  for (const a of artifacts) {
-    const reason = exclusionReason(a, reviews?.[a.id]);
-    if (reason && active.has(reason)) excluded.push({ artifact: a, reason });
-    else included.push(a);
-  }
-  return { included, excluded };
+  const v = buildEvidenceViews(artifacts, reviews, opts);
+  return { included: v.analysisArtifacts, excluded: v.excludedArtifacts };
 }

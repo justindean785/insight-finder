@@ -13,10 +13,11 @@ import {
   dedupeBreachDatasets,
 } from "@/lib/report-hygiene";
 import {
-  partitionExcluded,
+  buildEvidenceViews,
   REPORT_EXCLUSION_REASONS,
   EXCLUSION_REASON_LABEL,
 } from "@/lib/exclusion";
+import { isPipelineExcluded as isPipelineExcludedPrimitive } from "@/lib/artifact-exclusion";
 
 /** Analyst-grade group buckets for artifact kinds. */
 export type Group =
@@ -206,22 +207,10 @@ export function isSensitiveKind(kind: string, meta?: Record<string, unknown>): b
   return false;
 }
 
-/** Kinds the pipeline writes when it has already decided a row is not the subject. */
-const PIPELINE_EXCLUDED_KINDS = new Set(["excluded", "excluded_collision"]);
-
-/**
- * The pipeline's definitive "this is not the subject" signal.
- *
- * Kept here (rather than in exclusion.ts) so `labelForArtifact` can consult it
- * without intel.ts importing exclusion.ts — the dependency runs one way only.
- * Deliberately narrower than `isCollisionArtifact`: it does NOT match
- * `metadata.collision`, so an ordinary conflict row still labels CONFLICT.
- */
-export function isPipelineExcluded(a: { kind: string; metadata: Record<string, unknown> | null }): boolean {
-  if (PIPELINE_EXCLUDED_KINDS.has((a.kind ?? "").toLowerCase())) return true;
-  const m = (a.metadata ?? {}) as Record<string, unknown>;
-  return typeof m.status === "string" && m.status.toLowerCase() === "excluded";
-}
+// isPipelineExcluded now lives in the zero-dependency primitive module so that
+// exclusion.ts can compose it WITHOUT importing intel.ts. Re-exported here for
+// existing importers.
+export { isPipelineExcluded } from "@/lib/artifact-exclusion";
 
 // Back-compat alias for internal callers.
 
@@ -352,7 +341,7 @@ export function labelForArtifact(a: Artifact, review?: ReviewAdjustment): ConfLa
   // tiers below and rendered VERIFY, inviting an analyst to chase a namesake the
   // pipeline had already ruled out. Narrower than isCollisionArtifact on purpose
   // so `metadata.collision` keeps its CONFLICT label on the next line.
-  if (isPipelineExcluded(a)) return "FAILED";
+  if (isPipelineExcludedPrimitive(a)) return "FAILED";
   if (meta.conflict === true || meta.collision === true) return "CONFLICT";
   // Analyst attestations short-circuit to CONFIRMED — EXCEPT for a possible-minor
   // row. Minor-safety is a HARD FLOOR: attestation must never label-promote a
@@ -992,6 +981,26 @@ function mdEscape(v: string): string {
   return v.replace(/\|/g, "\\|").replace(/\n+/g, " ");
 }
 
+/**
+ * Render an arbitrary, attacker-influenced value as an INERT Markdown code span.
+ *
+ * A backslash is NOT an escape inside a CommonMark code span, so the obvious
+ * `` `${mdEscape(v)}` `` is unsafe: a single backtick in the value terminates
+ * the span and everything after it is parsed as Markdown. CommonMark's actual
+ * rule is that a span opened with N backticks runs until the next run of
+ * EXACTLY N — so we pick a fence longer than any run in the value, and pad with
+ * a space when the value starts or ends with a backtick (the parser strips one
+ * leading + trailing space when both are present).
+ */
+export function mdCodeSpan(raw: string): string {
+  const v = String(raw ?? "").replace(/[\r\n]+/g, " ");
+  const runs: string[] = v.match(/`+/g) ?? [];
+  const longest = runs.reduce((m, run) => Math.max(m, run.length), 0);
+  const fence = "`".repeat(longest + 1);
+  const pad = /^`|`$|^\s|\s$/.test(v) ? " " : "";
+  return `${fence}${pad}${v}${pad}${fence}`;
+}
+
 export function buildEvidenceMatrixMarkdown(
   artifacts: Artifact[],
   /** Analyst verdicts by artifact id. Without these the matrix showed a
@@ -1054,11 +1063,11 @@ export function buildReportMarkdown(input: ReportInput): string {
   // dropped — the appendix keeps the audit trail. `collision` is NOT partitioned
   // here: it already has its own "Collision / Likely Unrelated" section below,
   // and excluding it here would empty that section.
-  const { included: artifacts, excluded: excludedRows } = partitionExcluded(
-    dedupedArtifacts,
-    reviews,
-    { reasons: REPORT_EXCLUSION_REASONS },
-  );
+  const {
+    analysisArtifacts: artifacts,
+    safetyArtifacts,
+    excludedArtifacts: excludedRows,
+  } = buildEvidenceViews(dedupedArtifacts, reviews, { reasons: REPORT_EXCLUSION_REASONS });
   // Counts describe what was ANALYSED. Excluded rows are reported separately so
   // the header can't overstate the evidence base.
   const total = artifacts.length;
@@ -1097,7 +1106,12 @@ export function buildReportMarkdown(input: ReportInput): string {
   // COLLISION check read this raw parameter. Passing the partitioned list let an
   // analyst delete a child-safety warning by dismissing the possible_minor row,
   // while the appendix went on printing that row's raw value.
-  const clusterReport = buildIdentityClusters(dedupedArtifacts, seedValue, reviews);
+  // SAFETY VIEW — explicit, not incidental. buildIdentityClusters filters
+  // analyst verdicts internally for clustering, but its minor-safety and
+  // adult x minor scans read this parameter directly, so it must receive the
+  // FULL population. Passing the analysis view let an analyst delete a
+  // child-safety warning by dismissing the possible_minor row.
+  const clusterReport = buildIdentityClusters(safetyArtifacts, seedValue, reviews);
   const isNameSearch = !!detectNameLocationSeed(seedValue);
 
   // Group artifacts for entity table and network connections
@@ -1337,19 +1351,27 @@ export function buildReportMarkdown(input: ReportInput): string {
   // must be able to see what was set aside and why.
   const excludedSection = excludedRows.length === 0
     ? "_Nothing excluded._"
-    : excludedRows.map(({ artifact: a, reason }) => {
-        // mdEscape is REQUIRED here. Artifact values are attacker-influenced
-        // (scraped page text, breach records) and this line interpolates one
-        // directly. Without it a value containing newlines forges whole sections
-        // — `safe\n## Key Findings\n- ...` rendered a second, fabricated Key
-        // Findings heading inside the exported dossier.
-        let value = mdEscape(sanitizeValueForLabel(a.value, false));
+    : excludedRows.map(({ artifact: a, reason, redacted, displayValue }) => {
+        // A rejected possible-minor row is retained for audit but its raw
+        // identifier is NEVER printed in the ordinary dossier — the warning is
+        // the point, the child's identifier is not. `displayValue` is already
+        // the placeholder for those rows.
+        const shown = redacted
+          ? displayValue
+          : sanitizeValueForLabel(displayValue, false);
+        // mdCodeSpan, NOT `${mdEscape(v)}`. A backslash does not escape inside a
+        // CommonMark code span, so an attacker-supplied backtick would terminate
+        // the span and the remainder would parse as Markdown (forged headings,
+        // links, fenced blocks). mdCodeSpan picks a fence longer than any
+        // backtick run in the value, which is inert for ALL inputs.
+        let value = mdCodeSpan(shown);
         // Match the entity table: a legal_record that is really a source/claim
         // discrepancy must not be presented under a criminal-record kind.
         const kind = reportDisplayKind(a) === a.kind ? displayKind(a) : "source_conflict";
         const reserved = reservedNumberAnnotation(a);
-        if (reserved) value = `${value} — ${reserved}`;
-        return `- \`${value}\` — ${mdEscape(kind)} — **${EXCLUSION_REASON_LABEL[reason]}** _(via ${mdEscape(humanizeSourceChain(a.source))})_`;
+        if (reserved) value = `${value} — ${mdEscape(reserved)}`;
+        const redactNote = redacted ? " _(value withheld — possible minor)_" : "";
+        return `- ${value} — ${mdEscape(kind)} — **${EXCLUSION_REASON_LABEL[reason]}**${redactNote} _(via ${mdEscape(humanizeSourceChain(a.source))})_`;
       }).join("\n");
 
   const nextSteps = gaps.length === 0
