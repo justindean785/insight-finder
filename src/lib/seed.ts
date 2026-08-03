@@ -9,6 +9,12 @@ export type DetectedSeed = {
   raw: string;
   /** Normalized cache key. Lowercased, trimmed. For emails: "+tag" stripped. */
   normalized: string;
+  /**
+   * The token has hostname grammar but an unrecognised suffix, so `kind` is the
+   * least-assertive reading rather than a confident one. Surfaced in the report
+   * so an unresolved selector never reads as a settled fact.
+   */
+  ambiguous?: boolean;
 };
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -21,51 +27,62 @@ const BTC_RE = /^(?:bc1|[13])[a-z0-9]{25,62}$/i;
 const USERNAME_RE = /^[a-z0-9_.-]{2,40}$/i;
 
 /**
- * Generic TLDs we are willing to treat as proof of a hostname.
+ * Suffixes we are willing to treat as PROOF of a hostname.
  *
- * Deliberately a list, not a pattern. A dot is NOT evidence of a domain: the
- * live `Ronny.doe` investigation was typed "domain" purely because the token
- * contained one, which then steered tool selection and the report narrative at
- * a person. Two-letter TLDs are accepted by LENGTH rather than enumeration,
- * because every two-letter TLD is a ccTLD.
+ * This is a positive fast-path, NOT the classifier. There are well over a
+ * thousand gTLDs and the set changes, so an allowlist can only ever answer
+ * "yes, confidently" — never "no, confidently". Treating a miss as proof of a
+ * username would just invert the original bug: `example.quest` is a real
+ * domain, and calling it a handle is as wrong as calling `Ronny.doe` a domain.
+ * Misses are therefore reported as AMBIGUOUS (see `classifyDottedToken`).
  *
- * Being conservative here is the safe direction: an unrecognised suffix falls
- * through to the username branch (preserving dotted handles) instead of
- * asserting a domain we cannot defend.
+ * Two-letter suffixes are accepted by LENGTH rather than enumeration, because
+ * every two-letter TLD is a ccTLD.
+ *
+ * Word-like gTLDs that collide with ordinary handles (`.bar`, `.dog`, `.one`,
+ * `.pub`, `.run`, `.ltd`) are deliberately ABSENT: for those the ambiguous
+ * answer is the honest one.
  */
 const KNOWN_GTLDS = new Set([
   "com", "net", "org", "edu", "gov", "mil", "int", "info", "biz", "name", "pro",
-  "aero", "coop", "museum", "asia", "jobs", "mobi", "tel", "travel", "xxx",
-  "app", "dev", "page", "site", "online", "website", "store", "shop", "tech",
-  "xyz", "top", "icu", "cloud", "digital", "media", "news", "blog", "email",
-  "link", "click", "live", "life", "world", "today", "space", "fun", "art",
-  "design", "studio", "games", "group", "team", "zone", "company", "solutions",
-  "services", "network", "systems", "center", "expert", "guru", "ninja",
-  "social", "chat", "community", "money", "finance", "capital", "exchange",
-  "market", "trade", "business", "agency", "academy", "school", "college",
-  "university", "institute", "education", "health", "care", "clinic", "fitness",
-  "photo", "photography", "gallery", "video", "music", "band", "film", "movie",
-  "software", "codes", "computer", "host", "hosting", "domains", "wiki", "one",
-  "plus", "pub", "run", "sh", "gg", "dog", "cat", "bar", "ltd", "llc", "inc",
+  "aero", "coop", "museum", "asia", "jobs", "mobi", "tel", "travel",
+  "app", "dev", "cloud", "site", "online", "website", "store", "shop", "tech",
+  "xyz", "blog", "wiki", "page", "email", "digital", "agency", "solutions",
+  "services", "systems", "network", "software", "host", "hosting", "domains",
+  "media", "studio", "design", "academy", "institute", "university",
 ]);
 
-/**
- * Does this trailing label defensibly denote a TLD?
- *
- * Exported for the report-side selector checks and pinned by
- * src/test/seed-classification.test.ts.
- */
+/** Confidently a TLD. A `false` here means "unknown", NOT "definitely not". */
 export function isLikelyTld(label: string): boolean {
   const l = label.trim().toLowerCase();
   if (!/^[a-z]{2,24}$/.test(l)) return false;
   return l.length === 2 || KNOWN_GTLDS.has(l);
 }
 
-/** Hostname grammar AND a defensible TLD — not merely "contains a dot". */
+/** Hostname grammar AND a recognised TLD — not merely "contains a dot". */
 export function isLikelyDomain(value: string): boolean {
   const v = value.trim();
   if (!DOMAIN_RE.test(v)) return false;
   return isLikelyTld(v.split(".").pop() ?? "");
+}
+
+/**
+ * How to treat a single dotted token.
+ *
+ * Three outcomes, and the middle one is the point:
+ *   "domain"    — hostname grammar with a recognised suffix.
+ *   "ambiguous" — hostname grammar with an UNRECOGNISED suffix. Could be a
+ *                 newer gTLD or a `first.last` handle; nothing in the token
+ *                 itself distinguishes them. We take the least-assertive
+ *                 reading (username, so the seed is still searchable as a
+ *                 handle) and mark it so the report can say it is unresolved.
+ *   "username"  — no dot at all; nothing ambiguous about it.
+ */
+export function classifyDottedToken(value: string): "domain" | "ambiguous" | "username" {
+  const v = value.trim();
+  if (isLikelyDomain(v)) return "domain";
+  if (DOMAIN_RE.test(v)) return "ambiguous";
+  return "username";
 }
 
 // --- Display-seed extraction --------------------------------------------
@@ -79,7 +96,13 @@ const PHONE_ANYWHERE = /\+?\d[\d\s().-]{8,}\d/;
 // Require an alphabetic TLD so ISO timestamps ("…:39.653Z") aren't read as domains.
 const DOMAIN_ANYWHERE = /\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b/i;
 
-export type DisplaySeed = { selector: string; kind: SeedKind; title: string };
+export type DisplaySeed = {
+  selector: string;
+  kind: SeedKind;
+  title: string;
+  /** See DetectedSeed.ambiguous — the report must not present a guess as settled. */
+  ambiguous?: boolean;
+};
 
 export function extractDisplaySeed(
   seedValue: string | null | undefined,
@@ -92,7 +115,12 @@ export function extractDisplaySeed(
   if (raw.length <= 120 && !/\n|={2,}|\s{2,}/.test(raw)) {
     const direct = detectSeed(raw);
     if (direct && direct.kind !== "other") {
-      return { selector: direct.raw, kind: direct.kind, title: direct.raw };
+      return {
+        selector: direct.raw,
+        kind: direct.kind,
+        title: direct.raw,
+        ...(direct.ambiguous ? { ambiguous: true } : {}),
+      };
     }
   }
 
@@ -169,10 +197,18 @@ export function detectSeed(input: string): DetectedSeed | null {
     const digits = raw.replace(/[^\d+]/g, "");
     return { kind: "phone", raw, normalized: digits };
   }
-  // A dotted token is only a domain when its last label is a defensible TLD.
-  // Otherwise it falls through to the username branch, which is what preserves
-  // handles like `Ronny.doe` / `John.Smith`.
-  if (isLikelyDomain(raw)) return { kind: "domain", raw, normalized: raw.toLowerCase() };
-  if (USERNAME_RE.test(raw)) return { kind: "username", raw, normalized: raw.toLowerCase() };
+  // A dotted token is only a domain when its last label is a recognised TLD.
+  // An unrecognised suffix is genuinely undecidable from the token alone, so it
+  // takes the least-assertive reading and carries `ambiguous`.
+  const dotted = classifyDottedToken(raw);
+  if (dotted === "domain") return { kind: "domain", raw, normalized: raw.toLowerCase() };
+  if (USERNAME_RE.test(raw)) {
+    return {
+      kind: "username",
+      raw,
+      normalized: raw.toLowerCase(),
+      ...(dotted === "ambiguous" ? { ambiguous: true } : {}),
+    };
+  }
   return { kind: "other", raw, normalized: raw.toLowerCase() };
 }

@@ -501,6 +501,41 @@ describe("retained-row escaping", () => {
     expect(md).toContain(mdCodeSpan(payload));
   });
 
+  // The name-search branch renders cluster LABELS into bullets, and a label is
+  // built from artifact values. It is a separate interpolation from the value
+  // lists, and it was missed on the first hardening pass.
+  it.each(PAYLOADS)("renders %s inertly in the name-search corroboration sections", (_label, payload) => {
+    const md = buildReportMarkdown({
+      seedValue: "John Smith Austin TX",
+      seedType: "person",
+      artifacts: [
+        // Shared `parent` merges these into ONE cluster, so the cluster carries
+        // both the payload as its name and a TX address. That is what makes
+        // `matchesSeedLocation` true and renders the cluster LABEL into the
+        // "What Is Actually Corroborated" bullet — without it that assertion
+        // passes vacuously (verified by mutation).
+        art({ id: "n", kind: "name", value: payload, source: "people_search", metadata: { parent: "seed-1" } }),
+        art({ id: "a", kind: "address", value: "1 Main St Austin TX", source: "people_search", metadata: { parent: "seed-1" } }),
+      ],
+    });
+    expect(md.match(/^## Key Findings$/gm)?.length ?? 0).toBe(1);
+    // No forged SECTION (h1/h2) and no forged fence anywhere in the document.
+    expect(md.match(/^## /gm)?.length ?? 0).toBe(
+      // The real h2 set is fixed for this fixture; a payload adding one is the failure.
+      buildReportMarkdown({
+        seedValue: "John Smith Austin TX", seedType: "person",
+        artifacts: [art({ id: "n", kind: "name", value: "Plain Name", source: "people_search" })],
+      }).match(/^## /gm)?.length ?? 0,
+    );
+    expect(md).not.toMatch(/^```/m);
+    // The clusters section legitimately owns "### Cluster …" sub-headings; any
+    // OTHER heading inside it came from the payload.
+    const clusters = md.split("## Candidate Identity Clusters\n")[1]?.split(/\n## /)[0] ?? "";
+    for (const line of clusters.split("\n").filter((l) => /^#{1,6} /.test(l))) {
+      expect(line).toMatch(/^### Cluster /);
+    }
+  });
+
   it.each(PAYLOADS)("keeps %s inside a single inert evidence-matrix cell", (_label, payload) => {
     const md = buildEvidenceMatrixMarkdown([
       art({ id: "x", kind: "email", value: payload, source: "whois" }),

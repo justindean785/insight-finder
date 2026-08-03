@@ -1026,6 +1026,18 @@ function mdEscape(v: string): string {
 }
 
 /**
+ * Collapse to a single line.
+ *
+ * For a value that must stay READABLE (a cluster label, a heading) rather than
+ * become a code span. Block-level Markdown structure is line-anchored, so
+ * collapsing newlines is what stops an injected `## Heading` or ``` fence; a
+ * `#` that is not at the start of a line is inert.
+ */
+function mdOneLine(v: string): string {
+  return String(v ?? "").replace(/[\r\n]+/g, " ");
+}
+
+/**
  * Render an arbitrary, attacker-influenced value as an INERT Markdown code span.
  *
  * A backslash is NOT an escape inside a CommonMark code span, so the obvious
@@ -1561,7 +1573,12 @@ export function buildReportMarkdown(input: ReportInput): string {
     "",
     `## Seed Details`,
     `- **Selector:** \`${display.selector}\``,
-    `- **Type:** ${display.kind}`,
+    // An unresolved selector must never read as a settled fact.
+    `- **Type:** ${display.kind}${
+      display.ambiguous
+        ? " _(ambiguous — a dotted token with an unrecognised suffix. Treated as a handle so it stays searchable; it is NOT established as a domain. Confirm the selector type before relying on domain-shaped tooling.)_"
+        : ""
+    }`,
     ...(clusterReport.seedName ? [`- **Detected subject:** ${clusterReport.seedName}`] : []),
     ...(clusterReport.seedState ? [`- **Detected location target:** ${clusterReport.seedState}`] : []),
     // recorded = analyzed + excluded, by construction. Printing the ANALYSED
@@ -1600,7 +1617,7 @@ export function buildReportMarkdown(input: ReportInput): string {
           clusterReport.clusters.some((c) => c.matchesSeedLocation === true)
             ? clusterReport.clusters
                 .filter((c) => c.matchesSeedLocation === true)
-                .map((c) => `- ${c.label} — ${humanizeSourceChain(c.sources, "single source")}`)
+                .map((c) => `- ${mdOneLine(c.label)} — ${humanizeSourceChain(c.sources, "single source")}`)
                 .join("\n")
             : "_No cluster directly corroborates the seed location yet._",
           "",
@@ -2315,7 +2332,7 @@ export function buildClusterSection(
   // is not at the start of a line is inert.
   const fenced = (vals: string[], sep = ", "): string => vals.map((v) => mdCodeSpan(v)).join(sep);
   for (const c of report.clusters) {
-    parts.push(`### ${String(c.label ?? "").replace(/[\r\n]+/g, " ")}`);
+    parts.push(`### ${mdOneLine(c.label)}`);
     parts.push(`- **Confidence:** ${c.confidence}`);
     if (c.matchesSeedLocation === true) parts.push(`- **Seed location match:** yes`);
     else if (c.matchesSeedLocation === false) parts.push(`- **Seed location match:** no — possible different person`);

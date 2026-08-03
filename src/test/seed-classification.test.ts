@@ -45,6 +45,61 @@ describe("detectSeed — domain grammar, not merely a dot", () => {
     expect(detectSeed(input)?.kind).toBe(kind);
   });
 
+  // The allowlist is a POSITIVE fast-path, not the classifier. A suffix it does
+  // not recognise must not silently become either answer — a real newer gTLD
+  // would be called a username, and a handle would be called a domain. Both are
+  // invented certainty, so the token is marked ambiguous and the report says so.
+  it.each([
+    ["example.quest"],
+    ["example.zip"],
+    ["example.observer"],
+    ["example.lol"],
+  ])("marks %s ambiguous rather than guessing (real TLD, not in the allowlist)", (input) => {
+    const d = detectSeed(input);
+    expect(d?.ambiguous).toBe(true);
+    // Least-assertive: we do NOT assert a domain we cannot defend.
+    expect(d?.kind).not.toBe("domain");
+  });
+
+  it.each([
+    ["Ronny.doe"],
+    ["john.smith"],
+    ["foo.bar"],
+  ])("marks the dotted handle %s ambiguous too, and never a domain", (input) => {
+    const d = detectSeed(input);
+    expect(d?.ambiguous).toBe(true);
+    expect(d?.kind).toBe("username");
+  });
+
+  it.each([
+    ["example.com"],
+    ["sub.example.co.uk"],
+    ["acme.io"],
+  ])("does not mark the confident domain %s ambiguous", (input) => {
+    expect(detectSeed(input)?.ambiguous).toBeFalsy();
+  });
+
+  it.each([
+    ["ronny.doe@example.com"],
+    ["https://example.com/x"],
+    ["213.193.180.72"],
+    ["+15550001111"],
+    ["plainhandle"],
+  ])("does not mark the unambiguous selector %s ambiguous", (input) => {
+    expect(detectSeed(input)?.ambiguous).toBeFalsy();
+  });
+
+  it("surfaces the ambiguity in the report rather than hiding it", () => {
+    const md = buildReportMarkdown({
+      seedValue: "Ronny.doe",
+      seedType: "username",
+      artifacts: [],
+    });
+    const seedSection = md.split("## Seed Details")[1]?.split("\n## ")[0] ?? "";
+    expect(seedSection).toMatch(/ambiguous/i);
+    expect(seedSection).not.toContain("**Type:** domain");
+  });
+
   it("does not invent a domain from a dotted token inside a pasted blob", () => {
     // extractDisplaySeed's blob path has its own domain regex; it must apply
     // the same TLD rule or the fix is only half-applied.
