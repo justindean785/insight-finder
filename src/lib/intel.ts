@@ -18,7 +18,10 @@ import {
   EXCLUSION_REASON_LABEL,
   type ExclusionReason,
 } from "@/lib/exclusion";
-import { isPipelineExcluded as isPipelineExcludedPrimitive } from "@/lib/artifact-exclusion";
+import {
+  isPipelineExcluded as isPipelineExcludedPrimitive,
+  isRejectedReviewState,
+} from "@/lib/artifact-exclusion";
 
 /** Analyst-grade group buckets for artifact kinds. */
 export type Group =
@@ -717,14 +720,29 @@ export type ToolAuditEntry = {
   highConf: number;
   lowConf: number;
   cached: number;
+  /** TOOL-level failure only: the invocation was skipped or errored. */
   failed: number;
+  /**
+   * Rows disqualified as evidence by an analyst verdict or a pipeline
+   * exclusion. Deliberately NOT `failed`: the tool ran correctly and returned
+   * something we chose not to use. Counting a properly-excluded namesake as a
+   * tool failure is the same misattribution as selling a provider rejection as
+   * an outage.
+   */
+  rejected: number;
+  /** Rows that survived as evidence — neither failed nor rejected. */
+  retained: number;
   kinds: string[];
 };
 
 export type ToolAudit = {
+  /** Every tool that produced at least one row, retained or not. */
   tools: ToolAuditEntry[];
   cachedCount: number;
   failedCount: number;
+  rejectedCount: number;
+  retainedCount: number;
+  /** Kinds covered by RETAINED rows only — a rejected-only kind is still a gap. */
   kindsCovered: Set<string>;
 };
 
@@ -737,28 +755,51 @@ export function buildToolAudit(
   const map = new Map<string, ToolAuditEntry>();
   let cachedCount = 0;
   let failedCount = 0;
+  let rejectedCount = 0;
+  let retainedCount = 0;
   const kindsCovered = new Set<string>();
 
   for (const a of artifacts) {
     const tool = (a.source ?? "unknown").trim() || "unknown";
     const meta = (a.metadata ?? {}) as Record<string, unknown>;
-    const label = labelForArtifact(a, reviews?.[a.id]);
+    const review = reviews?.[a.id];
+    const label = labelForArtifact(a, review);
     const cached = meta.cached === true || meta._cached === true;
-    const failed = label === "FAILED" || meta.skipped === true || meta.failed === true;
+    // EXECUTION signal. `label === "FAILED"` used to be folded in here, but that
+    // label now also carries analyst verdicts and pipeline exclusions, so a tool
+    // that ran correctly and returned a properly-excluded namesake was reported
+    // as failing in AuditTab's "Skipped / Failed".
+    const failed = meta.skipped === true || meta.failed === true;
+    // COVERAGE signal — the row is disqualified as evidence, but the invocation
+    // itself was fine.
+    const rejected = !failed && (
+      isRejectedReviewState(review ?? null)
+      || isPipelineExcludedPrimitive(a)
+      || meta.false_positive === true
+    );
+    const retained = !failed && !rejected;
 
-    kindsCovered.add(a.kind.toLowerCase());
+    // Only retained rows count as coverage; otherwise `inferToolGaps` concludes
+    // a kind is handled when every row for it was thrown out, and stops
+    // recommending the tools that would actually close the gap.
+    if (retained) kindsCovered.add(a.kind.toLowerCase());
     if (cached) cachedCount++;
     if (failed) failedCount++;
+    if (rejected) rejectedCount++;
+    if (retained) retainedCount++;
 
     const entry = map.get(tool) ?? {
-      tool, totalResults: 0, highConf: 0, lowConf: 0, cached: 0, failed: 0, kinds: [],
+      tool, totalResults: 0, highConf: 0, lowConf: 0, cached: 0, failed: 0,
+      rejected: 0, retained: 0, kinds: [],
     };
     entry.totalResults++;
     if (label === "CONFIRMED" || label === "INFERRED") entry.highConf++;
     if (label === "LOW" || label === "VERIFY") entry.lowConf++;
     if (cached) entry.cached++;
     if (failed) entry.failed++;
-    if (!entry.kinds.includes(a.kind.toLowerCase())) entry.kinds.push(a.kind.toLowerCase());
+    if (rejected) entry.rejected++;
+    if (retained) entry.retained++;
+    if (retained && !entry.kinds.includes(a.kind.toLowerCase())) entry.kinds.push(a.kind.toLowerCase());
     map.set(tool, entry);
   }
 
@@ -766,6 +807,8 @@ export function buildToolAudit(
     tools: Array.from(map.values()).sort((a, b) => b.totalResults - a.totalResults),
     cachedCount,
     failedCount,
+    rejectedCount,
+    retainedCount,
     kindsCovered,
   };
 }
@@ -1200,7 +1243,19 @@ export function buildReportMarkdown(input: ReportInput): string {
       return `No artifacts have been recorded for this investigation yet. The agent has not produced any observations against the seed.`;
     }
     const parts: string[] = [];
-    parts.push(`Observed ${total} artifact${total === 1 ? "" : "s"} across ${audit.tools.length} tool${audit.tools.length === 1 ? "" : "s"}.`);
+    // Tool EXECUTION and evidentiary COVERAGE are different measurements. The
+    // live dossier read "52 artifacts across 4 tools" while the Activity Log
+    // recorded 36 invocations across many more tools — the "4" was the count of
+    // artifact-PRODUCING sources, presented as if it were tool coverage.
+    const producing = audit.tools.length;
+    parts.push(
+      `Observed ${total} artifact${total === 1 ? "" : "s"} retained for analysis from ${producing} artifact-producing source${producing === 1 ? "" : "s"}${
+        toolInvocations ? ` (${toolInvocations} tool invocation${toolInvocations === 1 ? "" : "s"} attempted — see Activity Log)` : ""
+      }.`,
+    );
+    if (audit.rejectedCount) {
+      parts.push(`${audit.rejectedCount} returned row${audit.rejectedCount === 1 ? " was" : "s were"} excluded from analysis and are not counted above.`);
+    }
     if (confirmed.length) parts.push(`${confirmed.length} finding${confirmed.length === 1 ? "" : "s"} observed in multiple sources or analyst-reviewed.`);
     if (verify.length + low.length) parts.push(`${verify.length + low.length} item${verify.length + low.length === 1 ? "" : "s"} need verification before reporting.`);
     if (failed.length) parts.push(`${failed.length} item${failed.length === 1 ? "" : "s"} marked as false positive.`);
@@ -1414,7 +1469,10 @@ export function buildReportMarkdown(input: ReportInput): string {
   const toolCoverage = audit.tools.length === 0
     ? "_No tools produced artifacts._"
     : audit.tools.map((t) =>
-        `- ${toolActionLabel(t.tool)} — ${t.totalResults} result${t.totalResults === 1 ? "" : "s"}, ${t.highConf} high-confidence, ${t.lowConf} need verification${t.cached ? `, ${t.cached} cached` : ""}${t.failed ? `, ${t.failed} failed` : ""}`,
+        // Rows returned, rows RETAINED, and rows excluded are three different
+        // numbers. Reporting only "results" let a tool whose every row was
+        // thrown out read exactly like one whose rows all survived.
+        `- ${toolActionLabel(t.tool)} — ${t.totalResults} result${t.totalResults === 1 ? "" : "s"}, ${t.retained} retained, ${t.highConf} high-confidence, ${t.lowConf} need verification${t.cached ? `, ${t.cached} cached` : ""}${t.rejected ? `, ${t.rejected} excluded` : ""}${t.failed ? `, ${t.failed} failed` : ""}`,
       ).join("\n");
 
   const weakAreas = (() => {

@@ -177,6 +177,15 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
                       {t.cached} cached
                     </span>
                   )}
+                  {/* Excluded is NOT failed. The tool ran correctly and
+                      returned something an analyst (or the pipeline) chose not
+                      to use — reporting that in destructive red under
+                      "Skipped / Failed" misattributed a verdict as an outage. */}
+                  {t.rejected > 0 && (
+                    <span className="px-1.5 py-0.5 rounded border border-border bg-secondary/40 text-muted-foreground">
+                      {t.rejected} excluded
+                    </span>
+                  )}
                   {t.failed > 0 && (
                     <span className="px-1.5 py-0.5 rounded border border-destructive/40 bg-destructive/10 text-destructive">
                       {t.failed} failed

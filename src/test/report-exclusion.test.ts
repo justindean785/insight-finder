@@ -112,12 +112,20 @@ describe("labelForArtifact — excluded rows never read VERIFY", () => {
 describe("buildToolAudit — rejected rows must not count as high-confidence", () => {
   const rows = [art({ id: "x", confidence: 90, source: "github_user", kind: "username" })];
 
-  it("counts a dismissed row as failed, not high-confidence", () => {
+  // SUPERSEDED BY CONTRACT ITEM 11 / REVIEW FINDING 3. This asserted that a
+  // dismissed row counts as `failed`, which is the misattribution itself: a
+  // tool that ran correctly and returned a row the analyst rejected is not a
+  // failing tool. The test's actual intent — a rejected row must not be
+  // high-confidence — is unchanged and still asserted below.
+  it("counts a dismissed row as excluded, not high-confidence and not failed", () => {
     const withReview = buildToolAudit(rows, { x: "dismissed" });
     const entry = withReview.tools[0];
-    expect(entry.failed).toBe(1);
     expect(entry.highConf).toBe(0);
-    expect(withReview.failedCount).toBe(1);
+    expect(entry.rejected).toBe(1);
+    expect(entry.retained).toBe(0);
+    expect(entry.failed).toBe(0);
+    expect(withReview.rejectedCount).toBe(1);
+    expect(withReview.failedCount).toBe(0);
   });
 
   it("is unchanged when no reviews are supplied", () => {
@@ -616,6 +624,86 @@ describe("evidence matrix — excluded rows are not ordinary evidence", () => {
     });
     const table = md.split("## Artifact / Entity Table")[1]?.split("\n## ")[0] ?? "";
     expect(table).toContain("NAMESAKE_ROW");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Contract item 11 + review finding 3. Tool EXECUTION and evidentiary COVERAGE
+// are different measurements and were collapsed into one. `failed` counted
+// analyst dismissals and pipeline-excluded namesakes alongside genuine tool
+// failures, so AuditTab's "Skipped / Failed" section reported a tool that ran
+// perfectly and returned a correctly-excluded namesake as failing.
+// ---------------------------------------------------------------------------
+
+describe("tool audit — execution is not coverage", () => {
+  const entry = (rows: Artifact[], reviews?: Record<string, ReviewState>) =>
+    buildToolAudit(rows, reviews).tools[0];
+
+  it("does not count an analyst dismissal as a tool failure", () => {
+    const e = entry([art({ id: "x", source: "oathnet_lookup" })], { x: "dismissed" });
+    expect(e.failed).toBe(0);
+    expect(e.rejected).toBe(1);
+    expect(e.retained).toBe(0);
+  });
+
+  it("does not count a pipeline-excluded namesake as a tool failure", () => {
+    const e = entry([art({ id: "x", kind: "excluded_collision", source: "people_search" })]);
+    expect(e.failed).toBe(0);
+    expect(e.rejected).toBe(1);
+  });
+
+  it("still counts a genuinely skipped or failed invocation", () => {
+    expect(entry([art({ id: "x", source: "hibp", metadata: { skipped: true } })]).failed).toBe(1);
+    expect(entry([art({ id: "x", source: "hibp", metadata: { failed: true } })]).failed).toBe(1);
+  });
+
+  it("keeps the tool operationally visible even when every row was rejected", () => {
+    const audit = buildToolAudit([art({ id: "x", source: "oathnet_lookup" })], { x: "wrong" });
+    expect(audit.tools.map((t) => t.tool)).toContain("oathnet_lookup");
+    expect(audit.retainedCount).toBe(0);
+    expect(audit.rejectedCount).toBe(1);
+  });
+
+  it("does not let a rejected-only kind satisfy coverage", () => {
+    // Otherwise inferToolGaps concludes the kind is handled and stops
+    // recommending the tools that would actually close the gap.
+    const audit = buildToolAudit([art({ id: "x", kind: "email", source: "hibp" })], { x: "dismissed" });
+    expect(audit.kindsCovered.has("email")).toBe(false);
+  });
+
+  it("counts a retained kind as covered", () => {
+    const audit = buildToolAudit([art({ id: "x", kind: "email", source: "hibp" })]);
+    expect(audit.kindsCovered.has("email")).toBe(true);
+  });
+});
+
+describe("report — attempted tools and evidentiary sources are reported separately", () => {
+  const md = () =>
+    buildReportMarkdown({
+      seedValue: "seed@example.com",
+      seedType: "email",
+      artifacts: [
+        art({ id: "keep", kind: "email", value: "kept@example.com", source: "hibp" }),
+        art({ id: "bad", kind: "phone", value: "+15550001111", source: "oathnet_lookup" }),
+      ],
+      reviews: { bad: "dismissed" },
+      toolInvocations: 36,
+    });
+
+  it("does not present artifact-producing sources as the tool-invocation count", () => {
+    // The live dossier read "52 artifacts across 4 tools" while the Activity
+    // Log recorded 36 invocations across many more tools.
+    const exec = md().split("## Executive Summary")[1]?.split("\n## ")[0] ?? "";
+    expect(exec).not.toMatch(/across \d+ tools?\./);
+    expect(exec).toMatch(/artifact-producing source/i);
+  });
+
+  it("shows the excluded rows in the tool coverage line rather than as failures", () => {
+    const section = md().split("## Tool Coverage Summary")[1]?.split("\n## ")[0] ?? "";
+    // Both tools stay listed — the one whose only row was dismissed included.
+    expect(section.split("\n").filter((l) => l.startsWith("- "))).toHaveLength(2);
+    expect(section).toMatch(/1 excluded/);
+    expect(section).not.toMatch(/1 failed/);
   });
 });
 
