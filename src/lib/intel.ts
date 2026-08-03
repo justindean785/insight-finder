@@ -1229,9 +1229,18 @@ export function buildReportMarkdown(input: ReportInput): string {
   const clusterReport = buildIdentityClusters(safetyArtifacts, seedValue, reviews);
   const isNameSearch = !!detectNameLocationSeed(seedValue);
 
+  // Network Connections is the SUBJECT's graph. A row that reached no displayed
+  // identity cluster has no demonstrated link to the subject, so it must not be
+  // presented as their contact/social/identity connection merely because a bulk
+  // breach response returned it. Those rows go to an explicit unassigned
+  // surface instead of being laundered into the graph.
+  const assignedIds = new Set(clusterReport.clusters.flatMap((c) => c.artifacts.map((a) => a.id)));
+  const unassignedRows = seedValue ? artifacts.filter((a) => !assignedIds.has(a.id)) : [];
+  const graphArtifacts = seedValue ? artifacts.filter((a) => assignedIds.has(a.id)) : artifacts;
+
   // Group artifacts for entity table and network connections
   const byGroup = new Map<Group, Artifact[]>();
-  for (const a of artifacts) {
+  for (const a of graphArtifacts) {
     const g = groupForKind(a.kind);
     if (!byGroup.has(g)) byGroup.set(g, []);
     byGroup.get(g)!.push(a);
@@ -1361,6 +1370,22 @@ export function buildReportMarkdown(input: ReportInput): string {
     if (ct) return ct;
     return "conflicting attributes across sources";
   };
+  // Retained, recorded, and explicitly NOT presented as the subject's. These
+  // are the rows a bulk breach / person-search response returned alongside the
+  // match: real observations with no demonstrated link to the subject. Naming
+  // them is the point — silently dropping them would be as dishonest as
+  // silently promoting them.
+  const unassignedSection = unassignedRows.length === 0
+    ? "_Every retained observation is linked to the subject or corroborated._"
+    : [
+        `_${unassignedRows.length} retained observation${unassignedRows.length === 1 ? " is" : "s are"} NOT linked to the subject. They reached no identity cluster: neither corroborated by a second signal nor tied to the queried selector. Bulk breach and person-search responses return whole rows of other people's fields — these are listed for audit, and must not be treated as the subject's contacts, identities or network without establishing a link._`,
+        "",
+        ...unassignedRows.slice(0, 40).map((a) =>
+          `- ${mdCodeSpan(sanitizeValueForLabel(a.value, false))} — ${mdEscape(displayKind(a))} _(via ${mdEscape(humanizeSourceChain(a.source))})_`,
+        ),
+        ...(unassignedRows.length > 40 ? ["", `_… and ${unassignedRows.length - 40} more (see the Artifact Table)._`] : []),
+      ].join("\n");
+
   // A cluster-level collision has no artifact-level marker of its own — it is a
   // determination ABOUT the clusters. It must still reach this section, or the
   // report warns of a same-name collision in the header and declares
@@ -1616,6 +1641,9 @@ export function buildReportMarkdown(input: ReportInput): string {
     "",
     `## Network Connections`,
     network,
+    "",
+    `## Unassigned Observations`,
+    unassignedSection,
     "",
     `## Collision / Likely Unrelated`,
     collisionSection,

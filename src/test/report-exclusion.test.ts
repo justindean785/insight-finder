@@ -192,7 +192,11 @@ describe("buildReportMarkdown — rejected rows are excluded, not hidden", () =>
     confidence: 90,
     source: "github_user",
   });
-  const kept = art({ id: "good", kind: "email", value: "kept@example.com" });
+  // Seed-linked on purpose: Network Connections is now the SUBJECT's graph, so
+  // a row must be linked or corroborated to appear there at all. Using an
+  // unlinked value would make the exclusion assertion below pass for the wrong
+  // reason (absent because unassigned, not because rejected).
+  const kept = art({ id: "good", kind: "email", value: "a@b.com" });
 
   const md = () =>
     buildReportMarkdown({
@@ -206,7 +210,7 @@ describe("buildReportMarkdown — rejected rows are excluded, not hidden", () =>
     const out = md();
     const network = out.split("## Network Connections")[1]?.split("##")[0] ?? "";
     expect(network).not.toContain("REJECTED_HANDLE");
-    expect(network).toContain("kept@example.com");
+    expect(network).toContain("a@b.com");
   });
 
   it("surfaces the rejected row in an explicit Excluded appendix", () => {
@@ -802,6 +806,34 @@ describe("bulk-result rows do not become the subject's identity", () => {
         .some((v) => v.toLowerCase() === SEED);
       expect(corroborated || seedLinked).toBe(true);
     }
+  });
+
+  it("does not launder unlinked rows into the subject's network graph", () => {
+    const md = buildReportMarkdown({
+      seedValue: SEED,
+      seedType: "username",
+      artifacts: [linked, ...neighbours],
+    });
+    const network = md.split("## Network Connections")[1]?.split("\n## ")[0] ?? "";
+    expect(network).not.toContain("Ron Daoust");
+    expect(network).not.toContain("unrelated@corp.example");
+    expect(network).not.toContain("+2250700000000");
+    expect(network).not.toContain("528 Lacroix Bay Rd Westmeath ON");
+  });
+
+  it("names them in an explicit unassigned surface instead of dropping them", () => {
+    const md = buildReportMarkdown({
+      seedValue: SEED,
+      seedType: "username",
+      artifacts: [linked, ...neighbours],
+    });
+    const unassigned = md.split("## Unassigned Observations")[1]?.split("\n## ")[0] ?? "";
+    expect(unassigned).toContain("Ron Daoust");
+    expect(unassigned).toContain("unrelated@corp.example");
+    expect(unassigned).toMatch(/NOT linked to the subject/i);
+    // Retained, not deleted — the Artifact Table still carries every row.
+    const table = md.split("## Artifact / Entity Table")[1]?.split("\n## ")[0] ?? "";
+    expect(table).toContain("Ron Daoust");
   });
 
   it("counts the suppressed rows exactly, and says why in those terms", () => {
