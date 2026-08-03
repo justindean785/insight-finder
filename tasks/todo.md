@@ -650,23 +650,38 @@ Deploy: backend ships via Lovable sync (sync `osint-agent/` → `seeker-spark-se
 
 ## 2026-08-03 — Codex UI command-center pass
 
-**Branch:** `codex/ui-command-center-20260803` from `main` @ `a23fbc9`. Frontend-only. No backend, migrations, mirror sync, deployment, or merge.
+**Branch:** `codex/ui-command-center-20260803` from `main` @ `a23fbc9`. Frontend-only. No backend, migrations, mirror sync, deployment promotion, or merge.
 
 ### Plan
 
 - [x] Capture the current Lovable/auth surface and inspect the current GitHub `main` frontend.
 - [x] Audit production-visible mock/demo data and branding drift.
-- [ ] Rebuild the signed-out gateway as a premium, responsive analyst operations surface.
-- [ ] Add restrained instrument-panel utilities and reduced-motion/performance safeguards.
-- [ ] Polish branded route loading and empty-state presentation without changing data semantics.
-- [ ] Add focused rendering/contract tests for the changed surfaces.
-- [ ] Run CI-equivalent typecheck, lint, unit tests, and build.
-- [ ] Open a draft PR; verify the Vercel preview at desktop and mobile widths.
-- [ ] Record results, evidence, and remaining risks here.
+- [x] Rebuild the signed-out gateway as a premium, responsive analyst operations surface.
+- [x] Add restrained instrument-panel utilities and reduced-motion/performance safeguards.
+- [x] Polish the public landing page, branded route loader, and authenticated hub language.
+- [x] Add focused rendering/source contracts for the changed surfaces.
+- [x] Run CI-equivalent typecheck, lint, unit tests, production build, migrations, and edge tests.
+- [x] Open a draft PR and verify the protected Vercel desktop preview.
+- [x] Record results, evidence, and remaining risks here.
 
 ### Guardrails
 
 - Preserve evidence counts, confidence tiers, chain-of-custody semantics, source labels, review states, run-state logic, and all backend contracts.
 - No production mock metrics or fake case data.
 - Keep `ReportPreview` dev-only and excluded from the production bundle.
-- Do not merge, deploy, sync Lovable mirrors, or edit Claude-owned backend paths.
+- Do not merge, promote a deployment, sync Lovable mirrors, or edit Claude-owned backend paths.
+
+### Results
+
+- Baseline Lovable capture exposed the stale `Swarmbot` identity, generic centered auth card, and indefinite `checking…` state. Canonical GitHub `main` is ahead of the Lovable mirror, so the mirror was inspected only and left untouched.
+- Rebuilt `Auth.tsx` as a two-pane analyst access gateway while preserving sign-in, sign-up, password recovery, Google gating, legal links, labels, and autocomplete behavior.
+- Rebuilt `Landing.tsx` around an evidence-led OSINT workflow; removed `Investigator beta`, `Chat-driven`, and `swarm harvests` copy.
+- Replaced the primary `Chat` workspace label with `Investigate` across tabs, command palette, and the signed-in hub. No route or backend contract changed.
+- Added a branded accessible route loader, canonical public metadata, reusable operations-surface styling, reduced-motion handling, and mobile blur/animation safeguards.
+- Hoisted static workflow data and memoized the static auth briefing rail so input updates do not rebuild decorative content.
+- Added `ui-command-center-contract.test.ts` covering canonical branding, no fabricated metrics, auth-path preservation, accessibility, responsive performance safeguards, and entry-point language.
+- Draft PR: https://github.com/justindean785/insight-finder/pull/411
+- Vercel preview deployment for implementation head `679bff9`: `READY`; public root returns HTTP 200 with the new canonical title and description.
+- GitHub Actions CI run `#938`: **success** — lint, typecheck, unit tests + coverage, production build, migration validation, and Deno edge tests all passed.
+- Desktop visual QA confirmed the redesigned auth gateway renders correctly with all expected controls and no app-origin console errors. Vercel/extension sign-in telemetry produced unrelated browser warnings.
+- Remaining QA risk: the latest protected landing revision could not be re-opened for a second screenshot after cloud-browser access was denied by policy; responsive behavior is covered by source inspection and CSS contracts, but a final human mobile visual pass is still recommended before merge.
