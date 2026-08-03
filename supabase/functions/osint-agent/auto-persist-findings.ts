@@ -32,6 +32,11 @@ import { checkpointKey } from "./incremental-persist.ts";
 /** Hard ceiling on auto-persisted rows PER tool call. Prevents one exhaustive
  *  scrape (Wayback captures, GitHub search hits) from writing hundreds of rows. */
 export const MAX_AUTO_PERSIST_PER_TOOL_CALL = 25;
+
+/** Corpus names retained inside a single breach_exposure artifact. Far above the
+ *  worst case observed in production (88 corpora in one thread), so truncation is
+ *  a disclosed edge case rather than routine lossiness. */
+export const MAX_BREACH_CORPORA_PER_EXPOSURE = 250;
 /** Hard ceiling on auto-persisted rows PER step across all tool calls. */
 export const MAX_AUTO_PERSIST_PER_STEP = 60;
 
@@ -58,7 +63,12 @@ export const AUTO_PERSIST_TOOL_DENYLIST = new Set<string>([
  *  identity, the whole point of the investigation; breach payloads (passwords,
  *  hashes, SSNs, PINs) are NEVER mapped to a kind and so never become artifacts. */
 const ALLOWED_KINDS = new Set<string>([
-  "url", "email", "breach", "social_account", "github_repo", "github_account",
+  // NB: bare "breach" is DELIBERATELY ABSENT — see collapseBreachCorpora below.
+  // A breach CORPUS NAME is provenance for an exposure, not a finding about the
+  // subject, and emitting one artifact per corpus is what buried the evidence
+  // board (measured: 708 corpus rows across 45 threads, mean 43.5 per thread,
+  // max 88; one scan was 47 of 83 artifacts, every one at confidence 55).
+  "url", "email", "breach_exposure", "social_account", "github_repo", "github_account",
   "phone", "domain", "ip_address", "leak_paste", "document",
   "name", "address", "organization", "username",
 ]);
@@ -113,9 +123,12 @@ export function normalizeFinding(kind: string, value: unknown): { kind: string; 
       if (digits.replace(/\D/g, "").length < 7) return null;
       return { kind: "phone", value: digits };
     }
-    case "breach": {
-      if (v.length > 120) return null;
-      return { kind: "breach", value: v };
+    case "breach_exposure": {
+      // The VALUE is a stable per-provider label, never a count — dedup is by
+      // (kind, value) via checkpointKey, so embedding "47 corpora" here would
+      // mint a second row the moment a later step found a 48th.
+      if (v.length > 200) return null;
+      return { kind: "breach_exposure", value: v };
     }
     case "github_account":
     case "github_repo":
@@ -191,13 +204,35 @@ export function extractFindings(toolName: string, output: unknown): ExtractedFin
     const n = normalizeFinding(k, v);
     if (n) findings.push({ kind: n.kind, value: n.value, context: { tool: toolName, ...ctx }, rawConfidence: conf });
   };
+  // Breach corpus names are COLLECTED, not pushed. Every provider branch below
+  // funnels through addCorpus, and collapseBreachCorpora emits ONE
+  // breach_exposure artifact per provider at the end, carrying the full list.
+  // Two independent reasons this matters:
+  //   1. 57% of one production board was corpus names at a single flat 55, so
+  //      nothing could rank against anything else.
+  //   2. extractFindings is capped at MAX_AUTO_PERSIST_PER_TOOL_CALL (25) with a
+  //      hard break, so corpus names were EVICTING real identity findings from
+  //      the per-call budget. Collapsing 25 names into 1 row returns 24 slots.
+  const breachCorpora = new Map<string, Set<string>>();
+  const addCorpus = (via: string, name: unknown) => {
+    const n = typeof name === "string" ? name.trim() : "";
+    if (!n || n.length > 120) return;
+    let set = breachCorpora.get(via);
+    if (!set) { set = new Set<string>(); breachCorpora.set(via, set); }
+    set.add(n);
+  };
 
   // 1) HIBP-style breach payloads: { data: { breaches: [{ Name|name }] } }
   const hibpBreaches = ((o.data as { breaches?: unknown } | null)?.breaches) ?? o.breaches;
   if (Array.isArray(hibpBreaches)) {
-    for (const b of hibpBreaches.slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
+    // NOT sliced to MAX_AUTO_PERSIST_PER_TOOL_CALL: that bound exists to cap
+    // ARTIFACTS, and corpora no longer become artifacts. Slicing here silently
+    // dropped corpora 26+ from the exposure list — caught by the "every corpus
+    // is still counted" fixture. The retention bound is
+    // MAX_BREACH_CORPORA_PER_EXPOSURE, which discloses truncation.
+    for (const b of hibpBreaches) {
       const name = (b as { Name?: unknown; name?: unknown })?.Name ?? (b as { name?: unknown })?.name;
-      push("breach", name, { via: "hibp_style" }, 55);
+      addCorpus("hibp_style", name);
     }
   }
 
@@ -305,10 +340,10 @@ export function extractFindings(toolName: string, output: unknown): ExtractedFin
       if (Array.isArray(ed.usernames)) for (const u of ed.usernames) push("username", u, { via: "serus" }, 45);
     }
     if (Array.isArray(o.breaches)) {
-      for (const b of o.breaches.slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
+      for (const b of o.breaches) {  // full list — see the hibp note above
         const bo = b as Record<string, unknown> | null;
         const name = typeof b === "string" ? b : (bo?.name ?? bo?.Name ?? bo?.title ?? bo?.source);
-        push("breach", name, { via: "serus_breach" }, 55);
+        addCorpus("serus_breach", name);
       }
     }
   }
@@ -317,10 +352,10 @@ export function extractFindings(toolName: string, output: unknown): ExtractedFin
   if (toolName === "breach_check" || toolName === "leakcheck_lookup") {
     const data = o.data as Record<string, unknown> | null;
     const sources = data && Array.isArray(data.sources) ? data.sources : [];
-    for (const s of sources.slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
+    for (const s of sources) {  // full list — see the hibp note above
       const so = s as Record<string, unknown> | null;
       const name = typeof s === "string" ? s : (so?.name ?? so?.Name ?? so?.title);
-      push("breach", name, { via: toolName }, 55);
+      addCorpus(toolName, name);
     }
   }
 
@@ -333,9 +368,9 @@ export function extractFindings(toolName: string, output: unknown): ExtractedFin
     if (dd && typeof dd === "object") {
       const dbInfo = dd.dbname_info as Record<string, unknown> | null;
       if (dbInfo && typeof dbInfo === "object") {
-        for (const [domain, info] of Object.entries(dbInfo).slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
+        for (const [domain, info] of Object.entries(dbInfo)) {  // full list — see the hibp note above
           const title = (info as Record<string, unknown>)?.Title;
-          push("breach", (typeof title === "string" && title) ? title : domain, { via: "oathnet_db" }, 55);
+          addCorpus("oathnet_db", (typeof title === "string" && title) ? title : domain);
         }
       }
       const items = Array.isArray(dd.items) ? dd.items : [];
@@ -412,6 +447,40 @@ export function extractFindings(toolName: string, output: unknown): ExtractedFin
       }
     }
   }
+
+  // ---- Collapse breach corpus names into ONE exposure artifact per provider --
+  // Mirrors the username_sweep collapse directly above: the ARTIFACT count drops,
+  // the underlying data does not. Every corpus name is retained in
+  // metadata.breach_corpora, sorted for determinism, with an explicit truncation
+  // disclosure if a provider ever exceeds the retention bound.
+  //
+  // These are UNSHIFTED to the front on purpose. The de-dup loop below stops at
+  // MAX_AUTO_PERSIST_PER_TOOL_CALL, and a row that stands in for 47 corpora must
+  // never be the one evicted by that cap.
+  const exposures: ExtractedFinding[] = [];
+  for (const [via, set] of breachCorpora) {
+    const corpora = [...set].sort();
+    if (corpora.length === 0) continue;
+    const kept = corpora.slice(0, MAX_BREACH_CORPORA_PER_EXPOSURE);
+    exposures.push({
+      kind: "breach_exposure",
+      value: `Breach exposure (${via})`,
+      context: {
+        tool: toolName,
+        via,
+        breach_corpora: kept,
+        breach_corpus_count: corpora.length,
+        ...(corpora.length > kept.length
+          ? { breach_corpora_truncated: true, breach_corpora_retained: kept.length }
+          : {}),
+      },
+      // Unchanged from the per-corpus rows this replaces. This is a SHAPE change,
+      // not a scoring change: no confidence value moves, no cap is touched, and
+      // applyEvidenceCaps still runs downstream exactly as before.
+      rawConfidence: 55,
+    });
+  }
+  findings.unshift(...exposures);
 
   // De-dup within this extraction.
   const seen = new Set<string>();

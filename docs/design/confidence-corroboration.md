@@ -1,6 +1,7 @@
 # Independent-source confidence corroboration — design, not yet implemented
 
-Status: **design for review. No code change. Do not merge as a fix.**
+Status: **§4 remains design-only. §10 IS IMPLEMENTED in this PR — a shape fix that
+touches no confidence rule. The corpus-counting proposal in §10.1 was measured and REJECTED.**
 Scope: integrity-critical (confidence). Sign-off obtained to *prepare*; none to change behaviour.
 
 Reported symptom (Lovable audit of thread `e66255da`): *"confidence corroboration does not
@@ -150,3 +151,99 @@ Second-order risk: raising an artifact's confidence can move it across a status 
 Implement §4 as one PR carrying fixtures 1–9, with **fixture 3 as the gate** — if 48
 same-provider rows produce any boost at all, the change is wrong and must not ship. Do not
 touch `computeAxes`'s curve, `NON_CORROBORATING_CLASSES`, or any cap. Do not backfill.
+
+---
+
+## 10. REVISION — corpus-level corroboration was proposed, measured, and REJECTED
+
+**Added after the 2026-08-03 evidence-quality report.** Two symptoms were raised: the
+board is clogged, and the confidence scale is meaningless. One half of my proposed fix was
+wrong, and §3 of this document had already named the trap.
+
+### 10.1 What was proposed
+
+Observing that 47 of 83 artifacts on one board sat at exactly 55, all reading
+`single source class: breach`, I proposed counting **distinct breach corpora** as
+independent corroboration — on the reasoning that Acxiom, Amtrak and Chegg are separate
+companies, separate incidents, separate years, and the model's own report already said
+*"internally consistent across 3+ independent breach corpora"* while rating the cluster 94%.
+
+### 10.2 What the data said
+
+| measurement | value |
+|---|---|
+| breach-corpus artifact rows in production | **708** across 45 threads |
+| mean corpora per breach-touching thread | **43.5** (max 88) |
+| distinct corpora | 337 |
+| corpora appearing in only one thread | 221 (65.6%) |
+
+And the head of the frequency distribution:
+
+| corpus | share of breach threads |
+|---|---|
+| **`Collection #1-5`** | **33%** |
+| `Twitter` | 24% |
+| `Verifications.io` | 22% |
+| `X (Twitter)` | 18% |
+| `Anti Public` | 16% |
+
+`Collection #1-5` and `Anti Public` are **combolists — aggregations of hundreds of prior
+breaches**. `Twitter` and `X (Twitter)` are the same breach under two names.
+
+So corpus-name counting would:
+
+1. count an aggregate as one independent origin **alongside its own constituents**, which
+   is double-counting by construction;
+2. count `Twitter` and `X (Twitter)` as two;
+3. give the largest boost to subjects whose credentials have circulated longest, which
+   measures **age of exposure**, not identity certainty.
+
+That is the F06 inflation bug at a third layer, against a third input. §3's third trap —
+*"Provider count is not class count. Two providers reselling the same aggregated breach
+corpus are one origin"* — states the same principle; the data supplies the sharper case,
+one corpus that **is** an aggregation of the others.
+
+**Rejected. `SourceClass` remains the unit of independence.** §4 is unchanged: the real
+scoring gap is that the artifact paths never call `computeAxes` at all, and that fix is
+class-based and safe.
+
+### 10.3 What was actually wrong — and it was never the scoring
+
+The compression is not caused by the cap. The cap is correct: single-class evidence
+*should* be capped at 60. The scale looked meaningless because **57% of the board was not
+findings at all** — it was provenance. `auto-persist-findings.ts` emitted one artifact per
+breach corpus name, at a hardcoded flat 55, from four separate branches.
+
+That is a **shape** defect, fixed in this PR without touching a single confidence rule:
+corpus names now collapse into one `breach_exposure` artifact per provider, carrying the
+full corpus list in `metadata.breach_corpora`. Same confidence (55), same caps, same
+`applyEvidenceCaps` afterwards.
+
+Measured on the reported scan: **83 artifacts → 39. 47 corpus rows → 3 exposure rows.
+All 47 distinct corpus names retained, zero lost.**
+
+A second effect was not anticipated and is arguably the larger one. `extractFindings` stops
+at `MAX_AUTO_PERSIST_PER_TOOL_CALL` (25) with a hard `break`, and each corpus branch also
+sliced its input to 25. **Corpus names were evicting real identity findings from the
+per-call budget.** Collapsing them returns those slots, and the per-branch slices are
+removed — they existed to bound artifacts, and corpora no longer are artifacts. A fixture
+caught that the slice was silently dropping corpora 26+ from the exposure list.
+
+### 10.4 Fixtures added
+
+- 60 corpora ⇒ exactly one row, `breach_corpus_count = 60`, all 60 names retained.
+- No `kind:"breach"` artifact can be produced at all — `"breach"` is removed from
+  `ALLOWED_KINDS`, so a future branch cannot reintroduce it.
+- The collapsed row is unshifted to the front, so the 25-cap can never evict the one row
+  standing in for 47 corpora — asserted directly.
+- 40 corpora + 20 emails ⇒ the emails survive the budget.
+- Provenance preserved per provider: `hibp_style`, `serus_breach`, `breach_check`,
+  `leakcheck_lookup`, `oathnet_db` each emit their own exposure row with their own list.
+- Value is count-independent (`Breach exposure (<via>)`), because dedup is by
+  `(kind, value)` and a count in the value would mint a second row on the next step.
+
+### 10.5 Still not done here
+
+The `Twitter` / `X (Twitter)` duplication is a **corpus-name normalization** problem and
+belongs with the companion name-normalization design (#404), not here. It is recorded so it
+is not mistaken for fixed.
