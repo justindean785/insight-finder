@@ -22,6 +22,24 @@ if (!window.localStorage) {
   });
 }
 
+// jsdom has no ResizeObserver. recharts' ResponsiveContainer constructs one on
+// mount, so without this any test that renders a chart-bearing component dies
+// with "ResizeObserver is not defined" — which reads like a component bug and
+// is not. The stub never fires: charts measure 0x0 in jsdom and render an empty
+// wrapper, which is fine because chart geometry is not what these tests assert.
+if (!("ResizeObserver" in globalThis)) {
+  class ResizeObserverStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  Object.defineProperty(globalThis, "ResizeObserver", {
+    configurable: true,
+    writable: true,
+    value: ResizeObserverStub,
+  });
+}
+
 Object.defineProperty(window, "matchMedia", {
   writable: true,
   value: (query: string) => ({

@@ -32,6 +32,7 @@ import {
   isReputationArtifact,
   type ConfLabel,
 } from "@/lib/intel";
+import { buildEvidenceViews, EXCLUSION_REASON_LABEL, type ExcludedArtifact } from "@/lib/exclusion";
 import { formatArtifactDisplayValue } from "@/lib/report-hygiene";
 import { toolActionLabel } from "@/lib/tool-display";
 import { tokenizeSourceChain } from "@/lib/report-source-labels";
@@ -331,9 +332,22 @@ function buildRegistrationRows(artifacts: Artifact[]): RegistrationRow[] {
 
 type HunterNoteItem = { text: string };
 
-function buildHunterNotes(artifacts: Artifact[], seedValue: string | null): HunterNoteItem[] {
+/**
+ * @param artifacts  the ANALYSIS view — drives every analytical note below.
+ * @param allArtifacts the FULL population — cluster warnings only.
+ */
+function buildHunterNotes(
+  artifacts: Artifact[],
+  allArtifacts: Artifact[],
+  seedValue: string | null,
+  reviews?: Record<string, ReviewState>,
+): HunterNoteItem[] {
   const notes: HunterNoteItem[] = [];
-  const cluster = buildIdentityClusters(artifacts, seedValue);
+  // Clusters get the FULL population by design. `buildIdentityClusters` filters
+  // rejected/collision rows internally when building clusters, but its
+  // minor-safety and adult x minor scans read the raw argument — handing it the
+  // analysis view would silently delete a child-safety warning.
+  const cluster = buildIdentityClusters(allArtifacts, seedValue, reviews);
   for (const w of cluster.warnings.slice(0, 3)) notes.push({ text: w });
 
   const breaches = artifacts.filter((a) => a.kind.toLowerCase() === "breach");
@@ -371,7 +385,16 @@ function buildHunterNotes(artifacts: Artifact[], seedValue: string | null): Hunt
   return notes;
 }
 
-function buildUnknowns(artifacts: Artifact[], reviews?: Record<string, ReviewState>): string[] {
+/**
+ * @param artifacts  the ANALYSIS view — a rejected address is not a recovered address.
+ * @param allArtifacts the FULL population — the tool audit is an attempt trail and
+ *   must keep listing a tool whose only output was later excluded.
+ */
+function buildUnknowns(
+  artifacts: Artifact[],
+  allArtifacts: Artifact[],
+  reviews?: Record<string, ReviewState>,
+): string[] {
   const out: string[] = [];
   const groups = new Set(artifacts.map((a) => groupForKind(a.kind)));
   if (!artifacts.some((a) => a.kind.toLowerCase() === "address")) {
@@ -387,7 +410,7 @@ function buildUnknowns(artifacts: Artifact[], reviews?: Record<string, ReviewSta
   if (hashes.length) {
     out.push(`${hashes.length} password hash${hashes.length === 1 ? "" : "es"} recovered but uncracked — plaintext unknown.`);
   }
-  const audit = buildToolAudit(artifacts, reviews);
+  const audit = buildToolAudit(allArtifacts, reviews);
   const gaps = inferToolGaps(audit);
   for (const g of gaps.slice(0, 2)) {
     out.push(`Coverage gap on ${g.kind}: ${g.suggested.slice(0, 3).map((t) => toolActionLabel(t)).join(", ")} not yet attempted.`);
@@ -848,55 +871,87 @@ export function CaseReport({
   reportType?: ReportType;
 }) {
   const display = useMemo(() => extractDisplaySeed(seedValue, seedType), [seedValue, seedType]);
-  const subjectProfile = useMemo(() => buildSubjectProfile(artifacts), [artifacts]);
-  const profileLinks = useMemo(() => buildProfileLinks(artifacts), [artifacts]);
-  const aliases = useMemo(() => buildAliases(artifacts), [artifacts]);
-  const breachRows = useMemo(() => buildBreachExposure(artifacts), [artifacts]);
-  const analystConf = useMemo(() => analystConfidence(artifacts), [artifacts]);
+
+  // ---------------------------------------------------------------------
+  // The three-view partition. Done ONCE, here, so no surface below can reach
+  // for `artifacts` by accident. See src/lib/exclusion.ts for the contract:
+  //   analysisArtifacts — may influence identity, confidence, KPIs, tables,
+  //                       charts, risk and pivots.
+  //   safetyArtifacts   — the FULL population; safety warnings only.
+  //   excludedArtifacts — retained for audit, possible-minor values redacted.
+  // `artifacts` itself is used below ONLY for the tool-audit attempt trail,
+  // which must keep listing a tool whose only output was later excluded.
+  // ---------------------------------------------------------------------
+  const { analysisArtifacts, safetyArtifacts, excludedArtifacts } = useMemo(
+    () => buildEvidenceViews(artifacts, reviews),
+    [artifacts, reviews],
+  );
+
+  const subjectProfile = useMemo(() => buildSubjectProfile(analysisArtifacts), [analysisArtifacts]);
+  const profileLinks = useMemo(() => buildProfileLinks(analysisArtifacts), [analysisArtifacts]);
+  const aliases = useMemo(() => buildAliases(analysisArtifacts), [analysisArtifacts]);
+  const breachRows = useMemo(() => buildBreachExposure(analysisArtifacts), [analysisArtifacts]);
+  const analystConf = useMemo(() => analystConfidence(analysisArtifacts), [analysisArtifacts]);
   const narrative = useMemo(() => {
     const last = (messages ?? []).filter((m) => m.role === "assistant" && m.summary?.trim()).slice(-1)[0];
     return last?.summary?.trim() ?? "";
   }, [messages]);
   const isBrief = reportType === "brief";
-  const identity = useMemo(() => buildIdentityRows(artifacts), [artifacts]);
-  const registrations = useMemo(() => buildRegistrationRows(artifacts), [artifacts]);
-  const hunterNotes = useMemo(() => buildHunterNotes(artifacts, seedValue), [artifacts, seedValue]);
-  const unknowns = useMemo(() => buildUnknowns(artifacts, reviews), [artifacts, reviews]);
-  const risk = useMemo(() => computeRisk(artifacts), [artifacts]);
-  const radar = useMemo(() => buildAnalyticRadar(artifacts, risk.level), [artifacts, risk.level]);
-  const groupDistribution = useMemo(() => buildGroupDistribution(artifacts), [artifacts]);
-  const sourceDistribution = useMemo(() => buildSourceDistribution(artifacts), [artifacts]);
-  const confidenceDistribution = useMemo(() => buildConfidenceDistribution(artifacts), [artifacts]);
-  const sources = useMemo(() => uniqueSources(artifacts), [artifacts]);
+  const identity = useMemo(() => buildIdentityRows(analysisArtifacts), [analysisArtifacts]);
+  const registrations = useMemo(() => buildRegistrationRows(analysisArtifacts), [analysisArtifacts]);
+  const hunterNotes = useMemo(
+    () => buildHunterNotes(analysisArtifacts, safetyArtifacts, seedValue, reviews),
+    [analysisArtifacts, safetyArtifacts, seedValue, reviews],
+  );
+  const unknowns = useMemo(
+    () => buildUnknowns(analysisArtifacts, safetyArtifacts, reviews),
+    [analysisArtifacts, safetyArtifacts, reviews],
+  );
+  const risk = useMemo(() => computeRisk(analysisArtifacts), [analysisArtifacts]);
+  const radar = useMemo(() => buildAnalyticRadar(analysisArtifacts, risk.level), [analysisArtifacts, risk.level]);
+  const groupDistribution = useMemo(() => buildGroupDistribution(analysisArtifacts), [analysisArtifacts]);
+  const sourceDistribution = useMemo(() => buildSourceDistribution(analysisArtifacts), [analysisArtifacts]);
+  const confidenceDistribution = useMemo(() => buildConfidenceDistribution(analysisArtifacts), [analysisArtifacts]);
+  const sources = useMemo(() => uniqueSources(analysisArtifacts), [analysisArtifacts]);
   // Honest source depth: collapse mirrors/aggregators and same-corpus breach
   // fields so "3 copies of one leak" reads as ONE source, not three. See
   // src/lib/audit/from-artifacts.ts (unit-tested) + source-independence.ts.
-  const auditSources = useMemo(() => artifactsToSources(artifacts), [artifacts]);
+  const auditSources = useMemo(() => artifactsToSources(analysisArtifacts), [analysisArtifacts]);
   const effectiveSources = useMemo(() => computeEffectiveSourceCount(auditSources), [auditSources]);
   const independenceFindings = useMemo(() => checkIndependence(auditSources), [auditSources]);
   // Honest confidence verdict: lint identity clusters for tier-over-statement /
   // unmet "Verified" gate, then roll lint + independence findings into one
   // CLEAN/ADVISORY/BLOCKED verdict. Integrity-critical (changes shown confidence).
-  const clusterAudits = useMemo(() => artifactsToClusterAudit(artifacts, seedValue), [artifacts, seedValue]);
+  const clusterAudits = useMemo(
+    () => artifactsToClusterAudit(analysisArtifacts, seedValue),
+    [analysisArtifacts, seedValue],
+  );
   const confidenceFindings = useMemo(() => lintReport(clusterAudits), [clusterAudits]);
   const verdict = useMemo(() => reportVerdict(confidenceFindings, independenceFindings), [confidenceFindings, independenceFindings]);
-  const avgConfidence = useMemo(() => averageConfidence(artifacts), [artifacts]);
+  const avgConfidence = useMemo(() => averageConfidence(analysisArtifacts), [analysisArtifacts]);
 
+  // Attempt trail — deliberately the FULL population. `buildToolAudit` applies
+  // the analyst verdicts internally (via labelForArtifact), which is what stops
+  // a rejected row inflating a tool's high-confidence tally. Filtering the input
+  // as well would erase the tool from the audit trail entirely, which is the one
+  // thing an audit section must preserve.
   const audit = buildToolAudit(artifacts, reviews);
 
   // Evidence-strength buckets per the new audit rules.
   const buckets = useMemo(() => {
     const g: Record<string, Artifact[]> = { confirmed: [], probable: [], lead: [], contradiction: [], excluded: [] };
-    for (const a of artifacts) g[bucket(a)].push(a);
+    for (const a of analysisArtifacts) g[bucket(a)].push(a);
     return g;
-  }, [artifacts]);
+  }, [analysisArtifacts]);
 
+  // Safety warnings read the FULL population. A dismissed possible-minor row
+  // must not delete the warning that a minor is implicated.
   const safetyFlags = useMemo(
-    () => artifacts.filter((a) => {
+    () => safetyArtifacts.filter((a) => {
       const m = (a.metadata ?? {}) as Record<string, unknown>;
       return m.possible_minor === true || m.auto_pivot_blocked === true || statusOf(a) === "manual_review_required";
     }),
-    [artifacts],
+    [safetyArtifacts],
   );
 
   const nextPivots = useMemo(() => {
@@ -925,7 +980,7 @@ export function CaseReport({
             <div className="mt-2 flex flex-wrap gap-1.5 text-eyebrow font-mono tracking-normal text-muted-foreground">
               <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{display.kind}</span>
               <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{reportType === "brief" ? "executive brief" : "full dossier"}</span>
-              <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{artifacts.length} artifacts</span>
+              <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{analysisArtifacts.length} artifacts</span>
               <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{audit.tools.length} tools</span>
               <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{sources.length} sources</span>
               <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{avgConfidence}% avg confidence</span>
@@ -944,7 +999,7 @@ export function CaseReport({
         <ReportKpi label="Leads" value={buckets.lead.length} detail="requires analyst verification" tone="warn" />
         <ReportKpi label="Contradictions" value={buckets.contradiction.length} detail="quality or conflict flags" tone={buckets.contradiction.length > 0 ? "danger" : "neutral"} />
       </section>
-      {buckets.confirmed.length === 0 && artifacts.length > 0 && (
+      {buckets.confirmed.length === 0 && analysisArtifacts.length > 0 && (
         <p className="mt-2 text-data leading-relaxed text-muted-foreground">
           A tier of <span className="font-mono text-foreground">0 confirmed</span> is by design, not an empty case: AI-inferred and
           single-source findings stay <span className="text-[hsl(var(--confidence-mid))]">leads</span> until a second independent source
@@ -965,7 +1020,7 @@ export function CaseReport({
         </div>
         <div>
           <div className="text-micro font-mono tracking-normal text-muted-foreground">Auto-corroboration</div>
-          <div className="mt-1 font-display text-2xl font-semibold text-foreground">{buckets.confirmed.length} / {artifacts.length}</div>
+          <div className="mt-1 font-display text-2xl font-semibold text-foreground">{buckets.confirmed.length} / {analysisArtifacts.length}</div>
           <p className="mt-1 text-data leading-relaxed text-muted-foreground">Findings backed by ≥2 independent source classes. Breach-only / single-class evidence stays a lead by design.</p>
         </div>
       </section>
@@ -1166,7 +1221,7 @@ export function CaseReport({
           independently corroborated.
         </p>
         <div className="mt-3 grid gap-2 sm:grid-cols-3">
-          <MiniAssessment label="Evidence volume" value={`${artifacts.length}`} hint="raw artifacts retained after client-side grouping" />
+          <MiniAssessment label="Evidence volume" value={`${analysisArtifacts.length}`} hint="artifacts retained for analysis after exclusions" />
           <MiniAssessment label="Independent sources" value={`${effectiveSources}`} hint={`${sources.length} source label${sources.length === 1 ? "" : "s"} → ${effectiveSources} independent (mirrors & duplicate datasets collapsed)`} />
           <MiniAssessment label="Tool coverage" value={`${audit.tools.length}`} hint="tools represented in this case artifact set" />
         </div>
@@ -1271,12 +1326,13 @@ export function CaseReport({
       <SectionHeader>Leads Requiring Verification</SectionHeader>
       <BucketTable rows={buckets.lead.slice(0, 40)} empty="No outstanding leads." />
 
-      {/* 7. Excluded / collision clusters */}
-      {buckets.excluded.length > 0 && (
-        <>
-          <SectionHeader>Excluded / Collision Clusters</SectionHeader>
-          <BucketTable rows={buckets.excluded} empty="—" />
-        </>
+      {/* 7. Excluded from analysis — retained for audit, never as evidence.
+             Driven by `excludedArtifacts`, so it covers analyst rejections as
+             well as the pipeline's collision/excluded rows. The old section
+             read from `buckets.excluded`, which is now always empty because
+             those rows never reach the analysis view. */}
+      {excludedArtifacts.length > 0 && (
+        <ExcludedAudit rows={excludedArtifacts} />
       )}
 
       {/* 9. Contradictions */}
@@ -1414,6 +1470,54 @@ export function CaseReport({
         </>
       )}
     </article>
+  );
+}
+
+/**
+ * Rows removed from the analysis view, retained so the dossier can be audited.
+ *
+ * Renders `displayValue`, NOT `artifact.value` — a possible-minor identifier is
+ * replaced with a placeholder here, because this section exists to show that a
+ * row was excluded, not to reprint what it contained.
+ */
+function ExcludedAudit({ rows }: { rows: ExcludedArtifact[] }) {
+  return (
+    <section data-testid="excluded-audit">
+      <SectionHeader>Excluded From Analysis</SectionHeader>
+      <p className="text-muted-foreground text-data">
+        Retained for audit only. These {rows.length === 1 ? "row is" : "rows are"} excluded from every
+        count, score, table and chart above.
+      </p>
+      <div className="mt-2 rounded-md border border-border-subtle overflow-x-auto [scrollbar-width:thin]">
+        <table className="w-full min-w-[560px] table-fixed [&_td]:align-top text-data">
+          <thead>
+            <tr className="bg-surface-2 text-micro font-medium tracking-normal text-muted-foreground">
+              <th className="text-left font-normal px-3 py-2 w-[104px]">Kind</th>
+              <th className="text-left font-normal px-3 py-2">Value</th>
+              <th className="text-left font-normal px-3 py-2 w-[200px]">Reason excluded</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.artifact.id} className="border-t border-border-subtle opacity-75">
+                <td className="px-3 py-2 text-muted-foreground text-eyebrow uppercase tracking-wider">
+                  {displayKind(r.artifact)}
+                </td>
+                <td
+                  className={cn(
+                    "px-3 py-2 font-mono break-words [overflow-wrap:anywhere]",
+                    !r.redacted && "line-through decoration-muted-foreground/50",
+                  )}
+                >
+                  {r.redacted ? r.displayValue : formatArtifactDisplayValue(r.displayValue)}
+                </td>
+                <td className="px-3 py-2 text-muted-foreground">{EXCLUSION_REASON_LABEL[r.reason]}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 
