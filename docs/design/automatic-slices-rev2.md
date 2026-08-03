@@ -45,7 +45,8 @@ that spent its budget on reserved-but-rejected calls has `genuine < cap` yet mus
 be forced to finalize."*
 
 **Parity check — `main` is the strict superset.** `main` has `reserveToolCall`,
-`isToolBudgetExhausted`, `toolCapExceeded`, and both race tests live. #377 has
+`isToolBudgetExhausted`, and both race tests live. (An earlier draft of this paragraph
+also credited `main` with `toolCapExceeded`; it does not have it — see **D1**.) #377 has
 `reserveToolCall` + `toolCapExceeded` and **no** `isToolBudgetExhausted`. #383 adds
 `isToolBudgetExhausted` but predates `main`'s version. **Recommend closing both #377 and
 #383 as superseded by #384.** Neither should be merged. I am not authorised to close them
