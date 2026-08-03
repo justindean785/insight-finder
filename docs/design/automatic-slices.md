@@ -1,5 +1,12 @@
 # Option B — automatic bounded slices
 
+> **⚠️ SUPERSEDED IN PART — read [`automatic-slices-rev2.md`](./automatic-slices-rev2.md) first.**
+> A read-only audit found material defects in this document, and two of its factual
+> claims were wrong. Obsolete here: §1a (the #383 primitive is already on `main` via
+> #384), §1e (the extension conclusion), §3's reservation ordering (a denied call could
+> replay as allowed), §5's driver-B latency, and §10's limits. Rev 2 carries the
+> corrected specification.
+
 **Status:** design only. No code. Returned for review before implementation, per instruction.
 
 **Goal:** the analyst submits one seed and receives one completed investigation, without typing
