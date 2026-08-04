@@ -232,7 +232,13 @@ function buildFakeDbLive(threadId: string, userId: string, now: Date) {
 // The existing races above pit two SWEEPS against each other and cannot catch this,
 // because neither of them inserts a real report mid-flight. This fake does.
 // ---------------------------------------------------------------------------
-function buildFakeDbLiveFinalize(threadId: string, userId: string, now: Date, reportInitiallyPresent = false) {
+function buildFakeDbLiveFinalize(
+  threadId: string,
+  userId: string,
+  now: Date,
+  reportInitiallyPresent = false,
+  assistantArrivingDuringClaim?: Record<string, unknown>,
+) {
   const staleHeartbeat = new Date(now.getTime() - STALE_RUN_AFTER_MS - 5_000).toISOString();
   const threadRow: Record<string, unknown> = {
     id: threadId,
@@ -270,7 +276,9 @@ function buildFakeDbLiveFinalize(threadId: string, userId: string, now: Date, re
           threadUpdates++;
           // THE INTERLEAVING: the live run inserts its real report just before our
           // claim commits — after recovery's first read saw an empty thread.
-          if (threadUpdates === 1 && !reportInitiallyPresent) messages.push(liveReport);
+          if (threadUpdates === 1 && !reportInitiallyPresent) {
+            messages.push(assistantArrivingDuringClaim ?? liveReport);
+          }
           const matches = filters.every(([col, val]) => threadRow[col] === val);
           if (matches) {
             Object.assign(threadRow, pendingUpdate);
@@ -335,6 +343,32 @@ Deno.test("recovery vs live finalization: a report arriving during the claim mus
   assertEquals(threadRow.recovered_at, null, "recovered_at must be cleared or the run renders Interrupted");
   assertEquals(threadRow.recovery_reason, null, "recovery_reason must be cleared");
   assertEquals(threadRow.status, "finished", "status stays terminal — the run really is over");
+});
+
+Deno.test("recovery vs live checkpoint: a non-report arriving during the claim must remain Interrupted", async () => {
+  const now = new Date("2026-08-04T16:00:00.000Z");
+  const checkpoint = {
+    created_at: new Date(now.getTime() - 500).toISOString(),
+    parts: [{ type: "text", text: "I am checking one more source now." }],
+  };
+  const { db, insertedMessages, threadRow } = buildFakeDbLiveFinalize(
+    "t-live-checkpoint",
+    "u1",
+    now,
+    false,
+    checkpoint,
+  );
+
+  const res = await recoverStaleThreadById(db, "t-live-checkpoint", {
+    now,
+    reason: "stale heartbeat recovered by health sweep",
+  });
+
+  assertEquals(insertedMessages.length, 0, "a recent checkpoint suppresses the recovery stub");
+  assertEquals(res.recovered, true, "a checkpoint is not a durable completion");
+  assertEquals(threadRow.status, "finished");
+  assertEquals(threadRow.recovered_at, now.toISOString(), "the incomplete run must remain labelled Interrupted");
+  assertEquals(threadRow.recovery_reason, "stale heartbeat recovered by health sweep");
 });
 
 Deno.test("an already-durable report is atomically closed as a clean completion", async () => {
