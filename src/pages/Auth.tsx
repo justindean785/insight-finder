@@ -240,7 +240,7 @@ export default function Auth() {
                       <Button type="submit" variant="cta" className="h-11 w-full border-0 font-medium shadow-cta" disabled={loading}>
                         {loading ? "Sending…" : "Send reset link"}
                       </Button>
-                      <button type="button" onClick={() => setForgotMode(false)} className="w-full rounded-md py-1 text-data text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                      <button type="button" onClick={() => setForgotMode(false)} className="w-full rounded-md py-1 text-data text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background">
                         Back to sign in
                       </button>
                     </form>
@@ -253,7 +253,7 @@ export default function Auth() {
                       <div className="space-y-1.5">
                         <div className="flex items-center justify-between">
                           <Label htmlFor="signin-password" className="text-eyebrow uppercase tracking-[0.1em] text-muted-foreground">Password</Label>
-                          <button type="button" onClick={() => setForgotMode(true)} className="rounded-sm text-eyebrow uppercase tracking-[0.1em] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                          <button type="button" onClick={() => setForgotMode(true)} className="rounded-sm text-eyebrow uppercase tracking-[0.1em] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background">
                             Forgot password?
                           </button>
                         </div>
@@ -293,6 +293,9 @@ export default function Auth() {
                     <div className="relative flex justify-center"><span className="bg-[hsl(var(--surface-1))] px-2.5 text-eyebrow uppercase tracking-[0.18em] text-muted-foreground">or</span></div>
                   </div>
                   <Button type="button" variant="outline" className="h-11 w-full border-white/10 bg-white/[0.035] text-foreground/90 hover:bg-white/[0.06]" onClick={google} disabled={loading}>
+                    <svg viewBox="0 0 24 24" className="mr-2 h-4 w-4" aria-hidden>
+                      <path fill="#EA4335" d="M12 10.2v3.9h5.5c-.24 1.4-1.65 4.1-5.5 4.1-3.32 0-6-2.74-6-6.1S8.68 6 12 6c1.88 0 3.15.8 3.87 1.5l2.64-2.55C16.78 3.4 14.6 2.4 12 2.4 6.7 2.4 2.4 6.7 2.4 12s4.3 9.6 9.6 9.6c5.55 0 9.22-3.9 9.22-9.4 0-.63-.07-1.1-.16-1.6H12z" />
+                    </svg>
                     Continue with Google
                   </Button>
                 </>
@@ -302,9 +305,9 @@ export default function Auth() {
             <div className="mt-5 flex flex-col items-center justify-between gap-3 text-[10px] text-muted-foreground sm:flex-row">
               <div className="font-mono uppercase tracking-[0.16em]">Authorized access · activity logged</div>
               <div className="flex items-center gap-2">
-                <Link to="/terms" className="rounded-sm transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Terms</Link>
+                <Link to="/terms" className="rounded-sm transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background">Terms</Link>
                 <span aria-hidden>·</span>
-                <Link to="/privacy" className="rounded-sm transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Privacy</Link>
+                <Link to="/privacy" className="rounded-sm transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background">Privacy</Link>
               </div>
             </div>
           </div>

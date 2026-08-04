@@ -31,13 +31,33 @@ describe("analyst access gateway contract", () => {
     expect(auth).not.toMatch(/\b\d+\s+(?:active\s+)?(?:cases|investigations|signals|sources|hits)\b/i);
   });
 
-  it("preserves every authentication and recovery path", () => {
+  // RENAMED, deliberately. This block used to be called "preserves every
+  // authentication and recovery path" — a claim its evidence could not support.
+  // Every assertion here is a SOURCE-TEXT match: it passes if `signIn` is gutted
+  // to a no-op, if the handler never reaches Supabase, if the submit button is
+  // detached from its form, or if the page throws on mount.
+  //
+  // The behavioural guarantee now lives in src/test/auth-gateway-render.test.tsx,
+  // which mounts the real component and asserts that submitting sign-in calls
+  // Supabase with the typed credentials and that recovery round-trips. Keep both:
+  // this one is a cheap structural tripwire, that one is the actual gate.
+  it("still declares the three auth form handlers and the legal links in source", () => {
     expect(auth).toContain("<form onSubmit={signIn}");
     expect(auth).toContain("<form onSubmit={signUp}");
     expect(auth).toContain("<form onSubmit={resetPassword}");
     expect(auth).toContain("googleEnabled");
     expect(auth).toContain('to="/terms"');
     expect(auth).toContain('to="/privacy"');
+  });
+
+  // Source-level on purpose, and weak on purpose: the OAuth button is gated
+  // behind `VITE_ENABLE_GOOGLE_OAUTH`, which is off in beta, so the button never
+  // renders and no behavioural test can reach it. Google's branding guidelines
+  // require the mark on the button, and the redesign dropped it — a tripwire is
+  // proportionate for a presentational asset that cannot be exercised.
+  it("keeps Google's branded mark on the OAuth button", () => {
+    expect(auth).toMatch(/<svg[^>]*viewBox="0 0 24 24"/);
+    expect(auth).toContain('fill="#EA4335"');
   });
 
   it("keeps labeled autocomplete-aware inputs", () => {
@@ -72,6 +92,16 @@ describe("operations surface performance and accessibility contract", () => {
   it("uses investigation language for the primary work surface", () => {
     expect(tabs).toContain('{ key: "chat", label: "Investigate"');
     expect(tabs).toContain('aria-label="Investigation workspace"');
+  });
+
+  // The rename originally reached WorkspaceTabs, HomeHub and the command palette
+  // but NOT AppNav — the global header rendered on every route, and the one
+  // surface this suite did not cover. An unguarded surface is where drift comes
+  // back, so it is pinned here rather than left to a visual pass.
+  it("renames the primary nav destination everywhere it is rendered", () => {
+    const nav = read("src/components/AppNav.tsx");
+    expect(nav).toContain('label: "Investigate"');
+    expect(nav).not.toMatch(/label:\s*"Chat"/);
   });
 });
 
