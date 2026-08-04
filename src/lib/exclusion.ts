@@ -13,6 +13,8 @@ import {
   isPipelineExcluded,
   isPossibleMinor,
   isRejectedReviewState,
+  isRuledOutNamesake,
+  REDACTED_COLLISION_PLACEHOLDER,
   REDACTED_MINOR_PLACEHOLDER,
 } from "@/lib/artifact-exclusion";
 
@@ -52,12 +54,60 @@ export function isExcludedArtifact(a: Artifact, review?: ReviewLike): boolean {
   return exclusionReason(a, review) !== null;
 }
 
+/**
+ * Why a value is masked. Two obligations, NOT one flag with two causes:
+ *
+ * - `possible_minor` — child safety. Highest precedence, and never weakened.
+ * - `ruled_out_namesake` — a third party's selector, where the pipeline has
+ *   decided the row is not the subject. Retained for audit, masked for privacy.
+ *
+ * Precedence matters: a row that is BOTH must read as the minor case, because
+ * that is the stronger obligation and the note the analyst must see.
+ */
+export type RedactionClass = "none" | "possible_minor" | "ruled_out_namesake";
+
+export const REDACTION_NOTE: Record<RedactionClass, string> = {
+  none: "",
+  possible_minor: "value withheld — possible minor",
+  ruled_out_namesake: "value withheld — ruled out as not the subject",
+};
+
+/**
+ * THE single place the masking precedence is decided.
+ *
+ * Every surface that prints an excluded or quarantined value must route through
+ * this, because the rows reach the report by TWO different paths — the Excluded
+ * appendix and the Collision / Likely Unrelated section — and a namesake takes
+ * the second one. Duplicating the rule at each call site is how the two drift.
+ */
+export function redactionFor(a: Artifact): {
+  redactionClass: RedactionClass;
+  displayValue: string;
+} {
+  // Minor safety first and unconditionally. A row that is both a possible minor
+  // and a ruled-out namesake takes the minor placeholder: stronger obligation,
+  // and its note is the one the analyst must see.
+  if (isPossibleMinor(a)) {
+    return { redactionClass: "possible_minor", displayValue: REDACTED_MINOR_PLACEHOLDER };
+  }
+  if (isRuledOutNamesake(a)) {
+    return { redactionClass: "ruled_out_namesake", displayValue: REDACTED_COLLISION_PLACEHOLDER };
+  }
+  return { redactionClass: "none", displayValue: a.value };
+}
+
 export type ExcludedArtifact = {
   artifact: Artifact;
   reason: ExclusionReason;
-  /** True when the value must not be printed in the ordinary dossier. */
+  /**
+   * True when the value must not be printed in the ordinary dossier.
+   * Retained as a boolean so existing call sites keep working; read
+   * `redactionClass` when the REASON for masking matters.
+   */
   redacted: boolean;
-  /** Value safe to display in an audit surface — redacted for possible minors. */
+  /** Which obligation caused the mask. `"none"` when the value is printed. */
+  redactionClass: RedactionClass;
+  /** Value safe to display in an audit surface. Masked per `redactionClass`. */
   displayValue: string;
 };
 
@@ -120,12 +170,13 @@ export function buildEvidenceViews(
   for (const a of artifacts) {
     const reason = exclusionReason(a, reviews?.[a.id]);
     if (reason && active.has(reason)) {
-      const redacted = isPossibleMinor(a);
+      const { redactionClass, displayValue } = redactionFor(a);
       excludedArtifacts.push({
         artifact: a,
         reason,
-        redacted,
-        displayValue: redacted ? REDACTED_MINOR_PLACEHOLDER : a.value,
+        redacted: redactionClass !== "none",
+        redactionClass,
+        displayValue,
       });
     } else {
       analysisArtifacts.push(a);

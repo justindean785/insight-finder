@@ -94,3 +94,31 @@ export function isPossibleMinor(a: ExclusionCandidate): boolean {
 
 /** Placeholder shown instead of a possible-minor value that was excluded. */
 export const REDACTED_MINOR_PLACEHOLDER = "[redacted — possible minor]";
+
+/**
+ * Placeholder for a selector belonging to someone RULED OUT as the subject.
+ *
+ * Different obligation from the minor placeholder, and deliberately a separate
+ * class. When the pipeline decides a row is a namesake, the row itself is
+ * evidence — it records that the collision was found and resolved — but the raw
+ * selector is a third party's PII, and that person has been affirmatively
+ * determined NOT to be the subject of the investigation. Keeping the row and
+ * the reason preserves the audit trail; printing `805-440-9318` for a different
+ * Joseph Schott does not serve it.
+ */
+export const REDACTED_COLLISION_PLACEHOLDER = "[redacted — ruled out, not the subject]";
+
+/**
+ * A DECIDED negative: the pipeline determined this row is not the subject.
+ *
+ * Deliberately narrower than `isCollisionArtifact`. `metadata.collision` and
+ * `metadata.possible_collision` mark an UNRESOLVED conflict — that row may still
+ * be the subject's, so masking it would hide live evidence behind a redaction.
+ * Only a settled "not the subject" earns the placeholder.
+ */
+export function isRuledOutNamesake(a: ExclusionCandidate): boolean {
+  if ((a.kind ?? "").toLowerCase() === "excluded_collision") return true;
+  const m = (a.metadata ?? {}) as Record<string, unknown>;
+  if (m.excluded_collision === true) return true;
+  return typeof m.status === "string" && m.status.toLowerCase() === "excluded";
+}

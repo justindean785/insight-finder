@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildReportMarkdown } from "@/lib/intel";
+import { REDACTED_COLLISION_PLACEHOLDER } from "@/lib/artifact-exclusion";
 
 // Fixture mirroring the artifact shape used across intel.ts consumers.
 const artifact = (over: Partial<{ id: string; kind: string; value: string; source: string | null; confidence: number | null; created_at: string; metadata: Record<string, unknown> | null }> = {}) => ({
@@ -99,7 +100,18 @@ describe("report — status:excluded + free-text collisions are surfaced", () =>
     });
     expect(md).toContain("## Collision / Likely Unrelated");
     expect(md).not.toContain("_No collisions flagged._");
-    expect(md).toContain("CameronLawson5");
+    // SUPERSEDED ASSERTION, deliberately. This used to assert the namesake's
+    // handle was PRINTED. Its intent — that a `status:'excluded'` namesake is
+    // surfaced rather than silently dropped — is preserved and asserted above
+    // and below: the section exists, it is not empty, and the row carries its
+    // reason. What changed is that the selector of a person RULED OUT as not the
+    // subject is now masked (the ruled-out-namesake redaction class), so the
+    // audit record survives without reprinting a third party's identifier.
+    expect(md).not.toContain("CameronLawson5");
+    expect(md).toContain(REDACTED_COLLISION_PLACEHOLDER);
+    expect(md).toMatch(/value withheld — ruled out as not the subject/);
+    // The row is still there, under its kind.
+    expect(md).toMatch(/social_profile/);
   });
 
   it("surfaces a free-text same-name collision noted via reason/cluster", () => {

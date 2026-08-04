@@ -16,6 +16,8 @@ import {
   buildEvidenceViews,
   REPORT_EXCLUSION_REASONS,
   EXCLUSION_REASON_LABEL,
+  REDACTION_NOTE,
+  redactionFor,
   type ExclusionReason,
 } from "@/lib/exclusion";
 import {
@@ -596,6 +598,25 @@ export type TimelineItem = {
  * user queries, tool invocations, and report-generated markers are
  * interleaved with the artifact stream.
  */
+/**
+ * The one value-rendering gate.
+ *
+ * A masked row can legitimately REMAIN in the analysis view — collision rows do,
+ * by design, so the Collision section is not emptied — which means partitioning
+ * alone never protected the value. Every surface that prints an artifact value
+ * must come through here, or the redaction is decorative.
+ *
+ * Found the hard way: a possible-minor row carrying `status: "excluded"` is
+ * classified `collision` (isCollisionArtifact is tested before
+ * isPipelineExcluded), `collision` is absent from REPORT_EXCLUSION_REASONS, so
+ * the row stayed in analysis and its identifier printed in the Artifact Table,
+ * the network line and the Timeline while the appendix dutifully redacted it.
+ */
+function displayableValue(a: Artifact, confirmed = false): string {
+  const { redactionClass, displayValue } = redactionFor(a);
+  return redactionClass === "none" ? sanitizeValueForLabel(displayValue, confirmed) : displayValue;
+}
+
 export function buildTimelineItems(
   artifacts: Artifact[],
   seed: { value: string | null; type: string | null; createdAt?: string | null } | null,
@@ -701,7 +722,7 @@ export function buildTimelineItems(
       id: a.id,
       time: a.created_at,
       type,
-      title: a.value,
+      title: displayableValue(a),
       source: a.source,
       confidence: a.confidence,
       kind: a.kind,
@@ -1094,7 +1115,7 @@ export function buildEvidenceMatrixMarkdown(
     const label = labelForArtifact(a, reviews?.[a.id]);
     // #3: strip promotional "CONFIRMED" wording from the VALUE when the row is
     // not actually backend-CONFIRMED (render-only; artifact untouched).
-    let value = sanitizeValueForLabel(a.value, label === "CONFIRMED");
+    let value = displayableValue(a, label === "CONFIRMED");
     // #7: annotate reserved/fictional numbers as non-actionable (never delete).
     const reserved = reservedNumberAnnotation(a);
     if (reserved) value = `${value} — ${reserved}`;
@@ -1122,12 +1143,14 @@ export function buildEvidenceMatrixMarkdown(
     "",
     "**Excluded from analysis** — retained for audit, not evidence.",
     "",
-    ...excludedArtifacts.map(({ artifact: a, reason, redacted, displayValue }) => {
-      // `displayValue` is already the redacted placeholder for a possible-minor
-      // row: the exclusion is the point, the child's identifier is not.
+    ...excludedArtifacts.map(({ artifact: a, reason, redacted, redactionClass, displayValue }) => {
+      // `displayValue` is already the placeholder for a masked row: the
+      // exclusion is the point, the identifier behind it is not. Two classes —
+      // a child's identifier and a ruled-out third party's — masked for
+      // different reasons, so the note is class-driven rather than hardcoded.
       const shown = redacted ? displayValue : sanitizeValueForLabel(displayValue, false);
       return `- ${mdCodeSpan(shown)} — ${mdEscape(displayKind(a))} — **${EXCLUSION_REASON_LABEL[reason]}**${
-        redacted ? " _(value redacted — possible minor)_" : ""
+        redacted ? ` _(${REDACTION_NOTE[redactionClass]})_` : ""
       } _(via ${mdEscape(humanizeSourceChain(a.source))})_`;
     }),
   ].join("\n");
@@ -1412,7 +1435,7 @@ export function buildReportMarkdown(input: ReportInput): string {
         `_${unassignedRows.length} retained observation${unassignedRows.length === 1 ? " carries" : "s carry"} no recorded link to \`${display.selector}\` and reached no corroborated identity cluster, so ${unassignedRows.length === 1 ? "its" : "their"} association with the subject is UNRESOLVED — not disproved. Bulk breach and person-search responses return whole rows of other people's fields alongside the match. Listed here for audit; do not treat as the subject's contacts, identities or network until a link is established._`,
         "",
         ...unassignedRows.slice(0, 40).map((a) =>
-          `- ${mdCodeSpan(sanitizeValueForLabel(a.value, false))} — ${mdEscape(displayKind(a))} _(via ${mdEscape(humanizeSourceChain(a.source))})_`,
+          `- ${mdCodeSpan(displayableValue(a))} — ${mdEscape(displayKind(a))} _(via ${mdEscape(humanizeSourceChain(a.source))})_`,
         ),
         ...(unassignedRows.length > 40 ? ["", `_… and ${unassignedRows.length - 40} more (see the Artifact Table)._`] : []),
       ].join("\n");
@@ -1433,9 +1456,19 @@ export function buildReportMarkdown(input: ReportInput): string {
           ? [
               "_These artifacts were flagged as namesakes / unrelated entities. They do NOT belong to the subject and do NOT strengthen the main network._",
               "",
-              ...collisionArtifacts.map((a) =>
-                `- ${mdCodeSpan(sanitizeValueForLabel(a.value, false))} — ${reportDisplayKind(a) === a.kind ? displayKind(a) : "source_conflict"} _(${labelForArtifact(a)}, via ${humanizeSourceChain(a.source)})_`,
-              ),
+              // A row RULED OUT as not the subject is a third party's selector.
+              // The row stays — it records that the collision was found and
+              // resolved — but the raw value is masked. `redactionFor` owns the
+              // precedence so a possible-minor row still takes the minor
+              // placeholder even when it is also a namesake.
+              ...collisionArtifacts.map((a) => {
+                const { redactionClass, displayValue } = redactionFor(a);
+                const shown = redactionClass === "none"
+                  ? sanitizeValueForLabel(displayValue, false)
+                  : displayValue;
+                const note = redactionClass === "none" ? "" : ` _(${REDACTION_NOTE[redactionClass]})_`;
+                return `- ${mdCodeSpan(shown)} — ${reportDisplayKind(a) === a.kind ? displayKind(a) : "source_conflict"}${note} _(${labelForArtifact(a)}, via ${humanizeSourceChain(a.source)})_`;
+              }),
             ]
           : []),
         ...(conflictNoted.length
@@ -1460,7 +1493,7 @@ export function buildReportMarkdown(input: ReportInput): string {
 
   const network = (() => {
     const sections: string[] = [];
-    const line = (a: Artifact) => `- ${mdCodeSpan(sanitizeValueForLabel(a.value, lbl(a) === "CONFIRMED"))} _(observed via ${humanizeSourceChain(a.source)})_`;
+    const line = (a: Artifact) => `- ${mdCodeSpan(displayableValue(a, lbl(a) === "CONFIRMED"))} _(observed via ${humanizeSourceChain(a.source)})_`;
     // Threat/reputation rows (VirusTotal, IPQS, EmailRep…) are pulled into their
     // own section regardless of which group they land in — they may be
     // mis-kinded as `breach` (→ breach group) OR correctly kinded as
@@ -1571,7 +1604,7 @@ export function buildReportMarkdown(input: ReportInput): string {
   // must be able to see what was set aside and why.
   const excludedSection = excludedRows.length === 0
     ? "_Nothing excluded._"
-    : excludedRows.map(({ artifact: a, reason, redacted, displayValue }) => {
+    : excludedRows.map(({ artifact: a, reason, redacted, redactionClass, displayValue }) => {
         // A rejected possible-minor row is retained for audit but its raw
         // identifier is NEVER printed in the ordinary dossier — the warning is
         // the point, the child's identifier is not. `displayValue` is already
@@ -1590,7 +1623,9 @@ export function buildReportMarkdown(input: ReportInput): string {
         const kind = reportDisplayKind(a) === a.kind ? displayKind(a) : "source_conflict";
         const reserved = reservedNumberAnnotation(a);
         if (reserved) value = `${value} — ${mdEscape(reserved)}`;
-        const redactNote = redacted ? " _(value withheld — possible minor)_" : "";
+        // Class-driven: a ruled-out namesake and a possible minor are masked for
+        // different reasons and must not read as the same finding.
+        const redactNote = redacted ? ` _(${REDACTION_NOTE[redactionClass]})_` : "";
         return `- ${value} — ${mdEscape(kind)} — **${EXCLUSION_REASON_LABEL[reason]}**${redactNote} _(via ${mdEscape(humanizeSourceChain(a.source))})_`;
       }).join("\n");
 
