@@ -441,10 +441,16 @@ Deno.test("resolveTerminalState: every salvage failure mode lands Interrupted, n
 });
 
 Deno.test("resolveTerminalState: failed no-findings calls remain Interrupted", () => {
-  for (const state of ["output-error", "input-available"]) {
+  const failedParts: Array<{ type: string; state: string; output?: { ok?: boolean } }> = [
+    { type: "tool-finalize_no_findings", state: "output-error" },
+    { type: "tool-finalize_no_findings", state: "input-available" },
+    { type: "tool-finalize_no_findings", state: "output-available", output: { ok: false } },
+    { type: "tool-finalize_no_findings", state: "output-available", output: {} },
+  ];
+  for (const part of failedParts) {
     const message = {
       role: "assistant",
-      parts: [{ type: "tool-finalize_no_findings", state }],
+      parts: [part],
     };
     assertEquals(
       resolveTerminalState({
@@ -452,7 +458,7 @@ Deno.test("resolveTerminalState: failed no-findings calls remain Interrupted", (
         finalMessages: [message],
       }),
       { status: "finished", recoveryReason: INCOMPLETE_RUN_REASON },
-      `${state} must not satisfy completion`,
+      `${part.state} with output ${JSON.stringify(part.output)} must not satisfy completion`,
     );
   }
 });

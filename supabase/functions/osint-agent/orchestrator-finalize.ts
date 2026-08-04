@@ -390,7 +390,7 @@ export function buildFinalizeDirective(): string {
 
 // ---- Fix B: post-loop salvage ---------------------------------------------------
 
-type ReportPart = { type?: string; text?: unknown };
+type ReportPart = { type?: string; text?: unknown; state?: unknown; output?: unknown };
 type ReportMsg = { role?: string; parts?: ReportPart[] };
 
 /** Concatenated text parts of the LAST assistant message — what the UI shows as the
@@ -471,13 +471,17 @@ export const MIN_TERMINAL_REPORT_CHARS = 200;
  */
 export const INCOMPLETE_RUN_REASON = "incomplete: run ended without a durable report";
 
-/** Did the LAST assistant message carry an explicit finalize_no_findings decision?
+/** Did the LAST assistant message carry a successful finalize_no_findings decision?
  *  Scoped to the last assistant on purpose — same scope as extractAssistantReportText
  *  — so a previous turn's decision cannot mark this run terminal. */
 export function hasNoFindingsDecision(finalMessages: ReportMsg[]): boolean {
   const assistant = [...(finalMessages ?? [])].reverse().find((m) => m?.role === "assistant");
   if (!assistant || !Array.isArray(assistant.parts)) return false;
-  return assistant.parts.some((p) => p?.type === "tool-finalize_no_findings");
+  return assistant.parts.some((p) => {
+    if (p?.type !== "tool-finalize_no_findings" || p.state !== "output-available") return false;
+    const output = p.output as { ok?: unknown } | null;
+    return !!output && typeof output === "object" && output.ok === true;
+  });
 }
 
 /**

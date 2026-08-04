@@ -369,17 +369,12 @@ export function buildRecoveredAssistantText(
 /**
  * Did this assistant row carry a finalize_no_findings decision that ACTUALLY SUCCEEDED?
  *
- * Deliberately stricter than the shared `hasNoFindingsDecision`, which matches on the
- * part's `type` alone. Presence is not success: the AI SDK still leaves a
+ * Kept aligned with the shared `hasNoFindingsDecision`: presence is not success.
+ * The AI SDK still leaves a
  * `tool-finalize_no_findings` part when the call finished in `output-error` or never
  * got past `input-available`, and treating those as terminal would let recovery clear
  * `recovery_reason` and present a run that never finalized as a clean completion —
  * exactly the false-green I-2 exists to prevent.
- *
- * The asymmetry is safe in this direction: recovery demanding more than the finalize
- * contract can only mislabel a genuine completion as Interrupted (honest, and visible),
- * never the reverse. The shared helper is tightened separately — this predicate then
- * becomes redundant rather than wrong.
  *
  * Not defended against here: `capToolPartPayloads` replaces an oversized `output` with
  * a `{_truncated}` preview, which would erase `ok`. A finalize_no_findings output is a
