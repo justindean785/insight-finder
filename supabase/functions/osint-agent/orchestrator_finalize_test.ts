@@ -18,6 +18,7 @@ import {
   meetsCompletionContract,
   hasNoFindingsDecision,
   resolveTerminalState,
+  INCOMPLETE_RUN_REASON,
   REPORT_PERSIST_FAILED_REASON,
   MIN_TERMINAL_REPORT_CHARS,
   SALVAGE_ON_ZERO_TOOL_CALLS,
@@ -375,7 +376,10 @@ Deno.test("needsReportSalvage: an explicit no-findings decision is terminal, nev
 Deno.test("meetsCompletionContract: only a report or an explicit no-findings decision may present as complete", () => {
   const report = { role: "assistant", parts: [{ type: "text", text: "## Findings report\n\n| a | b |\n|:--|:--|\n| 1 | 2 |" }] };
   const stub = { role: "assistant", parts: [{ type: "text", text: "I'll start" }] };
-  const decision = { role: "assistant", parts: [{ type: "tool-finalize_no_findings" }] };
+  const decision = {
+    role: "assistant",
+    parts: [{ type: "tool-finalize_no_findings", state: "output-available", output: { ok: true } }],
+  };
 
   assertEquals(meetsCompletionContract([report]), true, "durable report → complete");
   assertEquals(meetsCompletionContract([decision]), true, "explicit no-findings → complete");
@@ -425,7 +429,10 @@ Deno.test("resolveTerminalState: every salvage failure mode lands Interrupted, n
   }
 
   // …and the one case that legitimately completes without a report.
-  const decision = [{ role: "assistant", parts: [{ type: "tool-finalize_no_findings" }] }];
+  const decision = [{
+    role: "assistant",
+    parts: [{ type: "tool-finalize_no_findings", state: "output-available", output: { ok: true } }],
+  }];
   assertEquals(
     resolveTerminalState({ assistantRowPersisted: true, finalMessages: decision }).recoveryReason,
     null,
@@ -433,8 +440,28 @@ Deno.test("resolveTerminalState: every salvage failure mode lands Interrupted, n
   );
 });
 
+Deno.test("resolveTerminalState: failed no-findings calls remain Interrupted", () => {
+  for (const state of ["output-error", "input-available"]) {
+    const message = {
+      role: "assistant",
+      parts: [{ type: "tool-finalize_no_findings", state }],
+    };
+    assertEquals(
+      resolveTerminalState({
+        assistantRowPersisted: true,
+        finalMessages: [message],
+      }),
+      { status: "finished", recoveryReason: INCOMPLETE_RUN_REASON },
+      `${state} must not satisfy completion`,
+    );
+  }
+});
+
 Deno.test("hasNoFindingsDecision: scoped to the last assistant, not thread history", () => {
-  const decision = { role: "assistant", parts: [{ type: "tool-finalize_no_findings" }] };
+  const decision = {
+    role: "assistant",
+    parts: [{ type: "tool-finalize_no_findings", state: "output-available", output: { ok: true } }],
+  };
   const later = { role: "assistant", parts: [{ type: "text", text: "hi" }] };
   assertEquals(hasNoFindingsDecision([decision]), true);
   assertEquals(hasNoFindingsDecision([decision, later]), false, "a prior turn's decision does not carry over");
