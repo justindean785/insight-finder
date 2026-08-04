@@ -645,6 +645,22 @@ async function recoverOneStaleThread(
     freshRow?.parts,
   );
   if (!freshState.shouldInsert) {
+    const durableCompletion =
+      freshState.reason === "report_present" ||
+      freshState.reason === "no_findings_present";
+    if (!durableCompletion) {
+      // A recent non-report checkpoint can land in the same window as a real
+      // final report. It should suppress a redundant recovery stub, but it is
+      // NOT proof that the run completed. Keep the claim's recovery metadata so
+      // the UI presents the thread as Interrupted rather than false-green
+      // COMPLETE. The same applies to an existing recovery-generated stub.
+      return {
+        recovered: true,
+        assistantInserted: false,
+        artifactCount: artifactCount ?? 0,
+      };
+    }
+
     // ---- RELEASE THE CLAIM (2026-07-26, blocker 1) ----
     // A real report landed between our first read and the claim. Suppressing the stub
     // is necessary but NOT sufficient: the claim already stamped recovered_at /
