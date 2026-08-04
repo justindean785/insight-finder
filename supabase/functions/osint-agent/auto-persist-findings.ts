@@ -191,8 +191,57 @@ export const SWEEP_COLLAPSE_ENABLED = true;
 /** Below this many hits, individual URLs are still legible — don't collapse. */
 export const SWEEP_COLLAPSE_MIN_HITS = 3;
 
-/** Extract findings from a single tool call's parsed output. Never throws. */
-export function extractFindings(toolName: string, output: unknown): ExtractedFinding[] {
+// Input fields, in priority order, that name the selector a breach tool was
+// queried ON. Every breach lookup is invoked with one of these.
+const BREACH_SUBJECT_INPUT_KEYS = [
+  "email", "identifierValue", "username", "handle", "phone",
+  "query", "q", "value", "domain", "ip", "ip_address",
+] as const;
+
+/** Lowercased, bounded selector identity. Two spellings of one selector must
+ *  anchor to one exposure, and checkpointKey lowercases the value anyway. */
+function normalizeBreachSubject(s: string): string {
+  const v = s.trim().toLowerCase();
+  return v.length > 0 && v.length <= 200 ? v : "";
+}
+
+/**
+ * The queried selector a breach lookup ran ON — the SUBJECT its exposure belongs
+ * to. Read PRIMARILY from the tool INPUT (authoritative: it is literally what was
+ * queried), with a fallback to the few output shapes that echo the query
+ * (rapidapi → data.email; serus → identifierValue; generic → query).
+ *
+ * Deliberately NEVER reads a DISCOVERED email/handle out of the breach payload
+ * (e.g. serus `extractedData.emails`, oathnet item rows) — those can belong to
+ * other people in the same corpus and are not the subject. Anchoring on a
+ * discovered value is how one subject's exposure would be attributed to another.
+ */
+function breachSubjectAnchor(o: Record<string, unknown>, input: unknown): string {
+  const pick = (src: unknown, keys: readonly string[]): string => {
+    if (!src || typeof src !== "object") return "";
+    const rec = src as Record<string, unknown>;
+    for (const k of keys) {
+      const val = rec[k];
+      if (typeof val === "string" && val.trim()) return val.trim();
+      if (typeof val === "number" && Number.isFinite(val)) return String(val);
+    }
+    return "";
+  };
+  const fromInput = pick(input, BREACH_SUBJECT_INPUT_KEYS);
+  if (fromInput) return normalizeBreachSubject(fromInput);
+  const fromOutput = pick(o.data, ["email"]) || pick(o, ["identifierValue", "query"]);
+  return fromOutput ? normalizeBreachSubject(fromOutput) : "";
+}
+
+/**
+ * Extract findings from a single tool call's parsed output. Never throws.
+ *
+ * `input` is the tool-call arguments (the queried selector). Optional so the
+ * per-tool unit tests can keep calling with two args; production threads it via
+ * extractStepFindings so a breach exposure is scoped to the subject that was
+ * actually queried.
+ */
+export function extractFindings(toolName: string, output: unknown, input?: unknown): ExtractedFinding[] {
   if (AUTO_PERSIST_TOOL_DENYLIST.has(toolName)) return [];
   if (!output || typeof output !== "object") return [];
   const o = output as Record<string, unknown>;
@@ -457,6 +506,13 @@ export function extractFindings(toolName: string, output: unknown): ExtractedFin
   // These are UNSHIFTED to the front on purpose. The de-dup loop below stops at
   // MAX_AUTO_PERSIST_PER_TOOL_CALL, and a row that stands in for 47 corpora must
   // never be the one evicted by that cap.
+  // The subject this call was queried on. Scoping the VALUE (not just metadata)
+  // is load-bearing: the dedup key is checkpointKey(kind, value), thread-wide via
+  // loadSeenArtifactKeys. A subject-agnostic `Breach exposure (rapidapi)` collides
+  // across subjects, so a SECOND selector's exposure in the same thread was
+  // silently dropped as a duplicate. Anchoring the value on the queried selector
+  // gives each subject its own row.
+  const subjectLabel = breachSubjectAnchor(o, input);
   const exposures: ExtractedFinding[] = [];
   for (const [via, set] of breachCorpora) {
     const corpora = [...set].sort();
@@ -464,10 +520,15 @@ export function extractFindings(toolName: string, output: unknown): ExtractedFin
     const kept = corpora.slice(0, MAX_BREACH_CORPORA_PER_EXPOSURE);
     exposures.push({
       kind: "breach_exposure",
-      value: `Breach exposure (${via})`,
+      value: subjectLabel
+        ? `Breach exposure: ${subjectLabel} (${via})`
+        : `Breach exposure (${via})`,
       context: {
         tool: toolName,
         via,
+        // Provenance + the seed of selector-keyed aggregation. Null when the
+        // selector could not be determined (the value stays subject-agnostic).
+        queried_selector: subjectLabel || null,
         breach_corpora: kept,
         breach_corpus_count: corpora.length,
         ...(corpora.length > kept.length
@@ -505,7 +566,12 @@ export function extractStepFindings(toolResults: unknown[] | null | undefined): 
     const name = typeof t?.toolName === "string" ? t.toolName : "";
     if (!name) continue;
     const output = (t.output ?? t.result) ?? null;
-    const findings = extractFindings(name, output);
+    // The AI SDK step envelope carries the tool-call arguments; thread them so a
+    // breach exposure is scoped to the subject that was queried (P0: subject
+    // collision). `args`/`parameters` cover older/alternate envelope shapes.
+    const te = t as { input?: unknown; args?: unknown; parameters?: unknown };
+    const input = te.input ?? te.args ?? te.parameters ?? null;
+    const findings = extractFindings(name, output, input);
     for (const f of findings) {
       const k = checkpointKey(f.kind, f.value);
       if (seen.has(k)) continue;
