@@ -1,3 +1,4 @@
+import { isBreachKind } from "./breach-kinds";
 import {
   User, Building2, Globe, Network, Server, Cable,
   Mail, Phone, Wallet, FolderArchive, FileText, Image,
@@ -59,7 +60,7 @@ export function toEntityType(kind: string | null | undefined): EntityType {
   if (k === "case" || k === "legal_record") return "case";
   if (k === "image" || k === "avatar" || k === "photo") return "image";
   if (k === "geo" || k === "location" || k === "address") return "geo";
-  if (k === "breach" || k === "leak") return "breach";
+  if (isBreachKind(k)) return "breach";
   if (k === "infrastructure" || k === "service" || k === "tech_stack") return "infrastructure";
   if (k === "social" || k === "social_handle" || k === "username" || k === "handle") return "social_handle";
   return "document";

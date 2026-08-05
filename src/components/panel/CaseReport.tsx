@@ -39,6 +39,7 @@ import { cn } from "@/lib/utils";
 import type { ReviewState } from "@/lib/review";
 import { extractDisplaySeed } from "@/lib/seed";
 import type { MessageSummary } from "@/hooks/useThreadMessages";
+import { isBreachKind } from "@/lib/breach-kinds";
 
 export type ReportType = "full" | "brief";
 
@@ -336,7 +337,7 @@ function buildHunterNotes(artifacts: Artifact[], seedValue: string | null): Hunt
   const cluster = buildIdentityClusters(artifacts, seedValue);
   for (const w of cluster.warnings.slice(0, 3)) notes.push({ text: w });
 
-  const breaches = artifacts.filter((a) => a.kind.toLowerCase() === "breach");
+  const breaches = artifacts.filter((a) => isBreachKind(a.kind));
   const passwords = artifacts.filter((a) => a.kind.toLowerCase() === "password");
   if (breaches.length >= 3) {
     notes.push({
@@ -401,7 +402,7 @@ function computeRisk(artifacts: Artifact[]): { level: RiskLevel; risks: string[]
   const risks: string[] = [];
   let score = 0;
 
-  const breaches = artifacts.filter((a) => a.kind.toLowerCase() === "breach").length;
+  const breaches = artifacts.filter((a) => isBreachKind(a.kind)).length;
   const passwords = artifacts.filter((a) => a.kind.toLowerCase() === "password").length;
   const hasName = artifacts.some((a) => ["name", "person"].includes(a.kind.toLowerCase()));
   const hasPhone = artifacts.some((a) => a.kind.toLowerCase() === "phone");

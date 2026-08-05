@@ -1,6 +1,7 @@
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import type { ReviewState } from "@/lib/review";
 import { extractSourceInfo } from "@/lib/intel";
+import { isDateableBreachKind } from "./breach-kinds";
 
 /**
  * Source-tier baseline. These map an OSINT source to a default reliability
@@ -139,7 +140,10 @@ function badgesFor(
       hint: "Only one source so far — promote after corroboration." });
   }
 
-  if (a.created_at && a.kind.toLowerCase() === "breach") {
+  // isDateableBreachKind, NOT isBreachKind: a collapsed breach_exposure row spans
+  // many corpora with many dates, so ageing it as one record would assert
+  // something the row does not know.
+  if (a.created_at && isDateableBreachKind(a.kind)) {
     const age = Date.now() - new Date(a.created_at).getTime();
     if (age > 365 * DAY) {
       out.push({ key: "stale-breach", label: "Stale breach", tone: "low",

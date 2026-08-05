@@ -32,6 +32,11 @@ import { checkpointKey } from "./incremental-persist.ts";
 /** Hard ceiling on auto-persisted rows PER tool call. Prevents one exhaustive
  *  scrape (Wayback captures, GitHub search hits) from writing hundreds of rows. */
 export const MAX_AUTO_PERSIST_PER_TOOL_CALL = 25;
+
+/** Corpus names retained inside a single breach_exposure artifact. Far above the
+ *  worst case observed in production (88 corpora in one thread), so truncation is
+ *  a disclosed edge case rather than routine lossiness. */
+export const MAX_BREACH_CORPORA_PER_EXPOSURE = 250;
 /** Hard ceiling on auto-persisted rows PER step across all tool calls. */
 export const MAX_AUTO_PERSIST_PER_STEP = 60;
 
@@ -58,7 +63,12 @@ export const AUTO_PERSIST_TOOL_DENYLIST = new Set<string>([
  *  identity, the whole point of the investigation; breach payloads (passwords,
  *  hashes, SSNs, PINs) are NEVER mapped to a kind and so never become artifacts. */
 const ALLOWED_KINDS = new Set<string>([
-  "url", "email", "breach", "social_account", "github_repo", "github_account",
+  // NB: bare "breach" is DELIBERATELY ABSENT — see collapseBreachCorpora below.
+  // A breach CORPUS NAME is provenance for an exposure, not a finding about the
+  // subject, and emitting one artifact per corpus is what buried the evidence
+  // board (measured: 708 corpus rows across 45 threads, mean 43.5 per thread,
+  // max 88; one scan was 47 of 83 artifacts, every one at confidence 55).
+  "url", "email", "breach_exposure", "social_account", "github_repo", "github_account",
   "phone", "domain", "ip_address", "leak_paste", "document",
   "name", "address", "organization", "username",
 ]);
@@ -113,9 +123,12 @@ export function normalizeFinding(kind: string, value: unknown): { kind: string; 
       if (digits.replace(/\D/g, "").length < 7) return null;
       return { kind: "phone", value: digits };
     }
-    case "breach": {
-      if (v.length > 120) return null;
-      return { kind: "breach", value: v };
+    case "breach_exposure": {
+      // The VALUE is a stable per-provider label, never a count — dedup is by
+      // (kind, value) via checkpointKey, so embedding "47 corpora" here would
+      // mint a second row the moment a later step found a 48th.
+      if (v.length > 200) return null;
+      return { kind: "breach_exposure", value: v };
     }
     case "github_account":
     case "github_repo":
@@ -178,8 +191,57 @@ export const SWEEP_COLLAPSE_ENABLED = true;
 /** Below this many hits, individual URLs are still legible — don't collapse. */
 export const SWEEP_COLLAPSE_MIN_HITS = 3;
 
-/** Extract findings from a single tool call's parsed output. Never throws. */
-export function extractFindings(toolName: string, output: unknown): ExtractedFinding[] {
+// Input fields, in priority order, that name the selector a breach tool was
+// queried ON. Every breach lookup is invoked with one of these.
+const BREACH_SUBJECT_INPUT_KEYS = [
+  "email", "identifierValue", "username", "handle", "phone",
+  "query", "q", "value", "domain", "ip", "ip_address",
+] as const;
+
+/** Lowercased, bounded selector identity. Two spellings of one selector must
+ *  anchor to one exposure, and checkpointKey lowercases the value anyway. */
+function normalizeBreachSubject(s: string): string {
+  const v = s.trim().toLowerCase();
+  return v.length > 0 && v.length <= 200 ? v : "";
+}
+
+/**
+ * The queried selector a breach lookup ran ON — the SUBJECT its exposure belongs
+ * to. Read PRIMARILY from the tool INPUT (authoritative: it is literally what was
+ * queried), with a fallback to the few output shapes that echo the query
+ * (rapidapi → data.email; serus → identifierValue; generic → query).
+ *
+ * Deliberately NEVER reads a DISCOVERED email/handle out of the breach payload
+ * (e.g. serus `extractedData.emails`, oathnet item rows) — those can belong to
+ * other people in the same corpus and are not the subject. Anchoring on a
+ * discovered value is how one subject's exposure would be attributed to another.
+ */
+function breachSubjectAnchor(o: Record<string, unknown>, input: unknown): string {
+  const pick = (src: unknown, keys: readonly string[]): string => {
+    if (!src || typeof src !== "object") return "";
+    const rec = src as Record<string, unknown>;
+    for (const k of keys) {
+      const val = rec[k];
+      if (typeof val === "string" && val.trim()) return val.trim();
+      if (typeof val === "number" && Number.isFinite(val)) return String(val);
+    }
+    return "";
+  };
+  const fromInput = pick(input, BREACH_SUBJECT_INPUT_KEYS);
+  if (fromInput) return normalizeBreachSubject(fromInput);
+  const fromOutput = pick(o.data, ["email"]) || pick(o, ["identifierValue", "query"]);
+  return fromOutput ? normalizeBreachSubject(fromOutput) : "";
+}
+
+/**
+ * Extract findings from a single tool call's parsed output. Never throws.
+ *
+ * `input` is the tool-call arguments (the queried selector). Optional so the
+ * per-tool unit tests can keep calling with two args; production threads it via
+ * extractStepFindings so a breach exposure is scoped to the subject that was
+ * actually queried.
+ */
+export function extractFindings(toolName: string, output: unknown, input?: unknown): ExtractedFinding[] {
   if (AUTO_PERSIST_TOOL_DENYLIST.has(toolName)) return [];
   if (!output || typeof output !== "object") return [];
   const o = output as Record<string, unknown>;
@@ -191,13 +253,35 @@ export function extractFindings(toolName: string, output: unknown): ExtractedFin
     const n = normalizeFinding(k, v);
     if (n) findings.push({ kind: n.kind, value: n.value, context: { tool: toolName, ...ctx }, rawConfidence: conf });
   };
+  // Breach corpus names are COLLECTED, not pushed. Every provider branch below
+  // funnels through addCorpus, and collapseBreachCorpora emits ONE
+  // breach_exposure artifact per provider at the end, carrying the full list.
+  // Two independent reasons this matters:
+  //   1. 57% of one production board was corpus names at a single flat 55, so
+  //      nothing could rank against anything else.
+  //   2. extractFindings is capped at MAX_AUTO_PERSIST_PER_TOOL_CALL (25) with a
+  //      hard break, so corpus names were EVICTING real identity findings from
+  //      the per-call budget. Collapsing 25 names into 1 row returns 24 slots.
+  const breachCorpora = new Map<string, Set<string>>();
+  const addCorpus = (via: string, name: unknown) => {
+    const n = typeof name === "string" ? name.trim() : "";
+    if (!n || n.length > 120) return;
+    let set = breachCorpora.get(via);
+    if (!set) { set = new Set<string>(); breachCorpora.set(via, set); }
+    set.add(n);
+  };
 
   // 1) HIBP-style breach payloads: { data: { breaches: [{ Name|name }] } }
   const hibpBreaches = ((o.data as { breaches?: unknown } | null)?.breaches) ?? o.breaches;
   if (Array.isArray(hibpBreaches)) {
-    for (const b of hibpBreaches.slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
+    // NOT sliced to MAX_AUTO_PERSIST_PER_TOOL_CALL: that bound exists to cap
+    // ARTIFACTS, and corpora no longer become artifacts. Slicing here silently
+    // dropped corpora 26+ from the exposure list — caught by the "every corpus
+    // is still counted" fixture. The retention bound is
+    // MAX_BREACH_CORPORA_PER_EXPOSURE, which discloses truncation.
+    for (const b of hibpBreaches) {
       const name = (b as { Name?: unknown; name?: unknown })?.Name ?? (b as { name?: unknown })?.name;
-      push("breach", name, { via: "hibp_style" }, 55);
+      addCorpus("hibp_style", name);
     }
   }
 
@@ -305,10 +389,10 @@ export function extractFindings(toolName: string, output: unknown): ExtractedFin
       if (Array.isArray(ed.usernames)) for (const u of ed.usernames) push("username", u, { via: "serus" }, 45);
     }
     if (Array.isArray(o.breaches)) {
-      for (const b of o.breaches.slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
+      for (const b of o.breaches) {  // full list — see the hibp note above
         const bo = b as Record<string, unknown> | null;
         const name = typeof b === "string" ? b : (bo?.name ?? bo?.Name ?? bo?.title ?? bo?.source);
-        push("breach", name, { via: "serus_breach" }, 55);
+        addCorpus("serus_breach", name);
       }
     }
   }
@@ -317,10 +401,10 @@ export function extractFindings(toolName: string, output: unknown): ExtractedFin
   if (toolName === "breach_check" || toolName === "leakcheck_lookup") {
     const data = o.data as Record<string, unknown> | null;
     const sources = data && Array.isArray(data.sources) ? data.sources : [];
-    for (const s of sources.slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
+    for (const s of sources) {  // full list — see the hibp note above
       const so = s as Record<string, unknown> | null;
       const name = typeof s === "string" ? s : (so?.name ?? so?.Name ?? so?.title);
-      push("breach", name, { via: toolName }, 55);
+      addCorpus(toolName, name);
     }
   }
 
@@ -333,9 +417,9 @@ export function extractFindings(toolName: string, output: unknown): ExtractedFin
     if (dd && typeof dd === "object") {
       const dbInfo = dd.dbname_info as Record<string, unknown> | null;
       if (dbInfo && typeof dbInfo === "object") {
-        for (const [domain, info] of Object.entries(dbInfo).slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
+        for (const [domain, info] of Object.entries(dbInfo)) {  // full list — see the hibp note above
           const title = (info as Record<string, unknown>)?.Title;
-          push("breach", (typeof title === "string" && title) ? title : domain, { via: "oathnet_db" }, 55);
+          addCorpus("oathnet_db", (typeof title === "string" && title) ? title : domain);
         }
       }
       const items = Array.isArray(dd.items) ? dd.items : [];
@@ -413,6 +497,52 @@ export function extractFindings(toolName: string, output: unknown): ExtractedFin
     }
   }
 
+  // ---- Collapse breach corpus names into ONE exposure artifact per provider --
+  // Mirrors the username_sweep collapse directly above: the ARTIFACT count drops,
+  // the underlying data does not. Every corpus name is retained in
+  // metadata.breach_corpora, sorted for determinism, with an explicit truncation
+  // disclosure if a provider ever exceeds the retention bound.
+  //
+  // These are UNSHIFTED to the front on purpose. The de-dup loop below stops at
+  // MAX_AUTO_PERSIST_PER_TOOL_CALL, and a row that stands in for 47 corpora must
+  // never be the one evicted by that cap.
+  // The subject this call was queried on. Scoping the VALUE (not just metadata)
+  // is load-bearing: the dedup key is checkpointKey(kind, value), thread-wide via
+  // loadSeenArtifactKeys. A subject-agnostic `Breach exposure (rapidapi)` collides
+  // across subjects, so a SECOND selector's exposure in the same thread was
+  // silently dropped as a duplicate. Anchoring the value on the queried selector
+  // gives each subject its own row.
+  const subjectLabel = breachSubjectAnchor(o, input);
+  const exposures: ExtractedFinding[] = [];
+  for (const [via, set] of breachCorpora) {
+    const corpora = [...set].sort();
+    if (corpora.length === 0) continue;
+    const kept = corpora.slice(0, MAX_BREACH_CORPORA_PER_EXPOSURE);
+    exposures.push({
+      kind: "breach_exposure",
+      value: subjectLabel
+        ? `Breach exposure: ${subjectLabel} (${via})`
+        : `Breach exposure (${via})`,
+      context: {
+        tool: toolName,
+        via,
+        // Provenance + the seed of selector-keyed aggregation. Null when the
+        // selector could not be determined (the value stays subject-agnostic).
+        queried_selector: subjectLabel || null,
+        breach_corpora: kept,
+        breach_corpus_count: corpora.length,
+        ...(corpora.length > kept.length
+          ? { breach_corpora_truncated: true, breach_corpora_retained: kept.length }
+          : {}),
+      },
+      // Unchanged from the per-corpus rows this replaces. This is a SHAPE change,
+      // not a scoring change: no confidence value moves, no cap is touched, and
+      // applyEvidenceCaps still runs downstream exactly as before.
+      rawConfidence: 55,
+    });
+  }
+  findings.unshift(...exposures);
+
   // De-dup within this extraction.
   const seen = new Set<string>();
   const uniq: ExtractedFinding[] = [];
@@ -436,7 +566,12 @@ export function extractStepFindings(toolResults: unknown[] | null | undefined): 
     const name = typeof t?.toolName === "string" ? t.toolName : "";
     if (!name) continue;
     const output = (t.output ?? t.result) ?? null;
-    const findings = extractFindings(name, output);
+    // The AI SDK step envelope carries the tool-call arguments; thread them so a
+    // breach exposure is scoped to the subject that was queried (P0: subject
+    // collision). `args`/`parameters` cover older/alternate envelope shapes.
+    const te = t as { input?: unknown; args?: unknown; parameters?: unknown };
+    const input = te.input ?? te.args ?? te.parameters ?? null;
+    const findings = extractFindings(name, output, input);
     for (const f of findings) {
       const k = checkpointKey(f.kind, f.value);
       if (seen.has(k)) continue;

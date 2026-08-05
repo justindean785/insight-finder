@@ -48,8 +48,42 @@ Deno.test("extractFindings pulls hibp breaches", () => {
     ok: true,
     data: { breaches: [{ Name: "LinkedIn" }, { name: "Adobe" }] },
   });
-  assertEquals(out.length, 2);
-  assertEquals(out[0], { kind: "breach", value: "LinkedIn", context: { tool: "hibp_check", via: "hibp_style" }, rawConfidence: 55 });
+  // Two corpora now collapse into ONE breach_exposure row carrying both names.
+  // The artifact count drops; the corpus list does not.
+  assertEquals(out.length, 1);
+  assertEquals(out[0].kind, "breach_exposure");
+  assertEquals(out[0].value, "Breach exposure (hibp_style)");
+  assertEquals(out[0].rawConfidence, 55, "shape change only — the confidence value must not move");
+  assertEquals(out[0].context?.breach_corpora, ["Adobe", "LinkedIn"], "sorted, and lossless");
+  assertEquals(out[0].context?.breach_corpus_count, 2);
+});
+
+Deno.test("breach corpus names never become standalone artifacts again", () => {
+  // The regression this guards: 47 of 83 artifacts on one production board were
+  // bare corpus names at a flat 55, and 708 such rows exist across 45 threads
+  // (mean 43.5, max 88). ALLOWED_KINDS no longer contains "breach", so the
+  // extractor cannot mint one even if a future branch tries.
+  const out = extractFindings("hibp_check", {
+    ok: true,
+    data: { breaches: Array.from({ length: 60 }, (_, i) => ({ Name: `Corpus${String(i).padStart(2, "0")}` })) },
+  });
+  assertEquals(out.filter((f) => f.kind === "breach").length, 0, "no bare breach artifacts");
+  assertEquals(out.length, 1, "60 corpora collapse to exactly one row");
+  assertEquals(out[0].context?.breach_corpus_count, 60, "every corpus is still counted");
+  assertEquals((out[0].context?.breach_corpora as string[]).length, 60, "and every name retained");
+});
+
+Deno.test("the collapsed row survives the per-call cap that used to evict findings", () => {
+  // extractFindings stops at MAX_AUTO_PERSIST_PER_TOOL_CALL with a hard break.
+  // Corpus names used to consume that budget and push real identity findings out.
+  const out = extractFindings("hibp_check", {
+    ok: true,
+    data: { breaches: Array.from({ length: 40 }, (_, i) => ({ Name: `C${i}` })) },
+    items: Array.from({ length: 20 }, (_, i) => ({ email: `p${i}@example.com` })),
+  });
+  assertEquals(out[0].kind, "breach_exposure", "the exposure row is never the one evicted");
+  const emails = out.filter((f) => f.kind === "email").length;
+  assert(emails >= 15, `real findings should now fit the budget, got ${emails}`);
 });
 
 Deno.test("extractFindings handles github_user", () => {

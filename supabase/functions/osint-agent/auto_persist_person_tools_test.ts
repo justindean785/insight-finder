@@ -63,8 +63,11 @@ Deno.test("extractFindings: serus_darkweb_scan salvages breaches + extractedData
       usernames: ["jdoe"], cryptoAddresses: [],
     },
   });
-  assert(values(out, "breach").includes("LinkedIn"));
-  assert(values(out, "breach").includes("Adobe"));
+  // Corpora collapse into one breach_exposure row; both names are retained.
+  assertEquals(values(out, "breach"), [], "no bare corpus artifacts");
+  const exp = out.find((f) => f.kind === "breach_exposure");
+  assert(exp, "a breach_exposure row must be emitted");
+  assertEquals(exp!.context?.breach_corpora, ["Adobe", "LinkedIn"]);
   assert(values(out, "email").includes("a@b.com"));
   assert(values(out, "phone").length === 1);
   assert(values(out, "name").includes("John Doe"));
@@ -77,7 +80,10 @@ Deno.test("extractFindings: breach_check salvages breach source names", () => {
     ok: true,
     data: { found: 1, fields: ["first_name", "phone"], sources: [{ date: "2020-06", name: "Ordersnapp.com" }], success: true },
   });
-  assertEquals(values(out, "breach"), ["Ordersnapp.com"]);
+  assertEquals(values(out, "breach"), [], "no bare corpus artifacts");
+  const exp = out.find((f) => f.kind === "breach_exposure");
+  assertEquals(exp?.value, "Breach exposure (breach_check)");
+  assertEquals(exp?.context?.breach_corpora, ["Ordersnapp.com"]);
 });
 
 Deno.test("extractFindings: leakcheck_lookup salvages breach source names", () => {
@@ -85,7 +91,10 @@ Deno.test("extractFindings: leakcheck_lookup salvages breach source names", () =
     ok: true,
     data: { found: 2, quota: 100, sources: [{ name: "Adobe", date: "2013" }, { name: "Canva" }], success: true },
   });
-  assertEquals(values(out, "breach").sort(), ["Adobe", "Canva"]);
+  assertEquals(values(out, "breach"), [], "no bare corpus artifacts");
+  const exp = out.find((f) => f.kind === "breach_exposure");
+  assertEquals(exp?.value, "Breach exposure (leakcheck_lookup)");
+  assertEquals(exp?.context?.breach_corpora, ["Adobe", "Canva"]);
 });
 
 Deno.test("extractFindings: leakcheck_lookup with zero results yields nothing", () => {
@@ -118,8 +127,10 @@ Deno.test("extractFindings: oathnet_lookup salvages items + breach names, NEVER 
       },
     },
   });
-  assert(values(out, "breach").includes("ADT"));
-  assert(values(out, "breach").includes("Dave"));
+  assertEquals(values(out, "breach"), [], "no bare corpus artifacts");
+  const oexp = out.find((f) => f.kind === "breach_exposure");
+  assertEquals(oexp?.value, "Breach exposure (oathnet_db)");
+  assertEquals(oexp?.context?.breach_corpora, ["ADT", "Dave"]);
   assert(values(out, "email").includes("x@y.com"));
   assert(values(out, "phone").length === 1);
   assert(values(out, "name").includes("Jane Roe"));
@@ -207,7 +218,7 @@ Deno.test("extractFindings: a Ray-Martinez-style tool mix now salvages findings"
     ok: true, data: { success: true, data: { dbname_info: { "dropbox.com": { Title: "Dropbox" } }, items: [{ email: "ray@example.com" }] } },
   });
   assert(indicia.length > 0, "indicia_person must salvage");
-  assert(oathnet.some((f) => f.kind === "breach"), "oathnet must salvage the breach");
+  assert(oathnet.some((f) => f.kind === "breach_exposure"), "oathnet must salvage the breach corpora as one exposure row");
 });
 
 Deno.test("normalizeFinding: handle-shaped junk is never recorded as a person's name", () => {
