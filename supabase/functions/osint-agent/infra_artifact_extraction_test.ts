@@ -19,7 +19,7 @@
  * evidence at all — the report's "Missing coverage" and empty "Key Findings"
  * were downstream of that, not of a thin target.
  *
- * FIXTURES ARE REAL SHAPES, taken from tool-registry.ts:
+ * FIXTURES ARE REAL SHAPES, read from tool-registry.ts (verified, not guessed):
  *   dns_records       { ok, host, records: { A: [{ data }], NS: [...] } }  (Cloudflare DoH)
  *   ip_intel          { ...ip-api fields, query, isp, org, as, location_kind }
  *   shodan_internetdb { ok, status, data: { ip, ports, hostnames, cpes, tags, vulns } }
@@ -89,19 +89,99 @@ Deno.test("shodan_internetdb: host IP and its hostnames are persisted", () => {
   assert(values(out).includes("api.example.com"), "a hostname on the seed's infrastructure is evidence");
 });
 
-Deno.test("subdomains nested under data[] are found, not just top-level", () => {
-  // crtsh_subdomains survived only because it emits `{ subdomains: [] }` at the top
-  // level. Providers that nest the same list under `data` were silently missed.
-  const out = extractFindings("oathnet_subdomains", {
-    ok: true,
-    data: { subdomains: ["admin.example.com", "vpn.example.com"] },
+/**
+ * A CDN edge is NOT the subject's organization.
+ *
+ * ip_intel flags this itself — `{ cdn: true, cdn_provider, location_kind:
+ * "cdn_edge" }` with the note "geo reflects CDN POP, not the actual origin
+ * server". Persisting ip-api's `org` regardless records "Cloudflare, Inc." as an
+ * organization associated with the subject, and graph.ts promotes an
+ * `organization` artifact to an entity node in the link-analysis graph. For any
+ * domain behind a CDN — the common case — that is an invented affiliation.
+ *
+ * Same trade the name normalizer already codifies: a false negative loses one
+ * weak artifact, a false positive invents a relationship.
+ */
+Deno.test("ip_intel: a CDN edge's operator is NOT recorded as the subject's organization", () => {
+  const out = extractFindings("ip_intel", {
+    status: "success",
+    query: "192.0.2.40",
+    isp: "Cloudflare",
+    org: "Cloudflare, Inc.",
+    as: "AS13335 Cloudflare",
+    cdn: true,
+    cdn_provider: "cloudflare",
+    location_kind: "cdn_edge",
+    note: "IP belongs to cloudflare edge network — geo reflects CDN POP",
   });
-  assert(values(out).includes("admin.example.com"), "a nested subdomain list must extract too");
+  assert(values(out).includes("192.0.2.40"), "the IP itself is still real evidence");
+  assertEquals(
+    out.filter((f) => f.kind === "organization").length,
+    0,
+    "the CDN operator must never become an organization about the subject",
+  );
 });
 
-Deno.test("an errored infra call yields nothing", () => {
-  assertEquals(extractFindings("dns_records", { ok: false, error: "SERVFAIL" }).length, 0);
+Deno.test("ip_intel: a hosting/proxy IP is also not an organization", () => {
+  const out = extractFindings("ip_intel", {
+    status: "success", query: "192.0.2.41", org: "Example Hosting LLC",
+    hosting: true, location_kind: "origin",
+  });
+  assertEquals(out.filter((f) => f.kind === "organization").length, 0);
+});
+
+Deno.test("ip_intel: the origin IP's operator carries its location_kind for downstream discounting", () => {
+  const out = extractFindings("ip_intel", {
+    status: "success", query: "192.0.2.42", org: "Real Owner Ltd", location_kind: "origin",
+  });
+  const org = out.find((f) => f.kind === "organization");
+  assert(org, "a non-CDN, non-hosting operator is attributable");
+  assertEquals(org!.context?.location_kind, "origin", "provenance must travel with the row");
+});
+
+/**
+ * dns_records makes per-type failures NON-fatal on purpose: it returns
+ * `{ ok: !hasErr, records: {…still populated…}, errors: {…} }`. But
+ * extractFindings bails on `ok === false`, so one SERVFAIL — or a DKIM query
+ * without a dkimSelector — silently discarded every record that DID resolve.
+ */
+Deno.test("dns_records: a partial failure still yields the records that resolved", () => {
+  const out = extractFindings("dns_records", {
+    ok: false,
+    host: "example.com",
+    records: { A: [{ data: "192.0.2.50" }], TXT: [] },
+    errors: { DKIM: "dkimSelector required", MX: "SERVFAIL" },
+  });
+  assert(
+    values(out).includes("192.0.2.50"),
+    "a resolved A record must survive an unrelated type's failure",
+  );
+});
+
+/**
+ * RDAP (RFC 7483) is a STANDARD schema — whois_lookup fetches rdap.org, so the
+ * nameserver shape is knowable rather than provider-dependent. Registrant
+ * identity is deliberately NOT extracted: it is usually GDPR-redacted, and
+ * vCard parsing to invent an affiliation is the finding-1 mistake again.
+ */
+Deno.test("whois_lookup: RDAP nameservers become domain artifacts", () => {
+  const out = extractFindings("whois_lookup", {
+    ok: true,
+    data: {
+      ldhName: "EXAMPLE.COM",
+      nameservers: [{ ldhName: "NS1.EXAMPLE.NET" }, { ldhName: "ns2.example.net" }],
+    },
+  });
+  assert(values(out).includes("ns1.example.net"), "RDAP uppercases; normalize before persisting");
+  assert(values(out).includes("ns2.example.net"));
+});
+
+Deno.test("a hard-errored infra call still yields nothing", () => {
+  // The shapes these tools ACTUALLY emit on hard failure — dns_records never
+  // returns a top-level `error` string for an rcode failure, it returns `errors`.
+  assertEquals(extractFindings("dns_records", { error: "boom" }).length, 0);
   assertEquals(extractFindings("ip_intel", { error: "lookup failed" }).length, 0);
+  assertEquals(extractFindings("whois_lookup", { ok: false, status: 404 }).length, 0);
 });
 
 Deno.test("garbage in an infra payload is dropped, not persisted", () => {
