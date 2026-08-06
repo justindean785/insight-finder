@@ -1084,6 +1084,8 @@ Deno.serve(async (req) => {
                   console.log(JSON.stringify({
                     event: "auto_persist_step", thread_id: threadId,
                     inserted: res.inserted, skipped_duplicates: res.skipped_duplicates,
+                    // < inserted means artifacts landed with no chain-of-custody row.
+                    evidence_appended: res.evidence_appended ?? 0,
                   }));
                 }
               } catch (e) {
