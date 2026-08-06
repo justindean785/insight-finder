@@ -215,4 +215,68 @@ describe("useThreadArtifacts terminal-status reconciliation", () => {
 
     await waitFor(() => expect(result.current.items).toHaveLength(7));
   });
+
+  // The gap the tests above do NOT cover, observed on thread dd2514e3 (2026-08-06):
+  // a second run in an already-terminal thread wrote five artifacts at 10:14, and
+  // the Evidence badge stayed on the three rows from 09:02.
+  //
+  // Every existing self-heal is realtime-dependent: the INSERT event, the
+  // terminal-status flip, and the re-SUBSCRIBED reconcile all require a live
+  // socket. When the socket is dead none of them fire — and that run was
+  // CPU-killed (recovery_reason "stale heartbeat recovered by health sweep"),
+  // so it never flipped status cleanly either. The count then stays stale
+  // indefinitely, because nothing re-reads persistence until the store is torn
+  // down and rebuilt (a reload or a re-navigation).
+  //
+  // Returning to the tab is the one signal that does not depend on the socket.
+  it("reconciles from persistence when the tab becomes visible again", async () => {
+    mock.rowsByThread.set("thread-f", artifacts(3));
+    const { result } = renderArtifactsHook("thread-f");
+    await waitFor(() => expect(result.current.items).toHaveLength(3));
+
+    // Rows landed while the socket was down: no INSERT event, no terminal flip.
+    mock.rowsByThread.set("thread-f", artifacts(9));
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+    await waitFor(() => expect(result.current.items).toHaveLength(9));
+  });
+
+  it("does NOT reconcile while the tab is still hidden", async () => {
+    mock.rowsByThread.set("thread-g", artifacts(4));
+    const { result } = renderArtifactsHook("thread-g");
+    await waitFor(() => expect(result.current.items).toHaveLength(4));
+    const queryCount = mock.queriedTables.length;
+
+    const original = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState");
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    try {
+      mock.rowsByThread.set("thread-g", artifacts(99));
+      await act(async () => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      expect(mock.queriedTables).toHaveLength(queryCount);
+      expect(result.current.items).toHaveLength(4);
+    } finally {
+      delete (document as unknown as Record<string, unknown>).visibilityState;
+      if (original) Object.defineProperty(Document.prototype, "visibilityState", original);
+    }
+  });
+
+  it("stops reconciling once the last subscriber has unmounted", async () => {
+    mock.rowsByThread.set("thread-h", artifacts(2));
+    renderArtifactsHook("thread-h");
+    await waitFor(() => expect(mock.queriedTables.length).toBeGreaterThan(0));
+
+    for (const root of mountedRoots.splice(0)) act(() => root.unmount());
+    const queryCount = mock.queriedTables.length;
+
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+    // A leaked listener would keep querying for a thread nobody is watching.
+    expect(mock.queriedTables).toHaveLength(queryCount);
+  });
 });

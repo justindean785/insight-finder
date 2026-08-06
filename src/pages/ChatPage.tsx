@@ -18,6 +18,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { PanelLeftOpen, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { buildWorkspaceTabCounts } from "@/lib/workspace-tab-counts";
 import { CommandPalette } from "@/components/CommandPalette";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { FullPageLoader } from "@/components/ui/full-page-loader";
@@ -96,13 +97,7 @@ export default function ChatPage() {
   if (!user) return <Navigate to="/auth" replace />;
   if (!threadId) return <Navigate to="/" replace />;
 
-  // Tab badges own the section counts; alerts (breaches)
-  // ride along as a red dot so a tab number always means "items in this tab".
-  const breachCount = items.filter((a) => a.kind.toLowerCase() === "breach").length;
-  const tabCounts = {
-    evidence: { value: items.length, alert: breachCount },
-    tools: { value: activity.persistedTotal, alert: 0 },
-  };
+  const tabCounts = buildWorkspaceTabCounts(items, activity.persistedTotal);
 
   const content = (
     <div key="workspace-content" className="flex-1 min-h-0 relative">
