@@ -192,3 +192,53 @@ Deno.test("garbage in an infra payload is dropped, not persisted", () => {
   });
   assertEquals(out.length, 0, "normalizeFinding must still gate every value");
 });
+
+// ── The shape production actually emits ─────────────────────────────────────
+//
+// Added 2026-08-06 after reading REAL cached payloads out of tool_call_cache for a
+// live domain run, rather than reading the tool source. The fixtures above model
+// Cloudflare DoH's `{ data }` answer objects; the deployed `dns_records` tool
+// normalizes those to PLAIN STRINGS before returning, and MX answers keep their
+// RFC 1035 wire form — a numeric preference, a space, then a trailing-dot FQDN:
+//
+//   "records": { "A": ["203.0.113.10"], "MX": ["40 mail.example.com."], ... }
+//
+// The extractor handles both answer forms, but only the `{ data }` one was pinned,
+// so the form that ships was untested. That is the same class of gap that made the
+// original incident invisible: a fixture that agrees with the code and not with
+// production.
+Deno.test("dns_records: production's plain-string answers still extract", () => {
+  const out = extractFindings("dns_records", {
+    ok: true,
+    host: "example.com",
+    records: {
+      A: ["203.0.113.10", "203.0.113.11"],
+      NS: ["ns1.example.net.", "ns2.example.net."],
+      CNAME: [],
+    },
+  });
+
+  const values = out.map((f) => f.value);
+  assert(values.includes("203.0.113.10"), `A record lost from the string form:\n${JSON.stringify(values)}`);
+  assert(values.includes("203.0.113.11"), "second A record lost");
+  assert(
+    values.some((v) => v.includes("ns1.example.net")),
+    `NS record lost from the string form:\n${JSON.stringify(values)}`,
+  );
+});
+
+Deno.test("dns_records: an MX answer keeps its hostname, not its preference number", () => {
+  // Real wire form. If the whole string is taken as the value, the artifact reads
+  // "40 mail.example.com." — not a domain, and not pivotable.
+  const out = extractFindings("dns_records", {
+    ok: true,
+    host: "example.com",
+    records: { MX: ["40 mail.example.com.", "10 alt.example.net."] },
+  });
+
+  const values = out.map((f) => f.value);
+  for (const v of values) {
+    assert(!/^\d+\s/.test(v), `MX preference number leaked into the artifact value: ${JSON.stringify(v)}`);
+    assert(!/\s/.test(v), `artifact value contains whitespace, so it is not a usable selector: ${JSON.stringify(v)}`);
+  }
+});
