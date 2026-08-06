@@ -135,7 +135,13 @@ function metaFirstOfArray(raw: string, key: string): string | null {
 
 export function isExcluded(a: Artifact): boolean {
   return a.kind === "excluded_collision" || metaBoolTrue(a.metaRaw, "excluded_collision") ||
-    /"status"\s*:\s*"excluded"/i.test(a.metaRaw);
+    /"status"\s*:\s*"excluded"/i.test(a.metaRaw) ||
+    // Harvested from a name-only query: linkage to the subject is UNPROVEN, so it
+    // may not contribute a selector to union-find. Without this, one name search
+    // merges every same-name stranger the provider returned into the subject.
+    // NB: this is weaker than `excluded` — the row is an unverified lead, not a
+    // ruled-out namesake — but for CLUSTERING both must be inert.
+    metaBoolTrue(a.metaRaw, "subject_unlinked");
 }
 export function selfAdmissionQuote(a: Artifact): string | null {
   return metaStr(a.metaRaw, "source_quote") ?? metaFirstOfArray(a.metaRaw, "source_quotes");

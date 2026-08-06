@@ -198,6 +198,85 @@ const BREACH_SUBJECT_INPUT_KEYS = [
   "query", "q", "value", "domain", "ip", "ip_address",
 ] as const;
 
+/** Input keys that carry a CONCRETE selector — one that identifies an account,
+ *  not a person. A query on any of these is subject-linked by construction:
+ *  the provider matched on the selector itself. */
+const CONCRETE_SELECTOR_INPUT_KEYS = [
+  "email", "identifierValue", "username", "handle", "phone", "domain", "ip", "ip_address",
+] as const;
+
+/** Marker written into artifact.metadata for a row harvested from a name-only
+ *  query. It is DISCLOSURE, not deletion: the row persists and stays readable on
+ *  the Evidence board, but it must never join a cluster or count as evidence. */
+const SUBJECT_UNLINKED_CTX = {
+  subject_unlinked: true,
+  subject_unlinked_reason:
+    "harvested from a name-only query — same-name collision axis; linkage to the subject is unproven",
+} as const;
+
+/** Does this string look like a PERSON NAME rather than a selector? Two or more
+ *  words and none of the concrete selector shapes. */
+function looksLikePersonName(v: string): boolean {
+  const s = String(v ?? "").trim();
+  if (!s || s.length > 120) return false;
+  if (s.includes("@")) return false;                      // email
+  if (/^https?:\/\//i.test(s)) return false;              // url
+  if (/^\+?[\d\s().-]{7,}$/.test(s)) return false;        // phone
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(s)) return false;    // ipv4
+  if (/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(s)) return false; // domain / host
+  return /\s/.test(s);                                    // 2+ words ⇒ person name
+}
+
+/** The raw selector string this tool call queried, whatever slot it arrived in. */
+function queriedSelectorRaw(input: unknown): string {
+  if (!input || typeof input !== "object") return "";
+  const i = input as Record<string, unknown>;
+  for (const k of [...BREACH_SUBJECT_INPUT_KEYS, "name", "full_name", "person"]) {
+    const v = i[k as string];
+    if (typeof v === "string" && v.trim()) return v.trim();
+    if (typeof v === "number") return String(v);
+  }
+  return "";
+}
+
+/**
+ * Was this tool queried by PERSON NAME only — with no concrete selector?
+ *
+ * THE INCIDENT (production, 2026-08-06): a breach-aggregator lookup keyed on a
+ * person's NAME returned dozens of unrelated people, and the extractor persisted
+ * 15+ of THEIR emails and usernames onto the subject's thread at confidence 45 —
+ * including a K-12 school-district student address belonging to no one in the
+ * investigation. The agent's own narration called the results "massive noise";
+ * nothing downstream could tell, because a harvested row carried no record of how
+ * weak its linkage was. (Those selectors are third parties' personal data and are
+ * deliberately not reproduced here or in the fixtures.)
+ *
+ * A concrete selector anywhere in the input means the provider matched on that
+ * selector, so results are subject-linked and NOT quarantined.
+ */
+function queryIsNameOnly(input: unknown): boolean {
+  if (!input || typeof input !== "object") return false;
+  const i = input as Record<string, unknown>;
+  for (const k of CONCRETE_SELECTOR_INPUT_KEYS) {
+    const v = i[k];
+    if (typeof v === "string" && v.trim()) return false;
+    if (typeof v === "number") return false;
+  }
+  // An explicit person/name typing is authoritative.
+  const declared = String(i.type ?? i.kind ?? i.search_type ?? "").toLowerCase();
+  if (declared === "name" || declared === "person") return true;
+  for (const k of ["name", "full_name", "person"]) {
+    const v = i[k];
+    if (typeof v === "string" && v.trim()) return true;
+  }
+  // Otherwise fall back to the SHAPE of the generic query slot.
+  for (const k of ["query", "q", "value"]) {
+    const v = i[k];
+    if (typeof v === "string" && v.trim()) return looksLikePersonName(v);
+  }
+  return false;
+}
+
 /** Lowercased, bounded selector identity. Two spellings of one selector must
  *  anchor to one exposure, and checkpointKey lowercases the value anyway. */
 function normalizeBreachSubject(s: string): string {
@@ -247,6 +326,13 @@ export function extractFindings(toolName: string, output: unknown, input?: unkno
   const o = output as Record<string, unknown>;
   // Never extract from an explicit tool error.
   if (o.ok === false || typeof o.error === "string") return [];
+
+  // QUARANTINE GATE. A NAME-only query cannot establish subject linkage for
+  // anything it returns — that is the same-name collision axis the rest of this
+  // codebase already refuses to treat as identity (lib/cluster.ts: "Names are
+  // deliberately excluded"). Rows harvested from one are LEADS, not evidence.
+  const nameOnly = queryIsNameOnly(input);
+  const queriedName = nameOnly ? normalizeBreachSubject(queriedSelectorRaw(input)) : "";
 
   const findings: ExtractedFinding[] = [];
   const push = (k: string, v: unknown, ctx: Record<string, unknown> = {}, conf = 30) => {
@@ -542,6 +628,19 @@ export function extractFindings(toolName: string, output: unknown, input?: unkno
     });
   }
   findings.unshift(...exposures);
+
+  // QUARANTINE STAMP — applied here, after every branch has emitted, so it cannot
+  // be missed by a provider branch that pushes through pushUrl or the collapsed
+  // breach path rather than `push`. A name-only query proves nothing about WHO a
+  // returned row belongs to, so each one is disclosed as an unlinked lead.
+  if (nameOnly) {
+    for (const f of findings) {
+      // The query echoed back — a `name` row equal to what was asked — is the
+      // subject's own asserted name, not a third party. Not quarantined.
+      if (f.kind === "name" && normalizeBreachSubject(f.value) === queriedName) continue;
+      f.context = { ...(f.context ?? {}), ...SUBJECT_UNLINKED_CTX };
+    }
+  }
 
   // De-dup within this extraction.
   const seen = new Set<string>();
