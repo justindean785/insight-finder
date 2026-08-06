@@ -111,6 +111,144 @@ Deno.test("no input at all leaves rows unquarantined (no false accusation)", () 
   assert(out.every((f) => !unlinked(f)), "absent an input we cannot claim the query was a name");
 });
 
+/**
+ * FP-1 — a free-text SEARCH QUERY is not a person name.
+ *
+ * `github_code_search`'s inputSchema is `z.object({ query: z.string() })`: there is
+ * no concrete-selector key to find, and a useful code-search query is inherently
+ * multiword. Shape-sniffing therefore classified every one of them as a person
+ * name and quarantined every repo it found.
+ */
+Deno.test("a code-search query is not a person name, so its repos are not quarantined", () => {
+  const out = extractFindings(
+    "github_code_search",
+    { items: [{ repo: "acme/widgets", path: "config.json" }] },
+    { query: "widgets in:file extension:json" },
+  );
+  assert(out.length > 0, "the repo must still be extracted");
+  assert(
+    out.every((f) => !unlinked(f)),
+    "a free-text code search is a query language, not a name — nothing it returns is subject_unlinked",
+  );
+});
+
+/**
+ * FP-2 — a declared CONCRETE type is authoritative, in both directions.
+ *
+ * `oathnet_lookup` declares `type: z.enum([...,"username",...])` with the selector
+ * in `value`, not in a concrete-named key. Treating only `name`/`person` as
+ * authoritative meant an explicit `type:"username"` fell through to shape-sniffing,
+ * and a handle that happens to contain a space was quarantined as a name.
+ */
+Deno.test("an explicit type:'username' is honoured even when the value looks like a name", () => {
+  const out = extractFindings(
+    "oathnet_lookup",
+    nameSearchHits,
+    { type: "username", value: "kyle williams 710" },
+  );
+  assert(out.length > 0);
+  assert(
+    out.every((f) => !unlinked(f)),
+    "the caller declared a concrete selector — the provider matched on it, so results are subject-linked",
+  );
+});
+
+Deno.test("leakcheck_lookup's type/value shape is honoured the same way", () => {
+  // NOTE the output shape: leakcheck's corpus arrives as data.breaches[], NOT the
+  // data.data.items[] of a name search. Reusing nameSearchHits here extracted
+  // nothing, so the test passed its quarantine assertion vacuously.
+  const out = extractFindings(
+    "leakcheck_lookup",
+    { data: { breaches: [{ Name: "ExampleCorp" }] } },
+    { type: "username", value: "kyle williams 710" },
+  );
+  assert(out.length > 0, "the fixture must actually reach the extractor");
+  assert(out.every((f) => !unlinked(f)), "a declared concrete type wins over the value's shape");
+});
+
+Deno.test("an explicit type:'name' still quarantines — the gate's whole point survives", () => {
+  const out = extractFindings("oathnet_lookup", nameSearchHits, { type: "name", value: SUBJECT_NAME });
+  const ids = out.filter((f) => f.kind === "email" || f.kind === "username");
+  assert(ids.length > 0);
+  assert(ids.every(unlinked), "a declared name query must still quarantine everything it harvests");
+});
+
+/**
+ * The rest of the free-text inventory, enumerated from real schemas in
+ * tool-registry.ts rather than guessed from tool names. Each of these was probed
+ * against the live module and confirmed to (a) produce findings and (b) have them
+ * wrongly quarantined before the allowlist existed.
+ *
+ * The broad-search tools that would otherwise belong here — exa_search,
+ * minimax_web_search, osint_navigator_search — are already on
+ * AUTO_PERSIST_TOOL_DENYLIST and never reach the gate at all.
+ */
+const freeTextQueries: Array<[string, string]> = [
+  ["fofa_search", 'domain="example.com" && port="443"'],
+  ["oathnet_ai_filter", "US banking users with gmail addresses"],
+  ["osint_navigator_query", "tools to find who registered a domain"],
+  ["urlscan_search", 'domain:example.com AND page.url:"keyword"'],
+];
+
+for (const [tool, query] of freeTextQueries) {
+  Deno.test(`${tool}'s query is a search expression, not a person name`, () => {
+    const out = extractFindings(tool, { citations: ["https://example.com/a"] }, { query });
+    assert(out.length > 0, "the fixture must actually reach the extractor");
+    assert(out.every((f) => !unlinked(f)), `${tool} takes a query language — nothing it returns is subject_unlinked`);
+  });
+}
+
+/**
+ * The counter-case that keeps the allowlist honest. deepfind_telegram_search is
+ * deliberately NOT allowlisted: it is a topic/keyword search, so querying it with
+ * a person's name really does return same-name-collision-prone channels. If
+ * someone "completes" the allowlist by adding every query-shaped tool, this fails.
+ */
+Deno.test("a topic search queried by name still quarantines — the allowlist is not 'every query tool'", () => {
+  const out = extractFindings("deepfind_telegram_search", { citations: ["https://example.com/a"] }, {
+    query: SUBJECT_NAME,
+  });
+  assert(out.length > 0);
+  assert(out.every(unlinked), "a name typed into a topic search is exactly the weak linkage the gate discloses");
+});
+
+Deno.test("an explicit type:'domain' follows the declared type, not the value's shape", () => {
+  const out = extractFindings(
+    "oathnet_lookup",
+    { data: { breaches: [{ Name: "ExampleCorp" }] } },
+    { type: "domain", value: "example com ltd" },
+  );
+  assert(out.length > 0);
+  assert(out.every((f) => !unlinked(f)), "a declared domain query is subject-linked by construction");
+});
+
+Deno.test("a name alongside a concrete selector is not a name-only query", () => {
+  const out = extractFindings(
+    "oathnet_lookup",
+    nameSearchHits,
+    { name: SUBJECT_NAME, email: SUBJECT_EMAIL },
+  );
+  assert(out.length > 0);
+  assert(
+    out.every((f) => !unlinked(f)),
+    "the provider still matched on the email — the co-present name does not weaken it",
+  );
+});
+
+/**
+ * FN-1 — CHARACTERIZATION, not a red-green test. This pins the ACCEPTED limit
+ * documented in `queryIsNameOnly`: a person name placed in a concrete slot escapes
+ * the gate. Closing it would require inferring that a name sits inside a selector
+ * slot, i.e. re-introducing prose-based inference — removed from this project
+ * deliberately after it caused a production incident. If this test ever starts
+ * failing, the gate got stricter; check that the change is intentional.
+ */
+Deno.test("KNOWN LIMIT (FN-1): a name in a concrete slot escapes the gate", () => {
+  const out = extractFindings("oathnet_lookup", nameSearchHits, { username: "jane roe" });
+  assert(out.length > 0);
+  assert(out.every((f) => !unlinked(f)), "documented limit — a concrete key is trusted by construction");
+});
+
 /** A fully-typed minimal artifact — no cast, so both linters stay happy. */
 const artifact = (value: string, metaRaw: string): Artifact => ({
   kind: "email",
