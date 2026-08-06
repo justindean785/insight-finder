@@ -291,25 +291,55 @@ export function buildPerCycleCompactDirective(): string {
 // record_artifacts calls — the "fanned out but persisted nothing" signature.
 export const PERSISTENCE_NUDGE_TOOL_CALL_THRESHOLD = 5;
 
+// Re-arm the nudge after this many FURTHER tool calls if the run has STILL recorded
+// nothing. See shouldNudgePersistence for why a single nudge is not enough.
+export const PERSISTENCE_NUDGE_REARM_INTERVAL = 6;
+
+// Hard ceiling on nudges per run. Bounds the escalation so a model that simply will
+// not record cannot have its whole step budget spent on directives.
+export const PERSISTENCE_NUDGE_MAX = 3;
+
 /**
  * True when the run should be nudged to persist already-supported findings NOW:
- * it has made >= PERSISTENCE_NUDGE_TOOL_CALL_THRESHOLD tool calls, has recorded
- * ZERO artifacts so far, and has not already been nudged this run. Pure — the caller
- * passes request-scoped counts + latch, so no module-global state crosses requests.
+ * it has made >= PERSISTENCE_NUDGE_TOOL_CALL_THRESHOLD tool calls and has recorded
+ * ZERO artifacts so far. Pure — the caller passes request-scoped counts, so no
+ * module-global state crosses requests.
  *
- * The `alreadyNudged` latch bounds it to one injection per run (no nudge spam); the
- * `recordArtifactCalls === 0` gate independently stops it the instant any persistence
- * happens. Either alone ends the nudge; together it fires at most once.
+ * WHY THIS RE-ARMS (2026-08-06). It used to latch after ONE injection. But the nudged
+ * step narrows activeTools to record_artifacts with toolChoice "auto" — deliberately,
+ * so the model is never pressured into fabricating an artifact (#384 P1) — which means
+ * the model can answer the nudge with prose and decline it at zero cost. The latch was
+ * then spent for the rest of the run. Production 2026-08-06, thread f9056822: 28 tool
+ * calls, `record_artifacts` called ZERO times, every durable row written by the
+ * detached auto-persist backstop instead — and backstop rows carry no evidence_log
+ * entry, so the run's chain of custody held 2 rows against 4 artifacts.
+ *
+ * A one-shot guard against a whole-run failure mode only has to be declined once.
+ *
+ * The anti-spam requirement still holds and is now enforced by construction rather
+ * than by a latch: the nudge cannot fire on consecutive steps (it needs
+ * PERSISTENCE_NUDGE_REARM_INTERVAL further tool calls), it stops permanently the
+ * instant ANY record_artifacts call lands, and it is capped at PERSISTENCE_NUDGE_MAX
+ * per run. A model that records even once is never nudged again.
+ *
+ * @param nudgedAtToolCalls tool-call count when the nudge last fired, or null if never.
+ * @param nudgeCount how many times it has fired this run.
  */
 export function shouldNudgePersistence(
   toolCalls: number,
   recordArtifactCalls: number,
-  alreadyNudged: boolean,
+  nudgedAtToolCalls: number | null,
+  nudgeCount = 0,
   threshold: number = PERSISTENCE_NUDGE_TOOL_CALL_THRESHOLD,
+  rearmInterval: number = PERSISTENCE_NUDGE_REARM_INTERVAL,
+  maxNudges: number = PERSISTENCE_NUDGE_MAX,
 ): boolean {
-  if (alreadyNudged) return false;
+  // Any persistence at all ends the nudge permanently — the run is recording.
   if (recordArtifactCalls > 0) return false;
-  return toolCalls >= threshold;
+  if (nudgeCount >= maxNudges) return false;
+  if (toolCalls < threshold) return false;
+  if (nudgedAtToolCalls == null) return true;
+  return toolCalls - nudgedAtToolCalls >= rearmInterval;
 }
 
 /**

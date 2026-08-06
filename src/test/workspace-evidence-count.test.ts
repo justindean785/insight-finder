@@ -1,5 +1,41 @@
 import { describe, expect, it } from "vitest";
-import { deriveWorkspaceStatus, pickEvidenceCount } from "@/components/workspace/WorkspaceHeader";
+import { describeEvidence, deriveWorkspaceStatus, pickEvidenceCount } from "@/components/workspace/WorkspaceHeader";
+
+// ── The header must not report a number the analyst cannot interpret ─────────
+//
+// Production 2026-08-06: the header read "2 evidence · 25 tools" while the
+// Evidence tab badge on the SAME page read 50. Both were true — the header reads
+// the chain-verified `evidence_log` total, the badge counts `artifacts` — and the
+// analyst has no way to know that. The documented invariant (see pickEvidenceCount)
+// is that the chain total is the LARGER number, because one artifact can carry
+// several evidence rows and the artifact list is deduped. When the chain total is
+// SMALLER, that invariant is violated: artifacts exist with no chain-of-custody
+// entry, and reporting the small number alone reads as "we found almost nothing."
+describe("describeEvidence — header evidence summary", () => {
+  it("names both numbers when artifacts exceed the chain (missing custody)", () => {
+    // The real prod shape: 50 artifacts, 2 chain entries.
+    const d = describeEvidence({ total: 2 }, 50);
+    expect(d.text).toBe("50 recorded · 2 chain-verified");
+    expect(d.unledgered).toBe(48);
+  });
+
+  it("leaves the documented, legitimate direction unchanged", () => {
+    // 29 evidence rows across 23 deduped artifacts — expected by design.
+    const d = describeEvidence({ total: 29 }, 23);
+    expect(d.text).toBe("29 evidence");
+    expect(d.unledgered).toBe(0);
+  });
+
+  it("says nothing extra when the two agree", () => {
+    expect(describeEvidence({ total: 12 }, 12).text).toBe("12 evidence");
+  });
+
+  it("falls back to the artifact count while integrity is still loading", () => {
+    const d = describeEvidence(null, 23);
+    expect(d.text).toBe("23 evidence");
+    expect(d.unledgered).toBe(0);
+  });
+});
 
 describe("pickEvidenceCount — header 'N evidence'", () => {
   it("shows the chain-verified evidence_log total, not the artifact count", () => {
@@ -80,6 +116,51 @@ describe("deriveWorkspaceStatus", () => {
       recoveredAt: null,
       recoveryReason: null,
     })).toBe("completed");
+  });
+
+  // ── An `active` row is NOT a completed run ────────────────────────────────
+  //
+  // Production 2026-08-06, thread 6bdf7e55: the database row was status='active'
+  // while the UI badge read COMPLETE. `active` was never handled here — after
+  // chatRunning and recentlyActive both failed, it fell through to
+  // `hasEvidence ? "completed" : "idle"`, so a run that started and died without
+  // ever finalizing was painted green. That is invariant I-2 (a run may only
+  // present as complete if it actually completed) failing at the UI layer, on the
+  // one surface the analyst actually looks at.
+  it("does NOT paint a stalled active run as COMPLETE", () => {
+    expect(deriveWorkspaceStatus({
+      threadStatus: "active",
+      chatRunning: false,
+      recentlyActive: false,
+      hasEvidence: true,
+    })).toBe("interrupted");
+  });
+
+  // I-1: a thread with no run marker is not an interrupted investigation. A blank
+  // thread is born status='active' with no evidence — it must stay IDLE, or every
+  // untouched new case renders as a failed run.
+  it("leaves a blank active thread IDLE, never interrupted", () => {
+    expect(deriveWorkspaceStatus({
+      threadStatus: "active",
+      chatRunning: false,
+      recentlyActive: false,
+      hasEvidence: false,
+    })).toBe("idle");
+  });
+
+  it("still shows a genuinely running active thread as ACTIVE", () => {
+    expect(deriveWorkspaceStatus({
+      threadStatus: "active",
+      chatRunning: false,
+      recentlyActive: true,
+      hasEvidence: true,
+    })).toBe("active");
+    expect(deriveWorkspaceStatus({
+      threadStatus: "active",
+      chatRunning: true,
+      recentlyActive: false,
+      hasEvidence: false,
+    })).toBe("active");
   });
 
   it("a live stream still overrides an interrupted row", () => {

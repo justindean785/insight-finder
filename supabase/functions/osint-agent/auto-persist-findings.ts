@@ -587,7 +587,105 @@ type SupabaseInsertLike = {
   from: (table: string) => {
     insert: (rows: Array<Record<string, unknown>>) => Promise<{ error: { message: string } | null; data?: unknown }>;
   };
+  /** Present on the real client; optional so existing fixtures keep working and a
+   *  client without it degrades to "artifact written, no ledger entry" rather than
+   *  throwing inside the detached backstop. */
+  rpc?: (fn: string, args: Record<string, unknown>) => Promise<{ error: { message: string } | null }>;
 };
+
+/**
+ * Auto-recorded rows enter the ledger as SOFT, always — never derived from
+ * confidence the way record_artifacts derives it (>= 85 → "hard").
+ *
+ * THIS IS THE INTEGRITY CRUX of putting the backstop on the chain. A row here was
+ * extracted from tool output by a regex-grade extractor with no model or analyst
+ * judgement applied. Giving it a chain entry must make it AUDITABLE, never
+ * VERIFIED. If classification were derived from confidence, a high-confidence
+ * extraction would enter the tamper-evident log indistinguishable from a
+ * model-reviewed finding — laundering extractor output into hard evidence, which
+ * is precisely the failure the chain exists to prevent.
+ */
+export const AUTO_EVIDENCE_CLASSIFICATION = "soft";
+
+/** Bounded retries for the seq race described in appendAutoEvidence. */
+export const AUTO_EVIDENCE_MAX_RETRIES = 2;
+
+/** A unique-violation on evidence_log(thread_id, seq) — i.e. we lost the seq race. */
+function isSeqRace(message: string): boolean {
+  const m = (message ?? "").toLowerCase();
+  return m.includes("duplicate key") || m.includes("unique constraint") || m.includes("evidence_log_thread_id_seq_key");
+}
+
+/**
+ * Append one chain-of-custody row per auto-recorded artifact.
+ *
+ * WHY (production 2026-08-06): this module wrote `public.artifacts` and nothing
+ * else, so every finding it rescued existed with NO entry in `evidence_log`. On
+ * thread f9056822 the model called record_artifacts zero times across 28 tool
+ * calls, so the backstop wrote everything and the run closed with 4 artifacts
+ * behind 2 chain entries. Across the last 8 threads, 6 held more artifacts than
+ * chain entries — inverting the documented invariant that the chain is the larger
+ * count. Evidence the analyst can see but cannot audit is the problem being fixed.
+ *
+ * Contract, and why each part is the way it is:
+ *   - SERIAL, never Promise.all. `append_evidence` computes seq as
+ *     MAX(seq)+1 per thread with no lock, so parallel appends collide by design.
+ *   - Races are SAFE, not corrupting: evidence_log has a UNIQUE(thread_id, seq)
+ *     index, so a lost race is a failed INSERT, never a forked chain. We retry
+ *     (the RPC recomputes MAX(seq) each call) rather than drop the row — this
+ *     module now writes concurrently with record_artifacts, which is exactly when
+ *     the race can happen.
+ *   - Uses the USER-SCOPED client. `append_evidence` is SECURITY DEFINER over
+ *     auth.uid() and rejects a thread the caller does not own, so a service-role
+ *     client would raise "must be authenticated".
+ *   - NEVER throws. The caller is a detached, best-effort backstop; a ledger
+ *     failure must degrade to "artifact without chain entry" (which the workspace
+ *     header now surfaces as "N recorded · M chain-verified"), never break a run.
+ *
+ * @returns how many chain entries were appended.
+ */
+export async function appendAutoEvidence(
+  ctx: AutoPersistContext,
+  rows: Array<Record<string, unknown>>,
+): Promise<number> {
+  const rpc = ctx.supabase.rpc;
+  if (typeof rpc !== "function" || !Array.isArray(rows) || rows.length === 0) return 0;
+  let appended = 0;
+  for (const r of rows) {
+    const meta = (r.metadata as Record<string, unknown> | null) ?? {};
+    const rawUrl = meta.source_url ?? meta.url ?? meta.profile_url ?? meta.archived_url ?? null;
+    const args = {
+      _thread_id: ctx.threadId,
+      _artifact_id: null,
+      _tool_name: typeof r.source === "string" ? r.source : "auto_persist",
+      _source: typeof r.source === "string" ? r.source : null,
+      _source_url: typeof rawUrl === "string" ? rawUrl : null,
+      // Never confidence-derived — see AUTO_EVIDENCE_CLASSIFICATION.
+      _classification: AUTO_EVIDENCE_CLASSIFICATION,
+      _confidence: typeof r.confidence === "number" ? r.confidence : null,
+      _kind: String(r.kind ?? ""),
+      _value: String(r.value ?? ""),
+      _content_snapshot: JSON.stringify(meta).slice(0, 1500),
+      // `auto_recorded: true` rides along from buildAutoRecordedRow; it is what
+      // keeps a machine-extracted ledger row distinguishable from a reviewed one.
+      _metadata: meta,
+    };
+    for (let attempt = 0; attempt <= AUTO_EVIDENCE_MAX_RETRIES; attempt++) {
+      try {
+        const { error } = await rpc.call(ctx.supabase, "append_evidence", args);
+        if (!error) { appended++; break; }
+        if (!isSeqRace(error.message) || attempt === AUTO_EVIDENCE_MAX_RETRIES) {
+          console.warn("[auto-persist-findings] append_evidence:", error.message);
+          break;
+        }
+      } catch (e) {
+        console.warn("[auto-persist-findings] append_evidence threw:", (e as Error)?.message ?? e);
+        break;
+      }
+    }
+  }
+  return appended;
+}
 
 export type AutoPersistContext = {
   supabase: SupabaseInsertLike;
@@ -599,7 +697,14 @@ export type AutoPersistContext = {
   seen: Set<string>;
 };
 
-export type AutoPersistResult = { inserted: number; skipped_duplicates: number; rows: Array<Record<string, unknown>> };
+export type AutoPersistResult = {
+  inserted: number;
+  skipped_duplicates: number;
+  rows: Array<Record<string, unknown>>;
+  /** Chain-of-custody rows appended for those inserts (see appendAutoEvidence).
+   *  Less than `inserted` means artifacts landed without a ledger entry. */
+  evidence_appended?: number;
+};
 
 /**
  * Convert extracted findings into scrubbed artifact rows and insert them.
@@ -652,7 +757,13 @@ export async function persistAutoFindings(
   // don't re-insert.
   for (const f of fresh) ctx.seen.add(checkpointKey(f.kind, f.value));
 
-  return { inserted: safeRows.length, skipped_duplicates: dups, rows: safeRows };
+  // Chain of custody for the rows we just inserted — ONLY those. Duplicates that
+  // were skipped above already have their ledger entry from the pass that first
+  // wrote them, so appending again would add a second chain row for one finding.
+  // Best-effort by contract: a ledger failure leaves the artifacts in place.
+  const evidence_appended = await appendAutoEvidence(ctx, safeRows);
+
+  return { inserted: safeRows.length, skipped_duplicates: dups, rows: safeRows, evidence_appended };
 }
 
 /**

@@ -5,7 +5,37 @@ import { loadReviewsForThread, applyReviewsToArtifacts } from "./reviews.ts";
 
 export const RUN_HEARTBEAT_INTERVAL_MS = 15_000;
 export const STALE_RUN_AFTER_MS = 75_000;
+
+/**
+ * How many rows the recovered stub RENDERS. This is a readability bound on the
+ * document, NOT a bound on what recovery looks at — see RECOVERY_ARTIFACT_SCAN_MAX.
+ *
+ * The two were ONE constant until 2026-08-06, used as both the `.limit()` on the
+ * artifacts query and the render slice. On a production thread holding 85 artifacts
+ * that produced a stub closing with "45 artifacts on this thread were never read by
+ * recovery" — an accurate disclosure of real evidence loss. Rendering a bounded table
+ * is fine; never CLASSIFYING 53% of an interrupted run's durable evidence is not.
+ */
 export const RECOVERY_ARTIFACT_LIMIT = 40;
+
+/**
+ * Hard ceiling on how many artifact rows one recovery pass will READ.
+ *
+ * Recovery runs inside the CPU-bounded sweep (up to 20 threads per invocation), so
+ * the scan cannot be unbounded — but it must comfortably exceed the size of a real
+ * interrupted run. Production threads that hit the old cap held 55-85 artifacts; the
+ * pathological fan-out documented in orchestrator-budget.ts reached 230 tool calls.
+ * 500 covers those with headroom at a worst case of 3 round-trips per thread.
+ *
+ * A thread larger than this still degrades HONESTLY, not silently: `unexamined` is
+ * derived from the exact count, so the "never read by recovery" disclosure this
+ * change exists to eliminate returns verbatim for the rows beyond the ceiling.
+ */
+export const RECOVERY_ARTIFACT_SCAN_MAX = 500;
+
+/** Rows per artifacts round-trip while scanning up to RECOVERY_ARTIFACT_SCAN_MAX. */
+export const RECOVERY_ARTIFACT_PAGE_SIZE = 200;
+
 export const RECENT_ASSISTANT_WINDOW_MS = 2 * 60_000;
 
 type DbClient = ReturnType<typeof createClient>;
@@ -498,6 +528,75 @@ function withRunMarkerGuard<Q>(query: Q, thread: RecoverableThread): Q {
   return next as unknown as Q;
 }
 
+/**
+ * Read the thread's artifacts for recovery, PAGED up to RECOVERY_ARTIFACT_SCAN_MAX.
+ *
+ * Returns the rows actually read plus the TRUE unpaged total from `count: "exact"`,
+ * so the caller can still disclose an honest gap for anything beyond the ceiling.
+ *
+ * WHY PAGED (2026-08-06): this was a single `.limit(RECOVERY_ARTIFACT_LIMIT)` — the
+ * same 40 that bounds the RENDERED table. Two consequences, both evidence loss on a
+ * run the analyst never got to see finish:
+ *   1. Rows past the cap were never classified at all, so the stub closed with
+ *      "45 artifacts ... were never read by recovery" on an 85-artifact thread.
+ *   2. Worse and less visible: excluded rows, control/telemetry rows (triage_decision,
+ *      coverage_audit, tool_audit) and analyst-dismissed rows consumed slots in that
+ *      40-row page, so genuine findings were displaced OUT of the table by rows that
+ *      are not evidence — and, because the page WAS the read, could never be shown.
+ * Rendering stays bounded at RECOVERY_ARTIFACT_LIMIT; only the read grew.
+ *
+ * Ordering is applied per page and MUST be total, or paging can duplicate or skip
+ * rows across round-trips: confidence DESC (NULLs last), then created_at, then `id`
+ * as the unique tiebreaker.
+ *
+ * `metadata` is REQUIRED, not optional enrichment: status, reason_not_confirmed,
+ * source_category and the collision/exclusion flags all live there. Omitting it is
+ * what made the recovered report unable to tell an excluded same-name collision from
+ * a finding, or extractor output from model-reviewed evidence — every integrity field
+ * the recording layer had already computed was simply not fetched.
+ *
+ * `nullsFirst: false` is not cosmetic. Postgres orders NULLs FIRST under
+ * `ORDER BY confidence DESC`, so every row with no confidence score sorted ABOVE the
+ * highest-confidence real finding and ate the page cap from the top — the one thing
+ * the ordering exists to prevent.
+ */
+async function fetchRecoveryArtifacts(
+  db: DbClient,
+  threadId: string,
+): Promise<{ rows: Array<Record<string, unknown>>; total: number | null; error?: string }> {
+  const rows: Array<Record<string, unknown>> = [];
+  let total: number | null = null;
+  for (let from = 0; from < RECOVERY_ARTIFACT_SCAN_MAX; from += RECOVERY_ARTIFACT_PAGE_SIZE) {
+    const to = Math.min(from + RECOVERY_ARTIFACT_PAGE_SIZE, RECOVERY_ARTIFACT_SCAN_MAX) - 1;
+    const { data, count, error } = await db
+      .from("artifacts")
+      .select("id,kind,value,confidence,source,created_at,metadata", { count: "exact" })
+      .eq("thread_id", threadId)
+      .order("confidence", { ascending: false, nullsFirst: false })
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true })
+      .range(from, to);
+    // A failed page must not read as an empty thread. Return what we have plus the
+    // true count if we already learned it, so the disclosure logic reports a partial
+    // read as partial instead of presenting it as the whole record.
+    if (error) {
+      console.warn(JSON.stringify({
+        event: "recovery_artifact_page_failed",
+        thread_id: threadId, from, to, rows_so_far: rows.length, error: error.message,
+      }));
+      return { rows, total, error: error.message };
+    }
+    if (typeof count === "number") total = count;
+    const page = (data ?? []) as Array<Record<string, unknown>>;
+    rows.push(...page);
+    // Short page ⇒ thread exhausted. Also stop once the rows in hand cover the exact
+    // count, so a thread that ends on a full page costs no extra round-trip.
+    if (page.length < to - from + 1) break;
+    if (typeof total === "number" && rows.length >= total) break;
+  }
+  return { rows, total };
+}
+
 async function recoverOneStaleThread(
   db: DbClient,
   thread: RecoverableThread,
@@ -505,20 +604,9 @@ async function recoverOneStaleThread(
   reason: string,
 ): Promise<{ recovered: boolean; assistantInserted: boolean; artifactCount: number; error?: string }> {
   if (!isStaleActiveThread(thread, now.getTime())) return { recovered: false, assistantInserted: false, artifactCount: 0 };
-  const [{ data: latestAssistant }, { data: artifacts, count: artifactCount }] = await Promise.all([
+  const [{ data: latestAssistant }, { rows: artifacts, total: artifactCount }] = await Promise.all([
     db.from("messages").select("created_at,parts").eq("thread_id", thread.id).eq("role", "assistant").order("created_at", { ascending: false }).limit(1).maybeSingle(),
-    // `metadata` is REQUIRED, not optional enrichment: status,
-    // reason_not_confirmed, source_category and the collision/exclusion flags all
-    // live there. Omitting it is what made the recovered report unable to tell an
-    // excluded same-name collision from a finding, or extractor output from
-    // model-reviewed evidence — every integrity field the recording layer had
-    // already computed was simply not fetched.
-    //
-    // `nullsFirst: false` is not cosmetic. Postgres orders NULLs FIRST under
-    // `ORDER BY confidence DESC`, so every row with no confidence score sorted
-    // ABOVE the highest-confidence real finding and ate the 40-row page cap from
-    // the top — the one thing the ordering exists to prevent.
-    db.from("artifacts").select("id,kind,value,confidence,source,created_at,metadata", { count: "exact" }).eq("thread_id", thread.id).order("confidence", { ascending: false, nullsFirst: false }).order("created_at", { ascending: true }).limit(RECOVERY_ARTIFACT_LIMIT),
+    fetchRecoveryArtifacts(db, thread.id),
   ]);
   // Analyst verdicts apply to the recovery stub too. The stub is a REPORT the
   // analyst reads, built straight from durable artifacts — so without this a

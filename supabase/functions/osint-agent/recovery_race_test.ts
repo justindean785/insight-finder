@@ -76,7 +76,7 @@ function buildFakeDb(threadId: string, userId: string, now: Date) {
 
   function emptyChain(resolveValue: { data: unknown; error: unknown; count?: number }) {
     const node: Record<string, unknown> = {};
-    for (const m of ["select", "eq", "in", "order", "limit"]) node[m] = () => node;
+    for (const m of ["select", "eq", "in", "order", "limit", "range"]) node[m] = () => node;
     node.maybeSingle = () => Promise.resolve(resolveValue);
     node.then = (resolve: (v: unknown) => void) => resolve(resolveValue);
     return node;
@@ -208,7 +208,7 @@ function buildFakeDbLive(threadId: string, userId: string, now: Date) {
     from: (table: string) => {
       if (table === "threads") return threadsChain();
       const node: Record<string, unknown> = {};
-      for (const m of ["select", "eq", "in", "order", "limit"]) node[m] = () => node;
+      for (const m of ["select", "eq", "in", "order", "limit", "range"]) node[m] = () => node;
       node.maybeSingle = () => Promise.resolve({ data: null, error: null });
       node.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null, count: 0 });
       if (table === "messages") node.insert = (row: Record<string, unknown>) => { insertedMessages.push(row); return Promise.resolve({ error: null }); };
@@ -292,7 +292,7 @@ function buildFakeDbLiveFinalize(threadId: string, userId: string, now: Date, re
       if (table === "threads") return threadsChain();
       if (table === "messages") {
         const node: Record<string, unknown> = {};
-        for (const m of ["select", "eq", "in", "order", "limit"]) node[m] = () => node;
+        for (const m of ["select", "eq", "in", "order", "limit", "range"]) node[m] = () => node;
         node.maybeSingle = () => Promise.resolve({ data: messages.length ? messages[messages.length - 1] : null, error: null });
         node.then = (resolve: (v: unknown) => void) => resolve({ data: messages, error: null });
         node.insert = (row: Record<string, unknown>) => {
@@ -304,7 +304,7 @@ function buildFakeDbLiveFinalize(threadId: string, userId: string, now: Date, re
       }
       if (table === "artifacts") {
         const node: Record<string, unknown> = {};
-        for (const m of ["select", "eq", "in", "order", "limit"]) node[m] = () => node;
+        for (const m of ["select", "eq", "in", "order", "limit", "range"]) node[m] = () => node;
         const value = { data: [{ kind: "domain", value: "fingerprint.to", confidence: 0.75, source: "whois_lookup", created_at: now.toISOString() }], error: null, count: 1 };
         node.maybeSingle = () => Promise.resolve(value);
         node.then = (resolve: (v: unknown) => void) => resolve(value);
@@ -542,7 +542,7 @@ function buildFakeDbInsertFail(threadId: string, userId: string, now: Date) {
       if (table === "threads") return threadsChain();
       if (table === "messages") {
         const node: Record<string, unknown> = {};
-        for (const m of ["select", "eq", "in", "order", "limit"]) node[m] = () => node;
+        for (const m of ["select", "eq", "in", "order", "limit", "range"]) node[m] = () => node;
         node.maybeSingle = () => Promise.resolve({ data: insertedMessages.length ? insertedMessages[insertedMessages.length - 1] : null, error: null });
         node.then = (resolve: (v: unknown) => void) => resolve({ data: insertedMessages, error: null });
         node.insert = (row: Record<string, unknown>) => {
@@ -558,7 +558,7 @@ function buildFakeDbInsertFail(threadId: string, userId: string, now: Date) {
       }
       if (table === "artifacts") {
         const node: Record<string, unknown> = {};
-        for (const m of ["select", "eq", "in", "order", "limit"]) node[m] = () => node;
+        for (const m of ["select", "eq", "in", "order", "limit", "range"]) node[m] = () => node;
         const value = { data: [{ id: "a1", kind: "email", value: "found@insert-fail.example", confidence: 0.9, source: "test", created_at: now.toISOString() }], error: null, count: 1 };
         node.maybeSingle = () => Promise.resolve(value);
         node.then = (resolve: (v: unknown) => void) => resolve(value);
@@ -714,7 +714,7 @@ function buildFakeDbRestartRace(threadId: string, userId: string, now: Date, opt
       if (table === "threads") return threadsChain();
       if (table === "messages") {
         const node: Record<string, unknown> = {};
-        for (const m of ["select", "eq", "in", "order", "limit"]) node[m] = () => node;
+        for (const m of ["select", "eq", "in", "order", "limit", "range"]) node[m] = () => node;
         node.maybeSingle = () => Promise.resolve({ data: messages.length ? messages[messages.length - 1] : null, error: null });
         node.then = (resolve: (v: unknown) => void) => resolve({ data: messages, error: null });
         node.insert = (row: Record<string, unknown>) => { insertedMessages.push(row); messages.push(row); return Promise.resolve({ error: null }); };
@@ -722,7 +722,7 @@ function buildFakeDbRestartRace(threadId: string, userId: string, now: Date, opt
       }
       if (table === "artifacts") {
         const node: Record<string, unknown> = {};
-        for (const m of ["select", "eq", "in", "order", "limit"]) node[m] = () => node;
+        for (const m of ["select", "eq", "in", "order", "limit", "range"]) node[m] = () => node;
         const value = { data: [{ kind: "domain", value: "restart-race.example", confidence: 0.75, source: "whois_lookup", created_at: now.toISOString() }], error: null, count: 1 };
         node.maybeSingle = () => Promise.resolve(value);
         node.then = (resolve: (v: unknown) => void) => resolve(value);
