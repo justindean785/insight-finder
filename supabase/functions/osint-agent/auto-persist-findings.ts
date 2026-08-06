@@ -497,6 +497,76 @@ export function extractFindings(toolName: string, output: unknown, input?: unkno
     }
   }
 
+  // 13) INFRASTRUCTURE payloads — the shapes a DOMAIN investigation actually returns.
+  //
+  // Every branch above targets a PERSON shape: breach corpora, emails, usernames,
+  // social and github profiles. None matches an infra payload, so a domain seed
+  // persisted almost nothing. Measured on thread dd2514e3 (build 6210ef9): 33 tool
+  // calls, 21 of them ok, FOUR artifacts — and the only ones that landed came from
+  // crtsh_subdomains, which survived by accident because it happens to emit the
+  // `{ subdomains: [] }` shape branch 7 already matched. whois, dns, shodan,
+  // ip_intel×2, urlscan, virustotal and oathnet_subdomains all returned ok and were
+  // all discarded. Person-seeded runs land at 29–142 artifacts; that one got 4.
+  //
+  // Scope is deliberately narrow: ONLY kinds ALLOWED_KINDS already admits
+  // (domain / ip_address / organization). Ports, CPEs, vulns and reputation
+  // verdicts are attributes of a host, not entities about the subject, and are
+  // NOT persisted — inflating the evidence board is the failure this codebase
+  // keeps having to undo.
+  const infraDomain = (raw: unknown, via: string) => {
+    if (typeof raw !== "string") return;
+    // An MX answer is "<priority> <host>"; every DoH answer is fully qualified with
+    // a TRAILING DOT, which normalizeFinding's domain regex rejects outright. Both
+    // must be stripped or the value is silently dropped.
+    const host = raw.trim().split(/\s+/).pop()?.replace(/\.$/, "") ?? "";
+    if (host) push("domain", host, { via }, 40);
+  };
+  const infraIp = (raw: unknown, via: string) => {
+    if (typeof raw === "string" && raw.trim()) push("ip_address", raw.trim(), { via }, 40);
+  };
+  const dataObj = o.data && typeof o.data === "object" ? o.data as Record<string, unknown> : null;
+
+  // dns_records → { host, records: { A|AAAA|NS|MX|CNAME: [{ data }] } } (Cloudflare DoH)
+  const dnsRecords = o.records && typeof o.records === "object"
+    ? o.records as Record<string, unknown>
+    : null;
+  if (dnsRecords) {
+    for (const [type, answers] of Object.entries(dnsRecords)) {
+      if (!Array.isArray(answers)) continue;
+      for (const a of answers.slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
+        const d = typeof a === "string" ? a : (a as { data?: unknown })?.data;
+        if (type === "A" || type === "AAAA") infraIp(d, `dns:${type}`);
+        else if (type === "NS" || type === "MX" || type === "CNAME") infraDomain(d, `dns:${type}`);
+      }
+    }
+  }
+
+  // ip_intel → ip-api fields spread at the top level. Tool-gated: a bare `query`
+  // key is far too generic to match on shape without catching other tools.
+  if (toolName === "ip_intel") {
+    infraIp(o.query, "ip_intel");
+    const owner = typeof o.org === "string" && o.org.trim() ? o.org : o.isp;
+    if (typeof owner === "string" && owner.trim()) {
+      push("organization", owner, { via: "ip_intel" }, 35);
+    }
+  }
+
+  // shodan_internetdb → { data: { ip, hostnames[] } }
+  if (toolName === "shodan_internetdb" && dataObj) {
+    infraIp(dataObj.ip, "shodan");
+    if (Array.isArray(dataObj.hostnames)) {
+      for (const h of dataObj.hostnames.slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) infraDomain(h, "shodan");
+    }
+  }
+
+  // Subdomain lists NESTED under `data` — branch 7 only reads the top level, which
+  // is the accident that let crtsh through and kept every other provider out.
+  if (dataObj && Array.isArray(dataObj.subdomains)) {
+    for (const s of dataObj.subdomains.slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
+      infraDomain(s, "subdomains");
+    }
+  }
+
   // ---- Collapse breach corpus names into ONE exposure artifact per provider --
   // Mirrors the username_sweep collapse directly above: the ARTIFACT count drops,
   // the underlying data does not. Every corpus name is retained in
