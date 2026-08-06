@@ -17,6 +17,7 @@ import {
 import { cn } from "@/lib/utils";
 import { isActiveThreadStatus } from "@/lib/thread-status";
 import { captureError } from "@/lib/telemetry";
+import { loadCaseMetrics } from "@/lib/case-metrics";
 import { toast } from "sonner";
 
 type CaseRow = {
@@ -29,10 +30,7 @@ type CaseRow = {
   seed_value: string | null;
 };
 
-type CaseMetrics = {
-  artifacts: number;
-  toolCalls: number;
-};
+import type { CaseMetrics } from "@/lib/case-metrics";
 
 function relativeTime(iso: string | null): string {
   if (!iso) return "—";
@@ -75,42 +73,22 @@ export default function CasesPage() {
     if (!user) return;
     if (!opts?.silent) setLoading(true);
     try {
-      const [threadsRes, artifactsRes, toolsRes] = await Promise.all([
+      // Counts are aggregated in Postgres (get_case_metrics). Tallying fetched
+      // ROWS in the browser silently under-reported once an account passed the
+      // row cap — see src/lib/case-metrics.ts for the measured production case.
+      const [threadsRes, metricsMap] = await Promise.all([
         supabase
           .from("threads")
           .select("id,title,updated_at,created_at,status,seed_type,seed_value")
           .eq("user_id", user.id)
           .order("updated_at", { ascending: false })
           .limit(200),
-        supabase
-          .from("artifacts")
-          .select("thread_id")
-          .eq("user_id", user.id)
-          .limit(10000),
-        supabase
-          .from("tool_usage_log")
-          .select("thread_id")
-          .eq("user_id", user.id)
-          .limit(10000),
+        loadCaseMetrics(supabase),
       ]);
       if (threadsRes.error) throw threadsRes.error;
       setError(null);
       setCases((threadsRes.data ?? []) as CaseRow[]);
-
-      const m = new Map<string, CaseMetrics>();
-      for (const a of artifactsRes.data ?? []) {
-        const tid = a.thread_id as string;
-        const prev = m.get(tid) ?? { artifacts: 0, toolCalls: 0 };
-        prev.artifacts++;
-        m.set(tid, prev);
-      }
-      for (const t of toolsRes.data ?? []) {
-        const tid = t.thread_id as string;
-        const prev = m.get(tid) ?? { artifacts: 0, toolCalls: 0 };
-        prev.toolCalls++;
-        m.set(tid, prev);
-      }
-      setMetrics(m);
+      setMetrics(metricsMap);
     } catch (e) {
       captureError(e, "cases.load");
       // Surface the failure instead of silently rendering the "no cases" empty

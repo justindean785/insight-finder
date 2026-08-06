@@ -7,6 +7,7 @@ import {
   type ReviewAdjustment,
 } from "@/lib/intel";
 import { isCollisionArtifact } from "@/lib/report-hygiene";
+import { isBreachKind } from "@/lib/breach-kinds";
 
 /**
  * Confidence-dimension transform — PURE and DETERMINISTIC (pass `nowMs` to keep
@@ -88,7 +89,12 @@ function selectorType(a: Artifact): string | null {
 function isConflicted(a: Artifact): boolean {
   const m = (a.metadata ?? {}) as Record<string, unknown>;
   const k = a.kind.toLowerCase();
-  return isCollisionArtifact(a) || m.conflict === true || m.collision === true || m.false_positive === true || k === "breach" || k.endsWith("_conflict");
+  // isBreachKind, not the bare literal: #405 replaced kind:"breach" with
+  // breach_exposure, but 774 legacy bare rows still sit alongside 777 new-kind
+  // rows in production. The literal made the SAME evidence conflicted or not
+  // depending only on when it was written. This makes the existing rule apply
+  // uniformly; it does not introduce a new one.
+  return isCollisionArtifact(a) || m.conflict === true || m.collision === true || m.false_positive === true || isBreachKind(k) || k.endsWith("_conflict");
 }
 
 export function buildConfidenceProfile(input: {

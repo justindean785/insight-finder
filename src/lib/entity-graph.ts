@@ -7,6 +7,7 @@ import {
   type Group,
 } from "@/lib/intel";
 import { isCollisionArtifact } from "@/lib/report-hygiene";
+import { isBreachKind } from "@/lib/breach-kinds";
 
 /**
  * Entity-connection graph transform — PURE and DETERMINISTIC.
@@ -154,7 +155,9 @@ function isConflict(a: Artifact): boolean {
     m.conflict === true ||
     m.collision === true ||
     m.false_positive === true ||
-    k === "breach" ||
+    // See confidence-dimensions.ts: the bare literal split identical evidence
+    // by write date once #405 introduced breach_exposure.
+    isBreachKind(k) ||
     k.endsWith("_conflict")
   );
 }
