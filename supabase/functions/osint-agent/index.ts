@@ -754,10 +754,14 @@ Deno.serve(async (req) => {
     let openingGateLogged = false;
     // First-pass persistence nudge latch (DeepSeek deferral fix). Request-scoped —
     // owned by this per-request closure, NEVER a module-global, so one run's nudge
-    // state can't leak onto a concurrent run sharing a warm isolate. Flipped true the
-    // one time prepareStep injects buildPersistenceNudgeDirective(), which bounds the
-    // nudge to a single injection per run (no nudge spam).
-    let persistenceNudged = false;
+    // state can't leak onto a concurrent run sharing a warm isolate. Records the
+    // tool-call count at each buildPersistenceNudgeDirective() injection, so the nudge
+    // can RE-ARM after PERSISTENCE_NUDGE_REARM_INTERVAL further calls while the run has
+    // still recorded nothing — a single injection is declinable at zero cost, because
+    // the nudged step's toolChoice is deliberately "auto" (see shouldNudgePersistence).
+    // Spam is bounded by the interval plus PERSISTENCE_NUDGE_MAX.
+    let persistenceNudgedAt: number | null = null;
+    let persistenceNudgeCount = 0;
     // Wall-clock start for BOTH the finalize-reserve check (prepareStep) and the hard
     // deadline StopCondition below. Declared here so prepareStep's closure reads it.
     const runStartedAt = Date.now();
@@ -902,12 +906,14 @@ Deno.serve(async (req) => {
         let intermediateSystem = baseSystemPrompt + buildPerCycleCompactDirective();
         const { toolCalls: nudgeToolCalls, recordCalls: nudgeRecordCalls } =
           countModelMessageToolCalls(stepMessages as Array<{ content?: unknown }>);
-        if (shouldNudgePersistence(nudgeToolCalls, nudgeRecordCalls, persistenceNudged)) {
-          persistenceNudged = true;
+        if (shouldNudgePersistence(nudgeToolCalls, nudgeRecordCalls, persistenceNudgedAt, persistenceNudgeCount)) {
+          persistenceNudgedAt = nudgeToolCalls;
+          persistenceNudgeCount++;
           intermediateSystem += buildPersistenceNudgeDirective();
           console.log(JSON.stringify({
             event: "persistence_nudge_fired", thread_id: threadId,
             tool_calls: nudgeToolCalls, record_artifact_calls: nudgeRecordCalls,
+            nudge_count: persistenceNudgeCount,
           }));
           return {
             messages: stepMessagesOut,

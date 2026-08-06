@@ -21,6 +21,8 @@ import {
   FINALIZE_ACTIVE_TOOLS,
   FINALIZE_RESERVE_MS,
   PERSISTENCE_NUDGE_TOOL_CALL_THRESHOLD,
+  PERSISTENCE_NUDGE_REARM_INTERVAL,
+  PERSISTENCE_NUDGE_MAX,
 } from "./orchestrator-finalize.ts";
 import { ORCHESTRATOR_WALL_CLOCK_MS } from "./orchestrator-budget.ts";
 import { countModelMessageToolCalls } from "./guard.ts";
@@ -54,7 +56,7 @@ function assistantWithToolCalls(
 Deno.test("nudge: fires once many discovery calls land with zero record_artifacts", () => {
   const calls = PERSISTENCE_NUDGE_TOOL_CALL_THRESHOLD; // fan-out reached, nothing persisted
   assert(
-    shouldNudgePersistence(calls, 0, false),
+    shouldNudgePersistence(calls, 0, null),
     "threshold tool calls + 0 record calls + not-yet-nudged must fire",
   );
 });
@@ -64,14 +66,14 @@ Deno.test("nudge: counted from the running ModelMessages, fires at the boundary"
   const { toolCalls, recordCalls } = countModelMessageToolCalls(msgs);
   assertEquals(toolCalls, PERSISTENCE_NUDGE_TOOL_CALL_THRESHOLD);
   assertEquals(recordCalls, 0);
-  assert(shouldNudgePersistence(toolCalls, recordCalls, false), "at the boundary the nudge fires");
+  assert(shouldNudgePersistence(toolCalls, recordCalls, null), "at the boundary the nudge fires");
 });
 
 Deno.test("nudge: exactly threshold-1 tool calls does NOT fire", () => {
   const msgs = [assistantWithToolCalls(PERSISTENCE_NUDGE_TOOL_CALL_THRESHOLD - 1, 0)];
   const { toolCalls, recordCalls } = countModelMessageToolCalls(msgs);
   assertEquals(toolCalls, PERSISTENCE_NUDGE_TOOL_CALL_THRESHOLD - 1);
-  assertEquals(shouldNudgePersistence(toolCalls, recordCalls, false), false, "one short of threshold: keep working");
+  assertEquals(shouldNudgePersistence(toolCalls, recordCalls, null), false, "one short of threshold: keep working");
 });
 
 // ---- Requirement 1: cumulative count, no phantom inflation -----------------------
@@ -129,20 +131,62 @@ Deno.test("nudge directive: tells the model to record now, before correlate, w/ 
 
 // ---- Requirement 3: no nudge spam ------------------------------------------------
 
-Deno.test("no spam: the latch stops a second injection even while records stay 0", () => {
+// REVISED 2026-08-06. This used to assert the nudge fires at most ONCE per run. That
+// made it declinable at zero cost: the nudged step narrows activeTools to
+// record_artifacts but keeps toolChoice "auto" (deliberately — forcing would pressure
+// the model into fabricating an artifact, the #384 P1 defect), so answering with prose
+// spent the only guard the run had. Production thread f9056822: 28 tool calls,
+// record_artifacts called ZERO times, every durable row written by the detached
+// backstop instead — and backstop rows never reach evidence_log, so the run finished
+// with 4 artifacts behind 2 chain entries.
+//
+// The anti-spam requirement is unchanged in substance and now holds by construction:
+// no consecutive-step firing, permanent stop on any record call, hard cap per run.
+Deno.test("no spam: the nudge cannot fire again on the very next step", () => {
   const calls = PERSISTENCE_NUDGE_TOOL_CALL_THRESHOLD + 10;
-  assert(shouldNudgePersistence(calls, 0, false), "first step fires");
+  assert(shouldNudgePersistence(calls, 0, null), "first step fires");
   assertEquals(
-    shouldNudgePersistence(calls, 0, /* alreadyNudged */ true),
+    shouldNudgePersistence(calls + 1, 0, calls, 1),
     false,
-    "once nudged this run, it never fires again — no spam",
+    "one more tool call is not enough to re-arm — no back-to-back nudging",
   );
+});
+
+Deno.test("re-arms once the run has kept working without recording anything", () => {
+  const first = PERSISTENCE_NUDGE_TOOL_CALL_THRESHOLD;
+  assert(shouldNudgePersistence(first, 0, null), "first nudge fires at the threshold");
+  assertEquals(
+    shouldNudgePersistence(first + PERSISTENCE_NUDGE_REARM_INTERVAL - 1, 0, first, 1),
+    false,
+    "one short of the re-arm interval stays quiet",
+  );
+  assert(
+    shouldNudgePersistence(first + PERSISTENCE_NUDGE_REARM_INTERVAL, 0, first, 1),
+    "after the interval, a run that has STILL recorded nothing is nudged again",
+  );
+});
+
+Deno.test("the escalation is bounded — never more than PERSISTENCE_NUDGE_MAX per run", () => {
+  const far = PERSISTENCE_NUDGE_TOOL_CALL_THRESHOLD + PERSISTENCE_NUDGE_REARM_INTERVAL * 20;
+  assertEquals(
+    shouldNudgePersistence(far, 0, 0, PERSISTENCE_NUDGE_MAX),
+    false,
+    "a model that will not record cannot have its whole step budget spent on directives",
+  );
+});
+
+// The decisive safety property: recording even ONCE ends the escalation permanently,
+// so a well-behaved run can never be nudged repeatedly however long it goes.
+Deno.test("a single record_artifacts call ends the escalation for the rest of the run", () => {
+  const far = PERSISTENCE_NUDGE_TOOL_CALL_THRESHOLD + PERSISTENCE_NUDGE_REARM_INTERVAL * 5;
+  assertEquals(shouldNudgePersistence(far, 1, 0, 1), false, "one record is enough to stop it");
+  assertEquals(shouldNudgePersistence(far, 1, null, 0), false, "and it never starts");
 });
 
 Deno.test("no spam: once record_artifacts has been called the nudge stops (independent of latch)", () => {
   const calls = PERSISTENCE_NUDGE_TOOL_CALL_THRESHOLD + 3;
-  assertEquals(shouldNudgePersistence(calls, 1, false), false, "any record call short-circuits the nudge");
-  assertEquals(shouldNudgePersistence(calls, 5, false), false, "still off once persistence has happened");
+  assertEquals(shouldNudgePersistence(calls, 1, null), false, "any record call short-circuits the nudge");
+  assertEquals(shouldNudgePersistence(calls, 5, null), false, "still off once persistence has happened");
 });
 
 // ---- Requirement 4: normal MiniMax behavior unchanged ----------------------------
@@ -153,11 +197,11 @@ Deno.test("MiniMax unchanged: incremental recorder never trips the nudge", () =>
   const { toolCalls, recordCalls } = countModelMessageToolCalls(msgs);
   assertEquals(toolCalls, 8);
   assertEquals(recordCalls, 2);
-  assertEquals(shouldNudgePersistence(toolCalls, recordCalls, false), false, "a recorder is never nudged");
+  assertEquals(shouldNudgePersistence(toolCalls, recordCalls, null), false, "a recorder is never nudged");
 });
 
 Deno.test("MiniMax unchanged: a quiet early run (few calls, no records) is left alone", () => {
-  assertEquals(shouldNudgePersistence(2, 0, false), false, "2 calls is normal opening triage, not a deferral");
+  assertEquals(shouldNudgePersistence(2, 0, null), false, "2 calls is normal opening triage, not a deferral");
 });
 
 Deno.test("recording before the threshold suppresses the nudge outright", () => {
@@ -166,7 +210,7 @@ Deno.test("recording before the threshold suppresses the nudge outright", () => 
   const { toolCalls, recordCalls } = countModelMessageToolCalls(msgs);
   assert(toolCalls >= PERSISTENCE_NUDGE_TOOL_CALL_THRESHOLD, "fan-out crossed the threshold");
   assert(recordCalls >= 1, "but a record already happened");
-  assertEquals(shouldNudgePersistence(toolCalls, recordCalls, false), false, "prior persistence → never nudge");
+  assertEquals(shouldNudgePersistence(toolCalls, recordCalls, null), false, "prior persistence → never nudge");
 });
 
 // ---- Requirement 2: nudge is subordinate to forced finalization ------------------
@@ -179,10 +223,11 @@ function prepareStepDecision(
   capReached: boolean,
   toolCalls: number,
   recordCalls: number,
-  alreadyNudged: boolean,
+  nudgedAt: number | null,
+  nudgeCount = 0,
 ): "finalize" | "nudge" | "plain" {
   if (capReached || shouldForceFinalize(elapsedMs, stepNumber)) return "finalize";
-  if (shouldNudgePersistence(toolCalls, recordCalls, alreadyNudged)) return "nudge";
+  if (shouldNudgePersistence(toolCalls, recordCalls, nudgedAt, nudgeCount)) return "nudge";
   return "plain";
 }
 
@@ -193,13 +238,13 @@ Deno.test("forced-finalize takes precedence: the nudge cannot replace finalizati
   const finalizeEdge = ORCHESTRATOR_WALL_CLOCK_MS - FINALIZE_RESERVE_MS; // reserve window open → finalize due
   // Nudge conditions ALSO hold (many calls, 0 records, not yet nudged) — finalize still wins.
   assertEquals(
-    prepareStepDecision(finalizeEdge, 3, false, 20, 0, false),
+    prepareStepDecision(finalizeEdge, 3, false, 20, 0, null),
     "finalize",
     "when finalize is due it is chosen even though the nudge conditions are met",
   );
   // Same via the tool-call cap trigger.
   assertEquals(
-    prepareStepDecision(0, 0, /* capReached */ true, 20, 0, false),
+    prepareStepDecision(0, 0, /* capReached */ true, 20, 0, null),
     "finalize",
     "cap-reached forces finalize; the nudge is never reached",
   );
@@ -207,9 +252,9 @@ Deno.test("forced-finalize takes precedence: the nudge cannot replace finalizati
 
 Deno.test("nudge only fires on a genuine intermediate step (not finalize)", () => {
   // Early step, budget healthy, fanned out with no records → nudge is the decision.
-  assertEquals(prepareStepDecision(1_000, 3, false, 6, 0, false), "nudge");
+  assertEquals(prepareStepDecision(1_000, 3, false, 6, 0, null), "nudge");
   // Once latched, the same intermediate step decays to plain (one injection only).
-  assertEquals(prepareStepDecision(1_000, 4, false, 8, 0, /* alreadyNudged */ true), "plain");
+  assertEquals(prepareStepDecision(1_000, 4, false, 8, 0, /* nudgedAt */ 6, 1), "plain");
 });
 
 Deno.test("nudge injection is purely additive — the base prompt is not mutated", () => {
@@ -271,17 +316,17 @@ Deno.test("request isolation: the counter is pure — one request's messages don
   assertEquals(countModelMessageToolCalls(reqA).toolCalls, 6);
 });
 
-Deno.test("request isolation: each request owns its own nudge latch", () => {
-  // Request A crosses the threshold and gets nudged (its latch flips true).
-  let latchA = false;
-  const firedA = shouldNudgePersistence(6, 0, latchA);
-  if (firedA) latchA = true;
-  assert(firedA && latchA, "A fires and latches");
-  // Request B has its OWN latch — A latching cannot suppress B.
-  const latchB = false;
+Deno.test("request isolation: each request owns its own nudge state", () => {
+  // Request A crosses the threshold and gets nudged (it records where it fired).
+  let nudgedAtA: number | null = null;
+  const firedA = shouldNudgePersistence(6, 0, nudgedAtA);
+  if (firedA) nudgedAtA = 6;
+  assert(firedA && nudgedAtA === 6, "A fires and marks where");
+  // Request B has its OWN state — A's mark cannot suppress B.
+  const nudgedAtB: number | null = null;
   assert(
-    shouldNudgePersistence(6, 0, latchB),
-    "B fires on its own latch regardless of A having already nudged",
+    shouldNudgePersistence(6, 0, nudgedAtB),
+    "B fires on its own state regardless of A having already nudged",
   );
 });
 
@@ -289,7 +334,7 @@ Deno.test("request isolation: each request owns its own nudge latch", () => {
 
 Deno.test("no deterministic extraction: the nudge only asks the MODEL to record — it creates nothing", () => {
   // The predicate is a pure boolean gate; it returns no artifact payload.
-  assertEquals(typeof shouldNudgePersistence(6, 0, false), "boolean");
+  assertEquals(typeof shouldNudgePersistence(6, 0, null), "boolean");
   // The directive explicitly forbids fabricating artifacts from narration / prose.
   const d = buildPersistenceNudgeDirective();
   assert(/narration is NOT evidence/i.test(d), "must state narration is not evidence");
