@@ -66,6 +66,35 @@ export function pickEvidenceCount(
   return integrity ? integrity.total : artifactFallback;
 }
 
+/**
+ * The header's evidence summary, as a string the analyst can actually interpret.
+ *
+ * WHY THIS EXISTS (production 2026-08-06): the header read "2 evidence" while the
+ * Evidence tab badge on the same page read 50. Both were correct — the header reads
+ * the chain-verified `evidence_log` total, the badge counts `artifacts` — and nothing
+ * on screen said so, so the analyst saw a run that had found almost nothing.
+ *
+ * The comment above pickEvidenceCount states the intended relationship: the chain
+ * total is normally the LARGER number (one artifact can carry several evidence rows,
+ * and the artifact list is deduped). That direction stays a single figure, because it
+ * is expected and unremarkable.
+ *
+ * The INVERTED direction is the one worth surfacing. `evidence_log` below the artifact
+ * count means artifacts were written that never got a chain-of-custody entry — which
+ * happens whenever the auto-persist backstop carries a run, since it writes
+ * `public.artifacts` and never appends to `evidence_log`. Reporting only the small
+ * number there hides missing custody behind what looks like a thin result.
+ */
+export function describeEvidence(
+  integrity: { total: number } | null,
+  artifactCount: number,
+): { text: string; unledgered: number } {
+  if (!integrity) return { text: `${artifactCount} evidence`, unledgered: 0 };
+  const unledgered = Math.max(0, artifactCount - integrity.total);
+  if (unledgered === 0) return { text: `${integrity.total} evidence`, unledgered: 0 };
+  return { text: `${artifactCount} recorded · ${integrity.total} chain-verified`, unledgered };
+}
+
 // eslint-disable-next-line react-refresh/only-export-components
 export function deriveWorkspaceStatus(input: {
   threadStatus: Thread["status"] | undefined;
@@ -91,6 +120,16 @@ export function deriveWorkspaceStatus(input: {
     return input.recoveredAt || input.recoveryReason ? "interrupted" : "completed";
   }
   if (input.recentlyActive) return "active";
+  // An `active` row that is neither streaming nor recently active is a run that
+  // STARTED and stopped without ever finalizing — the stale-run sweep has simply
+  // not reaped it yet. `active` was previously not handled at all and fell through
+  // to the line below, so such a run rendered COMPLETE (production 2026-08-06,
+  // thread 6bdf7e55: status='active' in the database, COMPLETE in the header).
+  // That is invariant I-2 failing on the surface the analyst actually reads.
+  //
+  // I-1 still holds: a blank thread is born `active` with no run marker, so with no
+  // evidence it stays IDLE rather than being labelled a failed investigation.
+  if (input.threadStatus === "active") return input.hasEvidence ? "interrupted" : "idle";
   return input.hasEvidence ? "completed" : "idle";
 }
 
@@ -109,7 +148,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
   const [integrity, setIntegrity] = useState<{ ok: boolean; total: number; first_break: number | null } | null>(null);
 
   const artifactCount = items.length;
-  const evidenceCount = pickEvidenceCount(integrity, artifactCount);
+  const evidence = describeEvidence(integrity, artifactCount);
 
   const loadIntegrity = useCallback(async () => {
     const [{ count }, { data: v }] = await Promise.all([
@@ -285,8 +324,13 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
               >
                 {status === "active" ? "Running" : status === "interrupted" ? "Interrupted" : "Complete"}
               </span>
-              <span className="hidden text-[10px] text-muted-foreground/70 sm:inline tabular-nums">
-                {evidenceCount} evidence · {activity.persistedTotal} tools
+              <span
+                className="hidden text-[10px] text-muted-foreground/70 sm:inline tabular-nums"
+                title={evidence.unledgered > 0
+                  ? `${evidence.unledgered} recorded artifact${evidence.unledgered === 1 ? "" : "s"} have no chain-of-custody entry`
+                  : undefined}
+              >
+                {evidence.text} · {activity.persistedTotal} tools
               </span>
             </div>
           )}
