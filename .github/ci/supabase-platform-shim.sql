@@ -84,6 +84,21 @@ BEGIN
   END IF;
 END $$;
 
+-- pgcrypto lives in the `extensions` schema on Supabase, NOT in `public`.
+--
+-- This matters because CI was falsely green on a real production defect. Two
+-- migrations run a bare `CREATE EXTENSION IF NOT EXISTS pgcrypto;`, which on a
+-- vanilla postgres:15 installs into the first schema on the search_path —
+-- `public`. So a SECURITY DEFINER function pinned to `search_path = public`
+-- and calling an unqualified `digest(...)` resolved fine here while failing on
+-- the real platform with `function digest(text, unknown) does not exist`.
+--
+-- Installing it into `extensions` FIRST makes those later `IF NOT EXISTS`
+-- calls no-ops, so the extension stays where Supabase puts it and CI actually
+-- reproduces the platform's name resolution.
+CREATE SCHEMA IF NOT EXISTS extensions;
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;
+
 -- pg_cron / pg_net: CI's vanilla postgres:15 image has neither extension binary
 -- available, so migrations guard `CREATE EXTENSION` on pg_available_extensions
 -- and skip it here. These stubs stand in for cron.schedule/cron.unschedule/

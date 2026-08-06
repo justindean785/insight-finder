@@ -299,7 +299,10 @@ function buildRegistrationRows(artifacts: Artifact[]): RegistrationRow[] {
       (meta.service as string) ||
       (meta.source_name as string) ||
       null;
-    if (k === "breach" && !isReputationArtifact(a)) {
+    // #405 retired the bare "breach" kind in favour of breach_exposure; this
+    // call site kept the literal, so the registrations table has been empty
+    // for every investigation since. Same predicate as lines 340/405.
+    if (isBreachKind(k) && !isReputationArtifact(a)) {
       rows.push({
         site: site || String(a.value ?? "—"),
         identifier:
