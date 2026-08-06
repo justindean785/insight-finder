@@ -246,7 +246,16 @@ export function extractFindings(toolName: string, output: unknown, input?: unkno
   if (!output || typeof output !== "object") return [];
   const o = output as Record<string, unknown>;
   // Never extract from an explicit tool error.
-  if (o.ok === false || typeof o.error === "string") return [];
+  // A PARTIAL success is not a failure. dns_records makes per-type failures
+  // deliberately non-fatal — it returns `ok:false` with `records` still populated
+  // for every type that DID resolve, plus an `errors` map naming the ones that
+  // did not. Bailing on `ok === false` alone re-collapsed that design decision and
+  // silently discarded every resolved A/NS/MX record whenever one type SERVFAILed
+  // or a DKIM query arrived without its selector. A hard failure still carries a
+  // top-level `error` string and is still rejected below.
+  const partialSuccess = !!o.records && typeof o.records === "object" &&
+    !!o.errors && typeof o.errors === "object";
+  if ((o.ok === false && !partialSuccess) || typeof o.error === "string") return [];
 
   const findings: ExtractedFinding[] = [];
   const push = (k: string, v: unknown, ctx: Record<string, unknown> = {}, conf = 30) => {
@@ -527,7 +536,10 @@ export function extractFindings(toolName: string, output: unknown, input?: unkno
   const dataObj = o.data && typeof o.data === "object" ? o.data as Record<string, unknown> : null;
 
   // dns_records → { host, records: { A|AAAA|NS|MX|CNAME: [{ data }] } } (Cloudflare DoH)
-  const dnsRecords = o.records && typeof o.records === "object"
+  // Tool-gated for the same reason as ip_intel below: `records` is a generic key
+  // (GLEIF returns a top-level `records` ARRAY), and relying on Array.isArray to
+  // skip it is implicit safety that breaks silently when a shape changes.
+  const dnsRecords = toolName === "dns_records" && o.records && typeof o.records === "object"
     ? o.records as Record<string, unknown>
     : null;
   if (dnsRecords) {
@@ -544,10 +556,37 @@ export function extractFindings(toolName: string, output: unknown, input?: unkno
   // ip_intel → ip-api fields spread at the top level. Tool-gated: a bare `query`
   // key is far too generic to match on shape without catching other tools.
   if (toolName === "ip_intel") {
+    const locationKind = typeof o.location_kind === "string" ? o.location_kind : undefined;
     infraIp(o.query, "ip_intel");
+    // The network OPERATOR is not the subject's organization. ip_intel already
+    // tells us when it is merely infrastructure — `{ cdn: true, cdn_provider,
+    // location_kind: "cdn_edge" }`, plus ip-api's own `hosting` / `proxy` flags —
+    // and its own note says the geo "reflects CDN POP, not the actual origin
+    // server". Persisting `org` regardless writes "Cloudflare, Inc." as an
+    // organization about the SUBJECT, and graph.ts promotes an `organization`
+    // artifact to an entity node in the link-analysis graph. For any CDN-fronted
+    // domain — the common case — that is an invented affiliation.
+    //
+    // Same trade the name normalizer already codifies: a false negative loses one
+    // weak artifact, a false positive invents a relationship. Take the loss.
+    const isInfrastructureOnly = o.cdn === true || o.hosting === true || o.proxy === true ||
+      locationKind === "cdn_edge";
     const owner = typeof o.org === "string" && o.org.trim() ? o.org : o.isp;
-    if (typeof owner === "string" && owner.trim()) {
-      push("organization", owner, { via: "ip_intel" }, 35);
+    if (!isInfrastructureOnly && typeof owner === "string" && owner.trim()) {
+      // Provenance travels with the row so downstream can still discount it.
+      push("organization", owner, { via: "ip_intel", location_kind: locationKind }, 35);
+    }
+  }
+
+  // whois_lookup → rdap.org, which returns RFC 7483 RDAP: a STANDARD schema, so
+  // `nameservers[].ldhName` is knowable rather than provider-specific. Registrant
+  // identity is deliberately NOT extracted: it is usually GDPR-redacted, and
+  // parsing vCards to name an owner is the CDN mistake in a more damaging form.
+  if (toolName === "whois_lookup" && dataObj && Array.isArray(dataObj.nameservers)) {
+    for (const ns of dataObj.nameservers.slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
+      const host = typeof ns === "string" ? ns : (ns as { ldhName?: unknown })?.ldhName;
+      // RDAP returns names uppercased; normalizeFinding lowercases for `domain`.
+      infraDomain(host, "whois:rdap");
     }
   }
 
@@ -559,13 +598,14 @@ export function extractFindings(toolName: string, output: unknown, input?: unkno
     }
   }
 
-  // Subdomain lists NESTED under `data` — branch 7 only reads the top level, which
-  // is the accident that let crtsh through and kept every other provider out.
-  if (dataObj && Array.isArray(dataObj.subdomains)) {
-    for (const s of dataObj.subdomains.slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
-      infraDomain(s, "subdomains");
-    }
-  }
+  // NOTE — there is deliberately NO `data.subdomains` branch. Every subdomain
+  // producer emits the list at the TOP level, where branch 7 already reads it:
+  // crtsh_subdomains, crtsh_lookup, and oathnet_subdomains (which unwraps its
+  // provider's nested payload internally and re-emits flat). A nested branch
+  // matched no tool in this repo. That also means oathnet_subdomains hits were
+  // ALREADY covered — so its zero yield in thread dd2514e3 is still undiagnosed;
+  // check the raw output for the missing-key bail or the quota skipStub before
+  // treating that particular gap as closed.
 
   // ---- Collapse breach corpus names into ONE exposure artifact per provider --
   // Mirrors the username_sweep collapse directly above: the ARTIFACT count drops,
