@@ -119,6 +119,9 @@ type Store = {
   // reload per THROTTLE_MS. Protects against event storms (e.g. a single
   // scan inserting 50+ rows in <100ms) hammering the DB.
   pendingReload: ReturnType<typeof setTimeout> | null;
+  // Reconcile-on-refocus handler, kept so release can detach it. See
+  // acquireStore for why this exists.
+  onVisible: (() => void) | null;
 };
 
 type StoreSnapshot = {
@@ -234,6 +237,7 @@ function acquireStore(threadId: string, listener: (snapshot: StoreSnapshot) => v
       refCount: 0,
       pendingReload: null,
       subscribed: false,
+      onVisible: null,
     };
     stores.set(threadId, store);
     store.loading = loadStore(threadId, store);
@@ -282,6 +286,24 @@ function acquireStore(threadId: string, listener: (snapshot: StoreSnapshot) => v
         if (store!.subscribed) void loadStore(threadId, store!);
         store!.subscribed = true;
       });
+
+    // Every self-heal above is realtime-dependent: the INSERT event, the
+    // terminal-status flip, and the re-SUBSCRIBED reconcile all need a live
+    // socket. A backgrounded tab whose socket dies gets none of them, and a
+    // CPU-killed run never flips status cleanly either (it is recovered later
+    // by the health sweep), so the count can stay stale indefinitely — the
+    // "second run wrote five artifacts, badge still reads three" case.
+    //
+    // Returning to the tab is the one signal that does not depend on the
+    // socket, so reconcile from persistence there. Not throttled: visibility
+    // changes are user-driven and inherently low-frequency.
+    if (typeof document !== "undefined") {
+      store.onVisible = () => {
+        if (document.visibilityState !== "visible") return;
+        void loadStore(threadId, stores.get(threadId) ?? store!);
+      };
+      document.addEventListener("visibilitychange", store.onVisible);
+    }
   }
   store.subscribers.add(listener);
   store.refCount += 1;
@@ -296,6 +318,9 @@ function releaseStore(threadId: string, listener: (snapshot: StoreSnapshot) => v
   if (store.refCount <= 0) {
     if (store.channel) supabase.removeChannel(store.channel);
     if (store.pendingReload !== null) clearTimeout(store.pendingReload);
+    if (store.onVisible && typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", store.onVisible);
+    }
     stores.delete(threadId);
   }
 }
