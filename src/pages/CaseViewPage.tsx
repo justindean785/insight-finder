@@ -13,6 +13,7 @@ import { MessageSquare, ArrowLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { isActiveThreadStatus } from "@/lib/thread-status";
 import { extractDisplaySeed } from "@/lib/seed";
+import { buildWorkspaceTabCounts } from "@/lib/workspace-tab-counts";
 
 const EvidenceTab = lazy(() =>
   import("@/components/workspace/EvidenceTab").then((m) => ({ default: m.EvidenceTab })),
@@ -106,11 +107,7 @@ export default function CaseViewPage() {
     );
   }
 
-  const breachCount = items.filter((a) => a.kind.toLowerCase() === "breach").length;
-  const tabCounts = {
-    evidence: { value: items.length, alert: breachCount },
-    tools: { value: activity.persistedTotal, alert: 0 },
-  };
+  const tabCounts = buildWorkspaceTabCounts(items, activity.persistedTotal);
 
   const running = isActiveThreadStatus(meta?.status ?? null);
   // The stored title / seed_value can be the whole pasted run-prompt, which
