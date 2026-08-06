@@ -443,8 +443,11 @@ export function extractFindings(toolName: string, output: unknown, input?: unkno
     }
   }
 
-  // 12) username_sweep — found[] are CONFIRMED profile hits (status 2xx). The
-  //     profile URL is the finding; it lives in `found`, not items/results/matches,
+  // 12) username_sweep — found[] are CONFIRMED profile hits. "Confirmed" means the
+  //     page carried positive evidence of the account, NOT merely a 2xx: a soft-404
+  //     (signup form / SPA shell served at 200) is reported under `unverified` and
+  //     never counted here. See sweeper.ts `bodyEvidencesAccount`.
+  //     The profile URL is the finding; it lives in `found`, not items/results/matches,
   //     so it was previously dropped.
   if (toolName === "username_sweep" && Array.isArray(o.found)) {
     // COLLAPSED 2026-07-27 — one artifact per HANDLE, not one per platform.
@@ -474,6 +477,7 @@ export function extractFindings(toolName: string, output: unknown, input?: unkno
     }
     if (hits.length > 0) {
       const handle = String(o.username ?? o.handle ?? o.query ?? "").trim();
+      const unverifiedCount = Array.isArray(o.unverified) ? o.unverified.length : 0;
       if (SWEEP_COLLAPSE_ENABLED && handle && hits.length >= SWEEP_COLLAPSE_MIN_HITS) {
         findings.push({
           kind: "social_footprint",
@@ -486,6 +490,9 @@ export function extractFindings(toolName: string, output: unknown, input?: unkno
             // Every URL is preserved here — collapsing the ARTIFACT must not lose
             // the underlying data, only stop it inflating the evidence count.
             urls: hits,
+            // Reachable but unevidenced pages are DISCLOSED, not counted: the
+            // headline number must never absorb a soft-404.
+            ...(unverifiedCount > 0 ? { unverified_platform_count: unverifiedCount } : {}),
           },
           rawConfidence: 30,
         });

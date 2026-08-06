@@ -14,12 +14,18 @@ interface SweepSite {
   name: string;
   url: string;
   absent?: number | string;
+  /** Optional body marker that PROVES a real profile (beats the generic
+   *  username-echo test below). Use when a platform renders a profile without
+   *  echoing the handle, or echoes it on its not-found page. */
+  confirm?: string;
 }
 
 interface SweepSiteResult {
   site: string;
   url: string;
   found: boolean;
+  /** 2xx/3xx, but nothing in the body evidenced the account. A LEAD, not a hit. */
+  unverified?: boolean;
   status?: number;
   error?: string;
 }
@@ -27,10 +33,69 @@ interface SweepSiteResult {
 interface SweepResult {
   username: string;
   total: number;
+  /** CONFIRMED registrations only — never includes `unverified`. */
   hits: number;
   found: SweepSiteResult[];
+  /** Reachable but unevidenced. Surfaced so they can be chased, NOT counted. */
+  unverified: SweepSiteResult[];
   missed: string[];
   skipped_due_to_budget: number;
+}
+
+/**
+ * Read at most `maxBytes` of a response body, then cancel the stream.
+ *
+ * The existence check now needs the BODY for every site (not just the six with
+ * string markers), so this bounds the added cost: a profile page names its owner
+ * in the <title>/og: tags long before 64KB, and we never buffer a whole page.
+ */
+async function readCapped(r: Response, maxBytes = 65536): Promise<string> {
+  if (!r.body) return "";
+  const reader = r.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (total < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        chunks.push(value);
+        total += value.length;
+      }
+    }
+  } catch {
+    // A truncated body is still usable evidence.
+  } finally {
+    try {
+      await reader.cancel();
+    } catch { /* already closed */ }
+  }
+  const buf = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    buf.set(c, off);
+    off += c.length;
+  }
+  return new TextDecoder("utf-8", { fatal: false }).decode(buf);
+}
+
+/**
+ * Does the page actually evidence THIS account?
+ *
+ * A soft-404 (HTTP 200 carrying a signup form or an SPA shell) is the failure
+ * this guards: measured 2026-08-06, `pypi.org/user/<anything>/` returns 200 with
+ * a body that never names the user, and the status-only check counted it as a
+ * registration. The same shape produced the Bandcamp "domain is available /
+ * unclaimed", HackTheBox "Not Found" and Bluesky empty-profile hits that the
+ * analyst had already marked FALSE on an earlier case.
+ *
+ * Deliberately conservative: it can under-report a JS-rendered profile that
+ * never prints the handle server-side. Those do not vanish — they are reported
+ * as `unverified` leads, which is the honest label for "reachable, unproven".
+ */
+function bodyEvidencesAccount(body: string, username: string): boolean {
+  if (!body || !username) return false;
+  return body.toLowerCase().includes(username.toLowerCase());
 }
 
 /**
@@ -168,14 +233,31 @@ export async function sweepUsername(username: string): Promise<SweepResult> {
         redirect: "follow",
         signal: ctrl.signal,
       });
-      let found = r.ok;
-      if (typeof s.absent === "number") {
-        found = r.status !== s.absent && r.status < 400;
-      } else if (typeof s.absent === "string" && r.ok) {
-        const body = await r.text().catch(() => "");
-        found = !body.includes(s.absent);
+
+      // 1. Definitive ABSENT signals. A trusted negative ends it here.
+      if (typeof s.absent === "number" && r.status === s.absent) {
+        return { site: s.name, url: s.url, status: r.status, found: false };
       }
-      return { site: s.name, url: s.url, status: r.status, found };
+      if (r.status >= 400) {
+        return { site: s.name, url: s.url, status: r.status, found: false };
+      }
+
+      const body = await readCapped(r);
+      if (typeof s.absent === "string" && body.includes(s.absent)) {
+        return { site: s.name, url: s.url, status: r.status, found: false };
+      }
+
+      // 2. A 2xx is NOT proof of registration — require positive evidence.
+      //    Absent that, this is an unverified lead, never a counted hit.
+      const proven = (s.confirm && body.includes(s.confirm)) ||
+        bodyEvidencesAccount(body, username);
+      return {
+        site: s.name,
+        url: s.url,
+        status: r.status,
+        found: Boolean(proven),
+        ...(proven ? {} : { unverified: true }),
+      };
     } catch (e) {
       return { site: s.name, url: s.url, error: String(e), found: false };
     } finally {
@@ -193,6 +275,7 @@ export async function sweepUsername(username: string): Promise<SweepResult> {
   await Promise.all(workers);
 
   const hits = results.filter((r) => r.found);
+  const unverified = results.filter((r) => r.unverified);
   const skipped = results.filter((r) => r.error === "budget exhausted").length;
 
   return {
@@ -200,6 +283,10 @@ export async function sweepUsername(username: string): Promise<SweepResult> {
     total: results.length,
     hits: hits.length,
     found: hits,
+    unverified,
+    // `missed` stays "everything not confirmed" for existing callers, but the
+    // unverified sites are listed separately above so a caller can tell a
+    // proven absence from an unproven presence.
     missed: results.filter((r) => !r.found).map((r) => r.site),
     skipped_due_to_budget: skipped,
   };
