@@ -24,9 +24,15 @@ type MetricsRow = {
   tool_calls: number | string | null;
 };
 
-/** Minimal shape of the Supabase client this needs — keeps the module testable. */
+/**
+ * Minimal shape of the Supabase client this needs — keeps the module testable.
+ *
+ * PromiseLike, not Promise: supabase.rpc() returns a PostgrestFilterBuilder,
+ * which is thenable but lacks catch/finally/Symbol.toStringTag, so requiring a
+ * full Promise here rejects the real client.
+ */
 export interface CaseMetricsClient {
-  rpc(fn: string, args?: Record<string, unknown>): Promise<{
+  rpc(fn: string, args?: Record<string, unknown>): PromiseLike<{
     data: unknown;
     error: { message?: string } | null;
   }>;

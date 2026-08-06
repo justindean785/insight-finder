@@ -35,14 +35,14 @@ const collapsed = () => art({ kind: "breach_exposure", value: "Breach exposure: 
 
 describe("confidence dimensions treat both breach kinds alike", () => {
   it("scores a collapsed breach row the same as the legacy row", () => {
-    const withLegacy = buildConfidenceProfile({ artifacts: [legacy()] });
-    const withCollapsed = buildConfidenceProfile({ artifacts: [collapsed()] });
+    const withLegacy = buildConfidenceProfile({ artifacts: [legacy()], seedValue: "a@b.com" });
+    const withCollapsed = buildConfidenceProfile({ artifacts: [collapsed()], seedValue: "a@b.com" });
     expect(withCollapsed).toEqual(withLegacy);
   });
 
   it("does not treat an ordinary artifact as conflicted", () => {
-    const plain = buildConfidenceProfile({ artifacts: [art({ kind: "email" })] });
-    const breach = buildConfidenceProfile({ artifacts: [collapsed()] });
+    const plain = buildConfidenceProfile({ artifacts: [art({ kind: "email" })], seedValue: "a@b.com" });
+    const breach = buildConfidenceProfile({ artifacts: [collapsed()], seedValue: "a@b.com" });
     // If these were equal the predicate would be matching everything, which
     // would make the test above vacuous.
     expect(breach).not.toEqual(plain);
@@ -51,8 +51,8 @@ describe("confidence dimensions treat both breach kinds alike", () => {
 
 describe("the entity graph treats both breach kinds alike", () => {
   it("classifies a collapsed breach row exactly as the legacy row", () => {
-    const g1 = buildEntityGraph([legacy()]);
-    const g2 = buildEntityGraph([collapsed()]);
+    const g1 = buildEntityGraph([legacy()], "a@b.com", "email");
+    const g2 = buildEntityGraph([collapsed()], "a@b.com", "email");
     expect(g2.nodes.map((n) => n.conflict)).toEqual(g1.nodes.map((n) => n.conflict));
   });
 });
