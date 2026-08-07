@@ -17,7 +17,13 @@
  * All fixtures are RFC 2606 reserved names or synthetic registry hosts.
  */
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { _resetBootstrapCache, parseRdapDoc, rdapLookup, tldOf } from "./rdap.ts";
+import {
+  _expireBootstrapCache,
+  _resetBootstrapCache,
+  parseRdapDoc,
+  rdapLookup,
+  tldOf,
+} from "./rdap.ts";
 
 const IANA = "https://data.iana.org/rdap/dns.json";
 
@@ -200,4 +206,76 @@ Deno.test("parseRdapDoc tolerates a sparse record without throwing", () => {
   assertEquals(p.statuses, []);
   assertEquals(p.nameservers, []);
   assertEquals(p.redacted, false);
+});
+
+/**
+ * REVIEW FIX — a failed bootstrap must not be cached like a successful one.
+ *
+ * The first cut stored the empty map with the full 24h TTL, so one IANA blip on
+ * an isolate's first lookup disabled the registry fallback for a day. Every
+ * ccTLD rdap.org cannot route would have silently degraded to the aggregator's
+ * unconfirmed answer for that whole window.
+ */
+Deno.test("a failed bootstrap is retried, not cached for 24h", async () => {
+  _resetBootstrapCache();
+  let ianaHits = 0;
+  let ianaUp = false;
+  const f = router([
+    [/rdap\.org/, () => json({ errorCode: 404 }, 404)],
+    [/data\.iana\.org/, () => {
+      ianaHits++;
+      return ianaUp
+        ? json(bootstrapDoc("test", "https://rdap.registry.test"))
+        : Promise.resolve(new Response("down", { status: 503 }));
+    }],
+    [/rdap\.registry\.test/, () => json(domainDoc({ registrar: "Registry Test Ltd." }))],
+  ]);
+
+  const first = await rdapLookup("a.test", f);
+  assertEquals(first.outcome, "measured_empty", "no registry reachable — aggregator answer stands");
+  assertEquals(first.unconfirmed, true, "and it is flagged as uncorroborated");
+
+  // WITHIN the negative TTL the failure is honoured — that is the whole point
+  // of caching it, so a hard IANA outage does not mean an IANA request per
+  // lookup. This assertion pins the protection, not a bug.
+  ianaUp = true;
+  const immediate = await rdapLookup("b.test", f);
+  assertEquals(ianaHits, 1, "inside the short negative TTL, the failure suppresses re-fetch");
+  assertEquals(immediate.outcome, "measured_empty");
+
+  // ONCE THE SHORT TTL ELAPSES the fallback comes back. Under the original
+  // 24h TTL this lookup would still have been serving the cached failure, and
+  // the registry fallback would have stayed dead for a day.
+  _expireBootstrapCache();
+  const later = await rdapLookup("c.test", f);
+  assertEquals(ianaHits, 2, "a cached FAILURE must expire in seconds, not a day");
+  assertEquals(later.outcome, "found", "the registry answers once bootstrap succeeds");
+});
+
+Deno.test("stale successful bootstrap data outranks a fresh failure", async () => {
+  _resetBootstrapCache();
+  let ianaUp = true;
+  let registryHits = 0;
+  const f = router([
+    [/rdap\.org/, () => json({ errorCode: 404 }, 404)],
+    [/data\.iana\.org/, () =>
+      ianaUp
+        ? json(bootstrapDoc("test", "https://rdap.registry.test"))
+        : Promise.resolve(new Response("down", { status: 503 }))],
+    [/rdap\.registry\.test/, () => {
+      registryHits++;
+      return json(domainDoc({ registrar: "Registry Test Ltd." }));
+    }],
+  ]);
+
+  const warm = await rdapLookup("a.test", f);
+  assertEquals(warm.outcome, "found");
+
+  // IANA goes down AFTER we already have a good table. The table is days-stable,
+  // so keeping it beats discarding it — the fallback must keep working.
+  ianaUp = false;
+  _expireBootstrapCache();
+  const later = await rdapLookup("b.test", f);
+  assertEquals(later.outcome, "found", "a stale table still routes to the registry");
+  assertEquals(registryHits, 2);
 });

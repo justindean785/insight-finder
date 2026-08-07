@@ -53,16 +53,34 @@ export interface RdapResult {
 const IANA_BOOTSTRAP_URL = "https://data.iana.org/rdap/dns.json";
 const BOOTSTRAP_TTL_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * A FAILED bootstrap fetch must not be cached like a successful one.
+ *
+ * The first cut stored the empty map with the full 24h TTL, so a single IANA
+ * blip on the first lookup of an isolate disabled the registry fallback for a
+ * day — and every ccTLD rdap.org cannot route would have silently degraded to
+ * the aggregator's unconfirmed answer that whole time. A cached failure is not
+ * knowledge; it is only a reason not to hammer IANA.
+ */
+const BOOTSTRAP_NEGATIVE_TTL_MS = 60_000;
+
 interface BootstrapCache {
   /** tld (no leading dot) -> list of RDAP base URLs */
   map: Map<string, string[]>;
   fetchedAt: number;
+  /** false = this entry records a FAILURE, not a fetched table. */
+  ok: boolean;
 }
 let bootstrapCache: BootstrapCache | null = null;
 
 /** Exposed for tests; also lets a caller force a refresh after a bad fetch. */
 export function _resetBootstrapCache(): void {
   bootstrapCache = null;
+}
+
+/** Test seam: age the cache past its TTL without waiting or faking a clock. */
+export function _expireBootstrapCache(): void {
+  if (bootstrapCache) bootstrapCache.fetchedAt = 0;
 }
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
@@ -77,8 +95,9 @@ type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
  */
 export async function loadBootstrap(fetchImpl: FetchLike): Promise<Map<string, string[]>> {
   const now = Date.now();
-  if (bootstrapCache && now - bootstrapCache.fetchedAt < BOOTSTRAP_TTL_MS) {
-    return bootstrapCache.map;
+  if (bootstrapCache) {
+    const ttl = bootstrapCache.ok ? BOOTSTRAP_TTL_MS : BOOTSTRAP_NEGATIVE_TTL_MS;
+    if (now - bootstrapCache.fetchedAt < ttl) return bootstrapCache.map;
   }
   const map = new Map<string, string[]>();
   try {
@@ -89,14 +108,19 @@ export async function loadBootstrap(fetchImpl: FetchLike): Promise<Map<string, s
       const bases = (urls ?? []).filter((u) => typeof u === "string");
       for (const t of tlds ?? []) map.set(String(t).toLowerCase().replace(/^\./, ""), bases);
     }
-    bootstrapCache = { map, fetchedAt: now };
+    bootstrapCache = { map, fetchedAt: now, ok: true };
+    return map;
   } catch {
-    // Cache the miss briefly via an empty map only if we have nothing at all,
-    // so a hard IANA outage does not re-fetch on every single lookup.
-    if (!bootstrapCache) bootstrapCache = { map, fetchedAt: now };
-    return bootstrapCache.map;
+    // STALE SUCCESSFUL DATA OUTRANKS A FRESH FAILURE. The TLD -> RDAP table
+    // changes on the order of days, so a table from yesterday is far better
+    // than no table at all; keep serving it and leave its timestamp alone so
+    // the next lookup retries rather than extending the stale window.
+    if (bootstrapCache?.ok) return bootstrapCache.map;
+    // Nothing good to fall back on: record the failure under a SHORT negative
+    // TTL so a transient blip costs a minute, not a day.
+    bootstrapCache = { map, fetchedAt: now, ok: false };
+    return map;
   }
-  return map;
 }
 
 /** Public-suffix-naive but correct for RDAP: the registry is keyed by the TLD. */
