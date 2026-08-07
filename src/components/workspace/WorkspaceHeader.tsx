@@ -14,6 +14,7 @@ type Thread = {
   seed_value: string | null;
   seed_type: string | null;
   status: "active" | "finished" | "stopped" | null;
+  last_heartbeat_at: string | null;
   credits_used: number;
   cost_micro_usd: number | null;
   // Written by stale-run recovery, the stream-error path, and the completion
@@ -106,6 +107,10 @@ export function deriveWorkspaceStatus(input: {
   /** Set by stale-run recovery, the stream error path, or an unmet completion
    *  contract (see INCOMPLETE_RUN_REASON in the edge function). */
   recoveryReason?: string | null;
+  /** Server heartbeat for the current run. */
+  lastHeartbeatAt?: string | null;
+  /** Injectable clock for the backend-boundary test. */
+  nowMs?: number;
 }): "idle" | "active" | "completed" | "interrupted" {
   // The browser stream is the only signal allowed to override a terminal row:
   // persistence can mark the thread finished while the final report is still
@@ -119,6 +124,14 @@ export function deriveWorkspaceStatus(input: {
     // fabricated "recovered run" stub both looked identical to a real report.
     return input.recoveredAt || input.recoveryReason ? "interrupted" : "completed";
   }
+  // Mirror recovery.ts: an active run is stale only once its heartbeat is more
+  // than 75s old. This covers quiet provider/model work between tool events.
+  const heartbeatMs = input.lastHeartbeatAt ? Date.parse(input.lastHeartbeatAt) : NaN;
+  if (
+    input.threadStatus === "active"
+    && Number.isFinite(heartbeatMs)
+    && (input.nowMs ?? Date.now()) - heartbeatMs <= 75_000
+  ) return "active";
   if (input.recentlyActive) return "active";
   // An `active` row that is neither streaming nor recently active is a run that
   // STARTED and stopped without ever finalizing — the stale-run sweep has simply
@@ -163,7 +176,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
     const load = async () => {
       const { data } = await supabase
         .from("threads")
-        .select("id,seed_value,seed_type,status,credits_used,cost_micro_usd,recovered_at,recovery_reason")
+        .select("id,seed_value,seed_type,status,last_heartbeat_at,credits_used,cost_micro_usd,recovered_at,recovery_reason")
         .eq("id", threadId)
         .maybeSingle();
       // `recovered_at` / `recovery_reason` were added by migration and are not in
@@ -228,13 +241,6 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
     return max;
   }, [activity.events]);
   const recentlyActive = lastActivityMs > 0 && now - lastActivityMs < ACTIVE_WINDOW_MS;
-  const liveRun = chatRunning || recentlyActive;
-  useEffect(() => {
-    if (!liveRun) return;
-    const id = setInterval(() => setNow(Date.now()), 3000);
-    return () => clearInterval(id);
-  }, [liveRun]);
-
   const status = deriveWorkspaceStatus({
     threadStatus: thread?.status,
     chatRunning,
@@ -242,7 +248,15 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
     hasEvidence: artifactCount > 0 || activity.persistedTotal > 0,
     recoveredAt: thread?.recovered_at,
     recoveryReason: thread?.recovery_reason,
+    lastHeartbeatAt: thread?.last_heartbeat_at,
+    nowMs: now,
   });
+  const liveRun = status === "active";
+  useEffect(() => {
+    if (!liveRun) return;
+    const id = setInterval(() => setNow(Date.now()), 3000);
+    return () => clearInterval(id);
+  }, [liveRun]);
 
   const display = thread
     ? extractDisplaySeed(thread.seed_value, thread.seed_type)
