@@ -127,6 +127,20 @@ source-level wiring tests abort with `NotCapable` before asserting.
 
 `missed` is proven absence only; unreachable sites are listed under `errored`.
 
+**THESE ARE NOT `tool_usage_log` OUTCOMES.** Two different vocabularies exist at
+two different granularities, and conflating them produces nonsense counts:
+
+| | granularity | where it lives | values |
+|---|---|---|---|
+| **Sweep probe outcome** | one HTTP probe of one PLATFORM, ~99 per call | `SweepResult` in the tool's return payload — never persisted per-site | `found` / `not_found` / `unverified` / `error` |
+| **Tool call outcome** | one TOOL CALL | `tool_usage_log.outcome` (stored), refined client-side by `src/lib/tool-outcome.ts` | stored: `ok` / `skipped` / `empty` / `failed`; derived: 11 categories |
+
+A single `username_sweep` call producing 99 probe outcomes is **one** row in
+`tool_usage_log` with **one** outcome. The Health tab counts tool calls, not
+probes; it will never show "21 unverified". Item 1.2 aims to make the two
+vocabularies agree in NAMING, which is not the same as making them the same
+axis — a `not_found` probe inside an `ok` call is normal and correct.
+
 ### The absence-assertion pattern — three instances, one rule
 
 The same defect has now appeared three times in three different places. It is
@@ -139,7 +153,7 @@ yields `failed`, or a visibly-unconfirmed result.**
 |---|---|---|---|
 | 1 | `sweeper.ts` (#413) | `r.status >= 400` | any refusal — 403, 429, 451, 5xx — read as PROVEN absence. Measured: probing the sweep's own estate returned 403 for **92 of 99** sites, every one of which the old rule scored as absent |
 | 2 | `rdap.ts` (item 1.1) | aggregator 404 + registry unreachable | returned the aggregator's `measured_empty`, asserting the domain is unregistered when the 404 was ambiguous precisely because it might mean "no route for this zone". **Caught by an acceptance test, not by review** — this is the best test outcome of the cycle |
-| 3 | `sweeper.ts` (#413 residual, closed by 2.11) | a not-found page echoing the requested handle | a genuine whole-token echo read as PRESENCE. Closed by restricting the echo to the identity surface |
+| 3 | `sweeper.ts` (#413 residual, **narrowed** by 2.11, **not closed**) | a not-found page echoing the requested handle | a genuine whole-token echo read as PRESENCE. 2.11 restricts the echo to the identity surface, which removes the body-text case; a not-found page naming the handle in its own `<head>` `<title>` **still passes** |
 
 Instances 1 and 3 are the two directions of the same error — a refusal read as
 absence, and a query-echo read as presence. Instance 2 is the same error one

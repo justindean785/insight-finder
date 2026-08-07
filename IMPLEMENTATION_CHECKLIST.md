@@ -18,7 +18,7 @@ Annotations record what a repo scan found. No item has been dropped or merged.
 
 ## PHASE 1 — FIX BROKEN CORE
 
-- [x] **1.1 DONE** (PR #422) — RESCOPED — RDAP hardening for `whois_lookup` (public tool name unchanged)
+- [ ] **1.1 IMPLEMENTED, HELD** (PR #422 — draft, not merged) — RESCOPED — RDAP hardening for `whois_lookup` (public tool name unchanged)
   - `whois_lookup` (`tool-registry.ts:2405`) **is already an RDAP lookup** against `rdap.org`, so this is hardening, not replacement.
   - **No CLI/subprocess fallback** — removed from spec. The edge runtime has no subprocess capability.
   1. IANA bootstrap fallback: cache `dns.rdap.bootstrap.json` 24h; route ccTLDs `rdap.org` does not serve to their registry RDAP endpoint.
@@ -47,17 +47,18 @@ Annotations record what a repo scan found. No item has been dropped or merged.
 - [ ] **2.7 NEW** — `ripestat` (ASN / prefix / abuse contacts)
 - [ ] **2.8 BLOCKED → UNBLOCKED** — audit `username_sweep:2418` vs WhatsMyName `wmn-data`; merge WMN definitions as an additive source (24h cache, concurrency ≤10, cap 150 probes) **only if the coverage delta is material — report the delta first**
   - Was blocked on #413 (merging WMN into a substring sweep multiplies false positives). **#413 merged as `5bd6ead`**, so the substring test is gone: whole-token matching, floor 5, and `confirm`-replaces-echo are in. Unblocked.
-  - Carry forward: the sweep's residual echo-on-404 class is still open (see 2.11), so expand coverage cautiously.
+  - Carry forward: the echo-on-404 residual is NARROWED by 2.11 but NOT closed — a not-found page naming the handle in its own `<head>` `<title>` still passes. Expand coverage cautiously.
 - [ ] **2.9 NEW** — `open_meteo_history`
 - [ ] **2.10 NEW** — dork **execution** path
   - `google_dorks:3024` is a **generator**: its own comment says it *"only emits search URLs"*. It never contacts Google, so its success counter measures string templating and must never earn discovery credit.
   - **First: trace and report who consumes `google_dorks` output today.**
   - Then execute generated patterns through available search APIs (Tavily / Exa / Perplexity), recording per-provider **operator fidelity as unverified**. Cap dorks per run; respect `MIN_START_GAP_MS`.
   - Note `dork_harvest:3347` already executes and relevance-gates recording; do not duplicate it.
-- [x] **2.11 DONE** (PR #423) — region-restricted echo matching for the sweep
+- [ ] **2.11 IMPLEMENTED, HELD** (PR #423 — draft, not merged; acceptance 4 UNMET) — region-restricted echo matching for the sweep
   - Landed after #413. Require the handle echo in `<title>`, `og:*`, or `rel=canonical` rather than anywhere in the body.
   - Can only move a site `found → unverified`, **never the reverse**. If it surfaces new `unverified` sites that is data; if it surfaces none that is also data.
-  - Does not close the residual: a platform echoing the handle in its own `<title>` on a not-found page still passes. Per-platform `confirm` measurement remains the real fix and needs an environment with open egress — 92 of 99 sites return 403 at the agent proxy.
+  - **Narrows, does not close, the residual.** A platform echoing the handle in its own `<head>` `<title>` on a not-found page still passes. Per-platform `confirm` measurement remains the real fix and needs open egress — 92 of 99 sites return 403 at the agent proxy.
+  - **Acceptance criterion 4 is UNMET**: live per-platform `found → unverified` transition counts have not been measured and cannot be from this environment. 2.11 is not done until they are measured or the criterion is explicitly waived.
 
 ---
 
@@ -130,8 +131,10 @@ Annotations record what a repo scan found. No item has been dropped or merged.
   - **Absorb 8.1's `system-prompt.ts:116` count fix into this plan.**
   - Also in scope: `CATALOG_CACHE` (`tool-registry.ts:302-311`) caches nothing — `filtered` is rebuilt and returned every call and the cached value is read only as a boolean for `cached_for_investigation`, so all 107 entries re-enter context on every call. It stores **unfiltered** `TOOL_CATALOG` while returning **filtered**, so serving the cached value without fixing that would start advertising provider-disabled tools.
   - Add an **end-to-end contract test**: execute the authoritative `list_tools`, apply readiness filtering, assert a nonzero count, assert every returned name is step-callable or explicitly internal, and pin the response shape (a top-level `tools` array via object spread — no count field). Log `catalog_count`, `runtime_count`, `deploy_eligible_count`, `step_eligible_count`, a registry/version hash, and per-tool exclusion reasons. Existing tests prove static catalog↔`buildTools()` parity only and never execute `list_tools`.
-- [ ] **8.4** — #410 consumes `subject_unlinked` (evidence **totals** and **board rendering**); track to merge
-  - `subject_unlinked` appears **nowhere in `src/`**. Until #410 lands, #414's quarantined rows still count in evidence totals and still render on the board. Backend containment before display is acceptable; an orphaned flag is not.
+- [ ] **8.4** — make the frontend consume `subject_unlinked` (evidence **totals** and **board rendering**)
+  - **CORRECTED.** An earlier revision of this line said #410 consumes `subject_unlinked`. **It does not.** Verified against #410's branch: `subject_unlinked` appears **nowhere in it**. #410 keys exclusion on `metadata.status === "excluded"` plus `metadata.collision` / `metadata.possible_collision` (`src/lib/artifact-exclusion.ts:60,79,123`). The two vocabularies are **disjoint** — #410 will not see #414's rows.
+  - They must **not** be aliased. #410's `excluded` means *ruled out, not the subject*; #414's quarantine means *preserved and visible as a lead, linkage unproven*. Writing `status:"excluded"` on quarantined rows to make them compose would destroy the distinction #414 exists to draw. This needs a **third state** in #410, not a metadata trick.
+  - Until that lands, #414's quarantined rows still count in evidence totals and still render on the board. Backend containment before display is acceptable; an orphaned flag is not.
 
 ---
 
@@ -141,5 +144,7 @@ Annotations record what a repo scan found. No item has been dropped or merged.
 - **Also update per tool:** `costs.ts`, `capabilities.ts` (`PROVIDER_REQUIREMENTS`), `source-classification.ts`, `cache.ts` timeout map, and `availableToolsForAudit` until 8.3 replaces it.
 - **Nine new tools take the catalog from 107 to ~116** while `activeTools` is still the full registry every step. Adding capability without 8.1/8.3 widens the surface the model must reason over.
 - **Do not flip** `FORCE_TOOL_CALL_UNTIL_FINALIZE` or `REQUIRE_TOOL_CALL_IN_OPENING_PHASE`. Both are pinned by tests for documented incident reasons.
-- **Open PRs on this surface:** #414 (name-only quarantine, merge-ready pending 8.4 confirmation), #418 (infra extraction, clean on main, CI re-run pending). #413 merged as `5bd6ead`.
+- **Open PRs on this surface:** #414 (name-only quarantine; the 8.4 blocker is ANSWERED — #410 does not consume the flag — so the merge decision is JD's), #421 / #422 / #423 (all draft, all held). **Merged:** #413 `5bd6ead`, #418 `47fc486`. Neither is DEPLOYED — production `/health` still reports `04decb5`.
+- **CI reruns:** *A rerun validates the original workflow SHA only. If the base branch has advanced, update the PR branch or otherwise create a new virtual merge, then verify the workflow's checked-out merge SHA and base SHA before merging.*
+- **Never rebase a pushed branch.** A rebase of published history is a rewrite and needs explicit authorization; merge `main` in instead.
 - **Deploy:** merge → `npm run stamp:build` → surgical mirror sync → explicit Lovable deploy → verify the `/health` build SHA moved. A mirror push is not a deploy. **Currently held** until 1.1 lands and there is a clean baseline.
