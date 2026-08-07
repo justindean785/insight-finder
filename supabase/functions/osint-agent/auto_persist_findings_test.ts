@@ -52,7 +52,7 @@ Deno.test("extractFindings pulls hibp breaches", () => {
   // The artifact count drops; the corpus list does not.
   assertEquals(out.length, 1);
   assertEquals(out[0].kind, "breach_exposure");
-  assertEquals(out[0].value, "Breach exposure (hibp_style)");
+  assertEquals(out[0].value, "Breach exposure (hibp_check/hibp_style)");
   assertEquals(out[0].rawConfidence, 55, "shape change only — the confidence value must not move");
   assertEquals(out[0].context?.breach_corpora, ["Adobe", "LinkedIn"], "sorted, and lossless");
   assertEquals(out[0].context?.breach_corpus_count, 2);
