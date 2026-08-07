@@ -164,12 +164,81 @@ function echoesHandle(hay: string, needle: string): boolean {
   return new RegExp(`(^|[^a-z0-9_-])${escapeRe(needle)}([^a-z0-9_-]|$)`).test(hay);
 }
 
+/**
+ * GUARD 3 — WHERE the echo appears decides whether it is evidence.
+ *
+ * The residual this closes: a platform that repeats the REQUESTED handle on its
+ * own not-found page — "No account named mercury", a canonical URL echoing the
+ * path, a hydration blob carrying the query — passed the whole-body echo test
+ * and scored a registration. Guards 1 and 2 cannot see it, because the echo is
+ * a genuine whole-token occurrence of a long-enough handle. Only its LOCATION
+ * distinguishes "this page is that account's profile" from "this page is
+ * repeating what you asked for".
+ *
+ * A real profile names its owner in the document's identity surface: the
+ * <title>, the Open Graph tags a link preview would use, or the canonical URL.
+ * An error page names the request in its body text. So the echo is now sought
+ * ONLY in those regions.
+ *
+ * ONE-WAY RATCHET. Restricting where evidence may be found can only ever
+ * REMOVE proof, never manufacture it: every region is a substring of the body,
+ * so a region match implies a body match. Therefore the only transition this
+ * guard can cause is `found -> unverified`. It cannot turn `unverified` into
+ * `found`, and it cannot touch `not_found`, which is decided by the definitive
+ * absent signals BEFORE any body is read. `regionEchoImpliesBodyEcho` is
+ * exported so that invariant is asserted rather than asserted-about.
+ *
+ * The cost is real and accepted: a profile that names its owner only in
+ * JS-rendered body content degrades to `unverified` — a visible lead, which is
+ * the honest label for "reachable, unproven", and the direction this file
+ * already errs in.
+ */
+const TITLE_RE = /<title[^>]*>([\s\S]*?)<\/title>/gi;
+const OG_META_RE = /<meta\b[^>]*\b(?:property|name)\s*=\s*["']og:[^"']*["'][^>]*>/gi;
+const CANONICAL_LINK_RE = /<link\b[^>]*\brel\s*=\s*["'](?:canonical|alternate)["'][^>]*>/gi;
+const ATTR_RE = /\b(?:content|href)\s*=\s*["']([^"']*)["']/i;
+
+/**
+ * The document's identity surface: <title> text, og:* content values, and
+ * canonical/alternate hrefs. Nothing else — deliberately not the body, not
+ * twitter: cards, not JSON-LD. Widening this set widens the false-positive
+ * surface it exists to close.
+ */
+export function highSignalRegions(body: string): string {
+  if (!body) return "";
+  const parts: string[] = [];
+  for (const m of body.matchAll(TITLE_RE)) parts.push(m[1] ?? "");
+  for (const re of [OG_META_RE, CANONICAL_LINK_RE]) {
+    for (const m of body.matchAll(re)) {
+      const attr = ATTR_RE.exec(m[0]);
+      if (attr) parts.push(attr[1]);
+    }
+  }
+  return parts.join("\n");
+}
+
+/** The pre-2.11 test, kept ONLY so the ratchet invariant can be asserted. */
+export function echoAnywhereInBody(body: string, username: string): boolean {
+  const u = String(username ?? "").trim().toLowerCase();
+  if (!body || u.length < MIN_ECHO_LEN) return false;
+  return echoesHandle(body.toLowerCase(), u);
+}
+
+/**
+ * The ratchet, as a checkable property: a region echo ALWAYS implies a body
+ * echo. If this ever returns false the restriction has stopped being a
+ * narrowing and has started inventing evidence.
+ */
+export function regionEchoImpliesBodyEcho(body: string, username: string): boolean {
+  return !bodyEvidencesAccount(body, username) || echoAnywhereInBody(body, username);
+}
+
 function bodyEvidencesAccount(body: string, username: string): boolean {
   if (!body || !username) return false;
   const u = username.trim().toLowerCase();
   // Short handles are unprovable by echo alone — see guard 2 above.
   if (u.length < MIN_ECHO_LEN) return false;
-  return echoesHandle(body.toLowerCase(), u);
+  return echoesHandle(highSignalRegions(body).toLowerCase(), u);
 }
 
 /**
