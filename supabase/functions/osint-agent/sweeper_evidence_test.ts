@@ -130,3 +130,82 @@ Deno.test("the reported count never absorbs unverified pages", async () => {
     restore();
   }
 });
+
+/**
+ * REVIEW FIX — the echo test must find EVIDENCE, not coincidence.
+ *
+ * The first cut of `bodyEvidencesAccount` was a bare
+ * `body.toLowerCase().includes(username.toLowerCase())`. That reintroduced the
+ * very defect this file pins, only inverted: instead of a status counting as
+ * proof, an incidental substring did. A handle matches inside any longer run of
+ * characters — a CSS class, a minified identifier, a base64 blob, or an
+ * ordinary English word — so a 200 that never mentions the account could still
+ * be scored a confirmed registration.
+ *
+ * Two guards now hold the line, and both are pinned below.
+ */
+
+Deno.test("a handle buried inside a longer word is NOT evidence", async () => {
+  // "chris" occurs inside "christmas", but never as a token of its own.
+  stubFetch(() => ({ status: 200, body: "<title>christmas sale</title><p>christopher</p>" }));
+  try {
+    const r = await sweepUsername("chris");
+    assertEquals(r.hits, 0, "a substring match is coincidence, not a registration");
+    assert(r.unverified.length > 0, "the pages are reachable — they stay visible as leads");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("a handle on a token boundary IS evidence", async () => {
+  // Same handle, now delimited — the page genuinely names the account.
+  stubFetch(() => ({ status: 200, body: "<title>chris | profile</title>" }));
+  try {
+    const r = await sweepUsername("chris");
+    assert(r.hits > 0, "a whole-token echo is the positive proof the gate asks for");
+    assert(r.found.every((f) => f.found === true));
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("punctuation around the handle does not defeat the match", async () => {
+  stubFetch(() => ({ status: 200, body: '<meta property="og:url" content="/u/exampleuser710">' }));
+  try {
+    const r = await sweepUsername("exampleuser710");
+    assert(r.hits > 0, "slashes and quotes are token delimiters, not part of the handle");
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * The length floor. Three characters occur as a standalone token all over
+ * ordinary HTML — in attribute values, minified identifiers and stop-words — so
+ * even a whole-token match cannot carry the claim. Such a handle is provable
+ * only by a measured, per-platform `confirm` marker; no site carries one yet
+ * (see the note on `SweepSite.confirm`), so today these always come back
+ * unverified. That is the intended, honest outcome, not a gap to paper over.
+ */
+Deno.test("a handle below the length floor is never a hit on an echo alone", async () => {
+  stubFetch(() => ({ status: 200, body: "<title>abc</title> welcome abc, member since 2019" }));
+  try {
+    const r = await sweepUsername("abc");
+    assertEquals(r.hits, 0, "three characters cannot evidence an account by echo");
+    assert(r.unverified.length > 0, "it is surfaced as a lead, not silently dropped");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("a regex-special handle cannot break or widen the match", async () => {
+  // An unescaped handle would compile into a pattern that matches far too much
+  // (or throws). Both failure modes are silent scoring errors.
+  stubFetch(() => ({ status: 200, body: "<title>unrelated page</title>" }));
+  try {
+    const r = await sweepUsername("a.b*c+d");
+    assertEquals(r.hits, 0, "the handle is matched literally, never as a pattern");
+  } finally {
+    restore();
+  }
+});

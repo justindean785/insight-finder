@@ -16,7 +16,19 @@ interface SweepSite {
   absent?: number | string;
   /** Optional body marker that PROVES a real profile (beats the generic
    *  username-echo test below). Use when a platform renders a profile without
-   *  echoing the handle, or echoes it on its not-found page. */
+   *  echoing the handle, or echoes it on its not-found page.
+   *
+   *  DELIBERATELY UNPOPULATED. Every marker here has to be measured against the
+   *  live platform — inventing plausible-looking strings would manufacture the
+   *  same false confidence this file exists to remove. Until a platform is
+   *  actually measured it stays on the generic echo test, and anything that
+   *  test cannot prove is reported as `unverified` rather than as a hit.
+   *
+   *  This is also the ONLY way to prove a handle shorter than MIN_ECHO_LEN:
+   *  such handles fail the echo test by construction, so a site with no
+   *  `confirm` marker will always report them unverified. That is intentional
+   *  — an unproven lead is the honest answer — but it means short-handle
+   *  coverage is the first thing per-platform measurement should buy back. */
   confirm?: string;
 }
 
@@ -92,10 +104,36 @@ async function readCapped(r: Response, maxBytes = 65536): Promise<string> {
  * Deliberately conservative: it can under-report a JS-rendered profile that
  * never prints the handle server-side. Those do not vanish — they are reported
  * as `unverified` leads, which is the honest label for "reachable, unproven".
+ *
+ * TWO GUARDS make the echo test evidence rather than coincidence:
+ *
+ *  1. WHOLE-TOKEN. A bare `includes()` matched the handle inside any longer
+ *     run of characters — "ben" hits "benchmark", a CSS class, a minified
+ *     identifier, a base64 blob. That is the same defect this PR exists to
+ *     remove, only inverted: unproven presence dressed up as a hit. The handle
+ *     must sit on a token boundary.
+ *  2. LENGTH FLOOR. Below MIN_ECHO_LEN even a whole-token match is coincidence
+ *     — three characters occur as a standalone token all over ordinary HTML.
+ *     Such a handle can only be proven by an explicit `confirm` marker, so
+ *     absent one it comes back `unverified`, never as a hit.
  */
+const MIN_ECHO_LEN = 4;
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Does `hay` contain `needle` as a whole token? Both must be lowercased. */
+function echoesHandle(hay: string, needle: string): boolean {
+  return new RegExp(`(^|[^a-z0-9_])${escapeRe(needle)}([^a-z0-9_]|$)`).test(hay);
+}
+
 function bodyEvidencesAccount(body: string, username: string): boolean {
   if (!body || !username) return false;
-  return body.toLowerCase().includes(username.toLowerCase());
+  const u = username.trim().toLowerCase();
+  // Short handles are unprovable by echo alone — see guard 2 above.
+  if (u.length < MIN_ECHO_LEN) return false;
+  return echoesHandle(body.toLowerCase(), u);
 }
 
 /**
