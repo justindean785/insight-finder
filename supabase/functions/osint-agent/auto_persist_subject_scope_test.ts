@@ -44,6 +44,37 @@ Deno.test("extractStepFindings: two subjects on the same provider yield TWO expo
   assert(values[0] !== values[1], "the two exposures must not share a value/dedup key");
 });
 
+// ---- THE PROVIDER GUARD: one subject, two independent sources ---------------
+Deno.test("extractStepFindings: two providers using the same payload shape yield TWO exposures", () => {
+  // Both RapidAPI and HIBP return data.breaches, so both are classified with the
+  // internal `hibp_style` parser branch. `via` alone is therefore not a provider
+  // identity: keying the artifact value on it collapses independent source
+  // observations and silently discards whichever provider runs second.
+  const step = extractStepFindings([
+    {
+      toolName: "rapidapi_breach_search",
+      input: { email: "same.subject@example.com" },
+      output: { ok: true, data: { email: "same.subject@example.com", breaches: [{ name: "RapidAPI corpus" }] } },
+    },
+    {
+      toolName: "hibp_lookup",
+      input: { email: "same.subject@example.com" },
+      output: { ok: true, data: { breaches: [{ Name: "HIBP corpus" }] } },
+    },
+  ]);
+
+  const exposures = step.filter((f) => f.kind === "breach_exposure");
+  assertEquals(exposures.length, 2, "independent providers must not share a dedup key");
+  assertEquals(
+    new Set(exposures.map((e) => e.toolName)),
+    new Set(["rapidapi_breach_search", "hibp_lookup"]),
+  );
+  assert(
+    exposures.every((e) => e.value.includes(e.toolName)),
+    "the persisted identity must include the provider, not only the shared parser branch",
+  );
+});
+
 // ---- subject from INPUT (the tool did not echo it in the output) ------------
 Deno.test("extractFindings: breach_check scopes the exposure to the input selector", () => {
   // leakcheck/breach_check does NOT echo the queried email in its output, so the
@@ -69,7 +100,7 @@ Deno.test("extractFindings: rapidapi scopes from data.email when no input is pas
   });
   const exp = exposure(out);
   assert(exp, "a breach_exposure row must be emitted");
-  assertEquals(exp!.value, "Breach exposure: echo@example.com (hibp_style)");
+  assertEquals(exp!.value, "Breach exposure: echo@example.com (rapidapi_breach_search/hibp_style)");
   assertEquals(exp!.context?.queried_selector, "echo@example.com");
 });
 

@@ -508,21 +508,23 @@ export function extractFindings(toolName: string, output: unknown, input?: unkno
   // never be the one evicted by that cap.
   // The subject this call was queried on. Scoping the VALUE (not just metadata)
   // is load-bearing: the dedup key is checkpointKey(kind, value), thread-wide via
-  // loadSeenArtifactKeys. A subject-agnostic `Breach exposure (rapidapi)` collides
-  // across subjects, so a SECOND selector's exposure in the same thread was
-  // silently dropped as a duplicate. Anchoring the value on the queried selector
-  // gives each subject its own row.
+  // loadSeenArtifactKeys. It needs BOTH the queried subject and the actual tool
+  // provider. `via` only identifies the parser branch: rapidapi_breach_search,
+  // hibp_lookup, and other providers can all produce the same `hibp_style` shape.
+  // Keying on subject + via silently collapses independent source observations,
+  // destroying the corroboration the multi-provider lookup is meant to preserve.
   const subjectLabel = breachSubjectAnchor(o, input);
   const exposures: ExtractedFinding[] = [];
   for (const [via, set] of breachCorpora) {
     const corpora = [...set].sort();
     if (corpora.length === 0) continue;
     const kept = corpora.slice(0, MAX_BREACH_CORPORA_PER_EXPOSURE);
+    const providerKey = via === toolName ? toolName : `${toolName}/${via}`;
     exposures.push({
       kind: "breach_exposure",
       value: subjectLabel
-        ? `Breach exposure: ${subjectLabel} (${via})`
-        : `Breach exposure (${via})`,
+        ? `Breach exposure: ${subjectLabel} (${providerKey})`
+        : `Breach exposure (${providerKey})`,
       context: {
         tool: toolName,
         via,
