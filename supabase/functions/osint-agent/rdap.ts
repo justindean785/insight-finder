@@ -67,9 +67,17 @@ const BOOTSTRAP_NEGATIVE_TTL_MS = 60_000;
 interface BootstrapCache {
   /** tld (no leading dot) -> list of RDAP base URLs */
   map: Map<string, string[]>;
+  /** When the MAP was fetched. Never advanced by a failed refresh — the data
+   *  really is that old and its age must not be laundered. */
   fetchedAt: number;
   /** false = this entry records a FAILURE, not a fetched table. */
   ok: boolean;
+  /** When a REFRESH of an already-good map last failed. A separate clock from
+   *  `fetchedAt`, and the reason it exists: serving stale data without also
+   *  recording the failure left the map permanently expired, so every single
+   *  lookup re-attempted IANA for as long as it stayed down. Age and backoff
+   *  are different facts and need different fields. Cleared by a success. */
+  refreshFailedAt?: number;
 }
 let bootstrapCache: BootstrapCache | null = null;
 
@@ -78,9 +86,14 @@ export function _resetBootstrapCache(): void {
   bootstrapCache = null;
 }
 
-/** Test seam: age the cache past its TTL without waiting or faking a clock. */
+/** Test seam: age the MAP past its TTL without waiting or faking a clock. */
 export function _expireBootstrapCache(): void {
   if (bootstrapCache) bootstrapCache.fetchedAt = 0;
+}
+
+/** Test seam: elapse the refresh-failure barrier, leaving the map's age alone. */
+export function _expireBootstrapBarrier(): void {
+  if (bootstrapCache) bootstrapCache.refreshFailedAt = 0;
 }
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
@@ -98,6 +111,14 @@ export async function loadBootstrap(fetchImpl: FetchLike): Promise<Map<string, s
   if (bootstrapCache) {
     const ttl = bootstrapCache.ok ? BOOTSTRAP_TTL_MS : BOOTSTRAP_NEGATIVE_TTL_MS;
     if (now - bootstrapCache.fetchedAt < ttl) return bootstrapCache.map;
+    // Stale, but a recent refresh attempt already failed. Serve the stale map
+    // and do NOT re-attempt until the barrier elapses.
+    if (
+      bootstrapCache.refreshFailedAt !== undefined &&
+      now - bootstrapCache.refreshFailedAt < BOOTSTRAP_NEGATIVE_TTL_MS
+    ) {
+      return bootstrapCache.map;
+    }
   }
   const map = new Map<string, string[]>();
   try {
@@ -108,14 +129,19 @@ export async function loadBootstrap(fetchImpl: FetchLike): Promise<Map<string, s
       const bases = (urls ?? []).filter((u) => typeof u === "string");
       for (const t of tlds ?? []) map.set(String(t).toLowerCase().replace(/^\./, ""), bases);
     }
+    // A success replaces the entry outright, which also clears any barrier.
     bootstrapCache = { map, fetchedAt: now, ok: true };
     return map;
   } catch {
     // STALE SUCCESSFUL DATA OUTRANKS A FRESH FAILURE. The TLD -> RDAP table
-    // changes on the order of days, so a table from yesterday is far better
-    // than no table at all; keep serving it and leave its timestamp alone so
-    // the next lookup retries rather than extending the stale window.
-    if (bootstrapCache?.ok) return bootstrapCache.map;
+    // changes on the order of days, so yesterday's table beats no table.
+    // Record the failure on its OWN clock: the map keeps its real age (so it
+    // still expires honestly) while the barrier stops every subsequent lookup
+    // from re-attempting a provider we just watched fail.
+    if (bootstrapCache?.ok) {
+      bootstrapCache.refreshFailedAt = now;
+      return bootstrapCache.map;
+    }
     // Nothing good to fall back on: record the failure under a SHORT negative
     // TTL so a transient blip costs a minute, not a day.
     bootstrapCache = { map, fetchedAt: now, ok: false };

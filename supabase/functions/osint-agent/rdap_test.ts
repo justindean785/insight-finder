@@ -18,6 +18,7 @@
  */
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
+  _expireBootstrapBarrier,
   _expireBootstrapCache,
   _resetBootstrapCache,
   parseRdapDoc,
@@ -252,33 +253,55 @@ Deno.test("a failed bootstrap is retried, not cached for 24h", async () => {
   assertEquals(later.outcome, "found", "the registry answers once bootstrap succeeds");
 });
 
-Deno.test("stale successful bootstrap data outranks a fresh failure", async () => {
+Deno.test("a failed REFRESH serves stale data without starting a request storm", async () => {
   _resetBootstrapCache();
+  let ianaHits = 0;
   let ianaUp = true;
   let registryHits = 0;
   const f = router([
     [/rdap\.org/, () => json({ errorCode: 404 }, 404)],
-    [/data\.iana\.org/, () =>
-      ianaUp
+    [/data\.iana\.org/, () => {
+      ianaHits++;
+      return ianaUp
         ? json(bootstrapDoc("test", "https://rdap.registry.test"))
-        : Promise.resolve(new Response("down", { status: 503 }))],
+        : Promise.resolve(new Response("down", { status: 503 }));
+    }],
     [/rdap\.registry\.test/, () => {
       registryHits++;
       return json(domainDoc({ registrar: "Registry Test Ltd." }));
     }],
   ]);
 
-  const warm = await rdapLookup("a.test", f);
-  assertEquals(warm.outcome, "found");
+  // 1. Warm a successful map.
+  assertEquals((await rdapLookup("a.test", f)).outcome, "found");
+  assertEquals(ianaHits, 1);
 
-  // IANA goes down AFTER we already have a good table. The table is days-stable,
-  // so keeping it beats discarding it — the fallback must keep working.
-  ianaUp = false;
+  // 2. Age it out. 3. One refresh fails — stale data must still be served.
   _expireBootstrapCache();
-  const later = await rdapLookup("b.test", f);
-  assertEquals(later.outcome, "found", "a stale table still routes to the registry");
-  assertEquals(registryHits, 2);
+  ianaUp = false;
+  const stale = await rdapLookup("b.test", f);
+  assertEquals(stale.outcome, "found", "a stale table still routes to the registry");
+  assertEquals(ianaHits, 2, "exactly one refresh was attempted");
+
+  // 4. THE STORM. Without a barrier the map stays expired, so every further
+  //    lookup re-attempts IANA for as long as it is down. Three calls, zero
+  //    new IANA requests.
+  for (const d of ["c.test", "d.test", "e.test"]) {
+    assertEquals((await rdapLookup(d, f)).outcome, "found");
+  }
+  assertEquals(ianaHits, 2, "inside the barrier, IANA must not be called again");
+
+  // 5. Barrier elapses → EXACTLY ONE new refresh, not one per lookup.
+  _expireBootstrapBarrier();
+  ianaUp = true;
+  assertEquals((await rdapLookup("f.test", f)).outcome, "found");
+  assertEquals(ianaHits, 3, "exactly one refresh once the barrier elapses");
+  await rdapLookup("g.test", f);
+  assertEquals(ianaHits, 3, "and the fresh map is cached again, so no further refresh");
+
+  assertEquals(registryHits, 7, "every lookup still reached the registry throughout");
 });
+
 
 /**
  * ACCEPTANCE BAR point 7 — "aggregator 404 plus unavailable registry remains
