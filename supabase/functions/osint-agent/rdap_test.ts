@@ -279,3 +279,35 @@ Deno.test("stale successful bootstrap data outranks a fresh failure", async () =
   assertEquals(later.outcome, "found", "a stale table still routes to the registry");
   assertEquals(registryHits, 2);
 });
+
+/**
+ * ACCEPTANCE BAR point 7 — "aggregator 404 plus unavailable registry remains
+ * unconfirmed: true". Covers BOTH ways corroboration can fail, because a reader
+ * should not need to know which one happened to know that it did.
+ */
+Deno.test("aggregator 404 + unreachable registry is failed AND unconfirmed", async () => {
+  _resetBootstrapCache();
+  const r = await rdapLookup(
+    "example.test",
+    router([
+      [/rdap\.org/, () => json({ errorCode: 404 }, 404)],
+      [/data\.iana\.org/, () => json(bootstrapDoc("test", "https://rdap.registry.test"))],
+      [/rdap\.registry\.test/, () => Promise.resolve(new Response("gone", { status: 503 }))],
+    ]),
+  );
+  assertEquals(r.outcome, "failed", "an unreachable registry is not an absence");
+  assertEquals(r.unconfirmed, true, "and nothing corroborated the aggregator");
+});
+
+Deno.test("aggregator 404 + NO registry listed is measured_empty AND unconfirmed", async () => {
+  _resetBootstrapCache();
+  const r = await rdapLookup(
+    "example.test",
+    router([
+      [/rdap\.org/, () => json({ errorCode: 404 }, 404)],
+      [/data\.iana\.org/, () => json({ services: [] })],
+    ]),
+  );
+  assertEquals(r.outcome, "measured_empty");
+  assertEquals(r.unconfirmed, true);
+});

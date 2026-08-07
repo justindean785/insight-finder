@@ -278,5 +278,9 @@ export async function rdapLookup(
   // it was ambiguous precisely because it might mean "no route for this zone".
   // Returning `measured_empty` here would assert something never established,
   // which is the whole defect this module removes.
-  return viaRegistry;
+  //
+  // `unconfirmed` is set here as well as on the no-registry-listed path: in
+  // both cases nothing corroborated the aggregator, and a reader should not
+  // have to know WHICH way the corroboration failed to know that it did.
+  return { ...viaRegistry, unconfirmed: true };
 }
