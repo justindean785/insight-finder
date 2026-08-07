@@ -17,6 +17,42 @@ function fakeSupabase(capture: (rows: Array<Record<string, unknown>>) => void, i
   } as unknown as Parameters<typeof persistAutoFindings>[0]["supabase"];
 }
 
+function statefulArtifactSupabase() {
+  const rows: Array<Record<string, unknown>> = [];
+  return {
+    rows,
+    client: {
+      from: (_t: string) => ({
+        insert: (incoming: Array<Record<string, unknown>>) => {
+          rows.push(...incoming.map((row, i) => ({ id: `artifact-${rows.length + i}`, ...row })));
+          return Promise.resolve({ error: null });
+        },
+        select: (_columns: string) => {
+          const filters = new Map<string, unknown>();
+          const query = {
+            eq(column: string, value: unknown) {
+              filters.set(column, value);
+              return query;
+            },
+            maybeSingle() {
+              const data = rows.find((row) => [...filters].every(([column, value]) => row[column] === value)) ?? null;
+              return Promise.resolve({ data, error: null });
+            },
+          };
+          return query;
+        },
+        update: (patch: Record<string, unknown>) => ({
+          eq: (column: string, value: unknown) => {
+            const row = rows.find((candidate) => candidate[column] === value);
+            if (row) Object.assign(row, patch);
+            return Promise.resolve({ error: null });
+          },
+        }),
+      }),
+    } as unknown as Parameters<typeof persistAutoFindings>[0]["supabase"],
+  };
+}
+
 Deno.test("normalizeFinding rejects invalid values", () => {
   assertEquals(normalizeFinding("url", "not-a-url"), null);
   assertEquals(normalizeFinding("email", "not-an-email"), null);
@@ -114,6 +150,29 @@ Deno.test("extractStepFindings dedups across tool calls", () => {
   assertEquals(out.length, 2);
 });
 
+Deno.test("extractStepFindings merges corpora from repeated subject/provider calls", () => {
+  const out = extractStepFindings([
+    {
+      toolName: "breach_check",
+      input: { email: "merge.subject@example.com" },
+      output: { ok: true, data: { found: 1, sources: [{ name: "Adobe" }], success: true } },
+    },
+    {
+      toolName: "breach_check",
+      input: { email: "merge.subject@example.com" },
+      output: {
+        ok: true,
+        data: { found: 2, sources: [{ name: "Adobe" }, { name: "LinkedIn" }], success: true },
+      },
+    },
+  ]);
+
+  const exposures = out.filter((finding) => finding.kind === "breach_exposure");
+  assertEquals(exposures.length, 1, "the provider-scoped identity remains one artifact");
+  assertEquals(exposures[0].context?.breach_corpora, ["Adobe", "LinkedIn"], "later corpora must not be discarded");
+  assertEquals(exposures[0].context?.breach_corpus_count, 2);
+});
+
 Deno.test("extractStepFindings caps per-step at 60", () => {
   const citations: string[] = [];
   for (let i = 0; i < 200; i++) citations.push(`https://ex.com/${i}`);
@@ -147,6 +206,31 @@ Deno.test("persistAutoFindings inserts scrubbed rows tagged with thread/user and
   assertEquals(res2.inserted, 0);
   assertEquals(res2.skipped_duplicates, 1);
   assertEquals(inserted2.length, 0);
+});
+
+Deno.test("persistAutoFindings merges later corpora into an existing exposure row", async () => {
+  const store = statefulArtifactSupabase();
+  const seen = new Set<string>();
+  const base = {
+    kind: "breach_exposure",
+    value: "Breach exposure: merge.subject@example.com (breach_check)",
+    toolName: "breach_check",
+    rawConfidence: 55,
+  };
+
+  await persistAutoFindings(
+    { supabase: store.client, threadId: "t1", userId: "u1", seen },
+    [{ ...base, context: { breach_corpora: ["Adobe"], breach_corpus_count: 1 } }],
+  );
+  await persistAutoFindings(
+    { supabase: store.client, threadId: "t1", userId: "u1", seen },
+    [{ ...base, context: { breach_corpora: ["Adobe", "LinkedIn"], breach_corpus_count: 2 } }],
+  );
+
+  assertEquals(store.rows.length, 1, "the later observation must update, not duplicate, the exposure");
+  const metadata = store.rows[0].metadata as Record<string, unknown>;
+  assertEquals(metadata.breach_corpora, ["Adobe", "LinkedIn"], "persisted metadata must retain the corpus union");
+  assertEquals(metadata.breach_corpus_count, 2);
 });
 
 Deno.test("persistAutoFindings never throws on insert error and reports zero inserted", async () => {

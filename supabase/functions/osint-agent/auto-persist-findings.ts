@@ -85,6 +85,20 @@ export type ExtractedFinding = {
   rawConfidence?: number;
 };
 
+function agentDebugLog(hypothesisId: string, location: string, message: string, data: Record<string, unknown>): void {
+  try {
+    // #region agent log
+    Deno.writeTextFileSync(
+      "/opt/cursor/logs/debug.log",
+      JSON.stringify({ hypothesisId, location, message, data, timestamp: Date.now() }) + "\n",
+      { append: true },
+    );
+    // #endregion
+  } catch {
+    // Debug logging is best-effort and must never affect edge-function behavior.
+  }
+}
+
 /** Value normalization + validation for the allowed kinds. Returns the canonical
  *  form to store, or null if the value is invalid / not safe to persist. */
 export function normalizeFinding(kind: string, value: unknown): { kind: string; value: string } | null {
@@ -561,6 +575,11 @@ export function extractFindings(toolName: string, output: unknown, input?: unkno
 /** Walk every tool result on a step. Returns a de-duped, step-capped list. */
 export function extractStepFindings(toolResults: unknown[] | null | undefined): Array<ExtractedFinding & { toolName: string }> {
   if (!Array.isArray(toolResults)) return [];
+  // #region agent log
+  agentDebugLog("A", "auto-persist-findings.ts:576", "extractStepFindings entry", {
+    tool_result_count: toolResults.length,
+  });
+  // #endregion
   const out: Array<ExtractedFinding & { toolName: string }> = [];
   const seen = new Set<string>();
   for (const tr of toolResults) {
@@ -576,7 +595,17 @@ export function extractStepFindings(toolResults: unknown[] | null | undefined): 
     const findings = extractFindings(name, output, input);
     for (const f of findings) {
       const k = checkpointKey(f.kind, f.value);
-      if (seen.has(k)) continue;
+      if (seen.has(k)) {
+        // #region agent log
+        agentDebugLog("A", "auto-persist-findings.ts:596", "same-step duplicate skipped", {
+          kind: f.kind,
+          is_breach_exposure: f.kind === "breach_exposure",
+          prior_corpus_count: out.find((prior) => checkpointKey(prior.kind, prior.value) === k)?.context?.breach_corpus_count ?? null,
+          incoming_corpus_count: f.context?.breach_corpus_count ?? null,
+        });
+        // #endregion
+        continue;
+      }
       seen.add(k);
       out.push({ ...f, toolName: name });
       if (out.length >= MAX_AUTO_PERSIST_PER_STEP) return out;
@@ -718,11 +747,28 @@ export async function persistAutoFindings(
 ): Promise<AutoPersistResult> {
   if (!Array.isArray(findings) || findings.length === 0) return { inserted: 0, skipped_duplicates: 0, rows: [] };
 
+  // #region agent log
+  agentDebugLog("B", "auto-persist-findings.ts:749", "persistAutoFindings entry", {
+    finding_count: findings.length,
+    seen_count: ctx.seen.size,
+    breach_exposure_count: findings.filter((finding) => finding.kind === "breach_exposure").length,
+  });
+  // #endregion
   const fresh: Array<ExtractedFinding & { toolName: string }> = [];
   let dups = 0;
   for (const f of findings) {
     const k = checkpointKey(f.kind, f.value);
-    if (ctx.seen.has(k)) { dups++; continue; }
+    if (ctx.seen.has(k)) {
+      // #region agent log
+      agentDebugLog("B", "auto-persist-findings.ts:762", "persisted duplicate skipped", {
+        kind: f.kind,
+        is_breach_exposure: f.kind === "breach_exposure",
+        incoming_corpus_count: f.context?.breach_corpus_count ?? null,
+      });
+      // #endregion
+      dups++;
+      continue;
+    }
     fresh.push(f);
   }
   if (fresh.length === 0) return { inserted: 0, skipped_duplicates: dups, rows: [] };
