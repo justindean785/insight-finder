@@ -49,8 +49,8 @@ Four tools are defined in `tools/*.ts` and imported into the registry:
 | `google_dorks` | `tool-registry.ts:3024` | **Generator, not a search tool.** In-code comment: *"google_dorks is intentionally ungated — it only emits search URLs."* Performs no network I/O |
 | `dork_harvest` | `tool-registry.ts:3347` | The executing, relevance-gated dork stage (Perplexity Sonar, Exa fallback, bounded Gemini read) |
 | `gemini_deep_dork` | `tool-registry.ts:3688` | Documented fallback, ~46% success in production telemetry |
-| `whois_lookup` | `tool-registry.ts:2405` | 13-line **RDAP** wrapper over `rdap.org`. Keyless |
-| `username_sweep` | `tool-registry.ts:2418` | ~95-platform HTTP existence sweep |
+| `whois_lookup` | `tool-registry.ts:2405` | 13-line **RDAP** wrapper over `rdap.org`. Keyless. Item 1.1 hardens it |
+| `username_sweep` | `tool-registry.ts:2418` | ~95-platform HTTP existence sweep. Reworked by #413 (`5bd6ead`) |
 
 ### Health / audit recording path
 | Stage | Path : line |
@@ -112,6 +112,27 @@ appear as automated fallbacks in any routing graph.
 
 Test command: `npm run test:edge` — `--allow-read` is required or the
 source-level wiring tests abort with `NotCapable` before asserting.
+
+### Sweep outcome vocabulary (#413, merged as `5bd6ead`)
+
+`sweeper.ts` now reports one of four outcomes per site, and item 1.2 should keep
+`tool_usage_log` on the same vocabulary:
+
+| outcome | meaning |
+|---|---|
+| `found` | positive evidence — a configured `confirm` marker, or a whole-token echo of a handle ≥ 5 chars |
+| `not_found` | **proven** absence — a configured `absent` status, a configured `absent` body marker, or a bare 404/410 |
+| `unverified` | reached, nothing proved either way — a 2xx whose body does not evidence the account, **or** a refusal (401/403/451) where the account may exist behind the wall |
+| `error` | the question was never answered — 429, 5xx, timeout, network failure, budget exhaustion |
+
+`missed` is proven absence only; unreachable sites are listed under `errored`.
+
+**Known residual:** a platform that repeats the requested handle on its own
+not-found page still passes the echo test. `confirm` is deliberately unpopulated
+— each marker must be measured against the live platform, and **92 of 99 sites
+return HTTP 403 at the agent proxy**, so that measurement needs an environment
+with open egress. Inventing markers would manufacture the false confidence the
+change exists to remove. Item 2.11 is the approved bounded mitigation.
 
 ---
 
