@@ -1,4 +1,3 @@
-import { appendFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { describeEvidence, deriveWorkspaceStatus, pickEvidenceCount } from "@/components/workspace/WorkspaceHeader";
 
@@ -182,17 +181,8 @@ describe("deriveWorkspaceStatus", () => {
       lastHeartbeatAt: new Date(nowMs - 75_001).toISOString(),
     };
 
-    // #region agent log
-    appendFileSync("/opt/cursor/logs/debug.log", `${JSON.stringify({ hypothesisId: "A,B,C", location: "src/test/workspace-evidence-count.test.ts:heartbeat-fixtures", message: "heartbeat boundary fixtures", data: { freshInput, staleInput }, timestamp: Date.now() })}\n`);
-    // #endregion
     const freshStatus = deriveWorkspaceStatus(freshInput);
-    // #region agent log
-    appendFileSync("/opt/cursor/logs/debug.log", `${JSON.stringify({ hypothesisId: "A,C", location: "src/test/workspace-evidence-count.test.ts:fresh-result", message: "fresh heartbeat status", data: { lastHeartbeatAt: freshInput.lastHeartbeatAt, status: freshStatus }, timestamp: Date.now() })}\n`);
-    // #endregion
     const staleStatus = deriveWorkspaceStatus(staleInput);
-    // #region agent log
-    appendFileSync("/opt/cursor/logs/debug.log", `${JSON.stringify({ hypothesisId: "B,C", location: "src/test/workspace-evidence-count.test.ts:stale-result", message: "stale heartbeat status", data: { lastHeartbeatAt: staleInput.lastHeartbeatAt, status: staleStatus }, timestamp: Date.now() })}\n`);
-    // #endregion
 
     expect(freshStatus).toBe("active");
     expect(staleStatus).toBe("interrupted");
