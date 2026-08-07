@@ -541,3 +541,82 @@ Deno.test("2.11: echoAnywhereInBody still sees what the region test now rejects"
   assert(echoAnywhereInBody(body, "mercury"), "the pre-2.11 test would have called this a hit");
   assert(!accountIsProven({}, body, "mercury"), "2.11 correctly refuses it");
 });
+
+/**
+ * REVIEW FIX — markup-shaped TEXT is not markup.
+ *
+ * The region rule was sound; reading regions with a document-wide regex was
+ * not. A literal "<title>handle</title>" appearing inside a script string, an
+ * HTML comment, or a <template> was extracted as the page's title and scored as
+ * proof — the exact echo-on-404 shape 2.11 exists to reject, re-entering
+ * through the extractor instead of the matcher. All three were reproduced
+ * against the previous commit.
+ *
+ * The pre-existing exclusion test used plain `SCRIPTTEXT`, which is why it
+ * never caught this: it proved script CONTENT was excluded, not that script
+ * content SHAPED LIKE MARKUP was.
+ */
+const MARKUP_SHAPED_TEXT: Array<[string, string]> = [
+  ["script string", '<html><head><title>Not found</title></head><body><script>var t = "<title>mercury</title>";</script></body></html>'],
+  ["template literal in script", "<html><head><title>Not found</title></head><body><script>const h = `<title>mercury</title>`;</script></body></html>"],
+  ["HTML comment", "<html><head><title>Not found</title></head><body><!-- <title>mercury</title> --></body></html>"],
+  ["<template> element", "<html><head><title>Not found</title></head><body><template><title>mercury</title></template></body></html>"],
+  ["<textarea> content", "<html><head><title>Not found</title></head><body><textarea><title>mercury</title></textarea></body></html>"],
+  ["og:title inside a comment", '<html><head><title>Not found</title><!-- <meta property="og:title" content="mercury"> --></head></html>'],
+  ["canonical inside a script", '<html><head><title>Not found</title><script>var s = \'<link rel="canonical" href="/u/mercury">\';</script></head></html>'],
+];
+
+for (const [label, html] of MARKUP_SHAPED_TEXT) {
+  Deno.test(`2.11 REVIEW: markup-shaped text in a ${label} is not the identity surface`, async () => {
+    stubFetch(() => ({ status: 200, body: html }));
+    try {
+      const r = await sweepUsername("mercury");
+      assertEquals(r.hits, 0, `${label} must not be read as the page's identity`);
+      assert(r.unverified.length > 0, "the page is reachable — still a lead");
+    } finally {
+      restore();
+    }
+  });
+}
+
+Deno.test("2.11 REVIEW: highSignalRegions does not see markup-shaped text", () => {
+  for (const [label, html] of MARKUP_SHAPED_TEXT) {
+    const regions = highSignalRegions(html);
+    assert(!regions.includes("mercury"), `${label} leaked into the identity surface`);
+    assert(regions.includes("Not found"), `${label}: the REAL title must still be read`);
+  }
+});
+
+/**
+ * A <title> in the BODY is not the document's title — browsers honour only the
+ * one in <head>. Documents that omit <head> fall back to the stripped document,
+ * which stays safe because raw text and comments are already gone.
+ */
+Deno.test("2.11 REVIEW: a <title> in the body is not the document title", async () => {
+  stubFetch(() => ({
+    status: 200,
+    body: "<html><head><title>Not found</title></head><body><title>mercury</title></body></html>",
+  }));
+  try {
+    const r = await sweepUsername("mercury");
+    assertEquals(r.hits, 0, "only <head>'s title is the document's title");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("2.11 REVIEW: a document with no <head> still reads its title", async () => {
+  stubFetch(() => ({ status: 200, body: "<title>mercury</title><p>x</p>" }));
+  try {
+    const r = await sweepUsername("mercury");
+    assert(r.hits > 0, "head-less documents are common; do not lose them");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("2.11 REVIEW: the ratchet still holds over markup-shaped inputs", () => {
+  for (const [, html] of MARKUP_SHAPED_TEXT) {
+    assert(regionEchoImpliesBodyEcho(html, "mercury"), "region matched where the body did not");
+  }
+});

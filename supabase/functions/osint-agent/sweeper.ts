@@ -199,17 +199,46 @@ const CANONICAL_LINK_RE = /<link\b[^>]*\brel\s*=\s*["'](?:canonical|alternate)["
 const ATTR_RE = /\b(?:content|href)\s*=\s*["']([^"']*)["']/i;
 
 /**
+ * Regions whose CONTENT is not markup, even when it looks like markup.
+ *
+ * Stripped BEFORE anything is extracted, and in this order, because that is
+ * how HTML actually tokenizes: inside a raw-text element `<!--` is not a
+ * comment opener, so removing raw text first and comments second is faithful
+ * where the reverse would mangle a script containing `-->`.
+ *
+ * Why this exists: matching `<title>…</title>` across the whole document meant
+ * a literal `"<title>mercury</title>"` inside a script string, an HTML comment,
+ * or a <template> was extracted as the page's title and scored as proof. All
+ * three were reproduced. The region rule was sound; reading regions with a
+ * document-wide regex was not.
+ */
+const RAW_TEXT_RE = /<(script|style|textarea|template)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
+const COMMENT_RE = /<!--[\s\S]*?-->/g;
+const HEAD_RE = /<head\b[^>]*>([\s\S]*?)<\/head\s*>/i;
+
+/**
  * The document's identity surface: <title> text, og:* content values, and
  * canonical/alternate hrefs. Nothing else — deliberately not the body, not
  * twitter: cards, not JSON-LD. Widening this set widens the false-positive
  * surface it exists to close.
+ *
+ * Two narrowings beyond "run the regexes":
+ *  1. Raw-text elements and comments are removed first, so markup-shaped TEXT
+ *     can never be read as markup.
+ *  2. <title> is taken from <head> when the document has one. A <title> in the
+ *     body is not the document's title; browsers only honour the one in head.
+ *     Documents that omit <head> entirely fall back to the stripped document,
+ *     which is still safe because step 1 already ran.
  */
 export function highSignalRegions(body: string): string {
   if (!body) return "";
+  const clean = body.replace(RAW_TEXT_RE, " ").replace(COMMENT_RE, " ");
+  const head = HEAD_RE.exec(clean)?.[1];
+  const titleScope = head ?? clean;
   const parts: string[] = [];
-  for (const m of body.matchAll(TITLE_RE)) parts.push(m[1] ?? "");
+  for (const m of titleScope.matchAll(TITLE_RE)) parts.push(m[1] ?? "");
   for (const re of [OG_META_RE, CANONICAL_LINK_RE]) {
-    for (const m of body.matchAll(re)) {
+    for (const m of clean.matchAll(re)) {
       const attr = ATTR_RE.exec(m[0]);
       if (attr) parts.push(attr[1]);
     }
