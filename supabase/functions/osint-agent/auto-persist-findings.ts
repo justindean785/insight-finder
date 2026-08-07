@@ -198,6 +198,154 @@ const BREACH_SUBJECT_INPUT_KEYS = [
   "query", "q", "value", "domain", "ip", "ip_address",
 ] as const;
 
+/** Input keys that carry a CONCRETE selector — one that identifies an account,
+ *  not a person. A query on any of these is subject-linked by construction:
+ *  the provider matched on the selector itself. */
+const CONCRETE_SELECTOR_INPUT_KEYS = [
+  "email", "identifierValue", "username", "handle", "phone", "domain", "ip", "ip_address",
+] as const;
+
+/** Marker written into artifact.metadata for a row harvested from a name-only
+ *  query. It is DISCLOSURE, not deletion: the row persists and stays readable on
+ *  the Evidence board, but it must never join a cluster or count as evidence. */
+const SUBJECT_UNLINKED_CTX = {
+  subject_unlinked: true,
+  subject_unlinked_reason:
+    "harvested from a name-only query — same-name collision axis; linkage to the subject is unproven",
+} as const;
+
+/** Declared `type`/`kind`/`search_type` values that name a CONCRETE selector.
+ *  This is the union of the real tool enums minus `name`: oathnet_lookup is
+ *  ["email","username","phone","ip","domain","name"], leakcheck_lookup is
+ *  ["auto","email","username","phone","hash","domain"]. `auto` is deliberately
+ *  absent — it declares nothing, so it must fall through to shape-sniffing. */
+const CONCRETE_DECLARED_TYPES = new Set([
+  "email", "username", "phone", "ip", "domain", "hash",
+]);
+
+/** Tools whose `query` slot holds a SEARCH EXPRESSION in a query language or a
+ *  natural-language question — never a person name. Each is inherently multiword,
+ *  so shape-sniffing classified every call as a person name and quarantined
+ *  everything it returned. Enumerated from the real schemas in tool-registry.ts
+ *  and each confirmed by probe to both produce findings and be wrongly
+ *  quarantined; do NOT extend this by guessing from a tool's name.
+ *
+ *    github_code_search    GitHub search syntax   `widgets in:file extension:json`
+ *    urlscan_search        Lucene                 `domain:example.com AND page.url:"k"`
+ *    fofa_search           FOFA syntax            `domain="example.com" && port="443"`
+ *    oathnet_ai_filter     NL corpus filter       `US banking users with gmail addresses`
+ *    osint_navigator_query NL question ABOUT TOOLS `tools to find who registered a domain`
+ *
+ *  DELIBERATELY ABSENT — these are subject searches, not query languages, so a
+ *  name typed into them really does return same-name-collision-prone results,
+ *  which is precisely what this gate exists to disclose:
+ *    deepfind_telegram_search  topic/keyword channel search
+ *    oathnet_scanner           its `query` IS the selector being monitored
+ *    hackertarget              its `query` IS a host/IP/domain target
+ *  Also absent because AUTO_PERSIST_TOOL_DENYLIST already stops them reaching the
+ *  gate at all: exa_search, minimax_web_search, osint_navigator_search. */
+const FREE_TEXT_QUERY_TOOLS = new Set([
+  "github_code_search",
+  "urlscan_search",
+  "fofa_search",
+  "oathnet_ai_filter",
+  "osint_navigator_query",
+]);
+
+/** Does this string look like a PERSON NAME rather than a selector? Two or more
+ *  words and none of the concrete selector shapes.
+ *
+ *  LAST RESORT ONLY. This is a guess about a string's shape, and it is wrong in
+ *  both directions (a query language reads as a name; "kyle williams 710" is a
+ *  real handle). Every authoritative signal — an allowlisted free-text tool, a
+ *  concrete input key, a declared concrete type — is consulted BEFORE this. */
+function looksLikePersonName(v: string): boolean {
+  const s = String(v ?? "").trim();
+  if (!s || s.length > 120) return false;
+  if (s.includes("@")) return false;                      // email
+  if (/^https?:\/\//i.test(s)) return false;              // url
+  if (/^\+?[\d\s().-]{7,}$/.test(s)) return false;        // phone
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(s)) return false;    // ipv4
+  if (/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(s)) return false; // domain / host
+  return /\s/.test(s);                                    // 2+ words ⇒ person name
+}
+
+/** The raw selector string this tool call queried, whatever slot it arrived in. */
+function queriedSelectorRaw(input: unknown): string {
+  if (!input || typeof input !== "object") return "";
+  const i = input as Record<string, unknown>;
+  for (const k of [...BREACH_SUBJECT_INPUT_KEYS, "name", "full_name", "person"]) {
+    const v = i[k as string];
+    if (typeof v === "string" && v.trim()) return v.trim();
+    if (typeof v === "number") return String(v);
+  }
+  return "";
+}
+
+/**
+ * Was this tool queried by PERSON NAME only — with no concrete selector?
+ *
+ * THE INCIDENT (production, 2026-08-06): a breach-aggregator lookup keyed on a
+ * person's NAME returned dozens of unrelated people, and the extractor persisted
+ * 15+ of THEIR emails and usernames onto the subject's thread at confidence 45 —
+ * including a K-12 school-district student address belonging to no one in the
+ * investigation. The agent's own narration called the results "massive noise";
+ * nothing downstream could tell, because a harvested row carried no record of how
+ * weak its linkage was. (Those selectors are third parties' personal data and are
+ * deliberately not reproduced here or in the fixtures.)
+ *
+ * A concrete selector anywhere in the input means the provider matched on that
+ * selector, so results are subject-linked and NOT quarantined.
+ *
+ * SIGNALS, in strict priority order. Shape-sniffing is the LAST resort, never the
+ * first, because it is the only one that guesses:
+ *   1. an allowlisted free-text-query tool  ⇒ never a name
+ *   2. a concrete selector INPUT KEY        ⇒ never a name
+ *   3. a DECLARED type — authoritative in BOTH directions:
+ *        concrete (email/username/phone/ip/domain/hash) ⇒ never a name
+ *        name|person                                    ⇒ always a name
+ *   4. a name-shaped key (name/full_name/person)
+ *   5. only then, the SHAPE of an untyped generic slot
+ *
+ * KNOWN LIMIT (FN-1, accepted): a person name placed in a concrete slot —
+ * `{username: "jane roe"}` — escapes this gate, because signal 2 trusts the
+ * caller's own slot choice. Closing it would mean inferring that a name sits
+ * inside a selector slot, i.e. re-introducing the prose-based inference this
+ * project removed deliberately after it caused a production incident. The limit
+ * is documented rather than fixed; see the characterization test in
+ * subject_relevance_gate_test.ts.
+ */
+function queryIsNameOnly(toolName: string, input: unknown): boolean {
+  if (!input || typeof input !== "object") return false;
+  // 1. A query language is not a person name, however many words it has.
+  if (FREE_TEXT_QUERY_TOOLS.has(toolName)) return false;
+  const i = input as Record<string, unknown>;
+  // 2. A concrete selector key means the provider matched on that selector.
+  for (const k of CONCRETE_SELECTOR_INPUT_KEYS) {
+    const v = i[k];
+    if (typeof v === "string" && v.trim()) return false;
+    if (typeof v === "number") return false;
+  }
+  // 3. An explicit typing is authoritative in BOTH directions. Tools that carry
+  //    the selector in a generic `value` slot (oathnet_lookup, leakcheck_lookup)
+  //    declare what it IS in `type` — believe them, and never sniff past it.
+  const declared = String(i.type ?? i.kind ?? i.search_type ?? "").toLowerCase();
+  if (CONCRETE_DECLARED_TYPES.has(declared)) return false;
+  if (declared === "name" || declared === "person") return true;
+  // 4. A name-shaped key.
+  for (const k of ["name", "full_name", "person"]) {
+    const v = i[k];
+    if (typeof v === "string" && v.trim()) return true;
+  }
+  // 5. LAST RESORT: nothing declared anything, so guess from the shape of the
+  //    generic slot. Everything authoritative has already been consulted.
+  for (const k of ["query", "q", "value"]) {
+    const v = i[k];
+    if (typeof v === "string" && v.trim()) return looksLikePersonName(v);
+  }
+  return false;
+}
+
 /** Lowercased, bounded selector identity. Two spellings of one selector must
  *  anchor to one exposure, and checkpointKey lowercases the value anyway. */
 function normalizeBreachSubject(s: string): string {
@@ -256,6 +404,13 @@ export function extractFindings(toolName: string, output: unknown, input?: unkno
   const partialSuccess = !!o.records && typeof o.records === "object" &&
     !!o.errors && typeof o.errors === "object";
   if ((o.ok === false && !partialSuccess) || typeof o.error === "string") return [];
+
+  // QUARANTINE GATE. A NAME-only query cannot establish subject linkage for
+  // anything it returns — that is the same-name collision axis the rest of this
+  // codebase already refuses to treat as identity (lib/cluster.ts: "Names are
+  // deliberately excluded"). Rows harvested from one are LEADS, not evidence.
+  const nameOnly = queryIsNameOnly(toolName, input);
+  const queriedName = nameOnly ? normalizeBreachSubject(queriedSelectorRaw(input)) : "";
 
   const findings: ExtractedFinding[] = [];
   const push = (k: string, v: unknown, ctx: Record<string, unknown> = {}, conf = 30) => {
@@ -659,6 +814,19 @@ export function extractFindings(toolName: string, output: unknown, input?: unkno
     });
   }
   findings.unshift(...exposures);
+
+  // QUARANTINE STAMP — applied here, after every branch has emitted, so it cannot
+  // be missed by a provider branch that pushes through pushUrl or the collapsed
+  // breach path rather than `push`. A name-only query proves nothing about WHO a
+  // returned row belongs to, so each one is disclosed as an unlinked lead.
+  if (nameOnly) {
+    for (const f of findings) {
+      // The query echoed back — a `name` row equal to what was asked — is the
+      // subject's own asserted name, not a third party. Not quarantined.
+      if (f.kind === "name" && normalizeBreachSubject(f.value) === queriedName) continue;
+      f.context = { ...(f.context ?? {}), ...SUBJECT_UNLINKED_CTX };
+    }
+  }
 
   // De-dup within this extraction.
   const seen = new Set<string>();
