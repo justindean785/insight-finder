@@ -39,11 +39,16 @@ interface SweepSite {
  *
  *   found      — positive evidence: a `confirm` marker, or a whole-token echo
  *                of a handle at least MIN_ECHO_LEN long.
- *   not_found  — PROVEN absence: the site's declared `absent` status or body
- *                marker fired, or the response was >= 400.
- *   unverified — reachable, nothing proved either way. A lead, never a hit.
- *   error      — we never reached the site. Establishes NOTHING; in particular
- *                it is not absence, which is why it no longer lands in `missed`.
+ *   not_found  — PROVEN absence, and only three things prove it: the site's
+ *                configured `absent` status, its configured `absent` body
+ *                marker, or a bare 404/410 — the statuses that mean "no such
+ *                resource". Nothing else may claim absence.
+ *   unverified — reached, nothing proved either way. Covers a 2xx whose body
+ *                does not evidence the account AND a refusal (401/403/451):
+ *                the account may exist behind the wall. A lead, never a hit.
+ *   error      — the question was never answered: 5xx, 429, a timeout, a
+ *                network failure, or budget exhaustion. Establishes NOTHING,
+ *                which is why none of these land in `missed`.
  */
 export type SweepOutcome = "found" | "not_found" | "unverified" | "error";
 
@@ -165,6 +170,26 @@ function bodyEvidencesAccount(body: string, username: string): boolean {
   // Short handles are unprovable by echo alone — see guard 2 above.
   if (u.length < MIN_ECHO_LEN) return false;
   return echoesHandle(body.toLowerCase(), u);
+}
+
+/**
+ * Positive-evidence decision for one fetched page. Exported so the precedence
+ * rule can be tested directly: no site in the table configures `confirm` yet,
+ * so it is unreachable through `sweepUsername`.
+ *
+ * A configured `confirm` marker REPLACES the generic echo test rather than
+ * racing it. Under the earlier `(confirm && …) || echo` form, a site whose
+ * not-found page repeats the requested handle still passed on the echo even
+ * after a marker was configured for it — so the one mechanism capable of
+ * fixing that platform could never take effect. If a marker is configured, it
+ * is the whole test.
+ */
+export function accountIsProven(
+  site: Pick<SweepSite, "confirm">,
+  body: string,
+  username: string,
+): boolean {
+  return site.confirm ? body.includes(site.confirm) : bodyEvidencesAccount(body, username);
 }
 
 /**
@@ -303,12 +328,38 @@ export async function sweepUsername(username: string): Promise<SweepResult> {
         signal: ctrl.signal,
       });
 
-      // 1. Definitive ABSENT signals. A trusted negative ends it here.
+      // 1. ABSENCE MUST BE PROVEN, and only two things prove it: the site's
+      //    configured `absent` status, or a bare 404/410 on a profile URL —
+      //    the one status whose meaning IS "no such resource".
+      //
+      //    Everything else that happens to be >= 400 proves NOTHING about the
+      //    account. A 403 is an interposing proxy or a bot wall; 429 is a rate
+      //    limit; 451 is a legal block; 5xx is the platform failing. Treating
+      //    those as absence is the same category error as treating a 200 as
+      //    presence, and it is not hypothetical: probing this sweep's estate
+      //    from the build environment returned 403 for 92 of 99 sites, every
+      //    one of which the old `r.status >= 400` rule scored as a proven
+      //    absence.
       if (typeof s.absent === "number" && r.status === s.absent) {
         return { site: s.name, url: s.url, status: r.status, found: false, outcome: "not_found" };
       }
-      if (r.status >= 400) {
+      if (r.status === 404 || r.status === 410) {
         return { site: s.name, url: s.url, status: r.status, found: false, outcome: "not_found" };
+      }
+      if (r.status >= 500 || r.status === 429) {
+        // The platform never answered the question. Not a lead either.
+        return {
+          site: s.name, url: s.url, status: r.status, found: false,
+          outcome: "error", error: `upstream ${r.status}`,
+        };
+      }
+      if (r.status >= 400) {
+        // Reached something, was refused (401/403/451/…). Inconclusive: the
+        // account may well exist behind the wall, so it stays a lead.
+        return {
+          site: s.name, url: s.url, status: r.status, found: false,
+          outcome: "unverified", unverified: true, error: `blocked ${r.status}`,
+        };
       }
 
       const body = await readCapped(r);
@@ -318,8 +369,14 @@ export async function sweepUsername(username: string): Promise<SweepResult> {
 
       // 2. A 2xx is NOT proof of registration — require positive evidence.
       //    Absent that, this is an unverified lead, never a counted hit.
-      const proven = (s.confirm && body.includes(s.confirm)) ||
-        bodyEvidencesAccount(body, username);
+      //
+      //    A configured `confirm` marker REPLACES the generic echo test rather
+      //    than racing it. Under `(confirm && …) || echo` a site whose 404 page
+      //    repeats the requested handle still passed on the echo even after a
+      //    marker was configured for it — so the one mechanism able to fix that
+      //    platform could never actually take effect. If a marker is configured,
+      //    it is the whole test.
+      const proven = accountIsProven(s, body, username);
       return {
         site: s.name,
         url: s.url,

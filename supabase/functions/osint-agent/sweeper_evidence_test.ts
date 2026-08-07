@@ -23,7 +23,7 @@
  * unproven is reported as `unverified` — surfaced as a lead, never counted.
  */
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { sweepUsername } from "./sweeper.ts";
+import { accountIsProven, sweepUsername } from "./sweeper.ts";
 
 const realFetch = globalThis.fetch;
 
@@ -299,6 +299,105 @@ Deno.test("every result carries exactly one outcome from the shared vocabulary",
     assert(r.unverified.every((x) => x.outcome === "unverified"));
     assert(r.found.every((x) => x.outcome === "found"));
     assert(r.missed.length > 0, "the 404s are proven absences");
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * REVIEW ROUND 2 — three corrections, each with the failure it prevents.
+ */
+
+/** (1) The floor is 5, so an ordinary four-letter token cannot carry a claim. */
+Deno.test("a four-character handle is not proven by an echo", async () => {
+  // "mark" is a real handle shape AND an everyday word in page furniture.
+  stubFetch(() => ({ status: 200, body: "<p>mark as read</p><span>mark</span>" }));
+  try {
+    const r = await sweepUsername("mark");
+    assertEquals(r.hits, 0, "four characters is inside the identified 3-4 char risk band");
+    assert(r.unverified.length > 0, "still surfaced as a lead");
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * (2) `confirm` must REPLACE the generic echo, not race it.
+ *
+ * The old form was `(s.confirm && body.includes(s.confirm)) || bodyEvidencesAccount(...)`.
+ * On a platform whose not-found page repeats the requested handle, the echo
+ * arm still fired — so configuring a marker for exactly that platform could
+ * never take effect. The one available remedy was unreachable.
+ */
+Deno.test("a configured confirm marker replaces the echo test, and its absence is decisive", () => {
+  const site = { confirm: "data-profile-id=" };
+  const notFoundPageThatEchoes = "<h1>No account named mercury</h1><a>/u/mercury</a>";
+  assert(
+    !accountIsProven(site, notFoundPageThatEchoes, "mercury"),
+    "the handle is echoed, but the configured marker is absent — that is decisive",
+  );
+  assert(
+    accountIsProven(site, '<div data-profile-id="99">mercury</div>', "mercury"),
+    "with the marker present the page is proven",
+  );
+});
+
+Deno.test("with no confirm configured the generic echo still applies", () => {
+  assert(accountIsProven({}, "<title>mercury | profile</title>", "mercury"));
+  assert(!accountIsProven({}, "<title>mercurial docs</title>", "mercury"));
+});
+
+/**
+ * (3) ONLY a configured absent signal or a bare 404/410 proves absence.
+ *
+ * The old rule was `r.status >= 400 -> not_found`. Probing this sweep's estate
+ * from the build environment returned 403 for 92 of 99 sites — every one of
+ * which that rule would have reported as a proven absence, when it was an
+ * interposing proxy and not the platform at all.
+ */
+for (const [status, bucket] of [
+  [403, "unverified"], [401, "unverified"], [451, "unverified"],
+  [429, "error"], [500, "error"], [503, "error"],
+] as Array<[number, "unverified" | "error"]>) {
+  Deno.test(`HTTP ${status} is ${bucket}, never a proven absence`, async () => {
+    stubFetch(() => ({ status, body: "" }));
+    try {
+      const r = await sweepUsername("exampleuser710");
+      assertEquals(r.hits, 0);
+      assertEquals(r.missed.length, 0, `${status} does not prove the account is absent`);
+      if (bucket === "error") assert(r.errored.length > 0);
+      else assert(r.unverified.length > 0, "refused, but the account may exist behind the wall");
+    } finally {
+      restore();
+    }
+  });
+}
+
+Deno.test("404 and 410 remain proven absences", async () => {
+  for (const status of [404, 410]) {
+    stubFetch(() => ({ status, body: "gone" }));
+    try {
+      const r = await sweepUsername("exampleuser710");
+      assert(r.missed.length > 0, `${status} means no such resource`);
+      assertEquals(r.errored.length, 0);
+    } finally {
+      restore();
+    }
+  }
+});
+
+Deno.test("budget exhaustion is an error, never a proven absence", async () => {
+  // Every request stalls until the sweep's own per-request timeout aborts it.
+  globalThis.fetch = ((_i: unknown, init?: { signal?: AbortSignal }) =>
+    new Promise((_res, rej) => {
+      const sig = init?.signal;
+      if (sig?.aborted) return rej(new DOMException("Aborted", "AbortError"));
+      sig?.addEventListener("abort", () => rej(new DOMException("Aborted", "AbortError")));
+    })) as unknown as typeof fetch;
+  try {
+    const r = await sweepUsername("exampleuser710");
+    assertEquals(r.missed.length, 0, "running out of time proves nothing about any account");
+    assert(r.errored.length > 0);
   } finally {
     restore();
   }
