@@ -209,3 +209,97 @@ Deno.test("a regex-special handle cannot break or widen the match", async () => 
     restore();
   }
 });
+
+/**
+ * The three coincidence shapes JD called out by name. Each is a real thing that
+ * appears in ordinary page source, and each one scored a registration under the
+ * original `includes()` test.
+ *
+ * "ben" is BELOW the length floor, so it is refused twice over — once by the
+ * floor and once by the boundary. The `mercury`/`mercurial` pair beside it
+ * isolates the BOUNDARY guard on a handle long enough to clear the floor, so a
+ * future change to MIN_ECHO_LEN cannot quietly turn these into vacuous passes.
+ */
+Deno.test("'ben' does not match inside 'benchmark'", async () => {
+  stubFetch(() => ({ status: 200, body: "<h1>benchmark results</h1><p>benign</p>" }));
+  try {
+    const r = await sweepUsername("ben");
+    assertEquals(r.hits, 0);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("a long handle does not match inside a longer word", async () => {
+  stubFetch(() => ({ status: 200, body: "<p>mercurial repositories</p>" }));
+  try {
+    const r = await sweepUsername("mercury");
+    assertEquals(r.hits, 0, "boundary guard, independent of the length floor");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("a handle occurring inside a base64 blob is not evidence", async () => {
+  // Base64 is dense enough that almost any short token appears somewhere.
+  stubFetch(() => ({
+    status: 200,
+    body: '<script>var d="aGVsbG9tZXJjdXJ5d29ybGRkYXRhYmxvYg==mercuryX9zdHVmZg";</script>',
+  }));
+  try {
+    const r = await sweepUsername("mercury");
+    assertEquals(r.hits, 0, "a run of base64 is not a page naming the account");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("a handle occurring inside a CSS class name is not evidence", async () => {
+  stubFetch(() => ({
+    status: 200,
+    body: '<div class="mercury-banner mercury_wrap"><style>.mercuryIcon{}</style></div>',
+  }));
+  try {
+    const r = await sweepUsername("mercury");
+    assertEquals(r.hits, 0, "hyphen/underscore/camel class names are not a profile");
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * OUTCOME VOCABULARY. A probe that never reached the site establishes nothing —
+ * least of all absence. It used to land in `missed` alongside proven 404s, which
+ * is the same category error as counting a soft-404 as a hit.
+ */
+Deno.test("a network error is reported as error, never as proven absence", async () => {
+  globalThis.fetch = (() => Promise.reject(new Error("ECONNRESET"))) as typeof fetch;
+  try {
+    const r = await sweepUsername("exampleuser710");
+    assertEquals(r.hits, 0);
+    assertEquals(r.missed.length, 0, "nothing was PROVEN absent — we never arrived");
+    assert(r.errored.length > 0, "the unreachable sites are surfaced under `errored`");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("every result carries exactly one outcome from the shared vocabulary", async () => {
+  stubFetch((url) => (
+    url.includes("pypi.org")
+      ? { status: 200, body: "<title>Sign up</title>" }   // unverified
+      : { status: 404, body: "no such user" }             // not_found
+  ));
+  try {
+    const r = await sweepUsername("exampleuser710");
+    const vocab = new Set(["found", "not_found", "unverified", "error"]);
+    for (const g of [...r.found, ...r.unverified]) {
+      assert(vocab.has(g.outcome), `unknown outcome ${g.outcome}`);
+    }
+    assert(r.unverified.every((x) => x.outcome === "unverified"));
+    assert(r.found.every((x) => x.outcome === "found"));
+    assert(r.missed.length > 0, "the 404s are proven absences");
+  } finally {
+    restore();
+  }
+});

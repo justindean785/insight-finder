@@ -32,10 +32,27 @@ interface SweepSite {
   confirm?: string;
 }
 
+/**
+ * One vocabulary for what a probe established. Deliberately mirrors the
+ * tool_usage_log outcome axis so a sweep row and an orchestrator row can be
+ * read the same way:
+ *
+ *   found      — positive evidence: a `confirm` marker, or a whole-token echo
+ *                of a handle at least MIN_ECHO_LEN long.
+ *   not_found  — PROVEN absence: the site's declared `absent` status or body
+ *                marker fired, or the response was >= 400.
+ *   unverified — reachable, nothing proved either way. A lead, never a hit.
+ *   error      — we never reached the site. Establishes NOTHING; in particular
+ *                it is not absence, which is why it no longer lands in `missed`.
+ */
+export type SweepOutcome = "found" | "not_found" | "unverified" | "error";
+
 interface SweepSiteResult {
   site: string;
   url: string;
+  /** Kept as the primary field: `found[]`/`hits` consumers read it directly. */
   found: boolean;
+  outcome: SweepOutcome;
   /** 2xx/3xx, but nothing in the body evidenced the account. A LEAD, not a hit. */
   unverified?: boolean;
   status?: number;
@@ -50,7 +67,10 @@ interface SweepResult {
   found: SweepSiteResult[];
   /** Reachable but unevidenced. Surfaced so they can be chased, NOT counted. */
   unverified: SweepSiteResult[];
+  /** PROVEN absence only — never includes `unverified` or `errored`. */
   missed: string[];
+  /** Unreachable. Establishes nothing either way. */
+  errored: string[];
   skipped_due_to_budget: number;
 }
 
@@ -113,19 +133,30 @@ async function readCapped(r: Response, maxBytes = 65536): Promise<string> {
  *     remove, only inverted: unproven presence dressed up as a hit. The handle
  *     must sit on a token boundary.
  *  2. LENGTH FLOOR. Below MIN_ECHO_LEN even a whole-token match is coincidence
- *     — three characters occur as a standalone token all over ordinary HTML.
- *     Such a handle can only be proven by an explicit `confirm` marker, so
- *     absent one it comes back `unverified`, never as a hit.
+ *     — short strings occur as standalone tokens all over ordinary HTML, in
+ *     attribute values, minified identifiers and stop-words. Such a handle can
+ *     only be proven by an explicit `confirm` marker, so absent one it comes
+ *     back `unverified`, never as a hit.
  */
-const MIN_ECHO_LEN = 4;
+const MIN_ECHO_LEN = 5;
 
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Does `hay` contain `needle` as a whole token? Both must be lowercased. */
+/**
+ * Does `hay` contain `needle` as a whole token? Both must be lowercased.
+ *
+ * The token alphabet includes `-` as well as `_`, which matters more than it
+ * looks: hyphens are legal in handles on most of these platforms, so `mercury`
+ * and `mercury-banner` are genuinely DIFFERENT handles, not one inside the
+ * other. Leaving `-` as a delimiter let every hyphenated CSS class, utility
+ * class and BEM modifier in a stylesheet read as an echo of the account —
+ * `class="mercury-banner"` scored a registration for `mercury`. Caught by the
+ * CSS-class case in sweeper_evidence_test.ts.
+ */
 function echoesHandle(hay: string, needle: string): boolean {
-  return new RegExp(`(^|[^a-z0-9_])${escapeRe(needle)}([^a-z0-9_]|$)`).test(hay);
+  return new RegExp(`(^|[^a-z0-9_-])${escapeRe(needle)}([^a-z0-9_-]|$)`).test(hay);
 }
 
 function bodyEvidencesAccount(body: string, username: string): boolean {
@@ -259,7 +290,7 @@ export async function sweepUsername(username: string): Promise<SweepResult> {
 
   const runOne = async (s: SweepSite): Promise<SweepSiteResult> => {
     if (Date.now() > sweepDeadline) {
-      return { site: s.name, url: s.url, error: "budget exhausted", found: false };
+      return { site: s.name, url: s.url, error: "budget exhausted", found: false, outcome: "error" };
     }
     const ctrl = new AbortController();
     const remaining = Math.max(500, sweepDeadline - Date.now());
@@ -274,15 +305,15 @@ export async function sweepUsername(username: string): Promise<SweepResult> {
 
       // 1. Definitive ABSENT signals. A trusted negative ends it here.
       if (typeof s.absent === "number" && r.status === s.absent) {
-        return { site: s.name, url: s.url, status: r.status, found: false };
+        return { site: s.name, url: s.url, status: r.status, found: false, outcome: "not_found" };
       }
       if (r.status >= 400) {
-        return { site: s.name, url: s.url, status: r.status, found: false };
+        return { site: s.name, url: s.url, status: r.status, found: false, outcome: "not_found" };
       }
 
       const body = await readCapped(r);
       if (typeof s.absent === "string" && body.includes(s.absent)) {
-        return { site: s.name, url: s.url, status: r.status, found: false };
+        return { site: s.name, url: s.url, status: r.status, found: false, outcome: "not_found" };
       }
 
       // 2. A 2xx is NOT proof of registration — require positive evidence.
@@ -294,10 +325,11 @@ export async function sweepUsername(username: string): Promise<SweepResult> {
         url: s.url,
         status: r.status,
         found: Boolean(proven),
+        outcome: proven ? "found" : "unverified",
         ...(proven ? {} : { unverified: true }),
       };
     } catch (e) {
-      return { site: s.name, url: s.url, error: String(e), found: false };
+      return { site: s.name, url: s.url, error: String(e), found: false, outcome: "error" };
     } finally {
       clearTimeout(t);
     }
@@ -325,7 +357,11 @@ export async function sweepUsername(username: string): Promise<SweepResult> {
     // `missed` stays "everything not confirmed" for existing callers, but the
     // unverified sites are listed separately above so a caller can tell a
     // proven absence from an unproven presence.
-    missed: results.filter((r) => !r.found).map((r) => r.site),
+    // PROVEN absence only. A site we never reached establishes nothing, so it
+    // is reported under `errored` instead of being counted as "not there" —
+    // the same honesty rule the unverified split applies to soft-404s.
+    missed: results.filter((r) => r.outcome === "not_found").map((r) => r.site),
+    errored: results.filter((r) => r.outcome === "error").map((r) => r.site),
     skipped_due_to_budget: skipped,
   };
 }
