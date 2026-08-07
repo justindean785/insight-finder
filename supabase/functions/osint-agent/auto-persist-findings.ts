@@ -85,6 +85,32 @@ export type ExtractedFinding = {
   rawConfidence?: number;
 };
 
+function mergeBreachExposureContext(
+  existing: Record<string, unknown> | undefined,
+  incoming: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const corpusNames = (context: Record<string, unknown> | undefined): string[] =>
+    Array.isArray(context?.breach_corpora)
+      ? context.breach_corpora.filter((name): name is string => typeof name === "string" && name.length > 0)
+      : [];
+  const corpora = [...new Set([...corpusNames(existing), ...corpusNames(incoming)])].sort();
+  const declaredCounts = [existing?.breach_corpus_count, incoming?.breach_corpus_count]
+    .filter((count): count is number => typeof count === "number" && Number.isFinite(count));
+  const count = Math.max(corpora.length, ...declaredCounts);
+  const kept = corpora.slice(0, MAX_BREACH_CORPORA_PER_EXPOSURE);
+  const merged = { ...(existing ?? {}), ...(incoming ?? {}) };
+  delete merged.breach_corpora_truncated;
+  delete merged.breach_corpora_retained;
+  return {
+    ...merged,
+    breach_corpora: kept,
+    breach_corpus_count: count,
+    ...(count > kept.length
+      ? { breach_corpora_truncated: true, breach_corpora_retained: kept.length }
+      : {}),
+  };
+}
+
 function agentDebugLog(hypothesisId: string, location: string, message: string, data: Record<string, unknown>): void {
   try {
     // #region agent log
@@ -596,14 +622,23 @@ export function extractStepFindings(toolResults: unknown[] | null | undefined): 
     for (const f of findings) {
       const k = checkpointKey(f.kind, f.value);
       if (seen.has(k)) {
+        const prior = out.find((candidate) => checkpointKey(candidate.kind, candidate.value) === k);
         // #region agent log
         agentDebugLog("A", "auto-persist-findings.ts:596", "same-step duplicate skipped", {
           kind: f.kind,
           is_breach_exposure: f.kind === "breach_exposure",
-          prior_corpus_count: out.find((prior) => checkpointKey(prior.kind, prior.value) === k)?.context?.breach_corpus_count ?? null,
+          prior_corpus_count: prior?.context?.breach_corpus_count ?? null,
           incoming_corpus_count: f.context?.breach_corpus_count ?? null,
         });
         // #endregion
+        if (f.kind === "breach_exposure" && prior) {
+          prior.context = mergeBreachExposureContext(prior.context, f.context);
+          // #region agent log
+          agentDebugLog("A", "auto-persist-findings.ts:635", "same-step breach metadata merged", {
+            merged_corpus_count: prior.context.breach_corpus_count ?? null,
+          });
+          // #endregion
+        }
         continue;
       }
       seen.add(k);
@@ -614,10 +649,24 @@ export function extractStepFindings(toolResults: unknown[] | null | undefined): 
   return out;
 }
 
-type SupabaseInsertLike = {
-  from: (table: string) => {
-    insert: (rows: Array<Record<string, unknown>>) => Promise<{ error: { message: string } | null; data?: unknown }>;
+type ArtifactSelectQuery = {
+  eq: (column: string, value: unknown) => ArtifactSelectQuery;
+  maybeSingle: () => Promise<{
+    data: { id?: unknown; metadata?: unknown } | null;
+    error: { message: string } | null;
+  }>;
+};
+
+type ArtifactTableLike = {
+  insert: (rows: Array<Record<string, unknown>>) => Promise<{ error: { message: string } | null; data?: unknown }>;
+  select?: (columns: string) => ArtifactSelectQuery;
+  update?: (patch: Record<string, unknown>) => {
+    eq: (column: string, value: unknown) => Promise<{ error: { message: string } | null }>;
   };
+};
+
+type SupabaseInsertLike = {
+  from: (table: string) => ArtifactTableLike;
   /** Present on the real client; optional so existing fixtures keep working and a
    *  client without it degrades to "artifact written, no ledger entry" rather than
    *  throwing inside the detached backstop. */
@@ -737,6 +786,33 @@ export type AutoPersistResult = {
   evidence_appended?: number;
 };
 
+async function mergePersistedBreachExposure(
+  ctx: AutoPersistContext,
+  finding: ExtractedFinding,
+): Promise<boolean> {
+  try {
+    const table = ctx.supabase.from("artifacts");
+    if (typeof table.select !== "function" || typeof table.update !== "function") return false;
+    const { data, error } = await table.select("id,metadata")
+      .eq("thread_id", ctx.threadId)
+      .eq("kind", finding.kind)
+      .eq("value", finding.value)
+      .maybeSingle();
+    if (error || typeof data?.id !== "string") return false;
+    const existing = data.metadata && typeof data.metadata === "object"
+      ? data.metadata as Record<string, unknown>
+      : {};
+    const metadata = mergeBreachExposureContext(existing, finding.context);
+    const updateTable = ctx.supabase.from("artifacts");
+    if (typeof updateTable.update !== "function") return false;
+    const { error: updateError } = await updateTable.update({ metadata }).eq("id", data.id);
+    return !updateError;
+  } catch (e) {
+    console.warn("[auto-persist-findings] breach metadata merge failed:", (e as Error)?.message ?? e);
+    return false;
+  }
+}
+
 /**
  * Convert extracted findings into scrubbed artifact rows and insert them.
  * Never throws — an auto-persist failure must NEVER break the run.
@@ -766,6 +842,15 @@ export async function persistAutoFindings(
         incoming_corpus_count: f.context?.breach_corpus_count ?? null,
       });
       // #endregion
+      if (f.kind === "breach_exposure") {
+        const merged = await mergePersistedBreachExposure(ctx, f);
+        // #region agent log
+        agentDebugLog("B", "auto-persist-findings.ts:842", "persisted breach metadata merge completed", {
+          merged,
+          incoming_corpus_count: f.context?.breach_corpus_count ?? null,
+        });
+        // #endregion
+      }
       dups++;
       continue;
     }
