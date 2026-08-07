@@ -129,7 +129,7 @@ Deno.test("extractFindings: oathnet_lookup salvages items + breach names, NEVER 
   });
   assertEquals(values(out, "breach"), [], "no bare corpus artifacts");
   const oexp = out.find((f) => f.kind === "breach_exposure");
-  assertEquals(oexp?.value, "Breach exposure (oathnet_db)");
+  assertEquals(oexp?.value, "Breach exposure (oathnet_lookup/oathnet_db)");
   assertEquals(oexp?.context?.breach_corpora, ["ADT", "Dave"]);
   assert(values(out, "email").includes("x@y.com"));
   assert(values(out, "phone").length === 1);
