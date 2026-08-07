@@ -23,7 +23,13 @@
  * unproven is reported as `unverified` — surfaced as a lead, never counted.
  */
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { accountIsProven, sweepUsername } from "./sweeper.ts";
+import {
+  accountIsProven,
+  echoAnywhereInBody,
+  highSignalRegions,
+  regionEchoImpliesBodyEcho,
+  sweepUsername,
+} from "./sweeper.ts";
 
 const realFetch = globalThis.fetch;
 
@@ -72,8 +78,12 @@ Deno.test("a 200 whose body names the account IS a registration", async () => {
   }
 });
 
+// Fixture moved into <title> by item 2.11. This case tests CASING, not
+// location; the original `<h1>` fixture was body-only, which 2.11 correctly
+// demotes to `unverified`. Asserting casing from the identity surface keeps the
+// test measuring what it is named for instead of quietly re-testing 2.11.
 Deno.test("case-insensitive: ExampleUser710 on the page evidences exampleuser710", async () => {
-  stubFetch(() => ({ status: 200, body: "<h1>ExampleUser710</h1>" }));
+  stubFetch(() => ({ status: 200, body: "<title>ExampleUser710</title>" }));
   try {
     const r = await sweepUsername("exampleuser710");
     assert(r.hits > 0, "handle casing must not decide existence");
@@ -400,5 +410,213 @@ Deno.test("budget exhaustion is an error, never a proven absence", async () => {
     assert(r.errored.length > 0);
   } finally {
     restore();
+  }
+});
+
+/**
+ * ITEM 2.11 — WHERE the echo appears decides whether it is evidence.
+ *
+ * Guards 1 and 2 cannot see the residual this closes: a not-found page that
+ * repeats the REQUESTED handle produces a genuine whole-token echo of a
+ * long-enough handle. Only its LOCATION separates "this is that account's
+ * profile" from "this page is repeating your query".
+ */
+
+Deno.test("2.11: a handle in the BODY ONLY is not evidence", async () => {
+  stubFetch(() => ({
+    status: 200,
+    body: "<html><head><title>Page not found</title></head><body><h1>No account named mercury</h1></body></html>",
+  }));
+  try {
+    const r = await sweepUsername("mercury");
+    assertEquals(r.hits, 0, "an error page echoing the request is not a registration");
+    assert(r.unverified.length > 0, "still surfaced as a lead");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("2.11: a handle in <title> IS evidence", async () => {
+  stubFetch(() => ({ status: 200, body: "<html><head><title>mercury (@mercury)</title></head><body>x</body></html>" }));
+  try {
+    const r = await sweepUsername("mercury");
+    assert(r.hits > 0, "the document's identity surface names the account");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("2.11: og:* and canonical are identity surfaces too", async () => {
+  for (const head of [
+    '<meta property="og:title" content="mercury on Example">',
+    '<meta name="og:url" content="https://example.com/u/mercury">',
+    '<link rel="canonical" href="https://example.com/u/mercury">',
+  ]) {
+    stubFetch(() => ({ status: 200, body: `<html><head>${head}</head><body>nothing here</body></html>` }));
+    try {
+      const r = await sweepUsername("mercury");
+      assert(r.hits > 0, `expected a hit from: ${head}`);
+    } finally {
+      restore();
+    }
+  }
+});
+
+Deno.test("2.11: an absent handle stays a proven absence", async () => {
+  stubFetch(() => ({ status: 404, body: "<title>Not Found</title>" }));
+  try {
+    const r = await sweepUsername("mercury");
+    assertEquals(r.hits, 0);
+    assert(r.missed.length > 0, "404 is decided before any body is read");
+    assertEquals(r.unverified.length, 0);
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * NEGATIVE CONTROL 1 — the ratchet. Every region is a substring of the body, so
+ * a region echo must always imply a body echo. If this ever fails, the
+ * restriction has stopped narrowing and started inventing evidence.
+ */
+Deno.test("2.11 NEGATIVE CONTROL: no input can yield unverified -> found", () => {
+  const cases = [
+    "<title>mercury</title>",
+    '<meta property="og:title" content="mercury">',
+    '<link rel="canonical" href="/u/mercury">',
+    "<body>mercury</body>",
+    "<title>nothing</title><body>mercury-banner</body>",
+    "",
+    "<title></title>",
+    "<title>MERCURY</title>",
+    '<meta property="og:description" content="a page about mercurial">',
+  ];
+  for (const body of cases) {
+    assert(
+      regionEchoImpliesBodyEcho(body, "mercury"),
+      `ratchet violated — region matched where the body did not: ${body}`,
+    );
+  }
+});
+
+/**
+ * NEGATIVE CONTROL 2 — `not_found` is structurally unreachable from this guard.
+ * The definitive absent signals run BEFORE any body is read, so no page content
+ * can promote a proven absence to a hit.
+ */
+Deno.test("2.11 NEGATIVE CONTROL: no page content can turn not_found into found", async () => {
+  // A body that would PASS the region test, served under every proven-absence signal.
+  const provingBody = "<title>mercury (@mercury)</title>";
+  for (const status of [404, 410]) {
+    stubFetch(() => ({ status, body: provingBody }));
+    try {
+      const r = await sweepUsername("mercury");
+      assertEquals(r.hits, 0, `status ${status} must stay a proven absence`);
+      assert(r.missed.length > 0);
+    } finally {
+      restore();
+    }
+  }
+});
+
+Deno.test("2.11: highSignalRegions extracts only the identity surface", () => {
+  const regions = highSignalRegions(
+    '<title>T</title><meta property="og:url" content="OG"><link rel="canonical" href="C">' +
+      "<body>BODYTEXT</body><script>SCRIPTTEXT</script>",
+  );
+  assert(regions.includes("T") && regions.includes("OG") && regions.includes("C"));
+  assert(!regions.includes("BODYTEXT"), "body text is not an identity surface");
+  assert(!regions.includes("SCRIPTTEXT"), "hydration blobs are not an identity surface");
+});
+
+Deno.test("2.11: a configured confirm marker still bypasses the region test", () => {
+  // `confirm` is a MEASURED per-platform assertion; region restriction is a
+  // heuristic. The measurement must keep winning.
+  assert(accountIsProven({ confirm: "data-profile-id=" }, "<body>data-profile-id=9</body>", "mercury"));
+  assert(!accountIsProven({}, "<body>mercury</body>", "mercury"), "no marker → region rules apply");
+});
+
+Deno.test("2.11: echoAnywhereInBody still sees what the region test now rejects", () => {
+  const body = "<title>Not found</title><body>No account named mercury</body>";
+  assert(echoAnywhereInBody(body, "mercury"), "the pre-2.11 test would have called this a hit");
+  assert(!accountIsProven({}, body, "mercury"), "2.11 correctly refuses it");
+});
+
+/**
+ * REVIEW FIX — markup-shaped TEXT is not markup.
+ *
+ * The region rule was sound; reading regions with a document-wide regex was
+ * not. A literal "<title>handle</title>" appearing inside a script string, an
+ * HTML comment, or a <template> was extracted as the page's title and scored as
+ * proof — the exact echo-on-404 shape 2.11 exists to reject, re-entering
+ * through the extractor instead of the matcher. All three were reproduced
+ * against the previous commit.
+ *
+ * The pre-existing exclusion test used plain `SCRIPTTEXT`, which is why it
+ * never caught this: it proved script CONTENT was excluded, not that script
+ * content SHAPED LIKE MARKUP was.
+ */
+const MARKUP_SHAPED_TEXT: Array<[string, string]> = [
+  ["script string", '<html><head><title>Not found</title></head><body><script>var t = "<title>mercury</title>";</script></body></html>'],
+  ["template literal in script", "<html><head><title>Not found</title></head><body><script>const h = `<title>mercury</title>`;</script></body></html>"],
+  ["HTML comment", "<html><head><title>Not found</title></head><body><!-- <title>mercury</title> --></body></html>"],
+  ["<template> element", "<html><head><title>Not found</title></head><body><template><title>mercury</title></template></body></html>"],
+  ["<textarea> content", "<html><head><title>Not found</title></head><body><textarea><title>mercury</title></textarea></body></html>"],
+  ["og:title inside a comment", '<html><head><title>Not found</title><!-- <meta property="og:title" content="mercury"> --></head></html>'],
+  ["canonical inside a script", '<html><head><title>Not found</title><script>var s = \'<link rel="canonical" href="/u/mercury">\';</script></head></html>'],
+];
+
+for (const [label, html] of MARKUP_SHAPED_TEXT) {
+  Deno.test(`2.11 REVIEW: markup-shaped text in a ${label} is not the identity surface`, async () => {
+    stubFetch(() => ({ status: 200, body: html }));
+    try {
+      const r = await sweepUsername("mercury");
+      assertEquals(r.hits, 0, `${label} must not be read as the page's identity`);
+      assert(r.unverified.length > 0, "the page is reachable — still a lead");
+    } finally {
+      restore();
+    }
+  });
+}
+
+Deno.test("2.11 REVIEW: highSignalRegions does not see markup-shaped text", () => {
+  for (const [label, html] of MARKUP_SHAPED_TEXT) {
+    const regions = highSignalRegions(html);
+    assert(!regions.includes("mercury"), `${label} leaked into the identity surface`);
+    assert(regions.includes("Not found"), `${label}: the REAL title must still be read`);
+  }
+});
+
+/**
+ * A <title> in the BODY is not the document's title — browsers honour only the
+ * one in <head>. Documents that omit <head> fall back to the stripped document,
+ * which stays safe because raw text and comments are already gone.
+ */
+Deno.test("2.11 REVIEW: a <title> in the body is not the document title", async () => {
+  stubFetch(() => ({
+    status: 200,
+    body: "<html><head><title>Not found</title></head><body><title>mercury</title></body></html>",
+  }));
+  try {
+    const r = await sweepUsername("mercury");
+    assertEquals(r.hits, 0, "only <head>'s title is the document's title");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("2.11 REVIEW: a document with no <head> still reads its title", async () => {
+  stubFetch(() => ({ status: 200, body: "<title>mercury</title><p>x</p>" }));
+  try {
+    const r = await sweepUsername("mercury");
+    assert(r.hits > 0, "head-less documents are common; do not lose them");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("2.11 REVIEW: the ratchet still holds over markup-shaped inputs", () => {
+  for (const [, html] of MARKUP_SHAPED_TEXT) {
+    assert(regionEchoImpliesBodyEcho(html, "mercury"), "region matched where the body did not");
   }
 });
