@@ -109,6 +109,7 @@ import { serus_darkweb_scan } from "./tools/serus.ts";
 import { okWithSuccessFlag, isHackertargetApiError, isCrtshOk, dohTypeError, blockchairError } from "./tool_response.ts";
 import { enforceNameSeedPriority, enforceFallbackToolPolicy, NAME_SEED_PLANNER_RULES } from "./planner-guidance.ts";
 import { sweepUsername } from "./sweeper.ts";
+import { rdapLookup } from "./rdap.ts";
 import { trimExaResults, archiveAttachment } from "./archiver.ts";
 // Single source of truth for provider gating. list_tools derives its disabled
 // set from this so a tool marked `disabled: true` cannot stay advertised to the
@@ -2403,16 +2404,25 @@ export function buildTools(ctx: ToolContext) {
       },
     }),
     whois_lookup: tool({
-      description: "RDAP/WHOIS lookup for a domain.",
+      description:
+        "RDAP registration lookup for a domain (registrar, statuses, events, nameservers). Tries the rdap.org aggregator, then falls back to the registry IANA says owns the TLD — rdap.org does not route every ccTLD, so its 404 alone does not mean the domain is unregistered. Outcomes are explicit: `found`, `measured_empty` (the registry answered: no such domain), or `failed` (nobody answered). A registry that withholds contact detail under GDPR returns redacted:true and is still a successful lookup.",
       inputSchema: memoSchema("whois_lookup", () => z.object({ domain: z.string() })),
       execute: async ({ domain }) => {
-        try {
-          const r = await fetchRetry(`https://rdap.org/domain/${encodeURIComponent(domain)}`, {});
-          const data = await r.json().catch(() => ({}));
-          return { ok: r.ok, data };
-        } catch (e) {
-          return { error: String(e) };
-        }
+        // fetchT, NOT fetchRetry — this is load-bearing.
+        //
+        // fetchRetry defaults to retries:2 (three attempts) and retries exactly
+        // the class rdapLookup also retries: 429 and 5xx. Composed, a failing
+        // registry would get three attempts from fetchRetry MULTIPLIED by
+        // rdapLookup's own retry — six requests, from a module documenting
+        // "exactly one retry". fetchT is one-shot and timeout-bounded, so retry
+        // policy lives solely in rdapLookup, which is the layer that knows a
+        // 404 is a measured answer worth no retry while a 5xx is an unanswered
+        // question worth exactly one.
+        //
+        // Pinned by rdap_wiring_test.ts. A unit test CANNOT catch this: it
+        // injects its own stub in place of this exact expression, so the
+        // composition is invisible to it. The assertion has to read the source.
+        return await rdapLookup(domain, (url) => fetchT(url, {}, 12_000));
       },
     }),
     username_sweep: tool({
