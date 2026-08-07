@@ -127,6 +127,32 @@ source-level wiring tests abort with `NotCapable` before asserting.
 
 `missed` is proven absence only; unreachable sites are listed under `errored`.
 
+### The absence-assertion pattern — three instances, one rule
+
+The same defect has now appeared three times in three different places. It is
+worth naming, because inspection missed it twice and a test caught it twice.
+
+**THE RULE: an ambiguous upstream negative never yields `measured_empty`. It
+yields `failed`, or a visibly-unconfirmed result.**
+
+| # | where | the ambiguous negative | what it wrongly asserted |
+|---|---|---|---|
+| 1 | `sweeper.ts` (#413) | `r.status >= 400` | any refusal — 403, 429, 451, 5xx — read as PROVEN absence. Measured: probing the sweep's own estate returned 403 for **92 of 99** sites, every one of which the old rule scored as absent |
+| 2 | `rdap.ts` (item 1.1) | aggregator 404 + registry unreachable | returned the aggregator's `measured_empty`, asserting the domain is unregistered when the 404 was ambiguous precisely because it might mean "no route for this zone". **Caught by an acceptance test, not by review** — this is the best test outcome of the cycle |
+| 3 | `sweeper.ts` (#413 residual, closed by 2.11) | a not-found page echoing the requested handle | a genuine whole-token echo read as PRESENCE. Closed by restricting the echo to the identity surface |
+
+Instances 1 and 3 are the two directions of the same error — a refusal read as
+absence, and a query-echo read as presence. Instance 2 is the same error one
+layer up: an unanswerable question reported as an answer.
+
+**Applying the rule when writing a new tool:** for every non-2xx and every
+empty result, ask *which of these did the upstream actually tell me?*
+ - "the thing does not exist" → `measured_empty` / `not_found`. Real evidence.
+ - "I will not tell you" (401/403/451) → inconclusive. Never absence.
+ - "I could not answer" (429/5xx/timeout/reset/budget) → `failed`. Never absence.
+ - "I answered, but nothing corroborated it" → surface it, flagged (`unverified`,
+   `unconfirmed: true`). Never silently promoted.
+
 **Known residual:** a platform that repeats the requested handle on its own
 not-found page still passes the echo test. `confirm` is deliberately unpopulated
 — each marker must be measured against the live platform, and **92 of 99 sites

@@ -18,7 +18,7 @@ Annotations record what a repo scan found. No item has been dropped or merged.
 
 ## PHASE 1 — FIX BROKEN CORE
 
-- [ ] **1.1 RESCOPED** — RDAP hardening for `whois_lookup` (public tool name unchanged)
+- [x] **1.1 DONE** (PR #422) — RESCOPED — RDAP hardening for `whois_lookup` (public tool name unchanged)
   - `whois_lookup` (`tool-registry.ts:2405`) **is already an RDAP lookup** against `rdap.org`, so this is hardening, not replacement.
   - **No CLI/subprocess fallback** — removed from spec. The edge runtime has no subprocess capability.
   1. IANA bootstrap fallback: cache `dns.rdap.bootstrap.json` 24h; route ccTLDs `rdap.org` does not serve to their registry RDAP endpoint.
@@ -54,7 +54,7 @@ Annotations record what a repo scan found. No item has been dropped or merged.
   - **First: trace and report who consumes `google_dorks` output today.**
   - Then execute generated patterns through available search APIs (Tavily / Exa / Perplexity), recording per-provider **operator fidelity as unverified**. Cap dorks per run; respect `MIN_START_GAP_MS`.
   - Note `dork_harvest:3347` already executes and relevance-gates recording; do not duplicate it.
-- [ ] **2.11 NEW** (approved, bounded) — region-restricted echo matching for the sweep
+- [x] **2.11 DONE** (PR #423) — region-restricted echo matching for the sweep
   - Landed after #413. Require the handle echo in `<title>`, `og:*`, or `rel=canonical` rather than anywhere in the body.
   - Can only move a site `found → unverified`, **never the reverse**. If it surfaces new `unverified` sites that is data; if it surfaces none that is also data.
   - Does not close the residual: a platform echoing the handle in its own `<title>` on a not-found page still passes. Per-platform `confirm` measurement remains the real fix and needs an environment with open egress — 92 of 99 sites return 403 at the agent proxy.
