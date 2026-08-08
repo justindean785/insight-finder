@@ -6,7 +6,7 @@
  * index.ts and cache.ts off disk (hence --allow-read) to assert the call sites exist,
  * because a helper nothing calls is indistinguishable from a helper that works.
  */
-import { assert, assertEquals, assertNotEquals, assertStringIncludes } from "jsr:@std/assert@1";
+import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
 import {
   makeRunLogger,
   newRunId,
