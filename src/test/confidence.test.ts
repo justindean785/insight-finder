@@ -105,6 +105,120 @@ describe("explainConfidence", () => {
   });
 });
 
+describe("explainConfidence — server source-class ceiling", () => {
+  // Every case below is taken from a real production run (thread f17ddf69, 2026-08-08)
+  // where the displayed score sat ABOVE the ceiling the server had already applied.
+  // The stored artifacts were correct; only this decomposition was not.
+
+  it("never displays a score above the server's confidence_cap_applied", () => {
+    const { final } = explainConfidence(
+      art({ source: "serus_darkweb_scan", confidence: 60,
+            metadata: { confidence_cap_applied: 60, source_category: ["breach"] } }),
+      "confirmed",
+    );
+    expect(final).toBeLessThanOrEqual(60);
+  });
+
+  it("reproduces the Wattpad row: capped at 60, previously displayed 80", () => {
+    const { final } = explainConfidence(
+      art({ kind: "breach_exposure", source: "serus_darkweb_scan", confidence: 60,
+            metadata: { confidence_cap_applied: 60, source_category: ["breach"] } }),
+      "confirmed",
+    );
+    expect(final).toBe(60);
+  });
+
+  it("reproduces the oathnet row: capped at 60, previously displayed 70", () => {
+    const { final } = explainConfidence(
+      art({ kind: "breach_exposure", source: "oathnet_lookup", confidence: 55,
+            metadata: { confidence_cap_applied: 60, source_category: ["breach"] } }),
+      "confirmed",
+    );
+    expect(final).toBeLessThanOrEqual(60);
+  });
+
+  it("marking an artifact KEY cannot break the ceiling either", () => {
+    // The +18 "key" bump is the largest upward adjustment an analyst can apply;
+    // if anything escapes the cap it is this.
+    const { final } = explainConfidence(
+      art({ source: "hibp", confidence: 45, metadata: { confidence_cap_applied: 45 } }),
+      "key",
+    );
+    expect(final).toBeLessThanOrEqual(45);
+  });
+
+  it("explains the shortfall so Confirm does not silently appear broken", () => {
+    const { components, final } = explainConfidence(
+      art({ source: "hibp", confidence: 60, metadata: { confidence_cap_applied: 60 } }),
+      "confirmed",
+    );
+    const ceiling = components.find((c) => c.label.startsWith("Source-class ceiling"));
+    expect(ceiling).toBeDefined();
+    expect(ceiling!.delta).toBeLessThan(0);
+    // The popover renders the header total and the component list separately —
+    // they must reconcile, or the explanation is not auditable.
+    expect(components.reduce((s, c) => s + c.delta, 0)).toBe(final);
+  });
+
+  it("is a CEILING, not a target — a dismissal still lands below it", () => {
+    const { final } = explainConfidence(
+      art({ source: "hibp", confidence: 60, metadata: { confidence_cap_applied: 60 } }),
+      "dismissed",
+    );
+    expect(final).toBeLessThan(60);
+  });
+
+  it("a false-positive flag is not lifted up to the cap", () => {
+    const { final } = explainConfidence(
+      art({ source: "hibp", metadata: { confidence_cap_applied: 75, false_positive: true } }),
+    );
+    expect(final).toBeLessThan(75);
+  });
+
+  it("adds no ceiling component when the cap does not bind", () => {
+    const { components } = explainConfidence(
+      art({ source: "inference", confidence: 20, metadata: { confidence_cap_applied: 95 } }),
+    );
+    expect(components.some((c) => c.label.startsWith("Source-class ceiling"))).toBe(false);
+  });
+
+  it("leaves artifacts with no cap exactly as before (older rows)", () => {
+    const withoutCap = explainConfidence(art({ source: "hibp", metadata: null }), "confirmed");
+    const withEmptyMeta = explainConfidence(art({ source: "hibp", metadata: {} }), "confirmed");
+    expect(withoutCap.final).toBe(withEmptyMeta.final);
+    expect(withoutCap.components.some((c) => c.label.startsWith("Source-class ceiling"))).toBe(false);
+  });
+
+
+  it("the component list always reconciles to the displayed total", () => {
+    // The popover renders the header total and the component list from the same
+    // object; if they disagree the explanation is not auditable. Covers the
+    // saturating, capped, floored and ordinary cases together.
+    const cases: Array<[Partial<Artifact>, "confirmed" | "dismissed" | undefined]> = [
+      [{ source: "hibp", metadata: { confidence_cap_applied: 60 } }, "confirmed"],
+      [{ source: "hibp", metadata: null }, "confirmed"],
+      [{ source: "inference", metadata: { confidence_cap_applied: 95, false_positive: true } }, "dismissed"],
+      [{ source: "inference", metadata: null }, "dismissed"],
+      [{ source: "github", metadata: { confidence_cap_applied: 40 } }, undefined],
+    ];
+    for (const [over, review] of cases) {
+      const { components, final } = explainConfidence(art(over), review);
+      expect(components.reduce((s, c) => s + c.delta, 0)).toBe(final);
+      expect(final).toBeGreaterThanOrEqual(0);
+      expect(final).toBeLessThanOrEqual(100);
+    }
+  });
+
+  it("accepts a cap that arrives as a JSON string, and ignores a malformed one", () => {
+    const asString = explainConfidence(
+      art({ source: "hibp", metadata: { confidence_cap_applied: "60" } }), "confirmed");
+    expect(asString.final).toBe(60);
+    const malformed = explainConfidence(
+      art({ source: "hibp", metadata: { confidence_cap_applied: "not-a-number" } }), "confirmed");
+    expect(malformed.components.some((c) => c.label.startsWith("Source-class ceiling"))).toBe(false);
+  });
+});
+
 describe("BADGE_TONE_CLASS", () => {
   it("covers every tone", () => {
     for (const tone of ["high", "mid", "low", "neutral"] as const) {

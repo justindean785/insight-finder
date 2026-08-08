@@ -60,6 +60,32 @@ export type TrustBadge = {
 const DAY = 86_400_000;
 
 /**
+ * Read the SERVER-COMPUTED source-class ceiling off an artifact.
+ *
+ * `confidence_cap_applied` is written by `applyEvidenceCaps` on every write path
+ * (record_artifacts, the auto-persist backstop, and the tool auto-insert shim) and
+ * is the authoritative limit on what a given source class can support. The stored
+ * `artifacts.confidence` already respects it — verified across a full production
+ * run: 81 artifacts, zero rows where `confidence > confidence_cap_applied`.
+ *
+ * This decomposition did NOT respect it. It rebuilt a score client-side from its
+ * own source tiers and deltas and clamped only to 0–100, so the number an analyst
+ * READS could sit above the ceiling the server had already applied — e.g. a
+ * breach-class row capped at 60 displaying 80 once confirmed. The stored evidence
+ * was right and the surface was wrong, which is the worse way round: the analyst
+ * only ever sees the surface.
+ *
+ * Returns null when the artifact carries no cap (older rows predating the field),
+ * leaving those scores exactly as before.
+ */
+function serverConfidenceCap(meta: Record<string, unknown>): number | null {
+  const raw = meta.confidence_cap_applied;
+  const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, n));
+}
+
+/**
  * Decompose a stored artifact confidence into its analyst-readable inputs.
  * This is deterministic — no model call — so it can power "Why this is 60%"
  * popovers without an additional round-trip.
@@ -122,7 +148,44 @@ export function explainConfidence(a: Artifact, review?: ReviewState): Confidence
     components.push({ label: "False positive", delta: -50, why: "Metadata flag false_positive=true." });
   }
 
-  const final = Math.max(0, Math.min(100, components.reduce((s, c) => s + c.delta, 0)));
+  // 6) Source-class ceiling — the server's cap is authoritative and binds LAST.
+  // Deliberately a ceiling, not a target: it can only pull a score down, so a
+  // dismissal or false-positive penalty still lands below it. Pushed as a real
+  // component with the exact shortfall as its delta, so the popover's arithmetic
+  // still reconciles to the number in the header AND the analyst can see why
+  // Confirm did not move the score — without this the button reads as broken.
+  // The ceiling is the tighter of the 0–100 display range and the server's cap.
+  // Both are applied as REAL components carrying the exact shortfall, so the
+  // popover's list always reconciles to the number in its header. Previously the
+  // 0–100 clamp was applied silently after the reduce, so a score that saturated
+  // showed a component list that did not add up to the total on display.
+  const rawSum = components.reduce((s, c) => s + c.delta, 0);
+  const cap = serverConfidenceCap(meta);
+  const ceiling = cap == null ? 100 : Math.min(100, cap);
+  if (rawSum > ceiling) {
+    components.push(
+      cap != null && cap <= 100
+        ? {
+          label: `Source-class ceiling (${cap})`,
+          delta: ceiling - rawSum,
+          why:
+            `This artifact's source class supports at most ${cap}/100. Corroboration from an ` +
+            `INDEPENDENT source class is what lifts the ceiling — analyst review and recency cannot.`,
+        }
+        : {
+          label: "Score ceiling (100)",
+          delta: ceiling - rawSum,
+          why: "Confidence is reported on a 0–100 scale.",
+        },
+    );
+  } else if (rawSum < 0) {
+    components.push({
+      label: "Score floor (0)",
+      delta: -rawSum,
+      why: "Confidence is reported on a 0–100 scale.",
+    });
+  }
+  const final = Math.max(0, Math.min(ceiling, rawSum));
   return { raw: a.confidence ?? 0, final, components, badges: badgesFor(a, src, review) };
 }
 
