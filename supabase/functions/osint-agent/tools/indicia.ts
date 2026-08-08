@@ -53,6 +53,35 @@ const INDICIA_BASE = "https://api.indicia.app";
 // so the tool's own fetch times out cleanly before the wrapper cap fires.
 const INDICIA_HTTP_TIMEOUT_MS = 18_000;
 
+/**
+ * The closed set of web-DB corpora the `/web-dbs` endpoint accepts. The endpoint
+ * requires a non-empty `services` list and rejects any name outside this set, so
+ * both the default and the filter read from here — one list, not three.
+ */
+export const WEB_DB_SERVICES = [
+  "cloudsint",
+  "leakcheck",
+  "snusbase",
+  "intelligencex.identityportal",
+] as const;
+
+/** The closed set of selector types the `/hudsonrock` endpoint accepts. */
+export const HUDSONROCK_TYPES = ["domain", "email", "ip", "password", "username"] as const;
+
+/**
+ * Infer a Hudson Rock selector type from the selector's shape. Never returns
+ * "password" — a password is not inferable from shape, and guessing one would send
+ * an analyst's selector to a credential-search endpoint it was not meant for. The
+ * caller must name that type explicitly.
+ */
+export function inferHudsonRockType(query: string): string {
+  const q = String(query ?? "").trim();
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(q)) return "ip";
+  if (q.includes("@")) return "email";
+  if (/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(q)) return "domain";
+  return "username";
+}
+
 interface IndiciaToolResult {
   ok?: boolean;
   empty?: boolean;
@@ -241,13 +270,67 @@ export const indicia_email = tool({
     indiciaRequest("/v1/search/intelligence/email", "email", { query }, query, getSignal(opts)),
 });
 
+/**
+ * Reduce a phone selector to the bare 10-digit NANP number the Indicia phone
+ * endpoint accepts, or null when the selector cannot be used.
+ *
+ * The endpoint validates `exactly length 10`, so a formatted or E.164 selector
+ * ("+1 (212) 555-0123") is rejected 400 before it reaches the data layer. An
+ * 11-digit number with a leading US country code is reduced rather than refused —
+ * live telemetry recorded successful calls at both 10 and 11 digits, and 10 is the
+ * length that satisfies the documented validator, so normalising down is correct
+ * under both accounts.
+ */
+export function normalizeUsPhone(raw: string): string | null {
+  const digits = String(raw ?? "").replace(/\D+/g, "");
+  if (digits.length === 10) return digits;
+  if (digits.length === 11 && digits.startsWith("1")) return digits.slice(1);
+  return null;
+}
+
 /** Phone → linked person/records. 1 token/call. Broker/lead tier. */
 export const indicia_phone = tool({
   description:
     "Indicia phone intelligence (api.indicia.app) — US person/broker + web-DB records linked to a phone number. Broker/breach-dump data: LEAD until corroborated. 1 token/call.",
-  inputSchema: z.object({ query: z.string().min(7).describe("Phone number (any format).") }),
-  execute: async ({ query }, opts) =>
-    indiciaRequest("/v1/search/intelligence/phone", "phone", { query }, query, getSignal(opts)),
+  inputSchema: z.object({
+    query: z.string().min(7).describe("Phone number (any format — normalized to bare digits before the call)."),
+  }),
+  execute: async ({ query }, opts) => {
+    // Normalize rather than relying on the model to send bare digits: 26 of 33
+    // observed HTTP 400s carried non-digit characters (12 leading "+", 15 with
+    // "()- ."), while every successful call sent pure digits.
+    const normalized = normalizeUsPhone(query);
+    if (!normalized) {
+      // Two deliberate properties, both load-bearing:
+      //
+      //  1. "gated" routes this through classifyToolOutcome's SKIP_RE to SKIPPED.
+      //     A selector we DECLINED TO SEND is not a measurement. Phrasing it as
+      //     "no usable result" would match EMPTY_RE and record `empty` — asserting
+      //     the provider was asked and had no record, when no call was made at
+      //     all. That is the absence-assertion defect this codebase has already
+      //     hit three times (sweeper 4xx, RDAP bootstrap, sweep echo); recording a
+      //     never-made call as measured absence is the same error a fourth time.
+      //
+      //  2. It reports the digit COUNT, never the number. A tool's `error` string
+      //     is lifted by extractToolError into `tool_usage_log.error_msg`, so
+      //     interpolating the selector would write an analyst-supplied phone number
+      //     into telemetry — exactly what env.ts's logging policy forbids.
+      const digitCount = String(query ?? "").replace(/\D+/g, "").length;
+      return {
+        error: `indicia phone: gated — selector is not a usable US phone number ` +
+          `(expected 10 digits, or 11 with a leading country code; got ${digitCount})`,
+        source: "indicia",
+        endpoint: "phone",
+      };
+    }
+    return indiciaRequest(
+      "/v1/search/intelligence/phone",
+      "phone",
+      { query: normalized },
+      normalized,
+      getSignal(opts),
+    );
+  },
 });
 
 /** Name + city/state (US) → person records. 1 token/call. Broker/lead tier. */
@@ -279,7 +362,9 @@ export const indicia_address = tool({
     address1: z.string().min(3).describe("Street address line 1."),
     city: z.string().optional(),
     state: z.string().optional().describe("US state (2-letter or full)."),
-    zip: z.string().optional(),
+    // REQUIRED by the API (`path:["zip"] code:"required"`) — an omitted zip is a
+    // hard 400, not a broader search. Already required in the deployed build.
+    zip: z.string().describe("US 5-digit ZIP code (required by the provider)."),
     address2: z.string().optional(),
   }),
   execute: async ({ address1, city, state, zip, address2 }, opts) =>
@@ -298,10 +383,28 @@ export const indicia_web_dbs = tool({
     "Indicia web-DB breach aggregator (api.indicia.app) — queries multiple breach corpora (leakcheck, snusbase, cloudsint, …) for a selector. Breach-dump data: LEAD until corroborated, never auto-pivot leaked passwords. 1-2 tokens/call.",
   inputSchema: z.object({
     query: z.string().min(3).describe("Selector (email, username, phone, …)."),
-    services: z.array(z.string()).optional().describe("Optional subset of Indicia web-DB services to query."),
+    services: z.array(z.string()).optional().describe(
+      `Optional subset of web-DB services: ${WEB_DB_SERVICES.join(" | ")}. Defaults to all.`,
+    ),
   }),
-  execute: async ({ query, services }, opts) =>
-    indiciaRequest("/v1/search/intelligence/web-dbs", "web-dbs", { query, services }, query, getSignal(opts)),
+  execute: async ({ query, services }, opts) => {
+    // `services` is REQUIRED by the endpoint and validated against a closed set —
+    // omitting it, or naming a service outside the set, is an unconditional 400.
+    // Resolved HERE rather than only in the zod schema: execute() is called
+    // directly by tests and by any path that skips schema parsing, and an explicit
+    // `services: []` would satisfy a .default() while still 400ing.
+    const requested = (services ?? [])
+      .map((s) => String(s).trim().toLowerCase())
+      .filter((s) => (WEB_DB_SERVICES as readonly string[]).includes(s));
+    const resolved = requested.length > 0 ? requested : [...WEB_DB_SERVICES];
+    return indiciaRequest(
+      "/v1/search/intelligence/web-dbs",
+      "web-dbs",
+      { query, services: resolved },
+      query,
+      getSignal(opts),
+    );
+  },
 });
 
 /** Hudson Rock — infostealer/compromised-credential exposure. FREE (0 tokens/call). */
@@ -310,8 +413,22 @@ export const indicia_hudsonrock = tool({
     "Indicia Hudson Rock lookup (api.indicia.app) — infostealer / compromised-machine credential exposure for an email, domain, or username. FREE (0 tokens). Exposure is a LEAD; corroborate before treating as confirmed.",
   inputSchema: z.object({
     query: z.string().min(3).describe("Email, domain, or username to check for infostealer exposure."),
-    type: z.string().optional().describe("Optional selector type hint (email | domain | username)."),
+    type: z.string().optional().describe(
+      `Selector type: ${HUDSONROCK_TYPES.join(" | ")}. Inferred from the selector shape when omitted.`,
+    ),
   }),
-  execute: async ({ query, type }, opts) =>
-    indiciaRequest("/v1/search/intelligence/hudsonrock", "hudsonrock", { query, type }, query, getSignal(opts)),
+  execute: async ({ query, type }, opts) => {
+    // `type` is REQUIRED and validated against a closed set, so an omitted hint is
+    // a 400 rather than a broader search. Infer it from the selector's shape.
+    const hint = type ? String(type).trim().toLowerCase() : "";
+    const q = String(query).trim();
+    const resolved = (HUDSONROCK_TYPES as readonly string[]).includes(hint) ? hint : inferHudsonRockType(q);
+    return indiciaRequest(
+      "/v1/search/intelligence/hudsonrock",
+      "hudsonrock",
+      { query: q, type: resolved },
+      q,
+      getSignal(opts),
+    );
+  },
 });
