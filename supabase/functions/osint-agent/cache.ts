@@ -486,6 +486,23 @@ async function loadSelectorEvidence(
   }
 }
 
+/**
+ * Attach the run correlation id to a tool_usage_log row's `input_json`.
+ *
+ * Returns a NEW object; the caller's payload is never mutated. When no run id is set
+ * the payload passes through byte-identical, so the column's existing shape is
+ * unchanged for any caller that does not opt in. When `inputJson` is null — several
+ * logUsage call sites pass nothing — a row still gets attributed rather than silently
+ * dropping out of every per-run query, which is the whole point of stamping centrally.
+ */
+export function stampRunId(
+  inputJson: Record<string, unknown> | null,
+  runId: string | null | undefined,
+): Record<string, unknown> | null {
+  if (!runId) return inputJson;
+  return { ...(inputJson ?? {}), run_id: runId };
+}
+
 // ---- Central tool cache wrapper ------------------------------------------------
 // Wraps every tool with a three-layer cache (memory → db → live), cost tracking,
 // telemetry logging, and optional auto-evidence mirroring. All 77 tools flow
@@ -507,6 +524,16 @@ export function wrapToolsWithCache(
     toolCallBudget?: { genuine: number; reserved: number; capped: boolean };
     shouldStopLiveLookups?: () => boolean;
     onHeartbeat?: () => void;
+    /**
+     * Request-scoped run correlation id (see run-telemetry.ts). PURELY OBSERVATIONAL —
+     * no gate, cap, cache key or circuit decision reads it. It is stamped onto every
+     * tool_usage_log row so calls can be grouped by RUN rather than by thread, which
+     * today is impossible: the best available proxy (a 90s inter-call gap) cannot tell
+     * one run overshooting its 36-call ceiling from two overlapping runs each getting a
+     * fresh one. Optional, so callers that don't set it (tests, other entrypoints) are
+     * unaffected and rows simply stay unattributed as they are now.
+     */
+    runId?: string | null;
   },
 ) {
   const wrapped: Record<string, Tool> = {};
@@ -672,7 +699,12 @@ export function wrapToolsWithCache(
         duration_ms: durationMs,
         error_msg: outcome === "ok" ? null : errorMsg,
         status_code: outcome === "ok" ? null : statusCode,
-        input_json: inputJson,
+        // Stamped HERE, at the one choke point every outcome funnels through, rather
+        // than at the ~10 individual logUsage call sites — a newly added rejection
+        // path physically cannot write an unattributed row. Rides the existing jsonb
+        // column, so per-run grouping (`input_json->>'run_id'`) works on deploy with
+        // no migration and nothing to roll back but this code.
+        input_json: stampRunId(inputJson, ctx.runId),
       };
       try {
         let { error } = await adminDb.from("tool_usage_log").insert(row);

@@ -42,6 +42,7 @@ import {
   MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN,
   capTotalToBudget, deadlineReached, isToolBudgetExhausted, buildIntermediateStepPlan,
 } from "./orchestrator-budget.ts";
+import { makeRunLogger, newRunId, type RunLogger } from "./run-telemetry.ts";
 import {
   shouldForceFinalize, buildFinalizeStepPlan, buildPerCycleCompactDirective,
   activeToolsOutsideFinalize, countFinalizeProgress, resolveFinalizePhase, type FinalizePhase,
@@ -107,6 +108,11 @@ function extractManualOverrideSelector(messages: UIMessage[]): string | null {
 Deno.serve(async (req) => {
   let heartbeat: ReturnType<typeof startRunHeartbeat> | null = null;
   let releaseRunState = () => {};
+  // Hoisted alongside heartbeat/releaseRunState so the outer catch — a genuine
+  // terminal exit that returns a 500 — can record the run's terminal event too.
+  // Stays null when setupRequest throws before a thread is even identified; there is
+  // no run to attribute in that case.
+  let runLog: RunLogger | null = null;
   if (isHealthProbe(req)) return handleHealthProbe(req);
 
   degradedTools.clear();
@@ -132,6 +138,21 @@ Deno.serve(async (req) => {
     // ---- setupRequest handles CORS, auth, thread verification, message persistence ----
     const ctx = await setupRequest(req);
     const { supabase, supabaseAdmin, user, userId, threadId, archiveEnabled, detectedSeedType, messages } = ctx;
+    // ---- Run correlation (PR 0a — observability only) --------------------------
+    // Minted once per accepted request and never mutated. This is a CORRELATION
+    // HANDLE, not a lock and not authority: nothing branches on it, it grants no
+    // right to write, and it does not lock out a concurrent run on this thread —
+    // that gap is real (see the comment above circuit.acquire below) and is fixed
+    // by durable run identity, not by this id. What it buys today is the ability to
+    // GROUP telemetry by run at all, which is currently impossible: tool_usage_log
+    // carries only thread_id + created_at, so a thread observed making 49 live tool
+    // calls inside one 180s isolate against a 36-call ceiling cannot be diagnosed —
+    // one run overshooting and two overlapping runs each holding a fresh budget look
+    // identical. Every line this run logs and every tool_usage_log row it writes now
+    // carry the same id, so those two cases separate.
+    const runId = newRunId();
+    runLog = makeRunLogger(runId, threadId);
+    const runLogger: RunLogger = runLog;
     recoverStaleActiveThreads(supabaseAdmin, { limit: 10, reason: "stale heartbeat recovered at run startup" })
       .then((r) => {
         if (r.recovered || r.errors) console.log(JSON.stringify({ event: "stale_thread_sweeper", ...r }));
@@ -746,6 +767,17 @@ Deno.serve(async (req) => {
     // `capped` once the cap is hit; prepareStep reads it to force finalize. Owned by
     // this per-request closure so concurrent runs on a warm isolate never share it.
     const toolCallBudget = { genuine: 0, reserved: 0, capped: false };
+    // Run-shape counters for the terminal event (PR 0a). Request-closure locals, like
+    // toolCallBudget, so a concurrent run on a warm isolate can never read or bump
+    // them. Observational only — nothing branches on either.
+    let stepsObserved = 0;
+    let lastFinishReason: string | null = null;
+    // Set from resolveTerminalState so the terminal event can distinguish a run that
+    // genuinely completed from one that reached `finished` with the I-2 completion
+    // contract UNMET (the "I'll start" stub class). Both write status='finished';
+    // only the recovery_reason tells them apart, and today that distinction is not
+    // recoverable from logs at all.
+    let completionContractReason: string | null = null;
     // Separate one-shot latch for the run_capped telemetry: `capped` is now flipped at
     // ADMISSION (reserveToolCall), before this prepareStep closure runs, so the old
     // `capReached && !capped` gate would never log. This latch fires the event exactly
@@ -766,6 +798,20 @@ Deno.serve(async (req) => {
     // deadline StopCondition below. Declared here so prepareStep's closure reads it.
     const runStartedAt = Date.now();
     heartbeat = startRunHeartbeat(supabaseAdmin, threadId, { startedAt: new Date(runStartedAt) });
+    // Opening event. Emitted unconditionally, once the provider is resolved, so that
+    // every run has a first line — including runs that die before any tool executes,
+    // which are exactly the ones with no other trace today. Records the seed KIND
+    // ("email"/"username"/…), never the seed itself.
+    runLogger.emit("run_started", {
+      provider: useFallback ? fallbackTarget!.provider : orchChoice.provider,
+      model: useFallback ? fallbackTarget!.modelId : primaryLabel,
+      provider_reason: useFallback ? "fallback" : orchChoice.reason,
+      seed_kind: detectedSeedType ?? null,
+      tool_schema_size: Object.keys(tools).length,
+      step_cap: MAX_ORCHESTRATOR_STEPS,
+      tool_call_cap: MAX_TOOL_CALLS_PER_RUN,
+      wall_clock_budget_ms: ORCHESTRATOR_WALL_CLOCK_MS,
+    });
     // P0-B opening gate. Did the analyst's LATEST turn ask for an investigation?
     // `detectedSeedType`/`seedValueRaw` both read the FIRST user message, which on a
     // long-lived thread is not what this turn is about (production thread 40f8a6eb
@@ -984,6 +1030,7 @@ Deno.serve(async (req) => {
       messages: trimmedMessages,
       tools: wrapToolsWithCache(tools, {
         investigationId: threadId,
+        runId,
         userId,
         supabase,
         supabaseAdmin,
@@ -1041,6 +1088,26 @@ Deno.serve(async (req) => {
       // fallback path. An operator LOVABLE_FALLBACK_MODEL_ID override is best-effort
       // metered at the Flash rate.
       onStepFinish: ({ usage, finishReason, toolCalls, toolResults }) => {
+        // ---- Unconditional step finish reason (PR 0a) ----
+        // MUST stay above the `finalizeStarted` guard below. The pre-existing
+        // finalize_step_finished event sits INSIDE that guard, so an ordinary step —
+        // the overwhelming majority of all steps — recorded no finish reason at all,
+        // leaving per-step questions ("how many tools per step?", "which finishReason
+        // ends a run?") with no denominator. Names only, never arguments or results.
+        stepsObserved++;
+        const stepToolNames = (toolCalls ?? []).map((call: { toolName: string }) => call.toolName);
+        lastFinishReason = typeof finishReason === "string" ? finishReason : null;
+        runLogger.emit("step_finished", {
+          step_index: stepsObserved,
+          finish_reason: lastFinishReason,
+          tool_call_count: stepToolNames.length,
+          tool_names: stepToolNames,
+          distinct_tool_count: new Set(stepToolNames).size,
+          finalize_phase: finalizeStarted ? finalizePhase : null,
+          reserved_tool_calls: toolCallBudget.reserved,
+          genuine_tool_calls: toolCallBudget.genuine,
+          elapsed_ms: Date.now() - runStartedAt,
+        });
         if (finalizeStarted) {
           const names = (toolCalls ?? []).map((call: { toolName: string }) => call.toolName);
           const stepProgress = countFinalizeProgress([{ content: toolResults }]);
@@ -1168,6 +1235,20 @@ Deno.serve(async (req) => {
         } catch (e) {
           console.warn("[thread status] error-path update threw:", e);
         } finally {
+          // The run's single terminal event. The latch lives in the logger, so
+          // whichever exit fires first wins and a run can never record two — an
+          // error path that also reaches onFinish must not be counted twice.
+          runLogger.terminal("stream_error", {
+            steps: stepsObserved,
+            genuine_tool_calls: toolCallBudget.genuine,
+            reserved_tool_calls: toolCallBudget.reserved,
+            budget_capped: toolCallBudget.capped,
+            finalize_started: finalizeStarted,
+            context_overflow: isCtxOverflow,
+            message_schema_invalid: isSchemaError,
+            error_name: errName,
+            elapsed_ms: Date.now() - runStartedAt,
+          });
           releaseRunState();
         }
       },
@@ -1333,6 +1414,7 @@ Deno.serve(async (req) => {
           assistantRowPersisted,
           finalMessages: finalMessages as unknown as Array<{ role?: string; parts?: Array<{ type?: string; text?: unknown }> }>,
         });
+        completionContractReason = terminal.recoveryReason ?? null;
         if (terminal.recoveryReason) {
           console.warn(JSON.stringify({
             event: "completion_contract_unmet", thread_id: threadId,
@@ -1501,6 +1583,22 @@ Deno.serve(async (req) => {
         // backstop for the paths where this never runs (isolate death,
         // unhandled rejection).
         heartbeat?.stop();
+        // The run's single terminal event, on the clean path. Reason distinguishes a
+        // run that met the I-2 completion contract from one that reached 'finished'
+        // without it — both write the same status, and until now nothing in the logs
+        // separated them.
+        runLogger.terminal(completionContractReason ? "finished_contract_unmet" : "clean_finalize", {
+          steps: stepsObserved,
+          last_finish_reason: lastFinishReason,
+          genuine_tool_calls: toolCallBudget.genuine,
+          reserved_tool_calls: toolCallBudget.reserved,
+          budget_capped: toolCallBudget.capped,
+          finalize_started: finalizeStarted,
+          finalize_steps_run: finalizeStepsRun,
+          contract_reason: completionContractReason,
+          run_cost_micro_usd: runCostMicroUsd,
+          elapsed_ms: Date.now() - runStartedAt,
+        });
         releaseRunState();
     };
 
@@ -1561,6 +1659,14 @@ Deno.serve(async (req) => {
     });
   } catch (e) {
     heartbeat?.stop();
+    // A fault that reaches here ends the run with a 500 and no report. It is a
+    // terminal exit like any other and must not be the one that goes unrecorded —
+    // the latch means this is a no-op if the stream already terminated. Skipped
+    // entirely for the Response throws below (auth/validation rejections), which
+    // never started a run.
+    if (!(e instanceof Response)) {
+      runLog?.terminal("orchestrator_fault", { error_name: e instanceof Error ? e.name : "" });
+    }
     releaseRunState();
     // setupRequest throws Response objects for 401/403/400 — return them directly
     if (e instanceof Response) return e;
