@@ -3,7 +3,6 @@ import { SwarmMark } from "@/components/ui/swarm-mark";
 import {
   Home,
   MessageSquare,
-  BarChart3,
   Brain,
   FolderOpen,
   type LucideIcon,
@@ -16,8 +15,10 @@ const NAV: Array<{ to: string; label: string; icon: LucideIcon; match: (p: strin
   // "Investigate", not "Chat" — the global nav is the most persistent surface in
   // the app, so leaving it on the old word undoes the rename everywhere else.
   { to: "/chat", label: "Investigate", icon: MessageSquare, match: (p) => p.startsWith("/chat") },
-  { to: "/insights", label: "Insights", icon: BarChart3, match: (p) => p.startsWith("/insights") },
-  { to: "/brain", label: "Brain", icon: Brain, match: (p) => p.startsWith("/brain") },
+  // Insights and Brain were two entries onto the same question. One section now
+  // ("Intelligence"), with Overview / Analysis / Memories / Patterns / Sources /
+  // Credits as tabs inside it.
+  { to: "/brain", label: "Intelligence", icon: Brain, match: (p) => p.startsWith("/brain") || p.startsWith("/insights") },
 ];
 
 export function AppNav({ className }: { className?: string }) {

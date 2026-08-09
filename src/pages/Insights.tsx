@@ -49,13 +49,22 @@ function relativeTime(iso: string | null): string {
   return `${d}d ago`;
 }
 
-export default function Insights() {
+/**
+ * The Insights body, without page chrome.
+ *
+ * Extracted so it can render as the OVERVIEW tab of the unified Intelligence
+ * page alongside Brain's memories/patterns/sources/credits. Insights and Brain
+ * were two separate destinations answering the same question ("what do I know
+ * across my cases?"), which forced a nav round-trip to compare aggregate stats
+ * against the memories and patterns they summarise.
+ *
+ * `heading` is suppressed when embedded — the host page owns the title.
+ */
+export function InsightsOverview({ embedded = false }: { embedded?: boolean } = {}) {
   const { user, loading: authLoading } = useAuth();
   const { data, loading, error } = useInsightsData(user?.id, !!user && !authLoading);
 
-  if (authLoading) {
-    return <FullPageLoader />;
-  }
+  if (authLoading) return <FullPageLoader fullScreen={!embedded} />;
   if (!user) return <Navigate to="/auth" replace />;
 
   const derived = data ? deriveInsights(data.summary) : null;
@@ -70,20 +79,21 @@ export default function Insights() {
     : null;
 
   return (
-    <div className="relative min-h-screen bg-background text-foreground">
-      <AppNav />
+    <>
+      {!embedded && (
+        <>
+          <div className="text-eyebrow uppercase tracking-[0.26em] text-primary/80">Insights</div>
+          <h1 className="mt-2 font-display text-3xl font-semibold tracking-tight">
+            Your investigation stats
+          </h1>
+          <p className="mt-2 text-sm text-muted-foreground max-w-2xl">
+            Live aggregate view across <strong className="text-foreground/90">your</strong> cases only.
+            Updates automatically as scans run and tools return results.
+          </p>
+        </>
+      )}
 
-      <main className="mx-auto max-w-6xl px-4 sm:px-8 py-8 pb-16">
-        <div className="text-eyebrow uppercase tracking-[0.26em] text-primary/80">Insights</div>
-        <h1 className="mt-2 font-display text-3xl font-semibold tracking-tight">
-          Your investigation stats
-        </h1>
-        <p className="mt-2 text-sm text-muted-foreground max-w-2xl">
-          Live aggregate view across <strong className="text-foreground/90">your</strong> cases only.
-          Updates automatically as scans run and tools return results.
-        </p>
-
-        {error && (
+      {error && (
           <div className="mt-6 rounded-2xl border border-danger/40 bg-danger/10 p-4 text-sm text-danger">
             {error}
           </div>
@@ -215,7 +225,19 @@ export default function Insights() {
               No cases yet.
             </div>
           )}
-        </section>
+      </section>
+    </>
+  );
+}
+
+/** Standalone /insights route — kept so existing links keep working; the
+ *  canonical home for this content is now the Intelligence page's Overview tab. */
+export default function Insights() {
+  return (
+    <div className="relative min-h-screen bg-background text-foreground">
+      <AppNav />
+      <main className="mx-auto max-w-6xl px-4 sm:px-8 py-8 pb-16">
+        <InsightsOverview />
       </main>
     </div>
   );
