@@ -50,6 +50,36 @@ There is **ONE place to work: this repo, `justindean785/insight-finder`** (local
 - Tests: `npm run test:edge` (= `cd supabase/functions/osint-agent && deno test --no-check --allow-net --allow-env --allow-sys --allow-read *_test.ts`). **`--allow-read` is required** — the source-level wiring tests (`reviews_wiring_test.ts`) read `index.ts`/`cluster.ts`/`recovery.ts` off disk to assert the call sites exist, and without it they abort with `NotCapable` before any assertion runs, which reads like a code failure and is not. (The old `--allow-net --no-check` form left env/sys perms off, inflating the failure count — measured 2026-07-25: `--allow-net --no-check` = 546 pass/57 fail vs `--allow-net --allow-env` = 754 pass/24 fail; the 24 remaining are environmental — missing API keys + sandboxed network, e.g. `readiness_gate_test`, `breach_request_test` — not real.) `deno check index.ts` has ~12–157 **pre-existing** AI-SDK/Supabase type-graph errors — not a gate; verify your change adds none.
 - Frontend tests: `npx vitest run` from repo root.
 
+## Seeing the UI before you ship it — the harness
+
+> A Vercel **preview** deployment is not the site. Only `target: production` on `main` is.
+
+Two failure modes have repeatedly shipped UI work that changed nothing an analyst sees:
+
+1. **Draft PRs never merge.** A preview deploy reports `READY` with a green check and looks
+   exactly like a successful deploy — but it is `target: null`. Production only moves when a
+   PR merges to `main`. Check `target`, not the checkmark.
+2. **Reviewing only the signed-out surfaces.** Landing and `/auth` are easy to render, so
+   passes concentrate there — while the signed-in workspace, where analysts actually live,
+   goes untouched and the change reads as "looks the exact same."
+
+To render the **signed-in workspace** with no prod credentials and no network:
+
+```bash
+npx vite --config vite.harness.config.ts        # → http://127.0.0.1:5174
+# open /chat/11111111-2222-4333-8444-555555555555
+```
+
+`vite.harness.config.ts` aliases `@/integrations/supabase/client` to
+`src/dev/supabase-mock.ts` — a chainable PostgREST stub plus fixtures for a realistic
+finished case (8 artifacts spanning verified → capped → broker-only, 9 tool calls including
+2 failures, a report-shaped final message). Every tab renders: Investigate, Evidence, Tools,
+Graph, Report.
+
+Nothing under `src/` imports the stub and the production config is untouched, so it cannot
+reach a real build — `npm run build && grep -r harness.local dist/` returns nothing. Screenshot
+the workspace before/after any UI change and put the images in the PR.
+
 ## ⛔ Run-termination invariants — 48 hours of incidents live here (2026-07-26)
 
 Full write-up: `INCIDENT_2026-07-26_termination-and-ghost-recovery.md`. Two invariants

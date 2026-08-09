@@ -30,7 +30,30 @@ export type InsightsSummary = {
   tool_calls_total: number;
 };
 
-export function deriveInsights(summary: InsightsSummary) {
+/**
+ * Normalize the RPC payload before use.
+ *
+ * Every list below was dereferenced directly, so a payload missing any one of
+ * them threw `summary.<field> is not iterable` and took the whole surface down.
+ * That mattered more once Insights became a tab inside Intelligence: one absent
+ * array blanked the section rather than one page. A partial payload should
+ * degrade to an empty chart, not a crash.
+ */
+function normalize(summary: InsightsSummary): InsightsSummary {
+  const list = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
+  return {
+    ...summary,
+    kind_counts: list(summary?.kind_counts),
+    source_counts: list(summary?.source_counts),
+    day_counts: list(summary?.day_counts),
+    top_cases: list(summary?.top_cases),
+    conf_buckets: summary?.conf_buckets ?? ({} as InsightsSummary["conf_buckets"]),
+    avg_confidence: Number(summary?.avg_confidence ?? 0),
+  };
+}
+
+export function deriveInsights(rawSummary: InsightsSummary) {
+  const summary = normalize(rawSummary);
   // Raw artifact kinds → display groups (Identity, Contact, …). The mapping
   // stays in JS so `groupForKind` is the single source of truth, not duplicated
   // in SQL.

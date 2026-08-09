@@ -162,11 +162,11 @@ export default function HomeHub() {
             Workspace
           </div>
           <h1 className="mt-2 font-display text-3xl sm:text-4xl font-semibold tracking-tight">
-            Where do you want to go?
+            Resume analysis or open a new case.
           </h1>
           <p className="mt-3 max-w-xl text-sm text-muted-foreground">
-            Start a new investigation, open the chat to resume one in progress, or dig into the
-            insights you've already gathered.
+            Start a new investigation, resume active casework, or review intelligence already
+            assembled across your workspace.
           </p>
           <div className="mt-6 flex flex-wrap gap-3">
             <Button
@@ -210,9 +210,9 @@ export default function HomeHub() {
           <HubCard
             to="/chat"
             icon={MessageSquare}
-            title="Chat"
-            blurb="Run the investigator agent. Seed an identifier and let the swarm work."
-            cta="Open chat"
+            title="Investigate"
+            blurb="Work the case from a real selector, direct pivots, and review findings as they arrive."
+            cta="Open workspace"
           />
           <HubCard
             to="/insights"

@@ -359,8 +359,8 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
               ? "bg-primary/15 text-primary ring-1 ring-primary/40"
               : "glass-interactive text-muted-foreground hover:text-primary",
           )}
-          title="Global Brain"
-          aria-label="Global Brain"
+          title="Intelligence"
+          aria-label="Intelligence"
         >
           <Brain className="w-4 h-4" strokeWidth={1.5} />
           {newPatternCount > 0 && !onBrainRoute && (
@@ -368,20 +368,6 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
               {newPatternCount > 99 ? "99+" : newPatternCount}
             </span>
           )}
-        </Link>
-
-        <Link
-          to="/insights"
-          className={cn(
-            "relative w-8 h-8 rounded-lg grid place-items-center transition-colors",
-            onInsightsRoute
-              ? "bg-primary/15 text-primary ring-1 ring-primary/40"
-              : "glass-interactive text-muted-foreground hover:text-primary",
-          )}
-          title="Insights"
-          aria-label="Insights"
-        >
-          <BarChart3 className="w-4 h-4" strokeWidth={1.5} />
         </Link>
 
         {/* Only the most-recent cases belong in the 56px rail. Mapping the full
@@ -502,8 +488,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         {(
           [
             { to: "/cases", label: "All cases", icon: FolderOpen, active: onCasesRoute, badge: 0 },
-            { to: "/brain", label: "Brain", icon: Brain, active: onBrainRoute, badge: onBrainRoute ? 0 : newPatternCount },
-            { to: "/insights", label: "Insights", icon: BarChart3, active: onInsightsRoute, badge: 0 },
+            { to: "/brain", label: "Intelligence", icon: Brain, active: onBrainRoute || onInsightsRoute, badge: onBrainRoute ? 0 : newPatternCount },
           ] as const
         ).map(({ to, label, icon: Icon, active, badge }) => (
           <Link
