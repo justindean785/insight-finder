@@ -22,6 +22,7 @@ import { isSameSurnameOnlyLead, isListingAgentLead } from "./collision-policy.ts
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDomainSource, LLM_ASSERTED_PROVENANCE, countIndependentClasses } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
 import { buildNodes } from "./graph.ts";
+import { collisionPeerSignal, type CollisionPeer } from "./lib/quarantine.ts";
 import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
 import { selectPivots, proposedCallToCandidate, type PivotCandidate, type ProposedCall } from "./graph_pivots.ts";
 import { renderPivotChecklistForPrompt } from "./pivot-checklists.ts";
@@ -4709,15 +4710,13 @@ export function buildTools(ctx: ToolContext) {
               .eq("thread_id", threadId)
               .eq("kind", String(r.kind))
               .eq("value", String(r.value));
-            const sources = new Set<string>();
-            const clusters = new Set<string>();
-            type PeerRow = { source?: unknown; metadata?: Record<string, unknown> | null };
-            for (const p of (peers ?? []) as PeerRow[]) {
-              if (p.source) sources.add(String(p.source));
-              const cid = (p.metadata ?? {}).cluster_id;
-              if (cid) clusters.add(String(cid));
-            }
-            if (sources.size >= 3 || clusters.size >= 2) {
+            // Quarantined peers are skipped — both counts are corroboration
+            // measures, and an unlinked row can corroborate nothing. Shared with
+            // the recovery/graph readers so the flag binds one predicate, not four.
+            const { sources, clusters } = collisionPeerSignal(
+              (peers ?? []) as CollisionPeer[],
+            );
+            if (sources.length >= 3 || clusters.length >= 2) {
               await supabase.from("artifacts").insert({
                 thread_id: threadId,
                 user_id: userId,
@@ -4728,9 +4727,9 @@ export function buildTools(ctx: ToolContext) {
                 metadata: {
                   collision_value: r.value,
                   collision_kind: r.kind,
-                  sources: Array.from(sources),
-                  clusters: Array.from(clusters),
-                  severity: clusters.size >= 2 ? "high" : "medium",
+                  sources,
+                  clusters,
+                  severity: clusters.length >= 2 ? "high" : "medium",
                   status: "needs_review",
                 },
               });

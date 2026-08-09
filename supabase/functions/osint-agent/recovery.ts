@@ -2,6 +2,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { stripNulCharacters } from "./safety.ts";
 import { hasReportShape, stripReasoning } from "./orchestrator-finalize.ts";
 import { loadReviewsForThread, applyReviewsToArtifacts } from "./reviews.ts";
+import { isSubjectUnlinked } from "./lib/quarantine.ts";
 
 export const RUN_HEARTBEAT_INTERVAL_MS = 15_000;
 export const STALE_RUN_AFTER_MS = 75_000;
@@ -110,6 +111,13 @@ export function classifyRecoveryRow(a: RecoveryArtifact): RecoveryRowClass {
   const md = (a.metadata ?? {}) as RecoveryArtifactMetadata;
   const status = String(md.status ?? "").trim().toLowerCase();
 
+  // A row harvested from a name-only query whose linkage is unproven is not
+  // salvageable evidence. Recovery is the ONE surface that runs when the model
+  // never closed the run, so it is exactly where an unlinked row would otherwise
+  // be published as a finding with nothing left to challenge it. Classified
+  // `excluded`, not dropped: the excluded section still discloses it by count and
+  // kind, and the row itself stays on the Evidence board.
+  if (isSubjectUnlinked(a.metadata)) return "excluded";
   if (EXCLUDED_KINDS.has(kind) || EXCLUDED_STATUSES.has(status)) return "excluded";
   if (NON_EVIDENCE_KINDS.has(kind)) return "non_evidence";
   if (md.auto_recorded === true || typeof md.auto_persist_source === "string") return "candidate";

@@ -14,6 +14,11 @@
  * (Phase 10). Edge inference + propagation + clustering land in the next PR.
  */
 
+// The one exception to "no imports": a pure, dependency-free local predicate.
+// Duplicating the quarantine check here is how the flag came to bind only one
+// reader in the first place.
+import { isSubjectUnlinked } from "./lib/quarantine.ts";
+
 // ---- Model ------------------------------------------------------------------
 
 export type NodeType =
@@ -220,10 +225,19 @@ export function inferNodeType(kind: string | null | undefined, value: string): N
 /** Build canonical, de-duplicated entity nodes from the flat artifact list.
  *  Repeated lookups of the same selector collapse into one node carrying
  *  multiple evidence entries — the structural fix for the duplicate-charge /
- *  re-pivot problem seen in the audited trace. */
+ *  re-pivot problem seen in the audited trace.
+ *
+ *  QUARANTINED ROWS NEVER ENTER THE GRAPH. A node is the unit that carries an
+ *  identity EDGE, and an edge is a claim that two selectors belong to the same
+ *  person. A `subject_unlinked` row is by definition one whose linkage to the
+ *  subject is unproven, so admitting it lets a same-name stranger's selector
+ *  become a node and steer the planner's next pivot. Dropped at the door rather
+ *  than downweighted: there is no correct weight for "may be a different human".
+ *  The row is untouched in the artifacts table and stays on the Evidence board. */
 export function buildNodes(artifacts: ArtifactInput[]): GraphNode[] {
   const byId = new Map<string, GraphNode>();
   for (const a of artifacts) {
+    if (isSubjectUnlinked(a.metadata)) continue;
     const rawValue = (a.value ?? "").trim();
     if (!rawValue) continue;
     const type = inferNodeType(a.kind, rawValue);
