@@ -31,40 +31,57 @@
  *
  * ---- LOGGING POLICY ----------------------------------------------------------------
  * env.ts's policy is binding here and is ENFORCED, not merely documented: `emit`
- * strips any field whose NAME matches a sensitive pattern (seed, query, value, email,
- * phone, token, password, secret, raw, body, snapshot, …). Telemetry carries ids,
- * counts, durations, statuses and reasons — never selectors, never analyst input,
- * never provider payloads. A caller that passes a seed by mistake logs nothing rather
- * than leaking it.
+ * drops every field whose NAME is not in `TELEMETRY_FIELDS` — an ALLOWLIST, so the
+ * default is DROP. Telemetry carries ids, counts, durations, statuses, enum-ish
+ * reasons and TYPE names — never selectors, never analyst input, never provider
+ * payloads. A caller that passes a seed, a name or a credential by mistake logs
+ * nothing rather than leaking it.
  */
 
 /** Bumped when the emitted event shape changes, so a query can tell eras apart. */
 export const RUN_TELEMETRY_VERSION = 1;
 
 /**
- * Field names that must never reach a log line. Matched case-insensitively as a
- * SUBSTRING of the key, so `seed_value`, `userEmail` and `raw_body` are all caught.
- * Deliberately broad: a dropped counter is a cosmetic loss, a leaked selector is not.
+ * The COMPLETE set of field names telemetry may emit. Anything not named here is
+ * dropped before a line is written.
+ *
+ * This is an ALLOWLIST on purpose. The first version was a denylist of PII-shaped
+ * key names, and reviewing this PR caught it leaking `queried_name` — a person's
+ * name — because the pattern matched `query` and not `queried`. That is the generic
+ * failure of a denylist: it can only block the key names somebody thought of, and a
+ * near-miss reads as safe. An allowlist inverts the default, so a field a future
+ * author forgot to think about is dropped rather than published.
+ *
+ * It is affordable precisely because telemetry is closed: three call sites emit a
+ * fixed vocabulary of counts, ids, durations, enum-ish reasons and TYPE names —
+ * never a selector, a name, a payload or a credential. `run_telemetry_test.ts` pins
+ * the emitted set against this list, so adding a field without allowlisting it fails
+ * the suite loudly instead of silently vanishing from the logs.
  */
-export const SENSITIVE_FIELD_RE =
-  /seed|query|selector|value|email|phone|token|password|passwd|secret|api[_-]?key|authorization|cookie|raw|body|payload|snapshot|content|handle|username|address/i;
-
-/**
- * Keys that match SENSITIVE_FIELD_RE by substring but carry no subject data — a
- * SCORE, a TYPE NAME, or a COUNT rather than the thing itself. Without this the broad
- * regex would silently swallow exactly the signals the ranking work needs to measure
- * (`expected_value` is a 0-100 score; `selector_type` is "email"/"phone", never the
- * selector). Explicit and enumerated: a key is safe because it is on this list, not
- * because it looked safe to whoever added it.
- */
-export const SAFE_FIELD_ALLOWLIST = new Set([
-  // The seed's KIND ("email" | "username" | "domain" | …), never the seed. Caught by
-  // the regex on its first authoring, which is the enforcement working as intended.
+export const TELEMETRY_FIELDS: ReadonlySet<string> = new Set([
+  // run_started
+  "provider", "model", "provider_reason",
+  // The seed's KIND ("email" | "username" | "domain" | …), never the seed itself.
   "seed_kind",
-  "expected_value",
-  "selector_type",
-  "value_count",
-  "values_kept",
+  "tool_schema_size", "step_cap", "tool_call_cap", "wall_clock_budget_ms",
+  // step_finished
+  "step_index", "finish_reason", "tool_call_count",
+  // TOOL names ("serus_darkweb_scan"), never tool arguments.
+  "tool_names",
+  "distinct_tool_count", "finalize_phase",
+  "reserved_tool_calls", "genuine_tool_calls", "elapsed_ms",
+  // run_terminal
+  "terminal_reason", "steps", "last_finish_reason", "budget_capped",
+  "finalize_started", "finalize_steps_run", "contract_reason",
+  "run_cost_micro_usd", "context_overflow", "message_schema_invalid",
+  // An Error's `.name` ("AbortError"), never its message.
+  "error_name",
+  // Pre-existing events folded in when their console.log calls were migrated.
+  "rejected", "reviewed", "cap", "trigger", "step_number", "nudge_count",
+  "tool_calls", "record_artifact_calls", "inserted", "skipped_duplicates",
+  "evidence_appended", "phase", "decision_succeeded",
+  // Ranking/measurement signals: a 0-100 SCORE and a TYPE name, never the selector.
+  "expected_value", "selector_type", "weak_lead", "value_count", "values_kept",
   "content_hash",
 ]);
 
@@ -121,7 +138,8 @@ export function scrubLogFields(fields: RunLogFields | undefined): RunLogFields {
   if (!fields) return out;
   for (const [k, v] of Object.entries(fields)) {
     if (RESERVED_FIELDS.has(k)) continue;
-    if (!SAFE_FIELD_ALLOWLIST.has(k) && SENSITIVE_FIELD_RE.test(k)) continue;
+    // Allowlist, not denylist — see TELEMETRY_FIELDS. Default is DROP.
+    if (!TELEMETRY_FIELDS.has(k)) continue;
     if (typeof v === "string" && v.length > 300) {
       out[k] = v.slice(0, 300);
       continue;

@@ -11,9 +11,8 @@ import {
   makeRunLogger,
   newRunId,
   RUN_TELEMETRY_VERSION,
-  SAFE_FIELD_ALLOWLIST,
+  TELEMETRY_FIELDS,
   scrubLogFields,
-  SENSITIVE_FIELD_RE,
 } from "./run-telemetry.ts";
 import { stampRunId } from "./cache.ts";
 
@@ -90,43 +89,46 @@ Deno.test("the first exit to fire wins, and later exits cannot relabel the run",
 
 // ---- the logging policy is enforced, not documented --------------------------------
 
-Deno.test("sensitive field NAMES are dropped before a line is written", () => {
-  // env.ts's policy: never log seeds, raw bodies, extracted PII. Enforcing it in the
-  // logger means a call site that passes a seed by mistake logs nothing rather than
-  // leaking it.
+Deno.test("a field that is not on the allowlist is dropped, whatever it is called", () => {
+  // The first version of this scrubber was a DENYLIST and it leaked `queried_name`:
+  // the pattern matched `query`, not `queried`. A near-miss read as safe. These are
+  // the shapes an analyst's investigation actually contains.
   const c = capture();
   const log = makeRunLogger("run-A", "thread-1", c.sink);
   log.emit("step_finished", {
-    seed_value: "jdean785",
-    query: "site:example.com",
-    user_email: "a@b.com",
-    phone_number: "+15555550123",
-    api_key: "sk-live-xxx",
-    raw_response: "{...}",
-    step_number: 4,
+    seed_value: "leoseyes86@gmail.com",
+    queried_name: "Example Person",
+    subject_name: "Example Person",
+    display_name: "Example Person",
+    selector: "+1 (212) 555-0123",
+    query: 'site:example.com "Example Person"',
+    raw_response: '{"ssn":"000-00-0000"}',
+    associated_password: "hunter2",
+    ip_addresses: ["203.0.113.47"],
+    some_field_nobody_thought_of: "leoseyes86@gmail.com",
+    step_index: 4,
   });
   const line = c.lines[0];
-  for (const leaked of ["jdean785", "site:example.com", "a@b.com", "+15555550123", "sk-live-xxx"]) {
+  for (const leaked of [
+    "leoseyes86", "Example Person", "555-0123", "site:example.com",
+    "000-00-0000", "hunter2", "203.0.113.47",
+  ]) {
     assertEquals(line.includes(leaked), false, `leaked ${leaked}`);
   }
   const r = JSON.parse(line);
-  assertEquals(r.step_number, 4);
-  assertEquals("seed_value" in r, false);
-  assertEquals("api_key" in r, false);
+  assertEquals(r.step_index, 4);
+  for (const k of ["seed_value", "queried_name", "subject_name", "some_field_nobody_thought_of"]) {
+    assertEquals(k in r, false, `${k} survived`);
+  }
 });
 
-Deno.test("allowlisted score/type keys survive the broad regex", () => {
-  // expected_value is a 0-100 score and selector_type is "email"/"phone" — never the
-  // selector. Losing them silently would blind the ranking work this PR exists to
-  // enable, so the exemption is explicit and pinned.
-  // Every allowlist entry must actually NEED the exemption. An entry the regex would
-  // have passed anyway is dead weight that makes the exemption list look broader —
-  // and less reviewable — than it is.
-  for (const k of SAFE_FIELD_ALLOWLIST) {
-    assert(SENSITIVE_FIELD_RE.test(k), `${k} is allowlisted but the regex never blocked it`);
+Deno.test("the allowlist contains no field that is itself a selector or payload", () => {
+  // Reviewer aid: every entry must be a count, id, duration, enum-ish reason, or a
+  // TYPE name. If a future author adds a value-bearing key this fails.
+  const banned = /^(seed_value|selector|query|value|email|phone|password|raw|body|payload|snapshot|handle|username|address|name)$/i;
+  for (const f of TELEMETRY_FIELDS) {
+    assertEquals(banned.test(f), false, `${f} looks like it carries a value, not a measure`);
   }
-  const out = scrubLogFields({ expected_value: 62, selector_type: "email", weak_lead: false });
-  assertEquals(out, { expected_value: 62, selector_type: "email", weak_lead: false });
 });
 
 Deno.test("the fields index.ts actually emits all survive the scrubber", () => {
@@ -146,6 +148,10 @@ Deno.test("the fields index.ts actually emits all survive the scrubber", () => {
     message_schema_invalid: false, error_name: "",
   };
   assertEquals(Object.keys(scrubLogFields(emitted)).sort(), Object.keys(emitted).sort());
+  // and every one of them is declared, so the list and the call sites cannot drift
+  for (const k of Object.keys(emitted)) {
+    assert(TELEMETRY_FIELDS.has(k), `${k} is emitted by index.ts but not in TELEMETRY_FIELDS`);
+  }
 });
 
 Deno.test("scrubLogFields never mutates the caller's object", () => {
@@ -156,8 +162,9 @@ Deno.test("scrubLogFields never mutates the caller's object", () => {
 
 Deno.test("long strings are bounded so one error message cannot flood the log", () => {
   const c = capture();
-  makeRunLogger("run-A", "thread-1", c.sink).emit("run_terminal", { detail: "z".repeat(5000) });
-  assertEquals((JSON.parse(c.lines[0]).detail as string).length, 300);
+  // Uses a real emitted field: `contract_reason` is free text from resolveTerminalState.
+  makeRunLogger("run-A", "thread-1", c.sink).emit("run_terminal", { contract_reason: "z".repeat(5000) });
+  assertEquals((JSON.parse(c.lines[0]).contract_reason as string).length, 300);
 });
 
 // ---- telemetry can never break a run -----------------------------------------------
@@ -176,7 +183,8 @@ Deno.test("an unserializable field costs one line, not the run", () => {
   const log = makeRunLogger("run-A", "thread-1", c.sink);
   const circular: Record<string, unknown> = {};
   circular.self = circular;
-  log.emit("step_finished", { circular });
+  // `tool_names` is a real emitted field; a cyclic value in it must cost the line only.
+  log.emit("step_finished", { tool_names: circular });
   log.emit("step_finished", { step_number: 2 });
   assertEquals(c.parsed().length, 1);
   assertEquals(c.parsed()[0].step_number, 2);
