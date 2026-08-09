@@ -63,6 +63,12 @@ const KIND_TO_GROUP: Record<string, Group> = {
   social: "social",
   account: "social",
   ip: "infrastructure",
+  // The extractor emits BOTH `ip` and `ip_address` for the same concept. Only
+  // `ip` was mapped, so `ip_address` fell through to "other" — on the
+  // leoseyes86 report that filed 206.111.150.4 and 72.23.81.65 under **Other**
+  // while 75.169.97.217 sat under **Infrastructure**, splitting one entity type
+  // across two sections of the same document.
+  ip_address: "infrastructure",
   domain: "infrastructure",
   subdomain: "infrastructure",
   asn: "infrastructure",
@@ -460,6 +466,7 @@ export const KIND_TO_PIVOT: Record<string, PivotType> = {
   subdomain: "domain",
   url: "url",
   ip: "ip",
+  ip_address: "ip",
   name: "name",
   person: "name",
   wallet: "wallet",
@@ -1107,17 +1114,38 @@ export function buildReportMarkdown(input: ReportInput): string {
     }
     return null;
   };
+  /**
+   * `subject_unlinked` is the strongest collision signal the pipeline emits —
+   * the backend sets it, with a reason, on every row harvested from a name-only
+   * query ("same-name collision axis; linkage to the subject is unproven").
+   *
+   * It was read NOWHERE in the frontend. On the leoseyes86 report that meant 20
+   * quarantined artifacts rendered as ordinary Candidate Identity Clusters
+   * (C003–C022) while this section printed "_No collisions flagged._" — directly
+   * contradicting the report's own header banner, which had already warned that
+   * a same-name collision was detected and that phone area codes disagreed.
+   * The integrity work was done and then discarded at the presentation layer.
+   */
+  const isSubjectUnlinked = (m: Record<string, unknown>): boolean => m.subject_unlinked === true;
+
   const conflictNoted = artifacts.filter((a) => {
     if (collisionIds.has(a.id)) return false;
     const m = (a.metadata ?? {}) as Record<string, unknown>;
     return (typeof m.conflict_note === "string" && m.conflict_note.trim().length > 0)
       || (typeof m.conflict === "string" && m.conflict.trim().length > 0)
       || m.geo_conflict === true
+      || isSubjectUnlinked(m)
       || collisionText(m) !== null;
   });
   const conflictNote = (a: Artifact): string => {
     const m = (a.metadata ?? {}) as Record<string, unknown>;
     if (typeof m.conflict_note === "string" && m.conflict_note.trim()) return m.conflict_note.trim();
+    // The backend's own words for why this row is unlinked — quote them rather
+    // than paraphrasing, so the report says exactly what the pipeline decided.
+    if (isSubjectUnlinked(m) && typeof m.subject_unlinked_reason === "string" && m.subject_unlinked_reason.trim()) {
+      return m.subject_unlinked_reason.trim();
+    }
+    if (isSubjectUnlinked(m)) return "harvested from a name-only query — linkage to the subject is unproven";
     if (typeof m.geo_conflict_note === "string" && m.geo_conflict_note.trim()) return m.geo_conflict_note.trim();
     if (typeof m.conflict === "string" && m.conflict.trim()) return m.conflict.trim();
     const ct = collisionText(m);

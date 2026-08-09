@@ -47,11 +47,12 @@ export interface ToolEvent {
 
 export interface ThreadToolActivity {
   events: ToolEvent[];
-  /** Every persisted tool call for the thread, including suppressed failures. */
+  /** Every persisted tool call for the thread. */
   persistedTotal: number;
-  /** Visible activity-feed rows (failed calls are intentionally suppressed). */
+  /** Activity-feed rows. Includes failures — nothing is suppressed. */
   total: number;
-  hiddenFailed: number;
+  /** Calls that failed outright. Shown in the feed, counted here for the badge. */
+  failed: number;
   ok: number;
   skipped: number;
   gated: number;
@@ -72,13 +73,27 @@ interface ActivityRow {
 interface ActivityState {
   scopeKey: string;
   events: ToolEvent[];
-  hiddenFailed: number;
   persistedTotal: number;
   loading: boolean;
 }
 
 const GATED_RE = /gated|missing.?key|not configured|disabled|unavailable|provider disabled/i;
-const DEGRADED_RE = /degraded|suppressed|rate.?limit|burst|budget|concurrency|cycle limit|duplicate call/i;
+/**
+ * Transient, non-fault conditions.
+ *
+ * Beyond the original rate/budget terms this now covers the three shapes the
+ * Health panel already classified as Degraded/Denied while Activity was still
+ * calling them failures:
+ *   - our OWN throttles: "internal paid-call cap reached (12 this run) —
+ *     internal throttle, not a provider limit". The row states outright that it
+ *     is not a provider limit, and Activity labelled it FAILED anyway.
+ *   - upstream refusals: "reddit request failed (403)" — Denied, not breakage.
+ *   - timeouts, which are transient by definition.
+ * A genuine provider fault (5xx, unparseable error) still falls through to
+ * `failed`, which is what "Needs attention" is for.
+ */
+const DEGRADED_RE =
+  /degraded|suppressed|rate.?limit|burst|budget|concurrency|cycle limit|duplicate call|cap reached|internal throttle|paid-call cap|quota|denied|blocked|forbidden|timed?.?out|timeout|\b40[39]\b|\b429\b/i;
 
 /**
  * Map a tool_usage_log row to a display tone + operational status. The log's
@@ -93,12 +108,19 @@ export function classifyActivityRow(
 ): { tone: ToolTone; status: ToolStatus } {
   const oc = (outcome ?? (ok ? "ok" : "failed")).toLowerCase();
   if (oc === "ok" || oc === "empty") return { tone: "ok", status: "succeeded" };
-  if (oc === "skipped") {
-    const err = errorMsg ?? "";
-    if (GATED_RE.test(err)) return { tone: "skip", status: "gated" };
-    if (DEGRADED_RE.test(err)) return { tone: "skip", status: "degraded" };
-    return { tone: "skip", status: "skipped" };
-  }
+
+  // The gate/degradation check applies to EVERY non-OK outcome, not just
+  // `skipped`. Consulting it only for `skipped` is why the Activity feed and
+  // the Health panel disagreed about the same rows: an internal paid-call cap
+  // and a reddit 403 both fell straight through to `failed` here, while Health
+  // correctly reported them as Degraded/Denied and "Needs attention 0". One
+  // call must not read FAILED in one panel and Degraded in the panel beside it.
+  const err = errorMsg ?? "";
+  if (GATED_RE.test(err)) return { tone: "skip", status: "gated" };
+  if (DEGRADED_RE.test(err)) return { tone: "skip", status: "degraded" };
+  if (oc === "skipped") return { tone: "skip", status: "skipped" };
+
+  // Nothing matched: a genuine fault. This is what "Needs attention" means.
   return { tone: "error", status: "failed" };
 }
 
@@ -120,7 +142,6 @@ export function useThreadToolActivity(threadId: string, accountId?: string): Thr
   const [state, setState] = useState<ActivityState>({
     scopeKey: "",
     events: [],
-    hiddenFailed: 0,
     persistedTotal: 0,
     loading: true,
   });
@@ -136,7 +157,6 @@ export function useThreadToolActivity(threadId: string, accountId?: string): Thr
     const emptyState = (): ActivityState => ({
       scopeKey,
       events: [],
-      hiddenFailed: 0,
       persistedTotal: 0,
       loading: true,
     });
@@ -177,14 +197,18 @@ export function useThreadToolActivity(threadId: string, accountId?: string): Thr
           reason: tone === "ok" ? undefined : cleanReason(r.error_msg),
         };
       });
-      // Failed calls stay in the log but are suppressed from the beta-facing
-      // feed (the Tool-Health panel surfaces failures explicitly); carry the
-      // count so the surface acknowledges hidden activity instead of reading
-      // empty.
+      // Failed calls are part of the record, not noise to be hidden.
+      //
+      // They used to be filtered out of this feed with only a count carried
+      // alongside, which meant an analyst could not see WHICH tool failed or
+      // why. Across this account that suppressed 2,142 of 18,393 calls, and it
+      // put the tab badge (every persisted call) permanently at odds with the
+      // panel (survivors only) — 9 vs 7 on a sample case. A tool that failed is
+      // a coverage gap in the investigation: the thing the analyst most needs
+      // to know before trusting the result.
       setState({
         scopeKey,
-        hiddenFailed: out.filter((event) => event.status === "failed").length,
-        events: out.filter((event) => event.status !== "failed"),
+        events: out,
         persistedTotal: count ?? rows.length,
         loading: false,
       });
@@ -244,14 +268,14 @@ export function useThreadToolActivity(threadId: string, accountId?: string): Thr
   // of the previous thread/account count from leaking during that transition.
   const current = state.scopeKey === scopeKey
     ? state
-    : { scopeKey, events: [], hiddenFailed: 0, persistedTotal: 0, loading: true };
-  const { events, hiddenFailed, persistedTotal, loading } = current;
+    : { scopeKey, events: [], persistedTotal: 0, loading: true };
+  const { events, persistedTotal, loading } = current;
 
   return {
     events,
     persistedTotal,
     total: events.length,
-    hiddenFailed,
+    failed: events.filter((e) => e.status === "failed").length,
     ok: events.filter((e) => e.status === "succeeded").length,
     skipped: events.filter((e) => e.status === "skipped").length,
     gated: events.filter((e) => e.status === "gated").length,

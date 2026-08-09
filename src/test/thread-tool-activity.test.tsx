@@ -190,37 +190,46 @@ describe("useThreadToolActivity persisted count", () => {
     }
   });
 
-  it("loads all 99 persisted calls even when failures are hidden from the feed", async () => {
+  // Failures used to be stripped from the feed, so a thread of 99 failed calls
+  // rendered an EMPTY Activity list under a badge reading 99. An analyst could
+  // not see which tool failed or why — across this account that hid 2,142 of
+  // 18,393 calls. The feed now shows every persisted call.
+  it("shows all 99 persisted calls when every one of them failed", async () => {
     mock.rowsByThread.set("thread-a", rows(99, "failed"));
 
     const { result } = renderActivityHook("thread-a", "account-a");
 
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.persistedTotal).toBe(99);
-    expect(result.current.total).toBe(0);
-    expect(result.current.hiddenFailed).toBe(99);
+    expect(result.current.total).toBe(99);
+    expect(result.current.failed).toBe(99);
+    expect(result.current.events).toHaveLength(99);
   });
 
-  // Documents the Activity-vs-Health count discrepancy raised in #312 QA: a
-  // thread with 10 ok + 1 empty + 2 failed persists 13 rows. The Health panel
-  // keeps `empty` as its own bucket (10 ok + 1 empty + 2 failed = 13), but the
-  // Activity feed intentionally collapses `empty` into `succeeded` and hides
-  // `failed`, so it shows 11 visible/succeeded rows (10 ok + 1 empty) while the
-  // header still reports the full persisted total of 13. This is the intended
-  // classification, not a mismatch.
-  it("counts an empty outcome as a visible succeeded row and hides failures", async () => {
+  it("keeps the feed total equal to the persisted total, so badge and panel agree", async () => {
+    mock.rowsByThread.set("thread-a", mixedRows({ ok: 7, failed: 2 }));
+
+    const { result } = renderActivityHook("thread-a", "account-a");
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    // The 9-vs-7 disagreement between the tab badge and the panel is gone.
+    expect(result.current.total).toBe(result.current.persistedTotal);
+  });
+
+  // The Activity feed still collapses `empty` into `succeeded` (an empty result
+  // IS a completed call), but failures are no longer dropped. A thread with
+  // 10 ok + 1 empty + 2 failed persists 13 rows and now SHOWS all 13.
+  it("counts an empty outcome as succeeded and still surfaces failures", async () => {
     mock.rowsByThread.set("thread-a", mixedRows({ ok: 10, empty: 1, failed: 2 }));
 
     const { result } = renderActivityHook("thread-a", "account-a");
 
     await waitFor(() => expect(result.current.loading).toBe(false));
-    // Header / Health total: every persisted invocation.
     expect(result.current.persistedTotal).toBe(13);
-    // Activity feed: ok + empty are both visible "succeeded" rows.
-    expect(result.current.total).toBe(11);
+    expect(result.current.total).toBe(13);
+    // ok + empty are both "succeeded" rows.
     expect(result.current.ok).toBe(11);
-    // The 2 failed rows are suppressed from the feed but acknowledged.
-    expect(result.current.hiddenFailed).toBe(2);
+    expect(result.current.failed).toBe(2);
     // Empty is grouped with ok, so no separate skipped/gated/degraded rows.
     expect(result.current.skipped).toBe(0);
     expect(result.current.gated).toBe(0);
