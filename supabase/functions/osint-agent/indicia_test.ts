@@ -2,7 +2,7 @@ import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.t
 import {
   indicia_email, indicia_phone, indicia_person,
   indicia_address, indicia_web_dbs, indicia_hudsonrock,
-  extractIndiciaRecords,
+  extractIndiciaRecords, inferHudsonRockType, WEB_DB_SERVICES,
 } from "./tools/indicia.ts";
 import { buildTools, type ToolContext } from "./tool-registry.ts";
 import { classifyToolOutcome } from "./tool-outcome.ts";
@@ -235,4 +235,131 @@ Deno.test("indicia_person: explicit state wins over a parsed suffix", async () =
   });
   assertEquals((sentBody as Record<string, unknown>).name, "JOHN SMITH");
   assertEquals((sentBody as Record<string, unknown>).state, "NY");
+});
+
+// ---- Provider input contracts (backported from the deployed build) -----------
+// Four endpoints reject a request the model can easily construct: a formatted
+// phone, a missing zip, an omitted `services`, an omitted hudsonrock `type`. Each
+// was a 400 spent for nothing. Every test below fails against the preceding commit.
+
+Deno.test("indicia_phone: a formatted or E.164 selector is normalized to 10 NANP digits", async () => {
+  for (const [input, expected] of [
+    ["+1 (212) 555-0123", "2125550123"],
+    ["1-212-555-0123", "2125550123"],
+    ["212.555.0123", "2125550123"],
+    ["2125550123", "2125550123"],
+  ] as const) {
+    let sentBody: Record<string, unknown> | null = null;
+    await withStubbedFetch((_url, init) => {
+      sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+      return jsonResponse(200, { success: true, data: { web: [{ name: "Jane" }] } });
+    }, async () => {
+      await exec(indicia_phone, { query: input });
+    });
+    assertEquals((sentBody as unknown as Record<string, unknown>).query, expected, `for input ${input}`);
+  }
+});
+
+Deno.test("indicia_phone: an unusable selector is SKIPPED, never a measured empty", async () => {
+  // A call we declined to make is not a measurement. Recording it as `empty`
+  // would assert the provider was asked and had no record — the same
+  // absence-assertion error this codebase has already corrected three times.
+  const r = await exec(indicia_phone, { query: "not-a-phone-at-all" });
+  assertEquals(classifyToolOutcome(r.error as string, null), "skipped");
+});
+
+Deno.test("indicia_phone: the gate reports a digit COUNT and never echoes the selector", async () => {
+  // A tool's `error` string is lifted into tool_usage_log.error_msg, so echoing
+  // the selector would write an analyst-supplied phone number into telemetry.
+  const r = await exec(indicia_phone, { query: "+44 20 7946 0958" });
+  const err = String(r.error);
+  assertEquals(err.includes("7946"), false, "selector leaked into the error string");
+  assertEquals(err.includes("0958"), false, "selector leaked into the error string");
+  assert(err.includes("got 12"), `expected a digit count, got: ${err}`);
+});
+
+Deno.test("indicia_phone: an unusable selector never reaches the provider", async () => {
+  let called = false;
+  await withStubbedFetch(() => {
+    called = true;
+    return jsonResponse(200, { success: true, data: {} });
+  }, async () => {
+    await exec(indicia_phone, { query: "12345" });
+  });
+  assertEquals(called, false, "a gated selector must not spend a provider call");
+});
+
+Deno.test("indicia_address: zip is REQUIRED by the schema (an omitted zip is a hard 400)", () => {
+  const schema = (indicia_address as unknown as { inputSchema: { shape: Record<string, { isOptional(): boolean }> } }).inputSchema;
+  assertEquals(schema.shape.zip.isOptional(), false, "zip must be required");
+  assertEquals(schema.shape.city.isOptional(), true, "city stays optional");
+});
+
+Deno.test("indicia_web_dbs: an omitted services list defaults to the full closed set", async () => {
+  let sentBody: Record<string, unknown> | null = null;
+  await withStubbedFetch((_url, init) => {
+    sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    return jsonResponse(200, { success: true, data: { web: [] } });
+  }, async () => {
+    await exec(indicia_web_dbs, { query: "jane@example.com" });
+  });
+  assertEquals((sentBody as unknown as Record<string, unknown>).services, [...WEB_DB_SERVICES]);
+});
+
+Deno.test("indicia_web_dbs: an explicit empty array still resolves to the full set", async () => {
+  // `services: []` satisfies a zod .default() while still 400ing at the provider,
+  // which is why the resolution lives in execute() and not only in the schema.
+  let sentBody: Record<string, unknown> | null = null;
+  await withStubbedFetch((_url, init) => {
+    sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    return jsonResponse(200, { success: true, data: { web: [] } });
+  }, async () => {
+    await exec(indicia_web_dbs, { query: "jane@example.com", services: [] });
+  });
+  assertEquals((sentBody as unknown as Record<string, unknown>).services, [...WEB_DB_SERVICES]);
+});
+
+Deno.test("indicia_web_dbs: a service outside the closed set is dropped, not forwarded", async () => {
+  let sentBody: Record<string, unknown> | null = null;
+  await withStubbedFetch((_url, init) => {
+    sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    return jsonResponse(200, { success: true, data: { web: [] } });
+  }, async () => {
+    await exec(indicia_web_dbs, { query: "jane@example.com", services: ["LeakCheck", "not-a-service"] });
+  });
+  assertEquals((sentBody as unknown as Record<string, unknown>).services, ["leakcheck"]);
+});
+
+Deno.test("indicia_hudsonrock: an omitted type is inferred from the selector shape", () => {
+  assertEquals(inferHudsonRockType("jane@example.com"), "email");
+  assertEquals(inferHudsonRockType("example.com"), "domain");
+  assertEquals(inferHudsonRockType("192.0.2.1"), "ip");
+  assertEquals(inferHudsonRockType("jdean785"), "username");
+  // "password" is never inferred — it is not derivable from shape, and guessing it
+  // would send a selector to a credential-search endpoint it was not meant for.
+  for (const q of ["jane@example.com", "example.com", "192.0.2.1", "jdean785", "hunter2"]) {
+    assert(inferHudsonRockType(q) !== "password", `inferred password for ${q}`);
+  }
+});
+
+Deno.test("indicia_hudsonrock: an unrecognized explicit type falls back to inference", async () => {
+  let sentBody: Record<string, unknown> | null = null;
+  await withStubbedFetch((_url, init) => {
+    sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    return jsonResponse(200, { success: true, data: { web: [] } });
+  }, async () => {
+    await exec(indicia_hudsonrock, { query: "jane@example.com", type: "handle" });
+  });
+  assertEquals((sentBody as unknown as Record<string, unknown>).type, "email");
+});
+
+Deno.test("indicia_hudsonrock: a valid explicit type is honoured over inference", async () => {
+  let sentBody: Record<string, unknown> | null = null;
+  await withStubbedFetch((_url, init) => {
+    sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    return jsonResponse(200, { success: true, data: { web: [] } });
+  }, async () => {
+    await exec(indicia_hudsonrock, { query: "hunter2", type: "PASSWORD" });
+  });
+  assertEquals((sentBody as unknown as Record<string, unknown>).type, "password");
 });

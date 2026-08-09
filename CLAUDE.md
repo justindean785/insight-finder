@@ -47,7 +47,7 @@ There is **ONE place to work: this repo, `justindean785/insight-finder`** (local
 
 ## Edge function internals (gotchas)
 - **Live tool defs are in `supabase/functions/osint-agent/tool-registry.ts`** (`buildTools`), **not** inline in `index.ts` (which now only orchestrates the request). The god-file refactor moved them; `index.ts` has zero tool defs. The catalog↔runtime contract test (`src/test/catalog-guidance.test.ts`) reads `tool-registry.ts` (with an `index.ts` fallback) to assert every `catalog.ts` entry has a runtime def — keep `catalog.ts` and `tool-registry.ts` in sync when adding a tool. (Any older `tools/*.ts` files are stale mirrors, not the runtime source.)
-- Tests: `npm run test:edge` (= `cd supabase/functions/osint-agent && deno test --no-check --allow-net --allow-env --allow-sys --allow-read *_test.ts`). **`--allow-read` is required** — the source-level wiring tests (`reviews_wiring_test.ts`) read `index.ts`/`cluster.ts`/`recovery.ts` off disk to assert the call sites exist, and without it they abort with `NotCapable` before any assertion runs, which reads like a code failure and is not. (The old `--allow-net --no-check` form left env/sys perms off, inflating the failure count — measured 2026-07-25: `--allow-net --no-check` = 546 pass/57 fail vs `--allow-net --allow-env` = 754 pass/24 fail; the 24 remaining are environmental — missing API keys + sandboxed network, e.g. `readiness_gate_test`, `breach_request_test` — not real.) `deno check index.ts` has ~12–157 **pre-existing** AI-SDK/Supabase type-graph errors — not a gate; verify your change adds none.
+- Tests: `npm run test:edge` (= `cd supabase/functions/osint-agent && deno test --no-check --allow-net --allow-env --allow-sys --allow-read *_test.ts`). **`--allow-read` is required** — the source-level wiring tests (`reviews_wiring_test.ts`) read `index.ts`/`cluster.ts`/`recovery.ts` off disk to assert the call sites exist, and without it they abort with `NotCapable` before any assertion runs, which reads like a code failure and is not. (The old `--allow-net --no-check` form left env/sys perms off, inflating the failure count — measured 2026-07-25: `--allow-net --no-check` = 546 pass/57 fail vs `--allow-net --allow-env` = 754 pass/24 fail.) **Baseline re-measured 2026-08-09 on `86f92c62`: 1105 passed / 0 failed / 5 ignored.** The 24 environmental failures are GONE — do not treat any failure as "probably environmental"; that excuse is retired. **Deno is NOT preinstalled** in the web/remote sandbox: `DENO_INSTALL=/usr/local sh <(curl -fsSL https://deno.land/install.sh) -y`. `deno check index.ts` has ~12–157 **pre-existing** AI-SDK/Supabase type-graph errors — not a gate; verify your change adds none.
 - Frontend tests: `npx vitest run` from repo root.
 
 ## Seeing the UI before you ship it — the harness
@@ -118,6 +118,33 @@ unclassifiable falls through to the completion contract and is labelled honestly
 
 **`stopWhen` cannot prevent a natural stop** — it only ADDS stop conditions. The SDK's
 `finishReason:"stop"` on a text-only step is not vetoable from there. Don't try again.
+
+## ⛔ Beta blockers — open P0s (2026-08-09)
+
+Full write-up: `SESSION_HANDOFF_2026-08-09_beta-stabilization.md`. Two anchors are
+**verified in code** and worth memorising, because both look fixed and are not:
+
+- **`subject_unlinked` is a LABEL, not an AUTHORITY.** On `86f92c62` it is read in exactly
+  one place — `src/lib/intel.ts:1129,1145`, the report collision section added by #431.
+  `grep -rn subject_unlinked src/` is the whole list. The pivot engine never consults it,
+  so quarantined selectors still surface as normal "Run this pivot" recommendations, and
+  nothing stops a quarantined artifact being promoted to Confirmed / Primary Subject.
+  Three boundaries must consult it: **write** (below), **pivot**, **promote**.
+
+- **The name-only quarantine escape** — `supabase/functions/osint-agent/auto-persist-findings.ts:826`.
+  A `name` row echoing the query is exempted from `SUBJECT_UNLINKED_CTX` (`:211`) on the
+  reasoning that it is "the subject's own asserted name". That holds ONLY when the queried
+  name IS the subject. When the name was itself derived from an earlier unlinked harvest it
+  is the collision axis — so every descendant gets `subject_unlinked: true` while the trunk
+  persists unquarantined at confidence 65, and the run pivots onto a different person.
+  `queriedName` (`:413`) comes purely from tool input and knows nothing about linkage.
+  Fix shape: gate the exemption on DURABLE linkage (seed match or selector overlap);
+  name equality with the query is never sufficient.
+
+Canonical fixtures: the `leoseyes86@gmail.com` collision case (exercises all of the above),
+and `NOC@onemobility.net` as the *uncontaminated* budget-exhaustion case. Both are real
+investigations — `src/dev/fixtures.json` and `src/dev/raw/` are gitignored; sanitize before
+checking anything in.
 
 ## Evidence-integrity rules (do not change without explicit approval)
 Evidence ranking, confidence caps, chain-of-custody, credential masking, minor-safety detection, and the audit/coverage behavior are integrity-critical. Treat changes to them as requiring sign-off.
