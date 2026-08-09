@@ -9,12 +9,12 @@ import {
   MetricCard, FilterChips, ToolStatusBadge, ExpandableRow, TabHeader,
   type FilterChip,
 } from "@/components/ui/workspace-primitives";
-import { Activity, Gauge, Lock, HeartPulse, CheckCircle2, MinusCircle, ListChecks, Clock, type LucideIcon } from "lucide-react";
+import { Activity, Gauge, Lock, HeartPulse, CheckCircle2, XCircle, MinusCircle, ListChecks, Clock, type LucideIcon } from "lucide-react";
 import { timeAgo } from "@/lib/time";
 import { toolSecondaryLine } from "@/lib/tool-display";
 import { cn } from "@/lib/utils";
 
-type ActivityFilter = "all" | "succeeded" | "skipped" | "gated" | "degraded" | "pending";
+type ActivityFilter = "all" | "succeeded" | "failed" | "skipped" | "gated" | "degraded" | "pending";
 
 type View = "activity" | "health" | "audit" | "custody";
 
@@ -74,11 +74,11 @@ export function ToolsTab({ threadId }: { threadId: string }) {
           <ActivityLog
             events={activity.events}
             ok={activity.ok}
+            failed={activity.failed}
             skipped={activity.skipped}
             gated={activity.gated}
             degraded={activity.degraded}
             total={activity.total}
-            hiddenFailed={activity.hiddenFailed}
             loading={activity.loading}
           />
         )}
@@ -91,8 +91,8 @@ export function ToolsTab({ threadId }: { threadId: string }) {
 }
 
 function ActivityLog({
-  events, ok, skipped, gated, degraded, total, hiddenFailed, loading,
-}: { events: ToolEvent[]; ok: number; skipped: number; gated: number; degraded: number; total: number; hiddenFailed: number; loading: boolean }) {
+  events, ok, failed, skipped, gated, degraded, total, loading,
+}: { events: ToolEvent[]; ok: number; failed: number; skipped: number; gated: number; degraded: number; total: number; loading: boolean }) {
   const [filter, setFilter] = useState<ActivityFilter>("all");
   const pending = events.filter((e) => e.status === "pending").length;
 
@@ -110,9 +110,7 @@ function ActivityLog({
         icon={Activity}
         title="No visible tool activity yet"
         hint={
-          hiddenFailed > 0
-            ? `${hiddenFailed} tool call${hiddenFailed === 1 ? "" : "s"} recorded but not shown here. Completed, running, skipped, gated, and degraded activity appears as the agent runs lookups.`
-            : "When the agent runs lookups, completed, running, skipped, gated, and degraded activity appears here."
+          "When the agent runs lookups, completed, failed, running, skipped, gated, and degraded activity appears here."
         }
       />
     );
@@ -121,6 +119,7 @@ function ActivityLog({
   const filters: FilterChip<ActivityFilter>[] = [
     { key: "all", label: "All", count: total },
     { key: "succeeded", label: "Succeeded", count: ok, tone: "ok" },
+    ...(failed > 0 ? [{ key: "failed" as const, label: "Failed", count: failed, tone: "danger" as const }] : []),
     { key: "skipped", label: "Skipped", count: skipped },
     ...(gated > 0 ? [{ key: "gated" as const, label: "Gated", count: gated, tone: "warn" as const }] : []),
     ...(degraded > 0 ? [{ key: "degraded" as const, label: "Degraded", count: degraded, tone: "warn" as const }] : []),
@@ -129,18 +128,21 @@ function ActivityLog({
 
   return (
     <div className="mx-auto max-w-4xl p-3 sm:p-4 space-y-4">
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <MetricCard
           label="Tools shown"
           value={total}
           icon={ListChecks}
-          hint={
-            hiddenFailed > 0
-              ? `Visible tool calls for this case. ${hiddenFailed} more recorded but not shown.`
-              : "Visible tool calls for this case."
-          }
+          hint="Every tool call recorded for this case, failures included."
         />
         <MetricCard label="Succeeded" value={ok} icon={CheckCircle2} tone={ok > 0 ? "ok" : "neutral"} hint="Calls that returned a usable result." />
+        <MetricCard
+          label="Failed"
+          value={failed}
+          icon={XCircle}
+          tone={failed > 0 ? "danger" : "neutral"}
+          hint="Calls that errored outright. Each one is a coverage gap: the lookup did not happen, so anything it would have found is missing from this case."
+        />
         <MetricCard
           label={gated > 0 ? "Skipped / Gated" : "Skipped"}
           value={gated > 0 ? `${skipped}/${gated}` : skipped}

@@ -15,21 +15,30 @@ import { cn } from "@/lib/utils";
  *
  * Insights answers "how much do I have"; this answers "how good is it, and
  * where does it break down". Every number here was chosen because a real
- * account exhibits the failure it measures:
+ * account exhibited the failure it measures:
  *
- *   - 41 of 101 artifacts on one case sat at EXACTLY confidence 50, each with
- *     confidence_cap_applied=50 and reason_for_confidence "single source class:
- *     unknown". An Evidence board where most rows share one score cannot rank,
- *     so the confidence HISTOGRAM and the capped share are the headline.
- *   - source_category was ["unknown"] on all 101, while the `source` column
- *     named three real providers. Unclassified sources are what pins the cap.
+ *   - A pre-classification case had 41 of 101 artifacts at EXACTLY confidence
+ *     50, each with confidence_cap_applied=50 and reason_for_confidence
+ *     "single source class: unknown", while `source` named three real
+ *     providers. An Evidence board where most rows share one score cannot be
+ *     ranked, so the HISTOGRAM and the capped share are the headline — they
+ *     are what makes that collapse visible instead of merely felt.
+ *   - Source classification has since landed: the newest 400 artifacts
+ *     classify at 89% and spread 15-100. The metric stays because it is the
+ *     regression detector for exactly that fix.
  *   - evidence_log held 4 rows for 101 artifacts, so chain-of-custody coverage
  *     is a ratio, never a checkmark.
- *   - 14 of 96 tool calls failed and the activity feed hides them, so the
- *     failure rate is stated here where nothing suppresses it.
+ *   - 9% of the newest 500 tool calls failed. Those rows were suppressed from
+ *     the activity feed until they were surfaced alongside this tab.
  *
  * Read-only: this presents what the pipeline already stored. It computes no
  * confidence and promotes nothing — evidence-integrity rules are untouched.
+ *
+ * Rows are read NEWEST-FIRST and capped. Source classification landed partway
+ * through this account's history — pre-fix cases sit at "unknown"/capped-50
+ * while recent ones classify at ~89% and spread 15-100 — so an unordered
+ * sample would mix the two eras and report a regression that is actually
+ * already fixed. Newest-first keeps this a picture of CURRENT behaviour.
  */
 
 type ArtifactRow = {
@@ -69,10 +78,10 @@ export function AnalysisTab() {
       setLoading(true);
       try {
         const [a, t, th, ev] = await Promise.all([
-          supabase.from("artifacts").select("id,thread_id,kind,confidence,source,metadata").limit(5000),
-          supabase.from("tool_usage_log").select("thread_id,ok").limit(5000),
+          supabase.from("artifacts").select("id,thread_id,kind,confidence,source,metadata").order("created_at", { ascending: false }).limit(5000),
+          supabase.from("tool_usage_log").select("thread_id,ok").order("created_at", { ascending: false }).limit(5000),
           supabase.from("threads").select("id,title,seed_value,status").order("updated_at", { ascending: false }).limit(500),
-          supabase.from("evidence_log").select("artifact_id").limit(5000),
+          supabase.from("evidence_log").select("artifact_id").order("created_at", { ascending: false }).limit(5000),
         ]);
         if (cancelled) return;
         const firstError = a.error ?? t.error ?? th.error ?? ev.error;

@@ -47,11 +47,12 @@ export interface ToolEvent {
 
 export interface ThreadToolActivity {
   events: ToolEvent[];
-  /** Every persisted tool call for the thread, including suppressed failures. */
+  /** Every persisted tool call for the thread. */
   persistedTotal: number;
-  /** Visible activity-feed rows (failed calls are intentionally suppressed). */
+  /** Activity-feed rows. Includes failures — nothing is suppressed. */
   total: number;
-  hiddenFailed: number;
+  /** Calls that failed outright. Shown in the feed, counted here for the badge. */
+  failed: number;
   ok: number;
   skipped: number;
   gated: number;
@@ -72,7 +73,6 @@ interface ActivityRow {
 interface ActivityState {
   scopeKey: string;
   events: ToolEvent[];
-  hiddenFailed: number;
   persistedTotal: number;
   loading: boolean;
 }
@@ -120,7 +120,6 @@ export function useThreadToolActivity(threadId: string, accountId?: string): Thr
   const [state, setState] = useState<ActivityState>({
     scopeKey: "",
     events: [],
-    hiddenFailed: 0,
     persistedTotal: 0,
     loading: true,
   });
@@ -136,7 +135,6 @@ export function useThreadToolActivity(threadId: string, accountId?: string): Thr
     const emptyState = (): ActivityState => ({
       scopeKey,
       events: [],
-      hiddenFailed: 0,
       persistedTotal: 0,
       loading: true,
     });
@@ -177,14 +175,18 @@ export function useThreadToolActivity(threadId: string, accountId?: string): Thr
           reason: tone === "ok" ? undefined : cleanReason(r.error_msg),
         };
       });
-      // Failed calls stay in the log but are suppressed from the beta-facing
-      // feed (the Tool-Health panel surfaces failures explicitly); carry the
-      // count so the surface acknowledges hidden activity instead of reading
-      // empty.
+      // Failed calls are part of the record, not noise to be hidden.
+      //
+      // They used to be filtered out of this feed with only a count carried
+      // alongside, which meant an analyst could not see WHICH tool failed or
+      // why. Across this account that suppressed 2,142 of 18,393 calls, and it
+      // put the tab badge (every persisted call) permanently at odds with the
+      // panel (survivors only) — 9 vs 7 on a sample case. A tool that failed is
+      // a coverage gap in the investigation: the thing the analyst most needs
+      // to know before trusting the result.
       setState({
         scopeKey,
-        hiddenFailed: out.filter((event) => event.status === "failed").length,
-        events: out.filter((event) => event.status !== "failed"),
+        events: out,
         persistedTotal: count ?? rows.length,
         loading: false,
       });
@@ -244,14 +246,14 @@ export function useThreadToolActivity(threadId: string, accountId?: string): Thr
   // of the previous thread/account count from leaking during that transition.
   const current = state.scopeKey === scopeKey
     ? state
-    : { scopeKey, events: [], hiddenFailed: 0, persistedTotal: 0, loading: true };
-  const { events, hiddenFailed, persistedTotal, loading } = current;
+    : { scopeKey, events: [], persistedTotal: 0, loading: true };
+  const { events, persistedTotal, loading } = current;
 
   return {
     events,
     persistedTotal,
     total: events.length,
-    hiddenFailed,
+    failed: events.filter((e) => e.status === "failed").length,
     ok: events.filter((e) => e.status === "succeeded").length,
     skipped: events.filter((e) => e.status === "skipped").length,
     gated: events.filter((e) => e.status === "gated").length,
