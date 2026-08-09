@@ -4,7 +4,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { SpeedInsights } from "@vercel/speed-insights/react";
 import { FullPageLoader } from "@/components/ui/full-page-loader";
 // Entry/auth routes stay eager — they're tiny and on the first-paint path.
@@ -16,7 +16,6 @@ const ChatPage = lazy(() => import("./pages/ChatPage"));
 const ChatResume = lazy(() => import("./pages/ChatResume"));
 const AdminSecurity = lazy(() => import("./pages/AdminSecurity"));
 const BrainGlobalPage = lazy(() => import("./pages/BrainGlobalPage"));
-const Insights = lazy(() => import("./pages/Insights"));
 const CasesPage = lazy(() => import("./pages/CasesPage"));
 const CaseViewPage = lazy(() => import("./pages/CaseViewPage"));
 // Dev-only preview of the report card. It renders hardcoded sample/demo PII, so
@@ -54,7 +53,10 @@ const App = () => (
             <Route path="/chat/:threadId" element={<ChatPage />} />
             <Route path="/cases" element={<CasesPage />} />
             <Route path="/cases/:threadId" element={<CaseViewPage />} />
-            <Route path="/insights" element={<Insights />} />
+            {/* Insights merged into the Intelligence section as its Overview
+                tab. The old path stays a permanent redirect so existing links,
+                bookmarks and the mobile nav keep resolving. */}
+            <Route path="/insights" element={<Navigate to="/brain?tab=overview" replace />} />
             <Route path="/brain" element={<BrainGlobalPage />} />
             {import.meta.env.DEV && ReportPreview && (
               <Route path="/report-preview" element={<ReportPreview />} />

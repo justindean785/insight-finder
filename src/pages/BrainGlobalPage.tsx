@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, Navigate, useNavigate } from "react-router-dom";
+import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
+import { InsightsOverview } from "@/pages/Insights";
+import { AnalysisTab } from "@/components/panel/AnalysisTab";
 import { useAuth } from "@/hooks/useAuth";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { ThreadSidebar } from "@/components/ThreadSidebar";
@@ -41,13 +43,24 @@ const KIND_META: Record<string, { label: string; Icon: typeof Lightbulb; tone: s
   connection: { label: "Connections", Icon: Network,    tone: "text-accent" },
 };
 
-type SubTab = "memories" | "patterns" | "sources" | "credits";
+/**
+ * Insights and Brain were two nav destinations answering the same question —
+ * "what do I know across my cases?" — so comparing an aggregate stat against
+ * the memories behind it meant a round trip. They are one section now:
+ * OVERVIEW is the former /insights page, ANALYSIS is the cross-case breakdown,
+ * and the original four tabs are unchanged.
+ */
+type SubTab = "overview" | "analysis" | "memories" | "patterns" | "sources" | "credits";
 const SUB_TABS: { id: SubTab; label: string }[] = [
+  { id: "overview", label: "OVERVIEW" },
+  { id: "analysis", label: "ANALYSIS" },
   { id: "memories", label: "MEMORIES" },
   { id: "patterns", label: "PATTERNS" },
   { id: "sources",  label: "SOURCES" },
   { id: "credits",  label: "CREDITS" },
 ];
+const IS_SUB_TAB = (v: string | null): v is SubTab =>
+  !!v && SUB_TABS.some((t) => t.id === v);
 
 const MEMORY_FILTERS = ["ALL", "IDENTITY", "EMAIL", "USERNAME", "PHONE", "BREACH", "GEO", "SOCIAL"] as const;
 type MemoryFilter = typeof MEMORY_FILTERS[number];
@@ -95,7 +108,19 @@ export default function BrainGlobalPage() {
   const [memories, setMemories] = useState<Memory[]>([]);
   const [memLoading, setMemLoading] = useState(true);
   const [sinceVisit, setSinceVisit] = useState<string | null>(null);
-  const [subTab, setSubTab] = useState<SubTab>("memories");
+  // `?tab=` keeps the merged section deep-linkable, and lets /insights redirect
+  // here without losing the destination the analyst actually asked for.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab");
+  const [subTab, setSubTabState] = useState<SubTab>(IS_SUB_TAB(tabParam) ? tabParam : "overview");
+  const setSubTab = (t: SubTab) => {
+    setSubTabState(t);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set("tab", t);
+      return next;
+    }, { replace: true });
+  };
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<MemoryFilter>("ALL");
   const [threadTitles, setThreadTitles] = useState<Record<string, string>>({});
@@ -249,10 +274,10 @@ export default function BrainGlobalPage() {
           </Link>
           <div className="flex-1 min-w-0">
             <h1 className="font-display text-xl tracking-tight text-foreground">
-              AGENT BRAIN · INVESTIGATION MEMORY
+              INTELLIGENCE · CROSS-CASE VIEW
             </h1>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Saved patterns, lessons, and source context from completed investigations.
+              Aggregate stats, evidence-quality analysis, saved patterns, and source context across every case.
             </p>
             <p className="mt-1.5 text-micro text-muted-foreground/80">
               Pin / mute / hide actions on this screen are local view controls — they do not modify
@@ -331,6 +356,8 @@ export default function BrainGlobalPage() {
             onOpenCase={(id) => navigate(`/cases/${id}`)}
           />
         )}
+        {subTab === "overview" && <InsightsOverview embedded />}
+        {subTab === "analysis" && <AnalysisTab />}
         {subTab === "sources" && <SourcesTab />}
         {subTab === "credits" && <CreditsTab onOpenCase={(id) => navigate(`/chat/${id}`)} />}
       </div>
