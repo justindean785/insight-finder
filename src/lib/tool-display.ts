@@ -216,3 +216,25 @@ export function readableSourceLabel(rawSource: string | null | undefined): strin
       : primary);
   return tokens.length > 1 ? `${readable} +${tokens.length - 1} more` : readable;
 }
+
+/**
+ * Secondary detail line for a Tools-activity row, or null when there is nothing
+ * to add.
+ *
+ * A `reason` (error / gate / degradation text) always earns the line. Without
+ * one the caller falls back to `actionLabel` — but that is DERIVED from
+ * `toolDisplayName` (the slice after " — ", or the whole string when there is
+ * no dash), so for every tool in the registry it is already contained in the
+ * title. Rendering it unconditionally made each succeeded row restate itself:
+ * "Analyst — Socialfetch" above "Analyst — Socialfetch".
+ */
+export function toolSecondaryLine(e: {
+  reason?: string | null;
+  actionLabel?: string | null;
+  displayName?: string | null;
+}): string | null {
+  if (e.reason) return e.reason;
+  const action = e.actionLabel?.trim();
+  if (!action) return null;
+  return e.displayName?.toLowerCase().includes(action.toLowerCase()) ? null : action;
+}

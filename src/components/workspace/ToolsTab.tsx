@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/workspace-primitives";
 import { Activity, Gauge, Lock, HeartPulse, CheckCircle2, MinusCircle, ListChecks, Clock, type LucideIcon } from "lucide-react";
 import { timeAgo } from "@/lib/time";
+import { toolSecondaryLine } from "@/lib/tool-display";
 import { cn } from "@/lib/utils";
 
 type ActivityFilter = "all" | "succeeded" | "skipped" | "gated" | "degraded" | "pending";
@@ -195,8 +196,14 @@ function ActivityRowSummary({ e }: { e: ToolEvent }) {
           <span className="font-mono text-eyebrow uppercase tracking-wider text-muted-foreground/70 shrink-0">{e.toolName}</span>
         </div>
         {/* Title truncates once above; the REASON body carries the full provider
-            string — wrap to 2 lines instead of a single-line clip (Phase C3). */}
-        <div className="text-data text-muted-foreground line-clamp-2 break-words">{e.reason ?? e.actionLabel}</div>
+            string — wrap to 2 lines instead of a single-line clip (Phase C3).
+            `actionLabel` is derived from `displayName` (the slice after " — ",
+            or the whole string when there is no dash), so on a row with no
+            reason it restates the title verbatim or as a substring. Render the
+            secondary line only when it actually adds information. */}
+        {toolSecondaryLine(e) && (
+          <div className="text-data text-muted-foreground line-clamp-2 break-words">{toolSecondaryLine(e)}</div>
+        )}
       </div>
       <div className="flex items-center gap-1 shrink-0 text-data text-muted-foreground tabular-nums">
         <Clock className="w-3 h-3" />
