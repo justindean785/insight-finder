@@ -214,6 +214,60 @@ const SUBJECT_UNLINKED_CTX = {
     "harvested from a name-only query — same-name collision axis; linkage to the subject is unproven",
 } as const;
 
+/** Reason stamped on the ROOT row — the echo of the queried name itself. Distinct
+ *  from the descendant reason above because the failure is different in kind: the
+ *  value is not a stranger's identifier, it is the subject's *apparent* name
+ *  carried on a stranger's record. Analysts read this to understand why a name
+ *  they recognise lost authority. */
+const UNLINKED_ECHO_CTX = {
+  subject_unlinked: true,
+  subject_unlinked_reason:
+    "echo of a name-only query whose queried name is not itself linked to the subject — " +
+    "same-name collision axis; the matching name does not prove this record is the subject's",
+} as const;
+
+/** Split a name into comparable tokens. Punctuation and commas are separators so
+ *  "Roe, Jane" and "Jane Roe" reduce to the same token set. */
+function nameTokens(s: string): string[] {
+  return String(s ?? "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/i)
+    .filter((t) => t.length > 0);
+}
+
+/**
+ * Does the investigation SEED durably link the name a tool was queried on?
+ *
+ * THE INVARIANT THIS ENFORCES (P0-A): name equality is not durable linkage. The
+ * echo of a name-only query may keep subject authority ONLY when the queried name
+ * is tied to the subject by an already-authorized mechanism. The seed is that
+ * mechanism: an investigation opened ON a person name asserts that name as the
+ * subject's, so echoing it back is not a claim about a stranger.
+ *
+ * A name HARVESTED mid-run is deliberately NOT accepted, even when it came from a
+ * subject-linked branch. The row at issue belongs to whoever the provider matched
+ * on the name — a same-name stranger in the failure case — and the subject's own
+ * name already exists as a separate, subject-linked artifact from the branch that
+ * harvested it. Quarantining the echo therefore costs no evidence.
+ *
+ * Matching is TOKEN-SUBSET, not substring: `detectSeedServer` classifies
+ * "Jane Roe Springfield OR" as one person seed, so a query narrowed to "Jane Roe"
+ * must still resolve as seed-linked. A substring predicate was tried elsewhere in
+ * this codebase and produced false confirmations at scale; a token subset cannot
+ * match a name the seed does not actually contain. Single-token names are refused
+ * outright — one shared token is the collision axis, not linkage.
+ *
+ * FAILS CLOSED: an absent or unusable seed yields false, so the echo is
+ * quarantined. Absence of proof is not proof of linkage.
+ */
+export function seedLinksQueriedName(seedName: string, queriedName: string): boolean {
+  const queried = nameTokens(queriedName);
+  if (queried.length < 2) return false;
+  const seed = new Set(nameTokens(seedName));
+  if (seed.size === 0) return false;
+  return queried.every((t) => seed.has(t));
+}
+
 /** Declared `type`/`kind`/`search_type` values that name a CONCRETE selector.
  *  This is the union of the real tool enums minus `name`: oathnet_lookup is
  *  ["email","username","phone","ip","domain","name"], leakcheck_lookup is
@@ -388,8 +442,18 @@ function breachSubjectAnchor(o: Record<string, unknown>, input: unknown): string
  * per-tool unit tests can keep calling with two args; production threads it via
  * extractStepFindings so a breach exposure is scoped to the subject that was
  * actually queried.
+ *
+ * `subjectSeedName` is the investigation's PERSON seed, normalized — "" for a
+ * run seeded on anything else. It is the only mechanism by which a queried-name
+ * echo may retain subject authority (see seedLinksQueriedName). Omitting it fails
+ * closed: the echo is quarantined like every other row from a name-only query.
  */
-export function extractFindings(toolName: string, output: unknown, input?: unknown): ExtractedFinding[] {
+export function extractFindings(
+  toolName: string,
+  output: unknown,
+  input?: unknown,
+  subjectSeedName?: string,
+): ExtractedFinding[] {
   if (AUTO_PERSIST_TOOL_DENYLIST.has(toolName)) return [];
   if (!output || typeof output !== "object") return [];
   const o = output as Record<string, unknown>;
@@ -411,6 +475,10 @@ export function extractFindings(toolName: string, output: unknown, input?: unkno
   // deliberately excluded"). Rows harvested from one are LEADS, not evidence.
   const nameOnly = queryIsNameOnly(toolName, input);
   const queriedName = nameOnly ? normalizeBreachSubject(queriedSelectorRaw(input)) : "";
+  // Whether the QUERIED name is itself linked to the subject. Decides only one
+  // thing: may the echo of that name keep subject authority (see the stamp below).
+  const queriedNameIsSubjectLinked = nameOnly &&
+    seedLinksQueriedName(subjectSeedName ?? "", queriedName);
 
   const findings: ExtractedFinding[] = [];
   const push = (k: string, v: unknown, ctx: Record<string, unknown> = {}, conf = 30) => {
@@ -821,9 +889,17 @@ export function extractFindings(toolName: string, output: unknown, input?: unkno
   // returned row belongs to, so each one is disclosed as an unlinked lead.
   if (nameOnly) {
     for (const f of findings) {
-      // The query echoed back — a `name` row equal to what was asked — is the
-      // subject's own asserted name, not a third party. Not quarantined.
-      if (f.kind === "name" && normalizeBreachSubject(f.value) === queriedName) continue;
+      // The query echoed back — a `name` row equal to what was asked. This is the
+      // subject's own asserted name ONLY when the queried name was linked to the
+      // subject in the first place. When the queried name was harvested mid-run,
+      // the echo belongs to whoever the provider matched on that name — a
+      // same-name stranger in the failure case — so it is quarantined like every
+      // other row here, under its own reason. Name equality is not linkage.
+      if (f.kind === "name" && normalizeBreachSubject(f.value) === queriedName) {
+        if (queriedNameIsSubjectLinked) continue;
+        f.context = { ...(f.context ?? {}), ...UNLINKED_ECHO_CTX };
+        continue;
+      }
       f.context = { ...(f.context ?? {}), ...SUBJECT_UNLINKED_CTX };
     }
   }
@@ -841,8 +917,15 @@ export function extractFindings(toolName: string, output: unknown, input?: unkno
   return uniq;
 }
 
-/** Walk every tool result on a step. Returns a de-duped, step-capped list. */
-export function extractStepFindings(toolResults: unknown[] | null | undefined): Array<ExtractedFinding & { toolName: string }> {
+/** Walk every tool result on a step. Returns a de-duped, step-capped list.
+ *
+ *  `subjectSeedName` is threaded through to extractFindings unchanged — see there
+ *  for why it is the only thing that can keep a queried-name echo authoritative.
+ *  Omitted (the unit-test call shape) fails closed. */
+export function extractStepFindings(
+  toolResults: unknown[] | null | undefined,
+  subjectSeedName?: string,
+): Array<ExtractedFinding & { toolName: string }> {
   if (!Array.isArray(toolResults)) return [];
   const out: Array<ExtractedFinding & { toolName: string }> = [];
   const seen = new Set<string>();
@@ -856,7 +939,7 @@ export function extractStepFindings(toolResults: unknown[] | null | undefined): 
     // collision). `args`/`parameters` cover older/alternate envelope shapes.
     const te = t as { input?: unknown; args?: unknown; parameters?: unknown };
     const input = te.input ?? te.args ?? te.parameters ?? null;
-    const findings = extractFindings(name, output, input);
+    const findings = extractFindings(name, output, input, subjectSeedName);
     for (const f of findings) {
       const k = checkpointKey(f.kind, f.value);
       if (seen.has(k)) continue;

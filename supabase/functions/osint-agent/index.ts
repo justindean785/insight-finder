@@ -324,6 +324,16 @@ Deno.serve(async (req) => {
         .join(" ")
         .trim() || "(seed)";
     })();
+    // The subject's SEED NAME, or "" when this run was seeded on anything else.
+    // Sole input to the queried-name echo exemption in the auto-persist gate: a
+    // name harvested mid-run and fed back as a query cannot authorize the record
+    // it returns (same-name collision), but an investigation opened ON a name
+    // asserts that name as the subject's. "" fails closed — the echo is
+    // quarantined. See seedLinksQueriedName in auto-persist-findings.ts.
+    const subjectSeedName = (() => {
+      const s = detectSeedServer(seedValueRaw);
+      return s && s.kind === "person" ? s.normalized : "";
+    })();
     beginCycle(
       threadId,
       "Classify the seed, reject weak pivots, and select the smallest high-value initial batch.",
@@ -1074,7 +1084,7 @@ Deno.serve(async (req) => {
         // pass) so it never double-inserts a value record_artifacts or an earlier step
         // already wrote; the module also scrubs, caps, and denylists (never throws).
         if (!finalizeStarted && Array.isArray(toolResults) && toolResults.length > 0) {
-          const stepFindings = extractStepFindings(toolResults as unknown[]);
+          const stepFindings = extractStepFindings(toolResults as unknown[], subjectSeedName);
           if (stepFindings.length > 0) {
             const autoPersistTask = (async () => {
               try {

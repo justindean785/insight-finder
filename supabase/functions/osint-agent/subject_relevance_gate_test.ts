@@ -16,7 +16,9 @@
  * RFC 2606 reserved and resolve to nobody.
  *
  * THE CONTRACT
- *  - A name-only query ⇒ every harvested row is stamped `subject_unlinked`.
+ *  - A name-only query ⇒ every harvested row is stamped `subject_unlinked`,
+ *    INCLUDING the echo of the queried name itself unless that name is the
+ *    investigation's seed (P0-A — see name_collision_root_test.ts).
  *  - Quarantine is DISCLOSURE, NOT DELETION: the row still persists, keeps its
  *    value, and stays readable as a lead. Nothing is dropped.
  *  - A concrete selector (email/username/phone/domain/ip) anywhere in the input
@@ -94,16 +96,33 @@ Deno.test("an email in the generic query slot is NOT treated as a name", () => {
   assert(out.every((f) => !unlinked(f)));
 });
 
-Deno.test("the queried name echoed back is the subject's own name, not a third party", () => {
+// The echo exemption is CONDITIONAL — see name_collision_root_test.ts for the
+// escape it used to permit. It survives here only in its authorized form: the
+// queried name is the investigation's own seed.
+Deno.test("the queried name echoed back is the subject's own name when the SEED is that name", () => {
   const out = extractFindings(
     "oathnet_lookup",
     { data: { data: { items: [{ full_name: SUBJECT_NAME, email: "third.party.c@example.com" }] } } },
     { type: "name", value: SUBJECT_NAME },
+    SUBJECT_NAME.toLowerCase(),
   );
   const nameRow = out.find((f) => f.kind === "name");
-  if (nameRow) assert(!unlinked(nameRow), "the echo of the query is not a stranger");
+  if (nameRow) assert(!unlinked(nameRow), "the echo of a SEEDED name is not a stranger");
   const other = out.find((f) => f.kind === "email");
   if (other) assert(unlinked(other), "but a co-returned email still is");
+});
+
+Deno.test("the same echo IS quarantined when the queried name is not the seed", () => {
+  const out = extractFindings(
+    "oathnet_lookup",
+    { data: { data: { items: [{ full_name: SUBJECT_NAME, email: "third.party.c@example.com" }] } } },
+    { type: "name", value: SUBJECT_NAME },
+    // Seeded on an email — nothing links this harvested name to the subject.
+    "",
+  );
+  const nameRow = out.find((f) => f.kind === "name");
+  assert(nameRow, "the row is still extracted — quarantine is not deletion");
+  assert(unlinked(nameRow!), "name equality alone is not durable linkage");
 });
 
 Deno.test("no input at all leaves rows unquarantined (no false accusation)", () => {
