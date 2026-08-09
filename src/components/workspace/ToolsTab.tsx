@@ -143,6 +143,19 @@ function ActivityLog({
           tone={failed > 0 ? "danger" : "neutral"}
           hint="Calls that errored outright. Each one is a coverage gap: the lookup did not happen, so anything it would have found is missing from this case."
         />
+        {/* Degraded earns its own tile whenever it is non-zero. Without it a run
+            whose only non-OK rows are throttles or upstream refusals reads
+            "Failed 0 / Skipped 0" and looks perfectly clean, which is how the
+            suppressed-failure problem would quietly come back in a new form. */}
+        {degraded > 0 && (
+          <MetricCard
+            label="Degraded"
+            value={degraded}
+            icon={Clock}
+            tone="warn"
+            hint="Transient, not breakage: our own throttles and caps, upstream rate limits, denials and timeouts. The lookup can succeed on a retry."
+          />
+        )}
         <MetricCard
           label={gated > 0 ? "Skipped / Gated" : "Skipped"}
           value={gated > 0 ? `${skipped}/${gated}` : skipped}

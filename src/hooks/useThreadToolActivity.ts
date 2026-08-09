@@ -78,7 +78,22 @@ interface ActivityState {
 }
 
 const GATED_RE = /gated|missing.?key|not configured|disabled|unavailable|provider disabled/i;
-const DEGRADED_RE = /degraded|suppressed|rate.?limit|burst|budget|concurrency|cycle limit|duplicate call/i;
+/**
+ * Transient, non-fault conditions.
+ *
+ * Beyond the original rate/budget terms this now covers the three shapes the
+ * Health panel already classified as Degraded/Denied while Activity was still
+ * calling them failures:
+ *   - our OWN throttles: "internal paid-call cap reached (12 this run) —
+ *     internal throttle, not a provider limit". The row states outright that it
+ *     is not a provider limit, and Activity labelled it FAILED anyway.
+ *   - upstream refusals: "reddit request failed (403)" — Denied, not breakage.
+ *   - timeouts, which are transient by definition.
+ * A genuine provider fault (5xx, unparseable error) still falls through to
+ * `failed`, which is what "Needs attention" is for.
+ */
+const DEGRADED_RE =
+  /degraded|suppressed|rate.?limit|burst|budget|concurrency|cycle limit|duplicate call|cap reached|internal throttle|paid-call cap|quota|denied|blocked|forbidden|timed?.?out|timeout|\b40[39]\b|\b429\b/i;
 
 /**
  * Map a tool_usage_log row to a display tone + operational status. The log's
@@ -93,12 +108,19 @@ export function classifyActivityRow(
 ): { tone: ToolTone; status: ToolStatus } {
   const oc = (outcome ?? (ok ? "ok" : "failed")).toLowerCase();
   if (oc === "ok" || oc === "empty") return { tone: "ok", status: "succeeded" };
-  if (oc === "skipped") {
-    const err = errorMsg ?? "";
-    if (GATED_RE.test(err)) return { tone: "skip", status: "gated" };
-    if (DEGRADED_RE.test(err)) return { tone: "skip", status: "degraded" };
-    return { tone: "skip", status: "skipped" };
-  }
+
+  // The gate/degradation check applies to EVERY non-OK outcome, not just
+  // `skipped`. Consulting it only for `skipped` is why the Activity feed and
+  // the Health panel disagreed about the same rows: an internal paid-call cap
+  // and a reddit 403 both fell straight through to `failed` here, while Health
+  // correctly reported them as Degraded/Denied and "Needs attention 0". One
+  // call must not read FAILED in one panel and Degraded in the panel beside it.
+  const err = errorMsg ?? "";
+  if (GATED_RE.test(err)) return { tone: "skip", status: "gated" };
+  if (DEGRADED_RE.test(err)) return { tone: "skip", status: "degraded" };
+  if (oc === "skipped") return { tone: "skip", status: "skipped" };
+
+  // Nothing matched: a genuine fault. This is what "Needs attention" means.
   return { tone: "error", status: "failed" };
 }
 
