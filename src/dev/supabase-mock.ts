@@ -66,7 +66,30 @@ const tool_usage_log = [
   tool("t9", "gemini_vision", false, 9100, 8, "document exceeded inline size ceiling"),
 ];
 
-const FIXTURES: Record<string, unknown[]> = {
+/**
+ * A real snapshot, when one exists, always wins over the synthetic rows below.
+ *
+ * `scripts/harness-snapshot.mjs` writes `fixtures.json` (gitignored — real case
+ * data). Invented fixtures are a floor, not a substitute: they cannot show a
+ * kind distribution skewed 66/101 toward one type, a confidence ceiling of 75,
+ * or chain-of-custody covering 4 of 101 artifacts. Those only appear in
+ * production data, and they are exactly what the UI has to survive.
+ *
+ * Vite resolves this eagerly, so a missing file is a build-time miss rather
+ * than a runtime throw — hence the glob rather than a bare import.
+ */
+const SNAPSHOT = (Object.values(
+  import.meta.glob("./fixtures.json", { eager: true }) as Record<string, { default?: HarnessSnapshot }>,
+)[0]?.default ?? null) as HarnessSnapshot | null;
+
+interface HarnessSnapshot {
+  capturedAt: string;
+  threadId: string;
+  tables: Record<string, unknown[]>;
+  user?: { id?: string; email?: string };
+}
+
+const SYNTHETIC: Record<string, unknown[]> = {
   threads: [{
     id: THREAD_ID, user_id: USER_ID, title: "James Harker — logistics", archive_attachments: false,
     seed_value: "j.harker@northgate-logistics.com", seed_type: "email",
@@ -89,6 +112,17 @@ const FIXTURES: Record<string, unknown[]> = {
   agent_memory: [], investigation_cache: [], client_errors: [],
 };
 
+const FIXTURES: Record<string, unknown[]> = SNAPSHOT?.tables ?? SYNTHETIC;
+
+if (SNAPSHOT) {
+  const t = SNAPSHOT.tables;
+  console.info(
+    `[harness] real snapshot ${SNAPSHOT.capturedAt} — thread ${SNAPSHOT.threadId}: ` +
+      `${t.artifacts?.length ?? 0} artifacts, ${t.tool_usage_log?.length ?? 0} tool calls, ` +
+      `${t.messages?.length ?? 0} messages, ${t.threads?.length ?? 0} threads`,
+  );
+}
+
 const RPC: Record<string, unknown> = {
   get_case_metrics: [{ thread_id: THREAD_ID, artifact_count: artifacts.length, confirmed_count: 2, tool_call_count: tool_usage_log.length, failed_tool_count: 2 }],
   get_insights_summary: [{ total_threads: 12, total_artifacts: 96, confirmed_artifacts: 24, credits_used: 341 }],
@@ -101,7 +135,10 @@ const RPC: Record<string, unknown> = {
 /** Chainable PostgREST stub: every filter/modifier returns `this`; awaiting it
  *  resolves `{ data, error: null }`. Mirrors the subset the app actually uses. */
 function builder(table: string) {
-  let rows = [...(FIXTURES[table] ?? [])];
+  // A snapshot table can be absent, or (for a single-row REST response) an
+  // object rather than an array — never let either shape throw mid-render.
+  const raw = FIXTURES[table];
+  let rows: unknown[] = Array.isArray(raw) ? [...raw] : raw ? [raw] : [];
   const self: Record<string, unknown> = {};
   const chain = () => self;
 
@@ -119,7 +156,7 @@ function builder(table: string) {
 const session = {
   access_token: "harness-token", refresh_token: "harness-refresh",
   expires_in: 3600, expires_at: 4102444800, token_type: "bearer",
-  user: { id: USER_ID, email: "analyst@harness.local", aud: "authenticated", role: "authenticated", app_metadata: {}, user_metadata: {}, created_at: iso(60_000) } as unknown as User,
+  user: { id: SNAPSHOT?.user?.id ?? USER_ID, email: "analyst@harness.local", aud: "authenticated", role: "authenticated", app_metadata: {}, user_metadata: {}, created_at: iso(60_000) } as unknown as User,
 } as unknown as Session;
 
 export const SUPABASE_URL = "https://harness.local";
@@ -145,4 +182,4 @@ export const supabase = {
   },
 } as unknown as typeof import("@/integrations/supabase/client").supabase;
 
-export const HARNESS_THREAD_ID = THREAD_ID;
+export const HARNESS_THREAD_ID = SNAPSHOT?.threadId ?? THREAD_ID;

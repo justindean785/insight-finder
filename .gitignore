@@ -49,6 +49,11 @@ LEAD_REVIEW_STATE.md
 
 *.tsbuildinfo
 
+# Harness snapshots — REAL case data (subject names, emails, phones, breach
+# rows) pulled from production by scripts/harness-snapshot.mjs. Never commit.
+src/dev/fixtures.json
+src/dev/raw/
+
 # Sensitive scan artifacts — never commit (2026-07-11 PII incident remediation)
 last_scan_tool_usage_full.csv
 logs (*).json
