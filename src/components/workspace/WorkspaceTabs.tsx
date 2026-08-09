@@ -12,7 +12,7 @@ export type WorkspaceTab = "chat" | "evidence" | "report" | "graph" | "tools";
 export type TabCount = { value: number; alert?: number };
 
 const TABS: { key: WorkspaceTab; label: string; icon: LucideIcon }[] = [
-  { key: "chat", label: "Chat", icon: MessagesSquare },
+  { key: "chat", label: "Investigate", icon: MessagesSquare },
   { key: "evidence", label: "Evidence", icon: Database },
   { key: "tools", label: "Tools", icon: Activity },
   { key: "graph", label: "Graph", icon: Share2 },

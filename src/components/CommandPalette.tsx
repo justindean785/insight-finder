@@ -120,7 +120,7 @@ export function CommandPalette() {
         <CommandGroup heading="Quick actions">
           <PaletteItem
             icon={MessageSquare}
-            label="Focus chat input"
+            label="Focus investigation input"
             shortcut="↵"
             onSelect={() => { setOpen(false); focusChat(); }}
           />

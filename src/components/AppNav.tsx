@@ -13,7 +13,9 @@ import { cn } from "@/lib/utils";
 const NAV: Array<{ to: string; label: string; icon: LucideIcon; match: (p: string) => boolean }> = [
   { to: "/", label: "Home", icon: Home, match: (p) => p === "/" },
   { to: "/cases", label: "Cases", icon: FolderOpen, match: (p) => p.startsWith("/cases") },
-  { to: "/chat", label: "Chat", icon: MessageSquare, match: (p) => p.startsWith("/chat") },
+  // "Investigate", not "Chat" — the global nav is the most persistent surface in
+  // the app, so leaving it on the old word undoes the rename everywhere else.
+  { to: "/chat", label: "Investigate", icon: MessageSquare, match: (p) => p.startsWith("/chat") },
   { to: "/insights", label: "Insights", icon: BarChart3, match: (p) => p.startsWith("/insights") },
   { to: "/brain", label: "Brain", icon: Brain, match: (p) => p.startsWith("/brain") },
 ];
