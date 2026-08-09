@@ -188,6 +188,12 @@ export function skipStub(tool: string, reason: string, state: Record<string, unk
   return {
     ok: false,
     skipped: true,
+    // A guard gate returns BEFORE the tool contacts its provider, so no request
+    // was issued and nothing can have been billed. This marker is what releases
+    // the reserved paid-call slot (runtime-policy.ts:isPreProviderGate) — without
+    // it a guard-blocked expensive tool silently spends one of the run's paid
+    // slots on work that never happened.
+    provider_attempted: false,
     reason: "skipped: guard not met",
     tool,
     detail: reason,

@@ -321,6 +321,11 @@ export const indicia_phone = tool({
           `(expected 10 digits, or 11 with a leading country code; got ${digitCount})`,
         source: "indicia",
         endpoint: "phone",
+        // No fetch was issued above, so this call cost nothing. The marker
+        // releases the paid-call slot reserved at admission — see
+        // runtime-policy.ts:isPreProviderGate. Any tool that declines its
+        // selector before contacting the provider must set this.
+        provider_attempted: false,
       };
     }
     return indiciaRequest(
