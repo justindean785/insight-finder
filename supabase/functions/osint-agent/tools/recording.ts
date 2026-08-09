@@ -9,6 +9,7 @@
 import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { collisionPeerSignal, type CollisionPeer } from "../lib/quarantine.ts";
 
 export const record_artifacts = tool({
   description:
@@ -152,14 +153,12 @@ export const record_artifacts = tool({
           .eq("thread_id", threadId)
           .eq("kind", String(r.kind))
           .eq("value", String(r.value));
-        const sources = new Set<string>();
-        const clusters = new Set<string>();
-        for (const p of (peers ?? []) as Array<{ source?: unknown; metadata?: Record<string, unknown> | null }>) {
-          if (p.source) sources.add(String(p.source));
-          const cid = (p.metadata ?? {}).cluster_id;
-          if (cid) clusters.add(String(cid));
-        }
-        if (sources.size >= 3 || clusters.size >= 2) {
+        // Mirrors the live detector in ../tool-registry.ts — both call the one
+        // shared, quarantine-aware helper so they cannot drift apart.
+        const { sources, clusters } = collisionPeerSignal(
+          (peers ?? []) as CollisionPeer[],
+        );
+        if (sources.length >= 3 || clusters.length >= 2) {
           await supabase.from("artifacts").insert({
             thread_id: threadId,
             user_id: userId,
@@ -170,9 +169,9 @@ export const record_artifacts = tool({
             metadata: {
               collision_value: r.value,
               collision_kind: r.kind,
-              sources: Array.from(sources),
-              clusters: Array.from(clusters),
-              severity: clusters.size >= 2 ? "high" : "medium",
+              sources,
+              clusters,
+              severity: clusters.length >= 2 ? "high" : "medium",
               status: "needs_review",
             },
           });
