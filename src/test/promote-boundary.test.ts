@@ -300,7 +300,9 @@ describe("promote boundary — cluster audit", () => {
       FIXTURE.filter((a) => QUARANTINED_IDS.has(a.id)).map((a) => a.value),
     );
     const audit = artifactsToClusterAudit(FIXTURE, SEED_VALUE);
-    const citedValues = audit.flatMap((c) => c.cells.map((cell) => cell.value));
+    // EvidenceCell.value is `string | number`; artifact values are strings. Compare
+    // as strings so a numeric cell can still be matched rather than silently skipped.
+    const citedValues = audit.flatMap((c) => c.cells.map((cell) => String(cell.value)));
     expect(citedValues.filter((v) => quarantinedValues.has(v))).toEqual([]);
   });
 });
