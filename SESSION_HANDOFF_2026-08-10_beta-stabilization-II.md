@@ -29,13 +29,50 @@ successful deploy right now would leave `/health` reporting `b6ffd63`, and the
 
 ---
 
-## 2. What this session shipped (3 PRs, all draft)
+## 2. What this session opened (4 PRs, ALL DRAFT, none merged)
+
+Nothing here is merged, stamped, synced or deployed. **Green CI did not catch the
+two most important defects in this set** — an independent review found both, and
+both were real. Read §2.1 before trusting any "closed" in this document.
 
 | PR | Domain | Deploy channel | State |
 | --- | --- | --- | --- |
-| **#436** — bind `subject_unlinked` at the frontend pivot boundary | frontend | Vercel on merge | CI green |
-| **#437** — give a non-recording run a durability path | backend | **stamp → sync → Lovable deploy** | — |
-| **#438** — revoke `anon` EXECUTE on `record_analyst_feedback` | database | **already applied live** | — |
+| **#436** — bind `subject_unlinked` at the frontend pivot boundary | frontend | Vercel on merge | draft; corrected after review |
+| **#437** — give a non-recording run a durability path | backend | **stamp → sync → Lovable deploy** | draft; corrected after review |
+| **#438** — revoke `anon` EXECUTE on `record_analyst_feedback` | database | **already applied live** | draft; comment corrected |
+| **#439** — this document | docs | — | draft |
+
+### 2.1 What green CI missed — and what that means for how you read this file
+
+Both defects passed every gate: full vitest, full edge suite, typecheck, lint,
+build. Both were semantic, and unit tests written by the same author who wrote the
+code did not probe the semantics.
+
+- **#436 — the quarantine key was not an identity.** Both sets were keyed on
+  `normalizeTarget(value)` alone. That function collapses every non-alphanumeric
+  run to a space, so `username "jordan.vale"` and `name "Jordan Vale"` both become
+  `"jordan vale"` — and the ordinary NAME landed in `linked` and RESTORED
+  authority to the quarantined USERNAME. The quarantine was undone by a row that
+  says nothing about it. A second route did the same: non-pivotable kinds
+  (address, organization) were also admitted to `linked`. Now keyed by
+  `type:normalizedValue` with non-pivotable kinds excluded outright.
+
+- **#437 — the escalation gate opened onto an empty room.** The gate needs
+  `persistenceNudgeCount > 0`, and the nudge fires only after several unrecorded
+  fan-out steps — so everything found before it was denied by the denylist and
+  never held anywhere. Worse, `buildIntermediateStepPlan` narrows the nudge step's
+  `activeTools` to `["record_artifacts"]` alone, so the very step that opens the
+  gate has no search result to extract. The fix only ever covered searches made
+  AFTER the first nudge, which is not the failure it claimed to close. A bounded,
+  memory-only pre-nudge buffer now holds candidates and flushes them when the gate
+  opens.
+
+**The lesson worth carrying:** on this codebase, unit tests confirm that a
+function does what its author meant. They do not confirm that the surrounding
+state machine reaches that function with the right inputs at the right time. The
+two defects above were both timeline/identity errors, not logic errors, and both
+were invisible to every gate. Prefer a test that replays the real step sequence
+over one that calls the helper directly.
 
 They are deliberately separate: #436 ships the moment it merges, #437 ships
 nothing until the full recipe runs, and #438 is already in the database. Merging
@@ -58,9 +95,18 @@ Two holes in `computePivots`, both now closed:
   model wrote into the report's *Recommended pivots* bypassed it entirely.
 
 `src/lib/quarantine.ts` mirrors the edge module, strict `=== true` included.
-**Not over-blocking:** a selector goes inert only while *every* artifact carrying
+**Not over-blocking:** an identity goes inert only while *every* artifact carrying
 it is quarantined — provenance is per-row, and the same phone can arrive both from
 a name sweep and from a provider that matched on the subject's own email.
+
+Keyed by `type:normalizedValue`, **not by value alone** — see §2.1 for why that
+distinction is load-bearing rather than cosmetic. Non-pivotable kinds are excluded
+from both sets: they can be the subject of no authority decision.
+
+**Still unbound: the PROMOTE boundary.** The 08-09 handoff named three boundaries
+— write, pivot, promote. #433 closed write, #436 closes pivot. Nothing yet stops a
+quarantined artifact being promoted to Confirmed / Primary Subject in the report
+or cluster confidence. That is the next piece of this work.
 
 ### #437 — the zero-artifact runtime blocker
 
@@ -91,6 +137,10 @@ both conditions hold — the nudge has fired with zero `record_artifacts` calls
 *and* the thread holds zero artifacts. Outside that state, behaviour is
 byte-identical.
 
+Plus a bounded, memory-only **pre-nudge buffer** — without which the gate opened
+onto an empty room (§2.1). Candidates are held from every pre-gate step and
+flushed oldest-first when the gate opens; nothing is written until then.
+
 **Deliberately not attempted:** the backstop is still detached via
 `EdgeRuntime.waitUntil`, so it can still die with the isolate. Bound-awaiting it
 would fix that, but awaiting auto-persist is what hung production in #369 and
@@ -107,7 +157,7 @@ scan whose four findings were all *ignored* rather than resolved:
 | --- | --- |
 | **Critical** — any authed user can subscribe to another user's Realtime channels | **Not reproducible by inspection.** All 12 frontend channels use `postgres_changes` (no `broadcast`, no `presence`); `artifacts` and `threads` both have RLS on with `auth.uid() = user_id` SELECT policies; a `realtime.messages` policy restricting `user:` / `thread:` topics also exists. **Still open** — inspection cannot prove per-subscriber enforcement. Needs the two-user canary. |
 | **Warning** — evidence archive has no DELETE policy | **Already fixed.** `evidence-archive owner delete` exists on `storage.objects`. |
-| **Warning** — public can execute a SECURITY DEFINER function | **Real → #438.** `record_analyst_feedback` had EXECUTE for `anon`. Not exploitable (it raises `must be authenticated` on NULL `auth.uid()`), so hygiene, not an open door. Revoked and verified live. |
+| **Warning** — public can execute a SECURITY DEFINER function | **Real → #438.** `record_analyst_feedback` had EXECUTE for `anon`. Not exploitable (it raises `must be authenticated` on NULL `auth.uid()`), so hygiene, not an open door. Revoked and verified live. **The revoke is not self-sustaining:** `pg_default_acl` for `public` functions grants `anon`/`authenticated`/`service_role` EXECUTE, so a DROP+CREATE or a new overloaded signature silently restores it. (CREATE OR REPLACE does *not* — probed on this database.) |
 | **Warning** — signed-in users can execute a SECURITY DEFINER function | **Real and appropriate.** The four app-facing functions all validate `auth.uid()` + thread ownership internally. |
 
 **All 11 SECURITY DEFINER functions in `public` already pin `search_path`** (9 to
@@ -131,12 +181,17 @@ Reachability, per package:
   `esbuild`, `vite`, `postcss`. The vite/esbuild issues are dev-server-only.
 - **`nanoid` 3.3.12** — no app import; transitive under `@supabase/functions-js`
   and `postcss`. Both advisories require attacker-controlled `size`. Unreachable.
-- **`react-router-dom` 6.30.4** — the only runtime-reachable candidate, and still
-  **not reachable**: every `navigate()` is `` `/chat/${uuid}` ``-shaped with a
-  DB-derived id, every `<Link to={to}>` uses a local nav constant, and the only
-  URL params read are `tab`, compared against literals. There is no
-  `?redirect=` / `?next=` parameter anywhere. The SSR advisory needs SSR; this is
-  a pure SPA.
+- **`react-router-dom` 6.30.4** — the only plausible runtime candidate. **No
+  exploit path was found** by grepping every `navigate()` and `<Link to=…>` call
+  site: each is `` `/chat/${uuid}` ``-shaped with a DB-derived id or a local nav
+  constant, the only URL params read are `tab` (compared against literals), and
+  there is no `?redirect=` / `?next=` parameter anywhere. The SSR advisory needs
+  SSR; this is a pure SPA.
+
+  **Stated at its true strength:** this is *no path found by call-site
+  inspection*, not *proven unreachable*. It was not fuzzed, and a future feature
+  that routes on user input would change the answer. Treat it as a deferral with
+  evidence, and re-check when routing changes.
 
 `6.30.4` is the **last 6.x release** — the only fix is `7.18.0+`, a breaking
 major. Upgrading a router for unreachable moderates days before a beta is the
@@ -176,16 +231,23 @@ Apply these; each was verified this session.
 5. **`tools/peopledatalabs.ts` is no longer mirror-only** — `diff -rq` reports no
    files present only in the mirror's `osint-agent`. The warning is still worth
    keeping in spirit (never blanket-overwrite), but that specific example is stale.
-6. **`subject_unlinked` now binds at the frontend pivot boundary** (#436), so the
-   `CLAUDE.md` "⛔ Beta blockers" claim that `src/lib/intel.ts` is the whole list
-   is superseded. The **promote** boundary is still unbound.
+6. **`subject_unlinked` binds at the frontend pivot boundary once #436 merges** —
+   apply this correction only then, not before. The `CLAUDE.md` "⛔ Beta blockers"
+   claim that `src/lib/intel.ts` is the whole list is superseded by that PR. The
+   **promote** boundary remains unbound either way.
 
 ---
 
 ## 7. Discipline (unchanged, and it held)
 
 - Failure-first or it does not count: #436's tests were 5/8 red before the fix,
-  #437's prompt tests 3/5 red.
+  #437's prompt tests 3/5 red, and the two review-driven corrections were held to
+  the same bar (#436's new regressions 3/11 red first).
+- **Unit-green is not semantics-green.** Both defects found in review passed every
+  gate. Test the state machine's timeline and its identity keys, not just the
+  helper in isolation — see §2.1.
+- Say things at their true strength. "No exploit path found by inspection" is not
+  "unreachable"; "applied and verified" is not "self-sustaining".
 - Preserve quarantined evidence; make it inert, visible, auditable. #436 pins both
   halves against the same artifact.
 - A stale scan and an ignored finding are different failures. Check the live
