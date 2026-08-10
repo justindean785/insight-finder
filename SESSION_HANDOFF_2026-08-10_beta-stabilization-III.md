@@ -1,0 +1,631 @@
+# Session handoff — 2026-08-10 (evening) — beta stabilization III
+
+Third in the series. Read in order if you have time:
+`SESSION_HANDOFF_2026-08-09_beta-stabilization.md` → `…_2026-08-10_beta-stabilization-II.md` → this.
+If you have time for one, read **this one plus §11 (corrections)** — several load-bearing
+facts in II and in `CLAUDE.md` are now false, and acting on them will waste a session.
+
+Everything asserted here was measured today, against the live system, and the measurement
+command is printed next to the claim. Where something was *not* measured, it says so.
+
+---
+
+## 1. The two things to take away
+
+> **1. The deploy axis is, for the first time in this series, VERIFIED GREEN end to end.
+> Frontend and backend both run current `main`. Do not lose this — every regression in
+> this project's history started with someone assuming it.**
+>
+> **2. The PROMOTE boundary is open, and it is worse than II described. The existing
+> gate catches ZERO of the 104 quarantined artifacts in production — not "some", zero.**
+
+### 1.1 The deploy state, measured
+
+```
+canonical main HEAD ............. 2ebd330  chore(build): stamp osint-agent build marker e7e3f80
+  └─ its parent ................. e7e3f80  fix(prompt): bind the credential policy to REVEAL_BREACH_DATA (#443)
+
+build-info.ts BUILD_MARKER ...... e7e3f80
+Lovable mirror origin/main ...... 33d676e  "sync(osint-agent): … BUILD_MARKER e7e3f80"
+live /health build .............. e7e3f80   ← THE proof. Matches.
+Vercel production ............... 2ebd330  target=production, state=READY
+```
+
+Read the one-commit offset correctly or you will chase a phantom: `stamp-build.mjs` writes
+the marker for `HEAD` **at stamp time**, then that write becomes its own commit. So the
+marker names the stamp commit's *parent*. `/health` reporting `e7e3f80` while `main` is
+`2ebd330` is **correct and expected** — it means the deployed tree is `2ebd330`. A successor
+who "fixes" this by expecting `/health == main HEAD` will re-stamp forever.
+
+Verify it yourself, in this order:
+
+```bash
+curl -s "https://skzqwbyvmwqarfgfvyky.supabase.co/functions/v1/osint-agent?health=1" | jq
+git log --oneline -2                                    # HEAD should be the stamp of /health's SHA
+grep BUILD_MARKER supabase/functions/osint-agent/build-info.ts
+diff -rq supabase/functions/osint-agent \
+         ../seeker-spark-search-5362c57c/supabase/functions/osint-agent   # must print nothing
+```
+
+**Source parity across ALL FOUR backend trees is byte-clean today** (`diff -rq`, empty for
+each): `osint-agent`, `evidence-export`, `security-test-lab`, `_shared`. This closes the
+long-standing `evidence-export` drift that `CLAUDE.md` still warns about — see §11.
+
+**But do not upgrade "synced" to "deployed" for the other two functions.** The Lovable
+deploy call was `function_names: ["osint-agent"]`. `evidence-export` and
+`security-test-lab` are byte-identical *in source* and their deployed state was **not
+verified** — neither exposes a build marker at a health endpoint, so there is no
+instrument for it. That is a gap in the verification story, not a green light. If an
+export bug appears, suspect a stale deployed `evidence-export` first.
+
+### 1.2 Live health, verbatim
+
+```json
+{"ok":true,"service":"osint-agent","version":"1.2.2","build":"e7e3f80",
+ "build_committed_at":"2026-08-10T06:31:35-07:00",
+ "selected_provider":"deepseek","selected_model":"deepseek-v4-pro",
+ "orchestrator_reason":"pinned","orchestrator_active_ok":true,
+ "checks":{"orchestrator":{"ok":true},"core":{"ok":true},
+           "tools":{"ok":true,"detail":"16/19 optional tool APIs configured"},
+           "deepseek":{"ok":true,"role":"active"},"minimax":{"ok":true,"role":"fallback"},
+           "recovery":{"ok":true,"detail":"recovered 0 stale active run(s)"}},
+ "intelbase_enabled":false,"reveal_breach_data":true}
+```
+
+`ok: true` is not beta-ready and never has been. It says the isolate boots, the providers
+answer, and 16 of 19 optional tool keys are present. It says nothing about whether an
+investigation produces a correct report — see §5.
+
+---
+
+## 2. What shipped since handoff II (merged AND deployed)
+
+All of these are live. II described most of them as draft; that is the single biggest
+staleness in II.
+
+| PR | What it actually changed | Channel | Live? |
+| --- | --- | --- | --- |
+| **#433** | quarantine name-only collision roots (the WRITE boundary) | backend | ✅ `e7e3f80` |
+| **#434** | bind `subject_unlinked` at the backend authority boundaries | backend | ✅ |
+| **#436** | bind `subject_unlinked` at the frontend PIVOT boundary | frontend | ✅ `2ebd330` |
+| **#437** | give a non-recording run a durability path (pre-nudge buffer + `decideBackstopAction`) | backend | ✅ |
+| **#440** | report shows captured breach values instead of dropping them | frontend | ✅ |
+| **#441** | surface `reveal_breach_data` at `/health` so the policy is verifiable | backend | ✅ |
+| **#442** | `trimVictimItems` honours `REVEAL_BREACH_DATA` (oathnet victim parity) | backend | ✅ |
+| **#443** | **the system prompt's credential policy follows `REVEAL_BREACH_DATA`** | backend | ✅ |
+
+### 2.1 Why #443 was the one that mattered
+
+"Breach values don't show" was five independent defects stacked, not one. Four are closed:
+
+1. `trimVictimItems` had no `reveal` parameter — it masked unconditionally. (#442)
+2. The victim tool's guidance string told the model "No raw credentials". (#442)
+3. The tool *description* called `victim_file` "redacted" when it no longer was. (#442)
+4. **The system prompt said, unconditionally, `NEVER paste full plaintext credentials`** —
+   so with `REVEAL_BREACH_DATA=true` the tools handed the model real values and the prompt
+   forbade it from printing them. The model complied with the prompt. It then wrote
+   `"(masked, 12 chars)"` about a value it was holding in plaintext — **a false statement
+   about the evidence**, which is worse than either mode alone. (#443)
+5. **STILL OPEN:** `addCorpus` in `auto-persist-findings.ts` discards every breach field
+   except the corpus name, so what the model *can* now print is not what gets *persisted*.
+   Audit-only authorization; see §6.
+
+The structural lesson from #443, which will bite again: **`system-prompt.ts` cannot import
+`env.ts`.** Frontend vitest suites import the prompt module, and `env.ts` pulls
+`npm:@ai-sdk/openai-compatible@1`, which Vite cannot resolve — the suite dies with a
+transform error, not a test failure. The fix was a **leaf module**, `reveal-policy.ts`,
+with zero imports; `env.ts` now re-exports from it. There is a structural test pinning
+this (`system_prompt_reveal_policy_test.ts`) precisely so nobody reintroduces the import
+and spends an hour on a confusing Vite error.
+
+```
+reveal-policy.ts   (leaf, no imports)  ←── system-prompt.ts   (safe for vitest)
+        ↑
+      env.ts  (re-export)              ←── everything backend
+```
+
+---
+
+## 3. ⛔ THE OPEN P0 — the PROMOTE boundary
+
+The 08-09 handoff named three authority boundaries for `subject_unlinked`:
+**write · pivot · promote**. #433 closed write. #436 closed pivot. **Promote is open**, and
+this session reproduced it against production data.
+
+### 3.1 The decisive measurement
+
+```sql
+SELECT thread_id, count(*) AS quarantined,
+       count(*) FILTER (WHERE (metadata->>'collision')='true'
+                          OR (metadata->>'excluded_collision')='true'
+                          OR (metadata->>'possible_collision')='true'
+                          OR (metadata->>'status')='excluded') AS also_collision_flagged
+FROM artifacts WHERE metadata->>'subject_unlinked'='true' GROUP BY thread_id;
+```
+
+| thread | quarantined | also_collision_flagged | max confidence | reviewed=true |
+| --- | --- | --- | --- | --- |
+| `f17ddf69` | 48 | **0** | 55 | 0 |
+| `1deed1c1` | 24 | **0** | 55 | 0 |
+| `98da3fb9` | 24 | **0** | 55 | 0 |
+| `88cf94fa` | 8 | **0** | 55 | 0 |
+| **total** | **104** | **0** | | |
+
+That `0` column is the whole finding. The frontend's cluster gate is
+`isCollisionArtifact()`, which tests exactly those four flags plus
+`kind === "excluded_collision"`. **Not one of the 104 quarantined artifacts in production
+carries any of them.** So the gate is not "leaky" — it is *inapplicable*. Every quarantined
+artifact in the database is admitted to identity clustering.
+
+II said the promote boundary was "unbound". The precise statement is stronger: the
+existing exclusion mechanism and the quarantine flag are disjoint sets of signals that
+were never connected.
+
+### 3.2 The reproduction — already committed, deliberately failing
+
+Branch **`diagnostic/promote-boundary-repro`** @ `394cd0b` (pushed; see §4 for its PR).
+One test, one file, no fix, CI red **on purpose**.
+
+```bash
+git checkout diagnostic/promote-boundary-repro
+npx vitest run src/test/promote-boundary-repro.test.ts
+```
+
+```
+× REPRODUCTION: quarantined artifact ids must not appear in any cluster's member list
+  → expected [ …(6) ] to deeply equal []
+  + [ "0f19bbfc-…", "c97b3628-…", "5cd06c92-…",
+      "b40c485f-…", "dca13bb5-…", "81a8a3b8-…" ]
+```
+
+The fixture reproduces thread `88cf94fa`'s exact shape — **real artifact ids, kinds,
+confidence values, source, and `subject_unlinked` flags pulled from the live DB** — with
+**synthetic values** (email/phone/address strings), because `CLAUDE.md` forbids real
+investigation PII in this repo and the leak does not depend on what the values are.
+
+**Read the "6 of 8" carefully.** The two that did not leak (`ip_address`,
+`breach_exposure`) are **not protected by anything**. They produce no clustering signal
+because `signalsFor` does not extract a key for those kinds. Add one clustering signal for
+either kind — a perfectly ordinary future change — and the number becomes 8 of 8 with no
+warning. Do not read the 2 as partial coverage; there is no coverage.
+
+### 3.3 The blast radius — five surfaces, not one
+
+`buildIdentityClusters` (`src/lib/intel.ts:1603`) is called from five places. Every one
+inherits the leak, and three of them apply *their own* predicate that also omits
+`subject_unlinked`:
+
+| # | Call site | What the analyst sees | Own predicate? |
+| --- | --- | --- | --- |
+| 1 | `src/lib/intel.ts:1040` (`buildIntelReport`) | the markdown report's cluster section | — |
+| 2 | `src/components/panel/ClustersTab.tsx:48` | the **Graph / Clusters tab** | — |
+| 3 | `src/lib/confidence-dimensions.ts:117` | the **Identity confidence score** | `isConflicted` `:89` — omits it |
+| 4 | `src/lib/entity-graph.ts:192` | the **entity graph** nodes/edges | `isConflict` `:150` — omits it |
+| 5 | `src/lib/audit/from-artifacts.ts:108` | `artifactsToClusterAudit` → **ReportVerdict** | — |
+
+Site 3 is the nastiest: it passes the **full** `artifacts` array (not its own filtered
+`live`), so quarantined rows drive the headline Identity percentage. Site 5 means the audit
+surface — the thing meant to *catch* over-statement — is computed from the contaminated
+clusters and will certify them.
+
+### 3.4 The THIRD leak nobody has named yet: the label boundary
+
+`labelForArtifact` (`src/lib/intel.ts:336`) never consults quarantine either. Two paths
+reach a promotion:
+
+```ts
+// intel.ts:349 — the attestation short-circuit
+const attested = review === "confirmed" || review === "key" || meta.reviewed === true;
+if (attested && meta.possible_minor !== true) return "CONFIRMED";
+```
+
+- **Analyst attestation** promotes a quarantined row straight to `CONFIRMED`. Note the
+  shape of the existing carve-out: `possible_minor` is already exempted from this
+  short-circuit precisely because a hard floor must survive attestation. `subject_unlinked`
+  needs the same treatment and does not have it.
+- **No attestation at all** still reaches `CONFIRMED` via the multi-source path at the
+  bottom (`c >= 85 && independentClasses >= 2`).
+
+`CONFIRMED` is not cosmetic — it leads Key Findings, feeds the "Confirmed" KPI bucket, and
+skips value sanitization on export. Today nothing in production has `reviewed=true`
+(the table above: `reviewed_true = 0` everywhere), so this path has not fired yet. It is a
+loaded gun, not a smoking one.
+
+### 3.5 The backend already does this correctly — copy it, don't invent it
+
+```ts
+// supabase/functions/osint-agent/lib/cluster.ts:136
+export function isExcluded(a: Artifact): boolean {
+  return a.kind === "excluded_collision" || metaBoolTrue(a.metaRaw, "excluded_collision") ||
+    /"status"\s*:\s*"excluded"/i.test(a.metaRaw) ||
+    metaBoolTrue(a.metaRaw, "subject_unlinked");        // ← the frontend has no equivalent
+}
+```
+
+The frontend's `isCollisionArtifact` (`src/lib/report-hygiene.ts:108`) is that function
+minus the last line. The divergence is the bug.
+
+### 3.6 Fix shape — and the trap in the obvious version
+
+**Do NOT simply widen `isCollisionArtifact`.** It looks like the one-line fix and it is
+wrong. That predicate is also the membership test for the report's *collision section* at
+`intel.ts:1099`, and #431 already renders quarantined rows there through a separate path
+(`intel.ts:1129–1153`, reading `subject_unlinked` and `subject_unlinked_reason`). Widening
+it double-lists every quarantined artifact in the report and changes an
+evidence-presentation surface as a side effect of a clustering fix.
+
+The shape that holds:
+
+1. **New shared predicate**, exported once — e.g. `isClusterIneligible(a) =
+   isCollisionArtifact(a) || isSubjectUnlinked(a.metadata)`. Leave `isCollisionArtifact`
+   untouched so the collision section keeps its current membership.
+2. **Apply it at all five sites in §3.3**, including inside `isConflicted`
+   (`confidence-dimensions.ts:89`) and `isConflict` (`entity-graph.ts:150`). Five sites or
+   the fix is partial, and a partial fix on this axis reads as closed.
+3. **Site 3 additionally needs its `buildIdentityClusters(artifacts, …)` call reviewed** —
+   passing the unfiltered array is a second, independent defect there.
+4. **The label boundary (§3.4) is separate and is evidence-integrity-gated.** Excluding
+   quarantined rows from the attestation short-circuit and capping their label is a
+   *confidence-cap change*. `CLAUDE.md` requires sign-off for confidence caps,
+   chain-of-custody, and ranking. **Do not fold it into the clustering PR.** Propose the
+   cap, get the decision, ship it second.
+5. **Failure-first, extended.** The current diagnostic covers site 1 only. Extend it to red
+   on all five surfaces *before* touching `intel.ts`. Handoff II's §2.1 lesson applies
+   directly here: green unit tests on this codebase confirm a helper does what its author
+   meant, and miss the identity/timeline errors. Assert on **artifact ids appearing in
+   output**, not on internal predicate returns.
+
+### 3.7 The other half the operator asked for: quarantined selectors re-entering the tool queue
+
+This is why runs feel spammy and burn the paid cap. Measured:
+
+```bash
+grep -rn "isSubjectUnlinked" tool-registry.ts index.ts tools/*.ts   # → EMPTY
+```
+
+**There is no tool-input quarantine guard anywhere in the backend.** Quarantine binds at
+`graph.ts`, `recovery.ts`, `tools/recording.ts`, `auto-persist-findings.ts` and
+`lib/cluster.ts` — i.e. at *write* and *read-back*. It does not bind at *dispatch*.
+
+The consequence, and the thing to understand before designing anything: **there is no
+selector queue to filter.** `buildIntermediateStepPlan` (`orchestrator-budget.ts:123`)
+chooses `activeTools` and `toolChoice` — it never sees artifacts or selectors. The model
+picks the next selector out of prior tool output in its context window. So a name-only
+harvest that produced 8 quarantined selectors leaves 8 perfectly readable phone/address/
+email strings in context, each eligible to seed its own multi-tool breach stack, and
+nothing between the model's choice and the paid provider call.
+
+That means the enforcement point is a **pre-flight guard on tool input** — refuse or
+downgrade a paid lookup whose input value matches a quarantined selector for this thread —
+**not** a filter on a queue. Design it as its own PR with its own evidence. Two hazards to
+design against up front:
+
+- **Provenance is per-row.** `src/lib/quarantine.ts:79` (`quarantineSets`) already got
+  this right on the frontend after review: an identity goes inert only when *every*
+  artifact carrying it is quarantined, keyed by **`type:normalizedValue`, not value
+  alone**. `normalizeTarget` collapses non-alphanumerics, so `username "jordan.vale"` and
+  `name "Jordan Vale"` both become `"jordan vale"` — keying by value alone let an ordinary
+  name *restore authority to a quarantined username*. Any backend guard must use the same
+  keying or it will reproduce that exact defect.
+- **Do not turn a refused call into a burned step.** `repairUnknownTool` → `UNKNOWN_TOOL_SINK`
+  returns `ok:true`, which is how `dork_harvest(completed)` reached a chain-of-custody
+  record for a tool that has been `disabled: true` since 2026-07-09. A quarantine refusal
+  must be legible as a refusal, in the run log and in the evidence export.
+
+**Explicitly held for its own reviewed PR** (operator instruction, this session): relaxing
+the mandatory 5-tool breach stack. It would reduce the same API spam from a different
+direction and must not be bundled with either piece above.
+
+---
+
+## 4. Open PRs — what is actually in each, and what gates it
+
+Nothing below is merged. **21 PRs are open**; these five are the ones this work touches.
+
+| PR | Branch | Contents | Gate |
+| --- | --- | --- | --- |
+| **#444** | `claude/insight-finder-beta-stabilization-sx80nc` | deploy-provenance recorder (`verify:deploy` / `record:deploy`, `deploy-log.jsonl`, 28 tests, `.d.mts`) | **Operator review. Do not merge.** CI green. |
+| **#445** | `fix/evidence-count-header` | header evidence-count tooltip, both divergence directions | **Operator review. Do not merge.** CI green. Frontend → ships on merge. |
+| — | `diagnostic/promote-boundary-repro` | the §3.2 failing test, no fix | needs a PR; **CI is red by design** |
+| #438 | `claude/beta-db-security-sx80nc` | revoke `anon` EXECUTE on `record_analyst_feedback` | **already applied to the live DB**; the PR only records it |
+| #435 / #430 | `fix/paid-call-accounting`, `claude/ui-frontend-audit-prs-59n7bi` | paid-call accounting + raisable cap | see §5.2 — do not merge either as a "fix" for the cap complaint |
+
+### 4.1 #444 — read this before you form an opinion of it
+
+The first version of #444 **overclaimed**, an operator review caught it, and the correction
+is the valuable part. The verifier establishes that the SHA `/health` reports maps to a
+real commit in canonical history whose stamp is consistent. It does **not** establish that
+the deployed bytes are that commit's bytes. **A post-sync Lovable edit that leaves
+`build-info.ts` alone passes every check in it.**
+
+The corrected version says so in its own output and pins it with a test literally named for
+the ceiling ("cannot detect a post-sync edit to a NON-marker file, and must not pretend
+to"). The recorded verdict field is `markerProvenanceOk`, not `verified`;
+`deployed_artifact_digest` is always `null`; `deployed_bytes_verified` is always `false`;
+`proves` is the string `"observed-runtime-marker-maps-to-canonical-source-history"`.
+
+Keep that naming. The failure mode this project actually suffers from is a tool that
+reports a stronger guarantee than it has, and a successor who then trusts it.
+
+---
+
+## 5. Runtime blockers — reproduced this session, not fixed
+
+These are the "the app doesn't work" complaints, in their measured form.
+
+### 5.1 Runs die inside the finalize window
+
+Observed live: a run at **192 s** against `ORCHESTRATOR_WALL_CLOCK_MS = 3 * 60_000`
+(`orchestrator-budget.ts:264`) with `FINALIZE_RESERVE_MS = 90_000`
+(`orchestrator-finalize.ts:43` — the finalize window therefore opens at 90 s), ending with
+no durable report and `record_artifacts` never called. Invariant **I-2** then does its job — `recovery_reason` is set and the UI renders
+**Interrupted** rather than a green COMPLETE — so the *labelling* is honest. The run is
+still lost.
+
+Current DB: **60 of 150 threads carry a `recovery_reason`** (40%). Some of those are the
+historical ghost incident, not fresh failures; the split was not measured. Measure it
+before quoting 40% as a current failure rate.
+
+Before touching this, read `CLAUDE.md`'s run-termination section and
+`INCIDENT_2026-07-26_termination-and-ghost-recovery.md` in full. The oscillation is real
+and has broken production **twice, in opposite directions**:
+`FORCE_TOOL_CALL_UNTIL_FINALIZE=true` removed the model's only natural exit and dropped
+self-completion 61%→25%; pure `"auto"` let `"I'll now run…"` narration end a run and mark
+it COMPLETE. The settled resolution is **phase-aware** (`REQUIRE_TOOL_CALL_IN_OPENING_PHASE`,
+active only while the run has admitted zero tool calls and the latest user message parses
+as a seed). Do not fix a termination bug by flipping a global toggle. Also settled: intent
+is **not** inferred from prose — a future-intent regex was implemented and removed because
+it matched the legitimate closing line *"Drop a seed and I'll run the investigation from
+TRIAGE through REPORT"* and fabricated a report on top of a plain answer. And `stopWhen`
+cannot prevent a natural stop; it only adds conditions. That has been tried.
+
+### 5.2 The paid cap — settled, and NOT a bug to "fix"
+
+`MAX_PAID_CALLS = 12` (`runtime-policy.ts:163`), alongside `MAX_TOTAL_CALLS = 30`,
+`MAX_SAME_TOOL_CALLS = 16`, `MAX_CONCURRENT_CALLS = 3`, `MAX_TOOL_CALLS_PER_RUN = 36`.
+
+It was raised to `Number.POSITIVE_INFINITY` during this session and **reverted on operator
+instruction**: *"Do not set MAX_PAID_CALLS to unlimited. Keep a bounded ceiling."* The
+reasoning is that the cap and the finalization state machine have to be designed
+**together** — an unbounded run does not finish more often, it runs out of wall-clock
+instead of budget and dies in a worse place. Also note `MAX_TOOL_CALLS_PER_RUN` was
+clamped to 36 after a live run reached 230 calls / 747 s of tool time and was CPU-killed
+before `onFinish`, leaving `status=active` with zero assistant messages.
+
+The right way to reduce cap pressure is §3.7 — **stop spending the budget on quarantined
+selectors** — not a higher number.
+
+### 5.3 Canaries never run
+
+Both were named P0 in II and both are still unrun:
+
+- **Two-user Realtime canary.** Lovable's "critical" finding (any authed user can subscribe
+  to another user's channels) was **not reproducible by inspection** — all 12 frontend
+  channels use `postgres_changes` with no `broadcast`/`presence`, RLS is on for `artifacts`
+  and `threads` with `auth.uid() = user_id`, and a `realtime.messages` topic policy exists.
+  Inspection **cannot** prove per-subscriber enforcement. Needs two real accounts: A
+  subscribes to B's thread and must receive nothing.
+- **Investigation canary.** `node scripts/live-scan.mjs <domain>` after any backend deploy.
+
+---
+
+## 6. Authorized-as-audit-only, no code
+
+`addCorpus` — `supabase/functions/osint-agent/auto-persist-findings.ts:665–683` — keeps
+only breach **corpus names** and discards the fields (passwords, DOBs, IPs) that #442/#443
+now let the model see. `shapeTerminalResult` (`tools/serus_core.ts:138–161`) compounds it
+by rebuilding from a fixed key list that excludes those fields.
+
+Net effect: reveal is fixed on the **display** path and still broken on the **persistence**
+path. The model prints a real value in chat; the artifact metadata does not contain it; the
+report and export cannot cite it later.
+
+Failure-first tests for this were *designed* and deliberately **not written** — the
+authorization was audit-only. Persistence shape touches evidence integrity, so it needs
+sign-off before code.
+
+---
+
+## 7. Case data — current state
+
+Oldest **150** threads were deleted on operator instruction; **150 remain**.
+
+```
+threads 150 (0 active, 143 finished, 60 with recovery_reason)
+artifacts 7102 · quarantined (subject_unlinked=true) 104 across 4 threads
+evidence_log 5464 rows · newest thread 2026-08-10 16:40:37+00
+```
+
+`thread_metrics` is a **GROUP BY view, not a table** — `DELETE FROM thread_metrics` fails
+with `cannot delete from view`. Omit it from cleanup scripts; it recomputes.
+
+---
+
+## 8. Test baselines — measured today
+
+| Suite | Command | Result on `2ebd330` |
+| --- | --- | --- |
+| Frontend | `npx vitest run` | **1211 passed · 1 skipped · 102 files** (35 s) |
+| Edge | `npm run test:edge` | **not re-measured this session.** Last: 1135/0/5 on `3cac170` |
+
+Edge-suite gotchas that have each cost a session:
+
+- **Deno is NOT preinstalled** in the web/remote sandbox:
+  `DENO_INSTALL=/usr/local sh <(curl -fsSL https://deno.land/install.sh) -y`
+- **`--allow-read` is mandatory.** The wiring tests read `index.ts`/`cluster.ts`/`recovery.ts`
+  off disk to assert call sites exist; without it they abort with `NotCapable` before any
+  assertion, which *reads exactly like a code failure and is not*.
+- The old `--allow-net --no-check` form left env/sys perms off and inflated failures
+  (546/57 vs 754/24 measured on the same tree).
+- `deno check index.ts` has ~12–157 **pre-existing** AI-SDK/Supabase type-graph errors. Not
+  a gate. Verify your change adds none.
+- **"Probably environmental" is retired as an explanation.** The 24 environmental failures
+  are gone. A failure is a failure.
+
+---
+
+## 9. Canonical fixtures
+
+- **`leoseyes86@gmail.com`** — the collision case. Exercises the name-only quarantine
+  escape, the promote leak, and the pivot storm in one run.
+- **`NOC@onemobility.net`** — the *uncontaminated* budget-exhaustion case. Use this one to
+  study the cap and finalization without collision noise.
+- Thread **`88cf94fa-660a-43f3-bad6-81291eb18641`** — the shape behind §3.2's fixture.
+- Threads **`f17ddf69`** (48 quarantined), **`1deed1c1`**, **`98da3fb9`** (24 each) — larger
+  instances of the same leak; use `f17ddf69` if you want the fix stressed.
+
+`src/dev/fixtures.json` and `src/dev/raw/` are **gitignored**. Sanitize before checking
+anything in. The §3.2 test is the pattern: real ids/kinds/flags/confidence, synthetic values.
+
+---
+
+## 10. Seeing the signed-in workspace without prod credentials
+
+```bash
+npx vite --config vite.harness.config.ts        # → http://127.0.0.1:5174
+# open /chat/11111111-2222-4333-8444-555555555555
+```
+
+Aliases `@/integrations/supabase/client` to `src/dev/supabase-mock.ts` — a chainable
+PostgREST stub with fixtures for a realistic finished case (8 artifacts spanning verified →
+capped → broker-only, 9 tool calls including 2 failures, a report-shaped final message).
+All five tabs render. Nothing under `src/` imports the stub
+(`npm run build && grep -r harness.local dist/` → nothing).
+
+**Any promote-boundary fix must be screenshotted here before/after**, on the Graph/Clusters
+tab and the Report tab specifically — those are surfaces 1 and 2 in §3.3, and a change that
+correctly excludes quarantined rows should visibly reduce cluster membership. Two failure
+modes have repeatedly shipped UI work that changed nothing an analyst sees: reviewing only
+the signed-out surfaces, and mistaking a Vercel **preview** (`target: null`, green check,
+looks identical to a real deploy) for production. Check `target`, not the checkmark.
+
+---
+
+## 11. Corrections — apply these to `CLAUDE.md` and handoff II
+
+Each was verified today. Several will actively mislead a successor.
+
+1. **`evidence-export` drift is CLOSED.** `CLAUDE.md` says the mirror runs an older
+   273-line `index.ts` with no `text-sanitize.ts`. `diff -rq` across all four backend trees
+   is empty today. Keep the *rule* (never blanket-overwrite; sync only changed files) —
+   drop the specific claim. Note the residual gap in §1.1: source-identical ≠ deployed.
+2. **`tools/peopledatalabs.ts` is no longer mirror-only**, and `tools/indicia.ts` no longer
+   differs. No file is present only in the mirror. The blanket-sync hazard is still real in
+   principle; both cited examples are stale.
+3. **Edge baseline was 1135/0/5 on `3cac170`**, not the 754/24 still in `CLAUDE.md` and not
+   1105 (that was `86f92c62`). Not re-measured today.
+4. **Frontend baseline is 1211/1/102**, not II's 1200/1/101.
+5. **The orchestrator is DeepSeek-pinned** (`deepseek-v4-pro`, `orchestrator_reason:
+   "pinned"`) with MiniMax as fallback. `CLAUDE.md` and `AGENTS.md` both still say MiniMax
+   is primary.
+6. **The package manager is npm.** No `pnpm-lock.yaml`, no `test:e2e` script.
+7. **`CLAUDE.md`'s "⛔ Beta blockers" section is out of date on both anchors:**
+   - It says `grep -rn subject_unlinked src/` returns only `intel.ts:1129,1145`. It now
+     returns `src/lib/quarantine.ts`, `src/lib/pivot-engine.ts`, and `intel.ts:6,1119,1142,
+     1150,1153`. The pivot boundary is bound (#436).
+   - It says three boundaries must consult it — write, pivot, promote. **Write and pivot are
+     closed. Promote is open, and §3.1 shows the existing gate matches zero of the 104
+     production rows.** Replace the section with a pointer to §3 here.
+   - **The "name-only quarantine escape" is CLOSED — `CLAUDE.md` describes it as open and
+     that is now false.** It named `auto-persist-findings.ts:826`; that line is unrelated
+     today. The escape was fixed on exactly the shape `CLAUDE.md` prescribed — gate the
+     exemption on *durable linkage*, never on name equality:
+
+     ```ts
+     // auto-persist-findings.ts:428 — FAILS CLOSED: absent/unusable seed ⇒ false.
+     export function seedLinksQueriedName(seedName: string, queriedName: string): boolean {
+       const queried = nameTokens(queriedName);
+       if (queried.length < 2) return false;
+       const seed = new Set(nameTokens(seedName));
+       if (seed.size === 0) return false;
+       return queried.every((t) => seed.has(t));      // every queried token in the SEED
+     }
+     // :648  queriedNameIsSubjectLinked = nameOnly && seedLinksQueriedName(subjectSeedName, queriedName)
+     // :1066 if (queriedNameIsSubjectLinked) continue;   ← the only way out
+     // :1067 otherwise → UNLINKED_ECHO_CTX (its own reason, not silent persistence)
+     ```
+
+     Verified end to end: `index.ts:337` derives `subjectSeedName` and threads it into both
+     extraction call sites (`:1111`, `:1130`), so the gate is live in production rather than
+     defaulting to `""`. An unlinked echo now gets `UNLINKED_ECHO_CTX` instead of persisting
+     unquarantined at confidence 65. Replace this bullet in `CLAUDE.md` with a pointer here.
+8. **II's §2 table is entirely stale** — it lists #436/#437/#438/#439 as "ALL DRAFT, none
+   merged". #436, #437 and #439 are merged and live; #438's change is applied to the live
+   database. Read II's §2.1 (what green CI missed) — that content is still the best thing in
+   it — and ignore its status column.
+9. **`REVEAL_BREACH_DATA` stays ON.** Settled operator decision, re-affirmed 2026-08-10.
+   Now verifiable at `/health` (`reveal_breach_data: true`, added by #441). If an audit
+   re-flags the `?? "true"` default as a safe-by-default violation, the correct response is
+   one line: *settled, see handoff II §6a* — not a fresh analysis. The one real thing to
+   know for release: flipping it to `false` gives **masked-by-default**, not
+   click-to-reveal. No per-item reveal control exists in the UI. The release posture is a
+   small feature build, not a deploy-day config change. Scope it before release.
+
+---
+
+## 12. Standing operating rules (unchanged, still in force)
+
+- **Do not push directly to `main`.** Stamp commits and deploy-recipe steps are exceptions
+  authorized case-by-case, not standing permission.
+- **Do not deploy, publish, sync the Lovable mirror, run migrations, change secrets, alter
+  auth, or modify RLS without explicit approval.**
+- **Do not auto-upgrade dependencies.** Real `npm audit`: 8 vulns (5 high, 3 moderate, 0
+  critical), all build/dev-only or unreachable by call-site inspection. `react-router-dom`
+  `6.30.4` is the last 6.x; the only fix is a breaking major. Document and defer — do not
+  "ignore" in Lovable, and state it at true strength: *no exploit path found by
+  inspection*, not *proven unreachable*.
+- **Never commit** real investigation subjects, email addresses, harvested PII, raw
+  evidence, secrets, or production log payloads.
+- **Separate, reviewable PRs.** Do not combine unrelated risk domains. The §3 work is
+  minimum two PRs (clustering; then the sign-off-gated label cap) and the §3.7 work is a
+  third.
+- **Evidence-integrity changes need sign-off**: evidence ranking, confidence caps,
+  chain-of-custody, credential masking, minor-safety detection, audit/coverage behaviour.
+- **Never equate:** merged = deployed · frontend published = backend deployed · HTTP 200 =
+  investigation succeeded · ignored security finding = resolved · `ok: true` = beta-ready.
+- **No "green", "looks good", or "probably environmental".** Report exact results.
+
+---
+
+## 13. Discipline that has actually held
+
+- **Failure-first or it does not count.** #436 was 5/8 red before the fix; #437's prompt
+  tests 3/5 red; the review-driven corrections were held to the same bar. §3.2 exists as a
+  committed red test for exactly this reason.
+- **Unit-green is not semantics-green.** Every defect caught in review on this codebase was
+  a *timeline or identity* error, not a logic error, and every one passed the full suite,
+  typecheck, lint and build. #436's quarantine key was correct as a function and wrong as an
+  identity. #437's gate was correct as a branch and unreachable as a state.
+- **A behavioural test must DRIVE the shipped control flow, never re-describe it.** #437's
+  first regression test replayed the real step sequence *through its own slightly more
+  permissive copy of the branch* and passed against broken production code. If a test needs
+  the branch, export the branch and call it. `decideBackstopAction` exists because of this.
+- **Say things at their true strength.** "No exploit path found by inspection" ≠
+  "unreachable". "Applied and verified" ≠ "self-sustaining" — the #438 revoke is not
+  self-sustaining, because `pg_default_acl` for `public` functions grants `anon` EXECUTE, so
+  a DROP+CREATE or a new overloaded signature silently restores it (`CREATE OR REPLACE` does
+  not — probed on this database).
+- **Preserve quarantined evidence; make it inert, visible, auditable.** Never delete it. The
+  §3 fix must keep all 104 rows in the artifact table and in the collision section — it
+  removes their *authority*, not their existence.
+- **A stale scan and an ignored finding are different failures.** Two of Lovable's four
+  findings were already remediated when the scan still showed them open. Check the live
+  system before believing either.
+
+---
+
+## 14. If you have one hour, do this
+
+1. `curl … ?health=1` and the four `diff -rq`s in §1.1. Confirm the deploy axis is still
+   green before changing anything. If it moved, stop and find out why.
+2. Open a PR for `diagnostic/promote-boundary-repro` with **CI IS RED ON PURPOSE** in the
+   first line of the body, so the reproduction is durable and reviewable.
+3. Extend that test to red on all five surfaces in §3.3.
+4. Add `isClusterIneligible` and apply it at all five. Green the test. Screenshot the
+   harness Graph and Report tabs before/after (§10). Draft PR, frontend-only.
+5. **Separately**, write up the label-boundary cap (§3.4) as a proposal and get sign-off
+   before writing a line of it.
+
+Do **not** start with §3.7 (the dispatch guard). It is the bigger win for API spend, but it
+is a backend change requiring the full stamp → sync → explicit-Lovable-deploy → moved-SHA
+recipe, and it should land after the frontend boundary is closed and verified.
