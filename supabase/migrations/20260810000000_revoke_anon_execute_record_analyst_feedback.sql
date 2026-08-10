@@ -38,9 +38,29 @@ REVOKE EXECUTE ON FUNCTION public.record_analyst_feedback(
   uuid, uuid, text, text, text, text, integer, integer, text, jsonb
 ) FROM anon;
 
--- Defense in depth: PUBLIC currently holds no grant here, but a future
--- CREATE OR REPLACE would re-establish the default PUBLIC EXECUTE unless it is
--- explicitly revoked, so state it rather than rely on the current state.
+-- Defense in depth. An earlier draft of this comment justified the line by
+-- claiming a future CREATE OR REPLACE would re-establish PUBLIC EXECUTE. That is
+-- WRONG, and it was corrected in review: PostgreSQL preserves a function's owner
+-- and ACL across CREATE OR REPLACE. Probed on this database to be sure — created
+-- a throwaway function, revoked EXECUTE from PUBLIC, replaced it, and read
+-- pg_proc.proacl back: PUBLIC was still absent.
+--
+-- The REAL re-grant risk is DROP + CREATE, or adding a NEW OVERLOADED SIGNATURE
+-- (a different argument list is a different function and gets a fresh ACL).
+-- Either path re-runs this project's default privileges — and on this database
+-- pg_default_acl for functions in `public` grants EXECUTE to anon, authenticated
+-- AND service_role:
+--
+--   schema  objtype  owner            default_acl
+--   public  f        supabase_admin   postgres=X, anon=X, authenticated=X, service_role=X
+--   public  f        postgres         postgres=X, anon=X, authenticated=X, service_role=X
+--
+-- So the revoke above is NOT self-sustaining: recreate this function under a new
+-- signature and `anon` comes straight back, silently. Anyone changing this
+-- function's argument list must re-apply the revoke.
+--
+-- The PUBLIC revoke below is kept because it is harmless and correct as a
+-- belt-and-braces default, not because CREATE OR REPLACE would undo it.
 REVOKE EXECUTE ON FUNCTION public.record_analyst_feedback(
   uuid, uuid, text, text, text, text, integer, integer, text, jsonb
 ) FROM PUBLIC;
