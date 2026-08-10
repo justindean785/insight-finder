@@ -36,7 +36,9 @@ import {
   AUTO_PERSIST_TOOL_DENYLIST,
   ESCALATION_ELIGIBLE_TOOLS,
   MAX_ESCALATION_BUFFER,
+  MAX_ESCALATION_FLUSH,
   bufferEscalationCandidates,
+  decideBackstopAction,
   drainEscalationBuffer,
   extractFindings,
   extractStepFindings,
@@ -162,19 +164,34 @@ Deno.test("escalated extraction is deterministic and de-duplicated within a step
 type Buffered = ExtractedFinding & { toolName: string };
 const newBuffer = () => new Map<string, Buffered>();
 
-/** The exact failure sequence from the 2026-08-06 forensics. */
+/**
+ * Replay the step loop, taking the branch from PRODUCTION'S OWN
+ * `decideBackstopAction` rather than a local copy of the condition.
+ *
+ * This is the whole point of the rewrite. The previous version of this helper
+ * branched on `stepFindings.length > 0 || buffer.size > 0` while index.ts shipped
+ * `stepFindings.length > 0`, so the test exercised a strictly more permissive
+ * state machine than the product. Every assertion passed and the buffer was still
+ * unreachable on the declined-nudge / barren-step timeline. A behavioural test
+ * that reimplements the behaviour it is testing proves nothing — so the ONLY
+ * decision made here comes from the shipped function.
+ */
 function replayRun(steps: Array<{ toolResults: unknown[]; nudgeFired: boolean }>): {
   persisted: Buffered[];
   buffer: Map<string, Buffered>;
+  decisions: string[];
 } {
   const buffer = newBuffer();
   let nudgeCount = 0;
-  let persisted: Buffered[] = [];
+  const persisted: Buffered[] = [];
+  const decisions: string[] = [];
   for (const step of steps) {
     if (step.nudgeFired) nudgeCount++;
     const escalated = nudgeCount > 0;
-    const stepFindings = extractStepFindings(step.toolResults, undefined, { escalated });
-    if (!escalated) {
+    const stepFindings = step.toolResults.length > 0
+      ? extractStepFindings(step.toolResults, undefined, { escalated })
+      : [];
+    if (!escalated && step.toolResults.length > 0) {
       const names = (step.toolResults as Array<{ toolName?: string }>).map((r) => r?.toolName ?? "");
       if (names.some((n) => ESCALATION_ELIGIBLE_TOOLS.has(n))) {
         bufferEscalationCandidates(
@@ -183,40 +200,49 @@ function replayRun(steps: Array<{ toolResults: unknown[]; nudgeFired: boolean }>
             .filter((f) => ESCALATION_ELIGIBLE_TOOLS.has(f.toolName)),
         );
       }
-    } else if (stepFindings.length > 0 || buffer.size > 0) {
-      persisted = persisted.concat(drainEscalationBuffer(buffer, stepFindings));
     }
+    const decision = decideBackstopAction({
+      finalizeStarted: false,
+      stepFindingCount: stepFindings.length,
+      bufferedCount: buffer.size,
+      escalated,
+    });
+    decisions.push(decision.reason);
+    if (!decision.runPersist) continue;
+    persisted.push(...(escalated ? drainEscalationBuffer(buffer, stepFindings).rows : stepFindings));
   }
-  return { persisted, buffer };
+  return { persisted, buffer, decisions };
 }
 
-Deno.test("pre-nudge search evidence survives a nudge step that offers only record_artifacts", () => {
-  // searches → nudge step (record_artifacts only, model declines) → a later step.
-  // The declined nudge step yields no extractable result at all, so without the
-  // buffer this run persists nothing despite five useful searches.
-  const searchStep = (i: number) => ({
-    toolResults: [{
-      toolName: "minimax_web_search",
-      input: { query: `q${i}` },
-      output: { ok: true, results: [{ url: `https://example.org/hit-${i}` }] },
-    }],
-    nudgeFired: false,
-  });
-  const declinedNudgeStep = {
-    // activeTools was ["record_artifacts"]; the model declined, so the step
-    // produced no tool result the backstop can read.
-    toolResults: [] as unknown[],
-    nudgeFired: true,
-  };
-  const laterBarrenStep = { toolResults: [{ toolName: "wayback_cdx_search", output: { ok: false, error: "timeout" } }], nudgeFired: false };
+const searchStep = (i: number) => ({
+  toolResults: [{
+    toolName: "minimax_web_search",
+    input: { query: `q${i}` },
+    output: { ok: true, results: [{ url: `https://example.org/hit-${i}` }] },
+  }],
+  nudgeFired: false,
+});
+/** activeTools was narrowed to ["record_artifacts"] and the model declined, so the
+ *  step produced NO tool result at all. */
+const declinedNudgeStep = { toolResults: [] as unknown[], nudgeFired: true };
+const barrenStep = {
+  toolResults: [{ toolName: "wayback_cdx_search", output: { ok: false, error: "timeout" } }],
+  nudgeFired: false,
+};
 
-  const { persisted } = replayRun([
+Deno.test("THE timeline: 5 pre-nudge searches → declined nudge → barren step → evidence persists", () => {
+  // The exact sequence from the 2026-08-06 forensics, and the one the previous
+  // version of this fix silently failed: the declined nudge step has no tool
+  // result (so a `toolResults.length > 0` gate skips everything) and the barren
+  // step extracts nothing (so a `stepFindings.length > 0` gate skips the persist).
+  // The buffer was filled and never drained, and the run still died empty.
+  const { persisted, decisions } = replayRun([
     searchStep(1), searchStep(2), searchStep(3), searchStep(4), searchStep(5),
     declinedNudgeStep,
-    laterBarrenStep,
+    barrenStep,
   ]);
 
-  assert(persisted.length > 0, "five pre-nudge searches were lost — the buffer did not carry them");
+  assert(persisted.length > 0, "five pre-nudge searches were lost — the buffer never drained");
   const urls = persisted.map((f) => f.value);
   for (const i of [1, 2, 3, 4, 5]) {
     assert(
@@ -224,6 +250,65 @@ Deno.test("pre-nudge search evidence survives a nudge step that offers only reco
       `evidence from pre-nudge search step ${i} was not recovered`,
     );
   }
+  // And name WHICH branch saved it, so a future refactor that happens to persist
+  // via some other path cannot pass this silently.
+  assert(
+    decisions.includes("buffered_escalation"),
+    `the buffered-escalation branch never fired; decisions were: ${decisions.join(", ")}`,
+  );
+});
+
+Deno.test("the declined nudge step ALONE flushes the buffer — no later step required", () => {
+  // Strictly harder than the case above: if the run dies right after the model
+  // declines the nudge, the buffered evidence must already have gone out. A
+  // tool-result-count gate makes this impossible, which is why the production
+  // gate is `!finalizeStarted` alone.
+  const { persisted, decisions } = replayRun([
+    searchStep(1), searchStep(2), declinedNudgeStep,
+  ]);
+  assertEquals(decisions[decisions.length - 1], "buffered_escalation");
+  assert(persisted.length >= 2, "the declined nudge step did not flush the held evidence");
+});
+
+Deno.test("decideBackstopAction — the branch, exhaustively", () => {
+  const d = (over: Partial<Parameters<typeof decideBackstopAction>[0]>) =>
+    decideBackstopAction({
+      finalizeStarted: false, stepFindingCount: 0, bufferedCount: 0, escalated: false, ...over,
+    });
+  // Finalize owns persistence and outranks everything, buffer included.
+  assertEquals(d({ finalizeStarted: true, stepFindingCount: 9, bufferedCount: 9, escalated: true }),
+    { runPersist: false, reason: "finalize_owns_persistence" });
+  // Ordinary step with findings — unchanged from before any of this work.
+  assertEquals(d({ stepFindingCount: 3 }), { runPersist: true, reason: "step_findings" });
+  // THE fix: nothing extractable now, gate open, evidence held.
+  assertEquals(d({ escalated: true, bufferedCount: 4 }),
+    { runPersist: true, reason: "buffered_escalation" });
+  // A full buffer with the gate SHUT must not persist — that would write
+  // search-derived rows on a healthy run.
+  assertEquals(d({ escalated: false, bufferedCount: 4 }),
+    { runPersist: false, reason: "nothing_to_do" });
+  // Nothing anywhere.
+  assertEquals(d({}), { runPersist: false, reason: "nothing_to_do" });
+});
+
+Deno.test("index.ts calls decideBackstopAction and does not re-implement the branch", () => {
+  // The divergence that let the last defect through was a second copy of this
+  // condition. Pin that index.ts asks the shared function and that the old
+  // tool-result gate is gone.
+  const src = Deno.readTextFileSync(new URL("./index.ts", import.meta.url));
+  assert(
+    /const decision = decideBackstopAction\(\{/.test(src),
+    "index.ts no longer calls decideBackstopAction — the branch has been re-inlined",
+  );
+  assert(
+    /if \(decision\.runPersist\)/.test(src),
+    "the persist task is not gated on the shared decision",
+  );
+  assert(
+    !/if \(!finalizeStarted && Array\.isArray\(toolResults\) && toolResults\.length > 0\)/.test(src),
+    "the backstop is gated on tool results again — a declined nudge step produces none, " +
+      "so the buffer becomes unreachable exactly when it is needed",
+  );
 });
 
 Deno.test("nothing is persisted while the gate stays shut", () => {
@@ -237,19 +322,20 @@ Deno.test("nothing is persisted while the gate stays shut", () => {
   assert(buffer.size > 0, "candidates should be held, ready for a gate that may still open");
 });
 
-Deno.test("draining is idempotent — a second escalated step does not re-persist", () => {
-  // drainEscalationBuffer empties the buffer, so buffered rows are offered once.
-  // Re-persisting them would rely entirely on the DB dedup to stay correct.
+Deno.test("draining is idempotent — a fully-flushed buffer does not re-persist", () => {
+  // Rows that fit the budget leave the buffer, so they are offered once and
+  // correctness does not lean on the DB dedup to avoid duplicates.
   const buffer = newBuffer();
   const step = extractStepFindings([SEARCH_RESULT], undefined, { escalated: true });
   bufferEscalationCandidates(buffer, step);
   const first = drainEscalationBuffer(buffer, []);
-  assert(first.length > 0);
-  assertEquals(buffer.size, 0, "buffer must be emptied by a drain");
-  assertEquals(drainEscalationBuffer(buffer, []), []);
+  assert(first.rows.length > 0);
+  assertEquals(buffer.size, 0, "everything within budget must leave the buffer");
+  assertEquals(first.retained, 0);
+  assertEquals(drainEscalationBuffer(buffer, []).rows, []);
 });
 
-Deno.test("buffered candidates lead the drain, so a cap cannot truncate the oldest", () => {
+Deno.test("buffered candidates lead the drain, so the budget cannot truncate the oldest", () => {
   const buffer = newBuffer();
   bufferEscalationCandidates(
     buffer,
@@ -261,8 +347,55 @@ Deno.test("buffered candidates lead the drain, so a cap cannot truncate the olde
     undefined,
     { escalated: true },
   );
-  const drained = drainEscalationBuffer(buffer, fresh).map((f) => f.value);
+  const drained = drainEscalationBuffer(buffer, fresh).rows.map((f) => f.value);
   assertEquals(drained.slice(0, held.length), held, "the oldest evidence must lead");
+});
+
+Deno.test("a flush is bounded by MAX_ESCALATION_FLUSH and retains the overflow", () => {
+  // persistAutoFindings applies NO row cap — it maps every non-duplicate finding
+  // straight to an insert. A full buffer (120) merged with a full step (60) would
+  // hand it 180 rows in one call, silently bypassing the per-step ceiling the rest
+  // of the pipeline respects.
+  const buffer = newBuffer();
+  const held: Buffered[] = Array.from({ length: MAX_ESCALATION_BUFFER }, (_, i) => ({
+    kind: "url", value: `https://example.org/held-${i}`, toolName: "exa_search",
+  }));
+  const step: Buffered[] = Array.from({ length: 60 }, (_, i) => ({
+    kind: "url", value: `https://example.org/step-${i}`, toolName: "exa_search",
+  }));
+  bufferEscalationCandidates(buffer, held);
+  assertEquals(buffer.size, MAX_ESCALATION_BUFFER);
+
+  const { rows, retained } = drainEscalationBuffer(buffer, step);
+  assertEquals(rows.length, MAX_ESCALATION_FLUSH, "flush exceeded its budget");
+  // Nothing is discarded: 120 held + 60 step = 180 candidates, 60 flushed, 120 back
+  // in the buffer for the next flush — and that remainder cannot exceed the buffer
+  // ceiling by construction.
+  assertEquals(retained, 180 - MAX_ESCALATION_FLUSH);
+  assertEquals(buffer.size, retained);
+  assert(retained <= MAX_ESCALATION_BUFFER, "retained overflow exceeded the buffer ceiling");
+  // Oldest-first: the flush is drawn from the held rows, not the fresh step.
+  assert(rows.every((f) => f.value.includes("/held-")), "the budget truncated the OLDEST evidence");
+});
+
+Deno.test("successive flushes drain the whole backlog, in order, without loss", () => {
+  // The retention policy is only correct if the remainder actually goes out later.
+  const buffer = newBuffer();
+  bufferEscalationCandidates(
+    buffer,
+    Array.from({ length: MAX_ESCALATION_BUFFER }, (_, i) => ({
+      kind: "url", value: `https://example.org/n-${i}`, toolName: "exa_search",
+    })),
+  );
+  const seen: string[] = [];
+  let guard = 0;
+  while (buffer.size > 0 && guard++ < 10) {
+    seen.push(...drainEscalationBuffer(buffer, []).rows.map((f) => f.value));
+  }
+  assertEquals(buffer.size, 0, "backlog never fully drained");
+  assertEquals(seen.length, MAX_ESCALATION_BUFFER, "rows were lost between flushes");
+  assertEquals(new Set(seen).size, seen.length, "a row was flushed twice");
+  assertEquals(seen[0], "https://example.org/n-0", "flush order is not oldest-first");
 });
 
 Deno.test("the buffer is bounded and de-duplicated", () => {
@@ -293,7 +426,7 @@ Deno.test("the index.ts call site wires the buffer on both sides", () => {
     "the buffer is filled but never drained into the persist call",
   );
   assert(
-    /if \(!escalated\) \{[\s\S]{0,700}?bufferEscalationCandidates/.test(src),
+    /if \(!escalated && stepToolResults\.length > 0\) \{[\s\S]{0,900}?bufferEscalationCandidates/.test(src),
     "buffering must happen on the PRE-gate path — that is the evidence at risk",
   );
   assert(

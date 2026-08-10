@@ -129,26 +129,98 @@ export function bufferEscalationCandidates(
   return { added, dropped };
 }
 
+/** Rows a single escalated flush may hand to persistAutoFindings.
+ *
+ *  WHY A SEPARATE BUDGET. persistAutoFindings applies NO row-count cap — it maps
+ *  every non-duplicate finding straight to an insert. extractStepFindings is
+ *  bounded by MAX_AUTO_PERSIST_PER_STEP, but a flush merges the buffer (up to 120)
+ *  with the current step (up to 60), so an unbounded drain could hand it 180 rows
+ *  in one call and quietly bypass the per-step ceiling the rest of the pipeline
+ *  respects. The overflow is RETAINED, not dropped: it stays in the buffer and
+ *  goes out on the next escalated flush. */
+export const MAX_ESCALATION_FLUSH = MAX_AUTO_PERSIST_PER_STEP;
+
 /**
- * Drain the buffer in front of this step's findings, de-duplicated across both.
+ * Drain the buffer in front of this step's findings, de-duplicated across both and
+ * bounded by `budget`.
+ *
  * Buffered candidates lead because they are the OLDEST evidence and therefore the
- * most likely to be lost — if the per-step cap truncates anything, it must not be
- * the rows that have already survived several steps unpersisted.
+ * most likely to be lost — if the budget truncates anything, it must not be the
+ * rows that have already survived several steps unpersisted.
+ *
+ * Whatever does not fit goes BACK into the buffer rather than being discarded,
+ * including any of this step's own findings displaced by older ones. The buffer is
+ * naturally bounded by this: merged is at most MAX_ESCALATION_BUFFER +
+ * MAX_AUTO_PERSIST_PER_STEP, so the retained remainder can never exceed
+ * MAX_ESCALATION_BUFFER.
  */
 export function drainEscalationBuffer(
   buffer: Map<string, ExtractedFinding & { toolName: string }>,
   stepFindings: readonly (ExtractedFinding & { toolName: string })[],
-): Array<ExtractedFinding & { toolName: string }> {
-  const out: Array<ExtractedFinding & { toolName: string }> = [];
+  budget: number = MAX_ESCALATION_FLUSH,
+): { rows: Array<ExtractedFinding & { toolName: string }>; retained: number } {
+  const merged: Array<[string, ExtractedFinding & { toolName: string }]> = [];
   const seen = new Set<string>();
   for (const f of [...buffer.values(), ...stepFindings]) {
     const k = checkpointKey(f.kind, f.value);
     if (seen.has(k)) continue;
     seen.add(k);
-    out.push(f);
+    merged.push([k, f]);
   }
+  const rows = merged.slice(0, Math.max(0, budget)).map(([, f]) => f);
   buffer.clear();
-  return out;
+  for (const [k, f] of merged.slice(Math.max(0, budget))) buffer.set(k, f);
+  return { rows, retained: buffer.size };
+}
+
+/** What the per-step backstop should do. `runPersist` drives the ONE branch in
+ *  index.ts that starts the persist task. */
+export type BackstopDecision = {
+  runPersist: boolean;
+  reason: "finalize_owns_persistence" | "step_findings" | "buffered_escalation" | "nothing_to_do";
+};
+
+/**
+ * Decide whether the auto-persist backstop runs this step. Pure, and PRODUCTION
+ * CALLS THIS — it is not a description of the control flow, it is the control flow.
+ *
+ * WHY IT EXISTS AS A FUNCTION. The first version of the pre-nudge buffer was
+ * wired under two conditions that between them made it unreachable in exactly the
+ * scenario it was written for:
+ *
+ *   1. the whole backstop was gated on `toolResults.length > 0`, and
+ *   2. the persist task was gated on `stepFindings.length > 0`.
+ *
+ * A DECLINED NUDGE STEP produces no tool result at all (activeTools is narrowed to
+ * ["record_artifacts"], and the model declined), so (1) skipped the block outright.
+ * A later BARREN STEP — a Wayback timeout, an errored search — extracts nothing, so
+ * (2) skipped the task. The buffer was filled and never drained, and the run still
+ * died with zero artifacts.
+ *
+ * That defect survived a test suite because the test replayed the timeline through
+ * its OWN copy of the branch logic, written slightly more permissively than the
+ * shipped one. Both halves passed; the product did not work. Hence this function:
+ * one definition, called by index.ts and asserted by the tests, so the two cannot
+ * diverge again.
+ *
+ * NOTE the absence of a tool-result count. It is deliberate — the buffered case
+ * MUST fire on a step that produced no tool results whatsoever.
+ */
+export function decideBackstopAction(input: {
+  finalizeStarted: boolean;
+  stepFindingCount: number;
+  bufferedCount: number;
+  escalated: boolean;
+}): BackstopDecision {
+  // Finalize owns persistence once it starts; the backstop stands aside.
+  if (input.finalizeStarted) return { runPersist: false, reason: "finalize_owns_persistence" };
+  if (input.stepFindingCount > 0) return { runPersist: true, reason: "step_findings" };
+  // The case the first version missed: nothing extractable NOW, but evidence is
+  // held from earlier steps and the gate is open.
+  if (input.escalated && input.bufferedCount > 0) {
+    return { runPersist: true, reason: "buffered_escalation" };
+  }
+  return { runPersist: false, reason: "nothing_to_do" };
 }
 
 /** Kinds we will auto-persist. Nothing sensitive is on this list — the identity

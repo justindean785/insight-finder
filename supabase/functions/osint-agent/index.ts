@@ -21,7 +21,7 @@ import {
 
 import { detectSeedServer } from "./validation.ts";
 import {
-  extractStepFindings, persistAutoFindings, loadSeenArtifactKeys,
+  extractStepFindings, persistAutoFindings, loadSeenArtifactKeys, decideBackstopAction,
   ESCALATION_ELIGIBLE_TOOLS, bufferEscalationCandidates, drainEscalationBuffer,
   type ExtractedFinding,
 } from "./auto-persist-findings.ts";
@@ -1092,7 +1092,13 @@ Deno.serve(async (req) => {
         // owns persistence then). Dedup is DB-backed (loadSeenArtifactKeys re-read per
         // pass) so it never double-inserts a value record_artifacts or an earlier step
         // already wrote; the module also scrubs, caps, and denylists (never throws).
-        if (!finalizeStarted && Array.isArray(toolResults) && toolResults.length > 0) {
+        // NOTE the gate is `!finalizeStarted` ALONE. It deliberately does NOT
+        // require tool results: a declined nudge step produces none, and that is
+        // precisely the step on which a full escalation buffer must still be able
+        // to flush. Requiring them made the buffer unreachable in the one scenario
+        // it exists for. `decideBackstopAction` owns the branch from here.
+        if (!finalizeStarted) {
+          const stepToolResults = Array.isArray(toolResults) ? (toolResults as unknown[]) : [];
           // ZERO-EVIDENCE ESCALATION. `persistenceNudgeCount > 0` means the model
           // has fanned out past the nudge threshold having called record_artifacts
           // ZERO times — the request-scoped signal that it is not recording. In
@@ -1101,9 +1107,9 @@ Deno.serve(async (req) => {
           // and behaviour is byte-identical to before. Free to evaluate — the nudge
           // counter is a closure local, no DB round-trip.
           const escalated = persistenceNudgeCount > 0;
-          const stepFindings = extractStepFindings(
-            toolResults as unknown[], subjectSeedName, { escalated },
-          );
+          const stepFindings = stepToolResults.length > 0
+            ? extractStepFindings(stepToolResults, subjectSeedName, { escalated })
+            : [];
           // PRE-NUDGE BUFFER. The gate above can only open AFTER the nudge fires,
           // and the nudge fires only after several unrecorded fan-out steps — so
           // everything the run found before that point was denied by the denylist
@@ -1116,12 +1122,12 @@ Deno.serve(async (req) => {
           // So every pre-gate step extracts its eligible candidates and HOLDS them
           // in memory. Nothing is written until the gate opens; the second pass is
           // skipped entirely unless the step actually ran an eligible tool.
-          if (!escalated) {
-            const names = (toolResults as Array<{ toolName?: unknown }>)
+          if (!escalated && stepToolResults.length > 0) {
+            const names = (stepToolResults as Array<{ toolName?: unknown }>)
               .map((r) => (typeof r?.toolName === "string" ? r.toolName : ""));
             if (names.some((n) => ESCALATION_ELIGIBLE_TOOLS.has(n))) {
               const eligible = extractStepFindings(
-                toolResults as unknown[], subjectSeedName, { escalated: true },
+                stepToolResults, subjectSeedName, { escalated: true },
               ).filter((f) => ESCALATION_ELIGIBLE_TOOLS.has(f.toolName));
               const { added, dropped } = bufferEscalationCandidates(escalationBuffer, eligible);
               if (added > 0 || dropped > 0) {
@@ -1145,13 +1151,22 @@ Deno.serve(async (req) => {
           if (stepFindings.length === 0) {
             console.log(JSON.stringify({
               event: "auto_persist_step_empty", thread_id: threadId,
-              tool_results: toolResults.length,
-              tools: (toolResults as Array<{ toolName?: unknown }>)
+              tool_results: stepToolResults.length,
+              tools: (stepToolResults as Array<{ toolName?: unknown }>)
                 .map((r) => (typeof r?.toolName === "string" ? r.toolName : "unknown"))
                 .slice(0, 12),
+              buffered: escalationBuffer.size,
             }));
           }
-          if (stepFindings.length > 0) {
+          // THE branch. One definition, shared with the tests — see
+          // decideBackstopAction's comment for the divergence this replaces.
+          const decision = decideBackstopAction({
+            finalizeStarted,
+            stepFindingCount: stepFindings.length,
+            bufferedCount: escalationBuffer.size,
+            escalated,
+          });
+          if (decision.runPersist) {
             const autoPersistTask = (async () => {
               try {
                 const seen = await loadSeenArtifactKeys(supabase, threadId);
@@ -1180,16 +1195,24 @@ Deno.serve(async (req) => {
                 // be lost, so if the per-step cap truncates anything it must not be
                 // them. drainEscalationBuffer de-duplicates across both and empties
                 // the buffer, so a later escalated step cannot re-persist them.
-                const toPersist = escalated
-                  ? drainEscalationBuffer(escalationBuffer, stepFindings)
-                  : stepFindings;
+                let toPersist = stepFindings;
                 if (escalated) {
+                  // Bounded: persistAutoFindings applies no row cap of its own, so
+                  // an unbounded merge of buffer (<=120) and step (<=60) would hand
+                  // it 180 rows and bypass the per-step ceiling. Overflow is
+                  // RETAINED in the buffer for the next flush, never dropped.
+                  const drained = drainEscalationBuffer(escalationBuffer, stepFindings);
+                  toPersist = drained.rows;
                   console.log(JSON.stringify({
                     event: "auto_persist_escalated", thread_id: threadId,
-                    reason: "nudge fired with zero record_artifacts calls and zero persisted artifacts",
+                    reason: decision.reason === "buffered_escalation"
+                      ? "no extractable findings this step; flushing evidence buffered before the nudge"
+                      : "nudge fired with zero record_artifacts calls and zero persisted artifacts",
+                    decision: decision.reason,
                     nudge_count: persistenceNudgeCount,
                     step_candidates: stepFindings.length,
-                    total_candidates: toPersist.length,
+                    flushed: toPersist.length,
+                    retained_for_next_flush: drained.retained,
                   }));
                 }
                 const res = await persistAutoFindings({ supabase, threadId, userId, seen }, toPersist);
