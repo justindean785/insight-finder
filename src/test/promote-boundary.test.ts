@@ -1,24 +1,58 @@
 /**
- * promote-boundary-repro.test.ts — DIAGNOSTIC, not yet part of any PR.
+ * promote-boundary.test.ts — the PROMOTE half of the `subject_unlinked` boundary.
  *
- * Executes the real production `buildIdentityClusters` (src/lib/intel.ts) against
- * a fixture that reproduces thread 88cf94fa-660a-43f3-bad6-81291eb18641's EXACT
- * shape — same artifact ids, same kinds, same subject_unlinked flags, same
- * confidence values, same source — pulled from the live database on 2026-08-10.
- * Values (email/phone/address strings) are synthetic; CLAUDE.md forbids real
- * investigation PII entering this repo, and the leak this test targets does not
- * depend on what the values ARE, only on whether a quarantined artifact's ID
- * ends up inside a cluster's member list.
+ * Three boundaries must consult the quarantine flag: WRITE (backend auto-persist,
+ * closed by #433), PIVOT (frontend pivot engine, closed by #436), and PROMOTE —
+ * this one. Promote was open: a quarantined artifact could enter an identity
+ * cluster and from there drive the report, the Clusters tab, the entity graph, the
+ * Identity confidence score, and the cluster audit.
+ *
+ * WHY THE EXISTING GATE CAUGHT NONE OF IT. `buildIdentityClusters` excluded
+ * `isCollisionArtifact(a)` — which tests `kind === "excluded_collision"`,
+ * `status === "excluded"`, `excluded_collision`, `collision`, `possible_collision`.
+ * Queried against production on 2026-08-10: of the 104 `subject_unlinked` artifacts
+ * across 4 threads, **zero** carried any of those five signals. The flag and the
+ * exclusion mechanism were disjoint sets of signals that had never been connected,
+ * so the gate was not leaky — it was inapplicable.
+ *
+ * THE FIXTURE reproduces thread 88cf94fa-660a-43f3-bad6-81291eb18641's EXACT shape
+ * — same artifact ids, kinds, confidence values, source, and subject_unlinked flags,
+ * pulled from the live database. Values (email/phone/address strings) are SYNTHETIC:
+ * CLAUDE.md forbids real investigation PII in this repo, and the leak does not depend
+ * on what the values are, only on whether a quarantined artifact's id reaches a
+ * cluster.
  *
  * Real thread facts (queried, not values):
  *   9 artifacts: 1 name (subject_unlinked NULL/false), 8 others all
  *   subject_unlinked=true — 2 phone, 2 address, 2 email, 1 breach_exposure,
  *   1 ip_address. Every row: source='oathnet_lookup', status='observed'.
  *
- * Scope note: this reproduction concerns ONLY quarantine leakage — whether a
- * subject_unlinked artifact's id appears among a cluster's member ids. It does
- * NOT assert a required total cluster count; whether the one clean unreviewed
- * name row should itself form a cluster is a separate policy question.
+ * ASSERTIONS ARE ON OUTPUT, NOT ON PREDICATES. The test below drives the real
+ * exported surface and asserts on artifact ids appearing in its output. A test
+ * that asserted a predicate returns true would pass while every surface still
+ * leaked — this codebase's recurring defect is a correct helper that the
+ * surrounding control flow never reaches with the right inputs.
+ *
+ * COVERAGE IS ONE SURFACE OF FIVE, AND THAT IS A KNOWN GAP, NOT AN OVERSIGHT.
+ * `buildIdentityClusters` is called from five places, and three of them apply
+ * their own predicate carrying the same omission:
+ *
+ *   intel.ts:1040                 report cluster section          (shared gate)
+ *   ClustersTab.tsx:48            Clusters / Graph tab            (shared gate)
+ *   confidence-dimensions.ts:117  Identity confidence score       isConflicted :89
+ *   entity-graph.ts:192           entity graph nodes/edges        isConflict   :150
+ *   audit/from-artifacts.ts:108   cluster audit → ReportVerdict   (shared gate)
+ *
+ * A fix must close all five, and each needs its own red assertion first. Full
+ * scoping — including why widening `isCollisionArtifact` is the WRONG one-line fix
+ * — is in SESSION_HANDOFF_2026-08-10_beta-stabilization-III.md §3.
+ *
+ * NOT IN SCOPE, DELIBERATELY:
+ *  - The LABEL boundary. `labelForArtifact`'s attestation short-circuit promotes a
+ *    quarantined row to CONFIRMED. Fixing that changes a confidence cap, which
+ *    CLAUDE.md puts behind evidence-integrity sign-off. Separate PR.
+ *  - The total cluster count. Whether the one clean unreviewed `name` row should
+ *    itself form a cluster is a policy question, not a quarantine question.
  */
 import { describe, expect, it } from "vitest";
 import { buildIdentityClusters, type IdentityCluster } from "@/lib/intel";
