@@ -413,7 +413,10 @@ direction and must not be bundled with either piece above.
 
 ## 4. Open PRs — what is actually in each, and what gates it
 
-Nothing below is merged. **21 PRs are open**; these five are the ones this work touches.
+Nothing below is merged. **30 PRs are open — 29 drafts and exactly one ready for review
+(#198, account deletion)**; these five are the ones this work touches. (An earlier draft of
+this section said 21; that came from a single paginated page of 20 and was wrong. Count with
+`perPage: 100` or `gh pr list --limit 100`.)
 
 | PR | Branch | Contents | Gate |
 | --- | --- | --- | --- |
