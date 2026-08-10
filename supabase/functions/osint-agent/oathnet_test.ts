@@ -292,4 +292,12 @@ Deno.test("victim GUIDANCE tracks the reveal policy, not just the payload", () =
     !/device emails, linked discord_ids, doc counts, dates\. No raw credentials\./.test(handler),
     "the description still claims 'No raw credentials' unconditionally",
   );
+  // Bugbot's second catch: with reveal ON the description pointed the model at
+  // oathnet_victim_file labelled "(redacted content)", but that tool passes
+  // reveal: REVEAL_BREACH_DATA into safeVictimFile and returns UNMASKED content.
+  // The pivot line steered the model away from where the credentials actually are.
+  assert(
+    /UNMASKED file content/.test(handler),
+    "the reveal-ON description must not describe oathnet_victim_file as redacted",
+  );
 });

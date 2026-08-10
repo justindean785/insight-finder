@@ -1084,9 +1084,11 @@ export function buildTools(ctx: ToolContext) {
       description:
         "OathNet v2 VICTIM-manifest search — find compromised hosts (stealer-log victims) tied to a selector. Returns victim device metadata keyed by log_id: device usernames, HWIDs, device IPs, device emails, linked discord_ids, doc counts, dates. " +
         (REVEAL_BREACH_DATA
-          ? "Account-authorized full reveal is ON: raw credential fields carried on a victim row ARE returned — record every concrete value found. "
-          : "No raw credentials. ") +
-        "Pivot a returned log_id into oathnet_victim_manifest (file tree) → oathnet_victim_file (redacted content). total_docs_min filters to richer logs. Every hit is a LEAD; label [VERIFY]. Shares the 500/day OathNet pool.",
+          ? "Account-authorized full reveal is ON: raw credential fields carried on a victim row ARE returned — record every concrete value found. " +
+            "Pivot a returned log_id into oathnet_victim_manifest (file tree) → oathnet_victim_file, which returns UNMASKED file content under the same reveal policy — that is where the bulk of the captured credentials live, so pivot there and record what it returns. "
+          : "No raw credentials. " +
+            "Pivot a returned log_id into oathnet_victim_manifest (file tree) → oathnet_victim_file (redacted content). ") +
+        "total_docs_min filters to richer logs. Every hit is a LEAD; label [VERIFY]. Shares the 500/day OathNet pool.",
       inputSchema: memoSchema("oathnet_victims_search", () => z.object({
         value: z.string().describe("Selector: email / username / ip / discord_id / domain"),
         total_docs_min: z.number().int().min(0).optional().describe("Only logs with at least N documents"),
