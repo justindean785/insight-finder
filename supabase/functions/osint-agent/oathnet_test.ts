@@ -158,6 +158,75 @@ Deno.test("trimVictimItems keeps device metadata, no creds", () => {
   assertEquals(trimmed[0].total_docs, 54);
 });
 
+// ---------------------------------------------------------------------------
+// VICTIM-REVEAL PARITY. trimStealerItems has taken a `reveal` argument since the
+// account-level reveal policy landed; trimVictimItems never did. It had no such
+// parameter at all, so its hard-coded keep-list dropped every credential the
+// victim row carried and REVEAL_BREACH_DATA was structurally incapable of
+// affecting that path — the flag could be ON, the provider could return the
+// password, and it was discarded inside our own trimmer before anything
+// downstream saw it. The two functions sit twenty lines apart and only one of
+// them honoured the policy; that asymmetry WAS the bug.
+// ---------------------------------------------------------------------------
+
+Deno.test("REVEAL policy: trimVictimItems(reveal=true) SURFACES secret-bearing victim fields", () => {
+  const items = [{
+    log_id: "vic_2", device_user_str: ["Tyler"], device_ips: ["73.45.123.89"],
+    total_docs: 54, password: "leaked", cookies: "sessionid=x",
+  }];
+  const revealed = trimVictimItems(items, 25, true);
+  assert(JSON.stringify(revealed).includes("leaked"), "reveal=true must surface raw victim credentials");
+  assertEquals(revealed[0].password, "leaked");
+  assertEquals(revealed[0].cookies, "sessionid=x");
+  // The metadata keep-list is unaffected by revealing.
+  assertEquals(revealed[0].log_id, "vic_2");
+  assertEquals(revealed[0].total_docs, 54);
+});
+
+Deno.test("REVEAL policy: default stays masked — reveal is OPT-IN, never implicit", () => {
+  // Guards the inverse mistake. Omitting the argument, and passing false
+  // explicitly, must both behave exactly as before this change.
+  const items = [{ log_id: "vic_3", total_docs: 1, password: "leaked", cookies: "sessionid=x" }];
+  for (const trimmed of [trimVictimItems(items), trimVictimItems(items, 25, false)]) {
+    const blob = JSON.stringify(trimmed);
+    assert(!blob.includes("leaked"), "default must not surface credentials");
+    assert(!blob.includes("sessionid=x"), "default must not surface cookies");
+    assertEquals(trimmed[0].log_id, "vic_3");
+  }
+});
+
+Deno.test("REVEAL parity: the victim and stealer trimmers agree on the policy contract", () => {
+  // The contract, not the keep-lists: both take a reveal flag, both mask by
+  // default, and both surface credentials when it is set. Pinned so a future
+  // refactor cannot silently drop the argument from one of them again.
+  const row = { log_id: "L", total_docs: 1, password: "leaked" };
+  for (const [name, fn] of [
+    ["trimVictimItems", trimVictimItems],
+    ["trimStealerItems", trimStealerItems],
+  ] as const) {
+    // Asserted BEHAVIOURALLY, not by arity: Function.length counts only the
+    // parameters before the first default, so both trimmers report 1 and an
+    // arity check would be vacuous.
+    assert(!JSON.stringify(fn([row], 25, false)).includes("leaked"), `${name} must mask by default`);
+    assert(JSON.stringify(fn([row], 25, true)).includes("leaked"), `${name} must reveal when asked`);
+  }
+});
+
+Deno.test("the victim call site threads REVEAL_BREACH_DATA, not a bare call", () => {
+  // Source-level, because the defect was at the CALL SITE as much as in the
+  // function: `trimVictimItems(items)` with no third argument silently took the
+  // masked default while the sibling line two hundred above passed the policy.
+  const src = Deno.readTextFileSync(new URL("./tool-registry.ts", import.meta.url));
+  assert(
+    /trimVictimItems\(items,\s*25,\s*REVEAL_BREACH_DATA\)/.test(src),
+    "tool-registry.ts must pass REVEAL_BREACH_DATA into trimVictimItems",
+  );
+  assert(
+    !/trimVictimItems\(items\)/.test(src),
+    "a bare trimVictimItems(items) call has come back — it ignores the reveal policy",
+  );
+});
+
 Deno.test("summarizeManifest keeps tree structure only, no file contents", () => {
   const m = {
     log_id: "vic_2", log_name: "xX_DragonSlayer_Xx",
