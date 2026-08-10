@@ -37,7 +37,15 @@ import type { Artifact } from "@/hooks/useThreadArtifacts";
 
 const NOW = "2026-08-10T15:11:15.413Z";
 
+// `parent` is what gives the edge assertion teeth. Rows harvested from ONE
+// name-only query all carry that query as their parent pointer, which is a real
+// shared selector — so if the graph gate regresses they bond to each other (and
+// to the seed) rather than sitting inert. Without it the fixture's quarantined
+// rows share no selector at all, no edge can form under any implementation, and
+// "builds no identity edge" passes vacuously. Found by mutation-testing the gate:
+// the assertion survived removing the very code it exists to protect.
 const QUARANTINE = {
+  parent: "test subject",
   subject_unlinked: true,
   subject_unlinked_reason:
     "harvested from a name-only query — same-name collision axis; linkage to the subject is unproven",
