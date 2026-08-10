@@ -154,6 +154,55 @@ describe("computePivots — the quarantine does not over-block", () => {
     );
   });
 
+  it("an unrelated KIND that normalizes alike does NOT restore authority", () => {
+    // The value-only-key defect, found in review of the first version of this fix.
+    // normalizeTarget collapses every non-alphanumeric run to one space — by design,
+    // so "O'Brien" / "O Brien" / "O.Brien" agree — which also makes
+    //   username "jordan.vale"  ->  "jordan vale"
+    //   name     "Jordan Vale"  ->  "jordan vale"
+    // collide. Keyed on value alone, the ordinary NAME landed in `linked` and
+    // restored authority to the quarantined USERNAME: the quarantine was undone by
+    // a row that says nothing about it, and the disputed handle went back to being
+    // a one-click pivot.
+    const artifacts = [
+      art({ kind: "username", value: "jordan.vale", metadata: QUARANTINED }),
+      art({ kind: "name", value: "Jordan Vale" }),
+    ];
+    const out = run(artifacts);
+    expect(out.find((p) => p.value === "jordan.vale")).toBeUndefined();
+    // The name itself is a different identity and is untouched by the quarantine.
+    expect(out.find((p) => p.value === "Jordan Vale")).toBeDefined();
+  });
+
+  it("restoration requires the SAME pivot type, not merely the same text", () => {
+    // The inverse direction: a linked row of the same type does restore, and a
+    // linked row of a different type does not. Both halves in one assertion so the
+    // key can't be loosened without failing.
+    const sameType = [
+      art({ kind: "username", value: "vale.jordan", metadata: QUARANTINED }),
+      art({ kind: "username", value: "vale jordan", source: "github_user" }),
+    ];
+    expect(run(sameType).find((p) => p.type === "username")).toBeDefined();
+
+    const crossType = [
+      art({ kind: "username", value: "vale.jordan", metadata: QUARANTINED }),
+      art({ kind: "name", value: "Vale Jordan" }),
+    ];
+    expect(run(crossType).find((p) => p.type === "username")).toBeUndefined();
+  });
+
+  it("a NON-PIVOTABLE kind can neither restore nor create authority", () => {
+    // `address` / `organization` / `breach_exposure` never become pivots, so such a
+    // row must not be the subject of an authority decision in either direction.
+    // Letting them into `linked` was the collision bug by a second route.
+    const artifacts = [
+      art({ kind: "phone", value: "+1 555 0100", metadata: QUARANTINED }),
+      // Same normalized text as the quarantined phone, but a kind that is not a pivot.
+      art({ kind: "address", value: "1 555 0100" }),
+    ];
+    expect(run(artifacts).find((p) => p.value === "+1 555 0100")).toBeUndefined();
+  });
+
   it("is strictly `=== true` — a legacy row keeps its authority", () => {
     // Mirrors lib/quarantine.ts on the edge: a string "true", a truthy number, or
     // absent metadata predate the gate and must not be silently disenfranchised.
