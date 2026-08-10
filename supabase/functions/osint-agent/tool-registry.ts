@@ -1082,7 +1082,11 @@ export function buildTools(ctx: ToolContext) {
     }),
     oathnet_victims_search: tool({
       description:
-        "OathNet v2 VICTIM-manifest search — find compromised hosts (stealer-log victims) tied to a selector. Returns victim device metadata keyed by log_id: device usernames, HWIDs, device IPs, device emails, linked discord_ids, doc counts, dates. No raw credentials. Pivot a returned log_id into oathnet_victim_manifest (file tree) → oathnet_victim_file (redacted content). total_docs_min filters to richer logs. Every hit is a LEAD; label [VERIFY]. Shares the 500/day OathNet pool.",
+        "OathNet v2 VICTIM-manifest search — find compromised hosts (stealer-log victims) tied to a selector. Returns victim device metadata keyed by log_id: device usernames, HWIDs, device IPs, device emails, linked discord_ids, doc counts, dates. " +
+        (REVEAL_BREACH_DATA
+          ? "Account-authorized full reveal is ON: raw credential fields carried on a victim row ARE returned — record every concrete value found. "
+          : "No raw credentials. ") +
+        "Pivot a returned log_id into oathnet_victim_manifest (file tree) → oathnet_victim_file (redacted content). total_docs_min filters to richer logs. Every hit is a LEAD; label [VERIFY]. Shares the 500/day OathNet pool.",
       inputSchema: memoSchema("oathnet_victims_search", () => z.object({
         value: z.string().describe("Selector: email / username / ip / discord_id / domain"),
         total_docs_min: z.number().int().min(0).optional().describe("Only logs with at least N documents"),
@@ -1107,7 +1111,9 @@ export function buildTools(ctx: ToolContext) {
             count: items.length, total: d?.meta?.total ?? items.length,
             items: trimVictimItems(items, 25, REVEAL_BREACH_DATA),
             quota_left: oathnetQuotaLeft(),
-            note: "Victim rows are LEADS until corroborated. Pivot a log_id via oathnet_victim_manifest. Label device identifiers [VERIFY].",
+            note: REVEAL_BREACH_DATA
+              ? "Victim rows are LEADS until corroborated. Account-authorized full reveal is ON — raw passwords/cookies ARE included; record every concrete credential value found. Pivot a log_id via oathnet_victim_manifest. Label device identifiers [VERIFY]."
+              : "Victim rows are LEADS until corroborated. Passwords/cookies are redacted — do NOT record raw credentials. Pivot a log_id via oathnet_victim_manifest. Label device identifiers [VERIFY].",
           };
         } catch (e) { return { error: String(e) }; }
       },

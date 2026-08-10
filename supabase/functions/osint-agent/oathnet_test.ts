@@ -268,3 +268,28 @@ Deno.test("safeVictimFile returns masked preview + metadata, never raw creds", (
   assertEquals(r.line_count, 4);
   assert(typeof r.redacted_preview === "string");
 });
+
+Deno.test("victim GUIDANCE tracks the reveal policy, not just the payload", () => {
+  // Bugbot's catch on #442, and it is the writer-side half of the same bug.
+  // trimVictimItems can now hand back raw credentials, but the tool's `note` and
+  // `description` still told the model "No raw credentials" and never asked it to
+  // record them. The model would have received the values and written down only
+  // device metadata — which is exactly the symptom the reveal fix exists to end.
+  // The stealer handler already switches its note on the policy; the victim
+  // handler must too, or the guidance contradicts the payload.
+  const src = Deno.readTextFileSync(new URL("./tool-registry.ts", import.meta.url));
+  const victim = src.slice(src.indexOf("oathnet_victims_search: tool({"));
+  const handler = victim.slice(0, victim.indexOf("oathnet_victim_manifest: tool({"));
+  assert(
+    /note: REVEAL_BREACH_DATA\s*\?/.test(handler),
+    "the victim note must switch on REVEAL_BREACH_DATA, as the stealer note does",
+  );
+  assert(
+    /record every concrete (credential )?value found/i.test(handler),
+    "the reveal-ON note must instruct the model to record concrete values",
+  );
+  assert(
+    !/device emails, linked discord_ids, doc counts, dates\. No raw credentials\./.test(handler),
+    "the description still claims 'No raw credentials' unconditionally",
+  );
+});
