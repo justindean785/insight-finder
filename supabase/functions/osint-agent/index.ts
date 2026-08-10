@@ -1085,19 +1085,40 @@ Deno.serve(async (req) => {
         // already wrote; the module also scrubs, caps, and denylists (never throws).
         if (!finalizeStarted && Array.isArray(toolResults) && toolResults.length > 0) {
           const stepFindings = extractStepFindings(toolResults as unknown[], subjectSeedName);
+          // OBSERVABILITY — an empty extraction is a REPORTABLE outcome, not silence.
+          // `auto_persist_step` used to log only when `inserted > 0`, so a step that
+          // extracted nothing, a step where everything deduped, and a step where the
+          // backstop never ran at all were indistinguishable in the logs. That is
+          // exactly the ambiguity that left the 2026-08-06 zero-artifact run
+          // undiagnosable: three `persistence_nudge_fired` events with
+          // `record_artifact_calls: 0`, no `auto_persist_step`, and no way to tell
+          // whether the backstop had been reached. Emit the barren case explicitly
+          // with the tool names that produced it, so the next such run names its own
+          // cause. Cheap: one log line per step, no DB round-trip.
+          if (stepFindings.length === 0) {
+            console.log(JSON.stringify({
+              event: "auto_persist_step_empty", thread_id: threadId,
+              tool_results: toolResults.length,
+              tools: (toolResults as Array<{ toolName?: unknown }>)
+                .map((r) => (typeof r?.toolName === "string" ? r.toolName : "unknown"))
+                .slice(0, 12),
+            }));
+          }
           if (stepFindings.length > 0) {
             const autoPersistTask = (async () => {
               try {
                 const seen = await loadSeenArtifactKeys(supabase, threadId);
                 const res = await persistAutoFindings({ supabase, threadId, userId, seen }, stepFindings);
-                if (res.inserted > 0) {
-                  console.log(JSON.stringify({
-                    event: "auto_persist_step", thread_id: threadId,
-                    inserted: res.inserted, skipped_duplicates: res.skipped_duplicates,
-                    // < inserted means artifacts landed with no chain-of-custody row.
-                    evidence_appended: res.evidence_appended ?? 0,
-                  }));
-                }
+                // Logged unconditionally now: `inserted: 0, skipped_duplicates: N`
+                // is the healthy steady state and must be distinguishable from the
+                // backstop never running.
+                console.log(JSON.stringify({
+                  event: "auto_persist_step", thread_id: threadId,
+                  candidates: stepFindings.length,
+                  inserted: res.inserted, skipped_duplicates: res.skipped_duplicates,
+                  // < inserted means artifacts landed with no chain-of-custody row.
+                  evidence_appended: res.evidence_appended ?? 0,
+                }));
               } catch (e) {
                 console.warn("[auto-persist] step backstop failed (non-fatal):", String(e));
               }
