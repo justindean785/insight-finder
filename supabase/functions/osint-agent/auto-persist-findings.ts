@@ -58,6 +58,171 @@ export const AUTO_PERSIST_TOOL_DENYLIST = new Set<string>([
   "attribution_check", "date_sanity_check",
 ]);
 
+/**
+ * The subset of the denylist that is excluded for NOISE, not for correctness —
+ * eligible for the zero-evidence escalation below.
+ *
+ * WHY THIS EXISTS. The denylist above conflates two very different reasons to
+ * skip a tool, and that conflation is a durability hole. Recording, memory,
+ * planner and auto-recording tools must NEVER be scanned: their output is not
+ * findings, or is already persisted, so extracting from them would be wrong at
+ * any time. But the broad search and read tools are skipped only because
+ * auto-persisting them "blindly" is too noisy — the standing assumption being
+ * that the model will pick the good hits and call `record_artifacts`.
+ *
+ * When the model does not, that assumption leaves NO durability path at all. A
+ * run made entirely of these tools persists nothing, the persistence nudge is
+ * advisory, and if the isolate is CPU-killed the analyst gets zero artifacts
+ * from real completed work (production, 2026-08-06: three nudges,
+ * `record_artifact_calls: 0`, `artifact_count: 0`, CPU Time exceeded).
+ *
+ * So these become extractable ONLY in the escalated state — see the call site in
+ * index.ts, which requires BOTH that the model has fanned out without recording
+ * AND that the thread still holds zero artifacts. Noise is the price of the
+ * alternative being total evidence loss, and it is paid only in the state where
+ * the alternative is certain.
+ *
+ * Everything omitted here stays permanently excluded, escalation or not.
+ */
+export const ESCALATION_ELIGIBLE_TOOLS = new Set<string>([
+  "google_dorks", "minimax_web_search", "perplexity_search", "exa_search",
+  "osint_navigator_search", "osint_navigator_advise",
+  "gemini_vision", "jina_reader_scrape", "http_fingerprint", "firecrawl_scrape",
+]);
+
+/** Ceiling on candidates held in memory awaiting the escalation gate. 2x the
+ *  per-step cap: enough to carry several barren steps, small enough that a long
+ *  run cannot grow the isolate's memory without bound. */
+export const MAX_ESCALATION_BUFFER = 120;
+
+/**
+ * Hold escalation-eligible candidates from steps that have ALREADY happened.
+ *
+ * WHY A BUFFER IS REQUIRED, not a nicety. The escalation gate can only open once
+ * `persistenceNudgeCount > 0`, and the nudge fires only after the model has fanned
+ * out several times without recording. Everything found in those earlier steps was
+ * denied by the denylist and never held anywhere, so it was already gone by the
+ * time the gate opened. Worse, `buildIntermediateStepPlan` narrows the nudge
+ * step's `activeTools` to `["record_artifacts"]` alone — so on the very step that
+ * opens the gate there are no search results to extract, and if the model then
+ * declines or fails and the run dies, escalation salvages NOTHING. Without this
+ * buffer the fix only ever covered searches performed AFTER the first nudge.
+ *
+ * The buffer is memory-only and bounded: nothing is written until the gate opens.
+ * Keyed by `checkpointKey(kind, value)` so a value seen across several steps is
+ * held once, matching the dedup the DB path applies later.
+ */
+export function bufferEscalationCandidates(
+  buffer: Map<string, ExtractedFinding & { toolName: string }>,
+  candidates: readonly (ExtractedFinding & { toolName: string })[],
+  cap: number = MAX_ESCALATION_BUFFER,
+): { added: number; dropped: number } {
+  let added = 0;
+  let dropped = 0;
+  for (const f of candidates) {
+    if (buffer.size >= cap) { dropped++; continue; }
+    const k = checkpointKey(f.kind, f.value);
+    if (buffer.has(k)) continue;
+    buffer.set(k, f);
+    added++;
+  }
+  return { added, dropped };
+}
+
+/** Rows a single escalated flush may hand to persistAutoFindings.
+ *
+ *  WHY A SEPARATE BUDGET. persistAutoFindings applies NO row-count cap — it maps
+ *  every non-duplicate finding straight to an insert. extractStepFindings is
+ *  bounded by MAX_AUTO_PERSIST_PER_STEP, but a flush merges the buffer (up to 120)
+ *  with the current step (up to 60), so an unbounded drain could hand it 180 rows
+ *  in one call and quietly bypass the per-step ceiling the rest of the pipeline
+ *  respects. The overflow is RETAINED, not dropped: it stays in the buffer and
+ *  goes out on the next escalated flush. */
+export const MAX_ESCALATION_FLUSH = MAX_AUTO_PERSIST_PER_STEP;
+
+/**
+ * Drain the buffer in front of this step's findings, de-duplicated across both and
+ * bounded by `budget`.
+ *
+ * Buffered candidates lead because they are the OLDEST evidence and therefore the
+ * most likely to be lost — if the budget truncates anything, it must not be the
+ * rows that have already survived several steps unpersisted.
+ *
+ * Whatever does not fit goes BACK into the buffer rather than being discarded,
+ * including any of this step's own findings displaced by older ones. The buffer is
+ * naturally bounded by this: merged is at most MAX_ESCALATION_BUFFER +
+ * MAX_AUTO_PERSIST_PER_STEP, so the retained remainder can never exceed
+ * MAX_ESCALATION_BUFFER.
+ */
+export function drainEscalationBuffer(
+  buffer: Map<string, ExtractedFinding & { toolName: string }>,
+  stepFindings: readonly (ExtractedFinding & { toolName: string })[],
+  budget: number = MAX_ESCALATION_FLUSH,
+): { rows: Array<ExtractedFinding & { toolName: string }>; retained: number } {
+  const merged: Array<[string, ExtractedFinding & { toolName: string }]> = [];
+  const seen = new Set<string>();
+  for (const f of [...buffer.values(), ...stepFindings]) {
+    const k = checkpointKey(f.kind, f.value);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    merged.push([k, f]);
+  }
+  const rows = merged.slice(0, Math.max(0, budget)).map(([, f]) => f);
+  buffer.clear();
+  for (const [k, f] of merged.slice(Math.max(0, budget))) buffer.set(k, f);
+  return { rows, retained: buffer.size };
+}
+
+/** What the per-step backstop should do. `runPersist` drives the ONE branch in
+ *  index.ts that starts the persist task. */
+export type BackstopDecision = {
+  runPersist: boolean;
+  reason: "finalize_owns_persistence" | "step_findings" | "buffered_escalation" | "nothing_to_do";
+};
+
+/**
+ * Decide whether the auto-persist backstop runs this step. Pure, and PRODUCTION
+ * CALLS THIS — it is not a description of the control flow, it is the control flow.
+ *
+ * WHY IT EXISTS AS A FUNCTION. The first version of the pre-nudge buffer was
+ * wired under two conditions that between them made it unreachable in exactly the
+ * scenario it was written for:
+ *
+ *   1. the whole backstop was gated on `toolResults.length > 0`, and
+ *   2. the persist task was gated on `stepFindings.length > 0`.
+ *
+ * A DECLINED NUDGE STEP produces no tool result at all (activeTools is narrowed to
+ * ["record_artifacts"], and the model declined), so (1) skipped the block outright.
+ * A later BARREN STEP — a Wayback timeout, an errored search — extracts nothing, so
+ * (2) skipped the task. The buffer was filled and never drained, and the run still
+ * died with zero artifacts.
+ *
+ * That defect survived a test suite because the test replayed the timeline through
+ * its OWN copy of the branch logic, written slightly more permissively than the
+ * shipped one. Both halves passed; the product did not work. Hence this function:
+ * one definition, called by index.ts and asserted by the tests, so the two cannot
+ * diverge again.
+ *
+ * NOTE the absence of a tool-result count. It is deliberate — the buffered case
+ * MUST fire on a step that produced no tool results whatsoever.
+ */
+export function decideBackstopAction(input: {
+  finalizeStarted: boolean;
+  stepFindingCount: number;
+  bufferedCount: number;
+  escalated: boolean;
+}): BackstopDecision {
+  // Finalize owns persistence once it starts; the backstop stands aside.
+  if (input.finalizeStarted) return { runPersist: false, reason: "finalize_owns_persistence" };
+  if (input.stepFindingCount > 0) return { runPersist: true, reason: "step_findings" };
+  // The case the first version missed: nothing extractable NOW, but evidence is
+  // held from earlier steps and the gate is open.
+  if (input.escalated && input.bufferedCount > 0) {
+    return { runPersist: true, reason: "buffered_escalation" };
+  }
+  return { runPersist: false, reason: "nothing_to_do" };
+}
+
 /** Kinds we will auto-persist. Nothing sensitive is on this list — the identity
  *  kinds below (name/address/organization/username) are the SUBJECT's resolved
  *  identity, the whole point of the investigation; breach payloads (passwords,
@@ -453,8 +618,10 @@ export function extractFindings(
   output: unknown,
   input?: unknown,
   subjectSeedName?: string,
+  opts?: { escalated?: boolean },
 ): ExtractedFinding[] {
-  if (AUTO_PERSIST_TOOL_DENYLIST.has(toolName)) return [];
+  if (AUTO_PERSIST_TOOL_DENYLIST.has(toolName) &&
+      !(opts?.escalated && ESCALATION_ELIGIBLE_TOOLS.has(toolName))) return [];
   if (!output || typeof output !== "object") return [];
   const o = output as Record<string, unknown>;
   // Never extract from an explicit tool error.
@@ -925,6 +1092,9 @@ export function extractFindings(
 export function extractStepFindings(
   toolResults: unknown[] | null | undefined,
   subjectSeedName?: string,
+  /** Zero-evidence escalation — see ESCALATION_ELIGIBLE_TOOLS. Default off, so
+   *  every existing caller and test keeps today's exact behaviour. */
+  opts?: { escalated?: boolean },
 ): Array<ExtractedFinding & { toolName: string }> {
   if (!Array.isArray(toolResults)) return [];
   const out: Array<ExtractedFinding & { toolName: string }> = [];
@@ -939,7 +1109,7 @@ export function extractStepFindings(
     // collision). `args`/`parameters` cover older/alternate envelope shapes.
     const te = t as { input?: unknown; args?: unknown; parameters?: unknown };
     const input = te.input ?? te.args ?? te.parameters ?? null;
-    const findings = extractFindings(name, output, input, subjectSeedName);
+    const findings = extractFindings(name, output, input, subjectSeedName, opts);
     for (const f of findings) {
       const k = checkpointKey(f.kind, f.value);
       if (seen.has(k)) continue;
