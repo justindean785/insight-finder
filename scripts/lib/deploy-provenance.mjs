@@ -1,31 +1,40 @@
 /**
- * deploy-provenance.mjs — pure checks that answer one question:
+ * deploy-provenance.mjs — pure checks establishing MARKER PROVENANCE.
  *
- *     Is the code running in production a commit I can read in this repo?
+ * ┌───────────────────────────────────────────────────────────────────────────┐
+ * │ WHAT THIS PROVES                                                          │
+ * │   The build marker /health reports maps to a real, reviewable position in │
+ * │   this repository's history: the SHA is a commit here, some commit        │
+ * │   stamped that exact marker, and that stamp commit sits as the marker's   │
+ * │   child. The marker was produced by stamp-build.mjs, not invented.        │
+ * │                                                                           │
+ * │ WHAT THIS DOES NOT PROVE                                                  │
+ * │   That the DEPLOYED BYTES are the bytes at that commit. build-info.ts is  │
+ * │   a static file the running code reads and echoes. Edit system-prompt.ts  │
+ * │   after the mirror sync, leave build-info.ts alone, deploy — /health      │
+ * │   still reports the stamped SHA and every check below still passes.       │
+ * │   An earlier version of this comment claimed otherwise. It was wrong.     │
+ * │                                                                           │
+ * │   Closing that gap needs a digest of the deployed ARTIFACT emitted by the │
+ * │   deploying system, compared against a digest computed here. Supabase's   │
+ * │   deploy API surfaces no such value through the Lovable path today, so    │
+ * │   the honest move is to record the canonical source digest and label the  │
+ * │   bound of the evidence — not to imply a stronger guarantee.              │
+ * └───────────────────────────────────────────────────────────────────────────┘
  *
- * WHY THIS EXISTS. The deploy path is insight-finder `main` → surgical sync to
- * the Lovable mirror → the Lovable project agent runs `supabase--deploy_edge_functions`.
- * Every deployed build therefore ORIGINATES as a canonical commit here — the
- * frequently-repeated claim that "the live build has no source in GitHub" is
- * false, and `git branch -r --contains <sha>` disproves it in one command.
+ * The gap this DOES close is the one that actually existed: `/health` reports
+ * what is live right now, and nothing recorded that a deploy happened, when,
+ * what was live before it, or whether anyone confirmed the SHA moved. "Was this
+ * audit run against the deployed build?" had no answer a month later.
  *
- * What was genuinely missing is different, and narrower:
+ * (On the recurring claim that a live build "has no source in GitHub":
+ * `git branch -r --contains <sha>` disproves it. The pipeline runs main →
+ * mirror sync → Lovable deploy; the mirror receives code, it does not author
+ * it. What was missing was the record, not the source.)
  *
- *   1. NO HISTORY. `/health` reports what is live right now. Nothing recorded
- *      that a deploy happened, when, what was live before it, or whether anyone
- *      ever confirmed the SHA moved. "Was this audited against the deployed
- *      build?" had no answer a month later.
- *
- *   2. NO CROSS-CHECK. The marker is a string the deployed code reports about
- *      ITSELF. A third party runs the deploy, and has previously taken actions
- *      it was explicitly told not to take. If a file were edited between sync
- *      and deploy, `/health` would still cheerfully report the stamped SHA while
- *      the running code differed from every commit in this repo — and nothing
- *      would notice.
- *
- * These checks close both gaps. They are deliberately pure (no fetch, no git, no
- * filesystem) so the failure modes can be tested directly rather than staged
- * against a live endpoint; the I/O lives in scripts/record-deploy.mjs.
+ * These checks are deliberately pure — no fetch, no git, no filesystem — so the
+ * failure modes are tested directly rather than staged against a live endpoint.
+ * The I/O lives in scripts/record-deploy.mjs.
  */
 
 /** A SHA the marker could plausibly hold: git short-SHA, 7-40 lowercase hex. */
@@ -65,6 +74,43 @@ export function parseBuildInfo(source) {
 }
 
 /**
+ * The ledger and the `deploy/live` ref are two records of the same fact, written
+ * by two different git operations. Nothing stops one landing without the other —
+ * a commit that forgets the log, a push that forgets the ref — and a ledger that
+ * can silently disagree with the ref is not evidence, it is two guesses.
+ *
+ * So they are checked against each other on EVERY run, before anything is
+ * recorded. Divergence is a problem, not a warning: recording on top of an
+ * inconsistent ledger buries the inconsistency under a newer entry.
+ *
+ * An empty ledger with no ref is the legitimate initial state.
+ */
+export function verifyLedgerConsistency({ lastEntryBuild, refBuild }) {
+  if (!lastEntryBuild && !refBuild) return [];
+  if (lastEntryBuild && !refBuild) {
+    return [{
+      code: "ledger_ref_divergence",
+      detail: `deploy-log.jsonl's latest entry is ${lastEntryBuild} but the deploy ref does not exist`,
+    }];
+  }
+  if (!lastEntryBuild && refBuild) {
+    return [{
+      code: "ledger_ref_divergence",
+      detail: `the deploy ref points at ${refBuild} but deploy-log.jsonl has no entries`,
+    }];
+  }
+  // The ref holds a full SHA; the ledger holds the short marker it was recorded
+  // under. Compare by prefix in the direction that is actually meaningful.
+  if (!refBuild.startsWith(lastEntryBuild) && !lastEntryBuild.startsWith(refBuild)) {
+    return [{
+      code: "ledger_ref_divergence",
+      detail: `deploy ref is ${refBuild} but deploy-log.jsonl's latest entry is ${lastEntryBuild}`,
+    }];
+  }
+  return [];
+}
+
+/**
  * The verdict.
  *
  * THE ONE-COMMIT OFFSET, which is the whole reason this is not a one-line SHA
@@ -93,17 +139,17 @@ export function parseBuildInfo(source) {
  *     The value was invented rather than produced by stamp-build.mjs.
  *
  *   marker_offset_mismatch — a commit carries the marker, but it is not the
- *     child of the commit the marker names. History was rewritten, or the file
- *     was edited by hand. This is the check that would catch the deploying agent
- *     modifying code between the mirror sync and the deploy, which is the reason
- *     a self-reported marker cannot be trusted on its own.
+ *     child of the commit the marker names. History was rewritten, or
+ *     build-info.ts was edited by hand. Note the bound: this catches tampering
+ *     WITH THE MARKER. It does not catch tampering with any other file, because
+ *     no other file is reflected in what /health reports.
  *
  * `not_on_main` is a WARNING: deploying a branch build to debug something is
  * legitimate, it is just not reviewable through merged history. Record and flag,
  * do not block.
  */
-export function verifyDeployedCommit({ live, repo }) {
-  const problems = [];
+export function verifyDeployedCommit({ live, repo, ledger }) {
+  const problems = ledger ? verifyLedgerConsistency(ledger) : [];
   const warnings = [];
 
   if (!repo?.exists) {
@@ -113,7 +159,7 @@ export function verifyDeployedCommit({ live, repo }) {
         `live build ${live.build} is not a commit in this repository — ` +
         "the deployed code cannot be reviewed here",
     });
-    return { verified: false, problems, warnings };
+    return { markerProvenanceOk: false, problems, warnings };
   }
 
   if (!repo.stampCommit) {
@@ -123,7 +169,7 @@ export function verifyDeployedCommit({ live, repo }) {
         `no commit in this repository sets BUILD_MARKER = "${live.build}" — ` +
         "the live marker was not produced by scripts/stamp-build.mjs",
     });
-    return { verified: false, problems, warnings };
+    return { markerProvenanceOk: false, problems, warnings };
   }
 
   const info = parseBuildInfo(repo.buildInfoSource);
@@ -161,18 +207,86 @@ export function verifyDeployedCommit({ live, repo }) {
     });
   }
 
-  return { verified: problems.length === 0, problems, warnings, stampCommit: repo.stampCommit };
+  return { markerProvenanceOk: problems.length === 0, problems, warnings, stampCommit: repo.stampCommit };
 }
 
-/** One append-only log line. Kept flat so `jq` and `grep` both work on it. */
-export function buildLogEntry({ live, verdict, recordedAt, previousBuild }) {
+/**
+ * Mirror-tree comparison. Separate from marker provenance on purpose: it answers
+ * a different question (does the tree we PUSHED match the tree we HOLD?) and can
+ * legitimately be NOT RUN when no mirror checkout is available. Conflating "not
+ * run" with "equal" is how an unverified step becomes a claimed one.
+ */
+export function compareSourceTrees({ canonicalTreeDigest, mirrorTreeDigest }) {
+  if (!canonicalTreeDigest || !mirrorTreeDigest) return { status: "not_run", note: null };
+  if (canonicalTreeDigest === mirrorTreeDigest) return { status: "equal", note: null };
+  return {
+    status: "differs",
+    note: {
+      code: "mirror_tree_differs",
+      detail:
+        `canonical osint-agent tree ${canonicalTreeDigest.slice(0, 12)} != ` +
+        `mirror tree ${mirrorTreeDigest.slice(0, 12)} — the mirror is not carrying this build's source`,
+    },
+  };
+}
+
+/**
+ * One append-only log line. Kept flat so `jq` and `grep` both work on it.
+ *
+ * EVERY FIELD IS A SEPARATE FACT, and the two that matter most are the ones that
+ * are always negative today:
+ *
+ *   deployed_artifact_digest — null. The Lovable → Supabase deploy path exposes
+ *     no digest or attestation of what was actually deployed.
+ *   deployed_bytes_verified — false. Follows from the above. It is not "probably
+ *     true"; it is unestablished, and a ledger that rounded it up would be
+ *     asserting something nobody measured.
+ *
+ * A row saying only `verified: true` invites the reader to supply their own
+ * definition of what was verified — which is exactly the overclaim this module
+ * was corrected for. Naming each fact separately means a row read a year from now
+ * cannot be mistaken for deployed-byte attestation.
+ *
+ * previous_build_source exists for the same reason: a bare null conflates "first
+ * deploy ever recorded" with "a predecessor existed but the ledger never saw it".
+ */
+export function buildLogEntry({
+  live,
+  repo,
+  verdict,
+  recordedAt,
+  previousBuild,
+  previousBuildSource,
+  mirror,
+}) {
+  const treeComparison = compareSourceTrees({
+    canonicalTreeDigest: repo?.sourceTreeDigest ?? null,
+    mirrorTreeDigest: mirror?.treeDigest ?? null,
+  });
   return {
     recorded_at: recordedAt,
-    build: live.build,
-    build_committed_at: live.committedAt,
+    // What the running function said about itself.
+    runtime_marker: live.build,
+    runtime_marker_committed_at: live.committedAt,
+    // What this repository can show for it.
+    canonical_commit: repo?.exists ? live.build : null,
+    stamp_commit: repo?.stampCommit ?? null,
+    stamp_parent: repo?.stampParent ?? null,
+    canonical_tree_digest: repo?.sourceTreeDigest ?? null,
+    // What the mirror we pushed to is carrying.
+    mirror_commit: mirror?.commit ?? null,
+    mirror_tree_digest: mirror?.treeDigest ?? null,
+    mirror_tree_equality: treeComparison.status, // equal | differs | not_run
+    // What nobody has measured.
+    deployed_artifact_digest: null,
+    deployed_bytes_verified: false,
+    // Ledger continuity.
     previous_build: previousBuild ?? null,
+    previous_build_source: previousBuildSource,
+    // Observed policy, and the verdict's own bound.
     reveal_breach_data: live.revealBreachData,
-    verified: verdict.verified,
+    marker_provenance_ok: verdict.markerProvenanceOk,
+    proves: "observed-runtime-marker-maps-to-canonical-source-history",
     warnings: verdict.warnings.map((w) => w.code),
     problems: verdict.problems.map((p) => p.code),
   };

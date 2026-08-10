@@ -1,31 +1,50 @@
 /**
- * deploy-provenance.test.ts — the checks that decide whether a live build counts
- * as auditable.
+ * deploy-provenance.test.ts — MARKER provenance, and the exact edge of what that
+ * establishes.
  *
- * The failure this guards against is specific. The build marker is a string the
- * deployed code reports about ITSELF, and a third party runs the deploy. So
- * "/health says e7e3f80" is evidence about the marker, not about the code. These
- * cases pin the three ways that can be a lie — a SHA this repo has never seen, a
- * marker no commit here ever set, and a stamp commit sitting somewhere other than
- * where stamping would have put it — and keep them distinguishable, because they
- * call for different responses.
+ * SCOPE, stated first because getting it wrong is the failure this file exists
+ * to prevent. These checks establish that the build marker /health reports maps
+ * to a reviewable commit here. They do NOT establish that the deployed bytes
+ * match that commit: build-info.ts is a static file the running code echoes, so
+ * editing any OTHER file after the mirror sync and deploying leaves every
+ * assertion below passing. An earlier version of this suite's sibling comments
+ * claimed the check caught exactly that, and it does not.
  *
- * They also pin the one-commit stamp offset, which the first version of the
- * checker got wrong: it failed a healthy deploy because build-info.ts AT the
- * marker commit still holds the PREVIOUS marker. That offset is inherent (a
- * commit's SHA is not knowable before the commit exists), so the check has to
- * verify the PAIR rather than a single SHA.
+ * What is pinned: the three ways the marker itself can lie — a SHA this repo has
+ * never seen, a marker no commit here ever set, and a stamp commit sitting
+ * somewhere other than where stamping would have put it — kept distinguishable
+ * because they call for different responses; the ledger/ref consistency that
+ * makes the record trustworthy as a record; and the one-commit stamp offset,
+ * which the first version of the checker got wrong by failing a healthy deploy
+ * (at the marker commit, build-info.ts still holds the PREVIOUS marker). That
+ * offset is inherent — a commit's SHA is not knowable before the commit exists —
+ * so the check verifies the PAIR rather than a single SHA.
  */
 import { describe, it, expect } from "vitest";
-// @ts-expect-error — plain .mjs helper, shared with scripts/record-deploy.mjs so
-// the tested logic is the shipped logic rather than a TypeScript restatement.
-import * as provenance from "../../scripts/lib/deploy-provenance.mjs";
+import {
+  parseHealth,
+  parseBuildInfo,
+  verifyLedgerConsistency,
+  verifyDeployedCommit,
+  buildLogEntry,
+  type LiveHealthOk,
+  type LiveHealthFailed,
+  type RepoFacts,
+  compareSourceTrees,
+} from "../../scripts/lib/deploy-provenance.mjs";
 
-const { parseHealth, parseBuildInfo, verifyDeployedCommit, buildLogEntry } = provenance as {
-  parseHealth: (body: unknown) => any;
-  parseBuildInfo: (source: string | null) => any;
-  verifyDeployedCommit: (input: { live: any; repo: any }) => any;
-  buildLogEntry: (input: any) => any;
+/**
+ * Narrow a parse result the fixtures guarantee is well-formed. The casts are
+ * explicit rather than relying on discriminant narrowing: this project compiles
+ * with `strict: false`, which disables narrowing on a boolean literal
+ * discriminant, so `if (!parsed.ok)` does not refine the union here.
+ */
+const okHealth = (body: unknown): LiveHealthOk => {
+  const parsed = parseHealth(body);
+  if (!parsed.ok) {
+    throw new Error(`fixture should parse: ${(parsed as LiveHealthFailed).reason}`);
+  }
+  return parsed as LiveHealthOk;
 };
 
 const buildInfo = (marker: string, committedAt = "2026-08-10T06:31:35-07:00") =>
@@ -44,7 +63,7 @@ const liveHealth = {
 
 describe("parseHealth", () => {
   it("reads the build pair and the reveal policy", () => {
-    const parsed = parseHealth(liveHealth);
+    const parsed = okHealth(liveHealth);
     expect(parsed.ok).toBe(true);
     expect(parsed.build).toBe("e7e3f80");
     expect(parsed.committedAt).toBe("2026-08-10T06:31:35-07:00");
@@ -73,7 +92,7 @@ describe("parseHealth", () => {
     // The field only shipped in #441. An older live build genuinely does not say,
     // and recording `false` would assert a policy nobody set.
     const { build_committed_at, reveal_breach_data, ...older } = liveHealth;
-    expect(parseHealth({ ...older, build_committed_at }).revealBreachData).toBeNull();
+    expect(okHealth({ ...older, build_committed_at }).revealBreachData).toBeNull();
   });
 });
 
@@ -90,15 +109,16 @@ describe("parseBuildInfo", () => {
 });
 
 describe("verifyDeployedCommit", () => {
-  const live = parseHealth(liveHealth);
+  const live = okHealth(liveHealth);
   // The real shape from 2026-08-10: marker e7e3f80 (#443's squash merge), stamped
   // into build-info.ts by the NEXT commit, 2ebd330, whose parent is e7e3f80.
-  const healthy = {
+  const healthy: RepoFacts = {
     exists: true,
     stampCommit: "2ebd33002d17440a60ec86e25756f7a0700545f2",
     stampParent: "e7e3f8098407557e427376029645633507962979",
     onMain: true,
     buildInfoSource: buildInfo("e7e3f80"),
+    sourceTreeDigest: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
   };
 
   it("verifies across the one-commit stamp offset", () => {
@@ -108,7 +128,7 @@ describe("verifyDeployedCommit", () => {
     // known before the commit exists, so the offset is inherent — never a bug to
     // "fix" in stamp-build.mjs.
     const verdict = verifyDeployedCommit({ live, repo: healthy });
-    expect(verdict.verified).toBe(true);
+    expect(verdict.markerProvenanceOk).toBe(true);
     expect(verdict.problems).toEqual([]);
     expect(verdict.warnings).toEqual([]);
   });
@@ -118,7 +138,7 @@ describe("verifyDeployedCommit", () => {
       live,
       repo: { exists: false, stampCommit: null, stampParent: null, onMain: null, buildInfoSource: null },
     });
-    expect(verdict.verified).toBe(false);
+    expect(verdict.markerProvenanceOk).toBe(false);
     expect(verdict.problems[0].code).toBe("unknown_commit");
   });
 
@@ -129,7 +149,7 @@ describe("verifyDeployedCommit", () => {
       live,
       repo: { ...healthy, stampCommit: null, stampParent: null, buildInfoSource: null },
     });
-    expect(verdict.verified).toBe(false);
+    expect(verdict.markerProvenanceOk).toBe(false);
     expect(verdict.problems[0].code).toBe("unstamped_marker");
   });
 
@@ -142,8 +162,8 @@ describe("verifyDeployedCommit", () => {
       live,
       repo: { ...healthy, stampParent: "0000000deadbeef0000000000000000000000000" },
     });
-    expect(verdict.verified).toBe(false);
-    expect(verdict.problems.map((p: any) => p.code)).toContain("marker_offset_mismatch");
+    expect(verdict.markerProvenanceOk).toBe(false);
+    expect(verdict.problems.map((p) => p.code)).toContain("marker_offset_mismatch");
     expect(verdict.problems[0].detail).toContain("does not sit where stamping would have put it");
   });
 
@@ -152,8 +172,8 @@ describe("verifyDeployedCommit", () => {
       live,
       repo: { ...healthy, buildInfoSource: buildInfo("fb812a6") },
     });
-    expect(verdict.verified).toBe(false);
-    expect(verdict.problems.map((p: any) => p.code)).toContain("marker_offset_mismatch");
+    expect(verdict.markerProvenanceOk).toBe(false);
+    expect(verdict.problems.map((p) => p.code)).toContain("marker_offset_mismatch");
   });
 
   it("catches a matching SHA with a mismatched timestamp", () => {
@@ -161,30 +181,61 @@ describe("verifyDeployedCommit", () => {
       live,
       repo: { ...healthy, buildInfoSource: buildInfo("e7e3f80", "2026-01-01T00:00:00-07:00") },
     });
-    expect(verdict.verified).toBe(false);
-    expect(verdict.problems.map((p: any) => p.code)).toContain("marker_offset_mismatch");
+    expect(verdict.markerProvenanceOk).toBe(false);
+    expect(verdict.problems.map((p) => p.code)).toContain("marker_offset_mismatch");
   });
 
   it("warns but still verifies a build deployed off main", () => {
     // Deploying a branch to debug something is legitimate; it just is not
     // reviewable through merged history. Flag it, do not block it.
     const verdict = verifyDeployedCommit({ live, repo: { ...healthy, onMain: false } });
-    expect(verdict.verified).toBe(true);
-    expect(verdict.warnings.map((w: any) => w.code)).toEqual(["not_on_main"]);
+    expect(verdict.markerProvenanceOk).toBe(true);
+    expect(verdict.warnings.map((w) => w.code)).toEqual(["not_on_main"]);
   });
 
   it("fails closed when build-info.ts cannot be read at the stamp commit", () => {
     const verdict = verifyDeployedCommit({ live, repo: { ...healthy, buildInfoSource: "" } });
-    expect(verdict.verified).toBe(false);
+    expect(verdict.markerProvenanceOk).toBe(false);
     expect(verdict.problems[0].code).toBe("unreadable_build_info");
   });
 });
 
-describe("buildLogEntry", () => {
-  it("records the transition, not just the snapshot", () => {
-    const live = parseHealth(liveHealth);
+describe("verifyLedgerConsistency", () => {
+  // The ledger and the deploy ref are two records of one fact, written by two
+  // git operations. If they can disagree silently, the ledger is not evidence.
+  it("accepts the empty initial state", () => {
+    expect(verifyLedgerConsistency({ lastEntryBuild: null, refBuild: null })).toEqual([]);
+  });
+
+  it("accepts a ref whose full SHA extends the recorded short marker", () => {
+    expect(
+      verifyLedgerConsistency({
+        lastEntryBuild: "e7e3f80",
+        refBuild: "e7e3f8098407557e427376029645633507962979",
+      }),
+    ).toEqual([]);
+  });
+
+  it("flags a log entry with no ref", () => {
+    const notes = verifyLedgerConsistency({ lastEntryBuild: "e7e3f80", refBuild: null });
+    expect(notes.map((n) => n.code)).toEqual(["ledger_ref_divergence"]);
+  });
+
+  it("flags a ref with no log entry", () => {
+    const notes = verifyLedgerConsistency({ lastEntryBuild: null, refBuild: "e7e3f80" });
+    expect(notes.map((n) => n.code)).toEqual(["ledger_ref_divergence"]);
+  });
+
+  it("flags a ref and log that name different builds", () => {
+    const notes = verifyLedgerConsistency({ lastEntryBuild: "fb812a6", refBuild: "e7e3f80" });
+    expect(notes.map((n) => n.code)).toEqual(["ledger_ref_divergence"]);
+  });
+
+  it("blocks recording, rather than merely warning", () => {
+    // Appending on top of an inconsistent ledger buries the inconsistency under
+    // a newer entry, which is the one outcome worse than noticing it late.
     const verdict = verifyDeployedCommit({
-      live,
+      live: okHealth(liveHealth),
       repo: {
         exists: true,
         stampCommit: "2ebd33002d17440a60ec86e25756f7a0700545f2",
@@ -192,38 +243,153 @@ describe("buildLogEntry", () => {
         onMain: true,
         buildInfoSource: buildInfo("e7e3f80"),
       },
+      ledger: { lastEntryBuild: "fb812a6", refBuild: null },
     });
+    expect(verdict.markerProvenanceOk).toBe(false);
+    expect(verdict.problems.map((p) => p.code)).toContain("ledger_ref_divergence");
+  });
+});
+
+describe("compareSourceTrees", () => {
+  it("reports equality only when both digests are present and match", () => {
+    expect(compareSourceTrees({ canonicalTreeDigest: "abc", mirrorTreeDigest: "abc" }).status).toBe("equal");
+    expect(compareSourceTrees({ canonicalTreeDigest: "abc", mirrorTreeDigest: "def" }).status).toBe("differs");
+  });
+
+  it("reports not_run — never equal — when a digest is missing", () => {
+    // No mirror checkout is a legitimate state. Treating "we did not look" as
+    // "they matched" is how an unrun step becomes a claimed one.
+    expect(compareSourceTrees({ canonicalTreeDigest: "abc", mirrorTreeDigest: null }).status).toBe("not_run");
+    expect(compareSourceTrees({ canonicalTreeDigest: null, mirrorTreeDigest: "abc" }).status).toBe("not_run");
+    expect(compareSourceTrees({ canonicalTreeDigest: null, mirrorTreeDigest: null }).status).toBe("not_run");
+  });
+});
+
+describe("the bound of the evidence", () => {
+  const repo: RepoFacts = {
+    exists: true,
+    stampCommit: "2ebd33002d17440a60ec86e25756f7a0700545f2",
+    stampParent: "e7e3f8098407557e427376029645633507962979",
+    onMain: true,
+    buildInfoSource: buildInfo("e7e3f80"),
+    sourceTreeDigest: "4f8ecef31bba28965211cc2fdef0a577d605c7ef",
+  };
+
+  it("cannot detect a post-sync edit to a NON-marker file, and must not pretend to", () => {
+    // THE CASE THAT DEFINES THIS MODULE'S CEILING.
+    //
+    // Scenario: after the mirror sync, system-prompt.ts is modified and
+    // build-info.ts is left untouched, then the function is deployed. /health
+    // still echoes the stamped marker, because build-info.ts is a static file
+    // the running code reads about ITSELF and no other file is reflected in it.
+    //
+    // Every input below is therefore IDENTICAL to a healthy deploy — that is the
+    // point. This test does not assert the drift is caught; it asserts the
+    // opposite, and pins the honest reporting of it. If someone later "fixes"
+    // this by flipping deployed_bytes_verified to true, this fails loudly.
+    const live = okHealth(liveHealth);
+    const verdict = verifyDeployedCommit({ live, repo });
     const entry = buildLogEntry({
-      live,
-      verdict,
-      recordedAt: "2026-08-10T13:36:07.000Z",
+      live, repo, verdict,
+      recordedAt: "2026-08-10T13:56:26.103Z",
       previousBuild: "fb812a6",
+      previousBuildSource: "operator",
+      mirror: { commit: "33d676e", treeDigest: "4f8ecef31bba28965211cc2fdef0a577d605c7ef" },
+    });
+
+    expect(verdict.markerProvenanceOk).toBe(true);
+    expect(verdict.problems).toEqual([]);
+    // ...and yet:
+    expect(entry.deployed_bytes_verified).toBe(false);
+    expect(entry.deployed_artifact_digest).toBeNull();
+    expect(entry.proves).toBe("observed-runtime-marker-maps-to-canonical-source-history");
+  });
+
+  it("never emits a bare `verified` field that a reader could over-read", () => {
+    const live = okHealth(liveHealth);
+    const verdict = verifyDeployedCommit({ live, repo });
+    const entry = buildLogEntry({
+      live, repo, verdict,
+      recordedAt: "x", previousBuild: null, previousBuildSource: "unknown", mirror: null,
+    });
+    expect(entry).not.toHaveProperty("verified");
+    expect(entry.deployed_bytes_verified).toBe(false);
+  });
+});
+
+describe("buildLogEntry", () => {
+  const repo: RepoFacts = {
+    exists: true,
+    stampCommit: "2ebd33002d17440a60ec86e25756f7a0700545f2",
+    stampParent: "e7e3f8098407557e427376029645633507962979",
+    onMain: true,
+    buildInfoSource: buildInfo("e7e3f80"),
+    sourceTreeDigest: "4f8ecef31bba28965211cc2fdef0a577d605c7ef",
+  };
+
+  it("records each fact separately", () => {
+    const live = okHealth(liveHealth);
+    const verdict = verifyDeployedCommit({ live, repo });
+    const entry = buildLogEntry({
+      live, repo, verdict,
+      recordedAt: "2026-08-10T13:56:26.103Z",
+      previousBuild: "fb812a6",
+      previousBuildSource: "operator",
+      mirror: { commit: "33d676e", treeDigest: "4f8ecef31bba28965211cc2fdef0a577d605c7ef" },
     });
     expect(entry).toEqual({
-      recorded_at: "2026-08-10T13:36:07.000Z",
-      build: "e7e3f80",
-      build_committed_at: "2026-08-10T06:31:35-07:00",
+      recorded_at: "2026-08-10T13:56:26.103Z",
+      runtime_marker: "e7e3f80",
+      runtime_marker_committed_at: "2026-08-10T06:31:35-07:00",
+      canonical_commit: "e7e3f80",
+      stamp_commit: "2ebd33002d17440a60ec86e25756f7a0700545f2",
+      stamp_parent: "e7e3f8098407557e427376029645633507962979",
+      canonical_tree_digest: "4f8ecef31bba28965211cc2fdef0a577d605c7ef",
+      mirror_commit: "33d676e",
+      mirror_tree_digest: "4f8ecef31bba28965211cc2fdef0a577d605c7ef",
+      mirror_tree_equality: "equal",
+      deployed_artifact_digest: null,
+      deployed_bytes_verified: false,
       previous_build: "fb812a6",
+      previous_build_source: "operator",
       reveal_breach_data: true,
-      verified: true,
+      marker_provenance_ok: true,
+      proves: "observed-runtime-marker-maps-to-canonical-source-history",
       warnings: [],
       problems: [],
     });
   });
 
-  it("serialises to one line, because the log is append-only JSONL", () => {
-    const live = parseHealth(liveHealth);
-    const verdict = verifyDeployedCommit({
-      live,
-      repo: {
-        exists: true,
-        stampCommit: "2ebd33002d17440a60ec86e25756f7a0700545f2",
-        stampParent: "e7e3f8098407557e427376029645633507962979",
-        onMain: false,
-        buildInfoSource: buildInfo("e7e3f80"),
-      },
+  it("records mirror_tree_equality as not_run without a mirror checkout", () => {
+    const live = okHealth(liveHealth);
+    const verdict = verifyDeployedCommit({ live, repo });
+    const entry = buildLogEntry({
+      live, repo, verdict,
+      recordedAt: "x", previousBuild: null, previousBuildSource: "unknown", mirror: null,
     });
-    const line = JSON.stringify(buildLogEntry({ live, verdict, recordedAt: "x", previousBuild: null }));
+    expect(entry.mirror_tree_equality).toBe("not_run");
+    expect(entry.mirror_commit).toBeNull();
+  });
+
+  it("distinguishes an unknown predecessor from no predecessor", () => {
+    const live = okHealth(liveHealth);
+    const verdict = verifyDeployedCommit({ live, repo });
+    const base = { live, repo, verdict, recordedAt: "x", mirror: null } as const;
+    expect(buildLogEntry({ ...base, previousBuild: null, previousBuildSource: "unknown" }))
+      .toMatchObject({ previous_build: null, previous_build_source: "unknown" });
+    expect(buildLogEntry({ ...base, previousBuild: "fb812a6", previousBuildSource: "ledger" }))
+      .toMatchObject({ previous_build: "fb812a6", previous_build_source: "ledger" });
+  });
+
+  it("serialises to one line, because the log is append-only JSONL", () => {
+    const live = okHealth(liveHealth);
+    const verdict = verifyDeployedCommit({ live, repo: { ...repo, onMain: false } });
+    const line = JSON.stringify(
+      buildLogEntry({
+        live, repo, verdict,
+        recordedAt: "x", previousBuild: null, previousBuildSource: "unknown", mirror: null,
+      }),
+    );
     expect(line).not.toContain("\n");
     expect(JSON.parse(line).warnings).toEqual(["not_on_main"]);
   });
