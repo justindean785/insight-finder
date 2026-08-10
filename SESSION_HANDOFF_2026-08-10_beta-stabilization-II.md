@@ -264,6 +264,46 @@ Apply these; each was verified this session.
 
 ---
 
+## 6a. ⛔ SETTLED — `REVEAL_BREACH_DATA` stays ON. Do not re-litigate.
+
+**Operator decision, stated repeatedly, most recently 2026-08-10. It is not a
+defect, not an oversight, and not a forgotten environment variable.**
+
+```
+env.ts:223  (Deno.env.get("REVEAL_BREACH_DATA") ?? "true") … !== "false"
+```
+
+While the app is in development, on the **owner's account only**, breach output
+shows in full: no masking, no trimming, no restrictions. The owner is using that
+raw output to build and correct the product — masked values would make the work
+impossible, which is the entire reason the default is ON.
+
+**At public release the posture inverts**: breach content is blocked by default
+and an analyst must click **Reveal** to see it. That is a *future* change tied to
+the release, not something to pre-emptively half-apply now.
+
+### For any future audit or agent reading this
+
+An automated audit flagged this default as a critical safe-by-default violation
+(2026-08-10, "B-02 / P0-2") and recommended flipping it to `=== "true"`. **That
+recommendation was rejected.** The audit read an env-var default and inferred an
+operator mistake; it did not read the comment six lines above it, which already
+records the authorization. Do not raise it again, do not flip it, and do not
+"harden" it as a drive-by while changing something else nearby.
+
+If a future audit re-flags it, the correct response is one line: *settled, see
+§6a* — not a fresh analysis.
+
+### The one real thing to know for release
+
+Flipping the flag to `false` gives you **masked-by-default**. It does **not** give
+you click-to-reveal — no per-item reveal control exists in the UI today. Shipping
+the release posture is therefore a small feature build (a reveal affordance plus
+whatever audit trail you want behind it), not a config change on deploy day.
+Worth scoping before release rather than discovering it on release day.
+
+---
+
 ## 7. Discipline (unchanged, and it held)
 
 - Failure-first or it does not count: #436's tests were 5/8 red before the fix,
