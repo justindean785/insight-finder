@@ -2,7 +2,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import {
   corsHeaders, MINIMAX_API_KEY, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY,
   OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
-  CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED,
+  CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED, REVEAL_BREACH_DATA,
   HIBP_API_KEY, EXA_API_KEY, FIRECRAWL_API_KEY, SERUS_API_KEY,
   GITHUB_API_TOKEN, PERPLEXITY_API_KEY, IPQUALITYSCORE_API_KEY,
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
@@ -435,6 +435,17 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     orchestrator_active_ok: orchestratorActiveOk,
     checks: r.checks,
     intelbase_enabled: INTELBASE_ENABLED,
+    // Account-level breach-reveal policy, surfaced for the same reason as the
+    // build marker: so it can be VERIFIED rather than assumed. It defaults ON in
+    // source, but an explicit REVEAL_BREACH_DATA=false in the deployed function's
+    // secrets silently overrides that — and there is no other way to observe which
+    // is in force without running a real breach query and reading the output.
+    //
+    // This cost real time on 2026-08-10: a case returned breach rows carrying only
+    // exposed_field CLASSES and no concrete values, and the deployed setting could
+    // not be distinguished from the model simply not recording them. One curl now
+    // answers it. Boolean only — never echo secret VALUES on a public endpoint.
+    reveal_breach_data: REVEAL_BREACH_DATA,
   };
   if (wantProbe) body.providers = providers;
   return new Response(
