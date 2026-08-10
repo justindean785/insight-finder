@@ -443,10 +443,22 @@ with `cannot delete from view`. Omit it from cleanup scripts; it recomputes.
 
 ## 8. Test baselines — measured today
 
-| Suite | Command | Result on `2ebd330` |
-| --- | --- | --- |
-| Frontend | `npx vitest run` | **1211 passed · 1 skipped · 102 files** (35 s) |
-| Edge | `npm run test:edge` | **not re-measured this session.** Last: 1135/0/5 on `3cac170` |
+| Suite | Command | Result on `2ebd330` | Where measured |
+| --- | --- | --- | --- |
+| Frontend | `npx vitest run` | **1211 passed · 1 skipped · 102 files** (35 s local, 95 s CI) | local + CI |
+| Edge | `npm run test:edge` | **1178 passed · 0 failed · 5 ignored** (48 s) | CI (see below) |
+| Migrations | psql validation | pass | CI |
+
+The edge number came from CI on `394cd0b` (= `2ebd330` plus one frontend-only test file, so
+it is `main`'s baseline), because Deno is not installed in this sandbox. It moved
+**1135 → 1178** since `3cac170`, consistent with the tests #442/#443 added. `CLAUDE.md`'s
+754/24 is stale by two baselines.
+
+**Using CI as the edge instrument is worth knowing about**: any PR gives you a clean
+`deno test` run on a provisioned toolchain without the local install dance, and the run
+that produced this number was the *failing* diagnostic PR — its Edge and Migrations jobs
+both passed. A red PR is still a usable measuring device; read the per-job conclusions, not
+the top-level X.
 
 Edge-suite gotchas that have each cost a session:
 
