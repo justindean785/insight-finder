@@ -58,6 +58,38 @@ export const AUTO_PERSIST_TOOL_DENYLIST = new Set<string>([
   "attribution_check", "date_sanity_check",
 ]);
 
+/**
+ * The subset of the denylist that is excluded for NOISE, not for correctness —
+ * eligible for the zero-evidence escalation below.
+ *
+ * WHY THIS EXISTS. The denylist above conflates two very different reasons to
+ * skip a tool, and that conflation is a durability hole. Recording, memory,
+ * planner and auto-recording tools must NEVER be scanned: their output is not
+ * findings, or is already persisted, so extracting from them would be wrong at
+ * any time. But the broad search and read tools are skipped only because
+ * auto-persisting them "blindly" is too noisy — the standing assumption being
+ * that the model will pick the good hits and call `record_artifacts`.
+ *
+ * When the model does not, that assumption leaves NO durability path at all. A
+ * run made entirely of these tools persists nothing, the persistence nudge is
+ * advisory, and if the isolate is CPU-killed the analyst gets zero artifacts
+ * from real completed work (production, 2026-08-06: three nudges,
+ * `record_artifact_calls: 0`, `artifact_count: 0`, CPU Time exceeded).
+ *
+ * So these become extractable ONLY in the escalated state — see the call site in
+ * index.ts, which requires BOTH that the model has fanned out without recording
+ * AND that the thread still holds zero artifacts. Noise is the price of the
+ * alternative being total evidence loss, and it is paid only in the state where
+ * the alternative is certain.
+ *
+ * Everything omitted here stays permanently excluded, escalation or not.
+ */
+export const ESCALATION_ELIGIBLE_TOOLS = new Set<string>([
+  "google_dorks", "minimax_web_search", "perplexity_search", "exa_search",
+  "osint_navigator_search", "osint_navigator_advise",
+  "gemini_vision", "jina_reader_scrape", "http_fingerprint", "firecrawl_scrape",
+]);
+
 /** Kinds we will auto-persist. Nothing sensitive is on this list — the identity
  *  kinds below (name/address/organization/username) are the SUBJECT's resolved
  *  identity, the whole point of the investigation; breach payloads (passwords,
@@ -453,8 +485,10 @@ export function extractFindings(
   output: unknown,
   input?: unknown,
   subjectSeedName?: string,
+  opts?: { escalated?: boolean },
 ): ExtractedFinding[] {
-  if (AUTO_PERSIST_TOOL_DENYLIST.has(toolName)) return [];
+  if (AUTO_PERSIST_TOOL_DENYLIST.has(toolName) &&
+      !(opts?.escalated && ESCALATION_ELIGIBLE_TOOLS.has(toolName))) return [];
   if (!output || typeof output !== "object") return [];
   const o = output as Record<string, unknown>;
   // Never extract from an explicit tool error.
@@ -925,6 +959,9 @@ export function extractFindings(
 export function extractStepFindings(
   toolResults: unknown[] | null | undefined,
   subjectSeedName?: string,
+  /** Zero-evidence escalation — see ESCALATION_ELIGIBLE_TOOLS. Default off, so
+   *  every existing caller and test keeps today's exact behaviour. */
+  opts?: { escalated?: boolean },
 ): Array<ExtractedFinding & { toolName: string }> {
   if (!Array.isArray(toolResults)) return [];
   const out: Array<ExtractedFinding & { toolName: string }> = [];
@@ -939,7 +976,7 @@ export function extractStepFindings(
     // collision). `args`/`parameters` cover older/alternate envelope shapes.
     const te = t as { input?: unknown; args?: unknown; parameters?: unknown };
     const input = te.input ?? te.args ?? te.parameters ?? null;
-    const findings = extractFindings(name, output, input, subjectSeedName);
+    const findings = extractFindings(name, output, input, subjectSeedName, opts);
     for (const f of findings) {
       const k = checkpointKey(f.kind, f.value);
       if (seen.has(k)) continue;

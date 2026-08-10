@@ -1084,7 +1084,17 @@ Deno.serve(async (req) => {
         // pass) so it never double-inserts a value record_artifacts or an earlier step
         // already wrote; the module also scrubs, caps, and denylists (never throws).
         if (!finalizeStarted && Array.isArray(toolResults) && toolResults.length > 0) {
-          const stepFindings = extractStepFindings(toolResults as unknown[], subjectSeedName);
+          // ZERO-EVIDENCE ESCALATION. `persistenceNudgeCount > 0` means the model
+          // has fanned out past the nudge threshold having called record_artifacts
+          // ZERO times — the request-scoped signal that it is not recording. In
+          // that state the broad search/read tools become extractable (see
+          // ESCALATION_ELIGIBLE_TOOLS); at all other times the denylist is intact
+          // and behaviour is byte-identical to before. Free to evaluate — the nudge
+          // counter is a closure local, no DB round-trip.
+          const escalated = persistenceNudgeCount > 0;
+          const stepFindings = extractStepFindings(
+            toolResults as unknown[], subjectSeedName, { escalated },
+          );
           // OBSERVABILITY — an empty extraction is a REPORTABLE outcome, not silence.
           // `auto_persist_step` used to log only when `inserted > 0`, so a step that
           // extracted nothing, a step where everything deduped, and a step where the
@@ -1108,6 +1118,28 @@ Deno.serve(async (req) => {
             const autoPersistTask = (async () => {
               try {
                 const seen = await loadSeenArtifactKeys(supabase, threadId);
+                // SECOND ESCALATION GATE — the nudge proves the model is not
+                // RECORDING; only this read proves the thread is actually EMPTY.
+                // The auto-persist backstop may well have been writing rows all
+                // along from non-denylisted tools, and in that case the run has a
+                // durability path already and the noisy search-derived rows are not
+                // worth their cost. So escalated output lands ONLY when the thread
+                // would otherwise finish with nothing at all — the state where the
+                // alternative is certain total evidence loss.
+                if (escalated && seen.size > 0) {
+                  console.log(JSON.stringify({
+                    event: "auto_persist_escalation_stood_down", thread_id: threadId,
+                    existing_artifacts: seen.size, candidates: stepFindings.length,
+                  }));
+                  return;
+                }
+                if (escalated) {
+                  console.log(JSON.stringify({
+                    event: "auto_persist_escalated", thread_id: threadId,
+                    reason: "nudge fired with zero record_artifacts calls and zero persisted artifacts",
+                    nudge_count: persistenceNudgeCount, candidates: stepFindings.length,
+                  }));
+                }
                 const res = await persistAutoFindings({ supabase, threadId, userId, seen }, stepFindings);
                 // Logged unconditionally now: `inserted: 0, skipped_duplicates: N`
                 // is the healthy steady state and must be distinguishable from the
