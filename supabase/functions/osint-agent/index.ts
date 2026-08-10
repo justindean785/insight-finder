@@ -20,7 +20,11 @@ import {
 } from "./env.ts";
 
 import { detectSeedServer } from "./validation.ts";
-import { extractStepFindings, persistAutoFindings, loadSeenArtifactKeys } from "./auto-persist-findings.ts";
+import {
+  extractStepFindings, persistAutoFindings, loadSeenArtifactKeys,
+  ESCALATION_ELIGIBLE_TOOLS, bufferEscalationCandidates, drainEscalationBuffer,
+  type ExtractedFinding,
+} from "./auto-persist-findings.ts";
 import {
   sanitizeToolOutput,
   capPartsSize,
@@ -772,6 +776,11 @@ Deno.serve(async (req) => {
     // Spam is bounded by the interval plus PERSISTENCE_NUDGE_MAX.
     let persistenceNudgedAt: number | null = null;
     let persistenceNudgeCount = 0;
+    // Escalation-eligible candidates from steps that ran BEFORE the nudge opened
+    // the zero-evidence gate. Memory-only and bounded (MAX_ESCALATION_BUFFER);
+    // request-scoped by construction, like the nudge counters above, so one run's
+    // buffer can never leak into another's. See bufferEscalationCandidates.
+    const escalationBuffer = new Map<string, ExtractedFinding & { toolName: string }>();
     // Wall-clock start for BOTH the finalize-reserve check (prepareStep) and the hard
     // deadline StopCondition below. Declared here so prepareStep's closure reads it.
     const runStartedAt = Date.now();
@@ -1095,6 +1104,34 @@ Deno.serve(async (req) => {
           const stepFindings = extractStepFindings(
             toolResults as unknown[], subjectSeedName, { escalated },
           );
+          // PRE-NUDGE BUFFER. The gate above can only open AFTER the nudge fires,
+          // and the nudge fires only after several unrecorded fan-out steps — so
+          // everything the run found before that point was denied by the denylist
+          // and never held anywhere. Worse, buildIntermediateStepPlan narrows the
+          // nudge step's activeTools to ["record_artifacts"] alone, so on the very
+          // step that opens the gate there is nothing to extract. Without this
+          // buffer the escalation only ever covered searches made AFTER the first
+          // nudge, which is not the failure being fixed.
+          //
+          // So every pre-gate step extracts its eligible candidates and HOLDS them
+          // in memory. Nothing is written until the gate opens; the second pass is
+          // skipped entirely unless the step actually ran an eligible tool.
+          if (!escalated) {
+            const names = (toolResults as Array<{ toolName?: unknown }>)
+              .map((r) => (typeof r?.toolName === "string" ? r.toolName : ""));
+            if (names.some((n) => ESCALATION_ELIGIBLE_TOOLS.has(n))) {
+              const eligible = extractStepFindings(
+                toolResults as unknown[], subjectSeedName, { escalated: true },
+              ).filter((f) => ESCALATION_ELIGIBLE_TOOLS.has(f.toolName));
+              const { added, dropped } = bufferEscalationCandidates(escalationBuffer, eligible);
+              if (added > 0 || dropped > 0) {
+                console.log(JSON.stringify({
+                  event: "escalation_buffer_held", thread_id: threadId,
+                  added, dropped, buffered: escalationBuffer.size,
+                }));
+              }
+            }
+          }
           // OBSERVABILITY — an empty extraction is a REPORTABLE outcome, not silence.
           // `auto_persist_step` used to log only when `inserted > 0`, so a step that
           // extracted nothing, a step where everything deduped, and a step where the
@@ -1130,23 +1167,38 @@ Deno.serve(async (req) => {
                   console.log(JSON.stringify({
                     event: "auto_persist_escalation_stood_down", thread_id: threadId,
                     existing_artifacts: seen.size, candidates: stepFindings.length,
+                    buffered_discarded: escalationBuffer.size,
                   }));
+                  // The thread has a durability path already, so the held candidates
+                  // are not needed. Release them rather than carrying them for the
+                  // rest of the run.
+                  escalationBuffer.clear();
                   return;
                 }
+                // Flush the pre-nudge buffer IN FRONT of this step's findings —
+                // the buffered rows are the oldest evidence and the most likely to
+                // be lost, so if the per-step cap truncates anything it must not be
+                // them. drainEscalationBuffer de-duplicates across both and empties
+                // the buffer, so a later escalated step cannot re-persist them.
+                const toPersist = escalated
+                  ? drainEscalationBuffer(escalationBuffer, stepFindings)
+                  : stepFindings;
                 if (escalated) {
                   console.log(JSON.stringify({
                     event: "auto_persist_escalated", thread_id: threadId,
                     reason: "nudge fired with zero record_artifacts calls and zero persisted artifacts",
-                    nudge_count: persistenceNudgeCount, candidates: stepFindings.length,
+                    nudge_count: persistenceNudgeCount,
+                    step_candidates: stepFindings.length,
+                    total_candidates: toPersist.length,
                   }));
                 }
-                const res = await persistAutoFindings({ supabase, threadId, userId, seen }, stepFindings);
+                const res = await persistAutoFindings({ supabase, threadId, userId, seen }, toPersist);
                 // Logged unconditionally now: `inserted: 0, skipped_duplicates: N`
                 // is the healthy steady state and must be distinguishable from the
                 // backstop never running.
                 console.log(JSON.stringify({
                   event: "auto_persist_step", thread_id: threadId,
-                  candidates: stepFindings.length,
+                  candidates: toPersist.length,
                   inserted: res.inserted, skipped_duplicates: res.skipped_duplicates,
                   // < inserted means artifacts landed with no chain-of-custody row.
                   evidence_appended: res.evidence_appended ?? 0,

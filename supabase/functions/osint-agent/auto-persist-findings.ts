@@ -90,6 +90,67 @@ export const ESCALATION_ELIGIBLE_TOOLS = new Set<string>([
   "gemini_vision", "jina_reader_scrape", "http_fingerprint", "firecrawl_scrape",
 ]);
 
+/** Ceiling on candidates held in memory awaiting the escalation gate. 2x the
+ *  per-step cap: enough to carry several barren steps, small enough that a long
+ *  run cannot grow the isolate's memory without bound. */
+export const MAX_ESCALATION_BUFFER = 120;
+
+/**
+ * Hold escalation-eligible candidates from steps that have ALREADY happened.
+ *
+ * WHY A BUFFER IS REQUIRED, not a nicety. The escalation gate can only open once
+ * `persistenceNudgeCount > 0`, and the nudge fires only after the model has fanned
+ * out several times without recording. Everything found in those earlier steps was
+ * denied by the denylist and never held anywhere, so it was already gone by the
+ * time the gate opened. Worse, `buildIntermediateStepPlan` narrows the nudge
+ * step's `activeTools` to `["record_artifacts"]` alone — so on the very step that
+ * opens the gate there are no search results to extract, and if the model then
+ * declines or fails and the run dies, escalation salvages NOTHING. Without this
+ * buffer the fix only ever covered searches performed AFTER the first nudge.
+ *
+ * The buffer is memory-only and bounded: nothing is written until the gate opens.
+ * Keyed by `checkpointKey(kind, value)` so a value seen across several steps is
+ * held once, matching the dedup the DB path applies later.
+ */
+export function bufferEscalationCandidates(
+  buffer: Map<string, ExtractedFinding & { toolName: string }>,
+  candidates: readonly (ExtractedFinding & { toolName: string })[],
+  cap: number = MAX_ESCALATION_BUFFER,
+): { added: number; dropped: number } {
+  let added = 0;
+  let dropped = 0;
+  for (const f of candidates) {
+    if (buffer.size >= cap) { dropped++; continue; }
+    const k = checkpointKey(f.kind, f.value);
+    if (buffer.has(k)) continue;
+    buffer.set(k, f);
+    added++;
+  }
+  return { added, dropped };
+}
+
+/**
+ * Drain the buffer in front of this step's findings, de-duplicated across both.
+ * Buffered candidates lead because they are the OLDEST evidence and therefore the
+ * most likely to be lost — if the per-step cap truncates anything, it must not be
+ * the rows that have already survived several steps unpersisted.
+ */
+export function drainEscalationBuffer(
+  buffer: Map<string, ExtractedFinding & { toolName: string }>,
+  stepFindings: readonly (ExtractedFinding & { toolName: string })[],
+): Array<ExtractedFinding & { toolName: string }> {
+  const out: Array<ExtractedFinding & { toolName: string }> = [];
+  const seen = new Set<string>();
+  for (const f of [...buffer.values(), ...stepFindings]) {
+    const k = checkpointKey(f.kind, f.value);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(f);
+  }
+  buffer.clear();
+  return out;
+}
+
 /** Kinds we will auto-persist. Nothing sensitive is on this list — the identity
  *  kinds below (name/address/organization/username) are the SUBJECT's resolved
  *  identity, the whole point of the investigation; breach payloads (passwords,
