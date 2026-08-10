@@ -6,7 +6,7 @@ import {
   GROUP_ORDER,
   type Group,
 } from "@/lib/intel";
-import { isCollisionArtifact } from "@/lib/report-hygiene";
+import { isClusterIneligible } from "@/lib/report-hygiene";
 import { isBreachKind } from "@/lib/breach-kinds";
 
 /**
@@ -151,7 +151,12 @@ function isConflict(a: Artifact): boolean {
   const m = (a.metadata ?? {}) as Record<string, unknown>;
   const k = a.kind.toLowerCase();
   return (
-    isCollisionArtifact(a) ||
+    // isClusterIneligible covers the legacy collision flags AND subject_unlinked.
+    // This predicate does two jobs here: it sets the node's `conflict` flag (so a
+    // quarantined row renders as visibly inert rather than as ordinary evidence)
+    // and it gates edge construction at :262 — without it a quarantined artifact
+    // acquired identity edges into the subject's network.
+    isClusterIneligible(a) ||
     m.conflict === true ||
     m.collision === true ||
     m.false_positive === true ||

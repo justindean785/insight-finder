@@ -6,7 +6,7 @@ import {
   isUsernameSweepSource,
   type ReviewAdjustment,
 } from "@/lib/intel";
-import { isCollisionArtifact } from "@/lib/report-hygiene";
+import { isClusterIneligible } from "@/lib/report-hygiene";
 import { isBreachKind } from "@/lib/breach-kinds";
 
 /**
@@ -94,7 +94,11 @@ function isConflicted(a: Artifact): boolean {
   // rows in production. The literal made the SAME evidence conflicted or not
   // depending only on when it was written. This makes the existing rule apply
   // uniformly; it does not introduce a new one.
-  return isCollisionArtifact(a) || m.conflict === true || m.collision === true || m.false_positive === true || isBreachKind(k) || k.endsWith("_conflict");
+  // isClusterIneligible covers the legacy collision flags AND subject_unlinked.
+  // Without the quarantine half, a name-only harvest inflated BOTH dimensions it
+  // feeds: `live` (selector breadth) counted quarantined selectors as coverage,
+  // and the Identity score rose off clusters built from them.
+  return isClusterIneligible(a) || m.conflict === true || m.collision === true || m.false_positive === true || isBreachKind(k) || k.endsWith("_conflict");
 }
 
 export function buildConfidenceProfile(input: {

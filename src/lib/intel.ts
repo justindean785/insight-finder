@@ -8,6 +8,7 @@ import {
   clusterDisplayId,
   bucketQualifiesAsCluster,
   isCollisionArtifact,
+  isClusterIneligible,
   sanitizeValueForLabel,
   reportDisplayKind,
   reservedNumberAnnotation,
@@ -1692,7 +1693,13 @@ export function buildIdentityClusters(
     // re-promoted analyst-dismissed artifacts into CONFIRMED clusters.
     const rev = reviews?.[a.id];
     if (rev === "dismissed" || rev === "wrong") return false;
-    if (isCollisionArtifact(a)) return false;
+    // isClusterIneligible, not isCollisionArtifact: the latter tests only the
+    // legacy collision flags, and NONE of the 104 subject_unlinked artifacts in
+    // production carry any of them (measured 2026-08-10 across all 4 affected
+    // threads). The gate was not leaky — it was inapplicable, so every
+    // quarantined row entered clustering and from there drove the report, the
+    // Clusters tab, the graph, the Identity score and the cluster audit.
+    if (isClusterIneligible(a)) return false;
     return true;
   });
 

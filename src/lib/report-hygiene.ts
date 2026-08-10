@@ -10,6 +10,7 @@
 
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { isUsernameSweepSource } from "@/lib/intel";
+import { isSubjectUnlinked } from "@/lib/quarantine";
 
 // ---------------------------------------------------------------------------
 // #1 — Deterministic, ASCII-safe cluster IDs.
@@ -116,6 +117,41 @@ export function isCollisionArtifact(a: Artifact): boolean {
   // already buckets status:"excluded" as excluded — this aligns the markdown report + clustering.)
   if (typeof m.status === "string" && m.status.toLowerCase() === "excluded") return true;
   return m.excluded_collision === true || m.collision === true || m.possible_collision === true;
+}
+
+// ---------------------------------------------------------------------------
+// #6b — The PROMOTE boundary for `subject_unlinked`.
+//
+// WHY THIS IS A SEPARATE PREDICATE AND NOT A WIDENED `isCollisionArtifact`.
+// Widening the one above is the obvious one-line fix and it is wrong twice over:
+//
+//  1. `isCollisionArtifact` is also the report's collision-SECTION membership
+//     test (`intel.ts:1099` → `collisionIds`).
+//  2. `intel.ts:1137` builds `conflictNoted` with `if (collisionIds.has(a.id))
+//     return false;` — and `conflictNoted` is the branch that quotes a row's own
+//     `subject_unlinked_reason` verbatim (`intel.ts:1150`).
+//
+// So folding quarantine into `isCollisionArtifact` would MOVE every quarantined
+// row out of the section that states exactly why the pipeline distrusted it and
+// into the generic collision list, replacing the backend's own words with
+// boilerplate. The report would get quietly worse while the clustering bug
+// looked fixed. Keeping quarantine a distinct signal preserves both surfaces.
+//
+// AUTHORITY, NOT EVIDENCE. This makes a quarantined row inert; it never hides
+// it. The row stays on the Evidence board, stays in the report's collision
+// section with its reason, and stays a node in the entity graph — flagged. What
+// it may no longer do is seed or strengthen the subject's identity.
+// ---------------------------------------------------------------------------
+
+/**
+ * May this artifact seed or strengthen the subject's identity?
+ *
+ * `false` for a legacy collision flag OR a `subject_unlinked` quarantine. Use at
+ * every surface that grants identity authority — clustering, graph edges,
+ * confidence dimensions — so the two signals can never drift apart again.
+ */
+export function isClusterIneligible(a: Artifact): boolean {
+  return isCollisionArtifact(a) || isSubjectUnlinked(a.metadata);
 }
 
 // ---------------------------------------------------------------------------
