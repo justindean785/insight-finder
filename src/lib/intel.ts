@@ -3,6 +3,7 @@ import { detectSeed, extractDisplaySeed } from "@/lib/seed";
 import { toolActionLabel } from "@/lib/tool-display";
 import { humanizeSourceChain, tokenizeSourceChain } from "@/lib/report-source-labels";
 import { deriveToolStatus, deriveToolReason } from "@/lib/tool-run";
+import { isSubjectUnlinked } from "@/lib/quarantine";
 import {
   clusterDisplayId,
   bucketQualifiesAsCluster,
@@ -1125,8 +1126,12 @@ export function buildReportMarkdown(input: ReportInput): string {
    * contradicting the report's own header banner, which had already warned that
    * a same-name collision was detected and that phone area codes disagreed.
    * The integrity work was done and then discarded at the presentation layer.
+   *
+   * The predicate now lives in `@/lib/quarantine` — the same one the pivot engine
+   * consults to keep a quarantined selector out of the actionable list. One
+   * definition, so the surface that DESCRIBES a collision and the surface that
+   * refuses to ACT on it can never drift apart.
    */
-  const isSubjectUnlinked = (m: Record<string, unknown>): boolean => m.subject_unlinked === true;
 
   const conflictNoted = artifacts.filter((a) => {
     if (collisionIds.has(a.id)) return false;
