@@ -28,6 +28,7 @@ import {
   type PivotType,
 } from "@/lib/intel";
 import { humanizeLeadReason, normalizeTarget } from "@/lib/next-step-cards";
+import { isInert, quarantineSets } from "@/lib/quarantine";
 import { toDisplayPivots, type RecommendedPivot } from "@/lib/recommended-pivots";
 
 export type PivotPriority = "high" | "medium" | "low";
@@ -164,6 +165,17 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
 
   const artifactById = new Map(artifacts.map((a) => [a.id, a]));
 
+  // --- collision quarantine (`subject_unlinked`) --------------------------
+  // The backend stamps every row harvested from a name-only query, and #434 bound
+  // that flag across the edge function (graph nodes, recovery salvage, collision
+  // corroboration). It stopped at the network boundary: the flag reached the
+  // client as pure DESCRIPTION, read only by the report's collision section, so
+  // the disputed selectors kept surfacing here as ordinary "Run this pivot" cards
+  // — the one-click path onto a same-name stranger. Computed over ALL artifacts
+  // (not just pivotable kinds) so a quarantined row of any kind still speaks for
+  // its selector.
+  const quarantine = quarantineSets(artifacts, normalizeTarget);
+
   // Findings already carry #185 filtering + status via buildPivots.
   const findings = buildPivots(artifacts, seedValue);
   const findingByKey = new Map<string, Pivot>();
@@ -216,6 +228,13 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
   for (const c of candidates) {
     const k = normalizeTarget(c.value);
     if (skipSet.has(k) || (seedKey && k === seedKey)) continue; // hard-hide
+    // Quarantined selector — inert, never actionable. Applied to BOTH origins on
+    // purpose: the metadata guard further down only inspects finding-origin
+    // candidates, so a quarantined value the model wrote into the report's
+    // "Recommended pivots" would otherwise walk straight past it. The row itself
+    // is untouched and still renders on the Evidence board and in the report's
+    // collision section — this removes the ACTION, not the evidence.
+    if (isInert(k, quarantine)) continue;
     // Defensive: report recommendations for a value that later resolved to an
     // infra domain artifact should still never surface (buildPivots drops them,
     // extractRecommendedPivots drops them; this backstops any survivor).
