@@ -34,10 +34,24 @@ function bareDigestCallSites(sql: string): string[] {
     .filter((l) => /(^|[^.\w])digest\s*\(/i.test(l));
 }
 
+/**
+ * Migrations that DEFINE the function — `CREATE [OR REPLACE] FUNCTION` only.
+ *
+ * The match was previously any `FUNCTION public.<fn>` occurrence, which also
+ * catches `REVOKE`/`GRANT ... ON FUNCTION`, `ALTER FUNCTION` and `DROP FUNCTION`.
+ * A privilege-only migration then sorted last and was asserted against as though
+ * it were the definition, so a REVOKE migration failed "the LAST definition
+ * actually calls extensions.digest" — a file that contains no function body at
+ * all. Privilege migrations on this function are expected to keep landing, so
+ * the selector has to name what it actually means.
+ *
+ * This NARROWS what is selected, never what is asserted: the three checks below
+ * still run against the true final definition.
+ */
 function migrationsDefining(fn: string): string[] {
   return readdirSync(MIGRATIONS)
     .filter((f) => f.endsWith(".sql"))
-    .filter((f) => new RegExp(`FUNCTION\\s+public\\.${fn}\\b`, "i").test(
+    .filter((f) => new RegExp(`CREATE\\s+(?:OR\\s+REPLACE\\s+)?FUNCTION\\s+public\\.${fn}\\b`, "i").test(
       readFileSync(path.join(MIGRATIONS, f), "utf8"),
     ))
     .sort();
@@ -63,6 +77,31 @@ describe("record_analyst_feedback keeps digest() schema-qualified", () => {
     const files = migrationsDefining(FN);
     const sql = readFileSync(path.join(MIGRATIONS, files[files.length - 1]), "utf8");
     expect(sql).toMatch(/extensions\.digest\s*\(/);
+  });
+
+  it("selects only real definitions — a privilege-only migration is not one", () => {
+    // Pins the narrowing above. Without this, someone restoring the loose regex
+    // sees three green tests and a fourth that fails for a reason that reads like
+    // a digest defect when it is really a selector defect.
+    const files = migrationsDefining(FN);
+    for (const f of files) {
+      const sql = readFileSync(path.join(MIGRATIONS, f), "utf8");
+      expect(
+        new RegExp(`CREATE\\s+(?:OR\\s+REPLACE\\s+)?FUNCTION\\s+public\\.${FN}\\b`, "i").test(sql),
+        `${f} was selected as a definition but contains no CREATE FUNCTION for ${FN}`,
+      ).toBe(true);
+    }
+    // A GRANT/REVOKE-only migration mentions the function but must not be picked.
+    const privilegeOnly = readdirSync(MIGRATIONS)
+      .filter((f) => f.endsWith(".sql"))
+      .filter((f) => {
+        const sql = readFileSync(path.join(MIGRATIONS, f), "utf8");
+        return new RegExp(`(?:REVOKE|GRANT)[\\s\\S]*?ON\\s+FUNCTION\\s+public\\.${FN}\\b`, "i").test(sql)
+          && !new RegExp(`CREATE\\s+(?:OR\\s+REPLACE\\s+)?FUNCTION\\s+public\\.${FN}\\b`, "i").test(sql);
+      });
+    for (const f of privilegeOnly) {
+      expect(files, `${f} is privilege-only and must not count as a definition`).not.toContain(f);
+    }
   });
 
   it("the historical broken migration is still present and still broken", () => {
