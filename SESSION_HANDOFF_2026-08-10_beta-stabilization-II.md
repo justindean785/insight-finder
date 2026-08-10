@@ -63,16 +63,32 @@ code did not probe the semantics.
   never held anywhere. Worse, `buildIntermediateStepPlan` narrows the nudge step's
   `activeTools` to `["record_artifacts"]` alone, so the very step that opens the
   gate has no search result to extract. The fix only ever covered searches made
-  AFTER the first nudge, which is not the failure it claimed to close. A bounded,
-  memory-only pre-nudge buffer now holds candidates and flushes them when the gate
-  opens.
+  AFTER the first nudge, which is not the failure it claimed to close.
 
-**The lesson worth carrying:** on this codebase, unit tests confirm that a
-function does what its author meant. They do not confirm that the surrounding
-state machine reaches that function with the right inputs at the right time. The
-two defects above were both timeline/identity errors, not logic errors, and both
-were invisible to every gate. Prefer a test that replays the real step sequence
-over one that calls the helper directly.
+- **#437, SECOND ROUND — the buffer was filled and never drained.** The fix for the
+  above added a pre-nudge buffer, and review found it *still* failed the same
+  timeline. Production gated the whole backstop on `toolResults.length > 0` and the
+  persist task on `stepFindings.length > 0`. A declined nudge step produces no tool
+  result; a later barren step extracts nothing. Both gates skipped, the buffer never
+  drained, the run still died empty. **The regression test hid it**: `replayRun`
+  branched on `stepFindings.length > 0 || buffer.size > 0` while `index.ts` shipped
+  `stepFindings.length > 0`. Now `decideBackstopAction` is a pure function that
+  *production calls* — one definition, asserted by the tests, with a source-level
+  check that the tool-result gate cannot come back. The flush is also bounded
+  (`MAX_ESCALATION_FLUSH`), since `persistAutoFindings` applies no row cap and a
+  full buffer plus a full step would have handed it 180 rows.
+
+**The lesson worth carrying**, and it earned a second telling: on this codebase,
+unit tests confirm that a function does what its author meant. They do not confirm
+that the surrounding state machine reaches that function with the right inputs at
+the right time. Every defect found in review here was a timeline or identity error,
+not a logic error, and every one was invisible to a green suite.
+
+The sharper form, from the second #437 round: **a behavioural test must DRIVE the
+shipped control flow, never re-describe it.** The first attempt replayed the real
+step sequence — and still passed against broken code, because it replayed that
+sequence through its own, slightly more permissive copy of the branch. If a test
+needs the branch, export the branch and call it.
 
 They are deliberately separate: #436 ships the moment it merges, #437 ships
 nothing until the full recipe runs, and #438 is already in the database. Merging
@@ -140,6 +156,16 @@ byte-identical.
 Plus a bounded, memory-only **pre-nudge buffer** — without which the gate opened
 onto an empty room (§2.1). Candidates are held from every pre-gate step and
 flushed oldest-first when the gate opens; nothing is written until then.
+
+**`decideBackstopAction` is the branch**, exported and called by `index.ts`, not a
+description of it. The outer gate is `!finalizeStarted` alone — requiring tool
+results is what made the buffer unreachable on a declined nudge step. The flush is
+bounded by `MAX_ESCALATION_FLUSH` and retains its overflow rather than dropping it,
+because `persistAutoFindings` applies no row cap of its own.
+
+**Verified, not assumed:** removing only the `buffered_escalation` branch fails
+three tests including the end-to-end timeline — the same timeline that passed
+against the earlier, broken production code.
 
 **Deliberately not attempted:** the backstop is still detached via
 `EdgeRuntime.waitUntil`, so it can still die with the isolate. Bound-awaiting it
