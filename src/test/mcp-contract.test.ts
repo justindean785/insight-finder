@@ -129,20 +129,28 @@ describe("mcp contract — KNOWN INTEGRITY GAPS (documented, not yet fixed)", ()
   });
 
   /**
-   * Gap 2 — the thread-ownership check races the data reads. RLS still
-   * prevents cross-user reads, so this is not a demonstrated tenant-isolation
-   * vulnerability, but the application-level guard is decorative: the
-   * subordinate queries are already in flight before its result is known.
+   * Gap 2 is CLOSED — kept as a positive assertion so it cannot regress.
    *
-   * When ownership is serialized ahead of the reads, replace this with the
-   * positive assertion — that the messages/artifacts queries appear only
-   * AFTER the ownership result is awaited.
+   * The ownership check used to sit inside the same Promise.all as the data
+   * reads, so messages/artifacts were in flight before its result existed.
+   * RLS still prevented cross-user reads, so this was never a demonstrated
+   * tenant-isolation vulnerability — but the application-level guard was
+   * decorative. Ownership must now settle, and both guards must return, before
+   * any subordinate read is issued.
    */
-  it("get_investigation still launches the ownership check concurrently (gap 2)", () => {
-    expect(GET).toContain("await Promise.all([");
-    const parallel = GET.slice(GET.indexOf("await Promise.all(["), GET.indexOf("]);"));
-    expect(parallel).toContain('sb.from("threads")');
-    expect(parallel).toContain('sb.from("messages")');
-    expect(parallel).toContain('sb.from("artifacts")');
+  it("get_investigation settles ownership before issuing subordinate reads", () => {
+    const ownership = GET.indexOf('.from("threads")');
+    const notFoundGuard = GET.indexOf('"Investigation not found"');
+    const messages = GET.indexOf('sb.from("messages")');
+    const artifacts = GET.indexOf('sb.from("artifacts")');
+
+    expect(ownership).toBeGreaterThan(-1);
+    expect(notFoundGuard, "the not-found guard must follow the ownership query").toBeGreaterThan(ownership);
+    expect(messages, "messages must be read only after the ownership guard").toBeGreaterThan(notFoundGuard);
+    expect(artifacts, "artifacts must be read only after the ownership guard").toBeGreaterThan(notFoundGuard);
+
+    // The ownership query must never rejoin the parallel batch.
+    const parallel = GET.slice(GET.indexOf("await Promise.all(["));
+    expect(parallel).not.toContain('.from("threads")');
   });
 });

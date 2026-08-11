@@ -96,6 +96,13 @@ Then follow the normal backend recipe in `CLAUDE.md`: review the diff, push to t
 mirror, and treat the **explicit Lovable deploy** as a separate step. A mirror push
 syncs code; it does not deploy.
 
+**Canonical ↔ mirror state (row 2 of the table above): canonical is AHEAD.**
+`get-investigation.ts` here serializes the thread-ownership check ahead of the
+subordinate reads; the mirror copy still issues all three queries under one
+`Promise.all`. This repo is source of truth, so the sync direction is canonical →
+mirror, and it has not been done yet. Nothing detects this automatically — it is
+recorded here by hand, and the contract test stays green either way.
+
 ## Open integrity issue — read before extending this
 
 `get_investigation` returns `messages` and `artifacts` via `select("*")`, verbatim, as
