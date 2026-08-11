@@ -15,8 +15,22 @@ import * as path from "path";
  * tool-registry.ts, and the edge suite's reviews_wiring_test.ts reading
  * index.ts off disk.
  *
- * This test IS the drift alarm. A failure means the canonical record and the
- * deployed function have diverged — investigate before "fixing" the test.
+ * SCOPE — read before trusting a green run. This is a CANONICAL CONTRACT LOCK,
+ * NOT a canonical↔mirror or canonical↔production drift detector. It reads only
+ * src/lib/mcp/** from THIS checkout. It never opens the Lovable mirror and never
+ * touches the deployed function, so a mirror-only edit or a regenerated
+ * `supabase/functions/mcp/index.ts` can diverge from this record while every
+ * assertion below stays green.
+ *
+ * What a FAILURE means: the canonical source changed without its recorded
+ * contract changing (or vice versa) — investigate before "fixing" the test.
+ * What a PASS means: only that the canonical source still matches this record.
+ *
+ * The three states are independent and must be checked separately:
+ *   1. canonical contract    — this test
+ *   2. canonical↔mirror sync — diff src/lib/mcp/** against the mirror's copy
+ *   3. deployed reality      — independent production verification
+ * See src/lib/mcp/README.md for how to do 2 and 3.
  */
 
 const MCP_DIR = path.resolve(process.cwd(), "src/lib/mcp");
@@ -95,10 +109,12 @@ describe("mcp contract — security posture", () => {
 
 describe("mcp contract — KNOWN INTEGRITY GAPS (documented, not yet fixed)", () => {
   /**
-   * These assertions deliberately encode the CURRENT deployed behaviour so it
-   * cannot change silently in either direction. When a fix lands, update these
-   * in the SAME commit — a green suite must never mean "the gap is closed"
-   * when it only means "nobody looked".
+   * These assertions deliberately encode the canonical record of the behaviour
+   * as audited on 2026-08-11, so it cannot change silently in either direction.
+   * They assert what the canonical source says — NOT what production is running;
+   * confirming the deployed function still matches requires separate production
+   * verification. When a fix lands, update these in the SAME commit — a green
+   * suite must never mean "the gap is closed" when it only means "nobody looked".
    *
    * Gap 1 — raw rows bypass the report/evidence integrity layers. `metadata`
    * is returned verbatim, and quarantine state (`subject_unlinked`) lives

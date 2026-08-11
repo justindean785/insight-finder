@@ -55,13 +55,38 @@ Consequences, both intentional:
 Because these files are not typechecked, `src/test/mcp-contract.test.ts` asserts their
 contract **as source text**, the same way `catalog-guidance.test.ts` reads
 `tool-registry.ts` and the edge suite's `reviews_wiring_test.ts` reads `index.ts`.
-That test is the drift alarm. If it fails, this copy and the deployed function have
-diverged, or someone changed the contract without changing the record.
+That test is a **canonical contract lock**, not a drift detector. It reads only
+`src/lib/mcp/**` from this checkout — it never opens the mirror and never touches the
+deployed function. A failure means the canonical source changed without its recorded
+contract changing, or vice versa. A pass means only that those two still agree; it says
+nothing about the mirror or production, and a mirror-only edit can diverge from this
+record while the suite stays green.
+
+## Three independent states — do not conflate them
+
+Nothing in CI can collapse these into one check, because this repo's CI is deliberately
+offline (no mirror clone, no network calls, no deploy probe). Each is verified its own
+way:
+
+| State | How to check | Automated? |
+|---|---|---|
+| Canonical contract intact | `src/test/mcp-contract.test.ts` | ✅ in CI |
+| Canonical ↔ mirror in sync | `diff -r src/lib/mcp <mirror-clone>/src/lib/mcp` | ❌ manual |
+| Deployed function matches | independent production verification | ❌ manual |
+
+Only the first is automated. Treating a green suite as evidence for the other two is
+the exact mistake this table exists to prevent — and it is the same class of error as
+"a mirror merge is not a deploy" in `CLAUDE.md`.
+
+For the third state, note that the deployed artifact is *generated* from this source,
+so it is not byte-comparable to it. A live probe of the MCP endpoint's tool list and
+behaviour is the only real evidence, and per `CLAUDE.md` an agent's own "deployed"
+report is not proof.
 
 ## Syncing
 
 Paths are identical on both sides, so the sync is a straight copy — keep it that way,
-because a path translation is exactly where drift re-enters:
+because a path translation is exactly where divergence re-enters:
 
 ```bash
 cp -R src/lib/mcp/. <mirror-clone>/src/lib/mcp/
