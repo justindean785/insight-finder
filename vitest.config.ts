@@ -16,6 +16,9 @@ export default defineConfig({
       exclude: [
         "src/**/*.{test,spec}.{ts,tsx}",
         "src/test/**",
+        // Governed record of the Lovable-deployed `mcp` edge function. Never
+        // imported, built, or executed by this app — see src/lib/mcp/README.md.
+        "src/lib/mcp/**",
         "src/components/ui/**",
         "src/integrations/**",
         "src/vite-env.d.ts",
