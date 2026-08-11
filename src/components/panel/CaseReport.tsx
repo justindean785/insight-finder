@@ -32,7 +32,7 @@ import {
   isReputationArtifact,
   type ConfLabel,
 } from "@/lib/intel";
-import { formatArtifactDisplayValue } from "@/lib/report-hygiene";
+import { formatArtifactDisplayValue, buildIdentityRows, type IdentityRow } from "@/lib/report-hygiene";
 import { toolActionLabel } from "@/lib/tool-display";
 import { tokenizeSourceChain } from "@/lib/report-source-labels";
 import { cn } from "@/lib/utils";
@@ -220,66 +220,6 @@ function ConfPill({ label }: { label: ConfLabel }) {
 /* ------------------------------------------------------------------ */
 /* Derivations                                                         */
 /* ------------------------------------------------------------------ */
-
-type IdentityRow = { field: string; value: string; label: ConfLabel };
-
-function pickBest(artifacts: Artifact[], kinds: string[]): Artifact | null {
-  const pool = artifacts.filter((a) => kinds.includes(String(a.kind ?? "").toLowerCase()));
-  if (!pool.length) return null;
-  const rank: Record<ConfLabel, number> = {
-    CONFIRMED: 6, CORRELATED: 5, INFERRED: 4, VERIFY: 3, LOW: 2, CONFLICT: 1, FAILED: 0,
-  };
-  return pool.slice().sort((a, b) => {
-    const ra = rank[labelForArtifact(a)] ?? 0;
-    const rb = rank[labelForArtifact(b)] ?? 0;
-    if (ra !== rb) return rb - ra;
-    return (b.confidence ?? 0) - (a.confidence ?? 0);
-  })[0];
-}
-
-function pickAllEmails(artifacts: Artifact[]): Artifact[] {
-  const seen = new Set<string>();
-  const out: Artifact[] = [];
-  for (const a of artifacts.filter((x) => String(x.kind ?? "").toLowerCase() === "email")) {
-    const k = String(a.value ?? "").toLowerCase();
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push(a);
-  }
-  return out;
-}
-
-function buildIdentityRows(artifacts: Artifact[]): IdentityRow[] {
-  const rows: IdentityRow[] = [];
-  const name = pickBest(artifacts, ["name", "person"]);
-  if (name) rows.push({ field: "Real name", value: name.value, label: labelForArtifact(name) });
-
-  const dob = pickBest(artifacts, ["dob"]);
-  if (dob) rows.push({ field: "Date of birth", value: dob.value, label: labelForArtifact(dob) });
-
-  const age = pickBest(artifacts, ["age"]);
-  if (age && !dob) rows.push({ field: "Age", value: age.value, label: labelForArtifact(age) });
-
-  const phone = pickBest(artifacts, ["phone"]);
-  if (phone) rows.push({ field: "Phone", value: phone.value, label: labelForArtifact(phone) });
-
-  const region = pickBest(artifacts, ["location", "geo", "address"]);
-  if (region) rows.push({ field: "Likely region", value: region.value, label: labelForArtifact(region) });
-
-  const emails = pickAllEmails(artifacts);
-  emails.forEach((e, i) => {
-    rows.push({
-      field: i === 0 ? "Primary email" : i === 1 ? "Alt email" : `Email ${i + 1}`,
-      value: e.value,
-      label: labelForArtifact(e),
-    });
-  });
-
-  const gender = pickBest(artifacts, ["gender"]);
-  if (gender) rows.push({ field: "Gender (implied)", value: gender.value, label: labelForArtifact(gender) });
-
-  return rows;
-}
 
 type RegistrationRow = {
   site: string;

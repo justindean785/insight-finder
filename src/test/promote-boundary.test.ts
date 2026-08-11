@@ -33,6 +33,7 @@ import { buildEntityGraph } from "@/lib/entity-graph";
 import { buildConfidenceProfile } from "@/lib/confidence-dimensions";
 import { artifactsToClusterAudit } from "@/lib/audit/from-artifacts";
 import { isSubjectUnlinked } from "@/lib/quarantine";
+import { buildIdentityRows } from "@/lib/report-hygiene";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 
 const NOW = "2026-08-10T15:11:15.413Z";
@@ -373,5 +374,55 @@ describe("promote boundary — cluster audit", () => {
     // as strings so a numeric cell can still be matched rather than silently skipped.
     const citedValues = audit.flatMap((c) => c.cells.map((cell) => String(cell.value)));
     expect(citedValues.filter((v) => quarantinedValues.has(v))).toEqual([]);
+  });
+});
+
+// ── Surface 6: the CaseReport Identity panel ────────────────────────────────
+// The workspace Report tab's Identity panel (CaseReport.tsx) is the surface an
+// analyst actually reads. It is an AUTHORITY surface — "Real name", "Phone",
+// "Alt email" are claims that the row belongs to the subject. A quarantined row
+// appearing there as "Alt email" asserts the very linkage quarantine says is
+// unproven. This is a different component from buildReportMarkdown (Surface 5);
+// it was found by visual check during verification and is closed here.
+//
+// `buildIdentityRows` was extracted to report-hygiene.ts as a pure function so
+// it is testable without exporting from the component. It uses the SAME
+// `isClusterIneligible` predicate as the other four surfaces, so the two
+// signals can never drift apart here either.
+describe("promote boundary — CaseReport Identity panel", () => {
+  it("never presents a quarantined artifact as a subject identity field", () => {
+    const rows = buildIdentityRows(FIXTURE);
+    const leaked = rows.filter((r) =>
+      FIXTURE.filter((a) => QUARANTINED_IDS.has(a.id)).some((a) => a.value === r.value),
+    );
+    expect(leaked).toEqual([]);
+  });
+
+  it("still presents the clean row — the fix removes authority, not evidence", () => {
+    const rows = buildIdentityRows(FIXTURE);
+    const cleanName = FIXTURE.find((a) => a.id === CLEAN_ID)!;
+    expect(rows.some((r) => r.value === cleanName.value && r.field === "Real name")).toBe(true);
+  });
+
+  // Over-block guard, matching the entity-graph assertion at line 230. The fix
+  // removes identity AUTHORITY; it must not remove the row from the Evidence
+  // board or the report's collision section. Those surfaces are tested above;
+  // this just pins that buildIdentityRows itself doesn't over-block by accepting
+  // a clean corroboration that restores a value's authority.
+  it("does not over-block: a clean row restoring a value lets it appear", () => {
+    const cleanEmail: Artifact = {
+      id: "33333333-3333-4333-8333-333333333333",
+      kind: "email",
+      value: "test.subject1@example.com", // same value as a quarantined row
+      confidence: 80,
+      source: "hibp",
+      created_at: NOW,
+      metadata: { parent: "test.subject1@example.com" }, // NOT quarantined
+    };
+    const rows = buildIdentityRows([...FIXTURE, cleanEmail]);
+    // The clean email restores authority to that value, so it MAY appear —
+    // matching the "authority, not evidence" rule: quarantine is per-row, and a
+    // linked observation restores the identity.
+    expect(rows.some((r) => r.value === cleanEmail.value)).toBe(true);
   });
 });

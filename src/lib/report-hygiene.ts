@@ -9,7 +9,7 @@
  */
 
 import type { Artifact } from "@/hooks/useThreadArtifacts";
-import { isUsernameSweepSource } from "@/lib/intel";
+import { isUsernameSweepSource, labelForArtifact, type ConfLabel } from "@/lib/intel";
 import { isSubjectUnlinked } from "@/lib/quarantine";
 
 // ---------------------------------------------------------------------------
@@ -341,4 +341,88 @@ export function dedupeBreachDatasets(artifacts: Artifact[]): Artifact[] {
   }
 
   return dropIds.size ? artifacts.filter((a) => !dropIds.has(a.id)) : artifacts;
+}
+// ---------------------------------------------------------------------------
+// #8 — The CaseReport Identity panel authority gate.
+//
+// The workspace Report tab's Identity panel (CaseReport.tsx) is the surface an
+// analyst actually reads. "Real name", "Phone", "Alt email" are IDENTITY-
+// AUTHORITY claims — they assert the row belongs to the subject. A quarantined
+// row appearing there as "Alt email" asserts the very linkage `subject_unlinked`
+// says is unproven, which is the same class of leak #448 closed in clusters,
+// graph edges, confidence dimensions, and the generated report.
+//
+// This was extracted from CaseReport.tsx (where it lived as a private function)
+// so it is testable without exporting from the component, and so the quarantine
+// gate uses the SAME `isClusterIneligible` predicate as the other four surfaces
+// — the two signals can never drift apart here either.
+//
+// AUTHORITY, NOT EVIDENCE. A quarantined row stays on the Evidence board, in
+// the report's collision section, and as a flagged node in the entity graph.
+// It simply may not appear as a subject identity field. Same rule as everywhere
+// else in this boundary.
+// ---------------------------------------------------------------------------
+
+export type IdentityRow = { field: string; value: string; label: ConfLabel };
+
+function pickBestIdentity(artifacts: Artifact[], kinds: string[]): Artifact | null {
+  const pool = artifacts.filter(
+    (a) => kinds.includes(String(a.kind ?? "").toLowerCase()) && !isClusterIneligible(a),
+  );
+  if (!pool.length) return null;
+  const rank: Record<ConfLabel, number> = {
+    CONFIRMED: 6, CORRELATED: 5, INFERRED: 4, VERIFY: 3, LOW: 2, CONFLICT: 1, FAILED: 0,
+  };
+  return pool.slice().sort((a, b) => {
+    const ra = rank[labelForArtifact(a)] ?? 0;
+    const rb = rank[labelForArtifact(b)] ?? 0;
+    if (ra !== rb) return rb - ra;
+    return (b.confidence ?? 0) - (a.confidence ?? 0);
+  })[0];
+}
+
+function pickAllEmailsIdentity(artifacts: Artifact[]): Artifact[] {
+  const seen = new Set<string>();
+  const out: Artifact[] = [];
+  for (const a of artifacts.filter(
+    (x) => String(x.kind ?? "").toLowerCase() === "email" && !isClusterIneligible(x),
+  )) {
+    const k = String(a.value ?? "").toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(a);
+  }
+  return out;
+}
+
+export function buildIdentityRows(artifacts: Artifact[]): IdentityRow[] {
+  const rows: IdentityRow[] = [];
+  const name = pickBestIdentity(artifacts, ["name", "person"]);
+  if (name) rows.push({ field: "Real name", value: name.value, label: labelForArtifact(name) });
+
+  const dob = pickBestIdentity(artifacts, ["dob"]);
+  if (dob) rows.push({ field: "Date of birth", value: dob.value, label: labelForArtifact(dob) });
+
+  const age = pickBestIdentity(artifacts, ["age"]);
+  if (age && !dob) rows.push({ field: "Age", value: age.value, label: labelForArtifact(age) });
+
+  const phone = pickBestIdentity(artifacts, ["phone"]);
+  if (phone) rows.push({ field: "Phone", value: phone.value, label: labelForArtifact(phone) });
+
+  const region = pickBestIdentity(artifacts, ["location", "geo", "address"]);
+  if (region) rows.push({ field: "Likely region", value: region.value, label: labelForArtifact(region) });
+
+  const emails = pickAllEmailsIdentity(artifacts);
+  emails.forEach((e, i) => {
+    rows.push({
+      field: i === 0 ? "Primary email" : i === 1 ? "Alt email" : `Email ${i + 1}`,
+      value: e.value,
+      label: labelForArtifact(e),
+    });
+  });
+
+  const gender = pickBestIdentity(artifacts, ["gender"]);
+  if (gender) rows.push({ field: "Gender (implied)", value: gender.value, label: labelForArtifact(gender) });
+
+  return rows;
 }
