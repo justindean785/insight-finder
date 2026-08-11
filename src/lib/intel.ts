@@ -1190,10 +1190,23 @@ export function buildReportMarkdown(input: ReportInput): string {
     // mis-kinded as `breach` (→ breach group) OR correctly kinded as
     // `threat_reputation`/`reputation_signal` (→ other group). Collecting by
     // isReputationArtifact() catches both so they never report as exposures.
-    const reputation = artifacts.filter((a) => isReputationArtifact(a) && !collisionIds.has(a.id));
+    // "Network Connections" IS the subject's network, so listing a row here is an
+    // AUTHORITY claim — the same claim clustering, graph edges and the confidence
+    // dimensions already refuse to make for a quarantined row. Excluding it here
+    // is not concealment: it stays in the Artifact/Entity Table, in the Timeline,
+    // and in the Collision section under its own `subject_unlinked_reason`.
+    //
+    // A SEPARATE set from `collisionIds` on purpose. collisionIds is the
+    // collision-SECTION membership test; adding quarantine to it would evict these
+    // rows from `conflictNoted` (:1138), which is the only branch that quotes
+    // their reason verbatim (:1151). See isClusterIneligible in report-hygiene.ts.
+    const networkExcluded = new Set(
+      artifacts.filter((a) => collisionIds.has(a.id) || isSubjectUnlinked(a.metadata)).map((a) => a.id),
+    );
+    const reputation = artifacts.filter((a) => isReputationArtifact(a) && !networkExcluded.has(a.id));
     const repIds = new Set(reputation.map((a) => a.id));
     for (const g of GROUP_ORDER) {
-      const items = (byGroup.get(g) ?? []).filter((a) => !repIds.has(a.id) && !collisionIds.has(a.id));
+      const items = (byGroup.get(g) ?? []).filter((a) => !repIds.has(a.id) && !networkExcluded.has(a.id));
       if (!items.length) continue;
       sections.push(`**${GROUP_LABEL[g]}**\n` + items.map(line).join("\n"));
     }

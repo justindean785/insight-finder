@@ -28,7 +28,7 @@
  * here — see the handoff, §3.4.
  */
 import { describe, expect, it } from "vitest";
-import { buildIdentityClusters, type IdentityCluster } from "@/lib/intel";
+import { buildIdentityClusters, buildReportMarkdown, type IdentityCluster } from "@/lib/intel";
 import { buildEntityGraph } from "@/lib/entity-graph";
 import { buildConfidenceProfile } from "@/lib/confidence-dimensions";
 import { artifactsToClusterAudit } from "@/lib/audit/from-artifacts";
@@ -296,6 +296,67 @@ describe("promote boundary — confidence dimensions", () => {
     const identity = profile.dimensions.find((d) => d.key === "identity");
     const cleanIdentity = cleanOnly.dimensions.find((d) => d.key === "identity");
     expect(identity!.value).toBe(cleanIdentity!.value);
+  });
+});
+
+// ── Surface 5: the rendered report ──────────────────────────────────────────
+// This is the half the design rationale rests on and the half nothing pinned.
+// `isClusterIneligible` is deliberately SEPARATE from `isCollisionArtifact`
+// because the latter is also the collision-SECTION membership test
+// (intel.ts:1100 -> collisionIds), and intel.ts:1138 excludes collisionIds from
+// `conflictNoted` — the only branch that quotes `subject_unlinked_reason`
+// verbatim (intel.ts:1151). Fold quarantine into isCollisionArtifact and every
+// quarantined row silently loses its specific reason for the generic collision
+// boilerplate. Both assertions below fail under exactly that mutation.
+describe("promote boundary — rendered report", () => {
+  const render = () =>
+    buildReportMarkdown({ seedValue: SEED_VALUE, seedType: "name", artifacts: FIXTURE });
+
+  it("quotes the backend's own subject_unlinked_reason verbatim", () => {
+    const md = render();
+    expect(md).toContain(
+      "harvested from a name-only query — same-name collision axis; linkage to the subject is unproven",
+    );
+    // and NOT the generic fallback the collision path would substitute
+    expect(md).not.toContain("conflicting attributes across sources");
+  });
+
+  // `## Network Connections` IS the subject's network — appearing there is an
+  // authority claim, not disclosure. The Artifact/Entity Table and Timeline are
+  // inventories and MUST still carry the row (evidence). The distinction is the
+  // whole "authority, not evidence" rule, so assert both halves rather than a
+  // blunt occurrence count.
+  const sectionOf = (md: string, heading: string) => {
+    const start = md.indexOf(`## ${heading}`);
+    if (start === -1) return "";
+    const rest = md.slice(start + heading.length + 3);
+    const end = rest.indexOf("\n## ");
+    return end === -1 ? rest : rest.slice(0, end);
+  };
+
+  it("never lists a quarantined row under Network Connections", () => {
+    const network = sectionOf(render(), "Network Connections");
+    const leaked = FIXTURE.filter((a) => QUARANTINED_IDS.has(a.id) && network.includes(a.value))
+      .map((a) => a.value);
+    expect(leaked).toEqual([]);
+  });
+
+  it("still lists quarantined rows in the evidence inventory — disclosure is preserved", () => {
+    const table = sectionOf(render(), "Artifact / Entity Table");
+    const missing = FIXTURE.filter((a) => QUARANTINED_IDS.has(a.id) && !table.includes(a.value))
+      .map((a) => a.value);
+    expect(missing).toEqual([]);
+  });
+
+  it("keeps quarantined rows OUT of the namesake collision list", () => {
+    const md = render();
+    const start = md.indexOf("## Collision / Likely Unrelated");
+    expect(start).toBeGreaterThan(-1);
+    const section = md.slice(start);
+    // The namesake blurb heads `collisionArtifacts`; quarantined rows belong to
+    // the conflict-noted blurb below it, which carries their reason.
+    expect(section).not.toContain("flagged as namesakes / unrelated entities");
+    expect(section).toContain("Conflicts noted across sources");
   });
 });
 
