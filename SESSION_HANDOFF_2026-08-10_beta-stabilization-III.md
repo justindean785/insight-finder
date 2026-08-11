@@ -19,7 +19,64 @@ command is printed next to the claim. Where something was *not* measured, it say
 > **2. The PROMOTE boundary is open, and it is worse than II described. The existing
 > gate catches ZERO of the 104 quarantined artifacts in production — not "some", zero.**
 
-### 1.1 The deploy state, measured
+### 1.0 ⛔ SUPERSEDED WITHIN SIX HOURS — read this before §1.1
+
+**§1.1 below was true when measured at 2026-08-10 22:00 UTC. By 2026-08-11 04:30 UTC it was
+false, and the way it broke is the most instructive thing in this document.** §1.1 is kept
+verbatim as the measurement it was; this section is what is true now.
+
+```
+canonical main HEAD ............. 9fc6ce1  backport(orchestrator): vendor-agnostic lead slot (#449)
+build-info.ts BUILD_MARKER ...... e7e3f80   ← NOT re-stamped after #449
+mirror origin/main .............. 054c3cb  "Made the requested updates"   ← Lovable-authored
+mirror HAS DEEPSEEK_BASE_URL .... yes (8 occurrences)  ← #449's code IS on the mirror
+mirror build-info marker ........ e7e3f80   ← not re-stamped either
+live /health build .............. e7e3f80   ← names a commit that is NOT what is running
+live selected_model ............. glm-5.2    (was deepseek-v4-pro six hours earlier)
+```
+
+**`/health`'s `build` field is currently lying, and this is the exact failure mode #444's
+verifier is documented as unable to catch.** Not a hypothetical: §4.1 says "a post-sync
+Lovable edit that leaves `build-info.ts` unchanged passes every current check." That is now
+what happened.
+
+The reconstruction, strongest evidence first:
+
+1. The mirror's last three commits are `77efb9e "Changes"`, `a92d277 "Changes"`,
+   `054c3cb "Made the requested updates"` — **Lovable-agent messages, not the
+   `sync(osint-agent): … BUILD_MARKER …` shape the canonical recipe produces.** So the
+   vendor-agnostic work was authored *in the Lovable project* and flowed mirror-first, then
+   was backported to canonical as #449. That is the reverse of the documented direction.
+2. Live `selected_model` is `glm-5.2`, so `DEEPSEEK_ORCHESTRATOR_MODEL_ID` was changed as a
+   secret.
+3. #449 is what introduces `DEEPSEEK_BASE_URL`; before it, the base URL is **hardcoded**
+   `https://api.deepseek.com/v1` in three places (`env.ts` gateway, `health-handler.ts`
+   probe, `index.ts` preflight). `checks.deepseek.ok: true` comes from a probe that really
+   does `POST {model: "glm-5.2"}` to that URL — so a 2xx is only expected if the live code
+   has `DEEPSEEK_BASE_URL` support and is pointing at Z.AI.
+
+⇒ **The deployed code is post-`e7e3f80`; only the marker was never moved.**
+
+**Residual uncertainty, stated rather than hidden:** #449 adds no new `/health` field, so the
+endpoint cannot distinguish the two builds directly, and no deployed-byte digest exists. The
+alternative — mirror synced but never deployed, with DeepSeek silently accepting a foreign
+model name — is logically possible but would mean the orchestrator is running something other
+than the `glm-5.2` it reports. Both readings are bad; they differ only in which instrument is
+lying. The cheap decisive test is a run's orchestrator label, which #449 changes from
+`glm-5.2 (DeepSeek)` to `glm-5.2 (api.z.ai)`.
+
+**The fix is stamp → sync → deploy → verify, in that order, and stamping alone is not
+enough** — the stamped `build-info.ts` has to reach the deployed function before `/health`
+tells the truth again. Needs operator approval: it is a direct-to-`main` push plus a mirror
+sync plus a deploy.
+
+**The durable lesson, and it is bigger than this incident.** "Deploy axis verified green" has
+a shelf life measured in hours, because the mirror is writable by a second agent whose edits
+this repo never sees. A green reading is a *timestamped measurement*, never a state. Any
+future handoff that says the deploy axis is clean must date the claim — and any reader must
+re-run the four commands in §1.1 rather than trust the sentence.
+
+### 1.1 The deploy state as measured at 2026-08-10 22:00 UTC — SUPERSEDED, see §1.0
 
 ```
 canonical main HEAD ............. 2ebd330  chore(build): stamp osint-agent build marker e7e3f80
