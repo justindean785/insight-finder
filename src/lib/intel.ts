@@ -346,8 +346,24 @@ export function labelForArtifact(a: Artifact, review?: ReviewAdjustment): ConfLa
   // skipping the short-circuit makes the LABEL respect that cap too — the row flows
   // through the source-derived tiers below (max VERIFY at 55), so number and label
   // stay consistent. The analyst review itself is still recorded.
+  // QUARANTINE IS A SECOND HARD FLOOR, alongside possible_minor. `subject_unlinked`
+  // says linkage to the subject is unproven; CONFIRMED asserts the row IS the
+  // subject's. Those cannot both be true, and CONFIRMED is not cosmetic — it leads
+  // Key Findings, feeds the "Confirmed" KPI bucket, and skips value sanitization on
+  // export.
+  //
+  // Ordinary attestation does NOT clear it. `meta.reviewed`/"confirmed"/"key" are
+  // set by flows that never adjudicated PROVENANCE — they answer "is this value
+  // real?", not "is it this person's?". Quarantine is a machine claim about
+  // provenance, so only an explicit human claim about provenance clears it:
+  // `linkage_confirmed`. Operator-approved policy, 2026-08-10.
+  //
+  // The analyst's review is still recorded, and still authoritative in the NEGATIVE
+  // direction — a dismissal above already returned FAILED.
+  const quarantined = isSubjectUnlinked(meta) && meta.linkage_confirmed !== true;
+
   const attested = review === "confirmed" || review === "key" || meta.reviewed === true;
-  if (attested && meta.possible_minor !== true) return "CONFIRMED";
+  if (attested && meta.possible_minor !== true && !quarantined) return "CONFIRMED";
 
   const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
   const allSources = [a.source ?? null, ...metaSources].filter(Boolean) as string[];
@@ -397,7 +413,14 @@ export function labelForArtifact(a: Artifact, review?: ReviewAdjustment): ConfLa
   }
 
   // Multi-source-class corroboration → CONFIRMED / CORRELATED.
-  if (c >= 85 && independentClasses >= 2) return "CONFIRMED";
+  //
+  // Corroboration cannot lift quarantine, and this is the clause that matters most:
+  // it proves the VALUE is real, never that it is the SUBJECT's. Ten providers
+  // agreeing a phone number exists says nothing about whose phone it is — and a
+  // name-only harvest returns exactly that shape, several sources describing one
+  // real stranger. So a quarantined row tops out at CORRELATED ("real, apparently
+  // connected") rather than CONFIRMED ("belongs to the subject").
+  if (c >= 85 && independentClasses >= 2) return quarantined ? "CORRELATED" : "CONFIRMED";
   if (c >= 70 && independentClasses >= 2) return "CORRELATED";
   if (c >= 85) return "INFERRED"; // single source class, even if high confidence
   if (c >= 65) return "INFERRED";

@@ -28,7 +28,7 @@
  * here — see the handoff, §3.4.
  */
 import { describe, expect, it } from "vitest";
-import { buildIdentityClusters, buildReportMarkdown, type IdentityCluster } from "@/lib/intel";
+import { buildIdentityClusters, buildReportMarkdown, labelForArtifact, type IdentityCluster } from "@/lib/intel";
 import { buildEntityGraph } from "@/lib/entity-graph";
 import { buildConfidenceProfile } from "@/lib/confidence-dimensions";
 import { artifactsToClusterAudit } from "@/lib/audit/from-artifacts";
@@ -424,5 +424,76 @@ describe("promote boundary — CaseReport Identity panel", () => {
     // matching the "authority, not evidence" rule: quarantine is per-row, and a
     // linked observation restores the identity.
     expect(rows.some((r) => r.value === cleanEmail.value)).toBe(true);
+  });
+});
+
+// ── Surface 6: the LABEL boundary (operator-approved policy, 2026-08-10) ─────
+//
+// `labelForArtifact` decides the integrity label. CONFIRMED is not cosmetic: it
+// leads Key Findings, feeds the "Confirmed" KPI bucket, and skips value
+// sanitization on export. Asserting a quarantined row is CONFIRMED asserts the
+// row belongs to the subject — exactly what quarantine says is unproven.
+//
+// THE PRECEDENT THIS COPIES. `possible_minor` is already carved out of the
+// attestation short-circuit (intel.ts:350) as a hard floor, because attestation
+// must not label-promote a row whose downstream rendering is consequential.
+// Quarantine has the same shape and had none of the protection.
+//
+// POLICY (operator sign-off — this is a confidence-cap change):
+//  1. A quarantined row is NEVER auto-CONFIRMED, however corroborated.
+//     Corroboration proves the VALUE is real, never that it is the SUBJECT's —
+//     ten sources agreeing a phone exists says nothing about whose it is.
+//  2. Ordinary attestation ("confirmed"/"key"/meta.reviewed) does NOT clear
+//     quarantine. Those are set by flows that never adjudicated linkage.
+//  3. Ceiling while quarantined is CORRELATED — high enough to say "real and
+//     apparently connected", short of asserting subject ownership.
+//  4. Only an explicit linkage decision restores authority:
+//     `meta.linkage_confirmed === true`. Quarantine is a machine claim about
+//     provenance; only an explicit human claim about provenance clears it.
+//  5. The row and the analyst's review are always preserved; only the
+//     label-promoting EFFECT is gated.
+const q = (over: Partial<Artifact> = {}, meta: Record<string, unknown> = {}): Artifact => ({
+  id: "lbl-1", kind: "email", value: "someone@example.com", confidence: 92,
+  source: "hunter_verify", created_at: NOW,
+  metadata: { sources: ["hunter_verify", "exa_search"], corroborations: 2, ...QUARANTINE, ...meta },
+  ...over,
+});
+
+describe("promote boundary — label", () => {
+  it("never auto-CONFIRMS a quarantined row on multi-source corroboration alone", () => {
+    expect(labelForArtifact(q())).not.toBe("CONFIRMED");
+  });
+
+  it("caps a quarantined row at CORRELATED", () => {
+    const rank = ["FAILED", "CONFLICT", "LOW", "VERIFY", "INFERRED", "CORRELATED", "CONFIRMED"];
+    expect(rank.indexOf(labelForArtifact(q()))).toBeLessThanOrEqual(rank.indexOf("CORRELATED"));
+  });
+
+  it("does not let ordinary attestation clear quarantine", () => {
+    expect(labelForArtifact(q(), "confirmed")).not.toBe("CONFIRMED");
+    expect(labelForArtifact(q(), "key")).not.toBe("CONFIRMED");
+    expect(labelForArtifact(q({}, { reviewed: true }))).not.toBe("CONFIRMED");
+  });
+
+  it("restores full authority on an explicit linkage_confirmed decision", () => {
+    expect(labelForArtifact(q({}, { linkage_confirmed: true }), "confirmed")).toBe("CONFIRMED");
+  });
+
+  // Over-block guard: the cap must apply ONLY to quarantined rows. An ordinary
+  // corroborated row must still reach CONFIRMED, or this "fix" silently
+  // downgrades the whole evidence base.
+  it("leaves an un-quarantined corroborated row at CONFIRMED", () => {
+    const clean: Artifact = {
+      id: "lbl-2", kind: "email", value: "real@example.com", confidence: 92,
+      source: "hunter_verify", created_at: NOW,
+      metadata: { sources: ["hunter_verify", "exa_search"], corroborations: 2 },
+    };
+    expect(labelForArtifact(clean)).toBe("CONFIRMED");
+    expect(labelForArtifact(clean, "confirmed")).toBe("CONFIRMED");
+  });
+
+  // The analyst's verdict is still authoritative in the NEGATIVE direction.
+  it("still lets a dismissal fail a quarantined row", () => {
+    expect(labelForArtifact(q(), "dismissed")).toBe("FAILED");
   });
 });
