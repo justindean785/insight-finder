@@ -16,6 +16,7 @@ import {
   grokGateway, openAdapterGateway, ORCHESTRATOR_PROVIDER,
   GROK_ORCHESTRATOR_MODEL_ID, OPENADAPTER_ORCHESTRATOR_MODEL_ID,
   deepseekGateway, DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID,
+  DEEPSEEK_BASE_URL, DEEPSEEK_VENDOR_HOST,
   degradedTools, deadHosts, resetFirecrawlCreditsLow, INTELBASE_ENABLED,
 } from "./env.ts";
 
@@ -625,7 +626,7 @@ Deno.serve(async (req) => {
           const ctrl = new AbortController();
           const timer = setTimeout(() => ctrl.abort(), DEEPSEEK_PREFLIGHT_TIMEOUT_MS);
           try {
-            const res = await fetch("https://api.deepseek.com/v1/chat/completions", {
+            const res = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
               method: "POST",
               headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}`, "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -679,7 +680,7 @@ Deno.serve(async (req) => {
     // Resolve the primary (non-fallback) model from the selected provider.
     const { model: primaryModel, label: primaryLabel } =
       orchChoice.provider === "deepseek"
-        ? { model: deepseekGateway!.chatModel(DEEPSEEK_ORCHESTRATOR_MODEL_ID), label: `${DEEPSEEK_ORCHESTRATOR_MODEL_ID} (DeepSeek)` }
+        ? { model: deepseekGateway!.chatModel(DEEPSEEK_ORCHESTRATOR_MODEL_ID), label: `${DEEPSEEK_ORCHESTRATOR_MODEL_ID} (${DEEPSEEK_VENDOR_HOST})` }
         : orchChoice.provider === "grok"
         ? { model: grokGateway!.chatModel(GROK_ORCHESTRATOR_MODEL_ID), label: `${GROK_ORCHESTRATOR_MODEL_ID} (xAI Grok)` }
         : orchChoice.provider === "openadapter"

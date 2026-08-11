@@ -134,7 +134,13 @@ export const FALLBACK_MODEL_ID = MODELS.fallback;
 export const XAI_API_KEY = Deno.env.get("XAI_API_KEY") ?? "";
 export const OPENADAPTER_API_KEY = Deno.env.get("OPENADAPTER_API_KEY") ?? "";
 export const OPENADAPTER_BASE_URL = Deno.env.get("OPENADAPTER_BASE_URL") ?? "";
-export const DEEPSEEK_API_KEY = Deno.env.get("DEEPSEEK_API_KEY") ?? "";
+// Lead-orchestrator credential. The slot is vendor-agnostic (see
+// DEEPSEEK_BASE_URL below): GLM_API_KEY wins when set to a NON-EMPTY value, so
+// pointing the slot at Z.AI GLM is a secret-only change; DEEPSEEK_API_KEY stays
+// the default. `||` (not `??`) on purpose — an empty-string secret must fall
+// through rather than silently disable the orchestrator.
+export const DEEPSEEK_API_KEY =
+  (Deno.env.get("GLM_API_KEY") || Deno.env.get("DEEPSEEK_API_KEY") || "").trim();
 /** Operator override pinning the primary orchestrator provider. */
 export const ORCHESTRATOR_PROVIDER = (Deno.env.get("ORCHESTRATOR_PROVIDER") ?? "").trim().toLowerCase();
 /** Orchestrator model IDs for the alternative providers (overridable).
@@ -150,7 +156,34 @@ export const OPENADAPTER_ORCHESTRATOR_MODEL_ID = Deno.env.get("OPENADAPTER_ORCHE
 // switch. Override via DEEPSEEK_ORCHESTRATOR_MODEL_ID once Flash has been
 // validated against the same recorded inputs.
 export const DEEPSEEK_ORCHESTRATOR_MODEL_ID =
-  Deno.env.get("DEEPSEEK_ORCHESTRATOR_MODEL_ID") ?? "deepseek-v4-pro";
+  (Deno.env.get("DEEPSEEK_ORCHESTRATOR_MODEL_ID") || "deepseek-v4-pro").trim();
+
+/**
+ * Base URL for the lead ("deepseek" slot) orchestrator provider. The slot is
+ * OpenAI-compatible, so it can point at ANY compatible vendor without touching
+ * the orchestrator plumbing. Defaults to DeepSeek. The gateway, the run
+ * preflight probe and the /health canary all read this so they can never split
+ * across two vendors.
+ */
+// To run Z.AI GLM instead, set the three secrets together:
+//   GLM_API_KEY=<z.ai key>
+//   DEEPSEEK_BASE_URL=https://api.z.ai/api/paas/v4
+//   DEEPSEEK_ORCHESTRATOR_MODEL_ID=glm-5.2
+// No code change or redeploy is needed — the default below keeps DeepSeek.
+export const DEEPSEEK_BASE_URL = (
+  (Deno.env.get("DEEPSEEK_BASE_URL") || "https://api.deepseek.com/v1").trim()
+).replace(/\/+$/, "");
+
+/** Hostname of the lead orchestrator vendor, for log/UI labels only.
+ * Never throws: an operator can paste a malformed DEEPSEEK_BASE_URL and that
+ * must not abort a run at label-construction time. */
+export const DEEPSEEK_VENDOR_HOST = (() => {
+  try {
+    return new URL(DEEPSEEK_BASE_URL).hostname;
+  } catch {
+    return DEEPSEEK_BASE_URL;
+  }
+})();
 
 // xAI Grok — OpenAI-compatible chat completions at api.x.ai.
 export const grokGateway = XAI_API_KEY
@@ -180,7 +213,7 @@ export const openAdapterGateway = (OPENADAPTER_API_KEY && OPENADAPTER_BASE_URL)
 export const deepseekGateway = DEEPSEEK_API_KEY
   ? createOpenAICompatible({
       name: "deepseek",
-      baseURL: "https://api.deepseek.com/v1",
+      baseURL: DEEPSEEK_BASE_URL,
       headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}` },
       fetch: ORCHESTRATOR_FETCH,
     })

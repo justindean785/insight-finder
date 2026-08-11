@@ -10,6 +10,7 @@ import {
   XAI_API_KEY, GROK_ORCHESTRATOR_MODEL_ID,
   OSINT_AGENT_PROBE_SECRET,
   DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID, PRIMARY_ORCHESTRATOR_MODEL_ID,
+  DEEPSEEK_BASE_URL,
   ORCHESTRATOR_PROVIDER, LOVABLE_API_KEY, OPENADAPTER_API_KEY, OPENADAPTER_BASE_URL,
 } from "./env.ts";
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
@@ -98,7 +99,7 @@ export async function checkDeepseek(deps?: {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 5_000);
   try {
-    const res = await doFetch("https://api.deepseek.com/v1/chat/completions", {
+    const res = await doFetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -381,7 +382,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     };
     const [ds, mm, gk, gm] = await Promise.all([
       probeProvider("deepseek", !!DEEPSEEK_API_KEY, async (signal) => {
-        const res = await fetch("https://api.deepseek.com/v1/chat/completions", {
+        const res = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
           method: "POST",
           headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}`, "Content-Type": "application/json" },
           body: JSON.stringify({
