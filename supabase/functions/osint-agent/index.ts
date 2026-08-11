@@ -33,6 +33,7 @@ import {
   stripNulCharacters,
   MAX_PERSISTED_ASSISTANT_PARTS_BYTES,
 } from "./safety.ts";
+import { expandFindingsTable, fetchFindingRows } from "./findings-table.ts";
 import { sanitizeModelMessages, capToolResultOutputs, summarizeToolResultValue } from "./message-sanitize.ts";
 import { guard, routingGuard, triageState, countRecordArtifactCalls, countModelMessageToolCalls } from "./guard.ts";
 import { setupRequest } from "./auth.ts";
@@ -1421,12 +1422,31 @@ Deno.serve(async (req) => {
           // the 2MB request limit: useChat replays full history, so allowing one
           // assistant row to consume that budget makes the next turn 413.
           const cappedParts = capToolPartPayloads(assistant.parts as unknown[]);
+          // Expand {{FINDINGS_TABLE}} from PERSISTED artifact rows before the row
+          // is stored, so the closing table is a view of the evidence store
+          // rather than numbers the model retyped. Measured on thread 64f7cc4b:
+          // the hand-written table published 95 [CONFIRMED] where the server had
+          // persisted 70 with confidence_cap_applied:70 and an explicit
+          // reason_not_confirmed. See findings-table.ts.
+          //
+          // Ordered BEFORE capPartsSize so the rendered table counts against the
+          // byte budget (expanding after the cap could push the row past it and
+          // lose the whole report), and before stripNulCharacters so that stays
+          // last as its comment requires.
+          //
+          // fetchFindingRows returns null on ANY read failure and never throws;
+          // expandFindingsTable returns its input unchanged on any error. This
+          // runs inside the finalize window, so it must not be able to fail the
+          // run — an exception here would discard the report row and score a
+          // completed investigation as interrupted (INCIDENT_2026-07-26).
+          const findingRows = await fetchFindingRows(supabase, threadId, userId);
+          const expandedParts = expandFindingsTable(cappedParts, findingRows);
           // Strip JSONB-unsafe control characters LAST, so nothing the capping
           // helpers do can reintroduce one. A single NUL anywhere in this tree
           // fails the insert outright and discards the whole finished report —
           // production, 2026-08-02, 12,736 characters lost. See safety.ts.
           const safeParts = stripNulCharacters(
-            capPartsSize(cappedParts, MAX_PERSISTED_ASSISTANT_PARTS_BYTES),
+            capPartsSize(expandedParts as unknown[], MAX_PERSISTED_ASSISTANT_PARTS_BYTES),
           );
           safePartsForCache = safeParts as unknown[];
           const { error: msgErr } = await supabase.from("messages").insert({
