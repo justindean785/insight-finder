@@ -25,8 +25,14 @@ command is printed next to the claim. Where something was *not* measured, it say
 false, and the way it broke is the most instructive thing in this document.** §1.1 is kept
 verbatim as the measurement it was; this section is what is true now.
 
+*(Updated 09:45 UTC — `main` has moved twice more since this section was written; the stamp
+gap is now three commits deep, though only #449 touches `osint-agent`, which is what the
+marker actually tracks.)*
+
 ```
-canonical main HEAD ............. 9fc6ce1  backport(orchestrator): vendor-agnostic lead slot (#449)
+canonical main HEAD ............. faf1305  fix(mcp): settle thread ownership … (#453)
+  └─ d9598f0  governance(mcp): fourth function under canonical review (#452)   src/lib/mcp/ only
+  └─ 9fc6ce1  backport(orchestrator): vendor-agnostic lead slot (#449)         osint-agent ×3
 build-info.ts BUILD_MARKER ...... e7e3f80   ← NOT re-stamped after #449
 mirror origin/main .............. 054c3cb  "Made the requested updates"   ← Lovable-authored
 mirror HAS DEEPSEEK_BASE_URL .... yes (8 occurrences)  ← #449's code IS on the mirror
@@ -138,8 +144,33 @@ forbid, and which would destroy the Lovable project. **The only meaningful parit
 
 ### 1.3 There is a FOURTH deployed edge function, and it is invisible to this repo
 
-`supabase/functions/mcp/` exists in the mirror, is **live in production**, and has **never
-existed in canonical history**:
+> **UPDATE 2026-08-11 09:45 UTC — two of the three findings below are now CLOSED, and the
+> claim that the function "has never existed in canonical history" is now FALSE.**
+>
+> - **#452 (`d9598f0`)** brought the fourth function under canonical review — and did it the
+>   right way: it canonicalized **`src/lib/mcp/`, the SOURCE** (index + 3 tools + README +
+>   `src/test/mcp-contract.test.ts`, wired into `tsconfig.app.json` and `vitest.config.ts`),
+>   **not** the Vite-plugin-generated `supabase/functions/mcp/index.ts`. That bundle correctly
+>   stays out of canonical — importing it would give this repo a file it has no generator for
+>   and that Lovable regenerates anyway. `ls supabase/functions/` on `main` is still
+>   `_shared · evidence-export · osint-agent · security-test-lab`, and that is correct.
+> - **#453 (`faf1305`)** fixed the `Promise.all` ownership ordering in finding 1: the
+>   `threads` check is now awaited, and both the error and not-found returns fire, **before**
+>   the `messages`/`artifacts` reads are issued (those two still run concurrently with each
+>   other, which is right — they are subordinate to a settled check). Its comment states the
+>   strength honestly: RLS *did* block cross-user rows, so this was never a demonstrated
+>   isolation bug, only a guard that read as defence-in-depth while RLS was the sole control.
+> - **STILL OPEN: finding 2**, the one that actually matters here — `artifacts` is still read
+>   with `select("*")`, so raw metadata still leaves over MCP. See §5.4.
+> - **NEW INSTRUMENTATION GAP:** #453 is a security-ordering fix to a **live** function, and
+>   the `mcp` function exposes **no build marker** — there is no `/health` equivalent, so
+>   there is no way to confirm the fix reached production. `osint-agent` at least has a
+>   (currently stale, see §1.0) marker; `mcp`, `evidence-export` and `security-test-lab` have
+>   none at all.
+
+`supabase/functions/mcp/` exists in the mirror, is **live in production**, and — when this
+section was written — had **never existed in canonical history** (superseded, see the update
+above):
 
 ```bash
 git log --oneline --all -- 'supabase/functions/mcp/**'   # → empty
