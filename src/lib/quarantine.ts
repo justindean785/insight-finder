@@ -31,6 +31,33 @@ export function isSubjectUnlinked(metadata: unknown): boolean {
   return (metadata as Record<string, unknown>).subject_unlinked === true;
 }
 
+/**
+ * Is this row quarantined for AUTHORITY purposes — i.e. may it not be promoted
+ * to subject evidence?
+ *
+ * `subject_unlinked` AND no explicit linkage decision. This is the one predicate
+ * every promotion path must consult, and it exists because there is more than one
+ * such path: `labelForArtifact` decides the integrity LABEL, `evidenceStatus`
+ * decides the display STATUS, and each had its own independent
+ * `attested -> promoted` short-circuit. They agreed only by coincidence, and when
+ * the label gate landed first they disagreed outright — one row reading
+ * CORRELATED on its confidence pill and "Verified" on its status chip, while the
+ * Confirmed KPI counted it. Two doors into the same room need one lock.
+ *
+ * WHY ORDINARY ATTESTATION DOES NOT CLEAR IT. `reviewed`/"confirmed"/"key" answer
+ * "is this value real?" — they are set by flows that never adjudicated PROVENANCE.
+ * Quarantine is a machine claim about provenance, so only an explicit human claim
+ * about provenance clears it: `linkage_confirmed`. Operator-approved, 2026-08-10.
+ *
+ * AUTHORITY, NOT DELETION. A quarantined row stays persisted, visible, exportable
+ * and reviewable, and keeps its `subject_unlinked_reason`. Only the promotion is
+ * withheld.
+ */
+export function isQuarantined(metadata: unknown): boolean {
+  if (!isSubjectUnlinked(metadata)) return false;
+  return (metadata as Record<string, unknown>).linkage_confirmed !== true;
+}
+
 /** The artifact shape this module needs — structural, so callers can pass either
  *  a full `Artifact` or a lighter projection. */
 export type QuarantineInput = {

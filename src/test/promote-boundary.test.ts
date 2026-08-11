@@ -32,6 +32,7 @@ import { buildIdentityClusters, buildReportMarkdown, labelForArtifact, type Iden
 import { buildEntityGraph } from "@/lib/entity-graph";
 import { buildConfidenceProfile } from "@/lib/confidence-dimensions";
 import { artifactsToClusterAudit } from "@/lib/audit/from-artifacts";
+import { evidenceStatus } from "@/lib/evidence-status";
 import { isSubjectUnlinked } from "@/lib/quarantine";
 import { buildIdentityRows } from "@/lib/report-hygiene";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
@@ -495,5 +496,82 @@ describe("promote boundary — label", () => {
   // The analyst's verdict is still authoritative in the NEGATIVE direction.
   it("still lets a dismissal fail a quarantined row", () => {
     expect(labelForArtifact(q(), "dismissed")).toBe("FAILED");
+  });
+});
+
+// ── Surface 8: evidence STATUS — the second promotion door ──────────────────
+//
+// `labelForArtifact` is not the only place attestation promotes. `evidenceStatus`
+// (evidence-status.ts) has its own, independent short-circuit:
+//
+//   const analystConfirmed = review === "confirmed" || review === "key" || meta.reviewed === true;
+//   if (analystConfirmed) { base = "verified"; }
+//
+// It is the FIRST branch, so it also overrides every demotion below it
+// (reputation / threat-intel / data-broker / breach → manual_review).
+//
+// WHY THIS IS THE CONTRADICTION, NOT A DUPLICATE. `evidenceStatus` already calls
+// labelForArtifact (:190), so `label` correctly comes back CORRELATED for a
+// quarantined row — and then line 230 discards that decision. The result is ONE
+// row reading CORRELATED on its ConfPill and "Verified" on its status chip, while
+// CaseReport.bucket() (:59-62) maps verified → "confirmed", driving the Confirmed
+// KPI tile (:978), the confirmed/total ratio (:1004), the Executive Summary count
+// (:1195) and the Confirmed Findings table (:1306).
+//
+// AUTHORITY, NOT DELETION — asserted below: the row keeps its value, its reason,
+// and its analyst review. Only the promotion is withheld.
+const attestedQuarantined = (meta: Record<string, unknown> = {}): Artifact => ({
+  id: "st-1", kind: "email", value: "someone@example.com", confidence: 92,
+  source: "hunter_verify", created_at: NOW,
+  metadata: { sources: ["hunter_verify", "exa_search"], corroborations: 2, ...QUARANTINE, ...meta },
+});
+
+describe("promote boundary — evidence status", () => {
+  it("does not promote a quarantined row to verified on ordinary attestation", () => {
+    expect(evidenceStatus(attestedQuarantined(), "confirmed").status).not.toBe("verified");
+    expect(evidenceStatus(attestedQuarantined(), "key").status).not.toBe("verified");
+    expect(evidenceStatus(attestedQuarantined({ reviewed: true })).status).not.toBe("verified");
+  });
+
+  it("does not promote a quarantined row to verified with no attestation either", () => {
+    expect(evidenceStatus(attestedQuarantined()).status).not.toBe("verified");
+  });
+
+  // The whole point of a shared authority point: the chip and the label must not
+  // be able to disagree about whether the row is subject evidence.
+  it("agrees with labelForArtifact — chip and label cannot contradict", () => {
+    const a = attestedQuarantined({ reviewed: true });
+    const label = labelForArtifact(a);
+    const status = evidenceStatus(a).status;
+    expect({ label, status }).not.toEqual({ label: "CORRELATED", status: "verified" });
+    if (status === "verified") expect(label).toBe("CONFIRMED");
+  });
+
+  it("restores promotion on an explicit linkage_confirmed decision", () => {
+    expect(evidenceStatus(attestedQuarantined({ linkage_confirmed: true }), "confirmed").status).toBe("verified");
+  });
+
+  // Over-block guards — the cap must apply ONLY to quarantined rows.
+  it("leaves an un-quarantined attested row verified", () => {
+    const clean: Artifact = {
+      id: "st-2", kind: "email", value: "real@example.com", confidence: 92,
+      source: "hunter_verify", created_at: NOW,
+      metadata: { sources: ["hunter_verify", "exa_search"], corroborations: 2 },
+    };
+    expect(evidenceStatus(clean, "confirmed").status).toBe("verified");
+    expect(evidenceStatus({ ...clean, metadata: { ...clean.metadata, reviewed: true } }).status).toBe("verified");
+  });
+
+  it("keeps the row visible, with its reason and its analyst review intact", () => {
+    const a = attestedQuarantined({ reviewed: true });
+    const info = evidenceStatus(a, "confirmed");
+    expect(info.status).not.toBe("rejected");          // not hidden
+    expect(a.metadata!.subject_unlinked_reason).toBeTruthy();
+    expect(a.metadata!.reviewed).toBe(true);            // review preserved
+  });
+
+  it("does not imply subject linkage in the status wording", () => {
+    const info = evidenceStatus(attestedQuarantined({ reviewed: true }), "confirmed");
+    expect(info.label.toLowerCase()).not.toContain("verified");
   });
 });

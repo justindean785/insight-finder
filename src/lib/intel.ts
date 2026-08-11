@@ -3,7 +3,7 @@ import { detectSeed, extractDisplaySeed } from "@/lib/seed";
 import { toolActionLabel } from "@/lib/tool-display";
 import { humanizeSourceChain, tokenizeSourceChain } from "@/lib/report-source-labels";
 import { deriveToolStatus, deriveToolReason } from "@/lib/tool-run";
-import { isSubjectUnlinked } from "@/lib/quarantine";
+import { isSubjectUnlinked, isQuarantined } from "@/lib/quarantine";
 import {
   clusterDisplayId,
   bucketQualifiesAsCluster,
@@ -360,7 +360,9 @@ export function labelForArtifact(a: Artifact, review?: ReviewAdjustment): ConfLa
   //
   // The analyst's review is still recorded, and still authoritative in the NEGATIVE
   // direction — a dismissal above already returned FAILED.
-  const quarantined = isSubjectUnlinked(meta) && meta.linkage_confirmed !== true;
+  // One predicate, shared with evidenceStatus — see isQuarantined's docstring for
+  // why two independent promotion paths must not each compute this themselves.
+  const quarantined = isQuarantined(meta);
 
   const attested = review === "confirmed" || review === "key" || meta.reviewed === true;
   if (attested && meta.possible_minor !== true && !quarantined) return "CONFIRMED";
