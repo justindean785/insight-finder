@@ -36,12 +36,22 @@
  *     string or the unmodified input, and never throws. See expandFindingsTable.
  */
 
+import { isSubjectUnlinked } from "./lib/quarantine.ts";
+
 /** The token the model emits in place of writing the table itself. */
 export const FINDINGS_TABLE_MARKER = "{{FINDINGS_TABLE}}";
 
 /** Upper bound on rendered rows, so one enormous thread cannot bloat the
  *  assistant row past the persisted-parts cap and lose the whole report. */
 export const MAX_RENDERED_ROWS = 100;
+
+/** Fetch ONE more than we render, so "there are more rows" is detectable.
+ *  Using MAX_RENDERED_ROWS for both the query limit and the render slice made
+ *  the truncation disclosure unreachable in production: the fetch could never
+ *  return more than the slice kept, so a 300-artifact thread silently rendered
+ *  100 rows and said nothing. The +1 row is never rendered; it exists only as
+ *  the signal. */
+export const FINDINGS_FETCH_LIMIT = MAX_RENDERED_ROWS + 1;
 
 /** The persisted shape this module reads. Intentionally a narrow structural
  *  type, not an import from the artifact model — this file is a renderer. */
@@ -111,10 +121,38 @@ export function renderFindingsTable(rows: readonly FindingRow[] | null | undefin
     return "_No evidence rows are persisted for this run, so no findings table can be generated._";
   }
 
+  // QUARANTINE BOUNDARY. A subject_unlinked row may not count toward identity,
+  // corroboration, graph edges, promotion, salvage, or automatic investigative
+  // direction (lib/quarantine.ts). The report is exactly such a surface, and
+  // this table is PERSISTED into the messages row — so it also reaches export.
+  // #448 closed this at the promote boundary; rendering quarantined rows here
+  // as ordinary findings would reopen it one layer up, on the durable surface.
+  //
+  // Excluded from the findings, NOT hidden: quarantine is disclosure, not
+  // deletion, and a change that makes a quarantined row disappear is a
+  // regression rather than a tightening. The count and the recorded reasons are
+  // disclosed below the table instead.
+  const linked: FindingRow[] = [];
+  const quarantined: FindingRow[] = [];
+  for (const row of list) {
+    (isSubjectUnlinked(row.metadata) ? quarantined : linked).push(row);
+  }
+
   // Strongest first, so the table leads with what the evidence store actually
   // supports rather than the order tools happened to fire.
-  const ordered = [...list].sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0));
+  const ordered = [...linked].sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0));
   const shown = ordered.slice(0, MAX_RENDERED_ROWS);
+
+  if (shown.length === 0) {
+    // Every persisted row is quarantined. Saying "no evidence" here would be a
+    // lie in the other direction — the run collected plenty, none of it linked.
+    return [
+      "_No linked evidence rows: every persisted artifact on this run is quarantined as",
+      "subject-unlinked, so none of it can support a finding._",
+      "",
+      renderQuarantineDisclosure(quarantined),
+    ].join("\n");
+  }
 
   const lines: string[] = [];
   lines.push("| # | Finding | Kind | Confidence | Strength | Sources | Not confirmed because |");
@@ -136,8 +174,19 @@ export function renderFindingsTable(rows: readonly FindingRow[] | null | undefin
   });
 
   if (ordered.length > shown.length) {
+    // The caller fetches FINDINGS_FETCH_LIMIT, so an exact total is not known
+    // here — only that more exist. Claiming a precise count would be inventing
+    // one; silence would read as "that is everything".
     lines.push("");
-    lines.push(`_Showing the ${shown.length} highest-confidence of ${ordered.length} persisted rows._`);
+    lines.push(
+      `_Showing the ${shown.length} highest-confidence linked rows. The evidence store holds ` +
+        "more — open the Evidence tab for the full set._",
+    );
+  }
+
+  if (quarantined.length > 0) {
+    lines.push("");
+    lines.push(renderQuarantineDisclosure(quarantined));
   }
 
   lines.push("");
@@ -148,6 +197,31 @@ export function renderFindingsTable(rows: readonly FindingRow[] | null | undefin
       "is NOT confirmed, whatever the surrounding prose says._",
   );
   return lines.join("\n");
+}
+
+/**
+ * Disclose the quarantined rows the table excluded: how many, and the reasons
+ * the server recorded. Never lists the values themselves — the point is that
+ * the analyst knows they exist and why they were held back, not that unlinked
+ * selectors get a second route onto the durable report surface.
+ */
+export function renderQuarantineDisclosure(rows: readonly FindingRow[]): string {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const reason = metaString(row.metadata, "subject_unlinked_reason") || "no reason recorded";
+    counts.set(reason, (counts.get(reason) ?? 0) + 1);
+  }
+  const breakdown = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([reason, n]) => `${escapeCell(reason, 120)} (${n})`)
+    .join("; ");
+  const noun = rows.length === 1 ? "row is" : "rows are";
+  return (
+    `_**${rows.length} ${noun} quarantined as subject-unlinked and excluded from the findings ` +
+    `above.** They are not deleted and not findings — they cannot support identity, ` +
+    `corroboration, or a pivot until linkage is established. Recorded reasons: ${breakdown}. ` +
+    "Review them in the Evidence tab._"
+  );
 }
 
 /** The text substituted when rows could not be read at all. Says what happened
@@ -211,7 +285,7 @@ export async function fetchFindingRows(
       .eq("thread_id", threadId)
       .eq("user_id", userId)
       .order("confidence", { ascending: false })
-      .limit(MAX_RENDERED_ROWS);
+      .limit(FINDINGS_FETCH_LIMIT);
     if (error) {
       console.error(
         JSON.stringify({ event: "findings_table_fetch_fail", thread_id: threadId, error: error.message }),

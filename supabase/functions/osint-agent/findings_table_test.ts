@@ -4,6 +4,7 @@ import {
   FINDINGS_TABLE_MARKER,
   FINDINGS_TABLE_UNAVAILABLE,
   fetchFindingRows,
+  FINDINGS_FETCH_LIMIT,
   MAX_RENDERED_ROWS,
   renderFindingsTable,
   rowSources,
@@ -156,7 +157,118 @@ Deno.test("orders strongest first and discloses truncation", () => {
   const first = out.split("\n").find((l) => l.startsWith("| 1 |")) ?? "";
   assertStringIncludes(first, `v${MAX_RENDERED_ROWS + 4}`);
   // Silent truncation would read as "that's everything".
-  assertStringIncludes(out, `of ${MAX_RENDERED_ROWS + 5} persisted rows`);
+  assertStringIncludes(out, "The evidence store holds");
+});
+
+Deno.test("the truncation disclosure is reachable through the REAL fetch path", async () => {
+  // Regression: MAX_RENDERED_ROWS was used as both the query limit and the
+  // render slice, so the fetch could never return more than the slice kept and
+  // this disclosure was dead code in production. The fetch must over-read by
+  // one for "there are more" to be detectable at all.
+  assert(FINDINGS_FETCH_LIMIT > MAX_RENDERED_ROWS, "fetch must over-read the render slice");
+
+  let requestedLimit = -1;
+  const db = {
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          eq: () => ({
+            order: () => ({
+              limit: (n: number) => {
+                requestedLimit = n;
+                return Promise.resolve({
+                  data: Array.from({ length: n }, (_, i) => ({
+                    kind: "weak_lead", value: `v${i}`, confidence: i, source: "s", metadata: {},
+                  })),
+                  error: null,
+                });
+              },
+            }),
+          }),
+        }),
+      }),
+    }),
+  };
+  const rows = await fetchFindingRows(db, "t", "u");
+  assertEquals(requestedLimit, FINDINGS_FETCH_LIMIT);
+  assertEquals(rows?.length, FINDINGS_FETCH_LIMIT);
+  // Driven end-to-end: a full store now actually produces the disclosure.
+  assertStringIncludes(renderFindingsTable(rows), "The evidence store holds");
+});
+
+/**
+ * QUARANTINE BOUNDARY. #448 closed this at promote; the generated table is a
+ * report surface AND is persisted into the messages row, so it reaches export
+ * too. A subject_unlinked row must not appear as an ordinary finding — and must
+ * not silently vanish either, because quarantine is disclosure, not deletion.
+ */
+const QUARANTINED: FindingRow[] = [
+  {
+    kind: "email",
+    value: "collision-a@example.test",
+    confidence: 45,
+    source: "breach_lookup",
+    metadata: { subject_unlinked: true, subject_unlinked_reason: "no durable linkage to seed" },
+  },
+  {
+    kind: "address",
+    value: "999 Elsewhere Rd, Othertown",
+    confidence: 45,
+    source: "breach_lookup",
+    metadata: { subject_unlinked: true, subject_unlinked_reason: "no durable linkage to seed" },
+  },
+  {
+    kind: "phone",
+    value: "5550000000",
+    confidence: 45,
+    source: "breach_lookup",
+    metadata: { subject_unlinked: true, subject_unlinked_reason: "same-name collision axis" },
+  },
+];
+
+Deno.test("quarantined rows never appear as findings in the table body", () => {
+  const out = renderFindingsTable([...ROWS, ...QUARANTINED]);
+  const body = out.split("\n").filter((l) => l.startsWith("| ") && !l.startsWith("| # |") && !l.startsWith("|---"));
+  assertEquals(body.length, ROWS.length, "only linked rows may occupy findings rows");
+  for (const q of QUARANTINED) {
+    assert(!body.join("\n").includes(String(q.value)), `quarantined value leaked into findings: ${q.value}`);
+  }
+});
+
+Deno.test("quarantined rows are DISCLOSED — count and recorded reasons", () => {
+  const out = renderFindingsTable([...ROWS, ...QUARANTINED]);
+  assertStringIncludes(out, "3 rows are quarantined as subject-unlinked");
+  assertStringIncludes(out, "not deleted and not findings");
+  assertStringIncludes(out, "no durable linkage to seed (2)");
+  assertStringIncludes(out, "same-name collision axis (1)");
+});
+
+Deno.test("the disclosure does not republish the quarantined values", () => {
+  // Disclosure is "these exist and why they were held back" — not a second
+  // route onto the durable report surface for unlinked selectors.
+  const out = renderFindingsTable([...ROWS, ...QUARANTINED]);
+  for (const q of QUARANTINED) {
+    assert(!out.includes(String(q.value)), `quarantined value republished: ${q.value}`);
+  }
+});
+
+Deno.test("an all-quarantined run says so instead of claiming no evidence", () => {
+  const out = renderFindingsTable(QUARANTINED);
+  assertStringIncludes(out, "every persisted artifact on this run is quarantined");
+  assertStringIncludes(out, "3 rows are quarantined");
+  assert(!out.includes("| # |"), "must not render a findings header with zero linked rows");
+  assert(
+    !out.includes("No evidence rows are persisted"),
+    "collected-but-unlinked is not the same claim as nothing was collected",
+  );
+});
+
+Deno.test("a missing quarantine reason is disclosed honestly, not blank", () => {
+  const out = renderFindingsTable([
+    ...ROWS,
+    { kind: "email", value: "x@example.test", confidence: 45, source: "s", metadata: { subject_unlinked: true } },
+  ]);
+  assertStringIncludes(out, "no reason recorded (1)");
 });
 
 Deno.test("fetchFindingRows returns null on error and [] on an empty store", async () => {
