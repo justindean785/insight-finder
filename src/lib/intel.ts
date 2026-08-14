@@ -236,6 +236,16 @@ const REVIEW_DELTA: Record<string, number> = {
   wrong: -40,
 };
 
+/** Minor-safety ceiling. A possible-minor row can never auto-promote. */
+export const POSSIBLE_MINOR_CEILING = 55;
+/**
+ * Quarantine ceiling for `subject_unlinked` rows. Same value as the backend's
+ * write-side cap, so the client cannot render a number the server refused to
+ * persist. Kept as a named constant rather than a literal because the label
+ * ladder reasons about the same threshold.
+ */
+export const QUARANTINE_CEILING = 55;
+
 export function adjustedConfidence(a: Artifact, review?: ReviewAdjustment): number {
   const base = a.confidence ?? 0;
   const d = review ? REVIEW_DELTA[review] ?? 0 : 0;
@@ -265,7 +275,31 @@ export function adjustedConfidence(a: Artifact, review?: ReviewAdjustment): numb
   if (meta.conflict === true || meta.collision === true) bonus -= 15;
   // Possible-minor signal forces a cap so the artifact never auto-promotes.
   if (meta.possible_minor === true) {
-    return Math.max(0, Math.min(55, base + d + bonus));
+    return Math.max(0, Math.min(POSSIBLE_MINOR_CEILING, base + d + bonus));
+  }
+  // Quarantine is the SECOND ceiling, for the same reason and with the same shape.
+  // #448 gave `subject_unlinked` a hard floor at the LABEL (labelForArtifact) but
+  // left the NUMBER uncapped, which breaks the invariant the possible_minor branch
+  // above exists to hold — see its comment in labelForArtifact: the cap is there
+  // "so number and label stay consistent". Without this, a quarantined row renders
+  // 65, or 85 once attested, beside a deliberately non-CONFIRMED label, and
+  // EvidenceMatrixTab shows that number to the analyst as the score.
+  //
+  // The backend already enforces this ceiling on write — canary run 4d0193c7
+  // observed max confidence 55 across all 24 quarantined rows — so an uncapped
+  // client value is the display contradicting the persisted record.
+  //
+  // Asymmetric on purpose: quarantine is a CEILING, never a floor. Positive
+  // corroboration and positive review deltas are dropped, because neither speaks
+  // to whether the row is THIS SUBJECT'S; negatives are kept in full, so a
+  // quarantined row that other signals push down still goes down.
+  //
+  // `isQuarantined` (not `isSubjectUnlinked`) is deliberate: it returns false once
+  // `linkage_confirmed` is set, preserving #448's explicit escape hatch — an
+  // analyst who has actually adjudicated provenance restores full authority here
+  // exactly as they do at the label boundary.
+  if (isQuarantined(meta)) {
+    return Math.max(0, Math.min(QUARANTINE_CEILING, base + Math.min(0, d) + Math.min(0, bonus)));
   }
   return Math.max(0, Math.min(100, base + d + bonus));
 }
