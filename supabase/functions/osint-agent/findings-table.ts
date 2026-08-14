@@ -288,14 +288,42 @@ export function expandFindingsTable(
     if (!Array.isArray(parts)) return parts;
     const replacement = rows === null ? FINDINGS_TABLE_UNAVAILABLE : renderFindingsTable(rows);
     let touched = false;
+    let textChars = 0;
     const next = parts.map((part) => {
       if (!part || typeof part !== "object") return part;
       const p = part as Record<string, unknown>;
       if (p.type !== "text" || typeof p.text !== "string") return part;
+      textChars += p.text.length;
       if (!p.text.includes(FINDINGS_TABLE_MARKER)) return part;
       touched = true;
       return { ...p, text: p.text.split(FINDINGS_TABLE_MARKER).join(replacement) };
     });
+
+    // COMPLIANCE TELEMETRY — the missing fact about whether this fix works.
+    //
+    // Everything here is downstream of the model choosing to emit the marker,
+    // which is instructed in system-prompt.ts. That is a prompt rule, and this
+    // module exists because prompt rules are not enforcement: the same model
+    // already publishes 95 over a persisted 70 in defiance of five separate
+    // confidence rules. When the marker is absent, `touched` stays false, the
+    // parts pass through untouched, and the model's hand-typed table ships
+    // exactly as it does today — no worse than before, but not fixed either.
+    //
+    // So the honest position is that this closes the gap only as often as the
+    // model complies, and compliance is currently UNMEASURED. This line turns
+    // that into a number readable off production: count `no_marker` against
+    // total terminal reports. `text_chars` separates "wrote a report and
+    // omitted the marker" (the case that matters) from "had no text at all".
+    // Do not treat the P0 as closed until this number is known.
+    if (!touched && textChars > 0) {
+      console.error(
+        JSON.stringify({
+          event: "findings_table_no_marker",
+          text_chars: textChars,
+          rows_available: rows === null ? null : rows.length,
+        }),
+      );
+    }
     return touched ? next : parts;
   } catch (e) {
     console.error(

@@ -398,3 +398,47 @@ Deno.test("an all-quarantined run on a saturated window does not overclaim", asy
   assertStringIncludes(out, "quarantined");
   assertStringIncludes(out, `Only the ${FINDINGS_FETCH_LIMIT} highest-confidence artifacts were read`);
 });
+
+/**
+ * COMPLIANCE TELEMETRY. The whole fix is downstream of the model emitting the
+ * marker — a prompt rule, which is the thing this module exists because we
+ * cannot rely on. When it is absent the model's hand-typed table ships as-is.
+ * That is no worse than today, but it is not fixed, and the difference has to
+ * be measurable rather than assumed.
+ */
+function captureStderr(fn: () => void): string[] {
+  const original = console.error;
+  const lines: string[] = [];
+  console.error = (...args: unknown[]) => void lines.push(args.map(String).join(" "));
+  try {
+    fn();
+  } finally {
+    console.error = original;
+  }
+  return lines;
+}
+
+Deno.test("a report with NO marker is logged as a compliance miss", () => {
+  const parts = [{ type: "text", text: "A long report the model wrote itself, with a hand-typed table." }];
+  const logged = captureStderr(() => expandFindingsTable(parts, ROWS));
+  const hit = logged.find((l) => l.includes("findings_table_no_marker"));
+  assert(hit, "a terminal report without the marker must be countable in production");
+  const parsed = JSON.parse(hit!);
+  assertEquals(parsed.rows_available, ROWS.length);
+  assert(parsed.text_chars > 0, "text_chars separates 'omitted the marker' from 'no text at all'");
+});
+
+Deno.test("a compliant report logs nothing", () => {
+  const parts = [{ type: "text", text: `intro\n${FINDINGS_TABLE_MARKER}\noutro` }];
+  const logged = captureStderr(() => expandFindingsTable(parts, ROWS));
+  assertEquals(logged.filter((l) => l.includes("findings_table_no_marker")).length, 0);
+});
+
+Deno.test("parts with no text at all are not counted as a compliance miss", () => {
+  // Only a model that wrote a report and omitted the marker is a miss; an
+  // empty or tool-only parts array is not, and counting it would inflate the
+  // very number this exists to measure.
+  const logged = captureStderr(() => expandFindingsTable([{ type: "tool", name: "x" }], ROWS));
+  assertEquals(logged.filter((l) => l.includes("findings_table_no_marker")).length, 0);
+  assertEquals(captureStderr(() => expandFindingsTable([], ROWS)).length, 0);
+});
