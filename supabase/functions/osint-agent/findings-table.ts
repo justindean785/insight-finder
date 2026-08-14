@@ -45,13 +45,31 @@ export const FINDINGS_TABLE_MARKER = "{{FINDINGS_TABLE}}";
  *  assistant row past the persisted-parts cap and lose the whole report. */
 export const MAX_RENDERED_ROWS = 100;
 
-/** Fetch ONE more than we render, so "there are more rows" is detectable.
- *  Using MAX_RENDERED_ROWS for both the query limit and the render slice made
- *  the truncation disclosure unreachable in production: the fetch could never
- *  return more than the slice kept, so a 300-artifact thread silently rendered
- *  100 rows and said nothing. The +1 row is never rendered; it exists only as
- *  the signal. */
-export const FINDINGS_FETCH_LIMIT = MAX_RENDERED_ROWS + 1;
+/**
+ * Read WIDER than we render.
+ *
+ * Two distinct reasons, and the second is why +1 is not enough:
+ *
+ *  1. "There are more rows" must be detectable. Using MAX_RENDERED_ROWS as both
+ *     the query limit and the render slice made the truncation disclosure
+ *     unreachable in production — the fetch could never return more than the
+ *     slice kept, so a 300-artifact thread silently rendered 100 and said
+ *     nothing. Any over-read fixes that much.
+ *
+ *  2. Quarantined rows must not consume the render allowance. The quarantine
+ *     filter runs AFTER the read, so the window — not the slice — decides how
+ *     many LINKED rows can reach the table. On the threads this feature exists
+ *     for, quarantined rows are the majority (the production canary was 24 of
+ *     29), and they are not reliably low-confidence, so they sort INTO a narrow
+ *     window. With a window of MAX_RENDERED_ROWS + 1, a run holding 150
+ *     quarantined rows above 50 linked ones fetches 101 quarantined, filters to
+ *     zero, and declares the run unlinked while 50 findings sit unreported.
+ *
+ * Rendered rows cost persisted bytes; read rows do not. So the read is wide and
+ * the render stays capped. The window is still bounded — when it saturates, the
+ * table says so rather than implying it saw the whole store.
+ */
+export const FINDINGS_FETCH_LIMIT = MAX_RENDERED_ROWS * 5 + 1;
 
 /** The persisted shape this module reads. Intentionally a narrow structural
  *  type, not an import from the artifact model — this file is a renderer. */
@@ -138,6 +156,16 @@ export function renderFindingsTable(rows: readonly FindingRow[] | null | undefin
     (isSubjectUnlinked(row.metadata) ? quarantined : linked).push(row);
   }
 
+  // The read window is bounded, so on a very large thread these counts describe
+  // the highest-confidence FINDINGS_FETCH_LIMIT artifacts rather than the whole
+  // store. Stated rather than implied: the truncation line below only fires when
+  // more LINKED rows survived the filter than fit, which cannot detect linked
+  // rows that never entered the window in the first place.
+  const windowNote = list.length >= FINDINGS_FETCH_LIMIT
+    ? `_Only the ${FINDINGS_FETCH_LIMIT} highest-confidence artifacts were read, so these ` +
+      "counts describe that window and not the entire evidence store._"
+    : null;
+
   // Strongest first, so the table leads with what the evidence store actually
   // supports rather than the order tools happened to fire.
   const ordered = [...linked].sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0));
@@ -151,6 +179,9 @@ export function renderFindingsTable(rows: readonly FindingRow[] | null | undefin
       "subject-unlinked, so none of it can support a finding._",
       "",
       renderQuarantineDisclosure(quarantined),
+      // Without this, a saturated window turns "none of what we READ was linked"
+      // into the much stronger, and possibly false, "none of it is linked".
+      ...(windowNote ? ["", windowNote] : []),
     ].join("\n");
   }
 
@@ -187,6 +218,11 @@ export function renderFindingsTable(rows: readonly FindingRow[] | null | undefin
   if (quarantined.length > 0) {
     lines.push("");
     lines.push(renderQuarantineDisclosure(quarantined));
+  }
+
+  if (windowNote) {
+    lines.push("");
+    lines.push(windowNote);
   }
 
   lines.push("");

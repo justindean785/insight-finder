@@ -289,3 +289,112 @@ Deno.test("fetchFindingRows swallows a thrown client and reports unavailable", a
   const throwing = { from: () => { throw new Error("network down"); } };
   assertEquals(await fetchFindingRows(throwing, "t", "u"), null);
 });
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * THE INTERACTION between the two fixes: quarantined rows must not consume the
+ * render allowance.
+ *
+ * Filtering happens AFTER the read. So the size of the read window, not the
+ * render slice, decides how many LINKED rows can possibly reach the table. A
+ * window of exactly MAX_RENDERED_ROWS + 1 is sufficient when every fetched row
+ * is linked, and wrong the moment quarantined rows occupy it — which is the
+ * normal case on the threads this feature exists for (the production canary was
+ * 24 quarantined of 29 persisted).
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** A store that behaves like the real query: orders by confidence DESC, then
+ *  applies the limit. The ordering is what lets quarantined rows crowd the
+ *  window, so a stub that ignores it cannot show this class of bug. */
+function storeOf(rows: FindingRow[]) {
+  return {
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          eq: () => ({
+            order: () => ({
+              limit: (n: number) =>
+                Promise.resolve({
+                  data: [...rows]
+                    .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
+                    .slice(0, n),
+                  error: null,
+                }),
+            }),
+          }),
+        }),
+      }),
+    }),
+  };
+}
+
+const qRow = (i: number, confidence: number): FindingRow => ({
+  kind: "username",
+  value: `quarantined-${i}`,
+  confidence,
+  source: "username_sweep",
+  metadata: { subject_unlinked: true, subject_unlinked_reason: "UNLINKED_ECHO_CTX" },
+});
+
+const linkedRow = (i: number, confidence: number): FindingRow => ({
+  kind: "social_profile",
+  value: `linked-finding-${i}`,
+  confidence,
+  source: "socialfetch_web_read",
+  metadata: { confidence_tier: "Possible" },
+});
+
+Deno.test("high-confidence quarantined rows cannot starve the table of linked findings", async () => {
+  // The severe case. A name-only sweep persists many quarantined rows that
+  // outrank the linked evidence on confidence. If they fill the read window,
+  // zero linked rows survive the filter and the table declares the run
+  // unlinked — while 50 linked findings sit in the store, unreported.
+  const store = storeOf([
+    ...Array.from({ length: 150 }, (_, i) => qRow(i, 55)),
+    ...Array.from({ length: 50 }, (_, i) => linkedRow(i, 40)),
+  ]);
+  const out = renderFindingsTable(await fetchFindingRows(store, "t", "u"));
+  assertStringIncludes(out, "linked-finding-0");
+  assert(
+    !out.includes("every persisted artifact on this run is quarantined"),
+    "declared the run unlinked while 50 linked findings existed in the store",
+  );
+});
+
+Deno.test("quarantined rows do not consume the render allowance", async () => {
+  // The quieter case, and the more likely one: quarantined rows eat part of the
+  // window, so fewer linked rows render than would fit — and because the
+  // survivors are under the ceiling, nothing is disclosed as truncated either.
+  const store = storeOf([
+    ...Array.from({ length: 40 }, (_, i) => qRow(i, 90)),
+    ...Array.from({ length: MAX_RENDERED_ROWS }, (_, i) => linkedRow(i, 80 - (i % 40))),
+  ]);
+  const out = renderFindingsTable(await fetchFindingRows(store, "t", "u"));
+  assertStringIncludes(out, `| ${MAX_RENDERED_ROWS} |`);
+  assertStringIncludes(out, "40 rows are quarantined");
+});
+
+Deno.test("a saturated read window is disclosed, not implied to be the whole store", async () => {
+  // The window is bounded, so on a very large thread the counts describe what
+  // was READ. The truncation line cannot cover this: it only fires when more
+  // LINKED rows survived than fit, and says nothing about linked rows that
+  // never entered the window at all.
+  const store = storeOf(Array.from({ length: FINDINGS_FETCH_LIMIT + 10 }, (_, i) => linkedRow(i, 90)));
+  const out = renderFindingsTable(await fetchFindingRows(store, "t", "u"));
+  assertStringIncludes(out, `Only the ${FINDINGS_FETCH_LIMIT} highest-confidence artifacts were read`);
+});
+
+Deno.test("an unsaturated window says nothing about the window", async () => {
+  // Guard against the disclosure becoming background noise on ordinary runs.
+  const store = storeOf(Array.from({ length: 12 }, (_, i) => linkedRow(i, 90)));
+  const out = renderFindingsTable(await fetchFindingRows(store, "t", "u"));
+  assert(!out.includes("highest-confidence artifacts were read"), "disclosed a window that never filled");
+});
+
+Deno.test("an all-quarantined run on a saturated window does not overclaim", async () => {
+  // The dangerous combination: "none of what we read was linked" must not be
+  // published as "none of it is linked" when the read stopped at a ceiling.
+  const store = storeOf(Array.from({ length: FINDINGS_FETCH_LIMIT + 10 }, (_, i) => qRow(i, 55)));
+  const out = renderFindingsTable(await fetchFindingRows(store, "t", "u"));
+  assertStringIncludes(out, "quarantined");
+  assertStringIncludes(out, `Only the ${FINDINGS_FETCH_LIMIT} highest-confidence artifacts were read`);
+});
