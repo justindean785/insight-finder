@@ -97,18 +97,40 @@ export function parseBuildInfo(source) {
  * when it is a failed check.
  */
 export function readLedgerState(logLines) {
-  if (!logLines.length) return { lastEntryBuild: null };
+  // A genuinely empty ledger is the one legitimate "nothing recorded" state.
+  if (!logLines.length) return { lastEntryBuild: null, corrupt: false };
   try {
     // `runtime_marker`, NOT `build`. /health reports the marker under `build`,
     // and reusing that name here is the exact drift this function was extracted
     // to pin — buildLogEntry has never written a `build` key.
-    return { lastEntryBuild: JSON.parse(logLines[logLines.length - 1]).runtime_marker ?? null };
+    const marker = JSON.parse(logLines[logLines.length - 1]).runtime_marker;
+    // Parsing is not the same as being usable. A row that round-trips as JSON
+    // but carries no marker cannot answer "what was last recorded?", so it is
+    // damaged rather than absent.
+    if (typeof marker !== "string" || !marker) return { lastEntryBuild: null, corrupt: true };
+    return { lastEntryBuild: marker, corrupt: false };
   } catch {
-    return { lastEntryBuild: null };
+    // NOT a fallback to the previous valid row: scanning backward would make a
+    // truncated latest record vanish from the very check meant to catch it.
+    return { lastEntryBuild: null, corrupt: true };
   }
 }
 
-export function verifyLedgerConsistency({ lastEntryBuild, refBuild }) {
+export function verifyLedgerConsistency({ lastEntryBuild, refBuild, corrupt = false }) {
+  // Checked BEFORE the initial-state branch, and independently of the ref. A
+  // damaged head reaches the same two nulls an empty ledger does; letting it
+  // inherit that pass means a corrupt ledger verifies clean on any checkout
+  // without a local deploy ref. The ledger exists but its head is unreadable,
+  // so provenance cannot be established from it — say that, do not record.
+  if (corrupt) {
+    return [{
+      code: "ledger_corrupt",
+      detail:
+        "deploy-log.jsonl's latest entry is unreadable (unparsable, or carrying no " +
+        "runtime_marker) — the ledger is damaged, not empty, and provenance cannot be " +
+        "established from it",
+    }];
+  }
   if (!lastEntryBuild && !refBuild) return [];
   if (lastEntryBuild && !refBuild) {
     return [{

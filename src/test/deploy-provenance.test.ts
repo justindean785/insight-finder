@@ -456,9 +456,42 @@ describe("readLedgerState", () => {
     expect(readLedgerState([]).lastEntryBuild).toBeNull();
   });
 
-  it("survives a corrupt trailing line rather than crashing the recorder", () => {
-    // A truncated append must not take down a check whose job is to notice it.
-    expect(readLedgerState([writtenLine(), "{not json"]).lastEntryBuild).toBeNull();
+  it("reports a corrupt trailing line as CORRUPT, not as empty", () => {
+    // A truncated append must not take down a check whose job is to notice it —
+    // but it must not read as an empty ledger either. An append-only provenance
+    // log with an unparsable head is a DAMAGED ledger, and the difference is the
+    // whole point: null alone collapses into the initial-state branch below.
+    const state = readLedgerState([writtenLine(), "{not json"]);
+    expect(state.lastEntryBuild).toBeNull();
+    expect(state.corrupt).toBe(true);
+  });
+
+  it("treats a head with no usable marker as corrupt too", () => {
+    // Parsing is not the same as being usable. A row that round-trips as JSON
+    // but carries no runtime_marker cannot answer "what was last recorded?",
+    // so it must not be allowed to answer "nothing was".
+    expect(readLedgerState([JSON.stringify({ recorded_at: "x" })]).corrupt).toBe(true);
+  });
+
+  it("does not scan backward to an older valid row", () => {
+    // Deliberate: falling back to the previous line would make a truncated
+    // latest record VANISH from the integrity check, which is the failure this
+    // control exists to catch.
+    const state = readLedgerState([writtenLine(), "{not json"]);
+    expect(state.lastEntryBuild).not.toBe("e7e3f80");
+  });
+
+  it("denies a corrupt ledger the initial-state pass when the ref is absent", () => {
+    // The regression that matters. {lastEntryBuild: null, refBuild: null} is the
+    // legitimate initial state and returns []. A corrupt head reaches the same
+    // two nulls, and must NOT inherit that pass — otherwise a damaged ledger
+    // verifies clean on any checkout without a local deploy/live ref, which is
+    // precisely the fail-open this change set exists to remove.
+    const corrupt = readLedgerState([writtenLine(), "{not json"]);
+    expect(verifyLedgerConsistency({ ...corrupt, refBuild: null })).toHaveLength(1);
+
+    // The genuinely empty ledger keeps its pass — this must not become noise.
+    expect(verifyLedgerConsistency({ ...readLedgerState([]), refBuild: null })).toEqual([]);
   });
 
   it("feeds verifyLedgerConsistency a value that lets divergence be SEEN", () => {

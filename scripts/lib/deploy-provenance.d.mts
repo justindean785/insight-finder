@@ -39,10 +39,16 @@ export type RepoFacts = {
 
 /** The ledger's own state, checked so the ref and the log cannot silently diverge. */
 export type LedgerState = {
-  /** `build` of the last deploy-log.jsonl entry, or null when the log is empty. */
+  /** `runtime_marker` of the last deploy-log.jsonl entry, or null when the log
+   *  is empty OR its head is unreadable — disambiguated by `corrupt`. */
   lastEntryBuild: string | null;
   /** What deploy/live currently points at, or null when the ref does not exist. */
   refBuild: string | null;
+  /** The head exists but is unparsable or carries no marker. A damaged ledger is
+   *  NOT an empty one: this blocks recording instead of taking the empty-ledger
+   *  initial-state pass. Optional so existing callers keep compiling; absent
+   *  means "not corrupt". */
+  corrupt?: boolean;
 };
 
 export type Verdict = {
@@ -94,8 +100,12 @@ export type LogEntry = {
 
 export function parseHealth(body: unknown): LiveHealth;
 export function parseBuildInfo(source: string | null): BuildInfo;
-/** Reads the ledger head from raw JSONL lines. Corrupt tail ⇒ empty, never throws. */
-export function readLedgerState(logLines: string[]): Pick<LedgerState, "lastEntryBuild">;
+/** Reads the ledger head from raw JSONL lines. Never throws. A corrupt or
+ *  marker-less head reports `corrupt: true`, NOT an empty ledger, and never
+ *  falls back to an older row. */
+export function readLedgerState(
+  logLines: string[],
+): Pick<LedgerState, "lastEntryBuild"> & { corrupt: boolean };
 export function verifyLedgerConsistency(state: LedgerState): Note[];
 export function verifyDeployedCommit(input: {
   live: LiveHealthOk;

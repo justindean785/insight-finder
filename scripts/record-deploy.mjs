@@ -121,9 +121,13 @@ const repo = {
 const logLines = existsSync(logPath)
   ? readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean)
   : [];
-const { lastEntryBuild } = readLedgerState(logLines);
+const { lastEntryBuild, corrupt } = readLedgerState(logLines);
 const ledger = {
   lastEntryBuild,
+  // Carried into the verdict: a damaged head must block recording rather than
+  // read as an empty ledger. Dropping this field here would restore the
+  // fail-open silently, since verifyLedgerConsistency defaults it to false.
+  corrupt,
   refBuild: gitOrNull("rev-parse", "--verify", `${DEPLOY_BRANCH}^{commit}`),
 };
 
@@ -161,7 +165,11 @@ console.log(`stamp commit     : ${repo.stampCommit ? `${repo.stampCommit.slice(0
 console.log(`canonical tree   : ${repo.sourceTreeDigest?.slice(0, 12) ?? "n/a"}`);
 console.log(`mirror tree      : ${mirror.treeDigest?.slice(0, 12) ?? "(no mirror checkout)"} -> ${treeComparison.status}`);
 console.log(`reachable from main: ${repo.onMain === null ? "n/a" : repo.onMain ? "yes" : "no"}`);
-console.log(`ledger / ref     : ${ledger.lastEntryBuild ?? "(empty)"} / ${ledger.refBuild?.slice(0, 7) ?? "(no ref)"}`);
+// "(corrupt)" and "(empty)" must not print the same way — telling them apart is
+// the entire point of the check immediately below.
+console.log(
+  `ledger / ref     : ${ledger.corrupt ? "(corrupt)" : (ledger.lastEntryBuild ?? "(empty)")} / ${ledger.refBuild?.slice(0, 7) ?? "(no ref)"}`,
+);
 for (const w of verdict.warnings) console.log(`warning [${w.code}] ${w.detail}`);
 for (const p of verdict.problems) console.error(`PROBLEM [${p.code}] ${p.detail}`);
 if (treeComparison.note) console.log(`warning [${treeComparison.note.code}] ${treeComparison.note.detail}`);
