@@ -84,15 +84,33 @@ export function pickEvidenceCount(
  * happens whenever the auto-persist backstop carries a run, since it writes
  * `public.artifacts` and never appends to `evidence_log`. Reporting only the small
  * number there hides missing custody behind what looks like a thin result.
+ *
+ * `hint` closes a gap that survived the 2026-08-06 fix: the tooltip that explains
+ * the two-metric relationship only fired on the INVERTED (missing-custody) branch.
+ * On the documented, "legitimate" branch above, the header rendered a bare number
+ * with no tooltip at all — so an analyst comparing it against the Evidence tab
+ * badge inches away (11 header vs 9 tab, a real 2026-08-10 case) sees exactly the
+ * same unexplained mismatch the original incident was about, just smaller. `hint`
+ * is set whenever the two counts differ, in EITHER direction, so the tooltip is
+ * never absent while there is something on screen worth explaining.
  */
 export function describeEvidence(
   integrity: { total: number } | null,
   artifactCount: number,
-): { text: string; unledgered: number } {
-  if (!integrity) return { text: `${artifactCount} evidence`, unledgered: 0 };
+): { text: string; unledgered: number; hint: string | undefined } {
+  if (!integrity) return { text: `${artifactCount} evidence`, unledgered: 0, hint: undefined };
   const unledgered = Math.max(0, artifactCount - integrity.total);
-  if (unledgered === 0) return { text: `${integrity.total} evidence`, unledgered: 0 };
-  return { text: `${artifactCount} recorded · ${integrity.total} chain-verified`, unledgered };
+  if (unledgered === 0) {
+    const hint = integrity.total > artifactCount
+      ? `${integrity.total} chain-verified evidence rows across ${artifactCount} deduped artifact${artifactCount === 1 ? "" : "s"} — one artifact can carry more than one evidence-log entry.`
+      : undefined;
+    return { text: `${integrity.total} evidence`, unledgered: 0, hint };
+  }
+  return {
+    text: `${artifactCount} recorded · ${integrity.total} chain-verified`,
+    unledgered,
+    hint: `${unledgered} recorded artifact${unledgered === 1 ? " has" : "s have"} no chain-of-custody entry`,
+  };
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -326,9 +344,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
               </span>
               <span
                 className="hidden text-[10px] text-muted-foreground/70 sm:inline tabular-nums"
-                title={evidence.unledgered > 0
-                  ? `${evidence.unledgered} recorded artifact${evidence.unledgered === 1 ? "" : "s"} have no chain-of-custody entry`
-                  : undefined}
+                title={evidence.hint}
               >
                 {evidence.text} · {activity.persistedTotal} tools
               </span>

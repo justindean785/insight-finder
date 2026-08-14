@@ -17,23 +17,56 @@ describe("describeEvidence — header evidence summary", () => {
     const d = describeEvidence({ total: 2 }, 50);
     expect(d.text).toBe("50 recorded · 2 chain-verified");
     expect(d.unledgered).toBe(48);
+    expect(d.hint).toBe("48 recorded artifacts have no chain-of-custody entry");
   });
 
-  it("leaves the documented, legitimate direction unchanged", () => {
+  it("leaves the documented, legitimate direction's TEXT unchanged", () => {
     // 29 evidence rows across 23 deduped artifacts — expected by design.
     const d = describeEvidence({ total: 29 }, 23);
     expect(d.text).toBe("29 evidence");
     expect(d.unledgered).toBe(0);
   });
 
-  it("says nothing extra when the two agree", () => {
-    expect(describeEvidence({ total: 12 }, 12).text).toBe("12 evidence");
+  // 2026-08-10, thread 88cf94fa: header read "11 evidence · 38 tools" while the
+  // Evidence tab on the SAME page read "Evidence 9". This is the exact scenario
+  // the test above already calls "legitimate" (11 evidence-log rows across 9
+  // deduped artifacts) — it was never a counting bug. But `describeEvidence`
+  // rendered a bare "11 evidence" with no tooltip in this branch, so it read as
+  // an unexplained mismatch against the tab badge, reproducing the 2026-08-06
+  // incident in miniature. `hint` must never be silent when the two genuinely
+  // differ.
+  it("explains itself on the legitimate-but-different-numbers case (2026-08-10, thread 88cf94fa)", () => {
+    const d = describeEvidence({ total: 11 }, 9);
+    expect(d.text).toBe("11 evidence");
+    expect(d.unledgered).toBe(0);
+    expect(d.hint).toBe(
+      "11 chain-verified evidence rows across 9 deduped artifacts — one artifact can carry more than one evidence-log entry.",
+    );
   });
 
-  it("falls back to the artifact count while integrity is still loading", () => {
+  it("says nothing extra when the two agree — no discrepancy exists to explain", () => {
+    const d = describeEvidence({ total: 12 }, 12);
+    expect(d.text).toBe("12 evidence");
+    expect(d.hint).toBeUndefined();
+  });
+
+  it("falls back to the artifact count while integrity is still loading, with no tooltip", () => {
     const d = describeEvidence(null, 23);
     expect(d.text).toBe("23 evidence");
     expect(d.unledgered).toBe(0);
+    expect(d.hint).toBeUndefined();
+  });
+
+  it("singularizes the missing-custody hint for exactly one artifact", () => {
+    expect(describeEvidence({ total: 4 }, 5).hint).toBe(
+      "1 recorded artifact has no chain-of-custody entry",
+    );
+  });
+
+  it("pluralizes the legitimate-direction hint's artifact count correctly", () => {
+    expect(describeEvidence({ total: 3 }, 1).hint).toBe(
+      "3 chain-verified evidence rows across 1 deduped artifact — one artifact can carry more than one evidence-log entry.",
+    );
   });
 });
 
