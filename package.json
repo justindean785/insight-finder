@@ -14,7 +14,9 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:edge": "cd supabase/functions/osint-agent && deno test --no-check --allow-net --allow-env --allow-sys --allow-read *_test.ts",
-    "stamp:build": "node scripts/stamp-build.mjs"
+    "stamp:build": "node scripts/stamp-build.mjs",
+    "verify:deploy": "node scripts/record-deploy.mjs",
+    "record:deploy": "node scripts/record-deploy.mjs --record"
   },
   "dependencies": {
     "@ai-sdk/react": "^3.0.193",
