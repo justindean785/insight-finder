@@ -94,6 +94,8 @@ export type LogEntry = {
 
 export function parseHealth(body: unknown): LiveHealth;
 export function parseBuildInfo(source: string | null): BuildInfo;
+/** Reads the ledger head from raw JSONL lines. Corrupt tail ⇒ empty, never throws. */
+export function readLedgerState(logLines: string[]): Pick<LedgerState, "lastEntryBuild">;
 export function verifyLedgerConsistency(state: LedgerState): Note[];
 export function verifyDeployedCommit(input: {
   live: LiveHealthOk;

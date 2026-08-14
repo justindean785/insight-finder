@@ -85,6 +85,29 @@ export function parseBuildInfo(source) {
  *
  * An empty ledger with no ref is the legitimate initial state.
  */
+/**
+ * Read the ledger's current head out of raw JSONL lines.
+ *
+ * Extracted from record-deploy.mjs so the reader can be tested against real
+ * writer output. It had lived inline, where nothing bound it to buildLogEntry
+ * and the two drifted onto different field names.
+ *
+ * A corrupt trailing line reports an empty ledger rather than throwing: this
+ * runs before anything is recorded, and a crash here reads as a failed deploy
+ * when it is a failed check.
+ */
+export function readLedgerState(logLines) {
+  if (!logLines.length) return { lastEntryBuild: null };
+  try {
+    // `runtime_marker`, NOT `build`. /health reports the marker under `build`,
+    // and reusing that name here is the exact drift this function was extracted
+    // to pin — buildLogEntry has never written a `build` key.
+    return { lastEntryBuild: JSON.parse(logLines[logLines.length - 1]).runtime_marker ?? null };
+  } catch {
+    return { lastEntryBuild: null };
+  }
+}
+
 export function verifyLedgerConsistency({ lastEntryBuild, refBuild }) {
   if (!lastEntryBuild && !refBuild) return [];
   if (lastEntryBuild && !refBuild) {

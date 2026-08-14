@@ -27,6 +27,7 @@ import {
   verifyLedgerConsistency,
   verifyDeployedCommit,
   buildLogEntry,
+  readLedgerState,
   type LiveHealthOk,
   type LiveHealthFailed,
   type RepoFacts,
@@ -392,5 +393,82 @@ describe("buildLogEntry", () => {
     );
     expect(line).not.toContain("\n");
     expect(JSON.parse(line).warnings).toEqual(["not_on_main"]);
+  });
+});
+
+/**
+ * readLedgerState — the reader half of the ledger, pinned against the writer.
+ *
+ * This exists because the two halves were written against DIFFERENT field names
+ * and nothing bound them together. `/health` reports the marker under `build`,
+ * and the reader reused that name when parsing a ledger ROW — where
+ * `buildLogEntry` writes it as `runtime_marker`. Every read therefore returned
+ * null, silently and forever.
+ *
+ * That single null defeated three separate controls: `verifyLedgerConsistency`
+ * saw `{lastEntryBuild: null}` and reported the empty-ledger "legitimate initial
+ * state" for a populated log; the already-recorded short-circuit could never
+ * match, so re-running the recorder appended a duplicate row; and `previous_build`
+ * fell back to "unknown" unless an operator passed it by hand — which is exactly
+ * what both rows in the real deploy-log.jsonl show.
+ *
+ * The round-trip test is the one that matters. Asserting the reader against a
+ * hand-written fixture would have passed with the bug in place, because the
+ * fixture would have been written from the same mistaken memory of the shape.
+ * Only feeding it real `buildLogEntry` output can catch a field-name drift.
+ */
+describe("readLedgerState", () => {
+  const repo: RepoFacts = {
+    exists: true,
+    stampCommit: "2ebd33002d17440a60ec86e25756f7a0700545f2",
+    stampParent: "e7e3f8098407557e427376029645633507962979",
+    onMain: true,
+    buildInfoSource: buildInfo("e7e3f80"),
+    sourceTreeDigest: "4f8ecef31bba28965211cc2fdef0a577d605c7ef",
+  };
+
+  const writtenLine = () => {
+    const live = okHealth(liveHealth);
+    return JSON.stringify(
+      buildLogEntry({
+        live, repo,
+        verdict: verifyDeployedCommit({ live, repo }),
+        recordedAt: "2026-08-10T13:56:26.103Z",
+        previousBuild: "fb812a6",
+        previousBuildSource: "operator",
+        mirror: null,
+      }),
+    );
+  };
+
+  it("reads back the marker from a row the writer actually produced", () => {
+    // The regression in one line: writer and reader must agree on the field.
+    expect(readLedgerState([writtenLine()]).lastEntryBuild).toBe("e7e3f80");
+  });
+
+  it("reads the LAST entry, because the log is append-only", () => {
+    const first = writtenLine();
+    const second = JSON.stringify({ ...JSON.parse(first), runtime_marker: "8c6184b" });
+    expect(readLedgerState([first, second]).lastEntryBuild).toBe("8c6184b");
+  });
+
+  it("reports an empty ledger as empty, not as a marker", () => {
+    expect(readLedgerState([]).lastEntryBuild).toBeNull();
+  });
+
+  it("survives a corrupt trailing line rather than crashing the recorder", () => {
+    // A truncated append must not take down a check whose job is to notice it.
+    expect(readLedgerState([writtenLine(), "{not json"]).lastEntryBuild).toBeNull();
+  });
+
+  it("feeds verifyLedgerConsistency a value that lets divergence be SEEN", () => {
+    // The bug's real cost: with lastEntryBuild pinned to null, a populated
+    // ledger sitting next to a ref read as the legitimate initial state, and a
+    // genuine divergence could never be reported. Drive both directions.
+    const ledger = readLedgerState([writtenLine()]);
+    expect(verifyLedgerConsistency({ ...ledger, refBuild: "e7e3f8098407557e427376029645633507962979" }))
+      .toEqual([]);
+    expect(verifyLedgerConsistency({ ...ledger, refBuild: "deadbee0000000000000000000000000000000d" }))
+      .toHaveLength(1);
   });
 });

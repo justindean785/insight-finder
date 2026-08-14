@@ -38,6 +38,7 @@ import {
   verifyDeployedCommit,
   compareSourceTrees,
   buildLogEntry,
+  readLedgerState,
 } from "./lib/deploy-provenance.mjs";
 
 const HEALTH_URL =
@@ -120,14 +121,7 @@ const repo = {
 const logLines = existsSync(logPath)
   ? readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean)
   : [];
-let lastEntryBuild = null;
-if (logLines.length) {
-  try {
-    lastEntryBuild = JSON.parse(logLines[logLines.length - 1]).build ?? null;
-  } catch {
-    lastEntryBuild = null;
-  }
-}
+const { lastEntryBuild } = readLedgerState(logLines);
 const ledger = {
   lastEntryBuild,
   refBuild: gitOrNull("rev-parse", "--verify", `${DEPLOY_BRANCH}^{commit}`),
