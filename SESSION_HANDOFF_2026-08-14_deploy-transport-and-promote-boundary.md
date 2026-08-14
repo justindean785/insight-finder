@@ -40,13 +40,14 @@ ceiling. **Read the ceiling line, not the green word** — see §4.
 
 ## 2. What shipped
 
-Nine commits landed on `main`. Everything below is merged AND deployed unless stated.
+Ten commits landed on `main`. Everything below is merged AND deployed unless stated.
 
 | PR | What | Channel | Live? |
 | --- | --- | --- | --- |
 | **#448** | bind `subject_unlinked` at the PROMOTE boundary | frontend | ✅ Vercel `795dbf5` |
 | **#450** | stop rendering every assistant message twice | frontend | ✅ |
 | **#445** | evidence-count tooltip fires in both divergence directions | frontend | ✅ |
+| **#456** | cap a quarantined row's displayed confidence NUMBER, not just its label | frontend | ✅ |
 | **#444** | deploy-provenance recorder (`verify:deploy` / `record:deploy`) | tooling | ✅ |
 | **#446** | handoff III, merged as a dated record with a SUPERSEDED banner | docs | — |
 | **#451** | report layer bypasses the integrity engine | docs | — |
@@ -291,13 +292,12 @@ not a fixture. Backend enforcement points: `lib/quarantine.ts` (predicate),
 
 ## 7. Open PRs — 27, of which 1 is ready
 
-**#456 is the only one this session created and the only one with current CI.**
+**#454 is the top priority.** #456 and #457 were created and merged this session.
 
 ### Act on these
 
 | PR | Branch | What | State |
 | --- | --- | --- | --- |
-| **#456** | `claude/review-open-prs-branches-czccfe` | cap a quarantined row's displayed confidence number | **draft, CI green (frontend + edge + migrations), awaiting scope review** |
 | **#454** | `claude/findings-table-provenance` | **THE LIVE P0** — Findings table from persisted rows | draft, green, 0 behind at creation |
 
 **#454 is now the top priority.** It is backend, so it needs the full recipe **and** §3's
@@ -381,18 +381,15 @@ selectors. The enforcement point is a **pre-flight guard on tool input**. Two ha
 
 ## 9. Next steps — in order, for the next agent
 
-1. **Review #456's scope reduction.** Three-quarters of the proposal it came from was already
-   in #448 and was discarded; the remainder is one branch in `adjustedConfidence`. Confirm
-   the reduction was right, then merge — it ships to production on merge.
-2. **Unpublish the stale Lovable frontend** (§4.1). One action, highest value-per-effort on
+1. **Unpublish the stale Lovable frontend** (§4.1). One action, highest value-per-effort on
    this list, no code.
-3. **Ship #454** — the live P0. Backend, so: merge → `npm run stamp:build` → commit →
+2. **Ship #454** — the live P0. Backend, so: merge → `npm run stamp:build` → commit →
    surgical mirror sync → **manual Lovable transport (§3)** → explicit deploy → moved
    `/health` SHA → `npm run record:deploy`. Then re-run the canary and diff the published
    Findings table against persisted rows.
-4. **File the transport defect** as its own infra issue with §3 as the evidence.
-5. **Run the two-user Realtime canary.** Named P0 across three handoffs, still never run.
-6. **Triage the stale cohort in one pass.** 15 PRs, 10 conflicting. Rebase the few describing
+3. **File the transport defect** as its own infra issue with §3 as the evidence.
+4. **Run the two-user Realtime canary.** Named P0 across three handoffs, still never run.
+5. **Triage the stale cohort in one pass.** 15 PRs, 10 conflicting. Rebase the few describing
    live defects (`#386`, `#401`, `#324`), close the rest with a note. Close mirror `#41`.
    Then the ~311 orphaned branches.
 
@@ -507,8 +504,7 @@ that ran used exactly that. **Never hand a password to an agent or a third-party
 
 1. `curl …?health=1` and `npm run verify:deploy`. Confirm the axis is still green before
    changing anything. If it moved, stop and find out why.
-2. Review and merge **#456** (§9.1). Frontend — ships on merge.
-3. **Unpublish the stale Lovable frontend** (§4.1).
-4. Read **#454** properly. It is the live P0 and the only remaining integrity defect on a
+2. **Unpublish the stale Lovable frontend** (§4.1).
+3. Read **#454** properly. It is the live P0 and the only remaining integrity defect on a
    deployed surface.
-5. Rotate the password (§14).
+4. Rotate the password (§14).
