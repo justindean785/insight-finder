@@ -3,11 +3,12 @@ import { detectSeed, extractDisplaySeed } from "@/lib/seed";
 import { toolActionLabel } from "@/lib/tool-display";
 import { humanizeSourceChain, tokenizeSourceChain } from "@/lib/report-source-labels";
 import { deriveToolStatus, deriveToolReason } from "@/lib/tool-run";
-import { isSubjectUnlinked } from "@/lib/quarantine";
+import { isSubjectUnlinked, isQuarantined } from "@/lib/quarantine";
 import {
   clusterDisplayId,
   bucketQualifiesAsCluster,
   isCollisionArtifact,
+  isClusterIneligible,
   sanitizeValueForLabel,
   reportDisplayKind,
   reservedNumberAnnotation,
@@ -345,8 +346,26 @@ export function labelForArtifact(a: Artifact, review?: ReviewAdjustment): ConfLa
   // skipping the short-circuit makes the LABEL respect that cap too — the row flows
   // through the source-derived tiers below (max VERIFY at 55), so number and label
   // stay consistent. The analyst review itself is still recorded.
+  // QUARANTINE IS A SECOND HARD FLOOR, alongside possible_minor. `subject_unlinked`
+  // says linkage to the subject is unproven; CONFIRMED asserts the row IS the
+  // subject's. Those cannot both be true, and CONFIRMED is not cosmetic — it leads
+  // Key Findings, feeds the "Confirmed" KPI bucket, and skips value sanitization on
+  // export.
+  //
+  // Ordinary attestation does NOT clear it. `meta.reviewed`/"confirmed"/"key" are
+  // set by flows that never adjudicated PROVENANCE — they answer "is this value
+  // real?", not "is it this person's?". Quarantine is a machine claim about
+  // provenance, so only an explicit human claim about provenance clears it:
+  // `linkage_confirmed`. Operator-approved policy, 2026-08-10.
+  //
+  // The analyst's review is still recorded, and still authoritative in the NEGATIVE
+  // direction — a dismissal above already returned FAILED.
+  // One predicate, shared with evidenceStatus — see isQuarantined's docstring for
+  // why two independent promotion paths must not each compute this themselves.
+  const quarantined = isQuarantined(meta);
+
   const attested = review === "confirmed" || review === "key" || meta.reviewed === true;
-  if (attested && meta.possible_minor !== true) return "CONFIRMED";
+  if (attested && meta.possible_minor !== true && !quarantined) return "CONFIRMED";
 
   const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
   const allSources = [a.source ?? null, ...metaSources].filter(Boolean) as string[];
@@ -396,7 +415,14 @@ export function labelForArtifact(a: Artifact, review?: ReviewAdjustment): ConfLa
   }
 
   // Multi-source-class corroboration → CONFIRMED / CORRELATED.
-  if (c >= 85 && independentClasses >= 2) return "CONFIRMED";
+  //
+  // Corroboration cannot lift quarantine, and this is the clause that matters most:
+  // it proves the VALUE is real, never that it is the SUBJECT's. Ten providers
+  // agreeing a phone number exists says nothing about whose phone it is — and a
+  // name-only harvest returns exactly that shape, several sources describing one
+  // real stranger. So a quarantined row tops out at CORRELATED ("real, apparently
+  // connected") rather than CONFIRMED ("belongs to the subject").
+  if (c >= 85 && independentClasses >= 2) return quarantined ? "CORRELATED" : "CONFIRMED";
   if (c >= 70 && independentClasses >= 2) return "CORRELATED";
   if (c >= 85) return "INFERRED"; // single source class, even if high confidence
   if (c >= 65) return "INFERRED";
@@ -1189,10 +1215,23 @@ export function buildReportMarkdown(input: ReportInput): string {
     // mis-kinded as `breach` (→ breach group) OR correctly kinded as
     // `threat_reputation`/`reputation_signal` (→ other group). Collecting by
     // isReputationArtifact() catches both so they never report as exposures.
-    const reputation = artifacts.filter((a) => isReputationArtifact(a) && !collisionIds.has(a.id));
+    // "Network Connections" IS the subject's network, so listing a row here is an
+    // AUTHORITY claim — the same claim clustering, graph edges and the confidence
+    // dimensions already refuse to make for a quarantined row. Excluding it here
+    // is not concealment: it stays in the Artifact/Entity Table, in the Timeline,
+    // and in the Collision section under its own `subject_unlinked_reason`.
+    //
+    // A SEPARATE set from `collisionIds` on purpose. collisionIds is the
+    // collision-SECTION membership test; adding quarantine to it would evict these
+    // rows from `conflictNoted` (:1138), which is the only branch that quotes
+    // their reason verbatim (:1151). See isClusterIneligible in report-hygiene.ts.
+    const networkExcluded = new Set(
+      artifacts.filter((a) => collisionIds.has(a.id) || isSubjectUnlinked(a.metadata)).map((a) => a.id),
+    );
+    const reputation = artifacts.filter((a) => isReputationArtifact(a) && !networkExcluded.has(a.id));
     const repIds = new Set(reputation.map((a) => a.id));
     for (const g of GROUP_ORDER) {
-      const items = (byGroup.get(g) ?? []).filter((a) => !repIds.has(a.id) && !collisionIds.has(a.id));
+      const items = (byGroup.get(g) ?? []).filter((a) => !repIds.has(a.id) && !networkExcluded.has(a.id));
       if (!items.length) continue;
       sections.push(`**${GROUP_LABEL[g]}**\n` + items.map(line).join("\n"));
     }
@@ -1692,7 +1731,13 @@ export function buildIdentityClusters(
     // re-promoted analyst-dismissed artifacts into CONFIRMED clusters.
     const rev = reviews?.[a.id];
     if (rev === "dismissed" || rev === "wrong") return false;
-    if (isCollisionArtifact(a)) return false;
+    // isClusterIneligible, not isCollisionArtifact: the latter tests only the
+    // legacy collision flags, and NONE of the 104 subject_unlinked artifacts in
+    // production carry any of them (measured 2026-08-10 across all 4 affected
+    // threads). The gate was not leaky — it was inapplicable, so every
+    // quarantined row entered clustering and from there drove the report, the
+    // Clusters tab, the graph, the Identity score and the cluster audit.
+    if (isClusterIneligible(a)) return false;
     return true;
   });
 

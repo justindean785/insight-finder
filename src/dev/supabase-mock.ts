@@ -25,6 +25,20 @@ const artifacts = [
   { id: "a6", thread_id: THREAD_ID, kind: "location", value: "Oakland, California, US", confidence: 41, confidence_cap_applied: 65, source: "indicia_person", created_at: iso(16), metadata: { sources: ["indicia_person"], corroborations: 1, source_class: "data_broker" } },
   { id: "a7", thread_id: THREAD_ID, kind: "social_profile", value: "linkedin.com/in/james-harker-logistics", confidence: 79, confidence_cap_applied: null, source: "socialfetch", created_at: iso(11), metadata: { sources: ["socialfetch", "exa_search"], corroborations: 2, source_class: "provider" } },
   { id: "a8", thread_id: THREAD_ID, kind: "ip", value: "203.0.113.47", confidence: 34, confidence_cap_applied: null, source: "oathnet", created_at: iso(6), metadata: { sources: ["oathnet"], corroborations: 1, source_class: "breach_corpus" } },
+  // ── Quarantined: the same-name collision axis ────────────────────────────
+  // A name-only sweep on "James Harker" returned a DIFFERENT James Harker's
+  // selectors. The backend flags them `subject_unlinked` (#433) and they are
+  // persisted on purpose — quarantine is disclosure, not deletion. They must
+  // render as evidence with their reason, and must never seed an identity
+  // cluster, gain a graph identity edge, or raise a confidence dimension.
+  //
+  // Without these rows the harness cannot show the promote boundary at all:
+  // every other fixture artifact is un-quarantined, so the Graph/Report tabs
+  // look identical with the gate on or off. They share a `parent` pointer so
+  // they WOULD cluster together if the gate ever regressed — which is what
+  // makes them a useful visual canary rather than decoration.
+  { id: "a9", thread_id: THREAD_ID, kind: "phone", value: "+1 209 555 0117", confidence: 45, confidence_cap_applied: 55, source: "oathnet_lookup", created_at: iso(19), metadata: { sources: ["oathnet_lookup"], corroborations: 1, source_class: "data_broker", parent: "james harker", subject_unlinked: true, subject_unlinked_reason: "harvested from a name-only query — same-name collision axis; linkage to the subject is unproven" } },
+  { id: "a10", thread_id: THREAD_ID, kind: "email", value: "jharker@stocktonfreight.example", confidence: 45, confidence_cap_applied: 55, source: "oathnet_lookup", created_at: iso(18), metadata: { sources: ["oathnet_lookup"], corroborations: 1, source_class: "data_broker", parent: "james harker", subject_unlinked: true, subject_unlinked_reason: "harvested from a name-only query — same-name collision axis; linkage to the subject is unproven" } },
 ];
 
 /** `messages.parts` is AI-SDK shaped Json, not a plain string body. */

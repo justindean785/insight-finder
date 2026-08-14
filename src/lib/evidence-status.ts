@@ -1,4 +1,5 @@
 import type { Artifact } from "@/hooks/useThreadArtifacts";
+import { isQuarantined } from "@/lib/quarantine";
 import {
   labelForArtifact,
   isBreachSource,
@@ -216,6 +217,11 @@ export function evidenceStatus(a: Artifact, review?: ReviewAdjustment): Evidence
   // or the single-source guard below would silently demote genuinely attested
   // findings back to "Needs corroboration".
   const analystConfirmed = review === "confirmed" || review === "key" || meta.reviewed === true;
+  // The SECOND promotion door. labelForArtifact has its own; both must consult the
+  // same lock or they disagree on one row — CORRELATED on the pill, "Verified" on
+  // the chip, and counted in the Confirmed KPI (CaseReport bucket() -> :978/:1195/:1306).
+  // Ordinary attestation answers "is this value real?", never "is it the subject's".
+  const quarantined = isQuarantined(meta);
   const shared = isSharedInfrastructure(a);
 
   let status: EvidenceDisplayStatus;
@@ -227,7 +233,7 @@ export function evidenceStatus(a: Artifact, review?: ReviewAdjustment): Evidence
     status = "contradicted";
   } else {
     let base = statusFromLabel(label);
-    if (analystConfirmed) {
+    if (analystConfirmed && !quarantined) {
       base = "verified";
     } else if (reputation && (base === "verified" || base === "probable" || base === "needs_corroboration" || base === "lead")) {
       // Threat/reputation signals are review-only — never auto-confirmed.
