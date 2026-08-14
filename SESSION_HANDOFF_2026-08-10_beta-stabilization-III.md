@@ -1,5 +1,31 @@
 # Session handoff — 2026-08-10 (evening) — beta stabilization III
 
+> ## ⚠️ HISTORICAL RECORD — merged 2026-08-14, four days after it was written
+>
+> **This document is a dated measurement, not current operating truth.** It is on `main` so
+> its evidence and reasoning survive; its *status* claims did not survive the week. Its own
+> §1.0 is the reason this banner exists — a "verified green" reading in this project went
+> false within six hours, because the mirror is writable by a second agent whose edits this
+> repo never sees.
+>
+> Superseded as of 2026-08-14:
+>
+> | §  | Claim | Now |
+> | --- | --- | --- |
+> | §3, §14 | the PROMOTE boundary is the open P0 | **CLOSED** by #448. `isClusterIneligible` binds at all five call sites; the label boundary is capped too |
+> | §3.2, §4 | `diagnostic/promote-boundary-repro` needs a PR | opened as #447, then **closed** — its file occupies the same path as #448's superset suite |
+> | §4 | "30 PRs are open" | it was 34 at the time; several have since merged or closed |
+> | §8 | frontend baseline 1211 / 1 / 102 | **1288 / 1 / 105** |
+> | §1.0 | main HEAD `faf1305`, stamp gap three commits | main has moved; the marker gap is unchanged and still open |
+> | §1.3 | `mcp` finding 1 (ownership ordering) open | fixed by #453 **and mirror-synced** (`b8e2056`) — though still not *verifiably deployed*, since `mcp` has no build marker |
+>
+> **Still true and still open:** the `/health` build marker names a commit that is not what
+> runs (§1.0); `mcp` returns `artifacts` with `select("*")`, bypassing every integrity layer
+> (§1.3 finding 2, §5.4); the dispatch guard (§3.7); breach-value persistence (§6); both
+> canaries (§5.3); runs dying in the finalize window (§5.1).
+>
+> `CLAUDE.md` is the entry point and has been updated. Read it first; read this for evidence.
+
 Third in the series. Read in order if you have time:
 `SESSION_HANDOFF_2026-08-09_beta-stabilization.md` → `…_2026-08-10_beta-stabilization-II.md` → this.
 If you have time for one, read **this one plus §11 (corrections)** — several load-bearing
