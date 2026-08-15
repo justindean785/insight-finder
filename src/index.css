@@ -1370,11 +1370,11 @@ All colors MUST be HSL.
 }
 .composer-shell:focus-within {
   background: hsl(0 0% 100% / 0.05);
-  border-color: hsl(var(--brand) / 0.55);
+  border-color: hsl(var(--brand) / 0.5);
   box-shadow:
     inset 0 1px 0 hsl(0 0% 100% / 0.09),
-    0 0 0 1px hsl(var(--brand) / 0.35),
-    0 18px 48px -22px hsl(var(--brand) / 0.5);
+    0 0 0 1px hsl(var(--brand) / 0.3),
+    0 6px 18px -12px hsl(var(--brand) / 0.35);
 }
 .composer-shell::before {
   content: "";
@@ -1396,10 +1396,12 @@ All colors MUST be HSL.
 .chat-next-steps__row::before {
   content: "";
   position: absolute;
-  inset: 6px auto 6px 0;
+  /* Inset from the edge: at left:0 this sits exactly on the two-column grid's
+     divider border, drawing a doubled line at the seam in the right column. */
+  inset: 8px auto 8px 6px;
   width: 2px;
   border-radius: 2px;
-  background: hsl(var(--conf-unverified) / 0.5);
+  background: hsl(var(--conf-unverified) / 0.45);
 }
 .chat-next-steps__row[data-priority="high"]::before {
   background: hsl(var(--brand));
@@ -1454,7 +1456,7 @@ All colors MUST be HSL.
   align-items: center;
   gap: 10px;
   min-height: 52px;
-  padding: 8px 12px;
+  padding: 8px 12px 8px 16px;
   transition: background 140ms ease;
 }
 .chat-next-steps__row:hover {
