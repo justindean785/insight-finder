@@ -171,22 +171,25 @@ export function isInert(
 }
 
 /**
- * Should a same-kind cluster start expanded?
+ * Should a same-kind cluster start expanded? ALWAYS YES.
  *
- * Large clusters fold by default — EXCEPT when one of the rows inside is
- * quarantined. A warning the analyst has to expand to find is a warning that
- * does not exist, and the collapsed subheader shows only a count, never the
- * quarantined values or the pipeline's recorded reason for distrusting them.
+ * This used to fold any cluster over four rows, to stop the "wall of identical
+ * rows" (11 subdomains, all hackertarget, all 70%). On a real 67-artifact case
+ * that inverted: nearly every cluster exceeds four, so the board opened almost
+ * entirely shut and the analyst had to expand each one to read their own
+ * evidence — every visit, because the open/closed state was component state that
+ * died on unmount. Operator verdict: "i have to go one by one every single time."
  *
- * DEFAULT ONLY: an explicit toggle in `openClusters` still wins, because an
- * analyst who has read the rows is entitled to fold them away again.
+ * Hiding evidence by default is the worse failure. The wall-of-rows problem is
+ * now addressed by things that do not hide anything without being asked: the
+ * quick-filters, the sort, a global collapse control, and a remembered per-case
+ * choice. A collapsed cluster still shows its quarantined count, so folding can
+ * never bury a withheld-authority row.
  *
- * It lives HERE, beside the predicate it depends on, because it is a disclosure
- * rule rather than layout trivia — when quarantine may be hidden is a quarantine
- * decision. Pinned by `evidence-disclosure.test.ts`. The call site carried this
- * exact promise in a comment for a while and never implemented it. (Cursor
- * review, PR #462.)
+ * Kept as a named function rather than inlined `true` so the decision has one
+ * documented home and `evidence-disclosure.test.ts` keeps a place to pin it.
+ * The parameters are retained for that pinning and are deliberately unused.
  */
-export function clusterDefaultOpen(collapsible: boolean, quarantinedCount: number): boolean {
-  return !collapsible || quarantinedCount > 0;
+export function clusterDefaultOpen(_collapsible: boolean, _quarantinedCount: number): boolean {
+  return true;
 }

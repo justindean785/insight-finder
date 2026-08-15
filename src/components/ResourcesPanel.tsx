@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Mail, Globe, User as UserIcon, Network, ShieldAlert, Image as ImgIcon, Tag,
@@ -64,6 +64,36 @@ function kindHeading(kind: string, n: number): string {
 // of the "wall of identical rows" (e.g. 11 subdomains, all hackertarget @70%).
 const CLUSTER_COLLAPSE_THRESHOLD = 4;
 
+/**
+ * The analyst's own fold/unfold choices, remembered per case.
+ *
+ * Stores ONLY which cluster headers are open — booleans keyed by group:kind.
+ * No artifact value, selector or reason is written to storage: this is a UI
+ * preference, and case evidence does not belong in localStorage.
+ * Fails silently and returns {} when storage is unavailable (private mode,
+ * quota, disabled) — a preference that cannot be read is not an error worth
+ * breaking the Evidence board over.
+ */
+const CLUSTER_PREFS_KEY = (threadId: string) => `proximity:evidence-clusters:${threadId}`;
+
+function readClusterPrefs(threadId: string): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(CLUSTER_PREFS_KEY(threadId));
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, boolean> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === "boolean") out[k] = v;
+    }
+    return out;
+  } catch { return {}; }
+}
+
+function writeClusterPrefs(threadId: string, prefs: Record<string, boolean>): void {
+  try { localStorage.setItem(CLUSTER_PREFS_KEY(threadId), JSON.stringify(prefs)); } catch { /* preference only */ }
+}
+
 export type EvidenceStatusFilter = "all" | "strong" | "review" | "quarantined" | "weak" | "excluded";
 export type EvidenceSortMode = "strength" | "confidence" | "newest";
 
@@ -85,9 +115,11 @@ const STATUS_FILTER_GROUPS: Record<EvidenceStatusFilter, Set<string> | null> = {
 };
 
 function ArtifactsList({
-  items, onSelect, review, statusFilter, sortMode, loading, error, onRetry,
+  items, onSelect, review, statusFilter, sortMode, loading, error, onRetry, threadId,
 }: {
   items: Artifact[];
+  /** Scopes the remembered fold/unfold choices to this case. */
+  threadId: string;
   onSelect: (a: Artifact) => void;
   review: ReturnType<typeof useReviewStates>;
   statusFilter: EvidenceStatusFilter;
@@ -96,9 +128,23 @@ function ArtifactsList({
   error?: boolean;
   onRetry?: () => void;
 }) {
-  // Track which kind-clusters the user has manually toggled open/closed.
-  // Keyed by `${group}:${kind}`; undefined = use the default (collapsed when big).
-  const [openClusters, setOpenClusters] = useState<Record<string, boolean>>({});
+  // Track which kind-clusters the analyst has manually toggled open/closed.
+  // Keyed by `${group}:${kind}`; undefined = use the default (open).
+  //
+  // PERSISTED PER CASE. This was component state, so every fold and unfold died
+  // on unmount and the board reset on every visit — the "every single time" half
+  // of the complaint. An analyst's decision about their own case survives the
+  // remount now; only their own toggles are stored, never evidence.
+  const [openClusters, setOpenClusters] = useState<Record<string, boolean>>(
+    () => readClusterPrefs(threadId),
+  );
+  const setClusters = useCallback(
+    (next: Record<string, boolean>) => {
+      setOpenClusters(next);
+      writeClusterPrefs(threadId, next);
+    },
+    [threadId],
+  );
 
   // Apply the status quick-filter, then bucket Group → kind → artifacts and sort
   // each kind by the chosen mode so the strongest evidence surfaces first.
@@ -346,9 +392,9 @@ function ArtifactsList({
                     role={collapsible ? "button" : undefined}
                     tabIndex={collapsible ? 0 : undefined}
                     aria-expanded={collapsible ? open : undefined}
-                    onClick={collapsible ? () => setOpenClusters((p) => ({ ...p, [key]: !open })) : undefined}
+                    onClick={collapsible ? () => setClusters({ ...openClusters, [key]: !open }) : undefined}
                     onKeyDown={collapsible ? (e) => {
-                      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpenClusters((p) => ({ ...p, [key]: !open })); }
+                      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setClusters({ ...openClusters, [key]: !open }); }
                     } : undefined}
                     className={cn(
                       "flex items-center gap-1.5 border-b border-border-subtle/60 px-2.5 py-1",
@@ -958,6 +1004,7 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
       )}
       <ArtifactsList
         items={items}
+        threadId={threadId}
         onSelect={setSelected}
         review={review}
         statusFilter={statusFilter}

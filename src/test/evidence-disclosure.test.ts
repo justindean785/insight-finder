@@ -18,18 +18,21 @@ describe("quarantine cannot hide behind a collapsed cluster", () => {
    * analyst must go looking for. The call site carried this promise in a comment
    * while `open` was still `?? !collapsible`.
    */
-  it("small clusters are open regardless", () => {
+  it("EVERY cluster opens by default, whatever its size", () => {
+    // Changed deliberately. Folding anything over four rows meant that on a real
+    // 67-artifact case the board opened almost entirely shut and the analyst had
+    // to expand each cluster to read their own evidence. Hiding evidence by
+    // default is the worse failure; the wall-of-rows problem is handled by the
+    // filters, the sort, and a remembered per-case choice instead.
     expect(clusterDefaultOpen(false, 0)).toBe(true);
     expect(clusterDefaultOpen(false, 2)).toBe(true);
-  });
-
-  it("large clean clusters fold — that is the feature, not a bug", () => {
-    expect(clusterDefaultOpen(true, 0)).toBe(false);
-  });
-
-  it("a single quarantined row keeps a large cluster open", () => {
-    expect(clusterDefaultOpen(true, 1)).toBe(true);
+    expect(clusterDefaultOpen(true, 0)).toBe(true);
     expect(clusterDefaultOpen(true, 9)).toBe(true);
+  });
+
+  it("a quarantined row is therefore never hidden by the default", () => {
+    // The invariant this rule existed for, now satisfied unconditionally.
+    expect(clusterDefaultOpen(true, 1)).toBe(true);
   });
 
   it("the component initialises from the rule, not from `!collapsible`", () => {
@@ -40,6 +43,10 @@ describe("quarantine cannot hide behind a collapsed cluster", () => {
     expect(src).toMatch(/openClusters\[key\]\s*\?\?\s*clusterDefaultOpen\(/);
     // And the old expression must be gone, not merely shadowed.
     expect(src).not.toMatch(/openClusters\[key\]\s*\?\?\s*!collapsible/);
+    // The analyst's own choice must survive a remount — the "every single time"
+    // half of the complaint. State that dies on unmount is not a preference.
+    expect(src).toMatch(/readClusterPrefs\(threadId\)/);
+    expect(src).toMatch(/writeClusterPrefs\(threadId/);
   });
 });
 
