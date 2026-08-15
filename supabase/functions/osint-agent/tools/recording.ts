@@ -10,6 +10,7 @@ import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { collisionPeerSignal, type CollisionPeer } from "../lib/quarantine.ts";
+import { applyRecordingSourcePolicy, disclosedSourceLabels, resolveRecordingStatus } from "../recording-source-policy.ts";
 
 export const record_artifacts = tool({
   description:
@@ -60,38 +61,28 @@ export const record_artifacts = tool({
       }
       // Apply conservative confidence caps based on source class.
       const aMeta = (a.metadata ?? {}) as Record<string, unknown>;
-      const effSources = [a.source ?? "", ...((aMeta.sources as unknown[]) ?? [])].filter(Boolean) as string[];
-      const cap = applyEvidenceCaps({
+      const disclosedSources = disclosedSourceLabels(a.source, aMeta);
+      const { effective: cap } = applyRecordingSourcePolicy({
         rawConfidence: a.confidence ?? 50,
-        sources: effSources,
+        source: a.source,
         kind: a.kind,
         metadata: aMeta,
       });
       // Provenance guard (#131 follow-up): flag a bare-domain source nothing fetched
       // (the menstoppingviolence.org incident). The LIVE path (tool-registry.ts)
       // whitelists the seed domain via triageState; this mirror has no triageState.
-      const llmAssertedProvenance = effSources.some((s) => isLlmAssertedDomainSource(s));
+      const llmAssertedProvenance = disclosedSources.some((s) => isLlmAssertedDomainSource(s));
       // Required-fields envelope. Status is DERIVED (deriveStatus) so it can never
       // contradict reason_not_confirmed — mirrors the live record_artifacts.
-      const resolvedReasonNotConfirmed =
-        (typeof aMeta.reason_not_confirmed === "string" ? aMeta.reason_not_confirmed : null) ??
-        cap.reason_not_confirmed ?? null;
+      const recordingStatus = resolveRecordingStatus(cap, aMeta);
+      const resolvedReasonNotConfirmed = recordingStatus.reasonNotConfirmed;
       const meta: Record<string, unknown> = {
         ...(a.metadata ?? {}),
         ...(v.metaPatch ?? {}),
         ...(inferred.reclassified_from ? { reclassified_from: inferred.reclassified_from } : {}),
         source_category: cap.source_classes,
         query_types: queryTypesOf({ value: v.value, kind: v.kind, metadata: aMeta }),
-        status: coerceCoherentStatus(
-          deriveStatus({
-            requested: typeof aMeta.status === "string" ? aMeta.status : null,
-            reasonNotConfirmed: resolvedReasonNotConfirmed,
-            sourceClasses: cap.source_classes,
-            contradictions: Array.isArray(aMeta.contradictions) ? aMeta.contradictions : [],
-            deadEnd: looksDeadEnd(aMeta),
-          }),
-          resolvedReasonNotConfirmed,
-        ),
+        status: recordingStatus.status,
         cluster_id: aMeta.cluster_id ?? null,
         reason_for_confidence: cap.reason_for_confidence,
         reason_not_confirmed: resolvedReasonNotConfirmed,
@@ -315,34 +306,24 @@ export const record_artifact = tool({
     const v = validateArtifact(inferred.kind, value);
     if (!v.ok) return { ok: false, rejected: true, reason: v.reason };
     const inMeta = (metadata ?? {}) as Record<string, unknown>;
-    const effSources = [source ?? "", ...((inMeta.sources as unknown[]) ?? [])].filter(Boolean) as string[];
-    const cap = applyEvidenceCaps({
+    const disclosedSources = disclosedSourceLabels(source, inMeta);
+    const { effective: cap } = applyRecordingSourcePolicy({
       rawConfidence: confidence ?? 50,
-      sources: effSources,
+      source,
       kind: inferred.kind,
       metadata: inMeta,
     });
     // Provenance guard (#131 follow-up) — mirrors record_artifacts.
-    const llmAssertedProvenance = effSources.some((s) => isLlmAssertedDomainSource(s));
-    const resolvedReasonNotConfirmed =
-      (typeof inMeta.reason_not_confirmed === "string" ? inMeta.reason_not_confirmed : null) ??
-      cap.reason_not_confirmed ?? null;
+    const llmAssertedProvenance = disclosedSources.some((s) => isLlmAssertedDomainSource(s));
+    const recordingStatus = resolveRecordingStatus(cap, inMeta);
+    const resolvedReasonNotConfirmed = recordingStatus.reasonNotConfirmed;
     const enrichedMeta = {
       ...(metadata ?? {}),
       ...(v.metaPatch ?? {}),
       ...(inferred.reclassified_from ? { reclassified_from: inferred.reclassified_from } : {}),
       source_category: cap.source_classes,
       query_types: queryTypesOf({ value: v.value, kind: v.kind, metadata: inMeta }),
-      status: coerceCoherentStatus(
-        deriveStatus({
-          requested: typeof inMeta.status === "string" ? inMeta.status : null,
-          reasonNotConfirmed: resolvedReasonNotConfirmed,
-          sourceClasses: cap.source_classes,
-          contradictions: Array.isArray(inMeta.contradictions) ? inMeta.contradictions : [],
-          deadEnd: looksDeadEnd(inMeta),
-        }),
-        resolvedReasonNotConfirmed,
-      ),
+      status: recordingStatus.status,
       cluster_id: inMeta.cluster_id ?? null,
       reason_for_confidence: cap.reason_for_confidence,
       reason_not_confirmed: resolvedReasonNotConfirmed,
@@ -447,4 +428,3 @@ export const record_evidence = tool({
     return { ok: true, id: row?.id, seq: row?.seq, chain_hash: row?.chain_hash, ...(archived ? { archived } : {}) };
   },
 }),
-

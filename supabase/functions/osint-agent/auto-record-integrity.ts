@@ -4,8 +4,12 @@
 // surface reason_not_confirmed so the UI never shows an un-capped ai_summary hit
 // as confirmed evidence.
 
-import { applyEvidenceCaps, deriveStatus, coerceCoherentStatus } from "./confidence.ts";
+import { coerceCoherentStatus, deriveStatus } from "./confidence.ts";
 import { queryTypesOf } from "./query-type-router.ts";
+import {
+  applyRecordingSourcePolicy,
+  firstNonemptyReason,
+} from "./recording-source-policy.ts";
 
 export interface AutoRecordInput {
   kind: string;
@@ -27,16 +31,19 @@ export function buildAutoRecordedRow(input: AutoRecordInput): {
   metadata: Record<string, unknown>;
 } {
   const value = (input.value ?? "").trim();
-  const cap = applyEvidenceCaps({
+  const cap = applyRecordingSourcePolicy({
     rawConfidence: input.rawConfidence,
-    sources: [input.source],
+    source: input.source,
     kind: input.kind,
     metadata: input.metadata ?? null,
-  });
-  const reasonNotConfirmed =
-    (typeof input.metadata?.reason_not_confirmed === "string" ? input.metadata.reason_not_confirmed : null) ??
-    cap.reason_not_confirmed ??
-    DEFAULT_REASON;
+  }).effective;
+  const reasonNotConfirmed = firstNonemptyReason(
+    typeof input.metadata?.reason_not_confirmed === "string"
+      ? input.metadata.reason_not_confirmed
+      : null,
+    cap.reason_not_confirmed,
+    DEFAULT_REASON,
+  ) ?? DEFAULT_REASON;
   const status = coerceCoherentStatus(
     deriveStatus({
       requested: null,
@@ -60,7 +67,11 @@ export function buildAutoRecordedRow(input: AutoRecordInput): {
       reason_for_confidence: cap.reason_for_confidence,
       reason_not_confirmed: reasonNotConfirmed,
       confidence_cap_applied: cap.cap,
-      query_types: queryTypesOf({ value, kind: input.kind, metadata: input.metadata ?? null }),
+      query_types: queryTypesOf({
+        value,
+        kind: input.kind,
+        metadata: input.metadata ?? null,
+      }),
     },
   };
 }
