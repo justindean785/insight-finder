@@ -113,9 +113,22 @@ describe("a persisted label resolves to the entity a tool actually ran", () => {
     for (const label of LABELS) expect(entityKey(label)).toBe("kestrelcap");
   });
 
-  it("leaves a hyphenated identifier alone", () => {
+  it("treats every spaced dash as a descriptor separator", () => {
+    // The model emits all three interchangeably; missing one would leave that
+    // variant recurring forever, which is the bug being fixed.
+    expect(entityKey("kestrelcap - YouTube channel")).toBe("kestrelcap");
+    expect(entityKey("kestrelcap — GitHub")).toBe("kestrelcap");
+    expect(entityKey("kestrelcap – SoundCloud")).toBe("kestrelcap");
+  });
+
+  it("never reads an INTERNAL hyphen as a descriptor separator", () => {
+    // Note what this does and does not claim: the whole identifier survives, its
+    // punctuation does not — `normalizeTarget` canonicalizes that afterwards, so
+    // the result is "kestrel cap", never "kestrel-cap". Asserting the latter
+    // would pin a behaviour this function has never had.
     expect(entityKey("kestrel-cap")).toBe("kestrel cap");
     expect(entityKey("Jean-Luc Bernard")).toBe("jean luc bernard");
+    expect(entityKey("Marcus Delaney Jr")).toBe("marcus delaney jr");
   });
 
   it("does NOT collapse two labels into one row", () => {

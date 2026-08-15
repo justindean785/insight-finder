@@ -41,8 +41,10 @@ export function normalizeTarget(value: string): string {
  * "hawkcapo" has already covered both. Collapsing their canonical keys instead
  * would delete one of them from the board.
  *
- * Only a SPACED dash separates entity from descriptor, so hyphenated
- * identifiers ("hawk-capo", "Jean-Luc Bernard") are left intact.
+ * Only a SPACED dash is treated as a descriptor separator, so an internal hyphen
+ * is never read as one — `normalizeTarget` still canonicalizes the punctuation
+ * afterwards, so "hawk-capo" ends up "hawk capo" and NOT "hawk-capo". What is
+ * preserved is the whole identifier, not its punctuation.
  *
  * ⚠️ IT ANSWERS AN ENTITY-LEVEL QUESTION, AND ONLY THAT ONE. "Has this entity
  * been investigated at all?" — never "has this objective been completed?" The
