@@ -23,6 +23,12 @@ import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDom
 import * as circuit from "./circuit.ts";
 import { buildNodes } from "./graph.ts";
 import { collisionPeerSignal, type CollisionPeer } from "./lib/quarantine.ts";
+import {
+  isQueuedPlaceholder,
+  stripStatusAssertions,
+  demoteUnauthoritativeLegalRecord,
+  nullResultKey,
+} from "./lib/artifact-hygiene.ts";
 import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
 import { selectPivots, proposedCallToCandidate, type PivotCandidate, type ProposedCall } from "./graph_pivots.ts";
 import { renderPivotChecklistForPrompt } from "./pivot-checklists.ts";
@@ -4545,10 +4551,36 @@ export function buildTools(ctx: ToolContext) {
         // a non-destructive, in-memory-only guard — no DB change.
         const seenInBatch = new Set<string>();
         artifacts.forEach((a, i) => {
+          // A QUEUED tool call is not an observation. Ten rows like
+          // "hawkcapo - socialfetch_lookup (pending Instagram)" were persisted
+          // on a measured run BEFORE their tool returned, each carrying
+          // status:"observed", each later shadowed by the real result — false
+          // when written, duplicated once answered, and joined to the subject
+          // cluster where they feed promoteConfidence's peer set.
+          if (isQueuedPlaceholder(a.value)) {
+            rejected.push({
+              index: i,
+              reason:
+                "queued-tool placeholder, not an observation — record the RESULT after the tool returns. " +
+                "A pending call has observed nothing and would duplicate its own result.",
+              kind: a.kind,
+              value: a.value,
+            });
+            return;
+          }
+          // An analyst label asserted INSIDE the value outranks the number
+          // stored beside it: "Instagram @hawkcapo - CONFIRMED active profile"
+          // shipped at confidence 40 with reason_not_confirmed "needs second
+          // independent class of evidence". The value is rendered verbatim by
+          // the evidence table, the graph, export and any generated findings
+          // table, so the word survives every downstream control built to stop
+          // that claim. Removed here, once, for all of them. ALL-CAPS only, so
+          // quoted source text is evidence and is left intact.
+          const hygienic = stripStatusAssertions(a.value);
           // Infer strict kind from value patterns (LAPD → law_enforcement_unit,
           // People v X → court_case, wallet hex → crypto_wallet, etc.).
-          const inferred = inferKind(a.kind, a.value);
-          const v = validateArtifact(inferred.kind, a.value);
+          const inferred = inferKind(a.kind, hygienic.value);
+          const v = validateArtifact(inferred.kind, hygienic.value);
           if (!v.ok) {
             rejected.push({ index: i, reason: v.reason, kind: a.kind, value: a.value });
             return;
@@ -4583,7 +4615,24 @@ export function buildTools(ctx: ToolContext) {
           // Bio-linked name gate: a name pulled out of a profile bio is an
           // unverified identity claim and can never anchor the case.
           const bioName = !collisionExcluded && isBioCrossLinkName(v.kind, a.metadata ?? null);
-          const finalKind = collisionExcluded ? "excluded_collision" : v.kind;
+          // A Reddit thread is not a legal record. Two rows on the measured run
+          // were stored as legal_record at confidence 70, sourced from
+          // socialfetch_web_read of reddit.com, asserting a shooting and a gang
+          // affiliation about a named private individual. The SOURCE classifier
+          // had it right (social_profile_active); only the KIND was wrong — and
+          // kind is what ranks the row and what an analyst reads first. The
+          // claim is preserved; only its category is corrected, so an
+          // unadjudicated community report is not filed as a legal record.
+          const legalDemotion = demoteUnauthoritativeLegalRecord({
+            kind: v.kind,
+            source: a.source ?? null,
+            url: typeof a.metadata?.url === "string"
+              ? a.metadata.url
+              : (typeof a.metadata?.source_url === "string" ? a.metadata.source_url : null),
+          });
+          const finalKind = collisionExcluded
+            ? "excluded_collision"
+            : (legalDemotion?.kind ?? v.kind);
           const finalConfidence = collisionExcluded
             ? Math.min(cap.confidence, EXCLUDED_COLLISION_CONFIDENCE)
             : bioName
@@ -4592,9 +4641,15 @@ export function buildTools(ctx: ToolContext) {
           // Resolve the confirmation gap, then DERIVE a coherent status from it
           // (status can never contradict reason_not_confirmed).
           const aReqRNC = typeof a.metadata?.reason_not_confirmed === "string" ? a.metadata.reason_not_confirmed : null;
-          const resolvedReasonNotConfirmed = bioName
+          const baseReasonNotConfirmed = bioName
             ? "name appears only in a bio/linked-accounts block — confirm it is the subject, not a mentioned third party"
             : (aReqRNC ?? cap.reason_not_confirmed ?? null);
+          // Keep BOTH reasons when a legal_record was demoted: why it is not a
+          // legal record, and why it is not confirmed, are different facts and
+          // dropping either one loses part of the audit trail.
+          const resolvedReasonNotConfirmed = legalDemotion
+            ? [legalDemotion.reason, baseReasonNotConfirmed].filter(Boolean).join(" | ")
+            : baseReasonNotConfirmed;
           const derivedStatus = collisionExcluded
             ? "excluded"
             : bioName
@@ -4654,7 +4709,26 @@ export function buildTools(ctx: ToolContext) {
           // `metadata.sources` (or `a.source` is a generic wrapper label like
           // "Multiple sources") — so key on the same `effSources` this block
           // already computes for confidence caps (sorted for a stable key).
-          const dedupKey = `${finalKind} ${v.value} ${[...effSources].sort().join(",")}`;
+          // A null result is identified by WHAT WAS CHECKED, not by how it was
+          // worded. The measured run wrote breach_check's single zero-hit
+          // result twice — "no breach hits (breach_check)" and "0 hits
+          // (breach_check)" — because the key above is the exact value string
+          // and paraphrase defeats it. `source` stays in the key: four corpora
+          // returning zero is four coverage facts, and collapsing those would
+          // erase breadth (the data-loss shape flagged on #189's migration).
+          // NOTE the bound: this set is per-BATCH, so it catches a paraphrase
+          // repeated within one record_artifacts call. The two rows measured on
+          // the live run were 33s apart in DIFFERENT batches; closing that needs
+          // the thread-wide dedup tracked in #307.
+          const canonicalNullKey = nullResultKey({
+            kind: finalKind,
+            source: [...effSources].sort().join(",") || (a.source ?? null),
+            value: v.value,
+            selector: typeof a.metadata?.username === "string"
+              ? a.metadata.username
+              : (typeof a.metadata?.email === "string" ? a.metadata.email : (triageState.seed ?? null)),
+          });
+          const dedupKey = canonicalNullKey ?? `${finalKind} ${v.value} ${[...effSources].sort().join(",")}`;
           if (seenInBatch.has(dedupKey)) {
             rejected.push({ index: i, reason: "duplicate (kind,value,sources) already in this batch", kind: finalKind, value: v.value });
             return;
