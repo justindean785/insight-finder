@@ -9,7 +9,7 @@ import {
   MetricCard, FilterChips, ToolStatusBadge, ExpandableRow, TabHeader,
   type FilterChip,
 } from "@/components/ui/workspace-primitives";
-import { Activity, Gauge, Lock, HeartPulse, CheckCircle2, XCircle, MinusCircle, ListChecks, Clock, type LucideIcon } from "lucide-react";
+import { Activity, Gauge, Lock, HeartPulse, CheckCircle2, XCircle, MinusCircle, ListChecks, Clock, DatabaseZap, Timer, type LucideIcon } from "lucide-react";
 import { timeAgo } from "@/lib/time";
 import { toolSecondaryLine } from "@/lib/tool-display";
 import { cn } from "@/lib/utils";
@@ -95,6 +95,17 @@ function ActivityLog({
 }: { events: ToolEvent[]; ok: number; failed: number; skipped: number; gated: number; degraded: number; total: number; loading: boolean }) {
   const [filter, setFilter] = useState<ActivityFilter>("all");
   const pending = events.filter((e) => e.status === "pending").length;
+  const { totalMs, slowCount, cachedCount } = useMemo(() => {
+    let total = 0, slow = 0, cached = 0;
+    for (const e of events) {
+      if (e.durationMs != null && Number.isFinite(e.durationMs)) {
+        total += e.durationMs;
+        if (e.durationMs >= 10_000) slow++;
+      }
+      if (e.cached) cached++;
+    }
+    return { totalMs: total, slowCount: slow, cachedCount: cached };
+  }, [events]);
 
   const ordered = useMemo(() => {
     return [...events].reverse().filter((e) => {
@@ -163,6 +174,30 @@ function ActivityLog({
           tone={gated > 0 ? "warn" : "neutral"}
           hint="Skipped = deduped/no-op. Gated = blocked by a triage, policy, or budget gate (an intentional decision, not a fault)."
         />
+        {/* Time spent is the other half of "what did this run cost". A case
+            that burned four minutes on two hung providers reads as healthy on
+            counts alone; these two tiles are the only place that shows it. */}
+        {totalMs > 0 && (
+          <MetricCard
+            label="Time in tools"
+            value={fmtDuration(totalMs) ?? "—"}
+            icon={Timer}
+            tone={slowCount > 0 ? "warn" : "neutral"}
+            hint={
+              slowCount > 0
+                ? `Total wall-clock across every recorded call. ${slowCount} call${slowCount === 1 ? "" : "s"} took 10s or longer — long-running calls are usually an upstream hang, not a fast refusal.`
+                : "Total wall-clock across every recorded call."
+            }
+          />
+        )}
+        {cachedCount > 0 && (
+          <MetricCard
+            label="Cached"
+            value={cachedCount}
+            icon={DatabaseZap}
+            hint="Served from cache: no provider call and no spend. Useful coverage, but the data can be older than the timestamp on the row."
+          />
+        )}
       </div>
 
       <FilterChips<ActivityFilter>
@@ -201,7 +236,20 @@ function ActivityLog({
   );
 }
 
+/** Wall-clock, at the precision an analyst actually reads it. */
+function fmtDuration(ms: number | null): string | null {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return null;
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 10_000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.round(ms / 1000)}s`;
+}
+
 function ActivityRowSummary({ e }: { e: ToolEvent }) {
+  const duration = fmtDuration(e.durationMs);
+  // A slow failure is a different problem from a fast one: 30s says the
+  // provider hung, 300ms says we never called it. Flag the long tail so the
+  // distinction is visible without reading every number.
+  const slow = e.durationMs != null && e.durationMs >= 10_000;
   return (
     <div className="flex items-center gap-3">
       <ToolStatusBadge status={e.status} />
@@ -209,6 +257,15 @@ function ActivityRowSummary({ e }: { e: ToolEvent }) {
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-meta text-foreground truncate">{e.displayName}</span>
           <span className="font-mono text-eyebrow uppercase tracking-wider text-muted-foreground/70 shrink-0">{e.toolName}</span>
+          {e.cached && (
+            <span
+              title="Served from cache — no provider call was made and nothing was charged. The data may be older than this timestamp."
+              className="inline-flex shrink-0 items-center gap-1 rounded border border-border-subtle bg-surface-2 px-1.5 py-px font-mono text-eyebrow uppercase tracking-wider text-muted-foreground"
+            >
+              <DatabaseZap className="h-2.5 w-2.5" strokeWidth={2} aria-hidden />
+              Cached
+            </span>
+          )}
         </div>
         {/* Title truncates once above; the REASON body carries the full provider
             string — wrap to 2 lines instead of a single-line clip (Phase C3).
@@ -220,9 +277,19 @@ function ActivityRowSummary({ e }: { e: ToolEvent }) {
           <div className="text-data text-muted-foreground line-clamp-2 break-words">{toolSecondaryLine(e)}</div>
         )}
       </div>
-      <div className="flex items-center gap-1 shrink-0 text-data text-muted-foreground tabular-nums">
-        <Clock className="w-3 h-3" />
-        {timeAgo(e.at)}
+      <div className="flex shrink-0 items-center gap-2.5 text-data tabular-nums">
+        {duration && (
+          <span
+            className={cn("font-mono", slow ? "text-[hsl(var(--confidence-mid))]" : "text-muted-foreground/70")}
+            title={slow ? `${duration} — long-running; likely an upstream hang rather than a fast refusal` : `Took ${duration}`}
+          >
+            {duration}
+          </span>
+        )}
+        <span className="flex items-center gap-1 text-muted-foreground">
+          <Clock className="w-3 h-3" aria-hidden />
+          {timeAgo(e.at)}
+        </span>
       </div>
     </div>
   );

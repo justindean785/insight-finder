@@ -43,6 +43,18 @@ export interface ToolEvent {
   at: string;
   /** Short failure/skip reason, when the tone is not "ok". */
   reason?: string;
+  /**
+   * Operational detail that was fetched and then discarded for months: the
+   * SELECT above pulled six columns while `tool_usage_log` carried duration,
+   * cache state and spend, so the Tools tab could not tell a 300ms "skipped, no
+   * API key" from a 30s upstream timeout — the two failures an analyst treats
+   * completely differently. Null when the column is absent on a legacy row.
+   */
+  durationMs: number | null;
+  /** Served from cache: no provider call, no spend, and possibly stale data. */
+  cached: boolean;
+  /** Micro-USD actually charged. 0 on a cache hit. */
+  chargedMicroUsd: number | null;
 }
 
 export interface ThreadToolActivity {
@@ -68,6 +80,12 @@ interface ActivityRow {
   ok: boolean | null;
   error_msg: string | null;
   created_at: string;
+  /** Wall-clock for the call. Distinguishes "failed fast" from "timed out". */
+  duration_ms: number | null;
+  /** Served from cache — no provider call, no spend. */
+  cached: boolean | null;
+  /** What this call actually cost, in micro-USD. 0 on a cache hit. */
+  charged_micro_usd: number | null;
 }
 
 interface ActivityState {
@@ -175,7 +193,7 @@ export function useThreadToolActivity(threadId: string, accountId?: string): Thr
         .from("tool_usage_log")
         // `outcome` is not in the generated types yet (added by migration) —
         // cast via unknown below to keep typecheck green.
-        .select("id,tool_name,outcome,ok,error_msg,created_at", { count: "exact" })
+        .select("id,tool_name,outcome,ok,error_msg,created_at,duration_ms,cached,charged_micro_usd", { count: "exact" })
         .eq("thread_id", threadId)
         .order("created_at", { ascending: true });
       if (!alive || requestSeq !== loadSeq) return;
@@ -195,6 +213,9 @@ export function useThreadToolActivity(threadId: string, accountId?: string): Thr
           status,
           at: r.created_at,
           reason: tone === "ok" ? undefined : cleanReason(r.error_msg),
+          durationMs: typeof r.duration_ms === "number" ? r.duration_ms : null,
+          cached: r.cached === true,
+          chargedMicroUsd: typeof r.charged_micro_usd === "number" ? r.charged_micro_usd : null,
         };
       });
       // Failed calls are part of the record, not noise to be hidden.

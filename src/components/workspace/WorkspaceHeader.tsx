@@ -4,10 +4,11 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadToolActivity } from "@/hooks/useThreadToolActivity";
-import { ShieldAlert, Lock, Coins, Plus, Copy, Link2, Mail, Phone, Globe, Network, User, Hash, FileSearch } from "lucide-react";
+import { ShieldAlert, Lock, Coins, Plus, Copy, Link2, Mail, Phone, Globe, Network, User, Hash, FileSearch, ShieldCheck, AlertTriangle, Unlink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { extractDisplaySeed, type SeedKind } from "@/lib/seed";
+import { tallyAuthority } from "@/lib/authority";
 
 type Thread = {
   id: string;
@@ -151,6 +152,25 @@ export function deriveWorkspaceStatus(input: {
   return input.hasEvidence ? "completed" : "idle";
 }
 
+/** One case-posture stat: icon + number + word. Never colour alone. */
+function HeaderStat({
+  icon: Icon, value, label, tone, title,
+}: { icon: typeof Globe; value: number; label: string; tone: string; title: string }) {
+  return (
+    <span
+      title={title}
+      className={cn(
+        "inline-flex items-center gap-1 rounded border border-white/[0.07] bg-white/[0.025] px-1.5 py-px text-[10px] font-medium tabular-nums",
+        tone,
+      )}
+    >
+      <Icon className="h-2.5 w-2.5 shrink-0" strokeWidth={2.25} aria-hidden />
+      {value}
+      <span className="text-muted-foreground/70">{label}</span>
+    </span>
+  );
+}
+
 /**
  * Case command bar — Palantir/Claude workstation style.
  * Three-zone grid: left meta · centered identity · right ops.
@@ -167,6 +187,9 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
 
   const artifactCount = items.length;
   const evidence = describeEvidence(integrity, artifactCount);
+  // Derived from the SAME projection the Evidence ledger renders, so the header
+  // and the board can never disagree about how many rows are quarantined.
+  const tally = useMemo(() => tallyAuthority(items), [items]);
 
   const loadIntegrity = useCallback(async () => {
     const [{ count }, { data: v }] = await Promise.all([
@@ -348,6 +371,43 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
               >
                 {evidence.text} · {activity.persistedTotal} tools
               </span>
+              {/* Case posture, not just case volume. "29 evidence" says how much
+                  was collected; it says nothing about how much an analyst can
+                  stand behind. These three are the questions asked on every
+                  case — what is solid, what is disputed, what cannot be
+                  attributed — and they were previously answerable only by
+                  opening Evidence and counting. Each is a live filter link. */}
+              {(tally.verified > 0 || tally.conflict > 0 || tally.quarantined > 0) && (
+                <span className="hidden items-center gap-1.5 md:inline-flex">
+                  {tally.verified > 0 && (
+                    <HeaderStat
+                      icon={ShieldCheck}
+                      value={tally.verified}
+                      label="verified"
+                      tone="text-[hsl(var(--authority-verified))]"
+                      title={`${tally.verified} corroborated across two or more independent source classes, or analyst-confirmed`}
+                    />
+                  )}
+                  {tally.conflict > 0 && (
+                    <HeaderStat
+                      icon={AlertTriangle}
+                      value={tally.conflict}
+                      label="conflict"
+                      tone="text-[hsl(var(--authority-conflict))]"
+                      title={`${tally.conflict} contradict the seed or another identity cluster`}
+                    />
+                  )}
+                  {tally.quarantined > 0 && (
+                    <HeaderStat
+                      icon={Unlink}
+                      value={tally.quarantined}
+                      label="quarantined"
+                      tone="text-[hsl(var(--authority-quarantine))]"
+                      title={`${tally.quarantined} recorded and disclosed, but withheld from identity — linkage to the subject is unproven`}
+                    />
+                  )}
+                </span>
+              )}
             </div>
           )}
         </div>
