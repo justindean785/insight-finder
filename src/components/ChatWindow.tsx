@@ -358,6 +358,11 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
     <div
       ref={rootRef}
       data-failed-tool={failed ? "true" : undefined}
+      // Speaker rail: three different kinds of claim (the agent's reasoning, the
+      // analyst's own words, the machine's tool traffic) were distinguished only
+      // by card padding, so skimming a long transcript meant reading every line
+      // to find out who was talking.
+      data-speaker={failed ? "failed" : "tool"}
       className={cn(
         "group relative w-full min-w-0 text-[13px] animate-fade-up overflow-hidden chat-card",
         failed && "border-destructive/30 bg-[hsl(0_40%_8%/0.85)]",
@@ -658,7 +663,7 @@ function flowToneForGroup(group: ToolRunGroup): "completed" | "partial" | "cache
 function RunFlowRail({ groups }: { groups: ToolRunGroup[] }) {
   if (groups.length <= 1) return null;
   return (
-    <div className="chat-card px-4 py-3">
+    <div className="chat-card px-4 py-3" data-speaker="system">
       <div className="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.04em] text-muted-foreground">
         <GitBranch className="h-3 w-3 text-muted-foreground" />
         Run flow
@@ -720,7 +725,7 @@ function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt
   // errors, so a user who expands a cycle never sees a red "failed" card.
   const visibleParts = group.parts.filter((part) => deriveToolTone(part) !== "error");
   return (
-    <div className="chat-card text-[13px] leading-relaxed text-muted-foreground">
+    <div className="chat-card text-[13px] leading-relaxed text-muted-foreground" data-speaker="tool">
       <button
         type="button"
         className="w-full px-4 py-3 text-left"
@@ -960,6 +965,7 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIM
     return (
       <div className="flex w-full justify-end">
         <div
+          data-speaker="analyst"
           className="chat-card relative min-w-0 max-w-[min(100%,36rem)] px-4 py-2.5 text-[14px] leading-[1.6] break-words text-[hsl(0_0%_93%)]"
           style={{
             overflowWrap: "break-word",
@@ -1069,7 +1075,7 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIM
         </div>
       )}
       {prose && (
-        <article className="chat-card w-full min-w-0" aria-label="Agent response">
+        <article className="chat-card w-full min-w-0" data-speaker="agent" aria-label="Agent response">
           <div className="chat-card__header">
             <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[hsl(var(--intel-blue))]" aria-hidden />
             <span>Agent</span>

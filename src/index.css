@@ -13,13 +13,13 @@ All colors MUST be HSL.
     /* Glassy blue-black: a near-black base with a faint cool intel-blue cast
        (hue 220, low saturation) so surfaces read as tinted glass, not flat black.
        Lightness is preserved so contrast is unchanged — just a little mix. */
-    --background: 222 24% 3.5%;      /* cool near-black base */
+    --background: 222 32% 3.2%;      /* cool near-black base */
     --foreground: 0 0% 97%;          /* #fafafa */
 
-    --card: 220 18% 8%;
+    --card: 221 24% 8.5%;
     --card-foreground: 0 0% 97%;
 
-    --popover: 221 20% 6%;
+    --popover: 221 26% 6.5%;
     --popover-foreground: 0 0% 97%;
 
     /* Primary — near-white CTAs / active state (Proximity-style monochrome).
@@ -28,7 +28,7 @@ All colors MUST be HSL.
     --primary-foreground: 0 0% 5%;
     --primary-glow: 0 0% 100%;
 
-    --secondary: 221 18% 6.5%;
+    --secondary: 221 24% 7%;
     --secondary-foreground: 0 0% 95%;
 
     --muted: 0 0% 5%;
@@ -37,28 +37,28 @@ All colors MUST be HSL.
     --accent: 0 0% 95%;
     --accent-foreground: 0 0% 5%;
 
-    --destructive: 0 84% 60%;        /* #ef4444 — Proximity red */
+    --destructive: 358 92% 64%;        /* #ef4444 — Proximity red */
     --destructive-foreground: 0 0% 100%;
 
     /* Semantic tokens — un-aliased. One meaning per token. */
-    --info: 212 78% 58%;             /* system / agent state — cool blue */
-    --success: 147 56% 56%;          /* instrument green */
-    --warning: 33 86% 67%;           /* amber */
-    --danger: 0 84% 60%;             /* #ef4444 — red */
+    --info: 210 100% 63%;             /* system / agent state — cool blue */
+    --success: 152 76% 52%;          /* instrument green */
+    --warning: 38 98% 62%;           /* amber */
+    --danger: 358 92% 64%;             /* #ef4444 — red */
     --evidence: 0 0% 64%;            /* immutable / custody marker — neutral */
 
     /* Muted semantic backgrounds — for soft chips, row tints, alerts */
-    --info-muted: 212 30% 12%;
-    --success-muted: 152 26% 11%;
-    --warning-muted: 36 34% 11%;
-    --danger-muted: 0 44% 12%;
+    --info-muted: 213 48% 14%;
+    --success-muted: 155 40% 12%;
+    --warning-muted: 38 48% 13%;
+    --danger-muted: 358 52% 14%;
 
     /* Confidence — green / amber / red (Proximity-style) */
-    --confidence-high: 147 56% 56%;
-    --confidence-high-glow: 147 70% 66%;
-    --confidence-mid: 33 86% 67%;
-    --confidence-low: 0 84% 62%;
-    --highconf: 147 56% 56%;
+    --confidence-high: 152 76% 52%;
+    --confidence-high-glow: 152 88% 62%;
+    --confidence-mid: 38 98% 62%;
+    --confidence-low: 358 92% 64%;
+    --highconf: 152 76% 52%;
 
     /* Confidence TIERS — single semantic 5-step ramp mapped to JD's bands
        (Confirmed >=90 / Likely 75-89 / Possible 55-74 / Weak 35-54 /
@@ -66,12 +66,12 @@ All colors MUST be HSL.
        (number, bar fill, tag, graph node, radar vertex) so the product reads as
        one system. Confirmed (emerald hue 160) and Likely (grass-green hue 142)
        are hue-separated so banding triages at a glance. */
-    --conf-confirmed: 160 84% 41%;
-    --conf-confirmed-glow: 160 84% 52%;
-    --conf-likely: 142 69% 48%;
-    --conf-possible: 38 92% 50%;
-    --conf-weak: 27 95% 60%;
-    --conf-unverified: 215 16% 52%;
+    --conf-confirmed: 158 90% 46%;
+    --conf-confirmed-glow: 158 92% 58%;
+    --conf-likely: 142 78% 53%;
+    --conf-possible: 40 98% 57%;
+    --conf-weak: 25 98% 62%;
+    --conf-unverified: 217 18% 56%;
 
     /* ── Authority ladder ──────────────────────────────────────────────────
        The eight analyst-facing states from `src/lib/authority.ts`, given ONE
@@ -93,32 +93,32 @@ All colors MUST be HSL.
                      below) rather than by hue, so it can never be mistaken for
                      a rung on the confidence ladder. */
     --authority-verified: var(--conf-confirmed);
-    --authority-infrastructure: 212 78% 58%;   /* asset resolves ≠ ownership — info blue */
+    --authority-infrastructure: 210 100% 63%;   /* asset resolves ≠ ownership — info blue */
     --authority-probable: var(--conf-likely);
     --authority-review: var(--conf-possible);
     --authority-weak: var(--conf-unverified);
-    --authority-conflict: 0 84% 60%;
-    --authority-quarantine: 0 0% 58%;          /* neutral by design — see above */
-    --authority-failed: 0 0% 38%;
+    --authority-conflict: 358 92% 64%;
+    --authority-quarantine: 220 10% 62%;          /* neutral by design — see above */
+    --authority-failed: 220 10% 40%;
 
     /* Layered surfaces — cool blue-black ramp (faint hue-220 cast, not heavy) */
-    --surface-0: 222 24% 3.5%;
-    --surface-1: 221 20% 6%;
-    --surface-2: 220 18% 8%;
-    --surface-3: 220 16% 11%;        /* selected / hover */
-    --surface-4: 219 14% 14.5%;
+    --surface-0: 222 32% 3.2%;
+    --surface-1: 221 26% 6.2%;
+    --surface-2: 220 24% 9%;
+    --surface-3: 219 22% 13%;        /* selected / hover */
+    --surface-4: 218 20% 17%;
 
-    --border: 0 0% 16%;              /* #2a2a2a */
-    --border-subtle: 0 0% 10%;       /* #1a1a1a */
-    --border-strong: 0 0% 24%;       /* #3d3d3d */
-    --input: 220 18% 8%;
-    --ring: 0 0% 72%;
+    --border: 220 14% 18%;              /* #2a2a2a */
+    --border-subtle: 220 16% 12%;       /* #1a1a1a */
+    --border-strong: 219 16% 28%;       /* #3d3d3d */
+    --input: 220 24% 9%;
+    --ring: 217 100% 70%;
 
     /* Intel tokens — ONE signature accent. The former violet co-accent is
        collapsed onto intel-blue so the product speaks with a single voice
        (Proximity-style restraint); kept as a token name for existing markup. */
-    --intel-blue: 220 90% 62%;
-    --intel-violet: 220 90% 62%;
+    --intel-blue: 217 100% 66%;
+    --intel-violet: 217 100% 66%;
 
     /* Brain (Global Brain tab) palette — neutralized greyscale + accents. */
     --brain-surface-base: 0 0% 6%;
@@ -133,14 +133,14 @@ All colors MUST be HSL.
 
     --radius: 0.75rem;          /* 12px cards (lg); inputs/buttons (md) 10px, sm 8px */
 
-    --sidebar-background: 0 0% 3%;
-    --sidebar-foreground: 0 0% 70%;
+    --sidebar-background: 222 34% 2.8%;
+    --sidebar-foreground: 218 12% 72%;
     --sidebar-primary: 0 0% 95%;
     --sidebar-primary-foreground: 0 0% 5%;
-    --sidebar-accent: 0 0% 10%;
-    --sidebar-accent-foreground: 0 0% 95%;
-    --sidebar-border: 0 0% 10%;
-    --sidebar-ring: 0 0% 72%;
+    --sidebar-accent: 220 22% 11%;
+    --sidebar-accent-foreground: 0 0% 96%;
+    --sidebar-border: 220 16% 12%;
+    --sidebar-ring: 217 100% 70%;
   }
 }
 
@@ -169,9 +169,10 @@ All colors MUST be HSL.
        feel like light itself"). A soft overhead spotlight, a deepened far
        corner, and a grounded bottom edge. No accent orbs. */
     background:
-      radial-gradient(125% 80% at 50% -12%, hsl(0 0% 100% / 0.028) 0%, transparent 56%),
-      radial-gradient(90% 70% at 100% 100%, hsl(0 0% 0% / 0.55) 0%, transparent 60%),
-      linear-gradient(180deg, transparent 58%, hsl(0 0% 0% / 0.42) 100%);
+      radial-gradient(90% 62% at 12% -6%, hsl(var(--intel-blue) / 0.10) 0%, transparent 58%),
+      radial-gradient(125% 80% at 50% -12%, hsl(0 0% 100% / 0.03) 0%, transparent 56%),
+      radial-gradient(90% 70% at 100% 100%, hsl(0 0% 0% / 0.6) 0%, transparent 62%),
+      linear-gradient(180deg, transparent 56%, hsl(0 0% 0% / 0.46) 100%);
   }
 
   /* App-wide film grain — barely-there */
@@ -181,8 +182,8 @@ All colors MUST be HSL.
     inset: 0;
     pointer-events: none;
     z-index: 9999;
-    opacity: 0.035;
-    mix-blend-mode: overlay;
+    opacity: 0.018;
+    mix-blend-mode: soft-light;
     background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
     background-size: 220px 220px;
   }
@@ -1217,6 +1218,26 @@ All colors MUST be HSL.
     0 12px 32px -28px hsl(0 0% 0% / 0.85);
 }
 
+.chat-card {
+  position: relative;
+  overflow: hidden;
+}
+/* Speaker identity rail. The agent's output, the analyst's own words and the
+   machine's tool traffic are three different kinds of claim; a transcript that
+   styles them identically forces you to read every line to find out who is
+   talking. 2px, left edge, keyed to the same accents the rest of the app uses. */
+.chat-card[data-speaker]::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 2px;
+  background: hsl(var(--intel-blue) / 0.55);
+}
+.chat-card[data-speaker="analyst"]::before { background: hsl(0 0% 100% / 0.4); }
+.chat-card[data-speaker="tool"]::before     { background: hsl(var(--conf-likely) / 0.5); }
+.chat-card[data-speaker="failed"]::before   { background: hsl(var(--danger)); }
+.chat-card[data-speaker="system"]::before   { background: hsl(var(--conf-possible) / 0.6); }
+
 .chat-card__header {
   display: flex;
   align-items: center;
@@ -1410,11 +1431,12 @@ All colors MUST be HSL.
 .chat-prose :not(pre) > code {
   font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
   font-size: 12px;
-  color: hsl(var(--info));
-  background: hsl(var(--info-muted));
-  border: 1px solid hsl(var(--info) / 0.2);
+  color: hsl(var(--foreground) / 0.92);
+  background: hsl(var(--surface-3));
+  border: 1px solid hsl(var(--border));
   border-radius: 4px;
   padding: 1px 5px;
+  user-select: all;
 }
 .chat-prose pre code {
   font-size: inherit;
