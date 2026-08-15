@@ -73,6 +73,34 @@ All colors MUST be HSL.
     --conf-weak: 27 95% 60%;
     --conf-unverified: 215 16% 52%;
 
+    /* ── Authority ladder ──────────────────────────────────────────────────
+       The eight analyst-facing states from `src/lib/authority.ts`, given ONE
+       colour each so a glance means the same thing on the Evidence ledger, the
+       graph, the clusters and the Overview.
+
+       Six of the eight reuse the confidence ramp above — they ARE degrees of
+       evidence strength, so giving them their own hues would say there are two
+       scales when there is one. The two that are not degrees get their own
+       treatment:
+
+         conflict    red — an active assertion that something is wrong.
+         quarantine  NEUTRAL, deliberately. `subject_unlinked` means "we do not
+                     know this belongs to the subject": an ABSENCE of authority,
+                     not a weak amount of it. Put it on the amber "needs review"
+                     step and it reads as a lesser version of a real finding —
+                     the exact confusion the promote boundary exists to prevent.
+                     It is carried by texture (a diagonal hatch, see .spine
+                     below) rather than by hue, so it can never be mistaken for
+                     a rung on the confidence ladder. */
+    --authority-verified: var(--conf-confirmed);
+    --authority-infrastructure: 212 78% 58%;   /* asset resolves ≠ ownership — info blue */
+    --authority-probable: var(--conf-likely);
+    --authority-review: var(--conf-possible);
+    --authority-weak: var(--conf-unverified);
+    --authority-conflict: 0 84% 60%;
+    --authority-quarantine: 0 0% 58%;          /* neutral by design — see above */
+    --authority-failed: 0 0% 38%;
+
     /* Layered surfaces — cool blue-black ramp (faint hue-220 cast, not heavy) */
     --surface-0: 222 24% 3.5%;
     --surface-1: 221 20% 6%;
@@ -202,6 +230,197 @@ All colors MUST be HSL.
 }
 
 @layer utilities {
+  /* ══════════════════════════════════════════════════════════════════════════
+     WORKSTATION PRIMITIVES
+     One material, one rule system, one authority spine. Everything below is
+     shared by Evidence / Overview / Tools / Graph / Clusters so the workspace
+     reads as a single instrument instead of a set of separately-styled screens.
+     ══════════════════════════════════════════════════════════════════════════ */
+
+  /* ── Panel: THE surface ────────────────────────────────────────────────────
+     Replaces the six near-identical materials this file used to carry (.glass,
+     .intel-node, .intel-surface, .evidence-tile, .card-material, .chat-card),
+     which differed only in radius (10/12/18/20px), blur (12/14/24/28px) and
+     border opacity — four axes of accidental variation that read as sloppiness
+     rather than depth. Flat, hairline-bounded, no blur: at analyst density a
+     backdrop-filter behind 11px mono is a legibility tax, and every one of them
+     is also a compositing layer.
+
+     `--panel-radius` is 10px, not 18px. Large radii are what make a dense data
+     surface read as consumer software; the corner should be a machined edge. */
+  .panel {
+    position: relative;
+    border-radius: 10px;
+    border: 1px solid hsl(var(--border-subtle));
+    background: hsl(var(--surface-1));
+  }
+  /* Raised — for panels that float above the workspace (drawers, popovers,
+     the Overview's lead tiles). One inner top hairline + one contained shadow. */
+  .panel-raised {
+    border-color: hsl(0 0% 100% / 0.08);
+    background: hsl(var(--surface-2));
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.04),
+      0 10px 26px -18px hsl(0 0% 0% / 0.85);
+  }
+  /* Recessed — for wells that content sits INSIDE (code, JSON, empty states). */
+  .panel-inset {
+    border-radius: 8px;
+    border: 1px solid hsl(0 0% 0% / 0.4);
+    background: hsl(var(--surface-0));
+    box-shadow: inset 0 1px 2px hsl(0 0% 0% / 0.35);
+  }
+  .panel-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 34px;
+    padding: 0 10px 0 12px;
+    border-bottom: 1px solid hsl(var(--border-subtle));
+    background: hsl(0 0% 100% / 0.02);
+  }
+
+  /* ── Authority spine ───────────────────────────────────────────────────────
+     THE signature element. A 3px bar at the head of every evidence row, cluster
+     and graph detail whose colour AND texture encode the authority state.
+
+     Texture, not just colour, is load-bearing:
+       solid       — the row carries authority (verified / infrastructure /
+                     probable), fill opacity steps down the ladder;
+       hatched     — QUARANTINED. Diagonal 45° stripes read as "cordoned off" at
+                     any size and survive greyscale, colour-blindness and a
+                     150-row scroll. It is the one state that must never be
+                     mistaken for a weak-but-real finding, so it is the one state
+                     that does not share the confidence ramp's visual language.
+       hollow      — excluded: the track is drawn, the fill is not.
+     Every spine is mirrored by a text chip, so this is never colour-alone. */
+  .spine {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3px;
+    border-radius: 10px 0 0 10px;
+    background: hsl(var(--authority-weak) / 0.5);
+  }
+  .spine[data-authority="verified"]        { background: hsl(var(--authority-verified)); }
+  .spine[data-authority="infrastructure"]  { background: hsl(var(--authority-infrastructure) / 0.85); }
+  .spine[data-authority="probable"]        { background: hsl(var(--authority-probable) / 0.8); }
+  .spine[data-authority="review"]          { background: hsl(var(--authority-review) / 0.75); }
+  .spine[data-authority="conflict"]        { background: hsl(var(--authority-conflict)); }
+  .spine[data-authority="weak"]            { background: hsl(var(--authority-weak) / 0.45); }
+  /* Excluded — hollow: a track with no fill. "This was recorded and set aside." */
+  .spine[data-authority="failed"] {
+    background: repeating-linear-gradient(
+      180deg,
+      hsl(var(--authority-failed)) 0 2px,
+      transparent 2px 5px
+    );
+  }
+  /* Quarantined — 45° hatch. Reads as cordon tape, not as a confidence tier. */
+  .spine[data-authority="quarantined"] {
+    background: repeating-linear-gradient(
+      45deg,
+      hsl(var(--authority-quarantine)) 0 2px,
+      hsl(var(--authority-quarantine) / 0.15) 2px 4px
+    );
+  }
+
+  /* Quarantine cordon — the same hatch as a full-width rule, for the caveat
+     line under a quarantined row and the head of the quarantine summary. */
+  .cordon {
+    height: 2px;
+    background: repeating-linear-gradient(
+      45deg,
+      hsl(var(--authority-quarantine) / 0.55) 0 3px,
+      transparent 3px 6px
+    );
+  }
+
+  /* ── Ledger ────────────────────────────────────────────────────────────────
+     The evidence table. Rows are separated by hairlines, not by gaps between
+     floating cards: an analyst scanning 300 artifacts triages on a shared
+     baseline grid, and each card boundary is a visual full-stop that breaks it.
+     Columns are declared once here so value / status / source / confidence line
+     up down the whole board — the single biggest scanning win available. */
+  .ledger {
+    --ledger-cols: minmax(0, 1fr) 9.5rem 8.5rem 4.5rem;
+    border-top: 1px solid hsl(var(--border-subtle));
+  }
+  .ledger-row {
+    position: relative;
+    display: grid;
+    grid-template-columns: var(--ledger-cols);
+    align-items: center;
+    column-gap: 0.75rem;
+    padding: 0.4375rem 0.625rem 0.4375rem 1rem;
+    border-bottom: 1px solid hsl(var(--border-subtle));
+    transition: background-color 120ms linear;
+  }
+  .ledger-row:hover { background: hsl(0 0% 100% / 0.028); }
+  .ledger-row[data-selected="true"] {
+    background: hsl(var(--info) / 0.09);
+    box-shadow: inset 0 0 0 1px hsl(var(--info) / 0.28);
+  }
+  .ledger-row:focus-visible {
+    outline: none;
+    background: hsl(0 0% 100% / 0.04);
+    box-shadow: inset 0 0 0 2px hsl(var(--ring));
+  }
+  /* Column head — sticky, so the grid stays readable after 200 rows of scroll. */
+  .ledger-head {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: grid;
+    grid-template-columns: var(--ledger-cols);
+    column-gap: 0.75rem;
+    padding: 0.375rem 0.625rem 0.375rem 1rem;
+    border-bottom: 1px solid hsl(var(--border));
+    background: hsl(var(--surface-0));
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: hsl(var(--muted-foreground) / 0.8);
+  }
+  /* Below the point where four columns stop fitting, collapse to value + status
+     and let the rest reflow under the value. Density, not stacking. */
+  @media (max-width: 899px) {
+    .ledger { --ledger-cols: minmax(0, 1fr) auto; }
+    .ledger-row [data-ledger-col="source"],
+    .ledger-head [data-ledger-col="source"] { display: none; }
+  }
+  @media (max-width: 639px) {
+    .ledger { --ledger-cols: minmax(0, 1fr); }
+    .ledger-row [data-ledger-col="status"],
+    .ledger-head [data-ledger-col="status"],
+    .ledger-row [data-ledger-col="confidence"],
+    .ledger-head [data-ledger-col="confidence"] { display: none; }
+  }
+
+  /* Section rule — a labelled hairline that opens a group without boxing it. */
+  .rule-label {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    padding: 0.5rem 0.625rem 0.375rem 1rem;
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: hsl(var(--foreground) / 0.72);
+    background: hsl(0 0% 100% / 0.018);
+    border-bottom: 1px solid hsl(var(--border-subtle));
+  }
+
+  /* Technical value — always selectable, never truncated without a title. */
+  .mono-value {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+    user-select: all;
+  }
+
   .text-glow {
     text-shadow: 0 0 16px hsl(var(--primary) / 0.3);
   }
@@ -214,44 +433,30 @@ All colors MUST be HSL.
   .no-scrollbar::-webkit-scrollbar {
     display: none;
   }
-  /* Single glass treatment — every panel surface uses this.
-     Legacy class names (.glass, .glass-strong, .glass-interactive, .glass-hover-shine)
-     alias to the same look to keep existing markup working. */
+  /* Legacy panel aliases — all six former materials now resolve to ONE.
+     `.glass` / `.glass-card` / `.glass-strong` are the surviving names in markup
+     (17 files); the look they get is `.panel-raised` above. Keeping the names is
+     deliberate: the consolidation is a MATERIAL change, and rewriting 17 files'
+     class strings in the same pass would hide it inside a large diff. */
   .glass,
   .glass-strong,
   .glass-card,
-  .glass-interactive,
-  .glass-hover-shine {
-    /* Matte instrument panel, not glass: a light blur (floating layers re-raise
-       it), a crisp hairline brightest at the top edge, a machined inner
-       top-highlight catch-light, and a directional, mostly-downward 2-layer
-       shadow. Depth reads as engineered, not decorative. */
-    background:
-      linear-gradient(180deg, hsl(220 22% 9% / 0.92) 0%, hsl(222 20% 6% / 0.92) 100%);
-    backdrop-filter: blur(12px) saturate(140%);
-    -webkit-backdrop-filter: blur(12px) saturate(140%);
-    border: 1px solid hsl(0 0% 100% / 0.06);
-    border-top-color: hsl(0 0% 100% / 0.1);
+  .glass-interactive {
+    border-radius: 10px;
+    border: 1px solid hsl(0 0% 100% / 0.08);
+    background: hsl(var(--surface-2));
     box-shadow:
-      inset 0 1px 0 hsl(0 0% 100% / 0.06),
-      0 1px 2px hsl(0 0% 0% / 0.45),
-      0 12px 32px -16px hsl(0 0% 0% / 0.7);
+      inset 0 1px 0 hsl(0 0% 100% / 0.04),
+      0 10px 26px -18px hsl(0 0% 0% / 0.85);
   }
   .glass-interactive {
-    transition: background-color 160ms ease, border-color 160ms ease;
+    transition: background-color 140ms linear, border-color 140ms linear;
     cursor: pointer;
   }
   .glass-interactive:hover {
-    background: linear-gradient(180deg, hsl(0 0% 9% / 0.9), hsl(0 0% 6% / 0.9));
-    border-color: hsl(0 0% 100% / 0.09);
+    background: hsl(var(--surface-3));
+    border-color: hsl(0 0% 100% / 0.12);
   }
-
-  /* Decorative ambient utilities — neutralized. Kept as class names so
-     existing markup doesn't need to be ripped through. */
-  .ambient-glow,
-  .ambient-dots,
-  .composer-halo,
-  .glass-hover-shine { position: relative; }
 
   .ring-glow {
     box-shadow: 0 0 0 1px hsl(var(--info) / 0.4), 0 0 18px -6px hsl(var(--info) / 0.35);
@@ -260,72 +465,14 @@ All colors MUST be HSL.
   .gradient-text {
     color: hsl(var(--foreground));
   }
-  .confidence-pop {
-    box-shadow:
-      0 0 0 1px hsl(var(--confidence-high) / 0.55),
-      0 0 18px -2px hsl(var(--confidence-high-glow) / 0.55);
-  }
-  .text-confidence-glow {
-    color: hsl(var(--confidence-high));
-    text-shadow: 0 0 12px hsl(var(--confidence-high-glow) / 0.55);
-  }
-  .bg-grid {
-    background-image:
-      linear-gradient(hsl(var(--border) / 0.4) 1px, transparent 1px),
-      linear-gradient(90deg, hsl(var(--border) / 0.4) 1px, transparent 1px);
-    background-size: 32px 32px;
-  }
-
-  /* Cyber / terminal aesthetics */
-  .terminal-glow {
-    text-shadow: 0 0 10px hsl(var(--primary) / 0.8), 0 0 30px hsl(var(--primary) / 0.4);
-  }
-  .neon-border {
-    border: 1px solid hsl(var(--primary) / 0.25);
-    box-shadow: 0 0 8px -2px hsl(var(--primary) / 0.3), inset 0 0 12px -6px hsl(var(--primary) / 0.1);
-  }
-  .hex-grid {
-    background-image:
-      linear-gradient(30deg, hsl(var(--border) / 0.15) 12%, transparent 12.5%, transparent 87%, hsl(var(--border) / 0.15) 87.5%, hsl(var(--border) / 0.15)),
-      linear-gradient(150deg, hsl(var(--border) / 0.15) 12%, transparent 12.5%, transparent 87%, hsl(var(--border) / 0.15) 87.5%, hsl(var(--border) / 0.15)),
-      linear-gradient(30deg, hsl(var(--border) / 0.15) 12%, transparent 12.5%, transparent 87%, hsl(var(--border) / 0.15) 87.5%, hsl(var(--border) / 0.15)),
-      linear-gradient(150deg, hsl(var(--border) / 0.15) 12%, transparent 12.5%, transparent 87%, hsl(var(--border) / 0.15) 87.5%, hsl(var(--border) / 0.15)),
-      linear-gradient(60deg, hsl(var(--border) / 0.08) 25%, transparent 25.5%, transparent 75%, hsl(var(--border) / 0.08) 75%, hsl(var(--border) / 0.08)),
-      linear-gradient(60deg, hsl(var(--border) / 0.08) 25%, transparent 25.5%, transparent 75%, hsl(var(--border) / 0.08) 75%, hsl(var(--border) / 0.08));
-    background-size: 40px 70px;
-    background-position: 0 0, 0 0, 20px 35px, 20px 35px, 0 0, 20px 35px;
-  }
 
   @keyframes pivot-in {
     0% { opacity: 0; transform: translateY(6px) scale(0.98); }
     100% { opacity: 1; transform: translateY(0) scale(1); }
   }
-  @keyframes pulse-ring {
-    0% { box-shadow: 0 0 0 0 hsl(var(--primary) / 0.55); }
-    70% { box-shadow: 0 0 0 8px hsl(var(--primary) / 0); }
-    100% { box-shadow: 0 0 0 0 hsl(var(--primary) / 0); }
-  }
-  @keyframes shimmer {
-    0% { background-position: -200% 0; }
-    100% { background-position: 200% 0; }
-  }
-  @keyframes float-slow {
-    0%, 100% { transform: translateY(0); }
-    50% { transform: translateY(-4px); }
-  }
-  @keyframes gradient-shift {
-    0%, 100% { background-position: 0% 50%; }
-    50% { background-position: 100% 50%; }
-  }
-  @keyframes scan-line { 0%, 100% { opacity: 0; } }
-  @keyframes crt-flicker { 0%, 100% { opacity: 1; } }
   @keyframes blink-cursor {
     0%, 100% { opacity: 1; }
     50% { opacity: 0; }
-  }
-  @keyframes brain-grow {
-    0%, 100% { transform: scale(1); }
-    50% { transform: scale(1.08); }
   }
   @keyframes memory-float {
     0%   { opacity: 0; transform: translateY(2px); }
@@ -356,24 +503,7 @@ All colors MUST be HSL.
   }
 
   .animate-pivot-in { animation: pivot-in 0.35s ease-out both; }
-  .animate-pulse-ring { animation: pulse-ring 2s ease-out infinite; }
-  .animate-float-slow { animation: float-slow 4s ease-in-out infinite; }
-  .animate-gradient-shift {
-    background-size: 200% 200%;
-    animation: gradient-shift 8s ease infinite;
-  }
-  .animate-scan-line { animation: scan-line 3s ease-in-out infinite; }
-  .animate-crt-flicker { animation: crt-flicker 0.15s infinite; }
   .animate-blink-cursor { animation: blink-cursor 1s step-end infinite; }
-  .animate-shimmer {
-    background: linear-gradient(90deg,
-      hsl(var(--primary) / 0) 0%,
-      hsl(var(--primary) / 0.25) 50%,
-      hsl(var(--primary) / 0) 100%);
-    background-size: 200% 100%;
-    animation: shimmer 2.5s linear infinite;
-  }
-  .animate-brain-grow  { animation: brain-grow 1.6s ease-out both; }
   .animate-memory-float { animation: memory-float 2.2s ease-out forwards; }
   .animate-memory-ring  { animation: memory-ring 1.6s ease-out both; }
 
@@ -381,57 +511,6 @@ All colors MUST be HSL.
   .animate-glow-soft { animation: glow-soft-pulse 3.6s ease-in-out infinite; }
   .animate-red-edge { animation: red-edge-breathe 2.4s ease-in-out infinite; }
   .animate-warning-pulse { animation: warning-pulse 1.8s ease-in-out infinite; }
-
-  /* Intelligence node card — premium tool result surface */
-  .intel-node {
-    background:
-      linear-gradient(180deg, hsl(0 0% 7% / 0.82) 0%, hsl(0 0% 5% / 0.82) 100%);
-    backdrop-filter: blur(24px) saturate(180%);
-    -webkit-backdrop-filter: blur(24px) saturate(180%);
-    border: 1px solid hsl(0 0% 100% / 0.06);
-    border-radius: 18px;
-    box-shadow:
-      0 1px 0 hsl(0 0% 100% / 0.04) inset,
-      0 18px 48px -28px hsl(0 0% 0% / 0.7);
-    transition: border-color 240ms ease, transform 240ms ease, box-shadow 240ms ease;
-  }
-  .intel-node:hover {
-    border-color: hsl(var(--intel-blue) / 0.35);
-    transform: translateY(-1px);
-    box-shadow:
-      0 1px 0 hsl(0 0% 100% / 0.06) inset,
-      0 24px 56px -28px hsl(0 0% 0% / 0.8),
-      0 0 32px -12px hsl(var(--intel-blue) / 0.35);
-  }
-  .intel-node--failed {
-    border-color: hsl(var(--danger) / 0.35);
-    background:
-      linear-gradient(180deg, hsl(0 40% 9% / 0.4) 0%, hsl(0 0% 5% / 0.85) 100%);
-  }
-  .intel-node--failed:hover {
-    border-color: hsl(var(--danger) / 0.55);
-    box-shadow:
-      0 1px 0 hsl(0 0% 100% / 0.04) inset,
-      0 24px 56px -28px hsl(0 0% 0% / 0.8),
-      0 0 32px -12px hsl(var(--danger) / 0.4);
-  }
-
-  /* Intelligence front-door surface — .intel-node-grade material (deep blur +
-     saturation, inner hairline, layered depth) but fully monochrome and static.
-     Used on logged-out shells (auth card) where .intel-node's intel-blue hover
-     accent would be off-system. Raises material grade without adding color. */
-  .intel-surface {
-    background:
-      linear-gradient(180deg, hsl(0 0% 7% / 0.85) 0%, hsl(0 0% 5% / 0.85) 100%);
-    backdrop-filter: blur(24px) saturate(180%);
-    -webkit-backdrop-filter: blur(24px) saturate(180%);
-    border: 1px solid hsl(0 0% 100% / 0.07);
-    border-top-color: hsl(0 0% 100% / 0.09);
-    box-shadow:
-      inset 0 1px 0 hsl(0 0% 100% / 0.05),
-      inset 0 0 0 1px hsl(0 0% 0% / 0.22),
-      0 24px 64px -30px hsl(0 0% 0% / 0.75);
-  }
 
   /* Top-edge "system live" seam — a faint monochrome sweep over a 1px hairline.
      Conservative: low opacity, slow (3.2s vs the 1.4s workstation scan), and
