@@ -99,6 +99,11 @@ function metaLabels(meta: Record<string, unknown> | null): string[] {
   return out;
 }
 
+/** The model-requested status, which lives in metadata rather than a column. */
+function reqStatus(meta: Record<string, unknown> | null): string | null {
+  return meta && typeof meta.status === "string" ? meta.status : null;
+}
+
 function classesOf(labels: string[]): SourceClass[] {
   const set = new Set<SourceClass>();
   for (const l of labels) {
@@ -114,7 +119,10 @@ function classesOf(labels: string[]): SourceClass[] {
 
 type Artifact = {
   id: string; thread_id: string; kind: string; source: string | null;
-  confidence: number | null; status: string | null;
+  confidence: number | null;
+  // NOTE: `artifacts` has NO `status` column — the requested status lives in
+  // `metadata.status`. Selecting `status` returns PostgREST 400. Verified
+  // against the live schema 2026-08-15.
   metadata: Record<string, unknown> | null;
 };
 type ToolRow = { thread_id: string; tool_name: string };
@@ -124,7 +132,7 @@ type ToolRow = { thread_id: string; tool_name: string };
 const token = await signIn();
 console.log("signed in; reading (read-only)…\n");
 
-const artifacts = await page<Artifact>(token, "artifacts", "id,thread_id,kind,source,confidence,status,metadata");
+const artifacts = await page<Artifact>(token, "artifacts", "id,thread_id,kind,source,confidence,metadata");
 const tools = await page<ToolRow>(token, "tool_usage_log", "thread_id,tool_name");
 
 /** Which tool slugs actually EXECUTED on each thread. This is the only
@@ -166,10 +174,10 @@ for (const a of artifacts) {
     const sTodayCls = classesOf([...surface, ...mLabels]);
     const sShipCls = classesOf(surface);
     const stToday = deriveStatus({
-      requested: a.status, reasonNotConfirmed: today.reason_not_confirmed ?? null, sourceClasses: sTodayCls,
+      requested: reqStatus(meta), reasonNotConfirmed: today.reason_not_confirmed ?? null, sourceClasses: sTodayCls,
     });
     const stShip = deriveStatus({
-      requested: a.status, reasonNotConfirmed: noMeta.reason_not_confirmed ?? null, sourceClasses: sShipCls,
+      requested: reqStatus(meta), reasonNotConfirmed: noMeta.reason_not_confirmed ?? null, sourceClasses: sShipCls,
     });
     if (stToday !== stShip) {
       statusChanged++;
