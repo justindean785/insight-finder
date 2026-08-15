@@ -3,7 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import {
   Mail, Globe, User as UserIcon, Network, ShieldAlert, Image as ImgIcon, Tag,
   Copy, CheckCircle2, XCircle, Star, ShieldQuestion, EyeOff, ChevronRight, Radar,
-  AlertTriangle, RotateCcw, Loader2,
+  AlertTriangle, RotateCcw, Loader2, Unlink,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -17,10 +17,15 @@ import {
   groupForKind, GROUP_LABEL, GROUP_ORDER, type Group,
   extractSourceInfo, CACHE_LAYER_LABEL, CACHE_LAYER_CLASS,
 } from "@/lib/intel";
-import { evidenceStatus, EVIDENCE_STATUS_RANK } from "@/lib/evidence-status";
+import { evidenceStatus } from "@/lib/evidence-status";
+import { authorityFor, LEDGER_SORT_RANK } from "@/lib/authority";
+import { isQuarantined } from "@/lib/quarantine";
 import { readableSourceLabel } from "@/lib/tool-display";
 import { humanizeArtifactMetadata } from "@/lib/artifact-metadata";
-import { EvidenceStatusBadge, FilterChips, StatusLegend } from "@/components/ui/workspace-primitives";
+import { FilterChips } from "@/components/ui/workspace-primitives";
+import {
+  AuthorityChip, AuthorityCaveat, AuthorityLegend, AuthoritySpine, RuleLabel, UnderlyingStrength,
+} from "@/components/ui/authority";
 import {
   useReviewStates, REVIEW_CLASS, REVIEW_SHORT, launchRecheckInChat,
   type ReviewState,
@@ -59,16 +64,24 @@ function kindHeading(kind: string, n: number): string {
 // of the "wall of identical rows" (e.g. 11 subdomains, all hackertarget @70%).
 const CLUSTER_COLLAPSE_THRESHOLD = 4;
 
-export type EvidenceStatusFilter = "all" | "strong" | "review" | "weak" | "excluded";
+export type EvidenceStatusFilter = "all" | "strong" | "review" | "quarantined" | "weak" | "excluded";
 export type EvidenceSortMode = "strength" | "confidence" | "newest";
 
-// Which display statuses each quick-filter admits.
+/**
+ * Which AUTHORITY states each quick-filter admits.
+ *
+ * `quarantined` is its own bucket, not folded into "Needs review". Those two
+ * mean different things and need different work: a review row needs another
+ * source, a quarantined row needs a linkage decision. Merging them is how 104
+ * quarantined artifacts sat in production looking like ordinary weak evidence.
+ */
 const STATUS_FILTER_GROUPS: Record<EvidenceStatusFilter, Set<string> | null> = {
   all: null,
-  strong: new Set(["verified", "verified_infrastructure", "probable"]),
-  review: new Set(["needs_corroboration", "manual_review", "contradicted"]),
-  weak: new Set(["lead", "shared_infrastructure"]),
-  excluded: new Set(["rejected"]),
+  strong: new Set(["verified", "infrastructure", "probable"]),
+  review: new Set(["review", "conflict"]),
+  quarantined: new Set(["quarantined"]),
+  weak: new Set(["weak"]),
+  excluded: new Set(["failed"]),
 };
 
 function ArtifactsList({
@@ -92,7 +105,7 @@ function ArtifactsList({
   // Not memoized on `review` so toggling a review state re-filters immediately.
   const allow = STATUS_FILTER_GROUPS[statusFilter];
   const filtered = allow
-    ? items.filter((a) => allow.has(evidenceStatus(a, review.get(a.id)).status))
+    ? items.filter((a) => allow.has(authorityFor(a, review.get(a.id)).state))
     : items;
 
   const grouped = useMemo(() => {
@@ -110,8 +123,8 @@ function ArtifactsList({
         return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
       }
       if (sortMode === "strength") {
-        const ra = EVIDENCE_STATUS_RANK[evidenceStatus(a, review.get(a.id)).status];
-        const rb = EVIDENCE_STATUS_RANK[evidenceStatus(b, review.get(b.id)).status];
+        const ra = LEDGER_SORT_RANK[authorityFor(a, review.get(a.id)).state];
+        const rb = LEDGER_SORT_RANK[authorityFor(b, review.get(b.id)).state];
         if (ra !== rb) return ra - rb;
         return conf(b) - conf(a);
       }
@@ -254,116 +267,135 @@ function ArtifactsList({
   }
 
   return (
-    <div className="px-2 py-3 space-y-5">
+    <div className="ledger">
+      {/* One column grid for the WHOLE board, declared once, so value / status /
+          source / confidence line up down every section. Column alignment is the
+          single biggest scanning win on a dense case: without it, reading 100
+          artifacts means reading 100 individually-laid-out rows. */}
+      <div className="ledger-head" role="presentation">
+        <span data-ledger-col="value">Evidence</span>
+        <span data-ledger-col="status">Authority</span>
+        <span data-ledger-col="source">Source</span>
+        <span data-ledger-col="confidence" className="text-right">Conf.</span>
+      </div>
       {GROUP_ORDER.filter((g) => grouped[g] && Object.keys(grouped[g]).length).map((g) => {
         const Icon = GROUP_ICON[g];
         const kinds = Object.keys(grouped[g]);
         const all = kinds.flatMap((k) => grouped[g][k]);
-        // Per-group severity breakdown for the header summary.
+        // Per-group breakdown for the section rule. Quarantine gets its own
+        // count: it is the one condition an analyst must not discover by
+        // scrolling, because a quarantined row that goes unnoticed is precisely
+        // how a same-name stranger enters a case.
         let failedC = 0;
+        let quarantinedC = 0;
         for (const a of all) {
           const meta = (a.metadata ?? {}) as Record<string, unknown>;
           if (meta.false_positive === true) failedC++;
+          if (isQuarantined(meta)) quarantinedC++;
         }
         // Order kinds by their strongest member so high-value kinds lead.
         kinds.sort((a, b) => (grouped[g][b][0]?.confidence ?? 0) - (grouped[g][a][0]?.confidence ?? 0));
         return (
-          <div
-            key={g}
-            className="rounded-2xl border border-white/8 bg-[linear-gradient(165deg,rgba(255,255,255,0.05),rgba(255,255,255,0.018)_48%,rgba(255,255,255,0.008))] p-2.5 shadow-[0_22px_80px_-52px_rgba(0,0,0,0.96)] backdrop-blur-xl"
-          >
-            {/* Group header: quiet label · count; only a flag count when something is flagged */}
-            <div className="flex items-center gap-2 px-2 pb-1.5">
-              <Icon
-                className={cn(
-                  "h-3 w-3 shrink-0",
-                  failedC > 0 ? "text-destructive" : "text-muted-foreground/80",
-                )}
-              />
-              <span
-                className="text-eyebrow font-semibold uppercase tracking-[0.18em]"
-                style={{ color: failedC > 0 ? "hsl(var(--danger))" : "hsl(var(--foreground) / 0.62)" }}
-              >
+          <section key={g} aria-label={GROUP_LABEL[g]}>
+            <RuleLabel
+              right={
+                <span className="flex items-center gap-2.5">
+                  {quarantinedC > 0 && (
+                    <span
+                      className="inline-flex items-center gap-1 text-micro tabular-nums text-[hsl(var(--authority-quarantine))]"
+                      title="Recorded, disclosed, and withheld from identity — linkage to the subject is unproven."
+                    >
+                      <Unlink className="h-3 w-3" strokeWidth={2} aria-hidden />
+                      {quarantinedC} quarantined
+                    </span>
+                  )}
+                  {failedC > 0 && (
+                    <span className="text-micro tabular-nums text-destructive">{failedC} flagged</span>
+                  )}
+                  <span className="text-micro tabular-nums text-muted-foreground/70">{all.length}</span>
+                </span>
+              }
+            >
+              <span className="inline-flex items-center gap-2">
+                <Icon className="h-3 w-3 shrink-0 text-muted-foreground/70" aria-hidden />
                 {GROUP_LABEL[g]}
               </span>
-              <span className="text-data tabular-nums text-muted-foreground/80">· {all.length}</span>
-              {failedC > 0 && (
-                <span className="ml-auto text-micro tabular-nums" style={{ color: "hsl(var(--danger))" }}>
-                  {failedC} flagged
-                </span>
-              )}
-            </div>
+            </RuleLabel>
 
-            <div className="space-y-0.5">
-              {kinds.map((kind) => {
-                const list = grouped[g][kind];
-                // A cluster shares one provenance when every row resolves to the
-                // same source — then we show it once in the subheader and drop
-                // the repeated per-row line.
-                const provs = new Set(list.map(provFor).filter(Boolean));
-                const uniformProv = provs.size === 1 ? [...provs][0] : null;
-                const collapsible = list.length > CLUSTER_COLLAPSE_THRESHOLD;
-                const key = `${g}:${kind}`;
-                const open = openClusters[key] ?? !collapsible;
-                // Confidence range across the cluster, for the collapsed summary.
-                const confs = list.map((a) => a.confidence).filter((c): c is number => c != null);
-                const lo = confs.length ? Math.min(...confs) : null;
-                const hi = confs.length ? Math.max(...confs) : null;
-                const rangeColor = (hi ?? 0) >= 70 ? "hsl(var(--confidence-high))"
-                  : (hi ?? 0) >= 50 ? "hsl(var(--confidence-mid))" : "hsl(var(--confidence-low))";
-                return (
-                  <div key={kind} className="rounded-xl border border-white/6 bg-white/[0.015]">
-                    {/* Kind subheader — clickable when the cluster is collapsible */}
-                    <div
-                      role={collapsible ? "button" : undefined}
-                      tabIndex={collapsible ? 0 : undefined}
-                      aria-expanded={collapsible ? open : undefined}
-                      onClick={collapsible ? () => setOpenClusters((p) => ({ ...p, [key]: !open })) : undefined}
-                      onKeyDown={collapsible ? (e) => {
-                        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpenClusters((p) => ({ ...p, [key]: !open })); }
-                      } : undefined}
-                      className={cn(
-                        "flex items-center gap-1.5 px-2 py-1 rounded-md",
-                        collapsible && "cursor-pointer hover:bg-white/[0.03] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                      )}
-                    >
-                      {collapsible ? (
-                        <ChevronRight className={cn("h-3 w-3 shrink-0 text-muted-foreground/70 transition-transform", open && "rotate-90")} />
-                      ) : (
-                        <span className="w-3 shrink-0" />
-                      )}
-                      <span className="text-data font-medium text-foreground/75">{kindHeading(kind, list.length)}</span>
-                      <span className="text-data tabular-nums text-muted-foreground/70">· {list.length}</span>
-                      {uniformProv && (
-                        <span className="truncate font-mono text-micro text-muted-foreground/60" title={uniformProv}>{readableSourceLabel(uniformProv)}</span>
-                      )}
-                      {/* Singletons show their score on the row itself; only
-                          show a subheader figure for multi-row clusters. */}
-                      {lo != null && hi != null && list.length > 1 && (
-                        <span className="ml-auto text-data font-semibold tabular-nums" style={{ color: rangeColor }}>
-                          {lo === hi ? `${hi}%` : `${lo}–${hi}%`}
-                        </span>
-                      )}
-                    </div>
-
-                    {open && (
-                      <div className="divide-y divide-border-subtle/35 pl-2 py-1">
-                        {list.map((a) => (
-                          <ArtifactRow
-                            key={a.id}
-                            a={a}
-                            onSelect={onSelect}
-                            review={review}
-                            hideProv={uniformProv != null}
-                          />
-                        ))}
-                      </div>
+            {kinds.map((kind) => {
+              const list = grouped[g][kind];
+              // A cluster shares one provenance when every row resolves to the
+              // same source — then we show it once in the subheader and drop
+              // the repeated per-row line.
+              const provs = new Set(list.map(provFor).filter(Boolean));
+              const uniformProv = provs.size === 1 ? [...provs][0] : null;
+              const collapsible = list.length > CLUSTER_COLLAPSE_THRESHOLD;
+              const key = `${g}:${kind}`;
+              const open = openClusters[key] ?? !collapsible;
+              // Confidence range across the cluster, for the collapsed summary.
+              const confs = list.map((a) => a.confidence).filter((c): c is number => c != null);
+              const lo = confs.length ? Math.min(...confs) : null;
+              const hi = confs.length ? Math.max(...confs) : null;
+              const rangeColor = (hi ?? 0) >= 70 ? "hsl(var(--confidence-high))"
+                : (hi ?? 0) >= 50 ? "hsl(var(--confidence-mid))" : "hsl(var(--confidence-low))";
+              // Never collapse a group that hides a quarantined row behind a
+              // closed disclosure: a warning the analyst has to expand to find
+              // is a warning that does not exist.
+              const kindQuarantined = list.filter((a) => isQuarantined(a.metadata)).length;
+              return (
+                <div key={kind}>
+                  {/* Kind subheader — clickable when the cluster is collapsible */}
+                  <div
+                    role={collapsible ? "button" : undefined}
+                    tabIndex={collapsible ? 0 : undefined}
+                    aria-expanded={collapsible ? open : undefined}
+                    onClick={collapsible ? () => setOpenClusters((p) => ({ ...p, [key]: !open })) : undefined}
+                    onKeyDown={collapsible ? (e) => {
+                      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpenClusters((p) => ({ ...p, [key]: !open })); }
+                    } : undefined}
+                    className={cn(
+                      "flex items-center gap-1.5 border-b border-border-subtle/60 px-2.5 py-1",
+                      collapsible && "cursor-pointer hover:bg-white/[0.028] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
+                    )}
+                  >
+                    {collapsible ? (
+                      <ChevronRight className={cn("h-3 w-3 shrink-0 text-muted-foreground/70 transition-transform", open && "rotate-90")} />
+                    ) : (
+                      <span className="w-3 shrink-0" />
+                    )}
+                    <span className="text-data font-medium text-foreground/75">{kindHeading(kind, list.length)}</span>
+                    <span className="text-data tabular-nums text-muted-foreground/70">· {list.length}</span>
+                    {kindQuarantined > 0 && !open && (
+                      <span className="inline-flex items-center gap-1 text-micro text-[hsl(var(--authority-quarantine))]">
+                        <Unlink className="h-3 w-3" strokeWidth={2} aria-hidden />
+                        {kindQuarantined} quarantined
+                      </span>
+                    )}
+                    {uniformProv && (
+                      <span className="truncate font-mono text-micro text-muted-foreground/60" title={uniformProv}>{readableSourceLabel(uniformProv)}</span>
+                    )}
+                    {/* Singletons show their score on the row itself; only
+                        show a subheader figure for multi-row clusters. */}
+                    {lo != null && hi != null && list.length > 1 && (
+                      <span className="ml-auto text-data font-semibold tabular-nums" style={{ color: rangeColor }}>
+                        {lo === hi ? `${hi}%` : `${lo}–${hi}%`}
+                      </span>
                     )}
                   </div>
-                );
-              })}
-            </div>
-          </div>
+
+                  {open && list.map((a) => (
+                    <ArtifactRow
+                      key={a.id}
+                      a={a}
+                      onSelect={onSelect}
+                      review={review}
+                      hideProv={uniformProv != null}
+                    />
+                  ))}
+                </div>
+              );
+            })}
+          </section>
         );
       })}
     </div>
@@ -389,7 +421,7 @@ function ArtifactRow({
     conf >= 50 ? "hsl(var(--confidence-mid))" :
     "hsl(var(--confidence-low))";
   const prov = provFor(a);
-  const status = evidenceStatus(a, rState);
+  const authority = authorityFor(a, rState);
   return (
     <HoverCard openDelay={250} closeDelay={80}>
       <HoverCardTrigger asChild>
@@ -400,67 +432,95 @@ function ArtifactRow({
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(a); }
           }}
+          // The row's accessible name carries BOTH axes plus the caveat, so a
+          // screen-reader user gets the quarantine disclosure from the row
+          // itself rather than having to open the detail drawer for it.
+          aria-label={[
+            `${a.kind} ${a.value}`,
+            authority.label,
+            authority.caveat ?? "",
+            a.confidence != null ? `${conf}% confidence` : "",
+          ].filter(Boolean).join(". ")}
           data-density-row
           className={cn(
-            "group/row flex w-full cursor-pointer items-center gap-2.5 rounded-xl border border-transparent px-2 py-2 text-left transition-all duration-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-            fp ? "hover:bg-danger-muted/30" : "hover:bg-white/[0.04]",
-            !fp && "hover:border-white/10 hover:shadow-[0_10px_30px_-24px_rgba(0,0,0,0.95)]",
+            "group/row ledger-row cursor-pointer text-left",
             dismissed && "opacity-50",
           )}
         >
-          <span className="min-w-0 flex-1">
+          <AuthoritySpine state={authority.state} />
+
+          {/* Value +, when there is one, the recorded reason it is not stronger. */}
+          <span className="min-w-0" data-ledger-col="value">
             <span className="flex items-center gap-1.5">
-              {rState === "confirmed" && <CheckCircle2 className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-high))]" />}
-              {rState === "key" && <Star className="h-3 w-3 shrink-0 text-primary" />}
-              {rState === "recheck" && <ShieldQuestion className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-mid))]" />}
-              {rState === "dismissed" && <EyeOff className="h-3 w-3 shrink-0 text-muted-foreground" />}
-              {fp && <XCircle className="h-3 w-3 shrink-0 text-destructive" />}
-              {sensitive && <ShieldAlert className="h-3 w-3 shrink-0 text-destructive" />}
-              <span className={cn("truncate text-meta text-foreground/95", fp && "line-through opacity-70")} title={a.value}>
+              {rState === "confirmed" && <CheckCircle2 className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-high))]" aria-hidden />}
+              {rState === "key" && <Star className="h-3 w-3 shrink-0 text-primary" aria-hidden />}
+              {rState === "recheck" && <ShieldQuestion className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-mid))]" aria-hidden />}
+              {rState === "dismissed" && <EyeOff className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />}
+              {fp && <XCircle className="h-3 w-3 shrink-0 text-destructive" aria-hidden />}
+              {sensitive && <ShieldAlert className="h-3 w-3 shrink-0 text-destructive" aria-hidden />}
+              <span
+                className={cn(
+                  "mono-value truncate text-data text-foreground/95",
+                  fp && "line-through opacity-70",
+                )}
+                title={a.value}
+              >
                 {a.value}
               </span>
+              <button
+                type="button"
+                aria-label={`Copy ${a.value}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigator.clipboard.writeText(a.value).then(
+                    () => toast.success("Copied"),
+                    () => toast.error("Copy failed"),
+                  );
+                }}
+                // Always rendered, dimmed until hover/focus rather than
+                // `opacity-0`: a copy control an analyst has to discover by
+                // hovering is a control most analysts never find, and copying a
+                // selector is the single most frequent action on this board.
+                className="-my-1 shrink-0 rounded p-1 text-muted-foreground/45 transition-colors hover:bg-surface-3 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/row:text-muted-foreground"
+              >
+                <Copy className="h-3 w-3" aria-hidden />
+              </button>
             </span>
-            <span className="mt-1 flex items-center gap-1.5 flex-wrap">
-              <EvidenceStatusBadge
-                status={status.status}
-                label={status.label}
-                tone={status.tone}
-                hint={status.hint}
-              />
-              <span className="truncate text-data text-muted-foreground/75" title={status.basis}>
-                {status.basis}
-              </span>
-              {!hideProv && prov && (
-                <span className="truncate font-mono text-data text-muted-foreground/55" title={prov}>
-                  · {readableSourceLabel(prov)}
-                </span>
-              )}
+            <AuthorityCaveat view={authority} className="mt-0.5" />
+          </span>
+
+          {/* Authority — chip, then BOTH axes on one sub-line: how strong the
+              observation is, and what it rests on. Keeping the strength here
+              rather than beside the value stops it competing with the recorded
+              reason for attention in the value column. */}
+          <span className="min-w-0" data-ledger-col="status">
+            <AuthorityChip view={authority} />
+            <span
+              className="mt-0.5 flex items-center gap-1 truncate text-eyebrow text-muted-foreground/70"
+              title={authority.state === "quarantined" ? `${authority.underlyingLabel} · ${authority.basis}` : authority.basis}
+            >
+              <UnderlyingStrength view={authority} />
+              {authority.state === "quarantined" && <span aria-hidden>·</span>}
+              <span className="truncate">{authority.basis}</span>
             </span>
           </span>
-          <button
-            type="button"
-            aria-label={`Copy ${a.value}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              navigator.clipboard.writeText(a.value).then(
-                () => toast.success("Copied"),
-                () => toast.error("Copy failed"),
-              );
-            }}
-            className="-m-2 shrink-0 rounded p-2 text-muted-foreground/60 opacity-0 transition-opacity hover:text-foreground hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/row:opacity-100"
-          >
-            <Copy className="h-3.5 w-3.5" />
-          </button>
-          {a.confidence != null && (
-            <span className="flex shrink-0 items-center gap-1">
-              <span className="w-9 text-right text-data font-semibold tabular-nums" style={{ color: confColor }}>{conf}%</span>
-              <ConfidenceExplain
-                artifact={a}
-                review={rState}
-                className="opacity-0 transition-opacity focus-visible:opacity-100 group-hover/row:opacity-100 data-[state=open]:opacity-100"
-              />
-            </span>
-          )}
+
+          <span className="min-w-0 truncate font-mono text-eyebrow text-muted-foreground/60" data-ledger-col="source" title={prov || undefined}>
+            {!hideProv && prov ? readableSourceLabel(prov) : ""}
+          </span>
+
+          <span className="flex shrink-0 items-center justify-end gap-0.5" data-ledger-col="confidence">
+            {a.confidence != null && (
+              <>
+                <span className="text-data font-semibold tabular-nums" style={{ color: confColor }}>{conf}</span>
+                <ConfidenceExplain
+                  artifact={a}
+                  review={rState}
+                  className="text-muted-foreground/45 transition-colors group-hover/row:text-muted-foreground data-[state=open]:text-foreground"
+                />
+              </>
+            )}
+          </span>
         </div>
       </HoverCardTrigger>
       <HoverCardContent side="left" align="start" className="w-72 overflow-hidden p-0 border-border-subtle">
@@ -513,6 +573,7 @@ function ArtifactDrawerInner({
   // confidence_before/source (else they're dropped from the by-band calibration).
   const rctx = { value: artifact.value, kind: artifact.kind, confidence: artifact.confidence, source: artifact.source };
   const src = extractSourceInfo(artifact);
+  const drawerAuthority = authorityFor(artifact, rState);
   const review = useReviewStates(threadId);
   const [noteDraft, setNoteDraft] = useState(review.getNote(artifact.id));
   const [saving, setSaving] = useState(false);
@@ -574,6 +635,29 @@ function ArtifactDrawerInner({
         </SheetHeader>
 
         <div className="space-y-4 px-5 py-4 text-sm">
+          {/* Authority banner — FIRST, above the source stack. An analyst opening
+              a quarantined row must meet the linkage question before they read
+              the evidence, not after. Previously `subject_unlinked_reason`
+              reached this sheet only as an unlabelled key/value row at the very
+              bottom of "Details". */}
+          {(drawerAuthority.state === "quarantined" || drawerAuthority.caveat) && (
+            <div className="panel-inset p-3">
+              <div className="cordon mb-2.5 -mx-3 -mt-3 rounded-t-[7px]" aria-hidden />
+              <div className="flex flex-wrap items-center gap-2">
+                <AuthorityChip view={drawerAuthority} size="md" />
+                <UnderlyingStrength view={drawerAuthority} />
+              </div>
+              <AuthorityCaveat view={drawerAuthority} className="mt-2" />
+              {drawerAuthority.state === "quarantined" && (
+                <p className="mt-2 text-micro leading-snug text-muted-foreground">
+                  Recorded and kept. It does not enter identity clusters, graph
+                  identity edges, confidence, or the report until the linkage is
+                  confirmed.
+                </p>
+              )}
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-2">
             <div className="rounded-lg border border-white/[0.08] bg-white/[0.035] p-3">
               <div className="text-eyebrow uppercase tracking-wider text-muted-foreground">Primary source</div>
@@ -825,11 +909,12 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
 
   // Live counts per quick-filter so the analyst sees how much sits in each bucket.
   const counts = useMemo(() => {
-    const c = { all: items.length, strong: 0, review: 0, weak: 0, excluded: 0 };
+    const c = { all: items.length, strong: 0, review: 0, quarantined: 0, weak: 0, excluded: 0 };
     for (const a of items) {
-      const s = evidenceStatus(a, review.get(a.id)).status;
+      const s = authorityFor(a, review.get(a.id)).state;
       if (STATUS_FILTER_GROUPS.strong!.has(s)) c.strong++;
       else if (STATUS_FILTER_GROUPS.review!.has(s)) c.review++;
+      else if (STATUS_FILTER_GROUPS.quarantined!.has(s)) c.quarantined++;
       else if (STATUS_FILTER_GROUPS.weak!.has(s)) c.weak++;
       else if (STATUS_FILTER_GROUPS.excluded!.has(s)) c.excluded++;
     }
@@ -849,6 +934,11 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
               { key: "all", label: "All", count: counts.all },
               { key: "strong", label: "Findings", count: counts.strong, tone: "ok" },
               { key: "review", label: "Needs review", count: counts.review, tone: "warn" },
+              // Only offered when there is something in it — an always-present
+              // "Quarantined 0" trains analysts to stop reading the number.
+              ...(counts.quarantined > 0
+                ? [{ key: "quarantined" as const, label: "Quarantined", count: counts.quarantined }]
+                : []),
               { key: "weak", label: "Leads", count: counts.weak },
               { key: "excluded", label: "Excluded", count: counts.excluded, tone: "danger" },
             ]}
@@ -865,7 +955,7 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
                 { key: "newest", label: "Newest" },
               ]}
             />
-            <StatusLegend />
+            <AuthorityLegend />
           </div>
         </div>
       )}
