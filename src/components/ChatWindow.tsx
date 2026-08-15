@@ -2442,7 +2442,7 @@ function ChatWindowInner({
                   const cardId = `${s.title}-${i}`;
                   const expanded = expandedPivot === cardId;
                   return (
-                    <div key={cardId} className="chat-next-steps__row group">
+                    <div key={cardId} className="chat-next-steps__row group" data-priority={s.priority}>
                       <button
                         type="button"
                         className="min-w-0 flex-1 text-left"
@@ -2542,8 +2542,8 @@ function ChatWindowInner({
               })}
             </div>
           )}
-          <div className="rounded-[22px] sm:rounded-[28px] border border-white/10 bg-surface-0 p-1 shadow-[0_24px_54px_-42px_rgba(0,0,0,0.95)]">
-            <div className="relative rounded-[18px] sm:rounded-[24px] border border-white/10 bg-background transition-colors focus-within:border-white/20">
+          <div className="composer-shell p-1">
+            <div className="relative rounded-[11px] bg-background/60">
               <input
                 ref={fileInputRef}
                 type="file"

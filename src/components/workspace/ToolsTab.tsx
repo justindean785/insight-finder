@@ -95,6 +95,36 @@ function ActivityLog({
 }: { events: ToolEvent[]; ok: number; failed: number; skipped: number; gated: number; degraded: number; total: number; loading: boolean }) {
   const [filter, setFilter] = useState<ActivityFilter>("all");
   const pending = events.filter((e) => e.status === "pending").length;
+  /**
+   * Where the money went. `charged_micro_usd` is what was ACTUALLY billed, which
+   * is not the same as what a call cost to attempt: a cache hit and a gated
+   * refusal both charge nothing. Reporting the charged figure per tool is the
+   * only way to see that one provider is eating the run's budget — the header's
+   * single aggregate cannot show that, and the paid-call cap is spent per tool.
+   */
+  const spend = useMemo(() => {
+    // NOTE: this reports what WAS charged, not what was avoided. Computing
+    // "saved by cache" honestly needs `cost_micro_usd` (list price) alongside
+    // `charged_micro_usd`, and only the latter is fetched — so the saving is
+    // deliberately not claimed rather than estimated from the cached count.
+    const by = new Map<string, { micro: number; calls: number }>();
+    let total = 0;
+    for (const e of events) {
+      const m = e.chargedMicroUsd ?? 0;
+      if (m <= 0) continue;
+      total += m;
+      const cur = by.get(e.toolName) ?? { micro: 0, calls: 0 };
+      cur.micro += m; cur.calls += 1;
+      by.set(e.toolName, cur);
+    }
+    const rows = [...by.entries()]
+      .map(([tool, v]) => ({ tool, ...v }))
+      .sort((a, b) => b.micro - a.micro)
+      .slice(0, 8);
+    const freeCalls = events.filter((e) => (e.chargedMicroUsd ?? 0) <= 0).length;
+    return { rows, total, freeCalls, max: Math.max(1, ...rows.map((r) => r.micro)) };
+  }, [events]);
+
   const { totalMs, slowCount, cachedCount } = useMemo(() => {
     let total = 0, slow = 0, cached = 0;
     for (const e of events) {
@@ -200,6 +230,37 @@ function ActivityLog({
         )}
       </div>
 
+      {spend.total > 0 && (
+        <section className="panel overflow-hidden">
+          <div className="rule-label">
+            <span>Spend by tool</span>
+            <span className="ml-auto normal-case tracking-normal text-micro tabular-nums text-muted-foreground">
+              {fmtMicroUsd(spend.total)}
+              {spend.freeCalls > 0 && (
+                <span className="ml-2 text-[hsl(var(--confidence-high))]" title="Cache hits, gated refusals and free-tier tools charge nothing.">
+                  {spend.freeCalls} free
+                </span>
+              )}
+            </span>
+          </div>
+          <div className="space-y-1 p-3">
+            {spend.rows.map((r) => (
+              <div key={r.tool} className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_4.5rem_2.5rem] items-center gap-2">
+                <span className="truncate font-mono text-eyebrow uppercase tracking-wider text-foreground/85" title={r.tool}>{r.tool}</span>
+                <span className="relative h-1.5 overflow-hidden rounded-sm bg-surface-3">
+                  <span
+                    className="absolute inset-y-0 left-0 rounded-sm bg-[hsl(var(--brand))]"
+                    style={{ width: `${Math.max(3, (r.micro / spend.max) * 100)}%` }}
+                  />
+                </span>
+                <span className="text-right font-mono text-data tabular-nums text-foreground/90">{fmtMicroUsd(r.micro)}</span>
+                <span className="text-right font-mono text-eyebrow tabular-nums text-muted-foreground/70">{r.calls}×</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       <FilterChips<ActivityFilter>
         ariaLabel="Filter tool activity by status"
         options={filters}
@@ -236,6 +297,17 @@ function ActivityLog({
   );
 }
 
+/** Micro-USD at a precision that stays readable per row. Zero renders as null:
+ *  a column of "$0.0000" on every cached or gated call is noise, and the CACHED
+ *  badge already says why nothing was charged. */
+function fmtMicroUsd(micro: number | null): string | null {
+  if (micro == null || !Number.isFinite(micro) || micro <= 0) return null;
+  const usd = micro / 1_000_000;
+  if (usd < 0.001) return "<$0.001";
+  if (usd < 1) return `$${usd.toFixed(3)}`;
+  return `$${usd.toFixed(2)}`;
+}
+
 /** Wall-clock, at the precision an analyst actually reads it. */
 function fmtDuration(ms: number | null): string | null {
   if (ms == null || !Number.isFinite(ms) || ms < 0) return null;
@@ -246,6 +318,7 @@ function fmtDuration(ms: number | null): string | null {
 
 function ActivityRowSummary({ e }: { e: ToolEvent }) {
   const duration = fmtDuration(e.durationMs);
+  const cost = fmtMicroUsd(e.chargedMicroUsd);
   // A slow failure is a different problem from a fast one: 30s says the
   // provider hung, 300ms says we never called it. Flag the long tail so the
   // distinction is visible without reading every number.
@@ -278,6 +351,14 @@ function ActivityRowSummary({ e }: { e: ToolEvent }) {
         )}
       </div>
       <div className="flex shrink-0 items-center gap-2.5 text-data tabular-nums">
+        {cost && (
+          <span
+            className="font-mono text-muted-foreground/80"
+            title={`This call was charged ${cost}. Cached calls and gated refusals cost nothing.`}
+          >
+            {cost}
+          </span>
+        )}
         {duration && (
           <span
             className={cn("font-mono", slow ? "text-[hsl(var(--confidence-mid))]" : "text-muted-foreground/70")}

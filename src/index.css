@@ -610,12 +610,14 @@ All colors MUST be HSL.
     border: 1px solid currentColor;
   }
   .pivot-priority--high {
-    color: hsl(var(--confidence-high));
-    background: hsl(var(--confidence-high) / 0.1);
+    color: hsl(0 0% 100%);
+    background: hsl(var(--brand) / 0.85);
+    border-color: transparent;
   }
   .pivot-priority--medium {
-    color: hsl(var(--confidence-mid));
-    background: hsl(var(--confidence-mid) / 0.1);
+    color: hsl(var(--brand));
+    background: hsl(var(--brand) / 0.16);
+    border-color: hsl(var(--brand) / 0.4);
   }
   .pivot-priority--low {
     color: hsl(var(--muted-foreground));
@@ -1325,6 +1327,62 @@ All colors MUST be HSL.
     padding: 1.25rem 1.75rem 1.5rem;
   }
 }
+
+/* ── Composer ──────────────────────────────────────────────────────────────
+   The one control that STARTS work sat at the same visual weight as a message
+   card, so the primary action on the screen read as page furniture. It now has
+   a brand-lit focus rim and a raised pane, so the eye lands on it when the
+   transcript goes quiet — which is exactly the moment an analyst needs to know
+   where to type next. */
+.composer-shell {
+  position: relative;
+  border-radius: 14px;
+  background: hsl(0 0% 100% / 0.035);
+  border: 1px solid hsl(0 0% 100% / 0.1);
+  border-top-color: hsl(0 0% 100% / 0.16);
+  box-shadow:
+    inset 0 1px 0 hsl(0 0% 100% / 0.07),
+    0 14px 40px -22px hsl(0 0% 0% / 0.95);
+  transition: border-color 180ms ease, box-shadow 220ms ease, background-color 180ms ease;
+}
+.composer-shell:focus-within {
+  background: hsl(0 0% 100% / 0.05);
+  border-color: hsl(var(--brand) / 0.55);
+  box-shadow:
+    inset 0 1px 0 hsl(0 0% 100% / 0.09),
+    0 0 0 1px hsl(var(--brand) / 0.35),
+    0 18px 48px -22px hsl(var(--brand) / 0.5);
+}
+.composer-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, hsl(var(--brand) / 0.45) 30%, hsl(0 0% 100% / 0.2) 60%, transparent);
+}
+
+/* ── Next steps ────────────────────────────────────────────────────────────
+   Every row rendered at identical weight, so the ranking the pivot engine
+   computed was invisible: HIGH and LOW looked the same and the analyst re-read
+   all four to pick one. Priority now drives a left rail, matching the authority
+   spine used everywhere else — same grammar, so a bar at the start of a row
+   always means "how much does this matter". */
+.chat-next-steps__row { position: relative; }
+.chat-next-steps__row::before {
+  content: "";
+  position: absolute;
+  inset: 6px auto 6px 0;
+  width: 2px;
+  border-radius: 2px;
+  background: hsl(var(--conf-unverified) / 0.5);
+}
+.chat-next-steps__row[data-priority="high"]::before {
+  background: hsl(var(--brand));
+  box-shadow: 0 0 10px -1px hsl(var(--brand) / 0.9);
+}
+.chat-next-steps__row[data-priority="medium"]::before { background: hsl(var(--brand) / 0.45); }
 
 /* Next-steps dense list — full column width, premium border */
 .chat-next-steps {
