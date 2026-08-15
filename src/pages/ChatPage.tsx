@@ -140,13 +140,13 @@ export default function ChatPage() {
   // preserves the ChatWindow fiber and the live run survives.
   return (
     <div key={threadId} className="relative flex h-[100dvh] w-full overflow-hidden bg-background">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_12%,rgba(84,170,255,0.09),transparent_36%),radial-gradient(circle_at_82%_88%,rgba(255,255,255,0.05),transparent_32%)]" />
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_12%,rgba(255,255,255,0.055),transparent_38%),radial-gradient(circle_at_82%_88%,rgba(255,255,255,0.03),transparent_32%)]" />
       <CommandPalette />
 
       {/* Desktop: persistent sidebar rail. Mobile uses the off-canvas Sheet below. */}
       {!isMobile && (
         <aside className={cn(
-          "relative z-10 flex h-full min-h-0 shrink-0 flex-col overflow-hidden border-r border-white/8 bg-[hsl(var(--surface-0))] shadow-[8px_0_38px_-30px_rgba(0,0,0,0.95)]",
+          "rail-surface relative z-10 flex h-full min-h-0 shrink-0 flex-col overflow-hidden border-r border-white/8 shadow-[8px_0_38px_-30px_rgba(0,0,0,0.95)]",
           leftCollapsed ? "w-14" : "w-72",
         )}>
           <ThreadSidebar collapsed={leftCollapsed} onToggleCollapse={() => setLeftCollapsed((c) => !c)} />
@@ -157,7 +157,7 @@ export default function ChatPage() {
         {/* Chrome differs by breakpoint but is always exactly ONE slot, so
             {content} stays at a stable index and is never remounted. */}
         {isMobile ? (
-          <header key="chrome" className="shrink-0 h-14 px-2 flex items-center gap-2 border-b border-white/8 bg-[linear-gradient(180deg,rgba(17,20,26,0.94),rgba(12,15,20,0.82))] backdrop-blur-xl">
+          <header key="chrome" className="shrink-0 h-14 px-2 flex items-center gap-2 border-b border-white/8 bg-[linear-gradient(180deg,rgba(20,20,20,0.94),rgba(9,9,9,0.82))] backdrop-blur-xl">
             <button onClick={() => setMLeft(true)} className="shrink-0 w-9 h-9 rounded-xl grid place-items-center border border-white/10 bg-white/[0.035] text-muted-foreground transition-all duration-500 ease-premium hover:text-foreground hover:bg-white/[0.06] active:scale-[0.97]" aria-label="Open cases">
               <PanelLeftOpen className="w-4 h-4 text-foreground/80" />
             </button>
@@ -186,7 +186,7 @@ export default function ChatPage() {
       {/* Mobile: cases live in an off-canvas overlay (does not affect layout flow). */}
       {isMobile && (
         <Sheet open={mLeft} onOpenChange={setMLeft}>
-          <SheetContent side="left" className="p-0 w-[82vw] max-w-[300px] sm:max-w-[300px] border-r border-white/8 bg-[hsl(var(--surface-0))] [&>button]:hidden overflow-hidden">
+          <SheetContent side="left" className="rail-surface p-0 w-[82vw] max-w-[300px] sm:max-w-[300px] border-r border-white/8 [&>button]:hidden overflow-hidden">
             {/* Radix requires an accessible name + description on every dialog
                 surface. This drawer had neither, which logged a Radix a11y
                 error and announced an unlabelled dialog to screen readers.

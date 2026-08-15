@@ -13,13 +13,13 @@ All colors MUST be HSL.
     /* Glassy blue-black: a near-black base with a faint cool intel-blue cast
        (hue 220, low saturation) so surfaces read as tinted glass, not flat black.
        Lightness is preserved so contrast is unchanged — just a little mix. */
-    --background: 222 32% 3.2%;      /* cool near-black base */
+    --background: 0 0% 3%;      /* cool near-black base */
     --foreground: 0 0% 97%;          /* #fafafa */
 
-    --card: 221 24% 8.5%;
+    --card: 0 0% 7.5%;
     --card-foreground: 0 0% 97%;
 
-    --popover: 221 26% 6.5%;
+    --popover: 0 0% 6%;
     --popover-foreground: 0 0% 97%;
 
     /* Primary — near-white CTAs / active state (Proximity-style monochrome).
@@ -28,7 +28,7 @@ All colors MUST be HSL.
     --primary-foreground: 0 0% 5%;
     --primary-glow: 0 0% 100%;
 
-    --secondary: 221 24% 7%;
+    --secondary: 0 0% 7%;
     --secondary-foreground: 0 0% 95%;
 
     --muted: 0 0% 5%;
@@ -41,14 +41,14 @@ All colors MUST be HSL.
     --destructive-foreground: 0 0% 100%;
 
     /* Semantic tokens — un-aliased. One meaning per token. */
-    --info: 210 100% 63%;             /* system / agent state — cool blue */
+    --info: 208 72% 60%;             /* system / agent state — cool blue */
     --success: 152 76% 52%;          /* instrument green */
     --warning: 38 98% 62%;           /* amber */
     --danger: 358 92% 64%;             /* #ef4444 — red */
     --evidence: 0 0% 64%;            /* immutable / custody marker — neutral */
 
     /* Muted semantic backgrounds — for soft chips, row tints, alerts */
-    --info-muted: 213 48% 14%;
+    --info-muted: 208 34% 13%;
     --success-muted: 155 40% 12%;
     --warning-muted: 38 48% 13%;
     --danger-muted: 358 52% 14%;
@@ -71,7 +71,7 @@ All colors MUST be HSL.
     --conf-likely: 142 78% 53%;
     --conf-possible: 40 98% 57%;
     --conf-weak: 25 98% 62%;
-    --conf-unverified: 217 18% 56%;
+    --conf-unverified: 0 0% 56%;
 
     /* ── Authority ladder ──────────────────────────────────────────────────
        The eight analyst-facing states from `src/lib/authority.ts`, given ONE
@@ -93,32 +93,45 @@ All colors MUST be HSL.
                      below) rather than by hue, so it can never be mistaken for
                      a rung on the confidence ladder. */
     --authority-verified: var(--conf-confirmed);
-    --authority-infrastructure: 210 100% 63%;   /* asset resolves ≠ ownership — info blue */
+    --authority-infrastructure: 208 72% 60%;   /* asset resolves ≠ ownership — info blue */
     --authority-probable: var(--conf-likely);
     --authority-review: var(--conf-possible);
     --authority-weak: var(--conf-unverified);
     --authority-conflict: 358 92% 64%;
-    --authority-quarantine: 220 10% 62%;          /* neutral by design — see above */
-    --authority-failed: 220 10% 40%;
+    --authority-quarantine: 0 0% 62%;          /* neutral by design — see above */
+    --authority-failed: 0 0% 40%;
 
     /* Layered surfaces — cool blue-black ramp (faint hue-220 cast, not heavy) */
-    --surface-0: 222 32% 3.2%;
-    --surface-1: 221 26% 6.2%;
-    --surface-2: 220 24% 9%;
-    --surface-3: 219 22% 13%;        /* selected / hover */
-    --surface-4: 218 20% 17%;
+    --surface-0: 0 0% 3%;
+    --surface-1: 0 0% 5.5%;
+    --surface-2: 0 0% 8%;
+    --surface-3: 0 0% 12%;        /* selected / hover */
+    --surface-4: 0 0% 16.5%;
 
-    --border: 220 14% 18%;              /* #2a2a2a */
-    --border-subtle: 220 16% 12%;       /* #1a1a1a */
-    --border-strong: 219 16% 28%;       /* #3d3d3d */
-    --input: 220 24% 9%;
-    --ring: 217 100% 70%;
+    --border: 0 0% 17%;              /* #2a2a2a */
+    --border-subtle: 0 0% 11%;       /* #1a1a1a */
+    --border-strong: 0 0% 27%;       /* #3d3d3d */
+    --input: 0 0% 8%;
+    --ring: 0 0% 82%;
+
+    /* ── Brand ────────────────────────────────────────────────────────────
+       The ONE hue in the product that carries no evidence meaning.
+       Every other colour here is spoken for: emerald = verified, grass =
+       probable, amber = review, orange = weak, red = conflict, blue = infra,
+       neutral = quarantine. A brand mark tinted with any of those would read as
+       a verdict about the case, which is why the app has been monochrome
+       everywhere until now. Violet is the only span of the wheel left free, so
+       it can identify the product without ever being mistaken for a state.
+       Used on the logo mark and as a whisper-level tint on the rail. Nowhere
+       near evidence. */
+    --brand: 268 84% 68%;
+    --brand-deep: 258 78% 56%;
 
     /* Intel tokens — ONE signature accent. The former violet co-accent is
        collapsed onto intel-blue so the product speaks with a single voice
        (Proximity-style restraint); kept as a token name for existing markup. */
-    --intel-blue: 217 100% 66%;
-    --intel-violet: 217 100% 66%;
+    --intel-blue: 0 0% 92%;
+    --intel-violet: 0 0% 92%;
 
     /* Brain (Global Brain tab) palette — neutralized greyscale + accents. */
     --brain-surface-base: 0 0% 6%;
@@ -133,14 +146,14 @@ All colors MUST be HSL.
 
     --radius: 0.75rem;          /* 12px cards (lg); inputs/buttons (md) 10px, sm 8px */
 
-    --sidebar-background: 222 34% 2.8%;
-    --sidebar-foreground: 218 12% 72%;
+    --sidebar-background: 0 0% 2.5%;
+    --sidebar-foreground: 0 0% 72%;
     --sidebar-primary: 0 0% 95%;
     --sidebar-primary-foreground: 0 0% 5%;
-    --sidebar-accent: 220 22% 11%;
+    --sidebar-accent: 0 0% 11%;
     --sidebar-accent-foreground: 0 0% 96%;
-    --sidebar-border: 220 16% 12%;
-    --sidebar-ring: 217 100% 70%;
+    --sidebar-border: 0 0% 11%;
+    --sidebar-ring: 0 0% 82%;
   }
 }
 
@@ -169,8 +182,8 @@ All colors MUST be HSL.
        feel like light itself"). A soft overhead spotlight, a deepened far
        corner, and a grounded bottom edge. No accent orbs. */
     background:
-      radial-gradient(90% 62% at 12% -6%, hsl(var(--intel-blue) / 0.10) 0%, transparent 58%),
-      radial-gradient(125% 80% at 50% -12%, hsl(0 0% 100% / 0.03) 0%, transparent 56%),
+      radial-gradient(80% 55% at 14% -8%, hsl(0 0% 100% / 0.055) 0%, transparent 60%),
+      radial-gradient(125% 80% at 50% -12%, hsl(0 0% 100% / 0.035) 0%, transparent 56%),
       radial-gradient(90% 70% at 100% 100%, hsl(0 0% 0% / 0.6) 0%, transparent 62%),
       linear-gradient(180deg, transparent 56%, hsl(0 0% 0% / 0.46) 100%);
   }
@@ -252,17 +265,26 @@ All colors MUST be HSL.
   .panel {
     position: relative;
     border-radius: 10px;
-    border: 1px solid hsl(var(--border-subtle));
-    background: hsl(var(--surface-1));
+    /* Smoked glass: a translucent white film over black, a rim brightest along
+       the top edge where light would catch, and a specular inner hairline. */
+    background: hsl(0 0% 100% / 0.026);
+    backdrop-filter: blur(18px) saturate(115%);
+    -webkit-backdrop-filter: blur(18px) saturate(115%);
+    border: 1px solid hsl(0 0% 100% / 0.075);
+    border-top-color: hsl(0 0% 100% / 0.13);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.055),
+      0 10px 30px -22px hsl(0 0% 0% / 0.95);
   }
   /* Raised — for panels that float above the workspace (drawers, popovers,
      the Overview's lead tiles). One inner top hairline + one contained shadow. */
   .panel-raised {
-    border-color: hsl(0 0% 100% / 0.08);
-    background: hsl(var(--surface-2));
+    background: hsl(0 0% 100% / 0.045);
+    border-color: hsl(0 0% 100% / 0.1);
+    border-top-color: hsl(0 0% 100% / 0.17);
     box-shadow:
-      inset 0 1px 0 hsl(0 0% 100% / 0.04),
-      0 10px 26px -18px hsl(0 0% 0% / 0.85);
+      inset 0 1px 0 hsl(0 0% 100% / 0.075),
+      0 18px 44px -26px hsl(0 0% 0% / 0.95);
   }
   /* Recessed — for wells that content sits INSIDE (code, JSON, empty states). */
   .panel-inset {
@@ -356,7 +378,7 @@ All colors MUST be HSL.
     border-bottom: 1px solid hsl(var(--border-subtle));
     transition: background-color 120ms linear;
   }
-  .ledger-row:hover { background: hsl(0 0% 100% / 0.028); }
+  .ledger-row:hover { background: hsl(0 0% 100% / 0.045); }
   .ledger-row[data-selected="true"] {
     background: hsl(var(--info) / 0.09);
     box-shadow: inset 0 0 0 1px hsl(var(--info) / 0.28);
@@ -371,12 +393,14 @@ All colors MUST be HSL.
     position: sticky;
     top: 0;
     z-index: 2;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
     display: grid;
     grid-template-columns: var(--ledger-cols);
     column-gap: 0.75rem;
     padding: 0.375rem 0.625rem 0.375rem 1rem;
     border-bottom: 1px solid hsl(var(--border));
-    background: hsl(var(--surface-0));
+    background: hsl(0 0% 4% / 0.92);
     font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 10px;
     font-weight: 500;
@@ -444,19 +468,22 @@ All colors MUST be HSL.
   .glass-card,
   .glass-interactive {
     border-radius: 10px;
-    border: 1px solid hsl(0 0% 100% / 0.08);
-    background: hsl(var(--surface-2));
+    background: hsl(0 0% 100% / 0.04);
+    backdrop-filter: blur(18px) saturate(115%);
+    -webkit-backdrop-filter: blur(18px) saturate(115%);
+    border: 1px solid hsl(0 0% 100% / 0.09);
+    border-top-color: hsl(0 0% 100% / 0.16);
     box-shadow:
-      inset 0 1px 0 hsl(0 0% 100% / 0.04),
-      0 10px 26px -18px hsl(0 0% 0% / 0.85);
+      inset 0 1px 0 hsl(0 0% 100% / 0.07),
+      0 16px 40px -26px hsl(0 0% 0% / 0.95);
   }
   .glass-interactive {
     transition: background-color 140ms linear, border-color 140ms linear;
     cursor: pointer;
   }
   .glass-interactive:hover {
-    background: hsl(var(--surface-3));
-    border-color: hsl(0 0% 100% / 0.12);
+    background: hsl(0 0% 100% / 0.07);
+    border-color: hsl(0 0% 100% / 0.15);
   }
 
   .ring-glow {
@@ -1533,6 +1560,78 @@ All colors MUST be HSL.
    full-height states. The texture is deliberately geometric and low-contrast:
    it reads as an intelligence workstation without competing with evidence. */
 @layer utilities {
+  /* Sidebar rail — the app's one tinted surface. Kept under 6% so it separates
+     the rail from the canvas without becoming a "coloured sidebar"; the brand
+     shows up as a temperature difference you notice at the seam, not as fill. */
+  .rail-surface {
+    background:
+      radial-gradient(120% 42% at 0% 0%, hsl(var(--brand) / 0.22) 0%, transparent 62%),
+      linear-gradient(180deg, hsl(var(--brand) / 0.07) 0%, hsl(var(--brand) / 0.025) 40%, transparent 70%),
+      hsl(var(--sidebar-background));
+  }
+  .rail-surface::after {
+    content: "";
+    position: absolute;
+    inset: 0 0 0 auto;
+    width: 1px;
+    pointer-events: none;
+    background: linear-gradient(180deg, hsl(var(--brand) / 0.85) 0%, hsl(var(--brand) / 0.25) 30%, hsl(0 0% 100% / 0.07) 60%, transparent);
+  }
+
+  /* ── Brand tile ───────────────────────────────────────────────────────────
+     The icon square that opens a card. These were grey outlines on black, which
+     is the single biggest reason the app read as "dull": every entry point on
+     the page looked like a disabled control. Filled, lit and slightly bloomed
+     — one saturated object per card, and it is always CHROME (a nav affordance),
+     never an evidence state, so it cannot be misread as a verdict. */
+  .brand-tile {
+    display: grid;
+    place-items: center;
+    border-radius: 12px;
+    color: hsl(0 0% 100%);
+    background: linear-gradient(150deg, hsl(var(--brand)) 0%, hsl(var(--brand-deep)) 100%);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.3),
+      0 0 0 1px hsl(var(--brand) / 0.4),
+      0 10px 26px -12px hsl(var(--brand) / 0.85);
+    transition: transform 220ms cubic-bezier(0.32, 0.72, 0, 1), box-shadow 220ms ease;
+  }
+  .group:hover > .brand-tile,
+  .brand-tile:hover {
+    transform: translateY(-1px) scale(1.04);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.36),
+      0 0 0 1px hsl(var(--brand) / 0.6),
+      0 16px 36px -12px hsl(var(--brand) / 1);
+  }
+
+  /* Brand CTA — the primary action, lit. */
+  .btn-brand {
+    background: linear-gradient(150deg, hsl(var(--brand)) 0%, hsl(var(--brand-deep)) 100%);
+    color: hsl(0 0% 100%);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.28),
+      0 8px 24px -10px hsl(var(--brand) / 0.9);
+  }
+  .btn-brand:hover {
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.34),
+      0 12px 30px -10px hsl(var(--brand) / 1);
+    filter: brightness(1.06);
+  }
+
+  /* Panels pick up a brand catch-light along their top edge — the pane looks
+     lit from the same source as the rail instead of floating in a void. */
+  .panel::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 1px;
+    border-radius: inherit;
+    pointer-events: none;
+    background: linear-gradient(90deg, transparent, hsl(var(--brand) / 0.32) 22%, hsl(0 0% 100% / 0.16) 55%, transparent);
+  }
+
   .ops-shell {
     isolation: isolate;
     background:

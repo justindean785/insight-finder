@@ -311,7 +311,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
   };
 
   return (
-    <header className="relative border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(220_22%_6.5%/0.92),hsl(222_24%_4%/0.88))] backdrop-blur-xl">
+    <header className="relative border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(0_0%_8%/0.9),hsl(0_0%_3.5%/0.86))] backdrop-blur-xl">
       <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
 
       {/* 3-zone command bar: left balance · center identity · right ops */}

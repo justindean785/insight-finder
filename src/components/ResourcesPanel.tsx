@@ -925,7 +925,7 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
   return (
     <>
       {items.length > 0 && (
-        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-x-3 gap-y-2 px-2 py-2.5 border-b border-border-subtle bg-[linear-gradient(180deg,rgba(13,15,19,0.94),rgba(13,15,19,0.86))] backdrop-blur-xl">
+        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-x-3 gap-y-2 px-2 py-2.5 border-b border-border-subtle bg-[linear-gradient(180deg,rgba(12,12,12,0.94),rgba(10,10,10,0.86))] backdrop-blur-xl">
           <FilterChips<EvidenceStatusFilter>
             ariaLabel="Filter evidence by strength"
             active={statusFilter}

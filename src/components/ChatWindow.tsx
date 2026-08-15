@@ -2286,7 +2286,7 @@ function ChatWindowInner({
         aria-hidden
         style={{
           background:
-            "radial-gradient(ellipse 80% 50% at 50% -10%, hsl(220 40% 18% / 0.35), transparent 55%), radial-gradient(ellipse 70% 40% at 50% 110%, hsl(220 30% 10% / 0.4), transparent 50%)",
+            "radial-gradient(ellipse 80% 50% at 50% -10%, hsl(0 0% 100% / 0.045), transparent 55%), radial-gradient(ellipse 70% 40% at 50% 110%, hsl(0 0% 0% / 0.5), transparent 50%)",
         }}
       />
       <div
@@ -2510,7 +2510,7 @@ function ChatWindowInner({
         )}
       </div>
 
-      <div className="relative z-10 border-t border-white/[0.06] bg-[linear-gradient(180deg,hsl(220_22%_6%/0.92),hsl(222_24%_4%/0.96))] px-4 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-7 sm:pt-4 sm:pb-5 backdrop-blur-xl">
+      <div className="relative z-10 border-t border-white/[0.06] bg-[linear-gradient(180deg,hsl(0_0%_7%/0.92),hsl(0_0%_3%/0.96))] px-4 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-7 sm:pt-4 sm:pb-5 backdrop-blur-xl">
         <div className="chat-column">
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2">

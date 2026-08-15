@@ -305,7 +305,7 @@ function HubCard({
         aria-hidden
         className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[hsl(var(--intel-blue)/0.55)] to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100"
       />
-      <div className="mb-4 grid h-10 w-10 place-items-center rounded-xl border border-[hsl(var(--intel-blue)/0.3)] bg-[linear-gradient(180deg,hsl(var(--intel-blue)/0.15),hsl(var(--intel-blue)/0.08))] text-[hsl(var(--intel-blue))] shadow-[0_0_24px_-10px_hsl(var(--intel-blue)/0.7)] transition-transform duration-300 group-hover:scale-105">
+      <div className="brand-tile mb-4 h-10 w-10">
         <Icon className="h-5 w-5" strokeWidth={1.6} />
       </div>
       <div className="font-display text-base font-semibold tracking-tight">{title}</div>

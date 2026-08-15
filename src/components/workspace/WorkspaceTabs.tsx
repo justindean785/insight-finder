@@ -270,12 +270,12 @@ export function WorkspaceTabs({
   // Full-width nav strip with centered segmented control — matches the widened
   // chat column so chrome and content share one symmetrical axis.
   return (
-    <div className="relative border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(220_22%_6.5%/0.72),hsl(222_20%_4.5%/0.55))] backdrop-blur-xl">
+    <div className="relative border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(0_0%_8%/0.72),hsl(0_0%_4%/0.55))] backdrop-blur-xl">
       <div className="chat-column mx-auto flex justify-center overflow-x-auto px-4 py-2 sm:px-7 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <div
           role="tablist"
           aria-label="Investigation workspace"
-          className="inline-flex w-full max-w-full items-center justify-center gap-0.5 rounded-xl border border-white/[0.08] bg-[hsl(220_26%_8%/0.75)] p-1 shadow-[inset_0_1px_0_hsl(0_0%_100%/0.05)] sm:w-auto sm:gap-1"
+          className="inline-flex w-full max-w-full items-center justify-center gap-0.5 rounded-xl border border-white/[0.08] bg-[hsl(0_0%_100%/0.035)] p-1 shadow-[inset_0_1px_0_hsl(0_0%_100%/0.05)] sm:w-auto sm:gap-1"
         >
           {TABS.map((t, idx) => {
             const Icon = t.icon;
