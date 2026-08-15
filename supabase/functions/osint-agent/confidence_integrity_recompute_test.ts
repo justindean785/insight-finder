@@ -12,7 +12,7 @@
 // top-level *_test.ts) actually runs it in CI.
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { promoteConfidence, tierFor, isVerifiedSelfAdmission, type Artifact } from "./lib/cluster.ts";
-import { applyEvidenceCaps } from "./confidence.ts";
+import { applyEvidenceCapsLegacyOccurrenceBaseline } from "./confidence.ts";
 
 const art = (over: Partial<Artifact>): Artifact => ({
   kind: "other", value: "x", source: "s", confidence: 50, metaRaw: "{}", ...over,
@@ -64,7 +64,7 @@ Deno.test("bug#1: an llm_asserted_unverified 'ownership' claim does NOT earn the
 // ── Bug #2: "unknown" excluded from corroboration count ────────────────────────
 
 Deno.test("bug#2: ['unknown','breach'] reads 'single source class: breach', no +10 boost, unknown retained for provenance", () => {
-  const r = applyEvidenceCaps({
+  const r = applyEvidenceCapsLegacyOccurrenceBaseline({
     rawConfidence: 90,
     kind: "name",
     sources: ["some_unknown_provider"],       // → unknown
@@ -77,19 +77,19 @@ Deno.test("bug#2: ['unknown','breach'] reads 'single source class: breach', no +
 });
 
 Deno.test("bug#2: a source that is only 'unknown' reports single-class reasoning, never 'corroborated'", () => {
-  const r = applyEvidenceCaps({ rawConfidence: 50, sources: ["some_mystery_provider"] });
+  const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 50, sources: ["some_mystery_provider"] });
   assertEquals(r.source_classes, ["unknown"]);
   assert(r.reason_for_confidence.startsWith("single source class"), r.reason_for_confidence);
   assert(!r.reason_for_confidence.includes("corroborated"), r.reason_for_confidence);
 });
 
 Deno.test("bug#2: two REAL classes still corroborate (unknown-exclusion doesn't over-suppress)", () => {
-  const r = applyEvidenceCaps({ rawConfidence: 95, sources: ["census_geocode", "pacer_docket"] }); // public_record + court_record
+  const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 95, sources: ["census_geocode", "pacer_docket"] }); // public_record + court_record
   assert(r.reason_for_confidence.startsWith("corroborated across 2 source classes"), r.reason_for_confidence);
 });
 
 Deno.test("bug#2: court_record + an unknown 2nd source no longer boosts to 95 (unknown ≠ corroboration)", () => {
-  const r = applyEvidenceCaps({ rawConfidence: 100, sources: ["pacer_docket", "some_unknown_provider"] });
+  const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 100, sources: ["pacer_docket", "some_unknown_provider"] });
   assert(r.source_classes.includes("court_record") && r.source_classes.includes("unknown"), r.source_classes.join(","));
   assertEquals(r.cap, 90, "court_record's own cap; the unknown 2nd source adds no +10 cross-class boost");
 });

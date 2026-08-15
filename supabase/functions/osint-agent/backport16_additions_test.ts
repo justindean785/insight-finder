@@ -9,7 +9,7 @@
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { classifySource } from "./artifact_types.ts";
 import {
-  applyEvidenceCaps,
+  applyEvidenceCapsLegacyOccurrenceBaseline,
   isUnrelatedEntity,
   EXCLUDED_COLLISION_CONFIDENCE,
   coerceCoherentStatus,
@@ -19,11 +19,11 @@ import {
 // ── 1. Government / official public records exceed the 85 ownership ceiling ──
 Deno.test("#16: government public-record class legitimately exceeds the 85 infra ceiling", () => {
   assertEquals(classifySource("county assessor parcel record"), "government_property_record");
-  const gov = applyEvidenceCaps({ rawConfidence: 95, sources: ["county assessor parcel record"] });
+  const gov = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 95, sources: ["county assessor parcel record"] });
   assert(gov.cap >= 90, `government cap should be >= 90, got ${gov.cap}`);
   assert(gov.confidence > 85, `government confidence should exceed the 85 infra ceiling, got ${gov.confidence}`);
   // Contrast: infra-only (whois) still cannot exceed 85 (it caps at 75 here).
-  const infra = applyEvidenceCaps({ rawConfidence: 95, sources: ["whois_lookup"] });
+  const infra = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 95, sources: ["whois_lookup"] });
   assert(infra.confidence <= 85, `infra-only must stay <= 85, got ${infra.confidence}`);
 });
 

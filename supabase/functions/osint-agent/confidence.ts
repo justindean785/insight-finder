@@ -4,7 +4,7 @@
 //
 // ── Merge note (backport mirror #16 PR2) ────────────────────────────────────
 // SourceClass + classifySource now come from source-classification.ts (mirror
-// #16's single-classifier architecture). The CLASS_CAP table and applyEvidenceCaps
+// #16's single-classifier architecture). The CLASS_CAP table and cap pipeline
 // below preserve post-#56 main's BEHAVIOR verbatim — the SPLIT-infra caps, the
 // infra-corroboration boost, the ownership guard, and the NEVER_HIGH ceiling are
 // the integrity contract (audit_fixes_test.ts). #16's status-derivation helpers
@@ -13,7 +13,7 @@
 
 import { tierOf, TIER_SOURCE_RELIABILITY, TIER_C_ONLY_CONFIDENCE_CAP } from "./tiers.ts";
 import type { ContradictionFinding } from "./contradictions.ts";
-import { classifySource, splitSourceLabels, countIndependentClasses, type SourceClass } from "./source-classification.ts";
+import { canonicalSourceToolIdentity, classifySource, splitSourceLabels, countIndependentClasses, type SourceClass } from "./source-classification.ts";
 
 // Back-compat re-export: historically these lived in confidence.ts / artifact_types.ts.
 export { classifySource, type SourceClass };
@@ -313,7 +313,10 @@ function metadataSourceLabels(meta: Record<string, unknown> | null | undefined):
 }
 
 /** Apply conservative caps. Breach-only ≤60, two breaches ≤65, etc. */
-export function applyEvidenceCaps(input: CapInput): CapResult {
+function computeEvidenceCaps(
+  input: CapInput,
+  breachCounting: "occurrences" | "canonical_tool_identity",
+): CapResult {
   // A single source string can name several tools ("breach_check+leakcheck+…"
   // or "snusbase/ATT breach"). Classify the WHOLE label first — that already
   // resolves shared-host/reverse-IP, parenthetical, and standalone-"breach"
@@ -342,11 +345,20 @@ export function applyEvidenceCaps(input: CapInput): CapResult {
   // Breach signals in metadata add a `breach` class even when no source label
   // classified as breach — so leaked PII can't present as a public record.
   if (hasBreachMetadata(input.metadata)) classes.push("breach");
-  const breachEvidenceCount = sourceLabels.reduce((count, label) => {
+  const breachTools: string[] = [];
+  for (const label of sourceLabels) {
     const parts = splitSourceLabels(label);
     const tokens = parts.length ? parts : [label];
-    return count + tokens.filter((token) => INTERNAL_BREACH_TOOL_RE.test(token.trim())).length;
-  }, 0);
+    for (const token of tokens) {
+      const normalized = token.trim().toLowerCase();
+      if (normalized && INTERNAL_BREACH_TOOL_RE.test(normalized)) {
+        breachTools.push(canonicalSourceToolIdentity(normalized));
+      }
+    }
+  }
+  const breachEvidenceCount = breachCounting === "canonical_tool_identity"
+    ? new Set(breachTools).size
+    : breachTools.length;
   const uniqClasses = Array.from(new Set(classes)).filter((c) => {
     // Breach-specific evidence dominates generic aggregator/source labels.
     // Without this, mixed strings such as "breach_check/oathnet/serus" can
@@ -481,6 +493,20 @@ export function applyEvidenceCaps(input: CapInput): CapResult {
   }
 
   return { confidence, cap, reason_for_confidence, reason_not_confirmed, source_classes: uniqClasses };
+}
+
+/**
+ * Historical occurrence-counting entry retained for reproducible deployed
+ * baselines and backward compatibility. Production recording callers must use
+ * applyRecordingSourcePolicy, not this function directly.
+ */
+export function applyEvidenceCapsLegacyOccurrenceBaseline(input: CapInput): CapResult {
+  return computeEvidenceCaps(input, "occurrences");
+}
+
+/** Distinct canonical tool identities for the recording trust boundary only. */
+export function applyEvidenceCapsWithDistinctBreachIdentities(input: CapInput): CapResult {
+  return computeEvidenceCaps(input, "canonical_tool_identity");
 }
 
 // ---- Different-person / unrelated-entity gate --------------------------------

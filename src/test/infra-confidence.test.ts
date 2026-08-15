@@ -8,7 +8,7 @@ import {
   classifySource,
   classifySourceLabel,
 } from "../../supabase/functions/osint-agent/artifact_types.ts";
-import { applyEvidenceCaps } from "../../supabase/functions/osint-agent/confidence.ts";
+import { applyEvidenceCapsLegacyOccurrenceBaseline } from "../../supabase/functions/osint-agent/confidence.ts";
 
 describe("infrastructure source sub-class classification", () => {
   it("maps WHOIS to infra_registry", () => {
@@ -65,36 +65,36 @@ describe("OathNet classifies as breach, never public_record", () => {
 
 describe("infrastructure confidence caps", () => {
   it("WHOIS only: capped at 75", () => {
-    const r = applyEvidenceCaps({ rawConfidence: 90, sources: ["whois_lookup"] });
+    const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 90, sources: ["whois_lookup"] });
     expect(r.confidence).toBe(75);
     expect(r.reason_not_confirmed).toBeDefined();
   });
 
   it("DNS only: capped at 75", () => {
-    const r = applyEvidenceCaps({ rawConfidence: 90, sources: ["dns_records"] });
+    const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 90, sources: ["dns_records"] });
     expect(r.confidence).toBe(75);
   });
 
   it("VirusTotal only: capped at 65", () => {
-    const r = applyEvidenceCaps({ rawConfidence: 80, sources: ["virustotal_lookup"] });
+    const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 80, sources: ["virustotal_lookup"] });
     expect(r.confidence).toBe(65);
   });
 
   it("WHOIS + DNS (2 sub-classes): gets boost, can reach 80+", () => {
-    const r = applyEvidenceCaps({ rawConfidence: 85, sources: ["whois_lookup", "dns_records"] });
+    const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 85, sources: ["whois_lookup", "dns_records"] });
     expect(r.confidence).toBeGreaterThanOrEqual(80);
     expect(r.confidence).toBeLessThanOrEqual(85);
     expect(r.reason_for_confidence).toContain("infra");
   });
 
   it("WHOIS + DNS + Shodan (3 sub-classes): stronger boost, reaches 85", () => {
-    const r = applyEvidenceCaps({ rawConfidence: 90, sources: ["whois_lookup", "dns_records", "shodan_internetdb"] });
+    const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 90, sources: ["whois_lookup", "dns_records", "shodan_internetdb"] });
     expect(r.confidence).toBe(85);
     expect(r.reason_for_confidence).toContain("3 sub-classes");
   });
 
   it("infra-only never exceeds 85, regardless of how many sub-classes", () => {
-    const r = applyEvidenceCaps({
+    const r = applyEvidenceCapsLegacyOccurrenceBaseline({
       rawConfidence: 100,
       sources: ["whois_lookup", "dns_records", "shodan_internetdb", "virustotal_lookup"],
     });
@@ -103,12 +103,12 @@ describe("infrastructure confidence caps", () => {
   });
 
   it("infra + non-infra class unlocks standard cross-class boost (no infra ceiling)", () => {
-    const r = applyEvidenceCaps({ rawConfidence: 90, sources: ["whois_lookup", "jina_reader_scrape"] });
+    const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 90, sources: ["whois_lookup", "jina_reader_scrape"] });
     expect(r.confidence).toBeGreaterThanOrEqual(85);
   });
 
   it("Doxbyte regression: 4 infra tools produce meaningful 85 confidence", () => {
-    const r = applyEvidenceCaps({
+    const r = applyEvidenceCapsLegacyOccurrenceBaseline({
       rawConfidence: 85,
       sources: ["whois_lookup", "dns_records", "shodan_internetdb", "virustotal_lookup"],
     });
@@ -118,13 +118,13 @@ describe("infrastructure confidence caps", () => {
   });
 
   it("Cloudflare/shared-host IP from Shodan alone stays low", () => {
-    const r = applyEvidenceCaps({ rawConfidence: 60, sources: ["shodan_internetdb"] });
+    const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 60, sources: ["shodan_internetdb"] });
     expect(r.confidence).toBeLessThanOrEqual(70);
     expect(r.reason_not_confirmed).toBeDefined();
   });
 
   it("infra corroboration does not upgrade to CONFIRMED (stays below 90)", () => {
-    const r = applyEvidenceCaps({
+    const r = applyEvidenceCapsLegacyOccurrenceBaseline({
       rawConfidence: 100,
       sources: ["whois_lookup", "dns_records", "shodan_internetdb", "virustotal_lookup", "hackertarget"],
     });
@@ -132,7 +132,7 @@ describe("infrastructure confidence caps", () => {
   });
 
   it("single-source WHOIS is higher than old infra cap (75 > 70)", () => {
-    const r = applyEvidenceCaps({ rawConfidence: 80, sources: ["whois_lookup"] });
+    const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 80, sources: ["whois_lookup"] });
     expect(r.confidence).toBe(75);
     expect(r.confidence).toBeGreaterThan(70);
   });
@@ -141,12 +141,12 @@ describe("infrastructure confidence caps", () => {
 describe("shared-host, passive, and trusted-class guards (review #3/#5)", () => {
   it("reverse-IP / shared host classifies as infra_shared_host and caps at 35", () => {
     expect(classifySource("hackertarget/reverseiplookup")).toBe("infra_shared_host");
-    const r = applyEvidenceCaps({ rawConfidence: 90, sources: ["hackertarget/reverseiplookup"] });
+    const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 90, sources: ["hackertarget/reverseiplookup"] });
     expect(r.confidence).toBe(35);
   });
 
   it("shared host adds no corroboration to a WHOIS finding", () => {
-    const r = applyEvidenceCaps({ rawConfidence: 90, sources: ["whois_lookup", "hackertarget/reverseiplookup"] });
+    const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 90, sources: ["whois_lookup", "hackertarget/reverseiplookup"] });
     expect(r.confidence).toBe(75); // whois cap only
   });
 
@@ -156,7 +156,7 @@ describe("shared-host, passive, and trusted-class guards (review #3/#5)", () => 
   });
 
   it("infra + weak ai_summary cannot exceed infra-safe 85", () => {
-    const r = applyEvidenceCaps({
+    const r = applyEvidenceCapsLegacyOccurrenceBaseline({
       rawConfidence: 100,
       sources: ["whois_lookup", "dns_records", "shodan_internetdb", "gemini_deep_dork"],
     });
@@ -164,7 +164,7 @@ describe("shared-host, passive, and trusted-class guards (review #3/#5)", () => 
   });
 
   it("infra + trusted court_record CAN lift past 85", () => {
-    const r = applyEvidenceCaps({ rawConfidence: 100, sources: ["whois_lookup", "pacer_docket"] });
+    const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 100, sources: ["whois_lookup", "pacer_docket"] });
     expect(r.confidence).toBeGreaterThan(85);
   });
 
@@ -172,7 +172,7 @@ describe("shared-host, passive, and trusted-class guards (review #3/#5)", () => 
     // Input must genuinely classify as `news` (the "nytimes_article" underscore
     // blocks the \b word boundary → it was actually `unknown`, and only reached
     // 95 via the old unknown-corroboration +10 boost that has since been removed).
-    const r = applyEvidenceCaps({ rawConfidence: 100, sources: ["pacer_docket", "nytimes news article"] });
+    const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 100, sources: ["pacer_docket", "nytimes news article"] });
     expect(r.confidence).toBe(95);
   });
 });

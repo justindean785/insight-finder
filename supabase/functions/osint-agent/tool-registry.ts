@@ -16,7 +16,8 @@ import {
   type StructuredContradiction,
 } from "./contradictions.ts";
 import { applyDateSanity } from "./date-sanity.ts";
-import { computeAxes, sourceConfidence, applyEvidenceCaps, isUnrelatedEntity, EXCLUDED_COLLISION_CONFIDENCE, isBioCrossLinkName, BIO_CROSS_LINK_NAME_CAP, deriveStatus, coerceCoherentStatus, looksDeadEnd } from "./confidence.ts";
+import { computeAxes, sourceConfidence, isUnrelatedEntity, EXCLUDED_COLLISION_CONFIDENCE, isBioCrossLinkName, BIO_CROSS_LINK_NAME_CAP } from "./confidence.ts";
+import { applyRecordingSourcePolicy, disclosedSourceLabels, resolveRecordingStatus } from "./recording-source-policy.ts";
 import { queryTypesOf } from "./query-type-router.ts";
 import { isSameSurnameOnlyLead, isListingAgentLead } from "./collision-policy.ts";
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDomainSource, LLM_ASSERTED_PROVENANCE, countIndependentClasses } from "./artifact_types.ts";
@@ -4554,10 +4555,10 @@ export function buildTools(ctx: ToolContext) {
             return;
           }
           // Apply conservative confidence caps based on source class.
-          const effSources = [a.source ?? "", ...((a.metadata?.sources ?? []) as Iterable<unknown>)].filter(Boolean) as string[];
-          const cap = applyEvidenceCaps({
+          const disclosedSources = disclosedSourceLabels(a.source, a.metadata ?? null);
+          const { effective: cap } = applyRecordingSourcePolicy({
             rawConfidence: a.confidence ?? 50,
-            sources: effSources,
+            source: a.source,
             kind: a.kind,
             metadata: (a.metadata ?? null) as Record<string, unknown> | null,
           });
@@ -4568,7 +4569,7 @@ export function buildTools(ctx: ToolContext) {
           // fetch) is whitelisted so the legitimate seed never trips it.
           const seedRecognizedDomains = [triageState.seedDomain, triageState.seed]
             .filter((d): d is string => typeof d === "string" && d.length > 0);
-          const llmAssertedProvenance = effSources.some((s) => isLlmAssertedDomainSource(s, seedRecognizedDomains));
+          const llmAssertedProvenance = disclosedSources.some((s) => isLlmAssertedDomainSource(s, seedRecognizedDomains));
           // Different-person / unrelated-entity gate: a namesake/collision that
           // does NOT belong to the seed is demoted to excluded_collision with a
           // hard-capped confidence so it can't roll up or read as a confirmed link.
@@ -4591,24 +4592,15 @@ export function buildTools(ctx: ToolContext) {
               : cap.confidence;
           // Resolve the confirmation gap, then DERIVE a coherent status from it
           // (status can never contradict reason_not_confirmed).
-          const aReqRNC = typeof a.metadata?.reason_not_confirmed === "string" ? a.metadata.reason_not_confirmed : null;
+          const ordinaryStatus = resolveRecordingStatus(cap, a.metadata ?? null);
           const resolvedReasonNotConfirmed = bioName
             ? "name appears only in a bio/linked-accounts block — confirm it is the subject, not a mentioned third party"
-            : (aReqRNC ?? cap.reason_not_confirmed ?? null);
+            : ordinaryStatus.reasonNotConfirmed;
           const derivedStatus = collisionExcluded
             ? "excluded"
             : bioName
               ? "unverified_bio_link"
-              : coerceCoherentStatus(
-                  deriveStatus({
-                    requested: typeof a.metadata?.status === "string" ? a.metadata.status : null,
-                    reasonNotConfirmed: resolvedReasonNotConfirmed,
-                    sourceClasses: cap.source_classes,
-                    contradictions: Array.isArray(a.metadata?.contradictions) ? a.metadata.contradictions : [],
-                    deadEnd: looksDeadEnd(a.metadata ?? null),
-                  }),
-                  resolvedReasonNotConfirmed,
-                );
+              : ordinaryStatus.status;
           // Deterministic date-sanity guard for harm-bearing records: flags a
           // genuinely-future date and neutralizes false model-authored
           // "future date" notes when the date is not actually future. Provenance
@@ -4643,20 +4635,19 @@ export function buildTools(ctx: ToolContext) {
             // Spread LAST so a corrected `note` overrides the model-supplied one.
             ...dateSanity.metaPatch,
           };
-          // Include EFFECTIVE source(s) in the key, not just the top-level
-          // `source` field: two DIFFERENT sources reporting the same (kind,
-          // value) in one batch is corroboration, not a duplicate — e.g.
-          // leakcheck_lookup + oathnet_lookup both hitting the same breach email
-          // must both land as distinct source observations, or the multi-source
-          // signal the confidence/corroboration logic depends on collapses to one
-          // row (the same class of bug flagged in #189's migration key). Using
-          // only `a.source` still missed this when provenance instead lives in
-          // `metadata.sources` (or `a.source` is a generic wrapper label like
-          // "Multiple sources") — so key on the same `effSources` this block
-          // already computes for confidence caps (sorted for a stable key).
-          const dedupKey = `${finalKind} ${v.value} ${[...effSources].sort().join(",")}`;
+          // One observation is identified only by its authority-bearing surface.
+          // Model-authored metadata labels remain persisted for disclosure, but
+          // cannot manufacture another observation row or corroboration.
+          const authoritativeSource = typeof a.source === "string"
+            ? a.source.trim().toLowerCase()
+            : "";
+          const dedupKey = JSON.stringify([
+            finalKind,
+            v.value,
+            authoritativeSource,
+          ]);
           if (seenInBatch.has(dedupKey)) {
-            rejected.push({ index: i, reason: "duplicate (kind,value,sources) already in this batch", kind: finalKind, value: v.value });
+            rejected.push({ index: i, reason: "duplicate (kind,value,authoritative source) already in this batch", kind: finalKind, value: v.value });
             return;
           }
           seenInBatch.add(dedupKey);
@@ -4884,10 +4875,10 @@ export function buildTools(ctx: ToolContext) {
         const inferred = inferKind(kind, value);
         const v = validateArtifact(inferred.kind, value);
         if (!v.ok) return { ok: false, rejected: true, reason: v.reason };
-        const effSources = [source ?? "", ...((metadata?.sources ?? []) as Iterable<unknown>)].filter(Boolean) as string[];
-        const cap = applyEvidenceCaps({
+        const disclosedSources = disclosedSourceLabels(source, metadata ?? null);
+        const { effective: cap } = applyRecordingSourcePolicy({
           rawConfidence: confidence ?? 50,
-          sources: effSources,
+          source,
           kind: inferred.kind,
           metadata: (metadata ?? null) as Record<string, unknown> | null,
         });
@@ -4896,7 +4887,7 @@ export function buildTools(ctx: ToolContext) {
         // LLM-asserted menstoppingviolence.org citation); seed domain whitelisted.
         const seedRecognizedDomains = [triageState.seedDomain, triageState.seed]
           .filter((d): d is string => typeof d === "string" && d.length > 0);
-        const llmAssertedProvenance = effSources.some((s) => isLlmAssertedDomainSource(s, seedRecognizedDomains));
+        const llmAssertedProvenance = disclosedSources.some((s) => isLlmAssertedDomainSource(s, seedRecognizedDomains));
         // Gates mirror record_artifacts: unrelated / same-surname-only / listing
         // agent → excluded collision; bio-linked name → unverified claim.
         const unrelated = isUnrelatedEntity(metadata ?? null);
@@ -4911,24 +4902,15 @@ export function buildTools(ctx: ToolContext) {
           : bioName
             ? Math.min(cap.confidence, BIO_CROSS_LINK_NAME_CAP)
             : cap.confidence;
-        const reqRNC = typeof metadata?.reason_not_confirmed === "string" ? metadata.reason_not_confirmed : null;
+        const ordinaryStatus = resolveRecordingStatus(cap, metadata ?? null);
         const resolvedReasonNotConfirmed = bioName
           ? "name appears only in a bio/linked-accounts block — confirm it is the subject, not a mentioned third party"
-          : (reqRNC ?? cap.reason_not_confirmed ?? null);
+          : ordinaryStatus.reasonNotConfirmed;
         const derivedStatus = collisionExcluded
           ? "excluded"
           : bioName
             ? "unverified_bio_link"
-            : coerceCoherentStatus(
-                deriveStatus({
-                  requested: typeof metadata?.status === "string" ? metadata.status : null,
-                  reasonNotConfirmed: resolvedReasonNotConfirmed,
-                  sourceClasses: cap.source_classes,
-                  contradictions: Array.isArray(metadata?.contradictions) ? metadata.contradictions : [],
-                  deadEnd: looksDeadEnd(metadata ?? null),
-                }),
-                resolvedReasonNotConfirmed,
-              );
+            : ordinaryStatus.status;
         const enrichedMeta = {
           ...(metadata ?? {}),
           ...(v.metaPatch ?? {}),
