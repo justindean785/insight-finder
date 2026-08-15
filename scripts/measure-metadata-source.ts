@@ -1,9 +1,18 @@
 #!/usr/bin/env -S deno run --allow-net --allow-env
 /**
- * Read-only, aggregate-only population measurement for the recording provenance
- * boundary. It compares the historical deployed caller topology (including the
+ * Read-only, aggregate-only measurement of the recording provenance boundary.
+ * It compares the historical deployed caller topology (including the
  * metadata.sources pre-union and occurrence-count breach behavior) with the
  * proposed channel policy.
+ *
+ * SCOPE — current operator account, NOT a multi-tenant population.
+ * Both reads below run as the authenticated user (anon key + user JWT), and
+ * RLS restricts each to that account: `Users view own artifacts` and
+ * `Users view own tool usage` are both `auth.uid() = user_id`. Artifact and
+ * execution visibility are therefore symmetric — the comparison is internally
+ * consistent — but the figures describe this account only. Reporting them as a
+ * population measurement would overstate them. Multi-tenant measurement needs a
+ * separately authorized aggregate path and is deliberately out of scope here.
  *
  * No artifact values are selected or printed. Credentials are read from the
  * environment only and are never logged or written.
@@ -23,7 +32,9 @@ import {
 import { isSameSurnameOnlyLead } from "../supabase/functions/osint-agent/collision-policy.ts";
 import {
   evaluateDuplicateBreachTransport,
+  executionTimesByTool,
   isAutoRecordedStatusRow,
+  isExecutionAvailableAt,
   surfaceTokensForExecutionMatch,
   type UnmatchedOrigin,
   unmatchedOrigin,
@@ -238,7 +249,10 @@ const scanStart = new Date().toISOString();
 const token = await signIn();
 console.log("signed in; reading aggregate inputs (read-only)…\n");
 
-const executedByThread = new Map<string, Set<string>>();
+// Per thread, EVERY instant each tool was observed executing. A timeless set
+// would let a later execution on a reused thread retroactively evidence an
+// older artifact; matching is bounded against each artifact's write time below.
+const executedByThread = new Map<string, Map<string, number[]>>();
 let toolRowCount = 0;
 for await (
   const rows of keysetPages<ToolRow>(
@@ -249,15 +263,32 @@ for await (
     scanStart,
   )
 ) {
+  const pageRowsByThread = new Map<string, ToolRow[]>();
   for (const row of rows) {
     toolRowCount++;
-    let executed = executedByThread.get(row.thread_id);
-    if (!executed) {
-      executed = new Set<string>();
-      executedByThread.set(row.thread_id, executed);
+    let pageRows = pageRowsByThread.get(row.thread_id);
+    if (!pageRows) {
+      pageRows = [];
+      pageRowsByThread.set(row.thread_id, pageRows);
     }
-    executed.add(row.tool_name.toLowerCase());
+    pageRows.push(row);
   }
+  for (const [threadId, pageRows] of pageRowsByThread) {
+    let observed = executedByThread.get(threadId);
+    if (!observed) {
+      observed = new Map<string, number[]>();
+      executedByThread.set(threadId, observed);
+    }
+    for (const [tool, instants] of executionTimesByTool(pageRows)) {
+      const known = observed.get(tool);
+      if (known) known.push(...instants);
+      else observed.set(tool, [...instants]);
+    }
+  }
+}
+// Keyset pages arrive in created_at order, but merge across pages regardless.
+for (const observed of executedByThread.values()) {
+  for (const instants of observed.values()) instants.sort((a, b) => a - b);
 }
 
 let withMetadata = 0;
@@ -282,6 +313,7 @@ let partiallyExecutionMatched = 0;
 let zeroExecutionMatched = 0;
 let anyTokenUnmatched = 0;
 let artifactsOnThreadsWithoutToolLog = 0;
+let backdatedExecutionArtifacts = 0;
 const capDeltas = new Map<string, number>();
 const statusTransitions = new Map<string, number>();
 const unmatchedOrigins = new Map<UnmatchedOrigin, number>();
@@ -387,15 +419,28 @@ for await (
       continue;
     }
 
-    const executed = threadTools ?? new Set<string>();
+    // Bound every match against this artifact's own write time. A tool that
+    // first ran only AFTER the artifact was written is not its provenance.
+    const artifactAt = Date.parse(artifact.created_at);
     const matchedCount = surfaceTokens.filter((surface) =>
-      executed.has(surface)
+      isExecutionAvailableAt(threadTools, surface, artifactAt)
     ).length;
-    if (matchedCount === surfaceTokens.length) fullyExecutionMatched++;
-    else if (matchedCount > 0) partiallyExecutionMatched++;
-    else zeroExecutionMatched++;
+    if (matchedCount === surfaceTokens.length) {
+      fullyExecutionMatched++;
+    } else if (matchedCount > 0) {
+      partiallyExecutionMatched++;
+    } else zeroExecutionMatched++;
 
-    const unmatched = surfaceTokens.filter((surface) => !executed.has(surface));
+    // How much of the historical "matched" count came from post-dating
+    // executions on reused threads — the overstatement this bound removes.
+    const timelessMatchedCount = surfaceTokens.filter((surface) =>
+      threadTools?.has(surface)
+    ).length;
+    if (timelessMatchedCount > matchedCount) backdatedExecutionArtifacts++;
+
+    const unmatched = surfaceTokens.filter((surface) =>
+      !isExecutionAvailableAt(threadTools, surface, artifactAt)
+    );
     if (unmatched.length > 0) {
       anyTokenUnmatched++;
       for (const surface of unmatched) {
@@ -416,6 +461,9 @@ function top(values: Map<string, number>, limit = 12): string {
 
 console.log("=".repeat(72));
 console.log("METADATA PROVENANCE — HISTORICAL CALLER / PROPOSED POLICY");
+console.log(
+  "SCOPE: current operator account only — NOT a multi-tenant population.",
+);
 console.log("=".repeat(72));
 console.log(
   `1. artifacts scanned                                    ${artifactsScanned}`,
@@ -477,6 +525,9 @@ console.log(
 console.log(
   `     artifacts on threads with no tool log             ${artifactsOnThreadsWithoutToolLog}`,
 );
+console.log(
+  `     rejected: execution post-dates the artifact       ${backdatedExecutionArtifacts}`,
+);
 console.log("7. single-logical breach transport-duplicate shapes:");
 console.log(
   `     historical caller shapes                          ${duplicateBreachTransportShapes}`,
@@ -532,6 +583,30 @@ console.log(
 );
 console.log(
   "Collision-excluded and bio-link override rows are counted separately and excluded.",
+);
+console.log(
+  "\nEXECUTION MATCHING IS AN UPPER BOUND ONLY. A tool counts as an artifact's provenance",
+);
+console.log(
+  "when it ran at or before that artifact's write time (plus a same-call write-order",
+);
+console.log(
+  "allowance, because auto-insert tools persist the artifact inside execute while the",
+);
+console.log(
+  "usage-log row is written afterwards). There is no durable run_id or call identity on",
+);
+console.log(
+  "artifacts or tool_usage_log, so no defensible LOWER bound exists: on a reused thread a",
+);
+console.log(
+  "tool that ran long before an artifact still qualifies. These figures therefore bound",
+);
+console.log(
+  "execution provenance from above; they do not prove per-call attribution.",
+);
+console.log(
+  "Scope is the current operator account (RLS-scoped), not a multi-tenant population.",
 );
 console.log(
   "Auto-recorded rows retain cap-policy measurement but are separately counted and",
