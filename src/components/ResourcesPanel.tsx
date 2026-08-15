@@ -19,7 +19,7 @@ import {
 } from "@/lib/intel";
 import { evidenceStatus } from "@/lib/evidence-status";
 import { authorityFor, LEDGER_SORT_RANK } from "@/lib/authority";
-import { isQuarantined } from "@/lib/quarantine";
+import { isQuarantined, clusterDefaultOpen } from "@/lib/quarantine";
 import { readableSourceLabel } from "@/lib/tool-display";
 import { humanizeArtifactMetadata } from "@/lib/artifact-metadata";
 import { FilterChips } from "@/components/ui/workspace-primitives";
@@ -331,17 +331,14 @@ function ArtifactsList({
               const uniformProv = provs.size === 1 ? [...provs][0] : null;
               const collapsible = list.length > CLUSTER_COLLAPSE_THRESHOLD;
               const key = `${g}:${kind}`;
-              const open = openClusters[key] ?? !collapsible;
+              const kindQuarantined = list.filter((a) => isQuarantined(a.metadata)).length;
+              const open = openClusters[key] ?? clusterDefaultOpen(collapsible, kindQuarantined);
               // Confidence range across the cluster, for the collapsed summary.
               const confs = list.map((a) => a.confidence).filter((c): c is number => c != null);
               const lo = confs.length ? Math.min(...confs) : null;
               const hi = confs.length ? Math.max(...confs) : null;
               const rangeColor = (hi ?? 0) >= 70 ? "hsl(var(--confidence-high))"
                 : (hi ?? 0) >= 50 ? "hsl(var(--confidence-mid))" : "hsl(var(--confidence-low))";
-              // Never collapse a group that hides a quarantined row behind a
-              // closed disclosure: a warning the analyst has to expand to find
-              // is a warning that does not exist.
-              const kindQuarantined = list.filter((a) => isQuarantined(a.metadata)).length;
               return (
                 <div key={kind}>
                   {/* Kind subheader — clickable when the cluster is collapsible */}

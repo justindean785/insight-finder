@@ -73,7 +73,7 @@ describe("Overview — authority tally agrees with the ledger", () => {
       art({ false_positive: true }),                           // excluded
       art({ subject_unlinked: true, linkage_confirmed: true }), // released -> verified
     ];
-    const t = tallyAuthority(rows);
+    const t = tallyAuthority(rows, () => undefined);
     expect(Object.values(t).reduce((a, b) => a + b, 0)).toBe(rows.length);
     expect(t.quarantined).toBe(1);
     expect(t.conflict).toBe(1);
@@ -86,7 +86,7 @@ describe("Overview — authority tally agrees with the ledger", () => {
     // function. This header owns a documented incident (2026-08-06) where two
     // surfaces counted two different tables and disagreed by 48.
     const rows = [art(), art({ subject_unlinked: true }), art({ conflict: true })];
-    const t = tallyAuthority(rows);
+    const t = tallyAuthority(rows, () => undefined);
     for (const state of Object.keys(t) as (keyof typeof t)[]) {
       const byRow = rows.filter((a) => authorityFor(a).state === state).length;
       expect(byRow).toBe(t[state]);

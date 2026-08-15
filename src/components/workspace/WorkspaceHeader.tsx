@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { extractDisplaySeed, type SeedKind } from "@/lib/seed";
 import { tallyAuthority } from "@/lib/authority";
+import { useReviewStates } from "@/lib/review";
 
 type Thread = {
   id: string;
@@ -189,7 +190,15 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
   const evidence = describeEvidence(integrity, artifactCount);
   // Derived from the SAME projection the Evidence ledger renders, so the header
   // and the board can never disagree about how many rows are quarantined.
-  const tally = useMemo(() => tallyAuthority(items), [items]);
+  //
+  // "Same projection" means the review getter too. Analyst verdicts live outside
+  // `items` — confirming or dismissing a row changes `authorityFor` without
+  // changing the artifact — so a tally that omits `review.get` drifts the moment
+  // anyone adjudicates anything: the header would keep calling a dismissed row
+  // Verified while the ledger and Overview, which both pass it, show Excluded.
+  // (Cursor + Codex review, PR #462.)
+  const review = useReviewStates(threadId);
+  const tally = useMemo(() => tallyAuthority(items, review.get), [items, review]);
 
   const loadIntegrity = useCallback(async () => {
     const [{ count }, { data: v }] = await Promise.all([
@@ -403,7 +412,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
                       value={tally.quarantined}
                       label="quarantined"
                       tone="text-[hsl(var(--authority-quarantine))]"
-                      title={`${tally.quarantined} recorded and disclosed, but withheld from identity — linkage to the subject is unproven`}
+                      title={`${tally.quarantined} recorded and disclosed, but withheld from identity — linkage to the subject is unproven, or the row is a flagged name collision`}
                     />
                   )}
                 </span>

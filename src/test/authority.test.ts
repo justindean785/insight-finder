@@ -8,8 +8,13 @@ import { buildReportMarkdown } from "@/lib/intel";
  * `authorityFor` — the frontend's single presentation projection.
  *
  * WHAT THIS MODULE IS ALLOWED TO DO, and therefore what these tests police:
- * re-label decisions that `evidenceStatus` / `labelForArtifact` /
- * `isQuarantined` have ALREADY made. It has no thresholds and no scoring, and it
+ * project decisions ALREADY made elsewhere. Strength comes from the evidence
+ * engine (`evidenceStatus` / `labelForArtifact`); eligibility comes from the
+ * authority-denial predicates (`isClusterIneligible` — active quarantine or a
+ * flagged collision — plus conflict / false-positive). `authorityFor` only
+ * renders those two verdicts as one UI state.
+ *
+ * It has no thresholds and no scoring, and it
  * must never move a row UP the ladder. The tests below are mostly a combination
  * table, because the only way this abstraction can fail is by mixing two
  * orthogonal axes — evidence STRENGTH ("how good is this observation?") and
@@ -141,7 +146,7 @@ describe("quarantineReason — one wording, two surfaces", () => {
 describe("tallyAuthority + sort order", () => {
   it("counts every row exactly once", () => {
     const rows = [art(), art(QUARANTINE), art({ conflict: true }), art(RELEASE)];
-    const t = tallyAuthority(rows);
+    const t = tallyAuthority(rows, () => undefined);
     expect(Object.values(t).reduce((a, b) => a + b, 0)).toBe(rows.length);
     expect(t.quarantined).toBe(1);
     expect(t.conflict).toBe(1);

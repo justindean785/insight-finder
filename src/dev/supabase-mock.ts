@@ -52,6 +52,18 @@ const artifacts = [
   // difference is invisible in every screenshot.
   { id: "a11", thread_id: THREAD_ID, kind: "username", value: "harker.logistics", confidence: 81, confidence_cap_applied: null, source: "socialfetch", created_at: iso(15), metadata: { sources: ["socialfetch", "exa_search"], corroborations: 2, source_class: "provider", parent: "james harker", subject_unlinked: true, subject_unlinked_reason: "harvested from a name-only query — same-name collision axis; linkage to the subject is unproven", linkage_confirmed: true } },
 
+  // ── The COLLISION row — strong evidence, zero subject authority ──────────
+  // Deliberately the strongest fixture on the board: two independent source
+  // classes and confidence 88, with `possible_collision` and no quarantine flag.
+  //
+  // That combination used to render "Verified", lead the Overview's strongest
+  // findings and count in the header's verified tally — while clustering, the
+  // graph, confidence dimensions and the report all treated it as an unrelated
+  // namesake, because `isClusterIneligible` covers the collision flags and
+  // `evidenceStatus` consults none of them. It is here so the board's answer and
+  // the engine's answer can be compared in one screenshot. (Codex review, #462.)
+  { id: "a12b", thread_id: THREAD_ID, kind: "email", value: "j.harker@harker-legal.example", confidence: 88, confidence_cap_applied: null, source: "hunter_verify", created_at: iso(14), metadata: { sources: ["hunter_verify", "exa_search"], corroborations: 2, source_class: "provider", parent: "james harker", possible_collision: true, reason_not_confirmed: "a second James Harker — attorney, Sacramento — matches the queried name but nothing else in the case" } },
+
   // ── Conflict — contradicts another row, and is NOT quarantined ───────────
   { id: "a12", thread_id: THREAD_ID, kind: "location", value: "Stockton, California, US", confidence: 38, confidence_cap_applied: null, source: "indicia_person", created_at: iso(14), metadata: { sources: ["indicia_person"], corroborations: 1, source_class: "data_broker", conflict: true, conflict_note: "contradicts the Oakland record from the same broker — both cannot be the subject's primary residence" } },
 

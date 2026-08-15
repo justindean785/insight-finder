@@ -89,11 +89,15 @@ export function AuthorityCaveat({
   view,
   className,
 }: {
-  view: Pick<AuthorityView, "state" | "caveat">;
+  view: Pick<AuthorityView, "caveatKind" | "caveat">;
   className?: string;
 }) {
   if (!view.caveat) return null;
-  const cordoned = view.state === "quarantined" || view.state === "conflict";
+  // Keyed on what the caveat SAYS, not on the row's winning state. A contradicted
+  // row's caveat explains the contradiction; rendering it in the quarantine hue
+  // behind an unlink mark reads as "linkage unproven" and argues with the
+  // Conflict chip and spine beside it. (Cursor review, PR #462.)
+  const cordoned = view.caveatKind === "linkage";
   return (
     <p
       className={cn(

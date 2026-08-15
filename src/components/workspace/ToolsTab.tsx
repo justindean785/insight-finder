@@ -103,14 +103,18 @@ function ActivityLog({
    * single aggregate cannot show that, and the paid-call cap is spent per tool.
    */
   const spend = useMemo(() => {
-    // NOTE: this reports what WAS charged, not what was avoided. Computing
-    // "saved by cache" honestly needs `cost_micro_usd` (list price) alongside
-    // `charged_micro_usd`, and only the latter is fetched — so the saving is
-    // deliberately not claimed rather than estimated from the cached count.
+    // NOTE: this reports what WAS charged, not what was avoided. `cost_micro_usd`
+    // is now fetched, but only as the legacy-row fallback inside
+    // `effectiveChargedMicroUsd` — the cache saving is still deliberately not
+    // claimed, because list price is an attributed figure and presenting it as
+    // money saved would invent a number no one billed.
     const by = new Map<string, { micro: number; calls: number }>();
     let total = 0;
     for (const e of events) {
-      const m = e.chargedMicroUsd ?? 0;
+      // Already resolved through runCost's `chargedMicroUsd` at the hook, so a
+      // legacy row with no `charged_micro_usd` contributes its list price
+      // instead of vanishing from the breakdown as if it were free.
+      const m = e.effectiveChargedMicroUsd;
       if (m <= 0) continue;
       total += m;
       const cur = by.get(e.toolName) ?? { micro: 0, calls: 0 };
@@ -121,7 +125,7 @@ function ActivityLog({
       .map(([tool, v]) => ({ tool, ...v }))
       .sort((a, b) => b.micro - a.micro)
       .slice(0, 8);
-    const freeCalls = events.filter((e) => (e.chargedMicroUsd ?? 0) <= 0).length;
+    const freeCalls = events.filter((e) => e.effectiveChargedMicroUsd <= 0).length;
     return { rows, total, freeCalls, max: Math.max(1, ...rows.map((r) => r.micro)) };
   }, [events]);
 
@@ -318,7 +322,7 @@ function fmtDuration(ms: number | null): string | null {
 
 function ActivityRowSummary({ e }: { e: ToolEvent }) {
   const duration = fmtDuration(e.durationMs);
-  const cost = fmtMicroUsd(e.chargedMicroUsd);
+  const cost = fmtMicroUsd(e.effectiveChargedMicroUsd);
   // A slow failure is a different problem from a fast one: 30s says the
   // provider hung, 300ms says we never called it. Flag the long tail so the
   // distinction is visible without reading every number.

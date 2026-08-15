@@ -169,3 +169,24 @@ export function isInert(
 ): boolean {
   return sets.quarantined.has(key) && !sets.linked.has(key);
 }
+
+/**
+ * Should a same-kind cluster start expanded?
+ *
+ * Large clusters fold by default — EXCEPT when one of the rows inside is
+ * quarantined. A warning the analyst has to expand to find is a warning that
+ * does not exist, and the collapsed subheader shows only a count, never the
+ * quarantined values or the pipeline's recorded reason for distrusting them.
+ *
+ * DEFAULT ONLY: an explicit toggle in `openClusters` still wins, because an
+ * analyst who has read the rows is entitled to fold them away again.
+ *
+ * It lives HERE, beside the predicate it depends on, because it is a disclosure
+ * rule rather than layout trivia — when quarantine may be hidden is a quarantine
+ * decision. Pinned by `evidence-disclosure.test.ts`. The call site carried this
+ * exact promise in a comment for a while and never implemented it. (Cursor
+ * review, PR #462.)
+ */
+export function clusterDefaultOpen(collapsible: boolean, quarantinedCount: number): boolean {
+  return !collapsible || quarantinedCount > 0;
+}
