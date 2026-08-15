@@ -301,6 +301,38 @@ export function adjustedConfidence(a: Artifact, review?: ReviewAdjustment): numb
   if (isQuarantined(meta)) {
     return Math.max(0, Math.min(QUARANTINE_CEILING, base + Math.min(0, d) + Math.min(0, bonus)));
   }
+  // THE SERVER'S CAP IS THE THIRD CEILING — the general case of the two above.
+  //
+  // `confidence_cap_applied` is written by applyEvidenceCaps and encodes a
+  // specific claim: "this row's SOURCE CLASSES cannot support more than N"
+  // (breach-only <=60, username_sweep-only <=45, social_profile_passive <=40,
+  // ai_summary <=55). Adding REVIEW_DELTA and the corroboration bonus on top of
+  // it published numbers above the server's own ceiling — measured on thread
+  // 2d0dcd03: rows stored at 70 rendered 95 in Key Findings, at 50 rendered 75,
+  // at 35 rendered 60. 95 clears the CONFIRMED threshold, so unadjudicated
+  // community posts about a named private individual were presented as
+  // confirmed-grade findings while the Artifact Table on the same page showed
+  // the true number.
+  //
+  // The bonus is also a DOUBLE COUNT: the server already measured independence
+  // (countIndependentClasses) before it set the cap, and it did so with the
+  // authoritative taxonomy rather than the coarse string split used here.
+  //
+  // Unlike quarantine this bounds the TOTAL rather than dropping positives:
+  // where the server left headroom (stored 55, cap 75) an analyst may still
+  // raise the row within what its sources can support. The ceiling only stops
+  // the display from asserting more than the persisted record allows.
+  //
+  // `linkage_confirmed` clears it, exactly as it clears quarantine at #448's
+  // escape hatch: that is the one attestation answering "is this THIS
+  // SUBJECT'S?" rather than "is this value real?", which is the question a
+  // source-class ceiling is about.
+  const serverCap = meta.confidence_cap_applied;
+  const capApplies = typeof serverCap === "number" && Number.isFinite(serverCap) && serverCap > 0 &&
+    meta.linkage_confirmed !== true;
+  if (capApplies) {
+    return Math.max(0, Math.min(serverCap as number, base + d + bonus));
+  }
   return Math.max(0, Math.min(100, base + d + bonus));
 }
 
