@@ -10,6 +10,7 @@ import { WorkspaceTabs, type WorkspaceTab } from "@/components/workspace/Workspa
 // Non-default tabs are code-split: Chat (default) loads eagerly; the heavier
 // Evidence/Report/Graph/Tools panels (and their markdown/graph libs) only load
 // when first opened, shrinking the initial ChatPage chunk and first paint.
+const OverviewTab = lazy(() => import("@/components/workspace/OverviewTab").then((m) => ({ default: m.OverviewTab })));
 const EvidenceTab = lazy(() => import("@/components/workspace/EvidenceTab").then((m) => ({ default: m.EvidenceTab })));
 const ToolsTab = lazy(() => import("@/components/workspace/ToolsTab").then((m) => ({ default: m.ToolsTab })));
 const GraphTab = lazy(() => import("@/components/workspace/GraphTab").then((m) => ({ default: m.GraphTab })));
@@ -72,7 +73,8 @@ export default function ChatPage() {
     const onNav = (e: Event) => {
       const detail = (e as CustomEvent).detail as { tab?: string; section?: string };
       const t = detail?.tab ?? "";
-      if (t === "chat") setTab("chat");
+      if (t === "overview") setTab("overview");
+      else if (t === "chat") setTab("chat");
       else if (t === "report") setTab("report");
       else if (["custody", "audit", "issues"].includes(t)) setTab("tools");
       else if (["artifacts", "matrix", "clusters", "timeline"].includes(t) || detail?.section === "evidence") {
@@ -112,6 +114,7 @@ export default function ChatPage() {
       </div>
       {tab !== "chat" && (
         <Suspense fallback={<FullPageLoader label="Loading workspace" fullScreen={false} className="absolute inset-0" />}>
+          {tab === "overview" && <div role="tabpanel" id="workspace-tabpanel-overview" aria-labelledby="workspace-tab-overview" className="absolute inset-0"><ErrorBoundary><OverviewTab threadId={threadId} /></ErrorBoundary></div>}
           {tab === "evidence" && <div role="tabpanel" id="workspace-tabpanel-evidence" aria-labelledby="workspace-tab-evidence" className="absolute inset-0"><ErrorBoundary><EvidenceTab threadId={threadId} viewRequest={evidenceReq} /></ErrorBoundary></div>}
           {tab === "report" && (
             <div role="tabpanel" id="workspace-tabpanel-report" aria-labelledby="workspace-tab-report" className="absolute inset-0 overflow-y-auto">
