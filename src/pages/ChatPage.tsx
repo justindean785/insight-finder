@@ -16,7 +16,7 @@ const ToolsTab = lazy(() => import("@/components/workspace/ToolsTab").then((m) =
 const GraphTab = lazy(() => import("@/components/workspace/GraphTab").then((m) => ({ default: m.GraphTab })));
 const ReportTab = lazy(() => import("@/components/panel/ReportTab").then((m) => ({ default: m.ReportTab })));
 import { useIsMobile } from "@/hooks/use-mobile";
-import { Sheet, SheetContent } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { PanelLeftOpen, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { buildWorkspaceTabCounts } from "@/lib/workspace-tab-counts";
@@ -187,6 +187,14 @@ export default function ChatPage() {
       {isMobile && (
         <Sheet open={mLeft} onOpenChange={setMLeft}>
           <SheetContent side="left" className="p-0 w-[82vw] max-w-[300px] sm:max-w-[300px] border-r border-white/8 bg-[hsl(var(--surface-0))] [&>button]:hidden overflow-hidden">
+            {/* Radix requires an accessible name + description on every dialog
+                surface. This drawer had neither, which logged a Radix a11y
+                error and announced an unlabelled dialog to screen readers.
+                Visually hidden — the drawer's own content is self-evident. */}
+            <SheetHeader className="sr-only">
+              <SheetTitle>Investigations</SheetTitle>
+              <SheetDescription>Switch between your cases, or start a new investigation.</SheetDescription>
+            </SheetHeader>
             <ThreadSidebar />
           </SheetContent>
         </Sheet>

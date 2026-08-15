@@ -112,9 +112,9 @@ const EntityNode = memo(function EntityNode({ data, selected }: NodeProps<Entity
     >
       <Handle type="target" position={Position.Top} className="!h-1 !w-1 !border-0 !bg-transparent !opacity-0" isConnectable={false} />
       <span className="h-2 w-2 shrink-0 rounded-[3px]" style={{ backgroundColor: color }} />
-      <span className="max-w-[140px] truncate font-mono text-micro text-foreground/90">{data.label}</span>
+      <span className="max-w-[120px] truncate font-mono text-data font-medium text-foreground sm:max-w-[160px]">{data.label}</span>
       {data.confidence > 0 && (
-        <span className="font-mono text-micro tabular-nums text-muted-foreground">{data.confidence}</span>
+        <span className="font-mono text-micro tabular-nums text-muted-foreground/90">{data.confidence}</span>
       )}
       <Handle type="source" position={Position.Bottom} className="!h-1 !w-1 !border-0 !bg-transparent !opacity-0" isConnectable={false} />
     </div>
@@ -226,6 +226,18 @@ export function GraphTab({ threadId }: { threadId: string }) {
   // an empty set and leaves the viewport off the nodes (blank canvas). Frame the
   // graph imperatively once nodes exist, once per case.
   const rfRef = useRef<ReactFlowInstance | null>(null);
+  // A browser side panel (~758px) is a PRIMARY viewport for this product, not a
+  // shrunken desktop: it is where an analyst keeps the case while reading a
+  // source in the other pane. Track it so fit/zoom can be tuned for it rather
+  // than inheriting desktop padding that leaves the graph a speck in the middle.
+  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.innerWidth < 900);
+  const narrowRef = useRef(narrow);
+  useEffect(() => { narrowRef.current = narrow; }, [narrow]);
+  useEffect(() => {
+    const onResize = () => setNarrow(window.innerWidth < 900);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
   const fittedThread = useRef<string | null>(null);
   const onRfInit = useCallback(
     (inst: ReactFlowInstance) => {
@@ -233,7 +245,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
       requestAnimationFrame(() => {
         if (rfNodes.length > 0) {
           fittedThread.current = threadId;
-          inst.fitView({ padding: 0.2 });
+          inst.fitView({ padding: narrowRef.current ? 0.06 : 0.2, maxZoom: 1.1 });
         }
       });
     },
@@ -267,7 +279,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
     if (!rfRef.current || rfNodes.length === 0) return;
     if (fittedThread.current === threadId) return;
     fittedThread.current = threadId;
-    const raf = requestAnimationFrame(() => rfRef.current?.fitView({ padding: 0.2, duration: 250 }));
+    const raf = requestAnimationFrame(() => rfRef.current?.fitView({ padding: narrowRef.current ? 0.06 : 0.2, maxZoom: 1.1, duration: 250 }));
     return () => cancelAnimationFrame(raf);
   }, [rfNodes, threadId]);
 
@@ -346,7 +358,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
           onNodeClick={(_, n) => setSelected(n.id)}
           onPaneClick={() => setSelected(null)}
           fitView
-          fitViewOptions={{ padding: 0.2 }}
+          fitViewOptions={{ padding: narrow ? 0.06 : 0.2, maxZoom: 1.1 }}
           minZoom={0.2}
           maxZoom={2.5}
           nodesConnectable={false}
@@ -357,9 +369,11 @@ export function GraphTab({ threadId }: { threadId: string }) {
           <Background variant={BackgroundVariant.Dots} gap={26} size={1} color="hsl(var(--foreground) / 0.10)" />
           <Controls showInteractive={false} className="!rounded-lg !border !border-white/10 !bg-surface-1/90 !shadow-lg [&_button]:!border-white/10 [&_button]:!bg-transparent [&_button]:!text-foreground" />
           <MiniMap
+            // Hidden under 900px: in a browser side panel (~758px) it covered
+            // real nodes and bought nothing a pan gesture does not.
             pannable
             zoomable
-            className="!rounded-lg !border !border-white/10 !bg-surface-0/90"
+            className="!hidden min-[900px]:!block !rounded-lg !border !border-white/10 !bg-surface-0/90"
             maskColor="hsl(var(--background) / 0.6)"
             nodeColor={(n) => {
               const d = n.data as EntityNodeData;

@@ -123,7 +123,20 @@ export function OverviewTab({ threadId }: { threadId: string }) {
   );
   const cached = useMemo(() => activity.events.filter((e) => e.cached).length, [activity.events]);
 
-  /** Source-class diversity — the corroboration base, straight off metadata. */
+  /**
+   * Which source classes appear in this case, counted off the persisted
+   * metadata.
+   *
+   * NOT a corroboration or independence measure, and deliberately not labelled
+   * as one. These are the classes the backend recorded; nothing here
+   * establishes that two of them are INDEPENDENT — mirrors of one leak, a
+   * broker reselling another broker, and two wrappers over the same upstream
+   * all count as separate classes by this tally while proving nothing twice.
+   * `countIndependentClasses` (backend, `record_finding`) is the only thing that
+   * decides independence, and it does so per finding at write time. Presenting
+   * this spread as "the corroboration base" would re-inflate exactly the claim
+   * the write-layer cap exists to hold down.
+   */
   const classes = useMemo(() => {
     const c = new Map<string, number>();
     for (const a of items) {
@@ -149,7 +162,7 @@ export function OverviewTab({ threadId }: { threadId: string }) {
           <Stat
             icon={ShieldCheck} label="Verified" value={tally.verified}
             tone="text-[hsl(var(--authority-verified))]"
-            sub="2+ independent classes"
+            sub="corroborated or analyst-confirmed"
             title={HINT.get("verified")} onClick={() => jump("artifacts")}
           />
           <Stat
@@ -164,11 +177,25 @@ export function OverviewTab({ threadId }: { threadId: string }) {
             sub="linkage unproven"
             title={HINT.get("quarantined")} onClick={() => jump("artifacts")}
           />
+          {/* NEVER sum these. `failed` is breakage — the lookup did not happen
+              and whatever it would have found is missing. `degraded` is
+              transient — our own throttles, upstream rate limits, timeouts —
+              and can succeed on a retry. ToolsTab keeps them as separate tiles
+              for that reason, and an Overview that adds them under the word
+              "failed" both overstates breakage and destroys the distinction an
+              analyst uses to decide whether to re-run. This is the
+              suppressed-failure problem in a new direction. */}
           <Stat
-            icon={XCircle} label="Tools failed" value={activity.failed + activity.degraded}
-            tone={activity.failed + activity.degraded > 0 ? "text-destructive" : undefined}
-            sub="each one is a coverage gap"
-            title="A failed lookup did not happen, so anything it would have found is missing from this case."
+            icon={XCircle} label="Coverage gaps"
+            value={activity.degraded > 0 ? `${activity.failed}/${activity.degraded}` : activity.failed}
+            tone={activity.failed > 0 ? "text-destructive" : activity.degraded > 0 ? "text-[hsl(var(--confidence-mid))]" : undefined}
+            sub={activity.degraded > 0 ? "failed / degraded" : "failed lookups"}
+            title={
+              `${activity.failed} failed — the lookup did not happen, so anything it would have found is missing from this case.` +
+              (activity.degraded > 0
+                ? ` ${activity.degraded} degraded — throttles, upstream rate limits, denials and timeouts; these can succeed on a retry.`
+                : "")
+            }
             onClick={() => jump("issues")}
           />
           <Stat
@@ -209,8 +236,10 @@ export function OverviewTab({ threadId }: { threadId: string }) {
             </div>
             {classes.length > 0 && (
               <>
-                <RuleLabel right={<span className="text-micro tabular-nums text-muted-foreground/70">{classes.length} classes</span>}>
-                  Source diversity
+                <RuleLabel right={<span className="text-micro tabular-nums text-muted-foreground/70">{classes.length} present</span>}>
+                  <span title="Which source classes appear in this case. A spread of classes is not proof of independent corroboration — mirrors, resellers and wrappers over one upstream all count separately here.">
+                    Source classes
+                  </span>
                 </RuleLabel>
                 <div className="flex flex-wrap gap-1.5 p-3">
                   {classes.map(([k, n]) => (
