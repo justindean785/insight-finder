@@ -94,7 +94,10 @@ function isConflicted(a: Artifact): boolean {
   // rows in production. The literal made the SAME evidence conflicted or not
   // depending only on when it was written. This makes the existing rule apply
   // uniformly; it does not introduce a new one.
-  // isClusterIneligible covers the legacy collision flags AND subject_unlinked.
+  // isClusterIneligible covers the legacy collision flags AND ACTIVE quarantine
+  // (`subject_unlinked` with no `linkage_confirmed` release), so an adjudicated
+  // row contributes to the dimensions again — matching the confidence NUMBER,
+  // which `adjustedConfidence` has always uncapped on release.
   // Without the quarantine half, a name-only harvest inflated BOTH dimensions it
   // feeds: `live` (selector breadth) counted quarantined selectors as coverage,
   // and the Identity score rose off clusters built from them.

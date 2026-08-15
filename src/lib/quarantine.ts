@@ -58,6 +58,28 @@ export function isQuarantined(metadata: unknown): boolean {
   return (metadata as Record<string, unknown>).linkage_confirmed !== true;
 }
 
+/**
+ * The pipeline's own words for WHY this row is unlinked.
+ *
+ * Quarantine is disclosure, so every surface that shows a quarantined row has to
+ * be able to state the reason — and it must be the BACKEND'S reason, quoted, not
+ * a paraphrase invented at the presentation layer. The precedence and the
+ * fallback sentence are deliberately identical to the `subject_unlinked` branch
+ * of `conflictNote` in `intel.ts` (the report's collision section), so the
+ * Evidence board and the report never explain the same row two different ways.
+ * The quarantine test suite pins them to the same string.
+ *
+ * Returns `null` for a row that is not quarantined — there is nothing to
+ * disclose, and an empty caveat must not render as one.
+ */
+export function quarantineReason(metadata: unknown): string | null {
+  if (!isSubjectUnlinked(metadata)) return null;
+  const m = metadata as Record<string, unknown>;
+  const recorded = m.subject_unlinked_reason;
+  if (typeof recorded === "string" && recorded.trim()) return recorded.trim();
+  return "harvested from a name-only query — linkage to the subject is unproven";
+}
+
 /** The artifact shape this module needs — structural, so callers can pass either
  *  a full `Artifact` or a lighter projection. */
 export type QuarantineInput = {
@@ -116,7 +138,21 @@ export function quarantineSets(
     const value = normalize(a.value ?? "");
     if (!value) continue;
     const key = `${type}:${value}`;
-    if (isSubjectUnlinked(a.metadata)) quarantined.add(key);
+    // ACTIVE quarantine, not the historical flag. `isQuarantined` — never
+    // `isSubjectUnlinked` — is what "quarantined" means for an AUTHORITY
+    // decision, and dispatching a pivot is an authority decision.
+    //
+    // This used to read `isSubjectUnlinked`, which silently made this the one
+    // authority boundary that ignored `linkage_confirmed`. A row an analyst had
+    // explicitly adjudicated came back CONFIRMED at the label
+    // (`labelForArtifact`), Verified on its chip (`evidenceStatus`) and uncapped
+    // in its number (`adjustedConfidence`) — and then landed in `quarantined`
+    // here, so `isInert` still refused to offer it as a pivot. The release was
+    // real everywhere except on the one surface where the analyst could act on
+    // it, which is a split brain of exactly the kind this module exists to
+    // prevent. It also made the docstring above ("carry at least one
+    // un-quarantined observation") false.
+    if (isQuarantined(a.metadata)) quarantined.add(key);
     else linked.add(key);
   }
   return { quarantined, linked };
