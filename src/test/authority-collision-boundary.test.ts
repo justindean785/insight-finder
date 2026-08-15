@@ -191,3 +191,42 @@ describe("tallyAuthority applies analyst verdicts", () => {
     expect(aware.failed).toBe(1);
   });
 });
+
+describe("a caveat that repeats the chip is suppressed, a specific one is not", () => {
+  /**
+   * Measured on a live 98-artifact case: 89 rows (91%) carried the identical
+   * backend default "needs second independent class of evidence" under an
+   * identical "Needs review" chip. Nine carried something specific. Rendering all
+   * 98 buries the nine.
+   */
+  const GENERIC = "needs second independent class of evidence";
+  const SPECIFIC = "Russian phone number +7 916 533 8635 — different country code, different person";
+
+  it("drops the backend default that only restates the status", () => {
+    const v = authorityFor(strong({ sources: ["hunter_verify"], corroborations: 1, reason_not_confirmed: GENERIC }), undefined);
+    expect(v.caveat).toBeNull();
+    // The information is not lost — the chip and hint still carry it.
+    expect(v.hint).toBeTruthy();
+  });
+
+  it("keeps a reason that says something the chip does not", () => {
+    const v = authorityFor(strong({ sources: ["hunter_verify"], corroborations: 1, reason_not_confirmed: SPECIFIC }), undefined);
+    expect(v.caveat).toBe(SPECIFIC);
+    expect(v.caveatKind).toBe("status");
+  });
+
+  it("NEVER suppresses a quarantine or collision reason", () => {
+    // Those branches carry the only statement of WHY authority is withheld, and
+    // the chip does not say it. Suppression there would be the original defect.
+    const q = authorityFor(strong({ subject_unlinked: true, reason_not_confirmed: GENERIC }), undefined);
+    expect(q.caveat).toBeTruthy();
+    const c = authorityFor(strong({ possible_collision: true, reason_not_confirmed: GENERIC }), undefined);
+    expect(c.caveat).toBeTruthy();
+  });
+
+  it("matches case and trailing-period variants", () => {
+    for (const s of ["Needs Second Independent Class Of Evidence", "needs second independent class of evidence."]) {
+      expect(authorityFor(strong({ sources: ["hunter_verify"], corroborations: 1, reason_not_confirmed: s }), undefined).caveat).toBeNull();
+    }
+  });
+});

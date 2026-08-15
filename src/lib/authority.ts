@@ -145,6 +145,36 @@ const COLLISION_HINT =
 const COLLISION_REASON =
   "Flagged as a possible name collision — this may be a different person with the same name.";
 
+/**
+ * Backend `reason_not_confirmed` strings that RESTATE the status rather than
+ * explaining it. These are hardcoded defaults, not observations — `confidence.ts`
+ * writes the first one whenever a row simply lacks a second source class.
+ *
+ * WHY SUPPRESS THEM. Measured on a live 98-artifact case: 89 rows (91%) carried
+ * the identical sentence "needs second independent class of evidence", under an
+ * identical "Needs review" chip that already says exactly that. Nine rows carried
+ * a reason that was actually specific to them — a same-digit phone collision, a
+ * community attribution that is not a law-enforcement designation, an unclear
+ * relationship. Rendering all 98 buries those nine in boilerplate, which is the
+ * wall-of-identical-rows failure the ledger exists to prevent.
+ *
+ * This removes NO information: the chip carries the same statement, the tooltip
+ * carries the full status hint, and the raw value stays in metadata. It removes
+ * a REPETITION. Anything the backend wrote that is not on this list still renders
+ * verbatim — the specific reasons are the whole point.
+ */
+const RESTATES_STATUS: ReadonlySet<string> = new Set([
+  "needs second independent class of evidence",
+  "needs a second independent class of evidence",
+  "needs independent corroboration",
+  "not yet corroborated",
+]);
+
+/** True when the backend reason only repeats what the status chip already says. */
+function restatesStatus(reason: string): boolean {
+  return RESTATES_STATUS.has(reason.trim().toLowerCase().replace(/[.]+$/, ""));
+}
+
 /** Where each display status lands on the analyst-facing ladder. */
 const FROM_STATUS: Record<EvidenceDisplayStatus, AuthorityState> = {
   verified: "verified",
@@ -215,7 +245,11 @@ export function authorityFor(a: Artifact, review?: ReviewState): AuthorityView {
     caveatKind = "linkage";
   } else {
     const backend = typeof meta.reason_not_confirmed === "string" ? meta.reason_not_confirmed.trim() : "";
-    caveat = backend && status.status !== "verified" ? backend : null;
+    // A caveat that repeats the chip beside it is noise, not disclosure — and at
+    // 91% of rows it actively hides the reasons that ARE specific. See
+    // RESTATES_STATUS. Quarantine and collision are unaffected: both branches
+    // above always carry their reason, because there the chip does NOT say why.
+    caveat = backend && status.status !== "verified" && !restatesStatus(backend) ? backend : null;
     caveatKind = caveat ? "status" : null;
   }
 
