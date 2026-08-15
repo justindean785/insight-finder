@@ -72,7 +72,7 @@ function Stat({
         <Icon className={cn("h-3 w-3 shrink-0", tone)} strokeWidth={2} aria-hidden />
         {label}
       </span>
-      <span className={cn("mt-1.5 block font-display text-h2 font-semibold leading-none tabular-nums", tone)}>{value}</span>
+      <span className={cn("mt-1.5 block font-display text-h2 font-semibold leading-none", tone ? "tabular-nums" : "stat-figure", tone)}>{value}</span>
       {sub && <span className="mt-1 block truncate text-micro text-muted-foreground">{sub}</span>}
     </Tag>
   );

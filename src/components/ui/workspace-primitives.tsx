@@ -151,7 +151,7 @@ export function MetricCard({
         {Icon && <Icon className={cn("w-3 h-3", tone !== "neutral" && color)} />}
         <span className="truncate">{label}</span>
       </div>
-      <div className={cn("mt-1 text-2xl font-display font-semibold tabular-nums leading-none", color)}>
+      <div className={cn("mt-1 text-2xl font-display font-semibold leading-none", tone === "neutral" ? "stat-figure" : "tabular-nums", color)}>
         {value}
       </div>
     </div>

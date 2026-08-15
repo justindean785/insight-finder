@@ -32,7 +32,7 @@ All colors MUST be HSL.
     --secondary-foreground: 0 0% 95%;
 
     --muted: 0 0% 5%;
-    --muted-foreground: 0 0% 74%;    /* neutral grey body — bumped 70→74 so the many /0.7 & /0.6 opacity variants on tinted glass still clear WCAG AA */
+    --muted-foreground: 0 0% 79%;    /* neutral grey body — bumped 70→74 so the many /0.7 & /0.6 opacity variants on tinted glass still clear WCAG AA */
 
     --accent: 0 0% 95%;
     --accent-foreground: 0 0% 5%;
@@ -207,9 +207,15 @@ All colors MUST be HSL.
      (a hair negative, not the old loose +0.02em) reads as designed, not default. */
   h1, h2 {
     @apply font-display;
-    font-weight: 600;
-    letter-spacing: -0.02em;
+    font-weight: 700;
+    letter-spacing: -0.025em;
     text-wrap: balance;
+    /* Lit from above: pure white at the cap line falling to 78% at the
+       baseline. On black this reads as dimension rather than as a colour. */
+    background: linear-gradient(180deg, hsl(0 0% 100%) 12%, hsl(0 0% 78%) 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
   }
   h1 { letter-spacing: -0.025em; }
   h3, h4, h5, h6 {
@@ -233,8 +239,8 @@ All colors MUST be HSL.
     font-size: 11px;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: hsl(var(--foreground) / 0.82);
-    font-weight: 500;
+    color: hsl(var(--brand) / 0.92);
+    font-weight: 600;
   }
 
   code, pre, kbd, samp, .font-mono {
@@ -244,6 +250,23 @@ All colors MUST be HSL.
 }
 
 @layer utilities {
+  /* ── Stat figure ──────────────────────────────────────────────────────────
+     The big numerals — 7,482 artifacts, 11,271 tool calls. These are the
+     headline of every dashboard tile and they rendered as flat #fafafa, so the
+     single largest object on the screen carried the least presence. A top-lit
+     gradient plus a faint brand bloom gives them weight without adding a colour
+     that could be read as a state. Chrome only; never used on a confidence
+     number, where the value's own colour IS the meaning. */
+  .stat-figure {
+    background: linear-gradient(175deg, hsl(0 0% 100%) 8%, hsl(0 0% 82%) 62%, hsl(var(--brand) / 0.85) 140%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    letter-spacing: -0.03em;
+    font-variant-numeric: tabular-nums;
+    filter: drop-shadow(0 2px 14px hsl(var(--brand) / 0.28));
+  }
+
   /* ══════════════════════════════════════════════════════════════════════════
      WORKSTATION PRIMITIVES
      One material, one rule system, one authority spine. Everything below is
