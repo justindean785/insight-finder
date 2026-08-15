@@ -24,7 +24,8 @@ import {
   type GraphNode as EntityNodeModel,
 } from "@/lib/entity-graph";
 import { ConfidenceMeter } from "@/components/investigation/primitives";
-import { CopyButton, StatusLegend } from "@/components/ui/workspace-primitives";
+import { CopyButton } from "@/components/ui/workspace-primitives";
+import { AuthorityLegend } from "@/components/ui/authority";
 import { EmptyState } from "@/components/panel/EmptyState";
 import { Activity, AlertTriangle, Share2, Sparkles, X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -55,6 +56,12 @@ const EDGE_LABEL: Record<EdgeType, string> = {
   identity: "Identity link",
   "shared-infra": "Shared infrastructure",
   "seed-discovery": "Discovered in run",
+};
+/** What each line CLAIMS — the distinction between a finding and a coincidence. */
+const EDGE_HINT: Record<EdgeType, string> = {
+  identity: "These entities share a selector that ties them to the same identity.",
+  "shared-infra": "These entities sit on shared infrastructure. That is co-location, NOT common ownership or identity.",
+  "seed-discovery": "This entity was surfaced during the run from the seed. Provenance, not a relationship claim.",
 };
 
 function shorten(s: string, n = 22): string {
@@ -440,13 +447,34 @@ export function GraphTab({ threadId }: { threadId: string }) {
             {GROUP_LABEL[g]}
           </span>
         ))}
+        {/* EDGE legend. The node-colour swatches to the left say what each dot
+            IS; nothing said what the LINES mean — and the lines are the whole
+            analytical claim. A solid blue line asserting shared identity and a
+            dashed amber line meaning "these merely sit on the same host" were
+            visually distinguishable and semantically unlabelled, which is the
+            difference between a finding and a coincidence. */}
+        <span className="mx-1 hidden h-3.5 w-px bg-border sm:block" aria-hidden />
+        {(Object.keys(EDGE_STYLE) as EdgeType[]).map((t) => (
+          <span key={t} className="inline-flex items-center gap-1.5 text-data text-muted-foreground" title={EDGE_HINT[t]}>
+            <svg width="18" height="6" viewBox="0 0 18 6" aria-hidden className="shrink-0">
+              <line
+                x1="0" y1="3" x2="18" y2="3"
+                stroke={EDGE_STYLE[t].stroke}
+                strokeWidth="1.75"
+                strokeDasharray={EDGE_STYLE[t].dashed ? "3 2.5" : undefined}
+                opacity={Math.max(EDGE_STYLE[t].baseOpacity, 0.55)}
+              />
+            </svg>
+            {EDGE_LABEL[t]}
+          </span>
+        ))}
         <div className="ml-auto flex items-center gap-3">
           <span className="inline-flex items-center gap-2 text-data text-muted-foreground/70">
             <Activity className="h-3.5 w-3.5" />
             {graph.stats.nodeCount} entit{graph.stats.nodeCount === 1 ? "y" : "ies"} · {graph.stats.realEdgeCount} real link{graph.stats.realEdgeCount === 1 ? "" : "s"} · {graph.stats.clusterCount} cluster{graph.stats.clusterCount === 1 ? "" : "s"}
             {graph.stats.bridgeCount > 0 && <> · {graph.stats.bridgeCount} bridge{graph.stats.bridgeCount > 1 ? "s" : ""}</>}
           </span>
-          <StatusLegend />
+          <AuthorityLegend />
         </div>
       </div>
     </div>

@@ -8,6 +8,9 @@ import { captureError } from "@/lib/telemetry";
 import { AlertTriangle, MapPin, Mail, Phone, User as UserIcon, Network, Tag, ShieldCheck, ShieldQuestion, Server } from "lucide-react";
 import { EmptyState } from "./EmptyState";
 import { ConfidenceTag } from "@/components/ui/confidence";
+import { AuthoritySpine } from "@/components/ui/authority";
+import type { AuthorityState } from "@/lib/authority";
+import { clusterDisplayId } from "@/lib/report-hygiene";
 import { cn } from "@/lib/utils";
 
 export function ClustersTab({ threadId, artifacts }: { threadId: string; artifacts: Artifact[] }) {
@@ -53,8 +56,15 @@ export function ClustersTab({ threadId, artifacts }: { threadId: string; artifac
 
   return (
     <div className="p-3 space-y-3">
+      <p className="text-micro leading-snug text-muted-foreground">
+        Identities the run merged from shared selectors. A cluster is a
+        hypothesis about who these observations belong to — quarantined and
+        collision rows are excluded from cluster formation and are listed on the
+        Evidence board instead.
+      </p>
       {report.warnings.length > 0 && (
-        <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 space-y-1.5 animate-pivot-in">
+        <div className="panel relative overflow-hidden border-[hsl(var(--authority-conflict))]/40 bg-[hsl(var(--authority-conflict))]/8 p-3 pl-4 space-y-1.5">
+          <AuthoritySpine state="conflict" />
           <div className="flex items-center gap-1.5 text-micro font-semibold text-destructive tracking-normal">
             <AlertTriangle className="w-3.5 h-3.5" /> Misattribution warning
           </div>
@@ -89,18 +99,39 @@ function ClusterCard({ cluster: c, index }: { cluster: IdentityCluster; index: n
   const infraOnly = c.artifacts.length > 0 && c.artifacts.every((a) => groupForKind(a.kind) === "infrastructure");
   const shared = infraOnly && c.artifacts.some((a) => isSharedInfrastructure(a));
   const title = infraOnly ? c.label.replace(/—\s*unknown\s*$/i, "— infrastructure") : c.label;
+  // Spine state, read off the cluster's EXISTING verdicts — no new scoring.
+  // A cluster that carries a misattribution warning or an out-of-area seed
+  // mismatch is the thing an analyst must not scroll past, so it gets the
+  // conflict spine; infra-only clusters read as infrastructure, never identity.
+  const spineState: AuthorityState =
+    c.warnings.length > 0 || matches === false ? "conflict"
+    : infraOnly ? "infrastructure"
+    : matches === true ? "verified"
+    : "review";
   return (
     <div
       className={cn(
-        "glass rounded-lg border p-3 space-y-2 animate-pivot-in",
-        !infraOnly && matches === true && "border-[hsl(var(--confidence-high))]/50 ring-1 ring-[hsl(var(--confidence-high))]/30",
-        !infraOnly && matches === false && "border-destructive/30",
-        (infraOnly || matches === null) && "border-border/60",
+        // One material (.panel) plus a spine, like every other authority
+        // surface — the cluster card used to be the only place that encoded
+        // state as a coloured BORDER + ring, which read as a selection state
+        // rather than as a verdict.
+        "panel panel-raised relative overflow-hidden p-3 pl-4 space-y-2",
+        !infraOnly && matches === false && "border-[hsl(var(--authority-conflict))]/35",
       )}
-      style={{ animationDelay: `${index * 50}ms` }}
     >
+      <AuthoritySpine state={spineState} />
       <div className="flex items-start justify-between gap-2">
-        <div className="text-data font-semibold leading-tight">{title}</div>
+        <div className="min-w-0">
+          <div className="text-eyebrow font-mono uppercase tracking-[0.14em] text-muted-foreground/70">
+            {clusterDisplayId(index)}
+          </div>
+          {/* `c.label` already reads "Cluster C001 — jharker88"; the ID now has
+              its own mono eyebrow above, so strip the redundant prefix rather
+              than printing the identifier twice on every card. */}
+          <div className="mt-0.5 text-meta font-semibold leading-tight">
+            {title.replace(/^\s*Cluster\s+C\d+\s*—\s*/i, "")}
+          </div>
+        </div>
         {infraOnly ? (
           <div className="text-micro font-mono px-1.5 py-0.5 rounded border shrink-0 text-muted-foreground border-border bg-secondary/40">
             <span className="flex items-center gap-1"><Server className="w-2.5 h-2.5" />{shared ? "shared infra" : "infrastructure"}</span>
