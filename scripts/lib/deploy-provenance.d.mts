@@ -39,10 +39,28 @@ export type RepoFacts = {
 
 /** The ledger's own state, checked so the ref and the log cannot silently diverge. */
 export type LedgerState = {
-  /** `build` of the last deploy-log.jsonl entry, or null when the log is empty. */
+  /**
+   * `runtime_marker` of the last deploy-log.jsonl entry — the field buildLogEntry
+   * emits — or null when the log is empty OR could not be read. Null alone is
+   * therefore ambiguous; pair it with `unreadableReason`.
+   */
   lastEntryBuild: string | null;
   /** What deploy/live currently points at, or null when the ref does not exist. */
   refBuild: string | null;
+  /**
+   * Why the ledger could not be parsed, or null when it read cleanly. Set means
+   * BLOCK: an unreadable ledger is not an empty one.
+   */
+  unreadableReason?: string | null;
+};
+
+/** Outcome of reading deploy-log.jsonl. `ok:false` blocks; `entryCount:0` is fine. */
+export type LedgerRead = {
+  ok: boolean;
+  lastEntryBuild: string | null;
+  /** Lines present in the file — what makes "empty" and "unreadable" distinct. */
+  entryCount: number;
+  reason?: string;
 };
 
 export type Verdict = {
@@ -94,6 +112,7 @@ export type LogEntry = {
 
 export function parseHealth(body: unknown): LiveHealth;
 export function parseBuildInfo(source: string | null): BuildInfo;
+export function readLedger(text: string | null | undefined): LedgerRead;
 export function verifyLedgerConsistency(state: LedgerState): Note[];
 export function verifyDeployedCommit(input: {
   live: LiveHealthOk;
