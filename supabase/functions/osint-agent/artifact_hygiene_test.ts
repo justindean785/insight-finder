@@ -19,7 +19,6 @@ import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.t
 import {
   isQueuedPlaceholder,
   stripStatusAssertions,
-  demoteUnauthoritativeLegalRecord,
   nullResultKey,
 } from "./lib/artifact-hygiene.ts";
 
@@ -98,40 +97,27 @@ Deno.test("does not strip a status word that is part of the evidence itself", ()
   assertEquals(stripStatusAssertions(quoted).stripped, false);
 });
 
-/* ── G3 — a Reddit thread is not a legal record ─────────────────────────── */
-
-Deno.test("demotes legal_record when the source is not authoritative", () => {
-  // Both live rows: kind legal_record at confidence 70, sourced from
-  // socialfetch_web_read of reddit.com. The SOURCE classifier had it right
-  // (social_profile_active); the KIND was wrong, which is what ranks community
-  // gossip about a shooting and a gang affiliation as a legal record.
-  const out = demoteUnauthoritativeLegalRecord({
-    kind: "legal_record",
-    source: "socialfetch_web_read",
-    url: "https://www.reddit.com/r/CaliBanging/comments/1lgy1zx/",
-  });
-  assert(out, "expected a demotion");
-  assertEquals(out.kind, "media_report");
-  assert(/not an authoritative/i.test(out.reason), `reason should explain: ${out?.reason}`);
-});
-
-Deno.test("leaves a genuine legal_record alone", () => {
-  // A court docket keeps its kind — the gate must narrow, never block.
-  for (const source of ["pacer_docket", "courtlistener", "county_court_records"]) {
-    assertEquals(
-      demoteUnauthoritativeLegalRecord({ kind: "legal_record", source, url: null }),
-      null,
-      `wrongly demoted an authoritative source: ${source}`,
-    );
-  }
-});
-
-Deno.test("ignores kinds other than legal_record", () => {
-  assertEquals(
-    demoteUnauthoritativeLegalRecord({ kind: "social_profile", source: "socialfetch_web_read", url: null }),
-    null,
-  );
-});
+/* ── G3 — DEFERRED, and the reason is worth keeping ──────────────────────
+ *
+ * #460 shipped a legal_record demotion keyed on the TOOL name: demote unless
+ * classifySource(source) is an OFFICIAL class. It is not in this PR, because a
+ * measured run (1720 Sea Pine Circle, 2026-08-16) produced two legal_record
+ * rows from the SAME tool at the SAME confidence whose correct answers differ:
+ *
+ *   jina_reader_scrape @75  aacounty.org police press release  -> genuine LE record
+ *   jina_reader_scrape @75  Gun Violence Archive incident      -> not a court/LE record
+ *
+ * classifySource("jina_reader_scrape") is `independent_public`, so the
+ * tool-keyed rule demotes BOTH — mis-filing a real law-enforcement record. The
+ * obvious repair, demoting only on a user-generated-content signal, keeps BOTH
+ * — letting the aggregator keep an authority it does not have.
+ *
+ * The signal is in the URL host, and classifySource cannot supply it:
+ * `aacounty.org` and `maryland.gov` both classify as `unknown`; only
+ * `courts.state.md.us` resolves to `court_record`. Closing this needs an
+ * explicit authoritative-host test, which is an evidence-ranking decision and
+ * is deliberately not being made inside a rebase.
+ */
 
 /* ── G4 — one null result is one row ────────────────────────────────────── */
 
@@ -202,6 +188,7 @@ Deno.test("returns null for a row that actually found something", () => {
  * suite runs with --allow-read.
  */
 const REGISTRY = await Deno.readTextFile(new URL("./tool-registry.ts", import.meta.url));
+const HYGIENE_SRC = await Deno.readTextFile(new URL("./lib/artifact-hygiene.ts", import.meta.url));
 
 Deno.test("wiring: record_artifacts imports the hygiene gates", () => {
   assert(
@@ -229,11 +216,17 @@ Deno.test("wiring: the value reaching validateArtifact is the stripped one", () 
   );
 });
 
-Deno.test("wiring: the legal_record demotion decides finalKind", () => {
-  assert(REGISTRY.includes("demoteUnauthoritativeLegalRecord({"), "demotion must be computed");
+Deno.test("wiring: no unwired gate ships — G3 is absent from BOTH sides", () => {
+  // A gate nobody calls is not a gate, and this project has merged exactly that
+  // before. G3 is deferred, so it must be absent from the library AND the call
+  // site — not left exported-but-unused, which reads as shipped.
   assert(
-    REGISTRY.includes("legalDemotion?.kind ?? v.kind"),
-    "finalKind must honour the demotion — computing it and discarding it changes nothing",
+    !REGISTRY.includes("demoteUnauthoritativeLegalRecord"),
+    "G3 is deferred — the call site must not reference it",
+  );
+  assert(
+    !HYGIENE_SRC.includes("export function demoteUnauthoritativeLegalRecord"),
+    "G3 is deferred — it must not ship as dead exported code",
   );
 });
 

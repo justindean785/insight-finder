@@ -19,8 +19,6 @@
 //     owns — never evidence, never PII, never a breach value.
 //   - No quarantine. `subject_unlinked` is decided elsewhere and is untouched.
 
-import { classifySource, OFFICIAL_CLASSES } from "../source-classification.ts";
-
 /** A snake_case tool slug: two or more segments, e.g. `serus_darkweb_scan`. */
 const TOOL_SLUG_RE = /\b[a-z0-9]+(?:_[a-z0-9]+)+\b/;
 
@@ -68,44 +66,6 @@ export function stripStatusAssertions(rawValue: string): { value: string; stripp
   const original = rawValue ?? "";
   const next = original.replace(STATUS_ASSERTION_RE, "").replace(/[ \t]{2,}/g, " ").trim();
   return { value: next, stripped: next !== original.trim() };
-}
-
-/** Sources whose class is an official / court / government record. */
-function isAuthoritativeLegalSource(source: string | null | undefined): boolean {
-  if (!source) return false;
-  return OFFICIAL_CLASSES.has(classifySource(source));
-}
-
-/**
- * G3 — a Reddit thread is not a legal record.
- *
- * Two rows in the run were stored as `kind: "legal_record"` at confidence 70,
- * sourced from `socialfetch_web_read` of reddit.com, asserting a shooting and a
- * gang affiliation about a named private individual. The SOURCE classifier had
- * it right (`social_profile_active`); only the KIND was wrong — and `kind` is
- * what ranks the row and what an analyst reads first.
- *
- * Community claims can be worth recording. They must not be recorded in the
- * category reserved for court and law-enforcement records, because that is the
- * category that makes an unverified allegation look adjudicated.
- *
- * Narrowing only: an authoritative source keeps `legal_record` untouched.
- */
-export function demoteUnauthoritativeLegalRecord(input: {
-  kind: string;
-  source?: string | null;
-  url?: string | null;
-}): { kind: string; reason: string } | null {
-  if (input.kind !== "legal_record") return null;
-  if (isAuthoritativeLegalSource(input.source)) return null;
-  const where = input.url ? ` (${input.url})` : "";
-  return {
-    kind: "media_report",
-    reason:
-      `reclassified legal_record -> media_report: "${input.source ?? "unknown source"}"${where} is ` +
-      "not an authoritative court / law-enforcement / government record. The claim is preserved; " +
-      "only its category is corrected, so an unadjudicated community report is not ranked as a legal record.",
-  };
 }
 
 /** Zero-result phrasings: "0 hits", "no breach hits", "no records", … */

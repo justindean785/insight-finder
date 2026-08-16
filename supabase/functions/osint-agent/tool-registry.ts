@@ -27,7 +27,6 @@ import { collisionPeerSignal, type CollisionPeer } from "./lib/quarantine.ts";
 import {
   isQueuedPlaceholder,
   stripStatusAssertions,
-  demoteUnauthoritativeLegalRecord,
   nullResultKey,
 } from "./lib/artifact-hygiene.ts";
 import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
@@ -4616,24 +4615,18 @@ export function buildTools(ctx: ToolContext) {
           // Bio-linked name gate: a name pulled out of a profile bio is an
           // unverified identity claim and can never anchor the case.
           const bioName = !collisionExcluded && isBioCrossLinkName(v.kind, a.metadata ?? null);
-          // A Reddit thread is not a legal record. Two rows on the measured run
-          // were stored as legal_record at confidence 70, sourced from
-          // socialfetch_web_read of reddit.com, asserting a shooting and a gang
-          // affiliation about a named private individual. The SOURCE classifier
-          // had it right (social_profile_active); only the KIND was wrong — and
-          // kind is what ranks the row and what an analyst reads first. The
-          // claim is preserved; only its category is corrected, so an
-          // unadjudicated community report is not filed as a legal record.
-          const legalDemotion = demoteUnauthoritativeLegalRecord({
-            kind: v.kind,
-            source: a.source ?? null,
-            url: typeof a.metadata?.url === "string"
-              ? a.metadata.url
-              : (typeof a.metadata?.source_url === "string" ? a.metadata.source_url : null),
-          });
-          const finalKind = collisionExcluded
-            ? "excluded_collision"
-            : (legalDemotion?.kind ?? v.kind);
+          // NOTE — the legal_record demotion (G3 in #460) is deliberately NOT
+          // here. It decided authority from the TOOL name, and a measured run
+          // (1720 Sea Pine Circle, 2026-08-16) produced two legal_record rows
+          // from the SAME tool at the SAME confidence where the right answer
+          // differs: an Anne Arundel County police press release (a genuine
+          // law-enforcement record) and a Gun Violence Archive incident (an
+          // independent aggregator). classifySource cannot separate them —
+          // aacounty.org and maryland.gov both classify as `unknown` — so the
+          // authority signal lives in the URL host, not the tool. Shipping the
+          // tool-keyed version would have systematically mis-filed real LE
+          // records as media_report. Deferred until that is designed properly.
+          const finalKind = collisionExcluded ? "excluded_collision" : v.kind;
           const finalConfidence = collisionExcluded
             ? Math.min(cap.confidence, EXCLUDED_COLLISION_CONFIDENCE)
             : bioName
@@ -4642,15 +4635,9 @@ export function buildTools(ctx: ToolContext) {
           // Resolve the confirmation gap, then DERIVE a coherent status from it
           // (status can never contradict reason_not_confirmed).
           const ordinaryStatus = resolveRecordingStatus(cap, a.metadata ?? null);
-          const baseReasonNotConfirmed = bioName
+          const resolvedReasonNotConfirmed = bioName
             ? "name appears only in a bio/linked-accounts block — confirm it is the subject, not a mentioned third party"
             : ordinaryStatus.reasonNotConfirmed;
-          // Keep BOTH reasons when a legal_record was demoted: why it is not a
-          // legal record, and why it is not confirmed, are different facts and
-          // dropping either one loses part of the audit trail.
-          const resolvedReasonNotConfirmed = legalDemotion
-            ? [legalDemotion.reason, baseReasonNotConfirmed].filter(Boolean).join(" | ")
-            : baseReasonNotConfirmed;
           const derivedStatus = collisionExcluded
             ? "excluded"
             : bioName
