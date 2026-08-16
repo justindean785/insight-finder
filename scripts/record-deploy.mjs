@@ -35,6 +35,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
   parseHealth,
+  readLedger,
   verifyDeployedCommit,
   compareSourceTrees,
   buildLogEntry,
@@ -117,19 +118,14 @@ const repo = {
 // of the verdict, not an afterthought. Two records of the same fact written by
 // two git operations can diverge, and a ledger that can disagree with the ref is
 // not evidence — it is two guesses.
-const logLines = existsSync(logPath)
-  ? readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean)
-  : [];
-let lastEntryBuild = null;
-if (logLines.length) {
-  try {
-    lastEntryBuild = JSON.parse(logLines[logLines.length - 1]).build ?? null;
-  } catch {
-    lastEntryBuild = null;
-  }
-}
+// Parsing lives in readLedger (deploy-provenance.mjs) so the reader/writer
+// contract is covered by the suite. It was inline here once, reading a field the
+// writer never emitted, and nothing could test it — see readLedger's comment.
+const ledgerRead = readLedger(existsSync(logPath) ? readFileSync(logPath, "utf8") : "");
+const lastEntryBuild = ledgerRead.lastEntryBuild;
 const ledger = {
   lastEntryBuild,
+  unreadableReason: ledgerRead.ok ? null : ledgerRead.reason,
   refBuild: gitOrNull("rev-parse", "--verify", `${DEPLOY_BRANCH}^{commit}`),
 };
 

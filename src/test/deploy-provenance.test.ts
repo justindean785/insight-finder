@@ -20,10 +20,13 @@
  * offset is inherent — a commit's SHA is not knowable before the commit exists —
  * so the check verifies the PAIR rather than a single SHA.
  */
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, it, expect } from "vitest";
 import {
   parseHealth,
   parseBuildInfo,
+  readLedger,
   verifyLedgerConsistency,
   verifyDeployedCommit,
   buildLogEntry,
@@ -392,5 +395,112 @@ describe("buildLogEntry", () => {
     );
     expect(line).not.toContain("\n");
     expect(JSON.parse(line).warnings).toEqual(["not_on_main"]);
+  });
+});
+
+/**
+ * THE REGRESSION THESE TESTS EXIST FOR — #444, surfaced 2026-08-15.
+ *
+ * The ledger reader lived inline in record-deploy.mjs, where no test could reach
+ * it, and read `.build`. buildLogEntry has never emitted `build`; it writes
+ * `runtime_marker`. Both halves shipped in the SAME commit, so this was never a
+ * rename regression — the contract was never consistent. Every run therefore read
+ * an empty ledger, and the moment a checkout fetched the deploy/live ref, the
+ * consistency check reported "deploy-log.jsonl has no entries" against a ledger
+ * that plainly had two. A gate that cries wolf trains people to force past it.
+ *
+ * So these tests drive the shipped serialise → read path end to end rather than
+ * asserting either side's field names. A future rename breaks the round-trip test
+ * here, not a deploy at 2am.
+ */
+describe("readLedger — the reader/writer contract", () => {
+  const repo: RepoFacts = {
+    exists: true,
+    stampCommit: "2ebd33002d17440a60ec86e25756f7a0700545f2",
+    stampParent: "e7e3f8098407557e427376029645633507962979",
+    onMain: true,
+    buildInfoSource: buildInfo("e7e3f80"),
+    sourceTreeDigest: "4f8ecef31bba28965211cc2fdef0a577d605c7ef",
+  };
+
+  /** Exactly what record-deploy.mjs appends: JSON.stringify(entry) + "\n". */
+  const writeLine = (marker: string) => {
+    const live = okHealth({ ...liveHealth, build: marker });
+    const verdict = verifyDeployedCommit({ live, repo });
+    return `${JSON.stringify(
+      buildLogEntry({
+        live, repo, verdict,
+        recordedAt: "2026-08-10T13:56:26.103Z",
+        previousBuild: null,
+        previousBuildSource: "unknown",
+        mirror: null,
+      }),
+    )}\n`;
+  };
+
+  it("reads back the marker the writer actually emitted", () => {
+    // The one assertion that would have caught #444 on the day it shipped.
+    expect(readLedger(writeLine("e7e3f80"))).toMatchObject({
+      ok: true,
+      lastEntryBuild: "e7e3f80",
+    });
+  });
+
+  it("reads the LAST entry, because the log is append-only", () => {
+    const text = writeLine("fb812a6") + writeLine("e7e3f80") + writeLine("8c6184b");
+    expect(readLedger(text)).toMatchObject({ ok: true, lastEntryBuild: "8c6184b", entryCount: 3 });
+  });
+
+  it("accepts an absent or empty log as the legitimate initial state", () => {
+    for (const empty of ["", "   \n", null, undefined]) {
+      expect(readLedger(empty as string)).toEqual({ ok: true, lastEntryBuild: null, entryCount: 0 });
+    }
+  });
+
+  it("reports a row it cannot understand as UNREADABLE, never as empty", () => {
+    // The deeper bug was not the field name. `?? null` and a swallowing catch
+    // both turned "I could not read the record" into "there is no record" — two
+    // states demanding opposite responses. An entry shaped like the reader's old
+    // assumption is the exact case: it parses, it is a row, and it must not read
+    // as an empty ledger.
+    const oldShape = readLedger(`${JSON.stringify({ recorded_at: "x", build: "8c6184b" })}\n`);
+    expect(oldShape.ok).toBe(false);
+    expect(oldShape.lastEntryBuild).toBeNull();
+    expect(oldShape.entryCount).toBe(1);
+
+    const malformed = readLedger("{not json\n");
+    expect(malformed.ok).toBe(false);
+    expect(malformed.entryCount).toBe(1);
+  });
+
+  it("blocks recording on an unreadable ledger, and says so in its own words", () => {
+    // Distinct code: "I cannot read the ledger" must not be reported as "the
+    // ledger and the ref disagree". The remedies are different.
+    const notes = verifyLedgerConsistency({
+      lastEntryBuild: null,
+      refBuild: "8c6184be77b840b7eec0932bbcbe2cfa4c652b98",
+      unreadableReason: "latest deploy-log.jsonl entry has no `runtime_marker`",
+    });
+    expect(notes.map((n) => n.code)).toEqual(["ledger_unreadable"]);
+    expect(notes[0].detail).toContain("runtime_marker");
+
+    const verdict = verifyDeployedCommit({
+      live: okHealth(liveHealth),
+      repo,
+      ledger: { lastEntryBuild: null, refBuild: null, unreadableReason: "bad line" },
+    });
+    expect(verdict.markerProvenanceOk).toBe(false);
+    expect(verdict.problems.map((p) => p.code)).toContain("ledger_unreadable");
+  });
+
+  it("reads the deploy-log.jsonl this repository actually ships", () => {
+    // Drives real committed data, not a fixture. This is the assertion that
+    // stays true through field renames: whatever the writer emits, the reader
+    // must recover it from the file in the repo. #444 fails here immediately.
+    const text = readFileSync(path.resolve(process.cwd(), "deploy-log.jsonl"), "utf8");
+    const state = readLedger(text);
+    expect(state.ok).toBe(true);
+    expect(state.entryCount).toBeGreaterThan(0);
+    expect(state.lastEntryBuild).toMatch(/^[0-9a-f]{7,40}$/);
   });
 });
