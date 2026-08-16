@@ -191,12 +191,20 @@ const EXPECTED_INJECTED: ReadonlyArray<{ name: string; module: string; budgetMs:
   // SERUS_OPERATION_DEADLINE_MS, and serus.ts now accepts and forwards the
   // wrapper's AbortSignal so that deadline is actually enforceable.
   { name: "serus_darkweb_scan", module: "./tools/serus_core.ts",      budgetMs: 40_000 },
-  { name: "indicia_email",      module: "./tools/indicia.ts",         budgetMs: 18_000 },
-  { name: "indicia_phone",      module: "./tools/indicia.ts",         budgetMs: 18_000 },
-  { name: "indicia_person",     module: "./tools/indicia.ts",         budgetMs: 18_000 },
-  { name: "indicia_address",    module: "./tools/indicia.ts",         budgetMs: 18_000 },
-  { name: "indicia_web_dbs",    module: "./tools/indicia.ts",         budgetMs: 18_000 },
-  { name: "indicia_hudsonrock", module: "./tools/indicia.ts",         budgetMs: 18_000 },
+  // RE-MEASURED 2026-08-16: 18_000 -> 30_000. The old budget was not a
+  // measurement of the provider, it was a measurement of our own abort. Direct
+  // probes with the production key returned HTTP 200 with real records at 20.5s
+  // (/search/intelligence/email) and 13.8s (/search/intelligence/phone), while
+  // every logged Indicia failure was our `timed out` at 18.0-18.2s — a 7-day
+  // ledger of 4 ok / 16 failed. The wrapper caps in cache.ts move 20s -> 32s in
+  // step, preserving the invariant that the wrapper sits ABOVE the tool's own
+  // fetch budget so the tool fails cleanly first.
+  { name: "indicia_email",      module: "./tools/indicia.ts",         budgetMs: 30_000 },
+  { name: "indicia_phone",      module: "./tools/indicia.ts",         budgetMs: 30_000 },
+  { name: "indicia_person",     module: "./tools/indicia.ts",         budgetMs: 30_000 },
+  { name: "indicia_address",    module: "./tools/indicia.ts",         budgetMs: 30_000 },
+  { name: "indicia_web_dbs",    module: "./tools/indicia.ts",         budgetMs: 30_000 },
+  { name: "indicia_hudsonrock", module: "./tools/indicia.ts",         budgetMs: 30_000 },
   { name: "pdl_person_enrich",  module: "./tools/peopledatalabs.ts",  budgetMs: 18_000 },
   { name: "gemini_vision",      module: "./tools/gemini_vision.ts",   budgetMs: 25_000 },
 ];
