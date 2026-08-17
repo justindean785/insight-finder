@@ -10,7 +10,7 @@
 
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { isUsernameSweepSource, labelForArtifact, type ConfLabel } from "@/lib/intel";
-import { isSubjectUnlinked } from "@/lib/quarantine";
+import { isQuarantined } from "@/lib/quarantine";
 
 // ---------------------------------------------------------------------------
 // #1 — Deterministic, ASCII-safe cluster IDs.
@@ -146,12 +146,36 @@ export function isCollisionArtifact(a: Artifact): boolean {
 /**
  * May this artifact seed or strengthen the subject's identity?
  *
- * `false` for a legacy collision flag OR a `subject_unlinked` quarantine. Use at
- * every surface that grants identity authority — clustering, graph edges,
+ * `false` for a legacy collision flag OR an ACTIVE `subject_unlinked` quarantine.
+ * Use at every surface that grants identity authority — clustering, graph edges,
  * confidence dimensions — so the two signals can never drift apart again.
+ *
+ * ACTIVE, via `isQuarantined` — not the raw `isSubjectUnlinked` flag. The two
+ * predicates answer different questions and only one of them is about authority:
+ *
+ *   isSubjectUnlinked  Was this row ever machine-flagged as having unproven
+ *                      linkage? — history, and the basis for DISCLOSURE. The
+ *                      report's collision section (`conflictNoted` in intel.ts)
+ *                      still keys on this, correctly: releasing a row must not
+ *                      erase the fact that it arrived on the collision axis.
+ *   isQuarantined      Does that flag CURRENTLY deny the row authority? — false
+ *                      once an analyst records `linkage_confirmed`.
+ *
+ * This function is an authority decision, so it takes the second. It previously
+ * took the first, which made it (with `quarantineSets`) one of two boundaries
+ * that ignored the release hatch while three others honoured it —
+ * `labelForArtifact`, `evidenceStatus` and `adjustedConfidence` all restore full
+ * authority on `linkage_confirmed`, and `adjustedConfidence` documents the
+ * distinction explicitly. An adjudicated row therefore read CONFIRMED at the
+ * label and still could not enter a cluster, a graph edge, or a confidence
+ * dimension. (Ultrareview #448 `bug_006`.)
+ *
+ * Release does not rewrite history: the row keeps `subject_unlinked` and its
+ * `subject_unlinked_reason`, and keeps appearing in the collision disclosure.
+ * What it regains is only the authority the analyst explicitly granted it.
  */
 export function isClusterIneligible(a: Artifact): boolean {
-  return isCollisionArtifact(a) || isSubjectUnlinked(a.metadata);
+  return isCollisionArtifact(a) || isQuarantined(a.metadata);
 }
 
 // ---------------------------------------------------------------------------

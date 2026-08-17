@@ -139,8 +139,8 @@ export default function HomeHub() {
 
       <header className="relative z-10 px-6 sm:px-10 py-5 flex items-center gap-3">
         <Link to="/" aria-label="Home" className="flex items-center gap-2.5 group">
-          <div className="w-9 h-9 rounded-xl glass-strong border border-white/10 grid place-items-center shadow-cta">
-            <SwarmMark className="w-5 h-5" />
+          <div className="brand-tile h-9 w-9">
+            <SwarmMark className="h-5 w-5 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.45)]" glow={false} />
           </div>
           <div className="font-display text-base font-semibold tracking-tight">Insight Finder</div>
         </Link>
@@ -305,7 +305,7 @@ function HubCard({
         aria-hidden
         className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[hsl(var(--intel-blue)/0.55)] to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100"
       />
-      <div className="mb-4 grid h-10 w-10 place-items-center rounded-xl border border-[hsl(var(--intel-blue)/0.3)] bg-[linear-gradient(180deg,hsl(var(--intel-blue)/0.15),hsl(var(--intel-blue)/0.08))] text-[hsl(var(--intel-blue))] shadow-[0_0_24px_-10px_hsl(var(--intel-blue)/0.7)] transition-transform duration-300 group-hover:scale-105">
+      <div className="brand-tile mb-4 h-10 w-10">
         <Icon className="h-5 w-5" strokeWidth={1.6} />
       </div>
       <div className="font-display text-base font-semibold tracking-tight">{title}</div>

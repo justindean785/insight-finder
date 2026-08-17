@@ -27,7 +27,7 @@ import {
   type Pivot,
   type PivotType,
 } from "@/lib/intel";
-import { humanizeLeadReason, normalizeTarget } from "@/lib/next-step-cards";
+import { entityKey, humanizeLeadReason, normalizeTarget } from "@/lib/next-step-cards";
 import { isInert, quarantineSets } from "@/lib/quarantine";
 import { toDisplayPivots, type RecommendedPivot } from "@/lib/recommended-pivots";
 
@@ -277,8 +277,13 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
     // A tool already run against this exact target is the strongest "already
     // investigated" signal we have (artifacts carry no parent lineage), so it
     // overrides the generator's optimistic "new" for both origins.
-    if (parentSet.has(k) || queriedSet.has(k)) status = "searched";
-    else if (c.origin === "report" && existingValueSet.has(k)) status = "searched";
+    // Compare on the ENTITY as well as the literal target. A persisted `name`
+    // artifact is frequently a label — "hawkcapo - YouTube channel" — while the
+    // tool log holds the bare selector "hawkcapo", so the literal comparison can
+    // never match and the lead is re-offered forever. See `entityKey`.
+    const ek = entityKey(c.value);
+    if (parentSet.has(k) || queriedSet.has(k) || parentSet.has(ek) || queriedSet.has(ek)) status = "searched";
+    else if (c.origin === "report" && (existingValueSet.has(k) || existingValueSet.has(ek))) status = "searched";
 
     const conf = clamp(c.confidence ?? 0, 0, 100);
     const recency = (newestOrder.get(c.sourceArtifactId) ?? 0) / denom;

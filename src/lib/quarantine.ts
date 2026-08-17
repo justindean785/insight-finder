@@ -58,6 +58,28 @@ export function isQuarantined(metadata: unknown): boolean {
   return (metadata as Record<string, unknown>).linkage_confirmed !== true;
 }
 
+/**
+ * The pipeline's own words for WHY this row is unlinked.
+ *
+ * Quarantine is disclosure, so every surface that shows a quarantined row has to
+ * be able to state the reason — and it must be the BACKEND'S reason, quoted, not
+ * a paraphrase invented at the presentation layer. The precedence and the
+ * fallback sentence are deliberately identical to the `subject_unlinked` branch
+ * of `conflictNote` in `intel.ts` (the report's collision section), so the
+ * Evidence board and the report never explain the same row two different ways.
+ * The quarantine test suite pins them to the same string.
+ *
+ * Returns `null` for a row that is not quarantined — there is nothing to
+ * disclose, and an empty caveat must not render as one.
+ */
+export function quarantineReason(metadata: unknown): string | null {
+  if (!isSubjectUnlinked(metadata)) return null;
+  const m = metadata as Record<string, unknown>;
+  const recorded = m.subject_unlinked_reason;
+  if (typeof recorded === "string" && recorded.trim()) return recorded.trim();
+  return "harvested from a name-only query — linkage to the subject is unproven";
+}
+
 /** The artifact shape this module needs — structural, so callers can pass either
  *  a full `Artifact` or a lighter projection. */
 export type QuarantineInput = {
@@ -116,7 +138,21 @@ export function quarantineSets(
     const value = normalize(a.value ?? "");
     if (!value) continue;
     const key = `${type}:${value}`;
-    if (isSubjectUnlinked(a.metadata)) quarantined.add(key);
+    // ACTIVE quarantine, not the historical flag. `isQuarantined` — never
+    // `isSubjectUnlinked` — is what "quarantined" means for an AUTHORITY
+    // decision, and dispatching a pivot is an authority decision.
+    //
+    // This used to read `isSubjectUnlinked`, which silently made this the one
+    // authority boundary that ignored `linkage_confirmed`. A row an analyst had
+    // explicitly adjudicated came back CONFIRMED at the label
+    // (`labelForArtifact`), Verified on its chip (`evidenceStatus`) and uncapped
+    // in its number (`adjustedConfidence`) — and then landed in `quarantined`
+    // here, so `isInert` still refused to offer it as a pivot. The release was
+    // real everywhere except on the one surface where the analyst could act on
+    // it, which is a split brain of exactly the kind this module exists to
+    // prevent. It also made the docstring above ("carry at least one
+    // un-quarantined observation") false.
+    if (isQuarantined(a.metadata)) quarantined.add(key);
     else linked.add(key);
   }
   return { quarantined, linked };
@@ -132,4 +168,28 @@ export function isInert(
   sets: { quarantined: Set<string>; linked: Set<string> },
 ): boolean {
   return sets.quarantined.has(key) && !sets.linked.has(key);
+}
+
+/**
+ * Should a same-kind cluster start expanded? ALWAYS YES.
+ *
+ * This used to fold any cluster over four rows, to stop the "wall of identical
+ * rows" (11 subdomains, all hackertarget, all 70%). On a real 67-artifact case
+ * that inverted: nearly every cluster exceeds four, so the board opened almost
+ * entirely shut and the analyst had to expand each one to read their own
+ * evidence — every visit, because the open/closed state was component state that
+ * died on unmount. Operator verdict: "i have to go one by one every single time."
+ *
+ * Hiding evidence by default is the worse failure. The wall-of-rows problem is
+ * now addressed by things that do not hide anything without being asked: the
+ * quick-filters, the sort, a global collapse control, and a remembered per-case
+ * choice. A collapsed cluster still shows its quarantined count, so folding can
+ * never bury a withheld-authority row.
+ *
+ * Kept as a named function rather than inlined `true` so the decision has one
+ * documented home and `evidence-disclosure.test.ts` keeps a place to pin it.
+ * The parameters are retained for that pinning and are deliberately unused.
+ */
+export function clusterDefaultOpen(_collapsible: boolean, _quarantinedCount: number): boolean {
+  return true;
 }

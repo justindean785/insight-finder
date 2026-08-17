@@ -358,6 +358,11 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
     <div
       ref={rootRef}
       data-failed-tool={failed ? "true" : undefined}
+      // Speaker rail: three different kinds of claim (the agent's reasoning, the
+      // analyst's own words, the machine's tool traffic) were distinguished only
+      // by card padding, so skimming a long transcript meant reading every line
+      // to find out who was talking.
+      data-speaker={failed ? "failed" : "tool"}
       className={cn(
         "group relative w-full min-w-0 text-[13px] animate-fade-up overflow-hidden chat-card",
         failed && "border-destructive/30 bg-[hsl(0_40%_8%/0.85)]",
@@ -658,7 +663,7 @@ function flowToneForGroup(group: ToolRunGroup): "completed" | "partial" | "cache
 function RunFlowRail({ groups }: { groups: ToolRunGroup[] }) {
   if (groups.length <= 1) return null;
   return (
-    <div className="chat-card px-4 py-3">
+    <div className="chat-card px-4 py-3" data-speaker="system">
       <div className="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.04em] text-muted-foreground">
         <GitBranch className="h-3 w-3 text-muted-foreground" />
         Run flow
@@ -720,7 +725,7 @@ function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt
   // errors, so a user who expands a cycle never sees a red "failed" card.
   const visibleParts = group.parts.filter((part) => deriveToolTone(part) !== "error");
   return (
-    <div className="chat-card text-[13px] leading-relaxed text-muted-foreground">
+    <div className="chat-card text-[13px] leading-relaxed text-muted-foreground" data-speaker="tool">
       <button
         type="button"
         className="w-full px-4 py-3 text-left"
@@ -960,6 +965,7 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIM
     return (
       <div className="flex w-full justify-end">
         <div
+          data-speaker="analyst"
           className="chat-card relative min-w-0 max-w-[min(100%,36rem)] px-4 py-2.5 text-[14px] leading-[1.6] break-words text-[hsl(0_0%_93%)]"
           style={{
             overflowWrap: "break-word",
@@ -1069,7 +1075,7 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIM
         </div>
       )}
       {prose && (
-        <article className="chat-card w-full min-w-0" aria-label="Agent response">
+        <article className="chat-card w-full min-w-0" data-speaker="agent" aria-label="Agent response">
           <div className="chat-card__header">
             <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[hsl(var(--intel-blue))]" aria-hidden />
             <span>Agent</span>
@@ -2280,7 +2286,7 @@ function ChatWindowInner({
         aria-hidden
         style={{
           background:
-            "radial-gradient(ellipse 80% 50% at 50% -10%, hsl(220 40% 18% / 0.35), transparent 55%), radial-gradient(ellipse 70% 40% at 50% 110%, hsl(220 30% 10% / 0.4), transparent 50%)",
+            "radial-gradient(ellipse 80% 50% at 50% -10%, hsl(0 0% 100% / 0.045), transparent 55%), radial-gradient(ellipse 70% 40% at 50% 110%, hsl(0 0% 0% / 0.5), transparent 50%)",
         }}
       />
       <div
@@ -2436,7 +2442,7 @@ function ChatWindowInner({
                   const cardId = `${s.title}-${i}`;
                   const expanded = expandedPivot === cardId;
                   return (
-                    <div key={cardId} className="chat-next-steps__row group">
+                    <div key={cardId} className="chat-next-steps__row group" data-priority={s.priority}>
                       <button
                         type="button"
                         className="min-w-0 flex-1 text-left"
@@ -2504,7 +2510,7 @@ function ChatWindowInner({
         )}
       </div>
 
-      <div className="relative z-10 border-t border-white/[0.06] bg-[linear-gradient(180deg,hsl(220_22%_6%/0.92),hsl(222_24%_4%/0.96))] px-4 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-7 sm:pt-4 sm:pb-5 backdrop-blur-xl">
+      <div className="relative z-10 border-t border-white/[0.06] bg-[linear-gradient(180deg,hsl(0_0%_7%/0.92),hsl(0_0%_3%/0.96))] px-4 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-7 sm:pt-4 sm:pb-5 backdrop-blur-xl">
         <div className="chat-column">
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2">
@@ -2536,8 +2542,8 @@ function ChatWindowInner({
               })}
             </div>
           )}
-          <div className="rounded-[22px] sm:rounded-[28px] border border-white/10 bg-surface-0 p-1 shadow-[0_24px_54px_-42px_rgba(0,0,0,0.95)]">
-            <div className="relative rounded-[18px] sm:rounded-[24px] border border-white/10 bg-background transition-colors focus-within:border-white/20">
+          <div className="composer-shell p-1">
+            <div className="relative rounded-[11px] bg-background/60">
               <input
                 ref={fileInputRef}
                 type="file"

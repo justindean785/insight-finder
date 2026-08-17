@@ -151,11 +151,21 @@ function isConflict(a: Artifact): boolean {
   const m = (a.metadata ?? {}) as Record<string, unknown>;
   const k = a.kind.toLowerCase();
   return (
-    // isClusterIneligible covers the legacy collision flags AND subject_unlinked.
+    // isClusterIneligible covers the legacy collision flags AND ACTIVE quarantine
+    // (`subject_unlinked` with no `linkage_confirmed` release) — not the raw
+    // historical flag, so a row an analyst has adjudicated regains its edges.
+    //
     // This predicate does two jobs here: it sets the node's `conflict` flag (so a
     // quarantined row renders as visibly inert rather than as ordinary evidence)
     // and it gates edge construction at :262 — without it a quarantined artifact
     // acquired identity edges into the subject's network.
+    //
+    // FOLLOW-UP, deliberately not bundled here: `conflict` is overloaded. It
+    // currently means BOTH "contradictory/collision evidence" AND "inert, do not
+    // connect", which is why the graph cannot yet express the authority taxonomy
+    // in `lib/authority.ts` — a quarantined row is not a contradiction. The clean
+    // shape is a separate `authority: AuthorityState` field with `conflict`
+    // narrowed back to real contradictions, and edge gating keyed on authority.
     isClusterIneligible(a) ||
     m.conflict === true ||
     m.collision === true ||

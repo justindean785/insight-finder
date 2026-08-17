@@ -24,7 +24,8 @@ import {
   type GraphNode as EntityNodeModel,
 } from "@/lib/entity-graph";
 import { ConfidenceMeter } from "@/components/investigation/primitives";
-import { CopyButton, StatusLegend } from "@/components/ui/workspace-primitives";
+import { CopyButton } from "@/components/ui/workspace-primitives";
+import { AuthorityLegend } from "@/components/ui/authority";
 import { EmptyState } from "@/components/panel/EmptyState";
 import { Activity, AlertTriangle, Share2, Sparkles, X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -55,6 +56,12 @@ const EDGE_LABEL: Record<EdgeType, string> = {
   identity: "Identity link",
   "shared-infra": "Shared infrastructure",
   "seed-discovery": "Discovered in run",
+};
+/** What each line CLAIMS — the distinction between a finding and a coincidence. */
+const EDGE_HINT: Record<EdgeType, string> = {
+  identity: "These entities share a selector that ties them to the same identity.",
+  "shared-infra": "These entities sit on shared infrastructure. That is co-location, NOT common ownership or identity.",
+  "seed-discovery": "This entity was surfaced during the run from the seed. Provenance, not a relationship claim.",
 };
 
 function shorten(s: string, n = 22): string {
@@ -105,9 +112,9 @@ const EntityNode = memo(function EntityNode({ data, selected }: NodeProps<Entity
     >
       <Handle type="target" position={Position.Top} className="!h-1 !w-1 !border-0 !bg-transparent !opacity-0" isConnectable={false} />
       <span className="h-2 w-2 shrink-0 rounded-[3px]" style={{ backgroundColor: color }} />
-      <span className="max-w-[140px] truncate font-mono text-micro text-foreground/90">{data.label}</span>
+      <span className="max-w-[120px] truncate font-mono text-data font-medium text-foreground sm:max-w-[160px]">{data.label}</span>
       {data.confidence > 0 && (
-        <span className="font-mono text-micro tabular-nums text-muted-foreground">{data.confidence}</span>
+        <span className="font-mono text-micro tabular-nums text-muted-foreground/90">{data.confidence}</span>
       )}
       <Handle type="source" position={Position.Bottom} className="!h-1 !w-1 !border-0 !bg-transparent !opacity-0" isConnectable={false} />
     </div>
@@ -219,6 +226,18 @@ export function GraphTab({ threadId }: { threadId: string }) {
   // an empty set and leaves the viewport off the nodes (blank canvas). Frame the
   // graph imperatively once nodes exist, once per case.
   const rfRef = useRef<ReactFlowInstance | null>(null);
+  // A browser side panel (~758px) is a PRIMARY viewport for this product, not a
+  // shrunken desktop: it is where an analyst keeps the case while reading a
+  // source in the other pane. Track it so fit/zoom can be tuned for it rather
+  // than inheriting desktop padding that leaves the graph a speck in the middle.
+  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.innerWidth < 900);
+  const narrowRef = useRef(narrow);
+  useEffect(() => { narrowRef.current = narrow; }, [narrow]);
+  useEffect(() => {
+    const onResize = () => setNarrow(window.innerWidth < 900);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
   const fittedThread = useRef<string | null>(null);
   const onRfInit = useCallback(
     (inst: ReactFlowInstance) => {
@@ -226,7 +245,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
       requestAnimationFrame(() => {
         if (rfNodes.length > 0) {
           fittedThread.current = threadId;
-          inst.fitView({ padding: 0.2 });
+          inst.fitView({ padding: narrowRef.current ? 0.06 : 0.2, maxZoom: 1.1 });
         }
       });
     },
@@ -260,7 +279,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
     if (!rfRef.current || rfNodes.length === 0) return;
     if (fittedThread.current === threadId) return;
     fittedThread.current = threadId;
-    const raf = requestAnimationFrame(() => rfRef.current?.fitView({ padding: 0.2, duration: 250 }));
+    const raf = requestAnimationFrame(() => rfRef.current?.fitView({ padding: narrowRef.current ? 0.06 : 0.2, maxZoom: 1.1, duration: 250 }));
     return () => cancelAnimationFrame(raf);
   }, [rfNodes, threadId]);
 
@@ -339,7 +358,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
           onNodeClick={(_, n) => setSelected(n.id)}
           onPaneClick={() => setSelected(null)}
           fitView
-          fitViewOptions={{ padding: 0.2 }}
+          fitViewOptions={{ padding: narrow ? 0.06 : 0.2, maxZoom: 1.1 }}
           minZoom={0.2}
           maxZoom={2.5}
           nodesConnectable={false}
@@ -350,9 +369,11 @@ export function GraphTab({ threadId }: { threadId: string }) {
           <Background variant={BackgroundVariant.Dots} gap={26} size={1} color="hsl(var(--foreground) / 0.10)" />
           <Controls showInteractive={false} className="!rounded-lg !border !border-white/10 !bg-surface-1/90 !shadow-lg [&_button]:!border-white/10 [&_button]:!bg-transparent [&_button]:!text-foreground" />
           <MiniMap
+            // Hidden under 900px: in a browser side panel (~758px) it covered
+            // real nodes and bought nothing a pan gesture does not.
             pannable
             zoomable
-            className="!rounded-lg !border !border-white/10 !bg-surface-0/90"
+            className="!hidden min-[900px]:!block !rounded-lg !border !border-white/10 !bg-surface-0/90"
             maskColor="hsl(var(--background) / 0.6)"
             nodeColor={(n) => {
               const d = n.data as EntityNodeData;
@@ -440,13 +461,34 @@ export function GraphTab({ threadId }: { threadId: string }) {
             {GROUP_LABEL[g]}
           </span>
         ))}
+        {/* EDGE legend. The node-colour swatches to the left say what each dot
+            IS; nothing said what the LINES mean — and the lines are the whole
+            analytical claim. A solid blue line asserting shared identity and a
+            dashed amber line meaning "these merely sit on the same host" were
+            visually distinguishable and semantically unlabelled, which is the
+            difference between a finding and a coincidence. */}
+        <span className="mx-1 hidden h-3.5 w-px bg-border sm:block" aria-hidden />
+        {(Object.keys(EDGE_STYLE) as EdgeType[]).map((t) => (
+          <span key={t} className="inline-flex items-center gap-1.5 text-data text-muted-foreground" title={EDGE_HINT[t]}>
+            <svg width="18" height="6" viewBox="0 0 18 6" aria-hidden className="shrink-0">
+              <line
+                x1="0" y1="3" x2="18" y2="3"
+                stroke={EDGE_STYLE[t].stroke}
+                strokeWidth="1.75"
+                strokeDasharray={EDGE_STYLE[t].dashed ? "3 2.5" : undefined}
+                opacity={Math.max(EDGE_STYLE[t].baseOpacity, 0.55)}
+              />
+            </svg>
+            {EDGE_LABEL[t]}
+          </span>
+        ))}
         <div className="ml-auto flex items-center gap-3">
           <span className="inline-flex items-center gap-2 text-data text-muted-foreground/70">
             <Activity className="h-3.5 w-3.5" />
             {graph.stats.nodeCount} entit{graph.stats.nodeCount === 1 ? "y" : "ies"} · {graph.stats.realEdgeCount} real link{graph.stats.realEdgeCount === 1 ? "" : "s"} · {graph.stats.clusterCount} cluster{graph.stats.clusterCount === 1 ? "" : "s"}
             {graph.stats.bridgeCount > 0 && <> · {graph.stats.bridgeCount} bridge{graph.stats.bridgeCount > 1 ? "s" : ""}</>}
           </span>
-          <StatusLegend />
+          <AuthorityLegend />
         </div>
       </div>
     </div>

@@ -53,12 +53,12 @@ export function ViewWorkspaceTabs({
   };
 
   return (
-    <div className="border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(220_22%_6.5%/0.5),hsl(222_20%_4.5%/0.38))] px-3 py-2.5">
+    <div className="border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(0_0%_8%/0.5),hsl(0_0%_4%/0.38))] px-3 py-2.5">
       <div className="mx-auto max-w-6xl flex justify-center overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <div
           role="tablist"
           aria-label="Case views"
-          className="inline-flex w-max items-center gap-1 rounded-2xl border border-white/[0.08] bg-[hsl(220_26%_9%/0.6)] p-1"
+          className="inline-flex w-max items-center gap-1 rounded-2xl border border-white/[0.08] bg-[hsl(0_0%_100%/0.035)] p-1"
         >
           {TABS.map((t, idx) => {
             const Icon = t.icon;
