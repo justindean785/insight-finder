@@ -24,6 +24,11 @@ import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDom
 import * as circuit from "./circuit.ts";
 import { buildNodes } from "./graph.ts";
 import { collisionPeerSignal, type CollisionPeer } from "./lib/quarantine.ts";
+import {
+  isQueuedPlaceholder,
+  stripStatusAssertions,
+  nullResultKey,
+} from "./lib/artifact-hygiene.ts";
 import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
 import { selectPivots, proposedCallToCandidate, type PivotCandidate, type ProposedCall } from "./graph_pivots.ts";
 import { renderPivotChecklistForPrompt } from "./pivot-checklists.ts";
@@ -4546,10 +4551,36 @@ export function buildTools(ctx: ToolContext) {
         // a non-destructive, in-memory-only guard — no DB change.
         const seenInBatch = new Set<string>();
         artifacts.forEach((a, i) => {
+          // A QUEUED tool call is not an observation. Ten rows like
+          // "hawkcapo - socialfetch_lookup (pending Instagram)" were persisted
+          // on a measured run BEFORE their tool returned, each carrying
+          // status:"observed", each later shadowed by the real result — false
+          // when written, duplicated once answered, and joined to the subject
+          // cluster where they feed promoteConfidence's peer set.
+          if (isQueuedPlaceholder(a.value)) {
+            rejected.push({
+              index: i,
+              reason:
+                "queued-tool placeholder, not an observation — record the RESULT after the tool returns. " +
+                "A pending call has observed nothing and would duplicate its own result.",
+              kind: a.kind,
+              value: a.value,
+            });
+            return;
+          }
+          // An analyst label asserted INSIDE the value outranks the number
+          // stored beside it: "Instagram @hawkcapo - CONFIRMED active profile"
+          // shipped at confidence 40 with reason_not_confirmed "needs second
+          // independent class of evidence". The value is rendered verbatim by
+          // the evidence table, the graph, export and any generated findings
+          // table, so the word survives every downstream control built to stop
+          // that claim. Removed here, once, for all of them. ALL-CAPS only, so
+          // quoted source text is evidence and is left intact.
+          const hygienic = stripStatusAssertions(a.value);
           // Infer strict kind from value patterns (LAPD → law_enforcement_unit,
           // People v X → court_case, wallet hex → crypto_wallet, etc.).
-          const inferred = inferKind(a.kind, a.value);
-          const v = validateArtifact(inferred.kind, a.value);
+          const inferred = inferKind(a.kind, hygienic.value);
+          const v = validateArtifact(inferred.kind, hygienic.value);
           if (!v.ok) {
             rejected.push({ index: i, reason: v.reason, kind: a.kind, value: a.value });
             return;
@@ -4584,6 +4615,17 @@ export function buildTools(ctx: ToolContext) {
           // Bio-linked name gate: a name pulled out of a profile bio is an
           // unverified identity claim and can never anchor the case.
           const bioName = !collisionExcluded && isBioCrossLinkName(v.kind, a.metadata ?? null);
+          // NOTE — the legal_record demotion (G3 in #460) is deliberately NOT
+          // here. It decided authority from the TOOL name, and a measured run
+          // (1720 Sea Pine Circle, 2026-08-16) produced two legal_record rows
+          // from the SAME tool at the SAME confidence where the right answer
+          // differs: an Anne Arundel County police press release (a genuine
+          // law-enforcement record) and a Gun Violence Archive incident (an
+          // independent aggregator). classifySource cannot separate them —
+          // aacounty.org and maryland.gov both classify as `unknown` — so the
+          // authority signal lives in the URL host, not the tool. Shipping the
+          // tool-keyed version would have systematically mis-filed real LE
+          // records as media_report. Deferred until that is designed properly.
           const finalKind = collisionExcluded ? "excluded_collision" : v.kind;
           const finalConfidence = collisionExcluded
             ? Math.min(cap.confidence, EXCLUDED_COLLISION_CONFIDENCE)
@@ -4641,7 +4683,32 @@ export function buildTools(ctx: ToolContext) {
           const authoritativeSource = typeof a.source === "string"
             ? a.source.trim().toLowerCase()
             : "";
-          const dedupKey = JSON.stringify([
+          // A null result is identified by WHAT WAS CHECKED, not by how it was
+          // worded. The measured run wrote breach_check's single zero-hit result
+          // twice — "no breach hits (breach_check)" and "0 hits (breach_check)" —
+          // because the key below is the exact value string, and paraphrase
+          // defeats it. The tool stays in the key: four corpora returning zero is
+          // four coverage facts, and collapsing those would erase breadth (the
+          // data-loss shape flagged on #189's migration).
+          //
+          // It keys on `authoritativeSource`, NOT on the disclosed metadata
+          // labels. #460 wrote this against `effSources`, which #463 deleted —
+          // and keying on model-authored labels would let a relabelled row split
+          // one observation into several, the exact laundering #463 closed.
+          //
+          // NOTE the bound: `seenInBatch` is per-BATCH, so this catches a
+          // paraphrase repeated within one record_artifacts call. The two rows
+          // measured on the live run were 33s apart in DIFFERENT batches;
+          // closing that needs the thread-wide dedup tracked in #307.
+          const canonicalNullKey = nullResultKey({
+            kind: finalKind,
+            source: authoritativeSource || (a.source ?? null),
+            value: v.value,
+            selector: typeof a.metadata?.username === "string"
+              ? a.metadata.username
+              : (typeof a.metadata?.email === "string" ? a.metadata.email : (triageState.seed ?? null)),
+          });
+          const dedupKey = canonicalNullKey ?? JSON.stringify([
             finalKind,
             v.value,
             authoritativeSource,
