@@ -124,6 +124,20 @@ import { trimExaResults, archiveAttachment } from "./archiver.ts";
 import { PROVIDER_REQUIREMENTS } from "./capabilities.ts";
 import { agentMemoryOrFilter } from "./pgrest.ts";
 
+/**
+ * The REAL tool vocabulary, for G1's queued-placeholder gate.
+ *
+ * G1 must recognise an actual tool name, never snake_case SHAPE — `2021_cv_01188`
+ * is the same shape as `socialfetch_lookup`, so the shape test discarded genuine
+ * court and immigration records phrased "(pending appeal)". Sourced from
+ * TOOL_CATALOG because catalog.ts is already held in sync with this registry by
+ * the catalog↔runtime contract test, so a new tool cannot silently fall out of
+ * this set.
+ */
+const KNOWN_TOOL_SLUGS: ReadonlySet<string> = new Set(
+  TOOL_CATALOG.tools.map((t) => t.name.toLowerCase()),
+);
+
 type ToolRegistry = Record<string, unknown>;
 type ExecutableTool = {
   execute: (input: Record<string, unknown>, options: unknown) => Promise<unknown>;
@@ -4558,7 +4572,7 @@ export function buildTools(ctx: ToolContext) {
           // status:"observed", each later shadowed by the real result — false
           // when written, duplicated once answered, and joined to the subject
           // cluster where they feed promoteConfidence's peer set.
-          if (isQueuedPlaceholder(a.value)) {
+          if (isQueuedPlaceholder(a.value, KNOWN_TOOL_SLUGS)) {
             rejected.push({
               index: i,
               reason:
@@ -4655,6 +4669,14 @@ export function buildTools(ctx: ToolContext) {
             ...(a.metadata ?? {}),
             ...(v.metaPatch ?? {}),
             ...(inferred.reclassified_from ? { reclassified_from: inferred.reclassified_from } : {}),
+            // G2 is DISCLOSURE, not a silent rewrite. stripStatusAssertions
+            // mutates the stored value, and `stripped` had no consumer — so an
+            // ALL-CAPS quotation ("POLICE CONFIRMED SUSPECT IN CUSTODY" ->
+            // "POLICE SUSPECT IN CUSTODY") was altered with no audit trail. The
+            // pre-hygiene value is retained so chain of custody survives the edit.
+            ...(hygienic.stripped
+              ? { status_assertion_stripped: true, value_before_hygiene: a.value }
+              : {}),
             source_category: cap.source_classes,
             query_types: queryTypesOf({ value: v.value, kind: v.kind, metadata: a.metadata ?? null }),
             status: derivedStatus,
@@ -4940,6 +4962,22 @@ export function buildTools(ctx: ToolContext) {
         metadata: z.record(z.unknown()).optional(),
       })),
       execute: async ({ kind, value, confidence, source, metadata }) => {
+        // G1/G2 apply HERE TOO. This shim is advertised in catalog.ts, so the
+        // model may call it, and it wrote artifacts with none of the write-path
+        // gates the plural tool enforces — an open bypass of the entire #466
+        // cleanup. "Prefer record_artifacts" is guidance, not a control.
+        if (isQueuedPlaceholder(value, KNOWN_TOOL_SLUGS)) {
+          return {
+            ok: false,
+            rejected: true,
+            reason:
+              "queued-tool placeholder, not an observation — record the RESULT after the tool returns. " +
+              "A pending call has observed nothing and would duplicate its own result.",
+          };
+        }
+        const rawValueBeforeHygiene = value;
+        const hygienic = stripStatusAssertions(value);
+        value = hygienic.value;
         const inferred = inferKind(kind, value);
         const v = validateArtifact(inferred.kind, value);
         if (!v.ok) return { ok: false, rejected: true, reason: v.reason };
@@ -4983,6 +5021,10 @@ export function buildTools(ctx: ToolContext) {
           ...(metadata ?? {}),
           ...(v.metaPatch ?? {}),
           ...(inferred.reclassified_from ? { reclassified_from: inferred.reclassified_from } : {}),
+          // Same disclosure contract as record_artifacts — never a silent edit.
+          ...(hygienic.stripped
+            ? { status_assertion_stripped: true, value_before_hygiene: rawValueBeforeHygiene }
+            : {}),
           source_category: cap.source_classes,
           query_types: queryTypesOf({ value: v.value, kind: v.kind, metadata: metadata ?? null }),
           status: derivedStatus,

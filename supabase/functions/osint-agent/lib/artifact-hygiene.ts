@@ -19,8 +19,8 @@
 //     owns — never evidence, never PII, never a breach value.
 //   - No quarantine. `subject_unlinked` is decided elsewhere and is untouched.
 
-/** A snake_case tool slug: two or more segments, e.g. `serus_darkweb_scan`. */
-const TOOL_SLUG_RE = /\b[a-z0-9]+(?:_[a-z0-9]+)+\b/;
+/** Any snake_case token, e.g. `serus_darkweb_scan` — but ALSO `2021_cv_01188`. */
+const SNAKE_TOKEN_RE = /\b[a-z0-9]+(?:_[a-z0-9]+)+\b/g;
 
 /**
  * G1 — a QUEUED tool call is not an observation.
@@ -31,15 +31,35 @@ const TOOL_SLUG_RE = /\b[a-z0-9]+(?:_[a-z0-9]+)+\b/;
  * guaranteed duplicates once the real result lands, and they join the subject
  * cluster — so they also feed promoteConfidence's peer set.
  *
- * Keyed on a tool slug NEXT TO a parenthesised "pending", never on the word
- * alone: "disposition pending" and "suspended pending appeal" are real
- * findings and must still record.
+ * Keyed on a REAL TOOL NAME next to a parenthesised "pending"/"queued", never on
+ * the word alone and never on snake_case SHAPE.
+ *
+ * WHY THE VOCABULARY IS REQUIRED. The first implementation accepted any
+ * `word_word` token, which is also the shape of a docket number. Executed
+ * against the shipped predicate, these three real records were all discarded as
+ * "queued-tool placeholder, not an observation":
+ *
+ *     "Docket 2021_cv_01188 (pending appeal) — Anne Arundel"
+ *     "Asylum application (pending decision) ref uscis_2024_88231"
+ *     "Sentencing (queued) for case_number 19_cr_457"
+ *
+ * `(pending appeal)` and `(pending decision)` are ordinary court and immigration
+ * language, so the shape heuristic destroys exactly the harm-bearing records this
+ * product exists to collect.
+ *
+ * FAILS CLOSED — no vocabulary means no discard. An unrecognised value is kept,
+ * because a duplicated placeholder is a counting error while a dropped court
+ * record is evidence loss, and those are not symmetric.
  */
-export function isQueuedPlaceholder(rawValue: string): boolean {
+export function isQueuedPlaceholder(rawValue: string, knownTools?: ReadonlySet<string>): boolean {
   const value = (rawValue ?? "").trim();
   if (!value) return false;
   if (!/\((?:pending|queued)\b/i.test(value)) return false;
-  return TOOL_SLUG_RE.test(value.toLowerCase());
+  if (!knownTools || knownTools.size === 0) return false;
+  for (const m of value.toLowerCase().matchAll(SNAKE_TOKEN_RE)) {
+    if (knownTools.has(m[0])) return true;
+  }
+  return false;
 }
 
 /**
@@ -93,8 +113,58 @@ export function nullResultKey(input: {
   value: string;
   selector?: string | null;
 }): string | null {
-  if (!NULL_RESULT_RE.test(input.value ?? "")) return null;
+  const raw = input.value ?? "";
+  if (!NULL_RESULT_RE.test(raw)) return null;
+  // A pure null result says ONLY "this corpus returned nothing for this
+  // selector". If anything of substance survives removing the zero phrase, the
+  // tool name and the selector, then the row names a SPECIFIC record and must
+  // never share a key with a different specific record.
+  //
+  // Executed against the first implementation, these two distinct court records
+  // canonicalised identically and the second was rejected as a "duplicate":
+  //
+  //   "Case 2021-CV-01188 (Anne Arundel Cty): no records of prior conviction"
+  //   "Case 2019-CR-00457 (Baltimore Cty): no records of appeal"
+  //
+  // Different courts, different dockets, different dispositions — one row.
+  if (nullResultResidue(input) !== "") return null;
   const tool = (input.source ?? "unknown").trim().toLowerCase();
   const selector = (input.selector ?? "").trim().toLowerCase();
   return `${input.kind.trim().toLowerCase()}:${tool}:${selector}:no-hits`;
+}
+
+/** Global twin of NULL_RESULT_RE. Separate object: a /g regex carries lastIndex
+ *  state across .test() calls, which would make the gate order-dependent. */
+const NULL_RESULT_RE_G = /\b(?:0|no|zero)\s+(?:hit|breach|result|record|paste|match|exposure)s?\b/gi;
+
+/** Connectives that carry no record identity, so their presence must not make a
+ *  plain null result look substantive. */
+const NULL_RESULT_FILLER_RE =
+  /\b(?:for|on|in|of|the|a|an|from|found|returned|via|with|and|to|at|by|any|were|was|there|this|that|query|lookup|search|check|against|across)\b/g;
+
+/** The result nouns themselves. NULL_RESULT_RE consumes only the quantifier and
+ *  ONE noun ("no breach" out of "no breach hits"), so the trailing noun survives
+ *  and would otherwise read as substance — which wrongly un-canonicalised a
+ *  plain "no breach hits (breach_check)" and broke G4's intended dedup. */
+const NULL_RESULT_NOUN_RE =
+  /\b(?:hits?|breach(?:es)?|results?|records?|pastes?|match(?:es)?|exposures?)\b/g;
+
+/**
+ * What remains of a value once the zero phrase, the tool and the selector are
+ * removed. Empty means "nothing but the null statement" — safe to canonicalise.
+ */
+function nullResultResidue(input: {
+  source?: string | null;
+  value: string;
+  selector?: string | null;
+}): string {
+  let s = (input.value ?? "").toLowerCase();
+  s = s.replace(NULL_RESULT_RE_G, " ");
+  for (const token of [input.source, input.selector]) {
+    const t = (token ?? "").trim().toLowerCase();
+    if (t) s = s.split(t).join(" ");
+  }
+  s = s.replace(NULL_RESULT_NOUN_RE, " ");
+  s = s.replace(NULL_RESULT_FILLER_RE, " ");
+  return s.replace(/[^a-z0-9]+/g, " ").trim();
 }
