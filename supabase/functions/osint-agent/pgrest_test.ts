@@ -119,3 +119,36 @@ Deno.test({
     }
   },
 });
+
+/* ── WIRING ────────────────────────────────────────────────────────────────
+ *
+ * This module shipped 2026-07-19 with a full unit suite AND a live-endpoint
+ * test, documenting itself as the "single source of truth for every recall
+ * site" — and had ZERO production adopters until 2026-08-16. All five recall
+ * sites kept interpolating the raw selector, so the bug it fixes recurred on a
+ * live run (`11349 ne prescott st, portland, or 97220`).
+ *
+ * A helper nobody calls is not a fix. These assertions read the call sites off
+ * disk, in the reviews_wiring_test.ts style (hence --allow-read).
+ */
+const REGISTRY_SRC = await Deno.readTextFile(new URL("./tool-registry.ts", import.meta.url));
+const RECORDING_SRC = await Deno.readTextFile(new URL("./tools/recording.ts", import.meta.url));
+
+Deno.test("wiring: no recall site interpolates a raw selector into a filter tree", () => {
+  for (const [name, src] of [["tool-registry.ts", REGISTRY_SRC], ["tools/recording.ts", RECORDING_SRC]] as const) {
+    assertEquals(
+      /subject\.eq\.\$\{/.test(src),
+      false,
+      `${name} interpolates a raw value into a PostgREST filter — use agentMemoryOrFilter()`,
+    );
+  }
+});
+
+Deno.test("wiring: every recall site calls agentMemoryOrFilter", () => {
+  // 4 in tool-registry.ts + 1 in tools/recording.ts. A new recall site that
+  // hand-rolls the filter is caught by the assertion above; this one catches
+  // an existing site being quietly reverted.
+  const calls = (REGISTRY_SRC.match(/agentMemoryOrFilter\(/g) ?? []).length
+    + (RECORDING_SRC.match(/agentMemoryOrFilter\(/g) ?? []).length;
+  assertEquals(calls >= 5, true, `expected >= 5 wired recall sites, found ${calls}`);
+});

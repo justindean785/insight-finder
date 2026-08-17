@@ -122,6 +122,7 @@ import { trimExaResults, archiveAttachment } from "./archiver.ts";
 // set from this so a tool marked `disabled: true` cannot stay advertised to the
 // model after the runtime has removed it.
 import { PROVIDER_REQUIREMENTS } from "./capabilities.ts";
+import { agentMemoryOrFilter } from "./pgrest.ts";
 
 type ToolRegistry = Record<string, unknown>;
 type ExecutableTool = {
@@ -771,7 +772,7 @@ export function buildTools(ctx: ToolContext) {
                 .from("agent_memory")
                 .select("kind,content,confidence")
                 .eq("user_id", userId)
-                .or(`subject.eq.${seedNorm},related_values.cs.{${seedNorm}}`)
+                .or(agentMemoryOrFilter(seedNorm))
                 .order("confidence", { ascending: false })
                 .limit(8);
               const rows = (mem ?? []) as Array<{ kind?: string; content?: string; confidence?: number }>;
@@ -4823,7 +4824,7 @@ export function buildTools(ctx: ToolContext) {
                   .from("agent_memory")
                   .select("id,kind,subject,subject_kind,related_values,content,confidence,hit_count")
                   .eq("user_id", userId)
-                  .or(`subject.eq.${subj},related_values.cs.{${subj}}`)
+                  .or(agentMemoryOrFilter(subj))
                   .order("confidence", { ascending: false })
                   .limit(5);
                 return { subject: subj, count: data?.length ?? 0, memories: data ?? [] };
@@ -5166,7 +5167,7 @@ export function buildTools(ctx: ToolContext) {
         .from("agent_memory")
         .select("id,kind,subject,subject_kind,related_values,content,confidence,source_thread_id,hit_count,last_used_at,created_at")
         .eq("user_id", userId)
-        .or(`subject.eq.${subj},related_values.cs.{${subj}}`)
+        .or(agentMemoryOrFilter(subj))
         .order("confidence", { ascending: false })
         .limit(limit ?? 20);
       if (kind && kind !== "any") q = supabase
@@ -5174,7 +5175,7 @@ export function buildTools(ctx: ToolContext) {
         .select("id,kind,subject,subject_kind,related_values,content,confidence,source_thread_id,hit_count,last_used_at,created_at")
         .eq("user_id", userId)
         .eq("kind", kind)
-        .or(`subject.eq.${subj},related_values.cs.{${subj}}`)
+        .or(agentMemoryOrFilter(subj))
         .order("confidence", { ascending: false })
         .limit(limit ?? 20);
       const { data, error } = await q;
