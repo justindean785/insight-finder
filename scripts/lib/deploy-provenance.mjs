@@ -74,6 +74,49 @@ export function parseBuildInfo(source) {
 }
 
 /**
+ * Read the latest recorded marker out of raw deploy-log.jsonl text.
+ *
+ * THIS LIVES HERE, NOT INLINE IN record-deploy.mjs, BECAUSE OF WHAT HAPPENED WHEN
+ * IT DID. The reader sat in the script where no test could reach it, and read
+ * `.build` — a field buildLogEntry has never emitted; it writes `runtime_marker`.
+ * Both halves shipped in the same commit, so the contract was never consistent,
+ * merely unobserved: verifyLedgerConsistency stays silent when no deploy ref
+ * exists, so for months the reader returned null against a populated ledger and
+ * nothing said otherwise. The first checkout to fetch deploy/live got
+ * "deploy-log.jsonl has no entries" about a file with two entries in it, and the
+ * deploy that triggered it was fine. A gate that cries wolf gets forced past.
+ *
+ * The field name was the shallow half. The deeper defect: `?? null` and a
+ * swallowing `catch` both collapsed "I could not read the record" into "there is
+ * no record" — the same conflation record-deploy.mjs's own `previous_build_source`
+ * comment warns against, committed by the code twenty lines above it. Those two
+ * states demand opposite responses. An empty ledger with no ref is the legitimate
+ * initial state and must proceed; an unreadable one must block, because appending
+ * to a ledger you cannot read buries whatever it was trying to tell you.
+ *
+ * Hence a result, not a bare string: {ok, lastEntryBuild, entryCount, reason}.
+ * entryCount is what makes "empty" and "unreadable" distinguishable to a caller.
+ */
+export function readLedger(text) {
+  const lines = (text ?? "").trim().split("\n").filter(Boolean);
+  if (!lines.length) return { ok: true, lastEntryBuild: null, entryCount: 0 };
+
+  const unreadable = (reason) => ({ ok: false, reason, lastEntryBuild: null, entryCount: lines.length });
+
+  let parsed;
+  try {
+    parsed = JSON.parse(lines[lines.length - 1]);
+  } catch {
+    return unreadable("latest deploy-log.jsonl line is not valid JSON");
+  }
+  const marker = parsed?.runtime_marker;
+  if (typeof marker !== "string" || !marker) {
+    return unreadable("latest deploy-log.jsonl entry has no `runtime_marker`");
+  }
+  return { ok: true, lastEntryBuild: marker, entryCount: lines.length };
+}
+
+/**
  * The ledger and the `deploy/live` ref are two records of the same fact, written
  * by two different git operations. Nothing stops one landing without the other —
  * a commit that forgets the log, a push that forgets the ref — and a ledger that
@@ -85,7 +128,17 @@ export function parseBuildInfo(source) {
  *
  * An empty ledger with no ref is the legitimate initial state.
  */
-export function verifyLedgerConsistency({ lastEntryBuild, refBuild }) {
+export function verifyLedgerConsistency({ lastEntryBuild, refBuild, unreadableReason = null }) {
+  // Checked FIRST and reported under its own code. "I cannot read the ledger" is
+  // not "the ledger and the ref disagree" — reporting the second when the first
+  // is true sends whoever reads it to reconcile records that were never in
+  // conflict, which is exactly the wrong-diagnosis loop this check caused once.
+  if (unreadableReason) {
+    return [{
+      code: "ledger_unreadable",
+      detail: `deploy-log.jsonl could not be read: ${unreadableReason} — this is NOT an empty ledger`,
+    }];
+  }
   if (!lastEntryBuild && !refBuild) return [];
   if (lastEntryBuild && !refBuild) {
     return [{

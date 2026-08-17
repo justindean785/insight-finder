@@ -263,6 +263,18 @@ export function normalizeSourceLabel(input: string): string {
 // intact; splits on `/ | , ;`, the word "and", and `+`.
 const MIXED_SOURCE_SPLIT_RE = /\s*(?:\/|\||,|;|\band\b|\+)\s*/i;
 
+// Explicit label aliases for one canonical tool identity. This does not merge
+// provider families: separate endpoints remain separate executions unless the
+// repository explicitly identifies an alias, as it does for leakcheck.
+const SOURCE_TOOL_IDENTITY_ALIASES: Readonly<Record<string, string>> = {
+  leakcheck: "leakcheck_lookup",
+};
+
+export function canonicalSourceToolIdentity(label: string): string {
+  const normalized = label.trim().toLowerCase();
+  return SOURCE_TOOL_IDENTITY_ALIASES[normalized] ?? normalized;
+}
+
 export function splitSourceLabels(label: string | null | undefined): string[] {
   const normalized = (label ?? "").trim();
   if (!normalized) return [];

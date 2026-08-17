@@ -7,7 +7,7 @@
 // threat-intel-only findings from ever reading as a verified identity claim.
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { classifySource, countIndependentClasses } from "./source-classification.ts";
-import { applyEvidenceCaps } from "./confidence.ts";
+import { applyEvidenceCapsLegacyOccurrenceBaseline } from "./confidence.ts";
 
 Deno.test("threat_intel does not count as independent identity corroboration", () => {
   // threat_intel alongside one official record must NOT read as 2 independent
@@ -28,14 +28,14 @@ Deno.test("real breach/leak tools STILL classify as breach (no over-reach)", () 
 });
 
 Deno.test("threat_intel-only confidence is capped low (<= 50, < breach)", () => {
-  const r = applyEvidenceCaps({ rawConfidence: 95, sources: ["ransomwarelive_lookup"] });
+  const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 95, sources: ["ransomwarelive_lookup"] });
   assertEquals(r.source_classes, ["threat_intel"]);
   assert(r.cap <= 50, `threat_intel cap expected <= 50, got ${r.cap}`);
   assert(r.confidence <= 50, `threat_intel confidence expected <= 50, got ${r.confidence}`);
 });
 
 Deno.test("threat_intel is NEVER_HIGH — even mixed with breach it can't reach 90+", () => {
-  const r = applyEvidenceCaps({
+  const r = applyEvidenceCapsLegacyOccurrenceBaseline({
     rawConfidence: 99,
     sources: ["ransomwarelive_lookup", "breach_check"],
   });
@@ -49,7 +49,7 @@ Deno.test("threat_intel is NEVER_HIGH — even mixed with breach it can't reach 
 Deno.test("threat_intel does not unlock the ownership/identity path on its own", () => {
   // Even alongside many infra perspectives, threat_intel is not a TRUSTED non-infra
   // class, so the finding cannot exceed the infra-safe ceiling.
-  const r = applyEvidenceCaps({
+  const r = applyEvidenceCapsLegacyOccurrenceBaseline({
     rawConfidence: 99,
     sources: ["ransomwarelive_lookup", "dns_records", "whois_lookup"],
   });

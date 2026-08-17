@@ -5,10 +5,10 @@
 // covers the report-render half (buildReportMarkdown) over the same fixture values.
 //
 // Mirrors what record_artifacts does per artifact in production:
-//   applyEvidenceCaps(source) -> write source_category/reason/cap into metadata
+//   applyEvidenceCapsLegacyOccurrenceBaseline(source) -> write source_category/reason/cap into metadata
 //   -> scrubArtifactRow(row)
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { applyEvidenceCaps } from "./confidence.ts";
+import { applyEvidenceCapsLegacyOccurrenceBaseline } from "./confidence.ts";
 import { scrubArtifactRow } from "./safety.ts";
 
 interface FixtureArtifact {
@@ -21,7 +21,7 @@ interface FixtureArtifact {
 
 function recordLikeBackend(a: FixtureArtifact) {
   const aMeta = a.metadata ?? {};
-  const cap = applyEvidenceCaps({
+  const cap = applyEvidenceCapsLegacyOccurrenceBaseline({
     rawConfidence: a.confidence ?? 50,
     sources: [a.source, ...((aMeta.sources as string[]) ?? [])].filter(Boolean),
   });

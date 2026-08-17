@@ -1,219 +1,622 @@
-#!/usr/bin/env -S deno run --allow-net --allow-env --allow-read
+#!/usr/bin/env -S deno run --allow-net --allow-env
 /**
- * Population measurement for the metadata-provenance boundary. READ-ONLY.
+ * Read-only, aggregate-only measurement of the recording provenance boundary.
+ * It compares the historical deployed caller topology (including the
+ * metadata.sources pre-union and occurrence-count breach behavior) with the
+ * proposed channel policy.
  *
- * THE INVARIANT UNDER TEST
- *   Model-authored provenance may DISCLOSE or REDUCE authority.
- *   It must never CREATE authority.
+ * SCOPE — current operator account, NOT a multi-tenant population.
+ * Both reads below run as the authenticated user (anon key + user JWT), and
+ * RLS restricts each to that account: `Users view own artifacts` and
+ * `Users view own tool usage` are both `auth.uid() = user_id`. Artifact and
+ * execution visibility are therefore symmetric — the comparison is internally
+ * consistent — but the figures describe this account only. Reporting them as a
+ * population measurement would overstate them. Multi-tenant measurement needs a
+ * separately authorized aggregate path and is deliberately out of scope here.
  *
- * `applyEvidenceCaps` (confidence.ts:327) unions `input.sources` with
- * `metadataSourceLabels(metadata)` (:301-311), which reads `metadata.source` and
- * `metadata.sources` out of the unvalidated `z.record(z.unknown())` blob that
- * `record_artifacts` (tool-registry.ts:4532) writes through verbatim. Measured
- * on a single case, that lets a model raise an artifact's cap 55 -> 95 and null
- * its `reason_not_confirmed` with zero tool calls. This script asks how much of
- * the real population that boundary actually touches, BEFORE any code changes.
+ * No artifact values are selected or printed. Credentials are read from the
+ * environment only and are never logged or written.
  *
- * WHY DENO AND NOT .mjs — it imports the REAL `applyEvidenceCaps`,
- * `deriveStatus` and `classifySource` from the edge function. A Node script
- * would have to reimplement the cap logic, and a second implementation of
- * evidence policy is the exact failure mode this work exists to remove.
- *
- * WHY IT PRINTS NO EVIDENCE VALUES — counts and grouped provenance SHAPES only.
- * Artifact values are case material about real people; the question here is
- * structural, so nothing identifying needs to leave the database.
- *
- * USAGE — credentials come from the environment and are never logged:
- *   export SUPABASE_EMAIL=you@example.com
- *   export SUPABASE_PASSWORD='…'
- *   deno run --allow-net --allow-env scripts/measure-metadata-source.ts
- *
- * Reads only what RLS already grants the signed-in analyst.
+ * Required:
+ *   SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_EMAIL, SUPABASE_PASSWORD
  */
-import { applyEvidenceCaps, deriveStatus } from "../supabase/functions/osint-agent/confidence.ts";
-import { classifySource, type SourceClass } from "../supabase/functions/osint-agent/source-classification.ts";
+import {
+  applyEvidenceCapsLegacyOccurrenceBaseline,
+  isBioCrossLinkName,
+  isUnrelatedEntity,
+} from "../supabase/functions/osint-agent/confidence.ts";
+import {
+  applyRecordingSourcePolicy,
+  resolveRecordingStatus,
+} from "../supabase/functions/osint-agent/recording-source-policy.ts";
+import { isSameSurnameOnlyLead } from "../supabase/functions/osint-agent/collision-policy.ts";
+import {
+  evaluateDuplicateBreachTransport,
+  executionTimesByTool,
+  isAutoRecordedStatusRow,
+  isExecutionAvailableAt,
+  surfaceTokensForExecutionMatch,
+  type UnmatchedOrigin,
+  unmatchedOrigin,
+} from "./metadata-source-measurement-policy.ts";
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "https://skzqwbyvmwqarfgfvyky.supabase.co";
-// Public anon key — same one the shipped client embeds; carries no privilege
-// beyond what the authenticated session already has under RLS.
-const ANON =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNrenF3Ynl2bXdxYXJmZ2Z2eWt5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3ODg5MTksImV4cCI6MjA5NTM2NDkxOX0.B2k5sI10zk1nxjZdXEFxuVV3B755FxDFGkT6TfWY6TE";
-
+const supabaseUrl = Deno.env.get("SUPABASE_URL");
+const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
 const email = Deno.env.get("SUPABASE_EMAIL");
 const password = Deno.env.get("SUPABASE_PASSWORD");
-if (!email || !password) {
-  console.error("SUPABASE_EMAIL and SUPABASE_PASSWORD must be set in the environment.");
-  console.error("They are read from env only, never written to disk or logged.");
+
+if (!supabaseUrl || !anonKey || !email || !password) {
+  console.error(
+    "SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_EMAIL, and SUPABASE_PASSWORD are required.",
+  );
+  console.error(
+    "They are read from env only, never written to disk or logged.",
+  );
   Deno.exit(2);
 }
 
 async function signIn(): Promise<string> {
-  const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
-    method: "POST",
-    headers: { apikey: ANON, "content-type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
-  if (!res.ok) throw new Error(`auth failed: ${res.status} ${(await res.text()).slice(0, 120)}`);
-  const j = await res.json();
-  if (!j.access_token) throw new Error("no access token returned");
-  return j.access_token;
+  const response = await fetch(
+    `${supabaseUrl}/auth/v1/token?grant_type=password`,
+    {
+      method: "POST",
+      headers: { apikey: anonKey, "content-type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(
+      `auth failed: ${response.status} ${
+        (await response.text()).slice(0, 120)
+      }`,
+    );
+  }
+  const body: unknown = await response.json();
+  if (
+    !body || typeof body !== "object" ||
+    !("access_token" in body) || typeof body.access_token !== "string"
+  ) {
+    throw new Error("no access token returned");
+  }
+  return body.access_token;
 }
 
-async function page<T>(token: string, path: string, select: string): Promise<T[]> {
-  const out: T[] = [];
-  const SIZE = 1000;
-  for (let from = 0; ; from += SIZE) {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}?select=${encodeURIComponent(select)}`, {
+interface KeysetRow {
+  id: string;
+  created_at: string;
+}
+
+interface KeysetCursor {
+  id: string;
+  createdAt: string;
+}
+
+async function* keysetPages<T extends KeysetRow>(
+  token: string,
+  path: string,
+  select: string,
+  parse: (value: unknown) => T,
+  scanStart: string,
+): AsyncGenerator<T[]> {
+  const size = 1_000;
+  let cursor: KeysetCursor | null = null;
+  for (;;) {
+    const params = new URLSearchParams({
+      select,
+      created_at: `lte.${scanStart}`,
+      order: "created_at.asc,id.asc",
+      limit: String(size),
+    });
+    if (cursor) {
+      params.set(
+        "or",
+        `(created_at.gt.${cursor.createdAt},and(created_at.eq.${cursor.createdAt},id.gt.${cursor.id}))`,
+      );
+    }
+    const response = await fetch(`${supabaseUrl}/rest/v1/${path}?${params}`, {
       headers: {
-        apikey: ANON,
+        apikey: anonKey,
         Authorization: `Bearer ${token}`,
-        Range: `${from}-${from + SIZE - 1}`,
-        "Range-Unit": "items",
       },
     });
-    if (!res.ok) throw new Error(`${path} read failed: ${res.status} ${(await res.text()).slice(0, 120)}`);
-    const rows = (await res.json()) as T[];
-    out.push(...rows);
-    if (rows.length < SIZE) return out;
+    if (!response.ok) {
+      throw new Error(
+        `${path} read failed: ${response.status} ${
+          (await response.text()).slice(0, 120)
+        }`,
+      );
+    }
+    const rawBatch: unknown = await response.json();
+    if (!Array.isArray(rawBatch)) {
+      throw new Error(`${path} returned a non-array response`);
+    }
+    const batch = rawBatch.map(parse);
+    if (batch.length === 0) return;
+    yield batch;
+    const last = batch[batch.length - 1];
+    const next = { id: last.id, createdAt: last.created_at };
+    if (cursor?.id === next.id && cursor.createdAt === next.createdAt) {
+      throw new Error(`${path} keyset cursor did not advance`);
+    }
+    cursor = next;
+    if (batch.length < size) return;
   }
 }
 
-// ---------------------------------------------------------------------------
-// Provenance helpers. These MIRROR the shipped code's own splitting rather than
-// inventing a new one: applyEvidenceCaps (confidence.ts:317-323) already splits
-// a compound label that names several tools ("breach_check+leakcheck+…"). A
-// measurement that failed to split the same way reported 11 false positives on a
-// 98-artifact sample, including an 85->50 on a legitimately 3-tool row.
-// ---------------------------------------------------------------------------
-const splitCompound = (label: string): string[] =>
-  label.split(/\s*[+,]\s*/).map((t) => t.trim()).filter(Boolean);
-
-const slugOf = (token: string): string =>
-  token.toLowerCase().replace(/\s*\([^)]*\)\s*$/, "").trim();
-
-function metaLabels(meta: Record<string, unknown> | null): string[] {
-  if (!meta) return [];
-  const out: string[] = [];
-  if (typeof meta.source === "string") out.push(meta.source);
-  if (Array.isArray(meta.sources)) for (const s of meta.sources) if (typeof s === "string") out.push(s);
-  return out;
-}
-
-/** The model-requested status, which lives in metadata rather than a column. */
-function reqStatus(meta: Record<string, unknown> | null): string | null {
-  return meta && typeof meta.status === "string" ? meta.status : null;
-}
-
-function classesOf(labels: string[]): SourceClass[] {
-  const set = new Set<SourceClass>();
-  for (const l of labels) {
-    const whole = classifySource(l);
-    if (whole !== "unknown") { set.add(whole); continue; }
-    for (const t of splitCompound(l)) {
-      const c = classifySource(t);
-      if (c !== "unknown") set.add(c);
+function metadataLabels(metadata: Record<string, unknown> | null): string[] {
+  if (!metadata) return [];
+  const labels: string[] = [];
+  if (typeof metadata.source === "string") labels.push(metadata.source);
+  if (Array.isArray(metadata.sources)) {
+    for (const source of metadata.sources) {
+      if (typeof source === "string") labels.push(source);
     }
   }
-  return [...set];
+  return labels;
+}
+
+/** Reproduce the historical deployed caller's metadata.sources pre-union. */
+function historicalCallerSources(
+  source: string | null,
+  metadata: Record<string, unknown> | null,
+): string[] {
+  const sources = source ? [source] : [];
+  if (Array.isArray(metadata?.sources)) {
+    for (const candidate of metadata.sources) {
+      if (typeof candidate === "string" && candidate) sources.push(candidate);
+    }
+  }
+  return sources;
 }
 
 type Artifact = {
-  id: string; thread_id: string; kind: string; source: string | null;
+  id: string;
+  created_at: string;
+  thread_id: string;
+  kind: string;
+  source: string | null;
   confidence: number | null;
-  // NOTE: `artifacts` has NO `status` column — the requested status lives in
-  // `metadata.status`. Selecting `status` returns PostgREST 400. Verified
-  // against the live schema 2026-08-15.
   metadata: Record<string, unknown> | null;
 };
-type ToolRow = { thread_id: string; tool_name: string };
 
-// ---------------------------------------------------------------------------
+type ToolRow = {
+  id: string;
+  created_at: string;
+  thread_id: string;
+  tool_name: string;
+};
 
-const token = await signIn();
-console.log("signed in; reading (read-only)…\n");
-
-const artifacts = await page<Artifact>(token, "artifacts", "id,thread_id,kind,source,confidence,metadata");
-const tools = await page<ToolRow>(token, "tool_usage_log", "thread_id,tool_name");
-
-/** Which tool slugs actually EXECUTED on each thread. This is the only
- *  execution-attested provenance root available today. */
-const executed = new Map<string, Set<string>>();
-for (const t of tools) {
-  if (!t.thread_id || !t.tool_name) continue;
-  (executed.get(t.thread_id) ?? executed.set(t.thread_id, new Set()).get(t.thread_id)!).add(t.tool_name.toLowerCase());
+function hasSpecialStatusOverride(artifact: Artifact): boolean {
+  const metadata = artifact.metadata;
+  const collisionExcluded = artifact.kind === "excluded_collision" ||
+    isUnrelatedEntity(metadata) ||
+    ((artifact.kind === "name" || artifact.kind === "person") &&
+      isSameSurnameOnlyLead(metadata));
+  return collisionExcluded || isBioCrossLinkName(artifact.kind, metadata);
 }
 
-let withMeta = 0, capChanged = 0, statusChanged = 0, noAttested = 0, unrootedSource = 0;
-const capDeltas = new Map<string, number>();       // "95->55" -> count
-const shapes = new Map<string, number>();          // grouped provenance shape -> count
-const unrootedTokens = new Map<string, number>();  // slug the log never saw -> count
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
-for (const a of artifacts) {
-  const meta = a.metadata ?? null;
-  const surface = a.source ? [a.source] : [];
-  const mLabels = metaLabels(meta);
-  if (mLabels.length) withMeta++;
+function parseArtifact(value: unknown): Artifact {
+  if (!isRecord(value)) throw new Error("artifacts returned a non-object row");
+  if (typeof value.thread_id !== "string" || typeof value.kind !== "string") {
+    throw new Error("artifacts row is missing thread_id or kind");
+  }
+  if (typeof value.id !== "string" || typeof value.created_at !== "string") {
+    throw new Error("artifacts row is missing keyset columns");
+  }
+  if (value.source !== null && typeof value.source !== "string") {
+    throw new Error("artifacts row has an invalid source");
+  }
+  if (value.confidence !== null && typeof value.confidence !== "number") {
+    throw new Error("artifacts row has an invalid confidence");
+  }
+  if (value.metadata !== null && !isRecord(value.metadata)) {
+    throw new Error("artifacts row has invalid metadata");
+  }
+  return {
+    id: value.id,
+    created_at: value.created_at,
+    thread_id: value.thread_id,
+    kind: value.kind,
+    source: value.source,
+    confidence: value.confidence,
+    metadata: value.metadata,
+  };
+}
 
-  // Run 1 — today: metadata labels participate and can RAISE the cap.
-  const today = applyEvidenceCaps({
-    rawConfidence: a.confidence ?? 50, sources: surface, kind: a.kind, metadata: meta,
-  });
-  // Run 2 — the invariant: metadata cannot create authority. min() keeps every
-  // existing demotion, because whichever run is more conservative wins.
-  const noMeta = applyEvidenceCaps({
-    rawConfidence: a.confidence ?? 50, sources: surface, kind: a.kind, metadata: null,
-  });
-  const shippedCap = Math.min(today.cap, noMeta.cap);
+function parseToolRow(value: unknown): ToolRow {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    typeof value.created_at !== "string" ||
+    typeof value.thread_id !== "string" ||
+    typeof value.tool_name !== "string"
+  ) {
+    throw new Error("tool_usage_log returned an invalid row");
+  }
+  return {
+    id: value.id,
+    created_at: value.created_at,
+    thread_id: value.thread_id,
+    tool_name: value.tool_name,
+  };
+}
 
-  if (shippedCap !== today.cap) {
-    capChanged++;
-    const k = `${today.cap}->${shippedCap}`;
-    capDeltas.set(k, (capDeltas.get(k) ?? 0) + 1);
+const scanStart = new Date().toISOString();
+const token = await signIn();
+console.log("signed in; reading aggregate inputs (read-only)…\n");
 
-    // (4) does the STATUS move, not just the number?
-    const sTodayCls = classesOf([...surface, ...mLabels]);
-    const sShipCls = classesOf(surface);
-    const stToday = deriveStatus({
-      requested: reqStatus(meta), reasonNotConfirmed: today.reason_not_confirmed ?? null, sourceClasses: sTodayCls,
-    });
-    const stShip = deriveStatus({
-      requested: reqStatus(meta), reasonNotConfirmed: noMeta.reason_not_confirmed ?? null, sourceClasses: sShipCls,
-    });
-    if (stToday !== stShip) {
-      statusChanged++;
-      shapes.set(`${stToday} -> ${stShip}`, (shapes.get(`${stToday} -> ${stShip}`) ?? 0) + 1);
+// Per thread, EVERY instant each tool was observed executing. A timeless set
+// would let a later execution on a reused thread retroactively evidence an
+// older artifact; matching is bounded against each artifact's write time below.
+const executedByThread = new Map<string, Map<string, number[]>>();
+let toolRowCount = 0;
+for await (
+  const rows of keysetPages<ToolRow>(
+    token,
+    "tool_usage_log",
+    "id,created_at,thread_id,tool_name",
+    parseToolRow,
+    scanStart,
+  )
+) {
+  const pageRowsByThread = new Map<string, ToolRow[]>();
+  for (const row of rows) {
+    toolRowCount++;
+    let pageRows = pageRowsByThread.get(row.thread_id);
+    if (!pageRows) {
+      pageRows = [];
+      pageRowsByThread.set(row.thread_id, pageRows);
+    }
+    pageRows.push(row);
+  }
+  for (const [threadId, pageRows] of pageRowsByThread) {
+    let observed = executedByThread.get(threadId);
+    if (!observed) {
+      observed = new Map<string, number[]>();
+      executedByThread.set(threadId, observed);
+    }
+    for (const [tool, instants] of executionTimesByTool(pageRows)) {
+      const known = observed.get(tool);
+      if (known) known.push(...instants);
+      else observed.set(tool, [...instants]);
     }
   }
+}
+// Keyset pages arrive in created_at order, but merge across pages regardless.
+for (const observed of executedByThread.values()) {
+  for (const instants of observed.values()) instants.sort((a, b) => a - b);
+}
 
-  // (5)/(6) can the surface provenance be tied to something that actually ran?
-  const ran = executed.get(a.thread_id) ?? new Set<string>();
-  const surfaceTokens = surface.flatMap(splitCompound).map(slugOf).filter(Boolean);
-  const rooted = surfaceTokens.filter((t) => ran.has(t));
-  if (surfaceTokens.length === 0) {
-    noAttested++;
-  } else if (rooted.length === 0) {
-    unrootedSource++;
-    for (const t of surfaceTokens.slice(0, 3)) unrootedTokens.set(t, (unrootedTokens.get(t) ?? 0) + 1);
+let withMetadata = 0;
+let capLowered = 0;
+let capRaised = 0;
+let capUnchanged = 0;
+let statusChanged = 0;
+let statusChangedAtEqualCap = 0;
+let historicalMetadataDemotions = 0;
+let metadataDemotionsPreserved = 0;
+let metadataDemotionsLost = 0;
+let proposedMetadataDemotions = 0;
+let duplicateBreachTransportShapes = 0;
+let duplicateBreachHistoricalNudges = 0;
+let duplicateBreachShapesFixedAt60 = 0;
+let duplicateBreachInvariantViolations = 0;
+let specialStatusRowsExcluded = 0;
+let autoRecordedStatusRowsExcluded = 0;
+let noSurfaceProvenance = 0;
+let fullyExecutionMatched = 0;
+let partiallyExecutionMatched = 0;
+let zeroExecutionMatched = 0;
+let anyTokenUnmatched = 0;
+let artifactsOnThreadsWithoutToolLog = 0;
+let backdatedExecutionArtifacts = 0;
+const capDeltas = new Map<string, number>();
+const statusTransitions = new Map<string, number>();
+const unmatchedOrigins = new Map<UnmatchedOrigin, number>();
+
+let artifactsScanned = 0;
+for await (
+  const artifactPage of keysetPages<Artifact>(
+    token,
+    "artifacts",
+    "id,created_at,thread_id,kind,source,confidence,metadata",
+    parseArtifact,
+    scanStart,
+  )
+) {
+  for (const artifact of artifactPage) {
+    artifactsScanned++;
+    const metadata = artifact.metadata ?? null;
+    if (metadataLabels(metadata).length > 0) withMetadata++;
+
+    // Baseline: reproduce the historical deployed call topology. metadata.sources
+    // is copied into sources here, then read again from metadata by the retained
+    // occurrence-count compatibility entry. metadata.source is read there too.
+    const baseline = applyEvidenceCapsLegacyOccurrenceBaseline({
+      rawConfidence: artifact.confidence ?? 50,
+      sources: historicalCallerSources(artifact.source, metadata),
+      kind: artifact.kind,
+      metadata,
+    });
+
+    // Proposed: singular surface provenance and metadata remain separate until
+    // two complete cap-pipeline runs select the lower cap.
+    const policy = applyRecordingSourcePolicy({
+      rawConfidence: artifact.confidence ?? 50,
+      source: artifact.source,
+      kind: artifact.kind,
+      metadata,
+    });
+    const proposed = policy.effective;
+
+    if (policy.withMetadata.cap < policy.surfaceOnly.cap) {
+      proposedMetadataDemotions++;
+    }
+    if (baseline.cap < policy.surfaceOnly.cap) {
+      historicalMetadataDemotions++;
+      if (proposed.cap <= baseline.cap) metadataDemotionsPreserved++;
+      else metadataDemotionsLost++;
+    }
+
+    const duplicateTransport = evaluateDuplicateBreachTransport({
+      source: artifact.source,
+      metadata,
+      legacy: baseline,
+      proposed: policy.withMetadata,
+    });
+    if (duplicateTransport.singleLogicalBreachShape) {
+      duplicateBreachTransportShapes++;
+    }
+    if (duplicateTransport.historicalNudgeAffected) {
+      duplicateBreachHistoricalNudges++;
+    }
+    if (duplicateTransport.proposedFixedAtSingleSourceCap) {
+      duplicateBreachShapesFixedAt60++;
+    }
+    if (duplicateTransport.invariantViolation) {
+      duplicateBreachInvariantViolations++;
+    }
+
+    if (proposed.cap < baseline.cap) capLowered++;
+    else if (proposed.cap > baseline.cap) capRaised++;
+    else capUnchanged++;
+
+    if (proposed.cap !== baseline.cap) {
+      const transition = `${baseline.cap}->${proposed.cap}`;
+      capDeltas.set(transition, (capDeltas.get(transition) ?? 0) + 1);
+    }
+
+    // Compare every ordinary-status artifact through the exact shared recording
+    // helper. Collision and bio-linked rows have explicit live overrides; report
+    // and exclude them rather than claiming false status parity.
+    if (isAutoRecordedStatusRow(metadata)) {
+      autoRecordedStatusRowsExcluded++;
+    } else if (hasSpecialStatusOverride(artifact)) {
+      specialStatusRowsExcluded++;
+    } else {
+      const beforeStatus = resolveRecordingStatus(baseline, metadata).status;
+      const afterStatus = resolveRecordingStatus(proposed, metadata).status;
+      if (beforeStatus !== afterStatus) {
+        statusChanged++;
+        if (proposed.cap === baseline.cap) statusChangedAtEqualCap++;
+        const transition = `${beforeStatus} -> ${afterStatus}`;
+        statusTransitions.set(
+          transition,
+          (statusTransitions.get(transition) ?? 0) + 1,
+        );
+      }
+    }
+
+    const surfaceTokens = surfaceTokensForExecutionMatch(artifact.source);
+    const threadTools = executedByThread.get(artifact.thread_id);
+    if (!threadTools) artifactsOnThreadsWithoutToolLog++;
+    if (surfaceTokens.length === 0) {
+      noSurfaceProvenance++;
+      continue;
+    }
+
+    // Bound every match against this artifact's own write time. A tool that
+    // first ran only AFTER the artifact was written is not its provenance.
+    const artifactAt = Date.parse(artifact.created_at);
+    const matchedCount = surfaceTokens.filter((surface) =>
+      isExecutionAvailableAt(threadTools, surface, artifactAt)
+    ).length;
+    if (matchedCount === surfaceTokens.length) {
+      fullyExecutionMatched++;
+    } else if (matchedCount > 0) {
+      partiallyExecutionMatched++;
+    } else zeroExecutionMatched++;
+
+    // How much of the historical "matched" count came from post-dating
+    // executions on reused threads — the overstatement this bound removes.
+    const timelessMatchedCount = surfaceTokens.filter((surface) =>
+      threadTools?.has(surface)
+    ).length;
+    if (timelessMatchedCount > matchedCount) backdatedExecutionArtifacts++;
+
+    const unmatched = surfaceTokens.filter((surface) =>
+      !isExecutionAvailableAt(threadTools, surface, artifactAt)
+    );
+    if (unmatched.length > 0) {
+      anyTokenUnmatched++;
+      for (const surface of unmatched) {
+        const origin = unmatchedOrigin(surface);
+        unmatchedOrigins.set(origin, (unmatchedOrigins.get(origin) ?? 0) + 1);
+      }
+    }
   }
 }
 
-const top = (m: Map<string, number>, n = 12) =>
-  [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(([k, v]) => `    ${String(v).padStart(6)}  ${k}`).join("\n") || "    (none)";
+function top(values: Map<string, number>, limit = 12): string {
+  return [...values.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([label, count]) => `    ${String(count).padStart(6)}  ${label}`)
+    .join("\n") || "    (none)";
+}
 
 console.log("=".repeat(72));
-console.log("METADATA-PROVENANCE BOUNDARY — POPULATION MEASUREMENT (read-only)");
+console.log("METADATA PROVENANCE — HISTORICAL CALLER / PROPOSED POLICY");
+console.log(
+  "SCOPE: current operator account only — NOT a multi-tenant population.",
+);
 console.log("=".repeat(72));
-console.log(`1. artifacts scanned                                    ${artifacts.length}`);
-console.log(`2. carrying metadata.source / metadata.sources          ${withMeta}`);
-console.log(`3. cap changes when metadata cannot raise authority     ${capChanged}`);
-console.log(`4.   ...of which STATUS also changes                    ${statusChanged}`);
-console.log(`5. no surface provenance at all                         ${noAttested}`);
-console.log(`6. surface source not tied to any executed tool         ${unrootedSource}`);
-console.log(`\n   (threads with tool_usage_log rows: ${executed.size}; tool rows: ${tools.length})`);
-console.log("\nCAP DELTAS (today -> invariant-respecting):");
+console.log(
+  `1. artifacts scanned                                    ${artifactsScanned}`,
+);
+console.log(
+  `2. carrying metadata.source / metadata.sources          ${withMetadata}`,
+);
+console.log("3. cap-ceiling direction under caller-boundary partition:");
+console.log(
+  `     proposed lower                                     ${capLowered}`,
+);
+console.log(
+  `     proposed raised (MUST BE 0)                        ${capRaised}`,
+);
+console.log(
+  `     unchanged                                          ${capUnchanged}`,
+);
+console.log(
+  `4. projected status changes across ordinary rows        ${statusChanged}`,
+);
+console.log(
+  `     ...at an equal cap ceiling                         ${statusChangedAtEqualCap}`,
+);
+console.log(
+  `     collision/bio override rows excluded              ${specialStatusRowsExcluded}`,
+);
+console.log(
+  `     auto-recorded status rows excluded                ${autoRecordedStatusRowsExcluded}`,
+);
+console.log("5. metadata demotions:");
+console.log(
+  `     present in historical deployed caller              ${historicalMetadataDemotions}`,
+);
+console.log(
+  `     preserved                                          ${metadataDemotionsPreserved}`,
+);
+console.log(
+  `     lost (MUST BE 0)                                   ${metadataDemotionsLost}`,
+);
+console.log(
+  `     present under proposed policy                      ${proposedMetadataDemotions}`,
+);
+console.log("6. surface provenance vs execution log:");
+console.log(
+  `     fully execution-matched                            ${fullyExecutionMatched}`,
+);
+console.log(
+  `     partially matched compound                        ${partiallyExecutionMatched}`,
+);
+console.log(
+  `     any token unmatched                               ${anyTokenUnmatched}`,
+);
+console.log(
+  `     zero tokens execution-matched                     ${zeroExecutionMatched}`,
+);
+console.log(
+  `     no surface provenance                             ${noSurfaceProvenance}`,
+);
+console.log(
+  `     artifacts on threads with no tool log             ${artifactsOnThreadsWithoutToolLog}`,
+);
+console.log(
+  `     rejected: execution post-dates the artifact       ${backdatedExecutionArtifacts}`,
+);
+console.log("7. single-logical breach transport-duplicate shapes:");
+console.log(
+  `     historical caller shapes                          ${duplicateBreachTransportShapes}`,
+);
+console.log(
+  `     historical deployed 60->65 nudge reproduced       ${duplicateBreachHistoricalNudges}`,
+);
+console.log(
+  `     proposed fixed at single-source cap 60            ${duplicateBreachShapesFixedAt60}`,
+);
+console.log(
+  `     invariant violations                              ${duplicateBreachInvariantViolations}`,
+);
+console.log(
+  `\n   threads with tool logs: ${executedByThread.size}; tool rows: ${toolRowCount}`,
+);
+console.log("\nCAP DELTAS (historical deployed caller -> proposed policy):");
 console.log(top(capDeltas));
 console.log("\nSTATUS TRANSITIONS:");
-console.log(top(shapes));
-console.log("\nSURFACE TOKENS THE TOOL LOG NEVER SAW (shape only, no values):");
-console.log(top(unrootedTokens));
-console.log("\nNo artifact values were read into this output.");
+console.log(top(statusTransitions));
+console.log(
+  "\nUNMATCHED ORIGIN BUCKETS (token counts; conservative, not suspicion labels):",
+);
+console.log(top(unmatchedOrigins));
+console.log("\nGATES:");
+console.log(
+  `  metadata cannot raise cap ceiling: ${capRaised === 0 ? "PASS" : "FAIL"}`,
+);
+console.log(
+  `  existing metadata demotions retained: ${
+    metadataDemotionsLost === 0 ? "PASS" : "FAIL"
+  }`,
+);
+console.log(
+  `  duplicate breach transport invariant: ${
+    duplicateBreachInvariantViolations === 0 ? "PASS" : "FAIL"
+  }`,
+);
+console.log(
+  "\nCAVEAT: artifacts.confidence is already persisted/capped. This compares the historical deployed",
+);
+console.log(
+  "and proposed source-policy CAP CEILINGS; it cannot reconstruct the historical",
+);
+console.log(
+  "model-requested or pre-cap effective confidence without a separately stored raw value.",
+);
+console.log(
+  "Status changes are projected from persisted metadata through the current ordinary",
+);
+console.log(
+  "recording helper; they are not a reconstruction of historical write-time status.",
+);
+console.log(
+  "Collision-excluded and bio-link override rows are counted separately and excluded.",
+);
+console.log(
+  "\nEXECUTION MATCHING IS AN UPPER BOUND ONLY. A tool counts as an artifact's provenance",
+);
+console.log(
+  "when it ran at or before that artifact's write time (plus a same-call write-order",
+);
+console.log(
+  "allowance, because auto-insert tools persist the artifact inside execute while the",
+);
+console.log(
+  "usage-log row is written afterwards). There is no durable run_id or call identity on",
+);
+console.log(
+  "artifacts or tool_usage_log, so no defensible LOWER bound exists: on a reused thread a",
+);
+console.log(
+  "tool that ran long before an artifact still qualifies. These figures therefore bound",
+);
+console.log(
+  "execution provenance from above; they do not prove per-call attribution.",
+);
+console.log(
+  "Scope is the current operator account (RLS-scoped), not a multi-tenant population.",
+);
+console.log(
+  "Auto-recorded rows retain cap-policy measurement but are separately counted and",
+);
+console.log(
+  "excluded from ordinary status deltas because they use a different status writer.",
+);
+console.log("No artifact values were selected or printed.");
+
+if (
+  capRaised > 0 || metadataDemotionsLost > 0 ||
+  duplicateBreachInvariantViolations > 0
+) Deno.exitCode = 1;

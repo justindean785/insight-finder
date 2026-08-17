@@ -38,6 +38,50 @@ Deno.test("buildAutoRecordedRow: preserves caller metadata", () => {
   assertEquals(row.metadata.focus, "breach exposure");
 });
 
+for (const emptyReason of ["", "   ", "\n\t"]) {
+  Deno.test(`buildAutoRecordedRow: ${JSON.stringify(emptyReason)} reason cannot verify weak evidence`, () => {
+    const row = buildAutoRecordedRow({
+      kind: "document",
+      value: "https://example.com/lead",
+      source: "minimax_web_search",
+      rawConfidence: 95,
+      metadata: { status: "verified", reason_not_confirmed: emptyReason },
+    });
+    assertEquals(row.confidence, 55);
+    assertEquals(row.metadata.status, "observed");
+    assertEquals(
+      row.metadata.reason_not_confirmed,
+      "needs second independent class of evidence",
+    );
+  });
+}
+
+Deno.test("buildAutoRecordedRow: metadata recorder prose cannot promote an AI-summary surface", () => {
+  const row = buildAutoRecordedRow({
+    kind: "document",
+    value: "https://example.com/lead",
+    source: "minimax_web_search",
+    rawConfidence: 95,
+    metadata: { source: "Placer County Recorder" },
+  });
+  assertEquals(row.confidence, 55);
+  assertEquals(row.metadata.confidence_cap_applied, 55);
+  assertEquals(row.metadata.source_category, ["ai_summary"]);
+});
+
+Deno.test("buildAutoRecordedRow: metadata breach corpus preserves a surface breach demotion", () => {
+  const row = buildAutoRecordedRow({
+    kind: "breach_exposure",
+    value: "test@example.com",
+    source: "breach_check+oathnet_lookup",
+    rawConfidence: 95,
+    metadata: { source: "Twitter scraping 2022" },
+  });
+  assertEquals(row.confidence, 60);
+  assertEquals(row.metadata.confidence_cap_applied, 60);
+  assertEquals(row.metadata.source_category, ["breach", "unknown"]);
+});
+
 // #119: the auto-record path must also honor the breach-metadata laundering
 // guard — a breach-derived row whose surface source looks like a public record
 // must be demoted to the breach cap, not recorded at public_record (75).
