@@ -45,7 +45,18 @@ function normalizeValue(kind: string, raw: string): string {
 
 /** Artifact kinds that represent meta/status rows — surfaced in audit/timeline,
  * not in the user-facing artifact list. */
-const META_KINDS = new Set(["triage_decision", "cluster_decision"]);
+/**
+ * SINGLE SOURCE OF TRUTH for the meta kinds.
+ *
+ * Exported because filtering them out of the artifact LIST was never enough. Every
+ * artifact COUNT is a bare `count(*)`: `useInsightsData` (Brain totals), `HomeHub`
+ * (workspace totals) and the `get_case_metrics` RPC (per-case totals). All three
+ * bypassed this filter, so a `cluster_decision` row was hidden from the list while
+ * still inflating every number an analyst actually reads. Any surface that counts
+ * artifacts must exclude these kinds.
+ */
+export const META_ARTIFACT_KINDS = ["triage_decision", "cluster_decision"] as const;
+const META_KINDS = new Set<string>(META_ARTIFACT_KINDS);
 export function isMetaArtifact(a: Artifact): boolean {
   if (META_KINDS.has(a.kind.toLowerCase())) return true;
   const meta = (a.metadata ?? {}) as Record<string, unknown>;

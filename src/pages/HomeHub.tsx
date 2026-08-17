@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, Navigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+import { META_ARTIFACT_KINDS } from "@/hooks/useThreadArtifacts";
 import { SwarmMark } from "@/components/ui/swarm-mark";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -59,7 +60,11 @@ export default function HomeHub() {
       try {
         const [threadsRes, artifactsRes, memoriesRes, recentRes] = await Promise.all([
           supabase.from("threads").select("id", { count: "exact", head: true }).eq("user_id", user.id),
-          supabase.from("artifacts").select("id", { count: "exact", head: true }).eq("user_id", user.id),
+          // Excludes meta kinds — see META_ARTIFACT_KINDS. Engine bookkeeping is
+          // not evidence, and this count is what the workspace header shows.
+          supabase.from("artifacts").select("id", { count: "exact", head: true })
+            .eq("user_id", user.id)
+            .not("kind", "in", `(${META_ARTIFACT_KINDS.join(",")})`),
           supabase.from("agent_memory").select("id", { count: "exact", head: true }).eq("user_id", user.id),
           supabase
             .from("threads")
