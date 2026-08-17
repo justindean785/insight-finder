@@ -207,11 +207,20 @@ const EXPECTED_INJECTED: ReadonlyArray<{ name: string; module: string; budgetMs:
   { name: "indicia_hudsonrock", module: "./tools/indicia.ts",         budgetMs: 30_000 },
   { name: "pdl_person_enrich",  module: "./tools/peopledatalabs.ts",  budgetMs: 18_000 },
   { name: "gemini_vision",      module: "./tools/gemini_vision.ts",   budgetMs: 25_000 },
+  // GeoSeer image geolocation. Own fetch budget 50s (observed 7-45s in `fast`
+  // mode); the cache.ts wrapper sits at 58s, ABOVE it, so the tool aborts cleanly
+  // first and the wrapper never orphans an un-signalled request.
+  //
+  // This entry is the whole reason this contract exists. GeoSeer shipped to the
+  // mirror and was deployed with a cache.ts wrapper cap but no entry here, so this
+  // test was RED at the deployed commit — and the mirror runs no CI, so nothing
+  // caught it. Backporting through canonical CI is what surfaced it.
+  { name: "geoseer_geolocate",  module: "./tools/geoseer.ts",         budgetMs: 50_000 },
 ];
 
-Deno.test("timeout contract: the injected-tool set is exactly the expected nine", () => {
-  // A tenth injected tool added without a measured budget must fail here rather
-  // than silently join the registry outside the contract.
+Deno.test("timeout contract: the injected-tool set is exactly the expected ten", () => {
+  // An eleventh injected tool added without a measured budget must fail here
+  // rather than silently join the registry outside the contract.
   const found = injectedTools().map((t) => t.name).sort();
   assertEquals(
     found,

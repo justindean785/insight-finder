@@ -84,6 +84,7 @@ import {
 } from "./tools/indicia.ts";
 import { pdl_person_enrich } from "./tools/peopledatalabs.ts";
 import { gemini_vision, runGeminiVision } from "./tools/gemini_vision.ts";
+import { geoseer_geolocate } from "./tools/geoseer.ts";
 
 import {
   validateArtifact, TTL_24H_MS, TOOL_TTL_MS, NO_CACHE_TOOLS,
@@ -290,6 +291,12 @@ export function buildTools(ctx: ToolContext) {
           disabled.push({
             name: "gemini_vision",
             reason: "GEMINI_API_KEY not configured — image/document reading (vision) is unavailable; record attachments as URLs only.",
+          });
+        }
+        if (!Deno.env.get("GEOSEER_API_KEY")) {
+          disabled.push({
+            name: "geoseer_geolocate",
+            reason: "GEOSEER_API_KEY not configured — AI image geolocation is unavailable; do not attempt to infer capture locations from photos.",
           });
         }
         // Config-disabled providers (`disabled: true` in capabilities.ts's
@@ -732,6 +739,9 @@ export function buildTools(ctx: ToolContext) {
             // Gemini vision/document reader — only works with GEMINI_API_KEY; keep
             // it off the planner menu when unkeyed (same gate as gemini_deep_dork).
             if (name === "gemini_vision" && !GEMINI_API_KEY) return false;
+            // GeoSeer image geolocation — paid per call; keep it off the planner
+            // menu when unkeyed.
+            if (name === "geoseer_geolocate" && !Deno.env.get("GEOSEER_API_KEY")) return false;
             // RapidAPI breach tools are the PRIMARY email breach source but only
             // work with RAPIDAPI_KEY — both self-skip without it. Keep them off the
             // planner menu when unkeyed so an un-keyed deploy doesn't burn a planner
@@ -5172,6 +5182,12 @@ export function buildTools(ctx: ToolContext) {
   // ai_summary in source-classification.ts (lead-tier, capped ≤55).
   (tools as ToolRegistry).gemini_vision = gemini_vision;
 
+  // GeoSeer image geolocation (tools/geoseer.ts) — GEO-OSINT pivot only. Gated on
+  // GEOSEER_API_KEY via capabilities.ts; classed ai_summary in
+  // source-classification.ts (lead-tier, capped ≤55). The tool's own
+  // geolocatability gate hard-skips non-geolocatable imagery before any paid call.
+  (tools as ToolRegistry).geoseer_geolocate = geoseer_geolocate;
+
   // Inject memory tools (cross-investigation learning) into the registry.
   //
   // Late-injected registry tools, written as `(tools as ToolRegistry).X =
@@ -5380,6 +5396,7 @@ export function buildTools(ctx: ToolContext) {
     ...(RAPIDAPI_KEY ? ["rapidapi_breach_search", "rapidapi_all_breaches"] : []),
     ...(Deno.env.get("EXA_API_KEY") ? ["exa_search","exa_get_contents","exa_find_similar"] : []),
     ...(Deno.env.get("GEMINI_API_KEY") ? ["gemini_deep_dork", "gemini_vision"] : []),
+    ...(Deno.env.get("GEOSEER_API_KEY") ? ["geoseer_geolocate"] : []),
     // Free / always-on tools
     "whois_lookup","dns_records","crtsh_subdomains","wayback_snapshots","archive_url","http_fingerprint",
     "ip_intel","shodan_internetdb","hackertarget","urlscan_search","gravatar_profile","hibp_lookup",

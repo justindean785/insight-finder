@@ -149,6 +149,9 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   indicia_web_dbs: { requiresKey: "INDICIA_API_KEY" },
   indicia_hudsonrock: { requiresKey: "INDICIA_API_KEY" },
   pdl_person_enrich: { requiresKey: "PEOPLEDATALABS_API_KEY" },
+  // GeoSeer image geolocation (tools/geoseer.ts) — paid per call, so it must be
+  // dropped from the schema entirely on a keyless deploy.
+  geoseer_geolocate: { requiresKey: "GEOSEER_API_KEY" },
 };
 
 /** Every env var name the requirements depend on — what the wiring must probe. */
