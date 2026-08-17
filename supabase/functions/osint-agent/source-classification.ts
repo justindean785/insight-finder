@@ -177,6 +177,8 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   osint_navigator_search: "ai_summary",
   gemini_deep_dork: "ai_summary",
   gemini_vision: "ai_summary",
+  // GeoSeer geolocation is AI inference over pixels — LEAD-tier, capped ≤55.
+  geoseer_geolocate: "ai_summary",
   google_dorks: "ai_summary",
   dork_harvest: "ai_summary",
   jina_reader_scrape: "independent_public",

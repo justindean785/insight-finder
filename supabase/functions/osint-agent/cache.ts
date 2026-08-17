@@ -227,6 +227,9 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   pdl_person_enrich: 20_000,  // own fetch 18s (PDL_HTTP_TIMEOUT_MS). Not in the
                               // 2026-08-02 report — found by scanning all nine
                               // injected tools rather than only the one that failed.
+  geoseer_geolocate: 58_000,  // own fetch 50s (GEOSEER_HTTP_TIMEOUT_MS); provider
+                              // runs 7-45s in `fast` mode, so the wrapper must sit
+                              // above the tool's own budget, never tie it.
 };
 export function toolTimeoutMs(name: string): number {
   return TOOL_TIMEOUT_OVERRIDE_MS[name] ?? DEFAULT_TOOL_TIMEOUT_MS;

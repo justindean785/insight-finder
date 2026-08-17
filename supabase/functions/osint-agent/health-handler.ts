@@ -205,6 +205,7 @@ export function deriveReadiness(env: {
   RANSOMWARELIVE_API_KEY?: string | null;
   URLSCANNER_API_KEY?: string | null;
   FOFA_API_KEY?: string | null;
+  GEOSEER_API_KEY?: string | null;
 }): { ok: boolean; checks: Record<string, { ok: boolean; detail?: string; reason?: string; role?: "active" | "fallback" }> } {
   const has = (v: string | null | undefined) => !!(v && v.length > 0);
   const orchestratorOk = has(env.MINIMAX_API_KEY);
@@ -235,6 +236,14 @@ export function deriveReadiness(env: {
     // so a green /health was consistent with the deploy having happened and with it
     // never having been attempted. Any tool added with a new key belongs here.
     fofa: has(env.FOFA_API_KEY),
+    // GeoSeer, listed for exactly the reason above — and it has already happened
+    // a second time. GeoSeer was added to the mirror and deployed on 2026-08-17
+    // WITHOUT touching this file or build-info.ts, so both signals stayed frozen
+    // (`build: 2d47656`, `16/19`) and it was impossible to tell from outside
+    // whether the tool was live. Adding it here moves the denominator to 20, which
+    // is the cheap, unauthenticated way to detect that a deploy actually shipped
+    // new capability. Any tool added with a new key belongs here.
+    geoseer: has(env.GEOSEER_API_KEY),
   };
   const enabledOptional = Object.values(tools).filter(Boolean).length;
   const checks: Record<string, { ok: boolean; detail?: string; reason?: string; role?: "active" | "fallback" }> = {
@@ -273,6 +282,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     URLSCANNER_API_KEY,
     RAPIDAPI_KEY: Deno.env.get("RAPIDAPI_KEY"),
     FOFA_API_KEY: Deno.env.get("FOFA_API_KEY"),
+    GEOSEER_API_KEY: Deno.env.get("GEOSEER_API_KEY"),
   });
   const u = new URL(req.url);
   const wantProbe = u.searchParams.get("probe") === "1";
