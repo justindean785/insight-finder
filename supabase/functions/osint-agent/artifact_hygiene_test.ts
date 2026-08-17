@@ -21,6 +21,11 @@ import {
   stripStatusAssertions,
   nullResultKey,
 } from "./lib/artifact-hygiene.ts";
+import { TOOL_CATALOG } from "./catalog.ts";
+
+/** The REAL tool vocabulary G1 keys on — the same set tool-registry.ts passes.
+ *  Built from the catalog so this test cannot drift from the shipped call. */
+const TOOLS: ReadonlySet<string> = new Set(TOOL_CATALOG.tools.map((t) => t.name.toLowerCase()));
 
 /* ── G1 — a queued tool call is not an observation ──────────────────────── */
 
@@ -41,8 +46,36 @@ Deno.test("rejects the '(pending)' placeholders the live run persisted", () => {
     "hawkcapo - google_dorks legal/court (pending)",
   ];
   for (const v of placeholders) {
-    assert(isQueuedPlaceholder(v), `should have been rejected as queued: ${v}`);
+    assert(isQueuedPlaceholder(v, TOOLS), `should have been rejected as queued: ${v}`);
   }
+});
+
+Deno.test("G1 keeps real records whose identifiers merely LOOK like tool slugs", () => {
+  // Executed against the first implementation, all three of these were dropped
+  // as "queued-tool placeholder": TOOL_SLUG_RE matched the docket/case number,
+  // and "(pending appeal)" / "(pending decision)" is ordinary court and
+  // immigration language. This is evidence loss, so it is pinned by value.
+  const realRecords = [
+    "Docket 2021_cv_01188 (pending appeal) — Anne Arundel",
+    "Asylum application (pending decision) ref uscis_2024_88231",
+    "Sentencing (queued) for case_number 19_cr_457",
+  ];
+  for (const v of realRecords) {
+    assert(!isQueuedPlaceholder(v, TOOLS), `real record must NOT be discarded: ${v}`);
+  }
+});
+
+Deno.test("G1 fails CLOSED — no vocabulary means no discard", () => {
+  // A duplicated placeholder is a counting error; a dropped court record is
+  // evidence loss. Those are not symmetric, so the unknown case must keep.
+  assert(
+    !isQueuedPlaceholder("hawkcapo - socialfetch_lookup (pending Instagram)"),
+    "without the tool vocabulary the row must be KEPT, never discarded",
+  );
+  assert(
+    !isQueuedPlaceholder("hawkcapo - socialfetch_lookup (pending Instagram)", new Set()),
+    "an empty vocabulary must behave the same as none",
+  );
 });
 
 Deno.test("does NOT reject real findings that merely contain the word pending", () => {
@@ -201,8 +234,34 @@ Deno.test("wiring: the queued-placeholder gate guards the record path unconditio
   // Asserts the exact call form, so a `false &&` / `if (0 &&` disable is caught
   // rather than passing as "still referenced somewhere".
   assert(
-    REGISTRY.includes("if (isQueuedPlaceholder(a.value)) {"),
-    "isQueuedPlaceholder must gate the record path with no disabling prefix",
+    REGISTRY.includes("if (isQueuedPlaceholder(a.value, KNOWN_TOOL_SLUGS)) {"),
+    "isQueuedPlaceholder must gate the record path with no disabling prefix, AND be passed the real tool vocabulary",
+  );
+});
+
+Deno.test("wiring: the singular record_artifact shim is gated too", () => {
+  // record_artifact is advertised in catalog.ts, so the model may call it. It
+  // previously wrote artifacts with NONE of these gates applied — an open bypass
+  // of the entire cleanup. "Prefer record_artifacts" is guidance, not a control.
+  assert(
+    REGISTRY.includes("isQueuedPlaceholder(value, KNOWN_TOOL_SLUGS)"),
+    "the record_artifact shim must run G1 with the tool vocabulary",
+  );
+  assert(
+    REGISTRY.includes("stripStatusAssertions(value)"),
+    "the record_artifact shim must run G2",
+  );
+});
+
+Deno.test("wiring: a G2 strip is DISCLOSED, never silent", () => {
+  // stripStatusAssertions rewrites the stored value. `stripped` had no consumer,
+  // so an ALL-CAPS quotation was altered with no audit trail. Both write paths
+  // must retain the pre-hygiene value.
+  const disclosures = REGISTRY.split("status_assertion_stripped: true").length - 1;
+  assert(disclosures >= 2, `both record paths must disclose the strip (found ${disclosures})`);
+  assert(
+    REGISTRY.includes("value_before_hygiene"),
+    "the pre-hygiene value must be retained for chain of custody",
   );
 });
 
@@ -256,4 +315,36 @@ Deno.test("wiring: the null-result key is built on the AUTHORITATIVE source only
     !/nullResultKey\(\{[\s\S]{0,200}effSources/.test(REGISTRY),
     "effSources was deleted by #463 and must not come back through this key",
   );
+});
+
+Deno.test("G4 must NOT collapse two DIFFERENT records that both mention a zero result", () => {
+  // Executed against the first implementation these canonicalised identically,
+  // so within one batch the second was rejected as a "duplicate". Different
+  // courts, different dockets, different dispositions — one surviving row.
+  const a = nullResultKey({
+    kind: "legal_record", source: "jina_reader_scrape", selector: "james harker",
+    value: "Case 2021-CV-01188 (Anne Arundel Cty): no records of prior conviction",
+  });
+  const b = nullResultKey({
+    kind: "legal_record", source: "jina_reader_scrape", selector: "james harker",
+    value: "Case 2019-CR-00457 (Baltimore Cty): no records of appeal",
+  });
+  assertEquals(a, null, "a record naming a specific docket is not a plain null result");
+  assertEquals(b, null, "a record naming a specific docket is not a plain null result");
+});
+
+Deno.test("G4 still dedups the SAME null result phrased two ways (the original defect)", () => {
+  // The regression guard for the fix above: the residue check must not be so
+  // eager that it un-canonicalises a plain null result. These two are the exact
+  // rows from the live run, 33s apart, both at confidence 60.
+  const a = nullResultKey({
+    kind: "breach_exposure", source: "breach_check", selector: "hawkcapo",
+    value: "no breach hits (breach_check)",
+  });
+  const b = nullResultKey({
+    kind: "breach_exposure", source: "breach_check", selector: "hawkcapo",
+    value: "hawkcapo - 0 hits (breach_check)",
+  });
+  assert(a !== null, "a plain null result must still canonicalise");
+  assertEquals(a, b, "the same null result phrased two ways must share one key");
 });
