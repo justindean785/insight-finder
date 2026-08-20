@@ -143,3 +143,24 @@ LANGUAGE sql
 AS $$
   SELECT 0::bigint;
 $$;
+
+-- ---------------------------------------------------------------------------
+-- Default privileges — mirror what Supabase actually configures on this project.
+--
+-- WHY THIS MATTERS, and why omitting it made a security assertion worthless.
+-- On the live database, pg_default_acl for functions in `public` grants EXECUTE
+-- to anon, authenticated AND service_role (two entries: owner supabase_admin and
+-- owner postgres). Every function a migration creates therefore starts out
+-- callable by `anon` unless the migration explicitly revokes it.
+--
+-- A bare PostgreSQL container has no such default, so without these lines CI
+-- creates functions with a narrow ACL that production would never produce — and
+-- the "no anon EXECUTE on SECURITY DEFINER" assertion in ci.yml passes trivially,
+-- proving nothing. Measured: without this, ZERO functions carry anon in CI, so
+-- the check is vacuous; with it, exactly one pre-existing defect surfaces
+-- (save_agent_memories' 4-argument overload — see migration 20260810000001).
+--
+-- Keep this in sync with production. If Supabase's defaults change, this line is
+-- what makes CI notice.
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT EXECUTE ON FUNCTIONS TO anon, authenticated, service_role;
