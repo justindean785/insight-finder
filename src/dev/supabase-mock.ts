@@ -25,6 +25,65 @@ const artifacts = [
   { id: "a6", thread_id: THREAD_ID, kind: "location", value: "Oakland, California, US", confidence: 41, confidence_cap_applied: 65, source: "indicia_person", created_at: iso(16), metadata: { sources: ["indicia_person"], corroborations: 1, source_class: "data_broker" } },
   { id: "a7", thread_id: THREAD_ID, kind: "social_profile", value: "linkedin.com/in/james-harker-logistics", confidence: 79, confidence_cap_applied: null, source: "socialfetch", created_at: iso(11), metadata: { sources: ["socialfetch", "exa_search"], corroborations: 2, source_class: "provider" } },
   { id: "a8", thread_id: THREAD_ID, kind: "ip", value: "203.0.113.47", confidence: 34, confidence_cap_applied: null, source: "oathnet", created_at: iso(6), metadata: { sources: ["oathnet"], corroborations: 1, source_class: "breach_corpus" } },
+  // ── Quarantined: the same-name collision axis ────────────────────────────
+  // A name-only sweep on "James Harker" returned a DIFFERENT James Harker's
+  // selectors. The backend flags them `subject_unlinked` (#433) and they are
+  // persisted on purpose — quarantine is disclosure, not deletion. They must
+  // render as evidence with their reason, and must never seed an identity
+  // cluster, gain a graph identity edge, or raise a confidence dimension.
+  //
+  // Without these rows the harness cannot show the promote boundary at all:
+  // every other fixture artifact is un-quarantined, so the Graph/Report tabs
+  // look identical with the gate on or off. They share a `parent` pointer so
+  // they WOULD cluster together if the gate ever regressed — which is what
+  // makes them a useful visual canary rather than decoration.
+  { id: "a9", thread_id: THREAD_ID, kind: "phone", value: "+1 209 555 0117", confidence: 45, confidence_cap_applied: 55, source: "oathnet_lookup", created_at: iso(19), metadata: { sources: ["oathnet_lookup"], corroborations: 1, source_class: "data_broker", parent: "james harker", subject_unlinked: true, subject_unlinked_reason: "harvested from a name-only query — same-name collision axis; linkage to the subject is unproven" } },
+  { id: "a10", thread_id: THREAD_ID, kind: "email", value: "jharker@stocktonfreight.example", confidence: 45, confidence_cap_applied: 55, source: "oathnet_lookup", created_at: iso(18), metadata: { sources: ["oathnet_lookup"], corroborations: 1, source_class: "data_broker", parent: "james harker", subject_unlinked: true, subject_unlinked_reason: "harvested from a name-only query — same-name collision axis; linkage to the subject is unproven" } },
+
+  // ── The RELEASED row — `subject_unlinked` + `linkage_confirmed` ──────────
+  // The #448 escape hatch, on the board. It arrived on the collision axis and
+  // an analyst then adjudicated the linkage, so it must read as ORDINARY
+  // evidence (no quarantine chip, no cordon, full confidence, eligible to
+  // cluster and to pivot) while keeping its history in metadata.
+  //
+  // It is here because it is the state most likely to regress silently: the
+  // three predicates that honour release and the two that used to ignore it all
+  // render the same on a row with no release, so without this fixture the
+  // difference is invisible in every screenshot.
+  { id: "a11", thread_id: THREAD_ID, kind: "username", value: "harker.logistics", confidence: 81, confidence_cap_applied: null, source: "socialfetch", created_at: iso(15), metadata: { sources: ["socialfetch", "exa_search"], corroborations: 2, source_class: "provider", parent: "james harker", subject_unlinked: true, subject_unlinked_reason: "harvested from a name-only query — same-name collision axis; linkage to the subject is unproven", linkage_confirmed: true } },
+
+  // ── The COLLISION row — strong evidence, zero subject authority ──────────
+  // Deliberately the strongest fixture on the board: two independent source
+  // classes and confidence 88, with `possible_collision` and no quarantine flag.
+  //
+  // That combination used to render "Verified", lead the Overview's strongest
+  // findings and count in the header's verified tally — while clustering, the
+  // graph, confidence dimensions and the report all treated it as an unrelated
+  // namesake, because `isClusterIneligible` covers the collision flags and
+  // `evidenceStatus` consults none of them. It is here so the board's answer and
+  // the engine's answer can be compared in one screenshot. (Codex review, #462.)
+  { id: "a12b", thread_id: THREAD_ID, kind: "email", value: "j.harker@harker-legal.example", confidence: 88, confidence_cap_applied: null, source: "hunter_verify", created_at: iso(14), metadata: { sources: ["hunter_verify", "exa_search"], corroborations: 2, source_class: "provider", parent: "james harker", possible_collision: true, reason_not_confirmed: "a second James Harker — attorney, Sacramento — matches the queried name but nothing else in the case" } },
+
+  // ── Conflict — contradicts another row, and is NOT quarantined ───────────
+  { id: "a12", thread_id: THREAD_ID, kind: "location", value: "Stockton, California, US", confidence: 38, confidence_cap_applied: null, source: "indicia_person", created_at: iso(14), metadata: { sources: ["indicia_person"], corroborations: 1, source_class: "data_broker", conflict: true, conflict_note: "contradicts the Oakland record from the same broker — both cannot be the subject's primary residence" } },
+
+  // ── Failed / excluded — analyst marked a false positive ─────────────────
+  { id: "a13", thread_id: THREAD_ID, kind: "email", value: "info@northgate-logistics.com", confidence: 20, confidence_cap_applied: null, source: "exa_search", created_at: iso(13), metadata: { sources: ["exa_search"], corroborations: 1, source_class: "independent_public", false_positive: true } },
+
+  // ── Long identifiers — the truncation / copy path ────────────────────────
+  { id: "a14", thread_id: THREAD_ID, kind: "url", value: "https://staff.northgate-logistics.com/directory/operations/james-harker?ref=internal&utm_source=intranet&sid=7f3c19ab-2d44-4e51-9c07-a8be31f0d2c6", confidence: 66, confidence_cap_applied: null, source: "firecrawl_scrape", created_at: iso(12), metadata: { sources: ["firecrawl_scrape"], corroborations: 1, source_class: "independent_public" } },
+  { id: "a15", thread_id: THREAD_ID, kind: "crypto_wallet", value: "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq9v0x8lm3sq4nzsjhtca8", confidence: 29, confidence_cap_applied: null, source: "oathnet", created_at: iso(10), metadata: { sources: ["oathnet"], corroborations: 1, source_class: "breach" } },
+
+  // ── Volume — a same-kind cluster past CLUSTER_COLLAPSE_THRESHOLD (4), so
+  //    the collapse path and the sticky column head are exercised. Uniform
+  //    provenance and near-identical confidence: the "wall of identical rows"
+  //    the ledger's column alignment exists to make scannable.
+  ...Array.from({ length: 14 }, (_, i) => ({
+    id: `sub${i + 1}`, thread_id: THREAD_ID, kind: "subdomain",
+    value: `${["mail", "vpn", "portal", "api", "dev", "staging", "cdn", "git", "docs", "status", "smtp", "ns1", "ns2", "legacy"][i]}.northgate-logistics.com`,
+    confidence: 70 - (i % 3) * 5, confidence_cap_applied: null, source: "hackertarget",
+    created_at: iso(9), metadata: { sources: ["hackertarget"], corroborations: 1, source_class: "infra_dns" },
+  })),
 ];
 
 /** `messages.parts` is AI-SDK shaped Json, not a plain string body. */
@@ -64,6 +123,17 @@ const tool_usage_log = [
   tool("t7", "whois_lookup", true, 640, 22),
   tool("t8", "socialfetch", true, 1890, 11),
   tool("t9", "gemini_vision", false, 9100, 8, "document exceeded inline size ceiling"),
+  // Long tool activity + the full outcome vocabulary, so the Tools tab is
+  // reviewed against something other than "mostly succeeded".
+  tool("t10", "hackertarget", true, 2210, 9),
+  tool("t11", "virustotal", true, 1430, 8, null, true),
+  tool("t12", "shodan_host", false, 30010, 7, "upstream rate limit — 429 after 3 retries"),
+  tool("t13", "pdl_person_enrich", false, 420, 7, "gated: paid-call budget reached for this run"),
+  tool("t14", "ipqualityscore", true, 690, 6),
+  tool("t15", "urlscan_submit", false, 12040, 5, "timeout after 12000ms"),
+  tool("t16", "ransomwarelive_lookup", true, 980, 5),
+  tool("t17", "dehashed_search", false, 310, 4, "skipped: DEHASHED_API_KEY not configured"),
+  tool("t18", "exa_contents", true, 3120, 4),
 ];
 
 /**

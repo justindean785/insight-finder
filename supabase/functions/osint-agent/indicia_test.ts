@@ -7,7 +7,7 @@ import {
 import { buildTools, type ToolContext } from "./tool-registry.ts";
 import { classifyToolOutcome } from "./tool-outcome.ts";
 import { classifySource } from "./source-classification.ts";
-import { applyEvidenceCaps } from "./confidence.ts";
+import { applyEvidenceCapsLegacyOccurrenceBaseline } from "./confidence.ts";
 
 // Indicia (api.indicia.app) wiring + integrity contract.
 //   - 6 endpoints ONLY; facial/geolocation/gmail/username are hard-excluded.
@@ -72,19 +72,19 @@ Deno.test("indicia: the data_broker split did NOT weaken any cap (integrity cont
   // or drops it from NEVER_HIGH, this fails — a relabel must never become a
   // promotion.
   for (const n of [...INDICIA_BROKER_TOOLS, ...INDICIA_BREACH_TOOLS, "pdl_person_enrich"]) {
-    const broker = applyEvidenceCaps({ rawConfidence: 95, sources: [n] });
+    const broker = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 95, sources: [n] });
     assert(broker.confidence <= 65, `${n}: ${broker.confidence} must stay ≤65 after the split`);
     assert(!!broker.reason_not_confirmed, `${n}: reason_not_confirmed must still be set`);
   }
   // Byte-for-byte parity between the two classes on the same raw input.
-  const asBroker = applyEvidenceCaps({ rawConfidence: 95, sources: ["indicia_address"] });
-  const asBreach = applyEvidenceCaps({ rawConfidence: 95, sources: ["indicia_web_dbs"] });
+  const asBroker = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 95, sources: ["indicia_address"] });
+  const asBreach = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 95, sources: ["indicia_web_dbs"] });
   assertEquals(asBroker.confidence, asBreach.confidence, "data_broker and breach must cap identically");
 });
 
 Deno.test("indicia: a single hit can NEVER reach Confirmed (capped ≤65, not-confirmed reason set)", () => {
   for (const n of INDICIA_TOOLS) {
-    const r = applyEvidenceCaps({ rawConfidence: 95, sources: [n] });
+    const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 95, sources: [n] });
     assert(r.confidence <= 65, `${n}: confidence ${r.confidence} must be ≤65`);
     assert(r.confidence < 90, `${n}: a single hit must stay below the Confirmed threshold`);
     assert(!!r.reason_not_confirmed, `${n}: reason_not_confirmed must be set`);

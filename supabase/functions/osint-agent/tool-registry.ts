@@ -16,13 +16,19 @@ import {
   type StructuredContradiction,
 } from "./contradictions.ts";
 import { applyDateSanity } from "./date-sanity.ts";
-import { computeAxes, sourceConfidence, applyEvidenceCaps, isUnrelatedEntity, EXCLUDED_COLLISION_CONFIDENCE, isBioCrossLinkName, BIO_CROSS_LINK_NAME_CAP, deriveStatus, coerceCoherentStatus, looksDeadEnd } from "./confidence.ts";
+import { computeAxes, sourceConfidence, isUnrelatedEntity, EXCLUDED_COLLISION_CONFIDENCE, isBioCrossLinkName, BIO_CROSS_LINK_NAME_CAP } from "./confidence.ts";
+import { applyRecordingSourcePolicy, disclosedSourceLabels, resolveRecordingStatus } from "./recording-source-policy.ts";
 import { queryTypesOf } from "./query-type-router.ts";
 import { isSameSurnameOnlyLead, isListingAgentLead } from "./collision-policy.ts";
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDomainSource, LLM_ASSERTED_PROVENANCE, countIndependentClasses } from "./artifact_types.ts";
 import * as circuit from "./circuit.ts";
 import { buildNodes } from "./graph.ts";
 import { collisionPeerSignal, type CollisionPeer } from "./lib/quarantine.ts";
+import {
+  isQueuedPlaceholder,
+  stripStatusAssertions,
+  nullResultKey,
+} from "./lib/artifact-hygiene.ts";
 import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
 import { selectPivots, proposedCallToCandidate, type PivotCandidate, type ProposedCall } from "./graph_pivots.ts";
 import { renderPivotChecklistForPrompt } from "./pivot-checklists.ts";
@@ -78,6 +84,7 @@ import {
 } from "./tools/indicia.ts";
 import { pdl_person_enrich } from "./tools/peopledatalabs.ts";
 import { gemini_vision, runGeminiVision } from "./tools/gemini_vision.ts";
+import { geoseer_geolocate } from "./tools/geoseer.ts";
 
 import {
   validateArtifact, TTL_24H_MS, TOOL_TTL_MS, NO_CACHE_TOOLS,
@@ -116,6 +123,21 @@ import { trimExaResults, archiveAttachment } from "./archiver.ts";
 // set from this so a tool marked `disabled: true` cannot stay advertised to the
 // model after the runtime has removed it.
 import { PROVIDER_REQUIREMENTS } from "./capabilities.ts";
+import { agentMemoryOrFilter } from "./pgrest.ts";
+
+/**
+ * The REAL tool vocabulary, for G1's queued-placeholder gate.
+ *
+ * G1 must recognise an actual tool name, never snake_case SHAPE — `2021_cv_01188`
+ * is the same shape as `socialfetch_lookup`, so the shape test discarded genuine
+ * court and immigration records phrased "(pending appeal)". Sourced from
+ * TOOL_CATALOG because catalog.ts is already held in sync with this registry by
+ * the catalog↔runtime contract test, so a new tool cannot silently fall out of
+ * this set.
+ */
+const KNOWN_TOOL_SLUGS: ReadonlySet<string> = new Set(
+  TOOL_CATALOG.tools.map((t) => t.name.toLowerCase()),
+);
 
 type ToolRegistry = Record<string, unknown>;
 type ExecutableTool = {
@@ -269,6 +291,12 @@ export function buildTools(ctx: ToolContext) {
           disabled.push({
             name: "gemini_vision",
             reason: "GEMINI_API_KEY not configured — image/document reading (vision) is unavailable; record attachments as URLs only.",
+          });
+        }
+        if (!Deno.env.get("GEOSEER_API_KEY")) {
+          disabled.push({
+            name: "geoseer_geolocate",
+            reason: "GEOSEER_API_KEY not configured — AI image geolocation is unavailable; do not attempt to infer capture locations from photos.",
           });
         }
         // Config-disabled providers (`disabled: true` in capabilities.ts's
@@ -711,6 +739,9 @@ export function buildTools(ctx: ToolContext) {
             // Gemini vision/document reader — only works with GEMINI_API_KEY; keep
             // it off the planner menu when unkeyed (same gate as gemini_deep_dork).
             if (name === "gemini_vision" && !GEMINI_API_KEY) return false;
+            // GeoSeer image geolocation — paid per call; keep it off the planner
+            // menu when unkeyed.
+            if (name === "geoseer_geolocate" && !Deno.env.get("GEOSEER_API_KEY")) return false;
             // RapidAPI breach tools are the PRIMARY email breach source but only
             // work with RAPIDAPI_KEY — both self-skip without it. Keep them off the
             // planner menu when unkeyed so an un-keyed deploy doesn't burn a planner
@@ -765,7 +796,7 @@ export function buildTools(ctx: ToolContext) {
                 .from("agent_memory")
                 .select("kind,content,confidence")
                 .eq("user_id", userId)
-                .or(`subject.eq.${seedNorm},related_values.cs.{${seedNorm}}`)
+                .or(agentMemoryOrFilter(seedNorm))
                 .order("confidence", { ascending: false })
                 .limit(8);
               const rows = (mem ?? []) as Array<{ kind?: string; content?: string; confidence?: number }>;
@@ -1082,7 +1113,13 @@ export function buildTools(ctx: ToolContext) {
     }),
     oathnet_victims_search: tool({
       description:
-        "OathNet v2 VICTIM-manifest search — find compromised hosts (stealer-log victims) tied to a selector. Returns victim device metadata keyed by log_id: device usernames, HWIDs, device IPs, device emails, linked discord_ids, doc counts, dates. No raw credentials. Pivot a returned log_id into oathnet_victim_manifest (file tree) → oathnet_victim_file (redacted content). total_docs_min filters to richer logs. Every hit is a LEAD; label [VERIFY]. Shares the 500/day OathNet pool.",
+        "OathNet v2 VICTIM-manifest search — find compromised hosts (stealer-log victims) tied to a selector. Returns victim device metadata keyed by log_id: device usernames, HWIDs, device IPs, device emails, linked discord_ids, doc counts, dates. " +
+        (REVEAL_BREACH_DATA
+          ? "Account-authorized full reveal is ON: raw credential fields carried on a victim row ARE returned — record every concrete value found. " +
+            "Pivot a returned log_id into oathnet_victim_manifest (file tree) → oathnet_victim_file, which returns UNMASKED file content under the same reveal policy — that is where the bulk of the captured credentials live, so pivot there and record what it returns. "
+          : "No raw credentials. " +
+            "Pivot a returned log_id into oathnet_victim_manifest (file tree) → oathnet_victim_file (redacted content). ") +
+        "total_docs_min filters to richer logs. Every hit is a LEAD; label [VERIFY]. Shares the 500/day OathNet pool.",
       inputSchema: memoSchema("oathnet_victims_search", () => z.object({
         value: z.string().describe("Selector: email / username / ip / discord_id / domain"),
         total_docs_min: z.number().int().min(0).optional().describe("Only logs with at least N documents"),
@@ -1105,9 +1142,11 @@ export function buildTools(ctx: ToolContext) {
           return {
             ok: true, status: r.status,
             count: items.length, total: d?.meta?.total ?? items.length,
-            items: trimVictimItems(items),
+            items: trimVictimItems(items, 25, REVEAL_BREACH_DATA),
             quota_left: oathnetQuotaLeft(),
-            note: "Victim rows are LEADS until corroborated. Pivot a log_id via oathnet_victim_manifest. Label device identifiers [VERIFY].",
+            note: REVEAL_BREACH_DATA
+              ? "Victim rows are LEADS until corroborated. Account-authorized full reveal is ON — raw passwords/cookies ARE included; record every concrete credential value found. Pivot a log_id via oathnet_victim_manifest. Label device identifiers [VERIFY]."
+              : "Victim rows are LEADS until corroborated. Passwords/cookies are redacted — do NOT record raw credentials. Pivot a log_id via oathnet_victim_manifest. Label device identifiers [VERIFY].",
           };
         } catch (e) { return { error: String(e) }; }
       },
@@ -4537,19 +4576,45 @@ export function buildTools(ctx: ToolContext) {
         // a non-destructive, in-memory-only guard — no DB change.
         const seenInBatch = new Set<string>();
         artifacts.forEach((a, i) => {
+          // A QUEUED tool call is not an observation. Ten rows like
+          // "hawkcapo - socialfetch_lookup (pending Instagram)" were persisted
+          // on a measured run BEFORE their tool returned, each carrying
+          // status:"observed", each later shadowed by the real result — false
+          // when written, duplicated once answered, and joined to the subject
+          // cluster where they feed promoteConfidence's peer set.
+          if (isQueuedPlaceholder(a.value, KNOWN_TOOL_SLUGS)) {
+            rejected.push({
+              index: i,
+              reason:
+                "queued-tool placeholder, not an observation — record the RESULT after the tool returns. " +
+                "A pending call has observed nothing and would duplicate its own result.",
+              kind: a.kind,
+              value: a.value,
+            });
+            return;
+          }
+          // An analyst label asserted INSIDE the value outranks the number
+          // stored beside it: "Instagram @hawkcapo - CONFIRMED active profile"
+          // shipped at confidence 40 with reason_not_confirmed "needs second
+          // independent class of evidence". The value is rendered verbatim by
+          // the evidence table, the graph, export and any generated findings
+          // table, so the word survives every downstream control built to stop
+          // that claim. Removed here, once, for all of them. ALL-CAPS only, so
+          // quoted source text is evidence and is left intact.
+          const hygienic = stripStatusAssertions(a.value);
           // Infer strict kind from value patterns (LAPD → law_enforcement_unit,
           // People v X → court_case, wallet hex → crypto_wallet, etc.).
-          const inferred = inferKind(a.kind, a.value);
-          const v = validateArtifact(inferred.kind, a.value);
+          const inferred = inferKind(a.kind, hygienic.value);
+          const v = validateArtifact(inferred.kind, hygienic.value);
           if (!v.ok) {
             rejected.push({ index: i, reason: v.reason, kind: a.kind, value: a.value });
             return;
           }
           // Apply conservative confidence caps based on source class.
-          const effSources = [a.source ?? "", ...((a.metadata?.sources ?? []) as Iterable<unknown>)].filter(Boolean) as string[];
-          const cap = applyEvidenceCaps({
+          const disclosedSources = disclosedSourceLabels(a.source, a.metadata ?? null);
+          const { effective: cap } = applyRecordingSourcePolicy({
             rawConfidence: a.confidence ?? 50,
-            sources: effSources,
+            source: a.source,
             kind: a.kind,
             metadata: (a.metadata ?? null) as Record<string, unknown> | null,
           });
@@ -4560,7 +4625,7 @@ export function buildTools(ctx: ToolContext) {
           // fetch) is whitelisted so the legitimate seed never trips it.
           const seedRecognizedDomains = [triageState.seedDomain, triageState.seed]
             .filter((d): d is string => typeof d === "string" && d.length > 0);
-          const llmAssertedProvenance = effSources.some((s) => isLlmAssertedDomainSource(s, seedRecognizedDomains));
+          const llmAssertedProvenance = disclosedSources.some((s) => isLlmAssertedDomainSource(s, seedRecognizedDomains));
           // Different-person / unrelated-entity gate: a namesake/collision that
           // does NOT belong to the seed is demoted to excluded_collision with a
           // hard-capped confidence so it can't roll up or read as a confirmed link.
@@ -4575,6 +4640,17 @@ export function buildTools(ctx: ToolContext) {
           // Bio-linked name gate: a name pulled out of a profile bio is an
           // unverified identity claim and can never anchor the case.
           const bioName = !collisionExcluded && isBioCrossLinkName(v.kind, a.metadata ?? null);
+          // NOTE — the legal_record demotion (G3 in #460) is deliberately NOT
+          // here. It decided authority from the TOOL name, and a measured run
+          // (1720 Sea Pine Circle, 2026-08-16) produced two legal_record rows
+          // from the SAME tool at the SAME confidence where the right answer
+          // differs: an Anne Arundel County police press release (a genuine
+          // law-enforcement record) and a Gun Violence Archive incident (an
+          // independent aggregator). classifySource cannot separate them —
+          // aacounty.org and maryland.gov both classify as `unknown` — so the
+          // authority signal lives in the URL host, not the tool. Shipping the
+          // tool-keyed version would have systematically mis-filed real LE
+          // records as media_report. Deferred until that is designed properly.
           const finalKind = collisionExcluded ? "excluded_collision" : v.kind;
           const finalConfidence = collisionExcluded
             ? Math.min(cap.confidence, EXCLUDED_COLLISION_CONFIDENCE)
@@ -4583,24 +4659,15 @@ export function buildTools(ctx: ToolContext) {
               : cap.confidence;
           // Resolve the confirmation gap, then DERIVE a coherent status from it
           // (status can never contradict reason_not_confirmed).
-          const aReqRNC = typeof a.metadata?.reason_not_confirmed === "string" ? a.metadata.reason_not_confirmed : null;
+          const ordinaryStatus = resolveRecordingStatus(cap, a.metadata ?? null);
           const resolvedReasonNotConfirmed = bioName
             ? "name appears only in a bio/linked-accounts block — confirm it is the subject, not a mentioned third party"
-            : (aReqRNC ?? cap.reason_not_confirmed ?? null);
+            : ordinaryStatus.reasonNotConfirmed;
           const derivedStatus = collisionExcluded
             ? "excluded"
             : bioName
               ? "unverified_bio_link"
-              : coerceCoherentStatus(
-                  deriveStatus({
-                    requested: typeof a.metadata?.status === "string" ? a.metadata.status : null,
-                    reasonNotConfirmed: resolvedReasonNotConfirmed,
-                    sourceClasses: cap.source_classes,
-                    contradictions: Array.isArray(a.metadata?.contradictions) ? a.metadata.contradictions : [],
-                    deadEnd: looksDeadEnd(a.metadata ?? null),
-                  }),
-                  resolvedReasonNotConfirmed,
-                );
+              : ordinaryStatus.status;
           // Deterministic date-sanity guard for harm-bearing records: flags a
           // genuinely-future date and neutralizes false model-authored
           // "future date" notes when the date is not actually future. Provenance
@@ -4612,6 +4679,14 @@ export function buildTools(ctx: ToolContext) {
             ...(a.metadata ?? {}),
             ...(v.metaPatch ?? {}),
             ...(inferred.reclassified_from ? { reclassified_from: inferred.reclassified_from } : {}),
+            // G2 is DISCLOSURE, not a silent rewrite. stripStatusAssertions
+            // mutates the stored value, and `stripped` had no consumer — so an
+            // ALL-CAPS quotation ("POLICE CONFIRMED SUSPECT IN CUSTODY" ->
+            // "POLICE SUSPECT IN CUSTODY") was altered with no audit trail. The
+            // pre-hygiene value is retained so chain of custody survives the edit.
+            ...(hygienic.stripped
+              ? { status_assertion_stripped: true, value_before_hygiene: a.value }
+              : {}),
             source_category: cap.source_classes,
             query_types: queryTypesOf({ value: v.value, kind: v.kind, metadata: a.metadata ?? null }),
             status: derivedStatus,
@@ -4635,20 +4710,44 @@ export function buildTools(ctx: ToolContext) {
             // Spread LAST so a corrected `note` overrides the model-supplied one.
             ...dateSanity.metaPatch,
           };
-          // Include EFFECTIVE source(s) in the key, not just the top-level
-          // `source` field: two DIFFERENT sources reporting the same (kind,
-          // value) in one batch is corroboration, not a duplicate — e.g.
-          // leakcheck_lookup + oathnet_lookup both hitting the same breach email
-          // must both land as distinct source observations, or the multi-source
-          // signal the confidence/corroboration logic depends on collapses to one
-          // row (the same class of bug flagged in #189's migration key). Using
-          // only `a.source` still missed this when provenance instead lives in
-          // `metadata.sources` (or `a.source` is a generic wrapper label like
-          // "Multiple sources") — so key on the same `effSources` this block
-          // already computes for confidence caps (sorted for a stable key).
-          const dedupKey = `${finalKind} ${v.value} ${[...effSources].sort().join(",")}`;
+          // One observation is identified only by its authority-bearing surface.
+          // Model-authored metadata labels remain persisted for disclosure, but
+          // cannot manufacture another observation row or corroboration.
+          const authoritativeSource = typeof a.source === "string"
+            ? a.source.trim().toLowerCase()
+            : "";
+          // A null result is identified by WHAT WAS CHECKED, not by how it was
+          // worded. The measured run wrote breach_check's single zero-hit result
+          // twice — "no breach hits (breach_check)" and "0 hits (breach_check)" —
+          // because the key below is the exact value string, and paraphrase
+          // defeats it. The tool stays in the key: four corpora returning zero is
+          // four coverage facts, and collapsing those would erase breadth (the
+          // data-loss shape flagged on #189's migration).
+          //
+          // It keys on `authoritativeSource`, NOT on the disclosed metadata
+          // labels. #460 wrote this against `effSources`, which #463 deleted —
+          // and keying on model-authored labels would let a relabelled row split
+          // one observation into several, the exact laundering #463 closed.
+          //
+          // NOTE the bound: `seenInBatch` is per-BATCH, so this catches a
+          // paraphrase repeated within one record_artifacts call. The two rows
+          // measured on the live run were 33s apart in DIFFERENT batches;
+          // closing that needs the thread-wide dedup tracked in #307.
+          const canonicalNullKey = nullResultKey({
+            kind: finalKind,
+            source: authoritativeSource || (a.source ?? null),
+            value: v.value,
+            selector: typeof a.metadata?.username === "string"
+              ? a.metadata.username
+              : (typeof a.metadata?.email === "string" ? a.metadata.email : (triageState.seed ?? null)),
+          });
+          const dedupKey = canonicalNullKey ?? JSON.stringify([
+            finalKind,
+            v.value,
+            authoritativeSource,
+          ]);
           if (seenInBatch.has(dedupKey)) {
-            rejected.push({ index: i, reason: "duplicate (kind,value,sources) already in this batch", kind: finalKind, value: v.value });
+            rejected.push({ index: i, reason: "duplicate (kind,value,authoritative source) already in this batch", kind: finalKind, value: v.value });
             return;
           }
           seenInBatch.add(dedupKey);
@@ -4757,7 +4856,7 @@ export function buildTools(ctx: ToolContext) {
                   .from("agent_memory")
                   .select("id,kind,subject,subject_kind,related_values,content,confidence,hit_count")
                   .eq("user_id", userId)
-                  .or(`subject.eq.${subj},related_values.cs.{${subj}}`)
+                  .or(agentMemoryOrFilter(subj))
                   .order("confidence", { ascending: false })
                   .limit(5);
                 return { subject: subj, count: data?.length ?? 0, memories: data ?? [] };
@@ -4873,13 +4972,29 @@ export function buildTools(ctx: ToolContext) {
         metadata: z.record(z.unknown()).optional(),
       })),
       execute: async ({ kind, value, confidence, source, metadata }) => {
+        // G1/G2 apply HERE TOO. This shim is advertised in catalog.ts, so the
+        // model may call it, and it wrote artifacts with none of the write-path
+        // gates the plural tool enforces — an open bypass of the entire #466
+        // cleanup. "Prefer record_artifacts" is guidance, not a control.
+        if (isQueuedPlaceholder(value, KNOWN_TOOL_SLUGS)) {
+          return {
+            ok: false,
+            rejected: true,
+            reason:
+              "queued-tool placeholder, not an observation — record the RESULT after the tool returns. " +
+              "A pending call has observed nothing and would duplicate its own result.",
+          };
+        }
+        const rawValueBeforeHygiene = value;
+        const hygienic = stripStatusAssertions(value);
+        value = hygienic.value;
         const inferred = inferKind(kind, value);
         const v = validateArtifact(inferred.kind, value);
         if (!v.ok) return { ok: false, rejected: true, reason: v.reason };
-        const effSources = [source ?? "", ...((metadata?.sources ?? []) as Iterable<unknown>)].filter(Boolean) as string[];
-        const cap = applyEvidenceCaps({
+        const disclosedSources = disclosedSourceLabels(source, metadata ?? null);
+        const { effective: cap } = applyRecordingSourcePolicy({
           rawConfidence: confidence ?? 50,
-          sources: effSources,
+          source,
           kind: inferred.kind,
           metadata: (metadata ?? null) as Record<string, unknown> | null,
         });
@@ -4888,7 +5003,7 @@ export function buildTools(ctx: ToolContext) {
         // LLM-asserted menstoppingviolence.org citation); seed domain whitelisted.
         const seedRecognizedDomains = [triageState.seedDomain, triageState.seed]
           .filter((d): d is string => typeof d === "string" && d.length > 0);
-        const llmAssertedProvenance = effSources.some((s) => isLlmAssertedDomainSource(s, seedRecognizedDomains));
+        const llmAssertedProvenance = disclosedSources.some((s) => isLlmAssertedDomainSource(s, seedRecognizedDomains));
         // Gates mirror record_artifacts: unrelated / same-surname-only / listing
         // agent → excluded collision; bio-linked name → unverified claim.
         const unrelated = isUnrelatedEntity(metadata ?? null);
@@ -4903,28 +5018,23 @@ export function buildTools(ctx: ToolContext) {
           : bioName
             ? Math.min(cap.confidence, BIO_CROSS_LINK_NAME_CAP)
             : cap.confidence;
-        const reqRNC = typeof metadata?.reason_not_confirmed === "string" ? metadata.reason_not_confirmed : null;
+        const ordinaryStatus = resolveRecordingStatus(cap, metadata ?? null);
         const resolvedReasonNotConfirmed = bioName
           ? "name appears only in a bio/linked-accounts block — confirm it is the subject, not a mentioned third party"
-          : (reqRNC ?? cap.reason_not_confirmed ?? null);
+          : ordinaryStatus.reasonNotConfirmed;
         const derivedStatus = collisionExcluded
           ? "excluded"
           : bioName
             ? "unverified_bio_link"
-            : coerceCoherentStatus(
-                deriveStatus({
-                  requested: typeof metadata?.status === "string" ? metadata.status : null,
-                  reasonNotConfirmed: resolvedReasonNotConfirmed,
-                  sourceClasses: cap.source_classes,
-                  contradictions: Array.isArray(metadata?.contradictions) ? metadata.contradictions : [],
-                  deadEnd: looksDeadEnd(metadata ?? null),
-                }),
-                resolvedReasonNotConfirmed,
-              );
+            : ordinaryStatus.status;
         const enrichedMeta = {
           ...(metadata ?? {}),
           ...(v.metaPatch ?? {}),
           ...(inferred.reclassified_from ? { reclassified_from: inferred.reclassified_from } : {}),
+          // Same disclosure contract as record_artifacts — never a silent edit.
+          ...(hygienic.stripped
+            ? { status_assertion_stripped: true, value_before_hygiene: rawValueBeforeHygiene }
+            : {}),
           source_category: cap.source_classes,
           query_types: queryTypesOf({ value: v.value, kind: v.kind, metadata: metadata ?? null }),
           status: derivedStatus,
@@ -5072,6 +5182,12 @@ export function buildTools(ctx: ToolContext) {
   // ai_summary in source-classification.ts (lead-tier, capped ≤55).
   (tools as ToolRegistry).gemini_vision = gemini_vision;
 
+  // GeoSeer image geolocation (tools/geoseer.ts) — GEO-OSINT pivot only. Gated on
+  // GEOSEER_API_KEY via capabilities.ts; classed ai_summary in
+  // source-classification.ts (lead-tier, capped ≤55). The tool's own
+  // geolocatability gate hard-skips non-geolocatable imagery before any paid call.
+  (tools as ToolRegistry).geoseer_geolocate = geoseer_geolocate;
+
   // Inject memory tools (cross-investigation learning) into the registry.
   //
   // Late-injected registry tools, written as `(tools as ToolRegistry).X =
@@ -5109,7 +5225,7 @@ export function buildTools(ctx: ToolContext) {
         .from("agent_memory")
         .select("id,kind,subject,subject_kind,related_values,content,confidence,source_thread_id,hit_count,last_used_at,created_at")
         .eq("user_id", userId)
-        .or(`subject.eq.${subj},related_values.cs.{${subj}}`)
+        .or(agentMemoryOrFilter(subj))
         .order("confidence", { ascending: false })
         .limit(limit ?? 20);
       if (kind && kind !== "any") q = supabase
@@ -5117,7 +5233,7 @@ export function buildTools(ctx: ToolContext) {
         .select("id,kind,subject,subject_kind,related_values,content,confidence,source_thread_id,hit_count,last_used_at,created_at")
         .eq("user_id", userId)
         .eq("kind", kind)
-        .or(`subject.eq.${subj},related_values.cs.{${subj}}`)
+        .or(agentMemoryOrFilter(subj))
         .order("confidence", { ascending: false })
         .limit(limit ?? 20);
       const { data, error } = await q;
@@ -5280,6 +5396,7 @@ export function buildTools(ctx: ToolContext) {
     ...(RAPIDAPI_KEY ? ["rapidapi_breach_search", "rapidapi_all_breaches"] : []),
     ...(Deno.env.get("EXA_API_KEY") ? ["exa_search","exa_get_contents","exa_find_similar"] : []),
     ...(Deno.env.get("GEMINI_API_KEY") ? ["gemini_deep_dork", "gemini_vision"] : []),
+    ...(Deno.env.get("GEOSEER_API_KEY") ? ["geoseer_geolocate"] : []),
     // Free / always-on tools
     "whois_lookup","dns_records","crtsh_subdomains","wayback_snapshots","archive_url","http_fingerprint",
     "ip_intel","shodan_internetdb","hackertarget","urlscan_search","gravatar_profile","hibp_lookup",

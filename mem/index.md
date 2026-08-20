@@ -14,3 +14,4 @@ Never redact breach-investigation fields (passwords, hashes, salts, ssn, dob, cc
 - [Investigation Scope](mem://features/investigation-scope) — Supported OSINT seed types and UI handling for artifacts
 - [No PII redaction](mem://preferences/redaction) — Do not re-add password/hash/ssn/dob/cc/cvv/otp to SENSITIVE_KEY_RE in osint-agent
 - [Deno tests in web sandbox](mem://ops/deno-tests-in-web-sandbox) — dl.deno.land is egress-blocked; install deno via `npm i deno` + set DENO_CERT to run edge tests locally
+- [Report layer bypasses the integrity engine](mem://architecture/report-layer-bypasses-integrity-engine) — `record_finding` persists a correct independence-capped confidence, then the model retypes the Findings table in prose; a prompt rule is not enforcement

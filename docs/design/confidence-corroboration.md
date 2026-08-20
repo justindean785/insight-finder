@@ -42,9 +42,10 @@ preserved by anything built here.
 
 `computeAxes()` has exactly **one** call site — the `record_finding` path.
 
-The artifact paths — `record_artifacts`, `record_artifact` (`tool-registry.ts:4539`, `:4871`)
-and `auto-record-integrity.ts:30` — call only `applyEvidenceCaps()`. Caps constrain a
-confidence downward; nothing on those paths ever *computes* a corroboration boost. So:
+The artifact paths — `record_artifacts`, compatibility `record_artifact`, the mirror path,
+and `auto-record-integrity.ts` — call `applyRecordingSourcePolicy()`, which delegates to the
+shared cap engine. Caps constrain a confidence downward; nothing on those paths ever
+*computes* a corroboration boost. So:
 
 > Two artifacts of the same value, produced by two genuinely independent source classes,
 > receive **no corroboration credit whatsoever** unless the model separately files a
@@ -80,7 +81,7 @@ Reuse the hardened path rather than build a second one.
    the existing `countIndependentClasses`.
 2. Feed that into the existing `computeAxes` boost. Do not introduce a new boost curve — the
    `min(20, (n-1) * 8)` ceiling is deliberate and should stay the single definition.
-3. Apply `applyEvidenceCaps` **after** the boost, unchanged, so every existing cap
+3. Apply `applyRecordingSourcePolicy` **after** the boost, unchanged, so every existing cap
    (collision, bio-cross-link name at 30, dead-end, `EXCLUDED_COLLISION_CONFIDENCE` at 15,
    tier-C ceiling) still binds. A corroboration boost must never lift an artifact past a cap
    that exists for an integrity reason.
@@ -97,7 +98,7 @@ Reuse the hardened path rather than build a second one.
   `web_search` can never corroborate anything.
 - A boost is computed **only** from distinct classes; row count, tool count and provider
   count are never used as a proxy.
-- `applyEvidenceCaps` runs after and wins on every conflict.
+- `applyRecordingSourcePolicy` runs after and wins on every conflict.
 - Collision-flagged and `isUnrelatedEntity` artifacts receive **no** boost, at any count.
 - Name agreement never counts as corroboration (see the companion name-normalization design).
 - The boost is deterministic and recomputable from stored metadata — no hidden state.
@@ -217,7 +218,7 @@ breach corpus name, at a hardcoded flat 55, from four separate branches.
 That is a **shape** defect, fixed in this PR without touching a single confidence rule:
 corpus names now collapse into one `breach_exposure` artifact per provider, carrying the
 full corpus list in `metadata.breach_corpora`. Same confidence (55), same caps, same
-`applyEvidenceCaps` afterwards.
+`applyRecordingSourcePolicy` afterwards.
 
 Measured on the reported scan: **83 artifacts → 39. 47 corpus rows → 3 exposure rows.
 All 47 distinct corpus names retained, zero lost.**

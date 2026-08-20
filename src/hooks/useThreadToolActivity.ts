@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { deriveToolReason, type ToolTone, type ToolStatus } from "@/lib/tool-run";
 import { toolDisplayName, toolActionLabel } from "@/lib/tool-display";
+import { chargedMicroUsd as effectiveCharge } from "@/lib/runCost";
 
 /**
  * Best-effort short reason for a non-OK tool event, for the Activity feed.
@@ -43,6 +44,36 @@ export interface ToolEvent {
   at: string;
   /** Short failure/skip reason, when the tone is not "ok". */
   reason?: string;
+  /**
+   * Operational detail that was fetched and then discarded for months: the
+   * SELECT above pulled six columns while `tool_usage_log` carried duration,
+   * cache state and spend, so the Tools tab could not tell a 300ms "skipped, no
+   * API key" from a 30s upstream timeout — the two failures an analyst treats
+   * completely differently. Null when the column is absent on a legacy row.
+   */
+  durationMs: number | null;
+  /** Served from cache: no provider call, no spend, and possibly stale data. */
+  cached: boolean;
+  /**
+   * RAW `charged_micro_usd`, exactly as persisted. `null` means the row predates
+   * charge accounting — NOT that the call was free.
+   *
+   * Kept nullable on purpose. Overwriting it with the reconstruction below would
+   * erase provenance and make a modern, recorded $0 charge indistinguishable
+   * from a legacy row we merely guessed at.
+   */
+  chargedMicroUsd: number | null;
+  /**
+   * The canonical figure any spend calculation should use: the persisted charge
+   * when there is one, otherwise reconstructed from ok/cached/list-price by the
+   * shared `chargedMicroUsd()` rule in runCost.ts.
+   *
+   * Derived HERE, at the data boundary, so no consumer has to know the schema's
+   * history. The Tools tab's spend breakdown grew its own `?? 0` precisely
+   * because that knowledge was left to the caller — which booked every legacy
+   * paid call as free and under-reported the run. (Codex review, PR #462.)
+   */
+  effectiveChargedMicroUsd: number;
 }
 
 export interface ThreadToolActivity {
@@ -68,6 +99,14 @@ interface ActivityRow {
   ok: boolean | null;
   error_msg: string | null;
   created_at: string;
+  /** Wall-clock for the call. Distinguishes "failed fast" from "timed out". */
+  duration_ms: number | null;
+  /** Served from cache — no provider call, no spend. */
+  cached: boolean | null;
+  /** What this call actually cost, in micro-USD. 0 on a cache hit. */
+  charged_micro_usd: number | null;
+  /** Attributed list price. The fallback when `charged_micro_usd` is legacy-null. */
+  cost_micro_usd: number | null;
 }
 
 interface ActivityState {
@@ -175,7 +214,7 @@ export function useThreadToolActivity(threadId: string, accountId?: string): Thr
         .from("tool_usage_log")
         // `outcome` is not in the generated types yet (added by migration) —
         // cast via unknown below to keep typecheck green.
-        .select("id,tool_name,outcome,ok,error_msg,created_at", { count: "exact" })
+        .select("id,tool_name,outcome,ok,error_msg,created_at,duration_ms,cached,charged_micro_usd,cost_micro_usd", { count: "exact" })
         .eq("thread_id", threadId)
         .order("created_at", { ascending: true });
       if (!alive || requestSeq !== loadSeq) return;
@@ -186,6 +225,7 @@ export function useThreadToolActivity(threadId: string, accountId?: string): Thr
       const rows = (data ?? []) as unknown as ActivityRow[];
       const out: ToolEvent[] = rows.map((r) => {
         const { tone, status } = classifyActivityRow(r.outcome, r.ok, r.error_msg);
+        const rawCharged = typeof r.charged_micro_usd === "number" ? r.charged_micro_usd : null;
         return {
           id: r.id,
           toolName: r.tool_name,
@@ -195,6 +235,19 @@ export function useThreadToolActivity(threadId: string, accountId?: string): Thr
           status,
           at: r.created_at,
           reason: tone === "ok" ? undefined : cleanReason(r.error_msg),
+          durationMs: typeof r.duration_ms === "number" ? r.duration_ms : null,
+          cached: r.cached === true,
+          chargedMicroUsd: rawCharged,
+          // `ok: r.ok` — the same input summarizeRunCosts uses, deliberately.
+          // Reconstructing from the derived tone instead would be a SECOND
+          // definition of "was this call billable", which is the class of
+          // divergence this extraction exists to end.
+          effectiveChargedMicroUsd: effectiveCharge({
+            ok: r.ok,
+            cached: r.cached,
+            cost_micro_usd: r.cost_micro_usd,
+            charged_micro_usd: rawCharged,
+          }),
         };
       });
       // Failed calls are part of the record, not noise to be hidden.

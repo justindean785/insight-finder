@@ -33,8 +33,8 @@ export function AppNav({ className }: { className?: string }) {
     >
       <div className="mx-auto max-w-6xl px-4 sm:px-8 h-14 flex items-center gap-3">
         <Link to="/" aria-label="Home" className="flex items-center gap-2.5 shrink-0">
-          <div className="w-8 h-8 rounded-lg border border-white/10 bg-white/[0.035] grid place-items-center">
-            <SwarmMark className="w-4 h-4" />
+          <div className="brand-tile h-8 w-8">
+            <SwarmMark className="h-4 w-4 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.45)]" glow={false} />
           </div>
           <div className="font-display text-sm font-semibold tracking-tight hidden xs:block sm:block">
             Insight Finder

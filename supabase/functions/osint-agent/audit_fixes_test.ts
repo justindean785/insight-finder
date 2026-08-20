@@ -4,7 +4,7 @@
 //  3. reserved / fiction / invalid phone detection
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { classifySource, inferKind } from "./artifact_types.ts";
-import { applyEvidenceCaps, isUnrelatedEntity, isBioCrossLinkName, BIO_CROSS_LINK_NAME_CAP } from "./confidence.ts";
+import { applyEvidenceCapsLegacyOccurrenceBaseline, isUnrelatedEntity, isBioCrossLinkName, BIO_CROSS_LINK_NAME_CAP } from "./confidence.ts";
 import { isReservedOrInvalidPhone, validateArtifact } from "./validation.ts";
 
 Deno.test("classifySource strips parenthetical qualifier before lookup", () => {
@@ -37,15 +37,15 @@ Deno.test("classifySource maps passive + shared-host sources", () => {
 });
 
 Deno.test("shared-host source is capped at 35 and never corroborates", () => {
-  const r = applyEvidenceCaps({ rawConfidence: 90, sources: ["hackertarget/reverseiplookup"] });
+  const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 90, sources: ["hackertarget/reverseiplookup"] });
   assertEquals(r.confidence, 35);
   // Adding a shared-host class does NOT lift a WHOIS finding.
-  const combo = applyEvidenceCaps({ rawConfidence: 90, sources: ["whois_lookup", "hackertarget/reverseiplookup"] });
+  const combo = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 90, sources: ["whois_lookup", "hackertarget/reverseiplookup"] });
   assertEquals(combo.confidence, 75); // whois cap only; shared-host adds nothing
 });
 
 Deno.test("infra + weak ai_summary cannot exceed infra-safe 85", () => {
-  const r = applyEvidenceCaps({
+  const r = applyEvidenceCapsLegacyOccurrenceBaseline({
     rawConfidence: 100,
     sources: ["whois_lookup", "dns_records", "shodan_internetdb", "gemini_deep_dork"],
   });
@@ -54,10 +54,10 @@ Deno.test("infra + weak ai_summary cannot exceed infra-safe 85", () => {
 
 Deno.test("infra + trusted class CAN lift past 85", () => {
   // whois (infra) + a court record (trusted non-infra) → cross-class unlock.
-  const r = applyEvidenceCaps({ rawConfidence: 100, sources: ["whois_lookup", "pacer_docket"] });
+  const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 100, sources: ["whois_lookup", "pacer_docket"] });
   assertEquals(r.confidence > 85, true);
   // whois + independent_public alone tops out at its own caps (infra-safe-ish).
-  const r2 = applyEvidenceCaps({ rawConfidence: 100, sources: ["whois_lookup", "jina_reader_scrape"] });
+  const r2 = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 100, sources: ["whois_lookup", "jina_reader_scrape"] });
   assertEquals(r2.confidence <= 85, true);
 });
 
@@ -66,14 +66,14 @@ Deno.test("court_record + news still reaches 95 (unchanged)", () => {
   // `unknown` (the underscore blocks the \b boundary) and only hit 95 via the
   // now-removed unknown-corroboration +10 boost. court_record + real news → 95
   // via the dedicated court_record+news rule, unaffected by the unknown change.
-  const r = applyEvidenceCaps({ rawConfidence: 100, sources: ["pacer_docket", "nytimes news article"] });
+  const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 100, sources: ["pacer_docket", "nytimes news article"] });
   assertEquals(r.confidence, 95);
 });
 
 Deno.test("passive-social hit no longer leaks to unknown cap (40 not 50)", () => {
   // keita.iq from the phone trace: source was 'socialfetch_lookup (instagram)'
   // which used to classify as unknown (cap 50). Must now cap at 40.
-  const cap = applyEvidenceCaps({ rawConfidence: 50, sources: ["socialfetch_lookup (instagram)"] });
+  const cap = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 50, sources: ["socialfetch_lookup (instagram)"] });
   assertEquals(cap.confidence, 40);
 });
 
@@ -132,7 +132,7 @@ Deno.test("isBioCrossLinkName flags bio-linked names only", () => {
 Deno.test("bio-linked name cap keeps it below corroborated signals", () => {
   // A bio name reaching for confidence 50 must be held under the cap so it can
   // never sit co-equal with the subject's display name / corroborated identity.
-  const cap = Math.min(applyEvidenceCaps({ rawConfidence: 50, sources: ["jina_reader_scrape"] }).confidence, BIO_CROSS_LINK_NAME_CAP);
+  const cap = Math.min(applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 50, sources: ["jina_reader_scrape"] }).confidence, BIO_CROSS_LINK_NAME_CAP);
   assertEquals(cap, BIO_CROSS_LINK_NAME_CAP);
   assertEquals(BIO_CROSS_LINK_NAME_CAP < 50, true);
 });
@@ -140,20 +140,20 @@ Deno.test("bio-linked name cap keeps it below corroborated signals", () => {
 // ── Infrastructure sub-class corroboration regression tests ──
 
 Deno.test("WHOIS only: capped at 75, does not confirm", () => {
-  const r = applyEvidenceCaps({ rawConfidence: 90, sources: ["whois_lookup"] });
+  const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 90, sources: ["whois_lookup"] });
   assertEquals(r.confidence, 75);
   assertEquals(r.confidence < 90, true);
   assertEquals(r.reason_not_confirmed !== undefined, true);
 });
 
 Deno.test("DNS only: capped at 75, does not confirm", () => {
-  const r = applyEvidenceCaps({ rawConfidence: 90, sources: ["dns_records"] });
+  const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 90, sources: ["dns_records"] });
   assertEquals(r.confidence, 75);
   assertEquals(r.reason_not_confirmed !== undefined, true);
 });
 
 Deno.test("WHOIS + DNS (2 infra sub-classes): gets cross-subclass boost", () => {
-  const r = applyEvidenceCaps({ rawConfidence: 85, sources: ["whois_lookup", "dns_records"] });
+  const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 85, sources: ["whois_lookup", "dns_records"] });
   // Base cap max(75,75) + 8 boost = 83. Raw 85 capped to 83.
   assertEquals(r.confidence >= 80, true);
   assertEquals(r.confidence <= 85, true);
@@ -161,14 +161,14 @@ Deno.test("WHOIS + DNS (2 infra sub-classes): gets cross-subclass boost", () => 
 });
 
 Deno.test("WHOIS + DNS + Shodan (3 infra sub-classes): stronger boost, can reach 85", () => {
-  const r = applyEvidenceCaps({ rawConfidence: 90, sources: ["whois_lookup", "dns_records", "shodan_internetdb"] });
+  const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 90, sources: ["whois_lookup", "dns_records", "shodan_internetdb"] });
   // Base cap max(75,75,70) + 15 boost = 90, clamped by infra-only ceiling to 85.
   assertEquals(r.confidence, 85);
   assertEquals(r.reason_for_confidence.includes("3 sub-classes"), true);
 });
 
 Deno.test("infra-only never exceeds 85 (no identity confirmation from infra alone)", () => {
-  const r = applyEvidenceCaps({
+  const r = applyEvidenceCapsLegacyOccurrenceBaseline({
     rawConfidence: 100,
     sources: ["whois_lookup", "dns_records", "shodan_internetdb", "virustotal_lookup"],
   });
@@ -177,20 +177,20 @@ Deno.test("infra-only never exceeds 85 (no identity confirmation from infra alon
 });
 
 Deno.test("VirusTotal reputation only: capped at 65, does not confirm", () => {
-  const r = applyEvidenceCaps({ rawConfidence: 80, sources: ["virustotal_lookup"] });
+  const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 80, sources: ["virustotal_lookup"] });
   assertEquals(r.confidence, 65);
   assertEquals(r.reason_not_confirmed !== undefined, true);
 });
 
 Deno.test("infra + non-infra class unlocks standard cross-class boost (not infra ceiling)", () => {
   // WHOIS + a news source: cap = max(75,80) + 10 = 90, no infra ceiling.
-  const r = applyEvidenceCaps({ rawConfidence: 90, sources: ["whois_lookup", "minimax_web_search (news article)"] });
+  const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 90, sources: ["whois_lookup", "minimax_web_search (news article)"] });
   assertEquals(r.confidence >= 85, true);
 });
 
 Deno.test("Doxbyte regression: whois + dns + shodan + virustotal gives meaningful confidence", () => {
   // Simulates the Doxbyte.com scenario: 4 infra tools, all different sub-classes.
-  const r = applyEvidenceCaps({
+  const r = applyEvidenceCapsLegacyOccurrenceBaseline({
     rawConfidence: 85,
     sources: ["whois_lookup", "dns_records", "shodan_internetdb", "virustotal_lookup"],
   });
@@ -203,7 +203,7 @@ Deno.test("Doxbyte regression: whois + dns + shodan + virustotal gives meaningfu
 
 Deno.test("Doxbyte regression: single-source whois produces higher cap than before", () => {
   // Before: whois_lookup → infra cap 70. After: infra_registry cap 75.
-  const r = applyEvidenceCaps({ rawConfidence: 80, sources: ["whois_lookup"] });
+  const r = applyEvidenceCapsLegacyOccurrenceBaseline({ rawConfidence: 80, sources: ["whois_lookup"] });
   assertEquals(r.confidence, 75);
   assertEquals(r.confidence > 70, true);
 });

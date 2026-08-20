@@ -22,6 +22,50 @@ export function normalizeTarget(value: string): string {
 }
 
 /**
+ * The ENTITY a pivot target refers to, with any trailing descriptor removed.
+ * `"hawkcapo - YouTube channel"` → `"hawkcapo"`.
+ *
+ * WHY THIS EXISTS — measured on a live 98-artifact case. The pipeline persists
+ * `kind: "name"` artifacts whose value is a descriptive label rather than an
+ * entity: "hawkcapo - GitHub", "hawkcapo - SoundCloud", "hawkcapo - YouTube
+ * channel". A tool, meanwhile, runs against the bare selector "hawkcapo". So the
+ * "have we already searched this?" comparison — `queriedSet.has(normalizeTarget
+ * (value))` — compared "hawkcapo youtube channel" against "hawkcapo" and never
+ * matched. The pivot stayed `status: "new"` permanently, and because Chat's Next
+ * Steps renders exactly the `new` ones, the same three cards came back on every
+ * render no matter how deep the investigation had gone.
+ *
+ * USE IT ONLY FOR THE ALREADY-SEARCHED COMPARISON, never for dedupe identity.
+ * Two labels sharing an entity ("hawkcapo - GitHub" / "- SoundCloud") are still
+ * distinct leads and must stay distinct rows; what they share is that a sweep of
+ * "hawkcapo" has already covered both. Collapsing their canonical keys instead
+ * would delete one of them from the board.
+ *
+ * Only a SPACED dash is treated as a descriptor separator, so an internal hyphen
+ * is never read as one — `normalizeTarget` still canonicalizes the punctuation
+ * afterwards, so "hawk-capo" ends up "hawk capo" and NOT "hawk-capo". What is
+ * preserved is the whole identifier, not its punctuation.
+ *
+ * ⚠️ IT ANSWERS AN ENTITY-LEVEL QUESTION, AND ONLY THAT ONE. "Has this entity
+ * been investigated at all?" — never "has this objective been completed?" The
+ * difference is load-bearing and the broadening is real: a lead written
+ * "Gregory Bradley - Sacramento court search" reduces to "gregory bradley", so
+ * ONE generic query against that name marks the court-records objective searched
+ * too. That is acceptable here only because `searched` sinks a lead out of Chat's
+ * suggestions while leaving it fully visible and runnable in the Pivots tab —
+ * it costs a prompt, not a lead. Do not reuse this key anywhere the consequence
+ * is deletion, filtering, or a claim that work was done.
+ *
+ * This is a mitigation, not the cure, twice over: a `name` artifact whose value
+ * is "hawkcapo - GitHub" is bad data at the write layer and only the pipeline
+ * can stop producing it, and a durable lifecycle needs objective-level state
+ * rather than a string comparison.
+ */
+export function entityKey(value: string): string {
+  return normalizeTarget(value.replace(/\s+[-–—]\s+.*$/, ""));
+}
+
+/**
  * Swap a raw `via <tool_id>` source token in an artifact-derived lead reason for
  * a readable label, so card summaries read "via breach/profile lookup" instead
  * of "via oathnet_lookup". Raw ids remain available in expanded provenance.

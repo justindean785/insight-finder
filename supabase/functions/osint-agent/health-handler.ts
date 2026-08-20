@@ -2,7 +2,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import {
   corsHeaders, MINIMAX_API_KEY, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY,
   OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
-  CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED,
+  CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED, REVEAL_BREACH_DATA,
   HIBP_API_KEY, EXA_API_KEY, FIRECRAWL_API_KEY, SERUS_API_KEY,
   GITHUB_API_TOKEN, PERPLEXITY_API_KEY, IPQUALITYSCORE_API_KEY,
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
@@ -10,6 +10,7 @@ import {
   XAI_API_KEY, GROK_ORCHESTRATOR_MODEL_ID,
   OSINT_AGENT_PROBE_SECRET,
   DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID, PRIMARY_ORCHESTRATOR_MODEL_ID,
+  DEEPSEEK_BASE_URL,
   ORCHESTRATOR_PROVIDER, LOVABLE_API_KEY, OPENADAPTER_API_KEY, OPENADAPTER_BASE_URL,
 } from "./env.ts";
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
@@ -98,7 +99,7 @@ export async function checkDeepseek(deps?: {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 5_000);
   try {
-    const res = await doFetch("https://api.deepseek.com/v1/chat/completions", {
+    const res = await doFetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -204,6 +205,7 @@ export function deriveReadiness(env: {
   RANSOMWARELIVE_API_KEY?: string | null;
   URLSCANNER_API_KEY?: string | null;
   FOFA_API_KEY?: string | null;
+  GEOSEER_API_KEY?: string | null;
 }): { ok: boolean; checks: Record<string, { ok: boolean; detail?: string; reason?: string; role?: "active" | "fallback" }> } {
   const has = (v: string | null | undefined) => !!(v && v.length > 0);
   const orchestratorOk = has(env.MINIMAX_API_KEY);
@@ -234,6 +236,14 @@ export function deriveReadiness(env: {
     // so a green /health was consistent with the deploy having happened and with it
     // never having been attempted. Any tool added with a new key belongs here.
     fofa: has(env.FOFA_API_KEY),
+    // GeoSeer, listed for exactly the reason above — and it has already happened
+    // a second time. GeoSeer was added to the mirror and deployed on 2026-08-17
+    // WITHOUT touching this file or build-info.ts, so both signals stayed frozen
+    // (`build: 2d47656`, `16/19`) and it was impossible to tell from outside
+    // whether the tool was live. Adding it here moves the denominator to 20, which
+    // is the cheap, unauthenticated way to detect that a deploy actually shipped
+    // new capability. Any tool added with a new key belongs here.
+    geoseer: has(env.GEOSEER_API_KEY),
   };
   const enabledOptional = Object.values(tools).filter(Boolean).length;
   const checks: Record<string, { ok: boolean; detail?: string; reason?: string; role?: "active" | "fallback" }> = {
@@ -272,6 +282,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     URLSCANNER_API_KEY,
     RAPIDAPI_KEY: Deno.env.get("RAPIDAPI_KEY"),
     FOFA_API_KEY: Deno.env.get("FOFA_API_KEY"),
+    GEOSEER_API_KEY: Deno.env.get("GEOSEER_API_KEY"),
   });
   const u = new URL(req.url);
   const wantProbe = u.searchParams.get("probe") === "1";
@@ -381,7 +392,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     };
     const [ds, mm, gk, gm] = await Promise.all([
       probeProvider("deepseek", !!DEEPSEEK_API_KEY, async (signal) => {
-        const res = await fetch("https://api.deepseek.com/v1/chat/completions", {
+        const res = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
           method: "POST",
           headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}`, "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -435,6 +446,17 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     orchestrator_active_ok: orchestratorActiveOk,
     checks: r.checks,
     intelbase_enabled: INTELBASE_ENABLED,
+    // Account-level breach-reveal policy, surfaced for the same reason as the
+    // build marker: so it can be VERIFIED rather than assumed. It defaults ON in
+    // source, but an explicit REVEAL_BREACH_DATA=false in the deployed function's
+    // secrets silently overrides that — and there is no other way to observe which
+    // is in force without running a real breach query and reading the output.
+    //
+    // This cost real time on 2026-08-10: a case returned breach rows carrying only
+    // exposed_field CLASSES and no concrete values, and the deployed setting could
+    // not be distinguished from the model simply not recording them. One curl now
+    // answers it. Boolean only — never echo secret VALUES on a public endpoint.
+    reveal_breach_data: REVEAL_BREACH_DATA,
   };
   if (wantProbe) body.providers = providers;
   return new Response(

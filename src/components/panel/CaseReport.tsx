@@ -32,7 +32,7 @@ import {
   isReputationArtifact,
   type ConfLabel,
 } from "@/lib/intel";
-import { formatArtifactDisplayValue } from "@/lib/report-hygiene";
+import { formatArtifactDisplayValue, buildIdentityRows, type IdentityRow } from "@/lib/report-hygiene";
 import { toolActionLabel } from "@/lib/tool-display";
 import { tokenizeSourceChain } from "@/lib/report-source-labels";
 import { cn } from "@/lib/utils";
@@ -220,66 +220,6 @@ function ConfPill({ label }: { label: ConfLabel }) {
 /* ------------------------------------------------------------------ */
 /* Derivations                                                         */
 /* ------------------------------------------------------------------ */
-
-type IdentityRow = { field: string; value: string; label: ConfLabel };
-
-function pickBest(artifacts: Artifact[], kinds: string[]): Artifact | null {
-  const pool = artifacts.filter((a) => kinds.includes(String(a.kind ?? "").toLowerCase()));
-  if (!pool.length) return null;
-  const rank: Record<ConfLabel, number> = {
-    CONFIRMED: 6, CORRELATED: 5, INFERRED: 4, VERIFY: 3, LOW: 2, CONFLICT: 1, FAILED: 0,
-  };
-  return pool.slice().sort((a, b) => {
-    const ra = rank[labelForArtifact(a)] ?? 0;
-    const rb = rank[labelForArtifact(b)] ?? 0;
-    if (ra !== rb) return rb - ra;
-    return (b.confidence ?? 0) - (a.confidence ?? 0);
-  })[0];
-}
-
-function pickAllEmails(artifacts: Artifact[]): Artifact[] {
-  const seen = new Set<string>();
-  const out: Artifact[] = [];
-  for (const a of artifacts.filter((x) => String(x.kind ?? "").toLowerCase() === "email")) {
-    const k = String(a.value ?? "").toLowerCase();
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push(a);
-  }
-  return out;
-}
-
-function buildIdentityRows(artifacts: Artifact[]): IdentityRow[] {
-  const rows: IdentityRow[] = [];
-  const name = pickBest(artifacts, ["name", "person"]);
-  if (name) rows.push({ field: "Real name", value: name.value, label: labelForArtifact(name) });
-
-  const dob = pickBest(artifacts, ["dob"]);
-  if (dob) rows.push({ field: "Date of birth", value: dob.value, label: labelForArtifact(dob) });
-
-  const age = pickBest(artifacts, ["age"]);
-  if (age && !dob) rows.push({ field: "Age", value: age.value, label: labelForArtifact(age) });
-
-  const phone = pickBest(artifacts, ["phone"]);
-  if (phone) rows.push({ field: "Phone", value: phone.value, label: labelForArtifact(phone) });
-
-  const region = pickBest(artifacts, ["location", "geo", "address"]);
-  if (region) rows.push({ field: "Likely region", value: region.value, label: labelForArtifact(region) });
-
-  const emails = pickAllEmails(artifacts);
-  emails.forEach((e, i) => {
-    rows.push({
-      field: i === 0 ? "Primary email" : i === 1 ? "Alt email" : `Email ${i + 1}`,
-      value: e.value,
-      label: labelForArtifact(e),
-    });
-  });
-
-  const gender = pickBest(artifacts, ["gender"]);
-  if (gender) rows.push({ field: "Gender (implied)", value: gender.value, label: labelForArtifact(gender) });
-
-  return rows;
-}
 
 type RegistrationRow = {
   site: string;
@@ -764,6 +704,79 @@ const metaStr = (m: Record<string, unknown>, k: string): string =>
   typeof m[k] === "string" ? (m[k] as string).trim() : "";
 
 /**
+ * Breach-value display policy.
+ *
+ * OFF (current, and the default) — every captured breach value renders in the
+ * clear. This is the platform owner's explicit, repeatedly-stated instruction:
+ * while the app is being built, on the owner's own account, nothing about their
+ * own authorized investigations is hidden from them. Masking the output makes
+ * the product impossible to develop against, which is the whole reason it is off.
+ *
+ * ON (set `VITE_MASK_BREACH_VALUES=true` at release) — restores click-to-reveal,
+ * the posture intended for public users.
+ *
+ * The minor-safety hard stop is NOT governed by this switch. A record flagged
+ * minor-related stays redacted in BOTH modes and is never revealable; that is a
+ * different protection with a different purpose and it is deliberately absolute.
+ */
+const MASK_BREACH_VALUES =
+  String(import.meta.env.VITE_MASK_BREACH_VALUES ?? "").trim().toLowerCase() === "true";
+
+/**
+ * Every metadata key that can carry a CONCRETE captured value.
+ *
+ * This list is the contract half of `system-prompt.ts`, which instructs the model:
+ * "you MUST record every concrete value returned (e.g. `concrete_values`,
+ * `exposed_values`, `concrete_hits`, raw stealer credentials) into that finding's
+ * artifact metadata."
+ *
+ * The report previously read ONLY `password_hash` plus the location quartet, so
+ * every one of the keys the prompt actually names was dropped on the floor —
+ * the model could do exactly as instructed and the analyst would still see "—".
+ * Verified against a live 56-artifact case: zero rows carried `password_hash`,
+ * so the reveal column was empty for the entire report.
+ */
+const CONCRETE_VALUE_KEYS: Array<[key: string, label: string]> = [
+  ["password", "Password"],
+  ["plaintext", "Password"],
+  ["password_hash", "Password hash"],
+  ["hash", "Hash"],
+  ["salt", "Salt"],
+  ["dob", "DOB"],
+  ["raw_dob", "DOB"],
+  ["phone", "Phone"],
+  ["ip", "IP"],
+  ["username", "Username"],
+];
+
+/** Keys whose value is a LIST of concrete values (arrays of strings/objects). */
+const CONCRETE_LIST_KEYS = [
+  "concrete_values", "exposed_values", "concrete_hits", "passwords", "credentials",
+] as const;
+
+/** Flatten one list-shaped metadata key into label/value pairs. */
+function concreteListFields(m: Record<string, unknown>, key: string): RevealField[] {
+  const raw = m[key];
+  if (!Array.isArray(raw)) return [];
+  const out: RevealField[] = [];
+  for (const item of raw.slice(0, 25)) {
+    if (typeof item === "string" && item.trim()) {
+      out.push({ label: key.replace(/_/g, " "), value: item.trim() });
+      continue;
+    }
+    if (item && typeof item === "object") {
+      // {field, value} / {label, value} / {type, value} shapes all appear upstream.
+      const o = item as Record<string, unknown>;
+      const v = typeof o.value === "string" ? o.value.trim() : "";
+      if (!v) continue;
+      const lbl = [o.field, o.label, o.type, o.name].find((x) => typeof x === "string" && x);
+      out.push({ label: String(lbl ?? key.replace(/_/g, " ")), value: v });
+    }
+  }
+  return out;
+}
+
+/**
  * Build the breach-exposure rows from the REAL artifact metadata shape
  * (`exposed_fields`, `password_hash`, `zip`/`city`/…). Records for the SAME
  * breach are reported by several tools, so merge by breach name+date rather than
@@ -784,11 +797,24 @@ function buildBreachExposure(artifacts: Artifact[]): BreachRow[] {
     const exposedFields = Array.isArray(m.exposed_fields) ? m.exposed_fields.map(String) : [];
     // Concrete values actually present in the record → revealable.
     const reveal: RevealField[] = [];
-    const hash = metaStr(m, "password_hash");
-    if (hash) reveal.push({ label: "Password hash", value: hash });
+    for (const [key, label] of CONCRETE_VALUE_KEYS) {
+      const v = metaStr(m, key);
+      if (v) reveal.push({ label, value: v });
+    }
+    for (const key of CONCRETE_LIST_KEYS) reveal.push(...concreteListFields(m, key));
     const loc = [metaStr(m, "city"), metaStr(m, "state"), metaStr(m, "zip"), metaStr(m, "country")]
       .filter(Boolean).join(" ");
     if (loc) reveal.push({ label: "Location", value: loc });
+    // Same label+value from two tools is one fact, not two.
+    const seenReveal = new Set<string>();
+    const dedupedReveal = reveal.filter((r) => {
+      const k = `${r.label} ${r.value}`;
+      if (seenReveal.has(k)) return false;
+      seenReveal.add(k);
+      return true;
+    });
+    reveal.length = 0;
+    reveal.push(...dedupedReveal);
     // Minor-safety hard stop: a record flagged minor-related is never unmasked.
     const minorRedacted = m.possible_minor === true || m.minor_warning === true
       || String(m.flag ?? "").toUpperCase() === "MINOR_SAFETY_FLAG";
@@ -808,9 +834,18 @@ function buildBreachExposure(artifacts: Artifact[]): BreachRow[] {
   return Array.from(byKey.values()).sort((a, b) => (a.date < b.date ? -1 : 1));
 }
 
-/** A single sensitive breach value, masked until the operator clicks Reveal. */
+/** A single captured breach value. Shown in the clear unless MASK_BREACH_VALUES
+ *  is on, in which case it is masked until the operator clicks Reveal. */
 function MaskedValue({ label, value }: RevealField) {
-  const [shown, setShown] = useState(false);
+  const [shown, setShown] = useState(!MASK_BREACH_VALUES);
+  if (!MASK_BREACH_VALUES) {
+    return (
+      <span className="inline-flex max-w-full items-center gap-1.5 rounded border border-destructive/40 bg-destructive/10 px-1.5 py-px font-mono text-eyebrow text-destructive">
+        <span className="text-micro uppercase tracking-wider text-muted-foreground">{label}</span>
+        <span className="break-all [overflow-wrap:anywhere]">{value}</span>
+      </span>
+    );
+  }
   return (
     <button
       type="button"
@@ -1251,7 +1286,13 @@ export function CaseReport({
               </tbody>
             </table>
           </div>
-          <p className="mt-1 text-data text-muted-foreground">Breach values are masked by default — click <span className="font-mono text-destructive">Reveal</span> to unmask a captured value. Records flagged minor-related stay redacted and cannot be revealed.</p>
+          <p className="mt-1 text-data text-muted-foreground">
+            {MASK_BREACH_VALUES ? (
+              <>Breach values are masked by default — click <span className="font-mono text-destructive">Reveal</span> to unmask a captured value. Records flagged minor-related stay redacted and cannot be revealed.</>
+            ) : (
+              <>Captured breach values are shown in full. Records flagged minor-related stay redacted and are never shown. A dash means no concrete value was captured for that record — only the exposed field classes.</>
+            )}
+          </p>
         </>
       ) : (
         <>

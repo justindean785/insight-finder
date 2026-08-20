@@ -16,11 +16,16 @@ import {
   grokGateway, openAdapterGateway, ORCHESTRATOR_PROVIDER,
   GROK_ORCHESTRATOR_MODEL_ID, OPENADAPTER_ORCHESTRATOR_MODEL_ID,
   deepseekGateway, DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID,
+  DEEPSEEK_BASE_URL, DEEPSEEK_VENDOR_HOST,
   degradedTools, deadHosts, resetFirecrawlCreditsLow, INTELBASE_ENABLED,
 } from "./env.ts";
 
 import { detectSeedServer } from "./validation.ts";
-import { extractStepFindings, persistAutoFindings, loadSeenArtifactKeys } from "./auto-persist-findings.ts";
+import {
+  extractStepFindings, persistAutoFindings, loadSeenArtifactKeys, decideBackstopAction,
+  ESCALATION_ELIGIBLE_TOOLS, bufferEscalationCandidates, drainEscalationBuffer,
+  type ExtractedFinding,
+} from "./auto-persist-findings.ts";
 import {
   sanitizeToolOutput,
   capPartsSize,
@@ -621,7 +626,7 @@ Deno.serve(async (req) => {
           const ctrl = new AbortController();
           const timer = setTimeout(() => ctrl.abort(), DEEPSEEK_PREFLIGHT_TIMEOUT_MS);
           try {
-            const res = await fetch("https://api.deepseek.com/v1/chat/completions", {
+            const res = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
               method: "POST",
               headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}`, "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -675,7 +680,7 @@ Deno.serve(async (req) => {
     // Resolve the primary (non-fallback) model from the selected provider.
     const { model: primaryModel, label: primaryLabel } =
       orchChoice.provider === "deepseek"
-        ? { model: deepseekGateway!.chatModel(DEEPSEEK_ORCHESTRATOR_MODEL_ID), label: `${DEEPSEEK_ORCHESTRATOR_MODEL_ID} (DeepSeek)` }
+        ? { model: deepseekGateway!.chatModel(DEEPSEEK_ORCHESTRATOR_MODEL_ID), label: `${DEEPSEEK_ORCHESTRATOR_MODEL_ID} (${DEEPSEEK_VENDOR_HOST})` }
         : orchChoice.provider === "grok"
         ? { model: grokGateway!.chatModel(GROK_ORCHESTRATOR_MODEL_ID), label: `${GROK_ORCHESTRATOR_MODEL_ID} (xAI Grok)` }
         : orchChoice.provider === "openadapter"
@@ -772,6 +777,11 @@ Deno.serve(async (req) => {
     // Spam is bounded by the interval plus PERSISTENCE_NUDGE_MAX.
     let persistenceNudgedAt: number | null = null;
     let persistenceNudgeCount = 0;
+    // Escalation-eligible candidates from steps that ran BEFORE the nudge opened
+    // the zero-evidence gate. Memory-only and bounded (MAX_ESCALATION_BUFFER);
+    // request-scoped by construction, like the nudge counters above, so one run's
+    // buffer can never leak into another's. See bufferEscalationCandidates.
+    const escalationBuffer = new Map<string, ExtractedFinding & { toolName: string }>();
     // Wall-clock start for BOTH the finalize-reserve check (prepareStep) and the hard
     // deadline StopCondition below. Declared here so prepareStep's closure reads it.
     const runStartedAt = Date.now();
@@ -1083,21 +1093,140 @@ Deno.serve(async (req) => {
         // owns persistence then). Dedup is DB-backed (loadSeenArtifactKeys re-read per
         // pass) so it never double-inserts a value record_artifacts or an earlier step
         // already wrote; the module also scrubs, caps, and denylists (never throws).
-        if (!finalizeStarted && Array.isArray(toolResults) && toolResults.length > 0) {
-          const stepFindings = extractStepFindings(toolResults as unknown[], subjectSeedName);
-          if (stepFindings.length > 0) {
+        // NOTE the gate is `!finalizeStarted` ALONE. It deliberately does NOT
+        // require tool results: a declined nudge step produces none, and that is
+        // precisely the step on which a full escalation buffer must still be able
+        // to flush. Requiring them made the buffer unreachable in the one scenario
+        // it exists for. `decideBackstopAction` owns the branch from here.
+        if (!finalizeStarted) {
+          const stepToolResults = Array.isArray(toolResults) ? (toolResults as unknown[]) : [];
+          // ZERO-EVIDENCE ESCALATION. `persistenceNudgeCount > 0` means the model
+          // has fanned out past the nudge threshold having called record_artifacts
+          // ZERO times — the request-scoped signal that it is not recording. In
+          // that state the broad search/read tools become extractable (see
+          // ESCALATION_ELIGIBLE_TOOLS); at all other times the denylist is intact
+          // and behaviour is byte-identical to before. Free to evaluate — the nudge
+          // counter is a closure local, no DB round-trip.
+          const escalated = persistenceNudgeCount > 0;
+          const stepFindings = stepToolResults.length > 0
+            ? extractStepFindings(stepToolResults, subjectSeedName, { escalated })
+            : [];
+          // PRE-NUDGE BUFFER. The gate above can only open AFTER the nudge fires,
+          // and the nudge fires only after several unrecorded fan-out steps — so
+          // everything the run found before that point was denied by the denylist
+          // and never held anywhere. Worse, buildIntermediateStepPlan narrows the
+          // nudge step's activeTools to ["record_artifacts"] alone, so on the very
+          // step that opens the gate there is nothing to extract. Without this
+          // buffer the escalation only ever covered searches made AFTER the first
+          // nudge, which is not the failure being fixed.
+          //
+          // So every pre-gate step extracts its eligible candidates and HOLDS them
+          // in memory. Nothing is written until the gate opens; the second pass is
+          // skipped entirely unless the step actually ran an eligible tool.
+          if (!escalated && stepToolResults.length > 0) {
+            const names = (stepToolResults as Array<{ toolName?: unknown }>)
+              .map((r) => (typeof r?.toolName === "string" ? r.toolName : ""));
+            if (names.some((n) => ESCALATION_ELIGIBLE_TOOLS.has(n))) {
+              const eligible = extractStepFindings(
+                stepToolResults, subjectSeedName, { escalated: true },
+              ).filter((f) => ESCALATION_ELIGIBLE_TOOLS.has(f.toolName));
+              const { added, dropped } = bufferEscalationCandidates(escalationBuffer, eligible);
+              if (added > 0 || dropped > 0) {
+                console.log(JSON.stringify({
+                  event: "escalation_buffer_held", thread_id: threadId,
+                  added, dropped, buffered: escalationBuffer.size,
+                }));
+              }
+            }
+          }
+          // OBSERVABILITY — an empty extraction is a REPORTABLE outcome, not silence.
+          // `auto_persist_step` used to log only when `inserted > 0`, so a step that
+          // extracted nothing, a step where everything deduped, and a step where the
+          // backstop never ran at all were indistinguishable in the logs. That is
+          // exactly the ambiguity that left the 2026-08-06 zero-artifact run
+          // undiagnosable: three `persistence_nudge_fired` events with
+          // `record_artifact_calls: 0`, no `auto_persist_step`, and no way to tell
+          // whether the backstop had been reached. Emit the barren case explicitly
+          // with the tool names that produced it, so the next such run names its own
+          // cause. Cheap: one log line per step, no DB round-trip.
+          if (stepFindings.length === 0) {
+            console.log(JSON.stringify({
+              event: "auto_persist_step_empty", thread_id: threadId,
+              tool_results: stepToolResults.length,
+              tools: (stepToolResults as Array<{ toolName?: unknown }>)
+                .map((r) => (typeof r?.toolName === "string" ? r.toolName : "unknown"))
+                .slice(0, 12),
+              buffered: escalationBuffer.size,
+            }));
+          }
+          // THE branch. One definition, shared with the tests — see
+          // decideBackstopAction's comment for the divergence this replaces.
+          const decision = decideBackstopAction({
+            finalizeStarted,
+            stepFindingCount: stepFindings.length,
+            bufferedCount: escalationBuffer.size,
+            escalated,
+          });
+          if (decision.runPersist) {
             const autoPersistTask = (async () => {
               try {
                 const seen = await loadSeenArtifactKeys(supabase, threadId);
-                const res = await persistAutoFindings({ supabase, threadId, userId, seen }, stepFindings);
-                if (res.inserted > 0) {
+                // SECOND ESCALATION GATE — the nudge proves the model is not
+                // RECORDING; only this read proves the thread is actually EMPTY.
+                // The auto-persist backstop may well have been writing rows all
+                // along from non-denylisted tools, and in that case the run has a
+                // durability path already and the noisy search-derived rows are not
+                // worth their cost. So escalated output lands ONLY when the thread
+                // would otherwise finish with nothing at all — the state where the
+                // alternative is certain total evidence loss.
+                if (escalated && seen.size > 0) {
                   console.log(JSON.stringify({
-                    event: "auto_persist_step", thread_id: threadId,
-                    inserted: res.inserted, skipped_duplicates: res.skipped_duplicates,
-                    // < inserted means artifacts landed with no chain-of-custody row.
-                    evidence_appended: res.evidence_appended ?? 0,
+                    event: "auto_persist_escalation_stood_down", thread_id: threadId,
+                    existing_artifacts: seen.size, candidates: stepFindings.length,
+                    buffered_discarded: escalationBuffer.size,
+                  }));
+                  // The thread has a durability path already, so the held candidates
+                  // are not needed. Release them rather than carrying them for the
+                  // rest of the run.
+                  escalationBuffer.clear();
+                  return;
+                }
+                // Flush the pre-nudge buffer IN FRONT of this step's findings —
+                // the buffered rows are the oldest evidence and the most likely to
+                // be lost, so if the per-step cap truncates anything it must not be
+                // them. drainEscalationBuffer de-duplicates across both and empties
+                // the buffer, so a later escalated step cannot re-persist them.
+                let toPersist = stepFindings;
+                if (escalated) {
+                  // Bounded: persistAutoFindings applies no row cap of its own, so
+                  // an unbounded merge of buffer (<=120) and step (<=60) would hand
+                  // it 180 rows and bypass the per-step ceiling. Overflow is
+                  // RETAINED in the buffer for the next flush, never dropped.
+                  const drained = drainEscalationBuffer(escalationBuffer, stepFindings);
+                  toPersist = drained.rows;
+                  console.log(JSON.stringify({
+                    event: "auto_persist_escalated", thread_id: threadId,
+                    reason: decision.reason === "buffered_escalation"
+                      ? "no extractable findings this step; flushing evidence buffered before the nudge"
+                      : "nudge fired with zero record_artifacts calls and zero persisted artifacts",
+                    decision: decision.reason,
+                    nudge_count: persistenceNudgeCount,
+                    step_candidates: stepFindings.length,
+                    flushed: toPersist.length,
+                    retained_for_next_flush: drained.retained,
                   }));
                 }
+                const res = await persistAutoFindings({ supabase, threadId, userId, seen }, toPersist);
+                // Logged unconditionally now: `inserted: 0, skipped_duplicates: N`
+                // is the healthy steady state and must be distinguishable from the
+                // backstop never running.
+                console.log(JSON.stringify({
+                  event: "auto_persist_step", thread_id: threadId,
+                  candidates: toPersist.length,
+                  inserted: res.inserted, skipped_duplicates: res.skipped_duplicates,
+                  // < inserted means artifacts landed with no chain-of-custody row.
+                  evidence_appended: res.evidence_appended ?? 0,
+                }));
               } catch (e) {
                 console.warn("[auto-persist] step backstop failed (non-fatal):", String(e));
               }
