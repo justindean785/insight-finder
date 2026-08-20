@@ -54,6 +54,18 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // collisions rather than clean fast fails. 20s keeps it well below the ~46s p95
   // (still a fast-fail relative to a full 30s+ tax) while giving legitimate fast
   // responses room to land instead of tripping the cap mid-flight.
+  // DELIBERATELY NOT RAISED. A 2026-08-16 telemetry audit reported a 20_130ms
+  // abort against this 20_000ms cap and proposed raising it, by analogy with
+  // Indicia. The analogy is wrong and the two are opposite cases:
+  //   Indicia RESPONDS SUCCESSFULLY at 13.8-20.5s and we were aborting at 18s,
+  //     so the cap was destroying real data -> raised.
+  //   gemini_deep_dork has a ~46s p95 and is capped BELOW it ON PURPOSE, to be
+  //     a fast-fail corroboration source rather than a 30s tax on every run.
+  //     An abort at 20_130ms is the cap working, not an off-by-a-hair bug.
+  // Raising it would not make the tool succeed — it would still miss its p95 —
+  // it would only make each failure more expensive. Pinned by
+  // tool_timeout_caps_test.ts:35 ("cut from its old 30s tail"), which is the
+  // test that caught this change.
   gemini_deep_dork: 20_000,        // was 12_000 — 12s cap fired mid-response too often
   // deepfind_reverse_email: removed 8s override — falls back to 12s default.
   // The 8s cap caused 9 timeouts in the 2026-07-08 audit; provider legitimately
@@ -73,13 +85,19 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // of the 12s default cap orphaning an un-signalled request (2026-07-05 fix).
   wayback_cdx_search: 25_000,
   archive_url: 25_000,
-  // Indicia broker lookups — person/address can be slow; own fetch timeout is 18s.
-  indicia_email: 20_000,
-  indicia_phone: 20_000,
-  indicia_person: 20_000,
-  indicia_address: 20_000,
-  indicia_web_dbs: 20_000,
-  indicia_hudsonrock: 20_000,
+  // Indicia broker lookups — the provider is simply slower than we allowed.
+  // RAISED 20s -> 32s (2026-08-16 telemetry audit) alongside the tool's own fetch
+  // timeout (18s -> 30s in tools/indicia.ts). Direct probes with the production
+  // key returned HTTP 200 with real records at 20.5s and 13.8s, while every
+  // logged failure was our abort at 18.0-18.2s. The wrapper cap must stay ABOVE
+  // the tool's own fetch timeout so the tool fails cleanly first and the wrapper
+  // never orphans an un-signalled request.
+  indicia_email: 32_000,
+  indicia_phone: 32_000,
+  indicia_person: 32_000,
+  indicia_address: 32_000,
+  indicia_web_dbs: 32_000,
+  indicia_hudsonrock: 32_000,
   // SocialFetch server-side web read (/v1/web/markdown) fetches + renders + converts
   // a full page (YouTube, etc.) upstream, which legitimately exceeds the 12s default.
   // 25s outer budget sits above the tool's own 22s per-attempt fetch timeout.
@@ -209,6 +227,9 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   pdl_person_enrich: 20_000,  // own fetch 18s (PDL_HTTP_TIMEOUT_MS). Not in the
                               // 2026-08-02 report — found by scanning all nine
                               // injected tools rather than only the one that failed.
+  geoseer_geolocate: 58_000,  // own fetch 50s (GEOSEER_HTTP_TIMEOUT_MS); provider
+                              // runs 7-45s in `fast` mode, so the wrapper must sit
+                              // above the tool's own budget, never tie it.
 };
 export function toolTimeoutMs(name: string): number {
   return TOOL_TIMEOUT_OVERRIDE_MS[name] ?? DEFAULT_TOOL_TIMEOUT_MS;

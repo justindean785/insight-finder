@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { captureError } from "@/lib/telemetry";
+import { META_ARTIFACT_KINDS } from "@/hooks/useThreadArtifacts";
 import type { InsightsSummary } from "@/pages/InsightsDerived";
 
 export type ToolUsageSummary = {
@@ -43,7 +44,13 @@ export function useInsightsData(userId: string | undefined, enabled: boolean) {
         }>,
         supabase.from("agent_memory").select("id", { count: "exact", head: true }).eq("user_id", userId),
         supabase.from("threads").select("id", { count: "exact", head: true }).eq("user_id", userId),
-        supabase.from("artifacts").select("id", { count: "exact", head: true }).eq("user_id", userId),
+        // Meta kinds are engine bookkeeping, not observations, and must never be
+        // counted as evidence. Filtering them out of the LIST was not enough —
+        // this is a bare count(*), so a cluster_decision row inflated the Brain
+        // total while being hidden from the artifact list.
+        supabase.from("artifacts").select("id", { count: "exact", head: true })
+          .eq("user_id", userId)
+          .not("kind", "in", `(${META_ARTIFACT_KINDS.join(",")})`),
       ]);
 
       if (summaryRes.error) throw new Error(summaryRes.error.message);

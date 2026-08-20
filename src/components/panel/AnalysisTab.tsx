@@ -2,11 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+import { describeError, describeNamedError } from "@/lib/error-text";
 import { EmptyState } from "@/components/panel/EmptyState";
 import { MetricCard } from "@/components/ui/workspace-primitives";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Microscope, ShieldCheck, Layers, AlertTriangle, ArrowRight, Wrench,
+  RotateCcw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -70,12 +72,14 @@ export function AnalysisTab() {
   const [custodyCount, setCustodyCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
     (async () => {
       setLoading(true);
+      setError(null);
       try {
         const [a, t, th, ev] = await Promise.all([
           supabase.from("artifacts").select("id,thread_id,kind,confidence,source,metadata").order("created_at", { ascending: false }).limit(5000),
@@ -84,20 +88,30 @@ export function AnalysisTab() {
           supabase.from("evidence_log").select("artifact_id").order("created_at", { ascending: false }).limit(5000),
         ]);
         if (cancelled) return;
-        const firstError = a.error ?? t.error ?? th.error ?? ev.error;
-        if (firstError) throw firstError;
+        // Name the failing query. Promise.all collapses four requests into one
+        // rejection, and "artifacts denied by RLS" and "evidence_log timed out"
+        // are different problems with different owners.
+        const failed = ([
+          ["artifacts", a.error],
+          ["tool_usage_log", t.error],
+          ["threads", th.error],
+          ["evidence_log", ev.error],
+        ] as const).filter(([, err]) => err);
+        if (failed.length) {
+          throw new Error(failed.map(([name, err]) => describeNamedError(name, err)).join(" · "));
+        }
         setArtifacts((a.data ?? []) as ArtifactRow[]);
         setTools((t.data ?? []) as ToolRow[]);
         setThreads((th.data ?? []) as ThreadRow[]);
         setCustodyCount(new Set((ev.data ?? []).map((r: { artifact_id: string }) => r.artifact_id)).size);
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setError(describeError(e));
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [user]);
+  }, [user, reloadKey]);
 
   const stats = useMemo(() => {
     const scored = artifacts.filter((a) => a.confidence != null);
@@ -161,8 +175,26 @@ export function AnalysisTab() {
 
   if (error) {
     return (
-      <div className="rounded-2xl border border-danger/40 bg-danger/10 p-4 text-sm text-danger">
-        Could not load analysis: {error}
+      <div className="panel relative overflow-hidden border-[hsl(var(--authority-conflict))]/40 p-4">
+        <span aria-hidden className="spine" data-authority="conflict" />
+        <div className="pl-1">
+          <div className="flex items-center gap-2 text-meta font-semibold text-[hsl(var(--authority-conflict))]">
+            <AlertTriangle className="h-4 w-4 shrink-0" strokeWidth={2} aria-hidden />
+            Analysis could not load
+          </div>
+          <p className="mt-1.5 text-data leading-relaxed text-muted-foreground">
+            The cross-case queries did not return. Nothing is lost — this view is
+            read-only and reads live tables.
+          </p>
+          <pre className="panel-inset mt-2.5 overflow-x-auto p-2.5 font-mono text-micro leading-relaxed text-foreground/85">{error}</pre>
+          <button
+            type="button"
+            onClick={() => setReloadKey((n) => n + 1)}
+            className="mt-2.5 inline-flex items-center gap-1.5 rounded-md border border-border-strong bg-surface-2 px-2.5 py-1 text-data font-medium text-foreground transition-colors hover:bg-surface-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <RotateCcw className="h-3.5 w-3.5" aria-hidden /> Try again
+          </button>
+        </div>
       </div>
     );
   }

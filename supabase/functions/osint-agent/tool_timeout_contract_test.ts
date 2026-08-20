@@ -191,19 +191,36 @@ const EXPECTED_INJECTED: ReadonlyArray<{ name: string; module: string; budgetMs:
   // SERUS_OPERATION_DEADLINE_MS, and serus.ts now accepts and forwards the
   // wrapper's AbortSignal so that deadline is actually enforceable.
   { name: "serus_darkweb_scan", module: "./tools/serus_core.ts",      budgetMs: 40_000 },
-  { name: "indicia_email",      module: "./tools/indicia.ts",         budgetMs: 18_000 },
-  { name: "indicia_phone",      module: "./tools/indicia.ts",         budgetMs: 18_000 },
-  { name: "indicia_person",     module: "./tools/indicia.ts",         budgetMs: 18_000 },
-  { name: "indicia_address",    module: "./tools/indicia.ts",         budgetMs: 18_000 },
-  { name: "indicia_web_dbs",    module: "./tools/indicia.ts",         budgetMs: 18_000 },
-  { name: "indicia_hudsonrock", module: "./tools/indicia.ts",         budgetMs: 18_000 },
+  // RE-MEASURED 2026-08-16: 18_000 -> 30_000. The old budget was not a
+  // measurement of the provider, it was a measurement of our own abort. Direct
+  // probes with the production key returned HTTP 200 with real records at 20.5s
+  // (/search/intelligence/email) and 13.8s (/search/intelligence/phone), while
+  // every logged Indicia failure was our `timed out` at 18.0-18.2s — a 7-day
+  // ledger of 4 ok / 16 failed. The wrapper caps in cache.ts move 20s -> 32s in
+  // step, preserving the invariant that the wrapper sits ABOVE the tool's own
+  // fetch budget so the tool fails cleanly first.
+  { name: "indicia_email",      module: "./tools/indicia.ts",         budgetMs: 30_000 },
+  { name: "indicia_phone",      module: "./tools/indicia.ts",         budgetMs: 30_000 },
+  { name: "indicia_person",     module: "./tools/indicia.ts",         budgetMs: 30_000 },
+  { name: "indicia_address",    module: "./tools/indicia.ts",         budgetMs: 30_000 },
+  { name: "indicia_web_dbs",    module: "./tools/indicia.ts",         budgetMs: 30_000 },
+  { name: "indicia_hudsonrock", module: "./tools/indicia.ts",         budgetMs: 30_000 },
   { name: "pdl_person_enrich",  module: "./tools/peopledatalabs.ts",  budgetMs: 18_000 },
   { name: "gemini_vision",      module: "./tools/gemini_vision.ts",   budgetMs: 25_000 },
+  // GeoSeer image geolocation. Own fetch budget 50s (observed 7-45s in `fast`
+  // mode); the cache.ts wrapper sits at 58s, ABOVE it, so the tool aborts cleanly
+  // first and the wrapper never orphans an un-signalled request.
+  //
+  // This entry is the whole reason this contract exists. GeoSeer shipped to the
+  // mirror and was deployed with a cache.ts wrapper cap but no entry here, so this
+  // test was RED at the deployed commit — and the mirror runs no CI, so nothing
+  // caught it. Backporting through canonical CI is what surfaced it.
+  { name: "geoseer_geolocate",  module: "./tools/geoseer.ts",         budgetMs: 50_000 },
 ];
 
-Deno.test("timeout contract: the injected-tool set is exactly the expected nine", () => {
-  // A tenth injected tool added without a measured budget must fail here rather
-  // than silently join the registry outside the contract.
+Deno.test("timeout contract: the injected-tool set is exactly the expected ten", () => {
+  // An eleventh injected tool added without a measured budget must fail here
+  // rather than silently join the registry outside the contract.
   const found = injectedTools().map((t) => t.name).sort();
   assertEquals(
     found,

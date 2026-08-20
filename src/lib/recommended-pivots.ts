@@ -55,8 +55,21 @@ function extractTarget(label: string): string {
     label.match(DOMAIN_RE)?.[0];
   if (directIdentifier) return stripTrailingPunctuation(directIdentifier);
 
+  // Two additions here, both of which decide whether a pivot can EVER be marked
+  // already-run. `computePivots` keys "have we searched this?" on
+  // `normalizeTarget(value)` and compares it against tool-log selectors, so any
+  // prose the parser leaves in `value` makes that comparison unmatchable —
+  // the pivot stays `status: "new"` forever and Chat's Next Steps re-offers it
+  // on every render, no matter how deep the investigation has gone.
+  //
+  //  1. `(?:lead|leads)\s*[:—–-]?` — "Review lead: hawkcapo" captured
+  //     "lead: hawkcapo", so the key was "lead hawkcapo" and no selector could
+  //     ever equal it. This is a report vocabulary the model uses constantly.
+  //  2. `-` in the terminator — "hawkcapo - YouTube channel" is one entity plus
+  //     a descriptor. Only a SPACED hyphen terminates, so hyphenated identifiers
+  //     ("hawk-capo", "Jean-Luc") are untouched.
   const action = label.match(
-    /^(?:investigate|pivot on|verify|cross-reference|check|review|corroborate|confirm|compare)\s+(.+?)(?:\s+[—–]\s+|\s+\b(?:with|against|via|using|through|from)\b|$)/i,
+    /^(?:investigate|pivot on|verify|cross-reference|check|review|corroborate|confirm|compare)\s+(?:(?:lead|leads)\s*[:—–-]?\s*)?(.+?)(?:\s+[—–-]\s+|\s+\b(?:with|against|via|using|through|from)\b|$)/i,
   )?.[1];
   return stripTrailingPunctuation(
     (action ?? label)

@@ -1233,7 +1233,7 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
             SocialFetch Credits
           </div>
           <div className="flex items-baseline gap-2">
-            <div className="font-display text-3xl text-foreground tabular-nums">
+            <div className="stat-figure font-display text-3xl font-semibold">
               {sfLeft.toLocaleString()} <span className="text-base text-muted-foreground font-sans">left</span>
             </div>
           </div>
@@ -1256,7 +1256,7 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
             Total API Spend
           </div>
           <div className="flex items-baseline gap-2">
-            <div className="font-display text-3xl text-foreground tabular-nums">
+            <div className="stat-figure font-display text-3xl font-semibold">
               ${totalSpendUsd.toFixed(2)}
             </div>
             <div className="text-xs text-muted-foreground">across {caseCount} cases</div>

@@ -467,15 +467,37 @@ export async function applyClusteringToThread(
       .update({ cluster_id: m.cluster_id, subject_id: m.subject_id, metadata: meta }).eq("id", m.id);
     if (!uErr) updated++;
   }
-  // cluster_decision log (best-effort) — makes a null-cluster outcome debuggable.
+  // Clustering telemetry goes to the LOG, never into `artifacts`.
+  //
+  // This used to insert a `cluster_decision` row — `confidence: 100`, value
+  // "Deterministic clustering: N subjects, M merges", source
+  // "lib/cluster.ts (union-find)". That is the engine describing its own
+  // bookkeeping, not an observation about the subject, and persisting it as an
+  // artifact made it evidence:
+  //   • it is the ONLY thing in the table at confidence 100, above every real
+  //     ceiling (breach cap 60, quarantine cap 55, highest real artifact 75), so
+  //     it carried more authority than any actual finding;
+  //   • it has no `source_category`, no `confidence_cap_applied` and no
+  //     `subject_unlinked`, so it bypassed every write-path control;
+  //   • every artifact COUNT is a bare `count(*)` (useInsightsData, HomeHub, and
+  //     the get_case_metrics RPC), so it inflated the Evidence number an analyst
+  //     reads even though `isMetaArtifact` hides it from the list.
+  //
+  // Nothing ever consumed it: zero backend readers, and the only frontend
+  // reference was the filter that EXCLUDES it. Its stated purpose — "makes a
+  // null-cluster outcome debuggable" — is served by a structured log line, which
+  // is already how this function reports clustering state (see the
+  // `clustering_skipped_review_state_unavailable` warn above). The summary also
+  // still reaches the caller through this function's return value.
   if (decisions.length) {
-    const { error: iErr } = await admin.from("artifacts").insert([{
-      thread_id: threadId, user_id: userId, kind: "cluster_decision",
-      value: `Deterministic clustering: ${subjects.length} subjects, ${decisions.length} merges`,
-      source: "lib/cluster.ts (union-find)", confidence: 100,
-      metadata: { cluster_id: null, subject_id: null, decisions: decisions.slice(0, 60), subject_count: subjects.length },
-    }]);
-    if (iErr) console.warn("[cluster] cluster_decision insert failed:", iErr);
+    console.log(JSON.stringify({
+      event: "clustering_applied",
+      thread_id: threadId,
+      subject_count: subjects.length,
+      merge_count: decisions.length,
+      artifacts_updated: updated,
+      decisions: decisions.slice(0, 60),
+    }));
   }
   return { updated, subjects: subjects.length, merges: decisions.length };
 }

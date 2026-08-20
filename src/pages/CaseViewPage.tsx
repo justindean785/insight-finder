@@ -120,7 +120,7 @@ export default function CaseViewPage() {
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <AppNav />
-      <div className="border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(220_22%_6.5%/0.6),hsl(222_20%_4.5%/0.46))] px-4 sm:px-8 py-4">
+      <div className="border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(0_0%_8%/0.6),hsl(0_0%_4%/0.46))] px-4 sm:px-8 py-4">
         <div className="mx-auto max-w-6xl flex flex-col sm:flex-row sm:items-center gap-3">
           <Link
             to="/cases"

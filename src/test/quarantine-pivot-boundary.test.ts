@@ -23,11 +23,20 @@ import type { RecommendedPivot } from "@/lib/recommended-pivots";
  * a label, not an authority: an analyst could one-click a quarantined selector
  * and steer the whole next run onto a same-name stranger.
  *
- * THE CONTRACT these tests pin — identical to the backend module's:
+ * THE CONTRACT these tests pin:
  *   authority, not evidence. A quarantined row stays persisted, visible and
  *   auditable on the report. It may not become an actionable pivot from ANY
  *   frontend surface. Both surfaces (the chat "Next steps" rail and the Pivots
  *   tab) call `computePivots`, so binding it there covers both by construction.
+ *
+ *   The frontend contract is NOT identical to the backend module's, and this
+ *   comment used to say it was. The backend treats raw `subject_unlinked` as
+ *   inert because it has no representation for a human linkage decision. The
+ *   frontend additionally honours the explicit `linkage_confirmed === true`
+ *   escape hatch established by #448 (operator sign-off 2026-08-10), so a
+ *   released row is no longer quarantined FOR AUTHORITY PURPOSES while keeping
+ *   its provenance history and its collision disclosure. Full release matrix:
+ *   `src/test/quarantine-release.test.ts`.
  *
  * NOT over-blocking: a selector is inert only while EVERY artifact carrying it
  * is quarantined. One piece of independent, subject-linked evidence for the same
@@ -138,6 +147,37 @@ describe("computePivots — the quarantine does not over-block", () => {
       art({ kind: "email", value: "shared@example.com", source: "breach_check" }),
     ];
     expect(run(artifacts).find((p) => p.value === "shared@example.com")).toBeDefined();
+  });
+
+  it("restores a selector after explicit linkage_confirmed adjudication", () => {
+    // #448's escape hatch, at the PIVOT boundary. Three other frontend gates
+    // (labelForArtifact, evidenceStatus, adjustedConfidence) already restored
+    // full authority on `linkage_confirmed`; this one did not, because
+    // `quarantineSets` classified with raw `isSubjectUnlinked`. An analyst who
+    // had actually adjudicated provenance got a row reading CONFIRMED that they
+    // still could not act on — the release was real everywhere except on the one
+    // surface where it mattered.
+    const artifacts = [
+      art({
+        kind: "email",
+        value: "adjudicated@example.com",
+        metadata: { ...QUARANTINED, linkage_confirmed: true },
+      }),
+    ];
+    expect(run(artifacts).find((p) => p.value === "adjudicated@example.com")).toBeDefined();
+  });
+
+  it("release is per-row: one adjudicated observation revives a value another row still quarantines", () => {
+    // Provenance is a statement about a ROW, so the same selector can arrive
+    // twice — once on the collision axis, once adjudicated. The key lands in
+    // BOTH sets and `isInert` resolves it to false, exactly as it does for an
+    // independently-sourced linked row. Releasing must not require deleting the
+    // quarantined observation.
+    const artifacts = [
+      art({ kind: "email", value: "twice@example.com", metadata: QUARANTINED }),
+      art({ kind: "email", value: "twice@example.com", metadata: { ...QUARANTINED, linkage_confirmed: true } }),
+    ];
+    expect(run(artifacts).find((p) => p.value === "twice@example.com")).toBeDefined();
   });
 
   it("leaves ordinary subject-linked pivots completely unchanged", () => {
