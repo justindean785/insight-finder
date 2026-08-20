@@ -18,6 +18,36 @@ import { selectOrchestratorProvider, type OrchestratorProvider } from "./orchest
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
 import { recoverStaleActiveThreads } from "./recovery.ts";
 
+/**
+ * Release a response body we are never going to read.
+ *
+ * Every liveness probe in this module needs only the status line, so none of
+ * them read their response body — and an unread body is not free. The stream
+ * stays open, holding its connection, until GC eventually collects it. Deno's
+ * test sanitizer reports exactly this as "A fetch response body was created
+ * during the test, but not consumed during the test", which is how it surfaced:
+ * 8 tests in health_handler_test.ts plus 1 in reconciliation_gates_test.ts, all
+ * failing on this and nothing else, on a completely unmodified main.
+ *
+ * The reason it hid for so long is that the failure is NETWORK-DEPENDENT: when
+ * the provider hosts are unreachable `fetch` rejects, no Response is ever
+ * constructed, and the suite reads green. It goes red precisely when the probes
+ * succeed — so a clean local run was evidence of no connectivity, not of no leak.
+ *
+ * `cancel()` is the right release for a body that will never be read: it
+ * discards the stream and frees the connection without buffering the payload.
+ * Its rejection is swallowed because an already-disturbed or errored body is
+ * ALSO released, and a health probe must never fail on cleanup — that would turn
+ * a healthy provider into a reported outage.
+ */
+async function releaseBody(res: Response): Promise<void> {
+  try {
+    await res.body?.cancel();
+  } catch {
+    // already disturbed / errored — nothing left to release
+  }
+}
+
 // ---- checks.minimax — is the PRIMARY orchestrator actually reachable? -------
 // `orchestrator.ok` only asserts a key exists; after the MiniMax-primary outage
 // it must be possible to confirm from a plain ?health=1 that MiniMax itself
@@ -113,6 +143,9 @@ export async function checkDeepseek(deps?: {
       }),
       signal: ctrl.signal,
     });
+    // The canary reads the status line only — release the body before returning
+    // on EITHER branch, or every plain ?health=1 leaks a connection.
+    await releaseBody(res);
     if (res.ok) return { ok: true };
     return { ok: false, reason: "preflight_failed", detail: `status=${res.status}` };
   } catch (e) {
@@ -403,6 +436,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
           }),
           signal,
         });
+        await releaseBody(res);
         return { ok: res.ok, status: res.status };
       }),
       probeProvider("minimax", !!MINIMAX_API_KEY, (signal) => minimaxChat({ user: "ping", maxTokens: 4, temperature: 0, signal })),
@@ -413,6 +447,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
           body: JSON.stringify({ model: GROK_ORCHESTRATOR_MODEL_ID, messages: [{ role: "user", content: "ping" }], max_tokens: 4 }),
           signal,
         });
+        await releaseBody(res);
         return { ok: res.ok, status: res.status };
       }),
       probeProvider("gemini", !!Deno.env.get("GEMINI_API_KEY"), async (signal) => {
@@ -422,6 +457,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
           body: JSON.stringify({ model: GEMINI_FALLBACK_MODEL_ID, messages: [{ role: "user", content: "ping" }], max_tokens: 4 }),
           signal,
         });
+        await releaseBody(res);
         return { ok: res.ok, status: res.status };
       }),
     ]);
