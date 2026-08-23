@@ -7,9 +7,9 @@ name: Edge Health
 
 on:
   schedule:
-    # Every 15 minutes. Polling every 5 would triple Actions minutes for
-    # little extra signal.
-    - cron: "*/15 * * * *"
+    # Hourly polling keeps a lightweight liveness signal without spending
+    # Actions minutes on a 15-minute cadence.
+    - cron: "0 * * * *"
   workflow_dispatch:
 
 # Only one probe at a time; a queued probe supersedes a stuck one.
