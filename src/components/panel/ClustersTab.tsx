@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
-import { buildIdentityClusters, groupForKind, type IdentityCluster } from "@/lib/intel";
+import { UNATTRIBUTED_CLUSTER_LABEL, buildIdentityClusters, groupForKind, type IdentityCluster } from "@/lib/intel";
 import { useReviewStates } from "@/lib/review";
 import { isSharedInfrastructure } from "@/lib/evidence-status";
 import { captureError } from "@/lib/telemetry";
@@ -98,7 +98,14 @@ function ClusterCard({ cluster: c, index }: { cluster: IdentityCluster; index: n
   // ownership proof.
   const infraOnly = c.artifacts.length > 0 && c.artifacts.every((a) => groupForKind(a.kind) === "infrastructure");
   const shared = infraOnly && c.artifacts.some((a) => isSharedInfrastructure(a));
-  const title = infraOnly ? c.label.replace(/—\s*unknown\s*$/i, "— infrastructure") : c.label;
+  // Matches the unattributed sentinel exported by intel.ts (#485). "unknown"
+  // is kept so a label built before that rename still relabels correctly.
+  const title = infraOnly
+    ? c.label.replace(
+        new RegExp(`—\\s*(?:${UNATTRIBUTED_CLUSTER_LABEL}|unknown)\\s*$`, "i"),
+        "— infrastructure",
+      )
+    : c.label;
   // Spine state, read off the cluster's EXISTING verdicts — no new scoring.
   // A cluster that carries a misattribution warning or an out-of-area seed
   // mismatch is the thing an analyst must not scroll past, so it gets the
