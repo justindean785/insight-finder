@@ -5627,6 +5627,31 @@ export function buildTools(ctx: ToolContext) {
         identityEvidenceStrength: i.identity_evidence_strength,
         relationshipEvidenceStrength: i.relationship_evidence_strength,
       });
+      // #477: the confidence above is derived with full server authority, but the
+      // model's `label` was persisted beside it with none and echoed back as
+      // `applied_label` as though the server had ratified it. Measured in
+      // production: of the 13 times record_finding has run, TEN persisted
+      // label:"CONFIRMED" on a server score between 15 and 78 — every one below
+      // the >=80 bar. Free text reached the same field too ("Mozzy Records"),
+      // because the model read "label" in its ordinary English sense.
+      //
+      // Authority is REUSED, never re-invented: resolveRecordingStatus wraps
+      // deriveStatus + coerceCoherentStatus and is already the status resolver on
+      // every other recording path (tool-registry :4662/:5021, tools/recording
+      // :78/:319). record_finding was the one that skipped it.
+      //
+      // `requested` is deliberately left null by passing no `status` key — the
+      // model may not ask for a status. Contradictions ARE passed, because they
+      // can only make the verdict more conservative.
+      const findingCap = applyRecordingSourcePolicy({
+        rawConfidence: axes.case,
+        source: i.supporting_sources.join(","),
+        kind: "finding",
+        metadata: null,
+      }).effective;
+      const findingContradictions = i.contradictions ?? contras.map((c) => `${c.kind}: ${c.detail}`);
+      const { status: findingStatus, reasonNotConfirmed: findingReason } =
+        resolveRecordingStatus(findingCap, { contradictions: findingContradictions });
       const row = {
         thread_id: threadId,
         user_id: userId,
@@ -5635,11 +5660,18 @@ export function buildTools(ctx: ToolContext) {
         confidence: axes.case,
         source: i.supporting_sources.join(","),
         metadata: {
-          label: i.label,
+          // Server authority. Note the key is `status`, not `label`:
+          // useThreadArtifacts.ts:63 reads metadata.label as the META-KIND marker
+          // (triage_decision / cluster_decision) to exclude rows from every
+          // artifact count, so findings must not compete for that key.
+          status: findingStatus,
+          reason_not_confirmed: findingReason,
+          // The model's own pick, kept for disclosure and never read as authority.
+          model_label: i.label,
           cluster_label: i.cluster_label,
           drivers: i.drivers,
           reducers: i.reducers ?? [],
-          contradictions: i.contradictions ?? contras.map((c) => `${c.kind}: ${c.detail}`),
+          contradictions: findingContradictions,
           unresolved: i.unresolved ?? [],
           next_pivots: i.next_pivots ?? [],
           supporting_sources: i.supporting_sources,
@@ -5651,7 +5683,9 @@ export function buildTools(ctx: ToolContext) {
       const { data, error } = await supabase.from("artifacts").insert([row]).select("id").maybeSingle();
       if (error) return { ok: false, error: error.message };
       recordFindingSummary(threadId, i.conclusion);
-      return { ok: true, id: data?.id ?? null, confidence_axes: axes, applied_label: i.label };
+      // `applied_label` must report what the SERVER applied. Echoing i.label here
+      // told the model its own guess had been ratified.
+      return { ok: true, id: data?.id ?? null, confidence_axes: axes, applied_label: findingStatus, model_label: i.label };
     },
   });
 
