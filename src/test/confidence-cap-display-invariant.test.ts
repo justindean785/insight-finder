@@ -148,3 +148,65 @@ describe("a malformed cap is ignored rather than trusted", () => {
     expect(adjustedConfidence(a, "confirmed")).toBe(70);
   });
 });
+
+describe("linkage_confirmed releases the quarantine ceiling but NOT the recorded cap", () => {
+  /**
+   * Operator decision, 2026-08-23, settling the Graphify advisory on this PR
+   * ("linkage_confirmed no longer bypasses recorded confidence cap").
+   *
+   * The two flags answer different questions and are not interchangeable:
+   *
+   *   linkage_confirmed        WHOSE this row is    — provenance, adjudicated by a human
+   *   confidence_cap_applied   HOW STRONG it is     — source classes, measured by the server
+   *
+   * Adjudicating that a breach record belongs to the subject does not turn one
+   * breach corpus into two independent source classes, so the evidence ceiling
+   * keeps binding after release. Note there was never a bypass to lose: before
+   * this change nothing in the scoring path read `confidence_cap_applied` at all.
+   *
+   * `source: "whois"` with no `sources` array is a deterministic zero bonus —
+   * pinned by "leaves rows with no cap completely unchanged" above (50 + 20 = 70).
+   */
+  const released = (over: Record<string, unknown> = {}): Artifact =>
+    art({
+      source: "whois",
+      confidence: 60,
+      metadata: {
+        subject_unlinked: true,
+        subject_unlinked_reason: "harvested from a name-only query",
+        linkage_confirmed: true,
+        ...over,
+      },
+    });
+
+  it("release still restores the number above the quarantine ceiling when no cap is recorded", () => {
+    // #448's escape hatch has to survive this change: an adjudicated row is not
+    // quarantined, so 60 + 25 lands at 85 rather than being pinned to 55.
+    expect(adjustedConfidence(released(), "key")).toBe(85);
+    expect(adjustedConfidence(released(), "key")).toBeGreaterThan(QUARANTINE_CEILING);
+  });
+
+  it("the recorded cap still binds on a released row", () => {
+    // The discriminating case, and the one the advisory asked about. 60 + 25 = 85
+    // uncapped. Landing on exactly 65 proves BOTH halves at once: above
+    // QUARANTINE_CEILING, so the release happened; at the cap, so the evidence
+    // ceiling still bound. Neither a re-quarantine nor a cap bypass can produce 65.
+    const a = released({ confidence_cap_applied: 65 });
+    expect(adjustedConfidence(a, "key")).toBe(65);
+    expect(adjustedConfidence(a, "key")).toBeGreaterThan(QUARANTINE_CEILING);
+  });
+
+  it("a low cap still holds a released row below CONFIRMED", () => {
+    const a = released({ confidence_cap_applied: 45 });
+    expect(adjustedConfidence(a, "key")).toBe(45);
+    expect(adjustedConfidence(a, "key")).toBeLessThan(80);
+  });
+
+  it("without release the quarantine ceiling is the stricter limit on the same row", () => {
+    // Same row, release withdrawn. 55 (quarantine) beats the 65 cap, and the
+    // positive review delta is DROPPED rather than clamped — quarantine's
+    // asymmetry, not the cap, is what does that.
+    const a = released({ confidence_cap_applied: 65, linkage_confirmed: false });
+    expect(adjustedConfidence(a, "key")).toBe(QUARANTINE_CEILING);
+  });
+});
