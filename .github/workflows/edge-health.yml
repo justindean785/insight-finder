@@ -7,9 +7,22 @@ name: Edge Health
 
 on:
   schedule:
-    # Every 15 minutes. Polling every 5 would triple Actions minutes for
-    # little extra signal.
-    - cron: "*/15 * * * *"
+    # Hourly, deliberately — do NOT tighten this without reading why.
+    #
+    # GitHub bills every job ROUNDED UP to a full minute, so this ~10-second
+    # curl costs a full billable minute per run however short it is. At the
+    # old */15 that was ~2,900 billed minutes a month for ~8 hours of real
+    # work — more than the entire included Actions allowance on a private
+    # repo. On 2026-08-20 it exhausted the account's minutes, and because the
+    # allowance is shared, that stopped CI on every pull request too: all
+    # jobs began failing at dispatch with "the job was not started because
+    # ... your spending limit needs to be increased". The probe then stayed
+    # dark for ~65 hours, so the monitor took out both CI and itself.
+    #
+    # Hourly costs ~720 minutes a month. If you need finer resolution, move
+    # this to an external uptime monitor — which is what the header above
+    # already calls it — instead of shortening the cron.
+    - cron: "0 * * * *"
   workflow_dispatch:
 
 # Only one probe at a time; a queued probe supersedes a stuck one.
