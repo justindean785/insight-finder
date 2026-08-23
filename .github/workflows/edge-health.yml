@@ -5,24 +5,23 @@ name: Edge Health
 # /health path) and is reachable without auth. A failed scheduled run shows
 # up in the Actions tab and emails the repo owner — that is the alerting.
 
+# NO SCHEDULE, deliberately. Run this by hand from the Actions tab
+# ("Run workflow") when you want a health reading.
+#
+# Why: GitHub bills every job ROUNDED UP to a full minute, so this ~10-second
+# curl cost a full billable minute per run. At the old */15 that was ~2,900
+# billed minutes a month for ~8 hours of real work -- more than the entire
+# included Actions allowance on a private repo. On 2026-08-20 it exhausted the
+# account's minutes and, because the allowance is shared, took CI down on every
+# pull request with it: all jobs failed at dispatch with "the job was not
+# started because ... your spending limit needs to be increased". The probe
+# then sat dark for ~65 hours and nobody noticed -- so as alerting it was
+# already not doing its job.
+#
+# To restore automatic polling, add back a `schedule:` block below. Prefer
+# hourly ("0 * * * *", ~720 min/month) over anything shorter, or better, use an
+# external uptime monitor -- which is what the header above already calls this.
 on:
-  schedule:
-    # Hourly, deliberately — do NOT tighten this without reading why.
-    #
-    # GitHub bills every job ROUNDED UP to a full minute, so this ~10-second
-    # curl costs a full billable minute per run however short it is. At the
-    # old */15 that was ~2,900 billed minutes a month for ~8 hours of real
-    # work — more than the entire included Actions allowance on a private
-    # repo. On 2026-08-20 it exhausted the account's minutes, and because the
-    # allowance is shared, that stopped CI on every pull request too: all
-    # jobs began failing at dispatch with "the job was not started because
-    # ... your spending limit needs to be increased". The probe then stayed
-    # dark for ~65 hours, so the monitor took out both CI and itself.
-    #
-    # Hourly costs ~720 minutes a month. If you need finer resolution, move
-    # this to an external uptime monitor — which is what the header above
-    # already calls it — instead of shortening the cron.
-    - cron: "0 * * * *"
   workflow_dispatch:
 
 # Only one probe at a time; a queued probe supersedes a stuck one.
