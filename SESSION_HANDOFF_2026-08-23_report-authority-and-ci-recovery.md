@@ -51,6 +51,7 @@ Pre-existing branches **not touched**: `claude/c2-confidence-caps`, `fix/edge-fn
 | **#481** | `fix(confidence): display confidence may never exceed the server's recorded cap` | `6c39559` | **ready, CI NEVER RAN** | Its red X is the billing dispatch failure, not code. Green on local gates. **Needs one CI re-run to be trustworthy.** |
 | #468 | Register hosted Graphify MCP in Cursor | `b8ba236` | draft | Not touched. Config only. |
 | #435 | `fix: charge paid-call budget on real provider attempts` | `90474c5` | draft | Not touched — explicitly out of scope this session. |
+| **#487** | `docs: 2026-08-23 session handoff + correct stale CLAUDE.md baselines` | — | **draft** | This file + the CLAUDE.md baseline corrections. Merge early — the stale baselines mislead. |
 
 **#483 merged** (cron removal, §3). **#484 closed** as a duplicate of #483.
 
@@ -154,7 +155,7 @@ ordinary English sense — plus 56 rows of `triage_decision`.
 
 ---
 
-## 6. NOT YET FILED — do these next
+## 6. The four findings this session traced to exact lines
 
 ### P0-1 · filed as **issue #485** · the top safety defect
 
@@ -176,7 +177,7 @@ Detection worked. Attribution overrode it at one line.
 **Fix:** `c.names[0] ?? c.emails[0] ?? c.usernames[0] ?? "unattributed cluster"` — drop `seedName`.
 Nothing is hidden; rows render in full, under the right entity.
 
-### P0-2 · **not filed** · "What Is Actually Corroborated" is a geography filter
+### P0-2 · filed as **issue #488** · "What Is Actually Corroborated" is a geography filter
 
 `src/lib/intel.ts:1421-1426` filters clusters on `c.matchesSeedLocation === true` — a **state match,
 not a source count** — and its source-chain fallback string is literally `"single source"`. That is
@@ -186,12 +187,12 @@ why the report listed 5 corroborated clusters while the app's own Confidence Sig
 **Fix:** filter on independent source classes ≥2 (the number the panel already computes); render an
 explicit empty state otherwise.
 
-### P1 · **not filed** · quarantine release has never been used
+### P1 · filed as **issue #489** · quarantine release has never been used
 
 207 rows `subject_unlinked`, **0** `linkage_confirmed`. #448 built an escape hatch no analyst has
 ever touched. Either the UI does not surface it or nobody knows it exists. Worth its own issue.
 
-### P1 · **not filed** · Key Findings and the Artifact Table disagree on the same row
+### P1 · **not filed — add to #478** · Key Findings and the Artifact Table disagree on the same row
 
 `buildReportMarkdown`: `intel.ts:1079` `conf()` applies analyst reviews; `intel.ts:1021`
 `buildEvidenceMatrixMarkdown(artifacts)` **takes no reviews parameter** and `:1024` calls
@@ -257,7 +258,7 @@ inside `buildReportMarkdown`**, a second call site worth adding to that issue.
 1. **Re-run CI on #481** (~$0.06). It is the only PR whose green is unverified by a runner.
 2. **P0-1 / issue #485** — one-line fix, highest safety value. Failure-first tests against
    `buildIdentityClusters`.
-3. **P0-2** — file it, then fix `intel.ts:1421`.
+3. **P0-2 / issue #488** — fix `intel.ts:1421`.
 4. **#486 review + merge** when you are ready; then the #477 follow-up PR for the artifact-row passthrough.
 5. **#479** — decide the data source before implementing (see §7).
 6. External uptime monitoring to replace the removed cron.
