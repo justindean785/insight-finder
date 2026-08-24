@@ -73,6 +73,18 @@ export const REVIEW_CONFIDENCE_DELTA: Record<ReviewState, number> = {
 
 /** Verdicts that mean "the analyst rejected this" — mirrors reviews.ts on the edge function. */
 export const REJECTED_REVIEW_STATES: ReadonlySet<ReviewState> = new Set(["dismissed", "wrong"]);
+
+/**
+ * Did the analyst reject this row?
+ *
+ * Accepts a loose string so callers holding an `ReviewAdjustment` (which also
+ * admits "new" | null | undefined) can ask without a cast, and so this module
+ * needs no import from `intel.ts`. One predicate on purpose: a second inline
+ * `r === "dismissed" || r === "wrong"` is how two signals drift apart.
+ */
+export function isRejectedReview(state: string | null | undefined): boolean {
+  return !!state && REJECTED_REVIEW_STATES.has(state as ReviewState);
+}
 /** A review write in any of these states can make a cached investigation_cache row stale. */
 const CACHE_INVALIDATING_STATES: ReadonlySet<ReviewState> = new Set(["dismissed", "wrong", "recheck"]);
 
