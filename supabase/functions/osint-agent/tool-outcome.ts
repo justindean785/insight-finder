@@ -104,9 +104,7 @@ export const PROVEN_EMPTY_PREDICATES: Readonly<Record<string, EmptyPredicate>> =
   // positive existence finding (27 such cached rows in production) — it stays `ok`.
   socialfetch_lookup: (r) => r.lookupStatus === "not_found",
 
-  // `listed:false` + `count:0` is emitted on HTTP-404 OR a successfully-parsed
-  // empty victim list (array / {victims:[]}). Parse failures and unexpected
-  // shapes return ok:false from the tool — they must not satisfy this predicate.
+  // `listed:false` is emitted on the HTTP-404 branch only. No parse overlap.
   ransomwarelive_lookup: (r) => r.listed === false && r.count === 0,
 
   census_geocode: (r) => r.matched === false && isArr(r.matches) && r.matches.length === 0,
