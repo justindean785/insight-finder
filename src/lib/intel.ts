@@ -1147,15 +1147,7 @@ export function buildReportMarkdown(input: ReportInput): string {
   // artifact reads the same here as in the Evidence view.
   const rev = (a: Artifact): ReviewAdjustment => reviews?.[a.id];
   const lbl = (a: Artifact): ConfLabel => labelForArtifact(a, rev(a));
-  // Rejected verdicts are excluded from the positive adjustment path — same
-  // contract as CaseReport's confOf. `dismissed` has REVIEW_DELTA 0 but
-  // adjustedConfidence still adds source/corroboration bonuses.
-  const conf = (a: Artifact): number | null => {
-    const r = rev(a);
-    if (!r) return a.confidence;
-    if (r === "dismissed" || r === "wrong") return null;
-    return adjustedConfidence(a, r);
-  };
+  const conf = (a: Artifact): number | null => (rev(a) ? adjustedConfidence(a, rev(a)) : a.confidence);
 
   const confirmed = artifacts.filter((a) => lbl(a) === "CONFIRMED");
   const inferred = artifacts.filter((a) => lbl(a) === "INFERRED");
