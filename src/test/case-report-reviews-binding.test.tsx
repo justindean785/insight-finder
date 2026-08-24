@@ -130,13 +130,27 @@ describe("#478 — the report scores through adjustedConfidence, not raw confide
 });
 
 describe("#478 — the Identity panel honours verdicts", () => {
-  it("a rejected name row is labelled FAILED, not reported at face value", () => {
+  // CORRECTED after the #495 review. The first version of this test asserted the
+  // rejected row should still occupy "Real name" carrying a FAILED label. That is
+  // the defect, not the fix: these fields are IDENTITY-AUTHORITY claims (see the
+  // #8 banner in report-hygiene.ts), so rendering a rejected row there still
+  // asserts it IS the subject's name — the pill only argues with the assertion.
+  // `buildIdentityClusters` (intel.ts:1865) already settled the semantics: a
+  // dismissed/wrong row may not seed or strengthen identity. It is excluded.
+  it("a rejected name does not occupy Real name at all", () => {
     const name = art({ id: "z1", kind: "name", value: "Jane Doe", confidence: 85 });
     const plain = buildIdentityRows([name] as never);
-    expect(plain.find((r) => r.field === "Real name")?.label).not.toBe("FAILED");
+    expect(plain.find((r) => r.field === "Real name")?.value).toBe("Jane Doe");
 
     const reviewed = buildIdentityRows([name] as never, { z1: "wrong" });
-    expect(reviewed.find((r) => r.field === "Real name")?.label).toBe("FAILED");
+    expect(reviewed.find((r) => r.field === "Real name")).toBeUndefined();
+  });
+
+  it("the rejected row is removed from identity authority, not from the report", () => {
+    const name = art({ id: "z2", kind: "name", value: "Jane Doe", confidence: 85 });
+    const html = renderReport([name], { z2: "wrong" }).textContent ?? "";
+    expect(html).toContain("Jane Doe");
+    expect(html).toContain(EXCLUDED_SECTION);
   });
 });
 
@@ -157,6 +171,132 @@ describe("#478 — the on-screen report and the markdown export cannot disagree"
 
     // Screen side: only agrees once the prop is bound.
     const html = renderReport([a], reviews).textContent ?? "";
+    expect(html).toContain(EXCLUDED_SECTION);
+  });
+});
+
+/**
+ * Post-review findings on PR #495 (Codex P1 + identity-picker).
+ *
+ * The first pass threaded `reviews` into LABELLING and SCORING but not into
+ * POPULATION SELECTION. Two consequences, both real:
+ *
+ *   A. `pickBestIdentity` ranks with `labelForArtifact(a)` — no review — and
+ *      then falls back to raw `a.confidence`. `buildIdentityRows` applied the
+ *      verdict only to the LABEL, after the winner was already chosen. So a
+ *      rejected high-confidence row still won "Real name" and merely rendered
+ *      with a FAILED pill.
+ *
+ *   B. `REVIEW_DELTA` has no `dismissed` key (delta 0), but routing a row
+ *      through `adjustedConfidence` swaps in the corroboration/direct-profile
+ *      bonus that the unreviewed branch never applies. Dismissing a row could
+ *      therefore RAISE its number by up to +15 and lift report aggregates.
+ *
+ * The invariant is not invented here — `buildIdentityClusters` (intel.ts:1865)
+ * already states it and ships it: an artifact marked "dismissed"/"wrong" must
+ * NOT seed or strengthen an identity cluster "or its confidence". These tests
+ * hold the same line for the report's pickers and aggregates.
+ *
+ * Deliberately NOT asserted: that a rejected row's per-row displayed score is
+ * clamped. `EvidenceMatrixTab:41` renders `adjustedConfidence(a, r)` for the
+ * same row, and making CaseReport disagree would recreate the exact divergence
+ * #478 exists to remove.
+ */
+
+const plain = (id: string, kind: string, value: string, confidence: number) =>
+  art({ id, kind, value, confidence, source: "whois_lookup", metadata: null });
+
+// 3 distinct source classes + a direct-profile source => a real positive bonus.
+const bonused = (id: string, confidence: number) =>
+  art({
+    id,
+    kind: "email",
+    value: `${id}@example.com`,
+    confidence,
+    source: "github_user",
+    metadata: { sources: ["github_user", "whois_lookup", "dns_records"] },
+  });
+
+describe("#495 finding A — a rejected row may not WIN an identity field", () => {
+  it("a rejected higher-confidence name loses to a valid lower-confidence one", () => {
+    const bad = plain("n-bad", "name", "Rejected Name", 90);
+    const good = plain("n-good", "name", "Valid Name", 60);
+
+    const unreviewed = buildIdentityRows([bad, good] as never);
+    expect(unreviewed.find((r) => r.field === "Real name")?.value).toBe("Rejected Name");
+
+    const reviewed = buildIdentityRows([bad, good] as never, { "n-bad": "wrong" });
+    expect(reviewed.find((r) => r.field === "Real name")?.value).toBe("Valid Name");
+  });
+
+  it("a dismissed email does not hold Primary email ahead of a valid one", () => {
+    const bad = plain("e-bad", "email", "bad@example.com", 90);
+    const good = plain("e-good", "email", "good@example.com", 60);
+
+    const reviewed = buildIdentityRows([bad, good] as never, { "e-bad": "dismissed" });
+    expect(reviewed.find((r) => r.field === "Primary email")?.value).toBe("good@example.com");
+  });
+
+  it("the Subject Profile picks a valid name over a rejected one", () => {
+    const bad = plain("s-bad", "name", "Rejected Name", 90);
+    const good = plain("s-good", "name", "Valid Name", 60);
+    // "dismissed", NOT "wrong": `wrong` carries a -40 delta that demotes the row
+    // by arithmetic alone, so this would pass without the selection fix. Only
+    // `dismissed` (delta 0) isolates the picker defect.
+    const container = renderReport([bad, good], { "s-bad": "dismissed" });
+
+    const labels = Array.from(container.querySelectorAll("span"));
+    const nameLabel = labels.find((s) => s.textContent?.trim() === "Name");
+    expect(nameLabel?.nextElementSibling?.textContent).toContain("Valid Name");
+  });
+
+  it("with no verdicts the pickers are unchanged — pre-#478 behaviour", () => {
+    const bad = plain("u-bad", "name", "Higher", 90);
+    const good = plain("u-good", "name", "Lower", 60);
+    expect(buildIdentityRows([bad, good] as never, {}).find((r) => r.field === "Real name")?.value)
+      .toBe(buildIdentityRows([bad, good] as never).find((r) => r.field === "Real name")?.value);
+  });
+});
+
+describe("#495 finding B — a rejected row may not strengthen positive aggregates", () => {
+  const confAxis = (m: ReturnType<typeof buildAnalyticRadar>) =>
+    m.find((x) => x.label === "Confidence")!.value;
+
+  it("dismissing a corroborated row does not RAISE average confidence", () => {
+    const flat = plain("p1", "email", "plain@example.com", 50);
+    const rich = bonused("b1", 50);
+
+    const before = confAxis(buildAnalyticRadar([flat, rich] as never, "LOW"));
+    const after = confAxis(buildAnalyticRadar([flat, rich] as never, "LOW", { b1: "dismissed" }));
+    expect(after).toBeLessThanOrEqual(before);
+  });
+
+  it("marking a corroborated row False does not RAISE average confidence", () => {
+    const flat = plain("p2", "email", "plain2@example.com", 50);
+    const rich = bonused("b2", 50);
+
+    const before = confAxis(buildAnalyticRadar([flat, rich] as never, "LOW"));
+    const after = confAxis(buildAnalyticRadar([flat, rich] as never, "LOW", { b2: "wrong" }));
+    expect(after).toBeLessThanOrEqual(before);
+  });
+
+  it("Confirm still raises the axis — the positive path is untouched", () => {
+    const a = plain("c1", "email", "c1@example.com", 50);
+    const before = confAxis(buildAnalyticRadar([a] as never, "LOW"));
+    const after = confAxis(buildAnalyticRadar([a] as never, "LOW", { c1: "confirmed" }));
+    expect(after).toBeGreaterThan(before);
+  });
+
+  it("an empty verdict map leaves every axis identical to no map at all", () => {
+    const arts = [plain("k1", "email", "k1@example.com", 50), bonused("k2", 70)];
+    expect(buildAnalyticRadar(arts as never, "LOW", {})).toEqual(
+      buildAnalyticRadar(arts as never, "LOW"),
+    );
+  });
+
+  it("a rejected row still appears in the Excluded bucket — disclosure, not deletion", () => {
+    const rich = bonused("x9", 50);
+    const html = renderReport([rich], { x9: "dismissed" }).textContent ?? "";
     expect(html).toContain(EXCLUDED_SECTION);
   });
 });

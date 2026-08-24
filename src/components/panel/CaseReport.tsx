@@ -38,7 +38,7 @@ import { formatArtifactDisplayValue, buildIdentityRows, type IdentityRow } from 
 import { toolActionLabel } from "@/lib/tool-display";
 import { tokenizeSourceChain } from "@/lib/report-source-labels";
 import { cn } from "@/lib/utils";
-import type { ReviewState } from "@/lib/review";
+import { isRejectedReview, type ReviewState } from "@/lib/review";
 import { extractDisplaySeed } from "@/lib/seed";
 import type { MessageSummary } from "@/hooks/useThreadMessages";
 import { isBreachKind } from "@/lib/breach-kinds";
@@ -433,7 +433,16 @@ function clampScore(n: number): number {
 }
 
 function averageConfidence(artifacts: Artifact[], reviews?: Reviews): number {
-  const vals = artifacts.map((a) => confOf(reviews, a)).filter((n): n is number => typeof n === "number");
+  // A rejected row may not strengthen a positive aggregate. `REVIEW_DELTA` has
+  // no `dismissed` entry (delta 0), so routing a dismissed row through
+  // `adjustedConfidence` swaps in the corroboration/direct-profile bonus the
+  // unreviewed branch never applies — dismissing could RAISE the average by up
+  // to +15. Excluding rather than clamping keeps the per-row number identical
+  // to EvidenceMatrixTab:41, and matches buildIdentityClusters (intel.ts:1865).
+  const vals = artifacts
+    .filter((a) => !isRejectedReview(revOf(reviews, a)))
+    .map((a) => confOf(reviews, a))
+    .filter((n): n is number => typeof n === "number");
   if (!vals.length) return 0;
   return Math.round(vals.reduce((sum, n) => sum + n, 0) / vals.length);
 }
@@ -628,7 +637,11 @@ function topByConfidence(artifacts: Artifact[], kinds: string[], reviews?: Revie
   // this keeps the narrative builders consistent so a capitalized/undefined
   // `kind` never silently drops a row (or throws into the ErrorBoundary).
   const set = new Set(kinds.map((k) => k.toLowerCase()));
-  const pool = artifacts.filter((a) => set.has(String(a.kind ?? "").toLowerCase()));
+  // Same rule as the identity pickers: a rejected row is not a candidate to
+  // become the subject's headline Name/Email/Phone/Address.
+  const pool = artifacts.filter(
+    (a) => set.has(String(a.kind ?? "").toLowerCase()) && !isRejectedReview(revOf(reviews, a)),
+  );
   if (!pool.length) return null;
   return pool.slice().sort((a, b) => (confOf(reviews, b) ?? 0) - (confOf(reviews, a) ?? 0))[0];
 }
