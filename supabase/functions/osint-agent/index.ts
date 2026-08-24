@@ -28,11 +28,14 @@ import {
 } from "./auto-persist-findings.ts";
 import {
   sanitizeToolOutput,
-  capPartsSize,
-  capToolPartPayloads,
-  stripNulCharacters,
   MAX_PERSISTED_ASSISTANT_PARTS_BYTES,
 } from "./safety.ts";
+// #479. capToolPartPayloads / capPartsSize / stripNulCharacters are no longer
+// called here directly — composePersistedParts owns that pipeline so the Evidence
+// Record's byte reservation cannot be separated from the capping it protects
+// against.
+import { buildEvidenceRecord } from "./lib/evidence-record.ts";
+import { composePersistedParts } from "./lib/evidence-record-persist.ts";
 import { sanitizeModelMessages, capToolResultOutputs, summarizeToolResultValue } from "./message-sanitize.ts";
 import { guard, routingGuard, triageState, countRecordArtifactCalls, countModelMessageToolCalls } from "./guard.ts";
 import { setupRequest } from "./auth.ts";
@@ -1321,6 +1324,14 @@ Deno.serve(async (req) => {
       // triage decision JSON and the threads.seed_type column stayed null.
       let detectedSeedKind: string | null = null;
         let assistant = [...finalMessages].reverse().find((m) => m.role === "assistant");
+        // #479. The Evidence Record renders from these rows, so they are hoisted out
+        // of the salvage try below — the fetch is the SAME single round trip the
+        // salvage backstop already makes, just visible at the persistence step 100
+        // lines down. A failed fetch leaves the empty array, and the record then
+        // renders its zero-findings statement rather than throwing: this path owns
+        // this project's worst incidents and may never fail finalize.
+        let salvageArts: Array<Record<string, unknown>> = [];
+        let artifactFetchHitCeiling = false;
         // P0 fix B — salvage backstop. If the run did work but produced no usable
         // report (the "No report yet" gap — e.g. the loop stopped on a tool step
         // before the model synthesized), run ONE bounded, TOOL-FREE generation that
@@ -1337,12 +1348,32 @@ Deno.serve(async (req) => {
           // of the message history still deserves a report.
           // `id` is required so analyst verdicts match at the ROW level, not only by
           // kind|value. Both levels are enforced below.
-          const { data: salvageArts } = await supabase
+          // #479 widens this SAME query — `metadata` for the recorded confidence
+          // cap, and 500 rows instead of 200. The extra rows are for the Evidence
+          // Record only; salvage synthesis still consumes its bounded top-200 slice
+          // below, so its prompt is byte-for-byte unchanged.
+          //
+          // The limit matters because the order is `confidence desc` and findings
+          // are LOW-confidence by nature (production: 15–78, mean ~44) — a cut at
+          // 200 drops findings FIRST. Live corpus: the largest thread holds 351
+          // rows and one thread already carries a finding at rank 173/176, so 200
+          // is close and 500 clears every thread with headroom. Coverage is not a
+          // guarantee, so a fetch that fills the limit sets the ceiling flag and
+          // the record discloses that it may be incomplete.
+          const ARTIFACT_FETCH_LIMIT = 500;
+          const { data: fetchedArts } = await supabase
             .from("artifacts")
-            .select("id,kind,value,confidence,source")
+            .select("id,kind,value,confidence,source,metadata")
             .eq("thread_id", threadId)
             .order("confidence", { ascending: false })
-            .limit(200);
+            .limit(ARTIFACT_FETCH_LIMIT);
+          salvageArts = (fetchedArts ?? []) as Array<Record<string, unknown>>;
+          artifactFetchHitCeiling = salvageArts.length >= ARTIFACT_FETCH_LIMIT;
+          if (artifactFetchHitCeiling) {
+            console.warn(JSON.stringify({
+              event: "artifact_fetch_ceiling_hit", thread_id: threadId, limit: ARTIFACT_FETCH_LIMIT,
+            }));
+          }
           // The DECISION to salvage uses the raw count deliberately. It answers "did
           // this run actually investigate?", and a run whose every finding the analyst
           // later rejected still investigated — it just needs a report saying so.
@@ -1365,8 +1396,12 @@ Deno.serve(async (req) => {
               }));
               throw new Error("salvage synthesis skipped: analyst review state unavailable");
             }
+            // Bounded to the top 200 by confidence — the exact slice this prompt
+            // received before #479 widened the fetch to 500 for the Evidence
+            // Record. Salvage runs a live generation inside the finalize window,
+            // so its input size is deliberately held constant here.
             const cleanSalvageArts = applyReviewsToArtifacts(
-              (salvageArts ?? []) as Array<Record<string, unknown>>, salvageReviews,
+              salvageArts.slice(0, 200), salvageReviews,
             );
             const salvage = await generateText({
               model: orchestratorModel,
@@ -1420,13 +1455,35 @@ Deno.serve(async (req) => {
           // through untouched. Then apply a true whole-message cap well below
           // the 2MB request limit: useChat replays full history, so allowing one
           // assistant row to consume that budget makes the next turn 413.
-          const cappedParts = capToolPartPayloads(assistant.parts as unknown[]);
-          // Strip JSONB-unsafe control characters LAST, so nothing the capping
-          // helpers do can reintroduce one. A single NUL anywhere in this tree
-          // fails the insert outright and discards the whole finished report —
-          // production, 2026-08-02, 12,736 characters lost. See safety.ts.
-          const safeParts = stripNulCharacters(
-            capPartsSize(cappedParts, MAX_PERSISTED_ASSISTANT_PARTS_BYTES),
+          //
+          // #479. Both of those caps, plus the NUL strip, now run inside
+          // composePersistedParts, which additionally RESERVES budget for the
+          // authoritative Evidence Record so a long model narrative cannot delete
+          // it. That ordering is not cosmetic: capPartsSize's last stage
+          // concatenates every text part and keeps a PREFIX (safety.ts:450), so a
+          // record appended before capping is precisely what gets sliced away.
+          //
+          // The record is built here, never inside the salvage try above, and it
+          // is composed into a SEPARATE array — `assistant.parts` is left
+          // untouched. `resolveTerminalState` below reads that same in-memory
+          // message, so a run that never produced a report cannot be handed a
+          // passing completion contract by this block's structure. Building it is
+          // wrapped because finalize may never fail: an unusable record degrades
+          // to the prior behavior of persisting the message as-is.
+          let evidenceRecord = "";
+          try {
+            evidenceRecord = buildEvidenceRecord({
+              rows: salvageArts,
+              totalArtifactCount: salvageArts.length,
+              retrievalCeilingHit: artifactFetchHitCeiling,
+            });
+          } catch (e) {
+            console.warn("[evidence-record] render failed (non-fatal):", String(e));
+          }
+          const safeParts = composePersistedParts(
+            assistant.parts as unknown[],
+            evidenceRecord,
+            MAX_PERSISTED_ASSISTANT_PARTS_BYTES,
           );
           safePartsForCache = safeParts as unknown[];
           const { error: msgErr } = await supabase.from("messages").insert({
