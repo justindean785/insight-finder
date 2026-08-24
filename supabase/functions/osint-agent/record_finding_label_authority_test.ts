@@ -264,3 +264,89 @@ Deno.test("#486 M4: the persisted confidence is still axes.case, uncapped", asyn
   // radius (#481 owns the display layer).
   assertEquals(captured.row!.confidence, out.confidence_axes.case);
 });
+
+// ---------------------------------------------------------------------------
+// Codex P1 — advisory heuristics must not carry contradiction authority.
+// detectContradictions returns TWO kinds of finding: explicit conflicts, which
+// carry `field` + >=2 `claims`, and advisory single-artifact heuristics
+// (thin_name, common_handle_collision, over_broad_username, cdn_shared_infra,
+// stale_breach) which omit `field` by design — see the contract documented on
+// ContradictionFinding.field. deriveStatus tests only `length > 0`, so feeding
+// it the whole set marked a finding `contradicted` on a RISK signal.
+// ---------------------------------------------------------------------------
+
+/** A single-token name row: fires `thin_name` (advisory, severity low, no field). */
+const THIN_NAME_ROW = {
+  kind: "name",
+  value: "Jordan",
+  source: "gemini_deep_dork",
+  metadata: {},
+  created_at: "2026-01-01T00:00:00Z",
+};
+
+Deno.test("#486 Codex-P1: an advisory-only signal does not make a finding contradicted", async () => {
+  const { captured, tool } = harness([THIN_NAME_ROW]);
+  await tool.execute(multiClassInput());
+  // Guard against a vacuous pass: prove the advisory signal really did fire,
+  // otherwise this test would pass simply by detecting nothing at all.
+  const advisory = captured.row!.metadata.advisory_signals as string[];
+  assert(
+    Array.isArray(advisory) && advisory.some((s) => s.startsWith("thin_name:")),
+    `vacuous: thin_name did not fire, got ${JSON.stringify(advisory)}`,
+  );
+  assertNotEquals(
+    captured.row!.metadata.status,
+    "contradicted",
+    "an advisory risk signal was treated as a conflicting claim",
+  );
+  // ...and it must not have leaked into the authoritative list either.
+  assertEquals(captured.row!.metadata.contradictions, []);
+});
+
+Deno.test("#486 Codex-P1: advisory signals are still recorded, just not authoritative", async () => {
+  const { captured, tool } = harness([THIN_NAME_ROW]);
+  await tool.execute(multiClassInput());
+  const advisory = captured.row!.metadata.advisory_signals as string[];
+  // Disclosure, not deletion — the same rule applied to model_label and
+  // model_contradictions, and the rule quarantine follows.
+  assert(advisory.some((s) => s.includes("single-token name")), JSON.stringify(advisory));
+});
+
+Deno.test("#486 Codex-P1: an advisory signal STILL applies its confidence penalty", async () => {
+  // The over-fix guard. Removing advisory findings from the status input must not
+  // remove them from computeAxes, which is the correct weight for a risk signal:
+  // penalty yes, verdict no. `contras` is passed WHOLE to computeAxes.
+  const clean = harness([]);
+  await clean.tool.execute(multiClassInput());
+  const withAdvisory = harness([THIN_NAME_ROW]);
+  await withAdvisory.tool.execute(multiClassInput());
+
+  const before = clean.captured.row!.confidence;
+  const after = withAdvisory.captured.row!.confidence;
+  assert(
+    after < before,
+    `advisory signal lost its confidence penalty: ${before} -> ${after}`,
+  );
+});
+
+Deno.test("#486 Codex-P1: an EXPLICIT conflict still carries authority alongside advisory noise", async () => {
+  // Both kinds present at once: the explicit conflict must still win, so the
+  // filter cannot be read as "ignore contradictions when any advisory fires".
+  const rows = [
+    THIN_NAME_ROW,
+    { kind: "name", value: "Subject A", source: "court_record_search", metadata: { based: "Sacramento, CA" }, created_at: "2026-01-01T00:00:00Z" },
+    { kind: "name", value: "Subject A", source: "gemini_deep_dork", metadata: { based: "Miami, FL" }, created_at: "2026-01-02T00:00:00Z" },
+  ];
+  const { captured, tool } = harness(rows);
+  await tool.execute(multiClassInput());
+  assertEquals(captured.row!.metadata.status, "contradicted");
+  const authoritative = captured.row!.metadata.contradictions as string[];
+  assert(
+    authoritative.some((s) => s.startsWith("location_conflict:")),
+    `expected the explicit conflict to be authoritative, got ${JSON.stringify(authoritative)}`,
+  );
+  assert(
+    !authoritative.some((s) => s.startsWith("thin_name:")),
+    "advisory signal leaked into the authoritative list",
+  );
+});

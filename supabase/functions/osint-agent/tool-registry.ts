@@ -12,6 +12,7 @@ import {
   detectContradictions,
   clusterScopedContradictionPatches,
   artifactsForFinding,
+  isExplicitContradiction,
   mergeStructuredContradictions,
   type StructuredContradiction,
 } from "./contradictions.ts";
@@ -5687,7 +5688,24 @@ export function buildTools(ctx: ToolContext) {
       //     the opposite. Three live rows carry prose of exactly that form.
       // So the earlier claim that contradictions "can only make the verdict more
       // conservative" does not hold in either direction.
-      const serverContradictions = contras.map((c) => `${c.kind}: ${c.detail}`);
+      // Only EXPLICIT conflicts carry status authority. detectContradictions also
+      // returns advisory single-artifact heuristics (thin_name,
+      // common_handle_collision, over_broad_username, cdn_shared_infra,
+      // stale_breach) which omit `field` by design, and deriveStatus tests only
+      // `length > 0` — so mapping the whole set in marked a finding
+      // `contradicted` on a RISK signal rather than a conflict. `thin_name`
+      // alone fires on any single-token name in the thread, so one such
+      // artifact would have contradicted every finding in it. That is the same
+      // false-authority shape as #477, a third field over.
+      //
+      // The advisory signals keep their ordinary confidence penalty: `contras`
+      // is passed WHOLE to computeAxes above, and that is deliberately
+      // unchanged. Penalty yes, verdict no.
+      const explicitContras = contras.filter(isExplicitContradiction);
+      const serverContradictions = explicitContras.map((c) => `${c.kind}: ${c.detail}`);
+      const advisorySignals = contras
+        .filter((c) => !isExplicitContradiction(c))
+        .map((c) => `${c.kind}: ${c.detail}`);
       const { status: findingStatus, reasonNotConfirmed: findingReason } =
         resolveRecordingStatus(findingCap, { contradictions: serverContradictions });
       const row = {
@@ -5713,6 +5731,11 @@ export function buildTools(ctx: ToolContext) {
           // from. The model's own array is preserved beside it as disclosure
           // (same pattern as model_label) and is never read as authority.
           contradictions: serverContradictions,
+          // Recorded, never authoritative — disclosure, not deletion. Keeping
+          // these out of `contradictions` honors the documented contract on
+          // ContradictionFinding.field: only explicit conflicts are eligible to
+          // be structured there.
+          advisory_signals: advisorySignals,
           model_contradictions: i.contradictions ?? null,
           unresolved: i.unresolved ?? [],
           next_pivots: i.next_pivots ?? [],
