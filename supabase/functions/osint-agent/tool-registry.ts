@@ -55,6 +55,7 @@ export const TOOL_NAME_ALIASES: Record<string, string> = {
   fetch_url: "jina_reader_scrape",
 };
 import type { QueryType } from "./query-type-router.ts";
+import { buildAddressDorks, canonicalizeDorks, resolveDorkKind, type Dork } from "./dork-queries.ts";
 import { DNS_TYPES, VIRTUAL_TYPE_MAP, isVirtualType, resolveVirtualHost, filterTxtByPrefix } from "./tools/dns-virtual.ts";
 
 import {
@@ -3073,17 +3074,28 @@ export function buildTools(ctx: ToolContext) {
     }),
     google_dorks: tool({
       description:
-        "Generate copy-paste Google/Bing/DuckDuckGo/Yandex dork queries for a seed identifier. NO external API cost. Use once for the original seed or a corroborated high-value selector when the resulting query set supports a defined verification goal.",
+        "Generate copy-paste Google/Bing/DuckDuckGo/Yandex dork queries for a seed identifier. NO external API cost. Use once for the original seed or a corroborated high-value selector when the resulting query set supports a defined verification goal. " +
+        "PICK THE KIND FROM THE SELECTOR, not from convenience: a street address is kind:\"address\" (exact-address, parcel/assessor/recorder, deed/ownership, address+person, address+business, public records, documents, archives, real estate). " +
+        "kind:\"domain\" is ONLY for a valid hostname such as example.com — it emits site:, wildcard-subdomain, certificate and secret-exposure templates that are meaningless for anything else. A non-hostname seed sent as kind:\"domain\" is refused with error:'kind_mismatch' (or re-routed to the address family when it is recognisably an address); it does NOT silently return domain queries.",
       inputSchema: memoSchema("google_dorks", () => z.object({
         seed: z.string(),
         // Accept legacy/alias "person" → mapped to "name" in execute().
-        kind: z.enum(["email", "username", "phone", "name", "person", "domain", "ip", "hash", "crypto_wallet"]),
+        kind: z.enum(["email", "username", "phone", "name", "person", "address", "domain", "ip", "hash", "crypto_wallet"]),
       })),
       execute: async ({ seed, kind: rawKind }) => {
-        const kind = rawKind === "person" ? "name" : rawKind;
+        const aliasedKind = rawKind === "person" ? "name" : rawKind;
+        // The model-supplied `kind` is UNTRUSTED input, not a routing decision.
+        // The domain family blindly interpolates the seed into host-shaped
+        // operators (site:, site:*., %., certificate/secret/admin templates);
+        // production emitted `site:79 Waverly Ave Cincinnati OH 45215` because
+        // nothing checked that the seed was actually a hostname.
+        const resolvedKind = resolveDorkKind(seed, aliasedKind);
+        if (!resolvedKind.ok) return resolvedKind;
+        const kind = resolvedKind.kind;
         // google_dorks is intentionally ungated — it only emits search URLs.
         const e = encodeURIComponent(seed);
-        const map: Record<string, Array<{ category: string; query: string; url: string }>> = {
+        const map: Record<string, Dork[]> = {
+          address: buildAddressDorks(seed),
           email: [
             { category: "Direct", query: `"${seed}"`, url: `https://www.google.com/search?q=%22${e}%22` },
             { category: "Direct", query: `intext:"${seed}"`, url: `https://www.google.com/search?q=intext:%22${e}%22` },
@@ -3391,7 +3403,16 @@ export function buildTools(ctx: ToolContext) {
             { category: "Alt Search Engines", query: `"${seed}"`, url: `https://yandex.com/search/?text=%22${e}%22` },
           ],
         };
-        return { seed, kind, dorks: map[kind] ?? [] };
+        // Every URL is regenerated from its own displayed query through ONE
+        // encoder, so the link a user clicks executes exactly what is shown.
+        // The hand-written urls above encoded only a prefix of their query.
+        const dorks = canonicalizeDorks(map[kind] ?? []);
+        return {
+          seed,
+          kind,
+          ...(resolvedKind.corrected ? { kind_corrected: resolvedKind.corrected } : {}),
+          dorks,
+        };
       },
     }),
     dork_harvest: tool({

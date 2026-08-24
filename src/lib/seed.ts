@@ -2,7 +2,7 @@
 // (for the investigation cache lookup) and rendered banners.
 // Mirror logic on the edge function so cache keys match.
 
-export type SeedKind = "email" | "username" | "phone" | "ip" | "domain" | "url" | "crypto" | "other";
+export type SeedKind = "email" | "username" | "phone" | "ip" | "domain" | "url" | "crypto" | "address" | "other";
 
 export type DetectedSeed = {
   kind: SeedKind;
@@ -19,6 +19,44 @@ const PHONE_RE = /^\+?[\d\s\-().]{7,}$/;
 const ETH_RE = /^0x[a-f0-9]{40}$/i;
 const BTC_RE = /^(?:bc1|[13])[a-z0-9]{25,62}$/i;
 const USERNAME_RE = /^[a-z0-9_.-]{2,40}$/i;
+
+// --- US postal address ----------------------------------------------------
+// MUST match looksLikePostalAddress / normalizeAddressValue in
+// supabase/functions/osint-agent/address.ts — the client computes the cache
+// key the edge function looks the investigation up by, and there is no shared
+// module between src/ and supabase/functions/.
+//
+// Runs against the WHITESPACE-FLATTENED value, so a pasted two-line address
+// ("79 WAVERLY AVE\nCINCINNATI OH, 45215") is the same input as its one-line
+// form, and `[\s,]+` accepts the comma placements people actually type
+// ("OH, 45215" / "Cincinnati, OH 45215" / "Cincinnati OH 45215").
+const US_POSTAL_RE =
+  /^\d{1,6}(?:-\d{1,6})?[A-Za-z]?\s+\S.*?[\s,]+[A-Za-z]{2}[\s,]+\d{5}(?:-\d{4})?$/;
+
+/** Collapse newlines/tabs/runs of spaces. Casing and punctuation untouched. */
+export function flattenAddress(raw: string | null | undefined): string {
+  return (raw ?? "").replace(/\s+/g, " ").trim();
+}
+
+/** House number + 2-letter state + ZIP, in any common punctuation/line layout. */
+export function looksLikePostalAddress(raw: string | null | undefined): boolean {
+  const flat = flattenAddress(raw);
+  if (!flat || flat.length > 200) return false;
+  return US_POSTAL_RE.test(flat);
+}
+
+/**
+ * Cache key for an address seed: lowercased, "," and "." dropped, whitespace
+ * collapsed — so every formatting of one address maps to one key while `raw`
+ * keeps the analyst's original text for display.
+ */
+export function normalizeAddressValue(raw: string | null | undefined): string {
+  return (raw ?? "")
+    .toLowerCase()
+    .replace(/[,.]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 // --- Display-seed extraction --------------------------------------------
 // A thread's seed_value can be a clean selector ("casey.rivera@example.com") OR a
@@ -46,6 +84,14 @@ export function extractDisplaySeed(
     if (direct && direct.kind !== "other") {
       return { selector: direct.raw, kind: direct.kind, title: direct.raw };
     }
+  }
+
+  // A pasted postal address is a real selector even though it spans two lines
+  // and trips the "messy blob" test above. Without this the fallback below cut
+  // "79 WAVERLY AVE\nCINCINNATI OH, 45215" down to its first line.
+  if (looksLikePostalAddress(raw)) {
+    const flat = flattenAddress(raw);
+    return { selector: flat, kind: "address", title: flat };
   }
 
   // Messy blob — extract the strongest selector by priority.
@@ -119,5 +165,9 @@ export function detectSeed(input: string): DetectedSeed | null {
   }
   if (DOMAIN_RE.test(raw)) return { kind: "domain", raw, normalized: raw.toLowerCase() };
   if (USERNAME_RE.test(raw)) return { kind: "username", raw, normalized: raw.toLowerCase() };
+  // MUST match detectSeedServer in supabase/functions/osint-agent/validation.ts.
+  if (looksLikePostalAddress(raw)) {
+    return { kind: "address", raw, normalized: normalizeAddressValue(raw) };
+  }
   return { kind: "other", raw, normalized: raw.toLowerCase() };
 }

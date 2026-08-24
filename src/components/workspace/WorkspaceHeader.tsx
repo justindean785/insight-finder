@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadToolActivity } from "@/hooks/useThreadToolActivity";
-import { ShieldAlert, Lock, Coins, Plus, Copy, Link2, Mail, Phone, Globe, Network, User, Hash, FileSearch, ShieldCheck, AlertTriangle, Unlink } from "lucide-react";
+import { ShieldAlert, Lock, Coins, Plus, Copy, Link2, Mail, Phone, Globe, Network, User, Hash, FileSearch, ShieldCheck, AlertTriangle, Unlink, MapPin } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { extractDisplaySeed, type SeedKind } from "@/lib/seed";
@@ -40,6 +40,7 @@ const KIND_ICON: Record<SeedKind, typeof Globe> = {
   domain: Globe,
   url: Link2,
   crypto: Hash,
+  address: MapPin,
   other: FileSearch,
 };
 
@@ -51,6 +52,7 @@ const KIND_LABEL: Record<SeedKind, string> = {
   domain: "Domain",
   url: "URL",
   crypto: "Wallet",
+  address: "Address",
   other: "Selector",
 };
 
