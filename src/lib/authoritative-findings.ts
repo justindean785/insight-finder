@@ -173,3 +173,43 @@ export function selectAuthoritativeFindings(
     totalArtifacts: rows.length,
   };
 }
+
+/** Heading both producers use, so the section is findable by one name. */
+export const AUTHORITY_HEADING = "Engine-adjudicated findings";
+
+/**
+ * The one-sentence status line, owned here so the markdown export and the
+ * rendered Report cannot drift into saying different things about the same run.
+ *
+ * The distinctions are the whole point: "we could not read" is not "there were
+ * none", and "the analyst rejected them all" is not "the engine adjudicated
+ * nothing" — those two blame opposite parties.
+ */
+export function authorityStatement(a: AuthoritativeFindings): string {
+  if (!a || typeof a !== "object") {
+    return "Authoritative finding state unavailable.";
+  }
+  if (a.state === "retrieval_unavailable") {
+    return "Authoritative finding state unavailable: stored artifacts could not be read, so nothing here describes this investigation.";
+  }
+  if (a.state === "reviews_unavailable") {
+    return "Authoritative finding state unavailable: analyst review state could not be read, so recorded findings are withheld rather than risk republishing a rejected one.";
+  }
+  const ceiling = a.state === "ceiling_hit"
+    ? " Artifact retrieval hit its limit, so this may be incomplete."
+    : "";
+  const n = a.findings?.length ?? 0;
+  const rejected = a.rejectedCount ?? 0;
+  const total = a.totalArtifacts ?? 0;
+
+  if (n > 0) {
+    const excluded = rejected > 0
+      ? ` ${rejected} further recorded finding${rejected === 1 ? " was" : "s were"} excluded by analyst review.`
+      : "";
+    return `The scoring engine adjudicated ${n} finding${n === 1 ? "" : "s"} on this case.${excluded}${ceiling}`;
+  }
+  if (rejected > 0) {
+    return `No adjudicated findings remain after analyst review: ${rejected} recorded finding${rejected === 1 ? " was" : "s were"} dismissed or marked wrong.${ceiling}`;
+  }
+  return `The scoring engine adjudicated no findings on this case. ${total} artifact${total === 1 ? " was" : "s were"} collected; everything below is a lead, not an adjudicated finding.${ceiling}`;
+}

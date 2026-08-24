@@ -1,5 +1,10 @@
 import type { Artifact } from "@/hooks/useThreadArtifacts";
-import { recordedConfidenceCap } from "@/lib/authoritative-findings";
+import {
+  AUTHORITY_HEADING,
+  authorityStatement,
+  recordedConfidenceCap,
+  type AuthoritativeFindings,
+} from "@/lib/authoritative-findings";
 import { detectSeed, extractDisplaySeed } from "@/lib/seed";
 import { toolActionLabel } from "@/lib/tool-display";
 import { humanizeSourceChain, tokenizeSourceChain } from "@/lib/report-source-labels";
@@ -1122,6 +1127,10 @@ export type ReportInput = {
   reviews?: Record<string, ReviewAdjustment>;
   /** Output shape: "full" dossier (default) or condensed "brief". */
   reportType?: "full" | "brief";
+  /** #499 — what the ENGINE adjudicated, from `selectAuthoritativeFindings`.
+   *  Optional so every other caller of this function keeps working unchanged;
+   *  when absent the section is omitted rather than guessed at. */
+  authority?: AuthoritativeFindings;
   /** Authoritative tool-call activity (from tool_usage_log), one entry per call.
    *  Supplied by the UI so the Activity Log reflects real tool invocations even
    *  though the persisted message stream doesn't carry tool parts. */
@@ -1130,8 +1139,31 @@ export type ReportInput = {
   toolInvocations?: number;
 };
 
+/**
+ * #499 — the engine's own adjudication, rendered above Key Findings.
+ *
+ * Placed ABOVE deliberately: its job is to qualify what follows. "Key Findings"
+ * is built from `labelForArtifact(a) === "CONFIRMED"` over ALL artifacts, which
+ * is a source-tier label and not an adjudication — so on a case where
+ * `record_finding` never fired, this section is what tells the analyst that
+ * everything below is a lead.
+ *
+ * Returns [] when no authority result was supplied, so existing callers are
+ * unaffected. The wording lives in `authorityStatement` so this and the rendered
+ * Report tab cannot drift into saying different things about the same run.
+ */
+function authoritySection(authority?: AuthoritativeFindings): string[] {
+  if (!authority) return [];
+  const rows = (authority.findings ?? []).map((f) => {
+    const pct = typeof f.confidence === "number" ? `${f.confidence}%` : "n/a";
+    const tier = f.tier ? f.tier.charAt(0).toUpperCase() + f.tier.slice(1) : "Unverified";
+    return `- ${f.value} — ${pct} — ${tier}`;
+  });
+  return [`## ${AUTHORITY_HEADING}`, "", authorityStatement(authority), ...(rows.length ? ["", ...rows] : []), ""];
+}
+
 export function buildReportMarkdown(input: ReportInput): string {
-  const { seedValue, seedType, messages, reviews, reportType, toolActivity, toolInvocations } = input;
+  const { seedValue, seedType, messages, reviews, reportType, toolActivity, toolInvocations, authority } = input;
   const display = extractDisplaySeed(seedValue, seedType);
   // Collapse breach datasets recorded twice under name variants from the same
   // source pair (conservative — see dedupeBreachDatasets) so the Artifact Table
@@ -1436,6 +1468,7 @@ export function buildReportMarkdown(input: ReportInput): string {
       `## Executive Summary`,
       exec,
       "",
+      ...authoritySection(authority),
       `## Key Findings`,
       keyFindings,
       "",
@@ -1481,6 +1514,7 @@ export function buildReportMarkdown(input: ReportInput): string {
     `## Candidate Identity Clusters`,
     buildClusterSection(clusterReport, { includeWarnings: false }),
     "",
+    ...authoritySection(authority),
     `## Key Findings`,
     keyFindings,
     "",

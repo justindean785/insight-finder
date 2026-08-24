@@ -18,7 +18,7 @@
  * the contract settled in #479.
  */
 import { describe, it, expect } from "vitest";
-import { selectAuthoritativeFindings } from "@/lib/authoritative-findings";
+import { authorityStatement, selectAuthoritativeFindings } from "@/lib/authoritative-findings";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 
 const art = (over: Partial<Artifact> & { id: string }): Artifact => ({
@@ -169,5 +169,51 @@ describe("determinism", () => {
   it("is total against malformed rows", () => {
     const r = sel([null, undefined, 42, {}, { id: "f1", kind: "finding" }] as unknown as Artifact[]);
     expect(Array.isArray(r.findings)).toBe(true);
+  });
+});
+
+describe("authorityStatement: the wording both producers share", () => {
+  const R = (over: Partial<import("@/lib/authoritative-findings").AuthoritativeFindings>) =>
+    ({ state: "complete", findings: [], rejectedCount: 0, totalArtifacts: 0, ...over }) as never;
+
+  it("says NONE ADJUDICATED, not 'no findings', on the common empty case", () => {
+    const s = authorityStatement(R({ totalArtifacts: 49 }));
+    expect(s).toContain("adjudicated no findings");
+    expect(s).toContain("49 artifacts were collected");
+    expect(s).toContain("lead, not an adjudicated finding");
+  });
+
+  it("distinguishes all-rejected from none-recorded", () => {
+    const rejected = authorityStatement(R({ rejectedCount: 2 }));
+    expect(rejected).toContain("after analyst review");
+    expect(rejected).not.toContain("adjudicated no findings");
+  });
+
+  it("never says 'none' when an input was unreadable", () => {
+    for (const state of ["retrieval_unavailable", "reviews_unavailable"] as const) {
+      const s = authorityStatement(R({ state }));
+      expect(s).toContain("unavailable");
+      expect(s).not.toContain("adjudicated no findings");
+      expect(s).not.toContain("after analyst review:");
+    }
+  });
+
+  it("discloses a ceiling on every state that can carry one", () => {
+    expect(authorityStatement(R({ state: "ceiling_hit" }))).toContain("may be incomplete");
+    expect(authorityStatement(R({ state: "ceiling_hit", rejectedCount: 1 }))).toContain("may be incomplete");
+    expect(authorityStatement(R({ state: "ceiling_hit", findings: [{ id: "a", value: "v", confidence: 50, tier: "weak" }] })))
+      .toContain("may be incomplete");
+  });
+
+  it("reports the adjudicated count and any review exclusions", () => {
+    const s = authorityStatement(R({ findings: [{ id: "a", value: "v", confidence: 50, tier: "weak" }], rejectedCount: 3 }));
+    expect(s).toContain("adjudicated 1 finding");
+    expect(s).toContain("3 further recorded findings were excluded");
+  });
+
+  it("is total against a malformed result", () => {
+    for (const bad of [null, undefined, 42, "x"]) {
+      expect(typeof authorityStatement(bad as never)).toBe("string");
+    }
   });
 });
