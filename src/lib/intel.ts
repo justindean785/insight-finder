@@ -1,4 +1,5 @@
 import type { Artifact } from "@/hooks/useThreadArtifacts";
+import { recordedConfidenceCap } from "@/lib/authoritative-findings";
 import { detectSeed, extractDisplaySeed } from "@/lib/seed";
 import { toolActionLabel } from "@/lib/tool-display";
 import { humanizeSourceChain, tokenizeSourceChain } from "@/lib/report-source-labels";
@@ -262,12 +263,7 @@ export const QUARANTINE_CEILING = 55;
  * raise one, so an unusable or hostile value cannot inflate a row — the failure
  * mode is fail-safe in the direction that matters.
  */
-function recordedConfidenceCap(meta: Record<string, unknown>): number | null {
-  const raw = meta.confidence_cap_applied;
-  if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
-  if (raw < 0 || raw > 100) return null;
-  return raw;
-}
+
 
 export function adjustedConfidence(a: Artifact, review?: ReviewAdjustment): number {
   const base = a.confidence ?? 0;
