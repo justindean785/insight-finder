@@ -11,7 +11,7 @@ import { tierForTool, modelForTool, type Tier } from "./models.ts";
 import { costForTool } from "./costs.ts";
 import { DEFAULT_TOOL_TTL_MS, NO_CACHE_TOOLS, redactSensitiveToolInput, TOOL_TTL_MS } from "./validation.ts";
 import { creditsCharged } from "./billing.ts";
-import { classifyToolOutcome } from "./tool-outcome.ts";
+import { classifyToolOutcome, isProvenEmptyResult } from "./tool-outcome.ts";
 import * as circuit from "./circuit.ts";
 import { guard } from "./guard.ts";
 import { reserveToolCall } from "./orchestrator-budget.ts";
@@ -659,6 +659,11 @@ export function wrapToolsWithCache(
       statusCode: number | null = null,
       freeCall: boolean = false,
       inputJson: Record<string, unknown> | null = null,
+      // The tool payload this log line describes — the live result, or the REPLAYED
+      // result on a cache hit. Consulted ONLY by isProvenEmptyResult to pick the
+      // telemetry `outcome`; it never reaches the row, and never affects billing,
+      // caching, dedup, the circuit breaker, or what the model receives.
+      resultForOutcome: unknown = undefined,
     ) => {
       // Two distinct numbers, intentionally logged separately:
       //  • cost_micro_usd   — ATTRIBUTED list price. Logged for every paid,
@@ -676,7 +681,15 @@ export function wrapToolsWithCache(
       // rate AND falsely tripped the circuit breaker's consecutive-failure guard.
       // The logged `ok` column is relaxed to "not a hard failure" (skipped/empty
       // → true); the new `outcome` column keeps the ok/skipped/empty/failed split.
-      const outcome = ok ? "ok" : classifyToolOutcome(errorMsg, statusCode);
+      // Outcome precedence: an operational failure is classified from its error/status
+      // as before; a SUCCESS is additionally checked for a proven successful-negative
+      // (the provider ran fine and the target has no record) so it stops being logged
+      // as a genuine hit. `ok` itself is untouched — see `okStored` below, billing
+      // (creditsCharged keys off `ok`), the cache-write gate, and circuit.recordResult,
+      // all of which continue to see this call as the success it is.
+      const outcome = ok
+        ? (isProvenEmptyResult(name, resultForOutcome) ? "empty" : "ok")
+        : classifyToolOutcome(errorMsg, statusCode);
       const okStored = outcome !== "failed";
       const cost = (cached || freeCall) ? 0 : baseCost;
       const charged = creditsCharged({ ok, cached, free: freeCall, baseCost });
@@ -746,7 +759,7 @@ export function wrapToolsWithCache(
               // below still records tool_usage_log truthfully (ok=false).
               return tagTier({ ok: false, error: redacted, _tool_error: true }, tier, model);
             }
-            finally { logUsage(false, ok, Date.now() - t0, errInfo.errorMsg, errInfo.statusCode, isFreeCall(out)); }
+            finally { logUsage(false, ok, Date.now() - t0, errInfo.errorMsg, errInfo.statusCode, isFreeCall(out), null, out); }
           },
         };
       } else {
@@ -851,7 +864,7 @@ export function wrapToolsWithCache(
             await logUsage(true, true, Date.now() - t0, null, null, false, {
               input: inputJson,
               runtime: { ...cacheRuntime, cache_layer: "thread", stale_cache: false, source_created_at: new Date(mem.createdAt).toISOString() },
-            });
+            }, mem.output);
             return attachRuntimeMeta(markCached(mem.output, new Date(mem.createdAt).toISOString(), "thread"), {
               ...cacheRuntime,
               cache_layer: "thread",
@@ -892,7 +905,7 @@ export function wrapToolsWithCache(
                 await logUsage(true, true, Date.now() - t0, null, null, false, {
                   input: inputJson,
                   runtime: { ...cacheRuntime, cache_layer: "user", stale_cache: false, source_created_at: row.source_created_at ?? row.created_at },
-                });
+                }, output);
                 return attachRuntimeMeta(markCached(output, row.source_created_at ?? row.created_at, "user"), {
                   ...cacheRuntime,
                   cache_layer: "user",
@@ -955,7 +968,7 @@ export function wrapToolsWithCache(
                 await logUsage(true, true, Date.now() - t0, null, null, false, {
                   input: inputJson,
                   runtime: { ...cacheRuntime, cache_layer: "user", selector_reuse: true, stale_cache: false, source_created_at: row.source_created_at ?? row.created_at },
-                });
+                }, output);
                 return attachRuntimeMeta(markCached(output, row.source_created_at ?? row.created_at, "user"), {
                   ...cacheRuntime,
                   cache_layer: "user",
@@ -1263,7 +1276,7 @@ export function wrapToolsWithCache(
             stale_cache: !!staleRecord,
             source_created_at: createdAtIso,
           },
-        });
+        }, result);
         if (AUTO_EVIDENCE_TOOLS.has(name)) {
           // Fire-and-forget: never let auto-evidence block the tool result.
           autoAppendToolEvidence(ctx.supabase, ctx, name, input, result).catch(() => {});
