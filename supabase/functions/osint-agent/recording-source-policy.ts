@@ -10,6 +10,29 @@ import {
 export interface RecordingSourcePolicyInput {
   /** The singular, top-level provenance accepted by the recording tool. */
   source?: string | null;
+  /**
+   * A genuinely MULTI-source surface, kept as distinct labels.
+   *
+   * `record_finding` accepts `supporting_sources: string[]`, and callers used to
+   * flatten it with `.join(",")` to fit the singular `source` field. That
+   * silently destroyed evidence: `singularSurfaceSources` wraps the joined
+   * string as ONE label and `classifySource` then classifies the whole thing as
+   * a single token, so "breach_check,gemini_deep_dork,court_record_search"
+   * resolved wholly to `breach` (BREACH_SLUG_RE's boundary class includes ","),
+   * turning 3 classes into 1 and a cap of 95 into 60. The collapse is not
+   * breach-specific — "court_record_search,gemini_deep_dork" collapsed to
+   * [court_record], dropping ai_summary.
+   *
+   * Prefer this over `source` whenever the tool surface is already a list. It
+   * keeps the cap engine as the single implementation of evidence policy rather
+   * than pushing callers to reach past this module for the array form, which
+   * `recording_source_policy_runtime_test.ts` forbids for good reason.
+   *
+   * Singular-surface callers (record_artifacts and the tools/recording.ts
+   * mirror) must keep using `source`: for them one label really is one
+   * provenance, and that is pinned by the mirror test.
+   */
+  sources?: readonly string[] | null;
   /** Model-authored provenance may disclose or constrain, never create authority. */
   metadata?: Record<string, unknown> | null;
   rawConfidence: number;
@@ -43,15 +66,19 @@ export function firstNonemptyReason(
 }
 
 function metadataWithDistinctSourceLabels(
-  source: string | null | undefined,
+  surface: readonly string[],
   metadata: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> | null {
   if (!metadata) return null;
 
   const copy = { ...metadata };
   const seen = new Set<string>();
-  if (typeof source === "string" && source.trim()) {
-    seen.add(source.trim().toLowerCase());
+  // Seed with every surface label so the channel boundary stays de-duplicated
+  // for multi-source surfaces too, not just the singular one.
+  for (const label of surface) {
+    if (typeof label === "string" && label.trim()) {
+      seen.add(label.trim().toLowerCase());
+    }
   }
 
   if (typeof copy.source === "string" && copy.source.trim()) {
@@ -77,6 +104,21 @@ function metadataWithDistinctSourceLabels(
 
 function singularSurfaceSources(source: string | null | undefined): string[] {
   return typeof source === "string" && source.trim() ? [source] : [];
+}
+
+/**
+ * The authority-bearing surface labels. An explicit `sources` list is kept as
+ * DISTINCT labels; otherwise the singular `source` is wrapped as exactly one.
+ * Never join a list into one string here — that is the collapse documented on
+ * `RecordingSourcePolicyInput.sources`.
+ */
+function surfaceSources(input: RecordingSourcePolicyInput): string[] {
+  if (Array.isArray(input.sources)) {
+    return input.sources.filter(
+      (label): label is string => typeof label === "string" && !!label.trim(),
+    );
+  }
+  return singularSurfaceSources(input.source);
 }
 
 /** Exact ordinary recording status path, excluding collision/bio overrides. */
@@ -119,7 +161,7 @@ export function resolveRecordingStatus(
 export function applyRecordingSourcePolicy(
   input: RecordingSourcePolicyInput,
 ): RecordingSourcePolicyResult {
-  const sources = singularSurfaceSources(input.source);
+  const sources = surfaceSources(input);
 
   const surfaceOnly = applyEvidenceCapsWithDistinctBreachIdentities({
     rawConfidence: input.rawConfidence,
@@ -134,7 +176,7 @@ export function applyRecordingSourcePolicy(
     // A logical label disclosed through more than one field is still one
     // provenance. Keep the channel boundary de-duplicated as defense in depth;
     // the cap engine independently counts distinct normalized breach tools.
-    metadata: metadataWithDistinctSourceLabels(input.source, input.metadata),
+    metadata: metadataWithDistinctSourceLabels(sources, input.metadata),
   });
 
   return {

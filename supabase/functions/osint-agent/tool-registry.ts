@@ -5643,15 +5643,53 @@ export function buildTools(ctx: ToolContext) {
       // `requested` is deliberately left null by passing no `status` key — the
       // model may not ask for a status. Contradictions ARE passed, because they
       // can only make the verdict more conservative.
+      // The cap MUST be derived from the source ARRAY, never from a joined
+      // string. `applyRecordingSourcePolicy` takes a singular top-level source
+      // and wraps it via `singularSurfaceSources` as ONE label, and
+      // `classifySource` then classifies that whole label as a single token.
+      // Because BREACH_SLUG_RE matches a breach slug anywhere in the string
+      // (its boundary class includes ","), "breach_check,gemini_deep_dork,
+      // court_record_search" resolved wholly to `breach`: 3 classes -> 1,
+      // independent 2 -> 1, cap 95 -> 60. The collapse is not breach-specific —
+      // "court_record_search,gemini_deep_dork" collapsed to [court_record],
+      // silently dropping ai_summary.
+      //
+      // That matters because `reason_not_confirmed` is DERIVED from the
+      // collapsed count and persisted as server authority: it wrote "needs
+      // second independent class of evidence" onto rows already carrying 2-5
+      // independent classes — a false authoritative statement in the very field
+      // added to stop false authoritative statements.
+      //
+      // Fixed by passing the LIST through the channel policy's `sources`
+      // surface, NOT by reaching past it for the array-form cap entry.
+      // `recording_source_policy_runtime_test.ts` ("production edge modules
+      // cannot bypass the recording source policy") allows low-level cap symbols
+      // only in confidence.ts and recording-source-policy.ts, so calling
+      // applyEvidenceCaps* from here fails that invariant — correctly: the cap
+      // engine stays the single implementation of evidence policy. The surface
+      // here is genuinely a list, which is exactly what `sources` is for. This
+      // matches the line above that already classifies correctly via
+      // `supporting_sources.map(classifySource)`.
       const findingCap = applyRecordingSourcePolicy({
         rawConfidence: axes.case,
-        source: i.supporting_sources.join(","),
+        sources: i.supporting_sources,
         kind: "finding",
         metadata: null,
       }).effective;
-      const findingContradictions = i.contradictions ?? contras.map((c) => `${c.kind}: ${c.detail}`);
+      // Status derives from SERVER-DETECTED contradictions only. Passing the
+      // model's array through `??` opened authority in both directions, because
+      // deriveStatus tests only `Array.isArray(x) && x.length > 0`:
+      //   - suppression: the model sends `[]`, the server's own `contras` are
+      //     discarded, and a row the server would call `contradicted` persists
+      //     as `observed`;
+      //   - fabrication: the model sends ["None — all sources agree ..."], length
+      //     is 1, and the row persists as `contradicted` on text that asserts
+      //     the opposite. Three live rows carry prose of exactly that form.
+      // So the earlier claim that contradictions "can only make the verdict more
+      // conservative" does not hold in either direction.
+      const serverContradictions = contras.map((c) => `${c.kind}: ${c.detail}`);
       const { status: findingStatus, reasonNotConfirmed: findingReason } =
-        resolveRecordingStatus(findingCap, { contradictions: findingContradictions });
+        resolveRecordingStatus(findingCap, { contradictions: serverContradictions });
       const row = {
         thread_id: threadId,
         user_id: userId,
@@ -5671,12 +5709,34 @@ export function buildTools(ctx: ToolContext) {
           cluster_label: i.cluster_label,
           drivers: i.drivers,
           reducers: i.reducers ?? [],
-          contradictions: findingContradictions,
+          // Server-detected, and the exact list the status above was derived
+          // from. The model's own array is preserved beside it as disclosure
+          // (same pattern as model_label) and is never read as authority.
+          contradictions: serverContradictions,
+          model_contradictions: i.contradictions ?? null,
           unresolved: i.unresolved ?? [],
           next_pivots: i.next_pivots ?? [],
           supporting_sources: i.supporting_sources,
           supporting_artifact_values: i.supporting_artifact_values ?? [],
           confidence_axes: axes,
+          // M4 disclosure: the status above is derived from a CAPPED result,
+          // but the row persists `confidence: axes.case` uncapped, so without
+          // these two fields a stored status cannot be reconciled with the
+          // derivation that produced it. Production carries
+          // confidence_cap_applied on 8,301 rows and on ZERO finding rows,
+          // which is why findings sat outside #481's display invariant. The
+          // persisted `confidence` is deliberately NOT changed here.
+          // Key is `source_category`, matching all five other recording
+          // writers (:4690, :5038, auto-record-integrity.ts:65,
+          // tools/recording.ts:84/:325). `source_classes` would be dead data:
+          // every consumer — intel.ts:334, evidence-status.ts:140,
+          // report-badges.ts:62, audit/from-artifacts.ts:35, AnalysisTab.tsx:134
+          // — keys on `source_category`. Writing it also fixes the SAME collapse
+          // on the read side: absent this key, artifactSourceClasses falls back
+          // to splitting the joined `source` string and finding rows resolve to
+          // ONE class on the frontend too.
+          confidence_cap_applied: findingCap.cap,
+          source_category: findingCap.source_classes,
           source_reliability: sourceConfidence(i.supporting_sources),
         },
       };
