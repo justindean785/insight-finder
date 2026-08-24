@@ -198,6 +198,17 @@ Deno.test("D5: OpenCorporates zero/malformed payload is NOT reclassified", async
   assertEquals(isProvenEmptyResult("opencorporates_search", amb), false);
 });
 
+Deno.test("ransomwarelive: parse/shape failure payloads stay non-empty (tool returns ok:false)", async () => {
+  // tool-registry fails closed on unparseable / unexpected JSON so those paths no
+  // longer emit listed:false. An ok:false error row must not hit the empty bucket.
+  const unparseable = { ok: false, domain: "acme.com", error: "ransomware.live returned unparseable JSON body" };
+  const unexpected = { ok: false, domain: "acme.com", error: "ransomware.live returned unexpected JSON shape" };
+  assertEquals(isProvenEmptyResult("ransomwarelive_lookup", unparseable), false);
+  assertEquals(isProvenEmptyResult("ransomwarelive_lookup", unexpected), false);
+  assertEquals(await outcomeOf("ransomwarelive_lookup", "rl-unparseable", unparseable), "failed");
+  assertEquals(await outcomeOf("ransomwarelive_lookup", "rl-unexpected", unexpected), "failed");
+});
+
 Deno.test("oathnet_lookup: pagination controls — an empty page mid-scroll is NOT empty", async () => {
   const env = (inner: Record<string, unknown>) => ({
     ok: true, status: 200, quota_left: 5,

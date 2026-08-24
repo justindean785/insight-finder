@@ -2623,10 +2623,21 @@ export function buildTools(ctx: ToolContext) {
           if (!r.ok) return { ok: false, status: r.status, error: `ransomware.live ${r.status}`, domain: d };
           const ct = r.headers.get("content-type") ?? "";
           if (!ct.includes("json")) { await r.body?.cancel().catch(() => {}); return { ok: false, degraded: true, domain: d, error: `non-JSON response (${ct || "unknown"})` }; }
+          // Fail closed on parse/shape errors: do NOT fold them into listed:false /
+          // victims:[] — that shape is reserved for HTTP-404 and a successfully
+          // parsed empty victim list, so telemetry can treat it as outcome=empty.
           const data = await r.json().catch(() => null);
-          const rows = Array.isArray(data)
-            ? data
-            : (Array.isArray((data as { victims?: unknown[] } | null)?.victims) ? (data as { victims: unknown[] }).victims : []);
+          if (data === null) {
+            return { ok: false, domain: d, error: "ransomware.live returned unparseable JSON body" };
+          }
+          let rows: unknown[];
+          if (Array.isArray(data)) {
+            rows = data;
+          } else if (Array.isArray((data as { victims?: unknown[] }).victims)) {
+            rows = (data as { victims: unknown[] }).victims;
+          } else {
+            return { ok: false, domain: d, error: "ransomware.live returned unexpected JSON shape" };
+          }
           const victims = rows.slice(0, 25).map((v) => {
             const x = (v ?? {}) as Record<string, unknown>;
             const desc = x.description;
