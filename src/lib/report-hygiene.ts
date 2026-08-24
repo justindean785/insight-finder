@@ -389,7 +389,11 @@ export function dedupeBreachDatasets(artifacts: Artifact[]): Artifact[] {
 
 export type IdentityRow = { field: string; value: string; label: ConfLabel };
 
-function pickBestIdentity(artifacts: Artifact[], kinds: string[]): Artifact | null {
+function pickBestIdentity(
+  artifacts: Artifact[],
+  kinds: string[],
+  reviews?: Record<string, ReviewAdjustment>,
+): Artifact | null {
   const pool = artifacts.filter(
     (a) => kinds.includes(String(a.kind ?? "").toLowerCase()) && !isClusterIneligible(a),
   );
@@ -397,9 +401,13 @@ function pickBestIdentity(artifacts: Artifact[], kinds: string[]): Artifact | nu
   const rank: Record<ConfLabel, number> = {
     CONFIRMED: 6, CORRELATED: 5, INFERRED: 4, VERIFY: 3, LOW: 2, CONFLICT: 1, FAILED: 0,
   };
+  // Rank through the same review-aware label the row will display. Without this,
+  // a dismissed high-confidence candidate still ranks as CONFIRMED/VERIFY and
+  // wins the field, then renders with a FAILED pill — while buildSubjectProfile
+  // (review-aware) can pick a different value on the same report.
   return pool.slice().sort((a, b) => {
-    const ra = rank[labelForArtifact(a)] ?? 0;
-    const rb = rank[labelForArtifact(b)] ?? 0;
+    const ra = rank[labelForArtifact(a, reviews?.[a.id])] ?? 0;
+    const rb = rank[labelForArtifact(b, reviews?.[b.id])] ?? 0;
     if (ra !== rb) return rb - ra;
     return (b.confidence ?? 0) - (a.confidence ?? 0);
   })[0];
@@ -421,19 +429,19 @@ function pickAllEmailsIdentity(artifacts: Artifact[]): Artifact[] {
 
 export function buildIdentityRows(artifacts: Artifact[], reviews?: Record<string, ReviewAdjustment>): IdentityRow[] {
   const rows: IdentityRow[] = [];
-  const name = pickBestIdentity(artifacts, ["name", "person"]);
+  const name = pickBestIdentity(artifacts, ["name", "person"], reviews);
   if (name) rows.push({ field: "Real name", value: name.value, label: labelForArtifact(name, reviews?.[name.id]) });
 
-  const dob = pickBestIdentity(artifacts, ["dob"]);
+  const dob = pickBestIdentity(artifacts, ["dob"], reviews);
   if (dob) rows.push({ field: "Date of birth", value: dob.value, label: labelForArtifact(dob, reviews?.[dob.id]) });
 
-  const age = pickBestIdentity(artifacts, ["age"]);
+  const age = pickBestIdentity(artifacts, ["age"], reviews);
   if (age && !dob) rows.push({ field: "Age", value: age.value, label: labelForArtifact(age, reviews?.[age.id]) });
 
-  const phone = pickBestIdentity(artifacts, ["phone"]);
+  const phone = pickBestIdentity(artifacts, ["phone"], reviews);
   if (phone) rows.push({ field: "Phone", value: phone.value, label: labelForArtifact(phone, reviews?.[phone.id]) });
 
-  const region = pickBestIdentity(artifacts, ["location", "geo", "address"]);
+  const region = pickBestIdentity(artifacts, ["location", "geo", "address"], reviews);
   if (region) rows.push({ field: "Likely region", value: region.value, label: labelForArtifact(region, reviews?.[region.id]) });
 
   const emails = pickAllEmailsIdentity(artifacts);
@@ -445,7 +453,7 @@ export function buildIdentityRows(artifacts: Artifact[], reviews?: Record<string
     });
   });
 
-  const gender = pickBestIdentity(artifacts, ["gender"]);
+  const gender = pickBestIdentity(artifacts, ["gender"], reviews);
   if (gender) rows.push({ field: "Gender (implied)", value: gender.value, label: labelForArtifact(gender, reviews?.[gender.id]) });
 
   return rows;

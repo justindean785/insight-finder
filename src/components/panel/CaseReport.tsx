@@ -38,7 +38,7 @@ import { formatArtifactDisplayValue, buildIdentityRows, type IdentityRow } from 
 import { toolActionLabel } from "@/lib/tool-display";
 import { tokenizeSourceChain } from "@/lib/report-source-labels";
 import { cn } from "@/lib/utils";
-import type { ReviewState } from "@/lib/review";
+import { REJECTED_REVIEW_STATES, type ReviewState } from "@/lib/review";
 import { extractDisplaySeed } from "@/lib/seed";
 import type { MessageSummary } from "@/hooks/useThreadMessages";
 import { isBreachKind } from "@/lib/breach-kinds";
@@ -64,12 +64,25 @@ export type ReportType = "full" | "brief";
  * already take a review and already encode the semantics (dismissed/wrong =>
  * FAILED => rejected => excluded; confirmed/key => CONFIRMED, subject to the
  * possible-minor and quarantine floors). This is plumbing that was missing.
+ *
+ * Rejected verdicts are the one deliberate divergence from a naive
+ * `adjustedConfidence` pass-through: `dismissed` has REVIEW_DELTA 0, so the
+ * positive source/corroboration bonuses would still raise the number while the
+ * label moves to FAILED. `confOf` (and markdown's `conf`) return null for
+ * rejected rows so they drop out of scored aggregates instead.
  */
 type Reviews = Record<string, ReviewAdjustment> | undefined;
 const revOf = (reviews: Reviews, a: Artifact): ReviewAdjustment => reviews?.[a.id];
 const confOf = (reviews: Reviews, a: Artifact): number | null => {
   const r = revOf(reviews, a);
-  return r ? adjustedConfidence(a, r) : a.confidence;
+  if (!r) return a.confidence;
+  // Rejected verdicts must not take the positive adjustment path. `dismissed`
+  // has REVIEW_DELTA 0, but `adjustedConfidence` still adds source /
+  // corroboration bonuses — so dismissing an 80 can raise it to 85 while the
+  // label moves to FAILED, inflating averages, radar/bands, analyst-confidence,
+  // and topByConfidence. Exclude rejected rows from scored aggregates instead.
+  if (typeof r === "string" && REJECTED_REVIEW_STATES.has(r as ReviewState)) return null;
+  return adjustedConfidence(a, r);
 };
 
 function statusOf(a: Artifact): string {
@@ -628,7 +641,14 @@ function topByConfidence(artifacts: Artifact[], kinds: string[], reviews?: Revie
   // this keeps the narrative builders consistent so a capitalized/undefined
   // `kind` never silently drops a row (or throws into the ErrorBoundary).
   const set = new Set(kinds.map((k) => k.toLowerCase()));
-  const pool = artifacts.filter((a) => set.has(String(a.kind ?? "").toLowerCase()));
+  // Analyst-rejected rows are out of the scored pool — confOf returns null for
+  // them, and Subject Profile has no FAILED pill, so letting them win would
+  // surface a dismissed value as if it were still live.
+  const pool = artifacts.filter((a) => {
+    if (!set.has(String(a.kind ?? "").toLowerCase())) return false;
+    const r = revOf(reviews, a);
+    return !(typeof r === "string" && REJECTED_REVIEW_STATES.has(r as ReviewState));
+  });
   if (!pool.length) return null;
   return pool.slice().sort((a, b) => (confOf(reviews, b) ?? 0) - (confOf(reviews, a) ?? 0))[0];
 }

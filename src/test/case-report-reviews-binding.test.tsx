@@ -127,6 +127,23 @@ describe("#478 — the report scores through adjustedConfidence, not raw confide
       m.find((x) => x.label === "Signal")!.value;
     expect(signal(after)).toBeLessThan(signal(before));
   });
+
+  it("dismissal does not raise Confidence via adjustedConfidence source bonuses", () => {
+    // Direct-profile + multi-source bonuses would lift an 80 past 80 even with
+    // REVIEW_DELTA 0 for dismissed — that must not inflate the Confidence axis.
+    const a = art({
+      id: "d1",
+      confidence: 80,
+      source: "linkedin",
+      metadata: { sources: ["pdl", "hunter"] },
+    });
+    expect(adjustedConfidence(a as never, "dismissed")).toBeGreaterThan(80);
+    const before = buildAnalyticRadar([a] as never, "LOW");
+    const after = buildAnalyticRadar([a] as never, "LOW", { d1: "dismissed" });
+    const axis = (m: ReturnType<typeof buildAnalyticRadar>) =>
+      m.find((x) => x.label === "Confidence")!.value;
+    expect(axis(after)).toBeLessThanOrEqual(axis(before));
+  });
 });
 
 describe("#478 — the Identity panel honours verdicts", () => {
@@ -137,6 +154,17 @@ describe("#478 — the Identity panel honours verdicts", () => {
 
     const reviewed = buildIdentityRows([name] as never, { z1: "wrong" });
     expect(reviewed.find((r) => r.field === "Real name")?.label).toBe("FAILED");
+  });
+
+  it("pickBestIdentity prefers a live candidate over a dismissed higher-confidence one", () => {
+    const rejected = art({ id: "n1", kind: "name", value: "Wrong Person", confidence: 95 });
+    const live = art({ id: "n2", kind: "name", value: "Right Person", confidence: 40 });
+    const plain = buildIdentityRows([rejected, live] as never);
+    expect(plain.find((r) => r.field === "Real name")?.value).toBe("Wrong Person");
+
+    const reviewed = buildIdentityRows([rejected, live] as never, { n1: "dismissed" });
+    expect(reviewed.find((r) => r.field === "Real name")?.value).toBe("Right Person");
+    expect(reviewed.find((r) => r.field === "Real name")?.label).not.toBe("FAILED");
   });
 });
 
