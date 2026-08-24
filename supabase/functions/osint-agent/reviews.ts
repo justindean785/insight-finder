@@ -185,6 +185,58 @@ export async function loadReviewsForThread(
 }
 
 /**
+ * The REJECTION half of `applyReviewsToArtifacts`, on its own and with no
+ * confidence arithmetic whatsoever.
+ *
+ * Extracted for #479's authoritative Evidence Record, which needs the analyst's
+ * rejection authority — a finding marked `dismissed`/`wrong` may not be
+ * republished under an "authoritative" heading — but must NOT inherit the
+ * review confidence deltas below it. That block's contract is
+ * `min(stored confidence, recorded cap)` and nothing else, so a `confirmed` or
+ * `key` verdict silently raising a printed number would break the one property
+ * the block exists to guarantee.
+ *
+ * Extracted rather than reimplemented on purpose: there is now exactly ONE
+ * rejection predicate in this file, and `applyReviewsToArtifacts` is defined in
+ * terms of it, so the two surfaces cannot drift.
+ *
+ * Fails closed: an unavailable review load surfaces NOTHING, because "we could
+ * not read the verdicts" and "nothing was rejected" are different facts.
+ */
+export function dropRejectedArtifacts<T extends Record<string, unknown>>(
+  rows: T[] | null | undefined,
+  review: ReviewLoad,
+): T[] {
+  if (!Array.isArray(rows)) return [];
+  if (!review.ok) return [];           // unavailable → surface nothing rather than everything
+  if (review.byId.size === 0 && review.rejectedKeys.size === 0) return rows;
+
+  // Union of the DB-resolved rejected keys and the keys of rejected rows present
+  // in THIS batch, so a re-record of the same finding under a new id is excluded
+  // even when the id→value lookup was unavailable.
+  const rejectedKeys = new Set(review.rejectedKeys);
+  for (const r of rows) {
+    const id = typeof r?.id === "string" ? r.id : null;
+    const state = id ? review.byId.get(id) : undefined;
+    if (state && REJECTED_REVIEW_STATES.has(state)) rejectedKeys.add(normalizeArtifactKey(r.kind, r.value));
+  }
+
+  return rows.filter((r) => {
+    const id = typeof r?.id === "string" ? r.id : null;
+    const state = id ? review.byId.get(id) : undefined;
+    // DELIBERATE REDUNDANCY, measured: mutating this line away leaves every test
+    // green, because the seeding loop above already added THIS row's own
+    // kind|value key. Kept anyway — it is the direct expression of the analyst's
+    // verdict, and without it the whole rejection depends on one normalisation
+    // function agreeing with itself. On the path that decides whether a finding
+    // the analyst called false gets republished as "authoritative", that is a
+    // single point of failure worth not having. Do not "simplify" it away.
+    if (state && REJECTED_REVIEW_STATES.has(state)) return false;
+    return !rejectedKeys.has(normalizeArtifactKey(r.kind, r.value)); // same value, new id
+  });
+}
+
+/**
  * Filter + adjust artifact rows by analyst verdict, for any read that feeds the
  * model. Rows SHOULD carry `id` (matching artifact_reviews.artifact_id).
  *   - dismissed / wrong                  → DROPPED (analyst rejected)
@@ -201,23 +253,15 @@ export function applyReviewsToArtifacts<T extends Record<string, unknown>>(
   rows: T[] | null | undefined,
   review: ReviewLoad,
 ): T[] {
-  if (!Array.isArray(rows)) return [];
-  if (!review.ok) return [];           // unavailable → surface nothing rather than everything
-  if (review.byId.size === 0 && review.rejectedKeys.size === 0) return rows;
-
-  const rejectedKeys = new Set(review.rejectedKeys);
-  for (const r of rows) {
-    const id = typeof r?.id === "string" ? r.id : null;
-    const state = id ? review.byId.get(id) : undefined;
-    if (state && REJECTED_REVIEW_STATES.has(state)) rejectedKeys.add(normalizeArtifactKey(r.kind, r.value));
-  }
+  const kept = dropRejectedArtifacts(rows, review);
+  // Nothing to tag or adjust — and this preserves the historical identity return
+  // for the "no verdicts at all" case.
+  if (review.byId.size === 0) return kept;
 
   const out: T[] = [];
-  for (const r of rows) {
+  for (const r of kept) {
     const id = typeof r?.id === "string" ? r.id : null;
     const state = id ? review.byId.get(id) : undefined;
-    if (state && REJECTED_REVIEW_STATES.has(state)) continue;
-    if (rejectedKeys.has(normalizeArtifactKey(r.kind, r.value))) continue; // same value, new id
     if (state === "recheck" || state === "confirmed" || state === "key") {
       // Apply the SAME deltas the frontend advertises. Previously only `recheck`
       // was honoured, so a confirmed finding kept its original number forever.
