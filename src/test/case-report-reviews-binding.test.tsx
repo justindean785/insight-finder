@@ -300,3 +300,121 @@ describe("#495 finding B — a rejected row may not strengthen positive aggregat
     expect(html).toContain(EXCLUDED_SECTION);
   });
 });
+
+/**
+ * #495 finding C — the radar's positive axes were still built from the raw
+ * population.
+ *
+ * The repair above fixed the pickers and the average, but `buildAnalyticRadar`
+ * kept deriving four axes straight from `artifacts`:
+ *
+ *   Identity coverage - `kinds` from every artifact
+ *   Exposure          - every breach/credential/leak artifact, and when
+ *                       `metadata.severity` is numeric `confOf` is bypassed
+ *                       entirely, so rejection had ZERO effect
+ *   Cross-source      - `artifactSourceClasses(a).size >= 2` over every artifact
+ *   Coverage          - source categories gathered from every artifact
+ *
+ * Same root cause as A and B: reviews reached per-row scoring, but the
+ * positive-metric POPULATION was never filtered. Same authority applies —
+ * a dismissed/wrong row may not seed or strengthen a positive metric
+ * (buildIdentityClusters, intel.ts:1865).
+ *
+ * DENOMINATORS ARE DELIBERATELY UNCHANGED. Cross-source and Signal still divide
+ * by `artifacts.length`, so rejecting a row can only lower or hold an axis,
+ * never raise it — and the rejected row stays counted as a finding that exists.
+ * Signal already excluded rejected rows through `bucket()`; it is untouched here
+ * and pinned below.
+ */
+
+const axisOf = (m: ReturnType<typeof buildAnalyticRadar>, label: string) =>
+  m.find((x) => x.label === label)!.value;
+
+const baseArt = () => plain("base", "email", "base@example.com", 50);
+
+describe("#495 finding C — a rejected row may not strengthen a radar axis", () => {
+  it("a rejected identity row does not raise Identity coverage", () => {
+    const name = plain("c-name", "name", "Rejected Person", 80);
+    const without = buildAnalyticRadar([baseArt()] as never, "LOW");
+    const withRejected = buildAnalyticRadar([baseArt(), name] as never, "LOW", { "c-name": "wrong" });
+    expect(axisOf(withRejected, "Identity coverage")).toBeLessThanOrEqual(
+      axisOf(without, "Identity coverage"),
+    );
+  });
+
+  it("a rejected breach_exposure with numeric severity does not raise Exposure", () => {
+    // severity bypasses confOf entirely, so rejection had literally no effect.
+    const exp = art({
+      id: "c-exp",
+      kind: "breach_exposure",
+      value: "leak@example.com",
+      confidence: 70,
+      source: "breach_check",
+      metadata: { severity: 90 },
+    });
+    const without = buildAnalyticRadar([baseArt()] as never, "LOW");
+    const withRejected = buildAnalyticRadar([baseArt(), exp] as never, "LOW", { "c-exp": "dismissed" });
+    expect(axisOf(withRejected, "Exposure")).toBeLessThanOrEqual(axisOf(without, "Exposure"));
+  });
+
+  it("a rejected multi-class row does not raise Cross-source", () => {
+    const multi = art({
+      id: "c-multi",
+      kind: "email",
+      value: "multi@example.com",
+      confidence: 60,
+      source: "breach_check",
+      metadata: { source_category: ["breach", "news"] },
+    });
+    const without = buildAnalyticRadar([baseArt()] as never, "LOW");
+    const withRejected = buildAnalyticRadar([baseArt(), multi] as never, "LOW", { "c-multi": "wrong" });
+    expect(axisOf(withRejected, "Cross-source")).toBeLessThanOrEqual(axisOf(without, "Cross-source"));
+  });
+
+  it("a rejected row introducing a new source category does not raise Coverage", () => {
+    const court = art({
+      id: "c-court",
+      kind: "legal_record",
+      value: "Case 123",
+      confidence: 60,
+      source: "court_record_search",
+      metadata: { source_category: ["court_record"] },
+    });
+    const without = buildAnalyticRadar([baseArt()] as never, "LOW");
+    const withRejected = buildAnalyticRadar([baseArt(), court] as never, "LOW", { "c-court": "dismissed" });
+    expect(axisOf(withRejected, "Coverage")).toBeLessThanOrEqual(axisOf(without, "Coverage"));
+  });
+
+  it("Confirm does NOT filter a row out of the positive axes", () => {
+    const multi = art({
+      id: "c-ok",
+      kind: "email",
+      value: "ok@example.com",
+      confidence: 60,
+      source: "breach_check",
+      metadata: { source_category: ["breach", "news"] },
+    });
+    const plainRun = buildAnalyticRadar([baseArt(), multi] as never, "LOW");
+    const confirmedRun = buildAnalyticRadar([baseArt(), multi] as never, "LOW", { "c-ok": "confirmed" });
+    expect(axisOf(confirmedRun, "Cross-source")).toBe(axisOf(plainRun, "Cross-source"));
+    expect(axisOf(confirmedRun, "Coverage")).toBe(axisOf(plainRun, "Coverage"));
+  });
+
+  it("the Signal denominator still counts a rejected row — disclosure preserved", () => {
+    // bucket() already excludes rejected rows from the numerator. The row must
+    // still count as a finding that exists, so Signal goes DOWN, not sideways.
+    const good = art({ id: "c-g", kind: "email", value: "g@example.com", confidence: 90, metadata: { reviewed: true } });
+    const bad = art({ id: "c-b", kind: "email", value: "b@example.com", confidence: 90, metadata: { reviewed: true } });
+    const before = axisOf(buildAnalyticRadar([good, bad] as never, "LOW"), "Signal");
+    const after = axisOf(buildAnalyticRadar([good, bad] as never, "LOW", { "c-b": "wrong" }), "Signal");
+    expect(after).toBeLessThan(before);
+  });
+
+  it("no verdict map and an empty verdict map produce identical axes", () => {
+    const arts = [
+      baseArt(),
+      art({ id: "c-x", kind: "breach_exposure", value: "x@example.com", confidence: 70, metadata: { severity: 40, source_category: ["breach", "news"] } }),
+    ];
+    expect(buildAnalyticRadar(arts as never, "LOW", {})).toEqual(buildAnalyticRadar(arts as never, "LOW"));
+  });
+});

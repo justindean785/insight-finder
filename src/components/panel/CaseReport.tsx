@@ -479,8 +479,23 @@ function artifactSourceClasses(a: Artifact): Set<string> {
 // NOT touch confidence caps, source classification, or status derivation — Signal
 // reuses the same bucket() the Confirmed/Probable counters use.
 export function buildAnalyticRadar(artifacts: Artifact[], riskLevel: RiskLevel, reviews?: Reviews): ReportMetric[] {
-  const kinds = new Set(artifacts.map((a) => String(a.kind ?? "").toLowerCase()));
-  const avg = averageConfidence(artifacts, reviews);
+  // ONE eligible-positive population for every axis that measures STRENGTH.
+  // An analyst-rejected row may not seed or strengthen a positive metric — the
+  // authority `buildIdentityClusters` already established (intel.ts:1865) and
+  // that the pickers and averageConfidence now follow. Four separate rejection
+  // checks would be four things to keep in step; this is one.
+  //
+  // Exposure is the reason this cannot be left to `confOf`: when
+  // `metadata.severity` is numeric the strength sum never consults a confidence
+  // at all, so rejection had ZERO effect on that axis.
+  //
+  // DENOMINATORS ARE DELIBERATELY NOT FILTERED. `total` stays `artifacts.length`
+  // so rejecting a row can only lower or hold an axis, never raise one, and the
+  // row still counts as a finding that exists. Signal is untouched — it already
+  // excludes rejected rows through bucket(), which is the counters' own path.
+  const positive = artifacts.filter((a) => !isRejectedReview(revOf(reviews, a)));
+  const kinds = new Set(positive.map((a) => String(a.kind ?? "").toLowerCase()));
+  const avg = averageConfidence(positive, reviews);
   const total = Math.max(artifacts.length, 1);
 
   const identityHits = ["name", "person", "phone", "email", "address", "dob", "age", "location"]
@@ -489,7 +504,7 @@ export function buildAnalyticRadar(artifacts: Artifact[], riskLevel: RiskLevel, 
   // Exposure (BUG-1): the kind is `breach_exposure`; the old kind-category check
   // missed it and read 0 despite many breaches. Count exposure ARTIFACTS,
   // weighted by metadata.severity when present, else confidence.
-  const exposureArts = artifacts.filter((a) =>
+  const exposureArts = positive.filter((a) =>
     ["breach_exposure", "credential_exposure", "leak_paste"].includes(String(a.kind ?? "")));
   const exposureStrength = exposureArts.reduce((s, a) => {
     const m = (a.metadata ?? {}) as Record<string, unknown>;
@@ -500,12 +515,12 @@ export function buildAnalyticRadar(artifacts: Artifact[], riskLevel: RiskLevel, 
 
   // Corroboration (BUG-3): findings backed by >=2 INDEPENDENT source classes,
   // NOT distinct source-label count (52 labels incl. 4x minimax != corroboration).
-  const corroborated = artifacts.filter((a) => artifactSourceClasses(a).size >= 2).length;
+  const corroborated = positive.filter((a) => artifactSourceClasses(a).size >= 2).length;
   const corroborationValue = clampScore((corroborated / total) * 100);
 
   // Coverage (BUG-4): observed source CATEGORIES vs the expected set, not tool count.
   const observedCats = new Set<string>();
-  for (const a of artifacts) for (const c of artifactSourceClasses(a)) observedCats.add(c);
+  for (const a of positive) for (const c of artifactSourceClasses(a)) observedCats.add(c);
   const coveredExpected = EXPECTED_SOURCE_CATEGORIES.filter((c) => observedCats.has(c)).length;
   const coverageValue = clampScore((coveredExpected / EXPECTED_SOURCE_CATEGORIES.length) * 100);
 
