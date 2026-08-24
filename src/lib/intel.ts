@@ -361,6 +361,34 @@ function independentSourceClassCount(a: Artifact): number {
   return artifactSourceClasses(a).filter((c) => !NON_CORROBORATING_CLASSES.has(c)).length;
 }
 
+/**
+ * The independent (corroborating) source classes backing a CLUSTER — the union
+ * of each member artifact's independent classes. A cluster is corroborated when
+ * two such classes back it, whether both come from one artifact or one from each
+ * of two: corroboration is a property of the claim, not of a single row.
+ *
+ * Deliberately NOT `cluster.sources.length`. That field holds raw source STRINGS
+ * (tool ids) — the report renders it elsewhere as "Source tools:" — and two tool
+ * ids are not two independent classes. The taxonomy collapses census + nominatim
+ * to a single `public_record`, and excludes discovery / AI-summary / sweep
+ * classes from corroborating anything. Measured on production 2026-08-24: 388
+ * artifacts carry >=2 raw categories but only 123 carry >=2 independent ones, so
+ * counting raw sources would over-report corroboration by ~3.2x.
+ */
+function clusterIndependentSourceClasses(c: IdentityCluster): string[] {
+  const out = new Set<string>();
+  for (const a of c.artifacts) {
+    for (const cls of artifactSourceClasses(a)) {
+      if (!NON_CORROBORATING_CLASSES.has(cls)) out.add(cls);
+    }
+  }
+  return Array.from(out);
+}
+
+/** A cluster is corroborated when >=2 INDEPENDENT source classes back it. Same
+ *  bar `labelForArtifact` uses to award CONFIRMED, applied at cluster scope. */
+const CLUSTER_CORROBORATION_MIN_CLASSES = 2;
+
 /** Distinct independent source strings ("corpora") after case-insensitive dedup.
  *  `meta.sources` frequently repeats `a.source`, so a single corpus otherwise
  *  reads as two sources. Used to gate breach-email corroboration. */
@@ -1380,6 +1408,17 @@ export function buildReportMarkdown(input: ReportInput): string {
     ].join("\n");
   }
 
+  // #488 — geography and corroboration are SEPARATE claims, and a cluster can be
+  // in either, both, or neither. The seed-location section reports a US-state
+  // match; the corroboration section reports >=2 independent source classes.
+  const locationMatched = clusterReport.clusters.filter((c) => c.matchesSeedLocation === true);
+  const byCorroboration = clusterReport.clusters.map((c) => ({
+    cluster: c,
+    classes: clusterIndependentSourceClasses(c),
+  }));
+  const corroborated = byCorroboration.filter((x) => x.classes.length >= CLUSTER_CORROBORATION_MIN_CLASSES);
+  const uncorroborated = byCorroboration.filter((x) => x.classes.length < CLUSTER_CORROBORATION_MIN_CLASSES);
+
   return [
     `# OSINT Investigation Report`,
     "",
@@ -1417,18 +1456,38 @@ export function buildReportMarkdown(input: ReportInput): string {
     "",
     ...(isNameSearch
       ? [
-          `## What Is Actually Corroborated`,
-          clusterReport.clusters.some((c) => c.matchesSeedLocation === true)
-            ? clusterReport.clusters
-                .filter((c) => c.matchesSeedLocation === true)
-                .map((c) => `- ${c.label} — ${humanizeSourceChain(c.sources, "single source")}`)
+          `## Seed-Location Match`,
+          locationMatched.length
+            ? locationMatched
+                // "single source" was the old fallback here, and it fires only
+                // when the token list is EMPTY — it labelled a cluster with no
+                // recorded source as if it had one.
+                .map((c) => `- ${c.label} — ${humanizeSourceChain(c.sources, "no source recorded")}`)
                 .join("\n")
-            : "_No cluster directly corroborates the seed location yet._",
+            : clusterReport.seedState
+              ? `_No cluster matches the seed location (${clusterReport.seedState}) yet._`
+              : "_No seed location was detected, so no cluster can be matched against one._",
+          "",
+          clusterReport.seedState
+            ? `_Geography only — a ${clusterReport.seedState} match narrows the candidate set, it does not corroborate it. Out-of-area same-name matches must not be treated as the seed subject without further verification._`
+            : "_A location match narrows the candidate set; it does not corroborate it._",
+          "",
+          `## What Is Actually Corroborated`,
+          corroborated.length
+            ? corroborated
+                .map(({ cluster, classes }) =>
+                  `- ${cluster.label} — ${classes.length} independent source classes: ${humanizeSourceChain(classes)}`)
+                .join("\n")
+            : "_No cluster is corroborated by 2 or more independent source classes yet._",
           "",
           `## What Is Not Corroborated`,
-          clusterReport.seedState
-            ? `- Direct ${clusterReport.seedState} address/IP evidence for the subject. Out-of-area matches must not be treated as the seed subject without further verification.`
-            : "- Subject identity has not been independently corroborated across two source classes.",
+          [
+            ...uncorroborated.map(({ cluster, classes }) =>
+              `- ${cluster.label} — ${classes.length} independent source class${classes.length === 1 ? "" : "es"}; needs a second before it can be reported as corroborated.`),
+            ...(clusterReport.seedState && !locationMatched.length
+              ? [`- Direct ${clusterReport.seedState} address/IP evidence for the subject.`]
+              : []),
+          ].join("\n") || "_Every cluster reaches 2 or more independent source classes._",
           "",
         ]
       : []),
