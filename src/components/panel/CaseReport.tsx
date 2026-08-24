@@ -22,6 +22,7 @@ import { ConfidenceBar } from "@/components/ui/confidence";
 import { evidenceStatus } from "@/lib/evidence-status";
 import {
   labelForArtifact,
+  adjustedConfidence,
   buildIdentityClusters,
   buildToolAudit,
   inferToolGaps,
@@ -31,6 +32,7 @@ import {
   extractSourceInfo,
   isReputationArtifact,
   type ConfLabel,
+  type ReviewAdjustment,
 } from "@/lib/intel";
 import { formatArtifactDisplayValue, buildIdentityRows, type IdentityRow } from "@/lib/report-hygiene";
 import { toolActionLabel } from "@/lib/tool-display";
@@ -47,16 +49,39 @@ export type ReportType = "full" | "brief";
 /* Evidence-strength bucketing                                         */
 /* ------------------------------------------------------------------ */
 
+/**
+ * #478 — analyst verdicts reach the report.
+ *
+ * `CaseReport` declared a `reviews` prop and never destructured it, so every
+ * number and label below was computed from the raw artifact while
+ * `ConfidenceRadar` — same tab, same object (`ReportTab.tsx:235` vs `:242`) —
+ * honoured the verdict. These two accessors mirror `buildReportMarkdown`
+ * (`intel.ts:1149-1150`) exactly, so the on-screen report and the markdown
+ * export cannot drift: the label always goes through the review, and the
+ * number goes through `adjustedConfidence` only when a verdict exists.
+ *
+ * No new policy is invented here. `labelForArtifact` and `evidenceStatus`
+ * already take a review and already encode the semantics (dismissed/wrong =>
+ * FAILED => rejected => excluded; confirmed/key => CONFIRMED, subject to the
+ * possible-minor and quarantine floors). This is plumbing that was missing.
+ */
+type Reviews = Record<string, ReviewAdjustment> | undefined;
+const revOf = (reviews: Reviews, a: Artifact): ReviewAdjustment => reviews?.[a.id];
+const confOf = (reviews: Reviews, a: Artifact): number | null => {
+  const r = revOf(reviews, a);
+  return r ? adjustedConfidence(a, r) : a.confidence;
+};
+
 function statusOf(a: Artifact): string {
   const m = (a.metadata ?? {}) as Record<string, unknown>;
   return String((m.status as string) ?? "new");
 }
-function bucket(a: Artifact): "confirmed" | "probable" | "lead" | "contradiction" | "excluded" {
+function bucket(a: Artifact, review?: ReviewAdjustment): "confirmed" | "probable" | "lead" | "contradiction" | "excluded" {
   const rawStatus = statusOf(a);
   const kind = a.kind.toLowerCase();
   if (kind === "contradiction" || rawStatus === "contradicted") return "contradiction";
   if (kind === "excluded_collision" || rawStatus === "excluded") return "excluded";
-  const status = evidenceStatus(a).status;
+  const status = evidenceStatus(a, review).status;
   if (status === "contradicted") return "contradiction";
   if (status === "rejected") return "excluded";
   if (status === "verified") return "confirmed";
@@ -64,12 +89,12 @@ function bucket(a: Artifact): "confirmed" | "probable" | "lead" | "contradiction
   return "lead";
 }
 
-function ArtifactRow({ a }: { a: Artifact }) {
+function ArtifactRow({ a, review }: { a: Artifact; review?: ReviewAdjustment }) {
   const m = (a.metadata ?? {}) as Record<string, unknown>;
-  const status = evidenceStatus(a);
+  const status = evidenceStatus(a, review);
   // Excluded namesakes/collisions are not part of the subject's network — render
   // them de-emphasised (dimmed + struck value) so they never read as live leads.
-  const isExcluded = bucket(a) === "excluded";
+  const isExcluded = bucket(a, review) === "excluded";
   // AI-asserted-but-unverified items (provenance guard) get the evidence-vs-
   // inference treatment: a faint amber wash + an "inferred" marker, so they look
   // distinct from a sourced observation.
@@ -99,7 +124,7 @@ function ArtifactRow({ a }: { a: Artifact }) {
         <div className="mt-1 text-eyebrow leading-snug text-muted-foreground">{status.basis}</div>
       </td>
       <td className="px-3 py-2 text-data">
-        <ConfidenceBar score={a.confidence} showValue className="min-w-[5.5rem]" />
+        <ConfidenceBar score={review ? adjustedConfidence(a, review) : a.confidence} showValue className="min-w-[5.5rem]" />
       </td>
       <td className="px-3 py-2 text-data text-muted-foreground whitespace-nowrap">
         {new Date(a.created_at).toLocaleDateString()}
@@ -132,7 +157,7 @@ function SourceBadges({ sources }: { sources: string[] }) {
   );
 }
 
-function BucketTable({ rows, empty }: { rows: Artifact[]; empty: string }) {
+function BucketTable({ rows, empty, reviews }: { rows: Artifact[]; empty: string; reviews?: Reviews }) {
   if (!rows.length) return <p className="text-muted-foreground italic text-data mt-2">{empty}</p>;
   return (
     <>
@@ -150,7 +175,7 @@ function BucketTable({ rows, empty }: { rows: Artifact[]; empty: string }) {
             <th className="text-left font-normal px-3 py-2">Reasoning</th>
           </tr>
         </thead>
-        <tbody>{rows.map((a) => <ArtifactRow key={a.id} a={a} />)}</tbody>
+        <tbody>{rows.map((a) => <ArtifactRow key={a.id} a={a} review={revOf(reviews, a)} />)}</tbody>
       </table>
     </div>
     </>
@@ -228,7 +253,7 @@ type RegistrationRow = {
   label: ConfLabel;
 };
 
-function buildRegistrationRows(artifacts: Artifact[]): RegistrationRow[] {
+function buildRegistrationRows(artifacts: Artifact[], reviews?: Reviews): RegistrationRow[] {
   const rows: RegistrationRow[] = [];
   for (const a of artifacts) {
     const k = String(a.kind ?? "").toLowerCase();
@@ -252,14 +277,14 @@ function buildRegistrationRows(artifacts: Artifact[]): RegistrationRow[] {
           (meta.account as string) ||
           "—",
         source: a.source ?? "—",
-        label: labelForArtifact(a),
+        label: labelForArtifact(a, revOf(reviews, a)),
       });
     } else if ((k === "account" || k === "social" || k === "handle") && site) {
       rows.push({
         site,
         identifier: a.value,
         source: a.source ?? "—",
-        label: labelForArtifact(a),
+        label: labelForArtifact(a, revOf(reviews, a)),
       });
     }
   }
@@ -407,8 +432,8 @@ function clampScore(n: number): number {
   return Math.max(0, Math.min(100, Math.round(n)));
 }
 
-function averageConfidence(artifacts: Artifact[]): number {
-  const vals = artifacts.map((a) => a.confidence).filter((n): n is number => typeof n === "number");
+function averageConfidence(artifacts: Artifact[], reviews?: Reviews): number {
+  const vals = artifacts.map((a) => confOf(reviews, a)).filter((n): n is number => typeof n === "number");
   if (!vals.length) return 0;
   return Math.round(vals.reduce((sum, n) => sum + n, 0) / vals.length);
 }
@@ -444,9 +469,9 @@ function artifactSourceClasses(a: Artifact): Set<string> {
 // DISPLAY-METRIC ONLY: these functions change what the radar axes COUNT. They do
 // NOT touch confidence caps, source classification, or status derivation — Signal
 // reuses the same bucket() the Confirmed/Probable counters use.
-export function buildAnalyticRadar(artifacts: Artifact[], riskLevel: RiskLevel): ReportMetric[] {
+export function buildAnalyticRadar(artifacts: Artifact[], riskLevel: RiskLevel, reviews?: Reviews): ReportMetric[] {
   const kinds = new Set(artifacts.map((a) => String(a.kind ?? "").toLowerCase()));
-  const avg = averageConfidence(artifacts);
+  const avg = averageConfidence(artifacts, reviews);
   const total = Math.max(artifacts.length, 1);
 
   const identityHits = ["name", "person", "phone", "email", "address", "dob", "age", "location"]
@@ -460,7 +485,7 @@ export function buildAnalyticRadar(artifacts: Artifact[], riskLevel: RiskLevel):
   const exposureStrength = exposureArts.reduce((s, a) => {
     const m = (a.metadata ?? {}) as Record<string, unknown>;
     const sev = typeof m.severity === "number" ? m.severity : null;
-    return s + (sev != null ? sev / 100 : (a.confidence ?? 50) / 100);
+    return s + (sev != null ? sev / 100 : (confOf(reviews, a) ?? 50) / 100);
   }, 0);
   const exposureValue = exposureArts.length === 0 ? 0 : clampScore(Math.min(100, exposureStrength * 18));
 
@@ -477,8 +502,8 @@ export function buildAnalyticRadar(artifacts: Artifact[], riskLevel: RiskLevel):
 
   // Signal (BUG-2): reuse the SAME bucket() the Confirmed/Probable counters use,
   // so the axis can never contradict the counters.
-  const sigConfirmed = artifacts.filter((a) => bucket(a) === "confirmed").length;
-  const sigProbable = artifacts.filter((a) => bucket(a) === "probable").length;
+  const sigConfirmed = artifacts.filter((a) => bucket(a, revOf(reviews, a)) === "confirmed").length;
+  const sigProbable = artifacts.filter((a) => bucket(a, revOf(reviews, a)) === "probable").length;
   const signalValue = clampScore(((sigConfirmed + sigProbable) / total) * 100);
 
   const riskScore: Record<RiskLevel, number> = { LOW: 22, MEDIUM: 48, HIGH: 74, CRITICAL: 94 };
@@ -520,7 +545,7 @@ function buildSourceDistribution(artifacts: Artifact[]): ChartDatum[] {
     .slice(0, 8);
 }
 
-function buildConfidenceDistribution(artifacts: Artifact[]): ChartDatum[] {
+function buildConfidenceDistribution(artifacts: Artifact[], reviews?: Reviews): ChartDatum[] {
   const bands = [
     { name: "90-100", min: 90, max: 101 },
     { name: "75-89", min: 75, max: 90 },
@@ -531,8 +556,8 @@ function buildConfidenceDistribution(artifacts: Artifact[]): ChartDatum[] {
   return bands.map((band) => ({
     name: band.name,
     value: artifacts.filter((a) => {
-      if (band.name === "Unknown") return a.confidence == null;
-      const c = a.confidence ?? -1;
+      if (band.name === "Unknown") return confOf(reviews, a) == null;
+      const c = confOf(reviews, a) ?? -1;
       return c >= band.min && c < band.max;
     }).length,
   }));
@@ -598,20 +623,20 @@ function CompactBarChart({ data, color = "hsl(var(--info))" }: { data: ChartDatu
 
 /* ---------- narrative / dossier helpers ---------- */
 
-function topByConfidence(artifacts: Artifact[], kinds: string[]): Artifact | null {
+function topByConfidence(artifacts: Artifact[], kinds: string[], reviews?: Reviews): Artifact | null {
   // Case-insensitive kind match + null-safe read. `pickBest` already lowercases;
   // this keeps the narrative builders consistent so a capitalized/undefined
   // `kind` never silently drops a row (or throws into the ErrorBoundary).
   const set = new Set(kinds.map((k) => k.toLowerCase()));
   const pool = artifacts.filter((a) => set.has(String(a.kind ?? "").toLowerCase()));
   if (!pool.length) return null;
-  return pool.slice().sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))[0];
+  return pool.slice().sort((a, b) => (confOf(reviews, b) ?? 0) - (confOf(reviews, a) ?? 0))[0];
 }
 
 type ProfileField = { label: string; value: string };
-function buildSubjectProfile(artifacts: Artifact[]): ProfileField[] {
+function buildSubjectProfile(artifacts: Artifact[], reviews?: Reviews): ProfileField[] {
   const out: ProfileField[] = [];
-  const name = topByConfidence(artifacts, ["name", "person"]);
+  const name = topByConfidence(artifacts, ["name", "person"], reviews);
   if (name) {
     out.push({ label: "Name", value: name.value });
     const m = (name.metadata ?? {}) as Record<string, unknown>;
@@ -619,11 +644,11 @@ function buildSubjectProfile(artifacts: Artifact[]): ProfileField[] {
     const age = m.age != null ? String(m.age) : "";
     if (dob || age) out.push({ label: "DOB / Age", value: [dob, age && `age ${age}`].filter(Boolean).join(" · ") });
   }
-  const email = topByConfidence(artifacts, ["email"]);
+  const email = topByConfidence(artifacts, ["email"], reviews);
   if (email) out.push({ label: "Email", value: email.value });
-  const phone = topByConfidence(artifacts, ["phone"]);
+  const phone = topByConfidence(artifacts, ["phone"], reviews);
   if (phone) out.push({ label: "Phone", value: phone.value });
-  const addr = topByConfidence(artifacts, ["address"]);
+  const addr = topByConfidence(artifacts, ["address"], reviews);
   if (addr) out.push({ label: "Address", value: addr.value });
   return out;
 }
@@ -864,15 +889,16 @@ function MaskedValue({ label, value }: RevealField) {
 
 /** Strongest identity-bearing artifact confidence — the reasoned read, distinct
  *  from the strict ≥2-independent-class auto-corroboration count. */
-function analystConfidence(artifacts: Artifact[]): number {
+function analystConfidence(artifacts: Artifact[], reviews?: Reviews): number {
   const pool = artifacts.filter((a) => ["name", "email", "phone", "address"].includes(a.kind));
-  return pool.reduce((mx, a) => Math.max(mx, a.confidence ?? 0), 0);
+  return pool.reduce((mx, a) => Math.max(mx, confOf(reviews, a) ?? 0), 0);
 }
 
 export function CaseReport({
   seedValue,
   seedType,
   artifacts,
+  reviews,
   messages,
   reportType = "full",
 }: {
@@ -884,25 +910,25 @@ export function CaseReport({
   reportType?: ReportType;
 }) {
   const display = useMemo(() => extractDisplaySeed(seedValue, seedType), [seedValue, seedType]);
-  const subjectProfile = useMemo(() => buildSubjectProfile(artifacts), [artifacts]);
+  const subjectProfile = useMemo(() => buildSubjectProfile(artifacts, reviews), [artifacts, reviews]);
   const profileLinks = useMemo(() => buildProfileLinks(artifacts), [artifacts]);
   const aliases = useMemo(() => buildAliases(artifacts), [artifacts]);
   const breachRows = useMemo(() => buildBreachExposure(artifacts), [artifacts]);
-  const analystConf = useMemo(() => analystConfidence(artifacts), [artifacts]);
+  const analystConf = useMemo(() => analystConfidence(artifacts, reviews), [artifacts, reviews]);
   const narrative = useMemo(() => {
     const last = (messages ?? []).filter((m) => m.role === "assistant" && m.summary?.trim()).slice(-1)[0];
     return last?.summary?.trim() ?? "";
   }, [messages]);
   const isBrief = reportType === "brief";
-  const identity = useMemo(() => buildIdentityRows(artifacts), [artifacts]);
-  const registrations = useMemo(() => buildRegistrationRows(artifacts), [artifacts]);
+  const identity = useMemo(() => buildIdentityRows(artifacts, reviews), [artifacts, reviews]);
+  const registrations = useMemo(() => buildRegistrationRows(artifacts, reviews), [artifacts, reviews]);
   const hunterNotes = useMemo(() => buildHunterNotes(artifacts, seedValue), [artifacts, seedValue]);
   const unknowns = useMemo(() => buildUnknowns(artifacts), [artifacts]);
   const risk = useMemo(() => computeRisk(artifacts), [artifacts]);
-  const radar = useMemo(() => buildAnalyticRadar(artifacts, risk.level), [artifacts, risk.level]);
+  const radar = useMemo(() => buildAnalyticRadar(artifacts, risk.level, reviews), [artifacts, risk.level, reviews]);
   const groupDistribution = useMemo(() => buildGroupDistribution(artifacts), [artifacts]);
   const sourceDistribution = useMemo(() => buildSourceDistribution(artifacts), [artifacts]);
-  const confidenceDistribution = useMemo(() => buildConfidenceDistribution(artifacts), [artifacts]);
+  const confidenceDistribution = useMemo(() => buildConfidenceDistribution(artifacts, reviews), [artifacts, reviews]);
   const sources = useMemo(() => uniqueSources(artifacts), [artifacts]);
   // Honest source depth: collapse mirrors/aggregators and same-corpus breach
   // fields so "3 copies of one leak" reads as ONE source, not three. See
@@ -916,16 +942,16 @@ export function CaseReport({
   const clusterAudits = useMemo(() => artifactsToClusterAudit(artifacts, seedValue), [artifacts, seedValue]);
   const confidenceFindings = useMemo(() => lintReport(clusterAudits), [clusterAudits]);
   const verdict = useMemo(() => reportVerdict(confidenceFindings, independenceFindings), [confidenceFindings, independenceFindings]);
-  const avgConfidence = useMemo(() => averageConfidence(artifacts), [artifacts]);
+  const avgConfidence = useMemo(() => averageConfidence(artifacts, reviews), [artifacts, reviews]);
 
   const audit = buildToolAudit(artifacts);
 
   // Evidence-strength buckets per the new audit rules.
   const buckets = useMemo(() => {
     const g: Record<string, Artifact[]> = { confirmed: [], probable: [], lead: [], contradiction: [], excluded: [] };
-    for (const a of artifacts) g[bucket(a)].push(a);
+    for (const a of artifacts) g[bucket(a, revOf(reviews, a))].push(a);
     return g;
-  }, [artifacts]);
+  }, [artifacts, reviews]);
 
   const safetyFlags = useMemo(
     () => artifacts.filter((a) => {
@@ -1212,7 +1238,7 @@ export function CaseReport({
       {safetyFlags.length > 0 && (
         <>
           <SectionHeader>Safety / Legal Flags</SectionHeader>
-          <BucketTable rows={safetyFlags} empty="No safety flags." />
+          <BucketTable rows={safetyFlags} empty="No safety flags." reviews={reviews} />
         </>
       )}
 
@@ -1303,21 +1329,21 @@ export function CaseReport({
 
       {/* 4. Confirmed findings */}
       <SectionHeader right={<StatusLegend />}>Confirmed Findings</SectionHeader>
-      <BucketTable rows={buckets.confirmed} empty="No findings meet the confirmation threshold (official + independent corroboration)." />
+      <BucketTable rows={buckets.confirmed} empty="No findings meet the confirmation threshold (official + independent corroboration)." reviews={reviews} />
 
       {/* 5. Probable findings */}
       <SectionHeader>Probable Findings</SectionHeader>
-      <BucketTable rows={buckets.probable} empty="No probable findings." />
+      <BucketTable rows={buckets.probable} empty="No probable findings." reviews={reviews} />
 
       {/* 6. Leads requiring verification */}
       <SectionHeader>Leads Requiring Verification</SectionHeader>
-      <BucketTable rows={buckets.lead.slice(0, 40)} empty="No outstanding leads." />
+      <BucketTable rows={buckets.lead.slice(0, 40)} empty="No outstanding leads." reviews={reviews} />
 
       {/* 7. Excluded / collision clusters */}
       {buckets.excluded.length > 0 && (
         <>
           <SectionHeader>Excluded / Collision Clusters</SectionHeader>
-          <BucketTable rows={buckets.excluded} empty="—" />
+          <BucketTable rows={buckets.excluded} empty="—" reviews={reviews} />
         </>
       )}
 
@@ -1325,7 +1351,7 @@ export function CaseReport({
       {buckets.contradiction.length > 0 && (
         <>
           <SectionHeader>Contradictions &amp; Data Quality Problems</SectionHeader>
-          <BucketTable rows={buckets.contradiction} empty="—" />
+          <BucketTable rows={buckets.contradiction} empty="—" reviews={reviews} />
         </>
       )}
 

@@ -9,7 +9,7 @@
  */
 
 import type { Artifact } from "@/hooks/useThreadArtifacts";
-import { isUsernameSweepSource, labelForArtifact, type ConfLabel } from "@/lib/intel";
+import { isUsernameSweepSource, labelForArtifact, type ConfLabel, type ReviewAdjustment } from "@/lib/intel";
 import { isQuarantined } from "@/lib/quarantine";
 
 // ---------------------------------------------------------------------------
@@ -419,34 +419,34 @@ function pickAllEmailsIdentity(artifacts: Artifact[]): Artifact[] {
   return out;
 }
 
-export function buildIdentityRows(artifacts: Artifact[]): IdentityRow[] {
+export function buildIdentityRows(artifacts: Artifact[], reviews?: Record<string, ReviewAdjustment>): IdentityRow[] {
   const rows: IdentityRow[] = [];
   const name = pickBestIdentity(artifacts, ["name", "person"]);
-  if (name) rows.push({ field: "Real name", value: name.value, label: labelForArtifact(name) });
+  if (name) rows.push({ field: "Real name", value: name.value, label: labelForArtifact(name, reviews?.[name.id]) });
 
   const dob = pickBestIdentity(artifacts, ["dob"]);
-  if (dob) rows.push({ field: "Date of birth", value: dob.value, label: labelForArtifact(dob) });
+  if (dob) rows.push({ field: "Date of birth", value: dob.value, label: labelForArtifact(dob, reviews?.[dob.id]) });
 
   const age = pickBestIdentity(artifacts, ["age"]);
-  if (age && !dob) rows.push({ field: "Age", value: age.value, label: labelForArtifact(age) });
+  if (age && !dob) rows.push({ field: "Age", value: age.value, label: labelForArtifact(age, reviews?.[age.id]) });
 
   const phone = pickBestIdentity(artifacts, ["phone"]);
-  if (phone) rows.push({ field: "Phone", value: phone.value, label: labelForArtifact(phone) });
+  if (phone) rows.push({ field: "Phone", value: phone.value, label: labelForArtifact(phone, reviews?.[phone.id]) });
 
   const region = pickBestIdentity(artifacts, ["location", "geo", "address"]);
-  if (region) rows.push({ field: "Likely region", value: region.value, label: labelForArtifact(region) });
+  if (region) rows.push({ field: "Likely region", value: region.value, label: labelForArtifact(region, reviews?.[region.id]) });
 
   const emails = pickAllEmailsIdentity(artifacts);
   emails.forEach((e, i) => {
     rows.push({
       field: i === 0 ? "Primary email" : i === 1 ? "Alt email" : `Email ${i + 1}`,
       value: e.value,
-      label: labelForArtifact(e),
+      label: labelForArtifact(e, reviews?.[e.id]),
     });
   });
 
   const gender = pickBestIdentity(artifacts, ["gender"]);
-  if (gender) rows.push({ field: "Gender (implied)", value: gender.value, label: labelForArtifact(gender) });
+  if (gender) rows.push({ field: "Gender (implied)", value: gender.value, label: labelForArtifact(gender, reviews?.[gender.id]) });
 
   return rows;
 }
