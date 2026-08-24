@@ -246,6 +246,29 @@ export const POSSIBLE_MINOR_CEILING = 55;
  */
 export const QUARANTINE_CEILING = 55;
 
+/**
+ * The server's recorded source-class ceiling for a row, or null.
+ *
+ * `metadata.confidence_cap_applied` is written by the backend's integrity layer
+ * (`auto-record-integrity.ts` — `confidence_cap_applied: cap.cap`) and encodes a
+ * specific claim: *this row's source classes cannot support more than N*
+ * (breach-only ≤60, username_sweep-only ≤45, `social_profile_passive` ≤40,
+ * `ai_summary` ≤55). It is the same kind of assertion as the two ceilings above,
+ * just per-row rather than per-flag.
+ *
+ * Total on purpose. `metadata` is untyped JSON off the wire and is partly
+ * model-authored, so anything unparseable yields null and scoring falls back to
+ * its normal path. Note the value can only ever LOWER a displayed number, never
+ * raise one, so an unusable or hostile value cannot inflate a row — the failure
+ * mode is fail-safe in the direction that matters.
+ */
+function recordedConfidenceCap(meta: Record<string, unknown>): number | null {
+  const raw = meta.confidence_cap_applied;
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
+  if (raw < 0 || raw > 100) return null;
+  return raw;
+}
+
 export function adjustedConfidence(a: Artifact, review?: ReviewAdjustment): number {
   const base = a.confidence ?? 0;
   const d = review ? REVIEW_DELTA[review] ?? 0 : 0;
@@ -273,9 +296,29 @@ export function adjustedConfidence(a: Artifact, review?: ReviewAdjustment): numb
   if (allSources.length > 0 && allSources.every((s) => isUsernameSweepSource(s))) bonus -= 10;
   // Explicit conflict / collision metadata is a strong negative signal.
   if (meta.conflict === true || meta.collision === true) bonus -= 15;
+  // The server's per-row source-class ceiling, folded into whichever limit
+  // applies below so the STRICTER of the two always wins. Applied to every
+  // return path rather than as a fourth branch: a quarantined row whose cap is
+  // 40 must land on 40, not on the looser QUARANTINE_CEILING of 55.
+  //
+  // This clamps the analyst review delta too, matching how POSSIBLE_MINOR_CEILING
+  // already treats it. That is deliberate — `confidence_cap_applied` is a
+  // statement about what this row's EVIDENCE can support, and a review verdict
+  // is not new evidence. The escape hatch for genuine adjudication is
+  // `linkage_confirmed`, which is explicit and durable, not a one-click verdict
+  // (the review control is known to invert on quarantined rows, so it must not
+  // be able to overrule an evidence ceiling on a mis-click).
+  //
+  // The corroboration bonus is clamped for a second, independent reason: it is a
+  // DOUBLE COUNT. The server already measured independence with
+  // `countIndependentClasses` over the authoritative taxonomy before setting the
+  // cap; re-adding a coarse client-side estimate on top re-credits the same
+  // sources twice.
+  const recordedCap = recordedConfidenceCap(meta);
+  const ceil = (limit: number) => (recordedCap === null ? limit : Math.min(limit, recordedCap));
   // Possible-minor signal forces a cap so the artifact never auto-promotes.
   if (meta.possible_minor === true) {
-    return Math.max(0, Math.min(POSSIBLE_MINOR_CEILING, base + d + bonus));
+    return Math.max(0, Math.min(ceil(POSSIBLE_MINOR_CEILING), base + d + bonus));
   }
   // Quarantine is the SECOND ceiling, for the same reason and with the same shape.
   // #448 gave `subject_unlinked` a hard floor at the LABEL (labelForArtifact) but
@@ -299,9 +342,9 @@ export function adjustedConfidence(a: Artifact, review?: ReviewAdjustment): numb
   // analyst who has actually adjudicated provenance restores full authority here
   // exactly as they do at the label boundary.
   if (isQuarantined(meta)) {
-    return Math.max(0, Math.min(QUARANTINE_CEILING, base + Math.min(0, d) + Math.min(0, bonus)));
+    return Math.max(0, Math.min(ceil(QUARANTINE_CEILING), base + Math.min(0, d) + Math.min(0, bonus)));
   }
-  return Math.max(0, Math.min(100, base + d + bonus));
+  return Math.max(0, Math.min(ceil(100), base + d + bonus));
 }
 
 // Source classes that do NOT, on their own, constitute independent corroboration
