@@ -1605,6 +1605,11 @@ export function detectNameLocationSeed(seedValue: string | null): { name: string
   return { name, state };
 }
 
+/** Rendered in place of an identity when a cluster carries no name, email or
+ *  username of its own. Never a person's name — see #485. `ClustersTab` matches
+ *  this exact string to relabel an infrastructure-only cluster. */
+export const UNATTRIBUTED_CLUSTER_LABEL = "unattributed cluster";
+
 export type IdentityCluster = {
   id: string;
   label: string;
@@ -2018,7 +2023,7 @@ export function buildIdentityClusters(
         if (!subset.length) continue;
         const sub = summarize(subset);
         sub.warnings.push(`Split from larger cluster on state=${st}; verify before merging back.`);
-        out.push({ ...sub, id: clusterDisplayId(idx), label: clusterLabel(idx, sub, seedName), matchesSeedLocation: seedState ? st === seedState : null });
+        out.push({ ...sub, id: clusterDisplayId(idx), label: clusterLabel(idx, sub), matchesSeedLocation: seedState ? st === seedState : null });
         idx++;
       }
       continue;
@@ -2027,7 +2032,7 @@ export function buildIdentityClusters(
     if (seedState && base.states[0] && base.states[0] !== seedState) {
       base.warnings.push(`Geography conflict: cluster ties to ${base.states[0]} but seed targets ${seedState}.`);
     }
-    out.push({ ...base, id: clusterDisplayId(idx), label: clusterLabel(idx, base, seedName), matchesSeedLocation: matches });
+    out.push({ ...base, id: clusterDisplayId(idx), label: clusterLabel(idx, base), matchesSeedLocation: matches });
     idx++;
   }
 
@@ -2105,13 +2110,26 @@ export function buildIdentityClusters(
   return { clusters: out, collision, warnings, seedName, seedState };
 }
 
-function clusterLabel(idx: number, c: Omit<IdentityCluster, "id" | "label" | "matchesSeedLocation">, seedName: string | null): string {
+function clusterLabel(idx: number, c: Omit<IdentityCluster, "id" | "label" | "matchesSeedLocation">): string {
   // Deterministic, ASCII-safe id (C001, C002, …). Never String.fromCharCode —
   // that walked past 'Z' into punctuation/control characters once a run
   // produced >26 clusters. See report-hygiene.clusterDisplayId.
   const id = clusterDisplayId(idx);
   const loc = c.states[0] ?? c.addresses[0] ?? null;
-  const who = c.names[0] ?? seedName ?? c.emails[0] ?? c.usernames[0] ?? "unknown";
+  // #485: the seed's name USED to sit between `c.names[0]` and the cluster's own
+  // email/username. That made the seed subject the default identity of every
+  // cluster without a `name` artifact — so a second person, reached through his
+  // own selectors, was published under the seed subject's name together with his
+  // SSN, address, phone and arrest record (live thread 4a1bea49). The engine had
+  // already separated the two and a collision_detector had fired; attribution
+  // overrode all of it here.
+  //
+  // A cluster is named by ITS OWN evidence or not at all. Nothing legitimate is
+  // lost: when the cluster really is the subject's, the subject's name IS in
+  // `c.names`. And the label is never the place to assert linkage — the same-name
+  // collision detector below reads `c.names`, never this string, so a borrowed
+  // name is a duplicate identity that no downstream check can see.
+  const who = c.names[0] ?? c.emails[0] ?? c.usernames[0] ?? UNATTRIBUTED_CLUSTER_LABEL;
   return loc ? `Cluster ${id} — ${who} (${loc})` : `Cluster ${id} — ${who}`;
 }
 
