@@ -29,8 +29,12 @@ const allText = (parts: unknown[]) =>
 const RECORD = buildEvidenceRecord({
   rows: [{ id: "a", kind: "finding", value: "Subject operates the domain", confidence: 50, metadata: {} }],
   totalArtifactCount: 40,
-  retrievalCeilingHit: false,
+  retrieval: "complete", reviews: "applied", rejectedFindingCount: 0,
 });
+/** The common production state: a successful read that found no adjudicated rows. */
+const EMPTY_RECORD = buildEvidenceRecord({ rows: [], totalArtifactCount: 49, retrieval: "complete", reviews: "applied", rejectedFindingCount: 0 });
+/** The failed-read state. Renders differently, and must be just as inert. */
+const UNAVAILABLE_RECORD = buildEvidenceRecord({ rows: [], totalArtifactCount: 0, retrieval: "unavailable" });
 
 const toolPart = (id: string, kb: number) => ({
   type: "tool-oathnet_lookup",
@@ -158,6 +162,78 @@ Deno.test("a genuine report is still COMPLETE after composing", () => {
     parts: [{ type: "text", text: "## Findings report\n\nThe subject operates the domain, corroborated across two classes." }],
   }];
   composePersistedParts(finalMessages[0].parts, RECORD, MAX);
+  assertEquals(
+    resolveTerminalState({ assistantRowPersisted: true, finalMessages: finalMessages as never }).recoveryReason,
+    null,
+  );
+});
+
+Deno.test("NUL inside the RECORD is scrubbed too, not only the narrative", () => {
+  // The record is sanitized at render, but the composer is the persistence
+  // boundary: whatever reaches it must be scrubbed regardless of provenance,
+  // because it is the last thing to run before the JSONB insert.
+  const out = composePersistedParts(
+    [{ type: "text", text: "the model's report" }],
+    "## Evidence Record — authoritative\n\nrow\u0000with a nul",
+    MAX,
+  );
+  assert(!JSON.stringify(out).includes("\\u0000"), "one NUL discards the whole report (2026-08-02)");
+  // Scrubbed, not dropped: stripNulCharacters removes the character and keeps the
+  // surrounding text, so the record still arrives whole.
+  assertStringIncludes(allText(out), "## Evidence Record — authoritative");
+  assertStringIncludes(allText(out), "rowwith a nul");
+});
+
+Deno.test("the record is written exactly once", () => {
+  const parts = [
+    { type: "text", text: "opening narration" },
+    toolPart("t1", 1),
+    { type: "text", text: "the model's report" },
+  ];
+  const text = allText(composePersistedParts(parts, RECORD, MAX));
+  assertEquals(text.split(RECORD).length - 1, 1, "duplicating the block would double every row in it");
+});
+
+Deno.test("the thread-list preview still leads with the narrative", () => {
+  // useThreadMessages.ts:73 previews the LAST text part. The record is merged into
+  // the tail of that part rather than replacing it, so the preview keeps showing
+  // the analyst's report rather than an audit block on every row of the list.
+  const parts = [{ type: "text", text: "The subject operates the domain." }];
+  const out = composePersistedParts(parts, RECORD, MAX);
+  const last = (textParts(out).at(-1) as { text: string }).text;
+  assert(last.startsWith("The subject operates the domain."), `preview must lead with the report, got: ${last.slice(0, 60)}`);
+});
+
+// ── Completion isolation across EVERY rendering of the block ──────────────────
+
+Deno.test("a stub run stays Interrupted for every record state", () => {
+  // Populated, zero-findings and unavailable are three different strings, and any
+  // one of them reaching `finalMessages` would be the regression #390 exists to
+  // prevent. The composer's non-mutation is what holds; this pins it per state so
+  // a future rendering cannot quietly acquire report shape.
+  for (const [name, record] of [["populated", RECORD], ["empty", EMPTY_RECORD], ["unavailable", UNAVAILABLE_RECORD]] as const) {
+    const finalMessages = [{ role: "assistant", parts: [{ type: "text", text: "I'll start" }] }];
+    assertEquals(meetsCompletionContract(finalMessages as never), false, `${name}: precondition`);
+    const persisted = composePersistedParts(finalMessages[0].parts, record, MAX);
+    assertStringIncludes(allText(persisted), record, `${name}: the record must still be persisted`);
+    assertEquals(meetsCompletionContract(finalMessages as never), false, `${name}: still not a report`);
+    assertEquals(
+      resolveTerminalState({ assistantRowPersisted: true, finalMessages: finalMessages as never }).recoveryReason,
+      "incomplete: run ended without a durable report",
+      `${name}: must stay Interrupted`,
+    );
+  }
+});
+
+Deno.test("a salvaged report stays COMPLETE, and the record is not what made it so", () => {
+  // The salvage backstop is the ONE writer allowed to mutate assistant.parts,
+  // because a salvaged report is a real report. Composing afterwards must neither
+  // break that nor be the reason it passes.
+  const salvaged = "## Findings report\n\nThe subject operates the domain, corroborated across two classes.";
+  const finalMessages = [{ role: "assistant", parts: [] as unknown[] }];
+  finalMessages[0].parts = [...finalMessages[0].parts, { type: "text", text: salvaged }];
+  assertEquals(meetsCompletionContract(finalMessages as never), true, "salvage earns the contract on its own");
+  composePersistedParts(finalMessages[0].parts, UNAVAILABLE_RECORD, MAX);
   assertEquals(
     resolveTerminalState({ assistantRowPersisted: true, finalMessages: finalMessages as never }).recoveryReason,
     null,

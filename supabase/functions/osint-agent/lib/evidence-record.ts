@@ -47,6 +47,63 @@ export const EVIDENCE_RECORD_HEADING = "## Evidence Record — authoritative";
 export const NO_FINDINGS_LINE = "_No authoritative finding rows were recorded for this run._";
 export const RETRIEVAL_CEILING_LINE =
   "_Retrieval ceiling reached — this record may be incomplete._";
+export const RETRIEVAL_UNAVAILABLE_LINE =
+  "_Authoritative Evidence Record unavailable: stored findings could not be read during finalization._";
+
+/**
+ * What the caller actually knows about the artifact population it handed over.
+ *
+ * The whole point of this type is that the third state EXISTS. A Supabase select
+ * that fails returns `{ data: null, error }` rather than throwing, so a caller
+ * that only reads `data` sees the same empty array it would see for a thread with
+ * no findings — and the block would then publish "nothing was adjudicated" as a
+ * fact about the run when it is really a fact about the query. Those two make
+ * opposite integrity claims, and the false one is the dangerous direction: it
+ * reads as the engine having examined the case and found nothing.
+ *
+ *  - `complete`    — the read succeeded and returned the whole population.
+ *  - `ceiling_hit` — the read succeeded but filled its row limit, so
+ *                    lower-confidence findings may sit below the returned window.
+ *  - `unavailable` — the read failed, or its result cannot be trusted.
+ */
+export type ArtifactRetrieval = "complete" | "ceiling_hit" | "unavailable";
+
+export const REVIEW_UNAVAILABLE_LINE =
+  "_Authoritative Evidence Record unavailable: analyst review state could not be read during " +
+  "finalization, so recorded findings are withheld rather than risk republishing a rejected one._";
+export const ALL_FINDINGS_REJECTED_LINE =
+  "_No authoritative finding rows remain after analyst review._";
+
+/**
+ * Whether the analyst's verdicts were readable for this run.
+ *
+ * Same shape of hazard as `ArtifactRetrieval`, one table over: an unreadable
+ * `artifact_reviews` read and "the analyst rejected nothing" are different facts,
+ * and only one of them makes it safe to publish a finding under a heading that
+ * says "authoritative". A finding the analyst marked `dismissed` or `wrong` being
+ * re-promoted here is worse than showing nothing, so this fails closed —
+ * `reviews.ts` already fails closed for the same reason at every other read.
+ */
+export type ReviewAuthority = "applied" | "unavailable";
+
+/** Fail-closed, exactly like `usableRetrieval`. */
+function usableReviewAuthority(x: unknown): ReviewAuthority {
+  return x === "applied" ? "applied" : "unavailable";
+}
+
+/** The population predicate, exported so the CALLER counts rejections with the
+ *  same definition of "finding" the block renders by. Two different answers to
+ *  "is this a finding row?" is how a count and its rows drift apart. */
+export function isFindingRow(row: unknown): boolean {
+  return isRecord(row) && typeof row.kind === "string" && row.kind.trim().toLowerCase() === "finding";
+}
+
+/** Fail-safe by construction: only the two literals that MEAN a successful read
+ *  are honoured, so a missing, misspelled or refactored-away value degrades to
+ *  "unavailable" — never to a false "none". */
+function usableRetrieval(x: unknown): ArtifactRetrieval {
+  return x === "complete" || x === "ceiling_hit" ? x : "unavailable";
+}
 
 /** Hard ceiling on the block itself, so it can never starve the narrative's share
  *  of MAX_PERSISTED_ASSISTANT_PARTS_BYTES. The caller reserves exactly this budget. */
@@ -133,8 +190,17 @@ interface EvidenceRecordInput {
   rows: unknown[];
   /** Total artifacts on the thread, so the zero-findings state is a statement. */
   totalArtifactCount: number;
-  /** True when the fetch hit its row limit, so completeness cannot be claimed. */
-  retrievalCeilingHit: boolean;
+  /** What the caller knows about that population. Anything but a successful read
+   *  suppresses the zero-findings statement entirely. */
+  retrieval: ArtifactRetrieval;
+  /** Whether analyst verdicts were readable. `rows` MUST already have rejected
+   *  artifacts removed — this module cannot import `reviews.ts` (see ZERO
+   *  IMPORTS above), so the caller holds that half of the contract and this flag
+   *  is how it reports whether it could honour it. */
+  reviews: ReviewAuthority;
+  /** How many `kind='finding'` rows analyst review removed, so "none remain
+   *  after review" is distinguishable from "none were ever recorded". */
+  rejectedFindingCount: number;
 }
 
 /**
@@ -145,12 +211,25 @@ export function buildEvidenceRecord(input: EvidenceRecordInput): string {
   const env = isRecord(input) ? input : ({} as Record<string, unknown>);
   const rows = Array.isArray(env.rows) ? env.rows : [];
   const total = usableCount(env.totalArtifactCount);
-  const ceiling = env.retrievalCeilingHit === true;
+  const retrieval = usableRetrieval(env.retrieval);
+  const reviews = usableReviewAuthority(env.reviews);
+  const rejected = usableCount(env.rejectedFindingCount);
+
+  // FIRST, before anything is counted: an unreadable population cannot be
+  // described. Not as findings, not as none, not as a count. Everything below
+  // this line is a claim about the run, and none of it is knowable yet.
+  if (retrieval === "unavailable") {
+    return [EVIDENCE_RECORD_HEADING, "", RETRIEVAL_UNAVAILABLE_LINE].join("\n");
+  }
+  // And a population that could not be checked against the analyst's verdicts is
+  // not authoritative either — publishing it risks re-promoting a finding the
+  // analyst already marked false, which is the one outcome worse than silence.
+  if (reviews === "unavailable") {
+    return [EVIDENCE_RECORD_HEADING, "", REVIEW_UNAVAILABLE_LINE].join("\n");
+  }
 
   const findings = rows
-    .filter((r): r is Record<string, unknown> =>
-      isRecord(r) && typeof r.kind === "string" && r.kind.trim().toLowerCase() === "finding"
-    )
+    .filter((r): r is Record<string, unknown> => isFindingRow(r))
     .map((r) => ({
       value: sanitizeValue(r.value),
       score: effectiveConfidence(r),
@@ -161,12 +240,22 @@ export function buildEvidenceRecord(input: EvidenceRecordInput): string {
     .sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
   const head: string[] = [EVIDENCE_RECORD_HEADING, ""];
-  if (ceiling) head.push(RETRIEVAL_CEILING_LINE, "");
+  // A filled fetch is a successful read, so the zero-findings statement below is
+  // still legal — but it is qualified, because findings are the LOWEST-confidence
+  // rows and this select is ordered confidence desc, which is exactly the cut a
+  // ceiling makes.
+  if (retrieval === "ceiling_hit") head.push(RETRIEVAL_CEILING_LINE, "");
 
   if (findings.length === 0) {
     head.push(
-      `${NO_FINDINGS_LINE} ${total} artifact${total === 1 ? "" : "s"} were collected; ` +
-        `nothing in the narrative above was adjudicated by the scoring engine.`,
+      rejected > 0
+        // "The analyst threw them all out" and "the engine never adjudicated
+        // anything" are opposite statements about a run. Collapsing them would
+        // erase the analyst's work and misattribute the silence to the engine.
+        ? `${ALL_FINDINGS_REJECTED_LINE} ${rejected} recorded finding row${rejected === 1 ? " was" : "s were"} ` +
+          `dismissed or marked wrong by the analyst; ${total} artifact${total === 1 ? "" : "s"} were collected.`
+        : `${NO_FINDINGS_LINE} ${total} artifact${total === 1 ? "" : "s"} were collected; ` +
+          `nothing in the narrative above was adjudicated by the scoring engine.`,
     );
     return head.join("\n");
   }
@@ -190,6 +279,9 @@ export function buildEvidenceRecord(input: EvidenceRecordInput): string {
 
   const dropped = findings.length - shown;
   const out = [...head, ...lines];
+  if (rejected > 0) {
+    out.push("", `_${rejected} further recorded finding row${rejected === 1 ? " was" : "s were"} excluded by analyst review (dismissed or wrong)._`);
+  }
   if (dropped > 0) {
     out.push("", `_… ${dropped} further row${dropped === 1 ? "" : "s"} not shown; the record is bounded to protect the storage budget._`);
   }

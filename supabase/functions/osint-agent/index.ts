@@ -34,7 +34,7 @@ import {
 // called here directly — composePersistedParts owns that pipeline so the Evidence
 // Record's byte reservation cannot be separated from the capping it protects
 // against.
-import { buildEvidenceRecord } from "./lib/evidence-record.ts";
+import { type ArtifactRetrieval, buildEvidenceRecord, isFindingRow } from "./lib/evidence-record.ts";
 import { composePersistedParts } from "./lib/evidence-record-persist.ts";
 import { sanitizeModelMessages, capToolResultOutputs, summarizeToolResultValue } from "./message-sanitize.ts";
 import { guard, routingGuard, triageState, countRecordArtifactCalls, countModelMessageToolCalls } from "./guard.ts";
@@ -59,7 +59,7 @@ import {
   hasNoFindingsDecision, resolveTerminalState,
 } from "./orchestrator-finalize.ts";
 import {
-  loadReviewsForThread, applyReviewsToArtifacts,
+  loadReviewsForThread, applyReviewsToArtifacts, dropRejectedArtifacts,
   renderAnalystRejectionBlock, REVIEW_STATE_UNAVAILABLE_NOTE,
 } from "./reviews.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
@@ -1327,11 +1327,19 @@ Deno.serve(async (req) => {
         // #479. The Evidence Record renders from these rows, so they are hoisted out
         // of the salvage try below — the fetch is the SAME single round trip the
         // salvage backstop already makes, just visible at the persistence step 100
-        // lines down. A failed fetch leaves the empty array, and the record then
-        // renders its zero-findings statement rather than throwing: this path owns
-        // this project's worst incidents and may never fail finalize.
+        // lines down.
+        //
+        // `artifactRetrieval` starts at "unavailable" and is only ever RAISED by a
+        // read that demonstrably succeeded. That default is the fix, not a
+        // formality: a Supabase select that fails returns `{ data: null, error }`
+        // instead of throwing, and anything thrown earlier in this try is swallowed
+        // by its catch — so on either failure the rows are `[]`, exactly like a
+        // thread that genuinely recorded no findings. Publishing "nothing was
+        // adjudicated by the scoring engine" for a query that never ran is a false
+        // integrity claim in the dangerous direction, so the two states are kept
+        // distinct here and the record says "unavailable" rather than "none".
         let salvageArts: Array<Record<string, unknown>> = [];
-        let artifactFetchHitCeiling = false;
+        let artifactRetrieval: ArtifactRetrieval = "unavailable";
         // P0 fix B — salvage backstop. If the run did work but produced no usable
         // report (the "No report yet" gap — e.g. the loop stopped on a tool step
         // before the model synthesized), run ONE bounded, TOOL-FREE generation that
@@ -1361,18 +1369,31 @@ Deno.serve(async (req) => {
           // guarantee, so a fetch that fills the limit sets the ceiling flag and
           // the record discloses that it may be incomplete.
           const ARTIFACT_FETCH_LIMIT = 500;
-          const { data: fetchedArts } = await supabase
+          const { data: fetchedArts, error: artifactFetchError } = await supabase
             .from("artifacts")
             .select("id,kind,value,confidence,source,metadata")
             .eq("thread_id", threadId)
             .order("confidence", { ascending: false })
             .limit(ARTIFACT_FETCH_LIMIT);
-          salvageArts = (fetchedArts ?? []) as Array<Record<string, unknown>>;
-          artifactFetchHitCeiling = salvageArts.length >= ARTIFACT_FETCH_LIMIT;
-          if (artifactFetchHitCeiling) {
+          // Classify the SAME response — no retry, no second round trip, no throw.
+          // Only an array actually returned counts as a read; `{ data: null, error }`
+          // and any other shape leave the state at "unavailable".
+          if (artifactFetchError || !Array.isArray(fetchedArts)) {
             console.warn(JSON.stringify({
-              event: "artifact_fetch_ceiling_hit", thread_id: threadId, limit: ARTIFACT_FETCH_LIMIT,
+              event: "artifact_fetch_unavailable",
+              thread_id: threadId,
+              // Message only, bounded: a PostgREST error can echo the filter, and
+              // this line goes to shared logs.
+              error: String(artifactFetchError?.message ?? "no rows returned").slice(0, 200),
             }));
+          } else {
+            salvageArts = fetchedArts as Array<Record<string, unknown>>;
+            artifactRetrieval = salvageArts.length >= ARTIFACT_FETCH_LIMIT ? "ceiling_hit" : "complete";
+            if (artifactRetrieval === "ceiling_hit") {
+              console.warn(JSON.stringify({
+                event: "artifact_fetch_ceiling_hit", thread_id: threadId, limit: ARTIFACT_FETCH_LIMIT,
+              }));
+            }
           }
           // The DECISION to salvage uses the raw count deliberately. It answers "did
           // this run actually investigate?", and a run whose every finding the analyst
@@ -1470,12 +1491,38 @@ Deno.serve(async (req) => {
           // passing completion contract by this block's structure. Building it is
           // wrapped because finalize may never fail: an unusable record degrades
           // to the prior behavior of persisting the message as-is.
+          //
+          // ANALYST REJECTION. A finding the analyst marked `dismissed`/`wrong`
+          // may not be republished under a heading that says "authoritative" —
+          // that would use the block's credibility to overturn the analyst's own
+          // verdict. `turnReviews` is the load this turn ALREADY made (line ~734,
+          // same closure), so this authority costs no extra round trip inside the
+          // finalize window. It is deliberately `dropRejectedArtifacts` and not
+          // `applyReviewsToArtifacts`: the latter also applies confirmed/key/
+          // recheck confidence DELTAS, and the block's published number must stay
+          // exactly min(stored confidence, recorded cap) — an analyst's positive
+          // verdict must not silently raise it.
+          //
+          // Unreadable verdicts fail CLOSED, matching reviews.ts everywhere else:
+          // "could not read the verdicts" is not "nothing was rejected".
+          const reviewsUsable = turnReviews.ok;
+          const reviewedArts = reviewsUsable ? dropRejectedArtifacts(salvageArts, turnReviews) : [];
+          // Counted with the renderer's OWN predicate so the number and the rows
+          // cannot disagree about what a finding is.
+          const rejectedFindingCount = reviewsUsable
+            ? salvageArts.filter(isFindingRow).length - reviewedArts.filter(isFindingRow).length
+            : 0;
           let evidenceRecord = "";
           try {
             evidenceRecord = buildEvidenceRecord({
-              rows: salvageArts,
+              rows: reviewedArts,
+              // The COLLECTED count, pre-rejection: "N artifacts were collected"
+              // is a fact about the run, and analyst review does not un-collect
+              // them. What review removed is disclosed separately.
               totalArtifactCount: salvageArts.length,
-              retrievalCeilingHit: artifactFetchHitCeiling,
+              retrieval: artifactRetrieval,
+              reviews: reviewsUsable ? "applied" : "unavailable",
+              rejectedFindingCount,
             });
           } catch (e) {
             console.warn("[evidence-record] render failed (non-fatal):", String(e));
