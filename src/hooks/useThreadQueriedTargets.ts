@@ -13,6 +13,19 @@ const TARGET_KEYS = [
   "email", "value", "url", "handle", "phone", "username", "domain", "ip", "wallet", "address",
 ];
 
+// Free-text search fields. Their whole value is a sentence, not a target, so it
+// is NOT added — but a QUOTED phrase inside one is the analyst's (or the model's)
+// explicit statement of what is being searched for, and it is frequently the only
+// footprint a lead leaves.
+//
+// Without this, a run can search `"Gregory Bradley" Sacramento` five times and
+// still believe that pivot untouched, because a web-search tool populates
+// `input.query` and leaves `runtime.selector` empty. Quoted-phrase only, never
+// the bare sentence: matching on unquoted free text would mark unrelated pivots
+// searched and silently hide real leads, which is the more dangerous failure.
+const QUERY_KEYS = ["query", "q", "search", "search_query"];
+const QUOTED_RE = /["“”']([^"“”']{2,80})["“”']/g;
+
 /** Pull every target a tool call was run against out of one input_json blob. */
 function collectTargets(inputJson: unknown, into: Set<string>): void {
   if (!inputJson || typeof inputJson !== "object") return;
@@ -28,8 +41,19 @@ function collectTargets(inputJson: unknown, into: Set<string>): void {
       const v = input[k];
       if (typeof v === "string" && v.trim()) into.add(normalizeTarget(v));
     }
+    for (const k of QUERY_KEYS) {
+      const v = input[k];
+      if (typeof v !== "string") continue;
+      for (const m of v.matchAll(QUOTED_RE)) {
+        const phrase = m[1]?.trim();
+        if (phrase) into.add(normalizeTarget(phrase));
+      }
+    }
   }
 }
+
+/** Exported for tests — the parsing half, with no Supabase or React attached. */
+export const __collectTargets = collectTargets;
 
 /**
  * The set of normalized targets that tools have ALREADY been run against on this

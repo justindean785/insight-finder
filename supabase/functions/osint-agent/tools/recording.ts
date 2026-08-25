@@ -11,6 +11,7 @@ import { z } from "npm:zod@3";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { collisionPeerSignal, type CollisionPeer } from "../lib/quarantine.ts";
 import { applyRecordingSourcePolicy, disclosedSourceLabels, resolveRecordingStatus } from "../recording-source-policy.ts";
+import { agentMemoryOrFilter } from "../pgrest.ts";
 
 export const record_artifacts = tool({
   description:
@@ -190,7 +191,7 @@ export const record_artifacts = tool({
               .from("agent_memory")
               .select("id,kind,subject,subject_kind,related_values,content,confidence,hit_count")
               .eq("user_id", userId)
-              .or(`subject.eq.${subj},related_values.cs.{${subj}}`)
+              .or(agentMemoryOrFilter(subj))
               .order("confidence", { ascending: false })
               .limit(5);
             return { subject: subj, count: data?.length ?? 0, memories: data ?? [] };

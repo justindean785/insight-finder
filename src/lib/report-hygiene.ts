@@ -9,8 +9,9 @@
  */
 
 import type { Artifact } from "@/hooks/useThreadArtifacts";
-import { isUsernameSweepSource, labelForArtifact, type ConfLabel } from "@/lib/intel";
-import { isSubjectUnlinked } from "@/lib/quarantine";
+import { isUsernameSweepSource, labelForArtifact, type ConfLabel, type ReviewAdjustment } from "@/lib/intel";
+import { isRejectedReview } from "@/lib/review";
+import { isQuarantined } from "@/lib/quarantine";
 
 // ---------------------------------------------------------------------------
 // #1 — Deterministic, ASCII-safe cluster IDs.
@@ -146,12 +147,36 @@ export function isCollisionArtifact(a: Artifact): boolean {
 /**
  * May this artifact seed or strengthen the subject's identity?
  *
- * `false` for a legacy collision flag OR a `subject_unlinked` quarantine. Use at
- * every surface that grants identity authority — clustering, graph edges,
+ * `false` for a legacy collision flag OR an ACTIVE `subject_unlinked` quarantine.
+ * Use at every surface that grants identity authority — clustering, graph edges,
  * confidence dimensions — so the two signals can never drift apart again.
+ *
+ * ACTIVE, via `isQuarantined` — not the raw `isSubjectUnlinked` flag. The two
+ * predicates answer different questions and only one of them is about authority:
+ *
+ *   isSubjectUnlinked  Was this row ever machine-flagged as having unproven
+ *                      linkage? — history, and the basis for DISCLOSURE. The
+ *                      report's collision section (`conflictNoted` in intel.ts)
+ *                      still keys on this, correctly: releasing a row must not
+ *                      erase the fact that it arrived on the collision axis.
+ *   isQuarantined      Does that flag CURRENTLY deny the row authority? — false
+ *                      once an analyst records `linkage_confirmed`.
+ *
+ * This function is an authority decision, so it takes the second. It previously
+ * took the first, which made it (with `quarantineSets`) one of two boundaries
+ * that ignored the release hatch while three others honoured it —
+ * `labelForArtifact`, `evidenceStatus` and `adjustedConfidence` all restore full
+ * authority on `linkage_confirmed`, and `adjustedConfidence` documents the
+ * distinction explicitly. An adjudicated row therefore read CONFIRMED at the
+ * label and still could not enter a cluster, a graph edge, or a confidence
+ * dimension. (Ultrareview #448 `bug_006`.)
+ *
+ * Release does not rewrite history: the row keeps `subject_unlinked` and its
+ * `subject_unlinked_reason`, and keeps appearing in the collision disclosure.
+ * What it regains is only the authority the analyst explicitly granted it.
  */
 export function isClusterIneligible(a: Artifact): boolean {
-  return isCollisionArtifact(a) || isSubjectUnlinked(a.metadata);
+  return isCollisionArtifact(a) || isQuarantined(a.metadata);
 }
 
 // ---------------------------------------------------------------------------
@@ -365,27 +390,48 @@ export function dedupeBreachDatasets(artifacts: Artifact[]): Artifact[] {
 
 export type IdentityRow = { field: string; value: string; label: ConfLabel };
 
-function pickBestIdentity(artifacts: Artifact[], kinds: string[]): Artifact | null {
+function pickBestIdentity(
+  artifacts: Artifact[],
+  kinds: string[],
+  reviews?: Record<string, ReviewAdjustment>,
+): Artifact | null {
+  // An analyst-rejected row is not a candidate for an identity field at all.
+  // These fields are AUTHORITY claims (see the #8 banner above) — rendering a
+  // rejected row as "Real name" with a FAILED pill still asserts it IS the
+  // subject's name. Same exclusion `buildIdentityClusters` applies to cluster
+  // membership (intel.ts:1865): a dismissed/wrong row may not seed or
+  // strengthen identity. The row keeps its place in the evidence tables.
   const pool = artifacts.filter(
-    (a) => kinds.includes(String(a.kind ?? "").toLowerCase()) && !isClusterIneligible(a),
+    (a) =>
+      kinds.includes(String(a.kind ?? "").toLowerCase()) &&
+      !isClusterIneligible(a) &&
+      !isRejectedReview(reviews?.[a.id]),
   );
   if (!pool.length) return null;
   const rank: Record<ConfLabel, number> = {
     CONFIRMED: 6, CORRELATED: 5, INFERRED: 4, VERIFY: 3, LOW: 2, CONFLICT: 1, FAILED: 0,
   };
+  // Rank through the verdict too, so an attested row outranks an unreviewed one
+  // instead of the ordering being decided before the analyst is consulted.
   return pool.slice().sort((a, b) => {
-    const ra = rank[labelForArtifact(a)] ?? 0;
-    const rb = rank[labelForArtifact(b)] ?? 0;
+    const ra = rank[labelForArtifact(a, reviews?.[a.id])] ?? 0;
+    const rb = rank[labelForArtifact(b, reviews?.[b.id])] ?? 0;
     if (ra !== rb) return rb - ra;
     return (b.confidence ?? 0) - (a.confidence ?? 0);
   })[0];
 }
 
-function pickAllEmailsIdentity(artifacts: Artifact[]): Artifact[] {
+function pickAllEmailsIdentity(
+  artifacts: Artifact[],
+  reviews?: Record<string, ReviewAdjustment>,
+): Artifact[] {
   const seen = new Set<string>();
   const out: Artifact[] = [];
   for (const a of artifacts.filter(
-    (x) => String(x.kind ?? "").toLowerCase() === "email" && !isClusterIneligible(x),
+    (x) =>
+      String(x.kind ?? "").toLowerCase() === "email" &&
+      !isClusterIneligible(x) &&
+      !isRejectedReview(reviews?.[x.id]),
   )) {
     const k = String(a.value ?? "").toLowerCase();
     if (seen.has(k)) continue;
@@ -395,34 +441,34 @@ function pickAllEmailsIdentity(artifacts: Artifact[]): Artifact[] {
   return out;
 }
 
-export function buildIdentityRows(artifacts: Artifact[]): IdentityRow[] {
+export function buildIdentityRows(artifacts: Artifact[], reviews?: Record<string, ReviewAdjustment>): IdentityRow[] {
   const rows: IdentityRow[] = [];
-  const name = pickBestIdentity(artifacts, ["name", "person"]);
-  if (name) rows.push({ field: "Real name", value: name.value, label: labelForArtifact(name) });
+  const name = pickBestIdentity(artifacts, ["name", "person"], reviews);
+  if (name) rows.push({ field: "Real name", value: name.value, label: labelForArtifact(name, reviews?.[name.id]) });
 
-  const dob = pickBestIdentity(artifacts, ["dob"]);
-  if (dob) rows.push({ field: "Date of birth", value: dob.value, label: labelForArtifact(dob) });
+  const dob = pickBestIdentity(artifacts, ["dob"], reviews);
+  if (dob) rows.push({ field: "Date of birth", value: dob.value, label: labelForArtifact(dob, reviews?.[dob.id]) });
 
-  const age = pickBestIdentity(artifacts, ["age"]);
-  if (age && !dob) rows.push({ field: "Age", value: age.value, label: labelForArtifact(age) });
+  const age = pickBestIdentity(artifacts, ["age"], reviews);
+  if (age && !dob) rows.push({ field: "Age", value: age.value, label: labelForArtifact(age, reviews?.[age.id]) });
 
-  const phone = pickBestIdentity(artifacts, ["phone"]);
-  if (phone) rows.push({ field: "Phone", value: phone.value, label: labelForArtifact(phone) });
+  const phone = pickBestIdentity(artifacts, ["phone"], reviews);
+  if (phone) rows.push({ field: "Phone", value: phone.value, label: labelForArtifact(phone, reviews?.[phone.id]) });
 
-  const region = pickBestIdentity(artifacts, ["location", "geo", "address"]);
-  if (region) rows.push({ field: "Likely region", value: region.value, label: labelForArtifact(region) });
+  const region = pickBestIdentity(artifacts, ["location", "geo", "address"], reviews);
+  if (region) rows.push({ field: "Likely region", value: region.value, label: labelForArtifact(region, reviews?.[region.id]) });
 
-  const emails = pickAllEmailsIdentity(artifacts);
+  const emails = pickAllEmailsIdentity(artifacts, reviews);
   emails.forEach((e, i) => {
     rows.push({
       field: i === 0 ? "Primary email" : i === 1 ? "Alt email" : `Email ${i + 1}`,
       value: e.value,
-      label: labelForArtifact(e),
+      label: labelForArtifact(e, reviews?.[e.id]),
     });
   });
 
-  const gender = pickBestIdentity(artifacts, ["gender"]);
-  if (gender) rows.push({ field: "Gender (implied)", value: gender.value, label: labelForArtifact(gender) });
+  const gender = pickBestIdentity(artifacts, ["gender"], reviews);
+  if (gender) rows.push({ field: "Gender (implied)", value: gender.value, label: labelForArtifact(gender, reviews?.[gender.id]) });
 
   return rows;
 }

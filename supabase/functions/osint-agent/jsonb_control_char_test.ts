@@ -210,7 +210,13 @@ Deno.test("EVERY persistence boundary is wired, not just the final report", () =
   // "before every persist", so every persist is checked here by name.
   const read = (f: string) => Deno.readTextFileSync(new URL(`./${f}`, import.meta.url));
   const boundaries: Array<[string, RegExp, string]> = [
-    ["index.ts", /stripNulCharacters\(/, "final assistant report insert"],
+    // #479 moved the final report's scrub one file down: index.ts now delegates
+    // the whole capping pipeline to composePersistedParts so the Evidence
+    // Record's byte reservation cannot be separated from the capping it has to
+    // survive. The boundary is unchanged — both ends of the delegation are pinned
+    // here so the chain still fails loudly if either half drops the scrub.
+    ["index.ts", /composePersistedParts\(/, "final assistant report insert"],
+    ["lib/evidence-record-persist.ts", /stripNulCharacters\(/, "final assistant report scrub"],
     ["cache.ts", /output_json: stripNulCharacters\(/, "tool_call_cache output_json"],
     ["cache.ts", /input_json: stripNulCharacters\(/, "tool_call_cache input_json"],
     ["auth.ts", /parts: stripNulCharacters\(/, "user message insert"],

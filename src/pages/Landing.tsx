@@ -43,8 +43,8 @@ export default function Landing() {
             aria-label="Insight Finder home"
             className="group flex items-center gap-3 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <span className="grid h-10 w-10 place-items-center rounded-xl border border-white/[0.12] bg-white/[0.045] shadow-cta">
-              <SwarmMark className="h-6 w-6" />
+            <span className="brand-tile h-10 w-10">
+              <SwarmMark className="h-6 w-6 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.45)]" glow={false} />
             </span>
             <span>
               <span className="block font-display text-sm font-semibold tracking-tight">Insight Finder</span>
