@@ -5,6 +5,13 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { PDFDocument, StandardFonts, rgb } from "npm:pdf-lib@1.17.1";
 import { zipSync, strToU8 } from "npm:fflate@0.8.2";
 import { sanitizeWinAnsi, safeIso } from "./text-sanitize.ts";
+// Imported, not mirrored — the security-test-lab drift is what a copy turns into.
+import { checkHourlyQuota } from "../osint-agent/ratelimit.ts";
+
+/** Exports per user per hour. The PDF/zip build is the CPU-heavy path here. */
+const MAX_EXPORTS_PER_HOUR = 10;
+/** Hard ceiling on evidence rows in one bundle. Over this the export refuses. */
+const MAX_EXPORT_ROWS = 5000;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -213,6 +220,30 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
     const userId = userData.user.id;
+
+    // Building a PDF + zip is the most CPU-expensive thing this project exposes,
+    // and it had no limiter of any kind — the orchestrator's 30/min + 300/hr
+    // never applied here. Its own namespaced hourly budget, failing OPEN like
+    // the orchestrator's so a Redis outage can't block a user's own export.
+    const quota = await checkHourlyQuota("evidence-export", userId, MAX_EXPORTS_PER_HOUR);
+    if (!quota.ok) {
+      return new Response(
+        JSON.stringify({
+          error: "Too Many Requests",
+          code: "EXPORT_RATE_LIMITED",
+          detail: `Evidence exports are limited to ${MAX_EXPORTS_PER_HOUR} per hour.`,
+        }),
+        {
+          status: 429,
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "application/json",
+            "Retry-After": String(quota.retryAfterSec),
+          },
+        },
+      );
+    }
+
     let body: { threadId?: string };
     try {
       body = await req.json();
@@ -230,10 +261,35 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: "Forbidden" }), { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
+    // Count BEFORE selecting. This endpoint builds a PDF and a zip in-isolate,
+    // and the select was previously unbounded — one large thread could pull the
+    // entire evidence_log for it into memory and then render it.
+    //
+    // On overflow this REFUSES rather than truncating. A silently truncated
+    // evidence bundle is worse than no bundle: it is a chain-of-custody artifact
+    // that presents as complete, and its own manifest would attest to a
+    // verification covering rows it does not contain.
+    const { count: evidenceCount } = await admin.from("evidence_log")
+      .select("id", { count: "exact", head: true })
+      .eq("thread_id", threadId);
+    if ((evidenceCount ?? 0) > MAX_EXPORT_ROWS) {
+      return new Response(
+        JSON.stringify({
+          error: "Export too large",
+          code: "EXPORT_TOO_LARGE",
+          detail: `This thread has ${evidenceCount} evidence entries; the export limit is ${MAX_EXPORT_ROWS}. Nothing was exported — a partial evidence bundle would misrepresent the chain of custody.`,
+          total: evidenceCount,
+          max: MAX_EXPORT_ROWS,
+        }),
+        { status: 413, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
     const { data: rowsData } = await admin.from("evidence_log")
       .select("id,seq,classification,kind,value,source,source_url,tool_name,confidence,chain_hash,prev_hash,content_hash,collected_at,metadata,archive_storage_path,archive_sha256,archive_bytes,archive_content_type")
       .eq("thread_id", threadId)
-      .order("seq", { ascending: true });
+      .order("seq", { ascending: true })
+      .limit(MAX_EXPORT_ROWS);
     const rows = (rowsData as EvidenceRow[]) ?? [];
 
     // Verify chain as the user

@@ -141,3 +141,73 @@ export async function checkRateLimit(userId: string, now: number = Date.now()): 
 export function _resetInMemoryForTests(): void {
   _fallbackStore.clear();
 }
+
+// ---- Generic namespaced hourly quota -----------------------------------
+// For callers other than the orchestrator, which need their OWN budget rather
+// than a share of the 30/min + 300/hr above. evidence-export uses this: its
+// PDF/zip build is CPU-heavy and was previously unmetered entirely.
+//
+// Same transport, same TTL grace, and the same deliberate FAIL-OPEN policy as
+// checkRateLimit — a Redis outage must not block a user's own evidence export.
+// Keys are namespaced (`rl:q:<namespace>:...`) so a quota can never consume or
+// be consumed by the orchestrator's counters.
+
+export type QuotaDecision = { ok: true; used: number } | { ok: false; retryAfterSec: number; used: number };
+
+const _quotaFallback = new Map<string, number[]>();
+
+/** Pure: in-memory hourly counter, used when Upstash is unset or unreachable. */
+export function inMemoryQuotaCheck(
+  namespace: string,
+  userId: string,
+  maxPerHour: number,
+  now: number = Date.now(),
+): QuotaDecision {
+  const k = `${namespace}:${userId}`;
+  const hits = (_quotaFallback.get(k) ?? []).filter((t) => t > now - 3_600_000);
+  hits.push(now);
+  _quotaFallback.set(k, hits);
+  return hits.length > maxPerHour
+    ? { ok: false, retryAfterSec: 3600, used: hits.length }
+    : { ok: true, used: hits.length };
+}
+
+/**
+ * Consume one unit of a namespaced hourly quota. Never throws; falls back to
+ * the in-memory counter on any Upstash error.
+ */
+export async function checkHourlyQuota(
+  namespace: string,
+  userId: string,
+  maxPerHour: number,
+  now: number = Date.now(),
+): Promise<QuotaDecision> {
+  if (!upstashConfigured()) return inMemoryQuotaCheck(namespace, userId, maxPerHour, now);
+  const base = Deno.env.get(URL_KEY)!.replace(/\/+$/, "");
+  const token = Deno.env.get(TOKEN_KEY)!;
+  const key = `rl:q:${namespace}:${userId}:${Math.floor(now / 3_600_000)}`;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), UPSTASH_TIMEOUT_MS);
+  try {
+    const r = await fetchRetry(`${base}/pipeline`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify([["INCR", key], ["EXPIRE", key, HOUR_TTL_SEC]]),
+      signal: ctrl.signal,
+    }, { retries: 0 });
+    if (!r.ok) throw new Error(`upstash HTTP ${r.status}`);
+    const json = (await r.json()) as UpstashResult[];
+    const used = Number(json[0]?.result ?? 0);
+    if (!Number.isFinite(used)) throw new Error("upstash returned a non-numeric count");
+    return used > maxPerHour ? { ok: false, retryAfterSec: 3600, used } : { ok: true, used };
+  } catch (e) {
+    // Error TYPE only, never the user id — the F-B1 logging policy again.
+    console.warn(`[quota:${namespace}] upstash unavailable, falling back to in-memory: ${e instanceof Error ? e.message : String(e)}`);
+    return inMemoryQuotaCheck(namespace, userId, maxPerHour, now);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Test-only: clear the in-memory quota store. */
+export function _resetQuotaForTests(): void { _quotaFallback.clear(); }
