@@ -29,6 +29,28 @@ jobs:
         run: npm run test:coverage
       - name: Production build
         run: npm run build
+      # Dependency advisories, as a visible gate rather than something a human
+      # has to remember to run. An audit found 8 advisories (5 high) sitting
+      # unnoticed in the lockfile, including two postcss path-traversal issues
+      # that were fixable in-range the whole time.
+      #
+      # The gate scope is `--omit=dev`, which is the distinction that makes this
+      # gate honest rather than decorative. Vercel serves the built static
+      # output, so a devDependency advisory does not reach a user — every
+      # current vite/esbuild finding here is dev-server only (arbitrary requests
+      # to the dev server, server.fs.deny bypass on Windows, launch-editor
+      # NTLMv2). Gating on those would make CI red on day one for something
+      # nobody can act on: vite@8 is blocked while lovable-tagger pins vite@5.
+      # A gate that cannot go green gets ignored, then bypassed.
+      #
+      # Production deps are clean at high/critical today, so this passes now and
+      # fails the moment something shippable regresses. The report step above it
+      # keeps the full moderate+ picture (including dev) visible either way.
+      - name: Dependency audit (report, all deps)
+        if: always()
+        run: npm audit --audit-level=moderate || true
+      - name: Dependency audit (gate — production deps, high+)
+        run: npm audit --omit=dev --audit-level=high
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v4

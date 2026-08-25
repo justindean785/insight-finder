@@ -18,9 +18,15 @@ name: Edge Health
 # then sat dark for ~65 hours and nobody noticed -- so as alerting it was
 # already not doing its job.
 #
-# To restore automatic polling, add back a `schedule:` block below. Prefer
-# hourly ("0 * * * *", ~720 min/month) over anything shorter, or better, use an
-# external uptime monitor -- which is what the header above already calls this.
+# Do NOT restore a `schedule:` block here. Use an external uptime monitor
+# instead -- setup, recommended interval, what each response field means, and
+# why polling ?health=1&probe=1 would cost real money are all written up in:
+#
+#     docs/ops/uptime-monitoring.md
+#
+# (If you restore a schedule anyway despite the above, hourly "0 * * * *" is the
+# floor -- ~720 billed minutes/month -- and it will still share the allowance
+# that runs CI.)
 on:
   workflow_dispatch:
 

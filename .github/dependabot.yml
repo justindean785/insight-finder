@@ -1,0 +1,55 @@
+version: 2
+
+# Why this exists: an audit found 8 npm advisories (5 high) sitting in a lockfile
+# nobody was watching, including two postcss path-traversal issues with fixes
+# available in-range. Nothing was configured to notice.
+#
+# Cadence and grouping are deliberate. This account is on GitHub Free and its
+# Actions minutes are SHARED with CI — an over-eager schedule opening a PR per
+# package would spend the same budget that runs the test suite, which is exactly
+# how CI went down for ~70 hours in August 2026 (see #483). Weekly, grouped, and
+# capped keeps the PR count low enough that each one gets a real review.
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for the routine churn. Majors stay separate: this project pins
+      # React 18 on purpose (see README), and Vite cannot move alone while
+      # lovable-tagger depends on vite@5 — both need a human deciding, not a
+      # bot bundling them in with patch bumps.
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # React 18 is a deliberate pin, not drift. Majors here would be noise.
+      - dependency-name: react
+        update-types: ["version-update:semver-major"]
+      - dependency-name: react-dom
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react-dom"
+        update-types: ["version-update:semver-major"]
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "chore(ci)"

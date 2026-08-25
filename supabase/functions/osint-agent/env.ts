@@ -46,8 +46,34 @@ export const corsHeaders = {
 };
 
 // ---- Supabase / core secrets ------------------------------------------------
+// The `!` is a typing convenience, not a claim that these are always present.
+// Missing core config is surfaced two ways, neither of which is a module-load
+// throw:
+//
+//   - loudly, once, at import (below) so it is visible the moment an isolate
+//     starts rather than as a confusing downstream failure;
+//   - structurally, via `?health=1`'s checks.core, which is the operator's
+//     diagnostic for exactly this.
+//
+// Deliberately NOT a hard throw. Throwing here kills the whole function
+// INCLUDING the health endpoint — the one surface that can report which
+// variable is missing. A deployment that fails closed but can no longer say why
+// is harder to fix, not safer. Call sites already treat these as possibly-empty
+// (health-handler.ts gates its admin work on `SUPABASE_URL && SERVICE_KEY`).
 export const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 export const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+
+for (const [name, value] of [
+  ["SUPABASE_URL", SUPABASE_URL],
+  ["SUPABASE_SERVICE_ROLE_KEY", SERVICE_KEY],
+] as const) {
+  if (!value) {
+    console.error(
+      `[env] ${name} is not configured — core Supabase access will fail. ` +
+      `Check checks.core at ?health=1. Set it in the function's secrets.`,
+    );
+  }
+}
 
 /**
  * Anon (publishable) key — used to build the *user-scoped* Supabase client

@@ -9,6 +9,8 @@
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json",
+    "check": "npm run lint && npm run typecheck && npm run test",
+    "check:all": "npm run check && npm run test:edge",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
