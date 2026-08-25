@@ -55,3 +55,56 @@ export function isDateableBreachKind(kind: string | null | undefined): boolean {
   const k = kind.toLowerCase().trim();
   return k === "breach" || k === "leak" || k === "stealer_log";
 }
+
+/**
+ * True when a breach-shaped artifact records an ACTUAL exposure, as opposed to a
+ * negative or coverage result that merely carries a breach-shaped `kind`.
+ *
+ * WHY THIS EXISTS. `isBreachKind` answers "is this row breach-shaped?" — which is
+ * the right question for grouping, icons and tab counts, and the WRONG question
+ * for risk. A sweep that finds nothing still persists a `breach_exposure` row, so
+ * counting by kind treated "no exposure found" as exposure. Measured on a live
+ * report, three such rows —
+ *
+ *   "NO BREACH EXPOSURE FOUND — <selector> clean"
+ *   "ListCrawler has no Hawaii/Honolulu classifieds section — 404"
+ *   "No escort listing found on BackpageGals Honolulu containing <selector>"
+ *
+ * — tripped the `>= 3` threshold and published "Subject appears in 3 distinct
+ * breach corpora. Assume credential exposure is broad", plus a MEDIUM risk score,
+ * in the same report that stated every breach query returned zero hits.
+ *
+ * The test is STRUCTURAL, never the prose of `value`. A real exposure record
+ * carries the metadata `buildBreachExposure` renders from — a corpus name, a
+ * date, exposed field classes, or a concrete leaked value. A negative sweep
+ * carries none of it. Reading the text instead would be the same mistake as
+ * inferring intent from prose: it works until a provider rewords its summary.
+ */
+export function isPositiveBreachExposure(artifact: {
+  kind?: string | null;
+  metadata?: Record<string, unknown> | null;
+  [k: string]: unknown;
+} | null | undefined): boolean {
+  if (!artifact || !isBreachKind(artifact.kind)) return false;
+  const m = artifact.metadata;
+  if (!m || typeof m !== "object") return false;
+
+  // An explicit negative marker wins outright, if a writer sets one.
+  if (m.no_exposure === true || m.exposure_found === false) return false;
+
+  const nonEmptyString = (v: unknown) => typeof v === "string" && v.trim().length > 0;
+  const nonEmptyList = (v: unknown) => Array.isArray(v) && v.length > 0;
+
+  // Any ONE of these is proof the sweep actually returned something.
+  if (nonEmptyString(m.breach_name)) return true;
+  if (nonEmptyString(m.breach_date)) return true;
+  if (nonEmptyList(m.breach_corpora)) return true;
+  if (nonEmptyList(m.exposed_fields)) return true;
+  if (typeof m.breach_count === "number" && m.breach_count > 0) return true;
+
+  // Concrete leaked values — the strongest signal of a real record.
+  for (const k of ["password", "password_hash", "hash", "salt", "email", "username", "phone", "ssn", "dob"]) {
+    if (nonEmptyString(m[k])) return true;
+  }
+  return false;
+}
