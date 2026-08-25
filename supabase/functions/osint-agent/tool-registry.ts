@@ -1446,10 +1446,27 @@ export function buildTools(ctx: ToolContext) {
       execute: async ({ url }) => {
         if (!SOCIALFETCH_API_KEY) return { error: "SOCIALFETCH_API_KEY not configured" };
         try {
-          // Single attempt with a long per-attempt timeout: server-side markdown
-          // of a heavy page (YouTube etc.) is slow, and retrying a timeout would
-          // just double the wait past the 25s outer tool budget (see cache.ts).
-          const r = await fetchRetry(`https://api.socialfetch.dev/v1/web/markdown?url=${encodeURIComponent(url)}`, { headers: { "x-api-key": SOCIALFETCH_API_KEY } }, { retries: 0, timeoutMs: 22_000 });
+          // Single attempt, no retry: retrying a timeout would just double the
+          // wait past the outer tool budget (see cache.ts).
+          //
+          // LOWERED 22s -> 9s (2026-08-25, production thread 9ac01762). Measured
+          // over 36h: 13 calls, 11 failed, every failure at the 22s ceiling
+          // (mean 19.8s). On the wedged run it never succeeded once and consumed
+          // roughly a quarter of the wall clock — ~4 minutes — while the model's
+          // own fallback (jina_reader_scrape) got the hit on every retry,
+          // including the one that found the decisive listing.
+          //
+          // So the 22s was not buying slow-but-real results here; it was buying
+          // slow failures ahead of a reader that works. 9s still clears the p50
+          // for a page this tool genuinely renders, and a miss now costs 9s
+          // before falling through to Jina instead of 22s.
+          //
+          // The knob is deliberately THIS one, not the wrapper cap in cache.ts.
+          // That cap (25s) is documented as needing to sit ABOVE this per-attempt
+          // timeout so the tool fails cleanly first and the wrapper never
+          // guillotines an un-signalled upstream request. Lowering the wrapper
+          // instead would reintroduce exactly that orphaning hazard.
+          const r = await fetchRetry(`https://api.socialfetch.dev/v1/web/markdown?url=${encodeURIComponent(url)}`, { headers: { "x-api-key": SOCIALFETCH_API_KEY } }, { retries: 0, timeoutMs: 9_000 });
           if (r.status === 402) {
             return { ok: false, status: 402, error: "SOCIALFETCH_CREDITS_EXHAUSTED", message: "Social Fetch credit balance is zero. Check /v1/balance." };
           }

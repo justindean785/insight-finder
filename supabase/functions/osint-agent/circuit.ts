@@ -134,6 +134,27 @@ export const GENERAL_MULTI_ORIGIN_TOOLS = new Set<string>([
  *  Single-upstream providers still suppress on the first timeout (oathnet: two). */
 export const TIMEOUT_SUPPRESS_CONSECUTIVE = 3;
 
+/** Per-tool override of the multi-origin timeout tolerance. */
+const TIMEOUT_SUPPRESS_CONSECUTIVE_OVERRIDE: Record<string, number> = {
+  // socialfetch_web_read: 3 -> 2 (2026-08-25, thread 9ac01762). Measured over
+  // 36h: 13 calls, 11 timed out. At a tolerance of 3 it kept being re-dispatched
+  // all run, and the model's own fallback (jina_reader_scrape) got the result
+  // every single time it was tried — including the retry that found the decisive
+  // listing. Two strikes is enough evidence to fall through to the reader that
+  // works.
+  //
+  // NOT applied to jina_reader_scrape, which shares this path: Jina is the tool
+  // carrying the run (37/44 ok in the same window), and its 3-strike tolerance
+  // is itself a documented fix — an 8s cap once suppressed it after one timeout
+  // and cost two later valid scrapes.
+  socialfetch_web_read: 2,
+};
+
+/** Consecutive timeouts a multi-origin tool tolerates before full suppression. */
+export function multiOriginTimeoutTolerance(tool: string): number {
+  return TIMEOUT_SUPPRESS_CONSECUTIVE_OVERRIDE[tool] ?? TIMEOUT_SUPPRESS_CONSECUTIVE;
+}
+
 function timeoutSuppressionThreshold(tool: string): number {
   // OathNet has a legitimate 20s internal fetch budget; one outer timeout can be
   // latency noise, not proof the whole quota-shared provider is dead. Require a
@@ -534,7 +555,7 @@ export function recordResult(
         // dedicated b.consecutiveTimeouts (maintained above) — NOT b.consecutive,
         // which also counts 4xx/5xx and would falsely trip on a mixed failure run.
         if (selector) b.deadSelectors.add(selector);
-        if (b.consecutiveTimeouts >= TIMEOUT_SUPPRESS_CONSECUTIVE) {
+        if (b.consecutiveTimeouts >= multiOriginTimeoutTolerance(tool)) {
           suppressProvider(
             threadId,
             tool,
