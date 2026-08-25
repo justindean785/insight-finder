@@ -1,6 +1,35 @@
 /**
  * incremental-persist.ts — sanitized mid-run progress checkpoints.
  *
+ * ⚠️ STATUS: DORMANT. `persistCheckpoint` has no caller anywhere in the repo, so
+ * NO new checkpoints are written today. Of this module's exports only
+ * `checkpointKey` is still live — auto-persist-findings.ts:30 imports it as the
+ * thread-wide artifact dedup key. Everything else is unreferenced outside tests.
+ *
+ * Same cause as the DSML guard: PR #348 wired the producer (`persistCheckpoint`
+ * in onStepFinish) plus the model-context filter, and 0595d8e ("roll back to
+ * 07-16 build (0bcd1a0)", #366) removed the call sites while leaving these files
+ * in place. Producer and filter died together.
+ *
+ * That pairing matters when reading the WHY below: it is design intent, not a
+ * description of the running system. In particular the "the edge excludes them
+ * from the model context" claim is not implemented — index.ts calls
+ * convertToModelMessages with no checkpoint filtering. It is also currently moot,
+ * since with no producer there are no new checkpoints to exclude.
+ *
+ * NOT dead on the frontend, though: ~40 checkpoint rows written before the
+ * rollback still live in 14 production threads, and src/lib/chat-checkpoints.ts +
+ * dedupeCheckpoints (ChatWindow.tsx) still collapse them at render time. Do NOT
+ * delete that frontend path as "matching dead code" — those threads would start
+ * showing duplicate finding rows next to their final report.
+ *
+ * Re-landing the feature means re-landing #348's onStepFinish block, which the
+ * operator rolled back for a measured regression and which sits in the
+ * finalize/termination blast zone CLAUDE.md fences off. That is a product
+ * decision, not a dead-code cleanup — as is deleting this module, which would
+ * require relocating `checkpointKey` (a botched move silently duplicates artifact
+ * rows). Both directions need sign-off.
+ *
  * WHY
  *   `streamText` only flushes the final assistant UIMessage in `onFinish`. If the
  *   isolate is CPU-killed mid-run (a routine failure mode for long OSINT runs),
@@ -19,9 +48,11 @@
  *     carries the PRE-scrub value and no safety flags). So no un-sanitized value
  *     ever reaches chat history.
  *   - Checkpoints carry a stable `_incremental` marker so the frontend collapses
- *     them once the final report lands (no duplicate rows) and so the edge
- *     excludes them from the model context on later steps/turns (no prompt bloat
- *     that would raise CPU-kill pressure).
+ *     them once the final report lands (no duplicate rows) — this half IS live,
+ *     for the legacy rows. The marker was ALSO meant to let the edge exclude them
+ *     from the model context on later steps/turns (no prompt bloat that would
+ *     raise CPU-kill pressure); that half was never restored after #366 and does
+ *     not exist today. See the STATUS note at the top.
  *
  * SAFETY — why raw values are never trusted
  *   A strict display-safe allowlist EXCLUDES credentials / secrets / tokens /
@@ -272,8 +303,9 @@ export async function persistCheckpoint(
           type: "text",
           text,
           // Markers (ignored by the AI-SDK renderer): the frontend collapses
-          // these once the final report lands, and the edge excludes them from
-          // the model context. `_checkpoint_keys` seeds recovery-time dedup.
+          // these once the final report lands. The edge-side model-context
+          // exclusion this marker was also meant to drive is NOT wired (see the
+          // STATUS note at the top). `_checkpoint_keys` seeds recovery-time dedup.
           _incremental: true,
           _checkpoint_id: checkpointId,
           _run_id: ctx.runId ?? null,
