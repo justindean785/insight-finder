@@ -53,7 +53,37 @@ describe("security headers via vercel.json HTTP headers (F-B5)", () => {
   });
 
   it("CSP restricts script-src to self + supabase", () => {
-    expect(headerMap["content-security-policy"]).toMatch(/script-src 'self' 'unsafe-inline' https:\/\/\*\.supabase\.co/);
+    expect(headerMap["content-security-policy"]).toMatch(/script-src 'self' https:\/\/\*\.supabase\.co/);
+  });
+
+  it("CSP does NOT allow 'unsafe-inline' in script-src", () => {
+    // 'unsafe-inline' in script-src defeats most of what a CSP buys you against
+    // XSS: an injected <script> executes. Vite emits no inline scripts (the
+    // build produces a single <script src=...>), so nothing needs it — verified
+    // against a real build served under this exact policy in Chromium: the app
+    // mounted with zero CSP violations.
+    //
+    // style-src deliberately KEEPS 'unsafe-inline': Tailwind and the chart-theme
+    // style tag (ui/chart.tsx) both inject styles, and the XSS leverage of an
+    // inline style is far lower than of an inline script.
+    const csp = headerMap["content-security-policy"];
+    const scriptSrc = csp.split(";").map((d) => d.trim()).find((d) => d.startsWith("script-src"));
+    expect(scriptSrc).toBeDefined();
+    expect(scriptSrc).not.toContain("unsafe-inline");
+    expect(scriptSrc).not.toContain("unsafe-eval");
+  });
+
+  it("index.html contains no inline <script> body (what makes the above safe)", () => {
+    // The source of truth for "can we drop 'unsafe-inline'". If someone adds an
+    // inline script to index.html, this fails HERE rather than as a blank page
+    // in production — the boot would be blocked by the policy above.
+    const html = readFileSync(resolve(process.cwd(), "index.html"), "utf8");
+    const scriptTags = html.match(/<script\b[^>]*>([\s\S]*?)<\/script>/gi) ?? [];
+    const withInlineBody = scriptTags.filter((tag) => {
+      const body = tag.replace(/^<script\b[^>]*>/i, "").replace(/<\/script>$/i, "");
+      return body.trim().length > 0;
+    });
+    expect(withInlineBody).toEqual([]);
   });
 
   it("CSP restricts connect-src to self + supabase + Serus", () => {
