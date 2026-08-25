@@ -206,21 +206,104 @@ export function sanitizeToolOutput<T>(input: T, maxStr = 2000, depth = 0): T {
 // SSRF guard for any tool that fetches a user/LLM-supplied URL. Blocks
 // loopback, link-local (cloud metadata!), and RFC1918 private ranges so the
 // edge function cannot be turned into a scanner of internal infra.
+function isPrivateIPv4(a: number, b: number): boolean {
+  if (a === 10) return true;
+  if (a === 127) return true;
+  if (a === 0) return true;
+  if (a === 169 && b === 254) return true; // link-local + cloud metadata
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  // Carrier-grade NAT (RFC 6598). Shared address space used inside carrier and
+  // cloud networks, so it is reachable-internal in exactly the way this guard
+  // exists to prevent. It was NOT previously covered.
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a >= 224) return true; // multicast / reserved
+  return false;
+}
+
+/**
+ * Expand an IPv6 literal into its 8 16-bit groups, or null if it is not one.
+ *
+ * Parsing rather than pattern-matching is required because `new URL()` has
+ * already rewritten the host by the time this runs, and it does not preserve the
+ * textual form: `[::ffff:127.0.0.1]` normalizes to `[::ffff:7f00:1]`. Any check
+ * written against the dotted-quad spelling of a mapped address therefore never
+ * fires on real input — the mapped v4 has to be recovered from the hex groups.
+ */
+function parseIPv6Groups(host: string): number[] | null {
+  let h = host;
+  if (h.startsWith("[") && h.endsWith("]")) h = h.slice(1, -1);
+  if (!h.includes(":")) return null;
+
+  // A trailing dotted-quad ("::ffff:127.0.0.1") is legal input even though URL
+  // normalization usually removes it — accept both spellings.
+  const v4 = h.match(/^(.*:)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const [o1, o2, o3, o4] = [Number(v4[2]), Number(v4[3]), Number(v4[4]), Number(v4[5])];
+    if ([o1, o2, o3, o4].some((o) => o > 255)) return null;
+    h = `${v4[1]}${((o1 << 8) | o2).toString(16)}:${((o3 << 8) | o4).toString(16)}`;
+  }
+
+  const halves = h.split("::");
+  if (halves.length > 2) return null;
+  const parse = (part: string): number[] | null => {
+    if (part === "") return [];
+    const out: number[] = [];
+    for (const g of part.split(":")) {
+      if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+      out.push(parseInt(g, 16));
+    }
+    return out;
+  };
+  const head = parse(halves[0] ?? "");
+  const tail = halves.length === 2 ? parse(halves[1] ?? "") : [];
+  if (head === null || tail === null) return null;
+
+  if (halves.length === 2) {
+    const fill = 8 - head.length - tail.length;
+    if (fill < 0) return null;
+    return [...head, ...Array(fill).fill(0), ...tail];
+  }
+  return head.length === 8 ? head : null;
+}
+
 export function isPrivateHost(hostname: string): boolean {
   const h = hostname.toLowerCase();
   if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".internal")) return true;
   if (h === "::1" || h.startsWith("[::1")) return true;
+
   // IPv4
   const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (m) {
-    const [a, b] = [Number(m[1]), Number(m[2])];
-    if (a === 10) return true;
-    if (a === 127) return true;
-    if (a === 0) return true;
-    if (a === 169 && b === 254) return true; // link-local + cloud metadata
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a >= 224) return true; // multicast / reserved
+    const octets = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])];
+    if (octets.some((o) => o > 255)) return false; // not a valid dotted quad
+    return isPrivateIPv4(octets[0], octets[1]);
+  }
+
+  // IPv6
+  const g = parseIPv6Groups(h);
+  if (g) {
+    // ::  (unspecified) and ::1 (loopback)
+    if (g.every((x) => x === 0)) return true;
+    if (g.slice(0, 7).every((x) => x === 0) && g[7] === 1) return true;
+    // Unique local fc00::/7
+    if ((g[0] & 0xfe00) === 0xfc00) return true;
+    // Link-local fe80::/10 — the IPv6 route to cloud metadata
+    if ((g[0] & 0xffc0) === 0xfe80) return true;
+    // Multicast ff00::/8
+    if ((g[0] & 0xff00) === 0xff00) return true;
+    // Embedded IPv4: mapped ::ffff:0:0/96, deprecated compatible ::/96, and the
+    // NAT64 well-known prefix 64:ff9b::/96 — each carries a v4 address in the
+    // low 32 bits and each is a way to reach an internal v4 target.
+    const low32 = (a: number, b: number) => [(a >> 8) & 0xff, a & 0xff, (b >> 8) & 0xff, b & 0xff];
+    const zeroHead = g.slice(0, 5).every((x) => x === 0);
+    const isMapped = zeroHead && g[5] === 0xffff;
+    const isCompat = zeroHead && g[5] === 0 && !(g[6] === 0 && g[7] <= 1);
+    const isNat64 = g[0] === 0x0064 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0);
+    if (isMapped || isCompat || isNat64) {
+      const [o1, o2] = low32(g[6], g[7]);
+      return isPrivateIPv4(o1, o2);
+    }
   }
   return false;
 }
