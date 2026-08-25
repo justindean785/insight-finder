@@ -45,6 +45,7 @@ import {
   shouldAbortClientStream,
   type TerminalThreadUpdate,
 } from "@/lib/chat-terminal-reconcile";
+import { captureError } from "@/lib/telemetry";
 
 const SUPABASE_PROJECT_ID = (import.meta.env.VITE_SUPABASE_PROJECT_ID as string | undefined)?.trim();
 // Resolve from the client's SUPABASE_URL (which carries the baked-in default),
@@ -1364,7 +1365,7 @@ function ChatWindowInner({
       .eq("thread_id", threadId)
       .order("created_at");
     if (loadError) {
-      console.warn("terminal message reconciliation failed:", loadError.message);
+      captureError(loadError, "chat.reconcile-terminal-message");
       return;
     }
     const rows = data ?? [];
@@ -1561,7 +1562,7 @@ function ChatWindowInner({
     try {
       stop();
     } catch (abortErr) {
-      console.error("stop() threw:", abortErr);
+      captureError(abortErr, "chat.stop-investigation.abort");
     }
     // Persist "stopped" — this is the status the edge worker's prepareStep polls
     // to abort the in-flight server-side run (the stream is intentionally NOT
@@ -1576,7 +1577,7 @@ function ChatWindowInner({
       if (statusError) throw statusError;
       toast.info("Investigation stopped");
     } catch (statusErr) {
-      console.error("stopInvestigation status update failed:", statusErr);
+      captureError(statusErr, "chat.stop-investigation.status-update");
       // The browser stream was aborted, but without the persisted "stopped"
       // status the server-side worker can keep running — so this is a real error.
       toast.error("Could not fully stop the investigation — the server run may still be active. Retry.");
@@ -1719,7 +1720,7 @@ function ChatWindowInner({
       // useChat's onError only fires for stream errors. Pre-stream failures
       // (network down, 5xx before the body starts) reject here and would
       // otherwise leave the UI silent.
-      console.error("sendMessage failed:", e);
+      captureError(e, "chat.send-message");
       toast.error(`Failed to send message: ${describeTransportError(e)}`);
     }
     } finally {
@@ -1795,7 +1796,7 @@ function ChatWindowInner({
       await beginInvestigation();
       await sendMessage({ text: t });
     } catch (e) {
-      console.error("sendText failed:", e);
+      captureError(e, "chat.send-text");
       toast.error(`Failed to send message: ${describeTransportError(e)}`);
     } finally {
       submitLockRef.current = false;
@@ -1845,7 +1846,7 @@ function ChatWindowInner({
         }
         if (userRowId) await supabase.from("messages").delete().eq("id", userRowId);
       } catch (e) {
-        console.error("renderCachedResult rollback failed:", e);
+        captureError(e, "chat.render-cached-result.rollback");
       }
     };
 
@@ -1925,7 +1926,7 @@ function ChatWindowInner({
       }));
       toast.success("Loaded cached investigation");
     } catch (e) {
-      console.error("renderCachedResult failed, rolling back:", e);
+      captureError(e, "chat.render-cached-result");
       await rollback();
       toast.error("Failed to load cached investigation");
     }

@@ -3,6 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { recordAnalystFeedback, actionForReviewState } from "@/lib/analyst-feedback";
 import { detectSeed } from "@/lib/seed";
 import { toast } from "sonner";
+import { captureError } from "@/lib/telemetry";
 
 /**
  * Analyst review states. Renamed for clarity (Nov 2026):
@@ -399,7 +400,7 @@ export function useReviewStates(threadId: string) {
         if (reviewErr) {
           if (prior === "new") delete c.states[id]; else c.states[id] = prior;
           emit(threadId);
-          console.error("[review] verdict did not persist", { artifactId: id, state, error: reviewErr.message });
+          captureError(reviewErr, "review.verdict-did-not-persist", { artifactId: id, state });
           toast.error(`Could not save "${state}" — the mark was not recorded. ${reviewErr.message}`);
           return;
         }
