@@ -37,6 +37,17 @@ describe("fail-open investigation policy", () => {
     expect(EXTRACTED_TOOLS).not.toMatch(/need ≥5/i);
   });
 
+  // The runaway caps ARE enforced by default: PR #388 (2026-07-27) replaced
+  // POSITIVE_INFINITY with the real constants and flipped STOP_ON_BUDGET_EXHAUSTED
+  // to default true. Comments claiming the defaults are unlimited survived that
+  // change and drift back periodically, which misleads anyone reasoning about run
+  // budgets — including whether a cap or a provider is ending a run. Pin the prose
+  // against the code. This asserts documentation accuracy, not behaviour; the
+  // behaviour itself is driven by runtime_policy_test.ts and runtime-policy.test.ts.
+  it("does not claim the runtime caps default to unlimited", () => {
+    expect(RUNTIME).not.toMatch(/default[^\n]*unlimited/i);
+  });
+
   it("documents planner, playbook, and audit helpers as advisory", () => {
     expect(WORKFLOW).toMatch(/ADVISORY WORKFLOW/);
     expect(WORKFLOW).toMatch(/None is required for progress/);
