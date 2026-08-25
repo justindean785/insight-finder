@@ -97,6 +97,7 @@ import type { NavigatorQueryResponse, NavigatorSearchResponse, NavigatorTool, Gi
 import {
   scrubArtifactRow, scrubArtifactRows, hashInput, normalizeForHash,
   sanitizeToolOutput, TOOL_CACHE_LRU, LRU, isPrivateHost, assertSafeUrl,
+  describeError,
   type CacheEntry,
 } from "./safety.ts";
 
@@ -939,7 +940,7 @@ export function buildTools(ctx: ToolContext) {
                 }
               }
             } catch (e) {
-              console.warn("[graph-pivots] selection failed, using planner output:", e);
+              console.warn("[graph-pivots] selection failed, using planner output:", describeError(e));
             }
           }
           return { ok: r.ok, status: r.status, plan: parsed };
@@ -4869,7 +4870,7 @@ export function buildTools(ctx: ToolContext) {
               supabase.rpc("bump_memory_hits", { _ids: allIds }).then(() => {}, () => {});
             }
           } catch (e) {
-            console.warn("[record_artifacts] auto memory_recall failed:", e);
+            console.warn("[record_artifacts] auto memory_recall failed:", describeError(e));
           }
         }
         // ---- Chain-of-custody: append one append-only evidence row per
@@ -5104,7 +5105,7 @@ export function buildTools(ctx: ToolContext) {
           _value: String(row.value),
           _content_snapshot: JSON.stringify(meta).slice(0, 1500),
           _metadata: meta,
-        }).then(() => {}, (e: unknown) => console.warn("[record_artifact] append_evidence:", e));
+        }).then(() => {}, (e: unknown) => console.warn("[record_artifact] append_evidence:", describeError(e)));
         return { ok: true, kind: row.kind, value: row.value, ...(minor ? { minor_safety_flag: true } : {}) };
       },
     }),

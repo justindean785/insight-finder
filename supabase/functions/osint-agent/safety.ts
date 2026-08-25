@@ -474,3 +474,58 @@ export function capPartsSize(parts: unknown[], maxBytes: number): unknown[] {
   }
   return fallback;
 }
+// ---- Credential redaction (single source) -----------------------------------
+// One redactor, used everywhere a string can cross a trust boundary: a tool
+// result, a log line, an HTTP response body. Previously cache.ts and index.ts
+// each carried their own copy and had already drifted apart.
+//
+// The query-string clause is the one that matters most here. Several providers
+// take the key as a URL parameter rather than a header — FOFA `key=`,
+// OpenCorporates `api_token=`, Hunter `api_key=`, Gemini `key=` — so any string
+// built from a request URL carries a live credential. The prefix-shaped clauses
+// (Bearer / sk- / xai- / AIza) cannot catch those, because Hunter's 40-hex and
+// OpenCorporates' tokens have no distinguishing prefix at all.
+export function redactSecrets(input: string): string {
+  return input
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+    .replace(/sk-[A-Za-z0-9._-]+/g, "sk-[REDACTED]")
+    .replace(/xai-[A-Za-z0-9._-]+/g, "xai-[REDACTED]")
+    .replace(/AIza[A-Za-z0-9_-]+/g, "AIza[REDACTED]")
+    // Credential-bearing query parameters, keyed on the parameter NAME so a
+    // key with no recognisable prefix is still caught.
+    .replace(
+      /([?&](?:api[_-]?key|api[_-]?token|access[_-]?token|auth[_-]?token|key|token|secret|password|passwd|pwd)=)[^&\s)"'<>]+/gi,
+      "$1[REDACTED]",
+    );
+}
+
+// Flatten an error — including its `cause` chain — into one redacted line.
+//
+// This exists because of how Deno 2.x reports fetch failures. `e.message` is the
+// bare string "fetch failed"; the request URL (with any credential in its query
+// string) lives ONLY in `e.cause`. That means `String(e)` is safe but useless
+// for diagnosis, while handing the raw error object to console.* prints the
+// cause chain verbatim — `[cause]: ... ?api_key=<live key> ...` — straight into
+// the function logs. Passing the error object was the actual leak; the string
+// conversions the audit flagged never carried the key.
+//
+// So: walk the chain (so an operator still sees the real cause), redact the
+// result (so the key never lands), and bound the length.
+export function describeError(e: unknown, maxLen = 500): string {
+  const parts: string[] = [];
+  let cur: unknown = e;
+  for (let depth = 0; cur != null && depth < 5; depth++) {
+    if (cur instanceof Error) {
+      parts.push(cur.message);
+      // Read `cause` structurally rather than off the Error type: this file is
+      // Deno source, but the frontend tsconfig also typechecks it, and that
+      // project's lib target predates ES2022's Error.cause.
+      cur = (cur as unknown as { cause?: unknown }).cause;
+    } else {
+      parts.push(String(cur));
+      break;
+    }
+  }
+  const joined = parts.filter((p) => p && p.length > 0).join(" <- ");
+  return redactSecrets(joined).slice(0, maxLen);
+}

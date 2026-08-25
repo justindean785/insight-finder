@@ -6,7 +6,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import type { Tool } from "npm:ai@6";
-import { hashInput, normalizeForHash, sanitizeToolOutput, stripNulCharacters, TOOL_CACHE_LRU } from "./safety.ts";
+import { hashInput, normalizeForHash, redactSecrets, sanitizeToolOutput, stripNulCharacters, TOOL_CACHE_LRU } from "./safety.ts";
 import { tierForTool, modelForTool, type Tier } from "./models.ts";
 import { costForTool } from "./costs.ts";
 import { DEFAULT_TOOL_TTL_MS, NO_CACHE_TOOLS, redactSensitiveToolInput, TOOL_TTL_MS } from "./validation.ts";
@@ -606,13 +606,9 @@ export function wrapToolsWithCache(
     return false;
   };
   // Strip anything that looks like an API credential before it lands in
-  // tool_usage_log.error_msg or edge logs. Covers Bearer tokens, OpenAI-style
-  // sk- keys, and Google AIza keys.
-  const redactSecrets = (input: string): string =>
-    input
-      .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-      .replace(/sk-[A-Za-z0-9._-]+/g, "sk-[REDACTED]")
-      .replace(/AIza[A-Za-z0-9_-]+/g, "AIza[REDACTED]");
+  // tool_usage_log.error_msg or edge logs. Single-sourced in safety.ts — this
+  // local copy had already drifted from index.ts's (it was missing `xai-`) and
+  // neither caught a key passed as a URL query parameter.
   // Pull a human-readable error message + status code out of a tool result
   // so failed calls leave a durable trace in tool_usage_log.
   const extractToolError = (
