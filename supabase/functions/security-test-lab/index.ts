@@ -15,51 +15,25 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY");
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-// ---------- mirrored defenses ----------
-const SENSITIVE_KEY_RE =
-  /^(password|passwd|pwd|hash|salt|token|secret|api[_-]?key|access[_-]?key|private[_-]?key|cookie|session|authorization|ssn|sin|dob|date[_-]?of[_-]?birth|cc|credit[_-]?card|cvv|cvc|otp|mfa)$/i;
-const REDACTED = "[REDACTED]";
-function sanitizeToolOutput<T>(input: T, maxStr = 2000, depth = 0): T {
-  if (depth > 8) return REDACTED as unknown as T;
-  if (input == null) return input;
-  if (typeof input === "string") {
-    return (input.length > maxStr ? input.slice(0, maxStr) + "…[truncated]" : input) as unknown as T;
-  }
-  if (typeof input !== "object") return input;
-  if (Array.isArray(input)) {
-    return input.slice(0, 200).map((v) => sanitizeToolOutput(v, maxStr, depth + 1)) as unknown as T;
-  }
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
-    if (SENSITIVE_KEY_RE.test(k)) { out[k] = REDACTED; continue; }
-    out[k] = sanitizeToolOutput(v, maxStr, depth + 1);
-  }
-  return out as unknown as T;
-}
-
-function isPrivateHost(hostname: string): boolean {
-  const h = hostname.toLowerCase();
-  if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".internal")) return true;
-  if (h === "::1" || h.startsWith("[::1")) return true;
-  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (m) {
-    const [a, b] = [Number(m[1]), Number(m[2])];
-    if (a === 10) return true;
-    if (a === 127) return true;
-    if (a === 0) return true;
-    if (a === 169 && b === 254) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a >= 224) return true;
-  }
-  return false;
-}
-function assertSafeUrl(rawUrl: string): URL {
-  const u = new URL(rawUrl);
-  if (!/^https?:$/.test(u.protocol)) throw new Error(`blocked: protocol ${u.protocol}`);
-  if (isPrivateHost(u.hostname)) throw new Error(`blocked: private/internal host ${u.hostname}`);
-  return u;
-}
+// ---------- the REAL defenses, imported ----------
+// These were mirrored copies, and the copies had drifted from what production
+// actually does — which made the lab certify behaviour the agent does not have.
+// The clearest case: the mirrored SENSITIVE_KEY_RE included
+// `password|passwd|pwd|hash|salt|ssn|sin|dob|cc|credit_card|cvv|cvc|otp|mfa`,
+// so the lab reported "password key stripped — PASSED (critical)". Production's
+// regex deliberately excludes every one of those, because on an OSINT tool they
+// are the INVESTIGATION TARGETS and must reach the investigator; it strips only
+// our own service auth material. The lab was green on a control that does not
+// exist, which is worse than having no test at all.
+//
+// safety.ts is dependency-free, so importing it across function directories
+// bundles cleanly. Never re-mirror these: a copy is exactly how the above
+// happened.
+import {
+  sanitizeToolOutput,
+  assertSafeUrl,
+  SENSITIVE_KEY_RE,
+} from "../osint-agent/safety.ts";
 
 // ---------- test cases ----------
 type TestResult = {
@@ -77,12 +51,22 @@ const SHORT = (s: string, n = 240) => (s.length > n ? s.slice(0, n) + "…" : s)
 
 function runPromptInjectionTests(): TestResult[] {
   const cases: { name: string; severity: TestResult["severity"]; payload: unknown; expectKey: string; expectStripped: boolean }[] = [
-    { name: "password key stripped", severity: "critical", payload: { user: "alice", password: "hunter2" }, expectKey: "password", expectStripped: true },
+    // Our own service auth material — MUST be stripped.
     { name: "api_key key stripped", severity: "critical", payload: { service: "x", api_key: "sk-live-abc123" }, expectKey: "api_key", expectStripped: true },
-    { name: "ssn key stripped", severity: "critical", payload: { name: "Bob", ssn: "123-45-6789" }, expectKey: "ssn", expectStripped: true },
-    { name: "dob key stripped", severity: "high", payload: { dob: "1990-01-01" }, expectKey: "dob", expectStripped: true },
     { name: "nested token stripped", severity: "critical", payload: { account: { profile: { token: "bearer-xyz" } } }, expectKey: "token", expectStripped: true },
     { name: "session in array stripped", severity: "high", payload: [{ session: "abc" }, { session: "def" }], expectKey: "session", expectStripped: true },
+    { name: "authorization key stripped", severity: "critical", payload: { authorization: "Bearer abc.def" }, expectKey: "authorization", expectStripped: true },
+    { name: "private_key stripped", severity: "critical", payload: { private_key: "-----BEGIN KEY-----" }, expectKey: "private_key", expectStripped: true },
+
+    // Investigation TARGETS — must pass through to the investigator. These
+    // previously asserted the opposite and passed, because the lab's mirrored
+    // regex redacted them and production's never did. Asserting pass-through is
+    // what actually pins the documented OSINT design: if someone widens
+    // SENSITIVE_KEY_RE to look "safer", these fail and say why.
+    { name: "password passes through (OSINT target)", severity: "critical", payload: { user: "alice", password: "hunter2" }, expectKey: "password", expectStripped: false },
+    { name: "ssn passes through (OSINT target)", severity: "critical", payload: { name: "Bob", ssn: "123-45-6789" }, expectKey: "ssn", expectStripped: false },
+    { name: "dob passes through (OSINT target)", severity: "high", payload: { dob: "1990-01-01" }, expectKey: "dob", expectStripped: false },
+    { name: "hash passes through (OSINT target)", severity: "high", payload: { hash: "5f4dcc3b5aa765d61d8327deb882cf99" }, expectKey: "hash", expectStripped: false },
     { name: "oversized string truncated", severity: "medium", payload: { bio: "A".repeat(8000) }, expectKey: "bio", expectStripped: false },
     { name: "deep recursion bounded", severity: "low", payload: buildDeep(20), expectKey: "x", expectStripped: false },
   ];
@@ -101,16 +85,19 @@ function runPromptInjectionTests(): TestResult[] {
       passed = serialized.includes("[REDACTED]") || serialized.length < 5000;
       notes = `output bytes ${serialized.length}`;
     } else if (c.expectStripped) {
-      passed = !serialized.includes("hunter2")
-        && !serialized.includes("sk-live-abc123")
-        && !serialized.includes("123-45-6789")
-        && !serialized.includes("1990-01-01")
-        && !serialized.includes("bearer-xyz")
-        && !serialized.includes("abc")
-        || serialized.includes("[REDACTED]");
-      // Stricter: key must be present with REDACTED value
-      passed = JSON.stringify(out).includes(`"${c.expectKey}":"[REDACTED]"`);
+      // The key must survive with a REDACTED value — not merely be absent, and
+      // not merely have "[REDACTED]" appear somewhere in the blob.
+      passed = serialized.includes(`"${c.expectKey}":"[REDACTED]"`);
       notes = passed ? `redacted ${c.expectKey}` : `LEAK: ${c.expectKey} value visible`;
+    } else {
+      // Pass-through contract for investigation targets: the key survives AND
+      // its value is untouched. Over-redaction is a real failure here — a
+      // breach password the analyst cannot see is a broken investigation.
+      const wasRedacted = serialized.includes(`"${c.expectKey}":"[REDACTED]"`);
+      passed = !wasRedacted && serialized.includes(`"${c.expectKey}":`);
+      notes = wasRedacted
+        ? `OVER-REDACTED: ${c.expectKey} is an OSINT target and must reach the investigator`
+        : `passed through ${c.expectKey}`;
     }
     return {
       category: "prompt_injection",
@@ -146,7 +133,24 @@ function runSsrfTests(): TestResult[] {
     { name: "gopher:// protocol", severity: "high", url: "gopher://127.0.0.1:11211/", shouldBlock: true },
     { name: ".internal TLD", severity: "high", url: "http://api.internal/", shouldBlock: true },
     { name: "multicast 239.x", severity: "medium", url: "http://239.255.0.1/", shouldBlock: true },
+
+    // IPv6 and shared address space. Every one of these reached the fetch
+    // untouched before the guard was rewritten. Note the mapped-v4 cases are
+    // written in dotted-quad form but arrive at the guard as hex
+    // (`[::ffff:7f00:1]`) because `new URL()` normalizes them — which is why a
+    // dotted-quad pattern for them is dead code.
+    { name: "IPv4-mapped loopback", severity: "critical", url: "http://[::ffff:127.0.0.1]/", shouldBlock: true },
+    { name: "IPv4-mapped AWS metadata", severity: "critical", url: "http://[::ffff:169.254.169.254]/", shouldBlock: true },
+    { name: "IPv6 unique-local fc00::/7", severity: "high", url: "http://[fc00::1]/", shouldBlock: true },
+    { name: "IPv6 unique-local fd00::", severity: "high", url: "http://[fd12:3456::1]/", shouldBlock: true },
+    { name: "IPv6 link-local fe80::/10", severity: "critical", url: "http://[fe80::1]/", shouldBlock: true },
+    { name: "IPv6 unspecified ::", severity: "high", url: "http://[::]/", shouldBlock: true },
+    { name: "NAT64 well-known prefix", severity: "high", url: "http://[64:ff9b::7f00:1]/", shouldBlock: true },
+    { name: "CGNAT 100.64/10 (RFC 6598)", severity: "high", url: "http://100.64.0.1/", shouldBlock: true },
+
     { name: "public host allowed", severity: "low", url: "https://example.com/path", shouldBlock: false },
+    { name: "public IPv6 allowed", severity: "low", url: "http://[2606:4700::1111]/", shouldBlock: false },
+    { name: "just outside CGNAT allowed", severity: "low", url: "http://100.128.0.1/", shouldBlock: false },
   ];
   return cases.map((c) => {
     const t0 = Date.now();

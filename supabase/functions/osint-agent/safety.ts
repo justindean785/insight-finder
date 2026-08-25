@@ -176,7 +176,7 @@ export const TOOL_CACHE_LRU = new LRU<CacheEntry>(500);
 //      (password, hash, token, api_key, secret, ssn, dob, …).
 //   2. Truncate any string longer than `MAX_STR` so a single field cannot
 //      flood the window or smuggle instructions inside a 50 KB blob.
-const SENSITIVE_KEY_RE =
+export const SENSITIVE_KEY_RE =
   // OSINT/breach-investigation tool: passwords, hashes, salts, SSN/SIN, DOB,
   // credit card / CVV / OTP / MFA are investigation targets and MUST pass
   // through to the investigator. Only strip OUR OWN service auth material
