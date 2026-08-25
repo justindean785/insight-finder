@@ -28,6 +28,8 @@ import {
 } from "./auto-persist-findings.ts";
 import {
   sanitizeToolOutput,
+  describeError,
+  redactSecrets,
   MAX_PERSISTED_ASSISTANT_PARTS_BYTES,
 } from "./safety.ts";
 // #479. capToolPartPayloads / capPartsSize / stripNulCharacters are no longer
@@ -143,7 +145,7 @@ Deno.serve(async (req) => {
     recoverStaleActiveThreads(supabaseAdmin, { limit: 10, reason: "stale heartbeat recovered at run startup" })
       .then((r) => {
         if (r.recovered || r.errors) console.log(JSON.stringify({ event: "stale_thread_sweeper", ...r }));
-      }, (e) => console.warn("[stale-recovery] startup sweeper failed:", e));
+      }, (e) => console.warn("[stale-recovery] startup sweeper failed:", describeError(e)));
     const manualOverrideSelector = extractManualOverrideSelector(messages);
 
     // ---- Per-user credit gate (beta budget protection) ----------------------
@@ -444,7 +446,7 @@ Deno.serve(async (req) => {
                 console.warn(`[credits] mid-run exhaustion (${abortReason}) — aborting at next step boundary`);
               }
             },
-            (e: unknown) => console.warn("[credits] debit failed:", e),
+            (e: unknown) => console.warn("[credits] debit failed:", describeError(e)),
           );
       }
       // Checkpoint the running cost to threads every 5 paid tool calls so
@@ -463,7 +465,7 @@ Deno.serve(async (req) => {
           supabaseAdmin.rpc("increment_thread_cost", { _id: threadId, _delta_cost: delta })
             .then(
               ({ error }: { error: unknown }) => { if (error) console.warn("[cost checkpoint] failed:", error); },
-              (e: unknown) => console.warn("[cost checkpoint] failed:", e),
+              (e: unknown) => console.warn("[cost checkpoint] failed:", describeError(e)),
             );
         }
       }
@@ -1251,7 +1253,7 @@ Deno.serve(async (req) => {
           const micro = Math.round(inTok * inRate + outTok * outRate);
           if (micro > 0) onCost(micro);
         } catch (e) {
-          console.warn("[orchestrator] usage meter failed:", e);
+          console.warn("[orchestrator] usage meter failed:", describeError(e));
         }
       },
       // Intentionally NOT bound to req.signal: when the analyst navigates away
@@ -1308,7 +1310,7 @@ Deno.serve(async (req) => {
             .eq("status", "active");
           if (updErr) console.warn("[thread status] error-path update failed:", updErr.message);
         } catch (e) {
-          console.warn("[thread status] error-path update threw:", e);
+          console.warn("[thread status] error-path update threw:", describeError(e));
         } finally {
           releaseRunState();
         }
@@ -1718,7 +1720,7 @@ Deno.serve(async (req) => {
             }));
           }
         } catch (e) {
-          console.warn("[safety-net] zero-artifact check failed:", e);
+          console.warn("[safety-net] zero-artifact check failed:", describeError(e));
         }
         // C-1: DETERMINISTIC clustering + confidence promotion — the last step of the
         // run, executed REGARDLESS of whether the LLM correlate tool succeeded, failed,
@@ -1793,12 +1795,9 @@ Deno.serve(async (req) => {
         }
         const friendly = classifyStreamProviderError(m, name);
         if (friendly) return friendly;
-        const redacted = m
-          .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-          .replace(/sk-[A-Za-z0-9._-]+/g, "sk-[REDACTED]")
-          .replace(/xai-[A-Za-z0-9._-]+/g, "xai-[REDACTED]")
-          .replace(/AIza[A-Za-z0-9_-]+/g, "AIza[REDACTED]");
-        return redacted.slice(0, 300) || "Provider stream error";
+        // Single-sourced in safety.ts — this copy and cache.ts's had drifted,
+        // and neither caught a credential passed as a URL query parameter.
+        return redactSecrets(m).slice(0, 300) || "Provider stream error";
       },
       onFinish: persistFinalMessages,
     });
@@ -1807,9 +1806,17 @@ Deno.serve(async (req) => {
     releaseRunState();
     // setupRequest throws Response objects for 401/403/400 — return them directly
     if (e instanceof Response) return e;
-    console.error("osint-agent error", e);
-    const message = e instanceof Error ? e.message : String(e);
-    return new Response(JSON.stringify({ error: "Internal Server Error", code: "ORCHESTRATOR_FAULT", detail: message }), {
+    // The detail is a fixed string, never the caught error. Raw `e.message` here
+    // handed the caller whatever the failing layer happened to say — provider
+    // URLs, upstream bodies, internal identifiers. It stays in the log line above
+    // (redacted), which is where an operator can act on it. The envelope keeps
+    // its {error, code, detail} shape so the transport contract is unchanged.
+    console.error("osint-agent error", describeError(e));
+    return new Response(JSON.stringify({
+      error: "Internal Server Error",
+      code: "ORCHESTRATOR_FAULT",
+      detail: "The investigation could not be started. The failure has been logged for the operator.",
+    }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
