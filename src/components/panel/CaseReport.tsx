@@ -20,6 +20,9 @@ import { breachSeverity, isAiSummaryArtifact, isDobPlaceholder, qualConfidence }
 import { EvidenceStatusBadge, StatusLegend } from "@/components/ui/workspace-primitives";
 import { ConfidenceBar } from "@/components/ui/confidence";
 import { evidenceStatus } from "@/lib/evidence-status";
+// #499 — the engine's own adjudication, so the KPIs above cannot be read as one.
+import { AUTHORITY_HEADING, authorityStatement, type AuthoritativeFindings } from "@/lib/authoritative-findings";
+import { tierInfo } from "@/lib/confidence-tier";
 import {
   labelForArtifact,
   adjustedConfidence,
@@ -929,6 +932,7 @@ export function CaseReport({
   reviews,
   messages,
   reportType = "full",
+  authority,
 }: {
   seedValue: string | null;
   seedType: string | null;
@@ -936,6 +940,10 @@ export function CaseReport({
   reviews?: Record<string, ReviewState>;
   messages?: MessageSummary[];
   reportType?: ReportType;
+  /** #499 — from `selectAuthoritativeFindings`. Optional so existing callers and
+   *  the dev harness keep working; when absent the panel is omitted rather than
+   *  guessed at. */
+  authority?: AuthoritativeFindings;
 }) {
   const display = useMemo(() => extractDisplaySeed(seedValue, seedType), [seedValue, seedType]);
   const subjectProfile = useMemo(() => buildSubjectProfile(artifacts, reviews), [artifacts, reviews]);
@@ -1040,6 +1048,39 @@ export function CaseReport({
           single-source findings stay <span className="text-[hsl(var(--confidence-mid))]">leads</span> until a second independent source
           class corroborates them. The evidence below is real — it just hasn't cleared the confirmation bar yet.
         </p>
+      )}
+
+      {/* #499 — what the ENGINE adjudicated, directly under the KPIs so those
+          numbers cannot be mistaken for an adjudication. "Confirmed" above is a
+          source-tier label over ALL artifacts; this is the count of rows
+          `record_finding` actually scored. On the production case that produced
+          this issue the two were 0 and 0 while the model's prose claimed 90-95%
+          CONFIRMED. Wording comes from authorityStatement so this panel and the
+          markdown export cannot drift. */}
+      {authority && (
+        <section className="mt-4 rounded-xl border border-white/[0.08] bg-white/[0.025] p-3">
+          <div className="text-micro font-mono uppercase tracking-[0.18em] text-muted-foreground">
+            {AUTHORITY_HEADING}
+          </div>
+          <p className="mt-1.5 text-data leading-relaxed text-muted-foreground">
+            {authorityStatement(authority)}
+          </p>
+          {authority.findings.length > 0 && (
+            <ul className="mt-2 space-y-1">
+              {authority.findings.map((f) => (
+                <li key={f.id} className="flex items-baseline gap-2 text-data">
+                  <span className="min-w-0 flex-1 break-words [overflow-wrap:anywhere] text-foreground/90">{f.value}</span>
+                  <span className="shrink-0 font-mono tabular-nums text-muted-foreground">
+                    {typeof f.confidence === "number" ? `${f.confidence}%` : "n/a"}
+                  </span>
+                  <span className={cn("shrink-0 text-micro font-mono uppercase tracking-normal", tierInfo(f.confidence).text)}>
+                    {tierInfo(f.confidence).label}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
       )}
 
       {/* Analyst confidence vs strict auto-corroboration — reconciles the
