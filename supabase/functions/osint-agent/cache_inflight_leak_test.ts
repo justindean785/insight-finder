@@ -60,13 +60,25 @@ Deno.test("in-flight leak: a throw before the live call must not strand the prov
   });
   const execute = wrapped.dns_records.execute as (i: unknown, o: unknown) => Promise<unknown>;
 
+  // The executor must NOT throw. A throw here escapes into the live AI-SDK step
+  // and orphans the sibling tool calls the model emitted alongside this one,
+  // which surfaces as "Tool results are missing for tool calls <id>" and ends the
+  // run with "Investigation ended early — partial results were saved". Both
+  // sibling paths (the NO_CACHE wrapper and the live-call catch) already return
+  // a schema-safe result for exactly this reason; this one must match them.
   let threw = false;
+  let out: unknown;
   try {
-    await execute({ domain: "leak-1.example", force: true }, { toolCallId: `${threadId}-1`, messages: [] });
+    out = await execute({ domain: "leak-1.example", force: true }, { toolCallId: `${threadId}-1`, messages: [] });
   } catch {
     threw = true;
   }
-  assert(threw, "the throw must still propagate — the guard releases state, it does not swallow errors");
+  assert(!threw, "the executor must never throw — that orphans sibling tool calls and kills the run");
+
+  const r = out as { ok?: boolean; _tool_error?: boolean; error?: string };
+  assertEquals(r.ok, false, "the failure must still be reported, not swallowed into a fake success");
+  assertEquals(r._tool_error, true, "it must be tagged as a tool error");
+  assert(typeof r.error === "string" && r.error.length > 0, "the real cause must survive for telemetry");
 
   // The real assertion: the provider is usable again. Before the fix this
   // returned allow:false with a provider-busy reason for the rest of the run.

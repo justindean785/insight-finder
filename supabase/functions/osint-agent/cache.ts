@@ -1178,10 +1178,46 @@ export function wrapToolsWithCache(
           // still counts: it genuinely ran and consumed time/quota.
           if (ctx.toolCallBudget && !ALWAYS_ALLOW_TOOLS.has(name)) ctx.toolCallBudget.genuine++;
         } catch (e) {
+          // Release the markers AND the startCall bookkeeping...
+          const preLiveMsg = redactSecrets(String((e as Error)?.message ?? e)).slice(0, 500);
           circuit.clearProviderInFlight(ctx.investigationId, name);
           if (sel) circuit.clearCallInFlight(ctx.investigationId, name, sel, purpose);
           finishCall(ctx.investigationId, name);
-          throw e;
+          logUsage(false, false, Date.now() - t0, preLiveMsg, null, false, {
+            input: inputJson,
+            runtime: { ...runtimeMetaBase, stage: runtimeDecision.stage, cycle_id: runtimeDecision.cycleId, cache_layer: "miss", stale_cache: !!staleRecord },
+          });
+          circuit.recordResult(ctx.investigationId, name, sel, purpose, {
+            status: circuit.classifyResult(null, e),
+            artifactCount: 0,
+            errorMessage: preLiveMsg,
+          });
+          // ...and RETURN a schema-safe result rather than rethrowing.
+          //
+          // This path must not throw. Both sibling paths already refuse to — the
+          // NO_CACHE wrapper and the live-call catch below each return a
+          // schema-safe error result, for the same documented reason: a throw
+          // escaping the tool executor orphans the sibling tool calls the model
+          // emitted in the same step, and the AI SDK then rejects the next
+          // request with "Tool results are missing for tool calls <id>".
+          // index.ts classifies that as a message-schema fault and ends the run
+          // with "Investigation ended early — partial results were saved" — the
+          // run dies holding partial evidence, and the cause looks like a
+          // provider problem when it was a local throw.
+          //
+          // An earlier version of this guard rethrew. It released the markers
+          // correctly but left that crash intact, which is the failure it was
+          // supposed to be helping with.
+          return attachRuntimeMeta(
+            tagTier({ ok: false, error: preLiveMsg, _tool_error: true }, tier, model),
+            {
+              ...runtimeMetaBase,
+              stage: runtimeDecision.stage,
+              cycle_id: runtimeDecision.cycleId,
+              cache_layer: "miss",
+              stale_cache: !!staleRecord,
+            },
+          );
         }
 
         let ok = true;
