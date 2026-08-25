@@ -882,9 +882,26 @@ Deno.serve(async (req) => {
         // guarantee a schema-valid, tool-paired array on every in-stream step so
         // a mid-run trim can't sever a tool-call/result pair and wedge the run.
         const budgeted = capTotalToBudget(trimmed, TOTAL_PROMPT_CHAR_BUDGET, STEP_RECENT_WINDOW);
-        const stepMessagesOut = sanitizeModelMessages(
+        // enforceToolPairing runs here too, not just on the step-0 prompt.
+        // sanitizeModelMessages applies a GLOBAL pairing rule (a result anywhere
+        // in the array counts); the SDK's is POSITIONAL (the result must precede
+        // the next user/system message). Only the initial prompt was getting the
+        // positional check, so an in-stream trim could still emit an array the
+        // SDK rejects — on any step, the finalize-window steps included, which is
+        // exactly where this run's budget-driven trims are heaviest.
+        const stepPairing = enforceToolPairing(sanitizeModelMessages(
           capToolResultOutputs(budgeted, MAX_TOOL_RESULT_CHARS),
-        );
+        ));
+        const stepMessagesOut = stepPairing.messages;
+        if (stepPairing.repaired.length > 0) {
+          console.error(JSON.stringify({
+            event: "tool_pairing_repaired_at_step",
+            thread_id: threadId,
+            step: stepNumber,
+            repaired_tool_call_ids: stepPairing.repaired.slice(0, 20),
+            repaired_count: stepPairing.repaired.length,
+          }));
+        }
         // Force the closing synthesis step when ANY run budget is exhausted:
         //  • P0 fix A — the wall-clock reserve window opened, or we hit the last step.
         //  • Run tool-call cap — MAX_TOOL_CALLS_PER_RUN genuine live calls reached
