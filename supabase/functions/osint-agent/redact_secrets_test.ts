@@ -15,7 +15,7 @@
 // keeping the cause visible to an operator.
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { redactSecrets, describeError } from "./safety.ts";
+import { redactSecrets, describeError, maskSeed } from "./safety.ts";
 
 Deno.test("redactSecrets: query-string credentials are caught for every provider shape", () => {
   const cases: Array<[string, string]> = [
@@ -98,4 +98,36 @@ Deno.test("describeError: handles non-Error values and cyclic causes without han
 Deno.test("describeError: output is length-bounded", () => {
   const long = new Error("x".repeat(5000));
   assert(describeError(long).length <= 500);
+});
+
+// ---- maskSeed (audit F-B1 logging policy) ------------------------------------
+// An investigation seed is the subject's email / phone / real name. env.ts's
+// logging policy forbids it reaching Supabase function logs (30-day retention),
+// and prescribes the mask shape used here.
+
+Deno.test("maskSeed: a realistic email seed is not recoverable from the mask", () => {
+  const out = maskSeed("leoseyes86@gmail.com");
+  assert(!out.includes("leoseyes86"), `local part survived: ${out}`);
+  assert(!out.includes("gmail"), `domain survived: ${out}`);
+  assert(out.startsWith("leo") && out.endsWith("om"), `unexpected shape: ${out}`);
+});
+
+Deno.test("maskSeed: short values are masked ENTIRELY, not round-tripped", () => {
+  // The policy's slice(0,3)+slice(-2) form overlaps on short input and would
+  // otherwise reproduce the whole value.
+  for (const s of ["a", "ab", "abc", "abcd", "abcde", "abcdef"]) {
+    const out = maskSeed(s);
+    assert(!out.includes(s.slice(0, 3)) || s.length <= 0, `short seed leaked: ${s} -> ${out}`);
+    assert(/^\*+$/.test(out), `expected full mask for ${s}, got ${out}`);
+  }
+});
+
+Deno.test("maskSeed: names and phones keep only non-identifying edges", () => {
+  assert(!maskSeed("Jordan Vale").includes("rdan Va"));
+  assert(!maskSeed("+1-555-867-5309").includes("867"));
+});
+
+Deno.test("maskSeed: empty and whitespace input is safe", () => {
+  assertEquals(maskSeed(""), "");
+  assertEquals(maskSeed("   "), "");
 });

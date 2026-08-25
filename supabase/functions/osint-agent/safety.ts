@@ -612,3 +612,22 @@ export function describeError(e: unknown, maxLen = 500): string {
   const joined = parts.filter((p) => p && p.length > 0).join(" <- ");
   return redactSecrets(joined).slice(0, maxLen);
 }
+
+/**
+ * Mask a user-supplied selector for logging.
+ *
+ * env.ts's logging policy (audit F-B1) is explicit that seeds must never reach
+ * Supabase function logs — an investigation seed IS the subject's email, phone
+ * or real name, and those logs are retained 30 days. The policy also prescribes
+ * the shape: `seed.slice(0,3) + "***" + seed.slice(-2)`, which keeps a log line
+ * correlatable without carrying the identifier.
+ *
+ * Short values are masked completely: on a 5-character seed the prescribed
+ * slices overlap and would reproduce the whole string.
+ */
+export function maskSeed(seed: string): string {
+  const s = (seed ?? "").trim();
+  if (!s) return "";
+  if (s.length <= 6) return "*".repeat(s.length);
+  return `${s.slice(0, 3)}***${s.slice(-2)}`;
+}

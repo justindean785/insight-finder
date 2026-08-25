@@ -30,6 +30,7 @@ import {
   sanitizeToolOutput,
   describeError,
   redactSecrets,
+  maskSeed,
   MAX_PERSISTED_ASSISTANT_PARTS_BYTES,
 } from "./safety.ts";
 // #479. capToolPartPayloads / capPartsSize / stripNulCharacters are no longer
@@ -1713,7 +1714,13 @@ Deno.serve(async (req) => {
               record_artifact_calls: recordCalls,
               tool_calls: toolCalls,
               in_memory_artifacts: routingGuard.artifactsTotal,
-              seed: seedValueRaw.slice(0, 120),
+              // Masked, never raw: an investigation seed IS the subject's email,
+              // phone or real name, and env.ts's logging policy forbids it
+              // reaching Supabase logs. The length is kept because it is
+              // non-identifying and the diagnostic value here is "was there a
+              // seed at all", not what it said.
+              seed: maskSeed(seedValueRaw),
+              seed_len: seedValueRaw.length,
               // ran lookups but never recorded → almost certainly the record gap,
               // not a genuinely empty case.
               findings_likely: toolCalls > 3 && recordCalls === 0,
