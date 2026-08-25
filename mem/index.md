@@ -15,3 +15,6 @@ Never redact breach-investigation fields (passwords, hashes, salts, ssn, dob, cc
 - [No PII redaction](mem://preferences/redaction) — Do not re-add password/hash/ssn/dob/cc/cvv/otp to SENSITIVE_KEY_RE in osint-agent
 - [Deno tests in web sandbox](mem://ops/deno-tests-in-web-sandbox) — dl.deno.land is egress-blocked; install deno via `npm i deno` + set DENO_CERT to run edge tests locally
 - [Report layer bypasses the integrity engine](mem://architecture/report-layer-bypasses-integrity-engine) — `record_finding` persists a correct independence-capped confidence, then the model retypes the Findings table in prose; a prompt rule is not enforcement
+- [AI SDK positional tool pairing](mem://architecture/ai-sdk-positional-tool-pairing) — `MissingToolResultsError` comes from the SDK's `convertToLanguageModelPrompt` and its rule is POSITIONAL; a dying run can wedge a thread permanently. Two plausible causes are verified FALSE.
+- [The health endpoint IS the recovery mechanism](mem://ops/health-endpoint-is-the-recovery-mechanism) — do NOT gate the `?health=1` recovery sweep behind the probe secret; pg_cron calls it with no secret on purpose. Throttle instead.
+- [Sandbox traps that cost time](mem://ops/sandbox-traps) — `deno test` rewrites deno.lock and drops real deps; tsc also typechecks the Deno sources; a test that passes before AND after your fix proves nothing
