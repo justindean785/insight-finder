@@ -39,7 +39,7 @@ import {
 // against.
 import { type ArtifactRetrieval, buildEvidenceRecord, isFindingRow } from "./lib/evidence-record.ts";
 import { composePersistedParts } from "./lib/evidence-record-persist.ts";
-import { sanitizeModelMessages, capToolResultOutputs, summarizeToolResultValue } from "./message-sanitize.ts";
+import { sanitizeModelMessages, capToolResultOutputs, summarizeToolResultValue, enforceToolPairing } from "./message-sanitize.ts";
 import { guard, routingGuard, triageState, countRecordArtifactCalls, countModelMessageToolCalls } from "./guard.ts";
 import { setupRequest } from "./auth.ts";
 import { minimax, minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
@@ -314,6 +314,34 @@ Deno.serve(async (req) => {
     trimmedMessages = sanitizeModelMessages(
       capToolResultOutputs(trimmedMessages, MAX_TOOL_RESULT_CHARS),
     );
+    // LAST line before the model call: the SDK's own positional pairing rule.
+    //
+    // sanitizeModelMessages above repairs every dangling-call shape reproducible
+    // locally, yet production has hit AI_MissingToolResultsError at STEP 0 —
+    // meaning some shape survives it. That error is thrown by the SDK's
+    // convertToLanguageModelPrompt, whose rule is positional: a tool call must
+    // be resolved before the next user/system message is reached, not merely
+    // somewhere later in the array. Running that exact rule here cannot be
+    // defeated by an upstream transform.
+    //
+    // This matters more than a normal guard because the failure is TERMINAL for
+    // the thread: the browser re-uploads the same unpaired history on every
+    // retry, so the run fails in <200ms forever and Retry can never succeed.
+    // Repairing beats failing closed.
+    const pairing = enforceToolPairing(trimmedMessages);
+    trimmedMessages = pairing.messages;
+    if (pairing.repaired.length > 0) {
+      // The instrument: names the tool calls that were about to wedge the run,
+      // so the shape sanitizeModelMessages missed becomes identifiable from logs
+      // instead of only reproducible in production.
+      console.error(JSON.stringify({
+        event: "tool_pairing_repaired_at_boundary",
+        thread_id: threadId,
+        repaired_tool_call_ids: pairing.repaired.slice(0, 20),
+        repaired_count: pairing.repaired.length,
+        message_count: trimmedMessages.length,
+      }));
+    }
 
     // Cumulative cost tracker for this run.
     let runCostMicroUsd = 0;

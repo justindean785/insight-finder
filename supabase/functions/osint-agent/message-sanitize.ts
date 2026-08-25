@@ -302,3 +302,73 @@ export function capToolResultOutputs(input: ModelMessage[], maxChars: number): M
     return any ? ({ ...m, content } as ModelMessage) : raw;
   });
 }
+
+/**
+ * Enforce the AI SDK's ACTUAL tool-pairing rule, as a last line before the model
+ * call, and report any violation it had to repair.
+ *
+ * The rule is POSITIONAL, not global. From the SDK's own
+ * convertToLanguageModelPrompt (node_modules/ai/dist/index.mjs): it walks the
+ * message list accumulating unresolved assistant tool-call ids, tool-results
+ * delete them, and on reaching a `user` or `system` message with any id still
+ * outstanding it throws MissingToolResultsError. A tool call must therefore be
+ * resolved BEFORE the next user/system message — not merely somewhere later in
+ * the array.
+ *
+ * sanitizeModelMessages already synthesizes placeholders for dangling calls and
+ * satisfies this in every shape reproducible locally. Production still hits the
+ * error at step 0, which means some shape survives it. So this runs the SDK's
+ * exact rule at the true boundary: it cannot be defeated by an upstream
+ * transform, and `repaired` names the tool-call ids that were about to wedge the
+ * run — turning an unreproducible failure into a logged, identifiable one.
+ *
+ * A wedged thread is unrecoverable by retry, so repairing beats failing closed.
+ */
+export function enforceToolPairing(
+  input: ModelMessage[],
+): { messages: ModelMessage[]; repaired: string[] } {
+  const out: ModelMessage[] = [];
+  const repaired: string[] = [];
+  // toolCallId -> toolName, for outstanding calls in the current block.
+  let outstanding = new Map<string, string>();
+
+  const flush = () => {
+    if (outstanding.size === 0) return;
+    const content = [...outstanding.entries()].map(([toolCallId, toolName]) => ({
+      type: "tool-result",
+      toolCallId,
+      toolName,
+      output: { type: "text", value: DROPPED_RESULT_PLACEHOLDER },
+    }));
+    repaired.push(...outstanding.keys());
+    out.push({ role: "tool", content } as unknown as ModelMessage);
+    outstanding = new Map();
+  };
+
+  for (const raw of input) {
+    const m = raw as AnyMsg;
+    const role = m?.role;
+
+    // Reaching a user/system message with unresolved calls is exactly what the
+    // SDK throws on — settle them first, in this position.
+    if (role === "user" || role === "system") flush();
+
+    if (role === "assistant" && Array.isArray(m.content)) {
+      for (const p of m.content as AnyPart[]) {
+        if (p?.type === "tool-call" && typeof p.toolCallId === "string" && !p.providerExecuted) {
+          outstanding.set(p.toolCallId, typeof p.toolName === "string" ? p.toolName : "unknown");
+        }
+      }
+    } else if (role === "tool" && Array.isArray(m.content)) {
+      for (const p of m.content as AnyPart[]) {
+        if (p?.type === "tool-result" && typeof p.toolCallId === "string") {
+          outstanding.delete(p.toolCallId);
+        }
+      }
+    }
+    out.push(raw);
+  }
+  // End of array counts too: the SDK re-checks after the walk.
+  flush();
+  return { messages: out, repaired };
+}
