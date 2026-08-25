@@ -18,6 +18,9 @@ export default function Settings() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [saving, setSaving] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState("");
+  const [deleting, setDeleting] = useState(false);
 
   if (loading) return <FullPageLoader />;
 
@@ -43,6 +46,25 @@ export default function Settings() {
       toast.success("Password updated");
       setNewPassword("");
       setConfirmPassword("");
+    }
+  };
+
+  const deleteAccount = async () => {
+    // Guarded again here, not only by the disabled button: a disabled attribute is
+    // a UI affordance, not an authorization check.
+    if (deleteConfirm !== "DELETE" || deleting) return;
+    setDeleting(true);
+    try {
+      const { error } = await supabase.rpc("delete_my_account");
+      if (error) throw error;
+      // The auth row is gone, so the session is already invalid — sign out to clear
+      // the local token rather than leaving a stale one in localStorage.
+      await supabase.auth.signOut();
+      toast.success("Account deleted");
+      navigate("/", { replace: true });
+    } catch (e) {
+      setDeleting(false);
+      toast.error(e instanceof Error ? e.message : "Could not delete the account");
     }
   };
 
@@ -130,6 +152,65 @@ export default function Settings() {
           <Button asChild variant="outline" className="h-9 text-xs">
             <a href={SUPPORT_MAILTO}>Contact support</a>
           </Button>
+        </div>
+
+        {/* Delete account (#476 — CCPA/GDPR). */}
+        <div className="glass-card rounded-2xl border border-destructive/25 p-6">
+          <h2 className="text-eyebrow uppercase tracking-[0.16em] text-destructive/80 font-mono mb-2">Delete account</h2>
+          <p className="text-sm text-muted-foreground mb-3">
+            Permanently deletes your login and every investigation you have run — cases, evidence,
+            artifacts, agent memory, notes and usage history. This cannot be undone.
+          </p>
+          {/* Disclosed BEFORE confirmation, not after. analyst_feedback_events is an
+              append-only hash-chained integrity log that cannot be deleted by anyone,
+              including the service role — so saying "everything is deleted" would be
+              false. Naming it here is what makes the retention lawful to rely on. */}
+          <p className="text-xs text-muted-foreground/80 mb-4 leading-relaxed">
+            One exception: the tamper-evident review log (records of accept/reject decisions you made
+            on evidence) is append-only and is retained for audit integrity. It holds your decisions,
+            not your investigations.
+          </p>
+          {!confirmingDelete ? (
+            <Button
+              variant="outline"
+              onClick={() => setConfirmingDelete(true)}
+              className="h-9 border-destructive/30 text-destructive hover:bg-destructive/10 text-xs"
+            >
+              Delete my account
+            </Button>
+          ) : (
+            <div className="space-y-3">
+              <Label htmlFor="delete-confirm" className="text-xs text-muted-foreground">
+                Type <span className="font-mono text-destructive">DELETE</span> to confirm
+              </Label>
+              <input
+                id="delete-confirm"
+                value={deleteConfirm}
+                onChange={(e) => setDeleteConfirm(e.target.value)}
+                autoComplete="off"
+                className="w-full max-w-[240px] rounded-lg border border-white/[0.08] bg-background/60 px-3 py-2 font-mono text-sm"
+                placeholder="DELETE"
+              />
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  onClick={deleteAccount}
+                  disabled={deleteConfirm !== "DELETE" || deleting}
+                  className="h-9 border-destructive/40 text-destructive hover:bg-destructive/10 text-xs"
+                >
+                  {deleting ? "Deleting…" : "Permanently delete"}
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={() => { setConfirmingDelete(false); setDeleteConfirm(""); }}
+                  disabled={deleting}
+                  className="h-9 text-xs"
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Sign out */}
