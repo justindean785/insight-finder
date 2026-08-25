@@ -72,7 +72,9 @@ Deno.test("checkDeepseek: probes in NON-THINKING mode with a tiny token budget",
 
 Deno.test("checkDeepseek: upstream non-2xx → preflight_failed with status", async () => {
   const fakeFetch = (() => Promise.resolve({ ok: false, status: 401 } as Response)) as unknown as typeof fetch;
-  const r = await checkDeepseek({ hasKey: true, apiKey: "k", doFetch: fakeFetch });
+  // recentlyHealthy:false — this asserts the LIVE probe path, so it must opt out
+  // of the per-isolate cooldown a prior successful test in this file may have set.
+  const r = await checkDeepseek({ hasKey: true, apiKey: "k", doFetch: fakeFetch, recentlyHealthy: false });
   assertEquals(r.ok, false);
   assertEquals(r.reason, "preflight_failed");
   assert(r.detail?.includes("401"), "the upstream status must be visible");
@@ -80,7 +82,7 @@ Deno.test("checkDeepseek: upstream non-2xx → preflight_failed with status", as
 
 Deno.test("checkDeepseek: network throw → preflight_failed (visible, not masked)", async () => {
   const fakeFetch = (() => Promise.reject(new Error("connection refused"))) as unknown as typeof fetch;
-  const r = await checkDeepseek({ hasKey: true, apiKey: "k", doFetch: fakeFetch });
+  const r = await checkDeepseek({ hasKey: true, apiKey: "k", doFetch: fakeFetch, recentlyHealthy: false });
   assertEquals(r.ok, false);
   assertEquals(r.reason, "preflight_failed");
 });

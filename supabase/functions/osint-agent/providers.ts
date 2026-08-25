@@ -156,6 +156,20 @@ export function minimaxHealthyWithin(ms: number): boolean {
   return lastMinimaxOkAt > 0 && Date.now() - lastMinimaxOkAt < ms;
 }
 
+// ---- DeepSeek-slot health signal (per-isolate) -------------------------------
+// Same shape as the MiniMax signal above, for the opposite reason. `?health=1`
+// is UNAUTHENTICATED and un-rate-limited (it returns at index.ts:118, before
+// setupRequest ever runs), and checkDeepseek() bills a real completion against
+// the selected orchestrator vendor. Without a cooldown any internet client can
+// drive that spend at whatever rate it likes, and pg_cron adds 1,440 calls/day
+// on its own. Cold isolate ⇒ 0 ⇒ the probe still runs, so a genuine outage is
+// never masked for longer than the window.
+let lastDeepseekOkAt = 0;
+export function markDeepseekHealthy(): void { lastDeepseekOkAt = Date.now(); }
+export function deepseekHealthyWithin(ms: number): boolean {
+  return lastDeepseekOkAt > 0 && Date.now() - lastDeepseekOkAt < ms;
+}
+
 export type FallbackResult = {
   ok: boolean;
   status: number;

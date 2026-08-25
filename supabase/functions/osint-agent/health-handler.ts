@@ -13,7 +13,13 @@ import {
   DEEPSEEK_BASE_URL,
   ORCHESTRATOR_PROVIDER, LOVABLE_API_KEY, OPENADAPTER_API_KEY, OPENADAPTER_BASE_URL,
 } from "./env.ts";
-import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
+import {
+  minimaxChat,
+  markMinimaxHealthy,
+  minimaxHealthyWithin,
+  markDeepseekHealthy,
+  deepseekHealthyWithin,
+} from "./providers.ts";
 import { selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
 import { recoverStaleActiveThreads } from "./recovery.ts";
@@ -115,6 +121,7 @@ export async function checkDeepseek(deps?: {
   apiKey?: string;
   model?: string;
   doFetch?: typeof fetch;
+  recentlyHealthy?: boolean;
 }): Promise<DeepseekCheck> {
   const hasKey = deps?.hasKey ?? !!DEEPSEEK_API_KEY;
   if (!hasKey) {
@@ -122,6 +129,14 @@ export async function checkDeepseek(deps?: {
     // can't hide behind a quietly-working MiniMax fallback.
     console.error("[health] DEEPSEEK_API_KEY is not configured — checks.deepseek reason=missing_key");
     return { ok: false, reason: "missing_key" };
+  }
+  // Proof-of-life cooldown, mirroring checkMinimax above. `?health=1` takes no
+  // auth and no rate limit, so without this every anonymous hit bills a real
+  // completion. A recent success on this warm isolate is sufficient evidence the
+  // provider answers; a failure is never cached, so an outage still surfaces on
+  // the next probe.
+  if (deps?.recentlyHealthy ?? deepseekHealthyWithin(60_000)) {
+    return { ok: true, detail: "recently_ok" };
   }
   const apiKey = deps?.apiKey ?? DEEPSEEK_API_KEY;
   const model = deps?.model ?? DEEPSEEK_ORCHESTRATOR_MODEL_ID;
@@ -146,7 +161,10 @@ export async function checkDeepseek(deps?: {
     // The canary reads the status line only — release the body before returning
     // on EITHER branch, or every plain ?health=1 leaks a connection.
     await releaseBody(res);
-    if (res.ok) return { ok: true };
+    if (res.ok) {
+      markDeepseekHealthy();
+      return { ok: true };
+    }
     return { ok: false, reason: "preflight_failed", detail: `status=${res.status}` };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -294,6 +312,27 @@ export function deriveReadiness(env: {
   return { ok: orchestratorOk && coreOk, checks };
 }
 
+// ---- privileged recovery-sweep throttle (per-isolate) -----------------------
+// The sweep below runs under the SERVICE-ROLE key and both reads and writes rows
+// across every tenant, on an endpoint that takes no auth and no rate limit. It
+// must NOT be reachable at arbitrary frequency.
+//
+// It deliberately stays available to ANONYMOUS callers rather than moving behind
+// the probe secret, because the anonymous call IS the production recovery
+// mechanism: supabase/migrations/20260720031500_pg_cron_health_sweep.sql
+// schedules `?health=1` every 60s with `headers := '{}'::jsonb` — no secret —
+// precisely so stale-run recovery keeps running when no browser tab is open.
+// Gating the sweep on the probe secret would silently disable that and reopen
+// the mobile-Safari failure the migration was written to fix. Throttling bounds
+// the abuse without breaking the mechanism: the cron's own cadence is 60s, so
+// the scheduled sweep is unaffected while a flood collapses to one sweep per
+// window per isolate.
+const RECOVERY_SWEEP_MIN_INTERVAL_MS = 60_000;
+let lastRecoverySweepAt = 0;
+
+/** Test-only: reset the per-isolate sweep throttle. */
+export function __resetRecoverySweepThrottle(): void { lastRecoverySweepAt = 0; }
+
 export function isHealthProbe(req: Request): boolean {
   if (req.method !== "GET" && req.method !== "HEAD") return false;
   try {
@@ -375,11 +414,19 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
 
   try {
     if (SUPABASE_URL && SERVICE_KEY) {
-      const admin = createClient(SUPABASE_URL, SERVICE_KEY);
-      const recovered = await recoverStaleActiveThreads(admin, { limit: 20, reason: "stale heartbeat recovered by health sweep" });
-      r.checks.recovery = recovered.errors
-        ? { ok: false, detail: `recovered ${recovered.recovered}; ${recovered.errors} error(s)` }
-        : { ok: true, detail: `recovered ${recovered.recovered} stale active run(s)` };
+      const sinceLast = Date.now() - lastRecoverySweepAt;
+      if (sinceLast < RECOVERY_SWEEP_MIN_INTERVAL_MS) {
+        r.checks.recovery = { ok: true, detail: "throttled" };
+      } else {
+        // Claim the window BEFORE awaiting, so concurrent probes on this isolate
+        // collapse to one sweep instead of racing through the gate together.
+        lastRecoverySweepAt = Date.now();
+        const admin = createClient(SUPABASE_URL, SERVICE_KEY);
+        const recovered = await recoverStaleActiveThreads(admin, { limit: 20, reason: "stale heartbeat recovered by health sweep" });
+        r.checks.recovery = recovered.errors
+          ? { ok: false, detail: `recovered ${recovered.recovered}; ${recovered.errors} error(s)` }
+          : { ok: true, detail: `recovered ${recovered.recovered} stale active run(s)` };
+      }
     }
   } catch (e) {
     r.checks.recovery = { ok: false, detail: String(e).slice(0, 160) };
