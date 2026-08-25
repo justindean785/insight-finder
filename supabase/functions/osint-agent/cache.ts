@@ -6,7 +6,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import type { Tool } from "npm:ai@6";
-import { hashInput, normalizeForHash, redactSecrets, sanitizeToolOutput, stripNulCharacters, TOOL_CACHE_LRU } from "./safety.ts";
+import { hashInput, LRU, normalizeForHash, redactSecrets, sanitizeToolOutput, stripNulCharacters, TOOL_CACHE_LRU } from "./safety.ts";
 import { tierForTool, modelForTool, type Tier } from "./models.ts";
 import { costForTool } from "./costs.ts";
 import { DEFAULT_TOOL_TTL_MS, NO_CACHE_TOOLS, redactSensitiveToolInput, TOOL_TTL_MS } from "./validation.ts";
@@ -29,7 +29,35 @@ import {
   type ToolCostTier,
 } from "./runtime-policy.ts";
 
-const SELECTOR_SIGNAL_CACHE = new Map<string, SelectorEvidenceSignal>();
+// Thread-scoped reuse of a selector's evidence signal, derived from the
+// `artifacts` table (loadSelectorEvidence below).
+//
+// This was a bare module-level Map with no eviction and no invalidation, which
+// made it wrong in two directions. It grew for the life of the isolate across
+// every thread that isolate served; and because the signal is computed FROM
+// artifacts, any artifact written mid-run left the cached signal stale for the
+// rest of the run — the run kept routing on a picture of the evidence that
+// predated its own findings.
+//
+// Bounded by the same LRU the tool cache uses, and invalidated per-thread the
+// moment that thread writes an artifact.
+const SELECTOR_SIGNAL_CACHE = new LRU<SelectorEvidenceSignal>(500);
+
+// Tools that write rows loadSelectorEvidence reads. A subset of
+// ALWAYS_ALLOW_TOOLS: memory_save and the finalize_* tools touch no artifacts,
+// so they must not force a needless re-read.
+const ARTIFACT_WRITING_TOOLS = new Set<string>([
+  "record_artifacts",
+  "record_artifact",
+  "record_evidence",
+  "record_finding",
+  "append_evidence",
+]);
+
+/** Drop a thread's cached selector signals — call after it writes artifacts. */
+export function invalidateSelectorSignals(threadId: string): number {
+  return SELECTOR_SIGNAL_CACHE.deletePrefix(`${threadId}:`);
+}
 
 // ---- Per-tool hard timeout (Phase 2) ------------------------------------------
 // A wall-clock cap around each LIVE tool execution so a single latency-bomb
@@ -729,6 +757,14 @@ export function wrapToolsWithCache(
                   );
               ok = deriveOk(out);
               if (!ok) errInfo = extractToolError(out);
+              // record_artifacts / record_artifact / record_evidence are all
+              // NO_CACHE_TOOLS, so they exit through THIS wrapper and never reach
+              // the main path below. The invalidation has to live on both, or the
+              // three tools that write the most artifacts would never clear the
+              // signals derived from them.
+              if (ok && ARTIFACT_WRITING_TOOLS.has(name)) {
+                invalidateSelectorSignals(ctx.investigationId);
+              }
               return tagSkipState(tagTier(scrub(out), tier, model));
             } catch (e) {
               ok = false;
@@ -1279,6 +1315,14 @@ export function wrapToolsWithCache(
             source_created_at: createdAtIso,
           },
         });
+        // A tool that just wrote artifacts invalidates every cached selector
+        // signal for this thread: those signals are DERIVED from the artifacts
+        // table, so leaving them would route the rest of the run on a picture of
+        // the evidence that predates its own findings. Cheap — a prefix sweep of
+        // an LRU bounded at 500.
+        if (ok && ARTIFACT_WRITING_TOOLS.has(name)) {
+          invalidateSelectorSignals(ctx.investigationId);
+        }
         if (AUTO_EVIDENCE_TOOLS.has(name)) {
           // Fire-and-forget: never let auto-evidence block the tool result — but
           // it must still be allowed to FINISH. Left as a bare floating promise,

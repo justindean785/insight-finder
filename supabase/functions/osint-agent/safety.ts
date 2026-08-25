@@ -159,6 +159,15 @@ export class LRU<V> {
       if (first !== undefined) this.map.delete(first);
     }
   }
+  /** Drop every entry whose key starts with `prefix`. Returns how many went. */
+  deletePrefix(prefix: string): number {
+    let removed = 0;
+    for (const k of [...this.map.keys()]) {
+      if (k.startsWith(prefix)) { this.map.delete(k); removed++; }
+    }
+    return removed;
+  }
+  get size(): number { return this.map.size; }
 }
 
 export type CacheEntry = { output: unknown; createdAt: number };
