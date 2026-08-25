@@ -2,6 +2,29 @@
  * dsml-tool-call-guard.ts — recover tool calls DeepSeek emits as raw DSML markup
  * instead of structured tool_calls.
  *
+ * ⚠️ STATUS: NOT WIRED. Nothing imports this module except its own test —
+ * `grep -rin dsml` over the repo returns only this file and
+ * dsml_tool_call_guard_test.ts. index.ts has zero references to it.
+ *
+ * The wiring did exist: 15b7513 added the module and its call sites, 0bef0ff
+ * hardened them after a security review, and 0595d8e ("roll back to 07-16 build
+ * (0bcd1a0)", #366) removed them. Because that revert was a checkout of the older
+ * tree, it deleted the call sites in index.ts but left files added afterwards in
+ * place — which is why the prose below still describes a caller that is gone.
+ * Read every "index.ts does X" statement in this header as DESIGN INTENT, not as
+ * current behaviour. The 21 tests below exercise the parser only; none of them
+ * asserts anything about production, and all of them passed for weeks while
+ * nothing called the module.
+ *
+ * Also stale below: the orchestrator slot is no longer DeepSeek. Since #449 it is
+ * vendor-agnostic via DEEPSEEK_BASE_URL and is currently served by glm-5.2 (Z.AI),
+ * so the quirk this guard parses is not reachable on the live model today.
+ *
+ * KEPT rather than deleted, deliberately. The parsing work is specific and hard to
+ * re-derive, and both directions are operator calls: #366 named "DSML guards" in
+ * its revert body, so re-wiring needs sign-off — and so does discarding it, since
+ * it would be re-lost if the slot ever returns to a DeepSeek-family model.
+ *
  * WHY: DeepSeek V4/V4-Pro (this project's currently-pinned orchestrator) has a
  * documented, widely-reported quirk — under certain conditions (observed: several
  * parallel tool calls requested in one turn) it emits its tool-call intent as
