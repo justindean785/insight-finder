@@ -1103,32 +1103,51 @@ export function wrapToolsWithCache(
           // alongside clearProviderInFlight on every exit path below.
           if (sel) circuit.markCallInFlight(ctx.investigationId, name, sel, purpose);
         }
-        if (runtimeDecision.waitMs > 0) {
-          await new Promise((resolve) => setTimeout(resolve, runtimeDecision.waitMs));
-        }
-        notePlanCall(ctx.investigationId, {
-          tool_name: name,
-          selector: sel,
-          selector_type: selectorType,
-          params_preview: inputJson,
-          expected_value: expectedValue,
-          cost_tier: costTierForTool(baseCost),
-          reason: weakLead.weak
-            ? `manual override or corroborated retry despite weak lead: ${weakLead.reasons.join("; ")}`
-            : "highest-value eligible pivot for this cycle",
-          stop_condition: "stop if no corroborating evidence, duplicate selector, or provider suppression appears",
-          cache_status: staleRecord ? "stale" : "miss",
-        });
+        // Everything from here to the live-call try below runs AFTER the in-flight
+        // markers are set (and after startCall), but OUTSIDE the try that clears
+        // them — and there is no `finally` anywhere on this path. So a throw in
+        // this window (the pacing sleep, notePlanCall, or the host's onHeartbeat
+        // callback) used to leave the provider marked in-flight for the rest of
+        // the run, after which shouldRun silently skipped every later call on it.
+        // Silently: the run just quietly stops using that provider.
+        //
+        // Guard the window explicitly and rethrow. Clearing is unconditional to
+        // match the success and error paths below, which also clear without
+        // re-checking ALWAYS_ALLOW_TOOLS.
+        try {
+          if (runtimeDecision.waitMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, runtimeDecision.waitMs));
+          }
+          notePlanCall(ctx.investigationId, {
+            tool_name: name,
+            selector: sel,
+            selector_type: selectorType,
+            params_preview: inputJson,
+            expected_value: expectedValue,
+            cost_tier: costTierForTool(baseCost),
+            reason: weakLead.weak
+              ? `manual override or corroborated retry despite weak lead: ${weakLead.reasons.join("; ")}`
+              : "highest-value eligible pivot for this cycle",
+            stop_condition: "stop if no corroborating evidence, duplicate selector, or provider suppression appears",
+            cache_status: staleRecord ? "stale" : "miss",
+          });
 
-        // 3) live
-        ctx.onHeartbeat?.();
-        // Count this GENUINE live execution against the per-run cap. Placed here (past
-        // every cache/circuit/runtime gate, at the point we commit to running live) so
-        // cached hits and governor skips never consume the budget — matching the
-        // outcome semantics the wrapper already uses. Recording/evidence tools are
-        // exempt so evidence writes don't eat the lookup budget. A live timeout/error
-        // still counts: it genuinely ran and consumed time/quota.
-        if (ctx.toolCallBudget && !ALWAYS_ALLOW_TOOLS.has(name)) ctx.toolCallBudget.genuine++;
+          // 3) live
+          ctx.onHeartbeat?.();
+          // Count this GENUINE live execution against the per-run cap. Placed here (past
+          // every cache/circuit/runtime gate, at the point we commit to running live) so
+          // cached hits and governor skips never consume the budget — matching the
+          // outcome semantics the wrapper already uses. Recording/evidence tools are
+          // exempt so evidence writes don't eat the lookup budget. A live timeout/error
+          // still counts: it genuinely ran and consumed time/quota.
+          if (ctx.toolCallBudget && !ALWAYS_ALLOW_TOOLS.has(name)) ctx.toolCallBudget.genuine++;
+        } catch (e) {
+          circuit.clearProviderInFlight(ctx.investigationId, name);
+          if (sel) circuit.clearCallInFlight(ctx.investigationId, name, sel, purpose);
+          finishCall(ctx.investigationId, name);
+          throw e;
+        }
+
         let ok = true;
         let result: unknown;
         let errInfo: { errorMsg: string | null; statusCode: number | null } = { errorMsg: null, statusCode: null };
@@ -1261,8 +1280,20 @@ export function wrapToolsWithCache(
           },
         });
         if (AUTO_EVIDENCE_TOOLS.has(name)) {
-          // Fire-and-forget: never let auto-evidence block the tool result.
-          autoAppendToolEvidence(ctx.supabase, ctx, name, input, result).catch(() => {});
+          // Fire-and-forget: never let auto-evidence block the tool result — but
+          // it must still be allowed to FINISH. Left as a bare floating promise,
+          // this write raced the isolate: the edge runtime is free to freeze once
+          // the response is done, and the chain-of-custody row simply never
+          // landed. That is a silent evidence-integrity gap — nothing errors, the
+          // row is just missing.
+          //
+          // waitUntil keeps the isolate alive for it, matching how index.ts:1240
+          // hands off its auto-persist task. Still non-blocking: the tool result
+          // returns immediately either way.
+          const custodyTask = autoAppendToolEvidence(ctx.supabase, ctx, name, input, result).catch(() => {});
+          const ert = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
+          if (ert && typeof ert.waitUntil === "function") ert.waitUntil(custodyTask);
+          else void custodyTask;
         }
         return result;
       },
