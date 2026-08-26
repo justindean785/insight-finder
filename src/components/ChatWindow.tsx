@@ -576,7 +576,9 @@ function computeToolGroups(parts: MessagePartShape[]): Array<ToolRunGroup | { pa
     // A real selector value (email / domain / handle being investigated) is
     // shown verbatim; when a tool has none, fall back to a plain-language action
     // label instead of leaking the raw tool id (e.g. "memory_recall") to the UI.
-    const selector = typeof runtime?.selector === "string" && runtime.selector ? runtime.selector : toolActionLabel(name);
+    const selector = typeof runtime?.selector === "string" && runtime.selector
+      ? humanizeSelector(runtime.selector)
+      : toolActionLabel(name);
     const useful = tone === "ok" && !cached && !stale ? 1 : 0;
     const reason = typeof runtime?.rejection_reason === "string" ? runtime.rejection_reason : "";
     if (!current || current.key !== key) {
@@ -658,6 +660,39 @@ function flowToneForGroup(group: ToolRunGroup): "completed" | "partial" | "cache
   if (group.cached > 0 || group.stale > 0) return "cached";
   if (group.skipped > 0 && group.failed === 0) return "skipped";
   return "partial";
+}
+
+
+/**
+ * Render a tool's selector as something an analyst reads, not as plumbing.
+ *
+ * When the seed is an uploaded file the selector is the SIGNED STORAGE URL,
+ * which printed in full across two lines of the transcript:
+ *
+ *   https://<project>.supabase.co/storage/v1/object/sign/chat-uploads/
+ *   <thread-uuid>/<msg-uuid>/1787738666550-jl6n4g-oathnet_export_….json
+ *
+ * — directly beneath the attachment chip that already names the file and its
+ * size. So the row said the same thing twice, once unreadably, and put a signed
+ * bucket path into a surface that gets screenshotted and pasted into reports.
+ *
+ * Uploads carry a `<epoch>-<nonce>-` prefix from the upload path; strip it so
+ * the original filename is what shows.
+ */
+function humanizeSelector(selector: string): string {
+  if (!/^https?:\/\//i.test(selector)) return selector;
+  let path: string;
+  try {
+    path = new URL(selector).pathname;
+  } catch {
+    return selector;
+  }
+  const last = decodeURIComponent(path.split("/").filter(Boolean).pop() ?? "");
+  if (!last) return selector;
+  // Only collapse OUR upload paths. An arbitrary URL a tool was pointed at is
+  // itself the selector and must stay legible as one.
+  if (!selector.includes("/chat-uploads/")) return selector;
+  return last.replace(/^\d{10,}-[a-z0-9]+-/i, "") || last;
 }
 
 function RunFlowRail({ groups }: { groups: ToolRunGroup[] }) {
@@ -800,6 +835,24 @@ function renderTextWithBadges(text: string): React.ReactNode {
   }
   if (last < text.length) out.push(text.slice(last));
   return out;
+}
+
+
+/**
+ * Does the transcript already carry a persisted failure message?
+ *
+ * Must match how MessageView detects the sentinel — the FIRST text part
+ * beginning with FAIL_PREFIX — because that is the branch that renders the
+ * transcript's own FailedRunCard. These are AI-SDK messages: the text lives in
+ * `parts`, not in a `content` string, so checking `content` silently matches
+ * nothing and the de-duplication quietly does nothing at all.
+ */
+function hasPersistedFailure(messages: { parts?: unknown }[]): boolean {
+  return messages.some((m) => {
+    const parts = Array.isArray(m.parts) ? (m.parts as MessagePartShape[]) : [];
+    const firstText = parts.find((p) => p?.type === "text");
+    return typeof firstText?.text === "string" && firstText.text.startsWith(FAIL_PREFIX);
+  });
 }
 
 function FailedRunCard({ reason, onRetry }: { reason: string; onRetry: () => void }) {
@@ -2425,7 +2478,16 @@ function ChatWindowInner({
               </span>
             </div>
           )}
-          {error && !isLoading && (
+          {/* ONE card per failure.
+              A failed run lands in two places: the live `error` state here, and
+              a persisted assistant message prefixed FAIL_PREFIX which renders
+              its own FailedRunCard in the transcript above. Both fired, so the
+              analyst saw the same "Investigation run failed" card twice, stacked
+              — identical title, body, hint and buttons — which reads as two
+              separate failures.
+              The persisted message is the durable record and wins; this live
+              card is for a failure that has not been written to the thread. */}
+          {error && !isLoading && !hasPersistedFailure(messages) && (
             <FailedRunCard reason={error.message} onRetry={retryLastUser} />
           )}
           {suggestions.length > 0 && (
