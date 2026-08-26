@@ -1162,6 +1162,23 @@ function authoritySection(authority?: AuthoritativeFindings): string[] {
   return [`## ${AUTHORITY_HEADING}`, "", authorityStatement(authority), ...(rows.length ? ["", ...rows] : []), ""];
 }
 
+/**
+ * Group artifacts by the exact text of their recorded reason, preserving the
+ * order each reason first appears. Used so a section states one judgement once
+ * rather than repeating it per artifact — see the collision section below.
+ */
+function groupByReason<T>(items: T[], reasonOf: (item: T) => string): { reason: string; items: T[] }[] {
+  const order: string[] = [];
+  const by = new Map<string, T[]>();
+  for (const item of items) {
+    const reason = reasonOf(item);
+    const bucket = by.get(reason);
+    if (bucket) bucket.push(item);
+    else { by.set(reason, [item]); order.push(reason); }
+  }
+  return order.map((reason) => ({ reason, items: by.get(reason)! }));
+}
+
 export function buildReportMarkdown(input: ReportInput): string {
   const { seedValue, seedType, messages, reviews, reportType, toolActivity, toolInvocations, authority } = input;
   const display = extractDisplaySeed(seedValue, seedType);
@@ -1331,10 +1348,29 @@ export function buildReportMarkdown(input: ReportInput): string {
         ...(conflictNoted.length
           ? [
               ...(collisionArtifacts.length ? [""] : []),
-              "_Conflicts noted across sources — may indicate different people or data errors. Corroborate before merging; these rows are NOT auto-quarantined._",
+              "_Conflicts noted across sources — may indicate different people or data errors. Corroborate before merging._",
               "",
-              ...conflictNoted.map((a) =>
-                `- \`${sanitizeValueForLabel(a.value, false)}\` — ${conflictNote(a)} _(via ${humanizeSourceChain(a.source)})_`,
+              // GROUPED BY REASON, not one line per artifact.
+              //
+              // A single name-only harvest produces dozens of rows that all carry
+              // the SAME `subject_unlinked_reason`. Printed per row, one live run
+              // published "harvested from a name-only query — same-name collision
+              // axis; linkage to the subject is unproven" twenty-five times in one
+              // section — the reader scrolls a wall of identical prose to find the
+              // handful of rows whose reason actually differs.
+              //
+              // Every value and every reason still appears. The reason is simply
+              // stated once for the set it applies to, which is also the truer
+              // shape: these rows are not 25 independent judgements, they are one
+              // judgement about 25 artifacts from one query.
+              ...groupByReason(conflictNoted, conflictNote).flatMap(({ reason, items }) =>
+                items.length === 1
+                  ? [`- \`${sanitizeValueForLabel(items[0].value, false)}\` — ${reason} _(via ${humanizeSourceChain(items[0].source)})_`]
+                  : [
+                      `- **${items.length} artifacts** — ${reason}`,
+                      ...items.map((a) =>
+                        `  - \`${sanitizeValueForLabel(a.value, false)}\` _(via ${humanizeSourceChain(a.source)})_`),
+                    ],
               ),
             ]
           : []),
@@ -1545,23 +1581,43 @@ export function buildReportMarkdown(input: ReportInput): string {
             ? `_Geography only — a ${clusterReport.seedState} match narrows the candidate set, it does not corroborate it. Out-of-area same-name matches must not be treated as the seed subject without further verification._`
             : "_A location match narrows the candidate set; it does not corroborate it._",
           "",
-          `## What Is Actually Corroborated`,
-          corroborated.length
-            ? corroborated
-                .map(({ cluster, classes }) =>
-                  `- ${cluster.label} — ${classes.length} independent source classes: ${humanizeSourceChain(classes)}`)
-                .join("\n")
-            : "_No cluster is corroborated by 2 or more independent source classes yet._",
-          "",
-          `## What Is Not Corroborated`,
-          [
-            ...uncorroborated.map(({ cluster, classes }) =>
-              `- ${cluster.label} — ${classes.length} independent source class${classes.length === 1 ? "" : "es"}; needs a second before it can be reported as corroborated.`),
-            ...(clusterReport.seedState && !locationMatched.length
-              ? [`- Direct ${clusterReport.seedState} address/IP evidence for the subject.`]
-              : []),
-          ].join("\n") || "_Every cluster reaches 2 or more independent source classes._",
-          "",
+          // ⚠️ THE EMPTY-CLUSTER CASE IS EXPLICIT, and must stay that way.
+          //
+          // With zero clusters BOTH of these sections used to fire their
+          // fallback, because both fallbacks are vacuously true of an empty set:
+          // "No cluster is corroborated…" (nothing to corroborate) immediately
+          // followed by "Every cluster reaches 2 or more…" (nothing that fails).
+          // A published report carried both sentences, three lines apart,
+          // flatly contradicting each other — observed on a live name-seed run
+          // that produced 41 artifacts and 0 clusters.
+          //
+          // An empty set is not a corroboration result. Say so once.
+          ...(byCorroboration.length === 0
+            ? [
+                `## Corroboration`,
+                "_No identity clusters were formed, so there is nothing to corroborate or to fault. "
+                  + "This is a statement about cluster formation, not about the strength of the artifacts below._",
+                "",
+              ]
+            : [
+                `## What Is Actually Corroborated`,
+                corroborated.length
+                  ? corroborated
+                      .map(({ cluster, classes }) =>
+                        `- ${cluster.label} — ${classes.length} independent source classes: ${humanizeSourceChain(classes)}`)
+                      .join("\n")
+                  : "_No cluster is corroborated by 2 or more independent source classes yet._",
+                "",
+                `## What Is Not Corroborated`,
+                [
+                  ...uncorroborated.map(({ cluster, classes }) =>
+                    `- ${cluster.label} — ${classes.length} independent source class${classes.length === 1 ? "" : "es"}; needs a second before it can be reported as corroborated.`),
+                  ...(clusterReport.seedState && !locationMatched.length
+                    ? [`- Direct ${clusterReport.seedState} address/IP evidence for the subject.`]
+                    : []),
+                ].join("\n") || "_Every cluster reaches 2 or more independent source classes._",
+                "",
+              ]),
         ]
       : []),
     `## Timeline Summary`,
