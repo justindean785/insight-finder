@@ -2463,12 +2463,27 @@ function ChatWindowInner({
                               · {s.meta}
                             </span>
                           )}
+                          {(s.detail || s.target) && (
+                            <ChevronDown
+                              className={cn(
+                                "ml-auto h-3 w-3 shrink-0 text-muted-foreground/45 transition-transform group-hover:text-muted-foreground",
+                                expanded && "rotate-180",
+                              )}
+                              aria-hidden
+                            />
+                          )}
                         </div>
+                        {/* line-clamp-1 cut these mid-sentence ("Email discovered
+                            via hunter verify…"), which is exactly the width at
+                            which a rationale stops being a rationale — and
+                            nothing on the row said it could be opened, so the
+                            rest was simply lost. Two lines carries the actual
+                            reason, and the chevron says there is more. */}
                         {s.detail && (
                           <p
                             className={cn(
                               "mt-0.5 text-[11px] leading-snug text-muted-foreground",
-                              !expanded && "line-clamp-1",
+                              !expanded && "line-clamp-2",
                             )}
                           >
                             {s.detail}
