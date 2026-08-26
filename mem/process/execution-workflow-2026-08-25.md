@@ -29,9 +29,24 @@ Lovable sync. **JD authorizes every merge and deploy.**
 ## PART A — settle the PR queue
 
 - **A1 — merge #501, #468, #503** (green, zero file overlap). ✅ **DONE 2026-08-25.**
-  Merge order #501 → #468 → #503, squash each. Result: `main` = **`865f49e`**.
+  Merge order #501 → #468 → #503, squash each. `main` was **`865f49e`** at that point;
+  it is **`a38963c`** now after the edge deploy (below).
   (#501 report authority, 9 files +932/-21; #468 Graphify `.mcp.json`, 2 files +16;
   #503 docs, 4 files +141.)
+  ⚠️ **#503 shipped three defective claims** — its mem notes describe #502's code, which is
+  NOT on `main` (`enforceToolPairing`, `tool_pairing_repaired`,
+  `RECOVERY_SWEEP_MIN_INTERVAL_MS` = 0 hits on `main`, present only at `0896e00`).
+  **PR #505 corrects them and should be merged.** Do not trust
+  `mem/architecture/ai-sdk-positional-tool-pairing.md` on `main` until it is.
+
+- **EDGE DEPLOY — done 2026-08-25, outside the A-track.** Live build moved
+  **`14e42a5` → `865f49e`**, the first move since #438. It shipped #486 (`record_finding`
+  derives status server-side) and #498 (authoritative Evidence Record), which had been
+  merged-but-undeployed. Recipe run in full: stamp (`df24977`) → surgical mirror sync
+  (`783f879`, osint-agent only, zero deletions) → explicit Lovable
+  `supabase--deploy_edge_functions` → `/health` verified → ledger + `deploy/live` published
+  (`a38963c`). The Lovable MCP call **timed out client-side at 60 s and still deployed** —
+  the moved `/health` SHA was the only proof, exactly as the recipe says.
 - **A2 — review and merge #502** (39 files, +2754/-192, 21 commits, branch
   `claude/audit-claims-verify-oi0urm`). The 2026-08-24 audit remediation + permanent
   run-wedge fix + #476 account deletion. It rewrites `cache.ts`, `circuit.ts`,
@@ -41,6 +56,16 @@ Lovable sync. **JD authorizes every merge and deploy.**
   document**; it corrects 5 audit claims. Claude does NOT merge this one: list the 5
   corrections verbatim, confirm CI on the current head, and diff against main to verify it
   does not violate the settled constraints. JD reads the summary and merges.
+  ✅ **REVIEW DONE 2026-08-25 — not merged.** All seven settled constraints hold
+  (`REVEAL_BREACH_DATA` untouched; `linkage_confirmed`/`confidence_cap_applied` untouched;
+  no `toolChoice` code change; `MAX_PAID_CALLS = 12` byte-identical; `recovery.ts` /
+  `orchestrator-finalize.ts` / `cluster.ts` untouched; `metadata.label` untouched; the
+  deletion RPC is a no-argument `SECURITY DEFINER` keyed on `auth.uid()` with
+  `search_path` pinned and `REVOKE`d from anon/PUBLIC). Two notes: its CI is **green but
+  stale at base `4cc7573`**, and **`vercel.json` DOES change** — CSP `script-src` drops
+  `'unsafe-inline'`, which the body's "deliberately not done" line about the vercel.json
+  *rewrite* obscures. Verified safe: built `dist/index.html` emits one `<script src=…>`,
+  zero inline scripts, zero inline handlers.
 - **A3 — triage #493 / #435 / #491**, which overlap the files #502 rewrote. Per PR:
   fully subsumed → close with a comment naming the covering #502 commit; partially
   subsumed → fresh branch off main, cherry-pick only the remainder, new PR, close the old
