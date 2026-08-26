@@ -170,9 +170,30 @@ const SYNTHETIC: Record<string, unknown[]> = {
   artifacts,
   messages,
   tool_usage_log,
+  // Shaped to the columns CustodyTab actually selects (seq / classification /
+  // chain_hash / collected_at ...). The previous fixture used a different, older
+  // column set — action/actor/hash/created_at — so every field the panel read
+  // came back undefined: 30 rows of "Invalid Date" with empty hashes, and a
+  // verification RPC whose shape it could not read either. The Custody tab was
+  // the one tab in the workspace that could not be reviewed in the harness.
   evidence_log: artifacts.map((a, i) => ({
-    id: `e${i + 1}`, thread_id: THREAD_ID, artifact_id: a.id, action: i === 0 ? "created" : "corroborated",
-    actor: "osint-agent", created_at: a.created_at, hash: `sha256:${"0".repeat(56)}${(i + 10).toString(16)}`, prev_hash: null, detail: {},
+    id: `e${i + 1}`,
+    thread_id: THREAD_ID,
+    seq: i + 1,
+    classification: i % 3 === 0 ? "hard" : "soft",
+    kind: a.kind,
+    value: a.value,
+    source: a.source,
+    source_url: null,
+    tool_name: a.source,
+    confidence: a.confidence,
+    chain_hash: `sha256:${(i + 10).toString(16).padStart(4, "0").repeat(16)}`.slice(0, 71),
+    prev_hash: i === 0 ? null : `sha256:${(i + 9).toString(16).padStart(4, "0").repeat(16)}`.slice(0, 71),
+    collected_at: a.created_at,
+    metadata: a.metadata ?? {},
+    archive_storage_path: i % 4 === 0 ? `evidence-archive/${THREAD_ID}/e${i + 1}.bin` : null,
+    archive_sha256: i % 4 === 0 ? `${(i + 3).toString(16).padStart(2, "0").repeat(32)}` : null,
+    archive_bytes: i % 4 === 0 ? 12_340 + i * 97 : null,
   })),
   artifact_reviews: [
     { id: "r1", artifact_id: "a1", thread_id: THREAD_ID, verdict: "correct", reviewer_id: USER_ID, created_at: iso(9), note: null },
@@ -197,7 +218,10 @@ const RPC: Record<string, unknown> = {
   get_case_metrics: [{ thread_id: THREAD_ID, artifact_count: artifacts.length, confirmed_count: 2, tool_call_count: tool_usage_log.length, failed_tool_count: 2 }],
   get_insights_summary: [{ total_threads: 12, total_artifacts: 96, confirmed_artifacts: 24, credits_used: 341 }],
   has_role: false,
-  verify_evidence_chain: [{ valid: true, checked: artifacts.length, broken_at: null }],
+  // CustodyTab.verify() reads { ok, total, first_break } — the old
+  // { valid, checked, broken_at } shape produced `ok: undefined`, which the
+  // banner coerced to a red "CHAIN INTEGRITY broken".
+  verify_evidence_chain: [{ ok: true, total: artifacts.length, first_break: null }],
   record_analyst_feedback: { ok: true },
   save_agent_memories: { ok: true },
 };
