@@ -18,10 +18,10 @@ export function ConfidenceExplain({
   className?: string;
 }) {
   const exp = explainConfidence(artifact, review);
-  const verdictColor =
-    exp.final >= 80 ? "text-[hsl(var(--confidence-high))]" :
-    exp.final >= 50 ? "text-[hsl(var(--confidence-mid))]" :
-    "text-[hsl(var(--confidence-low))]";
+  // Ink, not hue — a third by-value ladder (80/50) lived here and rendered
+  // inline beside every ledger numeral, so the row showed two different
+  // opinions about the same score. Authority carries the verdict.
+  const verdictColor = "text-foreground";
 
   return (
     <Popover>

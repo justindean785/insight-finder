@@ -383,8 +383,8 @@ function ArtifactsList({
               const confs = list.map((a) => a.confidence).filter((c): c is number => c != null);
               const lo = confs.length ? Math.min(...confs) : null;
               const hi = confs.length ? Math.max(...confs) : null;
-              const rangeColor = (hi ?? 0) >= 70 ? "hsl(var(--confidence-high))"
-                : (hi ?? 0) >= 50 ? "hsl(var(--confidence-mid))" : "hsl(var(--confidence-low))";
+              // Ordinal INK, not hue — see the confColor note on the row.
+              const rangeColor = "hsl(var(--muted-foreground) / 0.85)";
               return (
                 <div key={kind}>
                   {/* Kind subheader — clickable when the cluster is collapsible */}
@@ -459,10 +459,17 @@ function ArtifactRow({
   const rState = review.get(a.id);
   const dismissed = rState === "dismissed";
   const conf = a.confidence ?? 0;
-  const confColor =
-    conf >= 70 ? "hsl(var(--confidence-high))" :
-    conf >= 50 ? "hsl(var(--confidence-mid))" :
-    "hsl(var(--confidence-low))";
+  // A confidence is a MAGNITUDE, and magnitude is carried by the length of the
+  // hairline below the numeral — never by the numeral's colour. This used to be
+  // a three-step by-value ramp (>=70 green, >=50 amber, else red), which is why
+  // the Conf. column read as a column of verdicts: a single-source 38 rendered
+  // in alarm red beside a corroborated 88 in confirmation green, when neither
+  // colour was saying anything the AUTHORITY chip two columns left had not
+  // already said properly. Ink is now constant; only quarantine dims it,
+  // because an unlinked row's number genuinely is not about this subject.
+  const confColor = isQuarantined(a.metadata)
+    ? "hsl(var(--authority-quarantine))"
+    : "hsl(var(--foreground) / 0.92)";
   const prov = provFor(a);
   const authority = authorityFor(a, rState);
   return (
@@ -555,7 +562,14 @@ function ArtifactRow({
           <span className="flex shrink-0 items-center justify-end gap-0.5" data-ledger-col="confidence">
             {a.confidence != null && (
               <>
-                <span className="text-data font-semibold tabular-nums" style={{ color: confColor }}>{conf}</span>
+                <span className="flex flex-col items-end gap-1">
+                  <span className="conf-figure" style={{ color: confColor }}>{conf}</span>
+                  {/* The magnitude. A 2px rule whose LENGTH is the score — the
+                      one honest way to show a number at a glance. */}
+                  <span className="conf-rule" aria-hidden>
+                    <i style={{ width: `${Math.max(3, Math.min(100, conf))}%` }} data-authority={authority.state} />
+                  </span>
+                </span>
                 <ConfidenceExplain
                   artifact={a}
                   review={rState}

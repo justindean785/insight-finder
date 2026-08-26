@@ -31,25 +31,32 @@ import { Activity, AlertTriangle, Share2, Sparkles, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { captureError } from "@/lib/telemetry";
 
-// Restrained group palette — same vocabulary as the Evidence board so a glance
-// triages identically across tabs.
+// The graph's OWN taxonomy palette — the one documented exception to "hue
+// belongs to authority" (see the --kind-* block in index.css).
+//
+// These used to borrow confidence tokens: infrastructure was --confidence-mid
+// and web was --confidence-high. That coupling was invisible until confidence
+// was neutralised, at which point two entire node groups and the shared-infra
+// edge class would have collapsed into the grey `other` bucket — on the one
+// tab where hue IS the only thing separating a breach row from a DNS record.
+// Kind and confidence are different questions; they now use different tokens.
 const GROUP_COLOR: Record<Group, string> = {
-  identity: "hsl(var(--info))",
-  contact: "hsl(var(--brain-cyan))",
-  social: "hsl(var(--accent))",
-  infrastructure: "hsl(var(--confidence-mid))",
-  breach: "hsl(var(--danger))",
-  web: "hsl(var(--confidence-high))",
-  crypto: "hsl(var(--warning))",
-  other: "hsl(var(--muted-foreground))",
+  identity: "hsl(var(--kind-identity))",
+  contact: "hsl(var(--kind-contact))",
+  social: "hsl(var(--kind-social))",
+  infrastructure: "hsl(var(--kind-infrastructure))",
+  breach: "hsl(var(--kind-breach))",
+  web: "hsl(var(--kind-web))",
+  crypto: "hsl(var(--kind-crypto))",
+  other: "hsl(var(--kind-other))",
 };
 
 // How each edge class is drawn. The WHY ("reason") rides in edge.data and is
 // surfaced in the detail panel + as a native title tooltip — never invented:
 // every edge comes from buildEntityGraph's shared-selector analysis.
 const EDGE_STYLE: Record<EdgeType, { stroke: string; dashed: boolean; baseOpacity: number }> = {
-  identity: { stroke: "hsl(var(--info))", dashed: false, baseOpacity: 0.55 },
-  "shared-infra": { stroke: "hsl(var(--confidence-mid))", dashed: true, baseOpacity: 0.4 },
+  identity: { stroke: "hsl(var(--kind-identity))", dashed: false, baseOpacity: 0.55 },
+  "shared-infra": { stroke: "hsl(var(--kind-infrastructure))", dashed: true, baseOpacity: 0.4 },
   "seed-discovery": { stroke: "hsl(var(--foreground))", dashed: false, baseOpacity: 0.14 },
 };
 const EDGE_LABEL: Record<EdgeType, string> = {

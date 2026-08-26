@@ -22,7 +22,16 @@ export default {
         // a real contrast axis rather than two near-identical sans-serifs. Reserved
         // for hero/case titles and top-level section headings.
         display: ['"Sora"', '"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-        serif: ['ui-serif', 'Georgia', 'serif'],
+        // Figure face — Newsreader, a light text serif. Reserved for NUMERALS
+        // and case titles: the register's confidence figures, the masthead
+        // stat block, the case name. It is what makes the workspace read as a
+        // document rather than as a dashboard. `opsz` is deliberately NOT
+        // requested (it costs ~191KB against ~46KB pinned, and the face only
+        // renders at large sizes here, so the optical-size axis buys nothing).
+        // This slot was 100% dead before — zero consumers — so wiring it is
+        // purely additive and cannot restyle an existing heading.
+        serif: ['"Newsreader"', 'ui-serif', 'Georgia', 'serif'],
+        figure: ['"Newsreader"', 'ui-serif', 'Georgia', 'serif'],
         mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
       },
       // Semantic type scale — one ladder from dense labels to hero titles, so
@@ -136,6 +145,31 @@ export default {
         "brain-ok": "hsl(var(--brain-status-ok))",
         "brain-warn": "hsl(var(--brain-status-warn))",
         "brain-bad": "hsl(var(--brain-status-bad))",
+
+        // ── The film ────────────────────────────────────────────────────
+        // `white` is REMAPPED onto the warm film token, and that is the whole
+        // point. Every translucent highlight in the product is written in
+        // markup as `bg-white/5`, `border-white/10`, `text-white/70` — 84 of
+        // them across 17 .tsx files, none token-backed. While `white` stayed
+        // pure #fff, a hue-neutral sheet was laid over every surface and
+        // cancelled whatever the palette underneath was saying. That is the
+        // mechanical reason previous colour passes on this app "changed
+        // nothing an analyst sees". Remapping it here means all 84 follow the
+        // register automatically, and `text-white` resolves to the brightest
+        // ink rather than to a colour that exists nowhere else on screen.
+        white: "hsl(var(--film) / <alpha-value>)",
+        film: "hsl(var(--film) / <alpha-value>)",
+
+        // Entity-kind taxonomy — the Graph tab's own palette. Documented
+        // exception to "hue belongs to authority"; see the :root comment.
+        "kind-identity": "hsl(var(--kind-identity))",
+        "kind-contact": "hsl(var(--kind-contact))",
+        "kind-social": "hsl(var(--kind-social))",
+        "kind-infrastructure": "hsl(var(--kind-infrastructure))",
+        "kind-breach": "hsl(var(--kind-breach))",
+        "kind-web": "hsl(var(--kind-web))",
+        "kind-crypto": "hsl(var(--kind-crypto))",
+        "kind-other": "hsl(var(--kind-other))",
       },
       borderRadius: {
         lg: "var(--radius)",

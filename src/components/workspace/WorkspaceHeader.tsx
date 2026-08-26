@@ -320,8 +320,31 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
   };
 
   return (
-    <header className="relative border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(0_0%_8%/0.9),hsl(0_0%_3.5%/0.86))] backdrop-blur-xl">
+    <header className="relative border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(28_10%_6%/0.9),hsl(28_12%_2.5%/0.88))] backdrop-blur-xl">
       <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
+
+      {/* ── Classification band ─────────────────────────────────────────────
+          The strip that makes the workspace read as a case file rather than as
+          a dashboard: what this document is, who it is for, and — via the one
+          accent hairline that crosses it on a slow loop (.dsr-band) — whether
+          the case is live. Text only, no controls; it is a masthead, not a
+          toolbar. Hidden below sm, where the width is worth more than the
+          register mark. */}
+      <div
+        aria-hidden
+        className="dsr-band hidden border-b border-white/[0.05] bg-white/[0.012] px-4 py-1 font-mono text-[9px] uppercase tracking-[0.3em] text-muted-foreground/45 sm:flex sm:items-center sm:justify-between sm:px-7"
+      >
+        <span className="flex items-center gap-2">
+          <span className={cn("h-[5px] w-[5px] shrink-0", liveRun ? "dsr-dot" : "rounded-full bg-muted-foreground/30")} />
+          {liveRun ? <span className="text-danger">Live</span> : <span>Case file</span>}
+          <span className="text-muted-foreground/25">·</span>
+          <span>Insight Finder · Case register</span>
+        </span>
+        <span className="hidden lg:inline">Analyst copy — not for distribution</span>
+        <span className="tabular-nums">
+          {artifactCount} art · {activity.persistedTotal} tools
+        </span>
+      </div>
 
       {/* 3-zone command bar: left balance · center identity · right ops */}
       <div className="mx-auto grid h-[3.5rem] w-full max-w-[min(100%,64rem)] grid-cols-[1fr_minmax(0,auto)_1fr] items-center gap-2 px-4 sm:px-7">
