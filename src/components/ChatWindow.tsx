@@ -25,6 +25,7 @@ import { isSubmitBlocked } from "@/lib/submit-guard";
 import { interpretReadinessProbe, type ReadinessBody } from "@/lib/readiness-probe";
 import { dedupeCards } from "@/lib/next-step-cards";
 import { hasReportShape, joinAssistantTranscript, stripReasoningPerPart } from "@/lib/report-shape";
+import { findLastReportIndex, isReportMessage } from "@/lib/superseded-reports";
 import { dedupeCheckpoints } from "@/lib/chat-checkpoints";
 import { computePivots } from "@/lib/pivot-engine";
 import { sanitizeChatText } from "@/lib/sanitize-agent-text";
@@ -1005,7 +1006,8 @@ const MarkdownBlock = memo(function MarkdownBlock({ content }: { content: string
   );
 });
 
-function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean }) {
+
+function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded }: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean; superseded?: boolean }) {
   if (m.role === "user") {
     const text = (m.parts as MessagePartShape[]).filter((p) => p.type === "text").map((p) => p.text).join("");
     // Split the human text from the "Attached files:" block the composer appends,
@@ -1127,7 +1129,25 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIM
           ))}
         </div>
       )}
-      {prose && (
+      {prose && superseded && (
+        <details className="chat-card w-full min-w-0 group/sup" data-speaker="agent">
+          <summary className="chat-card__header cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+            <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/50" aria-hidden />
+            <span className="text-muted-foreground">Superseded report</span>
+            {timeLabel && <span className="chat-card__header-time">{timeLabel}</span>}
+            <span className="ml-auto flex items-center gap-1 text-eyebrow uppercase tracking-wider text-muted-foreground/70">
+              a later cycle rewrote this
+              <ChevronDown className="h-3 w-3 transition-transform group-open/sup:rotate-180" aria-hidden />
+            </span>
+          </summary>
+          <div className="chat-card__body">
+            <div className="chat-prose">
+              <MarkdownBlock content={prose} />
+            </div>
+          </div>
+        </details>
+      )}
+      {prose && !superseded && (
         <article className="chat-card w-full min-w-0" data-speaker="agent" aria-label="Agent response">
           <div className="chat-card__header">
             <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[hsl(var(--intel-blue))]" aria-hidden />
@@ -2445,20 +2465,34 @@ function ChatWindowInner({
           )}
           {/* Hide mid-run progress checkpoints once the final report lands so the
               same findings never render twice (see src/lib/chat-checkpoints.ts). */}
-          {dedupeCheckpoints(messages).map((m, idx, arr) => {
-            const isLastAssistant = m.role === "assistant" && idx === arr.length - 1;
-            const hasCacheBanner = m.role === "assistant" && (m.parts as MessagePartShape[]).some((p) => p?.type === CACHE_BANNER_TYPE);
-            return (
-              <MessageView
-                key={m.id}
-                m={m}
-                createdAt={createdAtMap[m.id]}
-                onRetry={isLastAssistant ? retryLastUser : undefined}
-                onRerun={hasCacheBanner ? rerunInvestigation : undefined}
-                rerunBusy={rerunBusy}
-              />
-            );
-          })}
+          {(() => {
+            const rendered = dedupeCheckpoints(messages);
+            // A multi-cycle run writes a COMPLETE report at every finalize, and
+            // the transcript rendered all of them at full length. One observed
+            // production thread carried four full "Investigation Report"
+            // documents and SEVEN blocks each headed "Evidence Record —
+            // authoritative" — a label only one of them can truthfully hold.
+            // The newest report stays open; the earlier ones collapse to a line
+            // the analyst can expand. Nothing is removed: a superseded report is
+            // still the record of what the run believed at that point.
+            const lastReportIdx = findLastReportIndex(rendered);
+            return rendered.map((m, idx, arr) => {
+              const isLastAssistant = m.role === "assistant" && idx === arr.length - 1;
+              const hasCacheBanner = m.role === "assistant" && (m.parts as MessagePartShape[]).some((p) => p?.type === CACHE_BANNER_TYPE);
+              const superseded = lastReportIdx >= 0 && idx < lastReportIdx && isReportMessage(m);
+              return (
+                <MessageView
+                  key={m.id}
+                  m={m}
+                  createdAt={createdAtMap[m.id]}
+                  onRetry={isLastAssistant ? retryLastUser : undefined}
+                  onRerun={hasCacheBanner ? rerunInvestigation : undefined}
+                  rerunBusy={rerunBusy}
+                  superseded={superseded}
+                />
+              );
+            });
+          })()}
           {isLoading && (
             <div
               className="flex items-center gap-2.5 text-sm"
