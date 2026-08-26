@@ -191,3 +191,53 @@ Also confirmed: `tool_call_cache` is **40 MB, 10,906 rows, 10,835 expired (99.3%
   untouched. The telemetry above argues the pressure is relievable without changing either.
 - Nothing was done about the sibling session `01XJGSHnzsGpSsA3C8NNcdot` (idle/blocked). It
   still holds corrections 1 and 2 above as live beliefs.
+
+---
+
+# Addendum — 2026-08-26: frontend design pass (no code shipped)
+
+Appended at the end of the session. **Nothing under `src/` or `supabase/` was changed** — the design
+work lives in a published canvas, and `src/index.css` is byte-identical to `main`.
+
+## State at handover
+
+| ref | value |
+| --- | --- |
+| `main` | `a38963c` |
+| live `/health` build | `865f49e` |
+| `deploy/live` | `865f49e` |
+| mirror main | `783f879` |
+| this branch (PR #504) | `claude/merge-prs-501-468-503-ploupv` |
+| design branch | `claude/design-palette-pass` @ `a38963c` — **created, zero commits** |
+
+Gate on `a38963c`: lint 0 errors / 10 warnings · typecheck clean · **1543 passed / 1 skipped / 124
+files** · edge **1370 / 0 failed / 5 ignored**.
+
+## What the design pass established
+
+Full detail in `mem/style/evidence-workspace-design-direction.md`. The three findings that matter:
+
+1. **99.4% tokenized** (102 CSS vars; 1,608 token utilities vs 10 hardcoded) — a recolour is an
+   `index.css` edit, and it barely collides with B1–B7.
+2. **`.panel` is a hue-neutral 2.6% white film**, not the `--surface-*` ramp. Overriding surface
+   tokens changes almost nothing visible. This is the measured reason "colour scheme" passes on this
+   app have repeatedly looked like nothing happened.
+3. **`--danger` = `--confidence-low` = `--authority-conflict` = `358 92% 64%`.** Identical. A 38%
+   confidence renders in alarm red beside a `Conflict` chip. Breaking this identity is the single
+   highest-value colour fix available.
+
+## Direction chosen
+
+**"Dossier, alive"** — editorial-intelligence-document on true black glass, animated. JD reviewed
+three static directions and picked Dossier, then asked for it bolder, darker, glassier and animated.
+
+Canvas (authored source recoverable via `seed-canvas.mjs --extract`):
+**https://claude.ai/code/artifact/f7d1ecf7-44eb-470f-a1a4-94249467697a**
+
+The rule that must survive porting into `index.css`: **confidence is not coloured by value.** Neutral
+numeral, hairline bar for magnitude, hue reserved for authority. Oxblood once per screen.
+
+Unresolved before it can ship: the ~400px masthead is unchecked against the Graph and Tools tabs, and
+PNG/PDF export falls back from Newsreader.
+
+## Nothing was merged, deployed or mirror-synced by this addendum.
