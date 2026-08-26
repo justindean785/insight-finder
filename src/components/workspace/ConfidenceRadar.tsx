@@ -118,14 +118,20 @@ export function ConfidenceRadar({
               headline read; vertices below carry each axis's own tier colour. */}
           <polygon
             points={polygon}
-            style={{ fill: `hsl(var(${tierInfo(profile.overall).varName}) / 0.14)` }}
+            // Contrast, not colour. Once confidence stopped being carried by
+            // hue, a 14%-alpha fill of a low-chroma token on true black left
+            // the shape unreadable — the plot became a faint smudge while the
+            // numbers beside it stayed perfectly legible, which is the wrong
+            // way round for a chart. Raised fill and a full-strength stroke;
+            // the tier still selects the token, it is just actually visible.
+            style={{ fill: `hsl(var(${tierInfo(profile.overall).varName}) / 0.3)` }}
             stroke={confidenceColor(profile.overall)}
-            strokeWidth={1.5}
+            strokeWidth={2}
             strokeLinejoin="round"
           />
           {dims.map((d, i) => {
             const [px, py] = pointAt(i, n, d.value / 100);
-            return <circle key={d.key} cx={px} cy={py} r={2.4} fill={bandColor(d)} />;
+            return <circle key={d.key} cx={px} cy={py} r={3} fill={bandColor(d)} />;
           })}
         </svg>
 
@@ -144,8 +150,20 @@ export function ConfidenceRadar({
                   {d.sufficient ? `${d.value}%` : "—"}
                 </span>
               </div>
-              <div className="mt-0.5 h-1 rounded-full bg-surface-3 overflow-hidden" aria-hidden>
-                <div className="h-full rounded-full" style={{ width: `${d.sufficient ? d.value : 0}%`, backgroundColor: bandColor(d) }} />
+              {/* A LOW value and NO value must not look the same. At 1px on a
+                  barely-tinted track, 17% rendered as an empty bar — the same
+                  picture an insufficient axis draws, when the two mean opposite
+                  things (measured-and-weak vs not-measurable). Taller bar, a
+                  track you can actually see, and a floor so any non-zero value
+                  leaves a visible mark. */}
+              <div className="mt-1 h-1.5 rounded-full bg-[hsl(var(--film)/0.1)] overflow-hidden" aria-hidden>
+                <div
+                  className="h-full rounded-full"
+                  style={{
+                    width: d.sufficient ? `${Math.max(2.5, d.value)}%` : "0%",
+                    backgroundColor: bandColor(d),
+                  }}
+                />
               </div>
               <p className="mt-0.5 text-eyebrow leading-snug text-muted-foreground/80">
                 {!d.sufficient && <span className="text-muted-foreground">Insufficient data — </span>}
