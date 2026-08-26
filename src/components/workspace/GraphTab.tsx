@@ -27,7 +27,7 @@ import { ConfidenceMeter } from "@/components/investigation/primitives";
 import { CopyButton } from "@/components/ui/workspace-primitives";
 import { AuthorityLegend } from "@/components/ui/authority";
 import { EmptyState } from "@/components/panel/EmptyState";
-import { Activity, AlertTriangle, Share2, Sparkles, X } from "lucide-react";
+import { Activity, AlertTriangle, ChevronDown, Share2, Sparkles, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { captureError } from "@/lib/telemetry";
 
@@ -75,8 +75,44 @@ function shorten(s: string, n = 22): string {
   return s.length > n ? `${s.slice(0, Math.max(0, n - 1))}…` : s;
 }
 
+/**
+ * Split labels on the suffix they SHARE with their neighbours.
+ *
+ * A case rooted on one company produces a wall of hostnames — docs·, git·,
+ * cdn·, api·, mail·, ns1·, smtp·, vpn·, staging· — that are identical for
+ * everything after the first dot. Rendered whole in a fixed-width chip they all
+ * truncate to "…northgate-logist…", so the ONLY distinguishing characters are
+ * the ones the ellipsis eats, and 16 nodes become visually indistinguishable.
+ *
+ * So: any suffix shared by 3+ labels is demoted to a dimmed tail. Nothing is
+ * hidden — the head carries the distinction, the tail stays legible, and the
+ * full value is still on the node's title and in the detail panel.
+ */
+function splitSharedSuffixes(labels: string[]): Map<string, { head: string; tail: string }> {
+  const counts = new Map<string, number>();
+  for (const l of labels) {
+    const dot = l.indexOf(".");
+    // Only host-like labels; an email's "@" tail is already its own signal.
+    if (dot <= 0 || l.includes("@")) continue;
+    const suffix = l.slice(dot);
+    counts.set(suffix, (counts.get(suffix) ?? 0) + 1);
+  }
+  const out = new Map<string, { head: string; tail: string }>();
+  for (const l of labels) {
+    const dot = l.indexOf(".");
+    if (dot <= 0 || l.includes("@")) { out.set(l, { head: l, tail: "" }); continue; }
+    const suffix = l.slice(dot);
+    out.set(l, (counts.get(suffix) ?? 0) >= 3
+      ? { head: l.slice(0, dot), tail: suffix }
+      : { head: l, tail: "" });
+  }
+  return out;
+}
+
 type EntityNodeData = {
   label: string;
+  head: string;
+  tail: string;
   group: Group;
   kind: string;
   value: string;
@@ -119,7 +155,24 @@ const EntityNode = memo(function EntityNode({ data, selected }: NodeProps<Entity
     >
       <Handle type="target" position={Position.Top} className="!h-1 !w-1 !border-0 !bg-transparent !opacity-0" isConnectable={false} />
       <span className="h-2 w-2 shrink-0 rounded-[3px]" style={{ backgroundColor: color }} />
-      <span className="max-w-[120px] truncate font-mono text-data font-medium text-foreground sm:max-w-[160px]">{data.label}</span>
+      {/* Hard width cap. Without it a single archive URL renders a ~700px chip,
+          which no layout spacing can plan around — one long node shoved four
+          neighbours underneath itself.
+          The head NEVER truncates when a tail exists: the head is the whole
+          reason this split happens (docs· vs git· vs cdn·), so letting flexbox
+          shrink both proportionally just reproduces the original bug pointed the
+          other way — "do…northgate-logistics.com". The shared tail absorbs all
+          of it; the full value stays on the title and in the detail panel. */}
+      <span className="flex min-w-0 max-w-[230px] items-baseline font-mono text-data">
+        {data.tail ? (
+          <>
+            <span className="shrink-0 font-medium text-foreground">{data.head}</span>
+            <span className="min-w-0 truncate text-muted-foreground/55">{data.tail}</span>
+          </>
+        ) : (
+          <span className="max-w-[190px] truncate font-medium text-foreground">{data.head}</span>
+        )}
+      </span>
       {data.confidence > 0 && (
         <span className="font-mono text-micro tabular-nums text-muted-foreground/90">{data.confidence}</span>
       )}
@@ -131,14 +184,17 @@ const EntityNode = memo(function EntityNode({ data, selected }: NodeProps<Entity
 const nodeTypes = { entity: EntityNode };
 
 function toRfNodes(graph: EntityGraph, hidden: Set<Group>): Node<EntityNodeData>[] {
-  return graph.nodes
-    .filter((n) => n.isSeed || !hidden.has(n.group))
+  const visible = graph.nodes.filter((n) => n.isSeed || !hidden.has(n.group));
+  const parts = splitSharedSuffixes(visible.map((n) => n.label));
+  return visible
     .map((n) => ({
       id: n.id,
       type: "entity",
       position: { x: n.x, y: n.y },
       data: {
         label: n.label,
+        head: parts.get(n.label)?.head ?? n.label,
+        tail: parts.get(n.label)?.tail ?? "",
         group: n.group,
         kind: n.kind,
         value: n.art?.value ?? n.label,
@@ -152,10 +208,17 @@ function toRfNodes(graph: EntityGraph, hidden: Set<Group>): Node<EntityNodeData>
     }));
 }
 
-function toRfEdges(graph: EntityGraph, hidden: Set<Group>, selected: string | null): Edge[] {
+function toRfEdges(graph: EntityGraph, hidden: Set<Group>, selected: string | null, showDiscovery: boolean): Edge[] {
   const visible = new Set(graph.nodes.filter((n) => n.isSeed || !hidden.has(n.group)).map((n) => n.id));
   return graph.edges
     .filter((e) => visible.has(e.source) && visible.has(e.target))
+    // "seed-discovery" is PROVENANCE, not a relationship claim (see EDGE_HINT):
+    // every node was discovered in the run, so drawing all of them says nothing
+    // and costs everything — 28 straight spokes converging on the seed rendered
+    // this graph as a starburst in which the ONE real identity link was
+    // invisible. Off by default; the toggle restores them, and selecting a node
+    // still reveals its own discovery edge below.
+    .filter((e) => showDiscovery || e.type !== "seed-discovery" || e.source === selected || e.target === selected)
     .map((e) => {
       const s = EDGE_STYLE[e.type];
       const incident = selected != null && (e.source === selected || e.target === selected);
@@ -186,6 +249,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
   const [seed, setSeed] = useState<{ value: string | null; type: string | null } | null>(null);
   const [hidden, setHidden] = useState<Set<Group>>(new Set());
   const [selected, setSelected] = useState<string | null>(null);
+  const [showDiscovery, setShowDiscovery] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -252,7 +316,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
       requestAnimationFrame(() => {
         if (rfNodes.length > 0) {
           fittedThread.current = threadId;
-          inst.fitView({ padding: narrowRef.current ? 0.06 : 0.2, maxZoom: 1.1 });
+          inst.fitView({ padding: narrowRef.current ? 0.05 : 0.1, maxZoom: 1.45 });
         }
       });
     },
@@ -278,7 +342,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
       });
     });
   }, [graph, hidden, setRfNodes]);
-  useEffect(() => { setRfEdges(toRfEdges(graph, hidden, selected)); }, [graph, hidden, selected, setRfEdges]);
+  useEffect(() => { setRfEdges(toRfEdges(graph, hidden, selected, showDiscovery)); }, [graph, hidden, selected, showDiscovery, setRfEdges]);
 
   // Fit once the (async) nodes for a case are present; re-fits when the case
   // changes. Group-filter toggles keep the same threadId so they don't re-fit.
@@ -286,7 +350,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
     if (!rfRef.current || rfNodes.length === 0) return;
     if (fittedThread.current === threadId) return;
     fittedThread.current = threadId;
-    const raf = requestAnimationFrame(() => rfRef.current?.fitView({ padding: narrowRef.current ? 0.06 : 0.2, maxZoom: 1.1, duration: 250 }));
+    const raf = requestAnimationFrame(() => rfRef.current?.fitView({ padding: narrowRef.current ? 0.05 : 0.1, maxZoom: 1.45, duration: 250 }));
     return () => cancelAnimationFrame(raf);
   }, [rfNodes, threadId]);
 
@@ -345,12 +409,40 @@ export function GraphTab({ threadId }: { threadId: string }) {
               </button>
             );
           })}
+          {/* Provenance edges are noise at rest and signal on demand — one
+              toggle, sitting with the other visibility controls. */}
+          {graph.stats.nodeCount > 1 && (
+            <button
+              onClick={() => setShowDiscovery((v) => !v)}
+              aria-pressed={showDiscovery}
+              title={
+                showDiscovery
+                  ? "Hide discovery links — they record that an entity was found in this run, not that it is related to anything"
+                  : "Show every discovery link (provenance, not relationships)"
+              }
+              className={cn(
+                "ml-auto inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg border px-2 text-data font-medium transition-colors",
+                showDiscovery
+                  ? "border-white/10 bg-surface-1/80 text-foreground"
+                  : "border-transparent text-muted-foreground/55 hover:text-muted-foreground",
+              )}
+            >
+              <svg width="16" height="6" viewBox="0 0 16 6" aria-hidden className="shrink-0">
+                <line x1="0" y1="3" x2="16" y2="3" stroke="currentColor" strokeWidth="1.5" opacity="0.8" />
+              </svg>
+              Discovery links
+            </button>
+          )}
         </div>
         {graph.warnings.length > 0 && (
-          <div className="mt-2 flex items-start gap-1.5 text-data text-[hsl(var(--warning))]">
-            <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
-            <span className="leading-relaxed">{graph.warnings[0]}</span>
-          </div>
+          <details className="group mt-2">
+            <summary className="flex cursor-pointer list-none items-center gap-1.5 text-data text-[hsl(var(--warning))] [&::-webkit-details-marker]:hidden">
+              <AlertTriangle className="h-3 w-3 shrink-0" />
+              <span className="min-w-0 flex-1 truncate">{graph.warnings[0]}</span>
+              <ChevronDown className="h-3 w-3 shrink-0 opacity-60 transition-transform group-open:rotate-180" />
+            </summary>
+            <p className="mt-1 pl-[18px] text-data leading-relaxed text-muted-foreground">{graph.warnings[0]}</p>
+          </details>
         )}
       </div>
 
@@ -365,7 +457,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
           onNodeClick={(_, n) => setSelected(n.id)}
           onPaneClick={() => setSelected(null)}
           fitView
-          fitViewOptions={{ padding: narrow ? 0.06 : 0.2, maxZoom: 1.1 }}
+          fitViewOptions={{ padding: narrow ? 0.05 : 0.1, maxZoom: 1.45 }}
           minZoom={0.2}
           maxZoom={2.5}
           nodesConnectable={false}
@@ -460,21 +552,16 @@ export function GraphTab({ threadId }: { threadId: string }) {
         )}
       </div>
 
-      {/* Legend + honest stats */}
+      {/* EDGE legend + honest stats.
+          The node-colour swatches that used to sit here were a READ-ONLY copy of
+          the filter chips at the top of this same panel — same eight labels,
+          same eight colours, two rows apart, one of them clickable and one not.
+          Deleted: the chips already say it, and they do something.
+          The edge legend stays, because nothing else explains what the LINES
+          claim — a solid line asserting shared identity and a dashed one meaning
+          "these merely sit on the same host" is the difference between a finding
+          and a coincidence. */}
       <div className="shrink-0 border-t border-white/[0.08] px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 bg-[linear-gradient(0deg,rgba(255,255,255,0.03),transparent)]">
-        {presentGroups.map((g) => (
-          <span key={g} className={cn("inline-flex items-center gap-1.5 text-data", hidden.has(g) ? "text-muted-foreground/40" : "text-muted-foreground")}>
-            <span className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ backgroundColor: GROUP_COLOR[g] }} />
-            {GROUP_LABEL[g]}
-          </span>
-        ))}
-        {/* EDGE legend. The node-colour swatches to the left say what each dot
-            IS; nothing said what the LINES mean — and the lines are the whole
-            analytical claim. A solid blue line asserting shared identity and a
-            dashed amber line meaning "these merely sit on the same host" were
-            visually distinguishable and semantically unlabelled, which is the
-            difference between a finding and a coincidence. */}
-        <span className="mx-1 hidden h-3.5 w-px bg-border sm:block" aria-hidden />
         {(Object.keys(EDGE_STYLE) as EdgeType[]).map((t) => (
           <span key={t} className="inline-flex items-center gap-1.5 text-data text-muted-foreground" title={EDGE_HINT[t]}>
             <svg width="18" height="6" viewBox="0 0 18 6" aria-hidden className="shrink-0">

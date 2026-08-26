@@ -1638,6 +1638,24 @@ All colors MUST be HSL.
   margin: 0 !important;
   max-width: 100%;
 }
+/* MEASURE. The single biggest legibility factor in long-form, and the one this
+   surface had no answer for: a findings report rendered at the full width of a
+   1600px workspace runs ~150 characters per line, and the eye loses its place
+   on the return sweep. 72ch is the top of the comfortable range — wide enough
+   that a report still reads as dense analyst output rather than a blog post.
+   Deliberately scoped to running text ONLY: tables, code blocks and horizontal
+   rules keep the full column, because their job is to carry wide data and
+   squeezing them just moves the scrollbar somewhere worse. */
+.chat-prose > p,
+.chat-prose > ul,
+.chat-prose > ol,
+.chat-prose > blockquote,
+.chat-prose > h1,
+.chat-prose > h2,
+.chat-prose > h3,
+.chat-prose > h4 {
+  max-width: 72ch;
+}
 .chat-prose > * + * {
   margin-top: 12px !important;
 }
@@ -1740,9 +1758,12 @@ All colors MUST be HSL.
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: hsl(var(--muted-foreground));
-  background: hsl(var(--film) / 0.04);
-  border-bottom: 1px solid hsl(var(--film) / 0.08);
+  /* Was --muted-foreground on a 4%-film ground: an 11px uppercase label at
+     that contrast is decoration, not a column head, and a findings table
+     whose columns cannot be identified at a glance is a wall of numbers. */
+  color: hsl(var(--foreground) / 0.72);
+  background: hsl(var(--film) / 0.055);
+  border-bottom: 1px solid hsl(var(--film) / 0.14);
   padding: 8px 12px;
   white-space: nowrap;
 }
@@ -1750,7 +1771,20 @@ All colors MUST be HSL.
   text-align: left;
   vertical-align: top;
   padding: 8px 12px;
-  border-bottom: 1px solid hsl(var(--film) / 0.05);
+  /* 0.05 was below the threshold where a rule reads as a rule — rows visually
+     merged, which is how a 20-row findings table becomes unscannable. */
+  border-bottom: 1px solid hsl(var(--film) / 0.09);
+  /* Confidence columns are the reason this table exists; lining the digits up
+     lets a column of scores be compared by eye instead of read one by one. */
+  font-variant-numeric: tabular-nums;
+}
+/* Row tracking. Reading across a wide report row is where an analyst loses the
+   line; a hover band is the cheapest possible fix and costs nothing at rest. */
+.chat-prose tbody tr {
+  transition: background-color 110ms linear;
+}
+.chat-prose tbody tr:hover {
+  background: hsl(var(--film) / 0.045);
 }
 .chat-prose tbody td:first-child {
   white-space: nowrap;
