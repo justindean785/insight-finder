@@ -109,6 +109,20 @@ describe("client display seed — address", () => {
     expect(d.kind).toBe("email");
     expect(d.selector).toBe("john@example.com");
   });
+
+  it("still classifies a bare, clean single-line address correctly (no stronger selector to prefer)", () => {
+    // Graphify review on #491 questioned whether excluding "address" from the
+    // clean-single-token fast path (the fix above) regresses the ordinary
+    // case — a plain address with nothing else in it. It doesn't: the blob-
+    // extraction chain it now falls through to finds no email/url/phone/
+    // domain and lands on the same address result, just one function call
+    // later.
+    for (const addr of ["79 Waverly Ave, Cincinnati, OH 45215", "1 Judiciary Sq NW, Washington, DC 20001"]) {
+      const d = extractDisplaySeed(addr, "other");
+      expect(d.kind).toBe("address");
+      expect(d.selector).toBe(addr);
+    }
+  });
 });
 
 describe("address normalizer", () => {
