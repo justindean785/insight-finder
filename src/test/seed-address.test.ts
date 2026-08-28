@@ -83,6 +83,13 @@ describe("client seed detection — address", () => {
     expect(detectSeed("5 AB CD 12345")?.kind).not.toBe("address");
     expect(detectSeed("1 Judiciary Sq NW, Washington, DC 20001")?.kind).toBe("address");
   });
+
+  it("does not mistake lowercase 'in'/'or' for the states IN/OR", () => {
+    expect(detectSeed("42 times he called in 12345")?.kind).not.toBe("address");
+    expect(detectSeed("5 things I like or 90210")?.kind).not.toBe("address");
+    expect(detectSeed("100 N Meridian St, Indianapolis, IN 46204")?.kind).toBe("address");
+    expect(detectSeed("123 SW Main St, Portland, OR 97204")?.kind).toBe("address");
+  });
 });
 
 describe("client display seed — address", () => {
@@ -149,13 +156,31 @@ describe("client ↔ server address parity", () => {
     "utf-8",
   );
 
-  const body = (src: string, name: string) =>
-    src
-      .match(new RegExp(`export function ${name}\\([^]*?\\n\\}`))?.[0]
-      // strip the signature and every comment/whitespace difference
-      .replace(new RegExp(`export function ${name}\\([^)]*\\)[^{]*\\{`), "")
-      .replace(/\/\/[^\n]*/g, "")
-      .replace(/\s+/g, "") ?? "";
+  // Graphify review on #491: matching the function up to the FIRST "\n}" is
+  // fragile — a body containing any inner block (an if, a try/catch, a
+  // nested function) would truncate there and the test would silently
+  // compare two incomplete fragments, defeating the point of a parity check
+  // (catching future drift). Extract the real function body by counting
+  // brace depth from the opening "{" instead.
+  function body(src: string, name: string): string {
+    const sigMatch = new RegExp(`export function ${name}\\([^)]*\\)[^{]*\\{`).exec(src);
+    if (!sigMatch) return "";
+    const openBraceIndex = sigMatch.index + sigMatch[0].length - 1;
+    let depth = 0;
+    for (let i = openBraceIndex; i < src.length; i++) {
+      if (src[i] === "{") depth++;
+      else if (src[i] === "}") {
+        depth--;
+        if (depth === 0) {
+          return src
+            .slice(openBraceIndex + 1, i)
+            .replace(/\/\/[^\n]*/g, "")
+            .replace(/\s+/g, "");
+        }
+      }
+    }
+    return "";
+  }
 
   it("normalizeAddressValue is character-identical on both sides", () => {
     const server = body(SERVER, "normalizeAddressValue");

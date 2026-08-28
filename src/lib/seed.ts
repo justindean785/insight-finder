@@ -45,7 +45,7 @@ const US_STATE_CODES = new Set([
 ]);
 const US_STATE_CODE_RE = "(?:" + [...US_STATE_CODES].join("|") + ")";
 const US_POSTAL_RE = new RegExp(
-  `^\\d{1,6}(?:-\\d{1,6})?[A-Za-z]?\\s+\\S.*?[\\s,]+${US_STATE_CODE_RE}[\\s,]+\\d{5}(?:-\\d{4})?$`,
+  `^\\d{1,6}(?:-\\d{1,6})?[A-Za-z]?\\s+\\S.*?[\\s,]+(${US_STATE_CODE_RE})[\\s,]+\\d{5}(?:-\\d{4})?$`,
   "i",
 );
 
@@ -58,7 +58,14 @@ export function flattenAddress(raw: string | null | undefined): string {
 export function looksLikePostalAddress(raw: string | null | undefined): boolean {
   const flat = flattenAddress(raw);
   if (!flat || flat.length > 200) return false;
-  return US_POSTAL_RE.test(flat);
+  const m = US_POSTAL_RE.exec(flat);
+  if (!m) return false;
+  // The state token must be written in the conventional uppercase form. Real
+  // addresses always capitalize the state abbreviation; two of the 57 codes
+  // (IN, OR) are also ordinary lowercase English words ("called him back in
+  // 12345", "apples or 90210"), so a case-insensitive-only match false-
+  // positived on plain sentences that happen to end in a 5-digit number.
+  return m[1] === m[1].toUpperCase();
 }
 
 /**

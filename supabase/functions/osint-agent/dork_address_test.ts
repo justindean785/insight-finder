@@ -122,6 +122,24 @@ Deno.test("address seed: the state position must be a real USPS code, not any tw
   assertEquals(detectSeedServer("1 Judiciary Sq NW, Washington, DC 20001")?.kind, "address");
 });
 
+Deno.test("address seed: 'in'/'or' as ordinary lowercase words are not mistaken for the states IN/OR", () => {
+  // Graphify review on #491: two of the 57 USPS codes (Indiana=IN, Oregon=OR)
+  // are also common lowercase English words. A case-insensitive-only state
+  // match let an ordinary sentence that starts with digits and ends in a
+  // 5-digit number false-positive as an address.
+  for (
+    const v of [
+      "42 times he called in 12345",
+      "5 things I like or 90210",
+    ]
+  ) {
+    assert(detectSeedServer(v)?.kind !== "address", `${v} must NOT classify as an address (lowercase "in"/"or", not a state)`);
+  }
+  // Properly capitalized IN/OR addresses are unaffected.
+  assertEquals(detectSeedServer("100 N Meridian St, Indianapolis, IN 46204")?.kind, "address");
+  assertEquals(detectSeedServer("123 SW Main St, Portland, OR 97204")?.kind, "address");
+});
+
 Deno.test("parseUsAddress: bails out on an oversized input instead of running the regex", () => {
   // Graphify review on #491: US_POSTAL_PARSE_RE backtracks two lazy groups
   // (street, city) against each other on a non-matching tail. Unlike
