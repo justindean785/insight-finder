@@ -556,11 +556,34 @@ All colors MUST be HSL.
     .ledger-row [data-ledger-col="source"],
     .ledger-head [data-ledger-col="source"] { display: none; }
   }
+  /* Phone. Four columns genuinely cannot fit — but dropping AUTHORITY and
+     CONFIDENCE is not a density decision, it is a DISCLOSURE one, and it
+     shipped. A live 96-artifact case on a phone rendered as a bare column of
+     values: twelve strangers' names lifted out of a breach corpus, with no
+     chip, no basis and no score to say so, reading exactly like the subject's
+     own verified selector one section below. Only the spine's colour and the
+     caveat line survived.
+
+     So reflow rather than hide — which is what the 899px comment above always
+     claimed ("let the rest reflow under the value") and what neither rule ever
+     did. Value takes its own line; authority and score share a second. */
   @media (max-width: 639px) {
-    .ledger { --ledger-cols: minmax(0, 1fr); }
-    .ledger-row [data-ledger-col="status"],
+    .ledger { --ledger-cols: minmax(0, 1fr) auto; }
+    .ledger-row { row-gap: 0.25rem; }
+    .ledger-row [data-ledger-col="value"] { grid-column: 1 / -1; }
+    .ledger-row [data-ledger-col="status"] {
+      grid-column: 1;
+      display: flex;
+      align-items: center;
+      gap: 0.375rem;
+      min-width: 0;
+    }
+    /* The basis sub-line sits BESIDE the chip here rather than under it, so a
+       row costs two lines instead of three across a hundred of them. */
+    .ledger-row [data-ledger-col="status"] > :last-child { margin-top: 0; }
+    .ledger-row [data-ledger-col="confidence"] { grid-column: 2; }
+    /* The head still can't label a reflowed row, so it keeps only "Evidence". */
     .ledger-head [data-ledger-col="status"],
-    .ledger-row [data-ledger-col="confidence"],
     .ledger-head [data-ledger-col="confidence"] { display: none; }
   }
 

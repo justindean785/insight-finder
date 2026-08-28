@@ -1081,7 +1081,11 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
               { key: "excluded", label: "Excluded", count: counts.excluded, tone: "danger" },
             ]}
           />
-          <div className="ml-auto flex items-center gap-1.5">
+          {/* The sort group takes its own line on a phone. `ml-auto` on a
+              wrapping flex row pushed it to a line of its own anyway, but with
+              the "SORT" label stranded beside a wrapped chip row rather than
+              above it. Wrapping as a unit is what it looked like it did. */}
+          <div className="flex w-full flex-wrap items-center gap-1.5 sm:ml-auto sm:w-auto">
             <span className="text-eyebrow uppercase tracking-[0.14em] text-muted-foreground/70">Sort</span>
             <FilterChips<EvidenceSortMode>
               ariaLabel="Sort evidence"
