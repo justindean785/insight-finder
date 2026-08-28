@@ -1725,6 +1725,37 @@ All colors MUST be HSL.
   border: 0;
   padding: 0;
 }
+/* Horizontal-scroll edge affordance, shared by every row that scrolls sideways.
+   A row that scrolls but shows no sign of it reads as CLIPPED — content sliced
+   mid-word at a hard edge, and on touch there is no resting scrollbar to say
+   otherwise. That is a perception bug, not a layout one: everything is present
+   and reachable, it just looks broken. Measured on a 390px viewport, the Brain
+   header's metric chips and its tab row both cut this way, and a chat table with
+   `min-width: 30rem` cuts inside a ~20rem column.
+
+   `mask-attachment: local` ties the gradient to scroll position, so the fade
+   shows only while there is more to reach, disappears at the end, and never
+   appears at all on a row that already fits. It changes no layout and hides no
+   content. */
+.edge-fade-x {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 1.75rem), transparent 100%),
+    linear-gradient(to right, #000 100%);
+  mask-image: linear-gradient(to right, #000 calc(100% - 1.75rem), transparent 100%),
+    linear-gradient(to right, #000 100%);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+  -webkit-mask-attachment: local, scroll;
+  mask-attachment: local, scroll;
+}
+@media (prefers-reduced-motion: reduce) {
+  /* No motion involved, but a static gradient over evidence is still an effect
+     some users suppress; the scrollbar stays as the fallback cue. */
+  .edge-fade-x {
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+}
+
 .chat-prose .chat-table-wrap {
   width: 100%;
   border: 1px solid hsl(var(--film) / 0.08);

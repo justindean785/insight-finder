@@ -962,7 +962,7 @@ const chatMarkdownComponents: Components = {
     </div>
   ),
   table: ({ node, children, ...rest }) => (
-    <div className="chat-table-wrap">
+    <div className="chat-table-wrap edge-fade-x">
       <table {...rest}>{children}</table>
     </div>
   ),

@@ -261,7 +261,12 @@ export default function BrainGlobalPage() {
   const content = (
     <div className="flex-1 min-h-0 overflow-y-auto">
       <header className="sticky top-0 z-10 glass-card border-b border-border-subtle">
-        <div className="px-6 pt-5 pb-3 flex items-start gap-3">
+        {/* Phone: this header is sticky, so every pixel it takes is permanently
+            gone. Measured at 390px before this change it stood ~330px tall —
+            39% of an 844px viewport — ahead of any content. Padding, title size
+            and the decorative sub-line are scaled per breakpoint; the desktop
+            composition is unchanged. */}
+        <div className="px-4 sm:px-6 pt-4 sm:pt-5 pb-2.5 sm:pb-3 flex items-start gap-2.5 sm:gap-3">
           <Link
             to="/"
             aria-label="Home"
@@ -273,13 +278,16 @@ export default function BrainGlobalPage() {
             <Sparkles className="absolute -top-1 -right-1 w-3 h-3 text-primary animate-pulse" />
           </Link>
           <div className="flex-1 min-w-0">
-            <h1 className="font-display text-xl tracking-tight text-foreground">
+            <h1 className="font-display text-base sm:text-xl tracking-tight text-foreground">
               INTELLIGENCE · CROSS-CASE VIEW
             </h1>
-            <p className="text-xs text-muted-foreground mt-0.5">
+            {/* Decorative: it restates what the title and the tabs below already
+                say. First thing to go on a small screen. The governance note
+                below is NOT decorative and stays at every width. */}
+            <p className="hidden sm:block text-xs text-muted-foreground mt-0.5">
               Aggregate stats, evidence-quality analysis, saved patterns, and source context across every case.
             </p>
-            <p className="mt-1.5 text-micro text-muted-foreground/80">
+            <p className="mt-1 sm:mt-1.5 text-micro text-muted-foreground/80">
               Pin / mute / hide actions on this screen are local view controls — they do not modify
               the source memory or create an audited governance record.
             </p>
@@ -290,7 +298,7 @@ export default function BrainGlobalPage() {
             </span>
           )}
         </div>
-        <div className="px-6 pb-4 flex gap-2 overflow-x-auto scrollbar-thin">
+        <div className="px-4 sm:px-6 pb-3 sm:pb-4 flex gap-2 overflow-x-auto scrollbar-thin edge-fade-x">
           <MetricChip icon={Brain} label="MEMORIES" value={stats.total} />
           <MetricChip icon={Zap} label="RECALLS" value={stats.recalls} />
           <MetricChip icon={Target} label="AVG CONFIDENCE" value={`${stats.avgConf}%`} />
@@ -532,7 +540,7 @@ function MemoriesTab({
         </div>
       </div>
 
-      <div className="flex gap-1.5 overflow-x-auto scrollbar-thin -mx-1 px-1">
+      <div className="flex gap-1.5 overflow-x-auto scrollbar-thin edge-fade-x -mx-1 px-1">
         {MEMORY_FILTERS.map((f) => (
           <button
             key={f}
@@ -718,7 +726,7 @@ function PatternsTab({
         </div>
       </div>
 
-      <div className="flex gap-1.5 overflow-x-auto scrollbar-thin -mx-1 px-1">
+      <div className="flex gap-1.5 overflow-x-auto scrollbar-thin edge-fade-x -mx-1 px-1">
         {PATTERN_FILTERS.map((f) => (
           <button
             key={f}
