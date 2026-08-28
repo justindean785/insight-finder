@@ -29,6 +29,7 @@ import {
   isQueuedPlaceholder,
   stripStatusAssertions,
   nullResultKey,
+  artifactDedupKey,
 } from "./lib/artifact-hygiene.ts";
 import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
 import { selectPivots, proposedCallToCandidate, type PivotCandidate, type ProposedCall } from "./graph_pivots.ts";
@@ -183,6 +184,106 @@ const JINA_HARD_BLOCK_HOSTS = [
   // review, not a markdown scrape.
   "webportal.courts.oregon.gov",
 ];
+/** Page size and hard ceiling for the thread-wide artifact identity scan.
+ *  PostgREST silently caps an unbounded select at the server `max-rows`, and a
+ *  silently truncated dedup set re-admits rows it should have declined — the
+ *  same shape as the recovery incident that read 40 of 85 artifacts and closed a
+ *  run on a minority of its own evidence. */
+const THREAD_ARTIFACT_PAGE_SIZE = 1000;
+const THREAD_ARTIFACT_SCAN_MAX = 5000;
+
+/** One stored artifact's identity, as the dedup gate needs it. */
+type PriorArtifact = { id: string; confidence: number };
+
+/**
+ * Every artifact identity already on this thread, keyed exactly as the write
+ * path keys a new one (`artifactDedupKey`) so runtime and stored keys cannot
+ * drift.
+ *
+ * `truncated` is surfaced to the model rather than swallowed: a partial set
+ * means a duplicate may be admitted, and a dedup gate that quietly stops
+ * deduping is worse than one that says so. Never selects `metadata` — it is
+ * JSONB carrying a large per-row snapshot, and hauling the thread's worth of it
+ * on every record call is the wrong cost.
+ */
+async function loadThreadArtifactIdentities(
+  supabase: ReturnType<typeof createClient>,
+  threadId: string,
+): Promise<{ keys: Map<string, PriorArtifact>; truncated: boolean }> {
+  const keys = new Map<string, PriorArtifact>();
+  let truncated = false;
+  try {
+    for (let from = 0; from < THREAD_ARTIFACT_SCAN_MAX; from += THREAD_ARTIFACT_PAGE_SIZE) {
+      const to = Math.min(from + THREAD_ARTIFACT_PAGE_SIZE, THREAD_ARTIFACT_SCAN_MAX) - 1;
+      const { data, error } = await supabase
+        .from("artifacts")
+        .select("id,kind,value,source,confidence")
+        .eq("thread_id", threadId)
+        .range(from, to);
+      if (error || !Array.isArray(data)) { truncated = true; break; }
+      for (const r of data as Array<Record<string, unknown>>) {
+        const kind = typeof r.kind === "string" ? r.kind : "";
+        const value = typeof r.value === "string" ? r.value : "";
+        if (!kind || !value) continue;
+        const key = artifactDedupKey({ kind, value, source: typeof r.source === "string" ? r.source : null });
+        // FIRST WRITER WINS. The earliest row is the one whose evidence-ledger
+        // entry exists; a later duplicate must never displace it as the survivor.
+        if (!keys.has(key)) {
+          keys.set(key, {
+            id: String(r.id ?? ""),
+            confidence: typeof r.confidence === "number" ? r.confidence : 0,
+          });
+        }
+      }
+      if (data.length < THREAD_ARTIFACT_PAGE_SIZE) break;
+      if (to + 1 >= THREAD_ARTIFACT_SCAN_MAX) truncated = true;
+    }
+  } catch (e) {
+    // Best-effort by contract: dedup must never cost a batch of evidence.
+    console.warn("[record_artifacts] thread dedup scan failed:", (e as Error)?.message ?? e);
+    truncated = true;
+  }
+  return { keys, truncated };
+}
+
+/**
+ * Targeted twin of the above for the SINGULAR `record_artifact` shim, which
+ * writes one row at a time. A full thread scan per single-artifact call would be
+ * the wrong cost, so this filters in SQL and builds the key on the few rows that
+ * come back — same `artifactDedupKey`, same semantics.
+ */
+async function findPriorThreadArtifact(
+  supabase: ReturnType<typeof createClient>,
+  threadId: string,
+  kind: string,
+  value: string,
+  source: string | null,
+): Promise<PriorArtifact | null> {
+  try {
+    const { data, error } = await supabase
+      .from("artifacts")
+      .select("id,kind,value,source,confidence")
+      .eq("thread_id", threadId)
+      .eq("kind", kind)
+      .eq("value", value);
+    if (error || !Array.isArray(data)) return null;
+    const wanted = artifactDedupKey({ kind, value, source });
+    for (const r of data as Array<Record<string, unknown>>) {
+      const k = artifactDedupKey({
+        kind: typeof r.kind === "string" ? r.kind : "",
+        value: typeof r.value === "string" ? r.value : "",
+        source: typeof r.source === "string" ? r.source : null,
+      });
+      if (k === wanted) {
+        return { id: String(r.id ?? ""), confidence: typeof r.confidence === "number" ? r.confidence : 0 };
+      }
+    }
+  } catch (e) {
+    console.warn("[record_artifact] thread dedup lookup failed:", (e as Error)?.message ?? e);
+  }
+  return null;
+}
+
 function isJinaHardBlocked(hostname: string): boolean {
   return JINA_HARD_BLOCK_HOSTS.some((h) => hostname === h || hostname.endsWith(`.${h}`));
 }
@@ -4576,6 +4677,28 @@ export function buildTools(ctx: ToolContext) {
         // Skip exact repeats so we don't write duplicate artifact rows. This is
         // a non-destructive, in-memory-only guard — no DB change.
         const seenInBatch = new Set<string>();
+        // THREAD-WIDE dedup (2026-08-28) — the bound the note below used to
+        // describe as open. `seenInBatch` only ever caught a repeat inside ONE
+        // call, and the duplicates measured in production were seconds apart in
+        // DIFFERENT calls: `V&S 1110 LLC` persisted as three `organization` rows
+        // (55/75/75), `Ved Parkash` as three, one address as four. An Evidence
+        // count of 88 that is not a count of distinct facts.
+        //
+        // Closed at RUNTIME, deliberately. #305's dedup migration would have
+        // deleted ~120 genuinely distinct rows and orphaned 53 analyst reviews;
+        // #307, which existed to fix that, was closed unmerged. Nothing here
+        // deletes, migrates or backfills anything — it only declines to write a
+        // row the thread already has.
+        const { keys: priorByKey, truncated: threadDedupPartial } =
+          await loadThreadArtifactIdentities(supabase, threadId);
+        /** Confidence differences on rows declined as thread-wide duplicates.
+         *  DISCLOSED, never applied — see the note at the rejection site. */
+        const confidenceDeltasSuppressed: Array<{
+          kind: string;
+          value: string;
+          recorded_confidence: number;
+          attempted_confidence: number;
+        }> = [];
         artifacts.forEach((a, i) => {
           // A QUEUED tool call is not an observation. Ten rows like
           // "hawkcapo - socialfetch_lookup (pending Instagram)" were persisted
@@ -4742,13 +4865,54 @@ export function buildTools(ctx: ToolContext) {
               ? a.metadata.username
               : (typeof a.metadata?.email === "string" ? a.metadata.email : (triageState.seed ?? null)),
           });
-          const dedupKey = canonicalNullKey ?? JSON.stringify([
-            finalKind,
-            v.value,
-            authoritativeSource,
-          ]);
+          const dedupKey = canonicalNullKey ?? artifactDedupKey({
+            kind: finalKind,
+            value: v.value,
+            source: authoritativeSource,
+          });
           if (seenInBatch.has(dedupKey)) {
             rejected.push({ index: i, reason: "duplicate (kind,value,authoritative source) already in this batch", kind: finalKind, value: v.value });
+            return;
+          }
+          // Already on the thread from an EARLIER call. Declined, and disclosed
+          // through the same `rejected[]` channel every other gate uses, so a
+          // refusal stays legible as a refusal.
+          const prior = priorByKey.get(dedupKey);
+          if (prior) {
+            // ⛔ THE STORED CONFIDENCE IS NOT RAISED. #307 merged with GREATEST
+            // and that is unsafe here: `scrubArtifactRow` (safety.ts:107-112)
+            // caps confidence to 25/35 on a possible-minor row AFTER
+            // finalConfidence is computed and BEFORE insert. A
+            // max(stored, attempted) update would read the capped 25 and raise
+            // it back to the model's number, silently undoing the minor-safety
+            // downgrade. Re-running the whole scrub pipeline in an update path
+            // means reimplementing the write path; declining is correct.
+            //
+            // Nor does the duplicate carry new evidence: the key includes the
+            // authoritative source, so the SAME value from a DIFFERENT source
+            // has a different key and is accepted as real corroboration. A
+            // delta on an identical key is the same claim from the same source
+            // scored differently by the model — and #477 already settled that a
+            // model-asserted number is disclosure, never authority.
+            //
+            // So the delta is DISCLOSED rather than applied. The model can read
+            // it and re-record under the source that actually corroborated,
+            // which does not collide.
+            if (finalConfidence !== prior.confidence) {
+              confidenceDeltasSuppressed.push({
+                kind: finalKind,
+                value: v.value,
+                recorded_confidence: prior.confidence,
+                attempted_confidence: finalConfidence,
+              });
+            }
+            rejected.push({
+              index: i,
+              reason: "duplicate (kind, value, authoritative source) already recorded on this thread — " +
+                "re-recording an observation does not make it two observations",
+              kind: finalKind,
+              value: v.value,
+            });
             return;
           }
           seenInBatch.add(dedupKey);
@@ -4948,6 +5112,16 @@ export function buildTools(ctx: ToolContext) {
           rejected,
           minor_safety_flags: flagged,
           evidence_appended,
+          // A confidence delta on a thread-wide duplicate is disclosed, never
+          // applied — the stored row is authoritative. If the higher number
+          // reflects genuinely new corroboration, record it under the source
+          // that produced it; that key does not collide.
+          ...(confidenceDeltasSuppressed.length > 0
+            ? { confidence_deltas_suppressed: confidenceDeltasSuppressed }
+            : {}),
+          // A dedup gate that quietly stopped deduping would be worse than one
+          // that says so: a partial scan means a duplicate may have been let in.
+          ...(threadDedupPartial ? { thread_dedup_partial: true } : {}),
           ...(memory_hits.length > 0
             ? {
                 memory_hits,
@@ -5057,6 +5231,33 @@ export function buildTools(ctx: ToolContext) {
           ...(bioName ? { bio_cross_link: true } : {}),
           ...(llmAssertedProvenance ? { provenance: LLM_ASSERTED_PROVENANCE, provenance_verified: false } : {}),
         };
+        // THREAD-WIDE dedup, same gate as record_artifacts (2026-08-28). This
+        // shim is a full duplicate implementation, not a delegation, and it is
+        // advertised in the catalog — so deduping only the plural tool would
+        // leave the bypass advertised. Targeted lookup rather than a whole-thread
+        // scan because this path writes exactly one row.
+        const priorSingle = await findPriorThreadArtifact(
+          supabase, threadId, finalKind, v.value, source ?? null,
+        );
+        if (priorSingle) {
+          return {
+            ok: false,
+            rejected: true,
+            reason: "duplicate (kind, value, authoritative source) already recorded on this thread — " +
+              "re-recording an observation does not make it two observations",
+            kind: finalKind,
+            value: v.value,
+            // Disclosed, never applied — see the note in record_artifacts.
+            ...(finalConfidence !== priorSingle.confidence
+              ? {
+                confidence_delta_suppressed: {
+                  recorded_confidence: priorSingle.confidence,
+                  attempted_confidence: finalConfidence,
+                },
+              }
+              : {}),
+          };
+        }
         const row = scrubArtifactRow({
           thread_id: threadId,
           user_id: userId,

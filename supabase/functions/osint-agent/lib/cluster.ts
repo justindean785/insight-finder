@@ -24,6 +24,7 @@
 
 // ---- Confidence tiers (JD's schema) -------------------------------------------
 import { loadReviewsForThread, applyReviewsToArtifacts } from "../reviews.ts";
+import { normPhoneE164 } from "./selector-normalize.ts";
 
 export const TIERS = { CONFIRMED: 90, LIKELY: 75, POSSIBLE: 50, WEAK: 30 } as const;
 export function tierFor(conf: number): string {
@@ -91,13 +92,17 @@ export function normEmail(v: string): string | null {
   return m ? m[0] : null;
 }
 
-export function normPhoneE164(v: string): string | null {
-  const digits = String(v ?? "").replace(/\D/g, "");
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-  if (digits.length >= 8 && digits.length <= 15) return `+${digits}`;
-  return null;
-}
+// MOVED to `lib/selector-normalize.ts` (2026-08-28) so the auto-persist
+// extractor can call the SAME fold at write time without importing this module,
+// which pulls in `../reviews.ts`. Re-exported here so every existing consumer —
+// `strongTokens` below, `lib/memory_consolidate.ts` — keeps working unchanged.
+//
+// The move is the point: before it, this fold ran only when clustering, so the
+// clusterer and the artifact table disagreed about what "one phone" is. One
+// number was persisted as three rows and then correctly clustered as one.
+// NOTE: imported AND re-exported, not `export … from`. `strongTokens` below
+// calls it, and a bare re-export would not bind the name in this module's scope.
+export { normPhoneE164 };
 
 /** Fold a handle/username to a comparison token: lowercase, alphanumerics only. So
  * manza_visuals ≡ ManzaVisuals ≡ @manza_visuals ≡ manzavisuals(.com local part). */

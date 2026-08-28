@@ -293,12 +293,16 @@ Deno.test("wiring: the null-result key is what dedup actually uses", () => {
   assert(REGISTRY.includes("nullResultKey({"), "null-result key must be computed");
   // The fallback key changed shape under #463: it was a template literal over
   // `effSources` (surface source UNIONED with model-authored metadata labels),
-  // and is now JSON.stringify over `authoritativeSource` alone. This assertion
-  // tracks the current shape on purpose — pinning the old string would pass
-  // while the gate sat unused, which is the failure this file exists to catch.
+  // and became JSON.stringify over `authoritativeSource` alone. It is now the
+  // shared `artifactDedupKey` helper — same bytes, but extracted so the
+  // thread-wide lookup builds its key with the SAME function. Two hand-written
+  // copies of one key is how a dedup gate silently stops matching. This
+  // assertion tracks the current shape on purpose — pinning an old string would
+  // pass while the gate sat unused, which is the failure this file exists to
+  // catch.
   assert(
-    REGISTRY.includes("const dedupKey = canonicalNullKey ?? JSON.stringify(["),
-    "dedupKey must PREFER the canonical null key, falling back to the authoritative-surface key",
+    REGISTRY.includes("const dedupKey = canonicalNullKey ?? artifactDedupKey({"),
+    "dedupKey must PREFER the canonical null key, falling back to the shared authoritative-surface key",
   );
 });
 

@@ -23,6 +23,39 @@
 const SNAKE_TOKEN_RE = /\b[a-z0-9]+(?:_[a-z0-9]+)+\b/g;
 
 /**
+ * G5 — the identity of a recorded observation: (kind, value, authoritative source).
+ *
+ * ONE function so the in-batch key and the thread-wide key cannot drift. They
+ * were previously the same expression written once; the moment a second copy
+ * existed for the thread-wide lookup, a runtime key that disagreed with the
+ * stored key would silently stop deduping and nothing would fail.
+ *
+ * `source` is part of the identity ON PURPOSE, and it is the same reason G4
+ * states: four corpora returning the same answer is four coverage facts, and
+ * collapsing them erases breadth — the data-loss shape flagged on #189's
+ * migration and, later, the reason #305/#307's dedup work was abandoned.
+ *
+ * ⚠️ THE VALUE IS IN THE KEY, WHOLE AND UNPARSED. That is what makes this safe
+ * to run thread-wide. `violations_total 670`, `violations_total 676` and
+ * `violations_total 28` are three different values, therefore three different
+ * keys, therefore three surviving rows. They are a CONTRADICTION, not a
+ * duplicate, and `detectContradictions` is what should speak to them. Any future
+ * change that normalises, rounds or fuzzy-matches the value here would convert a
+ * visible disagreement into a silent merge. Do not.
+ */
+export function artifactDedupKey(input: {
+  kind: string;
+  value: string;
+  source?: string | null;
+}): string {
+  return JSON.stringify([
+    input.kind,
+    input.value,
+    (input.source ?? "").trim().toLowerCase(),
+  ]);
+}
+
+/**
  * G1 — a QUEUED tool call is not an observation.
  *
  * The run persisted ten rows like `hawkcapo - socialfetch_lookup (pending
