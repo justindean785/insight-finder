@@ -1,6 +1,6 @@
 ---
 name: Insight Finder step-by-step execution workflow (2026-08-25)
-description: JD's ordered Part A / Part B execution plan — settle the PR queue (A1-A3), then ship B1-B7 — with the per-step rules that every step inherits; Step A1 is DONE, main is a38963c (865f49e is the DEPLOYED build marker, not main's tip)
+description: JD's ordered Part A / Part B execution plan — settle the PR queue (A1-A3), then ship B1-B7 — with the per-step rules that every step inherits; A1 DONE, A3 partly done, A2 (#502) still unmerged awaiting JD; as of 2026-08-28 main is 28acddd and the DEPLOYED build marker is b234550
 type: process
 ---
 The full plan JD handed over on 2026-08-25. Each step is a standalone prompt for a fresh
@@ -9,6 +9,31 @@ produced, so skipping ahead means branching off a `main` that is missing the fix
 
 `main` at plan authoring = `4cc7573`. Not branch-protected. No auto-merge. No deploy. No
 Lovable sync. **JD authorizes every merge and deploy.**
+
+## ⚠️ Progress since authoring — updated 2026-08-28
+
+`main` at plan authoring `4cc7573` → **`28acddd`**. Live `osint-agent` build **`865f49e` →
+`b234550`**. Merged since this plan was written, none of it in the A/B numbering:
+
+| PR | What |
+|---|---|
+| #507 | Workspace visual pass — graph readability, honest charts, Dossier register (frontend) |
+| #508 | Write-path artifact hygiene — phone E.164, address composition, thread-wide dedup (**deployed at `b234550`**) |
+| #509 | Graph NaN fix + un-inverted `isVacuous` (frontend follow-up to #507) |
+| #505 | The three-claim mem correction this plan's A1 note asks for — **now merged** |
+| #504 | This memory itself, plus tool-telemetry and design-direction notes |
+| #506 | Three module headers corrected to stop describing removed behaviour |
+
+**A2 (#502) is still open and still unmerged** — the review is done and recorded below;
+JD merges it. **A3 is partly done**: #493, #435 and #491 are all still open. Part B has not
+started. The A1 warning about `mem/architecture/ai-sdk-positional-tool-pairing.md` is
+**discharged** — #505 merged, so `main`'s copy is correct now.
+
+**The lesson this plan did not anticipate.** Rule 4 says "merge before the next step," and it
+was the rule that broke: nine finished, green PRs sat in **draft**, so three days produced zero
+functional commits on `main` while the work itself was done and correct. Add to the rule —
+**a PR is not finished until `draft: false` and merged.** Check `draft` before diagnosing
+anything downstream.
 
 ## Rules every step inherits
 

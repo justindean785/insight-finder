@@ -12,8 +12,32 @@ Source: two live runs pasted by JD (`insight-finder-sandy.vercel.app`), seed
 `"Jordan Vale, age 31"` → pivot to `+19175550123` → `1110 Sample Ave`.
 Raw artifact JSON, the exported report, the browser console and the Network tab.
 
-**None of the below is fixed.** The frontend consequences were fixed in #507;
-these are the causes, and they are backend or undecided.
+> ## STATUS — updated 2026-08-28
+>
+> | # | Defect | Status |
+> |---|---|---|
+> | 1 | Phone normalisation mints a selector from an excluded row | **FIXED + DEPLOYED** — #508, live build `b234550` |
+> | 2 | Raw breach fields concatenated into the value | **FIXED + DEPLOYED** — #508, live build `b234550` |
+> | 3 | The same fact recorded 3–5 times | **FIXED + DEPLOYED** — #508, live build `b234550` |
+> | 4 | Full SSN composed into an artifact VALUE | **OPEN** — JD explicitly declined it in this pass |
+> | 5 | Dispatch boundary | **OPEN** — CLAUDE.md's standing P1; JD explicitly declined it |
+> | 6 | Client-side (CSP, load-time 401, 3× health probes) | **OPEN** — all three declined |
+>
+> What #508 shipped for 1–3: E.164 canonicalisation at write time in **both** writers
+> (`normalizeFinding` and `validateArtifact`), so one number is one artifact while a `+7`
+> number sharing ten digits stays distinct; `composeAddress` instead of a raw field join; a
+> `CO_TENANT_CTX` quarantine stamp on a breach row that positively disagrees with the queried
+> phone (phone only, deliberately); and thread-wide dedup in `record_artifacts` and the
+> singular `record_artifact` shim through one shared `artifactDedupKey`. **No migration and no
+> backfill** — forward-only, so every row written before `b234550` still shows the old shapes.
+> Disagreeing values (670/676/28) stay separate rows by construction: the whole unparsed value
+> is in the key.
+>
+> Items 4–6 are unchanged and the text below still describes them accurately.
+
+**Items 1–3 are fixed as of 2026-08-28; 4–6 are not.** The frontend consequences were fixed
+in #507; the causes of 1–3 in #508. What follows is the original 2026-08-26 measurement,
+kept verbatim because the shapes are the evidence.
 
 ---
 
