@@ -74,6 +74,11 @@ const artifacts = [
   { id: "a14", thread_id: THREAD_ID, kind: "url", value: "https://staff.northgate-logistics.com/directory/operations/james-harker?ref=internal&utm_source=intranet&sid=7f3c19ab-2d44-4e51-9c07-a8be31f0d2c6", confidence: 66, confidence_cap_applied: null, source: "firecrawl_scrape", created_at: iso(12), metadata: { sources: ["firecrawl_scrape"], corroborations: 1, source_class: "independent_public" } },
   { id: "a15", thread_id: THREAD_ID, kind: "crypto_wallet", value: "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq9v0x8lm3sq4nzsjhtca8", confidence: 29, confidence_cap_applied: null, source: "oathnet", created_at: iso(10), metadata: { sources: ["oathnet"], corroborations: 1, source_class: "breach" } },
 
+  // ── A finding written into `value` as PROSE, not a selector ─────────────
+  //    Real shape from thread `61d1eede`: the single most important row in that
+  //    case, rendered by the board as forty truncated monospace characters.
+  { id: "a16", thread_id: THREAD_ID, kind: "contradiction", value: "CONTRADICTION: 1110 Anderson Ave is NOT linked to James Harker. The reverse-address lookup returned 31 records and the actual residents are the Keith and Plascencia families — Harker appears in none of them.", confidence: 65, confidence_cap_applied: null, source: "indicia_address", created_at: iso(11), metadata: { sources: ["indicia_address", "exa_search"], corroborations: 2, source_class: "data_broker", conflict: true, conflict_note: "the dossier's address claim does not survive the broker record" } },
+
   // ── Volume, MIXED provenance — the shape that made the board unreadable ──
   //    Production thread `61d1eede` (143 artifacts) rendered ONE `email`
   //    cluster of 34 rows: 21 mailboxes lifted wholesale out of a `psyber.com`

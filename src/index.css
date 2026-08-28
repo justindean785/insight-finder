@@ -1648,11 +1648,17 @@ All colors MUST be HSL.
   width: 100%;
   font-family: "IBM Plex Sans", system-ui, -apple-system, BlinkMacSystemFont,
     "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  font-size: 14px;
+  /* 15px, not 14. This is the surface an analyst reads a whole report on, and
+     14px of 400-weight sans at 94% ink is under the comfortable floor for long
+     form — measurably so on a phone, where it is also the smallest text on the
+     screen. Operator verdict: "hard to see the font". The measure below (72ch)
+     already keeps the line length honest, so the extra pixel costs nothing but
+     a slightly shorter column. */
+  font-size: 15px;
   font-weight: 400;
-  line-height: 1.6;
+  line-height: 1.65;
   letter-spacing: 0;
-  color: hsl(var(--foreground) / 0.94);
+  color: hsl(var(--foreground));
   text-align: left;
   overflow-wrap: break-word;
   word-break: break-word;
@@ -1682,30 +1688,45 @@ All colors MUST be HSL.
 .chat-prose > * + * {
   margin-top: 12px !important;
 }
+/* A heading opens a section, so it needs more air above it than a paragraph —
+   otherwise the run of blocks reads as one undifferentiated column no matter
+   what the type scale says. */
+.chat-prose > * + h1,
+.chat-prose > * + h2,
+.chat-prose > * + h3 {
+  margin-top: 26px !important;
+}
 .chat-prose h1,
 .chat-prose h2,
 .chat-prose h3,
 .chat-prose h4 {
   font-family: inherit;
   font-weight: 600;
-  line-height: 1.35;
-  letter-spacing: 0;
+  line-height: 1.3;
+  letter-spacing: -0.005em;
   color: hsl(var(--foreground));
 }
-.chat-prose h1 { font-size: 16px; }
+/* TYPE SCALE. This was flat: h1 16, h2 14, h3 14 — against 14px body. Two of
+   the three heading levels were the same size as the paragraphs under them, so
+   a Findings report with `## Confirmed` / `### Probable` / `### Unresolved`
+   arrived as one wall of same-sized text and the analyst had to READ the
+   document to find its structure instead of seeing it. A report is a scanned
+   document before it is a read one; the steps below (20 / 17 / 15 over 15px
+   body) are the smallest that make the levels distinguishable at a glance. */
+.chat-prose h1 { font-size: 20px; }
 .chat-prose h2 {
-  font-size: 14px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid hsl(var(--film) / 0.08);
+  font-size: 17px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid hsl(var(--film) / 0.1);
 }
-.chat-prose h3 { font-size: 14px; }
+.chat-prose h3 { font-size: 15px; }
 .chat-prose h4 {
   font-size: 12px;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.04em;
   color: hsl(var(--muted-foreground));
 }
-.chat-prose p { line-height: 1.6; }
+.chat-prose p { line-height: 1.65; }
 .chat-prose strong { font-weight: 600; color: hsl(var(--foreground)); }
 .chat-prose ul,
 .chat-prose ol {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { bandCluster, provenanceOf, MIN_BAND_CLUSTER, type BandRow } from "@/lib/evidence-bands";
+import { bandCluster, provenanceOf, isProseValue, MIN_BAND_CLUSTER, type BandRow } from "@/lib/evidence-bands";
 import { isQuarantined } from "@/lib/quarantine";
 
 /**
@@ -127,6 +127,61 @@ describe("provenanceOf keeps the row and its band in one keyspace", () => {
     const src = readFileSync("src/components/ResourcesPanel.tsx", "utf8");
     expect(src).toMatch(/provenanceOf as provFor.*from "@\/lib\/evidence-bands"/);
     expect(src, "no second local definition may reappear").not.toMatch(/function provFor\s*\(/);
+  });
+});
+
+describe("a sentence in the value column is not a selector", () => {
+  /**
+   * Every string below is a real `artifacts.value` from production thread
+   * `61d1eede`. The board rendered all of them mono, one line, truncated —
+   * including the contradiction row, which is the single most important row in
+   * that case and the one the analyst most needed to read.
+   */
+  const PROSE = [
+    "CONTRADICTION: 6035 Bryce Way, Rocklin CA 95677 is NOT linked to Carlos Morales. Indicia address lookup returned 31 records — the actual residents/owners are the KEITH family",
+    "psyber.com domain breach: 45+ records across 18+ breach DBs — ISP customer emails with exposed passwords, names, addresses, phones for Lincoln/Rocklin/Auburn CA area",
+    "IP 2600:387:6:803::87 — Oakland, CA, AT&T Mobile, ASN AS20057, not VPN/proxy",
+    "Phone +19166454567 — 0 breaches (Serus darkweb scan clean, completed successfully)",
+  ];
+
+  const SELECTORS = [
+    "morales7272carlos@gmail.com",
+    "support@psyber.com",
+    "+19166454567",
+    "2600:387:6:803::87",
+    "linkedin.com/in/carlos-morales-8999a91a4",
+    "104415703473311794312 (Google User ID)",
+    "google.com/maps/contrib/104415703473311794312",
+    "ns-145-c.gandi.net",
+    "carlosmorales3063",
+    // The one selector kind that DOES contain spaces. Short, so it stays mono.
+    "6035 Bryce Way, Rocklin, CA 95677",
+    "533 G ST STE 1, LINCOLN, CA 95648-1868",
+  ];
+
+  it("classifies every real prose value as prose", () => {
+    for (const v of PROSE) expect(isProseValue(v), v.slice(0, 50)).toBe(true);
+  });
+
+  it("⛔ NEGATIVE CONTROL: no real selector is misread as prose", () => {
+    // The costly direction. A selector rendered as wrapped sans loses the
+    // monospace alignment the whole ledger is built on, and an address is the
+    // case that makes a naive "contains a space" test fail.
+    for (const v of SELECTORS) expect(isProseValue(v), v).toBe(false);
+  });
+
+  it("a long unbroken identifier stays a selector", () => {
+    // Length alone must not decide it: a 90-character URL has no spaces and is
+    // still something you copy, not something you read.
+    expect(isProseValue("https://staff.northgate-logistics.com/directory/operations/james-harker?ref=internal&utm_source=intranet&sid=7f3c19ab")).toBe(false);
+  });
+
+  it("the row renders prose differently from a selector", () => {
+    const src = readFileSync("src/components/ResourcesPanel.tsx", "utf8");
+    expect(src).toMatch(/const prose = isProseValue\(a\.value\)/);
+    expect(src).toMatch(/prose\s*\?[\s\S]{0,240}line-clamp:2/);
+    expect(src, "a selector must keep the mono ledger treatment")
+      .toMatch(/:\s*"mono-value truncate text-data/);
   });
 });
 

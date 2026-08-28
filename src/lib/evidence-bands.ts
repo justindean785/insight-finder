@@ -42,6 +42,34 @@
  * rather than by hiding them.
  */
 
+/**
+ * Is this artifact value PROSE rather than a selector?
+ *
+ * The `value` column is a selector column — mono, one line, truncated — and for
+ * `support@psyber.com` that is exactly right. But the extractor also writes
+ * whole sentences into it, and those arrive on the board as a truncated
+ * monospace fragment that says nothing. Real production values:
+ *
+ *   "psyber.com domain breach: 45+ records across 18+ breach DBs — ISP customer
+ *    emails with exposed passwords, names, addresses, phones for Lincoln…"
+ *   "CONTRADICTION: 6035 Bryce Way, Rocklin CA 95677 is NOT linked to Carlos
+ *    Morales. Indicia address lookup returned 31 records — the actual…"
+ *
+ * The second one is the single most important row in its case, and the board
+ * showed the analyst its first forty characters in a monospace face.
+ *
+ * The test is a SPACE plus length, because that is what actually separates the
+ * two populations: selectors (emails, phones, domains, handles, URLs, IPs) have
+ * no spaces at all, and the one kind that does — a street address — is short.
+ * `"6035 Bryce Way, Rocklin, CA 95677"` is 33 characters and stays a selector;
+ * anything past the threshold with a space in it is a sentence.
+ */
+export const PROSE_VALUE_MIN = 48;
+
+export function isProseValue(value: string): boolean {
+  return value.length > PROSE_VALUE_MIN && /\s/.test(value.slice(0, PROSE_VALUE_MIN));
+}
+
 /** The fields banding needs. Structural, so a full `Artifact` or a projection both fit. */
 export interface BandRow {
   confidence?: number | null;

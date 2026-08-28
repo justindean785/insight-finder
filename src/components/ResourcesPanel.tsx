@@ -20,7 +20,7 @@ import {
 import { evidenceStatus } from "@/lib/evidence-status";
 import { authorityFor, LEDGER_SORT_RANK } from "@/lib/authority";
 import { isQuarantined, clusterDefaultOpen } from "@/lib/quarantine";
-import { bandCluster, provenanceOf as provFor } from "@/lib/evidence-bands";
+import { bandCluster, isProseValue, provenanceOf as provFor } from "@/lib/evidence-bands";
 import { readableSourceLabel } from "@/lib/tool-display";
 import { humanizeArtifactMetadata } from "@/lib/artifact-metadata";
 import { FilterChips } from "@/components/ui/workspace-primitives";
@@ -552,6 +552,7 @@ function ArtifactRow({
     ? "hsl(var(--authority-quarantine))"
     : "hsl(var(--foreground) / 0.92)";
   const prov = provFor(a);
+  const prose = isProseValue(a.value);
   const authority = authorityFor(a, rState);
   return (
     <HoverCard openDelay={250} closeDelay={80}>
@@ -582,16 +583,24 @@ function ArtifactRow({
 
           {/* Value +, when there is one, the recorded reason it is not stronger. */}
           <span className="min-w-0" data-ledger-col="value">
-            <span className="flex items-center gap-1.5">
+            <span className={cn("flex gap-1.5", prose ? "items-start" : "items-center")}>
               {rState === "confirmed" && <CheckCircle2 className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-high))]" aria-hidden />}
               {rState === "key" && <Star className="h-3 w-3 shrink-0 text-primary" aria-hidden />}
               {rState === "recheck" && <ShieldQuestion className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-mid))]" aria-hidden />}
               {rState === "dismissed" && <EyeOff className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />}
               {fp && <XCircle className="h-3 w-3 shrink-0 text-destructive" aria-hidden />}
               {sensitive && <ShieldAlert className="h-3 w-3 shrink-0 text-destructive" aria-hidden />}
+              {/* A selector gets the mono, one-line, truncated treatment this
+                  column was built for. A SENTENCE does not: the extractor writes
+                  whole findings into `value` ("CONTRADICTION: … Carlos Morales
+                  appears in ZERO of 31 records"), and truncating the most
+                  important row in a case to forty monospace characters is how
+                  it went unread. Prose wraps to two lines in the reading face. */}
               <span
                 className={cn(
-                  "mono-value truncate text-data text-foreground/95",
+                  prose
+                    ? "text-[12.5px] leading-[1.45] text-foreground/90 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden"
+                    : "mono-value truncate text-data text-foreground/95",
                   fp && "line-through opacity-70",
                 )}
                 title={a.value}
