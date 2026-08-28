@@ -28,6 +28,7 @@
 import { buildAutoRecordedRow } from "./auto-record-integrity.ts";
 import { scrubArtifactRows } from "./safety.ts";
 import { checkpointKey } from "./incremental-persist.ts";
+import { canonicalPhoneValue, composeAddress, normPhoneE164 } from "./lib/selector-normalize.ts";
 
 /** Hard ceiling on auto-persisted rows PER tool call. Prevents one exhaustive
  *  scrape (Wayback captures, GitHub search hits) from writing hundreds of rows. */
@@ -39,6 +40,13 @@ export const MAX_AUTO_PERSIST_PER_TOOL_CALL = 25;
 export const MAX_BREACH_CORPORA_PER_EXPOSURE = 250;
 /** Hard ceiling on auto-persisted rows PER step across all tool calls. */
 export const MAX_AUTO_PERSIST_PER_STEP = 60;
+
+/** Page size and hard scan ceiling for the thread-wide dedup set. Mirrors
+ *  `RECOVERY_ARTIFACT_PAGE_SIZE`'s reasoning in recovery.ts: an unbounded select
+ *  is silently truncated by PostgREST's row cap, and a truncated dedup set
+ *  re-inserts rows it should have blocked. */
+export const SEEN_ARTIFACT_PAGE_SIZE = 500;
+export const SEEN_ARTIFACT_SCAN_MAX = 5000;
 
 /** Tool names that already own their persistence path (do NOT double-record). */
 export const AUTO_PERSIST_TOOL_DENYLIST = new Set<string>([
@@ -286,7 +294,20 @@ export function normalizeFinding(kind: string, value: unknown): { kind: string; 
     case "phone": {
       const digits = v.replace(/[^\d+]/g, "");
       if (digits.replace(/\D/g, "").length < 7) return null;
-      return { kind: "phone", value: digits };
+      // CANONICAL E.164 (2026-08-28). Dedup is `checkpointKey(kind, value)` —
+      // exact equality — so the spelling IS the identity. A measured run wrote
+      // +19172915568, 19172915568 and 9172915568 as three artifacts in three
+      // cluster slots for one number, then the clusterer folded them back
+      // together, because this fold ran only at cluster time.
+      //
+      // The fold deliberately does NOT collapse 79172915568 (a Russian +7
+      // number sharing ten digits with the US one) — see selector-normalize.ts.
+      //
+      // FALLBACK, not a narrowing: normPhoneE164 returns null below 8 digits,
+      // and this case has always accepted 7. Keeping the digits-only value in
+      // that band preserves admission exactly as before — this change is about
+      // identity, never about which numbers are allowed in.
+      return { kind: "phone", value: canonicalPhoneValue(digits) ?? digits };
     }
     case "breach_exposure": {
       // The VALUE is a stable per-provider label, never a count — dedup is by
@@ -390,6 +411,68 @@ const UNLINKED_ECHO_CTX = {
     "echo of a name-only query whose queried name is not itself linked to the subject — " +
     "same-name collision axis; the matching name does not prove this record is the subject's",
 } as const;
+
+/** Reason stamped on a selector lifted from a breach-corpus row that belongs to
+ *  SOMEONE ELSE. A corpus row set is co-tenanted: querying one selector returns
+ *  the matching record plus, routinely, neighbours. `breachSubjectAnchor` already
+ *  refuses to anchor an exposure on a discovered value for exactly this reason —
+ *  "those can belong to other people in the same corpus" — but the item loop
+ *  below mints phone/email/name/address from those same rows, at full subject
+ *  authority.
+ *
+ *  MEASURED 2026-08-26: a run pivoting on +19172915568 persisted 79172915568 —
+ *  a Russian +7 number off a `zoloto585.ru` row belonging to a different person
+ *  — as a subject selector with its own cluster id. */
+const CO_TENANT_CTX = {
+  subject_unlinked: true,
+  subject_unlinked_reason:
+    "co-tenant row in a breach corpus — this record carries a different value in the field that " +
+    "was queried, so it belongs to another person in the same dataset, not the subject",
+} as const;
+
+/**
+ * Does this corpus row POSITIVELY disagree with the queried selector?
+ *
+ * Deliberately narrow, and deliberately asymmetric. It returns true only when
+ * the row carries a non-empty value in the SAME field the query anchored on and
+ * that value differs. It is false when:
+ *
+ *   - there is no anchor (nothing to disagree with);
+ *   - the row simply lacks a phone — a genuine subject row often does not echo
+ *     the queried selector at all;
+ *   - the anchor is a name or username — a same-name axis is a collision
+ *     question, which `queryIsNameOnly` + SUBJECT_UNLINKED_CTX already own.
+ *
+ * ABSENCE IS NEVER AN ACCUSATION. Stamping on a missing field would quarantine
+ * genuine evidence wholesale, which is the same over-application that
+ * `isSubjectUnlinked`'s strict `=== true` and G1's fail-closed rule exist to
+ * prevent. An over-broad quarantine is as much a defect as a missing one.
+ *
+ * ⚠️ PHONE ONLY, DELIBERATELY. An email branch was implemented and REMOVED. It
+ * broke `subject_relevance_gate_test.ts`'s "a selector-keyed lookup is
+ * subject-linked by construction" — the #433 position that a concrete-selector
+ * query is trusted and only NAME-only queries quarantine. That is a settled
+ * boundary, and moving it needs sign-off, not a drive-by.
+ *
+ * The measured defect is a PHONE mismatch (+1917… queried, 79172915568
+ * returned). There is no measured email case, and widening an integrity signal
+ * past its evidence to reach a tidier result is how the other over-applications
+ * in this module happened. If an email co-tenant is ever measured, that is the
+ * moment to revisit the #433 boundary — with the evidence in hand.
+ */
+function rowContradictsAnchor(row: Record<string, unknown>, anchor: string): boolean {
+  if (!anchor) return false;
+  const anchorPhone = normPhoneE164(anchor);
+  // `normPhoneE164` folds any 8-15 digit run, so guard on the anchor actually
+  // LOOKING like a phone — otherwise a numeric-ish username would be compared
+  // as one.
+  if (anchorPhone && /^[+\d][\d\s().+-]*$/.test(anchor)) {
+    const raw = row.phone_number ?? row.phone_national ?? row.phone_number2;
+    const p = (typeof raw === "string" || typeof raw === "number") ? normPhoneE164(String(raw)) : null;
+    return p !== null && p !== anchorPhone;
+  }
+  return false;
+}
 
 /** Split a name into comparable tokens. Punctuation and commas are separators so
  *  "Roe, Jane" and "Jane Roe" reduce to the same token set. */
@@ -822,22 +905,49 @@ export function extractFindings(
         }
       }
       const items = Array.isArray(dd.items) ? dd.items : [];
+      // The selector this lookup ACTUALLY ran on. A corpus returns the matching
+      // record plus its neighbours, so a row that disagrees with the anchor on
+      // the queried field belongs to someone else — see CO_TENANT_CTX.
+      const oathnetAnchor = breachSubjectAnchor(o, input);
       for (const it of items.slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
         if (!it || typeof it !== "object") continue;
         const row = it as Record<string, unknown>;
-        push("email", row.email, { via: "oathnet" }, 45);
+        // DISCLOSURE, not deletion: a co-tenant row keeps its place in the
+        // artifact table and the Evidence count and loses only AUTHORITY —
+        // clusters, graph edges, corroboration, promotion. `isSubjectUnlinked`
+        // already binds every one of those boundaries.
+        const rowCtx: Record<string, unknown> = rowContradictsAnchor(row, oathnetAnchor)
+          ? { via: "oathnet", ...CO_TENANT_CTX }
+          : { via: "oathnet" };
+        push("email", row.email, rowCtx, 45);
         const phoneRaw = row.phone_number ?? row.phone_national ?? row.phone_number2;
-        if (phoneRaw != null) push("phone", String(phoneRaw), { via: "oathnet" }, 45);
+        if (phoneRaw != null) push("phone", String(phoneRaw), rowCtx, 45);
         const fullName = row.full_name ?? row.display_name
           ?? [row.first_name, row.middle_name, row.last_name].filter((x) => typeof x === "string" && x).join(" ");
-        push("name", fullName, { via: "oathnet" }, 40);
-        push("username", row.username, { via: "oathnet" }, 45);
-        push("ip_address", row.ip, { via: "oathnet" }, 40);
-        if (typeof row.linkedin === "string") pushUrl(findings, row.linkedin, { tool: toolName, via: "oathnet_linkedin" });
-        const addr = [row.address_street, row.address_street2, row.address_city ?? row.city,
-          row.address_state ?? row.state, row.address_postcode ?? row.postal_code ?? row.zip]
-          .filter((x) => typeof x === "string" && x).join(" ");
-        push("address", addr, { via: "oathnet" }, 45);
+        push("name", fullName, rowCtx, 40);
+        push("username", row.username, rowCtx, 45);
+        push("ip_address", row.ip, rowCtx, 40);
+        if (typeof row.linkedin === "string") {
+          pushUrl(findings, row.linkedin, { tool: toolName, ...rowCtx, via: "oathnet_linkedin" });
+        }
+        // COMPOSED, not concatenated (2026-08-28). This was a five-field
+        // `.join(" ")`, which on a measured production row persisted:
+        //
+        //   1110 ANDERSON AVE3F 1110 ANDERSON AVE APT 3F BRONX NY 10452
+        //
+        // — `address_street2` restating `address_street` in a different
+        // spelling, run together with no separators. That string is the
+        // artifact's `value`, so it is what the board, the report and the
+        // export all render. composeAddress drops a redundant street line and
+        // keeps BOTH when they are genuinely different.
+        const addr = composeAddress({
+          street: row.address_street,
+          street2: row.address_street2,
+          city: row.address_city ?? row.city,
+          state: row.address_state ?? row.state,
+          postcode: row.address_postcode ?? row.postal_code ?? row.zip,
+        });
+        push("address", addr, rowCtx, 45);
       }
     }
   }
@@ -1309,17 +1419,59 @@ export async function persistAutoFindings(
  * re-run / recovery never re-inserts an existing (kind,value). Best-effort.
  */
 export async function loadSeenArtifactKeys(
-  supabase: { from: (t: string) => { select: (c: string) => { eq: (col: string, v: unknown) => Promise<{ data: Array<{ kind?: unknown; value?: unknown }> | null; error: unknown }> } } },
+  supabase: {
+    from: (t: string) => {
+      select: (c: string) => {
+        eq: (col: string, v: unknown) => {
+          range: (from: number, to: number) => Promise<{ data: Array<{ kind?: unknown; value?: unknown }> | null; error: unknown }>;
+        };
+      };
+    };
+  },
   threadId: string,
 ): Promise<Set<string>> {
   const seen = new Set<string>();
   try {
-    const { data, error } = await supabase.from("artifacts").select("kind,value").eq("thread_id", threadId);
-    if (error || !Array.isArray(data)) return seen;
-    for (const r of data) {
-      const k = typeof r?.kind === "string" ? r.kind : "";
-      const v = typeof r?.value === "string" ? r.value : "";
-      if (k && v) seen.add(checkpointKey(k, v));
+    // PAGED (2026-08-28). This was one unbounded `.select().eq()`, so on a thread
+    // past PostgREST's server-side row cap the dedup set was silently truncated
+    // and the rows beyond it could be written a second time. Same shape as the
+    // recovery incident `recovery_artifact_paging_test.ts` pins: a single
+    // `.limit()` read the first 40 of 85 artifacts and closed a run on a minority
+    // of its own evidence. Read and render are different questions.
+    for (let from = 0; from < SEEN_ARTIFACT_SCAN_MAX; from += SEEN_ARTIFACT_PAGE_SIZE) {
+      const to = Math.min(from + SEEN_ARTIFACT_PAGE_SIZE, SEEN_ARTIFACT_SCAN_MAX) - 1;
+      const { data, error } = await supabase.from("artifacts").select("kind,value").eq("thread_id", threadId).range(from, to);
+      // Best-effort by contract: a partial set means a duplicate may slip
+      // through, which is today's behaviour. It can never cause over-collapsing.
+      if (error || !Array.isArray(data)) break;
+      for (const r of data) {
+        const k = typeof r?.kind === "string" ? r.kind : "";
+        const v = typeof r?.value === "string" ? r.value : "";
+        if (!k || !v) continue;
+        seen.add(checkpointKey(k, v));
+        // MIGRATION-FREE RECONCILIATION. Rows written before the canonical phone
+        // fold hold "9172915568" where a new extraction now yields
+        // "+19172915568" — different keys for one number, so the legacy row
+        // would not block the re-insert. Registering the normalized spelling too
+        // makes old and new rows agree without touching a single stored row.
+        const n = normalizeFinding(k, v);
+        if (n && n.value !== v) seen.add(checkpointKey(n.kind, n.value));
+      }
+      if (data.length < SEEN_ARTIFACT_PAGE_SIZE) break;
+      // DISCLOSE the ceiling. `loadThreadArtifactIdentities` surfaces
+      // `thread_dedup_partial` when it stops early; this path returns a bare Set
+      // with nowhere to put that, so it said nothing at all — a dedup gate that
+      // quietly stops deduping, which is the exact thing the other path's
+      // comment argues against. Logged rather than silent until there is a
+      // channel to carry it.
+      if (from + SEEN_ARTIFACT_PAGE_SIZE >= SEEN_ARTIFACT_SCAN_MAX) {
+        console.warn(JSON.stringify({
+          event: "seen_artifact_scan_truncated",
+          thread_id: threadId,
+          scanned: SEEN_ARTIFACT_SCAN_MAX,
+          note: "thread exceeds the dedup scan ceiling — rows beyond it can be re-inserted",
+        }));
+      }
     }
   } catch (e) {
     console.warn("[auto-persist-findings] loadSeenArtifactKeys failed:", (e as Error)?.message ?? e);

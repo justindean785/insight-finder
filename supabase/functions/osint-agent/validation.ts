@@ -3,6 +3,12 @@
  * Extracted from index.ts (lines 284–547).
  */
 
+// The only import in this module, and deliberately onto a ZERO-import leaf so
+// nothing heavier is pulled in behind it: `validateArtifact` must canonicalise a
+// phone the same way the auto-persist extractor and the clusterer do, or the
+// writers disagree about what "one phone" is.
+import { canonicalPhoneValue } from "./lib/selector-normalize.ts";
+
 // ---- Seed normalization -------------------------------------------------------
 // Must match src/lib/seed.ts so cache keys line up.
 export type DetectedSeed = { kind: string; raw: string; normalized: string };
@@ -351,10 +357,18 @@ export function validateArtifact(kind: string, rawValue: string): ValidateResult
     case "phone": {
       if (!PHONE_RE.test(value)) return { ok: false, reason: "not a valid phone number" };
       const reserved = isReservedOrInvalidPhone(value);
+      // CANONICAL E.164 (2026-08-28) — the SAME fold the auto-persist extractor
+      // and the clusterer use. This case stored the model's spelling verbatim,
+      // so `record_artifacts`/`record_artifact` could mint 9172915568 as its own
+      // row beside an existing +19172915568 no matter what the extractor did.
+      // Three writers, one identity. `isReservedOrInvalidPhone` deliberately
+      // still reads the ORIGINAL — it digit-strips internally, so the verdict is
+      // identical and the diff stays at zero.
+      const canonical = canonicalPhoneValue(value) ?? value;
       if (reserved.reserved) {
-        return { ok: true, kind, value, metaPatch: { reserved_number: true, reserved_reason: reserved.reason } };
+        return { ok: true, kind, value: canonical, metaPatch: { reserved_number: true, reserved_reason: reserved.reason } };
       }
-      return { ok: true, kind, value };
+      return { ok: true, kind, value: canonical };
     }
     // ---- Expanded analyst taxonomy (free-form, length-capped) -----------
     // These don't need a strict regex — they're analyst-curated entity labels.
