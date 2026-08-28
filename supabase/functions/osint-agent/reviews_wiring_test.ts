@@ -61,8 +61,11 @@ Deno.test("analyst verdicts: salvage reads artifact ids so verdicts match at row
   // applyReviewsToArtifacts matches by id first and falls back to kind|value. If
   // the select omits `id`, only the value-level path works and a per-row verdict
   // on a duplicated selector is missed.
+  // Trailing columns are allowed (#479 added `metadata` for the recorded
+  // confidence cap). What this guards is that `id` is still selected — pinning
+  // the exact column list instead made an additive change look like a regression.
   assert(
-    /\.select\("id,kind,value,confidence,source"\)/.test(INDEX),
+    /\.select\("id,kind,value,confidence,source[^"]*"\)/.test(INDEX),
     "the salvage artifact select must include id for row-level verdict matching",
   );
 });

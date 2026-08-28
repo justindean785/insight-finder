@@ -35,3 +35,21 @@ Object.defineProperty(window, "matchMedia", {
     dispatchEvent: () => {},
   }),
 });
+
+// jsdom has no ResizeObserver, and recharts' ResponsiveContainer constructs one
+// on mount. Without this, any render test of a component that charts anything
+// dies in a passive effect with "ResizeObserver is not defined" — a harness gap,
+// not a component fault. Same shape as the localStorage/matchMedia stubs above.
+if (!window.ResizeObserver) {
+  class ResizeObserverStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  Object.defineProperty(window, "ResizeObserver", {
+    configurable: true,
+    writable: true,
+    value: ResizeObserverStub,
+  });
+  globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+}
