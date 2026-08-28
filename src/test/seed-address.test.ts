@@ -73,6 +73,16 @@ describe("client seed detection — address", () => {
     expect(d?.raw).toBe("79 Waverly Ave, Cincinnati, OH 45215");
     expect(d?.normalized).toBe(CACHE_KEY);
   });
+
+  it("requires a real USPS state code, not any two letters", () => {
+    // A street suffix alone ("St") or a made-up two-letter token must not be
+    // accepted as the state — see mem/architecture/address-seed-google-dork-
+    // cross-layer-mismatch.md for why an unconstrained [A-Za-z]{2} regressed.
+    expect(detectSeed("123 Main St 90210")?.kind).not.toBe("address");
+    expect(detectSeed("42 Oak Rd 10001")?.kind).not.toBe("address");
+    expect(detectSeed("5 AB CD 12345")?.kind).not.toBe("address");
+    expect(detectSeed("1 Judiciary Sq NW, Washington, DC 20001")?.kind).toBe("address");
+  });
 });
 
 describe("client display seed — address", () => {

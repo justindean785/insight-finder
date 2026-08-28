@@ -102,6 +102,25 @@ Deno.test("address seed: non-addresses are NOT swept into the address kind", () 
   }
 });
 
+Deno.test("address seed: the state position must be a real USPS code, not any two letters", () => {
+  // Graphify review on #491: an unconstrained [A-Za-z]{2} let a street+ZIP with
+  // NO state at all false-positive — the street suffix itself ("St") got
+  // consumed as the "state" — and let a degenerate two-token value with no real
+  // city or state false-positive too.
+  for (
+    const v of [
+      "123 Main St 90210", // street suffix "St" is not a state
+      "42 Oak Rd 10001",
+      "5 AB CD 12345", // neither "AB" nor "CD" is a real state
+    ]
+  ) {
+    assert(detectSeedServer(v)?.kind !== "address", `${v} must NOT classify as an address (no real state present)`);
+  }
+  // A real, if unusual, state code is still accepted.
+  assertEquals(detectSeedServer("79 Waverly Ave, Cincinnati, OH 45215")?.kind, "address");
+  assertEquals(detectSeedServer("1 Judiciary Sq NW, Washington, DC 20001")?.kind, "address");
+});
+
 // ---- 2. google_dorks accepts and serves the address kind ---------------------
 
 Deno.test("google_dorks: accepts kind 'address' and returns a real query family", async () => {

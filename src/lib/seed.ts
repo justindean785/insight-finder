@@ -30,8 +30,24 @@ const USERNAME_RE = /^[a-z0-9_.-]{2,40}$/i;
 // ("79 WAVERLY AVE\nCINCINNATI OH, 45215") is the same input as its one-line
 // form, and `[\s,]+` accepts the comma placements people actually type
 // ("OH, 45215" / "Cincinnati, OH 45215" / "Cincinnati OH 45215").
-const US_POSTAL_RE =
-  /^\d{1,6}(?:-\d{1,6})?[A-Za-z]?\s+\S.*?[\s,]+[A-Za-z]{2}[\s,]+\d{5}(?:-\d{4})?$/;
+//
+// The state position requires a real USPS two-letter code, not `[A-Za-z]{2}` —
+// an unconstrained class let a plain "<house> <street> <suffix> <zip>" with no
+// state at all false-positive ("123 Main St 90210": the street suffix "St" was
+// consumed as the "state"), and let a degenerate two-token value false-positive
+// too ("5 AB CD 12345": neither "AB" nor "CD" is a real state).
+const US_STATE_CODES = new Set([
+  "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN",
+  "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV",
+  "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN",
+  "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC", "AS", "GU", "MP", "PR", "VI",
+  "AA", "AE", "AP",
+]);
+const US_STATE_CODE_RE = "(?:" + [...US_STATE_CODES].join("|") + ")";
+const US_POSTAL_RE = new RegExp(
+  `^\\d{1,6}(?:-\\d{1,6})?[A-Za-z]?\\s+\\S.*?[\\s,]+${US_STATE_CODE_RE}[\\s,]+\\d{5}(?:-\\d{4})?$`,
+  "i",
+);
 
 /** Collapse newlines/tabs/runs of spaces. Casing and punctuation untouched. */
 export function flattenAddress(raw: string | null | undefined): string {

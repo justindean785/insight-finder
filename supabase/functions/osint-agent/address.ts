@@ -31,21 +31,40 @@ const STREET_SUFFIX_RE = new RegExp(`\\b${STREET_SUFFIX}\\b\\.?`, "i");
 const HOUSE_NUMBER_RE = /^\d{1,6}(?:-\d{1,6})?[A-Za-z]?\b/;
 
 /**
- * STRICT: house number … <2-letter state> <ZIP>.
+ * USPS two-letter state/territory/military codes. The strict matcher requires
+ * one of THESE in the state position, not merely `[A-Za-z]{2}` — an unconstrained
+ * 2-letter class let a plain "<house> <street> <suffix> <zip>" with no state at
+ * all false-positive ("123 Main St 90210": the street suffix "St" was consumed
+ * as the "state"), and let a degenerate two-token value false-positive too
+ * ("5 AB CD 12345": neither "AB" nor "CD" is a real state).
+ */
+const US_STATE_CODES = new Set([
+  "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN",
+  "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV",
+  "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN",
+  "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC", "AS", "GU", "MP", "PR", "VI",
+  "AA", "AE", "AP",
+]);
+const US_STATE_CODE_RE = "(?:" + [...US_STATE_CODES].join("|") + ")";
+
+/**
+ * STRICT: house number … <2-letter USPS state code> <ZIP>.
  *
  * Runs against the whitespace-flattened value, so a pasted two-line address
  * ("79 WAVERLY AVE\nCINCINNATI OH, 45215") is the same input as its one-line
  * form. `[\s,]+` before the state and the ZIP accepts the comma placements
  * people actually type: "OH, 45215", "Cincinnati, OH 45215", "Cincinnati OH 45215".
  */
-const US_POSTAL_RE =
-  /^\d{1,6}(?:-\d{1,6})?[A-Za-z]?\s+\S.*?[\s,]+[A-Za-z]{2}[\s,]+\d{5}(?:-\d{4})?$/;
+const US_POSTAL_RE = new RegExp(
+  `^\\d{1,6}(?:-\\d{1,6})?[A-Za-z]?\\s+\\S.*?[\\s,]+${US_STATE_CODE_RE}[\\s,]+\\d{5}(?:-\\d{4})?$`,
+  "i",
+);
 
 /** Parsing form of the strict pattern, anchored on a street suffix so street/city split correctly. */
 const US_POSTAL_PARSE_RE = new RegExp(
   `^(\\d{1,6}(?:-\\d{1,6})?[A-Za-z]?\\s+.*?\\b${STREET_SUFFIX}\\b\\.?` +
     `(?:\\s+(?:NE|NW|SE|SW|N|S|E|W|North|South|East|West)\\b)?)` +
-    `[\\s,]+([A-Za-z][A-Za-z.'\\- ]*?)[\\s,]+([A-Za-z]{2})[\\s,]+(\\d{5}(?:-\\d{4})?)$`,
+    `[\\s,]+([A-Za-z][A-Za-z.'\\- ]*?)[\\s,]+(${US_STATE_CODE_RE})[\\s,]+(\\d{5}(?:-\\d{4})?)$`,
   "i",
 );
 
