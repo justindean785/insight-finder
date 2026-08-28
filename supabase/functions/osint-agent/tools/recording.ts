@@ -290,7 +290,7 @@ export const record_artifacts = tool({
         : {}),
     };
   },
-}),
+});
 
 export const record_artifact = tool({
   description:
@@ -378,7 +378,7 @@ export const record_artifact = tool({
     }).then(() => {}, (e: unknown) => console.warn("[record_artifact] append_evidence:", e));
     return { ok: true, kind: row.kind, value: row.value, ...(minor ? { minor_safety_flag: true } : {}) };
   },
-}),
+});
 
 export const record_evidence = tool({
   description:
@@ -428,4 +428,4 @@ export const record_evidence = tool({
     }
     return { ok: true, id: row?.id, seq: row?.seq, chain_hash: row?.chain_hash, ...(archived ? { archived } : {}) };
   },
-}),
+});
