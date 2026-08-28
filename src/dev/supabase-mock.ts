@@ -74,6 +74,31 @@ const artifacts = [
   { id: "a14", thread_id: THREAD_ID, kind: "url", value: "https://staff.northgate-logistics.com/directory/operations/james-harker?ref=internal&utm_source=intranet&sid=7f3c19ab-2d44-4e51-9c07-a8be31f0d2c6", confidence: 66, confidence_cap_applied: null, source: "firecrawl_scrape", created_at: iso(12), metadata: { sources: ["firecrawl_scrape"], corroborations: 1, source_class: "independent_public" } },
   { id: "a15", thread_id: THREAD_ID, kind: "crypto_wallet", value: "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq9v0x8lm3sq4nzsjhtca8", confidence: 29, confidence_cap_applied: null, source: "oathnet", created_at: iso(10), metadata: { sources: ["oathnet"], corroborations: 1, source_class: "breach" } },
 
+  // ── Volume, MIXED provenance — the shape that made the board unreadable ──
+  //    Production thread `61d1eede` (143 artifacts) rendered ONE `email`
+  //    cluster of 34 rows: 21 mailboxes lifted wholesale out of a `psyber.com`
+  //    domain-breach corpus, 10 co-residents from a reverse-address lookup, and
+  //    3 the analyst uploaded — every row scored 30–50, so no sort or filter
+  //    separated them, and exactly one of the thread's 143 rows was quarantined.
+  //    Operator verdict: "there's way too many artifacts it's so hard to go
+  //    through and see evidence."
+  //
+  //    The subdomain block below is UNIFORM provenance and must keep rendering
+  //    flat (`uniformProv` already hoists its one label). This block is its
+  //    counterpart: the crowded cluster that bands. Both paths in one screenshot.
+  ...Array.from({ length: 7 }, (_, i) => ({
+    id: `bulk${i + 1}`, thread_id: THREAD_ID, kind: "email",
+    value: `${["support", "billing", "dbuse", "noreply", "hr", "sales", "webmaster"][i]}@stocktonfreight.example`,
+    confidence: 45, confidence_cap_applied: 60, source: "oathnet_lookup",
+    created_at: iso(17), metadata: { sources: ["oathnet_lookup"], corroborations: 1, source_class: "breach", reason_for_confidence: "single source class: breach" },
+  })),
+  ...Array.from({ length: 4 }, (_, i) => ({
+    id: `resid${i + 1}`, thread_id: THREAD_ID, kind: "email",
+    value: `${["m.keith", "a.keith", "r.plascencia", "t.plascencia"][i]}@mail.example`,
+    confidence: 50, confidence_cap_applied: 60, source: "indicia_address",
+    created_at: iso(16), metadata: { sources: ["indicia_address"], corroborations: 1, source_class: "data_broker", reason_for_confidence: "single source class: data_broker" },
+  })),
+
   // ── Volume — a same-kind cluster past CLUSTER_COLLAPSE_THRESHOLD (4), so
   //    the collapse path and the sticky column head are exercised. Uniform
   //    provenance and near-identical confidence: the "wall of identical rows"

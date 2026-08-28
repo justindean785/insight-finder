@@ -40,7 +40,18 @@ describe("quarantine cannot hide behind a collapsed cluster", () => {
     // This is the assertion that would have failed on the shipped code: the
     // helper is only worth anything if the rendered default flows through it.
     const src = readFileSync("src/components/ResourcesPanel.tsx", "utf8");
-    expect(src).toMatch(/openClusters\[key\]\s*\?\?\s*clusterDefaultOpen\(/);
+    // The chain gained a middle link — the analyst's board-wide "Fold all",
+    // which is an EXPLICIT action, not a default. What this test protects is
+    // unchanged and is the terminal position: when neither the cluster's own
+    // toggle nor an explicit fold-all says otherwise, the policy function
+    // decides, and it says open. A default that stops flowing through
+    // `clusterDefaultOpen` is the regression this assertion exists to catch.
+    expect(src).toMatch(
+      /openClusters\[key\]\s*\?\?\s*openClusters\[FOLD_ALL_KEY\]\s*\?\?\s*clusterDefaultOpen\(/,
+    );
+    // Nothing may seed the fold-all key, or "explicit action" becomes a default
+    // by the back door. Exactly one writer: the button's own handler.
+    expect(src.match(/\[FOLD_ALL_KEY\]:/g) ?? []).toHaveLength(1);
     // And the old expression must be gone, not merely shadowed.
     expect(src).not.toMatch(/openClusters\[key\]\s*\?\?\s*!collapsible/);
     // The analyst's own choice must survive a remount — the "every single time"
