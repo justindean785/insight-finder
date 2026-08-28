@@ -142,8 +142,12 @@ Deno.test("a failed page degrades to partial dedup, never to a thrown request", 
 const REGISTRY = await Deno.readTextFile(new URL("./tool-registry.ts", import.meta.url));
 
 Deno.test("wiring: record_artifacts loads the thread-wide key set", () => {
+  // Permissive on ARGUMENTS, strict on the call: the loader legitimately grew a
+  // `seed` parameter for null-result keying, and pinning the exact arg list made
+  // an additive change look like a regression. What must not drift is that the
+  // call happens, unprefixed, before the batch loop.
   assert(
-    REGISTRY.includes("await loadThreadArtifactIdentities(supabase, threadId)"),
+    /await loadThreadArtifactIdentities\(\s*supabase,\s*threadId/.test(REGISTRY),
     "the batch loop must be preceded by the thread-wide scan, with no disabling prefix",
   );
   assert(
@@ -167,6 +171,44 @@ Deno.test("wiring: both writers build the key with the SAME shared function", ()
   // matching: the runtime key drifts from the stored key and nothing fails.
   const uses = REGISTRY.split("artifactDedupKey(").length - 1;
   assert(uses >= 3, `expected the shared key helper at every site, saw ${uses}`);
+});
+
+/* ── review findings on #508 (Codex, 2026-08-28) — all three verified real ── */
+
+Deno.test("wiring: the thread loader indexes the LEGACY phone spelling too", () => {
+  // Without this, a thread holding a pre-canonicalisation "9172915568" is
+  // invisible to a lookup for "+19172915568", and re-running an existing thread
+  // recreates the exact duplicate this change set out to stop. The auto-persist
+  // path (loadSeenArtifactKeys) already did this; the model-facing writers were
+  // the one path that did not.
+  assert(
+    /kind\.toLowerCase\(\) === "phone"[\s\S]{0,320}canonicalPhoneValue\(value\)/.test(REGISTRY),
+    "the loader must register the canonical spelling of a stored legacy phone",
+  );
+});
+
+Deno.test("wiring: stored NULL RESULTS are indexed by their canonical key", () => {
+  // dedupKey prefers nullResultKey for a no-hit row, so a loader that indexed
+  // only artifactDedupKey could never match one — which is why production shows
+  // "no breach hits" written three times in three wordings.
+  assert(
+    /index\(nullResultKey\(\{\s*kind,\s*source,\s*value,\s*selector:/.test(REGISTRY),
+    "the loader must also index each stored row under its null-result key",
+  );
+});
+
+Deno.test("an all-duplicate batch still discloses its suppressed deltas", () => {
+  // The early `rows.length === 0` return fires BEFORE the disclosure fields in
+  // the success path, so the single most common case the gate fires was the one
+  // case that reported nothing — under a hint that blamed validation.
+  const early = REGISTRY.slice(REGISTRY.indexOf("if (rows.length === 0) {"));
+  const block = early.slice(0, early.indexOf("const safeRows"));
+  assert(block.includes("confidence_deltas_suppressed"), "the delta must survive the empty-batch return");
+  assert(block.includes("thread_dedup_partial"), "so must the partial-scan disclosure");
+  assert(
+    block.includes("already recorded on this thread"),
+    "an all-duplicate batch must NOT be reported as a validation failure",
+  );
 });
 
 Deno.test("⛔ wiring: a duplicate NEVER mutates the surviving row's confidence", () => {

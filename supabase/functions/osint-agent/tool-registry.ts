@@ -31,6 +31,7 @@ import {
   nullResultKey,
   artifactDedupKey,
 } from "./lib/artifact-hygiene.ts";
+import { canonicalPhoneValue } from "./lib/selector-normalize.ts";
 import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
 import { selectPivots, proposedCallToCandidate, type PivotCandidate, type ProposedCall } from "./graph_pivots.ts";
 import { renderPivotChecklistForPrompt } from "./pivot-checklists.ts";
@@ -209,6 +210,7 @@ type PriorArtifact = { id: string; confidence: number };
 async function loadThreadArtifactIdentities(
   supabase: ReturnType<typeof createClient>,
   threadId: string,
+  seed: string | null,
 ): Promise<{ keys: Map<string, PriorArtifact>; truncated: boolean }> {
   const keys = new Map<string, PriorArtifact>();
   let truncated = false;
@@ -225,15 +227,37 @@ async function loadThreadArtifactIdentities(
         const kind = typeof r.kind === "string" ? r.kind : "";
         const value = typeof r.value === "string" ? r.value : "";
         if (!kind || !value) continue;
-        const key = artifactDedupKey({ kind, value, source: typeof r.source === "string" ? r.source : null });
+        const source = typeof r.source === "string" ? r.source : null;
+        const entry: PriorArtifact = {
+          id: String(r.id ?? ""),
+          confidence: typeof r.confidence === "number" ? r.confidence : 0,
+        };
         // FIRST WRITER WINS. The earliest row is the one whose evidence-ledger
         // entry exists; a later duplicate must never displace it as the survivor.
-        if (!keys.has(key)) {
-          keys.set(key, {
-            id: String(r.id ?? ""),
-            confidence: typeof r.confidence === "number" ? r.confidence : 0,
-          });
+        const index = (k: string | null) => { if (k && !keys.has(k)) keys.set(k, entry); };
+
+        index(artifactDedupKey({ kind, value, source }));
+
+        // LEGACY SPELLING. `validateArtifact` canonicalises a phone on write, so
+        // a row stored before that change holds "9172915568" while the next
+        // attempt keys on "+19172915568" — the lookup misses and re-inserts the
+        // duplicate this gate exists to stop. `loadSeenArtifactKeys` already
+        // registers both spellings on the auto-persist path; without this the
+        // model-facing writers were the one path that did not, which is exactly
+        // the asymmetry this change set out to close.
+        if (kind.toLowerCase() === "phone") {
+          const canonical = canonicalPhoneValue(value);
+          if (canonical && canonical !== value) index(artifactDedupKey({ kind, value: canonical, source }));
         }
+
+        // NULL RESULTS key through `nullResultKey`, not the literal key, so a
+        // stored no-hit row indexed only literally can never be found by the
+        // canonical lookup — and "no breach hits" repeated in three wordings
+        // keeps writing three rows, which is what production shows. Indexed
+        // under the seed selector, matching the common write-time case; a row
+        // whose write-time selector came from metadata simply fails to match,
+        // which is a miss, never a false collapse.
+        index(nullResultKey({ kind, source, value, selector: seed ?? null }));
       }
       if (data.length < THREAD_ARTIFACT_PAGE_SIZE) break;
       if (to + 1 >= THREAD_ARTIFACT_SCAN_MAX) truncated = true;
@@ -260,21 +284,34 @@ async function findPriorThreadArtifact(
   source: string | null,
 ): Promise<PriorArtifact | null> {
   try {
+    // Match the LEGACY spelling too. The exact-value SQL filter is the singular
+    // writer's twin of the loader gap above: a thread holding a pre-change
+    // "9172915568" is invisible to a lookup for the canonical "+19172915568",
+    // so re-running an existing thread recreates the very duplicate this gate
+    // exists to stop.
+    const spellings = [value];
+    if (kind.toLowerCase() === "phone") {
+      const canonical = canonicalPhoneValue(value);
+      const bare = value.replace(/[^\d]/g, "");
+      for (const alt of [canonical, bare]) if (alt && !spellings.includes(alt)) spellings.push(alt);
+    }
     const { data, error } = await supabase
       .from("artifacts")
       .select("id,kind,value,source,confidence")
       .eq("thread_id", threadId)
       .eq("kind", kind)
-      .eq("value", value);
+      .in("value", spellings);
     if (error || !Array.isArray(data)) return null;
-    const wanted = artifactDedupKey({ kind, value, source });
+    // Every spelling of the incoming value is an acceptable match, for the same
+    // reason the SQL filter widened: the stored row may predate canonicalisation.
+    const wanted = new Set(spellings.map((s) => artifactDedupKey({ kind, value: s, source })));
     for (const r of data as Array<Record<string, unknown>>) {
       const k = artifactDedupKey({
         kind: typeof r.kind === "string" ? r.kind : "",
         value: typeof r.value === "string" ? r.value : "",
         source: typeof r.source === "string" ? r.source : null,
       });
-      if (k === wanted) {
+      if (wanted.has(k)) {
         return { id: String(r.id ?? ""), confidence: typeof r.confidence === "number" ? r.confidence : 0 };
       }
     }
@@ -4690,7 +4727,7 @@ export function buildTools(ctx: ToolContext) {
         // deletes, migrates or backfills anything — it only declines to write a
         // row the thread already has.
         const { keys: priorByKey, truncated: threadDedupPartial } =
-          await loadThreadArtifactIdentities(supabase, threadId);
+          await loadThreadArtifactIdentities(supabase, threadId, triageState.seed ?? null);
         /** Confidence differences on rows declined as thread-wide duplicates.
          *  DISCLOSED, never applied — see the note at the rejection site. */
         const confidenceDeltasSuppressed: Array<{
@@ -4928,7 +4965,28 @@ export function buildTools(ctx: ToolContext) {
           accepted.push({ index: i, kind: finalKind, value: v.value });
         });
         if (rows.length === 0) {
-          return { ok: false, count: 0, accepted, rejected, hint: "All items failed validation — re-check kinds/values against the rules in the tool description." };
+          // A batch can end empty for two DIFFERENT reasons, and saying the
+          // wrong one sends the model to fix a schema problem it does not have.
+          // When every item was already on the thread, the disclosure fields
+          // below are the whole point of the gate — dropping them here loses the
+          // recorded-versus-attempted confidence delta in the single most common
+          // case the gate fires.
+          const allDuplicates = rejected.length > 0 &&
+            rejected.every((r) => r.reason.includes("already recorded on this thread"));
+          return {
+            ok: false,
+            count: 0,
+            accepted,
+            rejected,
+            hint: allDuplicates
+              ? "Every item is already recorded on this thread — re-recording an observation does not make it two. " +
+                "Nothing was lost; read `confidence_deltas_suppressed` if you were raising a score."
+              : "All items failed validation — re-check kinds/values against the rules in the tool description.",
+            ...(confidenceDeltasSuppressed.length > 0
+              ? { confidence_deltas_suppressed: confidenceDeltasSuppressed }
+              : {}),
+            ...(threadDedupPartial ? { thread_dedup_partial: true } : {}),
+          };
         }
         const safeRows = scrubArtifactRows(rows);
         let insertedRows = safeRows;
