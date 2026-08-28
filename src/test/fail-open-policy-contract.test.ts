@@ -44,8 +44,21 @@ describe("fail-open investigation policy", () => {
   // budgets — including whether a cap or a provider is ending a run. Pin the prose
   // against the code. This asserts documentation accuracy, not behaviour; the
   // behaviour itself is driven by runtime_policy_test.ts and runtime-policy.test.ts.
+  //
+  // Match the affirmative claim, not a co-occurrence of the two words. A bare
+  // /default.*unlimited/ also rejects ACCURATE prose ("NOT to unlimited", "does
+  // not default to unlimited", "the default changed from unlimited") and fails on
+  // a harmless line reflow of a correct comment. So: flatten comment markers and
+  // whitespace (reflow-proof), drop clauses that name "unlimited" only to deny it,
+  // then test for what the two obsolete comments actually asserted.
   it("does not claim the runtime caps default to unlimited", () => {
-    expect(RUNTIME).not.toMatch(/default[^\n]*unlimited/i);
+    const flattened = RUNTIME.replace(/^[ \t]*\/\/+/gm, " ").replace(/\s+/g, " ");
+    const affirmativeOnly = flattened.replace(
+      /\b(?:not|never|no longer|changed from|instead of|rather than)\b[^.]{0,30}?\bunlimited\b/gi,
+      " ",
+    );
+    expect(affirmativeOnly).not.toMatch(/\bdefaults?\s+to\s+unlimited\b/i);
+    expect(affirmativeOnly).not.toMatch(/\bby default\b[^.]{0,40}?\bis\s+unlimited\b/i);
   });
 
   it("documents planner, playbook, and audit helpers as advisory", () => {
