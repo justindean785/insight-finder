@@ -15,7 +15,7 @@ export const firecrawl_search= tool({
     skipped: true,
     hint: "Firecrawl is permanently disabled. Call exa_search and minimax_web_search in parallel instead. Do NOT retry firecrawl_search.",
   }),
-}),
+});
 
 export const firecrawl_scrape= tool({
   description:
@@ -31,7 +31,7 @@ export const firecrawl_scrape= tool({
     skipped: true,
     hint: `Firecrawl is permanently disabled. Call jina_reader_scrape({ url: "${url}" }) instead.`,
   }),
-}),
+});
 
 export const firecrawl_map= tool({
   description:
@@ -47,5 +47,5 @@ export const firecrawl_map= tool({
     skipped: true,
     hint: "Firecrawl is permanently disabled. Call crtsh_subdomains + dns_records for domain enumeration instead.",
   }),
-}),
+});
 

@@ -159,7 +159,13 @@ reconstruct the original model-requested confidence.
 > cap is **15** (`confidence.ts:526`), not 30. **30** is the _bio-cross-link name_
 > cap. The observed 30 is either a bio-linked name, or the frontend re-inflating a
 > stored 15 (see §5, F-4). This is a display-vs-store reconciliation item, not a
-> constant to change.
+> constant to change. **2026-08-28:** if the stored 15 carried
+> `confidence_cap_applied`, the re-inflation branch is closed by #481 and the
+> observed 30 must be the bio-linked name.
+
+> ⚠️ **This document is a dated audit (2026-08-11), not a live status.** At least one
+> High finding (F-4) was substantially fixed afterwards and the table below was not
+> updated for it. Re-verify any finding against the tree before acting on it.
 
 ---
 
@@ -244,10 +250,23 @@ tier jump:
    vs the radar step 100/85/65/45/25/10 (`confidence-dimensions.ts:159`).
 4. Case-rollup weights 0.7/0.3 and the relationship penalty ÷2 — undocumented
    (`confidence.ts:53, 57`).
-5. Frontend `adjustedConfidence` re-adds a corroboration bonus **on top of the
-   already-capped stored value without re-applying caps** (`intel.ts:227-259`),
-   so a backend-capped 85 can display as 95 (F-4). The bonus's class set is a
-   naive first-token split that over-counts (`whois`+`whois_lookup` = 2 classes).
+5. ~~Frontend `adjustedConfidence` re-adds a corroboration bonus **on top of the
+   already-capped stored value without re-applying caps**, so a backend-capped 85
+   can display as 95 (F-4).~~ **MOSTLY CLOSED by #481 — verified 2026-08-28.**
+   `intel.ts` now reads `metadata.confidence_cap_applied` into `recordedCap` and
+   folds it through `ceil()` into **all three** return paths (possible-minor,
+   quarantine, and the ordinary path), so the stricter of the two limits always
+   wins and the bonus can no longer carry a row past a cap the server recorded.
+   The clamp is deliberately total: an unparseable or hostile `metadata` yields
+   `null` and can only ever LOWER a number, never raise one.
+   **The residual, stated precisely so nobody re-fixes the closed half:** when the
+   backend recorded *no* cap, `ceil(100)` is the only limit, so the client bonus
+   still adds on top of the stored value for uncapped rows. That is a narrower
+   finding than the original — it is no longer "displays above the backend cap,"
+   it is "adds a second, coarse corroboration estimate where the backend asserted
+   no ceiling." The bonus's class set is still a naive first-token split that
+   over-counts (`whois`+`whois_lookup` = 2 classes), which is the part worth
+   fixing.
 
 **Recommendation:** pick ONE corroboration curve, ONE analyst-delta set, ONE
 recency curve; make the frontend display the stored (capped) number verbatim and
@@ -260,7 +279,7 @@ stop re-inflating it. That single change resolves F-2, F-4, and most of the
 
 | ID | Finding | Severity | Action |
 |---|---|---|---|
-| F-4 | Frontend re-inflates above the backend cap | High | Display stored value verbatim |
+| F-4 | ~~Frontend re-inflates above the backend cap~~ **Mostly closed by #481** (verified 2026-08-28: `recordedCap` → `ceil()` on all three `adjustedConfidence` return paths). Residual: uncapped rows still take the client bonus, and its class set over-counts. | ~~High~~ Low | Fix the first-token class split; do NOT re-do the cap clamp |
 | G1 | Numeric tier lacks the independence gate (single court/gov → "Confirmed") | High | Gate numeric tier on independentClasses≥2 |
 | G2 | `meta.reviewed` may launder into CONFIRMED | High (if model-writable) | Verify write path, then gate |
 | F-2 | Confirm applies +20 but explains +15 | Medium | Single delta constant |

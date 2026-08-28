@@ -131,3 +131,57 @@ Deno.test("timeout overrides: fofa_search and markdown_extract clear their own f
     );
   }
 });
+
+// ── socialfetch_web_read: a doomed call must be a CHEAP doomed call ──────────
+//
+// Measured on the live backend (14-day tool_usage_log window, brief of
+// 2026-08-28): 21 aborts, avg 22,194ms, **zero successes ever observed**. Every
+// single call aborted at ~22,140ms — essentially zero variance, which is the
+// signature of a provider that never answers, not of heavy pages occasionally
+// landing late.
+//
+// The old pair was wrapper 25s / own fetch 22s. That spacing was correct and is
+// preserved here; what was wrong was its SIZE. `circuit.ts` deliberately gives
+// GENERAL_MULTI_ORIGIN_TOOLS three consecutive timeouts before suppressing the
+// provider (one slow page is a per-URL problem, not a dead provider), so the
+// run pays the full cap three times before the tool goes quiet: 3 × 22s = 66s
+// of a 90s work window — see ORCHESTRATOR_WALL_CLOCK_MS - FINALIZE_RESERVE_MS.
+// At 12s the same three strikes cost 36s, and the strike COUNT is untouched.
+//
+// NOT changed, deliberately: `TIMEOUT_SUPPRESS_CONSECUTIVE`. Dropping
+// socialfetch_web_read to a one-strike suppression would make the doomed path
+// cheaper still, but `circuit_timeout_test.ts:76` deliberately pins the
+// opposite ("one timeout must not suppress socialfetch_web_read"), and
+// overturning a pinned decision needs an operator call, not a drive-by.
+//
+// Whether the provider is alive at all is answerable for FREE and was not
+// answerable from this sandbox: `socialfetch_whoami` and `socialfetch_balance`
+// are both zero-credit. A dead key or exhausted quota would make this a
+// different fix entirely (the 402 -> SOCIALFETCH_CREDITS_EXHAUSTED path is
+// already handled, so it is NOT a 402).
+Deno.test("socialfetch_web_read fails fast — a tool with no observed successes gets the default budget", () => {
+  assertEquals(
+    toolTimeoutMs("socialfetch_web_read"),
+    15_000,
+    "wrapper cap was 25s while the tool has never once returned; a doomed call must be cheap",
+  );
+});
+
+Deno.test("socialfetch_web_read keeps the wrapper-above-own-budget invariant", () => {
+  // This tool passes its budget as `fetchRetry(..., { timeoutMs: N })`, which the
+  // structural scanner in tool_timeout_contract_test.ts does NOT see (it reads
+  // `fetchT(…, N)` positional args only). So the invariant that file exists to
+  // enforce was, for this tool, resting on prose alone — and prose is what the
+  // 25s/22s pair drifted from. Pin both halves here.
+  const src = Deno.readTextFileSync(new URL("./tool-registry.ts", import.meta.url));
+  const body = src.slice(src.indexOf("socialfetch_web_read: tool({"));
+  const m = body.slice(0, body.indexOf("socialfetch_whoami")).match(/timeoutMs:\s*([\d_]+)/);
+  assert(m, "socialfetch_web_read must still declare an explicit per-attempt timeout");
+  const own = Number(m![1].replace(/_/g, ""));
+  assertEquals(own, 12_000, "the tool's own fetch budget");
+  assert(
+    toolTimeoutMs("socialfetch_web_read") > own,
+    `wrapper cap (${toolTimeoutMs("socialfetch_web_read")}ms) must exceed the tool's own ` +
+      `fetch budget (${own}ms), or the wrapper guillotines the call before it can fail cleanly`,
+  );
+});
