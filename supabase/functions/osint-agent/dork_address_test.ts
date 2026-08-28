@@ -21,6 +21,7 @@ import { buildTools, type ToolContext } from "./tool-registry.ts";
 import { detectSeedServer } from "./validation.ts";
 import { TOOL_CATALOG } from "./catalog.ts";
 import { engineOfUrl, isHostname, searchUrl, splitQuotedSeed } from "./dork-queries.ts";
+import { parseUsAddress } from "./address.ts";
 
 // The two selectors the production run actually sent.
 const MULTILINE_SEED = "79 WAVERLY AVE\nCINCINNATI OH, 45215";
@@ -119,6 +120,25 @@ Deno.test("address seed: the state position must be a real USPS code, not any tw
   // A real, if unusual, state code is still accepted.
   assertEquals(detectSeedServer("79 Waverly Ave, Cincinnati, OH 45215")?.kind, "address");
   assertEquals(detectSeedServer("1 Judiciary Sq NW, Washington, DC 20001")?.kind, "address");
+});
+
+Deno.test("parseUsAddress: bails out on an oversized input instead of running the regex", () => {
+  // Graphify review on #491: US_POSTAL_PARSE_RE backtracks two lazy groups
+  // (street, city) against each other on a non-matching tail. Unlike
+  // looksLikePostalAddress/looksLikeStreetAddress, parseUsAddress had no
+  // length cap of its own — and it IS reachable with a raw, unbounded
+  // model-supplied seed (resolveDorkKind only re-validates when the model
+  // claims kind:"domain"; kind:"address" goes straight through). A real,
+  // normal-length address still parses; an oversized one is rejected before
+  // the regex runs.
+  const oversized = "1 " + "A".repeat(250) + " St, Springfield, OH 12345";
+  assertEquals(parseUsAddress(oversized), null);
+  assertEquals(parseUsAddress("79 Waverly Ave, Cincinnati, OH 45215"), {
+    street: "79 Waverly Ave",
+    city: "Cincinnati",
+    state: "OH",
+    zip: "45215",
+  });
 });
 
 Deno.test("google_dorks(address): every OR-group is parenthesized, so the address prefix scopes ALL branches", async () => {

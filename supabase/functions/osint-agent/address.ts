@@ -123,6 +123,16 @@ export function isAddressLike(raw: string | null | undefined): boolean {
 /** Best-effort component split. Returns null when the value does not parse cleanly. */
 export function parseUsAddress(raw: string | null | undefined): ParsedUsAddress | null {
   const flat = flattenAddress(raw);
+  // Same 200-char cap as looksLikePostalAddress/looksLikeStreetAddress. Unlike
+  // those two call sites, this one is reachable directly with a raw, unbounded
+  // model-supplied seed: resolveDorkKind() only re-validates the seed when the
+  // model claims kind:"domain"; a model that sends kind:"address" outright
+  // skips straight to buildAddressDorks() -> addressTerms() -> here with no
+  // length check at all. US_POSTAL_PARSE_RE backtracks two lazy groups
+  // (street, city) against each other on a non-matching tail, so an unbounded
+  // adversarial-length input is cheap insurance to cut off before the regex
+  // runs, not just a cosmetic bound.
+  if (flat.length > 200) return null;
   const m = US_POSTAL_PARSE_RE.exec(flat);
   if (!m) return null;
   return {
