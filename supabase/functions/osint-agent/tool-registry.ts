@@ -1584,16 +1584,17 @@ export function buildTools(ctx: ToolContext) {
       execute: async ({ url }) => {
         if (!SOCIALFETCH_API_KEY) return { error: "SOCIALFETCH_API_KEY not configured" };
         try {
-          // Single attempt, still no retry: retrying a timeout would just double the
+          // Single attempt, no retry: retrying a timeout would just double the
           // wait past the outer tool budget (see cache.ts).
           //
-          // 22_000 -> 12_000 (2026-08-28). The long budget was for "server-side
-          // markdown of a heavy page is slow", but 14 days of telemetry show 21
-          // aborts, zero successes, every one within ~10ms of the 22s ceiling — the
-          // headroom was never converting into results, only into wall clock. The
-          // wrapper cap moved 25s -> 15s in the same change so it still sits ABOVE
-          // this value; raise the two together or not at all.
-          const r = await fetchRetry(`https://api.socialfetch.dev/v1/web/markdown?url=${encodeURIComponent(url)}`, { headers: { "x-api-key": SOCIALFETCH_API_KEY } }, { retries: 0, timeoutMs: 12_000 });
+          // ⚠️ CORRECTED 2026-08-28: briefly cut to 12_000 on a report of "zero
+          // successes ever observed". tool_usage_log says otherwise — 127 calls
+          // over 30 days, 76 successful, successes averaging 5.4s and reaching
+          // 15,908ms. 18s clears every observed success with headroom; 12s would
+          // have severed three of them. Raise or lower this ONLY against a fresh
+          // query of the success-duration distribution, and move cache.ts's
+          // wrapper with it so the wrapper stays above.
+          const r = await fetchRetry(`https://api.socialfetch.dev/v1/web/markdown?url=${encodeURIComponent(url)}`, { headers: { "x-api-key": SOCIALFETCH_API_KEY } }, { retries: 0, timeoutMs: 18_000 });
           if (r.status === 402) {
             return { ok: false, status: 402, error: "SOCIALFETCH_CREDITS_EXHAUSTED", message: "Social Fetch credit balance is zero. Check /v1/balance." };
           }
