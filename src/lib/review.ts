@@ -73,6 +73,18 @@ export const REVIEW_CONFIDENCE_DELTA: Record<ReviewState, number> = {
 
 /** Verdicts that mean "the analyst rejected this" — mirrors reviews.ts on the edge function. */
 export const REJECTED_REVIEW_STATES: ReadonlySet<ReviewState> = new Set(["dismissed", "wrong"]);
+
+/**
+ * Did the analyst reject this row?
+ *
+ * Accepts a loose string so callers holding an `ReviewAdjustment` (which also
+ * admits "new" | null | undefined) can ask without a cast, and so this module
+ * needs no import from `intel.ts`. One predicate on purpose: a second inline
+ * `r === "dismissed" || r === "wrong"` is how two signals drift apart.
+ */
+export function isRejectedReview(state: string | null | undefined): boolean {
+  return !!state && REJECTED_REVIEW_STATES.has(state as ReviewState);
+}
 /** A review write in any of these states can make a cached investigation_cache row stale. */
 const CACHE_INVALIDATING_STATES: ReadonlySet<ReviewState> = new Set(["dismissed", "wrong", "recheck"]);
 
@@ -230,11 +242,19 @@ const LEGACY: Record<string, ReviewState> = {
 };
 
 /** Module-level cache keyed by threadId so multiple hook consumers share state without refetching. */
-const cache = new Map<string, { states: StateMap; notes: NoteMap; loaded: boolean }>();
+/** Whether this thread's analyst verdicts were actually readable.
+ *  `unknown` = not attempted yet; `unavailable` = the read failed and whatever is
+ *  in `states` cannot be trusted to be complete. #500. */
+export type ReviewAvailability = "unknown" | "ok" | "unavailable";
+
+const cache = new Map<
+  string,
+  { states: StateMap; notes: NoteMap; loaded: boolean; availability: ReviewAvailability }
+>();
 
 function ensure(threadId: string) {
   let c = cache.get(threadId);
-  if (!c) { c = { states: {}, notes: {}, loaded: false }; cache.set(threadId, c); }
+  if (!c) { c = { states: {}, notes: {}, loaded: false, availability: "unknown" }; cache.set(threadId, c); }
   return c;
 }
 
@@ -289,22 +309,93 @@ async function invalidateInvestigationCache(threadId: string, userId: string) {
   } catch { /* best-effort; read-time reconciliation is the real guard */ }
 }
 
+/**
+ * Decide whether an `artifact_reviews` response can be trusted, and project it.
+ *
+ * THE POINT OF THIS FUNCTION (#500): a failing PostgREST select resolves as
+ * `{ data: null, error }` rather than throwing. Reading only `data` — `data ?? []`
+ * — made a failed read indistinguishable from a thread with no reviews, so every
+ * `dismissed`/`wrong` artifact silently read as unreviewed and could render as
+ * CONFIRMED at the top of a report.
+ *
+ * "We could not read the verdicts" is not "nothing was rejected." Extracted as a
+ * pure function so that decision is directly testable and the caller has exactly
+ * one thing to branch on. Same shape as the backend fix in #498.
+ *
+ * A malformed individual ROW is tolerated — one bad row must not discard an
+ * analyst's other verdicts — but a malformed RESPONSE is not.
+ */
+/** Deliberately a flat shape, not a discriminated union: this project compiles
+ *  with `strict: false` / `strictNullChecks: false`, where narrowing on a literal
+ *  boolean discriminant is unreliable. Every field is always present — on an
+ *  unavailable read the maps are empty and `reason` carries why. */
+export interface ReviewLoadOutcome {
+  available: boolean;
+  states: StateMap;
+  notes: NoteMap;
+  reason: string | null;
+}
+
+export function interpretReviewRows(data: unknown, error: unknown): ReviewLoadOutcome {
+  if (error) {
+    const msg = error && typeof error === "object" && "message" in error
+      ? String((error as { message: unknown }).message)
+      : String(error);
+    return { available: false, states: {}, notes: {}, reason: msg.slice(0, 200) };
+  }
+  // A successful select returns an array, never null. Anything else is a shape we
+  // do not understand, and guessing "none" is the dangerous direction.
+  if (!Array.isArray(data)) {
+    return { available: false, states: {}, notes: {}, reason: "artifact_reviews returned no array" };
+  }
+
+  const states: StateMap = {};
+  const notes: NoteMap = {};
+  for (const row of data) {
+    if (!row || typeof row !== "object") continue;
+    const r = row as { artifact_id?: unknown; state?: unknown; note?: unknown };
+    if (typeof r.artifact_id !== "string" || typeof r.state !== "string") continue;
+    states[r.artifact_id] = r.state as ReviewState;
+    if (typeof r.note === "string" && r.note) notes[r.artifact_id] = r.note;
+  }
+  return { available: true, states, notes, reason: null };
+}
+
 async function loadFromDb(threadId: string) {
+  const c = ensure(threadId);
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return;
+  if (!user) {
+    // No session: the verdicts were not read. Say so rather than leaving the
+    // caller on "unknown" forever, and keep whatever was already loaded.
+    c.availability = "unavailable";
+    c.loaded = true;
+    emit(threadId);
+    return;
+  }
   await migrateLegacy(threadId, user.id);
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("artifact_reviews")
     .select("artifact_id,state,note")
     .eq("thread_id", threadId)
     .eq("user_id", user.id);
-  const c = ensure(threadId);
-  c.states = {};
-  c.notes = {};
-  for (const row of (data ?? []) as { artifact_id: string; state: ReviewState; note: string | null }[]) {
-    c.states[row.artifact_id] = row.state;
-    if (row.note) c.notes[row.artifact_id] = row.note;
+
+  const outcome = interpretReviewRows(data, error);
+  if (!outcome.available) {
+    // DO NOT touch c.states / c.notes here. The pre-#500 code cleared them before
+    // repopulating, so a failed RE-load destroyed verdicts that had loaded
+    // correctly a moment earlier — state went from accurate to empty. Whatever is
+    // cached stays; `availability` is how consumers learn not to trust it as
+    // complete. `loaded` is still set so the hook does not retry-storm.
+    console.warn("[review] artifact_reviews unavailable:", outcome.reason);
+    c.availability = "unavailable";
+    c.loaded = true;
+    emit(threadId);
+    return;
   }
+
+  c.states = outcome.states;
+  c.notes = outcome.notes;
+  c.availability = "ok";
   c.loaded = true;
   emit(threadId);
 }
@@ -313,11 +404,15 @@ export function useReviewStates(threadId: string) {
   const c = ensure(threadId);
   const [map, setMap] = useState<StateMap>(c.states);
   const [notes, setNotes] = useState<NoteMap>(c.notes);
+  // #500. Consumers that make an authority claim ("nothing was rejected") must be
+  // able to tell a successful empty read from a failed one, and fail closed.
+  const [availability, setAvailability] = useState<ReviewAvailability>(c.availability);
   const loadingRef = useRef(false);
 
   useEffect(() => {
     setMap(ensure(threadId).states);
     setNotes(ensure(threadId).notes);
+    setAvailability(ensure(threadId).availability);
     if (!ensure(threadId).loaded && !loadingRef.current) {
       loadingRef.current = true;
       loadFromDb(threadId).finally(() => { loadingRef.current = false; });
@@ -327,6 +422,7 @@ export function useReviewStates(threadId: string) {
       if (!d || d.threadId === threadId) {
         setMap({ ...ensure(threadId).states });
         setNotes({ ...ensure(threadId).notes });
+        setAvailability(ensure(threadId).availability);
       }
     };
     window.addEventListener(EVT, onChange);
@@ -494,5 +590,5 @@ export function useReviewStates(threadId: string) {
     await supabase.from("artifact_reviews").delete().eq("thread_id", threadId).eq("user_id", user.id);
   }, [threadId]);
 
-  return { map, notes, get, getNote, set, setNote, clear };
+  return { map, notes, availability, get, getNote, set, setNote, clear };
 }
