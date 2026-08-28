@@ -55,12 +55,34 @@ export type AuthorityState =
   /** Verdicts were unreadable, so a rejected finding might be in the population. */
   | "reviews_unavailable";
 
+export type FindingOrigin =
+  /** Derived server-side from persisted artifacts by finding synthesis. */
+  | "synthesis"
+  /** Asserted by the orchestrator through `record_finding`. */
+  | "model";
+
 export interface AuthoritativeFinding {
   id: string;
   value: string;
   /** Effective confidence: min(stored, recorded cap). null when unusable. */
   confidence: number | null;
   tier: ConfidenceTier;
+  /**
+   * WHO reached this conclusion. Disclosure only — it carries no authority and
+   * changes no number: both origins are scored by the identical engine chain
+   * (`lib/finding-row.ts`), so a synthesized 62 and a model-asserted 62 mean the
+   * same thing about the evidence.
+   *
+   * It matters because they do NOT mean the same thing about the process. A
+   * derived conclusion is a machine reading of rows that already existed; an
+   * asserted one is the orchestrator's own claim. Presenting them
+   * indistinguishably would let the engine appear to have adjudicated something
+   * no analyst and no model ever looked at.
+   *
+   * Defaults to "model" when absent, which is correct for the 13 findings that
+   * predate synthesis — every one of them came from `record_finding`.
+   */
+  origin: FindingOrigin;
 }
 
 export interface AuthoritativeFindings {
@@ -121,6 +143,17 @@ export function effectiveFindingConfidence(a: unknown): number | null {
   return cap === null ? base : Math.min(base, cap);
 }
 
+/**
+ * Which writer produced this finding. Total, and defaults to "model": an
+ * unreadable or absent marker must never render as "synthesis", because that
+ * would attribute a machine derivation to a row we cannot actually describe.
+ */
+export function findingOrigin(a: unknown): FindingOrigin {
+  if (!isRecord(a)) return "model";
+  const meta = isRecord(a.metadata) ? a.metadata : {};
+  return meta.finding_origin === "synthesis" ? "synthesis" : "model";
+}
+
 /** The population predicate. Exported so callers count with the same definition
  *  of "finding" this module selects by. */
 export function isFindingArtifact(a: unknown): boolean {
@@ -160,6 +193,7 @@ export function selectAuthoritativeFindings(
         // Only a usable score reaches the ladder, so a corrupt 101 lands on
         // "unverified" rather than "confirmed".
         tier: tierOf(confidence),
+        origin: findingOrigin(a),
       };
     })
     // Strongest first; id breaks ties so the same rows render identically in any
