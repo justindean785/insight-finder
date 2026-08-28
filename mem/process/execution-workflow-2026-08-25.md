@@ -1,6 +1,6 @@
 ---
 name: Insight Finder step-by-step execution workflow (2026-08-25)
-description: JD's ordered Part A / Part B execution plan — settle the PR queue (A1-A3), then ship B1-B7 — with the per-step rules that every step inherits; Step A1 is DONE, main is 865f49e
+description: JD's ordered Part A / Part B execution plan — settle the PR queue (A1-A3), then ship B1-B7 — with the per-step rules that every step inherits; Step A1 is DONE, main is a38963c (865f49e is the DEPLOYED build marker, not main's tip)
 type: process
 ---
 The full plan JD handed over on 2026-08-25. Each step is a standalone prompt for a fresh

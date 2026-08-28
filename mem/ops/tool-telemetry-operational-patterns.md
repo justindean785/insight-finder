@@ -1,6 +1,6 @@
 ---
 name: tool_usage_log already answers "why did the run fail" — nobody reads it
-description: 681 doomed calls across 158 threads (48.6s dead wall-clock per thread) are sitting in tool_usage_log unread; skips log with ok=true so naive queries miss them; the finalize window is a SYMPTOM of timeout ceilings set below provider latency
+description: 681 doomed calls across 158 threads (48.6s dead wall-clock per thread) are sitting in tool_usage_log unread; skips log with ok=true so naive queries miss them; much of the finalize-window pressure is timeout ceilings set below provider latency — but some of those ceilings are deliberate fast-fail bounds, so prove each one truncates useful data before touching it
 type: ops
 ---
 **Measured 2026-08-25 against production** (build `865f49e`, 60-day window). Every number
@@ -50,8 +50,35 @@ the finalize path**, which CLAUDE.md forbids adding work to and which owns this 
 worst incidents. Do NOT "fix" this by making the window budget-driven, and do NOT raise
 `MAX_PAID_CALLS` (settled: the cap stays bounded; the dispatch guard is the lever).
 
-**30 tools dying at their own ceilings is ONE configuration error, not 30 bugs.** No code
-audit framed it that way, because each audit saw a single `timeout: 8000` in isolation.
+**30 tools dying at their own ceilings is ONE unexamined configuration surface, not 30
+unrelated bugs.** No code audit framed it that way, because each audit saw a single
+`timeout: 8000` in isolation. But see the next section before changing any of them: "one
+surface" is a claim about where to look, NOT a licence to raise all 30.
+
+## ⚠️ A ceiling below p95 is NOT automatically broken
+
+Some caps sit below their provider's p95 **on purpose**, and raising them destroys the
+design rather than fixing a bug — exactly the mistake "empty is not broken" guards against
+one row down, in the other direction.
+
+The worked example is in `supabase/functions/osint-agent/cache.ts`
+(`TOOL_TIMEOUT_OVERRIDE_MS`): `gemini_deep_dork` is pinned at **20s against a ~46s p95**,
+deliberately, so it acts as a fast-fail corroboration source instead of a 30s tax on every
+run. Its comment records that a **2026-08-16 telemetry audit already proposed raising it
+and was rejected** — raising the cap would not make the tool succeed, it would still miss
+its p95; it would only make each failure more expensive. `tool_timeout_caps_test.ts:35`
+pins it.
+
+So the two cases look identical in this table and are opposites:
+
+| | signal | action |
+| --- | --- | --- |
+| cap destroys real data | provider **responds successfully** inside a window we abort (Indicia: 13.8–20.5s vs an 18s cap) | raise it |
+| cap is a deliberate bound | provider's p95 is **beyond** the cap by design; aborts are the cap working | leave it |
+
+**Before recommending any ceiling change, name the specific tool and show a successful
+provider response landing after the cap.** Read the comment above the override first —
+several already record why the current value was chosen and what was rejected.
 
 ## Standing offenders (60-day window)
 
