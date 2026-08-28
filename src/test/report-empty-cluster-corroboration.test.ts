@@ -3,7 +3,7 @@ import { buildReportMarkdown } from "@/lib/intel";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 
 /**
- * Regression from a live name-seed run (2026-08-26, seed "Jesus Acosta, age 31").
+ * Regression from a live name-seed run (2026-08-26, seed "Jordan Vale, age 31").
  *
  * The published report contained BOTH of these, three lines apart:
  *
@@ -45,7 +45,7 @@ function quarantined(id: string, kind: string, value: string): Artifact {
 
 function reportFor(artifacts: Artifact[]): string {
   return buildReportMarkdown({
-    seedValue: "Jesus Acosta, age 31",
+    seedValue: "Jordan Vale, age 31",
     seedType: "name",
     artifacts,
   });
@@ -53,10 +53,10 @@ function reportFor(artifacts: Artifact[]): string {
 
 describe("report corroboration sections with zero clusters", () => {
   const artifacts = [
-    quarantined("q1", "email", "jacosta0417@example.com"),
-    quarantined("q2", "email", "jizus9758@example.com"),
-    quarantined("q3", "username", "jesus-acosta-77"),
-    quarantined("q4", "username", "jesus-acosta-83"),
+    quarantined("q1", "email", "jvale0417@example.com"),
+    quarantined("q2", "email", "jvale9758@example.com"),
+    quarantined("q3", "username", "jordan-vale-77"),
+    quarantined("q4", "username", "jordan-vale-83"),
   ];
 
   it("never publishes both corroboration fallbacks at once", () => {

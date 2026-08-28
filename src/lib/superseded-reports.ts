@@ -3,7 +3,7 @@
  *
  * A multi-cycle run writes a COMPLETE report at every finalize, and the
  * transcript used to render every one of them at full length. One observed
- * production thread (seed "Jesus Acosta, age 31") carried FOUR full
+ * production thread (seed "Jordan Vale, age 31") carried FOUR full
  * "Investigation Report" documents and SEVEN blocks each headed
  * "## Evidence Record — authoritative" — a label only one of them can
  * truthfully hold — stacked in a single scroll.

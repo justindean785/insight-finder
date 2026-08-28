@@ -1,7 +1,15 @@
 # Production run defects — measured 2026-08-26
 
+> **Sanitised.** This run is a real investigation of a private individual. Every
+> selector below — name, SSN, address, phone, the collision row's name — has been
+> replaced with a synthetic stand-in (`Jordan Vale`, `917-555-0123`, `1110 Sample
+> Ave`, the reserved 555-01XX range). The *shapes* are preserved exactly, because
+> the shapes are the findings; the values are not real and must not be looked up.
+> CLAUDE.md's rule stands: `src/dev/fixtures.json` and `src/dev/raw/` are
+> gitignored — sanitise before checking anything in.
+
 Source: two live runs pasted by JD (`insight-finder-sandy.vercel.app`), seed
-`"Jesus Acosta, age 31"` → pivot to `+19172915568` → `1110 Anderson Ave`.
+`"Jordan Vale, age 31"` → pivot to `+19175550123` → `1110 Sample Ave`.
 Raw artifact JSON, the exported report, the browser console and the Network tab.
 
 **None of the below is fixed.** The frontend consequences were fixed in #507;
@@ -13,13 +21,13 @@ these are the causes, and they are backend or undecided.
 
 One phone became four artifacts:
 
-    +19172915568   seed
-    19172915568    clus_45d02dea
-    9172915568     clus_45d02dea
-    79172915568    clus_65fc6d70   ← Russian +7 prefix
+    +19175550123   seed
+    19175550123    clus_45d02dea
+    9175550123     clus_45d02dea
+    79175550123    clus_65fc6d70   ← Russian +7 prefix
 
-`79172915568` derives from the `zoloto585.ru` breach row that the *same artifact
-set* labels `"Svetlana Belousova, Kazan Russia — COLLISION, unrelated"`. The
+`79175550123` derives from the `zoloto585.ru` breach row that the *same artifact
+set* labels `"Anna Ivanova, Kazan Russia — COLLISION, unrelated"`. The
 normaliser built a selector out of an explicitly excluded row and gave it its
 own cluster id.
 
@@ -28,7 +36,7 @@ normaliser at the write layer.** Same family as the dispatch boundary.
 
 ## 2 · Raw breach fields concatenated into the rendered value
 
-    1110 ANDERSON AVE3F 1110 ANDERSON AVE APT 3F BRONX NY 10452
+    1110 SAMPLE AVE3F 1110 SAMPLE AVE APT 3F ANYTOWN NY 10001
 
 `address_street` + `address_street2` joined with no separator, then repeated.
 This is the artifact's `value`, so it renders on the board and in the report.
@@ -43,15 +51,15 @@ One building, one session:
 | open violations | 34 / 30 |
 | eviction filings | 117 / 118 |
 
-`V&S 1110 LLC` = 3 `organization` artifacts (55/75/75). `Ved Parkash` = 3
+`Example Holdings 1110 LLC` = 3 `organization` artifacts (55/75/75). `Sam Whitfield` = 3
 `source_person` artifacts. The address = 4+. **An Evidence count of 88 is
 inflated by near-duplicates differing only in phrasing** — which also means the
 count is not a count of distinct facts.
 
 ## 4 · ⚠️ Full SSN in an artifact VALUE
 
-    SSN 207563839 — AT&T breach: JESUS ACOSTA, 1110 Anderson Ave Apt 3F,
-    Bronx NY 10452, phone 9172915568
+    SSN <9-digit SSN> — AT&T breach: JORDAN VALE, 1110 Sample Ave Apt 3F,
+    Anytown NY 10001, phone 9175550123
 
 `sensitive: true` sits in metadata, but the **value string** carries SSN + full
 address + phone together, and the value is what renders and exports. Related:

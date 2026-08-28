@@ -3,7 +3,7 @@ import { isReportMessage, findLastReportIndex } from "@/lib/superseded-reports";
 import type { UIMessage } from "ai";
 
 /**
- * Regression from a live production thread (seed "Jesus Acosta, age 31").
+ * Regression from a live production thread (seed "Jordan Vale, age 31").
  *
  * A multi-cycle run writes a COMPLETE report at every finalize, and the
  * transcript rendered every one of them at full length. The exported thread
@@ -20,7 +20,7 @@ const msg = (role: "user" | "assistant", text: string, id = Math.random().toStri
   ({ id, role, parts: [{ type: "text", text }] }) as unknown as UIMessage;
 
 const REPORT = [
-  "## Investigation Report: Jesus Acosta, Age 31",
+  "## Investigation Report: Jordan Vale, Age 31",
   "",
   "| Finding | Confidence |",
   "| --- | --- |",
@@ -45,7 +45,7 @@ describe("superseded report detection", () => {
 
   it("points at the LAST report in a multi-cycle thread", () => {
     const thread = [
-      msg("user", "Jesus Acosta, age 31"),
+      msg("user", "Jordan Vale, age 31"),
       msg("assistant", NARRATION),
       msg("assistant", REPORT), // cycle 1
       msg("assistant", NARRATION),

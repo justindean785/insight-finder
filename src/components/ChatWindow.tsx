@@ -40,6 +40,7 @@ import {
 import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon, Copy as CopyIcon, ArrowRight } from "lucide-react";
 import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
 import { toolDisplayName, toolActionLabel, humanizeStage } from "@/lib/tool-display";
+import { humanizeSelector } from "@/lib/humanize-selector";
 import {
   isTerminalThreadUpdate,
   mergePersistedChatMessages,
@@ -663,38 +664,6 @@ function flowToneForGroup(group: ToolRunGroup): "completed" | "partial" | "cache
   return "partial";
 }
 
-
-/**
- * Render a tool's selector as something an analyst reads, not as plumbing.
- *
- * When the seed is an uploaded file the selector is the SIGNED STORAGE URL,
- * which printed in full across two lines of the transcript:
- *
- *   https://<project>.supabase.co/storage/v1/object/sign/chat-uploads/
- *   <thread-uuid>/<msg-uuid>/1787738666550-jl6n4g-oathnet_export_….json
- *
- * — directly beneath the attachment chip that already names the file and its
- * size. So the row said the same thing twice, once unreadably, and put a signed
- * bucket path into a surface that gets screenshotted and pasted into reports.
- *
- * Uploads carry a `<epoch>-<nonce>-` prefix from the upload path; strip it so
- * the original filename is what shows.
- */
-function humanizeSelector(selector: string): string {
-  if (!/^https?:\/\//i.test(selector)) return selector;
-  let path: string;
-  try {
-    path = new URL(selector).pathname;
-  } catch {
-    return selector;
-  }
-  const last = decodeURIComponent(path.split("/").filter(Boolean).pop() ?? "");
-  if (!last) return selector;
-  // Only collapse OUR upload paths. An arbitrary URL a tool was pointed at is
-  // itself the selector and must stay legible as one.
-  if (!selector.includes("/chat-uploads/")) return selector;
-  return last.replace(/^\d{10,}-[a-z0-9]+-/i, "") || last;
-}
 
 function RunFlowRail({ groups }: { groups: ToolRunGroup[] }) {
   if (groups.length <= 1) return null;

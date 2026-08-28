@@ -98,7 +98,7 @@ This one did not, which is why none of it had been seen.
 
 ### Report layer (`c06cb8b`, `c66c153`)
 
-Both found in the live "Jesus Acosta, age 31" run (41 artifacts, 0 clusters):
+Both found in the live "Jordan Vale, age 31" run (41 artifacts, 0 clusters):
 
 - The report published **two contradictory verdicts three lines apart** — "No
   cluster is corroborated…" immediately followed by "Every cluster reaches 2 or
@@ -128,27 +128,35 @@ that already named the file · timeline stamping the same date on forty rows.
 These are recorded because they are real and measured, not because they were
 handled. **Nothing below was changed.**
 
+> **Sanitised.** This run is a real investigation of a private individual. Every
+> selector below — name, SSN, address, phone, the collision row's name — has been
+> replaced with a synthetic stand-in (`Jordan Vale`, `917-555-0123`, `1110 Sample
+> Ave`, the reserved 555-01XX range). The *shapes* are preserved exactly, because
+> the shapes are the findings; the values are not real and must not be looked up.
+> CLAUDE.md's rule stands: `src/dev/fixtures.json` and `src/dev/raw/` are
+> gitignored — sanitise before checking anything in.
+
 ### 3.1 Phone normalisation manufactures a phantom selector
 
 One phone produced **four artifacts**:
 
 | value | cluster |
 |---|---|
-| `+19172915568` | seed |
-| `19172915568` | `clus_45d02dea` |
-| `9172915568` | `clus_45d02dea` |
-| **`79172915568`** | `clus_65fc6d70` |
+| `+19175550123` | seed |
+| `19175550123` | `clus_45d02dea` |
+| `9175550123` | `clus_45d02dea` |
+| **`79175550123`** | `clus_65fc6d70` |
 
-`79172915568` is the **Russian `+7` prefix**. It derives from the
+`79175550123` is the **Russian `+7` prefix**. It derives from the
 `zoloto585.ru` row that the *same artifact set* explicitly labels
-`"Svetlana Belousova, Kazan Russia — COLLISION, unrelated"`. The normaliser
+`"Anna Ivanova, Kazan Russia — COLLISION, unrelated"`. The normaliser
 minted a selector out of a row the run had already excluded, and gave it its
 own cluster.
 
 ### 3.2 Raw breach fields concatenated into a display value
 
 ```
-1110 ANDERSON AVE3F 1110 ANDERSON AVE APT 3F BRONX NY 10452
+1110 SAMPLE AVE3F 1110 SAMPLE AVE APT 3F ANYTOWN NY 10001
 ```
 
 `address_street` + `address_street2` joined with no separator ("AVE3F"), then
@@ -164,15 +172,15 @@ One building, one session:
 | open violations | **34** / **30** |
 | eviction filings | **117** / **118** |
 
-Also: `V&S 1110 LLC` as **3** `organization` artifacts (55/75/75), `Ved Parkash`
+Also: `Example Holdings 1110 LLC` as **3** `organization` artifacts (55/75/75), `Sam Whitfield`
 as **3** `source_person` artifacts, the address as **4+**. The Evidence count of
 88 is inflated by near-duplicates that differ only in phrasing.
 
 ### 3.4 ⚠️ Full SSN in an artifact VALUE, not just metadata
 
 ```
-SSN 207563839 — AT&T breach: JESUS ACOSTA, 1110 Anderson Ave Apt 3F,
-Bronx NY 10452, phone 9172915568
+SSN <9-digit SSN> — AT&T breach: JORDAN VALE, 1110 Sample Ave Apt 3F,
+Anytown NY 10001, phone 9175550123
 ```
 
 `sensitive: true` is set in metadata, but the **value string** — the part that
@@ -181,7 +189,7 @@ address + phone together. These screens get screenshotted and pasted.
 
 ### 3.5 The dispatch boundary, in production
 
-CLAUDE.md's open P1, observed live. Seed `"Jesus Acosta, age 31"` contains
+CLAUDE.md's open P1, observed live. Seed `"Jordan Vale, age 31"` contains
 spaces, which `breach_check` and `serus_darkweb_scan` **cannot** accept — a
 knowable validation rule. Both were called anyway, and **serus was called twice
 with the identical rejected input** (422 both times).
