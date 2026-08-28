@@ -428,6 +428,12 @@ function layout(
       .map((a) => nodeById.get(a.id))
       .filter((n): n is GraphNode => !!n)
       .sort((a, b) => b.confidence - a.confidence || (a.id < b.id ? -1 : 1));
+    // A cluster with no resolvable members poisons the WHOLE layout, not just
+    // itself: `Math.ceil(0 / Math.ceil(0 / 4))` is `0 / 0` = NaN, so perCol and
+    // cols are NaN, discR is NaN, and `Math.max(x, NaN)` is NaN — which makes
+    // maxClusterReach NaN, then innerR NaN, then every UNCLUSTERED node's x/y
+    // NaN. One empty cluster blanks the entire graph. Skip it.
+    if (members.length === 0) return;
     // Cluster members stack as ROWS, not as a phyllotaxis disc.
     //
     // A disc packs by area, which is right for dots and wrong for 190px-wide,
@@ -514,7 +520,23 @@ function layout(
       }
       placed += take;
       arc += 1;
-      if (arc > 40) break; // pathological guard; never reached in practice
+      if (arc > 40) {
+        // Bailing here used to leave the remainder at their birth coordinates —
+        // which are the SEED's centre — so they were not "unplaced", they were
+        // stacked on the seed and then flung outward by relax() to wherever.
+        // Place the tail in one final arc instead: crowded is a legible
+        // failure, teleported to the middle of the graph is not.
+        const r = innerR + arc * NODE_PITCH_Y * 1.25;
+        const rest = members.length - placed;
+        for (let k = 0; k < rest; k++) {
+          const step = rest === 1 ? 0 : (k - (rest - 1) / 2) * (span / rest);
+          const a = mid + step;
+          const node = members[placed + k];
+          node.x = round1(CX + Math.cos(a) * r);
+          node.y = round1(CY + Math.sin(a) * r);
+        }
+        break;
+      }
     }
     cursor += span + GAP;
   }

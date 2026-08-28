@@ -258,7 +258,12 @@ function ActivityLog({
         )}
       </div>
 
-      {spend.total > 0 && (
+      {/* Gate on having ROWS, not on money. This panel is titled "Time and
+          spend by tool" and its bars encode time, so a run made entirely of
+          cached / gated / free-tier calls — spend exactly 0, wall-clock very
+          much not — used to hide the panel outright. That silently undid the
+          point of counting free calls in the first place. */}
+      {spend.rows.length > 0 && (
         <section className="panel overflow-hidden">
           {/* The bar encodes TIME, not spend.
               It used to encode spend, normalised against the largest row — and

@@ -6,6 +6,7 @@ import { useThreadMessages } from "@/hooks/useThreadMessages";
 import { captureError } from "@/lib/telemetry";
 import { Database, ShieldQuestion, Wrench, XCircle, RotateCcw, FileCheck, Flag, Clock } from "lucide-react";
 import { EmptyState } from "./EmptyState";
+import { isVacuous } from "@/lib/timeline-explanation";
 
 const ICON: Record<TimelineEventType, React.ComponentType<{ className?: string }>> = {
   seed: Flag,
@@ -113,22 +114,4 @@ export function TimelineTab({ threadId, artifacts }: { threadId: string; artifac
       </ol>
     </div>
   );
-}
-
-/**
- * True when an explanation carries nothing the row does not already show.
- *
- * The timeline's generated descriptions are templated from the row itself
- * ("Tool returned.", "Recorded email from hunter_verify."), so under a row
- * already labelled TOOL RESULT / titled `hunter_verify` they restate rather
- * than explain. Conservative by design: only phrasings that are provably
- * derived from the title or the type are dropped, and anything an analyst or a
- * tool actually wrote is kept.
- */
-function isVacuous(explanation: string, title: string): boolean {
-  const e = explanation.trim().toLowerCase().replace(/\.$/, "");
-  if (e === "tool returned" || e === "tool call" || e === "no summary") return true;
-  // "Recorded email from hunter_verify." adds only words already on the row.
-  const t = title.trim().toLowerCase();
-  return t.length > 0 && /^recorded .* from .+$/.test(e) && e.endsWith(t) === false && e.includes(" from ");
 }

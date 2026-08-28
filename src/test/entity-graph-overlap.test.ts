@@ -107,3 +107,56 @@ describe("graph layout — no-overlap invariant on a fully clustered graph", () 
     );
   });
 });
+
+/**
+ * Every coordinate must be a finite number, on every shape.
+ *
+ * The layout multiplies and divides through several derived radii, and one
+ * NaN anywhere upstream propagates silently: `Math.max(x, NaN)` is NaN, so a
+ * single poisoned cluster radius makes `innerR` NaN and every UNCLUSTERED node
+ * lands at NaN — a blank graph with no error. Asserting finiteness across
+ * shapes catches that class wherever it enters, rather than pinning the one
+ * arithmetic path that produced it.
+ */
+describe("graph layout — coordinates are always finite", () => {
+  const mixed = (clustered: number, loose: number): EntityGraph => {
+    const arts: Artifact[] = [];
+    for (let i = 0; i < clustered; i++) {
+      arts.push(
+        A({
+          id: `c${i}`,
+          kind: "email",
+          value: `sam.cole+${i}@example.com`,
+          metadata: { phone: "925-813-9324" },
+        }),
+      );
+    }
+    const kinds = ["domain", "ip", "username", "organization", "phone"];
+    for (let i = 0; i < loose; i++) {
+      arts.push(A({ id: `u${i}`, kind: kinds[i % kinds.length], value: `loose-${i}.example.com` }));
+    }
+    return buildEntityGraph(arts, "sam.cole@example.com", "email");
+  };
+
+  const shapes: [string, () => EntityGraph][] = [
+    ["fully clustered", () => fullyClusteredGraph(12)],
+    ["single cluster member", () => fullyClusteredGraph(1)],
+    ["no artifacts at all", () => buildEntityGraph([], "sam.cole@example.com", "email")],
+    ["no seed", () => buildEntityGraph([A({ id: "x", kind: "domain", value: "a.example.com" })], null, null)],
+    ["clustered + unclustered", () => mixed(8, 14)],
+    ["one cluster, many loose", () => mixed(2, 30)],
+  ];
+
+  for (const [name, build] of shapes) {
+    it(`keeps every x/y finite — ${name}`, () => {
+      for (const n of build().nodes) {
+        expect(Number.isFinite(n.x), `${n.id}.x = ${n.x}`).toBe(true);
+        expect(Number.isFinite(n.y), `${n.id}.y = ${n.y}`).toBe(true);
+      }
+    });
+  }
+
+  it("still separates chips when clustered and unclustered nodes mix", () => {
+    expect(overlappingPairs(mixed(8, 14))).toEqual([]);
+  });
+});
