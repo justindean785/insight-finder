@@ -108,18 +108,28 @@ function ActivityLog({
     // `effectiveChargedMicroUsd` — the cache saving is still deliberately not
     // claimed, because list price is an attributed figure and presenting it as
     // money saved would invent a number no one billed.
+    // TIME IS NOT FILTERED BY SPEND. Skipping zero-charge calls here (the old
+    // `if (m <= 0) continue`) meant a slow FREE call — a gated refusal that
+    // still burned 12s, a free-tier tool that timed out — could not appear in a
+    // panel whose entire purpose is surfacing the long tail, while the badge
+    // beside the header cheerfully reported that free calls existed. It also
+    // made the header total disagree with the "Time in tools" figure above it,
+    // because the two were summing different populations of the same run.
     const by = new Map<string, { micro: number; calls: number; ms: number }>();
     let total = 0;
+    let wallClock = 0;
     for (const e of events) {
       // Already resolved through runCost's `chargedMicroUsd` at the hook, so a
       // legacy row with no `charged_micro_usd` contributes its list price
       // instead of vanishing from the breakdown as if it were free.
-      const m = e.effectiveChargedMicroUsd;
-      if (m <= 0) continue;
+      const m = Math.max(0, e.effectiveChargedMicroUsd);
       total += m;
       const cur = by.get(e.toolName) ?? { micro: 0, calls: 0, ms: 0 };
       cur.micro += m; cur.calls += 1;
-      if (e.durationMs != null && Number.isFinite(e.durationMs)) cur.ms += e.durationMs;
+      if (e.durationMs != null && Number.isFinite(e.durationMs)) {
+        cur.ms += e.durationMs;
+        wallClock += e.durationMs;
+      }
       by.set(e.toolName, cur);
     }
     const rows = [...by.entries()]
@@ -136,7 +146,10 @@ function ActivityLog({
       freeCalls,
       max: Math.max(1, ...rows.map((r) => r.micro)),
       maxMs: Math.max(1, ...rows.map((r) => r.ms)),
-      totalMs: rows.reduce((n, r) => n + r.ms, 0),
+      // Every recorded call, not just the eight rows drawn. The header states
+      // the run's wall-clock; the rows are the top of it, and a truncated sum
+      // presented as a total is a wrong number, not a shorter one.
+      totalMs: wallClock,
     };
   }, [events]);
 

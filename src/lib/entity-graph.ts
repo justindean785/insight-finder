@@ -461,7 +461,17 @@ function layout(
   const unclustered = nodes
     .filter((n) => !n.isSeed && !n.clusterId)
     .sort((a, b) => groupRank(a.group) - groupRank(b.group) || (a.id < b.id ? -1 : 1));
-  if (unclustered.length === 0) return;
+  // A fully clustered graph still needs the pass. Returning here skipped it
+  // for exactly the shape that needs it MOST: with no wedge ring to push
+  // against, cluster blocks are placed independently at their own radii, and a
+  // multi-row block can reach back across the seed or into its neighbour. The
+  // invariant `relax` exists to enforce is "no overlaps, whoever placed the
+  // node" — it cannot be conditional on one of the three producers being
+  // non-empty.
+  if (unclustered.length === 0) {
+    relax(nodes);
+    return;
+  }
 
   const byGroup = new Map<Group, GraphNode[]>();
   for (const n of unclustered) {

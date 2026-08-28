@@ -848,12 +848,20 @@ function renderTextWithBadges(text: string): React.ReactNode {
  * `parts`, not in a `content` string, so checking `content` silently matches
  * nothing and the de-duplication quietly does nothing at all.
  */
-function hasPersistedFailure(messages: { parts?: unknown }[]): boolean {
-  return messages.some((m) => {
-    const parts = Array.isArray(m.parts) ? (m.parts as MessagePartShape[]) : [];
-    const firstText = parts.find((p) => p?.type === "text");
-    return typeof firstText?.text === "string" && firstText.text.startsWith(FAIL_PREFIX);
-  });
+function hasPersistedFailure(messages: { role?: string; parts?: unknown }[]): boolean {
+  // ONLY the last message counts, and that is not a detail — it is the whole
+  // predicate. A persisted failure renders its card via `onRetry`, which the
+  // transcript passes only to the LAST assistant message (`isLastAssistant`),
+  // so an older sentinel buried mid-thread draws nothing at all. Scanning the
+  // whole thread therefore made one stale failure silence every later one: the
+  // live card was suppressed, the old sentinel rendered no card, and a real
+  // current failure vanished from the UI with no explanation and no retry.
+  // Suppress the live card only when the durable card is actually on screen.
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== "assistant") return false;
+  const parts = Array.isArray(last.parts) ? (last.parts as MessagePartShape[]) : [];
+  const firstText = parts.find((p) => p?.type === "text");
+  return typeof firstText?.text === "string" && firstText.text.startsWith(FAIL_PREFIX);
 }
 
 function FailedRunCard({ reason, onRetry }: { reason: string; onRetry: () => void }) {
