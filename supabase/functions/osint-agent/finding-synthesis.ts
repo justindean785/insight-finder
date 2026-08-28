@@ -139,6 +139,34 @@ export function eligibleArtifacts(rows: readonly PersistedArtifact[]): ClusterAr
   return out;
 }
 
+/**
+ * The source classes backing an artifact — PERSISTED first, recomputed only as a
+ * fallback.
+ *
+ * `metadata.source_category` is written by the integrity layer at record time and
+ * is the field every other consumer keys on (intel.ts, evidence-status.ts,
+ * report-badges.ts, audit/from-artifacts.ts, AnalysisTab.tsx). Recomputing
+ * `classifySource(row.source)` here is measurably WRONG: on the live argusint.net
+ * run of 2026-08-28, `argus-intelligence.io` carries
+ * `source: "minimax_web_search"` but `metadata.sources:
+ * ["minimax_web_search","whois_lookup"]`, so the write path correctly classified
+ * it `infra_registry` while a recomputation from the single `source` column gives
+ * `ai_summary`. 1 of 18 rows in that run disagreed.
+ *
+ * Falls back to classifying the `source` string when the marker is absent or
+ * unusable, which is what the 9,000+ rows written before `source_category` need.
+ */
+function classesFor(r: PersistedArtifact): string[] {
+  const meta = (r.metadata ?? {}) as Record<string, unknown>;
+  const persisted = meta.source_category;
+  if (Array.isArray(persisted)) {
+    const out = persisted.filter((c): c is string => typeof c === "string" && c.length > 0);
+    if (out.length > 0) return out;
+  }
+  const src = str(r.source).trim();
+  return src ? [classifySource(src)] : [];
+}
+
 /** Distinct tool/source labels backing a set of artifacts, order-stable. */
 function distinctSources(members: readonly ClusterArtifact[]): string[] {
   const seen = new Set<string>();
@@ -187,6 +215,13 @@ export function synthesizeFindings(
   const eligible = eligibleArtifacts(rows);
   if (eligible.length === 0) return [];
 
+  // id -> persisted source classes, so the bar is measured against what the
+  // integrity layer recorded rather than against a second derivation.
+  const classesById = new Map<string, string[]>();
+  for (const r of rows) {
+    if (typeof r.id === "string" && r.id) classesById.set(r.id, classesFor(r));
+  }
+
   const clustered = clusterArtifacts(eligible);
   const out: SynthesizedFinding[] = [];
 
@@ -194,7 +229,14 @@ export function synthesizeFindings(
     const members = subject.members as unknown as ClusterArtifact[];
     if (members.length === 0) continue;
     const sources = distinctSources(members);
-    const independent = countIndependentClasses(sources.map(classifySource));
+    // Classes come from the persisted marker where it exists; `classifySource`
+    // of the tool label is the documented fallback for older rows.
+    const classes = new Set<string>();
+    for (const m of members) {
+      const persisted = m.id ? classesById.get(m.id) : undefined;
+      for (const c of (persisted && persisted.length ? persisted : [classifySource(m.source)])) classes.add(c);
+    }
+    const independent = countIndependentClasses([...classes] as never);
     if (independent < minClasses) continue;
 
     const values = [...new Set(members.map((m) => m.value))];
@@ -210,7 +252,7 @@ export function synthesizeFindings(
         supporting_sources: sources,
         supporting_artifact_values: values.slice(0, 50),
         drivers: [
-          `${independent} independent source classes: ${sources.map(classifySource).join(", ")}`,
+          `${independent} independent source classes: ${[...classes].sort().join(", ")}`,
           `${members.length} corroborating artifact(s) sharing selector(s): ${subject.strongSelectors.slice(0, 5).join(", ") || "—"}`,
         ],
         reducers: [

@@ -240,3 +240,39 @@ Deno.test("wiring: record_finding delegates to the shared builder", () => {
 Deno.test("wiring: the bar is a named constant, not a literal buried in a branch", () => {
   assertEquals(MIN_INDEPENDENT_CLASSES, 2);
 });
+
+/* ── the persisted class beats a recomputed one ──────────────────────────── */
+
+Deno.test("⛔ source classes come from the PERSISTED marker, not a recomputation", () => {
+  // Measured on the live argusint.net run (2026-08-28). The row for
+  // `argus-intelligence.io` carries source: "minimax_web_search" but
+  // metadata.sources: ["minimax_web_search","whois_lookup"], so the integrity
+  // layer recorded source_category: ["infra_registry"] — while recomputing from
+  // the single `source` column yields "ai_summary", a NON-corroborating class.
+  // 1 of 18 rows in that run disagreed, and the disagreement flips whether the
+  // row can support a conclusion at all.
+  assertEquals(classifySource("minimax_web_search"), "ai_summary", "the recomputation");
+  const rows = [
+    row({ kind: "domain", value: SUBJECT_EMAIL, source: "minimax_web_search",
+          metadata: { source_category: ["infra_registry"], sources: ["minimax_web_search", "whois_lookup"] } }),
+    row({ kind: "domain", value: SUBJECT_EMAIL, source: "dns_records",
+          metadata: { source_category: ["infra_dns"] } }),
+  ];
+  const out = synthesizeFindings(rows);
+  assertEquals(out.length, 1, "infra_registry + infra_dns is two independent classes");
+  assertEquals(out[0].independentClasses, 2);
+  assert(
+    out[0].input.drivers[0].includes("infra_registry"),
+    `the driver must name the persisted class, saw: ${out[0].input.drivers[0]}`,
+  );
+});
+
+Deno.test("NEGATIVE CONTROL: a row with no persisted marker still classifies", () => {
+  // 9,000+ rows predate source_category. Falling back to classifySource keeps
+  // them countable rather than silently dropping them to zero classes.
+  const rows = [
+    row({ kind: "email", value: SUBJECT_EMAIL, source: "court_record_search" }),
+    row({ kind: "email", value: SUBJECT_EMAIL, source: "opencorporates_search" }),
+  ];
+  assertEquals(synthesizeFindings(rows).length, 1, "the fallback must still reach the bar");
+});
