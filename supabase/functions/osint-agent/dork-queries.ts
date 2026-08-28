@@ -64,14 +64,33 @@ export function searchUrl(engine: SearchEngine, query: string): string {
   return `${base}?${param}=${encodeURIComponent(query)}`;
 }
 
-/** Which engine an already-written dork URL points at. */
+const HOSTNAME_ENGINE: Record<string, SearchEngine> = {
+  "www.bing.com": "bing",
+  "duckduckgo.com": "duckduckgo",
+  "yandex.com": "yandex",
+  "crt.sh": "crtsh",
+  "webcache.googleusercontent.com": "googlecache",
+};
+
+/**
+ * Which engine an already-written dork URL points at — from its HOSTNAME, never
+ * a substring of the whole URL. A whole-string `.includes()` misclassified any
+ * Google URL whose QUERY happened to contain another engine's domain as text:
+ * the "Cert Transparency" Google dorks embed `site:crt.sh` in their query string,
+ * so `.includes("crt.sh")` matched and canonicalizeDorks rewrote a Google search
+ * into an actual crt.sh lookup (wrong destination, and crt.sh's endpoint doesn't
+ * understand a Google boolean query). The same shape misfires on any seed whose
+ * value contains another engine's domain as a substring (e.g. an email at
+ * bing.com turns its own Google dorks into Bing URLs).
+ */
 export function engineOfUrl(url: string): SearchEngine {
-  if (url.includes("bing.com")) return "bing";
-  if (url.includes("duckduckgo.com")) return "duckduckgo";
-  if (url.includes("yandex.")) return "yandex";
-  if (url.includes("crt.sh")) return "crtsh";
-  if (url.includes("webcache.googleusercontent.com")) return "googlecache";
-  return "google";
+  let hostname: string;
+  try {
+    hostname = new URL(url).hostname.toLowerCase();
+  } catch {
+    return "google";
+  }
+  return HOSTNAME_ENGINE[hostname] ?? "google";
 }
 
 /**

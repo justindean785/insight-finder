@@ -20,7 +20,7 @@ import { assert, assertEquals } from "jsr:@std/assert@^1";
 import { buildTools, type ToolContext } from "./tool-registry.ts";
 import { detectSeedServer } from "./validation.ts";
 import { TOOL_CATALOG } from "./catalog.ts";
-import { isHostname, searchUrl, splitQuotedSeed } from "./dork-queries.ts";
+import { engineOfUrl, isHostname, searchUrl, splitQuotedSeed } from "./dork-queries.ts";
 
 // The two selectors the production run actually sent.
 const MULTILINE_SEED = "79 WAVERLY AVE\nCINCINNATI OH, 45215";
@@ -263,6 +263,48 @@ Deno.test("searchUrl: round-trips any query through one encoder", () => {
   for (const engine of ["google", "bing", "duckduckgo", "yandex"] as const) {
     assertEquals(executedQuery(searchUrl(engine, q)), q, `${engine} URL lost part of the query`);
   }
+});
+
+Deno.test("engineOfUrl: classifies by HOSTNAME, not by substring of the whole URL", () => {
+  // A real, pre-existing dork: a Google "Cert Transparency" query whose QUERY
+  // STRING embeds "site:crt.sh" as text. A whole-string .includes("crt.sh")
+  // misread this as a crt.sh URL and canonicalizeDorks rewrote a working Google
+  // search into an actual crt.sh lookup — wrong destination, and crt.sh's own
+  // endpoint doesn't understand a Google boolean query.
+  const googleCertTransparencyUrl =
+    "https://www.google.com/search?q=%22example.com%22+site:censys.io+OR+site:crt.sh";
+  assertEquals(engineOfUrl(googleCertTransparencyUrl), "google");
+
+  // A seed whose own value contains another engine's domain as a substring
+  // (an email at bing.com) must not turn that seed's Google dorks into Bing
+  // URLs just because "bing.com" appears in the encoded query string.
+  const googleUrlForBingComSeed =
+    'https://www.google.com/search?q=%22foo%40bing.com%22+site%3Apastebin.com';
+  assertEquals(engineOfUrl(googleUrlForBingComSeed), "google");
+
+  // Genuine engine URLs still classify correctly.
+  assertEquals(engineOfUrl("https://www.bing.com/search?q=x"), "bing");
+  assertEquals(engineOfUrl("https://duckduckgo.com/?q=x"), "duckduckgo");
+  assertEquals(engineOfUrl("https://yandex.com/search/?text=x"), "yandex");
+  assertEquals(engineOfUrl("https://crt.sh/?q=%25.example.com"), "crtsh");
+  assertEquals(
+    engineOfUrl("https://webcache.googleusercontent.com/search?q=cache:x"),
+    "googlecache",
+  );
+
+  // An unparseable URL falls back to google rather than throwing.
+  assertEquals(engineOfUrl("not a url"), "google");
+});
+
+Deno.test("google_dorks(domain): the Cert Transparency query stays a Google URL after canonicalization", async () => {
+  const r = await dorks("example.com", "domain");
+  const certTransparency = (r.dorks ?? []).find((d) => d.category === "Cert Transparency");
+  assert(certTransparency, "domain family lost its Cert Transparency category");
+  assert(
+    certTransparency!.url.startsWith("https://www.google.com/search?"),
+    `Cert Transparency dork was rewritten off Google: ${certTransparency!.url}`,
+  );
+  assertEquals(executedQuery(certTransparency!.url), certTransparency!.query);
 });
 
 // ---- 6. Catalog ↔ schema ↔ runtime agreement --------------------------------
