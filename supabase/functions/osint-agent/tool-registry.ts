@@ -1583,10 +1583,16 @@ export function buildTools(ctx: ToolContext) {
       execute: async ({ url }) => {
         if (!SOCIALFETCH_API_KEY) return { error: "SOCIALFETCH_API_KEY not configured" };
         try {
-          // Single attempt with a long per-attempt timeout: server-side markdown
-          // of a heavy page (YouTube etc.) is slow, and retrying a timeout would
-          // just double the wait past the 25s outer tool budget (see cache.ts).
-          const r = await fetchRetry(`https://api.socialfetch.dev/v1/web/markdown?url=${encodeURIComponent(url)}`, { headers: { "x-api-key": SOCIALFETCH_API_KEY } }, { retries: 0, timeoutMs: 22_000 });
+          // Single attempt, still no retry: retrying a timeout would just double the
+          // wait past the outer tool budget (see cache.ts).
+          //
+          // 22_000 -> 12_000 (2026-08-28). The long budget was for "server-side
+          // markdown of a heavy page is slow", but 14 days of telemetry show 21
+          // aborts, zero successes, every one within ~10ms of the 22s ceiling — the
+          // headroom was never converting into results, only into wall clock. The
+          // wrapper cap moved 25s -> 15s in the same change so it still sits ABOVE
+          // this value; raise the two together or not at all.
+          const r = await fetchRetry(`https://api.socialfetch.dev/v1/web/markdown?url=${encodeURIComponent(url)}`, { headers: { "x-api-key": SOCIALFETCH_API_KEY } }, { retries: 0, timeoutMs: 12_000 });
           if (r.status === 402) {
             return { ok: false, status: 402, error: "SOCIALFETCH_CREDITS_EXHAUSTED", message: "Social Fetch credit balance is zero. Check /v1/balance." };
           }
