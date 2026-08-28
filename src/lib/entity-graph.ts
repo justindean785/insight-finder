@@ -387,10 +387,21 @@ export function buildEntityGraph(
   };
 }
 
-/** Place the seed at center, cluster discs on a golden-angle spiral (pulled
- * inward by cluster confidence), members phyllotaxis-packed inside each disc,
- * and unclustered nodes on an outer ring grouped by category. Fully
- * deterministic — positions depend only on the stable input ordering. */
+/* A rendered node chip is ~190px wide and ~34px tall. Every spacing constant
+ * below is derived from that, because the previous layout packed 24 nodes onto
+ * ONE ring: at that radius adjacent chips were ~90px apart, so half of them
+ * overlapped and the ones that did not were unreadable anyway. Positions must
+ * be chosen in the same units the chips are drawn in, or they collide. */
+const NODE_PITCH_X = 265; // min centre-to-centre along an arc (chip caps at ~230px + gap)
+const NODE_PITCH_Y = 56; // min centre-to-centre between arcs
+const SEED_KEEPOUT = 185; // nothing may be placed inside this radius of the seed
+
+/** Place the seed at center, cluster discs on a golden-angle spiral outside the
+ * seed's keep-out radius, members phyllotaxis-packed inside each disc, and
+ * unclustered nodes in per-category WEDGES — each category owns an angular
+ * sector and fills it in concentric arcs, so like sits with like and no two
+ * chips share space. Fully deterministic: positions depend only on the stable
+ * input ordering, never on measurement or animation state. */
 function layout(
   nodes: GraphNode[],
   nodeById: Map<string, GraphNode>,
@@ -403,32 +414,46 @@ function layout(
       b.confidence - a.confidence ||
       (a.id < b.id ? -1 : 1),
   );
+  let maxClusterReach = SEED_KEEPOUT;
   ordered.forEach((c, i) => {
     const angle = i * GOLDEN;
-    const baseR = 150 + 58 * Math.sqrt(i);
-    const effR = baseR * (1 - 0.22 * (c.confidence / 100)); // higher confidence → closer in
+    // Confidence pulls a cluster inward, but never inside the keep-out ring —
+    // a high-confidence cluster used to land ~120px out and sit UNDER the seed
+    // chip, which is why the seed appeared to be drawn twice.
+    const baseR = SEED_KEEPOUT + 70 + 66 * Math.sqrt(i);
+    const effR = baseR - 40 * (c.confidence / 100);
     const ccx = CX + Math.cos(angle) * effR;
     const ccy = CY + Math.sin(angle) * effR;
     const members = c.artifacts
       .map((a) => nodeById.get(a.id))
       .filter((n): n is GraphNode => !!n)
       .sort((a, b) => b.confidence - a.confidence || (a.id < b.id ? -1 : 1));
-    const discR = 24 + 9 * Math.sqrt(Math.max(0, members.length - 1));
+    // Cluster members stack as ROWS, not as a phyllotaxis disc.
+    //
+    // A disc packs by area, which is right for dots and wrong for 190px-wide,
+    // 34px-tall chips: two members at a similar radius but different angle end
+    // up ~60px apart horizontally and overlap by two thirds. Rows respect the
+    // actual aspect ratio — vertical stacking at NODE_PITCH_Y, and a second
+    // column only once a cluster is tall enough to need one.
+    const perCol = Math.max(1, Math.ceil(members.length / Math.ceil(members.length / 4)));
+    const cols = Math.ceil(members.length / perCol);
     members.forEach((n, j) => {
-      if (j === 0) {
-        n.x = round1(ccx);
-        n.y = round1(ccy);
-        return;
-      }
-      const rr = discR * Math.sqrt(j / members.length);
-      const aa = j * GOLDEN;
-      n.x = round1(ccx + Math.cos(aa) * rr);
-      n.y = round1(ccy + Math.sin(aa) * rr);
+      const col = Math.floor(j / perCol);
+      const row = j % perCol;
+      const rowsHere = Math.min(perCol, members.length - col * perCol);
+      n.x = round1(ccx + (col - (cols - 1) / 2) * NODE_PITCH_X);
+      n.y = round1(ccy + (row - (rowsHere - 1) / 2) * NODE_PITCH_Y);
     });
+    // Half-extent of the block PLUS half a chip: the block's outer column is a
+    // centre-point, and the chip drawn there sticks out another ~half-width past
+    // it. Omitting that let a cluster's edge chip land inside the unclustered
+    // wedge ring and overlap it.
+    const discR =
+      Math.max(((cols - 1) / 2) * NODE_PITCH_X, ((perCol - 1) / 2) * NODE_PITCH_Y) + NODE_PITCH_X / 2;
+    maxClusterReach = Math.max(maxClusterReach, effR + discR);
   });
 
-  // Unclustered nodes (not the seed) → outer ring, grouped by category for
-  // legibility, deterministic by canonical GROUP_ORDER then id.
+  // Unclustered nodes (not the seed) → one WEDGE per category.
   const groupRank = (g: Group) => {
     const i = GROUP_ORDER.indexOf(g);
     return i === -1 ? GROUP_ORDER.length : i;
@@ -436,12 +461,124 @@ function layout(
   const unclustered = nodes
     .filter((n) => !n.isSeed && !n.clusterId)
     .sort((a, b) => groupRank(a.group) - groupRank(b.group) || (a.id < b.id ? -1 : 1));
-  const outerR = 150 + 58 * Math.sqrt(Math.max(1, clusters.length)) + 70;
-  const n = unclustered.length;
-  unclustered.forEach((node, k) => {
-    const angle = (k / Math.max(1, n)) * Math.PI * 2 - Math.PI / 2;
-    const ring = outerR + (k % 2) * 34;
-    node.x = round1(CX + Math.cos(angle) * ring);
-    node.y = round1(CY + Math.sin(angle) * ring);
-  });
+  // A fully clustered graph still needs the pass. Returning here skipped it
+  // for exactly the shape that needs it MOST: with no wedge ring to push
+  // against, cluster blocks are placed independently at their own radii, and a
+  // multi-row block can reach back across the seed or into its neighbour. The
+  // invariant `relax` exists to enforce is "no overlaps, whoever placed the
+  // node" — it cannot be conditional on one of the three producers being
+  // non-empty.
+  if (unclustered.length === 0) {
+    relax(nodes);
+    return;
+  }
+
+  const byGroup = new Map<Group, GraphNode[]>();
+  for (const n of unclustered) {
+    const list = byGroup.get(n.group);
+    if (list) list.push(n);
+    else byGroup.set(n.group, [n]);
+  }
+  const groups = [...byGroup.keys()].sort((a, b) => groupRank(a) - groupRank(b));
+
+  // Each category's wedge is proportional to how many nodes it holds, so the
+  // 16-node infrastructure block gets room and a 1-node category does not get
+  // a quarter of the canvas to itself.
+  const total = unclustered.length;
+  const GAP = 0.14; // radians of breathing room between wedges
+  const usable = Math.PI * 2 - GAP * groups.length;
+  const innerR = Math.max(maxClusterReach + 85, SEED_KEEPOUT + 105);
+
+  let cursor = -Math.PI / 2; // start at 12 o'clock, go clockwise
+  for (const g of groups) {
+    const members = byGroup.get(g)!;
+    const span = Math.max(usable * (members.length / total), 0.26);
+    const mid = cursor + span / 2;
+
+    // Fill the wedge in concentric arcs. Each arc holds as many chips as fit at
+    // that radius given NODE_PITCH_X; deeper arcs are longer, so a big category
+    // grows outward as a readable block rather than stretching around the ring.
+    let placed = 0;
+    let arc = 0;
+    while (placed < members.length) {
+      const r = innerR + arc * NODE_PITCH_Y * 1.25;
+      const capacity = Math.max(1, Math.floor((span * r) / NODE_PITCH_X));
+      const take = Math.min(capacity, members.length - placed);
+      for (let k = 0; k < take; k++) {
+        // Centre the row inside the wedge.
+        const step = take === 1 ? 0 : (k - (take - 1) / 2) * (NODE_PITCH_X / r);
+        const a = mid + step;
+        const node = members[placed + k];
+        node.x = round1(CX + Math.cos(a) * r);
+        node.y = round1(CY + Math.sin(a) * r);
+      }
+      placed += take;
+      arc += 1;
+      if (arc > 40) break; // pathological guard; never reached in practice
+    }
+    cursor += span + GAP;
+  }
+
+  relax(nodes);
+}
+
+/**
+ * Guarantee the no-overlap invariant, whoever placed the node.
+ *
+ * Three independent producers assign positions here — cluster blocks, category
+ * wedges, and the fixed seed — and each one only reasons about its own members.
+ * Tuning them against each other is whack-a-mole: every constant that stops a
+ * cluster colliding with a wedge opens a gap somewhere else. So instead, one
+ * pass afterwards enforces the thing that actually matters, on the whole set.
+ *
+ * Deterministic by construction: a fixed iteration count, a stable node order,
+ * and a degenerate-overlap tiebreak derived from the array index rather than
+ * from randomness — so the same case still settles to the same frame.
+ */
+function relax(nodes: GraphNode[]): void {
+  const movable = nodes.filter((n) => !n.isSeed);
+  const all = nodes;
+  const MIN_X = NODE_PITCH_X;
+  const MIN_Y = NODE_PITCH_Y;
+
+  for (let iter = 0; iter < 60; iter++) {
+    let moved = false;
+    for (let i = 0; i < movable.length; i++) {
+      const a = movable[i];
+      for (let j = 0; j < all.length; j++) {
+        const b = all[j];
+        if (a === b) continue;
+        const dx = a.x - b.x;
+        const dy = a.y - b.y;
+        // Elliptical separation: chips are ~6x wider than tall, so a circular
+        // test either lets them overlap horizontally or flings them apart
+        // vertically. Overlap iff the normalised distance is under 1.
+        const nx = dx / MIN_X;
+        const ny = dy / MIN_Y;
+        const d2 = nx * nx + ny * ny;
+        if (d2 >= 1 || d2 === 0) {
+          if (d2 === 0) {
+            // Exactly coincident — separate along a stable, index-derived axis.
+            a.x += MIN_X * (i % 2 === 0 ? 0.5 : -0.5);
+            a.y += MIN_Y * 0.5;
+            moved = true;
+          }
+          continue;
+        }
+        const d = Math.sqrt(d2);
+        const push = (1 - d) / d / 2;
+        // The seed never moves; when b is pinned, a absorbs the whole push.
+        const share = b.isSeed ? 1 : 0.6;
+        a.x += nx * MIN_X * push * share;
+        a.y += ny * MIN_Y * push * share;
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+
+  for (const n of movable) {
+    n.x = round1(n.x);
+    n.y = round1(n.y);
+  }
 }

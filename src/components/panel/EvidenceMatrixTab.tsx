@@ -167,7 +167,7 @@ export function EvidenceMatrixTab({
           <ul className="grid grid-cols-1 gap-2 lg:grid-cols-2">
             {rows.map(({ a, label, review: rState, score }) => {
               const meta = (a.metadata ?? {}) as Record<string, unknown>;
-              const preview = Object.keys(meta).slice(0, 3).map((k) => `${k}=${shorten(String(meta[k]))}`).join(" · ");
+              const previewFacts = metaFacts(meta);
               const delta = REVIEW_CONFIDENCE_DELTA[rState] ?? 0;
               const base = a.confidence ?? 0;
               // Score bar: base score (neutral) + review delta (green/amber overlay)
@@ -207,8 +207,19 @@ export function EvidenceMatrixTab({
                         <span>·</span>
                         <span>{new Date(a.created_at).toLocaleString()}</span>
                       </div>
-                      {preview && (
-                        <div className="text-data font-mono text-muted-foreground mt-1 break-all">{preview}</div>
+                      {previewFacts.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                          {previewFacts.map((f) => (
+                            <span
+                              key={f.label}
+                              className="inline-flex max-w-full items-baseline gap-1 rounded border border-border-subtle bg-surface-2/50 px-1.5 py-px"
+                              title={f.title}
+                            >
+                              <span className="shrink-0 text-eyebrow uppercase tracking-wider text-muted-foreground/70">{f.label}</span>
+                              <span className="truncate font-mono text-eyebrow text-foreground/85">{f.value}</span>
+                            </span>
+                          ))}
+                        </div>
                       )}
                       {/* Trust badges — multi-source / single-source / stale-breach / analyst */}
                       <TrustBadgesRow artifact={a} review={rState} />
@@ -356,6 +367,60 @@ export function EvidenceMatrixTab({
 
 function shorten(v: string) {
   return v.length > 30 ? v.slice(0, 27) + "…" : v;
+}
+
+/**
+ * Turn an artifact's raw `metadata` into analyst-readable facts.
+ *
+ * This row used to render `Object.keys(meta).slice(0,3).map(k => k+"="+v)`
+ * joined by "·" — i.e. the storage layer's own serialization, shown to the
+ * person the product is for: `sources=hunter_verify,exa_search ·
+ * corroborations=2 · source_class=verified_provider`. And because the
+ * container carried `break-all`, it wrapped INSIDE tokens, producing
+ * `source_c` / `lass=verified_provider` and `breac` / `h_corpus`.
+ *
+ * Two rules now: a key is shown as a word, and the pieces are discrete chips
+ * so wrapping happens between facts rather than through them. Keys with a
+ * known analyst meaning get a real label; anything unrecognised still renders
+ * (this metadata is open-ended and hiding it would lose evidence) but with its
+ * key title-cased rather than printed as an assignment.
+ */
+const META_LABELS: Record<string, string> = {
+  sources: "sources",
+  corroborations: "corroborated by",
+  source_class: "class",
+  confidence_cap_applied: "capped at",
+  subject_unlinked_reason: "quarantine reason",
+  parent: "pivoted from",
+  breach_name: "breach",
+  breach_date: "breach date",
+};
+
+/** Keys that are flags or plumbing, not facts an analyst reads in a summary row. */
+const META_HIDDEN = new Set([
+  "false_positive", "possible_minor", "minor_warning", "conflict", "collision",
+  "subject_unlinked", "linkage_confirmed", "handle",
+]);
+
+function metaFacts(meta: Record<string, unknown>): { label: string; value: string; title: string }[] {
+  const out: { label: string; value: string; title: string }[] = [];
+  for (const k of Object.keys(meta)) {
+    if (META_HIDDEN.has(k)) continue;
+    const raw = meta[k];
+    if (raw == null || raw === "" || raw === false) continue;
+    // Arrays read as lists, not as JSON.
+    const text = Array.isArray(raw) ? raw.map((v) => humanToken(String(v))).join(", ") : humanToken(String(raw));
+    if (!text) continue;
+    const label = META_LABELS[k] ?? k.replace(/_/g, " ");
+    out.push({ label, value: shorten(text), title: `${label}: ${text}` });
+    if (out.length === 3) break;
+  }
+  return out;
+}
+
+/** `verified_provider` -> `verified provider`. Snake case is a storage detail. */
+function humanToken(v: string): string {
+  return v.replace(/_/g, " ").trim();
 }
 
 /* Source attribution row — shows all sources (1..N) as clickable pills. */

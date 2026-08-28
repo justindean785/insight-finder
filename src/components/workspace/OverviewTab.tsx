@@ -8,6 +8,7 @@ import { TabHeader } from "@/components/ui/workspace-primitives";
 import { readableSourceLabel } from "@/lib/tool-display";
 import { timeAgo } from "@/lib/time";
 import { cn } from "@/lib/utils";
+import { fmtWallClock } from "@/lib/duration";
 import {
   LayoutDashboard, Unlink, AlertTriangle, XCircle, ShieldCheck, Timer,
   DatabaseZap, Activity, ArrowRight, type LucideIcon,
@@ -200,7 +201,15 @@ export function OverviewTab({ threadId }: { threadId: string }) {
           />
           <Stat
             icon={Timer} label="Time in tools"
-            value={toolMs > 0 ? (toolMs >= 60_000 ? `${Math.round(toolMs / 60_000)}m` : `${Math.round(toolMs / 1000)}s`) : "—"}
+            // `Math.round(ms / 60_000)` reported 87s as "1m" — a 31% understatement,
+            // and every value from 30s to 89s collapsed onto the same label while
+            // the Tools tab showed the true "87s" for the same run. Carry the
+            // remainder: a wall-clock figure in an evidence tool should not round
+            // away half a minute of it.
+            // Round to whole seconds FIRST, then split. Rounding the remainder
+            // separately let it reach 60 and print "1m 60s" (119.6s did exactly
+            // that), and "60s" just under the minute mark.
+            value={fmtWallClock(toolMs)}
             sub={cached > 0 ? `${cached} served from cache` : "wall-clock across the run"}
             title="Total wall-clock across every recorded call."
             onClick={() => jump("issues")}

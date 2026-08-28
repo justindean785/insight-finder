@@ -25,6 +25,7 @@ import { isSubmitBlocked } from "@/lib/submit-guard";
 import { interpretReadinessProbe, type ReadinessBody } from "@/lib/readiness-probe";
 import { dedupeCards } from "@/lib/next-step-cards";
 import { hasReportShape, joinAssistantTranscript, stripReasoningPerPart } from "@/lib/report-shape";
+import { findLastReportIndex, isReportMessage } from "@/lib/superseded-reports";
 import { dedupeCheckpoints } from "@/lib/chat-checkpoints";
 import { computePivots } from "@/lib/pivot-engine";
 import { sanitizeChatText } from "@/lib/sanitize-agent-text";
@@ -39,6 +40,7 @@ import {
 import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon, Copy as CopyIcon, ArrowRight } from "lucide-react";
 import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
 import { toolDisplayName, toolActionLabel, humanizeStage } from "@/lib/tool-display";
+import { humanizeSelector } from "@/lib/humanize-selector";
 import {
   isTerminalThreadUpdate,
   mergePersistedChatMessages,
@@ -576,7 +578,9 @@ function computeToolGroups(parts: MessagePartShape[]): Array<ToolRunGroup | { pa
     // A real selector value (email / domain / handle being investigated) is
     // shown verbatim; when a tool has none, fall back to a plain-language action
     // label instead of leaking the raw tool id (e.g. "memory_recall") to the UI.
-    const selector = typeof runtime?.selector === "string" && runtime.selector ? runtime.selector : toolActionLabel(name);
+    const selector = typeof runtime?.selector === "string" && runtime.selector
+      ? humanizeSelector(runtime.selector)
+      : toolActionLabel(name);
     const useful = tone === "ok" && !cached && !stale ? 1 : 0;
     const reason = typeof runtime?.rejection_reason === "string" ? runtime.rejection_reason : "";
     if (!current || current.key !== key) {
@@ -659,6 +663,7 @@ function flowToneForGroup(group: ToolRunGroup): "completed" | "partial" | "cache
   if (group.skipped > 0 && group.failed === 0) return "skipped";
   return "partial";
 }
+
 
 function RunFlowRail({ groups }: { groups: ToolRunGroup[] }) {
   if (groups.length <= 1) return null;
@@ -800,6 +805,32 @@ function renderTextWithBadges(text: string): React.ReactNode {
   }
   if (last < text.length) out.push(text.slice(last));
   return out;
+}
+
+
+/**
+ * Does the transcript already carry a persisted failure message?
+ *
+ * Must match how MessageView detects the sentinel — the FIRST text part
+ * beginning with FAIL_PREFIX — because that is the branch that renders the
+ * transcript's own FailedRunCard. These are AI-SDK messages: the text lives in
+ * `parts`, not in a `content` string, so checking `content` silently matches
+ * nothing and the de-duplication quietly does nothing at all.
+ */
+function hasPersistedFailure(messages: { role?: string; parts?: unknown }[]): boolean {
+  // ONLY the last message counts, and that is not a detail — it is the whole
+  // predicate. A persisted failure renders its card via `onRetry`, which the
+  // transcript passes only to the LAST assistant message (`isLastAssistant`),
+  // so an older sentinel buried mid-thread draws nothing at all. Scanning the
+  // whole thread therefore made one stale failure silence every later one: the
+  // live card was suppressed, the old sentinel rendered no card, and a real
+  // current failure vanished from the UI with no explanation and no retry.
+  // Suppress the live card only when the durable card is actually on screen.
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== "assistant") return false;
+  const parts = Array.isArray(last.parts) ? (last.parts as MessagePartShape[]) : [];
+  const firstText = parts.find((p) => p?.type === "text");
+  return typeof firstText?.text === "string" && firstText.text.startsWith(FAIL_PREFIX);
 }
 
 function FailedRunCard({ reason, onRetry }: { reason: string; onRetry: () => void }) {
@@ -952,7 +983,8 @@ const MarkdownBlock = memo(function MarkdownBlock({ content }: { content: string
   );
 });
 
-function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean }) {
+
+function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded }: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean; superseded?: boolean }) {
   if (m.role === "user") {
     const text = (m.parts as MessagePartShape[]).filter((p) => p.type === "text").map((p) => p.text).join("");
     // Split the human text from the "Attached files:" block the composer appends,
@@ -1074,7 +1106,25 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy }: { m: UIM
           ))}
         </div>
       )}
-      {prose && (
+      {prose && superseded && (
+        <details className="chat-card w-full min-w-0 group/sup" data-speaker="agent">
+          <summary className="chat-card__header cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+            <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/50" aria-hidden />
+            <span className="text-muted-foreground">Superseded report</span>
+            {timeLabel && <span className="chat-card__header-time">{timeLabel}</span>}
+            <span className="ml-auto flex items-center gap-1 text-eyebrow uppercase tracking-wider text-muted-foreground/70">
+              a later cycle rewrote this
+              <ChevronDown className="h-3 w-3 transition-transform group-open/sup:rotate-180" aria-hidden />
+            </span>
+          </summary>
+          <div className="chat-card__body">
+            <div className="chat-prose">
+              <MarkdownBlock content={prose} />
+            </div>
+          </div>
+        </details>
+      )}
+      {prose && !superseded && (
         <article className="chat-card w-full min-w-0" data-speaker="agent" aria-label="Agent response">
           <div className="chat-card__header">
             <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[hsl(var(--intel-blue))]" aria-hidden />
@@ -2392,20 +2442,34 @@ function ChatWindowInner({
           )}
           {/* Hide mid-run progress checkpoints once the final report lands so the
               same findings never render twice (see src/lib/chat-checkpoints.ts). */}
-          {dedupeCheckpoints(messages).map((m, idx, arr) => {
-            const isLastAssistant = m.role === "assistant" && idx === arr.length - 1;
-            const hasCacheBanner = m.role === "assistant" && (m.parts as MessagePartShape[]).some((p) => p?.type === CACHE_BANNER_TYPE);
-            return (
-              <MessageView
-                key={m.id}
-                m={m}
-                createdAt={createdAtMap[m.id]}
-                onRetry={isLastAssistant ? retryLastUser : undefined}
-                onRerun={hasCacheBanner ? rerunInvestigation : undefined}
-                rerunBusy={rerunBusy}
-              />
-            );
-          })}
+          {(() => {
+            const rendered = dedupeCheckpoints(messages);
+            // A multi-cycle run writes a COMPLETE report at every finalize, and
+            // the transcript rendered all of them at full length. One observed
+            // production thread carried four full "Investigation Report"
+            // documents and SEVEN blocks each headed "Evidence Record —
+            // authoritative" — a label only one of them can truthfully hold.
+            // The newest report stays open; the earlier ones collapse to a line
+            // the analyst can expand. Nothing is removed: a superseded report is
+            // still the record of what the run believed at that point.
+            const lastReportIdx = findLastReportIndex(rendered);
+            return rendered.map((m, idx, arr) => {
+              const isLastAssistant = m.role === "assistant" && idx === arr.length - 1;
+              const hasCacheBanner = m.role === "assistant" && (m.parts as MessagePartShape[]).some((p) => p?.type === CACHE_BANNER_TYPE);
+              const superseded = lastReportIdx >= 0 && idx < lastReportIdx && isReportMessage(m);
+              return (
+                <MessageView
+                  key={m.id}
+                  m={m}
+                  createdAt={createdAtMap[m.id]}
+                  onRetry={isLastAssistant ? retryLastUser : undefined}
+                  onRerun={hasCacheBanner ? rerunInvestigation : undefined}
+                  rerunBusy={rerunBusy}
+                  superseded={superseded}
+                />
+              );
+            });
+          })()}
           {isLoading && (
             <div
               className="flex items-center gap-2.5 text-sm"
@@ -2425,7 +2489,16 @@ function ChatWindowInner({
               </span>
             </div>
           )}
-          {error && !isLoading && (
+          {/* ONE card per failure.
+              A failed run lands in two places: the live `error` state here, and
+              a persisted assistant message prefixed FAIL_PREFIX which renders
+              its own FailedRunCard in the transcript above. Both fired, so the
+              analyst saw the same "Investigation run failed" card twice, stacked
+              — identical title, body, hint and buttons — which reads as two
+              separate failures.
+              The persisted message is the durable record and wins; this live
+              card is for a failure that has not been written to the thread. */}
+          {error && !isLoading && !hasPersistedFailure(messages) && (
             <FailedRunCard reason={error.message} onRetry={retryLastUser} />
           )}
           {suggestions.length > 0 && (
@@ -2463,12 +2536,27 @@ function ChatWindowInner({
                               · {s.meta}
                             </span>
                           )}
+                          {(s.detail || s.target) && (
+                            <ChevronDown
+                              className={cn(
+                                "ml-auto h-3 w-3 shrink-0 text-muted-foreground/45 transition-transform group-hover:text-muted-foreground",
+                                expanded && "rotate-180",
+                              )}
+                              aria-hidden
+                            />
+                          )}
                         </div>
+                        {/* line-clamp-1 cut these mid-sentence ("Email discovered
+                            via hunter verify…"), which is exactly the width at
+                            which a rationale stops being a rationale — and
+                            nothing on the row said it could be opened, so the
+                            rest was simply lost. Two lines carries the actual
+                            reason, and the chevron says there is more. */}
                         {s.detail && (
                           <p
                             className={cn(
                               "mt-0.5 text-[11px] leading-snug text-muted-foreground",
-                              !expanded && "line-clamp-1",
+                              !expanded && "line-clamp-2",
                             )}
                           >
                             {s.detail}

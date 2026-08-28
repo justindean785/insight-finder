@@ -108,25 +108,49 @@ function ActivityLog({
     // `effectiveChargedMicroUsd` — the cache saving is still deliberately not
     // claimed, because list price is an attributed figure and presenting it as
     // money saved would invent a number no one billed.
-    const by = new Map<string, { micro: number; calls: number }>();
+    // TIME IS NOT FILTERED BY SPEND. Skipping zero-charge calls here (the old
+    // `if (m <= 0) continue`) meant a slow FREE call — a gated refusal that
+    // still burned 12s, a free-tier tool that timed out — could not appear in a
+    // panel whose entire purpose is surfacing the long tail, while the badge
+    // beside the header cheerfully reported that free calls existed. It also
+    // made the header total disagree with the "Time in tools" figure above it,
+    // because the two were summing different populations of the same run.
+    const by = new Map<string, { micro: number; calls: number; ms: number }>();
     let total = 0;
+    let wallClock = 0;
     for (const e of events) {
       // Already resolved through runCost's `chargedMicroUsd` at the hook, so a
       // legacy row with no `charged_micro_usd` contributes its list price
       // instead of vanishing from the breakdown as if it were free.
-      const m = e.effectiveChargedMicroUsd;
-      if (m <= 0) continue;
+      const m = Math.max(0, e.effectiveChargedMicroUsd);
       total += m;
-      const cur = by.get(e.toolName) ?? { micro: 0, calls: 0 };
+      const cur = by.get(e.toolName) ?? { micro: 0, calls: 0, ms: 0 };
       cur.micro += m; cur.calls += 1;
+      if (e.durationMs != null && Number.isFinite(e.durationMs)) {
+        cur.ms += e.durationMs;
+        wallClock += e.durationMs;
+      }
       by.set(e.toolName, cur);
     }
     const rows = [...by.entries()]
       .map(([tool, v]) => ({ tool, ...v }))
-      .sort((a, b) => b.micro - a.micro)
+      // Sort by TIME, then cost. On a per-call-priced tool set every row costs
+      // the same, so a cost sort produces an arbitrary order; time is the axis
+      // that actually separates a 310ms lookup from a 12s timeout.
+      .sort((a, b) => b.ms - a.ms || b.micro - a.micro)
       .slice(0, 8);
     const freeCalls = events.filter((e) => e.effectiveChargedMicroUsd <= 0).length;
-    return { rows, total, freeCalls, max: Math.max(1, ...rows.map((r) => r.micro)) };
+    return {
+      rows,
+      total,
+      freeCalls,
+      max: Math.max(1, ...rows.map((r) => r.micro)),
+      maxMs: Math.max(1, ...rows.map((r) => r.ms)),
+      // Every recorded call, not just the eight rows drawn. The header states
+      // the run's wall-clock; the rows are the top of it, and a truncated sum
+      // presented as a total is a wrong number, not a shorter one.
+      totalMs: wallClock,
+    };
   }, [events]);
 
   const { totalMs, slowCount, cachedCount } = useMemo(() => {
@@ -236,9 +260,19 @@ function ActivityLog({
 
       {spend.total > 0 && (
         <section className="panel overflow-hidden">
+          {/* The bar encodes TIME, not spend.
+              It used to encode spend, normalised against the largest row — and
+              on a tool set where every call is priced the same, that renders
+              every bar at 100%: nine identical full-width bars that look like a
+              distribution and carry no information at all. Cost is still shown
+              as a figure, because a figure is what a flat cost deserves.
+              Wall-clock is the axis with real variance here (310ms vs a 12s
+              timeout) and the resource a run actually runs out of. */}
           <div className="rule-label">
-            <span>Spend by tool</span>
+            <span>Time and spend by tool</span>
             <span className="ml-auto normal-case tracking-normal text-micro tabular-nums text-muted-foreground">
+              {fmtDuration(spend.totalMs)}
+              <span className="mx-1.5 text-muted-foreground/40" aria-hidden>·</span>
               {fmtMicroUsd(spend.total)}
               {spend.freeCalls > 0 && (
                 <span className="ml-2 text-[hsl(var(--confidence-high))]" title="Cache hits, gated refusals and free-tier tools charge nothing.">
@@ -248,19 +282,37 @@ function ActivityLog({
             </span>
           </div>
           <div className="space-y-1 p-3">
-            {spend.rows.map((r) => (
-              <div key={r.tool} className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_4.5rem_2.5rem] items-center gap-2">
-                <span className="truncate font-mono text-eyebrow uppercase tracking-wider text-foreground/85" title={r.tool}>{r.tool}</span>
-                <span className="relative h-1.5 overflow-hidden rounded-sm bg-surface-3">
+            {spend.rows.map((r) => {
+              const slow = r.ms >= 10_000;
+              return (
+                <div key={r.tool} className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_3.5rem_4.5rem_2.5rem] items-center gap-2">
+                  <span className="truncate font-mono text-eyebrow uppercase tracking-wider text-foreground/85" title={r.tool}>{r.tool}</span>
+                  <span className="relative h-1.5 overflow-hidden rounded-sm bg-surface-3">
+                    <span
+                      className="absolute inset-y-0 left-0 rounded-sm"
+                      style={{
+                        width: `${Math.max(3, (r.ms / spend.maxMs) * 100)}%`,
+                        // A tool at or past the 10s ceiling is the finding this
+                        // panel exists to surface, not a longer version of a
+                        // normal row.
+                        backgroundColor: slow ? "hsl(var(--warning))" : "hsl(var(--foreground) / 0.55)",
+                      }}
+                    />
+                  </span>
                   <span
-                    className="absolute inset-y-0 left-0 rounded-sm bg-[hsl(var(--brand))]"
-                    style={{ width: `${Math.max(3, (r.micro / spend.max) * 100)}%` }}
-                  />
-                </span>
-                <span className="text-right font-mono text-data tabular-nums text-foreground/90">{fmtMicroUsd(r.micro)}</span>
-                <span className="text-right font-mono text-eyebrow tabular-nums text-muted-foreground/70">{r.calls}×</span>
-              </div>
-            ))}
+                    className={cn(
+                      "text-right font-mono text-data tabular-nums",
+                      slow ? "text-[hsl(var(--warning))]" : "text-foreground/90",
+                    )}
+                    title={slow ? "At or past the 10s ceiling — likely a timeout, not work" : undefined}
+                  >
+                    {fmtDuration(r.ms)}
+                  </span>
+                  <span className="text-right font-mono text-data tabular-nums text-muted-foreground">{fmtMicroUsd(r.micro)}</span>
+                  <span className="text-right font-mono text-eyebrow tabular-nums text-muted-foreground/70">{r.calls}×</span>
+                </div>
+              );
+            })}
           </div>
         </section>
       )}

@@ -34,11 +34,17 @@ type EvidenceRow = {
 // precise absolute timestamp (date + time via toLocaleString) once older than a
 // day, so this keeps its own provenance-grade formatter.
 function timeAgo(iso: string): string {
-  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+  // A custody row with no usable timestamp is a gap in the record, and the
+  // honest rendering of a gap is a dash. `new Date(undefined).toLocaleString()`
+  // returns the literal string "Invalid Date", which on a chain-of-custody
+  // ledger reads as corrupted evidence rather than as absent metadata.
+  const t = iso ? new Date(iso).getTime() : NaN;
+  if (!Number.isFinite(t)) return "—";
+  const diff = (Date.now() - t) / 1000;
   if (diff < 60) return "just now";
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return new Date(iso).toLocaleString();
+  return new Date(t).toLocaleString();
 }
 
 /** Upper bound on evidence_log rows fetched for the visible custody panel.
@@ -51,7 +57,12 @@ export function CustodyTab({ threadId }: { threadId: string }) {
   const [rows, setRows] = useState<EvidenceRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [verifying, setVerifying] = useState(false);
-  const [verification, setVerification] = useState<{ ok: boolean; total: number; first_break: number | null } | null>(null);
+  // `state` is deliberately three-valued. See ChainIntegrityBanner: reporting
+  // "broken" because a response could not be READ is a false tampering alarm on
+  // the most safety-critical surface in the product.
+  const [verification, setVerification] = useState<
+    { state: "ok" | "broken" | "unavailable"; total: number; first_break: number | null } | null
+  >(null);
   const [archiveEnabled, setArchiveEnabled] = useState(false);
   const [exporting, setExporting] = useState(false);
 
@@ -79,11 +90,24 @@ export function CustodyTab({ threadId }: { threadId: string }) {
     const { data, error } = await supabase.rpc("verify_evidence_chain", { _thread_id: threadId });
     setVerifying(false);
     if (error) {
-      setVerification({ ok: false, total: 0, first_break: null });
+      // The check did not run. That is not evidence of tampering.
+      setVerification({ state: "unavailable", total: 0, first_break: null });
       return;
     }
-    const row = Array.isArray(data) ? data[0] : data;
-    setVerification({ ok: !!row?.ok, total: Number(row?.total ?? 0), first_break: row?.first_break ?? null });
+    const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
+    // Only a response that actually CARRIES a verdict can produce one. A missing
+    // row, or a row without an `ok` field, previously coerced to `ok: false` and
+    // rendered a red "broken" banner — so any drift in the RPC's shape accused
+    // the analyst's own evidence of being tampered with.
+    if (!row || typeof row.ok !== "boolean") {
+      setVerification({ state: "unavailable", total: Number(row?.total ?? 0), first_break: null });
+      return;
+    }
+    setVerification({
+      state: row.ok ? "ok" : "broken",
+      total: Number(row.total ?? 0),
+      first_break: (row.first_break as number | null) ?? null,
+    });
   }, [threadId]);
 
   // Auto-verify once entries are present so chain integrity is always surfaced.
@@ -342,14 +366,17 @@ function ChainIntegrityBanner({
   onRecheck,
   onJumpToBreak,
 }: {
-  verification: { ok: boolean; total: number; first_break: number | null } | null;
+  verification: { state: "ok" | "broken" | "unavailable"; total: number; first_break: number | null } | null;
   verifying: boolean;
   total: number;
   onRecheck: () => void;
   onJumpToBreak: (seq: number) => void;
 }) {
-  const ok = verification?.ok === true;
-  const broken = verification && !verification.ok;
+  const ok = verification?.state === "ok";
+  // ONLY an explicit negative verdict from the chain check. "unavailable" is not
+  // a break — it means the question was not answered.
+  const broken = verification?.state === "broken";
+  const unavailable = verification?.state === "unavailable";
   return (
     <div
       className={cn(
@@ -377,10 +404,10 @@ function ChainIntegrityBanner({
                 "font-mono text-data tabular-nums",
                 ok && "text-[hsl(var(--confidence-high))]",
                 broken && "text-danger",
-                !verification && "text-muted-foreground",
+                (unavailable || !verification) && "text-muted-foreground",
               )}
             >
-              {verifying ? "checking…" : ok ? "100%" : broken ? "broken" : "—"}
+              {verifying ? "checking…" : ok ? "100%" : broken ? "broken" : unavailable ? "not verified" : "—"}
             </span>
           </div>
           <div className="text-data text-muted-foreground mt-0.5">
@@ -389,6 +416,13 @@ function ChainIntegrityBanner({
               <>
                 Hash mismatch at <span className="font-mono text-danger">#{verification!.first_break ?? "?"}</span>
                 {" "}— evidence after this point may be tampered.
+              </>
+            )}
+            {unavailable && !verifying && (
+              <>
+                The chain check did not return a verdict, so these{" "}
+                <span className="font-mono tabular-nums">{total}</span> entries are neither
+                confirmed nor disputed. Re-verify, or treat the chain as unchecked.
               </>
             )}
             {!verification && !verifying && (

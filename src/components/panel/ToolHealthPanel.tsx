@@ -137,9 +137,22 @@ export function ToolHealthPanel({ threadId }: { threadId: string }) {
         </div>
       )}
 
+      {/* The escalated tools are NOT repeated here.
+          "Needs attention" already renders each faulting tool with its full
+          error block; listing them again at the top of "All tools" printed the
+          same tool name and the same two-line provider error twice on one
+          screen, which reads as two separate faults until you look closely.
+          The inventory stays complete — it just starts below what was already
+          escalated, and says so. */}
       <div className="space-y-1.5">
-        <div className="text-micro font-semibold tracking-normal text-muted-foreground">All tools ({rows.length})</div>
-        {rows.map((r) => <HealthRow key={r.toolName} row={r} />)}
+        <div className="text-micro font-semibold tracking-normal text-muted-foreground">
+          {attention.length > 0
+            ? `Other tools (${rows.length - attention.length})`
+            : `All tools (${rows.length})`}
+        </div>
+        {rows
+          .filter((r) => !attention.some((a) => a.toolName === r.toolName))
+          .map((r) => <HealthRow key={r.toolName} row={r} />)}
       </div>
     </div>
   );

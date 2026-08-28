@@ -5,7 +5,7 @@ import { UNATTRIBUTED_CLUSTER_LABEL, buildIdentityClusters, groupForKind, type I
 import { useReviewStates } from "@/lib/review";
 import { isSharedInfrastructure } from "@/lib/evidence-status";
 import { captureError } from "@/lib/telemetry";
-import { AlertTriangle, MapPin, Mail, Phone, User as UserIcon, Network, Tag, ShieldCheck, ShieldQuestion, Server } from "lucide-react";
+import { AlertTriangle, MapPin, Mail, Phone, User as UserIcon, Network, Tag, ShieldCheck, Server } from "lucide-react";
 import { EmptyState } from "./EmptyState";
 import { ConfidenceTag } from "@/components/ui/confidence";
 import { AuthoritySpine } from "@/components/ui/authority";
@@ -115,6 +115,9 @@ function ClusterCard({ cluster: c, index }: { cluster: IdentityCluster; index: n
     : infraOnly ? "infrastructure"
     : matches === true ? "verified"
     : "review";
+  // The card's visible heading, reused below to suppress the field that merely
+  // repeats it.
+  const heading = title.replace(/^\s*Cluster\s+C\d+\s*—\s*/i, "");
   return (
     <div
       className={cn(
@@ -136,25 +139,34 @@ function ClusterCard({ cluster: c, index }: { cluster: IdentityCluster; index: n
               its own mono eyebrow above, so strip the redundant prefix rather
               than printing the identifier twice on every card. */}
           <div className="mt-0.5 text-meta font-semibold leading-tight">
-            {title.replace(/^\s*Cluster\s+C\d+\s*—\s*/i, "")}
+            {heading}
           </div>
         </div>
         {infraOnly ? (
           <div className="text-micro font-mono px-1.5 py-0.5 rounded border shrink-0 text-muted-foreground border-border bg-secondary/40">
             <span className="flex items-center gap-1"><Server className="w-2.5 h-2.5" />{shared ? "shared infra" : "infrastructure"}</span>
           </div>
+        ) : matches == null ? (
+          /* NO CHIP.
+             `matchesSeedLocation` is null whenever the comparison could not be
+             made — overwhelmingly because the case seed carries no location at
+             all, in which case EVERY cluster is null and every card rendered an
+             identical "unknown" badge down the whole page. A badge that is
+             always present and always says the same thing is not a status, it
+             is furniture: it costs a scan stop per card and tells the analyst
+             nothing they can act on.
+             `seed match` and `out-of-area` are real claims and still render. */
+          null
         ) : (
           <div className={cn(
             "text-micro font-mono px-1.5 py-0.5 rounded border shrink-0",
-            matches === true
+            matches
               ? "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/40 bg-[hsl(var(--confidence-high))]/10"
-              : matches === false
-              ? "text-destructive border-destructive/40 bg-destructive/10"
-              : "text-muted-foreground border-border bg-secondary/40",
+              : "text-destructive border-destructive/40 bg-destructive/10",
           )}>
-            {matches === true ? <span className="flex items-center gap-1"><ShieldCheck className="w-2.5 h-2.5" />seed match</span>
-              : matches === false ? <span className="flex items-center gap-1"><AlertTriangle className="w-2.5 h-2.5" />out-of-area</span>
-              : <span className="flex items-center gap-1"><ShieldQuestion className="w-2.5 h-2.5" />unknown</span>}
+            {matches
+              ? <span className="flex items-center gap-1"><ShieldCheck className="w-2.5 h-2.5" />seed match</span>
+              : <span className="flex items-center gap-1"><AlertTriangle className="w-2.5 h-2.5" />out-of-area</span>}
           </div>
         )}
       </div>
@@ -166,9 +178,9 @@ function ClusterCard({ cluster: c, index }: { cluster: IdentityCluster; index: n
       )}
 
       <div className="grid grid-cols-2 gap-1.5 text-data font-mono">
-        <Field icon={Mail} label="emails" values={c.emails} />
-        <Field icon={UserIcon} label="usernames" values={c.usernames} />
-        <Field icon={Phone} label="phones" values={c.phones.map((p, i) => c.areaCodes[i] ? `${p} (${c.areaCodes[i]})` : p)} />
+        <Field icon={Mail} label="emails" values={c.emails} omit={heading} />
+        <Field icon={UserIcon} label="usernames" values={c.usernames} omit={heading} />
+        <Field icon={Phone} label="phones" values={c.phones.map((p, i) => c.areaCodes[i] ? `${p} (${c.areaCodes[i]})` : p)} omit={heading} />
         <Field icon={MapPin} label="states" values={c.states} />
         <Field icon={MapPin} label="addresses" values={c.addresses} />
         <Field icon={Network} label="ips" values={c.ips} />
@@ -201,9 +213,33 @@ function ClusterCard({ cluster: c, index }: { cluster: IdentityCluster; index: n
 }
 
 function Field({
-  icon: Icon, label, values,
-}: { icon: React.ComponentType<{ className?: string }>; label: string; values: string[] }) {
+  icon: Icon, label, values, omit,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  values: string[];
+  /** The card's heading. A cluster is TITLED by its strongest selector, so on a
+   *  single-selector cluster the field list printed the exact same string again
+   *  two lines below it — "j.harker@northgate-logistics.com" as the heading and
+   *  "emails: j.harker@northgate-logistics.com" underneath. The kind label still
+   *  earns its place; the repeated value does not. */
+  omit?: string;
+}) {
+  const norm = (v: string) => v.trim().toLowerCase();
+  const shown = omit ? values.filter((v) => norm(v) !== norm(omit)) : values;
   if (!values.length) return null;
+  if (!shown.length) {
+    // Every value was the heading: keep the kind, drop the echo.
+    return (
+      <div className="space-y-0.5 col-span-2">
+        <div className="text-muted-foreground flex items-center gap-1 text-micro tracking-normal">
+          <Icon className="w-2.5 h-2.5" />
+          {label}
+        </div>
+      </div>
+    );
+  }
+  values = shown;
   return (
     <div className="space-y-0.5 col-span-2">
       <div className="text-muted-foreground flex items-center gap-1 text-micro tracking-normal">
