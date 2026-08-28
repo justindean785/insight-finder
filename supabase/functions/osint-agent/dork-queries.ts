@@ -318,7 +318,7 @@ export function buildAddressDorks(seed: string): Dork[] {
   );
   add(
     "Residents / People",
-    `${street} site:whitepages.com OR site:spokeo.com OR site:anywho.com OR site:fastpeoplesearch.com OR site:truepeoplesearch.com`,
+    `${street} (site:whitepages.com OR site:spokeo.com OR site:anywho.com OR site:fastpeoplesearch.com OR site:truepeoplesearch.com)`,
   );
   if (t.extras) {
     add("Address + Person", `${street} ${t.extras}`);
@@ -335,7 +335,7 @@ export function buildAddressDorks(seed: string): Dork[] {
   );
   add(
     "Address + Business",
-    `${street} site:opencorporates.com OR site:bizapedia.com OR site:manta.com OR site:bbb.org`,
+    `${street} (site:opencorporates.com OR site:bizapedia.com OR site:manta.com OR site:bbb.org)`,
   );
 
   // 6) Public records
@@ -349,27 +349,27 @@ export function buildAddressDorks(seed: string): Dork[] {
   );
   add(
     "Public Records",
-    `${street} site:courtlistener.com OR site:justia.com OR site:unicourt.com OR site:docketbird.com`,
+    `${street} (site:courtlistener.com OR site:justia.com OR site:unicourt.com OR site:docketbird.com)`,
   );
 
   // 7) Documents
   add("Documents", `${sl} filetype:pdf`);
-  add("Documents", `${sl} filetype:xls OR filetype:xlsx OR filetype:csv`);
+  add("Documents", `${sl} (filetype:xls OR filetype:xlsx OR filetype:csv)`);
   add("Documents", `${sl} (minutes OR agenda OR "staff report" OR "notice of" OR "legal notice") filetype:pdf`);
 
   // 8) Archives
-  add("Archives", `${t.exact} site:web.archive.org OR site:archive.is OR site:archive.ph`);
+  add("Archives", `${t.exact} (site:web.archive.org OR site:archive.is OR site:archive.ph)`);
 
   // 9) Real estate
   add(
     "Real Estate",
-    `${street} site:zillow.com OR site:redfin.com OR site:realtor.com OR site:trulia.com OR site:homes.com`,
+    `${street} (site:zillow.com OR site:redfin.com OR site:realtor.com OR site:trulia.com OR site:homes.com)`,
   );
   add(
     "Real Estate",
     `${sl} ("last sold" OR "sold on" OR "for sale" OR "estimated value" OR "days on market")`,
   );
-  add("Real Estate", `${street} site:loopnet.com OR site:crexi.com OR site:apartments.com OR site:rent.com`);
+  add("Real Estate", `${street} (site:loopnet.com OR site:crexi.com OR site:apartments.com OR site:rent.com)`);
 
   // 10) Alternate engines — same exact-address expression
   add("Alt Search Engines", t.exact, "bing");

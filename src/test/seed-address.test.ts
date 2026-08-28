@@ -97,6 +97,18 @@ describe("client display seed — address", () => {
   it("labels an address thread as an Address", () => {
     expect(formatThreadTitle(MULTILINE_SEED)).toContain("Address:");
   });
+
+  it("still prefers a stronger selector (email) over an address-shaped blob that contains one", () => {
+    // Graphify review on #491: the address shortcut ran BEFORE the messy-blob
+    // email/url/phone/domain checks, so a blob that happens to be
+    // address-shaped end-to-end (house number ... real state ... ZIP) could
+    // swallow a stronger selector embedded inside it. The address check must
+    // run last among these, exactly as it did before "address" existed.
+    const blobWithEmail = "123 Main St, contact John Doe at john@example.com, Columbus OH 43215";
+    const d = extractDisplaySeed(blobWithEmail, "other");
+    expect(d.kind).toBe("email");
+    expect(d.selector).toBe("john@example.com");
+  });
 });
 
 describe("address normalizer", () => {

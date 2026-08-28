@@ -94,23 +94,28 @@ export function extractDisplaySeed(
   const raw = (seedValue ?? "").trim();
   if (!raw) return { selector: "—", kind: "other", title: "Investigation" };
 
-  // Already a clean single token → trust detectSeed.
+  // Already a clean single token → trust detectSeed. EXCEPT "address": unlike
+  // email/url/phone/domain/username, detectSeed's address pattern tolerates
+  // arbitrary characters between the house number and the state/ZIP
+  // (`\S.*?`), so a short one-line string can satisfy it end-to-end while
+  // ALSO containing a stronger, more precise selector inside it — e.g.
+  // "123 Main St, contact John Doe at john@example.com, Columbus OH 43215".
+  // Falling through to the blob-extraction chain below re-checks for that
+  // stronger selector first, and still lands on the same address result when
+  // there genuinely isn't one.
   if (raw.length <= 120 && !/\n|={2,}|\s{2,}/.test(raw)) {
     const direct = detectSeed(raw);
-    if (direct && direct.kind !== "other") {
+    if (direct && direct.kind !== "other" && direct.kind !== "address") {
       return { selector: direct.raw, kind: direct.kind, title: direct.raw };
     }
   }
 
-  // A pasted postal address is a real selector even though it spans two lines
-  // and trips the "messy blob" test above. Without this the fallback below cut
-  // "79 WAVERLY AVE\nCINCINNATI OH, 45215" down to its first line.
-  if (looksLikePostalAddress(raw)) {
-    const flat = flattenAddress(raw);
-    return { selector: flat, kind: "address", title: flat };
-  }
-
-  // Messy blob — extract the strongest selector by priority.
+  // Messy blob — extract the strongest selector by priority. Checked BEFORE the
+  // postal-address shortcut below: a blob can be address-shaped end-to-end
+  // (house number ... real state ... ZIP) while also carrying a stronger,
+  // more precise selector inside it (e.g. "123 Main St, contact John Doe at
+  // john@example.com, Columbus OH 43215") — that selector must still win, the
+  // same priority order this function already used before address existed.
   const email = raw.match(EMAIL_ANYWHERE)?.[0];
   if (email) return { selector: email, kind: "email", title: email };
   const url = raw.match(URL_ANYWHERE)?.[0];
@@ -121,6 +126,14 @@ export function extractDisplaySeed(
   }
   const domain = raw.match(DOMAIN_ANYWHERE)?.[0];
   if (domain) return { selector: domain.toLowerCase(), kind: "domain", title: domain.toLowerCase() };
+
+  // A pasted postal address is a real selector even though it spans two lines
+  // and trips the "messy blob" test above. Without this the fallback below cut
+  // "79 WAVERLY AVE\nCINCINNATI OH, 45215" down to its first line.
+  if (looksLikePostalAddress(raw)) {
+    const flat = flattenAddress(raw);
+    return { selector: flat, kind: "address", title: flat };
+  }
 
   // Fallback: first clean fragment, truncated.
   const frag = raw.split(/\n|·|—|={2,}/).map((s) => s.trim()).find(Boolean) ?? raw;

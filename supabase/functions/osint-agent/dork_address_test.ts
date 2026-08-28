@@ -121,6 +121,28 @@ Deno.test("address seed: the state position must be a real USPS code, not any tw
   assertEquals(detectSeedServer("1 Judiciary Sq NW, Washington, DC 20001")?.kind, "address");
 });
 
+Deno.test("google_dorks(address): every OR-group is parenthesized, so the address prefix scopes ALL branches", async () => {
+  // Graphify review on #491: "${street} site:A OR site:B OR site:C" (no
+  // parens) is a real Google-syntax bug — unparenthesized OR only loosely
+  // binds, so only the FIRST site: branch is actually scoped to the address;
+  // "OR site:B" and "OR site:C" would match ANY page on those domains, address
+  // or not. Every category that combines an address prefix with an OR list
+  // must wrap the list in parens.
+  const r = await dorks(MULTILINE_SEED, "address");
+  for (const d of r.dorks ?? []) {
+    if (!d.query.includes(" OR ")) continue;
+    // Every top-level OR must sit inside a paren group. A crude but effective
+    // check: strip quoted phrases (their internal "OR" text doesn't count),
+    // then every remaining " OR " must have an unmatched '(' before it and an
+    // unmatched ')' after it somewhere later on the line.
+    const stripped = d.query.replace(/"[^"]*"/g, '""');
+    assert(
+      /\([^()]*\bOR\b[^()]*\)/.test(stripped),
+      `OR appears outside a paren group, so it is not scoped to the prefix: ${d.query}`,
+    );
+  }
+});
+
 // ---- 2. google_dorks accepts and serves the address kind ---------------------
 
 Deno.test("google_dorks: accepts kind 'address' and returns a real query family", async () => {
