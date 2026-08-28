@@ -4,8 +4,8 @@
 // `seenInBatch`, which only ever caught a repeat inside ONE call. The
 // duplicates measured were seconds apart in DIFFERENT calls:
 //
-//     V&S 1110 LLC   3 `organization` rows at 55 / 75 / 75
-//     Ved Parkash    3 `source_person` rows
+//     R&C 4200 LLC   3 `organization` rows at 55 / 75 / 75
+//     Ray Calder    3 `source_person` rows
 //     the address    4+ rows
 //
 // so an Evidence count of 88 was not a count of distinct facts.
@@ -23,8 +23,8 @@ import { checkpointKey } from "./incremental-persist.ts";
 /* ── the identity key ──────────────────────────────────────────────────── */
 
 Deno.test("the same observation from the same source is one key", () => {
-  const a = artifactDedupKey({ kind: "organization", value: "V&S 1110 LLC", source: "opencorporates_search" });
-  const b = artifactDedupKey({ kind: "organization", value: "V&S 1110 LLC", source: "OpenCorporates_Search " });
+  const a = artifactDedupKey({ kind: "organization", value: "R&C 4200 LLC", source: "opencorporates_search" });
+  const b = artifactDedupKey({ kind: "organization", value: "R&C 4200 LLC", source: "OpenCorporates_Search " });
   assertEquals(a, b, "source is compared trimmed and case-folded, as the write path folds it");
 });
 
@@ -51,16 +51,16 @@ Deno.test("NEGATIVE CONTROL: the same value from a DIFFERENT source is corrobora
   // `source` is in the key on purpose. Four corpora returning the same answer
   // is four coverage facts; collapsing them erases breadth (#189's migration).
   assert(
-    artifactDedupKey({ kind: "phone", value: "+19172915568", source: "oathnet_lookup" }) !==
-      artifactDedupKey({ kind: "phone", value: "+19172915568", source: "indicia_phone" }),
+    artifactDedupKey({ kind: "phone", value: "+12025550142", source: "oathnet_lookup" }) !==
+      artifactDedupKey({ kind: "phone", value: "+12025550142", source: "indicia_phone" }),
     "two independent sources agreeing must remain two rows",
   );
 });
 
 Deno.test("a missing source folds to the empty string, matching a stored NULL", () => {
   assertEquals(
-    artifactDedupKey({ kind: "name", value: "Ved Parkash", source: null }),
-    artifactDedupKey({ kind: "name", value: "Ved Parkash" }),
+    artifactDedupKey({ kind: "name", value: "Ray Calder", source: null }),
+    artifactDedupKey({ kind: "name", value: "Ray Calder" }),
     "the write path stores `a.source ?? null`; both must key identically",
   );
 });
@@ -87,13 +87,13 @@ function fakeDb(pages: Array<Array<{ kind?: unknown; value?: unknown }>>, error:
 }
 
 Deno.test("a legacy phone row shields the canonical spelling from re-insert", () => {
-  // Rows written before the E.164 fold hold "9172915568" where a new extraction
-  // now yields "+19172915568". Without registering the normalized spelling the
+  // Rows written before the E.164 fold hold "2025550142" where a new extraction
+  // now yields "+12025550142". Without registering the normalized spelling the
   // legacy row would not block the duplicate — and there is no migration here
   // by design, so old and new must be reconciled at read time.
-  return loadSeenArtifactKeys(fakeDb([[{ kind: "phone", value: "9172915568" }]]).db, "t1").then((seen) => {
-    assert(seen.has(checkpointKey("phone", "+19172915568")), "the canonical form must be shielded");
-    assert(seen.has(checkpointKey("phone", "9172915568")), "and the literal stored form too");
+  return loadSeenArtifactKeys(fakeDb([[{ kind: "phone", value: "2025550142" }]]).db, "t1").then((seen) => {
+    assert(seen.has(checkpointKey("phone", "+12025550142")), "the canonical form must be shielded");
+    assert(seen.has(checkpointKey("phone", "2025550142")), "and the literal stored form too");
   });
 });
 
@@ -103,18 +103,18 @@ Deno.test("NEGATIVE CONTROL: the literal key is kept for values normalizeFinding
   // WIDEN the extractor's permission to re-insert them. The set only ever
   // grows, so this can cause more dedup, never less.
   return loadSeenArtifactKeys(
-    fakeDb([[{ kind: "organization", value: "V&S 1110 LLC" }, { kind: "court_case", value: "People v Parkash" }]]).db,
+    fakeDb([[{ kind: "organization", value: "R&C 4200 LLC" }, { kind: "court_case", value: "People v Calder" }]]).db,
     "t1",
   ).then((seen) => {
-    assert(seen.has(checkpointKey("organization", "V&S 1110 LLC")));
-    assert(seen.has(checkpointKey("court_case", "People v Parkash")));
+    assert(seen.has(checkpointKey("organization", "R&C 4200 LLC")));
+    assert(seen.has(checkpointKey("court_case", "People v Calder")));
   });
 });
 
 Deno.test("NEGATIVE CONTROL: a genuinely different phone is not shielded", () => {
-  return loadSeenArtifactKeys(fakeDb([[{ kind: "phone", value: "9172915568" }]]).db, "t1").then((seen) => {
+  return loadSeenArtifactKeys(fakeDb([[{ kind: "phone", value: "2025550142" }]]).db, "t1").then((seen) => {
     assert(
-      !seen.has(checkpointKey("phone", "+79172915568")),
+      !seen.has(checkpointKey("phone", "+72025550142")),
       "the Russian +7 number is a different fact and must still be insertable",
     );
   });
@@ -176,8 +176,8 @@ Deno.test("wiring: both writers build the key with the SAME shared function", ()
 /* ── review findings on #508 (Codex, 2026-08-28) — all three verified real ── */
 
 Deno.test("wiring: the thread loader indexes the LEGACY phone spelling too", () => {
-  // Without this, a thread holding a pre-canonicalisation "9172915568" is
-  // invisible to a lookup for "+19172915568", and re-running an existing thread
+  // Without this, a thread holding a pre-canonicalisation "2025550142" is
+  // invisible to a lookup for "+12025550142", and re-running an existing thread
   // recreates the exact duplicate this change set out to stop. The auto-persist
   // path (loadSeenArtifactKeys) already did this; the model-facing writers were
   // the one path that did not.

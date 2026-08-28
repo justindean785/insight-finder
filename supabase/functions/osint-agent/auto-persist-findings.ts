@@ -1458,6 +1458,20 @@ export async function loadSeenArtifactKeys(
         if (n && n.value !== v) seen.add(checkpointKey(n.kind, n.value));
       }
       if (data.length < SEEN_ARTIFACT_PAGE_SIZE) break;
+      // DISCLOSE the ceiling. `loadThreadArtifactIdentities` surfaces
+      // `thread_dedup_partial` when it stops early; this path returns a bare Set
+      // with nowhere to put that, so it said nothing at all — a dedup gate that
+      // quietly stops deduping, which is the exact thing the other path's
+      // comment argues against. Logged rather than silent until there is a
+      // channel to carry it.
+      if (from + SEEN_ARTIFACT_PAGE_SIZE >= SEEN_ARTIFACT_SCAN_MAX) {
+        console.warn(JSON.stringify({
+          event: "seen_artifact_scan_truncated",
+          thread_id: threadId,
+          scanned: SEEN_ARTIFACT_SCAN_MAX,
+          note: "thread exceeds the dedup scan ceiling — rows beyond it can be re-inserted",
+        }));
+      }
     }
   } catch (e) {
     console.warn("[auto-persist-findings] loadSeenArtifactKeys failed:", (e as Error)?.message ?? e);

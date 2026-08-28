@@ -1,9 +1,9 @@
 // breach_cotenant_provenance_test.ts — a breach corpus is CO-TENANTED, and a
 // neighbour's selector must not inherit the subject's authority.
 //
-// THE REGRESSION (production, 2026-08-26). A run pivoting on +19172915568
-// persisted 79172915568 — a Russian +7 number off a `zoloto585.ru` row that the
-// same artifact set describes as "Svetlana Belousova, Kazan Russia — COLLISION,
+// THE REGRESSION (production, 2026-08-26). A run pivoting on +12025550142
+// persisted 72025550142 — a Russian +7 number off a `zoloto585.ru` row that the
+// same artifact set describes as "Marta Kovalenko, Kazan Russia — COLLISION,
 // unrelated" — as a subject selector, with its own cluster id.
 //
 // `breachSubjectAnchor` already states the principle: it "deliberately NEVER
@@ -21,7 +21,7 @@
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { extractFindings } from "./auto-persist-findings.ts";
 
-const SUBJECT_PHONE = "+19172915568";
+const SUBJECT_PHONE = "+12025550142";
 
 /** One oathnet_lookup return carrying the subject's row and a co-tenant's. */
 function oathnetTwoRows() {
@@ -34,17 +34,17 @@ function oathnetTwoRows() {
         items: [
           {
             // The subject: carries the queried phone.
-            phone_number: "9172915568",
+            phone_number: "2025550142",
             email: "subject@example.com",
-            full_name: "Jesus Acosta",
+            full_name: "Dana Whitfield",
             dbname: "example.com",
           },
           {
             // A neighbour in the same corpus: a DIFFERENT number in the field
             // that was queried.
-            phone_number: "79172915568",
+            phone_number: "72025550142",
             email: "other@example.net",
-            full_name: "Svetlana Belousova",
+            full_name: "Marta Kovalenko",
             linkedin: "https://www.linkedin.com/in/example-cotenant",
             dbname: "example.net",
           },
@@ -59,7 +59,7 @@ const find = (out: ReturnType<typeof extractFindings>, kind: string, needle: str
 
 Deno.test("a corpus row that disagrees on the queried field is quarantined as a co-tenant", () => {
   const out = extractFindings("oathnet_lookup", oathnetTwoRows(), { type: "phone", value: SUBJECT_PHONE });
-  const cotenant = find(out, "phone", "+79172915568");
+  const cotenant = find(out, "phone", "+72025550142");
   assert(cotenant, "the +7 number must still be extracted — quarantine is not deletion");
   assertEquals(
     cotenant?.context?.subject_unlinked,
@@ -76,7 +76,7 @@ Deno.test("every selector on the co-tenant row is stamped, including its URL", (
   // pushUrl bypasses `push`, so a per-call ctx that only covered `push` would
   // leave the LinkedIn profile of a third party at full authority.
   const out = extractFindings("oathnet_lookup", oathnetTwoRows(), { type: "phone", value: SUBJECT_PHONE });
-  for (const [kind, needle] of [["email", "other@example.net"], ["name", "Svetlana"], ["url", "example-cotenant"]]) {
+  for (const [kind, needle] of [["email", "other@example.net"], ["name", "Marta"], ["url", "example-cotenant"]]) {
     const f = find(out, kind, needle);
     assert(f, `expected a ${kind} finding for ${needle}`);
     assertEquals(f?.context?.subject_unlinked, true, `${kind} on a co-tenant row must be quarantined`);
@@ -85,7 +85,7 @@ Deno.test("every selector on the co-tenant row is stamped, including its URL", (
 
 Deno.test("NEGATIVE CONTROL: the subject's own row keeps full authority", () => {
   const out = extractFindings("oathnet_lookup", oathnetTwoRows(), { type: "phone", value: SUBJECT_PHONE });
-  const own = find(out, "phone", "+19172915568");
+  const own = find(out, "phone", "+12025550142");
   assert(own, "the subject's phone must be extracted");
   assertEquals(own?.context?.subject_unlinked, undefined, "the queried row is NOT a co-tenant");
   const ownEmail = find(out, "email", "subject@example.com");
@@ -116,7 +116,7 @@ Deno.test("NEGATIVE CONTROL: a row that merely LACKS the queried field is not st
     data: {
       success: true,
       data: {
-        items: [{ full_name: "Jesus Acosta", address_street: "1110 Anderson Ave", address_city: "Bronx", address_state: "NY", address_postcode: "10452" }],
+        items: [{ full_name: "Dana Whitfield", address_street: "742 Evergreen Ter", address_city: "Springfield", address_state: "OR", address_postcode: "97477" }],
       },
     },
   }, { type: "phone", value: SUBJECT_PHONE });
@@ -149,9 +149,9 @@ Deno.test("DECISION: the gate is PHONE-only — an email anchor does not quarant
 
 Deno.test("NEGATIVE CONTROL: quarantine is disclosure — no value is dropped or rewritten", () => {
   const out = extractFindings("oathnet_lookup", oathnetTwoRows(), { type: "phone", value: SUBJECT_PHONE });
-  assert(find(out, "phone", "+79172915568"), "the co-tenant phone still persists");
-  assert(find(out, "name", "Svetlana Belousova"), "with its value intact");
-  assert(find(out, "phone", "+19172915568"), "beside the subject's own row");
+  assert(find(out, "phone", "+72025550142"), "the co-tenant phone still persists");
+  assert(find(out, "name", "Marta Kovalenko"), "with its value intact");
+  assert(find(out, "phone", "+12025550142"), "beside the subject's own row");
 });
 
 /* ── wiring: a gate nobody calls is not a gate ─────────────────────────── */
