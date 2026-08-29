@@ -594,7 +594,7 @@ appears in `supabase_migrations.schema_migrations` (newest there: `2026082502464
 
 ## §10 · Backend axis — three doc claims are false, and one of them is load-bearing
 
-### ⚠️ `tools/*.ts` is **not** dead code. Seven of those files are on the live runtime path.
+### ⚠️ `tools/*.ts` is **not** dead code. **Eight of its 24 files** are on the live runtime path.
 
 `CLAUDE.md` says *"these files are auto-extracted dead code — nothing imports any of them (the
 live tool defs are in `tool-registry.ts`)"*. Commit `61905d0`'s revert rationale repeats it
@@ -611,8 +611,18 @@ tool-registry.ts:91      ./tools/geoseer.ts
 tool-registry.ts:120     ./tools/serus.ts   →  serus_core.ts:19
 ```
 
-And `index.ts:69` imports `tool-registry.ts`, so the whole chain is live —
-**including `serus_core.ts`, the file #512 fixes.**
+And `index.ts:69` imports `tool-registry.ts`, so the whole chain is live — **including
+`serus_core.ts`, the file #512 fixes.** A full census adds a second-hop file I missed:
+`tools/geoseer.ts:34` → `geoseer_core.ts`. **Live: 8 of 24.** Genuinely dead: a **15-file
+subgraph rooted at `tools/index.ts`**, which nothing imports — `breach`, `crypto`,
+`deepfind_special`, `disabled`, `email`, `index`, `infrastructure`, `intelbase`, `meta`,
+`minimax`, `osint_navigator`, `phase1_free`, `recording`, `search`, `social`. The ten
+brace-repaired files all sit in that dead subgraph, so *that* part of `CLAUDE.md`'s story holds;
+the overgeneralization to the whole directory is what is false.
+
+`CLAUDE.md`'s companion claim that "no test ever touched them" is also false —
+`geoseer_test.ts`, `serus_test.ts`, `serus_abort_test.ts` and `tool_timeout_contract_test.ts`
+all import from `tools/`.
 
 This is load-bearing because `CLAUDE.md` uses "nothing imports them" to argue that mirror drift
 in `tools/` is harmless by construction. It isn't. The 2026-08-29 drift *was* harmless, but for
@@ -622,23 +632,41 @@ printing the source. **A future edit to any of those seven files reaches product
 `CLAUDE.md` paragraph must name the split explicitly instead of blanket-declaring the directory
 dead.
 
-### The one remaining health monitor is broken
+### ⛔ RETRACTED — two claims in this section were mine and were WRONG
 
-`.github/workflows/edge-health.yml` survives as `workflow_dispatch` only (as documented). But
-its final gate asserts **`.checks.minimax.ok`** — a key the live payload no longer emits
-(`checks` is now `{tools, recovery, synthesis}`). `jq` returns `"null"`, the comparison fails,
-and the workflow exits 1 with *"minimax reachability check failed"* **on a perfectly healthy
-system.** So the only manual instrument left reports a false failure every time it is run.
-Replace the hardcoded name with `jq -e '.ok == true and ([.checks[] | .ok] | all)'` plus an
-existence check on `.checks.synthesis`.
+An earlier draft asserted that `edge-health.yml` fails on a healthy system, and that `/health`'s
+`ok` gates on `MINIMAX_API_KEY`. **Both are false.** Re-verified by curling the live endpoint
+directly:
 
-### `/health`'s `ok` still gates on `MINIMAX_API_KEY`
+```
+checks keys: ['orchestrator', 'core', 'tools', 'deepseek', 'minimax', 'recovery', 'synthesis']
+minimax:     {'ok': True, 'role': 'fallback'}
+```
 
-`health-handler.ts` computes `const orchestratorOk = has(env.MINIMAX_API_KEY)` and returns
-`{ ok: orchestratorOk && coreOk }` — even though the orchestrator is DeepSeek-slot-pinned on
-`glm-5.2` via Z.AI with MiniMax only as fallback. **Tidying up the now-secondary MiniMax secret
-would flip `/health` to `ok:false` and black out the app.** Worth fixing before anyone audits
-the secret list: gate on *any* viable orchestrator credential.
+**`checks` has SEVEN keys, not three.** `checks.minimax` exists and is green, so
+`edge-health.yml:67`'s `.checks.minimax.ok` assertion **passes today** — a `workflow_dispatch`
+run is green, not red.
+
+**How I got it wrong, because the mechanism matters.** When briefing the audit agents I
+compressed the health payload into a three-key summary and dropped `orchestrator`, `core`,
+`deepseek` and `minimax`. An agent then reasoned correctly *from my abbreviation* and concluded
+the monitor was broken. **I turned a primary source into a lossy summary and then treated the
+summary as the source** — exactly the failure this audit's own method rules exist to prevent.
+
+And `health-handler.ts:245`'s `orchestratorOk = has(env.MINIMAX_API_KEY)` is **not** a live
+defect: it sits in the *pure* `deriveReadiness()` helper and is **deliberately overridden** at
+`:352-359`, where `selectedKeyPresent` is computed from the selected provider and assigned into
+`r.checks.orchestrator` / `r.ok`. The comment at `:342-350` documents this as intentional. Live
+`checks.orchestrator.ok` is `true` on a DeepSeek-pinned deployment, which is correct. **Settled
+— do not "fix" it.**
+
+### The real (smaller) monitor defect
+
+`edge-health.yml:67` hard-fails on **`.checks.minimax.ok` — the *fallback* provider** — and
+never asserts `.checks.deepseek.ok`, the **active** one. So it would go red on a healthy
+DeepSeek-only deployment that had dropped `MINIMAX_API_KEY`, and stay **green through a DeepSeek
+outage** that `checks.deepseek` had already flagged. That is worth fixing when the file is next
+touched, but it is the inverse of what I originally reported, and it is not urgent.
 
 ### Good news, both confirmed
 
@@ -695,10 +723,13 @@ only when a human has the app open.
 
 ### ⚠️ `supabase/migrations/` is not the mechanism that changes this database
 
-Stronger than the prior session stated: **46 of the 47 files in `supabase/migrations/` have
-never been applied.** `supabase_migrations.schema_migrations` holds 41 rows — 33 with an empty
-name, 7 bare UUIDs, and exactly one semantic-looking name. pg_cron was therefore never
-installed, and the health-sweep schedule PR #502 argues from has never existed.
+Worse than first reported. Matching the 47 repo filename version prefixes against the 41
+applied `version` values in `supabase_migrations.schema_migrations` yields **0 matches — none of
+the 47 has ever been applied.** (An earlier draft said 46 of 47; the one row that *looks*
+canonical, `20260715105643_cbe41215-…`, is stamped `version = 20260715105649` — six seconds off
+the filename — so it is not a version match either.) 33 of the 41 rows have an empty `name` and
+7 are bare UUIDs; the ledger is written by Lovable, not by this repo. pg_cron was therefore
+never installed, and the health-sweep schedule PR #502 argues from has never existed.
 
 > **This is a hard blocker for Stage 2.** The account-deletion RPC cannot reach production by
 > committing a file to `supabase/migrations/`. The delivery mechanism must be named and the
@@ -807,8 +838,10 @@ Carve into its own PR: `20260825000000_delete_my_account.sql` (**renumber above
 > `20260828200000` nor `20260720031500` was ever applied (§9). Two files in that directory are
 > already dead letters.
 >
-> **Measured 2026-08-29: 46 of the 47 files in `supabase/migrations/` have never been applied**
-> (§11a). Committing a 47th changes nothing by itself.
+> **Measured 2026-08-29: NONE of the 47 files in `supabase/migrations/` has ever been applied**
+> — 0 version matches against the live ledger (§11a). Committing a 48th changes nothing by
+> itself. `supabase db push` is blocked by the same Lovable ownership wall that 403s
+> `supabase functions deploy`.
 >
 > **Before this PR is called shipped, name the actual mechanism** — the Lovable project agent
 > applying it, or whatever channel genuinely writes this DB — then **verify in production**
