@@ -24,15 +24,29 @@ behaviour as out of scope and stop for explicit approval.**
 This is broader than `CLAUDE.md`'s existing "REVEAL_BREACH_DATA stays ON" item: it covers the
 whole visibility surface, not just the one flag, and it binds indirect changes too.
 
+### Scope — precisely what the freeze does and does not cover
+
+**Covered.** Breach evidence **shown to JD in the UI and in exports**. Everything stays visible.
+
+**NOT covered — these proceed normally:**
+
+- **Real third-party PII in fixtures, test constants and runtime comments.** Sanitising that is
+  *required* (the #491 ruling) and has nothing to do with breach-reveal behaviour for JD's own
+  investigations. The freeze is not a reason to keep a real person's home address in
+  `tool-registry.ts`.
+- **Application secrets.** The freeze never justifies exposing an API key, token, or credential.
+- **Unrelated log and security redaction.** #502's SSRF guard, CSP header, and log-channel
+  redaction work are outside the freeze and proceed.
+
 > ### ⚠️ Live interaction with this cycle's work
-> **PR #502 touches credential redaction** (its audit-remediation slice covers SSRF, the CSP
-> header, and credential redaction). Under this freeze, **any hunk in #502 that alters what is
-> displayed, masked, or redacted must be split out and held for explicit approval**, even
-> though the rest of the PR proceeds. Identify those hunks during the rebase, before merge.
+> **Split out any #502 hunk that would MASK or HIDE breach evidence** and hold it for explicit
+> approval — that is the direction that violates the freeze. The rest of #502's
+> credential-redaction work (logs, error channels, SSRF, CSP) proceeds. Identify these hunks
+> during the rebase, before merge.
 >
-> Do **not** conflate this with the #491 ruling. #491 is about a *real third party's* name and
-> address embedded in source fixtures and runtime comments — sanitising that is required and is
-> unrelated to breach-reveal behaviour for JD's own investigations.
+> An earlier draft of this section said "any hunk that alters what is displayed, masked, or
+> redacted." That was too broad and would have blocked legitimate log-redaction work. The
+> correct test is: **does it reduce what JD can see?**
 
 **This constraint must be restated in every implementation handoff and in the pre-merge and
 pre-deploy checklists.**
@@ -710,6 +724,40 @@ account-deletion slice out rather than letting it wait on the rebase.
 
 ---
 
+## §11b · ⛔ OPERATIONAL P1 — stale-run recovery has no scheduler
+
+**Elevated from "next cycle" on JD's instruction. This is not deferred.**
+
+| Measurement | Value |
+|---|---|
+| Threads recovered by the health sweep, 2026-07-15 → 2026-08-17 | 57 |
+| Threads recovered since **2026-08-17 13:10:31Z** | **0**, for 12 days |
+| `finished` threads carrying a `recovery_reason` (present as **Interrupted**) | **65 of 186 — 35%** |
+
+**Why it stopped.** The `Edge Health` GitHub Actions cron was the *only* thing actually driving
+the sweep. #483 removed it on 2026-08-23 for the billing incident (a ~10s curl billed as a full
+minute at `*/15`, which drained the shared Actions allowance and took CI down for ~70 hours).
+The `pg_cron` schedule everyone believed was the real driver — the one **PR #502's Fix-#1
+rationale argues from** — **has never existed**: pg_cron is not installed, the `cron` schema
+does not exist, and `20260720031500_pg_cron_health_sweep.sql` was never applied (§11a).
+
+**Why it is a P1 and not a nice-to-have.** Recovery currently fires *only when a human opens the
+app and the frontend happens to probe `/health`*. A run that dies while nobody is looking stays
+dead. **An investigation tool's recovery path cannot depend on someone opening the app.**
+
+> **Propose the scheduler mechanism separately. Do NOT implement it in this cycle.** It touches
+> the health path, which #513 and #502 both already modify, and the finalize/recovery machinery,
+> which owns this project's worst incidents (`CLAUDE.md`'s run-termination invariants I-1/I-2).
+> Options to write up — external uptime monitor, Supabase scheduled function, a restored but
+> hourly Actions cron, or actually installing pg_cron — with cost, failure mode, and interaction
+> with I-1 for each. **A design document, then authorization, then implementation.**
+
+**Immediate consequence for this cycle:** #502's Fix-#1 justification comment must be corrected
+before merge — it argues from a cron that does not exist.
+
+
+---
+
 ## §12 · Your rulings on the five open decisions
 
 Recorded as decided, not proposed.
@@ -843,9 +891,8 @@ backlog this plan exists to clear:
 - **Tool reliability, retargeted:** the 52% run was an outlier (aggregate is 7.6%). The real
   work is two hotspots — `socialfetch_web_read` at 39.4% over 127 calls and the `indicia`
   family at 42–88% (§11a).
-- **Stale-run recovery has had no driver since 2026-08-17** (§11a). #513's health-path sweep and
-  #502's throttle both land here, so decide deliberately what drives recovery after this cycle —
-  an external monitor, or something better than "a human has the tab open".
+- *(Stale-run recovery was previously listed here. It has been **elevated to an operational
+  P1** — see §11b. It is no longer deferred.)*
 - `ALWAYS_ALLOW_TOOLS` bypassing both the per-tool timeout and the abort signal
   (`cache.ts:1163-1169`), and `abortSignal` forwarded by only ~16 of ~98 tool definitions.
 
@@ -869,10 +916,11 @@ backlog this plan exists to clear:
 
 ### Pre-merge checklist — every PR, every time
 
-1. **Breach-data visibility unchanged.** No diff to `REVEAL_BREACH_DATA`, breach-reveal
-   behaviour, masking, redaction, credential display, UI visibility, or export visibility.
-   **If a hunk touches any of it — stop and get explicit approval.** (#502 is known to touch
-   credential redaction; split those hunks out.)
+1. **Breach evidence visible to JD is unchanged.** The test is: **does this hunk reduce what JD
+   can see** in the UI or in exports? If yes — **stop and get explicit approval.** Sanitising
+   third-party PII from fixtures, protecting secrets, and unrelated log/security redaction are
+   *not* covered by the freeze and proceed normally. (#502 needs its masking/hiding hunks split
+   out; its SSRF, CSP and log-redaction work proceeds.)
 2. Gates green on the **actual combined head**, not the branch in isolation.
 3. Conflict state reproduced with a real exit code.
 4. Evidence-integrity surfaces (confidence caps, source classification, chain-of-custody,
