@@ -123,7 +123,7 @@ into "nothing is broken."
 Confirmed broken or wrong in production *right now*:
 
 - **The Analysis tab is dead** (§4) — a nonexistent column takes down the whole Intelligence page.
-- **The only health monitor reports a false failure** (§10) — it asserts a `/health` key that no longer exists.
+- **The only health monitor gates on the wrong provider** (§10) — it asserts `checks.minimax`, the *fallback*, and never checks `checks.deepseek`, the active one. (An earlier draft claimed it fails outright on a healthy system. **That was wrong and is retracted** — see §10.)
 - **Shared-infrastructure confidence inflation** (§5) — an address match alone can carry a cluster to the CONFIRMED band.
 - **Discovery-tier evidence cannot corroborate** (§6) — resolution order makes the ≥2-class bar unreachable for people-search hits.
 - **The dispatch boundary is open** (§11) — quarantined selectors still reach tool dispatch.
@@ -692,7 +692,7 @@ touched, but it is the inverse of what I originally reported, and it is not urge
 | Shared-address → CONFIRMED cluster | **new, §5** | `intel.ts:1941 → :2132 → :2138` |
 | Discovery tools can't corroborate | **new, §6** | `source-classification.ts:329` before `:381` |
 | `AnalysisTab` 400 | **new, §4** | `evidence_log` has no `created_at` |
-| No production health monitoring | worse than documented | the one manual probe is itself broken |
+| No *automated* production health monitoring | as documented | `edge-health.yml` is `workflow_dispatch`-only since #483. The manual probe **passes** today; its defect is that it gates on the fallback provider (§10) |
 | `subject_unlinked` write/pivot/promote boundaries | **no regression** | `isClusterIneligible` at `report-hygiene.ts:178`, still separate from `isCollisionArtifact`, 5 production call sites; backend twin `isExcluded` at `lib/cluster.ts:141` |
 
 ---
