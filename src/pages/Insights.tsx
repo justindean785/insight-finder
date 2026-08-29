@@ -259,12 +259,12 @@ function StatTile({
   sub?: string;
 }) {
   return (
-    <div className="rounded-2xl border border-border-subtle/80 glass-card p-5">
+    <div className="rounded-2xl border border-border-subtle/80 glass-card p-3.5 sm:p-5">
       <div className="flex items-center gap-2 text-meta font-medium text-muted-foreground">
-        <Icon className="w-3.5 h-3.5" />
-        {label}
+        <Icon className="w-3.5 h-3.5 shrink-0" />
+        <span className="truncate">{label}</span>
       </div>
-      <div className="mt-2 font-display text-3xl font-semibold tracking-tight">
+      <div className="mt-1.5 sm:mt-2 font-display text-2xl sm:text-3xl font-semibold tracking-tight">
         {loading ? (
           <Skeleton className="h-9 w-20" />
         ) : (

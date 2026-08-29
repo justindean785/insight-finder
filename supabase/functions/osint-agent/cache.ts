@@ -98,26 +98,30 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   indicia_address: 32_000,
   indicia_web_dbs: 32_000,
   indicia_hudsonrock: 32_000,
-  // SocialFetch server-side web read (/v1/web/markdown) fetches + renders + converts
-  // a full page (YouTube, etc.) upstream, which was assumed to legitimately exceed
-  // the 12s default. CUT 25s -> 15s (2026-08-28), own fetch 22s -> 12s alongside it,
-  // so the wrapper still sits above the tool's own budget.
+  // SocialFetch server-side web read (/v1/web/markdown) fetches + renders +
+  // converts a full page upstream, which legitimately exceeds the 12s default.
   //
-  // The assumption never held. Live telemetry over a 14-day window: 21 aborts,
-  // avg 22,194ms, and ZERO successes ever observed — every call landing within
-  // ~10ms of the 22s ceiling. That variance-free clustering is a provider that
-  // never answers, not heavy pages occasionally landing late, so the 22s never
-  // once bought a result. What it did buy was wall clock: circuit.ts gives
-  // GENERAL_MULTI_ORIGIN_TOOLS three consecutive timeouts before suppressing
-  // (one slow page is a per-URL problem), so a run paid 3 x 22s = 66s of its 90s
-  // work window before the tool went quiet. At 12s those same three strikes cost
-  // 36s. The strike COUNT is deliberately unchanged — see the note in
-  // tool_timeout_caps_test.ts.
+  // ⚠️ CORRECTED 2026-08-28, SECOND PASS. The first pass cut this to 15s (tool
+  // 12s) on a brief that reported "21 aborts, avg 22,194ms, ZERO successes ever
+  // observed." That claim was FALSE — it was drawn from a 4-run sample of 3
+  // calls and generalised. Queried directly against tool_usage_log:
   //
-  // If the provider is ever confirmed healthy again, raise BOTH values together
-  // and keep this cap above the tool's own budget. socialfetch_whoami and
-  // socialfetch_balance answer "is it alive" for zero credits.
-  socialfetch_web_read: 15_000,
+  //     30 days: 127 calls, 76 OK (60%), successes avg 5,446ms, p95 11,161ms
+  //     14 days:  71 calls, 43 OK (61%), successes p95 13,349ms
+  //     max successful duration, either window: 15,908ms
+  //     failures average 12,395ms
+  //
+  // So this is an ordinary, working, somewhat slow tool — not a dead provider.
+  // A 12s tool cap would have severed 3 of 76 observed successes outright and
+  // cut straight through the 14-day p95. Trading real evidence for wall clock is
+  // the wrong direction, and the premise that justified it did not survive
+  // contact with the data.
+  //
+  // 18s sits above the 15,908ms maximum observed success with headroom, so it
+  // costs no evidence, while still trimming the failure path (which aborts at
+  // ~12.4s on average and previously ran to a 22s ceiling). The wrapper stays
+  // above the tool's own budget per the invariant this table states three times.
+  socialfetch_web_read: 22_000,
   // Telemetry-backed overrides (live failing-tools panel 2026-07-08): these
   // chronically hit the 12s default and lose real coverage.
   // crt.sh certificate transparency is Cloudflare-fronted and slow (p95 » 12s).

@@ -20,6 +20,7 @@ import {
 import { evidenceStatus } from "@/lib/evidence-status";
 import { authorityFor, LEDGER_SORT_RANK } from "@/lib/authority";
 import { isQuarantined, clusterDefaultOpen } from "@/lib/quarantine";
+import { bandCluster, isProseValue, provenanceOf as provFor } from "@/lib/evidence-bands";
 import { readableSourceLabel } from "@/lib/tool-display";
 import { humanizeArtifactMetadata } from "@/lib/artifact-metadata";
 import { FilterChips } from "@/components/ui/workspace-primitives";
@@ -42,13 +43,6 @@ const GROUP_ICON: Record<Group, React.ComponentType<{ className?: string }>> = {
   other: Tag,
 };
 
-// Provenance string shown under a row / in a cluster header.
-function provFor(a: Artifact): string {
-  const meta = (a.metadata ?? {}) as Record<string, unknown>;
-  return typeof meta.platform === "string" ? meta.platform
-    : typeof meta.breach_source === "string" ? `breach · ${meta.breach_source}`
-    : a.source ?? "";
-}
 
 // Title-case a kind for a subheader, with light pluralization.
 function kindHeading(kind: string, n: number): string {
@@ -60,9 +54,21 @@ function kindHeading(kind: string, n: number): string {
   return label + "s";
 }
 
-// Same-kind clusters larger than this collapse by default — they're the source
-// of the "wall of identical rows" (e.g. 11 subdomains, all hackertarget @70%).
+// Same-kind clusters larger than this get a fold control and are counted as a
+// "wall" (e.g. 11 subdomains, all hackertarget @70%). They still OPEN by
+// default — see `clusterDefaultOpen` for why folding by default was reverted —
+// so this is the threshold for offering the fold, never for applying it.
 const CLUSTER_COLLAPSE_THRESHOLD = 4;
+
+/**
+ * Reserved key inside the per-case fold preferences for the board-wide default.
+ *
+ * Cluster keys are `${group}:${kind}` and therefore always contain a colon, so a
+ * colon-free key cannot collide with one. Storing the fold-all choice in the
+ * same boolean map means it persists per case through the existing reader and
+ * writer with no schema change and no migration.
+ */
+const FOLD_ALL_KEY = "*";
 
 /**
  * The analyst's own fold/unfold choices, remembered per case.
@@ -312,12 +318,39 @@ function ArtifactsList({
     );
   }
 
+  // How many clusters are big enough to be worth a fold control. The board-wide
+  // fold is offered only when there is more than one — a single foldable cluster
+  // already has its own header toggle, and a second control for it is clutter.
+  let foldableClusters = 0;
+  for (const g of Object.keys(grouped) as Group[]) {
+    for (const k of Object.keys(grouped[g])) {
+      if (grouped[g][k].length > CLUSTER_COLLAPSE_THRESHOLD) foldableClusters++;
+    }
+  }
+  const allFolded = openClusters[FOLD_ALL_KEY] === false;
+
   return (
     <div className="ledger">
       {/* One column grid for the WHOLE board, declared once, so value / status /
           source / confidence line up down every section. Column alignment is the
           single biggest scanning win on a dense case: without it, reading 100
           artifacts means reading 100 individually-laid-out rows. */}
+      {foldableClusters > 1 && (
+        <div className="flex items-center justify-end gap-2 px-2.5 pt-1.5">
+          <span className="text-micro text-muted-foreground/55 tabular-nums">
+            {foldableClusters} large groups
+          </span>
+          <button
+            type="button"
+            onClick={() => setClusters(allFolded ? {} : { [FOLD_ALL_KEY]: false })}
+            aria-pressed={allFolded}
+            className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.035] px-2 py-0.5 text-micro text-muted-foreground transition-colors hover:bg-white/[0.07] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <ChevronRight className={cn("h-3 w-3 transition-transform", !allFolded && "rotate-90")} aria-hidden />
+            {allFolded ? "Unfold all" : "Fold all"}
+          </button>
+        </div>
+      )}
       <div className="ledger-head" role="presentation">
         <span data-ledger-col="value">Evidence</span>
         <span data-ledger-col="status">Authority</span>
@@ -375,10 +408,19 @@ function ArtifactsList({
               // the repeated per-row line.
               const provs = new Set(list.map(provFor).filter(Boolean));
               const uniformProv = provs.size === 1 ? [...provs][0] : null;
+              // A crowded cluster drawn from several harvests reads as one
+              // undifferentiated wall; banding names the harvests instead. Not
+              // attempted when the cluster is already single-provenance —
+              // `uniformProv` handles that case better, with no extra row.
+              const bands = uniformProv ? null : bandCluster(list);
               const collapsible = list.length > CLUSTER_COLLAPSE_THRESHOLD;
               const key = `${g}:${kind}`;
               const kindQuarantined = list.filter((a) => isQuarantined(a.metadata)).length;
-              const open = openClusters[key] ?? clusterDefaultOpen(collapsible, kindQuarantined);
+              // Precedence: this cluster's own toggle, then the analyst's
+              // board-wide fold, then the policy default (always open).
+              const open = openClusters[key]
+                ?? openClusters[FOLD_ALL_KEY]
+                ?? clusterDefaultOpen(collapsible, kindQuarantined);
               // Confidence range across the cluster, for the collapsed summary.
               const confs = list.map((a) => a.confidence).filter((c): c is number => c != null);
               const lo = confs.length ? Math.min(...confs) : null;
@@ -426,7 +468,46 @@ function ArtifactsList({
                     )}
                   </div>
 
-                  {open && list.map((a) => (
+                  {open && bands && bands.map((band) => {
+                    const bandQuarantined = band.rows.filter((a) => isQuarantined(a.metadata)).length;
+                    return (
+                      <div key={band.prov || "\u2014"}>
+                        {/* Band header. Deliberately NOT interactive: bands are
+                            structure, not a second place to hide rows. It states
+                            what this run of rows came from, how many there are,
+                            and their spread — the three questions the repeated
+                            per-row source label was answering one row at a time. */}
+                        <div className="flex items-center gap-1.5 bg-white/[0.012] px-2.5 py-0.5 pl-7">
+                          <span className="h-px w-2 shrink-0 bg-white/15" aria-hidden />
+                          <span
+                            className="truncate font-mono text-micro text-muted-foreground/75"
+                            title={band.prov || undefined}
+                          >
+                            {band.prov ? readableSourceLabel(band.prov) : "source not recorded"}
+                          </span>
+                          <span className="shrink-0 text-micro tabular-nums text-muted-foreground/55">
+                            · {band.rows.length}
+                          </span>
+                          {bandQuarantined > 0 && (
+                            <span className="inline-flex shrink-0 items-center gap-1 text-micro text-[hsl(var(--authority-quarantine))]">
+                              <Unlink className="h-3 w-3" strokeWidth={2} aria-hidden />
+                              {bandQuarantined}
+                            </span>
+                          )}
+                          {band.lo != null && band.hi != null && band.rows.length > 1 && (
+                            <span className="ml-auto shrink-0 text-micro tabular-nums text-muted-foreground/55">
+                              {band.lo === band.hi ? `${band.hi}%` : `${band.lo}\u2013${band.hi}%`}
+                            </span>
+                          )}
+                        </div>
+                        {band.rows.map((a) => (
+                          <ArtifactRow key={a.id} a={a} onSelect={onSelect} review={review} hideProv />
+                        ))}
+                      </div>
+                    );
+                  })}
+
+                  {open && !bands && list.map((a) => (
                     <ArtifactRow
                       key={a.id}
                       a={a}
@@ -471,6 +552,7 @@ function ArtifactRow({
     ? "hsl(var(--authority-quarantine))"
     : "hsl(var(--foreground) / 0.92)";
   const prov = provFor(a);
+  const prose = isProseValue(a.value);
   const authority = authorityFor(a, rState);
   return (
     <HoverCard openDelay={250} closeDelay={80}>
@@ -501,16 +583,24 @@ function ArtifactRow({
 
           {/* Value +, when there is one, the recorded reason it is not stronger. */}
           <span className="min-w-0" data-ledger-col="value">
-            <span className="flex items-center gap-1.5">
+            <span className={cn("flex gap-1.5", prose ? "items-start" : "items-center")}>
               {rState === "confirmed" && <CheckCircle2 className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-high))]" aria-hidden />}
               {rState === "key" && <Star className="h-3 w-3 shrink-0 text-primary" aria-hidden />}
               {rState === "recheck" && <ShieldQuestion className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-mid))]" aria-hidden />}
               {rState === "dismissed" && <EyeOff className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />}
               {fp && <XCircle className="h-3 w-3 shrink-0 text-destructive" aria-hidden />}
               {sensitive && <ShieldAlert className="h-3 w-3 shrink-0 text-destructive" aria-hidden />}
+              {/* A selector gets the mono, one-line, truncated treatment this
+                  column was built for. A SENTENCE does not: the extractor writes
+                  whole findings into `value` ("CONTRADICTION: … Carlos Morales
+                  appears in ZERO of 31 records"), and truncating the most
+                  important row in a case to forty monospace characters is how
+                  it went unread. Prose wraps to two lines in the reading face. */}
               <span
                 className={cn(
-                  "mono-value truncate text-data text-foreground/95",
+                  prose
+                    ? "text-[12.5px] leading-[1.45] text-foreground/90 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden"
+                    : "mono-value truncate text-data text-foreground/95",
                   fp && "line-through opacity-70",
                 )}
                 title={a.value}
@@ -1000,7 +1090,11 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
               { key: "excluded", label: "Excluded", count: counts.excluded, tone: "danger" },
             ]}
           />
-          <div className="ml-auto flex items-center gap-1.5">
+          {/* The sort group takes its own line on a phone. `ml-auto` on a
+              wrapping flex row pushed it to a line of its own anyway, but with
+              the "SORT" label stranded beside a wrapped chip row rather than
+              above it. Wrapping as a unit is what it looked like it did. */}
+          <div className="flex w-full flex-wrap items-center gap-1.5 sm:ml-auto sm:w-auto">
             <span className="text-eyebrow uppercase tracking-[0.14em] text-muted-foreground/70">Sort</span>
             <FilterChips<EvidenceSortMode>
               ariaLabel="Sort evidence"

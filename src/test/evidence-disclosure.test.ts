@@ -40,13 +40,64 @@ describe("quarantine cannot hide behind a collapsed cluster", () => {
     // This is the assertion that would have failed on the shipped code: the
     // helper is only worth anything if the rendered default flows through it.
     const src = readFileSync("src/components/ResourcesPanel.tsx", "utf8");
-    expect(src).toMatch(/openClusters\[key\]\s*\?\?\s*clusterDefaultOpen\(/);
+    // The chain gained a middle link — the analyst's board-wide "Fold all",
+    // which is an EXPLICIT action, not a default. What this test protects is
+    // unchanged and is the terminal position: when neither the cluster's own
+    // toggle nor an explicit fold-all says otherwise, the policy function
+    // decides, and it says open. A default that stops flowing through
+    // `clusterDefaultOpen` is the regression this assertion exists to catch.
+    expect(src).toMatch(
+      /openClusters\[key\]\s*\?\?\s*openClusters\[FOLD_ALL_KEY\]\s*\?\?\s*clusterDefaultOpen\(/,
+    );
+    // Nothing may seed the fold-all key, or "explicit action" becomes a default
+    // by the back door. Exactly one writer: the button's own handler.
+    expect(src.match(/\[FOLD_ALL_KEY\]:/g) ?? []).toHaveLength(1);
     // And the old expression must be gone, not merely shadowed.
     expect(src).not.toMatch(/openClusters\[key\]\s*\?\?\s*!collapsible/);
     // The analyst's own choice must survive a remount — the "every single time"
     // half of the complaint. State that dies on unmount is not a preference.
     expect(src).toMatch(/readClusterPrefs\(threadId\)/);
     expect(src).toMatch(/writeClusterPrefs\(threadId/);
+  });
+});
+
+describe("a phone may not drop the authority column", () => {
+  /**
+   * Third instance of this file's shape, found from a live 96-artifact case
+   * photographed on a phone: twelve strangers' names harvested out of a breach
+   * corpus, rendered as bare values — no chip, no basis, no score — directly
+   * above the subject's own verified selector, which looked identical. The
+   * 899px rule's comment promised the hidden columns "reflow under the value";
+   * the 639px rule set `display: none` on them and nothing reflowed anywhere.
+   *
+   * Narrowing the viewport is not permission to withhold the disclosure. Four
+   * columns genuinely cannot fit on a phone — so they wrap; they do not vanish.
+   */
+  const css = readFileSync("src/index.css", "utf8");
+  const phone = css.slice(css.indexOf("@media (max-width: 639px)"));
+  const block = phone.slice(0, phone.indexOf("\n  }\n") + 5);
+
+  it("the phone breakpoint exists and is bounded", () => {
+    expect(block).toContain(".ledger-row");
+    expect(block.length).toBeLessThan(1600);
+  });
+
+  it("⛔ neither AUTHORITY nor CONFIDENCE is hidden on a row", () => {
+    for (const col of ["status", "confidence"]) {
+      const rule = new RegExp(`\\.ledger-row \\[data-ledger-col="${col}"\\][^{]*\\{([^}]*)\\}`);
+      const m = block.match(rule);
+      expect(m, `.ledger-row ${col} must still be styled at the phone breakpoint`).not.toBeNull();
+      expect(m![1], `${col} may not be display:none on a phone`).not.toMatch(/display:\s*none/);
+    }
+    // The head is a different matter: it cannot label a reflowed row, so it
+    // legitimately drops its own column labels. Hiding a LABEL is not hiding
+    // evidence, and this assertion exists so the distinction stays deliberate.
+    expect(block).toMatch(/\.ledger-head \[data-ledger-col="status"\][\s\S]*?display:\s*none/);
+  });
+
+  it("places them on a second line rather than leaving them to overlap", () => {
+    expect(block).toMatch(/\[data-ledger-col="value"\]\s*\{\s*grid-column:\s*1 \/ -1/);
+    expect(block).toMatch(/row-gap/);
   });
 });
 

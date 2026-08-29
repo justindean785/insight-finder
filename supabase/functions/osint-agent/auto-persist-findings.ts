@@ -430,6 +430,77 @@ const CO_TENANT_CTX = {
     "was queried, so it belongs to another person in the same dataset, not the subject",
 } as const;
 
+/** Kinds that identify a PERSON. A corpus is measured in these, never in the
+ *  infrastructure, breach-name or summary rows one lookup legitimately fans out
+ *  to — those describe the DATASET, and the dataset is real evidence about the
+ *  thing that was queried even when its members are strangers. */
+const CORPUS_IDENTITY_KINDS = new Set(["name", "email", "phone", "address", "username"]);
+
+/**
+ * How many person-identities one tool return may yield before it is a CORPUS.
+ *
+ * A person has one name, a handful of addresses and a phone or two. Past that,
+ * a single lookup did not return the subject's record — it returned a dataset
+ * the subject may or may not be in.
+ *
+ * MEASURED on the live corpus 2026-08-28. Of the auto-persist batches that
+ * produced any identity row at all: 55 yielded 1-3, 42 yielded 4-6, 22 yielded
+ * 7-10, 16 yielded 11-20 and **31 yielded 21 or more — 752 rows, 51% of every
+ * person-identity auto-persist has ever written**. Fifteen sits above the whole
+ * plausible single-person range (the widest real one measured is Troy B. Keith:
+ * 5 emails + 4 phones + 1 address from `indicia_person`) and well under
+ * MAX_AUTO_PERSIST_PER_TOOL_CALL, so a legitimately rich person record is never
+ * touched and a customer list never survives.
+ */
+export const BULK_HARVEST_IDENTITY_CAP = 15;
+
+/**
+ * Reason stamped on a person-identity lifted out of a bulk corpus return.
+ *
+ * THE CASE THIS EXISTS FOR — thread `61d1eede`, 2026-08-28. A dossier claimed a
+ * phone; the phone turned out to be Psyberware's corporate landline; the run
+ * pivoted to `psyber.com` and OathNet returned the ISP's customer records. 21
+ * mailboxes (`support@`, `dbuse@`, `lisalou@`) and 13 names (`GIGI KLAIBER`,
+ * `dale buse`, `robin haynes`) persisted as SUBJECT evidence at 45%, each with
+ * its own cluster id — while the same run's own contradiction row, written a
+ * minute earlier, read "NO Carlos Morales in any record".
+ *
+ * Neither existing gate can reach it, and both look like they should:
+ *   - `SUBJECT_UNLINKED_CTX` needs a NAME-only query. This was a domain query.
+ *   - `CO_TENANT_CTX` needs a positive same-field mismatch. Querying
+ *     `psyber.com` and getting `support@psyber.com` back is a MATCH on the
+ *     queried field, so it correctly declines.
+ * Cardinality is the signal both of them are blind to.
+ */
+function coCorpusCtx(n: number) {
+  return {
+    subject_unlinked: true,
+    subject_unlinked_reason:
+      `harvested from a bulk corpus return — this one lookup yielded ${n} person identities for ` +
+      `a single selector, which is a dataset of many people rather than one person's record; ` +
+      `appearing in that dataset is not linkage to the subject`,
+  } as const;
+}
+
+/**
+ * Does this row echo the selector that was actually queried?
+ *
+ * EXACT normalized equality, never containment. Containment is the trap: the
+ * queried selector in the case above is `psyber.com`, and every one of the 21
+ * co-tenant mailboxes CONTAINS it — a containment test would exempt the whole
+ * corpus and the gate would do nothing at all. Exact equality exempts the one
+ * row that genuinely is the subject's (querying a seed email and getting that
+ * same email back out of its own breach corpus) and nothing else.
+ */
+function echoesQueriedSelector(value: string, queriedRaw: string, seedName: string): boolean {
+  const v = normalizeBreachSubject(value);
+  if (!v) return false;
+  const q = normalizeBreachSubject(queriedRaw);
+  if (q && v === q) return true;
+  const s = normalizeBreachSubject(seedName);
+  return !!s && v === s;
+}
+
 /**
  * Does this corpus row POSITIVELY disagree with the queried selector?
  *
@@ -1178,6 +1249,30 @@ export function extractFindings(
         continue;
       }
       f.context = { ...(f.context ?? {}), ...SUBJECT_UNLINKED_CTX };
+    }
+  }
+
+  // CORPUS STAMP — cardinality, not content. Runs AFTER the name-only stamp so a
+  // row already quarantined there keeps its more specific reason, and BEFORE the
+  // de-dup so every emitted row is covered whichever branch pushed it.
+  //
+  // Note what is deliberately NOT stamped: the `breach_exposure` summary row
+  // naming the corpus ("psyber.com domain breach: 45+ records across 18+ breach
+  // DBs"). That row is evidence ABOUT the thing that was queried and keeps full
+  // authority. Only its members lose it — which is exactly the finding: the
+  // dataset is real, the strangers inside it are not the subject.
+  {
+    const bulk = findings.filter((f) =>
+      CORPUS_IDENTITY_KINDS.has(f.kind) &&
+      (f.context as Record<string, unknown> | undefined)?.subject_unlinked !== true
+    );
+    if (bulk.length > BULK_HARVEST_IDENTITY_CAP) {
+      const ctx = coCorpusCtx(bulk.length);
+      const queried = queriedSelectorRaw(input);
+      for (const f of bulk) {
+        if (echoesQueriedSelector(f.value, queried, subjectSeedName ?? "")) continue;
+        f.context = { ...(f.context ?? {}), ...ctx };
+      }
     }
   }
 
