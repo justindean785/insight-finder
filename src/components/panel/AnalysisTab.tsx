@@ -85,7 +85,7 @@ export function AnalysisTab() {
           supabase.from("artifacts").select("id,thread_id,kind,confidence,source,metadata").order("created_at", { ascending: false }).limit(5000),
           supabase.from("tool_usage_log").select("thread_id,ok").order("created_at", { ascending: false }).limit(5000),
           supabase.from("threads").select("id,title,seed_value,status").order("updated_at", { ascending: false }).limit(500),
-          supabase.from("evidence_log").select("artifact_id").order("created_at", { ascending: false }).limit(5000),
+          supabase.from("evidence_log").select("artifact_id").order("collected_at", { ascending: false }).limit(5000),
         ]);
         if (cancelled) return;
         // Name the failing query. Promise.all collapses four requests into one
