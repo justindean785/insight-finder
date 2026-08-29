@@ -10,6 +10,33 @@ adversarially re-checked), the Lovable backend axis, 382 branches, and the defec
 declares open. Corrections the audit made to *itself* are kept in place, marked, and are among
 the more useful parts of the document.
 
+---
+
+## ⛔ STANDING CONSTRAINT — breach-data visibility is FROZEN
+
+**Do not change** `REVEAL_BREACH_DATA`, breach-reveal behaviour, masking, redaction,
+credential display, UI visibility, export visibility, or any related default.
+
+Everything remains shown for now because **JD is the sole user**. This will be revisited
+before public or multi-user release. **Treat any direct *or indirect* change to this
+behaviour as out of scope and stop for explicit approval.**
+
+This is broader than `CLAUDE.md`'s existing "REVEAL_BREACH_DATA stays ON" item: it covers the
+whole visibility surface, not just the one flag, and it binds indirect changes too.
+
+> ### ⚠️ Live interaction with this cycle's work
+> **PR #502 touches credential redaction** (its audit-remediation slice covers SSRF, the CSP
+> header, and credential redaction). Under this freeze, **any hunk in #502 that alters what is
+> displayed, masked, or redacted must be split out and held for explicit approval**, even
+> though the rest of the PR proceeds. Identify those hunks during the rebase, before merge.
+>
+> Do **not** conflate this with the #491 ruling. #491 is about a *real third party's* name and
+> address embedded in source fixtures and runtime comments — sanitising that is required and is
+> unrelated to breach-reveal behaviour for JD's own investigations.
+
+**This constraint must be restated in every implementation handoff and in the pre-merge and
+pre-deploy checklists.**
+
 
 ## Context
 
@@ -312,17 +339,26 @@ a classification decision made one layer below what the analyst reads.
 
 ---
 
-## §7 · Branches — 382 refs, and **33 need a decision from you**
+## §7 · Branches — **375** GitHub refs; the deletion set must be certified, not inferred
 
 This section took five passes. The first four were wrong in the direction of "just delete
 them," and the correction below is the single most important reversal in this audit.
 
+### Branch accounting, normalized to GitHub `refs/heads/*`
+
+An intermediate pass reported **382** refs. That was wrong: it counted local remote-tracking
+refs, which include artifacts **my own audit agents created**. Reconciled against
+`git ls-remote --heads origin` (GitHub's authoritative `refs/heads/*`):
+
 | Measure | Count |
 |---|---|
-| Remote branches (`git for-each-ref refs/remotes/origin`) | **382** (not the 375 I first reported) |
-| Merged into `origin/main` by ancestry | 77 |
-| **Not** merged by ancestry | 305 |
-| …of those, a PR number proven landed on `main` by commit subject | 204 |
+| **GitHub `refs/heads/*` — the only valid manifest source** | **375** |
+| Local remote-tracking refs in this clone | 382 |
+| **Local-only artifacts — excluded from every manifest** | **7** (`pr-435`, `pr-491`, `pr-493`, `pr-502`, `pr-512`, `pr-513`, `pr-514`) |
+| Present on GitHub but missing locally | 0 |
+
+The manifest must contain **only** actual `refs/heads/*` branch names returned by GitHub — never
+`refs/pull/*`, never local `pr-*` refs, never tracking artifacts.
 
 ### ⛔ Retracted: an earlier draft said "safe to bulk-delete." That was unsound.
 
@@ -335,24 +371,49 @@ Two independent errors, both yours to have caught:
    *contain* lost work is a fine way to look for a positive and no way at all to prove a
    negative across the population.
 
-**Redone properly** — deciding each branch with `git merge-tree --write-tree origin/main
-<branch>` and comparing the result tree against main's, so a clean non-empty add means content
-`main` genuinely lacks:
+An earlier pass produced a 335 / 14 / 33 split. **Those numbers are superseded** — they were
+computed on the contaminated 382-ref base and used commit-subject matching (`(#N)` on `main`) as
+proof that a PR landed. **Subject-matching is supporting evidence, not certification.** The
+split is being recomputed on the 375-ref base against the four criteria below, and the result
+ships as a manifest, not a count.
 
-| Bucket | Count |
-|---|---|
-| Safely deletable (merged, or a subject-proven landed PR, or a no-op, or an operator-closed PR now conflicting with rewritten main) | **335** |
-| Leave alone — the 7 open PRs (each present twice: `pr-NNN` + real head) | **14** |
-| **Need an owner decision** | **33** |
+**What survives from that pass**: a bulk delete would have destroyed roughly 33 branches
+carrying content `main` does not have — including the repo's only Playwright suite.
 
-**The bulk delete I nearly recommended would have destroyed all 33.**
-
-### The 33, split
+### The decision set, as last measured (subject to recount on the 375-ref base)
 
 - **19 branches whose merge cleanly ADDS content absent from `main`** — 9 docs/handoffs,
-  **8 code**, 1 CSS one-liner, 1 set of demo-video scripts.
+  **8 code**, 1 CSS one-liner, 1 set of demo-video scripts. Established with
+  `git merge-tree --write-tree origin/main <branch>` compared against `origin/main^{tree}`.
 - **14 branches that never had a PR at all** — no `refs/pull/*/head`, so nobody ever opened,
   reviewed, or closed anything for them.
+
+### ⛔ ALL decision branches are QUARANTINED
+
+No decision branch is deleted, merged, or rebased until individually reviewed and explicitly
+authorized. **Two require immediate preservation and active investigation:**
+
+**1 · `test/e2e-playwright-smoke`** — preserve, then evaluate **separately against current
+`main`**, not merged on sight. The evaluation must establish: stale selectors, fixture drift,
+any secrets or credentials it expects, whether it runs at all against today's UI, and whether
+it can become a dedicated E2E PR. `CLAUDE.md`'s "there is no `test:e2e` script" is a consequence
+of this branch never landing, not a design decision — but a two-month-old smoke suite is a
+candidate, not a gift.
+
+**2 · `lovable-sync-1784512454`** (in the **mirror**, not canonical) — **deep-audit before the
+combined backend deploy.** 13 commits from 2026-07-20, twelve by `gpt-engineer-app[bot]`,
+carrying a hard finalize tool-gate (`isToolAllowedInFinalize`) that is **absent from canonical
+`main`**. Determine: its origin, its intended behaviour, whether it has tests, and its
+relationship to #502 — which also touches the finalize/recovery path. **Do not merge, delete, or
+assume it belongs in canonical.** It touches the finalize window, which owns this project's
+worst incidents (see `CLAUDE.md`'s run-termination invariants), so it is a read-and-decide.
+
+### Deletion protocol — when it is eventually authorized
+
+- Delete **only** from an explicit manifest of GitHub `refs/heads/*` names with tip SHAs.
+- **No globs, no patterns, no `xargs` over a filter.** Explicit targets only.
+- Small batches, with the manifest retained as the record of what was removed and why.
+- **Only after JD's approval**, batch by batch.
 
 > **The highest-value single item: `origin/test/e2e-playwright-smoke`** (2026-06-12) —
 > `playwright.config.ts` plus a two-spec E2E suite, with **no equivalent anywhere on `main`**
@@ -594,6 +655,61 @@ the secret list: gate on *any* viable orchestrator credential.
 
 ---
 
+## §11a · Production corpus — measured against the live database
+
+All read-only `SELECT`s against project `4ce11bc3-039d-4439-b293-acacca9e1e3a`. Several
+headline numbers carried in `CLAUDE.md` and in the open issues are **badly stale**.
+
+| Claim | Source says | **Measured 2026-08-29** |
+|---|---|---|
+| Quarantined artifacts | 104 across 4 threads (`CLAUDE.md`) | **426 across 19 threads** |
+| Same, per issue #489 | 207 flagged, 0 released | **426**, still **0 released** |
+| Overlap with `isCollisionArtifact` | zero | **still zero** — shape unchanged, scale 4× |
+| Open issues | 30 (#502's body) / 10 | **28** |
+| Tool failure rate | 52% (2026-08-26 handoff) | **7.6% aggregate — that run was an outlier** |
+
+### ⚠️ Production stale-run recovery has been dead for twelve days
+
+57 threads carry `recovery_reason = 'stale heartbeat recovered by health sweep'`, running from
+2026-07-15 to **2026-08-17 13:10:31Z — and nothing since.** The driver was the GitHub Actions
+`Edge Health` cron, which **#483 removed on 2026-08-23** for the billing incident. The pg_cron
+schedule everyone believed was the real driver **never existed** (below). So recovery now fires
+only when a human has the app open.
+
+**Invariant I-2's real-world incidence: 65 of 186 `finished` threads (35%) carry a
+`recovery_reason` and therefore render as Interrupted rather than complete.**
+
+### ⚠️ `supabase/migrations/` is not the mechanism that changes this database
+
+Stronger than the prior session stated: **46 of the 47 files in `supabase/migrations/` have
+never been applied.** `supabase_migrations.schema_migrations` holds 41 rows — 33 with an empty
+name, 7 bare UUIDs, and exactly one semantic-looking name. pg_cron was therefore never
+installed, and the health-sweep schedule PR #502 argues from has never existed.
+
+> **This is a hard blocker for Stage 2.** The account-deletion RPC cannot reach production by
+> committing a file to `supabase/migrations/`. The delivery mechanism must be named and the
+> result verified in production before #476 is called closed.
+
+### Tool reliability — retarget from aggregate to hotspots
+
+30 days, 4,278 calls: `ok` 3,395 · `skipped` 336 · `failed` 326 · `empty` 221. Hard failure
+**7.6%**; worst single thread 21.4%. The handoff's 52% run does **not** generalise, so broad
+reliability work is lower priority than the specific hotspots: **`socialfetch_web_read` 39.4%
+over 127 calls** and **the `indicia` family 42–88%**.
+
+> Note this independently corroborates §3's ruling on #502's socialfetch timeout hunk: main's
+> #511 measurement is the one backed by corpus-scale data.
+
+### #476 is genuinely open and only #502 closes any open issue
+
+#476 *[COMPLIANCE] No self-service account deletion exists* — opened 2026-08-20, still open,
+never updated, and GitHub reports **zero** closing-PR links. Of the seven open PRs, **#502 is
+the only one that closes any open issue at all**, which is a further argument for splitting its
+account-deletion slice out rather than letting it wait on the rebase.
+
+
+---
+
 ## §12 · Your rulings on the five open decisions
 
 Recorded as decided, not proposed.
@@ -610,10 +726,14 @@ Recorded as decided, not proposed.
 
 ## §13 · The plan — corrected execution order
 
-Optimizing for **clearing the merge backlog** with **#502 rebased whole**. Three hard
-constraints from the audit drive the order: #513 precedes #502 (§9), #502's `tool-registry.ts`
-conflict resolves *against* the PR (§3), and — your correction — **the deploy instruments are
-repaired before the deploy that depends on them.**
+Optimizing for **clearing the merge backlog** with **#502 rebased whole**. Four hard constraints
+drive the order: #513 precedes #502 (§9), #502's `tool-registry.ts` conflict resolves *against*
+the PR (§3), **the deploy instruments are repaired before the deploy that depends on them**, and
+**breach-data visibility is frozen** (see the standing constraint above).
+
+> **⛔ Nothing below begins without JD's stage-by-stage authorization.** No implementation, no
+> merging, no deployment, no migration application, no branch deletion. Each stage stops and
+> waits.
 
 ### 1 · The `AnalysisTab` fix (frontend, ships alone)
 
@@ -639,10 +759,16 @@ Carve into its own PR: `20260825000000_delete_my_account.sql` (**renumber above
 > `20260828200000` nor `20260720031500` was ever applied (§9). Two files in that directory are
 > already dead letters.
 >
+> **Measured 2026-08-29: 46 of the 47 files in `supabase/migrations/` have never been applied**
+> (§11a). Committing a 47th changes nothing by itself.
+>
 > **Before this PR is called shipped, name the actual mechanism** — the Lovable project agent
 > applying it, or whatever channel genuinely writes this DB — then **verify in production**
 > that the migration version is present in `schema_migrations` and that the RPC exists with the
 > intended grants (`EXECUTE` to `authenticated` only, revoked from `public`/`anon`).
+>
+> #476 is the **only** open issue any open PR closes, so this slice is the highest-value merge
+> in the queue — and the one most likely to be declared done while silently not shipping.
 
 Complete its security review before merge: it is a destructive, caller-scoped RPC.
 
@@ -691,15 +817,15 @@ Ship disabled. Then run **dry-run** and read its output (note it reports the bat
 backlog — 11,041 rows are expired). Only then, as a **separately authorized** step, enable a
 bounded sweep and confirm rows actually delete.
 
-### 9 · Branch hygiene — narrow and evidence-based
+### 9 · Branch hygiene — manifest-driven, batch-authorized
 
-Delete **only** the 335 branches meeting all four criteria in §7. **The 33 in the decision set
-get individual review** — starting with `origin/test/e2e-playwright-smoke`, the repo's only
-Playwright suite, which never had a PR and has no equivalent on `main`. No bulk delete.
+Delete **only** from the certified manifest (§7), in small batches, **each batch authorized by
+JD**, with the manifest retained. Explicit branch names and tip SHAs — **no globs**.
 
-Separately, read the mirror's `origin/lovable-sync-1784512454` — 13 Lovable-bot commits carrying
-a finalize tool-gate absent from canonical. It touches the finalize window, so it is a read-and-
-decide, not a backport-on-sight.
+All decision branches stay **quarantined** pending individual review. `test/e2e-playwright-smoke`
+gets a dedicated compatibility evaluation against current `main`; the mirror's
+`lovable-sync-1784512454` gets a deep audit **before** step 7's deploy, since it carries a
+finalize tool-gate absent from canonical.
 
 ---
 
@@ -713,8 +839,13 @@ backlog this plan exists to clear:
   synthesis is a different layer.
 - **Full SSN in an artifact `value`** (2026-08-26 handoff §3.4) — renders on the board, in the
   report, and in exports. **This one deserves its own decision soon, ahead of the rest.**
-- The phantom `+7` phone selector; one fact recorded 3–5× with disagreeing numbers; the 52%
-  tool-failure run.
+- The phantom `+7` phone selector; one fact recorded 3–5× with disagreeing numbers.
+- **Tool reliability, retargeted:** the 52% run was an outlier (aggregate is 7.6%). The real
+  work is two hotspots — `socialfetch_web_read` at 39.4% over 127 calls and the `indicia`
+  family at 42–88% (§11a).
+- **Stale-run recovery has had no driver since 2026-08-17** (§11a). #513's health-path sweep and
+  #502's throttle both land here, so decide deliberately what drives recovery after this cycle —
+  an external monitor, or something better than "a human has the tab open".
 - `ALWAYS_ALLOW_TOOLS` bypassing both the per-tool timeout and the abort signal
   (`cache.ts:1163-1169`), and `abortSignal` forwarded by only ~16 of ~98 tool definitions.
 
@@ -735,6 +866,29 @@ backlog this plan exists to clear:
   `/chat/11111111-2222-4333-8444-555555555555`. Screenshot the Analysis tab before/after.
 - **Never** run `deno` without `--no-lock` — it rewrites `deno.lock` and drops three real
   dependency entries. It happened once during this audit.
+
+### Pre-merge checklist — every PR, every time
+
+1. **Breach-data visibility unchanged.** No diff to `REVEAL_BREACH_DATA`, breach-reveal
+   behaviour, masking, redaction, credential display, UI visibility, or export visibility.
+   **If a hunk touches any of it — stop and get explicit approval.** (#502 is known to touch
+   credential redaction; split those hunks out.)
+2. Gates green on the **actual combined head**, not the branch in isolation.
+3. Conflict state reproduced with a real exit code.
+4. Evidence-integrity surfaces (confidence caps, source classification, chain-of-custody,
+   minor-safety, audit/coverage) unchanged unless separately signed off.
+5. JD's explicit authorization for this specific merge.
+
+### Pre-deploy checklist
+
+1. **Breach-data visibility unchanged** — re-verify at `/health` (`reveal_breach_data`) after
+   the deploy, not just before.
+2. Deploy instruments repaired and re-verified first (§13 step 4).
+3. `lovable-sync-1784512454` deep-audited and dispositioned.
+4. Mirror parity checked **per function directory**, and `git log origin/main` read in the
+   mirror — a second agent writes there.
+5. Build SHA moved **and** `checks.cache_sweep` present.
+6. Cache sweep still **disabled**; functional validation is a separate authorized step.
 
 ---
 
