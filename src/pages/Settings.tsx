@@ -11,6 +11,24 @@ import { SUPPORT_MAILTO } from "@/lib/contact";
 import { FullPageLoader } from "@/components/ui/full-page-loader";
 import { toast } from "sonner";
 
+// ⛔ ACCOUNT DELETION SHIPS DARK. Off unless VITE_ENABLE_ACCOUNT_DELETION is the
+// exact string "true" — same convention as VITE_ENABLE_GOOGLE_OAUTH in Auth.tsx, and
+// deliberately strict: unset, "1", "TRUE", "yes" and any typo all evaluate to false.
+// A control this destructive must fail closed on a malformed value, not guess.
+//
+// WHY DARK. `delete_my_account()` is irreversible — no soft-delete, no tombstone, no
+// export, and no recovery path this repo can perform (only a platform point-in-time
+// restore). While JD is the sole user, exposing the control offers ~nothing and risks
+// the entire investigation corpus. The reviewed code lands in main; the affordance does
+// not appear until the activation runbook in
+// supabase/migrations/20260829000000_delete_my_account.sql has been worked through and
+// separately authorized.
+//
+// This gate is the UI boundary only. The RPC's own defences are unchanged and still
+// stand on their own: caller-scoped via auth.uid(), zero arguments, and EXECUTE revoked
+// from anon/PUBLIC.
+const accountDeletionEnabled = import.meta.env.VITE_ENABLE_ACCOUNT_DELETION === "true";
+
 /**
  * Locally cached investigation state, cleared on account deletion.
  *
@@ -92,6 +110,11 @@ export default function Settings() {
   };
 
   const deleteAccount = async () => {
+    // The flag is re-checked HERE, not only at the render site. Conditional
+    // rendering is a display decision; this is the call site that actually reaches
+    // the RPC, and it is what makes "unreachable through the UI" true rather than
+    // merely visually absent.
+    if (!accountDeletionEnabled) return;
     // Guarded again here, not only by the disabled button: a disabled attribute is
     // a UI affordance, not an authorization check.
     if (deleteConfirm !== "DELETE" || deleting) return;
@@ -215,7 +238,10 @@ export default function Settings() {
           </Button>
         </div>
 
-        {/* Delete account (#476 — CCPA/GDPR). */}
+        {/* Delete account (#476 — CCPA/GDPR). Rendered ONLY when the flag is on:
+            when off there is no card, no heading and no copy — not a disabled
+            button, which would still advertise an action that must not be taken. */}
+        {accountDeletionEnabled && (
         <div className="glass-card rounded-2xl border border-destructive/25 p-6">
           <h2 className="text-eyebrow uppercase tracking-[0.16em] text-destructive/80 font-mono mb-2">Delete account</h2>
           <p className="text-sm text-muted-foreground mb-3">
@@ -283,6 +309,7 @@ export default function Settings() {
             </div>
           )}
         </div>
+        )}
 
         {/* Sign out */}
         <div className="glass-card rounded-2xl border border-white/[0.07] p-6">

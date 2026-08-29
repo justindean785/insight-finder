@@ -50,6 +50,64 @@
 -- run time rather than silently resolving somewhere unexpected — that is the
 -- intended failure mode.
 
+-- ─── ⛔ ACTIVATION RUNBOOK — REQUIRES SEPARATE AUTHORIZATION ────────────────
+--
+-- This function ships DARK. The frontend control is gated behind
+-- VITE_ENABLE_ACCOUNT_DELETION, which defaults to false, so merging this changes
+-- nothing an analyst can reach. Do NOT work through the steps below as part of a
+-- routine deploy — each one needs its own explicit go-ahead.
+--
+-- The ordering is deliberate: every database-side step is proven BEFORE the
+-- frontend flag is flipped, so the affordance never appears ahead of the guarantee.
+--
+--   1. CONFIRM BACKUPS FIRST, and confirm their LIMITS, not just their existence.
+--      Establish whether point-in-time recovery is available on this Lovable-owned
+--      project, its retention window, its granularity, and who can actually invoke
+--      it — this repo cannot. A deletion is irreversible; PITR is the only recovery
+--      that exists, so an unverified backup story means step 5 must not happen.
+--      Write down what you found. "Probably fine" is not an answer here.
+--
+--   2. APPLY THIS EXACT MIGRATION through Lovable's delivery channel.
+--      ⚠️ Lovable must apply it AS-IS and must NOT rewrite, reformat, "improve" or
+--      regenerate it. The reviewed artifact is the one that carries the empty
+--      search_path, the zero-argument signature and the REVOKE/GRANT set; a
+--      regenerated variant has not been reviewed and is not this function.
+--      `supabase db push` is blocked by the ownership wall, so this is the channel.
+--
+--   3. VERIFY IN PRODUCTION, against the catalog — never against the migration
+--      ledger, which repo migrations routinely bypass:
+--
+--        SELECT p.prosecdef, p.pronargs, p.proconfig,
+--               pg_catalog.pg_get_userbyid(p.proowner) AS owner, p.proacl
+--          FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+--         WHERE n.nspname = 'public' AND p.proname = 'delete_my_account';
+--        -- expect: prosecdef = t, pronargs = 0, proconfig = {"search_path="},
+--        --         owner = the migration runner, proacl with NO anon and NO PUBLIC entry
+--
+--        SELECT has_function_privilege('anon','public.delete_my_account()','EXECUTE'),
+--               has_function_privilege('authenticated','public.delete_my_account()','EXECUTE');
+--        -- expect: false, true
+--
+--      Owner matters: SECURITY DEFINER runs with the owner's rights, so an
+--      unexpected owner changes what the function can reach.
+--
+--   4. TEST WITH A DISPOSABLE ACCOUNT, and prove the blast radius empirically.
+--      Create a throwaway account, give it at least one thread and one artifact,
+--      run the deletion as that user, then verify BOTH halves: its rows are gone,
+--      AND a second account's rows are untouched (threads, artifacts, agent_memory,
+--      auth.users, analyst_feedback_events). CI proves this against a synthetic
+--      schema; production is the only place it is proven against the real one.
+--      Never run the first test against a real investigation account.
+--
+--   5. ONLY THEN set VITE_ENABLE_ACCOUNT_DELETION="true" and redeploy the frontend.
+--      Verify on the PRODUCTION deployment (target: production, not a preview) that
+--      the control appears, and re-confirm at /health that reveal_breach_data and
+--      the rest of the posture are unchanged. A Vite env change needs a rebuild —
+--      setting the variable without redeploying does nothing.
+--
+-- Steps 1-4 are reversible or read-only. Step 5 is the one that exposes an
+-- irreversible action to a human being. Treat it as its own decision.
+
 -- ─── DELIVERY AND ROLLBACK ──────────────────────────────────────────────────
 --
 -- DELIVERY. Committing this file does NOT apply it. `supabase db push` is blocked
