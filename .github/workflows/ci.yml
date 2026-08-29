@@ -148,6 +148,19 @@ jobs:
           }
           echo "OK: ${secdef} SECURITY DEFINER functions in public, none executable by anon or PUBLIC."
 
+      # #476 account deletion: behavioural assertions against the real schema the
+      # migrations just built. These are database properties — what the function
+      # deletes, what it must NOT delete, and that the append-only controls on
+      # analyst_feedback_events are still installed AND still rejecting after it
+      # runs — none of which a vitest unit test can observe.
+      #
+      # The retention is deliberate and load-bearing: analyst_feedback_events has
+      # no FK to auth.users, so the auth row deletes cleanly and analyst_id stays
+      # as a historical UUID. If someone "fixes" that by disabling a trigger or
+      # adding the table to the delete set, these fail.
+      - name: Account-deletion assertions (#476)
+        run: psql --set ON_ERROR_STOP=1 -f .github/ci/delete-my-account-assertions.sql
+
   edge:
     name: Edge functions (deno test)
     runs-on: ubuntu-latest
