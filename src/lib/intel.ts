@@ -1815,8 +1815,15 @@ const HANDLE_REINFORCE_CAP = 20;
 // confidence territory and contradict the per-artifact labels.
 const HANDLE_ONLY_CLUSTER_CAP = 60;
 // Metadata keys whose presence means a record carries identity-bearing fields
-// (a breach/profile row that ties the handle to a real person).
-const IDENTITY_BEARING_META_KEYS = ["full_name", "name", "real_name", "address", "phone", "dob", "date_of_birth", "ssn"];
+// (a breach/profile row that ties the handle to a real PERSON).
+//
+// `address` is deliberately NOT here. It identifies a PLACE, not a person, and a
+// place is shared by everyone who lives, works or receives mail there — so a row
+// whose only identifying field was an address used to lift the handle-only cap
+// through this door while the other two were closed. A row that genuinely names
+// someone still qualifies via full_name / name / real_name, and one carrying a
+// durable personal selector still qualifies via phone / dob / ssn.
+const IDENTITY_BEARING_META_KEYS = ["full_name", "name", "real_name", "phone", "dob", "date_of_birth", "ssn"];
 
 /**
  * Normalize a social handle for cross-platform identity matching (T1-2 §2).
@@ -2127,9 +2134,25 @@ export function buildIdentityClusters(
       const m = (a.metadata ?? {}) as Record<string, unknown>;
       return IDENTITY_BEARING_META_KEYS.some((k) => typeof m[k] === "string" && (m[k] as string).trim().length > 0);
     });
+    // ⛔ SHARED INFRASTRUCTURE IS NOT IDENTITY CORROBORATION.
+    //
+    // An address, IP, wallet or parent domain is shared BY CONSTRUCTION: a
+    // household or building shares an address, a VPN exit / carrier NAT /
+    // corporate egress shares an IP, every tenant of a hosting provider shares a
+    // parent domain. None of them says WHO the person is, which is the only
+    // question HANDLE_ONLY_CLUSTER_CAP exists to answer. Counting them here let
+    // a subject and their landlord — or two strangers behind one CGNAT — reach
+    // CONFIRMED (>=85) on username breadth alone.
+    //
+    // Removed from this predicate, deliberately: `addresses.length`, `ips.length`
+    // and `signalsPresent.has("SHARED_INFRASTRUCTURE")`. Infra still MERGES the
+    // cluster and still appears in mergeReasons — it is demoted from proof to
+    // lead, not deleted. What remains lifts the cap because each names a person
+    // or a durable personal selector: an email or phone in the cluster, an
+    // EMAIL_MATCH / PHONE_MATCH merge, or a record carrying an identifying field.
     const hasIdentityCorroboration =
-      emails.length > 0 || phones.length > 0 || addresses.length > 0 || ips.length > 0 ||
-      signalsPresent.has("EMAIL_MATCH") || signalsPresent.has("PHONE_MATCH") || signalsPresent.has("SHARED_INFRASTRUCTURE") ||
+      emails.length > 0 || phones.length > 0 ||
+      signalsPresent.has("EMAIL_MATCH") || signalsPresent.has("PHONE_MATCH") ||
       hasIdentityRecord;
 
     // Handle-only / username-only cluster → cap into the VERIFY band. Platform
