@@ -257,3 +257,24 @@ Per CLAUDE.md, `draft` is the thing to look at here: **3 of the 7 are still draf
   or worktree change). No other write of any kind was performed.
 - `what_would_be_lost` for conflicting branches is deliberately unresolved — a real answer needs
   a manual rebase, which is out of scope for a read-only pass.
+
+---
+
+## ⚠️ Corrections from the completeness critic (2026-08-29)
+
+**Criterion 3 is entailed, not independent.** Every row in `branch-manifest-DELETABLE.tsv` has
+`tip_sha == pr_head_sha` (`awk -F'\t' 'NR>1 && $2!=$6' | wc -l` -> 0). When those are equal,
+`git rev-list --count <pr_head>..<tip>` is 0 by construction — the evidence column literally
+reads `git rev-list --count a2562f00..a2562f00 = 0`. It is reported for legibility, **not as
+independent evidence**. The load-bearing gates are **1, 2 and 4**; criterion 2 (tip == final
+head) is the real one, and it holds — five rows were spot-checked end to end against the GitHub
+API and `git ls-remote`.
+
+**Residual gap worth stating.** None of the four criteria establishes that the merged content is
+still on `main` *today* — a later revert would leave every gate satisfied. GitHub retains
+`refs/pull/N/head`, so this is **recoverable rather than destructive**, but do not read the
+manifest as proving the work survives on `main`.
+
+**The manifest is already stale by one branch.** `fix/analysis-tab-evidence-log-order` (PR #515,
+merged as `2cedda7b`) was pushed after this manifest was cut and appears in **neither** file.
+Recount before acting.

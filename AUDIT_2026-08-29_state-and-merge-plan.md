@@ -38,15 +38,30 @@ whole visibility surface, not just the one flag, and it binds indirect changes t
 - **Unrelated log and security redaction.** #502's SSRF guard, CSP header, and log-channel
   redaction work are outside the freeze and proceed.
 
-> ### ⚠️ Live interaction with this cycle's work
-> **Split out any #502 hunk that would MASK or HIDE breach evidence** and hold it for explicit
-> approval — that is the direction that violates the freeze. The rest of #502's
-> credential-redaction work (logs, error channels, SSRF, CSP) proceeds. Identify these hunks
-> during the rebase, before merge.
+> ### ⚠️ Live interaction with this cycle's work — MEASURED, not deferred
+> An earlier draft said "identify these hunks during the rebase." That deferred a scope analysis
+> I already had the file list to perform. Done now, against `refs/pull/502/head`:
 >
-> An earlier draft of this section said "any hunk that alters what is displayed, masked, or
-> redacted." That was too broad and would have blocked legitimate log-redaction work. The
-> correct test is: **does it reduce what JD can see?**
+> **Three hunks meet the freeze test and must be split out for explicit approval:**
+>
+> 1. **`src/lib/breach-kinds.ts` (+53) — `isPositiveBreachExposure`.** It returns `false` for
+>    breach-shaped rows lacking structured metadata (`if (m.no_exposure === true ||
+>    m.exposure_found === false) return false;` at `:93`). Rows that previously produced
+>    *"Subject appears in N distinct breach corpora"* and a MEDIUM risk score would stop
+>    counting. It is probably the **correct** fix — but it changes what JD reads about breach
+>    exposure, so it is exactly what the freeze test catches. The symbol does not exist on `main`.
+> 2. **`supabase/functions/osint-agent/safety.ts` (+186)** — newly exports `maskSeed` and
+>    `redactSecrets`. The *application sites* need the same test; the helpers themselves do not.
+> 3. **`supabase/functions/evidence-export/index.ts` (+58)** — `MAX_EXPORT_ROWS = 5000` is an
+>    export-truncation ceiling. **Not currently binding**: the largest thread carries 164
+>    `evidence_log` rows. Note it, don't block on it.
+>
+> **Proceeding normally:** the SSRF guard, the CSP header, the export *rate* limit
+> (`MAX_EXPORTS_PER_HOUR`), and log-channel redaction. None reduces what JD can see.
+>
+> An even earlier draft said "any hunk that alters what is displayed, masked, or redacted" —
+> too broad, and it would have blocked legitimate log-redaction work. The correct test is:
+> **does it reduce what JD can see?**
 
 **This constraint must be restated in every implementation handoff and in the pre-merge and
 pre-deploy checklists.**
@@ -79,7 +94,7 @@ to clear it.
 | `npm run typecheck` | exit 0 | clean |
 | `npm run lint` | 0 errors, 10 pre-existing `react-refresh` warnings | clean |
 | `npm run build` | ✓ 9.79s | clean |
-| Open PRs | 7 — #514, #513, #512 (drafts, opened today); #502, #493, #491, #435 | see §3 |
+| Open PRs | 7 — #514, #513, #512 (drafts); #502, #493, #491, #435. (#515, the AnalysisTab fix, was opened and **merged** during this audit — `main` is now `2cedda7b`.) | see §3 |
 | Remote branches (canonical) | 375 | see §4 |
 
 ### The `mirror_tree_equality: "differs"` scare — resolved, and it is not a contradiction
@@ -193,6 +208,15 @@ executed main's `tool_timeout_caps_test.ts`. And there is **no human review** on
 spanning SSRF/CSP/credential redaction, the orchestrator termination path, and a destructive
 `SECURITY DEFINER` account-deletion RPC.
 
+> **⚠️ This disposition is PARTIAL, not complete.** The conflict/rebase analysis above is sound,
+> but it never enumerated six changed files totalling ~357 lines: `safety.ts` (+186),
+> `security-test-lab/index.ts` (118 changed), `evidence-export/index.ts` (+58),
+> `breach-kinds.ts` (+53), plus `ChatWindow.tsx`, `review.ts`, `providers.ts`, `ratelimit.ts`,
+> `message-sanitize.ts`, `vercel.json` and `dependabot.yml`. For a PR this audit itself flags as
+> having no human review, that is a gap in the review standing in for one. **Two consequences
+> already found there:** the freeze-relevant hunks (see the standing constraint) and the
+> three-function deploy scope (§13 step 7). Read the remaining files before merge.
+
 ### #514 — do not merge as written
 
 The first pass called it a free win: docs-only, zero conflict, zero runtime. The adversarial
@@ -270,8 +294,9 @@ clean-zero gate, which the AI-SDK type graph cannot meet.
 I verified this one myself, independently of the prior session's report.
 
 `src/components/panel/AnalysisTab.tsx:88` orders `evidence_log` by **`created_at`, a column
-that does not exist.** Per `src/integrations/supabase/types.ts`, `evidence_log`'s timestamp
-is **`collected_at`** (its other ordering key is `seq`). It is the *only* one of the four
+that does not exist.** Confirmed against the **live database**, not just the generated types:
+`evidence_log`'s columns end `…, metadata, collected_at, archive_*` — there is no `created_at`.
+Its other ordering key is `seq`. It is the *only* one of the four
 queries with a bad column — `artifacts`, `tool_usage_log` and `threads` all genuinely have
 `created_at`.
 
@@ -394,13 +419,16 @@ ships as a manifest, not a count.
 **What survives from that pass**: a bulk delete would have destroyed roughly 33 branches
 carrying content `main` does not have — including the repo's only Playwright suite.
 
-### The decision set, as last measured (subject to recount on the 375-ref base)
+### The decision set is **85 branches** — certified, in the manifest
 
-- **19 branches whose merge cleanly ADDS content absent from `main`** — 9 docs/handoffs,
-  **8 code**, 1 CSS one-liner, 1 set of demo-video scripts. Established with
-  `git merge-tree --write-tree origin/main <branch>` compared against `origin/main^{tree}`.
-- **14 branches that never had a PR at all** — no `refs/pull/*/head`, so nobody ever opened,
-  reviewed, or closed anything for them.
+Superseding an earlier 19/14/33 estimate in this section. Per `branch-manifest-DECIDE.tsv`:
+**58 `pr-closed-unmerged`, 16 `no-pr`, 11 `merged-but-tip-moved`, 0 unresolved.** 283 are
+certified deletable in `branch-manifest-DELETABLE.tsv`. Union + the 7 open-PR heads matches the
+GitHub capture exactly, with zero duplicates and zero gaps.
+
+> **Recount before acting.** `fix/analysis-tab-evidence-log-order` (#515) was pushed *after* the
+> manifest was cut and appears in **neither** file — the same "manifest must contain only real
+> `refs/heads/*`" failure the section warns about, in the opposite direction.
 
 ### ⛔ ALL decision branches are QUARANTINED
 
@@ -439,7 +467,7 @@ worst incidents (see `CLAUDE.md`'s run-termination invariants), so it is a read-
 It names `claude/upbeat-darwin-y842dl`, `left/beta-p0`, `insight-finder-tier0`. Searching every
 ref in this clone: **two do not exist at all**, and the third's likely counterpart `feat/beta-p0`
 **landed as PR #174**. The note is stale for any remote/web session and should be replaced with
-the 33-branch decision list.
+a pointer to the two manifest TSVs.
 
 ### ⚠️ The mirror holds un-backported Lovable work
 
@@ -560,6 +588,17 @@ synthesis block *and* #513's cache-sweep block both reference `admin` at the out
 declaration, all three sweeps inside the `else`, and all three checks emitted as `throttled`
 on the fast path (which also satisfies §3's `checks.synthesis` trap).
 
+> **Why that order — corrected reasoning.** An earlier draft argued #513-first because
+> take-both-sides would break "two blocks that use `admin`". That was **circular**: #513's block
+> is only in the tree if #513 already merged, and merging it first actually *raises* the count
+> #502's rebase must relocate from two to three. The real reason is **hazard visibility**:
+> #502-first would leave #513 rebasing onto a tree where `admin` sits inside the `else`, and
+> #513's insertion point may auto-merge **with no conflict marker at all** — a silent
+> `ReferenceError` in the health path. #513-first forces the collision into #502's rebase, where
+> a human is already resolving three hunks and will see it. The scope hazard is real in either
+> order (verified: main `health-handler.ts:379` declares `admin` at the outer scope and synthesis
+> uses it at `:400`; #502 moves it to `:418-420` inside the `else`) — only its visibility differs.
+
 ### #513 itself: mergeable, but fix two things first
 
 - **`CACHE_SWEEP_BATCH = 5_000` cannot work.** `.in("id", ids)` renders as a query parameter;
@@ -628,7 +667,7 @@ This is load-bearing because `CLAUDE.md` uses "nothing imports them" to argue th
 in `tools/` is harmless by construction. It isn't. The 2026-08-29 drift *was* harmless, but for
 a much narrower reason: `tool()` is literally `function tool(t) { return t }` in **both**
 `npm:ai@6` and `@ai-sdk/provider-utils@4.0.27` — independently verified by importing both and
-printing the source. **A future edit to any of those seven files reaches production.** The
+printing the source. **A future edit to any of those eight files reaches production.** The
 `CLAUDE.md` paragraph must name the split explicitly instead of blanket-declaring the directory
 dead.
 
@@ -723,13 +762,47 @@ only when a human has the app open.
 
 ### ⚠️ `supabase/migrations/` is not the mechanism that changes this database
 
-Worse than first reported. Matching the 47 repo filename version prefixes against the 41
-applied `version` values in `supabase_migrations.schema_migrations` yields **0 matches — none of
-the 47 has ever been applied.** (An earlier draft said 46 of 47; the one row that *looks*
-canonical, `20260715105643_cbe41215-…`, is stamped `version = 20260715105649` — six seconds off
-the filename — so it is not a version match either.) 33 of the 41 rows have an empty `name` and
-7 are bare UUIDs; the ledger is written by Lovable, not by this repo. pg_cron was therefore
-never installed, and the health-sweep schedule PR #502 argues from has never existed.
+### ⛔ RETRACTED AND INVERTED — this was my most consequential error
+
+An earlier draft said **"0 of 47 migrations have ever been applied"** and escalated it into
+*"`supabase/migrations/` is not the mechanism that changes this database"* and *"a hard blocker
+for Stage 2."* **That conclusion is false.** It came from exact string equality on version
+prefixes, which is a stamping artifact, not a measure of applied-ness.
+
+**Lovable stamps its ledger row 2–3 seconds *before* the filename timestamp:**
+
+| repo filename prefix | ledger `version` | delta |
+|---|---|---|
+| `20260526140844` | `20260526140842` | −2s |
+| `20260526140902` | `20260526140900` | −2s |
+| `20260526145730` | `20260526145727` | −3s |
+| `20260526201231` | `20260526201229` | −2s |
+
+With a ±30s tolerance, **26 of the 39 fourteen-digit repo migrations have a corresponding
+applied row.** This is the same class of error as the `build-info.ts` one-commit offset
+`CLAUDE.md` already documents — and my earlier draft *saw* the offset (`20260715105643` vs
+`…649`, "six seconds off") and dismissed it as "not a match either" instead of recognising it.
+
+**And hand-written repo migrations demonstrably DO reach this database, with no ledger row at
+all.** Measured against production:
+
+```
+outcome_col_live      = 1     -- tool_usage_log.outcome exists
+tool_health_view_live = 1     -- the tool_health view exists
+ledger_20260628       = 0     -- no ledger row
+ledger_20260701       = 0     -- no ledger row
+```
+
+Their only source anywhere in the repo is `20260628_tool_usage_outcome.sql` and
+`20260701_tool_health_view.sql`. Both are live; neither is in the ledger. My draft also
+contradicted itself here — §3's #493 analysis treats `20260701_tool_health_view.sql` as
+live-affecting.
+
+**What actually holds:** delivery in general is *not* broken; what is unproven is delivery of
+any **specific recent hand-written file**. Two are measurably absent —
+`20260720031500_pg_cron_health_sweep.sql` (pg_cron is not installed and the `cron` schema does
+not exist) and `20260828200000_tool_call_cache_expiry_sweep.sql`. Those conclusions stand, and
+PR #502's Fix-#1 rationale still argues from a cron that has never existed.
 
 > **This is a hard blocker for Stage 2.** The account-deletion RPC cannot reach production by
 > committing a file to `supabase/migrations/`. The delivery mechanism must be named and the
@@ -748,9 +821,9 @@ over 127 calls** and **the `indicia` family 42–88%**.
 ### #476 is genuinely open and only #502 closes any open issue
 
 #476 *[COMPLIANCE] No self-service account deletion exists* — opened 2026-08-20, still open,
-never updated, and GitHub reports **zero** closing-PR links. Of the seven open PRs, **#502 is
-the only one that closes any open issue at all**, which is a further argument for splitting its
-account-deletion slice out rather than letting it wait on the rebase.
+never updated. **#502 carries the account-deletion RPC but does not declare a closing link**, so
+GitHub shows #476 with none. That is a further argument for splitting the slice out rather than
+letting it wait on the rebase — and for adding an explicit `Closes #476` when it is opened.
 
 
 ---
@@ -814,7 +887,19 @@ the PR (§3), **the deploy instruments are repaired before the deploy that depen
 > merging, no deployment, no migration application, no branch deletion. Each stage stops and
 > waits.
 
-### 1 · The `AnalysisTab` fix (frontend, ships alone)
+### 1 · The `AnalysisTab` fix (frontend, ships alone) — ✅ DONE
+
+> **Shipped 2026-08-29.** PR #515 squash-merged as `2cedda7b`; Vercel production READY on that
+> SHA; the live bundle carries `order("collected_at")` with zero occurrences of the broken query.
+>
+> **⚠️ One defect shipped with it.** Its fourth test cannot fail: it asserts
+> `expect(host.textContent).not.toContain("Could not load")`, but the error branch renders
+> **"Analysis could not load"** (lowercase `c`), so the substring never matches — and the mock
+> always resolves `{ error: null }`, so the error path is unreachable anyway. The other three
+> tests are sound and do drive the component. **Follow-up: either delete that case, or make it
+> drive** — inject `{ error: {...} }` on `evidence_log`, assert the banner appears naming the
+> table via `describeNamedError`, then assert its absence in the happy path against the real
+> string `"Analysis could not load"`.
 
 One line: `src/components/panel/AnalysisTab.tsx:88` → `.order("collected_at", { ascending: false })`.
 
@@ -838,10 +923,16 @@ Carve into its own PR: `20260825000000_delete_my_account.sql` (**renumber above
 > `20260828200000` nor `20260720031500` was ever applied (§9). Two files in that directory are
 > already dead letters.
 >
-> **Measured 2026-08-29: NONE of the 47 files in `supabase/migrations/` has ever been applied**
-> — 0 version matches against the live ledger (§11a). Committing a 48th changes nothing by
-> itself. `supabase db push` is blocked by the same Lovable ownership wall that 403s
-> `supabase functions deploy`.
+> **Corrected — see §11a.** An earlier draft said no repo migration has ever applied and called
+> this a hard blocker. That was wrong: the ledger stamps 2–3s off the filename, 26 of 39 match
+> under tolerance, and hand-written files with *no* ledger row are demonstrably live.
+>
+> **The operative instruction survives the correction and is what matters:** the delivery channel
+> is the **Lovable project agent** — ask it to apply the migration in the same `send_message`
+> that deploys — and then **verify in production by `SELECT` on `pg_proc` /
+> `information_schema.routine_privileges`, not by the ledger**, that the RPC exists with the
+> intended grants (`EXECUTE` to `authenticated` only, revoked from `public`/`anon`).
+> `supabase db push` remains blocked by the Lovable ownership wall.
 >
 > **Before this PR is called shipped, name the actual mechanism** — the Lovable project agent
 > applying it, or whatever channel genuinely writes this DB — then **verify in production**
@@ -870,12 +961,14 @@ instrument this audit just proved cannot block incorrect parity.
 
 1. **`record-deploy.mjs`** — `-S` pickaxe matches deletions; resolves the wrong stamp commit
    for any non-current build (§8).
-2. **`edge-health.yml`** — asserts `.checks.minimax.ok`, which no longer exists; fails on a
-   healthy system (§10).
+2. **`edge-health.yml`** — **it passes today**; §10 retracts the earlier claim that it fails.
+   Its real defect is that it hard-gates on `.checks.minimax.ok`, the *fallback*, and never
+   asserts `.checks.deepseek.ok`, the active provider. Add the `deepseek` assertion, demote
+   `minimax` to non-fatal. **Not urgent.**
 3. **#514, rewritten** — compare the tree being **shipped**, exclude `*_test.ts`, and **wire
    the result into the exit code** (§8).
-4. **`/health` `ok`** — stop gating on `MINIMAX_API_KEY` while the orchestrator is
-   DeepSeek-pinned (§10).
+4. *(Deleted. §10 establishes `health-handler.ts:245` is a pure helper deliberately
+   overridden at `:352-359`. **Settled — do not "fix" it.**)*
 
 ### 5 · Run all gates on the actual combined heads
 
@@ -886,8 +979,17 @@ typecheck, lint (0 errors), build.
 
 ### 7 · One backend sync + deploy
 
-`CLAUDE.md`'s six-step recipe once. Verify **both** a moved build SHA **and** the presence of
-`checks.cache_sweep`.
+`CLAUDE.md`'s six-step recipe once, but with
+**`function_names: ["osint-agent", "evidence-export", "security-test-lab"]`** — #502 changes all
+three, and `evidence-export/index.ts` now does
+`import { checkHourlyQuota } from "../osint-agent/ratelimit.ts"`, so **a single-function sync
+ships a broken import.**
+
+- `osint-agent` verifies by a moved build SHA **and** the presence of `checks.cache_sweep`.
+- `evidence-export` and `security-test-lab` **have no marker and no health endpoint** (§10).
+  Verify them by the §10 probe — 401 on GET/POST plus a byte-match on
+  `access-control-allow-methods` — plus one positive behavioural probe of the new limiter:
+  an 11th export within an hour must return `429 EXPORT_RATE_LIMITED`.
 
 ### 8 · Validate the cache sweep functionally — separately
 
@@ -915,7 +1017,7 @@ finalize tool-gate absent from canonical.
 All confirmed still open, and the right *next* cycle — folding them in now would recreate the
 backlog this plan exists to clear:
 
-- **The dispatch boundary (P1)** — `isSubjectUnlinked` absent from the entire dispatch path.
+- **The dispatch boundary (P1)** — `isSubjectUnlinked` absent from the entire dispatch path. Filed as **issue #480**.
 - **The report layer bypass** — no `{{FINDINGS_TABLE}}` expansion exists anywhere; #511's
   synthesis is a different layer.
 - **Full SSN in an artifact `value`** (2026-08-26 handoff §3.4) — renders on the board, in the
