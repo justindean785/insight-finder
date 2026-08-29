@@ -47,7 +47,7 @@ INSERT INTO public.artifacts (id, thread_id, user_id, kind, value) VALUES
 -- failure on the CI schema nor lets the table escape scrutiny on production.
 DO $$
 BEGIN
-  IF to_regclass('public.artifact_linkage_releases') IS NOT NULL THEN
+  IF pg_catalog.to_regclass('public.artifact_linkage_releases') IS NOT NULL THEN
     EXECUTE $i$
       INSERT INTO public.artifact_linkage_releases (thread_id, artifact_id, user_id, reason) VALUES
         ('aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', 'a11fac11-1111-4111-8111-a11fac111111',
@@ -86,7 +86,7 @@ BEGIN
   IF n <> 0 THEN RAISE EXCEPTION 'artifacts not deleted: %', n; END IF;
   SELECT count(*) INTO n FROM public.agent_memory WHERE user_id = v;
   IF n <> 0 THEN RAISE EXCEPTION 'agent_memory not deleted: %', n; END IF;
-  IF to_regclass('public.artifact_linkage_releases') IS NOT NULL THEN
+  IF pg_catalog.to_regclass('public.artifact_linkage_releases') IS NOT NULL THEN
     EXECUTE 'SELECT count(*) FROM public.artifact_linkage_releases WHERE user_id = $1' INTO n USING v;
     IF n <> 0 THEN RAISE EXCEPTION 'artifact_linkage_releases not deleted: %', n; END IF;
   END IF;
@@ -116,7 +116,7 @@ BEGIN
   IF n <> 1 THEN RAISE EXCEPTION 'bystander artifacts harmed: %', n; END IF;
   SELECT count(*) INTO n FROM public.agent_memory WHERE user_id = b;
   IF n <> 1 THEN RAISE EXCEPTION 'bystander memory harmed: %', n; END IF;
-  IF to_regclass('public.artifact_linkage_releases') IS NOT NULL THEN
+  IF pg_catalog.to_regclass('public.artifact_linkage_releases') IS NOT NULL THEN
     EXECUTE 'SELECT count(*) FROM public.artifact_linkage_releases WHERE user_id = $1' INTO n USING b;
     IF n <> 1 THEN RAISE EXCEPTION 'bystander linkage releases harmed: %', n; END IF;
   END IF;
@@ -161,6 +161,59 @@ BEGIN
       'user-keyed table(s) in no bucket of delete_my_account(): % — add to the DELETE set, or document the retention', missing;
   END IF;
   RAISE NOTICE 'delete_my_account: every user-keyed table is accounted for';
+END $$;
+
+-- 3c. The hardened definition itself, pinned. These are properties of the BUILT
+--     function read from the catalog, not of the DDL text, so a future edit that
+--     weakens any of them fails here rather than in production.
+DO $$
+DECLARE cfg text; nargs int; secdef boolean;
+BEGIN
+  SELECT coalesce(array_to_string(p.proconfig, ','), ''), p.pronargs, p.prosecdef
+    INTO cfg, nargs, secdef
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+   WHERE n.nspname = 'public' AND p.proname = 'delete_my_account';
+
+  IF NOT secdef THEN
+    RAISE EXCEPTION 'delete_my_account is no longer SECURITY DEFINER';
+  END IF;
+
+  -- Empty search_path is the maximally safe setting: no schema on the path means
+  -- an unqualified name cannot resolve to an attacker-planted object. Every
+  -- reference in the body is schema-qualified, so this costs nothing.
+  IF cfg <> 'search_path=""' THEN
+    RAISE EXCEPTION
+      'delete_my_account search_path must be empty (got %). If you widen it, you must also prove no callable role holds CREATE on the schemas you add.', cfg;
+  END IF;
+
+  -- No arguments means there is no caller-controlled target to aim at another
+  -- account. This is the single most important property of the function.
+  IF nargs <> 0 THEN
+    RAISE EXCEPTION 'delete_my_account must take NO arguments (got %) — an argument is a target', nargs;
+  END IF;
+
+  RAISE NOTICE 'delete_my_account: SECURITY DEFINER, empty search_path, zero arguments';
+END $$;
+
+-- 3d. Belt and braces for the empty-search_path argument: even though the empty
+--     path makes it moot, record whether a callable role holds CREATE on the
+--     schemas an earlier revision named. This is the invariant that a non-empty
+--     search_path would have depended on, so it is worth seeing in the log.
+DO $$
+DECLARE offender text;
+BEGIN
+  SELECT string_agg(r.rolname || ' on ' || s.nspname, ', ')
+    INTO offender
+    FROM pg_namespace s
+    CROSS JOIN (SELECT rolname FROM pg_roles WHERE rolname IN ('anon','authenticated')) r
+   WHERE s.nspname IN ('public','auth')
+     AND pg_catalog.has_schema_privilege(r.rolname, s.nspname, 'CREATE');
+
+  IF offender IS NOT NULL THEN
+    RAISE NOTICE 'delete_my_account: NOTE — CREATE is held by % (harmless while search_path is empty, fatal if it is ever widened)', offender;
+  ELSE
+    RAISE NOTICE 'delete_my_account: neither anon nor authenticated holds CREATE on public/auth';
+  END IF;
 END $$;
 
 -- 4. The append-only triggers are STILL INSTALLED after the deletion ran.

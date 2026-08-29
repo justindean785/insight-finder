@@ -32,6 +32,23 @@
 -- The function is deliberately caller-scoped: it takes NO user id and derives
 -- everything from auth.uid(), so it cannot be aimed at another account even by a
 -- caller who controls its arguments.
+--
+-- SEARCH_PATH IS EMPTY, ON PURPOSE. `SET search_path = ''` is the maximally safe
+-- setting for a SECURITY DEFINER function: with no schemas on the path, an
+-- unqualified name cannot be resolved to an attacker-planted object in a schema
+-- the caller can write to. It costs nothing here because every reference below is
+-- already schema-qualified — `auth.uid()`, `auth.users`, and every `public.*`
+-- table. (`pg_catalog` is always searched implicitly even with an empty path, so
+-- built-ins like jsonb_build_object, count() and to_regclass still resolve; that
+-- is documented Postgres behaviour, not an accident.)
+--
+-- An earlier revision used `SET search_path = public, auth`, which is explicit but
+-- weaker: it is only safe for as long as no role that can call this function also
+-- holds CREATE on public or auth. Empty removes that standing dependency
+-- altogether, so the property does not have to be re-verified whenever grants
+-- change. If you ever add an unqualified reference below, it will fail loudly at
+-- run time rather than silently resolving somewhere unexpected — that is the
+-- intended failure mode.
 
 -- ─── DELIVERY AND ROLLBACK ──────────────────────────────────────────────────
 --
@@ -55,27 +72,48 @@
 --          has_function_privilege('authenticated','public.delete_my_account()','EXECUTE');
 --   -- expect: false, true
 --
--- ROLLBACK. Idempotent and non-destructive — this migration creates one function
--- and grants on it, and alters no table, column, constraint or row. To undo:
+-- ROLLBACK. Two different things are called "rollback" here and they must not be
+-- conflated:
 --
---   DROP FUNCTION IF EXISTS public.delete_my_account();
+--   1. SCHEMA rollback — reversible, trivial. This migration creates one function
+--      and grants on it, and alters no table, column, constraint or row:
 --
--- There is no data to restore, because nothing here migrates data. Re-applying is
--- safe: CREATE OR REPLACE plus REVOKE/GRANT are all idempotent.
+--        DROP FUNCTION IF EXISTS public.delete_my_account();
 --
--- ⚠️ Rolling back does NOT undo any deletion a user already performed. Account
--- deletion is irreversible by construction — it removes the auth row and every
--- user-keyed record. Recovery from that would be a database restore, not a
--- migration. Weigh that before enabling the UI path in production.
+--      There is no data to restore because nothing here migrates data, and
+--      re-applying is safe (CREATE OR REPLACE plus REVOKE/GRANT are idempotent).
+--
+--   2. DELETED-DATA recovery — ⚠️ NOT POSSIBLE. Dropping the function stops
+--      future deletions; it does not undo one that already ran. A completed
+--      deletion is irreversible by construction: the auth row and every
+--      user-keyed record are gone, and the function offers no soft-delete, no
+--      tombstone and no export. The only recovery is a point-in-time database
+--      restore, which is a platform operation, is not part of this migration, and
+--      on this Lovable-owned project is not something this repo can perform.
+--
+-- So: shipping this is low-risk and reversible. ENABLING it for users is neither.
+-- Weigh (2), not (1), before exposing the UI path in production.
+--
+-- POST-DELETION AUTHENTICATION, stated precisely because it is easy to overclaim.
+-- Deleting auth.users removes the user's sessions and refresh tokens, so no NEW
+-- access token can be minted and every refresh fails. It does NOT cryptographically
+-- invalidate an access token that was already issued: a Supabase access token is a
+-- stateless signed JWT, so one held by a client stays signature-valid until its own
+-- `exp`. What it can still DO in that window is bounded by RLS, and every row it
+-- could have reached has just been deleted — but the correct statement is
+-- "revoked at the session layer, bounded by token expiry", not "instantly
+-- invalidated". The UI signs out to drop the local copy immediately. If a hard
+-- upper bound matters for a compliance claim, measure the project's configured
+-- access-token TTL and cite that number; do not assert immediacy.
 
 CREATE OR REPLACE FUNCTION public.delete_my_account()
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, auth
+SET search_path = ''
 AS $$
 DECLARE
-  _uid uuid := auth.uid();
+  _uid uuid := auth.uid();  -- auth.uid() is schema-qualified; see search_path note above
   _deleted jsonb := '{}'::jsonb;
   _n bigint;
   _retained bigint := 0;
@@ -123,7 +161,7 @@ BEGIN
   -- independently of thread_id/artifact_id: a release the caller recorded against
   -- a row they do not own would survive an artifacts/threads cascade. Counting it
   -- also keeps the receipt honest instead of silently omitting a table.
-  IF to_regclass('public.artifact_linkage_releases') IS NOT NULL THEN
+  IF pg_catalog.to_regclass('public.artifact_linkage_releases') IS NOT NULL THEN
     EXECUTE 'DELETE FROM public.artifact_linkage_releases WHERE user_id = $1' USING _uid;
     GET DIAGNOSTICS _n = ROW_COUNT; _deleted := _deleted || jsonb_build_object('artifact_linkage_releases', _n);
   END IF;

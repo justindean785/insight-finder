@@ -97,3 +97,73 @@ describe("#476 account deletion — migration contract", () => {
     expect(authDelete).toBeGreaterThan(lastPublicDelete);
   });
 });
+
+describe("#476 account deletion — hardening", () => {
+  it("uses an EMPTY search_path, not merely an explicit one", () => {
+    // The maximally safe setting for SECURITY DEFINER: with no schema on the
+    // path an unqualified name cannot resolve to an attacker-planted object, and
+    // the function stops depending on who holds CREATE on public/auth.
+    //
+    // Asserted against the DDL with `--` comments stripped: the header
+    // deliberately DISCUSSES the weaker `search_path = public, auth` it replaced,
+    // and a naive whole-file match would read that prose as the setting.
+    const ddl = migration
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("--"))
+      .join("\n");
+    expect(ddl).toMatch(/SET search_path = ''/);
+    expect(ddl).not.toMatch(/SET search_path = public/);
+  });
+
+  it("schema-qualifies every reference, so the empty path is survivable", () => {
+    const body = migration.slice(migration.indexOf("AS $$"), migration.indexOf("$$;"));
+    // Every DELETE target and every FROM must carry a schema.
+    for (const m of body.matchAll(/DELETE FROM\s+(\S+)/g)) {
+      expect(m[1], `unqualified DELETE target: ${m[1]}`).toMatch(/^(public|auth)\./);
+    }
+    expect(body).toMatch(/auth\.uid\(\)/);
+    expect(body).toMatch(/pg_catalog\.to_regclass/);
+  });
+
+  it("keeps dynamic SQL as fixed text with the caller value bound, never interpolated", () => {
+    const body = migration.slice(migration.indexOf("AS $$"), migration.indexOf("$$;"));
+    for (const m of body.matchAll(/EXECUTE\s+([^;]+);/g)) {
+      const stmt = m[1];
+      expect(stmt, `dynamic SQL must be a single-quoted literal: ${stmt}`).toMatch(/^'[^']*'/);
+      expect(stmt, `dynamic SQL must not concatenate: ${stmt}`).not.toMatch(/\|\|/);
+      expect(stmt, `dynamic SQL must bind, not inline: ${stmt}`).toMatch(/USING /);
+    }
+  });
+
+  it("distinguishes schema rollback from deleted-data recovery", () => {
+    // Conflating the two would read as "this is reversible", which it is not.
+    expect(migration).toMatch(/SCHEMA rollback/i);
+    expect(migration).toMatch(/DELETED-DATA recovery/i);
+    expect(migration).toMatch(/NOT POSSIBLE/i);
+  });
+
+  it("does not claim an already-issued access token is instantly invalidated", () => {
+    expect(migration).toMatch(/stateless signed JWT/i);
+    expect(migration).not.toMatch(/immediately invalidat|instantly invalidat/i);
+    // The UI must state the same thing, not something more reassuring.
+    expect(settings).toMatch(/stays valid until it expires/i);
+  });
+
+  it("clears locally cached case data, not just the auth token", () => {
+    expect(settings).toMatch(/clearLocalCaseState\(\)/);
+    // The case-scoped keys are built per thread and per tool call, so the clear
+    // must be prefix-based rather than an enumerated list.
+    for (const prefix of ['"proximity:"', '"brain_"', '"sb-"']) {
+      expect(settings).toContain(prefix);
+    }
+  });
+
+  it("does not report failure after the server already deleted the account", () => {
+    // signOut targets a user that no longer exists; letting it throw would show
+    // "Could not delete the account" for a completed, irreversible deletion.
+    const handler = settings.slice(settings.indexOf("const deleteAccount"));
+    const signOut = handler.slice(handler.indexOf("supabase.auth.signOut"));
+    expect(handler.slice(0, handler.indexOf("supabase.auth.signOut"))).toMatch(/try \{/);
+    expect(signOut).toMatch(/\} catch \{/);
+  });
+});

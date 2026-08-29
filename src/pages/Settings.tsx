@@ -11,6 +11,48 @@ import { SUPPORT_MAILTO } from "@/lib/contact";
 import { FullPageLoader } from "@/components/ui/full-page-loader";
 import { toast } from "sonner";
 
+/**
+ * Locally cached investigation state, cleared on account deletion.
+ *
+ * `supabase.auth.signOut()` clears the auth token and nothing else. Everything
+ * this app caches about cases — evidence-cluster preferences, per-case caps,
+ * review state, tool-call notes, skipped pivots, brain memory decisions — is
+ * keyed under these prefixes in localStorage and would otherwise survive the
+ * account and be visible to the next person who signs in on this browser.
+ *
+ * Prefix-matched rather than enumerated, because the case-scoped keys are built
+ * per thread and per tool call (`proximity:note:<callId>`,
+ * `proximity:pivot-skip:<threadId>`, …) and cannot be listed ahead of time.
+ * Scoped to the app's own prefixes so unrelated data on this origin is untouched.
+ */
+const DELETION_CLEARED_PREFIXES = [
+  "proximity:", // case data: clusters, caps, reviews, notes, pivot-skips, density
+  "brain_",     // brain memory decisions: deleted / promoted / suppressed / last visited
+  "if:",        // app UI preferences
+  "if_",        // app diagnostics (last error)
+  "sb-",        // Supabase auth tokens; signOut clears these, this is belt-and-braces
+];
+
+function clearLocalCaseState(): void {
+  for (const store of [
+    typeof localStorage !== "undefined" ? localStorage : null,
+    typeof sessionStorage !== "undefined" ? sessionStorage : null,
+  ]) {
+    if (!store) continue;
+    try {
+      // Snapshot the keys first — removing while iterating by index skips entries.
+      const doomed: string[] = [];
+      for (let i = 0; i < store.length; i += 1) {
+        const key = store.key(i);
+        if (key && DELETION_CLEARED_PREFIXES.some((p) => key.startsWith(p))) doomed.push(key);
+      }
+      for (const key of doomed) store.removeItem(key);
+    } catch {
+      /* storage can be unavailable (private mode, blocked cookies); never block deletion */
+    }
+  }
+}
+
 export default function Settings() {
   const { user, loading } = useAuth();
   const navigate = useNavigate();
@@ -57,9 +99,28 @@ export default function Settings() {
     try {
       const { error } = await supabase.rpc("delete_my_account");
       if (error) throw error;
-      // The auth row is gone, so the session is already invalid — sign out to clear
-      // the local token rather than leaving a stale one in localStorage.
-      await supabase.auth.signOut();
+
+      // ── Everything below this line runs AFTER the server has already deleted
+      // the account. None of it may throw back into the catch: the deletion is
+      // done and irreversible, so reporting "Could not delete the account" here
+      // would be a lie that invites the analyst to retry a completed action.
+
+      // 1. Drop locally cached case data. signOut() only clears the Supabase auth
+      //    token — it does not touch the investigation state this app keeps in
+      //    localStorage, which would otherwise outlive the account and surface
+      //    under whoever signs in next on this browser.
+      clearLocalCaseState();
+
+      // 2. Revoke server-side. Deleting auth.users removes the sessions and
+      //    refresh tokens, so no NEW access token can be minted. signOut is still
+      //    called to clear the local token and notify listeners; it is allowed to
+      //    fail, because the user it would sign out no longer exists.
+      try {
+        await supabase.auth.signOut();
+      } catch {
+        /* the account is already gone; nothing to sign out of */
+      }
+
       toast.success("Account deleted");
       navigate("/", { replace: true });
     } catch (e) {
@@ -169,6 +230,16 @@ export default function Settings() {
             One exception: the tamper-evident review log (records of accept/reject decisions you made
             on evidence) is append-only and is retained for audit integrity. It holds your decisions,
             not your investigations.
+          </p>
+          {/* Stated precisely rather than reassuringly. Deleting the auth row removes
+              sessions and refresh tokens, so nothing new can be minted — but a Supabase
+              access token is a stateless signed JWT and stays signature-valid until its
+              own expiry. We sign out to drop the local copy immediately. Claiming
+              instant invalidation would be a compliance claim we have not measured. */}
+          <p className="text-xs text-muted-foreground/80 mb-4 leading-relaxed">
+            You are signed out immediately and this browser's cached case data is cleared. Sessions
+            are revoked server-side, so nothing new can be issued; an access token already held by
+            another device stays valid until it expires, though every record it could reach is gone.
           </p>
           {!confirmingDelete ? (
             <Button
