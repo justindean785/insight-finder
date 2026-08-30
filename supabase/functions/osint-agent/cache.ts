@@ -13,6 +13,7 @@ import { DEFAULT_TOOL_TTL_MS, NO_CACHE_TOOLS, redactSensitiveToolInput, TOOL_TTL
 import { creditsCharged } from "./billing.ts";
 import { classifyToolOutcome } from "./tool-outcome.ts";
 import * as circuit from "./circuit.ts";
+import { buildRefusedKeys, dispatchTypeCandidates, isDispatchRefused, quarantineRefusal, reasonForKey } from "./lib/dispatch-quarantine.ts";
 import { guard } from "./guard.ts";
 import { reserveToolCall } from "./orchestrator-budget.ts";
 import {
@@ -592,6 +593,40 @@ export function wrapToolsWithCache(
     }
     return toolHealthPromise;
   };
+  // ---- subject_unlinked DISPATCH boundary --------------------------------------
+  // Quarantine binds at write and read-back; without this it never bound at
+  // DISPATCH, so a quarantined selector could still start its own paid tool
+  // stack. Loaded ONCE per run and reused, like tool_health above.
+  //
+  // FAILS OPEN on a load error, matching loadToolHealth's precedent in this same
+  // function: this boundary prevents wasted calls and contaminated pivots, it is
+  // not an authorization control, and hard-failing every tool call on a transient
+  // artifacts read would be a worse outcome than the leak it prevents. The warning
+  // is logged so the degradation is observable rather than silent.
+  let refusedKeysPromise: Promise<{ keys: Set<string>; rows: Array<Record<string, unknown>> }> | null = null;
+  const loadRefusedKeys = () => {
+    if (!refusedKeysPromise) {
+      refusedKeysPromise = (async () => {
+        try {
+          const { data, error } = await adminDb
+            .from("artifacts")
+            .select("kind,value,metadata")
+            .eq("thread_id", ctx.investigationId);
+          if (error) {
+            console.warn("[quarantine-dispatch] load failed (boundary open this run):", error.message);
+            return { keys: new Set<string>(), rows: [] };
+          }
+          const rows = (data ?? []) as Array<Record<string, unknown>>;
+          return { keys: buildRefusedKeys(rows, circuit.normalizeSelector), rows };
+        } catch (e) {
+          console.warn("[quarantine-dispatch] load failed (boundary open this run):", e);
+          return { keys: new Set<string>(), rows: [] };
+        }
+      })();
+    }
+    return refusedKeysPromise;
+  };
+
   // Derive a real success flag from a tool's return value. A tool can return
   // without throwing yet still represent a failure (HTTP non-2xx wrapped into
   // { ok:false }, an `error` field, or a stub). The wrapper must NOT log such
@@ -788,6 +823,31 @@ export function wrapToolsWithCache(
         const sel = circuit.normalizeSelector(selectorType, selectorValue);
         const purpose = String(inp.purpose ?? "default");
         const force = inp.force === true;
+        // ---- subject_unlinked DISPATCH boundary ----
+        // FIRST, before budget reservation, the circuit breaker, the cache
+        // lookups and the live call — so a quarantined selector cannot start a
+        // direct, pivoted, cached, repeated or paid call. Placed here rather than
+        // per-tool because all ~89 tools funnel through this one wrapper.
+        //
+        // `force` does NOT override it: a manual re-run of a quarantined selector
+        // is exactly the escape this boundary exists to close. Clearing it is an
+        // analyst linkage decision on the artifact, not a call-site flag.
+        {
+          const { keys: refusedKeys, rows: refusedRows } = await loadRefusedKeys();
+          // Candidates, not the computed type alone — the paid breach tools take
+          // `{ type, value }` and detectSelectorType does not read `type`.
+          const candidateTypes = dispatchTypeCandidates(selectorType, inp);
+          if (isDispatchRefused(refusedKeys, candidateTypes, sel)) {
+            const declared = candidateTypes.find((t) => refusedKeys.has(`${t}:${sel}`)) ?? selectorType;
+            const why = reasonForKey(refusedRows, circuit.normalizeSelector, declared, sel);
+            const refusal = quarantineRefusal(name, declared, sel, why);
+            console.warn(
+              `[quarantine-dispatch] refused ${name} on ${declared}:${sel}` +
+              (why ? ` (${why})` : ""),
+            );
+            return refusal;
+          }
+        }
         const overrideSelector = ctx.manualOverrideSelector
           ? circuit.normalizeSelector(selectorType, ctx.manualOverrideSelector)
           : "";
