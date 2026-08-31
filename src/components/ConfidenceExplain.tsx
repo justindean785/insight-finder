@@ -1,6 +1,7 @@
 import { Info } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { explainConfidence } from "@/lib/confidence";
+import { displayConfidence } from "@/lib/display-confidence";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import type { ReviewState } from "@/lib/review";
 import { cn } from "@/lib/utils";
@@ -18,6 +19,13 @@ export function ConfidenceExplain({
   className?: string;
 }) {
   const exp = explainConfidence(artifact, review);
+  // THE HEADLINE IS THE CANONICAL NUMBER. `explainConfidence(...).final` is a full
+  // re-derivation from source tier, corroboration and recency that never reads
+  // `a.confidence` at all — a fifth pipeline, and this popover is mounted on every
+  // Evidence board row, so it rendered its own opinion inches from the row's
+  // figure. The DECOMPOSITION below is genuinely useful and stays; what it may not
+  // do is disagree about the total.
+  const shown = displayConfidence(artifact);
   // Ink, not hue — a third by-value ladder (80/50) lived here and rendered
   // inline beside every ledger numeral, so the row showed two different
   // opinions about the same score. Authority carries the verdict.
@@ -28,7 +36,7 @@ export function ConfidenceExplain({
       <PopoverTrigger asChild>
         <button
           type="button"
-          aria-label={`Why is this ${exp.final}%?`}
+          aria-label={`Why is this ${shown.effective ?? 0}%?`}
           className={cn(
             "inline-grid place-items-center w-4 h-4 rounded-full text-muted-foreground/60 hover:text-foreground hover:bg-surface-3 transition-colors",
             className,
@@ -71,9 +79,9 @@ export function ConfidenceExplain({
             </li>
           ))}
         </ul>
-        {artifact.confidence != null && artifact.confidence !== exp.final && (
+        {shown.stored != null && shown.stored !== shown.effective && (
           <div className="px-3 py-2 border-t border-border-subtle text-data text-muted-foreground">
-            Tool-reported raw: <span className="font-mono text-foreground">{artifact.confidence}</span>. The decomposed score above is the analyst-facing reconstruction.
+            Stored by the server: <span className="font-mono text-foreground">{shown.stored}</span>, capped to <span className="font-mono text-foreground">{shown.effective}</span>{shown.capReason ? ` — ${shown.capReason}` : ""}. The breakdown above decomposes the signals behind it.
           </div>
         )}
       </PopoverContent>

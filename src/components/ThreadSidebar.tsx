@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { effectiveConfidenceOrZero } from "@/lib/display-confidence";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
@@ -222,7 +223,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         const m = agg[a.thread_id] ?? { artifacts: 0, breaches: 0, lowConf: 0 };
         m.artifacts++;
         if (isBreachKind(a.kind)) m.breaches++;
-        if ((a.confidence ?? 0) < 50) m.lowConf++;
+        if ((effectiveConfidenceOrZero(a)) < 50) m.lowConf++;
         agg[a.thread_id] = m;
       }
       setMetrics(agg);

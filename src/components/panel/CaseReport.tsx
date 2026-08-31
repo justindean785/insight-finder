@@ -877,7 +877,7 @@ function buildBreachExposure(artifacts: Artifact[]): BreachRow[] {
     // Same label+value from two tools is one fact, not two.
     const seenReveal = new Set<string>();
     const dedupedReveal = reveal.filter((r) => {
-      const k = `${r.label} ${r.value}`;
+      const k = `${r.label}\u0000${r.value}`;
       if (seenReveal.has(k)) return false;
       seenReveal.add(k);
       return true;

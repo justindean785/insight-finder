@@ -204,6 +204,38 @@ describe("wiring — no surface may render its own number", () => {
     "components/panel/EvidenceMatrixTab.tsx",
     "components/workspace/OverviewTab.tsx",
     "components/panel/CaseReport.tsx",
+    "components/ConfidenceExplain.tsx",
+    "components/panel/AnalysisTab.tsx",
+  ];
+
+  // EXCLUDED, each for a stated reason. This list exists so the inventory is a
+  // decision record rather than "the files someone happened to think of".
+  //
+  //   components/ChatWindow.tsx
+  //     `confidence: a.confidence ?? null` inside a `.insert()` into `artifacts`.
+  //     A WRITE, not a display. Writing the effective value here would overwrite
+  //     the stored column with a capped one — the one thing the canonical helper
+  //     must never cause.
+  //
+  //   components/investigation/ReportCardV2.tsx
+  //     Renders `Hypothesis` and confidence-linter models rather than artifacts,
+  //     and is routed only from `pages/ReportPreview.tsx`, which App.tsx gates
+  //     behind `import.meta.env.DEV`.
+  //
+  //     CORRECTION, and it matters. The first version of this list claimed those
+  //     models had "no artifact-backed builder". That was wrong: `artifactsToSources`
+  //     and `artifactsToClusterAudit` in `lib/audit/from-artifacts.ts` build the
+  //     same shapes FROM artifacts, and `CaseReport.tsx:17` imports both — so they
+  //     reach production, not just the dev preview. Both builders were emitting
+  //     `a.confidence ?? 0` and are now fixed at the builder; the test below pins
+  //     them. The component stays excluded because it renders whatever it is
+  //     handed, but the exclusion is now for the right reason.
+  //
+  //   components/panel/ClustersTab.tsx
+  //     Aggregate — see the block below.
+  const EXCLUDED_WITH_REASON = [
+    "components/ChatWindow.tsx",
+    "components/investigation/ReportCardV2.tsx",
   ];
 
   // NOT IN SCOPE, and the distinction is load-bearing rather than a convenience.
@@ -254,6 +286,108 @@ describe("wiring — no surface may render its own number", () => {
     }
   });
 
+  it("the exclusion list stays honest — every excluded file still exists", () => {
+    // A stale exclusion is how a surface quietly leaves the inventory. If one of
+    // these is renamed or deleted, this fails and the reason gets re-examined
+    // rather than silently carried forward.
+    for (const f of EXCLUDED_WITH_REASON) {
+      expect(() => read(f), `${f} is excluded by name — keep the list current`).not.toThrow();
+    }
+  });
+
+  it("the markdown export renders the same number as the on-screen report", () => {
+    // `buildReportMarkdown` had its own `rev(a) ? adjustedConfidence : a.confidence`
+    // expression, so an EXPORTED document could disagree with the screen it was
+    // exported from, depending only on whether a row had been reviewed.
+    const intel = read("lib/intel.ts");
+    expect(intel).toMatch(/const conf = \(a: Artifact\): number \| null => effectiveConfidence\(a\);/);
+    // Comment lines skipped — the note above the new line quotes the old
+    // expression on purpose, and that quotation is the record of what changed.
+    const live = intel.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+    expect(live).not.toMatch(/rev\(a\) \? adjustedConfidence\(a, rev\(a\)\) : a\.confidence/);
+  });
+
+  it("ChatWindow's only raw read is a WRITE, and stays raw", () => {
+    // Re-persisting a cached artifact must store the value the server originally
+    // recorded. Writing the effective value here would overwrite the stored
+    // column with a capped one — the single thing the canonical helper must never
+    // cause. Pinned as an insert so it cannot drift into a render.
+    const cw = read("components/ChatWindow.tsx");
+    const raw = cw.split("\n")
+      .map((line, i) => [i + 1, line] as const)
+      .filter(([, l]) => /\ba\.confidence\b/.test(l))
+      .filter(([, l]) => !/^\s*(\/\/|\*)/.test(l));
+    expect(raw).toHaveLength(1);
+    expect(raw[0][1]).toMatch(/confidence: a\.confidence \?\? null,/);
+    expect(cw).toMatch(/\.from\("artifacts"\)\.insert\(/);
+  });
+
+  it("AnalysisTab's raw reads are only the stored-vs-cap diagnostic", () => {
+    // Bands and the modal score now read effective. The two remaining raw reads
+    // are the per-corpus and per-thread "stored at or above its own cap" counts,
+    // where effective would be circular — it can never exceed the cap.
+    const at = read("components/panel/AnalysisTab.tsx");
+    const raw = at.split("\n")
+      .map((line, i) => [i + 1, line] as const)
+      .filter(([, l]) => /\ba\.confidence\b/.test(l))
+      .filter(([, l]) => !/^\s*(\/\/|\*)/.test(l));
+    expect(raw.length, `unexpected raw reads: ${JSON.stringify(raw)}`).toBe(2);
+    for (const [, line] of raw) expect(line).toMatch(/a\.confidence >= cap/);
+    expect(at).toMatch(/const storedAtOrAboveCap = /);
+  });
+
+  it("ReportCardV2 has no artifact-backed builder and is dev-only", () => {
+    // Its `Hypothesis` / linter cells are constructed nowhere but
+    // pages/ReportPreview.tsx, as hardcoded sample data, and App.tsx gates that
+    // route behind import.meta.env.DEV so it leaves the production bundle.
+    const app = read("App.tsx");
+    expect(app).toMatch(/import\.meta\.env\.DEV \? lazy\(\(\) => import\("\.\/pages\/ReportPreview"\)\) : null/);
+    expect(app).toMatch(/import\.meta\.env\.DEV && ReportPreview/);
+  });
+
+  it("every swept source file is ordinary UTF-8 text with no NUL bytes", () => {
+    // CaseReport.tsx carried a LITERAL NUL byte as a Set-key separator, which made
+    // `file` report it as data and made grep skip it as binary — so a source-guard
+    // sweep could not see inside the file at all. That is exactly how a consumer
+    // hides from an inventory. The separator is now the `\u0000` escape: identical
+    // runtime string, ordinary text on disk.
+    for (const f of [...SURFACES, ...DERIVED_SURFACES, ...AGGREGATE_SURFACES, ...EXCLUDED_WITH_REASON]) {
+      expect(read(f).includes("\u0000"), `${f} contains a literal NUL byte`).toBe(false);
+    }
+  });
+
+  it("the audit builders that reach production CaseReport emit effective", () => {
+    // These feed the confidence linter, whose job is comparing a declared tier
+    // against the evidence beneath it. Uncapped numbers would let a capped row
+    // argue for a tier the server had already refused.
+    const fa = read("lib/audit/from-artifacts.ts");
+    expect(fa).toMatch(/from "@\/lib\/display-confidence"/);
+    expect(fa.split("\n").filter((l) => /confidence: a\.confidence/.test(l) && !/^\s*(\/\/|\*)/.test(l)))
+      .toHaveLength(0);
+    expect(read("components/panel/CaseReport.tsx")).toMatch(/from "@\/lib\/audit\/from-artifacts"/);
+  });
+
+  it("analyst review events log the number the analyst SAW", () => {
+    // `confidence` in a review context becomes
+    // `analyst_feedback_events.confidence_before` — the model's prediction at the
+    // moment of the decision. Logging the raw column would make every calibration
+    // band measure a figure the product never displayed.
+    for (const f of ["components/ResourcesPanel.tsx", "components/panel/EvidenceMatrixTab.tsx"]) {
+      const live = read(f).split("\n").filter((l) => !/^\s*(\/\/|\*)/.test(l)).join("\n");
+      expect(live, `${f} must not log raw confidence as ground truth`)
+        .not.toMatch(/confidence: (a|artifact)\.confidence,/);
+      expect(live, `${f} must log the effective value`).toMatch(/confidence: shown(Conf|Artifact)\.effective/);
+    }
+  });
+
+  it("the tree-wide inventory script exists and is executable", () => {
+    // The list above is files someone thought of; scripts/verify-confidence-consumers.sh
+    // sweeps the tree and found four consumers this guard had missed. Keep both.
+    const sh = readFileSync(resolve(SRC, "..", "scripts/verify-confidence-consumers.sh"), "utf8");
+    expect(sh).toMatch(/INVENTORY: FAIL/);
+    expect(sh).toMatch(/exit 1/);
+  });
+
   it("the derived-model builders carry the effective value, not the raw one", () => {
     // TimelineTab renders `it.confidence` and PivotCard reads `p.confidence`;
     // both come from intel.ts. Pin the assignment, because that is the only place
@@ -287,7 +421,10 @@ describe("wiring — no surface may render its own number", () => {
         // applied at construction in authoritative-findings.ts. The
         // "agrees with effectiveFindingConfidence" test above pins the two
         // together, so this read is already canonical.
-        .filter(([, line]) => !/\bf\.confidence\b/.test(line));
+        .filter(([, line]) => !/\bf\.confidence\b/.test(line))
+        // The stored-vs-cap diagnostic, asserted precisely in its own test below.
+        // Effective can never exceed the cap, so this comparison MUST read raw.
+        .filter(([, line]) => !/a\.confidence >= cap/.test(line));
       expect(offending, `${f} raw confidence reads: ${JSON.stringify(offending)}`).toHaveLength(0);
     }
   });

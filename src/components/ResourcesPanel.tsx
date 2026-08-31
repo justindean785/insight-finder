@@ -727,7 +727,12 @@ function ArtifactDrawerInner({
   const rState = reviewGet(artifact.id);
   // Ground-truth context passed to every review action so feedback events carry
   // confidence_before/source (else they're dropped from the by-band calibration).
-  const rctx = { value: artifact.value, kind: artifact.kind, confidence: artifact.confidence, source: artifact.source };
+  // `confidence` here becomes `analyst_feedback_events.confidence_before` — the
+  // model's PREDICTION AT THE MOMENT OF THE DECISION. That is by definition the
+  // number the analyst was looking at, so it is the effective value, not the raw
+  // column. Logging raw would make every calibration band measure a figure the
+  // product never showed.
+  const rctx = { value: artifact.value, kind: artifact.kind, confidence: shownArtifact.effective ?? undefined, source: artifact.source };
   const src = extractSourceInfo(artifact);
   const drawerAuthority = authorityFor(artifact, rState);
   const review = useReviewStates(threadId);

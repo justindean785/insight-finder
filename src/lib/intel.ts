@@ -1237,7 +1237,14 @@ export function buildReportMarkdown(input: ReportInput): string {
   // artifact reads the same here as in the Evidence view.
   const rev = (a: Artifact): ReviewAdjustment => reviews?.[a.id];
   const lbl = (a: Artifact): ConfLabel => labelForArtifact(a, rev(a));
-  const conf = (a: Artifact): number | null => (rev(a) ? adjustedConfidence(a, rev(a)) : a.confidence);
+  // The markdown export's number, and it is the same number the on-screen report
+  // renders — `CaseReport.confOf` was changed in lockstep. This was
+  // `rev(a) ? adjustedConfidence(a, rev(a)) : a.confidence`, a third pipeline that
+  // switched which of the other two it agreed with depending on whether an
+  // analyst had clicked Confirm, and it shipped that inconsistency into an
+  // exported document. The LABEL above still goes through the review; only the
+  // figure is review-independent.
+  const conf = (a: Artifact): number | null => effectiveConfidence(a);
 
   const confirmed = artifacts.filter((a) => lbl(a) === "CONFIRMED");
   const inferred = artifacts.filter((a) => lbl(a) === "INFERRED");
