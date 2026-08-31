@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { effectiveConfidence } from "@/lib/display-confidence";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { supabase } from "@/integrations/supabase/client";
 import { Copy, EyeOff, CheckSquare, Square, Sparkles, Wallet, GitCompare, Zap } from "lucide-react";
@@ -81,7 +82,7 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
     let n = 0;
     const byKind = new Map<string, Set<string>>();
     for (const a of artifacts) {
-      if ((a.confidence ?? 100) < 50) n++;
+      if ((effectiveConfidence(a) ?? 100) < 50) n++;
       const k = a.kind.toLowerCase();
       const set = byKind.get(k) ?? new Set();
       set.add(String(a.value));

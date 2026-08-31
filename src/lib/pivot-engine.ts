@@ -29,6 +29,12 @@ import {
 } from "@/lib/intel";
 import { entityKey, humanizeLeadReason, normalizeTarget } from "@/lib/next-step-cards";
 import { isInert, quarantineSets } from "@/lib/quarantine";
+// The ENGINE's authority gate, imported rather than re-derived. `pivot-engine`
+// is a leaf (only ChatWindow, PivotsTab and PivotCard import it), so the edge
+// pivot-engine -> report-hygiene is safe; the reverse (quarantine -> report-hygiene)
+// would be a cycle, which is why the predicate is injected below rather than
+// imported inside `quarantine.ts`.
+import { isClusterIneligible } from "@/lib/report-hygiene";
 import { toDisplayPivots, type RecommendedPivot } from "@/lib/recommended-pivots";
 
 export type PivotPriority = "high" | "medium" | "low";
@@ -183,6 +189,12 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
     artifacts,
     normalizeTarget,
     (kind) => KIND_TO_PIVOT[kind.toLowerCase()] ?? null,
+    // ONE boundary. Dispatching a pivot is an authority decision, so it is gated
+    // on the same predicate every other authority surface uses — never a copy of
+    // it, and never a narrower subset. `isClusterIneligible` covers BOTH the
+    // active quarantine (`subject_unlinked` with no `linkage_confirmed` release)
+    // and the collision family, which is what this gate used to miss.
+    isClusterIneligible,
   );
 
   // Findings already carry #185 filtering + status via buildPivots.
@@ -262,6 +274,7 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
     // sensitive leads never surface: never pivot on a secret-bearing value, and
     // drop finding-origin candidates flagged as a collision or possible-minor.
     if (SECRET_VALUE_RE.test(c.value)) continue;
+    // DELIBERATELY NOT `isClusterIneligible` HERE — see the note below.
     if (c.origin === "finding") {
       const meta = (artifactById.get(c.sourceArtifactId)?.metadata ?? {}) as Record<string, unknown>;
       if (
@@ -272,6 +285,27 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
         meta.auto_pivot_blocked === true
       ) continue;
     }
+    // WHY THE AUTHORITY GATE IS NOT REPEATED IN THAT BLOCK.
+    //
+    // It looks like the obvious place to also apply `isClusterIneligible`, and
+    // doing so is wrong: this guard keys on ONE source row, so it blocks
+    // unconditionally, while the authority boundary is per-ROW and restorable.
+    // `isInert` above resolves a selector to inert only while EVERY row carrying
+    // it is denied; a value that arrived once on the collision axis and once from
+    // a provider that matched on the subject's own email stays pivotable, because
+    // the second observation is genuinely linked.
+    //
+    // Adding the predicate here overrode that and cost three green tests in
+    // `quarantine-pivot-boundary.test.ts` ("keeps a selector that ALSO has
+    // independent, subject-linked evidence", "release is per-row", "restoration
+    // requires the SAME pivot type") — `buildPivots` names the quarantined row as
+    // the candidate's source, so the merged, legitimately-restored pivot was
+    // dropped. Over-blocking is its own integrity failure, just a quieter one.
+    //
+    // The enumerated flags above are left exactly as they were: `possible_minor`
+    // and `minor_warning` are a SAFETY ceiling that must never be restorable by
+    // another row, and the two collision entries are pre-existing behaviour that
+    // `isInert` now covers properly at the selector level.
 
     let status: Pivot["status"] = c.status;
     // A tool already run against this exact target is the strongest "already
