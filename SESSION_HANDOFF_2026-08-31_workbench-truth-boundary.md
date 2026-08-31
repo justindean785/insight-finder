@@ -16,8 +16,9 @@ Design dossier (the approved plan, updated with the operator's decisions):
 |---|---|
 | `main` | `21c3403` — **unchanged this session**, re-fetched twice |
 | Working branch | `claude/investigation-workbench-milestone-wqa3vm` (pushed) |
-| Last **code** commit | **`3ab9e59`** — the two commits in §3. This handoff is a docs-only commit on top of it, so the branch head is one further along. |
-| Code ahead of `main` | 2 commits · 22 files · +1554 / −116 |
+| Last **code** commit | **`3ab9e59`** — the two commits in §3. Everything after it on this branch is docs-only, so the head is always further along. |
+| Code ahead of `main` | 2 commits · 22 files · +1554 / −116 · `git diff --shortstat 21c3403...3ab9e59` |
+| Whole branch ahead of `main` | more, and growing with each docs commit — resolve it, do not read it from here |
 | PR | **NONE OPENED** — operator instruction was push-and-stop |
 | Live `/health` build | `dcd51a2` · `glm-5.2` via the DeepSeek slot, `pinned` · `reveal_breach_data: true` |
 | Frontend gates on `3ab9e59` | **1695 passed / 1 skipped / 136 files** · typecheck 0 · lint **10 warnings, 0 errors** · build 0 · consumer inventory 0 |
