@@ -13,7 +13,8 @@ import { DEFAULT_TOOL_TTL_MS, NO_CACHE_TOOLS, redactSensitiveToolInput, TOOL_TTL
 import { creditsCharged } from "./billing.ts";
 import { classifyToolOutcome } from "./tool-outcome.ts";
 import * as circuit from "./circuit.ts";
-import { buildRefusedKeys, dispatchTypeCandidates, isDispatchRefused, quarantineRefusal, reasonForKey } from "./lib/dispatch-quarantine.ts";
+import { dispatchTypeCandidates, isDispatchRefused, loadRefusedArtifacts, quarantineRefusal, reasonForKey } from "./lib/dispatch-quarantine.ts";
+import type { QuarantineRow } from "./lib/dispatch-quarantine.ts";
 import { guard } from "./guard.ts";
 import { reserveToolCall } from "./orchestrator-budget.ts";
 import {
@@ -532,6 +533,13 @@ async function loadSelectorEvidence(
 // Wraps every tool with a three-layer cache (memory → db → live), cost tracking,
 // telemetry logging, and optional auto-evidence mirroring. All 77 tools flow
 // through this function.
+/**
+ * How many times one run may attempt the refused-key read before it settles for the
+ * partial answer. Bounds the retry that an incomplete read triggers, so a database
+ * that is genuinely down costs a few queries per run rather than one per tool call.
+ */
+const REFUSED_KEYS_MAX_LOAD_ATTEMPTS = 3;
+
 export function wrapToolsWithCache(
   toolsObj: Record<string, Tool>,
   ctx: {
@@ -603,47 +611,73 @@ export function wrapToolsWithCache(
   // not an authorization control, and hard-failing every tool call on a transient
   // artifacts read would be a worse outcome than the leak it prevents. The warning
   // is logged so the degradation is observable rather than silent.
-  let refusedKeysPromise: Promise<{ keys: Set<string>; rows: Array<Record<string, unknown>> }> | null = null;
+  let refusedKeysPromise: Promise<{ keys: Set<string>; rows: QuarantineRow[] }> | null = null;
+  let refusedKeysAttempts = 0;
   const loadRefusedKeys = () => {
     if (!refusedKeysPromise) {
+      refusedKeysAttempts += 1;
+      const attempt = refusedKeysAttempts;
       refusedKeysPromise = (async () => {
-        try {
-          const { data, error } = await adminDb
-            .from("artifacts")
-            .select("kind,value,metadata")
-            .eq("thread_id", ctx.investigationId);
-          if (error) {
-            console.warn("[quarantine-dispatch] load failed (boundary open this run):", error.message);
-            return { keys: new Set<string>(), rows: [] };
-          }
-          const rows = (data ?? []) as Array<Record<string, unknown>>;
-          return { keys: buildRefusedKeys(rows, circuit.normalizeSelector), rows };
-        } catch (e) {
-          console.warn("[quarantine-dispatch] load failed (boundary open this run):", e);
-          return { keys: new Set<string>(), rows: [] };
+        // PAGED. One unbounded select returns at most PostgREST's `db-max-rows`,
+        // with no error, so on a long thread the key set was silently built from a
+        // prefix and every quarantined selector past it dispatched normally. The
+        // loop advances by rows actually returned, so it is correct whatever that
+        // server cap is — a value that is container config, not a DB setting, and
+        // therefore not readable from here.
+        //
+        // ORDER BY created_at, id is load-bearing, not tidiness. `auto-persist-findings`
+        // writes artifacts during this same request; append-only ordering keeps a
+        // concurrent insert at the tail where it cannot shift a row backwards past
+        // the cursor and out of the scan. `id` makes the order total so pages
+        // cannot overlap.
+        const res = await loadRefusedArtifacts(
+          async (from, to) => {
+            try {
+              const { data, count, error } = await adminDb
+                .from("artifacts")
+                .select("kind,value,metadata", { count: "exact" })
+                .eq("thread_id", ctx.investigationId)
+                .order("created_at", { ascending: true })
+                .order("id", { ascending: true })
+                .range(from, to);
+              return { data: (data ?? null) as QuarantineRow[] | null, count, error };
+            } catch (e) {
+              return { data: null, count: null, error: { message: e instanceof Error ? e.message : String(e) } };
+            }
+          },
+          circuit.normalizeSelector,
+        );
+        if (!res.complete) {
+          // DO NOT CACHE AN INCOMPLETE READ. The keys in hand are still sound —
+          // every one is a genuine quarantine — but the set is a prefix, so the
+          // boundary is open for whatever lies beyond it. Clearing the memo lets a
+          // later dispatch in the same run retry and close the gap, bounded so a
+          // genuinely broken read costs a few queries and not one per tool call.
+          //
+          // It stays FAIL-OPEN by design. Refusing every tool call in the run on a
+          // transient artifacts read would turn a database blip into a total
+          // investigation outage and write a chain-of-custody record claiming the
+          // whole thread was quarantined. This boundary is a cost-and-contamination
+          // control; write, read-back and promote are the authorization boundaries
+          // and none of them depends on this read.
+          console.warn(JSON.stringify({
+            event: "quarantine_dispatch_read_incomplete",
+            thread_id: ctx.investigationId,
+            rows_read: res.scanned,
+            keys_built: res.keys.size,
+            attempt,
+            will_retry: attempt < REFUSED_KEYS_MAX_LOAD_ATTEMPTS,
+            reason: res.reason,
+            note: "boundary open for quarantined selectors beyond the rows read",
+          }));
+          if (attempt < REFUSED_KEYS_MAX_LOAD_ATTEMPTS) refusedKeysPromise = null;
         }
+        return { keys: res.keys, rows: res.rows };
       })();
     }
     return refusedKeysPromise;
   };
 
-  // Derive a real success flag from a tool's return value. A tool can return
-  // without throwing yet still represent a failure (HTTP non-2xx wrapped into
-  // { ok:false }, an `error` field, or a stub). The wrapper must NOT log such
-  // calls as ok=true — otherwise tool_usage_log lies about reality.
-  const deriveOk = (result: unknown): boolean => {
-    if (!result || typeof result !== "object") return true;
-    const r = result as Record<string, unknown>;
-    // Intentional skips (missing required key, provider disabled in config, or an
-    // explicit `skipped` flag) are NOT failures. Keep them out of the
-    // tool_usage_log failure metric so the beta dashboard reflects real errors
-    // instead of intentional no-ops. The UI still renders them as "skipped" via
-    // tagSkipState / output.skipped. (Distinct from genuine 4xx/5xx/parse errors.)
-    if (isIntentionalSkip(r)) return true;
-    if (typeof r.ok === "boolean") return r.ok;
-    if (typeof r.error === "string" && r.error.length > 0) return false;
-    return true;
-  };
   // Detect calls that didn't actually consume provider quota / credits so we
   // don't bill for them: disabled stubs (firecrawl_*), gated tools (intelbase
   // when unhealthy), and tools that bailed because their API key isn't set.
@@ -1387,6 +1421,33 @@ export function isIntentionalSkip(output: unknown): boolean {
     .filter((v): v is string => typeof v === "string")
     .join(" ");
   return SKIP_REASON_RE.test(text);
+}
+
+/**
+ * Derive a real success flag from a tool's return value. A tool can return without
+ * throwing yet still represent a failure (HTTP non-2xx wrapped into `{ ok:false }`,
+ * an `error` field, or a stub). The wrapper must NOT log such calls as ok=true —
+ * otherwise tool_usage_log lies about reality.
+ *
+ * Intentional skips (missing required key, provider disabled in config, or an
+ * explicit `skipped` flag) are NOT failures. Keep them out of the tool_usage_log
+ * failure metric so the beta dashboard reflects real errors instead of intentional
+ * no-ops. The UI still renders them as "skipped" via tagSkipState / output.skipped.
+ * (Distinct from genuine 4xx/5xx/parse errors.)
+ *
+ * EXPORTED, and at module scope, so a test can drive THIS function rather than a
+ * copy of its rules. It used to be a closure inside `wrapToolsWithCache`, which left
+ * the quarantine-refusal tests asserting on `isIntentionalSkip` alone — one of the
+ * three inputs to the answer they actually cared about. It closes over nothing, so
+ * hoisting it changes no behaviour.
+ */
+export function deriveOk(result: unknown): boolean {
+  if (!result || typeof result !== "object") return true;
+  const r = result as Record<string, unknown>;
+  if (isIntentionalSkip(r)) return true;
+  if (typeof r.ok === "boolean") return r.ok;
+  if (typeof r.error === "string" && r.error.length > 0) return false;
+  return true;
 }
 
 // ---- Skip-state tagging --------------------------------------------------------

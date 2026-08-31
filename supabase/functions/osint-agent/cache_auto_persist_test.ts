@@ -24,7 +24,7 @@ type SupabaseClient = ReturnType<typeof createClient>;
 // matching how supabase-js query builders are themselves awaitable promises).
 function makeChain(resolveValue: { data: unknown; error: unknown }): Record<string, unknown> {
   const node: Record<string, unknown> = {};
-  for (const m of ["select", "eq", "in", "order", "update", "limit"]) node[m] = () => node;
+  for (const m of ["select", "eq", "in", "order", "update", "limit", "range"]) node[m] = () => node;
   node.maybeSingle = () => Promise.resolve(resolveValue);
   node.then = (resolve: (v: { data: unknown; error: unknown }) => void) => resolve(resolveValue);
   return node;
