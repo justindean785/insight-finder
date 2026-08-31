@@ -20,6 +20,10 @@ import {
 import { evidenceStatus } from "@/lib/evidence-status";
 import { authorityFor, LEDGER_SORT_RANK } from "@/lib/authority";
 import { isQuarantined, clusterDefaultOpen } from "@/lib/quarantine";
+// THE one number this surface renders. Every figure, meter, range, aria-label
+// and citation below reads `effective` — never `a.confidence`. See
+// src/lib/display-confidence.ts for why five pipelines became one.
+import { displayConfidence, effectiveConfidence, effectiveConfidenceOrZero } from "@/lib/display-confidence";
 import { bandCluster, isProseValue, provenanceOf as provFor } from "@/lib/evidence-bands";
 import { readableSourceLabel } from "@/lib/tool-display";
 import { humanizeArtifactMetadata } from "@/lib/artifact-metadata";
@@ -168,7 +172,7 @@ function ArtifactsList({
     }
     const conf = (a: Artifact) => {
       const fp = ((a.metadata ?? {}) as Record<string, unknown>).false_positive === true;
-      return fp ? -1 : (a.confidence ?? 0);
+      return fp ? -1 : effectiveConfidenceOrZero(a);
     };
     const cmp = (a: Artifact, b: Artifact) => {
       if (sortMode === "newest") {
@@ -373,7 +377,7 @@ function ArtifactsList({
           if (isQuarantined(meta)) quarantinedC++;
         }
         // Order kinds by their strongest member so high-value kinds lead.
-        kinds.sort((a, b) => (grouped[g][b][0]?.confidence ?? 0) - (grouped[g][a][0]?.confidence ?? 0));
+        kinds.sort((a, b) => effectiveConfidenceOrZero(grouped[g][b][0]) - effectiveConfidenceOrZero(grouped[g][a][0]));
         return (
           <section key={g} aria-label={GROUP_LABEL[g]}>
             <RuleLabel
@@ -422,7 +426,7 @@ function ArtifactsList({
                 ?? openClusters[FOLD_ALL_KEY]
                 ?? clusterDefaultOpen(collapsible, kindQuarantined);
               // Confidence range across the cluster, for the collapsed summary.
-              const confs = list.map((a) => a.confidence).filter((c): c is number => c != null);
+              const confs = list.map((a) => effectiveConfidence(a)).filter((c): c is number => c != null);
               const lo = confs.length ? Math.min(...confs) : null;
               const hi = confs.length ? Math.max(...confs) : null;
               // Ordinal INK, not hue — see the confColor note on the row.
@@ -539,7 +543,8 @@ function ArtifactRow({
   const sensitive = meta.possible_minor === true || meta.minor_warning === true;
   const rState = review.get(a.id);
   const dismissed = rState === "dismissed";
-  const conf = a.confidence ?? 0;
+  const shown = displayConfidence(a);
+  const conf = shown.effective ?? 0;
   // A confidence is a MAGNITUDE, and magnitude is carried by the length of the
   // hairline below the numeral — never by the numeral's colour. This used to be
   // a three-step by-value ramp (>=70 green, >=50 amber, else red), which is why
@@ -571,7 +576,7 @@ function ArtifactRow({
             `${a.kind} ${a.value}`,
             authority.label,
             authority.caveat ?? "",
-            a.confidence != null ? `${conf}% confidence` : "",
+            shown.effective != null ? `${conf}% confidence` : "",
           ].filter(Boolean).join(". ")}
           data-density-row
           className={cn(
@@ -650,7 +655,7 @@ function ArtifactRow({
           </span>
 
           <span className="flex shrink-0 items-center justify-end gap-0.5" data-ledger-col="confidence">
-            {a.confidence != null && (
+            {shown.effective != null && (
               <>
                 <span className="flex flex-col items-end gap-1">
                   <span className="conf-figure" style={{ color: confColor }}>{conf}</span>
@@ -713,6 +718,10 @@ function ArtifactDrawerInner({
   threadId: string;
 }) {
   const meta = (artifact.metadata ?? {}) as Record<string, unknown>;
+  // Stored, cap, effective and every applicable ceiling — the drawer is the one
+  // surface that shows more than the effective number, because "why is it 60 and
+  // not 88" is exactly the question this panel exists to answer.
+  const shownArtifact = displayConfidence(artifact);
   const metaRows = humanizeArtifactMetadata(meta);
   const falsePositive = meta.false_positive === true;
   const rState = reviewGet(artifact.id);
@@ -751,7 +760,7 @@ function ArtifactDrawerInner({
     }
   };
 
-  const citation = `\`${artifact.value}\` (${artifact.kind}${artifact.source ? `, via ${artifact.source}` : ""}${artifact.confidence != null ? `, ${artifact.confidence}%` : ""})`;
+  const citation = `\`${artifact.value}\` (${artifact.kind}${artifact.source ? `, via ${artifact.source}` : ""}${shownArtifact.effective != null ? `, ${shownArtifact.effective}%` : ""})`;
 
   return (
     <Sheet open onOpenChange={(o) => !o && onClose()}>
@@ -770,9 +779,9 @@ function ArtifactDrawerInner({
             <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 font-mono text-eyebrow uppercase tracking-[0.14em] text-muted-foreground">
               {artifact.kind}
             </span>
-            {artifact.confidence != null && (
+            {shownArtifact.effective != null && (
               <span className="rounded-md border border-[hsl(var(--confidence-mid)/0.35)] bg-[hsl(var(--confidence-mid)/0.1)] px-2 py-1 font-mono text-eyebrow uppercase tracking-[0.14em] text-[hsl(var(--confidence-mid))]">
-                {artifact.confidence}% confidence
+                {shownArtifact.effective}% confidence
               </span>
             )}
             <span className={"rounded-md border px-2 py-1 font-mono text-eyebrow uppercase tracking-[0.14em] " + REVIEW_CLASS[rState]}>
@@ -845,7 +854,7 @@ function ArtifactDrawerInner({
                   <li key={s} className="flex items-center justify-between font-mono">
                     <span className="truncate">{s}</span>
                     <span className="text-data text-muted-foreground shrink-0">
-                      {artifact.confidence != null ? `${artifact.confidence}%` : "—"}
+                      {shownArtifact.effective != null ? `${shownArtifact.effective}%` : "—"}
                     </span>
                   </li>
                 ))}
@@ -984,7 +993,8 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function ArtifactPeek({ artifact: a, confColor }: { artifact: Artifact; confColor: string }) {
   const src = extractSourceInfo(a);
   const created = a.created_at ? new Date(a.created_at) : null;
-  const conf = a.confidence ?? 0;
+  const shown = displayConfidence(a);
+  const conf = shown.effective ?? 0;
   const group = GROUP_LABEL[groupForKind(a.kind)];
   return (
     <div className="bg-popover text-popover-foreground">
@@ -994,13 +1004,13 @@ function ArtifactPeek({ artifact: a, confColor }: { artifact: Artifact; confColo
           <span className="text-muted-foreground">·</span>
           <span className="text-eyebrow font-mono uppercase text-muted-foreground">{a.kind}</span>
         </div>
-        {a.confidence != null && (
+        {shown.effective != null && (
           <span className="text-data font-mono tabular-nums" style={{ color: confColor }}>{conf}%</span>
         )}
       </div>
       <div className="px-3 py-2 space-y-2">
         <div className="font-mono text-data text-foreground break-all">{a.value}</div>
-        {a.confidence != null && (
+        {shown.effective != null && (
           <div className="confidence-track">
             <span
               className="confidence-fill"

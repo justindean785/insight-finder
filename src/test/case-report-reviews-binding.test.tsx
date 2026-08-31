@@ -3,6 +3,7 @@ import { render, cleanup } from "@testing-library/react";
 import { CaseReport, buildAnalyticRadar } from "@/components/panel/CaseReport";
 import { buildIdentityRows } from "@/lib/report-hygiene";
 import { adjustedConfidence, buildReportMarkdown, labelForArtifact } from "@/lib/intel";
+import { effectiveConfidence } from "@/lib/display-confidence";
 import type { ReviewState } from "@/lib/review";
 
 /**
@@ -102,20 +103,54 @@ describe("#478 — CaseReport binds its reviews prop", () => {
   });
 });
 
-describe("#478 — the report scores through adjustedConfidence, not raw confidence", () => {
-  it("Confirm raises the row's score exactly as adjustedConfidence says", () => {
+/**
+ * #478 SUPERSEDED IN PART, 2026-08-31 — and only in part, so read which part.
+ *
+ * #478 bound the report to the REVIEW rather than to the raw column, because the
+ * report's number and label disagreed with the radar on the same tab. That was
+ * right about the disagreement and it fixed it by making the number follow
+ * `adjustedConfidence(a, review)`.
+ *
+ * The display-confidence decision replaces that binding for the NUMBER only. A
+ * displayed figure is now `min(stored, confidence_cap_applied)` on every surface,
+ * so an analyst clicking Confirm no longer moves it — a decision is not new
+ * evidence, and folding +20 into the figure is what made review verdicts useless
+ * as calibration ground truth. #478's actual complaint is still satisfied, and
+ * more strongly than before: the report and the radar cannot disagree, because
+ * neither of them re-derives anything.
+ *
+ * What #478 established that STILL HOLDS, and is still asserted below:
+ *   - the LABEL follows the verdict (`labelForArtifact(a, review)`),
+ *   - the STATUS follows the verdict (`evidenceStatus(a, review)`),
+ *   - the Signal axis and the counters follow the verdict through `bucket()`,
+ *   - a rejected row may not strengthen a positive aggregate.
+ *
+ * Only "the figure follows the verdict" is retired.
+ */
+describe("#478 — the report's LABEL follows the verdict; its NUMBER follows the evidence", () => {
+  it("Confirm raises the CLASSIFICATION score — which is what drives the label", () => {
     const a = art({ id: "y1", confidence: 50 });
-    // The contract: the report must use this number, not a.confidence.
+    // Unchanged: `adjustedConfidence` is still the label ladder's input, and a
+    // verdict still moves it. It is simply no longer rendered.
     expect(adjustedConfidence(a as never, "confirmed")).toBeGreaterThan(50);
   });
 
-  it("the radar's Confidence axis follows the verdict", () => {
+  it("…and does NOT raise the displayed figure", () => {
+    const a = art({ id: "y1b", confidence: 50 });
+    expect(effectiveConfidence(a as never)).toBe(50);
+  });
+
+  it("the radar's Confidence axis reports the EVIDENCE, so a verdict does not move it", () => {
+    // The axis is an average of displayed figures, so it inherits the same rule:
+    // clicking Confirm cannot raise a case's measured confidence. The verdict is
+    // visible on the Signal axis and in the counters instead, which is where a
+    // decision belongs.
     const a = art({ id: "y2", confidence: 50 });
     const before = buildAnalyticRadar([a] as never, "LOW");
     const after = buildAnalyticRadar([a] as never, "LOW", { y2: "confirmed" });
     const axis = (m: ReturnType<typeof buildAnalyticRadar>) =>
       m.find((x) => x.label === "Confidence")!.value;
-    expect(axis(after)).toBeGreaterThan(axis(before));
+    expect(axis(after)).toBe(axis(before));
   });
 
   it("the radar's Signal axis drops when a row is rejected — it shares bucket() with the counters", () => {
@@ -280,11 +315,17 @@ describe("#495 finding B — a rejected row may not strengthen positive aggregat
     expect(after).toBeLessThanOrEqual(before);
   });
 
-  it("Confirm still raises the axis — the positive path is untouched", () => {
+  it("Confirm leaves the Confidence axis alone — the aggregate reports evidence", () => {
+    // This was "Confirm still raises the axis", the control proving #495's
+    // rejection-exclusion had not broken the positive path. The positive path is
+    // still untouched by #495; what changed is the axis itself, which no longer
+    // moves on a verdict at all (2026-08-31). The control that matters now is
+    // that confirming does not move it in EITHER direction — asserted here — and
+    // the rejection behaviour #495 cared about is asserted directly above.
     const a = plain("c1", "email", "c1@example.com", 50);
     const before = confAxis(buildAnalyticRadar([a] as never, "LOW"));
     const after = confAxis(buildAnalyticRadar([a] as never, "LOW", { c1: "confirmed" }));
-    expect(after).toBeGreaterThan(before);
+    expect(after).toBe(before);
   });
 
   it("an empty verdict map leaves every axis identical to no map at all", () => {

@@ -1,4 +1,6 @@
 import { useMemo } from "react";
+// One number, everywhere. See src/lib/display-confidence.ts.
+import { effectiveConfidence, effectiveConfidenceOrZero } from "@/lib/display-confidence";
 import { useThreadArtifacts, type Artifact } from "@/hooks/useThreadArtifacts";
 import { useThreadToolActivity } from "@/hooks/useThreadToolActivity";
 import { useReviewStates } from "@/lib/review";
@@ -94,7 +96,7 @@ export function OverviewTab({ threadId }: { threadId: string }) {
       .filter((x) => x.v.state === "verified" || x.v.state === "infrastructure" || x.v.state === "probable")
       .sort((x, y) => {
         const r = LEDGER_SORT_RANK[x.v.state] - LEDGER_SORT_RANK[y.v.state];
-        return r !== 0 ? r : (y.a.confidence ?? 0) - (x.a.confidence ?? 0);
+        return r !== 0 ? r : effectiveConfidenceOrZero(y.a) - effectiveConfidenceOrZero(x.a);
       })
       .slice(0, 6);
   }, [items, review]);
@@ -311,7 +313,7 @@ export function OverviewTab({ threadId }: { threadId: string }) {
                     <AuthoritySpine state={v.state} />
                     <span className="mono-value min-w-0 truncate text-data text-foreground/95" title={a.value}>{a.value}</span>
                     <AuthorityChip view={v} />
-                    <span className="text-right text-data font-semibold tabular-nums text-foreground/80">{a.confidence ?? "—"}</span>
+                    <span className="text-right text-data font-semibold tabular-nums text-foreground/80">{effectiveConfidence(a) ?? "—"}</span>
                   </li>
                 ))}
               </ul>

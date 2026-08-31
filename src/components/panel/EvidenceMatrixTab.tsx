@@ -1,9 +1,12 @@
 import { useMemo, useState } from "react";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import {
-  CONF_LABEL_CLASS, CONF_LABEL_HELP, labelForArtifact, adjustedConfidence, type ConfLabel,
+  CONF_LABEL_CLASS, CONF_LABEL_HELP, labelForArtifact, type ConfLabel,
   extractSourceInfo, displayKind,
 } from "@/lib/intel";
+// This tab was the surface that read 93 where the board read 88. It now renders
+// the same `effective` value as every other surface. See lib/display-confidence.ts.
+import { displayConfidence, effectiveConfidenceOrZero } from "@/lib/display-confidence";
 import {
   useReviewStates, REVIEW_CLASS, REVIEW_SHORT, REVIEW_STATES, REVIEW_HELP,
   REVIEW_CONFIDENCE_DELTA, launchRecheckInChat, type ReviewState,
@@ -38,7 +41,7 @@ export function EvidenceMatrixTab({
         a,
         review: r,
         label: labelForArtifact(a, r),
-        score: adjustedConfidence(a, r),
+        score: effectiveConfidenceOrZero(a),
       };
     });
     return labelled.filter((r) => {
@@ -168,12 +171,13 @@ export function EvidenceMatrixTab({
             {rows.map(({ a, label, review: rState, score }) => {
               const meta = (a.metadata ?? {}) as Record<string, unknown>;
               const previewFacts = metaFacts(meta);
-              const delta = REVIEW_CONFIDENCE_DELTA[rState] ?? 0;
-              const base = a.confidence ?? 0;
-              // Score bar: base score (neutral) + review delta (green/amber overlay)
-              const basePct = Math.max(0, Math.min(100, base));
-              const deltaPct = Math.max(0, Math.min(100 - basePct, Math.abs(delta)));
-              const deltaColor = delta > 0 ? "hsl(var(--confidence-high))" : "hsl(var(--confidence-mid))";
+              // ONE value drives the bar AND the numeral. They used to disagree
+              // inside a single tile: the bar was the raw stored value while the
+              // numeral beside it was `adjustedConfidence`, so a row read 88 wide
+              // and 93 tall. Both are `effective` now.
+              const shownConf = displayConfidence(a);
+              const stored = shownConf.stored;
+              const basePct = Math.max(0, Math.min(100, shownConf.effective ?? 0));
               // Score colour from the shared 5-tier ramp so the matrix agrees
               // with the grid / cluster / radar everywhere a confidence shows.
               const scoreColor = confidenceColor(score);
@@ -259,17 +263,11 @@ export function EvidenceMatrixTab({
                             className="absolute inset-y-0 left-0 rounded-full transition-all"
                             style={{ width: `${basePct}%`, background: "hsl(var(--muted-foreground) / 0.5)" }}
                           />
-                          {delta !== 0 && (
-                            <div
-                              className="absolute inset-y-0 rounded-full transition-all"
-                              style={{
-                                left: delta > 0 ? `${basePct}%` : `${Math.max(0, basePct - deltaPct)}%`,
-                                width: `${deltaPct}%`,
-                                background: deltaColor,
-                                opacity: delta > 0 ? 0.9 : 0.55,
-                              }}
-                            />
-                          )}
+                          {/* The review-delta overlay is gone with the delta itself.
+                              A confirmation is a decision, not new evidence, so it no
+                              longer moves the number — drawing a segment the figure
+                              does not contain would be the same lie in a new place.
+                              Review state is carried by the REVIEW chip on this tile. */}
                         </div>
                         <span className="font-mono tabular-nums text-data" style={{ color: scoreColor }}>
                           {score}
@@ -280,25 +278,30 @@ export function EvidenceMatrixTab({
                     </TooltipTrigger>
                     <TooltipContent side="bottom" className="max-w-[260px] text-xs">
                       <div className="space-y-0.5">
-                        <div><span className="text-foreground font-medium">Priority {score}/100</span></div>
+                        <div><span className="text-foreground font-medium">Confidence {score}/100</span></div>
                         <div className="text-muted-foreground">
-                          Raw confidence {base}{delta !== 0 && <> · Review <span style={{ color: deltaColor }}>{delta > 0 ? "+" : ""}{delta}</span></>}
+                          {stored !== null && stored !== score
+                            ? <>Stored {stored} · capped to {score} by the source-class ceiling the server recorded</>
+                            : <>As stored by the server</>}
                         </div>
                         <div className="text-muted-foreground text-data mt-1">
-                          Raw confidence comes from the source/tool. Review state changes analyst priority — not the underlying evidence.
+                          One number, everywhere. Independence is measured server-side; review state
+                          changes an artifact's STATUS, never its score.
                         </div>
                       </div>
                     </TooltipContent>
                   </Tooltip>
-                  {/* Raw source confidence chip — always-visible when the analyst review delta
-                      has bent the visible score away from the source-reported value. */}
-                  {delta !== 0 && (
+                  {/* Stored-vs-effective chip. It used to appear when a REVIEW DELTA had
+                      bent the figure away from the source value; deltas no longer touch the
+                      figure, so the only thing that can now separate the two is the server's
+                      recorded cap — which is exactly what an analyst needs to see. */}
+                  {stored !== null && stored !== score && (
                     <div
                       className="mt-1 inline-flex items-center gap-1 text-data text-muted-foreground font-mono"
-                      title="Raw source/tool confidence — not affected by analyst review actions."
+                      title="Stored by the server, before its recorded source-class ceiling was applied."
                     >
-                      <span className="tracking-normal text-eyebrow">raw</span>
-                      <span>{base}/100</span>
+                      <span className="tracking-normal text-eyebrow">stored</span>
+                      <span>{stored}/100</span>
                     </div>
                   )}
 
