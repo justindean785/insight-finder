@@ -15,11 +15,21 @@ Design dossier (the approved plan, updated with the operator's decisions):
 | | |
 |---|---|
 | `main` | `21c3403` — **unchanged this session**, re-fetched twice |
-| Working branch | `claude/investigation-workbench-milestone-wqa3vm` @ **`3ab9e59`** (pushed) |
-| Commits ahead of `main` | 2 · 22 files · +1554 / −116 |
+| Working branch | `claude/investigation-workbench-milestone-wqa3vm` (pushed) |
+| Last **code** commit | **`3ab9e59`** — the two commits in §3. This handoff is a docs-only commit on top of it, so the branch head is one further along. |
+| Code ahead of `main` | 2 commits · 22 files · +1554 / −116 |
 | PR | **NONE OPENED** — operator instruction was push-and-stop |
 | Live `/health` build | `dcd51a2` · `glm-5.2` via the DeepSeek slot, `pinned` · `reveal_breach_data: true` |
 | Frontend gates on `3ab9e59` | **1695 passed / 1 skipped / 136 files** · typecheck 0 · lint **10 warnings, 0 errors** · build 0 · consumer inventory 0 |
+
+⚠️ **This table deliberately does not name the branch HEAD.** The first version
+did, and it was wrong within one second: it recorded `3ab9e59` and then committing
+this file moved the head to `3b551f0`, so the handoff's own state table was a
+commit behind the branch it described. A second session caught it. Any SHA a
+handoff writes about itself is stale the moment it is committed — so read the head
+with `git rev-parse --short origin/claude/investigation-workbench-milestone-wqa3vm`
+and treat `3ab9e59` as what the gate figures above were measured on. Docs commits
+change no code, so those figures stay valid.
 
 **No backend change. No deploy performed, none owed. No migration written or
 applied. #516 and #519 untouched** — #519's head `370e6da` exists only on its own
@@ -183,6 +193,13 @@ injected and 0 when removed.
 - **The shell cwd resets between Bash calls** in this sandbox. `npx vitest` from
   `/home/user` silently resolves the wrong root and reports "no tests".
 
+- **A handoff cannot record its own commit SHA.** §1's first version named the
+  branch head, and committing the file moved that head — so the document was one
+  commit behind the branch it described, and a second session caught it during
+  verification. It is the same shape as the defect this whole session was about:
+  a surface asserting a number it is not in a position to know. Name the branch,
+  name the last CODE commit, and let the reader resolve the head.
+
 ---
 
 ## 5 · Corrections to inherited facts
@@ -232,7 +249,8 @@ all specified in dossier §4 and §9:
 ## 7 · Next steps, in order
 
 1. **Open the draft PR** for `claude/investigation-workbench-milestone-wqa3vm`
-   (`3ab9e59`) — or ask for the workspace UI on top first, then one PR. Operator's
+   (read the head; do not reuse a SHA from this file) — or ask for the workspace
+   UI on top first, then one PR. Operator's
    call; the branch is green and safe either way. **Correct the "137 files" figure
    in the PR body to 136.**
 2. **Build the PR 1 workspace UI** (dossier §9, PR 1). One new dependency:
