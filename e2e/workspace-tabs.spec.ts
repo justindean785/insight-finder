@@ -24,7 +24,31 @@ import { test, expect, type Page, type Locator } from "@playwright/test";
 const THREAD = "/chat/11111111-2222-4333-8444-555555555555";
 const TAB_LABELS = ["Overview", "Investigate", "Evidence", "Tools", "Graph", "Report"] as const;
 
+/**
+ * The harness is self-contained — the Supabase client is stubbed and no fixture
+ * needs the network. The one thing that still reaches out is the Google Fonts
+ * <link> in index.html, and it is expensive: measured here, a navigation that
+ * waits on it takes 12,558ms, versus 99ms with external origins blocked. On a
+ * runner without egress it is a multi-minute tax on a 30-test suite; with egress
+ * it is a third party in the critical path of a layout test.
+ *
+ * Blocking every non-localhost origin makes the suite hermetic and ~35x faster.
+ * The trade is that type renders in fallback metrics rather than Sora/IBM Plex,
+ * which changes tab widths — so `assertStripOverflows` below refuses to let that
+ * silently turn the 894x617 case into a vacuous pass.
+ */
+async function blockExternalOrigins(page: Page) {
+  await page.route("**/*", (route) => {
+    const url = route.request().url();
+    if (url.startsWith("http://127.0.0.1") || url.startsWith("http://localhost")) {
+      return route.continue();
+    }
+    return route.abort();
+  });
+}
+
 async function openWorkspace(page: Page) {
+  await blockExternalOrigins(page);
   await page.goto(THREAD);
   // The strip is the gate for every assertion here; wait on it rather than on a
   // blanket networkidle, which the harness's mocked client never settles into
@@ -67,6 +91,27 @@ test.describe("workspace tab strip", () => {
    * because the first tab sat at a NEGATIVE offset, outside that range in the
    * one direction no scroll can recover.
    */
+  /**
+   * Guard against a vacuous pass, in the same spirit as this repo's
+   * SECURITY DEFINER assertion in CI: at 894x617 the strip MUST actually
+   * overflow, or the reachability assertions below are proving nothing. If a
+   * font change, a shorter label or a narrower tab ever makes six tabs fit at
+   * this width, this fails loudly rather than going quietly green.
+   */
+  test("the 894px case still exercises overflow", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "894x617", "overflow is only expected at the narrow viewport");
+    await openWorkspace(page);
+    const maxScrollLeft = await page.evaluate(() => {
+      const list = document.querySelector('[role="tab"]')!.closest('[role="tablist"]')!;
+      const scroller = list.parentElement as HTMLElement;
+      return scroller.scrollWidth - scroller.clientWidth;
+    });
+    expect(
+      maxScrollLeft,
+      "the six tabs now fit at 894px, so the reachability tests no longer exercise the overflow path this suite exists for",
+    ).toBeGreaterThan(0);
+  });
+
   test("every tab lies within the scroller's reachable range", async ({ page }) => {
     await openWorkspace(page);
 
