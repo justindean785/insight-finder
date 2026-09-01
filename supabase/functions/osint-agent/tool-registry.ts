@@ -240,8 +240,8 @@ async function loadThreadArtifactIdentities(
         index(artifactDedupKey({ kind, value, source }));
 
         // LEGACY SPELLING. `validateArtifact` canonicalises a phone on write, so
-        // a row stored before that change holds "9172915568" while the next
-        // attempt keys on "+19172915568" — the lookup misses and re-inserts the
+        // a row stored before that change holds "9175550123" while the next
+        // attempt keys on "+19175550123" — the lookup misses and re-inserts the
         // duplicate this gate exists to stop. `loadSeenArtifactKeys` already
         // registers both spellings on the auto-persist path; without this the
         // model-facing writers were the one path that did not, which is exactly
@@ -287,7 +287,7 @@ async function findPriorThreadArtifact(
   try {
     // Match the LEGACY spelling too. The exact-value SQL filter is the singular
     // writer's twin of the loader gap above: a thread holding a pre-change
-    // "9172915568" is invisible to a lookup for the canonical "+19172915568",
+    // "9175550123" is invisible to a lookup for the canonical "+19175550123",
     // so re-running an existing thread recreates the very duplicate this gate
     // exists to stop.
     const spellings = [value];

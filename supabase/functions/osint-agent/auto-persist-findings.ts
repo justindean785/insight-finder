@@ -296,11 +296,11 @@ export function normalizeFinding(kind: string, value: unknown): { kind: string; 
       if (digits.replace(/\D/g, "").length < 7) return null;
       // CANONICAL E.164 (2026-08-28). Dedup is `checkpointKey(kind, value)` —
       // exact equality — so the spelling IS the identity. A measured run wrote
-      // +19172915568, 19172915568 and 9172915568 as three artifacts in three
+      // +19175550123, 19175550123 and 9175550123 as three artifacts in three
       // cluster slots for one number, then the clusterer folded them back
       // together, because this fold ran only at cluster time.
       //
-      // The fold deliberately does NOT collapse 79172915568 (a Russian +7
+      // The fold deliberately does NOT collapse 79175550123 (a Russian +7
       // number sharing ten digits with the US one) — see selector-normalize.ts.
       //
       // FALLBACK, not a narrowing: normPhoneE164 returns null below 8 digits,
@@ -420,7 +420,7 @@ const UNLINKED_ECHO_CTX = {
  *  below mints phone/email/name/address from those same rows, at full subject
  *  authority.
  *
- *  MEASURED 2026-08-26: a run pivoting on +19172915568 persisted 79172915568 —
+ *  MEASURED 2026-08-26: a run pivoting on +19175550123 persisted 79175550123 —
  *  a Russian +7 number off a `zoloto585.ru` row belonging to a different person
  *  — as a subject selector with its own cluster id. */
 const CO_TENANT_CTX = {
@@ -525,7 +525,7 @@ function echoesQueriedSelector(value: string, queriedRaw: string, seedName: stri
  * query is trusted and only NAME-only queries quarantine. That is a settled
  * boundary, and moving it needs sign-off, not a drive-by.
  *
- * The measured defect is a PHONE mismatch (+1917… queried, 79172915568
+ * The measured defect is a PHONE mismatch (+1917… queried, 79175550123
  * returned). There is no measured email case, and widening an integrity signal
  * past its evidence to reach a tidier result is how the other over-applications
  * in this module happened. If an email co-tenant is ever measured, that is the
@@ -1545,8 +1545,8 @@ export async function loadSeenArtifactKeys(
         if (!k || !v) continue;
         seen.add(checkpointKey(k, v));
         // MIGRATION-FREE RECONCILIATION. Rows written before the canonical phone
-        // fold hold "9172915568" where a new extraction now yields
-        // "+19172915568" — different keys for one number, so the legacy row
+        // fold hold "9175550123" where a new extraction now yields
+        // "+19175550123" — different keys for one number, so the legacy row
         // would not block the re-insert. Registering the normalized spelling too
         // makes old and new rows agree without touching a single stored row.
         const n = normalizeFinding(k, v);
