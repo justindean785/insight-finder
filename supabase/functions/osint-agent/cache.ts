@@ -1363,9 +1363,12 @@ export function wrapToolsWithCache(
         // latches once per correlate cycle, so it is a single directive rather than
         // a banner on every payload.
         //
-        // Recording tools are excluded: record_artifacts already spreads
-        // correlateNudge() itself, and double-delivery would waste the latch on the
-        // one surface that never needed it.
+        // Recording tools are excluded HERE because record_artifacts surfaces the
+        // hint on its own result — but it now takes it through the SAME latch, so
+        // there is exactly one delivery per cycle whichever surface reaches the
+        // model first. (Review caught the earlier version: record_artifacts called
+        // the UNLATCHED correlateNudge(), so excluding recording tools from this
+        // path did nothing to stop a second, ungoverned delivery.)
         if (ok && !ALWAYS_ALLOW_TOOLS.has(name) && result && typeof result === "object" && !Array.isArray(result)) {
           const hint = takeCorrelateHint();
           if (Object.keys(hint).length > 0) {

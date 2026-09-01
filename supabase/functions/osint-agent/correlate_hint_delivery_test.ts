@@ -126,3 +126,43 @@ Deno.test("a run that persists nothing never delivers", () => {
   assertEquals(hintKeys(takeCorrelateHint()).length, 0);
   assertEquals(guard.correlateHintDelivered, false);
 });
+
+// ── ONE LATCH GOVERNS BOTH SURFACES (review finding, invariant (d)) ─────────
+// The first version of this change left `record_artifacts` calling the UNLATCHED
+// `correlateNudge()`, so the hint could be delivered twice in one cycle: once on a
+// live tool result and again on the recording result. Excluding recording tools
+// from the new path did nothing about the old one. Both now take through
+// `takeCorrelateHint`, so the latch is authoritative across every surface.
+Deno.test("both delivery surfaces share ONE latch — no double delivery per cycle", () => {
+  resetCorrelateCycle();
+  bumpAutoPersistedArtifacts(persisted(20));
+  // Surface 1: a live tool result (cache.ts wrapper).
+  assertEquals(hintKeys(takeCorrelateHint()), ["correlate_hint"]);
+  // Surface 2: the record_artifacts result — must find the latch already spent.
+  assertEquals(hintKeys(takeCorrelateHint()).length, 0, "record_artifacts must not re-deliver in the same cycle");
+});
+
+Deno.test("either surface may be first — the latch does not privilege one", () => {
+  resetCorrelateCycle();
+  bumpAutoPersistedArtifacts(persisted(20));
+  const first = takeCorrelateHint();          // whichever reaches the model first
+  assertEquals(hintKeys(first), ["correlate_hint"]);
+  resetCorrelateCycle();
+  bumpAutoPersistedArtifacts(persisted(20));
+  const other = takeCorrelateHint();
+  assertEquals(other, first, "the directive is identical regardless of which surface carries it");
+});
+
+// ── THE PROMPT CONTRACT MUST MATCH THE WIDENED SURFACE ─────────────────────
+// Delivering the hint on a search result is inert if the system prompt still tells
+// the model to honour it only on a `record_artifacts` result. That mismatch is how
+// a correct mechanism ships and changes nothing — the #530 failure shape.
+Deno.test("the system prompt directs the model to honour the hint on ANY tool result", async () => {
+  const prompt = await Deno.readTextFile(new URL("./system-prompt.ts", import.meta.url));
+  const line = prompt.split("\n").find((l) => l.includes("correlate_hint"));
+  assert(line, "the prompt must still mention correlate_hint");
+  assert(
+    /ANY tool result carries a[^a-z]*correlate_hint/i.test(line!),
+    "the directive must not be scoped to record_artifacts — that is the surface the model opens LAST",
+  );
+});
