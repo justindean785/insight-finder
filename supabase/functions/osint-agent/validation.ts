@@ -359,8 +359,8 @@ export function validateArtifact(kind: string, rawValue: string): ValidateResult
       const reserved = isReservedOrInvalidPhone(value);
       // CANONICAL E.164 (2026-08-28) — the SAME fold the auto-persist extractor
       // and the clusterer use. This case stored the model's spelling verbatim,
-      // so `record_artifacts`/`record_artifact` could mint 9172915568 as its own
-      // row beside an existing +19172915568 no matter what the extractor did.
+      // so `record_artifacts`/`record_artifact` could mint 9175550123 as its own
+      // row beside an existing +19175550123 no matter what the extractor did.
       // Three writers, one identity. `isReservedOrInvalidPhone` deliberately
       // still reads the ORIGINAL — it digit-strips internally, so the verdict is
       // identical and the diff stays at zero.

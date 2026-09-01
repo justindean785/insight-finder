@@ -30,6 +30,7 @@ import { dedupeCheckpoints } from "@/lib/chat-checkpoints";
 import { computePivots } from "@/lib/pivot-engine";
 import { sanitizeChatText } from "@/lib/sanitize-agent-text";
 import { scrollBehavior } from "@/lib/motion";
+import { fetchWithRetry } from "@/lib/fetch-retry";
 import { deriveToolCharge, deriveToolPreview, deriveToolRuntime, deriveToolTone } from "@/lib/tool-run";
 import { shouldFollowChatScroll, shouldAdoptInitialMessages, CHAT_REENGAGE_THRESHOLD_PX } from "@/lib/chat-scroll";
 import {
@@ -58,7 +59,6 @@ const FUNCTIONS_URL = osintAgentUrl(SUPABASE_URL, SUPABASE_PROJECT_ID);
 
 const FAIL_PREFIX = "__STATUS__:failed:";
 const CACHE_BANNER_TYPE = "data-investigation-cache";
-const RETRYABLE_HTTP_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 type NextStepSuggestion = {
   title: string;
@@ -107,26 +107,6 @@ function describeTransportError(err: unknown): string {
   if (status && status >= 500) return `Backend error (HTTP ${status}) — the OSINT agent encountered a server fault. Check Supabase function logs for details.`;
   if (/failed to fetch|networkerror|network request failed|load failed|dns/i.test(msg)) return "Network failure — cannot reach the scan backend. Verify your Supabase project is running and the function URL is correct.";
   return "Scan request failed before the stream started — check the browser console for transport details.";
-}
-
-async function fetchWithRetry(url: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  const maxAttempts = 3;
-  let lastErr: unknown = null;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      const res = await fetch(url, init);
-      if (!RETRYABLE_HTTP_CODES.has(res.status) || attempt === maxAttempts) return res;
-      const delayMs = 250 * Math.pow(2, attempt - 1);
-      await new Promise((r) => setTimeout(r, delayMs));
-      continue;
-    } catch (e) {
-      lastErr = e;
-      if (attempt === maxAttempts) throw e;
-      const delayMs = 250 * Math.pow(2, attempt - 1);
-      await new Promise((r) => setTimeout(r, delayMs));
-    }
-  }
-  throw lastErr ?? new Error("fetch retry exhausted");
 }
 
 function copyToClipboard(text: string, label = "Copied") {
