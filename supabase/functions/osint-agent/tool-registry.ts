@@ -105,7 +105,7 @@ import {
 
 import {
   guard, routingGuard, CONSUMER_DOMAINS, STAGE2_TOOLS,
-  triageState, bumpArtifacts, skipStub, correlateNudge,
+  triageState, bumpArtifacts, skipStub, takeCorrelateHint, resetCorrelateCycle,
 } from "./guard.ts";
 import { reviewMemoryBatch, type MemoryEntry } from "./lib/memory_consolidate.ts";
 import type { Artifact as ClusterArtifact } from "./lib/cluster.ts";
@@ -755,7 +755,7 @@ export function buildTools(ctx: ToolContext) {
             signal: (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal,
           });
           const parsed = safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content };
-          guard.artifactsSinceCorrelate = 0;
+          resetCorrelateCycle();
           return { ok: r.ok, status: r.status, analysis: parsed };
         } catch (e) { return { error: String(e) }; }
       },
@@ -5198,7 +5198,13 @@ export function buildTools(ctx: ToolContext) {
           // Audit F1: once enough new artifacts have accrued since the last correlate,
           // surface a hint so the orchestrator actually runs minimax_correlate (it never
           // fired in the audited run). Empty object when not yet due.
-          ...correlateNudge(),
+          //
+          // Takes through the SAME latch as the fan-out delivery path. This used to
+          // call the unlatched `correlateNudge()`, which meant the hint could be
+          // delivered twice in one cycle — once on a live tool result and again
+          // here — because the latch did not govern this surface. One directive per
+          // cycle, whichever surface reaches the model first.
+          ...takeCorrelateHint(),
         };
       },
     }),
