@@ -37,7 +37,7 @@ import {
 import { type ArtifactRetrieval, buildEvidenceRecord, isFindingRow } from "./lib/evidence-record.ts";
 import { composePersistedParts } from "./lib/evidence-record-persist.ts";
 import { sanitizeModelMessages, capToolResultOutputs, summarizeToolResultValue } from "./message-sanitize.ts";
-import { guard, routingGuard, triageState, countRecordArtifactCalls, countModelMessageToolCalls, bumpAutoPersistedArtifacts } from "./guard.ts";
+import { guard, routingGuard, triageState, countRecordArtifactCalls, countModelMessageToolCalls, bumpAutoPersistedArtifacts, resetCorrelateCycle, correlateDue } from "./guard.ts";
 import { setupRequest } from "./auth.ts";
 import { minimax, minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider } from "./orchestrator_select.ts";
@@ -51,7 +51,7 @@ import {
   capTotalToBudget, deadlineReached, isToolBudgetExhausted, buildIntermediateStepPlan,
 } from "./orchestrator-budget.ts";
 import {
-  shouldForceFinalize, buildFinalizeStepPlan, buildPerCycleCompactDirective,
+  shouldForceFinalize, buildFinalizeStepPlan, buildPerCycleCompactDirective, shouldDeferFinalizeForCorrelate,
   activeToolsOutsideFinalize, countFinalizeProgress, resolveFinalizePhase, type FinalizePhase,
   shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS,
   extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt,
@@ -122,7 +122,7 @@ Deno.serve(async (req) => {
   resetFirecrawlCreditsLow();
 
   // ---- Reset guard/triage state (module-scoped, must be reset per-request) ----
-  guard.artifactsSinceCorrelate = 0;
+  resetCorrelateCycle();
   routingGuard.artifactsTotal = 0;
   routingGuard.memoryRecallTimestamps = [];
   routingGuard.memoryRecallSubjectsThisStep.clear();
@@ -889,7 +889,8 @@ Deno.serve(async (req) => {
         // that removed the "stream updates, then summarize" behavior. Left out so the
         // model concludes on its own, as it did days ago.
         const elapsedMsNow = Date.now() - runStartedAt;
-        if (finalizeStarted || capReached || shouldForceFinalize(elapsedMsNow, stepNumber ?? 0)) {
+        const correlatePending = shouldDeferFinalizeForCorrelate(correlateDue(), guard.lastCorrelateOutcome);
+        if (finalizeStarted || capReached || (shouldForceFinalize(elapsedMsNow, stepNumber ?? 0) && !correlatePending)) {
           const progress = countFinalizeProgress(stepMessages as Array<{ content?: unknown }>);
           if (!finalizeStarted) {
             finalizeStarted = true;

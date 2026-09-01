@@ -76,6 +76,7 @@ const KIND_TO_GROUP: Record<string, Group> = {
   handle: "social",
   social: "social",
   account: "social",
+  social_footprint: "social",
   ip: "infrastructure",
   // The extractor emits BOTH `ip` and `ip_address` for the same concept. Only
   // `ip` was mapped, so `ip_address` fell through to "other" — on the
@@ -93,6 +94,7 @@ const KIND_TO_GROUP: Record<string, Group> = {
   // The auto-persist collapse emits breach_exposure instead of many `breach`
   // rows; without this the collapsed row silently fell through to "other".
   breach_exposure: "breach",
+  bulk_corpus_harvest: "breach",
   credential_exposure: "breach",
   password: "breach",
   hash: "breach",

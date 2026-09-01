@@ -14,8 +14,9 @@ import { creditsCharged } from "./billing.ts";
 import { classifyToolOutcome } from "./tool-outcome.ts";
 import * as circuit from "./circuit.ts";
 import { buildRefusedKeys, dispatchTypeCandidates, isDispatchRefused, quarantineRefusal, reasonForKey } from "./lib/dispatch-quarantine.ts";
-import { guard } from "./guard.ts";
+import { guard, takeCorrelateHint } from "./guard.ts";
 import { reserveToolCall } from "./orchestrator-budget.ts";
+import { isFinalizeWindowLiveLookupExempt } from "./orchestrator-finalize.ts";
 import {
   ALWAYS_ALLOW_TOOLS,
   analyzeWeakLead,
@@ -1081,7 +1082,11 @@ export function wrapToolsWithCache(
         // only called between model steps. A long/parallel step can still attempt new
         // lookups after the window opens; skip them here so CPU is reserved for the
         // record/report closeout. Recording tools are exempt.
-        if (ctx.shouldStopLiveLookups?.() && !ALWAYS_ALLOW_TOOLS.has(name)) {
+        if (
+          ctx.shouldStopLiveLookups?.() &&
+          !ALWAYS_ALLOW_TOOLS.has(name) &&
+          !isFinalizeWindowLiveLookupExempt(name)
+        ) {
           await logUsage(false, false, Date.now() - t0, "finalize window open; live lookup skipped", null, true, {
             input: inputJson,
             runtime: { ...runtimeMetaBase, rejection_reason: "finalize_window", rejection_source: "deadline", stale_cache: !!staleRecord },
@@ -1347,6 +1352,33 @@ export function wrapToolsWithCache(
         if (AUTO_EVIDENCE_TOOLS.has(name)) {
           // Fire-and-forget: never let auto-evidence block the tool result.
           autoAppendToolEvidence(ctx.supabase, ctx, name, input, result).catch(() => {});
+        }
+        // ---- Correlate hint delivery -------------------------------------------
+        // The hint used to ride ONLY on a record_artifacts result. Measured on
+        // build 3d5130e (thread 15ebf7d4): the model called record_artifacts once,
+        // as call 22 of 23, right before memory_save ended the run. The pass was
+        // genuinely due by then — so the hint fired correctly and arrived with no
+        // fan-out left to influence. A trigger delivered through a channel the
+        // model only opens at the end is not a trigger.
+        //
+        // So it also rides the ordinary results the model reads mid-run. Attached
+        // ONLY here, on the live-success path: a failure, a skip, a cache hit and a
+        // finalize-window refusal all return earlier and are untouched, so this can
+        // never dress up a non-result as carrying a directive. `takeCorrelateHint`
+        // latches once per correlate cycle, so it is a single directive rather than
+        // a banner on every payload.
+        //
+        // Recording tools are excluded HERE because record_artifacts surfaces the
+        // hint on its own result — but it now takes it through the SAME latch, so
+        // there is exactly one delivery per cycle whichever surface reaches the
+        // model first. (Review caught the earlier version: record_artifacts called
+        // the UNLATCHED correlateNudge(), so excluding recording tools from this
+        // path did nothing to stop a second, ungoverned delivery.)
+        if (ok && !ALWAYS_ALLOW_TOOLS.has(name) && result && typeof result === "object" && !Array.isArray(result)) {
+          const hint = takeCorrelateHint();
+          if (Object.keys(hint).length > 0) {
+            return { ...(result as Record<string, unknown>), ...hint } as typeof result;
+          }
         }
         return result;
       },
