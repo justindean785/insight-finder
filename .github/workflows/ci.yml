@@ -167,47 +167,26 @@ jobs:
         run: npm run test:edge
 
   # ── Workspace e2e ────────────────────────────────────────────────────────
-  # Gated on UI-relevant paths, deliberately. This repo has had its shared
-  # Actions allowance exhausted once already (the Edge Health cron, removed in
-  # #483, billed a 10s curl as a full minute every 15 minutes and took CI down
-  # on every PR for ~70 hours). A browser job on every backend-only PR is the
-  # same mistake in a different shape, so `changes` decides first and costs
-  # about two seconds.
-  changes:
-    name: Detect UI changes
-    runs-on: ubuntu-latest
-    outputs:
-      ui: ${{ steps.filter.outputs.ui }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - id: filter
-        run: |
-          set -euo pipefail
-          # A push to main always runs the suite: main is the branch production
-          # deploys from, so it is the one place a gap in coverage actually ships.
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
-            echo "ui=true" >> "$GITHUB_OUTPUT"
-            echo "not a pull request — running e2e"
-            exit 0
-          fi
-          base="${{ github.event.pull_request.base.sha }}"
-          head="${{ github.event.pull_request.head.sha }}"
-          changed=$(git diff --name-only "$base" "$head")
-          echo "$changed" | sed 's/^/  /'
-          if echo "$changed" | grep -qE '^(src/|e2e/|index\.html|playwright\.config\.ts|tailwind\.config\.ts|vite\.(config|harness\.config)\.ts|package(-lock)?\.json|\.github/workflows/ci\.yml)'; then
-            echo "ui=true" >> "$GITHUB_OUTPUT"
-            echo "UI-relevant paths changed — running e2e"
-          else
-            echo "ui=false" >> "$GITHUB_OUTPUT"
-            echo "no UI-relevant paths changed — skipping e2e"
-          fi
-
+  # Runs on pushes to main ONLY, not on pull requests — a deliberate cost call.
+  #
+  # This repo has had its shared Actions allowance exhausted once already: the
+  # Edge Health cron removed in #483 billed a ~10s curl as a full minute every
+  # 15 minutes and took CI down on every PR for ~70 hours. A browser job on
+  # every PR is the same shape of bill, so it is spent where it protects
+  # production instead: main is the branch Vercel deploys from.
+  #
+  # The trade, stated plainly so nobody discovers it during an incident: a PR
+  # can go green and merge while breaking the tab-reachability contract, and
+  # the failure surfaces on main AFTER the merge — a revert, not a block. If
+  # that becomes the wrong balance, the narrower fix is a path filter on the
+  # tab components and e2e/ rather than restoring it for every PR.
+  #
+  # Run it against a branch by hand any time: `npm run test:e2e`.
   e2e:
     name: Workspace e2e (playwright)
-    needs: changes
-    if: needs.changes.outputs.ui == 'true'
+    # The workflow triggers on pull_request and on push to main, so this is
+    # exactly "pushes to main".
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
