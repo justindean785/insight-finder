@@ -534,6 +534,28 @@ All colors MUST be HSL.
     background: linear-gradient(180deg, hsl(var(--film) / 0.045), hsl(var(--film) / 0.012));
   }
 
+  /* ── Safe centering for scrollable strips ────────────────────────────────
+     `justify-content: center` on a horizontally scrollable flex container is a
+     trap: when the content is wider than the box, the overflow is split across
+     BOTH sides, and the left half sits at a negative offset that `scrollLeft`
+     can never reach. The first item is then permanently off-origin — visually
+     under whatever is stacked to its left, unclickable by pointer, yet still
+     reachable by keyboard because focus does not care about paint order. That
+     is exactly what the workspace tab strip did at 894px: Overview sat beneath
+     the z-10 rail and swallowed every click.
+
+     `safe center` centres while the content fits and falls back to start the
+     moment it overflows, so nothing is ever placed out of scroll range.
+
+     The `flex-start` line below it is the fallback for engines without `safe`.
+     It is deliberately NOT `center`: an engine that cannot do `safe` would
+     otherwise inherit the original bug. Losing centring is cosmetic; losing a
+     clickable tab is not. */
+  .justify-safe-center {
+    justify-content: flex-start;
+    justify-content: safe center;
+  }
+
   /* ── Active view key ──────────────────────────────────────────────────────
      The selected tab in the workspace strip. It was a flat 16%-alpha tint with
      an inset ring — legible, but the same object as an unselected tab wearing a

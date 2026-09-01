@@ -54,7 +54,10 @@ export function ViewWorkspaceTabs({
 
   return (
     <div className="border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(var(--surface-2)/0.5),hsl(var(--surface-0)/0.38))] px-3 py-2.5">
-      <div className="mx-auto max-w-6xl flex justify-center overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      {/* Same `safe center` reasoning as WorkspaceTabs — see the comment there.
+          This strip has not been observed clipping (it renders four tabs, not
+          six) but carries the identical construction. */}
+      <div className="mx-auto max-w-6xl flex justify-safe-center overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <div
           role="tablist"
           aria-label="Case views"
