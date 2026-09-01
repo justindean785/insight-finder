@@ -244,6 +244,8 @@ const ALLOWED_KINDS = new Set<string>([
   "url", "email", "breach_exposure", "social_account", "github_repo", "github_account",
   "phone", "domain", "ip_address", "leak_paste", "document",
   "name", "address", "organization", "username",
+  // Collapsed harvest shapes — one artifact carries many underlying rows in metadata.
+  "social_footprint", "bulk_corpus_harvest",
 ]);
 
 const EMAIL_RE = /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i;
@@ -363,6 +365,11 @@ export function normalizeFinding(kind: string, value: unknown): { kind: string; 
       if (/\s/.test(un)) return null;          // usernames have no whitespace
       return { kind: "username", value: un };
     }
+    case "social_footprint":
+    case "bulk_corpus_harvest": {
+      if (v.length < 4 || v.length > 240) return null;
+      return { kind: k, value: v.replace(/\s+/g, " ").trim() };
+    }
   }
   return null;
 }
@@ -376,6 +383,16 @@ function pushUrl(out: ExtractedFinding[], url: unknown, ctx: Record<string, unkn
 export const SWEEP_COLLAPSE_ENABLED = true;
 /** Below this many hits, individual URLs are still legible — don't collapse. */
 export const SWEEP_COLLAPSE_MIN_HITS = 3;
+
+/** Kill switch: false restores one quarantined artifact per bulk-corpus identity. */
+export const BULK_CORPUS_COLLAPSE_ENABLED = true;
+/** Identity rows retained inside a collapsed bulk-corpus summary. */
+export const MAX_BULK_CORPUS_ITEMS_RETAINED = 250;
+
+/** True when a row carries the bulk-corpus quarantine stamp from `coCorpusCtx`. */
+export function isBulkCorpusQuarantine(ctx: Record<string, unknown> | undefined): boolean {
+  return /bulk corpus return/i.test(String(ctx?.subject_unlinked_reason ?? ""));
+}
 
 // Input fields, in priority order, that name the selector a breach tool was
 // queried ON. Every breach lookup is invoked with one of these.
@@ -1273,6 +1290,65 @@ export function extractFindings(
         if (echoesQueriedSelector(f.value, queried, subjectSeedName ?? "")) continue;
         f.context = { ...(f.context ?? {}), ...ctx };
       }
+    }
+  }
+
+  // BULK CORPUS COLLAPSE — one summary row, not 67 identical quarantine cards.
+  // Mirrors username_sweep / breach_exposure collapse: the ARTIFACT count drops,
+  // every harvested identity is retained in metadata.harvested_identities.
+  if (BULK_CORPUS_COLLAPSE_ENABLED) {
+    const queried = queriedSelectorRaw(input);
+    const kept: ExtractedFinding[] = [];
+    const collapsed: ExtractedFinding[] = [];
+    for (const f of findings) {
+      if (!CORPUS_IDENTITY_KINDS.has(f.kind)) {
+        kept.push(f);
+        continue;
+      }
+      const ctx = f.context as Record<string, unknown> | undefined;
+      if (!isBulkCorpusQuarantine(ctx)) {
+        kept.push(f);
+        continue;
+      }
+      if (echoesQueriedSelector(f.value, queried, subjectSeedName ?? "")) {
+        kept.push(f);
+        continue;
+      }
+      collapsed.push(f);
+    }
+    if (collapsed.length > 0) {
+      const harvested = collapsed.map((f) => ({ kind: f.kind, value: f.value }));
+      const retained = harvested.slice(0, MAX_BULK_CORPUS_ITEMS_RETAINED);
+      const totalIdentities = collapsed.length;
+      // Parse the cardinality from the shared reason when present — it names the
+      // full lookup yield, which can exceed what survived the per-call cap.
+      const parsedTotal = Number(
+        String(collapsed[0]?.context?.subject_unlinked_reason ?? "").match(/(\d+) person identities/)?.[1] ?? "",
+      );
+      const lookupYield = Number.isFinite(parsedTotal) && parsedTotal > 0 ? parsedTotal : totalIdentities;
+      const anchor = breachSubjectAnchor(o, input) || queried || "";
+      kept.unshift({
+        kind: "bulk_corpus_harvest",
+        value: anchor
+          ? `${lookupYield} unlinked identities — bulk corpus (${anchor})`
+          : `${lookupYield} unlinked identities — bulk corpus return`,
+        context: {
+          tool: toolName,
+          via: toolName,
+          bulk_corpus: true,
+          identity_count: lookupYield,
+          collapsed_row_count: totalIdentities,
+          queried_selector: anchor || queried || null,
+          harvested_identities: retained,
+          ...(harvested.length > retained.length
+            ? { harvested_truncated: true, harvested_retained: retained.length }
+            : {}),
+          ...coCorpusCtx(lookupYield),
+        },
+        rawConfidence: 40,
+      });
+      findings.length = 0;
+      findings.push(...kept);
     }
   }
 
