@@ -14,7 +14,7 @@ import { creditsCharged } from "./billing.ts";
 import { classifyToolOutcome } from "./tool-outcome.ts";
 import * as circuit from "./circuit.ts";
 import { buildRefusedKeys, dispatchTypeCandidates, isDispatchRefused, quarantineRefusal, reasonForKey } from "./lib/dispatch-quarantine.ts";
-import { guard } from "./guard.ts";
+import { guard, takeCorrelateHint } from "./guard.ts";
 import { reserveToolCall } from "./orchestrator-budget.ts";
 import {
   ALWAYS_ALLOW_TOOLS,
@@ -1347,6 +1347,30 @@ export function wrapToolsWithCache(
         if (AUTO_EVIDENCE_TOOLS.has(name)) {
           // Fire-and-forget: never let auto-evidence block the tool result.
           autoAppendToolEvidence(ctx.supabase, ctx, name, input, result).catch(() => {});
+        }
+        // ---- Correlate hint delivery -------------------------------------------
+        // The hint used to ride ONLY on a record_artifacts result. Measured on
+        // build 3d5130e (thread 15ebf7d4): the model called record_artifacts once,
+        // as call 22 of 23, right before memory_save ended the run. The pass was
+        // genuinely due by then — so the hint fired correctly and arrived with no
+        // fan-out left to influence. A trigger delivered through a channel the
+        // model only opens at the end is not a trigger.
+        //
+        // So it also rides the ordinary results the model reads mid-run. Attached
+        // ONLY here, on the live-success path: a failure, a skip, a cache hit and a
+        // finalize-window refusal all return earlier and are untouched, so this can
+        // never dress up a non-result as carrying a directive. `takeCorrelateHint`
+        // latches once per correlate cycle, so it is a single directive rather than
+        // a banner on every payload.
+        //
+        // Recording tools are excluded: record_artifacts already spreads
+        // correlateNudge() itself, and double-delivery would waste the latch on the
+        // one surface that never needed it.
+        if (ok && !ALWAYS_ALLOW_TOOLS.has(name) && result && typeof result === "object" && !Array.isArray(result)) {
+          const hint = takeCorrelateHint();
+          if (Object.keys(hint).length > 0) {
+            return { ...(result as Record<string, unknown>), ...hint } as typeof result;
+          }
         }
         return result;
       },

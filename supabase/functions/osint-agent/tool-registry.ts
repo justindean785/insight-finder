@@ -105,7 +105,7 @@ import {
 
 import {
   guard, routingGuard, CONSUMER_DOMAINS, STAGE2_TOOLS,
-  triageState, bumpArtifacts, skipStub, correlateNudge,
+  triageState, bumpArtifacts, skipStub, correlateNudge, resetCorrelateCycle,
 } from "./guard.ts";
 import { reviewMemoryBatch, type MemoryEntry } from "./lib/memory_consolidate.ts";
 import type { Artifact as ClusterArtifact } from "./lib/cluster.ts";
@@ -755,7 +755,7 @@ export function buildTools(ctx: ToolContext) {
             signal: (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal,
           });
           const parsed = safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content };
-          guard.artifactsSinceCorrelate = 0;
+          resetCorrelateCycle();
           return { ok: r.ok, status: r.status, analysis: parsed };
         } catch (e) { return { error: String(e) }; }
       },
