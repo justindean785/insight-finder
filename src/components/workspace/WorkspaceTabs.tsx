@@ -271,11 +271,25 @@ export function WorkspaceTabs({
   // chat column so chrome and content share one symmetrical axis.
   return (
     <div className="relative border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(var(--surface-2)/0.72),hsl(var(--surface-0)/0.55))] backdrop-blur-xl">
-      <div className="chat-column mx-auto flex justify-center overflow-x-auto px-4 py-2 sm:px-7 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      {/* `safe center`, not `center`. A plain `justify-content: center` on an
+          overflow container distributes the overflow to BOTH sides, and the left
+          half lands at a negative offset that `scrollLeft` can never reach — so
+          the first tab sits permanently off-origin, underneath the z-10 rail,
+          unclickable by pointer while still reachable by keyboard. `safe` falls
+          back to start alignment the moment the content overflows, which keeps
+          every tab inside the scrollable range. Browsers without `safe` drop the
+          declaration and inherit `normal` (= start), which is the same safe
+          behaviour rather than a regression. */}
+      <div className="chat-column mx-auto flex justify-safe-center overflow-x-auto px-4 py-2 sm:px-7 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <div
           role="tablist"
           aria-label="Investigation workspace"
-          className="inline-flex w-full max-w-full items-center justify-center gap-0.5 rounded-xl border border-white/[0.08] bg-[hsl(var(--film)/0.035)] p-1 shadow-[inset_0_1px_0_hsl(var(--film)/0.05)] sm:w-auto sm:gap-1"
+          // `shrink-0` + `sm:w-max`: as a flex item this list was shrinking below
+          // its content (550px box around 675px of tabs) with `overflow-x: visible`,
+          // so the tabs escaped the list's own bounds and the scroller's
+          // scrollWidth never accounted for them. At its natural width the list
+          // overflows the SCROLLER instead, which is the thing that can scroll.
+          className="inline-flex w-full max-w-full shrink-0 items-center justify-safe-center gap-0.5 rounded-xl border border-white/[0.08] bg-[hsl(var(--film)/0.035)] p-1 shadow-[inset_0_1px_0_hsl(var(--film)/0.05)] sm:w-max sm:gap-1"
         >
           {TABS.map((t, idx) => {
             const Icon = t.icon;
