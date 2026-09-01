@@ -165,3 +165,81 @@ jobs:
           deno-version: v2.x
       - name: Deno edge tests
         run: npm run test:edge
+
+  # ── Workspace e2e ────────────────────────────────────────────────────────
+  # Gated on UI-relevant paths, deliberately. This repo has had its shared
+  # Actions allowance exhausted once already (the Edge Health cron, removed in
+  # #483, billed a 10s curl as a full minute every 15 minutes and took CI down
+  # on every PR for ~70 hours). A browser job on every backend-only PR is the
+  # same mistake in a different shape, so `changes` decides first and costs
+  # about two seconds.
+  changes:
+    name: Detect UI changes
+    runs-on: ubuntu-latest
+    outputs:
+      ui: ${{ steps.filter.outputs.ui }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: filter
+        run: |
+          set -euo pipefail
+          # A push to main always runs the suite: main is the branch production
+          # deploys from, so it is the one place a gap in coverage actually ships.
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "ui=true" >> "$GITHUB_OUTPUT"
+            echo "not a pull request — running e2e"
+            exit 0
+          fi
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          changed=$(git diff --name-only "$base" "$head")
+          echo "$changed" | sed 's/^/  /'
+          if echo "$changed" | grep -qE '^(src/|e2e/|index\.html|playwright\.config\.ts|tailwind\.config\.ts|vite\.(config|harness\.config)\.ts|package(-lock)?\.json|\.github/workflows/ci\.yml)'; then
+            echo "ui=true" >> "$GITHUB_OUTPUT"
+            echo "UI-relevant paths changed — running e2e"
+          else
+            echo "ui=false" >> "$GITHUB_OUTPUT"
+            echo "no UI-relevant paths changed — skipping e2e"
+          fi
+
+  e2e:
+    name: Workspace e2e (playwright)
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Cache the browser download rather than re-fetching ~140MB every run.
+      # Keyed on the lockfile because that is what pins the @playwright/test
+      # version, and a version bump needs a matching browser build.
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      # Only Chromium: every project in playwright.config.ts is Desktop Chrome.
+      # `--with-deps` still runs on a cache hit because the OS libraries live
+      # outside the cached directory.
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      # PLAYWRIGHT_CHROMIUM_PATH is deliberately NOT set here. It exists for
+      # sandboxes that pin an unmatched Chromium; a GitHub runner should use the
+      # browser Playwright just installed for itself.
+      - name: Workspace tab e2e
+        run: npm run test:e2e
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore
