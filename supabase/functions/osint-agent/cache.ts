@@ -16,6 +16,7 @@ import * as circuit from "./circuit.ts";
 import { buildRefusedKeys, dispatchTypeCandidates, isDispatchRefused, quarantineRefusal, reasonForKey } from "./lib/dispatch-quarantine.ts";
 import { guard, takeCorrelateHint } from "./guard.ts";
 import { reserveToolCall } from "./orchestrator-budget.ts";
+import { isFinalizeWindowLiveLookupExempt } from "./orchestrator-finalize.ts";
 import {
   ALWAYS_ALLOW_TOOLS,
   analyzeWeakLead,
@@ -1081,7 +1082,11 @@ export function wrapToolsWithCache(
         // only called between model steps. A long/parallel step can still attempt new
         // lookups after the window opens; skip them here so CPU is reserved for the
         // record/report closeout. Recording tools are exempt.
-        if (ctx.shouldStopLiveLookups?.() && !ALWAYS_ALLOW_TOOLS.has(name)) {
+        if (
+          ctx.shouldStopLiveLookups?.() &&
+          !ALWAYS_ALLOW_TOOLS.has(name) &&
+          !isFinalizeWindowLiveLookupExempt(name)
+        ) {
           await logUsage(false, false, Date.now() - t0, "finalize window open; live lookup skipped", null, true, {
             input: inputJson,
             runtime: { ...runtimeMetaBase, rejection_reason: "finalize_window", rejection_source: "deadline", stale_cache: !!staleRecord },

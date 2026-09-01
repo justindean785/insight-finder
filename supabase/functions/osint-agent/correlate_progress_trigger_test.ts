@@ -107,9 +107,14 @@ Deno.test("opening the finalize window initiates no correlate work", () => {
   const lateMs = 10_000_000;
   assertEquals(shouldSkipForFinalizeWindow(lateMs, false), true, "late non-recording lookups are skipped");
   assertEquals(shouldSkipForFinalizeWindow(lateMs, true), false, "recording tools stay allowed");
-  // Being "due" changes nothing about the window's verdict either way.
+  // Being "due" changes nothing about the window's verdict for ordinary tools.
   assert(correlateDue());
-  assertEquals(shouldSkipForFinalizeWindow(lateMs, false), true, "a due correlate does NOT reopen the window");
+  assertEquals(shouldSkipForFinalizeWindow(lateMs, false), true, "a due correlate does not reopen the window for fan-out tools");
+  assertEquals(
+    shouldSkipForFinalizeWindow(lateMs, false, { toolName: "minimax_correlate" }),
+    false,
+    "minimax_correlate is exempt — it clusters existing artifacts, not new live lookups",
+  );
 });
 
 Deno.test("finalize can complete when correlation never ran", () => {
