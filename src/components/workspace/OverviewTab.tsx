@@ -66,8 +66,9 @@ function Stat({
     <Tag
       {...(onClick ? { type: "button" as const, onClick } : {})}
       title={title}
+      data-interactive={onClick ? "true" : undefined}
       className={cn(
-        "panel px-3 py-2.5 text-left transition-colors",
+        "panel stat-tile px-3 py-2.5 text-left transition-colors",
         onClick && "hover:border-border-strong hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
       )}
     >

@@ -270,12 +270,12 @@ export function WorkspaceTabs({
   // Full-width nav strip with centered segmented control — matches the widened
   // chat column so chrome and content share one symmetrical axis.
   return (
-    <div className="relative border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(0_0%_8%/0.72),hsl(0_0%_4%/0.55))] backdrop-blur-xl">
+    <div className="relative border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(var(--surface-2)/0.72),hsl(var(--surface-0)/0.55))] backdrop-blur-xl">
       <div className="chat-column mx-auto flex justify-center overflow-x-auto px-4 py-2 sm:px-7 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <div
           role="tablist"
           aria-label="Investigation workspace"
-          className="inline-flex w-full max-w-full items-center justify-center gap-0.5 rounded-xl border border-white/[0.08] bg-[hsl(0_0%_100%/0.035)] p-1 shadow-[inset_0_1px_0_hsl(0_0%_100%/0.05)] sm:w-auto sm:gap-1"
+          className="inline-flex w-full max-w-full items-center justify-center gap-0.5 rounded-xl border border-white/[0.08] bg-[hsl(var(--film)/0.035)] p-1 shadow-[inset_0_1px_0_hsl(var(--film)/0.05)] sm:w-auto sm:gap-1"
         >
           {TABS.map((t, idx) => {
             const Icon = t.icon;
@@ -301,7 +301,7 @@ export function WorkspaceTabs({
                   "group/tab relative inline-flex h-9 flex-1 items-center justify-center gap-1.5 rounded-[7px] px-2.5 text-meta font-medium transition-[background-color,color,box-shadow] duration-150 sm:flex-none sm:gap-2 sm:px-4",
                   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                   isActive
-                    ? "bg-surface-3 text-foreground shadow-[inset_0_1px_0_hsl(0_0%_100%/0.07),0_1px_2px_hsl(0_0%_0%/0.5)]"
+                    ? "bg-surface-3 text-foreground shadow-[inset_0_1px_0_hsl(var(--film)/0.07),0_1px_2px_hsl(0_0%_0%/0.5)]"
                     : "text-muted-foreground hover:bg-white/[0.04] hover:text-foreground/90",
                 )}
               >

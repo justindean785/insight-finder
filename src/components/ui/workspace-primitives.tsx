@@ -45,7 +45,8 @@ export function TabHeader({
     <div
       className={cn(
         // Opaque semantic surface token. The previous `bg-[hsl(var(--surface-0))/0.98]`
-        // compiled to invalid CSS (`hsl(0 0% 3%)/0.98`) → no background at all, so the
+        // compiled to invalid CSS (an `hsl(...)/0.98` with the alpha outside the
+        // function) → no background at all, so the
         // sticky Report header let scrolling content show through (#110). Use the
         // `bg-surface-0` utility (matches bg-surface-1/2/3 used across the app; can't
         // be malformed like an arbitrary value).
@@ -144,7 +145,10 @@ export function MetricCard({
   const color = METRIC_TONE[tone];
   return (
     <div
-      className={cn("rounded-lg border border-border-subtle bg-surface-1 px-3 py-2.5", className)}
+      // `panel` rather than a flat `bg-surface-1` box: this is the same
+      // instrument reading as OverviewTab's Stat, and the two rendered as
+      // visibly different objects — one lit, one a plain rectangle.
+      className={cn("panel stat-tile px-3 py-2.5", className)}
       title={hint}
     >
       <div className="flex items-center gap-1.5 text-micro tracking-normal text-muted-foreground">
