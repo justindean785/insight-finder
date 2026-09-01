@@ -4725,9 +4725,9 @@ export function buildTools(ctx: ToolContext) {
         // THREAD-WIDE dedup (2026-08-28) — the bound the note below used to
         // describe as open. `seenInBatch` only ever caught a repeat inside ONE
         // call, and the duplicates measured in production were seconds apart in
-        // DIFFERENT calls: `V&S 1110 LLC` persisted as three `organization` rows
-        // (55/75/75), `Ved Parkash` as three, one address as four. An Evidence
-        // count of 88 that is not a count of distinct facts.
+        // DIFFERENT calls: `Example Holdings 1110 LLC` persisted as three
+        // `organization` rows (55/75/75), `Sam Whitfield` as three, one address
+        // as four. An Evidence count of 88 that is not a count of distinct facts.
         //
         // Closed at RUNTIME, deliberately. #305's dedup migration would have
         // deleted ~120 genuinely distinct rows and orphaned 53 analyst reviews;

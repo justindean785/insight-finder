@@ -84,8 +84,8 @@ const UNIT_DESIGNATOR_RE = /\b(?:apt|apartment|unit|ste|suite|rm|room|fl|floor|n
 /**
  * Comparison form of a street line: lowercase, unit designators removed, then
  * every non-alphanumeric dropped. Punctuation and spacing carry no address
- * identity — `"1110 ANDERSON AVE3F"` and `"1110 ANDERSON AVE APT 3F"` are the
- * same line typed two ways, and both fold to `1110andersonave3f`.
+ * identity — `"1110 SAMPLE AVE3F"` and `"1110 SAMPLE AVE APT 3F"` are the
+ * same line typed two ways, and both fold to `1110sampleave3f`.
  *
  * This is a COMPARISON key only. Nothing persists in this form.
  */
@@ -104,7 +104,7 @@ function clean(v: unknown): string {
  *
  * PREFIX, NEVER SUBSTRING. A substring test looks like the more thorough
  * choice and destroys data: `"APT 3F"` folds to `3f`, which appears inside
- * `1110andersonave3f`, so a genuinely distinct secondary line would be deleted
+ * `1110sampleave3f`, so a genuinely distinct secondary line would be deleted
  * as a "duplicate" of the street it sits under. It would also merge neighbours
  * in corpora that store `12 Oak St` and `120 Oak St`. A prefix relation is the
  * only one that actually means "the same line, continued".
@@ -124,10 +124,10 @@ function redundantAgainst(a: string, b: string): boolean {
  * MEASURED 2026-08-26 — the value that shipped to the board, the report and the
  * export was:
  *
- *     1110 ANDERSON AVE3F 1110 ANDERSON AVE APT 3F BRONX NY 10452
+ *     1110 SAMPLE AVE3F 1110 SAMPLE AVE APT 3F ANYTOWN NY 10001
  *
- * `address_street` ("1110 ANDERSON AVE3F", already corpus junk) and
- * `address_street2` ("1110 ANDERSON AVE APT 3F", the same line spelled
+ * `address_street` ("1110 SAMPLE AVE3F", already corpus junk) and
+ * `address_street2` ("1110 SAMPLE AVE APT 3F", the same line spelled
  * properly) were `.join(" ")`ed with city/state/zip and no separators, so the
  * street appeared twice and ran into the unit number. That string is the
  * artifact's `value`, which is what renders everywhere.

@@ -169,10 +169,10 @@ describe("computePivots — a collision row is never an actionable pivot", () =>
 // (2) The explicitly excluded residents
 // ---------------------------------------------------------------------------
 describe("computePivots — explicitly excluded residents are not leads", () => {
-  // The Anderson Ave shape. A reverse-address lookup returned the address's
+  // The Sample Ave shape. A reverse-address lookup returned the address's
   // co-residents; the case then recorded that the subject is not among them:
   //
-  //   "CONTRADICTION: 1110 Anderson Ave is NOT linked to James Harker. The
+  //   "CONTRADICTION: 1110 Sample Ave is NOT linked to James Harker. The
   //    reverse-address lookup returned 31 records and the actual residents are
   //    the Keith and Plascencia families — Harker appears in none of them."
   //
@@ -203,7 +203,7 @@ describe("computePivots — explicitly excluded residents are not leads", () => 
           ...STATUS_EXCLUDED,
           source_class: "data_broker",
           reason_not_confirmed:
-            "co-resident of 1110 Anderson Ave; the case records that the subject is not among the residents",
+            "co-resident of 1110 Sample Ave; the case records that the subject is not among the residents",
         },
       }),
     );

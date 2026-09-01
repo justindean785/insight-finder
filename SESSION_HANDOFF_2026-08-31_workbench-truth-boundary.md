@@ -216,7 +216,7 @@ injected and 0 when removed.
   `npm run build` byte-for-byte. Only the entry chunk differs, because
   `VITE_SUPABASE_*` is compiled into it.
 - **Frontend baseline is 1695 / 136**, not CLAUDE.md's 1611 / 131.
-- **In production the four Anderson Ave co-residents carry NO structural exclusion
+- **In production the four Sample Ave co-residents carry NO structural exclusion
   flag.** `queryIsNameOnly` is false for `indicia_address`, the bulk-corpus gate
   needs >15 identity rows, and `CO_TENANT_CTX` is oathnet-only — so their exclusion
   exists **only as prose** inside a separate `kind:"contradiction"` artifact. The

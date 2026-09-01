@@ -77,7 +77,7 @@ const artifacts = [
   // ── A finding written into `value` as PROSE, not a selector ─────────────
   //    Real shape from thread `61d1eede`: the single most important row in that
   //    case, rendered by the board as forty truncated monospace characters.
-  { id: "a16", thread_id: THREAD_ID, kind: "contradiction", value: "CONTRADICTION: 1110 Anderson Ave is NOT linked to James Harker. The reverse-address lookup returned 31 records and the actual residents are the Keith and Plascencia families — Harker appears in none of them.", confidence: 65, source: "indicia_address", created_at: iso(11), metadata: { sources: ["indicia_address", "exa_search"], corroborations: 2, source_class: "data_broker", conflict: true, conflict_note: "the dossier's address claim does not survive the broker record" } },
+  { id: "a16", thread_id: THREAD_ID, kind: "contradiction", value: "CONTRADICTION: 1110 Sample Ave is NOT linked to James Harker. The reverse-address lookup returned 31 records and the actual residents are the Keith and Plascencia families — Harker appears in none of them.", confidence: 65, source: "indicia_address", created_at: iso(11), metadata: { sources: ["indicia_address", "exa_search"], corroborations: 2, source_class: "data_broker", conflict: true, conflict_note: "the dossier's address claim does not survive the broker record" } },
 
   // ── Volume, MIXED provenance — the shape that made the board unreadable ──
   //    Production thread `61d1eede` (143 artifacts) rendered ONE `email`

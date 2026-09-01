@@ -1004,7 +1004,7 @@ export function extractFindings(
         // COMPOSED, not concatenated (2026-08-28). This was a five-field
         // `.join(" ")`, which on a measured production row persisted:
         //
-        //   1110 ANDERSON AVE3F 1110 ANDERSON AVE APT 3F BRONX NY 10452
+        //   1110 SAMPLE AVE3F 1110 SAMPLE AVE APT 3F ANYTOWN NY 10001
         //
         // — `address_street2` restating `address_street` in a different
         // spelling, run together with no separators. That string is the
