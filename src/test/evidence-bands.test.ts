@@ -196,13 +196,14 @@ describe("wiring: a band nobody renders is not a band", () => {
     // Both branches must render rows. Banding is an alternative layout, not a
     // gate: a cluster that returns null still shows every one of its rows.
     expect(src).toMatch(/\{open && bands && bands\.map\(/);
-    expect(src).toMatch(/\{open && !bands && list\.map\(/);
+    expect(src).toMatch(/renderDisplayRows\(partitionBulkCorpusRows\(list\)/);
+    expect(src).toMatch(/renderDisplayRows\(partitionBulkCorpusRows\(band\.rows\)/);
   });
 
   it("band headers are not interactive — bands may not become a second fold", () => {
     // If a band header ever gains a click handler it becomes another place to
     // hide rows, which is the reverted behaviour `clusterDefaultOpen` records.
-    const bandBlock = src.slice(src.indexOf("{open && bands &&"), src.indexOf("{open && !bands &&"));
+    const bandBlock = src.slice(src.indexOf("{open && bands &&"), src.indexOf("renderDisplayRows(partitionBulkCorpusRows(list)"));
     expect(bandBlock.length).toBeGreaterThan(200);
     expect(bandBlock).not.toMatch(/onClick|role="button"|aria-expanded/);
   });
