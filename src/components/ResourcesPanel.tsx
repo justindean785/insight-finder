@@ -27,6 +27,12 @@ import { displayConfidence, effectiveConfidence, effectiveConfidenceOrZero } fro
 import { bandCluster, isProseValue, provenanceOf as provFor } from "@/lib/evidence-bands";
 import { readableSourceLabel } from "@/lib/tool-display";
 import { humanizeArtifactMetadata } from "@/lib/artifact-metadata";
+import {
+  harvestedIdentityPreview,
+  isBulkCorpusHarvestArtifact,
+  partitionBulkCorpusRows,
+  type BulkCorpusDisplayRow,
+} from "@/lib/bulk-corpus-display";
 import { FilterChips } from "@/components/ui/workspace-primitives";
 import {
   AuthorityChip, AuthorityCaveat, AuthorityLegend, AuthoritySpine, RuleLabel, UnderlyingStrength,
@@ -504,28 +510,100 @@ function ArtifactsList({
                             </span>
                           )}
                         </div>
-                        {band.rows.map((a) => (
-                          <ArtifactRow key={a.id} a={a} onSelect={onSelect} review={review} hideProv />
-                        ))}
+                        {renderDisplayRows(partitionBulkCorpusRows(band.rows), onSelect, review, true)}
                       </div>
                     );
                   })}
 
-                  {open && !bands && list.map((a) => (
-                    <ArtifactRow
-                      key={a.id}
-                      a={a}
-                      onSelect={onSelect}
-                      review={review}
-                      hideProv={uniformProv != null}
-                    />
-                  ))}
+                  {open && !bands && renderDisplayRows(partitionBulkCorpusRows(list), onSelect, review, uniformProv != null)}
                 </div>
               );
             })}
           </section>
         );
       })}
+    </div>
+  );
+}
+
+function renderDisplayRows(
+  rows: BulkCorpusDisplayRow[],
+  onSelect: (a: Artifact) => void,
+  review: ReturnType<typeof useReviewStates>,
+  hideProv: boolean,
+) {
+  return rows.map((row) => {
+    if (row.type === "single") {
+      return (
+        <ArtifactRow
+          key={row.artifact.id}
+          a={row.artifact}
+          onSelect={onSelect}
+          review={review}
+          hideProv={hideProv}
+        />
+      );
+    }
+    return (
+      <BulkCorpusGroupRow
+        key={row.key}
+        group={row}
+        onSelect={onSelect}
+        review={review}
+        hideProv={hideProv}
+      />
+    );
+  });
+}
+
+function BulkCorpusGroupRow({
+  group, onSelect, review, hideProv,
+}: {
+  group: Extract<BulkCorpusDisplayRow, { type: "bulk_group" }>;
+  onSelect: (a: Artifact) => void;
+  review: ReturnType<typeof useReviewStates>;
+  hideProv: boolean;
+}) {
+  const lead = group.artifacts[0];
+  const authority = authorityFor(lead, review.get(lead.id));
+  const preview = group.artifacts.slice(0, 4).map((a) => a.value).join(" · ");
+  const more = group.artifacts.length - 4;
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => onSelect(lead)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(lead); }
+      }}
+      data-density-row
+      className="group/row ledger-row cursor-pointer text-left"
+      aria-label={`${group.artifacts.length} bulk-corpus identities. ${group.reason}`}
+    >
+      <AuthoritySpine state={authority.state} />
+      <span className="min-w-0" data-ledger-col="value">
+        <span className="flex items-start gap-1.5">
+          <span className="text-[12.5px] leading-[1.45] text-foreground/90">
+            <span className="font-medium">{group.artifacts.length} bulk-corpus identities</span>
+            {preview && (
+              <span className="mt-0.5 block truncate font-mono text-data text-muted-foreground/80">
+                {preview}{more > 0 ? ` · +${more} more` : ""}
+              </span>
+            )}
+          </span>
+        </span>
+        <AuthorityCaveat view={authority} className="mt-0.5 line-clamp-2" />
+      </span>
+      <span className="min-w-0" data-ledger-col="status">
+        <AuthorityChip view={authority} />
+        <span className="mt-0.5 truncate text-eyebrow text-muted-foreground/70">{authority.basis}</span>
+      </span>
+      <span className="min-w-0 truncate font-mono text-eyebrow text-muted-foreground/60" data-ledger-col="source" title={group.source ?? undefined}>
+        {!hideProv && group.source ? readableSourceLabel(group.source) : ""}
+      </span>
+      <span className="flex shrink-0 items-center justify-end gap-0.5" data-ledger-col="confidence">
+        <span className="conf-figure text-[hsl(var(--authority-quarantine))]">—</span>
+      </span>
     </div>
   );
 }
@@ -557,7 +635,8 @@ function ArtifactRow({
     ? "hsl(var(--authority-quarantine))"
     : "hsl(var(--foreground) / 0.92)";
   const prov = provFor(a);
-  const prose = isProseValue(a.value);
+  const prose = isProseValue(a.value) || isBulkCorpusHarvestArtifact(a);
+  const bulkPreview = isBulkCorpusHarvestArtifact(a) ? harvestedIdentityPreview(a, 4) : [];
   const authority = authorityFor(a, rState);
   return (
     <HoverCard openDelay={250} closeDelay={80}>
@@ -612,6 +691,11 @@ function ArtifactRow({
               >
                 {a.value}
               </span>
+              {bulkPreview.length > 0 && (
+                <span className="mt-0.5 block truncate font-mono text-data text-muted-foreground/80">
+                  {bulkPreview.join(" · ")}
+                </span>
+              )}
               <button
                 type="button"
                 aria-label={`Copy ${a.value}`}

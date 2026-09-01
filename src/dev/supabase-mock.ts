@@ -79,6 +79,27 @@ const artifacts = [
   //    case, rendered by the board as forty truncated monospace characters.
   { id: "a16", thread_id: THREAD_ID, kind: "contradiction", value: "CONTRADICTION: 1110 Sample Ave is NOT linked to James Harker. The reverse-address lookup returned 31 records and the actual residents are the Keith and Plascencia families — Harker appears in none of them.", confidence: 65, source: "indicia_address", created_at: iso(11), metadata: { sources: ["indicia_address", "exa_search"], corroborations: 2, source_class: "data_broker", conflict: true, conflict_note: "the dossier's address claim does not survive the broker record" } },
 
+  // ── Bulk-corpus spam — the gsalas916-style wall this change collapses ─────
+  // Legacy shape: many rows, one reason. The board groups these into one card.
+  { id: "bulk-1", thread_id: THREAD_ID, kind: "name", value: "Gabriel G. Salas", confidence: 45, source: "indicia_address", created_at: iso(9), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
+  { id: "bulk-2", thread_id: THREAD_ID, kind: "name", value: "Esther Salas", confidence: 45, source: "indicia_address", created_at: iso(8), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
+  { id: "bulk-3", thread_id: THREAD_ID, kind: "name", value: "Gabriel Gilbert Gilbert Salas", confidence: 45, source: "indicia_address", created_at: iso(7), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
+  { id: "bulk-4", thread_id: THREAD_ID, kind: "name", value: "Michael O. Wong", confidence: 45, source: "indicia_address", created_at: iso(6), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
+  { id: "bulk-5", thread_id: THREAD_ID, kind: "name", value: "Sandra Salas", confidence: 45, source: "indicia_address", created_at: iso(5), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
+  { id: "bulk-summary", thread_id: THREAD_ID, kind: "bulk_corpus_harvest", value: "67 unlinked identities — bulk corpus (gsalas916@icloud.com)", confidence: 40, source: "indicia_address", created_at: iso(4), metadata: {
+    bulk_corpus: true,
+    identity_count: 67,
+    subject_unlinked: true,
+    subject_unlinked_reason:
+      "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject",
+    harvested_identities: [
+      { kind: "name", value: "Gabriel G. Salas" },
+      { kind: "name", value: "Esther Salas" },
+      { kind: "email", value: "lil.est58@yahoo.com" },
+      { kind: "email", value: "bboyjr03@verizon.net" },
+    ],
+  } },
+
   // ── Volume, MIXED provenance — the shape that made the board unreadable ──
   //    Production thread `61d1eede` (143 artifacts) rendered ONE `email`
   //    cluster of 34 rows: 21 mailboxes lifted wholesale out of a `psyber.com`
