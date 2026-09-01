@@ -479,16 +479,31 @@ All colors MUST be HSL.
   .panel {
     position: relative;
     border-radius: 10px;
-    /* Smoked glass: a translucent white film over black, a rim brightest along
-       the top edge where light would catch, and a specular inner hairline. */
-    background: hsl(var(--film) / 0.026);
+    /* Smoked glass: a translucent film over the ground, a rim brightest along
+       the top edge where light would catch, and a specular inner hairline.
+
+       The film is a GRADIENT, not a flat wash. A single 2.6%-alpha sheet made
+       every pane in the workspace read as an empty black rectangle with a
+       hairline around it — technically a surface, visually nothing. Grading it
+       from 5.5% at the cap to 1.4% at the foot is what makes a pane read as a
+       lit object; a small opaque surface tone underneath stops the whole stack
+       going transparent where panels overlap. Held deliberately low: this class
+       is the workspace's densest surface and it sits behind 11px mono. */
+    background:
+      linear-gradient(
+        180deg,
+        hsl(var(--film) / 0.055) 0%,
+        hsl(var(--film) / 0.024) 46%,
+        hsl(var(--film) / 0.014) 100%
+      ),
+      hsl(var(--surface-1) / 0.5);
     backdrop-filter: blur(18px) saturate(115%);
     -webkit-backdrop-filter: blur(18px) saturate(115%);
-    border: 1px solid hsl(var(--film) / 0.075);
-    border-top-color: hsl(var(--film) / 0.13);
+    border: 1px solid hsl(var(--film) / 0.085);
+    border-top-color: hsl(var(--film) / 0.15);
     box-shadow:
-      inset 0 1px 0 hsl(var(--film) / 0.055),
-      0 10px 30px -22px hsl(0 0% 0% / 0.95);
+      inset 0 1px 0 hsl(var(--film) / 0.06),
+      0 10px 30px -20px hsl(0 0% 0% / 0.95);
   }
   /* Raised — for panels that float above the workspace (drawers, popovers,
      the Overview's lead tiles). One inner top hairline + one contained shadow. */
@@ -514,7 +529,61 @@ All colors MUST be HSL.
     min-height: 34px;
     padding: 0 10px 0 12px;
     border-bottom: 1px solid hsl(var(--border-subtle));
-    background: hsl(var(--film) / 0.02);
+    /* A header band reads as a header when it is lit differently from the body,
+       not when it merely has a rule under it. */
+    background: linear-gradient(180deg, hsl(var(--film) / 0.045), hsl(var(--film) / 0.012));
+  }
+
+  /* ── Active view key ──────────────────────────────────────────────────────
+     The selected tab in the workspace strip. It was a flat 16%-alpha tint with
+     an inset ring — legible, but the same object as an unselected tab wearing a
+     colour. A selected key should read as PRESSED AND LIT: a graded face, a
+     specular along the top edge, a signal rim, and a bloom beneath that ties it
+     to the strip. This appears on every one of the six tabs, so it is the single
+     most-seen control in the product. */
+  .tab-key-active {
+    background:
+      linear-gradient(180deg, hsl(var(--brand) / 0.26) 0%, hsl(var(--brand) / 0.13) 100%),
+      hsl(var(--surface-2) / 0.7);
+    box-shadow:
+      inset 0 1px 0 hsl(var(--film) / 0.16),
+      inset 0 0 0 1px hsl(var(--brand) / 0.42),
+      0 6px 18px -10px hsl(var(--brand) / 0.75);
+  }
+
+  /* ── Instrument tile ──────────────────────────────────────────────────────
+     The stat readings at the head of Overview, Tools and Evidence. These are
+     the first objects an analyst looks at on three of the six tabs, and they
+     rendered as flat outlined rectangles — the least present thing on screen
+     carrying the largest number.
+
+     Built on `.panel`, plus two things a panel alone does not give: a hairline
+     of light along the top edge that fades out (so a row of tiles reads as a
+     lit instrument bank rather than as boxes), and a corner specular. Tone is
+     NOT set here — the semantic colour stays on the icon and the figure, where
+     the component already puts it, so a tile never becomes a block of hue. */
+  .stat-tile {
+    position: relative;
+    overflow: hidden;
+  }
+  .stat-tile::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 1px;
+    pointer-events: none;
+    background: linear-gradient(90deg, hsl(var(--film) / 0.22), hsl(var(--film) / 0.05) 55%, transparent);
+  }
+  .stat-tile::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: radial-gradient(80% 120% at 0% 0%, hsl(var(--film) / 0.045), transparent 62%);
+  }
+  /* An interactive tile earns the signal on hover — it is a destination. */
+  .stat-tile[data-interactive="true"]:hover::before {
+    background: linear-gradient(90deg, hsl(var(--brand) / 0.75), hsl(var(--brand) / 0.2) 55%, transparent);
   }
 
   /* ── Authority spine ───────────────────────────────────────────────────────

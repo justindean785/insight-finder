@@ -462,7 +462,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
               surface is black, glass or grey, so a single filled tile carries
               the whole brand without competing with any evidence colour. */}
           <div className="relative grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-[9px] bg-[linear-gradient(145deg,hsl(var(--brand)),hsl(var(--brand-deep)))] shadow-[0_0_0_1px_hsl(var(--brand)/0.45),0_6px_18px_-8px_hsl(var(--brand)/0.75)] transition-transform duration-200 group-hover:scale-[1.04]">
-            <span aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-1/2 bg-[linear-gradient(180deg,hsl(0_0%_100%/0.28),transparent)]" />
+            <span aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-1/2 bg-[linear-gradient(180deg,hsl(var(--film)/0.28),transparent)]" />
             <SwarmMark className="relative h-4 w-4 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.4)]" />
           </div>
           <div className="min-w-0">
