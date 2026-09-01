@@ -1327,7 +1327,7 @@ export function extractFindings(
       );
       const lookupYield = Number.isFinite(parsedTotal) && parsedTotal > 0 ? parsedTotal : totalIdentities;
       const anchor = breachSubjectAnchor(o, input) || queried || "";
-      kept.unshift({
+      const summaryRow: ExtractedFinding = {
         kind: "bulk_corpus_harvest",
         value: anchor
           ? `${lookupYield} unlinked identities — bulk corpus (${anchor})`
@@ -1346,7 +1346,12 @@ export function extractFindings(
           ...coCorpusCtx(lookupYield),
         },
         rawConfidence: 40,
-      });
+      };
+      // Insert AFTER breach_exposure rows — those are unshifted to the front on
+      // purpose and must never lose priority to a bulk summary.
+      const insertAt = kept.findIndex((f) => f.kind !== "breach_exposure");
+      if (insertAt === -1) kept.push(summaryRow);
+      else kept.splice(insertAt, 0, summaryRow);
       findings.length = 0;
       findings.push(...kept);
     }
