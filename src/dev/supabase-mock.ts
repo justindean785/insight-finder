@@ -277,6 +277,15 @@ function builder(table: string) {
   return self;
 }
 
+/**
+ * Signed-out review switch. `?harness=signedout` makes the stub report no
+ * session, so the harness can render the logged-out surfaces (Landing, /auth)
+ * as well as the signed-in workspace. Default stays signed-in.
+ */
+const SIGNED_OUT =
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get("harness") === "signedout";
+
 const session = {
   access_token: "harness-token", refresh_token: "harness-refresh",
   expires_in: 3600, expires_at: 4102444800, token_type: "bearer",
@@ -295,10 +304,10 @@ export const supabase = {
   functions: { invoke: () => Promise.resolve({ data: null, error: null }) },
   storage: { from: () => ({ createSignedUrl: () => Promise.resolve({ data: { signedUrl: "#" }, error: null }) }) },
   auth: {
-    getSession: () => Promise.resolve({ data: { session }, error: null }),
-    getUser: () => Promise.resolve({ data: { user: session.user }, error: null }),
+    getSession: () => Promise.resolve({ data: { session: SIGNED_OUT ? null : session }, error: null }),
+    getUser: () => Promise.resolve({ data: { user: SIGNED_OUT ? null : session.user }, error: null }),
     onAuthStateChange: (cb: (e: string, s: Session | null) => void) => {
-      setTimeout(() => cb("SIGNED_IN", session), 0);
+      setTimeout(() => cb(SIGNED_OUT ? "SIGNED_OUT" : "SIGNED_IN", SIGNED_OUT ? null : session), 0);
       return { data: { subscription: { unsubscribe: () => {} } } };
     },
     signInWithPassword: () => Promise.resolve({ data: { session }, error: null }),

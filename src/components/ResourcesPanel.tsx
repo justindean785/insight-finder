@@ -198,7 +198,7 @@ function ArtifactsList({
   if (error && items.length === 0) {
     return (
       <div className="p-3 sm:p-5">
-        <div className="flex flex-col items-center gap-4 rounded-2xl border border-destructive/25 bg-[linear-gradient(180deg,rgba(70,20,20,0.22),rgba(12,8,8,0.9))] px-6 py-12 text-center shadow-[0_34px_110px_-70px_rgba(0,0,0,0.95)]">
+        <div className="flex flex-col items-center gap-4 rounded-2xl border border-destructive/25 bg-[linear-gradient(180deg,hsl(var(--danger-muted)/0.55),hsl(var(--surface-1)/0.92))] px-6 py-12 text-center shadow-[0_34px_110px_-70px_rgba(0,0,0,0.95)]">
           <div className="grid h-11 w-11 place-items-center rounded-xl border border-destructive/35 bg-destructive/10 text-destructive">
             <AlertTriangle className="h-[18px] w-[18px]" strokeWidth={1.75} />
           </div>
@@ -235,7 +235,7 @@ function ArtifactsList({
   if (items.length === 0) {
     return (
       <div className="p-3 sm:p-5">
-        <div className="overflow-hidden rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(17,19,23,0.98),rgba(5,6,8,0.98))] shadow-[0_34px_110px_-70px_rgba(0,0,0,0.95)]">
+        <div className="overflow-hidden rounded-2xl border border-white/10 bg-[linear-gradient(180deg,hsl(var(--surface-2)/0.98),hsl(var(--surface-0)/0.98))] shadow-[0_34px_110px_-70px_rgba(0,0,0,0.95)]">
           <div className="border-b border-white/8 px-4 sm:px-5 py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex min-w-0 items-center gap-3.5">
               {/* radar node — "sensor acquiring contact" */}
@@ -1087,7 +1087,7 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
   return (
     <>
       {items.length > 0 && (
-        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-x-3 gap-y-2 px-2 py-2.5 border-b border-border-subtle bg-[linear-gradient(180deg,rgba(12,12,12,0.94),rgba(10,10,10,0.86))] backdrop-blur-xl">
+        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-x-3 gap-y-2 px-2 py-2.5 border-b border-border-subtle bg-[linear-gradient(180deg,hsl(var(--surface-1)/0.94),hsl(var(--surface-0)/0.88))] backdrop-blur-xl">
           <FilterChips<EvidenceStatusFilter>
             ariaLabel="Filter evidence by strength"
             active={statusFilter}
