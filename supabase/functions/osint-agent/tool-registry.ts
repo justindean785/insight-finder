@@ -31,6 +31,8 @@ import {
   stripStatusAssertions,
   nullResultKey,
   artifactDedupKey,
+  breachExposureCanonicalKey,
+  collapseRecordArtifactsBatch,
 } from "./lib/artifact-hygiene.ts";
 import { canonicalPhoneValue } from "./lib/selector-normalize.ts";
 import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
@@ -259,6 +261,9 @@ async function loadThreadArtifactIdentities(
         // whose write-time selector came from metadata simply fails to match,
         // which is a miss, never a false collapse.
         index(nullResultKey({ kind, source, value, selector: seed ?? null }));
+
+        const breachCanon = breachExposureCanonicalKey({ kind, value, source });
+        if (breachCanon) index(breachCanon);
       }
       if (data.length < THREAD_ARTIFACT_PAGE_SIZE) break;
       if (to + 1 >= THREAD_ARTIFACT_SCAN_MAX) truncated = true;
@@ -4713,7 +4718,8 @@ export function buildTools(ctx: ToolContext) {
           .min(1)
           .max(200)),
       })),
-      execute: async ({ artifacts }) => {
+      execute: async ({ artifacts: rawArtifacts }) => {
+        const artifacts = collapseRecordArtifactsBatch(rawArtifacts);
         const accepted: Array<{ index: number; kind: string; value: string }> = [];
         const rejected: Array<{ index: number; reason: string; kind: string; value: string }> = [];
         const rows: Array<Record<string, unknown>> = [];
@@ -4910,7 +4916,9 @@ export function buildTools(ctx: ToolContext) {
               ? a.metadata.username
               : (typeof a.metadata?.email === "string" ? a.metadata.email : (triageState.seed ?? null)),
           });
-          const dedupKey = canonicalNullKey ?? artifactDedupKey({
+          const dedupKey = canonicalNullKey
+            ?? breachExposureCanonicalKey({ kind: finalKind, value: v.value, source: authoritativeSource || (a.source ?? null) })
+            ?? artifactDedupKey({
             kind: finalKind,
             value: v.value,
             source: authoritativeSource,
