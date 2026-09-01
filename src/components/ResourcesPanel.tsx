@@ -20,6 +20,15 @@ import {
 import { evidenceStatus } from "@/lib/evidence-status";
 import { authorityFor, LEDGER_SORT_RANK } from "@/lib/authority";
 import { isQuarantined, clusterDefaultOpen } from "@/lib/quarantine";
+import {
+  canReleaseLinkage, releasePatch,
+  RELEASE_ACTION_LABEL, RELEASE_CONFIRM_BODY, RELEASE_CONFIRM_TITLE,
+} from "@/lib/quarantine-release";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 // THE one number this surface renders. Every figure, meter, range, aria-label
 // and citation below reads `effective` — never `a.confidence`. See
 // src/lib/display-confidence.ts for why five pipelines became one.
@@ -765,6 +774,16 @@ function ArtifactDrawerInner({
     }
   };
 
+  // Release reuses `updateMeta` — the SAME RLS-gated `artifacts` update the drawer
+  // already uses — rather than opening a second authority path. `releasePatch`
+  // fails closed on anything that is not an active quarantine, so a non-quarantined
+  // or malformed target cannot be stamped through here.
+  const releaseLinkage = async () => {
+    const patch = releasePatch(meta);
+    if (!patch) return toast.error("Not under linkage quarantine — nothing to release");
+    await updateMeta(patch);
+  };
+
   const citation = `\`${artifact.value}\` (${artifact.kind}${artifact.source ? `, via ${artifact.source}` : ""}${shownArtifact.effective != null ? `, ${shownArtifact.effective}%` : ""})`;
 
   return (
@@ -815,6 +834,41 @@ function ArtifactDrawerInner({
                   identity edges, confidence, or the report until the linkage is
                   confirmed.
                 </p>
+              )}
+              {/* The WRITER for `linkage_confirmed`. Every boundary in the product
+                  reads that flag and nothing could set it, so a row auto-quarantined
+                  in error was stranded permanently once #518 made quarantine
+                  dispatch-blocking. Deliberately NOT one of the review controls
+                  below: those answer "is this value real?", this answers "is it this
+                  subject's?" — see quarantine-release.ts. Gated on the same
+                  `isQuarantined` every other boundary uses, via canReleaseLinkage. */}
+              {canReleaseLinkage(meta) && (
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={saving}
+                      className="mt-3 h-7 w-full font-mono text-eyebrow uppercase tracking-[0.14em]"
+                    >
+                      {RELEASE_ACTION_LABEL}
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>{RELEASE_CONFIRM_TITLE}</AlertDialogTitle>
+                      <AlertDialogDescription className="whitespace-pre-line text-left">
+                        {RELEASE_CONFIRM_BODY}
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction onClick={() => void releaseLinkage()}>
+                        {RELEASE_ACTION_LABEL}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
               )}
             </div>
           )}
