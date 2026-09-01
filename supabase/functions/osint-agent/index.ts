@@ -37,7 +37,7 @@ import {
 import { type ArtifactRetrieval, buildEvidenceRecord, isFindingRow } from "./lib/evidence-record.ts";
 import { composePersistedParts } from "./lib/evidence-record-persist.ts";
 import { sanitizeModelMessages, capToolResultOutputs, summarizeToolResultValue } from "./message-sanitize.ts";
-import { guard, routingGuard, triageState, countRecordArtifactCalls, countModelMessageToolCalls } from "./guard.ts";
+import { guard, routingGuard, triageState, countRecordArtifactCalls, countModelMessageToolCalls, bumpAutoPersistedArtifacts } from "./guard.ts";
 import { setupRequest } from "./auth.ts";
 import { minimax, minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider } from "./orchestrator_select.ts";
@@ -1230,6 +1230,29 @@ Deno.serve(async (req) => {
                   // < inserted means artifacts landed with no chain-of-custody row.
                   evidence_appended: res.evidence_appended ?? 0,
                 }));
+                // ---- Correlate progress trigger (2026-09-01) --------------------
+                // `bumpArtifacts` was called ONLY from the record_artifacts family and
+                // attachment intake, never from here. So on a run where the model does
+                // not call record_artifacts — measured in production: thread c65e555b,
+                // 34 auto-persisted artifacts, record_artifact_calls = 0 —
+                // `guard.artifactsSinceCorrelate` stayed at 0 for the whole run.
+                // `correlateDue()` was therefore never true, `correlateNudge()` returned
+                // {} every time, and the orchestrator was never told to correlate. The
+                // run then reached the finalize window with the counter still reading
+                // zero, and the late correlate attempt was skipped by the window guard —
+                // which is why correlate "never ran" while looking like a finalize-timing
+                // problem. It is a COUNTING problem: the trigger could not see the
+                // artifacts that actually existed.
+                //
+                // Auto-persisted rows are real persisted artifacts and are exactly what a
+                // correlation pass needs to cluster, so they count the same as recorded
+                // ones. `res.inserted` is already computed and returned here, so this adds
+                // no DB read; `res.rows` carries the kinds the counter's telemetry wants.
+                //
+                // Deliberately does NOT touch the finalize window, the completion
+                // contract, or clustering semantics — it only makes an existing,
+                // artifact-count trigger see the artifacts it was always meant to count.
+                bumpAutoPersistedArtifacts(res);
               } catch (e) {
                 console.warn("[auto-persist] step backstop failed (non-fatal):", String(e));
               }

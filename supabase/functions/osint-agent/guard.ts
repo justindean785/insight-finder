@@ -39,6 +39,47 @@ export function correlateDue(): boolean {
   return guard.artifactsSinceCorrelate >= CORRELATE_ARTIFACT_THRESHOLD;
 }
 
+/**
+ * Count AUTO-PERSISTED artifacts toward the correlate trigger.
+ *
+ * THE BUG THIS CLOSES. `bumpArtifacts` was reachable only from the
+ * `record_artifacts` family and attachment intake. Auto-persist — the backstop that
+ * writes rows when the model does not record any — never touched the counter. On a
+ * run where the model calls `record_artifacts` zero times (measured in production:
+ * thread c65e555b, 34 auto-persisted artifacts, `record_artifact_calls: 0`)
+ * `artifactsSinceCorrelate` stayed at 0 for the whole investigation. `correlateDue()`
+ * was never true, `correlateNudge()` returned `{}` on every call, and the orchestrator
+ * was never told to correlate. The run reached the finalize window with the counter
+ * still reading zero and the late correlate attempt was skipped by the window guard.
+ *
+ * That is why this reads as "correlate never runs, the finalize window eats it". The
+ * window guard is real, but it is the SECOND event. The first is that the trigger
+ * could not see the artifacts that already existed.
+ *
+ * WHY AUTO-PERSISTED ROWS COUNT THE SAME. They are real persisted artifacts on the
+ * thread and are precisely the population a correlation pass exists to cluster, dedup
+ * and rescore. A trigger that ignores them is measuring the model's bookkeeping habits
+ * rather than the investigation's progress.
+ *
+ * Pure apart from the counter it increments; adds no DB read (`inserted` and `rows`
+ * are already computed by the caller). Returns the number counted so the caller can
+ * log it. Does NOT decide whether correlate runs — `correlateDue` still owns the
+ * threshold, and nothing here touches the finalize window or the completion contract.
+ */
+export function bumpAutoPersistedArtifacts(
+  res: { inserted?: number; rows?: Array<Record<string, unknown>> } | null | undefined,
+): number {
+  const inserted = typeof res?.inserted === "number" && Number.isFinite(res.inserted)
+    ? Math.max(0, Math.trunc(res.inserted))
+    : 0;
+  if (inserted <= 0) return 0;
+  const kinds = Array.isArray(res?.rows)
+    ? res.rows.map((r) => String((r as { kind?: unknown })?.kind ?? "unknown"))
+    : [];
+  bumpArtifacts(inserted, kinds);
+  return inserted;
+}
+
 /** Nudge surfaced in a record_artifacts result when a correlate pass is due. Returns
  * {} when not due, so it can be spread directly into the tool result (mirrors the
  * memory_hint pattern). */
