@@ -8,13 +8,13 @@
 // re-exports `normPhoneE164`, so its existing consumers are unaffected.
 //
 // MEASURED 2026-08-26 — the production run this module exists to fix.
-// Seed "Jesus Acosta, age 31" → pivot +19172915568. ONE phone became FOUR
+// Seed "Jordan Vale, age 31" → pivot +19175550123. ONE phone became FOUR
 // artifacts:
 //
-//     +19172915568   seed
-//     19172915568    clus_45d02dea
-//     9172915568     clus_45d02dea
-//     79172915568    clus_65fc6d70   ← Russian +7 prefix, a DIFFERENT number
+//     +19175550123   seed
+//     19175550123    clus_45d02dea
+//     9175550123     clus_45d02dea
+//     79175550123    clus_65fc6d70   ← Russian +7 prefix, a DIFFERENT number
 //
 // The first three are one number written three ways. Dedup everywhere is
 // `checkpointKey(kind, value)` — exact equality on the lowercased value — so
@@ -32,10 +32,10 @@
  * Moved verbatim from `lib/cluster.ts` — behaviour is unchanged, only the call
  * sites grew. Note what it does and does NOT collapse on the measured values:
  *
- *     +19172915568 → +19172915568
- *      19172915568 → +19172915568     (11 digits, leading 1)
- *       9172915568 → +19172915568     (10 digits, NANP assumption)
- *      79172915568 → +79172915568     ← stays DISTINCT
+ *     +19175550123 → +19175550123
+ *      19175550123 → +19175550123     (11 digits, leading 1)
+ *       9175550123 → +19175550123     (10 digits, NANP assumption)
+ *      79175550123 → +79175550123     ← stays DISTINCT
  *
  * The `+7` number shares ten digits with the subject's US number and is a
  * different number in a different country. Collapsing those would be a false
