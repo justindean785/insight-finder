@@ -140,7 +140,7 @@ export default function ChatPage() {
   // preserves the ChatWindow fiber and the live run survives.
   return (
     <div key={threadId} className="relative flex h-[100dvh] w-full overflow-hidden bg-background">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_12%,rgba(255,255,255,0.055),transparent_38%),radial-gradient(circle_at_82%_88%,rgba(255,255,255,0.03),transparent_32%)]" />
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_12%,hsl(var(--film)/0.055),transparent_38%),radial-gradient(circle_at_82%_88%,hsl(var(--film)/0.03),transparent_32%)]" />
       <CommandPalette />
 
       {/* Desktop: persistent sidebar rail. Mobile uses the off-canvas Sheet below. */}
@@ -157,7 +157,7 @@ export default function ChatPage() {
         {/* Chrome differs by breakpoint but is always exactly ONE slot, so
             {content} stays at a stable index and is never remounted. */}
         {isMobile ? (
-          <header key="chrome" className="shrink-0 h-14 px-2 flex items-center gap-2 border-b border-white/8 bg-[linear-gradient(180deg,rgba(20,20,20,0.94),rgba(9,9,9,0.82))] backdrop-blur-xl">
+          <header key="chrome" className="shrink-0 h-14 px-2 flex items-center gap-2 border-b border-white/8 bg-[linear-gradient(180deg,hsl(var(--surface-2)/0.94),hsl(var(--surface-0)/0.86))] backdrop-blur-xl">
             <button onClick={() => setMLeft(true)} className="shrink-0 w-9 h-9 rounded-xl grid place-items-center border border-white/10 bg-white/[0.035] text-muted-foreground transition-all duration-500 ease-premium hover:text-foreground hover:bg-white/[0.06] active:scale-[0.97]" aria-label="Open cases">
               <PanelLeftOpen className="w-4 h-4 text-foreground/80" />
             </button>
