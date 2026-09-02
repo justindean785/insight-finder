@@ -429,7 +429,7 @@ function pickBestIdentity(
   );
   if (!pool.length) return null;
   const rank: Record<ConfLabel, number> = {
-    CONFIRMED: 6, CORRELATED: 5, INFERRED: 4, VERIFY: 3, LOW: 2, CONFLICT: 1, FAILED: 0,
+    CONFIRMED: 7, ATTESTED: 6, CORRELATED: 5, INFERRED: 4, VERIFY: 3, LOW: 2, CONFLICT: 1, FAILED: 0,
   };
   // Rank through the verdict too, so an attested row outranks an unreviewed one
   // instead of the ordering being decided before the analyst is consulted.

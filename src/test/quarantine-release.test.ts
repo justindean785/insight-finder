@@ -111,7 +111,9 @@ describe("release — the predicate split", () => {
 
 describe("release — every authority boundary agrees", () => {
   it("label: restores CONFIRMED (already correct — pinned as the reference)", () => {
+    expect(labelForArtifact(quarantined(), "confirmed")).not.toBe("ATTESTED");
     expect(labelForArtifact(quarantined(), "confirmed")).not.toBe("CONFIRMED");
+    // corroborated row: evidence-derived CONFIRMED outranks the analyst rung
     expect(labelForArtifact(released(), "confirmed")).toBe("CONFIRMED");
   });
 

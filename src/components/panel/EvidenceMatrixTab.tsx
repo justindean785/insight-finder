@@ -203,7 +203,7 @@ export function EvidenceMatrixTab({
                           (rState === "dismissed" ? "line-through" : "")
                         }
                       >
-                        <span className="break-all">{sanitizeValueForLabel(a.value, label === "CONFIRMED")}</span>
+                        <span className="break-all">{sanitizeValueForLabel(a.value, label === "CONFIRMED" || label === "ATTESTED")}</span>
                         <Copy className="mt-0.5 h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover/val:opacity-60" aria-hidden />
                       </button>
                       <div className="text-eyebrow tracking-normal text-muted-foreground mt-0.5 flex items-center gap-1.5 flex-wrap">

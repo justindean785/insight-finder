@@ -152,6 +152,8 @@ export function groupForKind(kind: string): Group {
 /** Confidence label used across the analyst surfaces. */
 export type ConfLabel =
   | "CONFIRMED"
+  /** Analyst Confirm / Key: a decision, not a second source class. */
+  | "ATTESTED"
   | "CORRELATED"
   | "INFERRED"
   | "VERIFY"
@@ -536,7 +538,17 @@ export function labelForArtifact(a: Artifact, review?: ReviewAdjustment): ConfLa
   const quarantined = isQuarantined(meta);
 
   const attested = review === "confirmed" || review === "key" || meta.reviewed === true;
-  if (attested && meta.possible_minor !== true && !quarantined) return "CONFIRMED";
+  // An analyst decision gets its OWN rung. It used to return CONFIRMED, so a
+  // row at recorded confidence 40 read "CONFIRMED" beside a legend defining
+  // CONFIRMED as two independent source classes — the number and the label
+  // disagreed in the same table row. ATTESTED renders as ANALYST-CONFIRMED,
+  // still counts as verified on the board, and never touches the figure.
+  if (attested && meta.possible_minor !== true && !quarantined) {
+    // Evidence that already clears the CONFIRMED bar on its own keeps the
+    // stronger, evidence-derived label; the decision never downgrades it.
+    const evidence = labelForArtifact({ ...a, metadata: { ...meta, reviewed: false } }, undefined);
+    return evidence === "CONFIRMED" ? "CONFIRMED" : "ATTESTED";
+  }
 
   const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
   const allSources = [a.source ?? null, ...metaSources].filter(Boolean) as string[];
@@ -618,7 +630,8 @@ export function labelForArtifact(a: Artifact, review?: ReviewAdjustment): ConfLa
 }
 
 export const CONF_LABEL_HELP: Record<ConfLabel, string> = {
-  CONFIRMED: "Supported by ≥2 independent source classes or reviewed by analyst.",
+  CONFIRMED: "Supported by ≥2 independent source classes.",
+  ATTESTED: "Analyst-confirmed. A decision, not a second source — the evidence figure is unchanged.",
   CORRELATED: "Multiple artifacts point together but no definitive proof.",
   INFERRED: "Source states this but it is not independently corroborated.",
   VERIFY: "Possible match. Needs verification before reporting.",
@@ -629,6 +642,7 @@ export const CONF_LABEL_HELP: Record<ConfLabel, string> = {
 
 export const CONF_LABEL_CLASS: Record<ConfLabel, string> = {
   CONFIRMED: "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/40 bg-[hsl(var(--confidence-high))]/10",
+  ATTESTED: "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))] border-dashed bg-[hsl(var(--confidence-high))]/10",
   CORRELATED: "text-[hsl(var(--confidence-high))]/90 border-[hsl(var(--confidence-high))]/30 bg-[hsl(var(--confidence-high))]/5",
   INFERRED: "text-primary border-primary/40 bg-primary/10",
   VERIFY: "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid))]/40 bg-[hsl(var(--confidence-mid))]/10",
@@ -960,7 +974,7 @@ export function buildToolAudit(
     };
     if (!entry.variants.includes(rawSource)) entry.variants.push(rawSource);
     entry.totalResults++;
-    if (label === "CONFIRMED" || label === "INFERRED") entry.highConf++;
+    if (label === "CONFIRMED" || label === "ATTESTED" || label === "INFERRED") entry.highConf++;
     if (label === "LOW" || label === "VERIFY") entry.lowConf++;
     if (cached) entry.cached++;
     if (failed) entry.failed++;
@@ -1142,7 +1156,7 @@ export function extractFailedAndSkipped(messages: RawMessage[]): FailedToolEntry
 export function buildInvestigationSummary(input: ReportInput): string {
   const { seedValue, seedType, artifacts } = input;
   const audit = buildToolAudit(artifacts);
-  const confirmed = artifacts.filter((a) => labelForArtifact(a) === "CONFIRMED").length;
+  const confirmed = artifacts.filter((a) => { const l = labelForArtifact(a); return l === "CONFIRMED" || l === "ATTESTED"; }).length;
   const verify = artifacts.filter((a) => labelForArtifact(a) === "VERIFY").length;
   const low = artifacts.filter((a) => labelForArtifact(a) === "LOW").length;
   const failed = artifacts.filter((a) => labelForArtifact(a) === "FAILED").length;
@@ -1197,7 +1211,7 @@ export function buildEvidenceMatrixMarkdown(
     const label = labelForArtifact(a, reviews?.[a.id]);
     // #3: strip promotional "CONFIRMED" wording from the VALUE when the row is
     // not actually backend-CONFIRMED (render-only; artifact untouched).
-    let value = sanitizeValueForLabel(a.value, label === "CONFIRMED");
+    let value = sanitizeValueForLabel(a.value, label === "CONFIRMED" || label === "ATTESTED");
     // #7: annotate reserved/fictional numbers as non-actionable (never delete).
     const reserved = reservedNumberAnnotation(a);
     if (reserved) value = `${value} — ${reserved}`;
@@ -1306,7 +1320,10 @@ export function buildReportMarkdown(input: ReportInput): string {
   // figure is review-independent.
   const conf = (a: Artifact): number | null => effectiveConfidence(a);
 
+  // CONFIRMED is evidence-derived (2+ independent source classes); ATTESTED is
+  // the analyst's decision. They are counted, worded and listed separately.
   const confirmed = artifacts.filter((a) => lbl(a) === "CONFIRMED");
+  const attested = artifacts.filter((a) => lbl(a) === "ATTESTED");
   const inferred = artifacts.filter((a) => lbl(a) === "INFERRED");
   const verify = artifacts.filter((a) => lbl(a) === "VERIFY");
   const low = artifacts.filter((a) => lbl(a) === "LOW");
@@ -1342,7 +1359,8 @@ export function buildReportMarkdown(input: ReportInput): string {
     }
     const parts: string[] = [];
     parts.push(`Observed ${total} artifact${total === 1 ? "" : "s"} across ${audit.tools.length} tool${audit.tools.length === 1 ? "" : "s"}.`);
-    if (confirmed.length) parts.push(`${confirmed.length} finding${confirmed.length === 1 ? "" : "s"} observed in multiple sources or analyst-reviewed.`);
+    if (confirmed.length) parts.push(`${confirmed.length} finding${confirmed.length === 1 ? "" : "s"} corroborated by 2+ independent source classes.`);
+    if (attested.length) parts.push(`${attested.length} item${attested.length === 1 ? "" : "s"} analyst-confirmed (a decision, not a second source).`);
     if (verify.length + low.length) parts.push(`${verify.length + low.length} item${verify.length + low.length === 1 ? "" : "s"} need verification before reporting.`);
     if (failed.length) parts.push(`${failed.length} item${failed.length === 1 ? "" : "s"} marked as false positive.`);
     if (reviewTally.verified || reviewTally.rejected || reviewTally.needs) {
@@ -1365,20 +1383,17 @@ export function buildReportMarkdown(input: ReportInput): string {
   // They are different populations, and the heading + lead say so when the
   // engine scored nothing — otherwise "adjudicated no findings" sat one heading
   // above a list of nine "findings" on a production export.
-  const attestedCount = confirmed.filter((a) => {
-    const r = rev(a);
-    return r === "confirmed" || r === "key" || (a.metadata as Record<string, unknown> | null)?.reviewed === true;
-  }).length;
   const keyFindingsHeading = keyFindingsFraming(authority, {
-    corroborated: confirmed.length - attestedCount,
-    attested: attestedCount,
+    corroborated: confirmed.length,
+    attested: attested.length,
   });
   const keyFindings = (() => {
-    if (confirmed.length) {
+    const strong = [...confirmed, ...attested];
+    if (strong.length) {
       return [
         ...(keyFindingsHeading.lead ? [keyFindingsHeading.lead, ""] : []),
-        ...confirmed.slice(0, 10).map((a) =>
-          `- **${a.kind}** — \`${a.value}\` _(source indicates via ${humanizeSourceChain(a.source)}, confidence ${conf(a) ?? "—"})_`,
+        ...strong.slice(0, 10).map((a) =>
+          `- **${a.kind}** — \`${a.value}\` _(${lbl(a) === "ATTESTED" ? "analyst-confirmed" : "corroborated"}; source indicates via ${humanizeSourceChain(a.source)}, confidence ${conf(a) ?? "—"})_`,
         ),
       ].join("\n");
     }
@@ -1388,7 +1403,7 @@ export function buildReportMarkdown(input: ReportInput): string {
       .slice(0, 10);
     if (!leads.length) return "_No findings recorded yet._";
     return [
-      "_No fully-corroborated findings yet (none reach CONFIRMED — 2+ independent source classes or analyst review). Strongest uncorroborated leads:_",
+      "_No fully-corroborated findings yet (none reach CONFIRMED — 2+ independent source classes — and none is analyst-confirmed). Strongest uncorroborated leads:_",
       "",
       ...leads.map((a) =>
         `- **${a.kind}** — \`${sanitizeValueForLabel(a.value, false)}\` _(${lbl(a)}, confidence ${conf(a) ?? "—"}, via ${humanizeSourceChain(a.source)})_`,
@@ -1506,7 +1521,7 @@ export function buildReportMarkdown(input: ReportInput): string {
 
   const network = (() => {
     const sections: string[] = [];
-    const line = (a: Artifact) => `- \`${sanitizeValueForLabel(a.value, lbl(a) === "CONFIRMED")}\` _(observed via ${humanizeSourceChain(a.source)})_`;
+    const line = (a: Artifact) => `- \`${sanitizeValueForLabel(a.value, lbl(a) === "CONFIRMED" || lbl(a) === "ATTESTED")}\` _(observed via ${humanizeSourceChain(a.source)})_`;
     // Threat/reputation rows (VirusTotal, IPQS, EmailRep…) are pulled into their
     // own section regardless of which group they land in — they may be
     // mis-kinded as `breach` (→ breach group) OR correctly kinded as

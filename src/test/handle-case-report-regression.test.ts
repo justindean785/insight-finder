@@ -76,7 +76,7 @@ describe("handle-case report regression", () => {
 
   it("2b. keyFindingsFraming is plain when the engine DID score findings", () => {
     const framed = keyFindingsFraming(
-      { state: "complete", findings: [{ id: "f", value: "x", confidence: 80, tier: "probable", origin: "model" }], rejectedCount: 0, totalArtifacts: 1 },
+      { state: "complete", findings: [{ id: "f", value: "x", confidence: 80, tier: "likely", origin: "model" }], rejectedCount: 0, totalArtifacts: 1 },
       { corroborated: 2, attested: 1 },
     );
     expect(framed).toEqual({ heading: "Key Findings", lead: null });
