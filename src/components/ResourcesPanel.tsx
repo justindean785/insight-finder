@@ -975,7 +975,7 @@ function ArtifactDrawerInner({
                 <ShieldQuestion className="w-3 h-3" /> Recheck
               </ReviewBtn>
               <ReviewBtn current={rState} target="dismissed" onClick={() => reviewSet(artifact.id, "dismissed", rctx)}>
-                <XCircle className="w-3 h-3" /> False
+                <XCircle className="w-3 h-3" /> Dismiss
               </ReviewBtn>
               <ReviewBtn current={rState} target="key" onClick={() => reviewSet(artifact.id, "key", rctx)}>
                 <Star className="w-3 h-3" /> Key

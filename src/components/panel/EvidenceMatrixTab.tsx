@@ -70,7 +70,7 @@ export function EvidenceMatrixTab({
             <span className="text-[hsl(var(--confidence-high))]">Confirm</span> accepts ·{" "}
             <span className="text-primary">Key</span> prioritises ·{" "}
             <span className="text-[hsl(var(--confidence-mid))]">Recheck</span> re-verifies in chat ·{" "}
-            <span className="text-destructive">False</span> excludes. Decisions steer the agent's
+            <span className="text-destructive">Dismiss</span> excludes. Decisions steer the agent's
             next run; none of them changes a confidence score.
           </div>
         </div>
@@ -307,7 +307,7 @@ export function EvidenceMatrixTab({
                     </div>
                   )}
 
-                  {/* One clear verdict each: Confirm true · Recheck in chat · False.
+                  {/* One clear verdict each: Confirm true · Recheck in chat · Dismiss.
                       "Key finding" and "false + teach agent" are deliberate
                       refinements, so they live in the overflow — the main row
                       stays a simple true / recheck / false decision. */}
@@ -334,7 +334,7 @@ export function EvidenceMatrixTab({
                             ctx: { value: a.value, kind: a.kind, confidence: shownConf.effective ?? undefined, source: a.source },
                           }).then((r) => { if (r.ok) toast.success("Rechecking in chat…"); });
                         }} />
-                      <PrimaryAction icon={XCircle} label="False" tip={REVIEW_HELP.dismissed}
+                      <PrimaryAction icon={XCircle} label="Dismiss" tip={REVIEW_HELP.dismissed}
                         active={rState === "dismissed"} tone="danger"
                         onClick={() => review.set(a.id, "dismissed", { value: a.value, kind: a.kind, confidence: shownConf.effective ?? undefined, source: a.source })} />
                       <DropdownMenu>

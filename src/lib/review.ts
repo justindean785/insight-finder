@@ -41,7 +41,7 @@ export const REVIEW_LABEL: Record<ReviewState, string> = {
   confirmed: "Confirmed true",
   recheck: "Needs another look",
   key: "Key finding",
-  dismissed: "False positive",
+  dismissed: "Dismissed",
   wrong: "Marked false (teach agent)",
 };
 
@@ -69,9 +69,9 @@ export const REVIEW_HELP: Record<ReviewState, string> = {
   key:
     "Critical lead. Pinned above comparable leads in pivot planning and named as a priority to the agent. Priority only — not confidence, sources or corroboration.",
   dismissed:
-    "False / unrelated. Leaves the working set, the pivots, tool dispatch, clusters and authoritative report sections. Kept in the evidence history.",
+    "Dismiss — false or unrelated. Leaves the working set, the pivots, tool dispatch, clusters and authoritative report sections. Kept in the evidence history.",
   wrong:
-    "Wrong / incorrect data. Same as False, plus a durable lesson in agent memory so future investigations skip this lead.",
+    "Wrong / incorrect data. Same as Dismiss, plus a durable lesson in agent memory so future investigations skip this lead.",
 };
 
 /** A review write in any recorded state can make a cached investigation_cache
