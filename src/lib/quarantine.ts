@@ -129,6 +129,7 @@ export function quarantineSets(
   artifacts: readonly QuarantineInput[],
   normalize: (value: string) => string,
   toPivotType: (kind: string) => string | null,
+  isDenied: (a: QuarantineInput) => boolean,
 ): { quarantined: Set<string>; linked: Set<string> } {
   const quarantined = new Set<string>();
   const linked = new Set<string>();
@@ -152,7 +153,28 @@ export function quarantineSets(
     // it, which is a split brain of exactly the kind this module exists to
     // prevent. It also made the docstring above ("carry at least one
     // un-quarantined observation") false.
-    if (isQuarantined(a.metadata)) quarantined.add(key);
+    // WHICH DENIAL, INJECTED. This used to hardcode `isQuarantined`, which made
+    // it the one authority boundary blind to the COLLISION family
+    // (`possible_collision`, `collision`, `excluded_collision`,
+    // `status: "excluded"`, `kind === "excluded_collision"`). Every other
+    // surface — clusters, the graph, the report, the confidence dimensions and
+    // the analyst-facing chip in `authority.ts` — gates on `isClusterIneligible`,
+    // which is `isCollisionArtifact(a) || isQuarantined(a.metadata)`. Only the
+    // pivot gate did not, so a row rendered "Quarantined" on the Evidence board
+    // was simultaneously the highest-scoring one-click pivot in the case.
+    //
+    // The predicate is INJECTED rather than imported for the same reason
+    // `normalize` and `toPivotType` are: `report-hygiene.ts` already imports
+    // `isQuarantined` from here, so importing it back would be a cycle, and this
+    // module is deliberately dependency-free.
+    //
+    // NOTE THE `else` — it is load-bearing, and it is why a separate key set
+    // OR-ed at the call site would NOT have been equivalent. An ineligible row
+    // must never land in `linked`: `isInert` treats one linked observation as a
+    // restore, so a ruled-out namesake sitting in `linked` would hand full pivot
+    // authority back to a value that a genuine `subject_unlinked` row had
+    // quarantined. Denial has to be decided once, here, for both sets.
+    if (isDenied(a)) quarantined.add(key);
     else linked.add(key);
   }
   return { quarantined, linked };

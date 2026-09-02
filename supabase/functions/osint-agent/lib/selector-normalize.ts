@@ -8,13 +8,13 @@
 // re-exports `normPhoneE164`, so its existing consumers are unaffected.
 //
 // MEASURED 2026-08-26 — the production run this module exists to fix.
-// Seed "Jesus Acosta, age 31" → pivot +19172915568. ONE phone became FOUR
+// Seed "Jordan Vale, age 31" → pivot +19175550123. ONE phone became FOUR
 // artifacts:
 //
-//     +19172915568   seed
-//     19172915568    clus_45d02dea
-//     9172915568     clus_45d02dea
-//     79172915568    clus_65fc6d70   ← Russian +7 prefix, a DIFFERENT number
+//     +19175550123   seed
+//     19175550123    clus_45d02dea
+//     9175550123     clus_45d02dea
+//     79175550123    clus_65fc6d70   ← Russian +7 prefix, a DIFFERENT number
 //
 // The first three are one number written three ways. Dedup everywhere is
 // `checkpointKey(kind, value)` — exact equality on the lowercased value — so
@@ -32,10 +32,10 @@
  * Moved verbatim from `lib/cluster.ts` — behaviour is unchanged, only the call
  * sites grew. Note what it does and does NOT collapse on the measured values:
  *
- *     +19172915568 → +19172915568
- *      19172915568 → +19172915568     (11 digits, leading 1)
- *       9172915568 → +19172915568     (10 digits, NANP assumption)
- *      79172915568 → +79172915568     ← stays DISTINCT
+ *     +19175550123 → +19175550123
+ *      19175550123 → +19175550123     (11 digits, leading 1)
+ *       9175550123 → +19175550123     (10 digits, NANP assumption)
+ *      79175550123 → +79175550123     ← stays DISTINCT
  *
  * The `+7` number shares ten digits with the subject's US number and is a
  * different number in a different country. Collapsing those would be a false
@@ -84,8 +84,8 @@ const UNIT_DESIGNATOR_RE = /\b(?:apt|apartment|unit|ste|suite|rm|room|fl|floor|n
 /**
  * Comparison form of a street line: lowercase, unit designators removed, then
  * every non-alphanumeric dropped. Punctuation and spacing carry no address
- * identity — `"1110 ANDERSON AVE3F"` and `"1110 ANDERSON AVE APT 3F"` are the
- * same line typed two ways, and both fold to `1110andersonave3f`.
+ * identity — `"1110 SAMPLE AVE3F"` and `"1110 SAMPLE AVE APT 3F"` are the
+ * same line typed two ways, and both fold to `1110sampleave3f`.
  *
  * This is a COMPARISON key only. Nothing persists in this form.
  */
@@ -104,7 +104,7 @@ function clean(v: unknown): string {
  *
  * PREFIX, NEVER SUBSTRING. A substring test looks like the more thorough
  * choice and destroys data: `"APT 3F"` folds to `3f`, which appears inside
- * `1110andersonave3f`, so a genuinely distinct secondary line would be deleted
+ * `1110sampleave3f`, so a genuinely distinct secondary line would be deleted
  * as a "duplicate" of the street it sits under. It would also merge neighbours
  * in corpora that store `12 Oak St` and `120 Oak St`. A prefix relation is the
  * only one that actually means "the same line, continued".
@@ -124,10 +124,10 @@ function redundantAgainst(a: string, b: string): boolean {
  * MEASURED 2026-08-26 — the value that shipped to the board, the report and the
  * export was:
  *
- *     1110 ANDERSON AVE3F 1110 ANDERSON AVE APT 3F BRONX NY 10452
+ *     1110 SAMPLE AVE3F 1110 SAMPLE AVE APT 3F ANYTOWN NY 10001
  *
- * `address_street` ("1110 ANDERSON AVE3F", already corpus junk) and
- * `address_street2` ("1110 ANDERSON AVE APT 3F", the same line spelled
+ * `address_street` ("1110 SAMPLE AVE3F", already corpus junk) and
+ * `address_street2` ("1110 SAMPLE AVE APT 3F", the same line spelled
  * properly) were `.join(" ")`ed with city/state/zip and no separators, so the
  * street appeared twice and ran into the unit number. That string is the
  * artifact's `value`, which is what renders everywhere.

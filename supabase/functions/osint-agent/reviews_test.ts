@@ -19,13 +19,11 @@ import {
   isRejectedReview,
   loadReviewsForThread,
   normalizeArtifactKey,
-  RECHECK_CONFIDENCE_PENALTY,
-  CONFIRMED_CONFIDENCE_BOOST,
-  KEY_CONFIDENCE_BOOST,
-  ATTESTED_CONFIDENCE_CEILING,
   rejectedArtifacts,
   renderAnalystRejectionBlock,
+  renderAnalystDecisionsBlock,
   type ReviewLoad,
+  type ReviewedRow,
 } from "./reviews.ts";
 
 type Rows = Array<Record<string, unknown>> | null;
@@ -67,9 +65,13 @@ function stubDb(
   };
 }
 
-const load = (byId: Record<string, string>, rejectedKeys: string[] = []): ReviewLoad => ({
-  ok: true, byId: new Map(Object.entries(byId)), rejectedKeys: new Set(rejectedKeys), error: null,
+const load = (byId: Record<string, string>, rejectedKeys: string[] = [], reviewedRows: ReviewedRow[] = []): ReviewLoad => ({
+  ok: true, byId: new Map(Object.entries(byId)), noteById: new Map(), rejectedKeys: new Set(rejectedKeys),
+  rejectedRows: reviewedRows.filter((r) => isRejectedReview(r.state)).map(({ id, kind, value }) => ({ id, kind, value })),
+  reviewedRows, error: null,
 });
+const reviewed = (id: string, kind: string, value: string, state: string, extra?: Partial<ReviewedRow>): ReviewedRow =>
+  ({ id, kind, value, state, note: null, quarantined: false, ...extra });
 
 Deno.test("isRejectedReview only treats dismissed/wrong as rejection", () => {
   assertEquals(isRejectedReview("dismissed"), true);
@@ -171,31 +173,105 @@ Deno.test("BYPASS CLOSED: value-level key from the DB drops a re-record even whe
   assertEquals(out.length, 0);
 });
 
-Deno.test("applyReviewsToArtifacts applies every review delta, floors at zero, tags states", () => {
+Deno.test("⛔ applyReviewsToArtifacts TAGS states and never touches confidence", () => {
+  // UPDATED 2026-09-02. Between 2026-07-27 and this change the backend applied
+  // +20 (confirmed) / +25 (key) / −20 (recheck) to EVIDENCE confidence on every
+  // read that feeds the model — cache write, salvage, clustering, recovery. An
+  // analyst decision is authority, priority or workflow state; it is not a
+  // second source, so it may not move the number the engine recorded. The
+  // decision now travels as `review_state` and the number is exactly as stored.
   const out = applyReviewsToArtifacts(
     [{ id: "a1", kind: "e", value: "v", confidence: 50 }, { id: "a2", kind: "e", value: "w", confidence: 5 }],
     load({ a1: "recheck", a2: "recheck" }),
   );
-  assertEquals(out[0].confidence, 50 - RECHECK_CONFIDENCE_PENALTY);
+  assertEquals(out[0].confidence, 50);
   assertEquals(out[0].review_state, "recheck");
-  assertEquals(out[1].confidence, 0);
+  assertEquals(out[1].confidence, 5);
 
-  // UPDATED 2026-07-27: `confirmed` used to be tagged WITHOUT touching confidence,
-  // and this test pinned that. The frontend advertised +20/+25
-  // (src/lib/review.ts REVIEW_CONFIDENCE_DELTA) while the backend applied neither,
-  // so production showed a green "Verified" chip beside an unchanged 45% and
-  // confirmed findings sorted BELOW unconfirmed ones.
   const kept = applyReviewsToArtifacts([{ id: "a1", kind: "e", value: "v", confidence: 50 }], load({ a1: "confirmed" }));
-  assertEquals(kept[0].confidence, 50 + CONFIRMED_CONFIDENCE_BOOST);
+  assertEquals(kept[0].confidence, 50, "confirm must not raise evidence confidence");
   assertEquals(kept[0].review_state, "confirmed");
 
   const keyed = applyReviewsToArtifacts([{ id: "a1", kind: "e", value: "v", confidence: 50 }], load({ a1: "key" }));
-  assertEquals(keyed[0].confidence, 50 + KEY_CONFIDENCE_BOOST);
+  assertEquals(keyed[0].confidence, 50, "key is priority, not confidence");
+  assertEquals(keyed[0].review_state, "key");
 
-  // An attestation is a statement about RELEVANCE, not a second independent
-  // source, so it must not manufacture corroboration past the ceiling.
-  const capped = applyReviewsToArtifacts([{ id: "a1", kind: "e", value: "v", confidence: 85 }], load({ a1: "key" }));
-  assertEquals(capped[0].confidence, ATTESTED_CONFIDENCE_CEILING);
+  // No field other than review_state is added — source classes / corroboration
+  // markers are untouched, so nothing downstream can read a verdict as a source.
+  const before = { id: "a1", kind: "e", value: "v", confidence: 85, metadata: { source_category: ["breach"] } };
+  const after = applyReviewsToArtifacts([before], load({ a1: "key" }))[0];
+  assertEquals(Object.keys(after).sort(), [...Object.keys(before), "review_state"].sort());
+  assertEquals(after.metadata, before.metadata);
+});
+
+Deno.test("loadReviewsForThread resolves EVERY reviewed row (not just rejected) with notes and quarantine", async () => {
+  const db = stubDb(
+    [
+      { artifact_id: "c1", state: "confirmed", note: " checked the registry " },
+      { artifact_id: "k1", state: "key", note: null },
+      { artifact_id: "r1", state: "recheck", note: null },
+      { artifact_id: "x1", state: "wrong", note: null },
+      { artifact_id: "zz", state: "unknown_state", note: null },
+    ],
+    null,
+    {
+      artifactRows: [
+        { id: "c1", kind: "email", value: "a@b.c", metadata: { subject_unlinked: true } },
+        { id: "k1", kind: "username", value: "lead", metadata: {} },
+        { id: "r1", kind: "phone", value: "+15551234567", metadata: { subject_unlinked: true, linkage_confirmed: true } },
+        { id: "x1", kind: "name", value: "Wayne Young", metadata: {} },
+      ],
+    },
+  );
+  const r = await loadReviewsForThread(db, "t1", "u1");
+  assertEquals(r.ok, true);
+  assertEquals(r.byId.has("zz"), false, "an unknown state is ignored, not propagated");
+  assertEquals(r.noteById.get("c1"), "checked the registry");
+  const byId = Object.fromEntries(r.reviewedRows.map((x) => [x.id, x]));
+  assertEquals(byId.c1.state, "confirmed");
+  assertEquals(byId.c1.quarantined, true, "confirmation does not release subject_unlinked");
+  assertEquals(byId.r1.quarantined, false, "linkage_confirmed is the release");
+  assertEquals(byId.k1.state, "key");
+  assertEquals(r.rejectedRows.map((x) => x.id), ["x1"]);
+  assertEquals(r.rejectedKeys.has(normalizeArtifactKey("name", "wayne young")), true);
+});
+
+Deno.test("⛔ renderAnalystDecisionsBlock: ONE structured block with all four decision kinds", () => {
+  const block = renderAnalystDecisionsBlock(load(
+    { c1: "confirmed", k1: "key", r1: "recheck", x1: "wrong" },
+    [],
+    [
+      reviewed("c1", "email", "jordan@example.test", "confirmed", { note: "matches the registry", quarantined: true }),
+      reviewed("k1", "username", "nightjar", "key"),
+      reviewed("r1", "phone", "+1 555 123 4567", "recheck"),
+      reviewed("x1", "name", "Wayne Young", "wrong"),
+    ],
+  ));
+  assertEquals(block.includes("## ANALYST DECISIONS"), true);
+  // The governing rule is stated once, in the header, for all four sections.
+  assertEquals(/never changes|None of them changes/i.test(block), true, "must state that decisions do not change confidence");
+  assertEquals(block.includes("### Confirmed by the analyst"), true);
+  assertEquals(block.includes("jordan@example.test"), true);
+  assertEquals(block.includes("analyst note: matches the registry"), true);
+  assertEquals(block.includes("linkage NOT released"), true, "a confirmed-but-quarantined row is described honestly");
+  assertEquals(block.includes("### Key priorities"), true);
+  assertEquals(block.includes("nightjar"), true);
+  assertEquals(block.includes("### Recheck tasks"), true);
+  assertEquals(block.includes("+1 555 123 4567"), true);
+  assertEquals(block.includes("DO NOT USE"), true);
+  assertEquals(block.includes("Wayne Young"), true);
+  // Section order: confirmed → key → recheck → rejected.
+  const idx = ["### Confirmed", "### Key", "### Recheck", "### ANALYST-REJECTED"].map((h) => block.indexOf(h));
+  assertEquals(idx.every((i, n) => i >= 0 && (n === 0 || i > idx[n - 1])), true);
+});
+
+Deno.test("renderAnalystDecisionsBlock is empty with no decisions and empty when the load is unavailable", () => {
+  assertEquals(renderAnalystDecisionsBlock(load({})), "");
+  assertEquals(renderAnalystDecisionsBlock(emptyReviewLoad(false, "boom")), "");
+  // Only positive decisions, no rejections: no DO-NOT-USE section is fabricated.
+  const only = renderAnalystDecisionsBlock(load({ c1: "confirmed" }, [], [reviewed("c1", "email", "a@b.c", "confirmed")]));
+  assertEquals(only.includes("### Confirmed"), true);
+  assertEquals(only.includes("DO NOT USE"), false);
 });
 
 Deno.test("applyReviewsToArtifacts is identity when nothing is reviewed", () => {

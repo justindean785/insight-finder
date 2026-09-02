@@ -7,6 +7,11 @@ import {
   type Group,
 } from "@/lib/intel";
 import { isClusterIneligible } from "@/lib/report-hygiene";
+// A GraphNode's confidence is RENDERED by GraphTab (node numeral, node meter,
+// the detail panel's ConfidenceMeter), so it must carry the effective value.
+// Fixing it here rather than at the three render sites means the graph cannot
+// display a raw number without any component ever naming `a.confidence`.
+import { effectiveConfidenceOrZero } from "@/lib/display-confidence";
 import { isBreachKind } from "@/lib/breach-kinds";
 
 /**
@@ -239,7 +244,7 @@ export function buildEntityGraph(
       label: a.value,
       kind: a.kind,
       group: groupForKind(a.kind),
-      confidence: a.confidence ?? 0,
+      confidence: effectiveConfidenceOrZero(a),
       isSeed: false,
       conflict: isConflict(a),
       clusterId: clusterOf.get(a.id) ?? null,

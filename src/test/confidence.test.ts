@@ -56,11 +56,18 @@ describe("explainConfidence", () => {
     expect(components.some((c) => c.label === "Stale (>30d)" && c.delta === -10)).toBe(true);
   });
 
-  it("applies analyst review deltas", () => {
-    expect(explainConfidence(art(), "confirmed").components.some((c) => c.delta === 15)).toBe(true);
-    expect(explainConfidence(art(), "key").components.some((c) => c.delta === 18)).toBe(true);
-    expect(explainConfidence(art(), "recheck").components.some((c) => c.delta === -12)).toBe(true);
-    expect(explainConfidence(art(), "dismissed").components.some((c) => c.delta === -40)).toBe(true);
+  it("discloses the analyst decision WITHOUT scoring it (decisions are not evidence)", () => {
+    // These used to be +15 / +18 / −12 / −40: the popover told the analyst that
+    // their click was a source. A decision is authority, priority or workflow
+    // state — the number it explains is the evidence's, and must not move.
+    const baseline = explainConfidence(art()).final;
+    for (const r of ["confirmed", "key", "recheck", "dismissed", "wrong"] as const) {
+      const exp = explainConfidence(art(), r);
+      expect(exp.final).toBe(baseline);
+      const disclosed = exp.components.find((c) => /analyst|key|recheck|rejected/i.test(c.label));
+      expect(disclosed).toBeDefined();
+      expect(disclosed!.delta).toBe(0);
+    }
   });
 
   it("applies a heavy false-positive metadata penalty", () => {

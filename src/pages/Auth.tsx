@@ -26,7 +26,7 @@ const OperationsBrief = memo(function OperationsBrief() {
   
   <header className="relative flex items-center justify-between">
   <div className="flex items-center gap-3">
-  <div className="grid h-11 w-11 place-items-center rounded-xl border border-white/10 bg-white/[0.045] shadow-[inset_0_1px_0_rgba(255,255,255,0.07)]">
+  <div className="grid h-11 w-11 place-items-center rounded-xl border border-white/10 bg-white/[0.045] shadow-[inset_0_1px_0_hsl(var(--film)/0.07)]">
   <SwarmMark className="h-7 w-7" />
   </div>
   <div>

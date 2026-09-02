@@ -93,7 +93,7 @@ export function ConfidenceMeter({
             key={i}
             className="h-2 flex-1 rounded-[1px]"
             style={{
-              background: i < filled ? `hsl(${c})` : "hsl(0 0% 100% / 0.05)",
+              background: i < filled ? `hsl(${c})` : "hsl(var(--film) / 0.05)",
               boxShadow: i < filled ? `0 0 4px hsl(${c} / 0.35)` : "none",
             }}
           />
