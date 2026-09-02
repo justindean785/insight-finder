@@ -4,10 +4,12 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadToolActivity } from "@/hooks/useThreadToolActivity";
-import { ShieldAlert, Lock, Coins, Plus, Copy, Link2, Mail, Phone, Globe, Network, User, Hash, FileSearch } from "lucide-react";
+import { ShieldAlert, Lock, Coins, Plus, Copy, Link2, Mail, Phone, Globe, Network, User, Hash, FileSearch, ShieldCheck, AlertTriangle, Unlink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { extractDisplaySeed, type SeedKind } from "@/lib/seed";
+import { tallyAuthority } from "@/lib/authority";
+import { useReviewStates } from "@/lib/review";
 
 type Thread = {
   id: string;
@@ -84,15 +86,33 @@ export function pickEvidenceCount(
  * happens whenever the auto-persist backstop carries a run, since it writes
  * `public.artifacts` and never appends to `evidence_log`. Reporting only the small
  * number there hides missing custody behind what looks like a thin result.
+ *
+ * `hint` closes a gap that survived the 2026-08-06 fix: the tooltip that explains
+ * the two-metric relationship only fired on the INVERTED (missing-custody) branch.
+ * On the documented, "legitimate" branch above, the header rendered a bare number
+ * with no tooltip at all — so an analyst comparing it against the Evidence tab
+ * badge inches away (11 header vs 9 tab, a real 2026-08-10 case) sees exactly the
+ * same unexplained mismatch the original incident was about, just smaller. `hint`
+ * is set whenever the two counts differ, in EITHER direction, so the tooltip is
+ * never absent while there is something on screen worth explaining.
  */
 export function describeEvidence(
   integrity: { total: number } | null,
   artifactCount: number,
-): { text: string; unledgered: number } {
-  if (!integrity) return { text: `${artifactCount} evidence`, unledgered: 0 };
+): { text: string; unledgered: number; hint: string | undefined } {
+  if (!integrity) return { text: `${artifactCount} evidence`, unledgered: 0, hint: undefined };
   const unledgered = Math.max(0, artifactCount - integrity.total);
-  if (unledgered === 0) return { text: `${integrity.total} evidence`, unledgered: 0 };
-  return { text: `${artifactCount} recorded · ${integrity.total} chain-verified`, unledgered };
+  if (unledgered === 0) {
+    const hint = integrity.total > artifactCount
+      ? `${integrity.total} chain-verified evidence rows across ${artifactCount} deduped artifact${artifactCount === 1 ? "" : "s"} — one artifact can carry more than one evidence-log entry.`
+      : undefined;
+    return { text: `${integrity.total} evidence`, unledgered: 0, hint };
+  }
+  return {
+    text: `${artifactCount} recorded · ${integrity.total} chain-verified`,
+    unledgered,
+    hint: `${unledgered} recorded artifact${unledgered === 1 ? " has" : "s have"} no chain-of-custody entry`,
+  };
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -133,6 +153,25 @@ export function deriveWorkspaceStatus(input: {
   return input.hasEvidence ? "completed" : "idle";
 }
 
+/** One case-posture stat: icon + number + word. Never colour alone. */
+function HeaderStat({
+  icon: Icon, value, label, tone, title,
+}: { icon: typeof Globe; value: number; label: string; tone: string; title: string }) {
+  return (
+    <span
+      title={title}
+      className={cn(
+        "inline-flex items-center gap-1 rounded border border-white/[0.07] bg-white/[0.025] px-1.5 py-px text-[10px] font-medium tabular-nums",
+        tone,
+      )}
+    >
+      <Icon className="h-2.5 w-2.5 shrink-0" strokeWidth={2.25} aria-hidden />
+      {value}
+      <span className="text-muted-foreground/70">{label}</span>
+    </span>
+  );
+}
+
 /**
  * Case command bar — Palantir/Claude workstation style.
  * Three-zone grid: left meta · centered identity · right ops.
@@ -149,6 +188,17 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
 
   const artifactCount = items.length;
   const evidence = describeEvidence(integrity, artifactCount);
+  // Derived from the SAME projection the Evidence ledger renders, so the header
+  // and the board can never disagree about how many rows are quarantined.
+  //
+  // "Same projection" means the review getter too. Analyst verdicts live outside
+  // `items` — confirming or dismissing a row changes `authorityFor` without
+  // changing the artifact — so a tally that omits `review.get` drifts the moment
+  // anyone adjudicates anything: the header would keep calling a dismissed row
+  // Verified while the ledger and Overview, which both pass it, show Excluded.
+  // (Cursor + Codex review, PR #462.)
+  const review = useReviewStates(threadId);
+  const tally = useMemo(() => tallyAuthority(items, review.get), [items, review]);
 
   const loadIntegrity = useCallback(async () => {
     const [{ count }, { data: v }] = await Promise.all([
@@ -270,18 +320,46 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
   };
 
   return (
-    <header className="relative border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(220_22%_6.5%/0.92),hsl(222_24%_4%/0.88))] backdrop-blur-xl">
+    <header className="relative border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(28_10%_6%/0.9),hsl(28_12%_2.5%/0.88))] backdrop-blur-xl">
       <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
 
+      {/* ── Classification band ─────────────────────────────────────────────
+          The strip that makes the workspace read as a case file rather than as
+          a dashboard: what this document is, who it is for, and — via the one
+          accent hairline that crosses it on a slow loop (.dsr-band) — whether
+          the case is live. Text only, no controls; it is a masthead, not a
+          toolbar. Hidden below sm, where the width is worth more than the
+          register mark. */}
+      <div
+        aria-hidden
+        className="dsr-band hidden border-b border-white/[0.05] bg-white/[0.012] px-4 py-1 font-mono text-[9px] uppercase tracking-[0.3em] text-muted-foreground/45 sm:flex sm:items-center sm:justify-between sm:px-7"
+      >
+        <span className="flex items-center gap-2">
+          <span className={cn("h-[5px] w-[5px] shrink-0", liveRun ? "dsr-dot" : "rounded-full bg-muted-foreground/30")} />
+          {liveRun ? <span className="text-danger">Live</span> : <span>Case file</span>}
+          <span className="text-muted-foreground/25">·</span>
+          <span>Insight Finder · Case register</span>
+        </span>
+        <span className="hidden lg:inline">Analyst copy — not for distribution</span>
+        <span className="tabular-nums">
+          {artifactCount} art · {activity.persistedTotal} tools
+        </span>
+      </div>
+
       {/* 3-zone command bar: left balance · center identity · right ops */}
-      <div className="mx-auto grid h-[3.5rem] w-full max-w-[min(100%,64rem)] grid-cols-[1fr_minmax(0,auto)_1fr] items-center gap-2 px-4 sm:px-7">
+      {/* `min-h`, not `h`. A FIXED 3.5rem could not hold the identity block once
+          its status line wrapped, which it does at any width where the case has
+          a few chips — measured at 1000px, where "CASE FILE" from the left
+          column printed straight through the COMPLETE badge and "42 evidence ·
+          18 tools" broke across the tab strip below. The bar grows instead. */}
+      <div className="mx-auto grid min-h-[3.5rem] w-full max-w-[min(100%,64rem)] grid-cols-[1fr_minmax(0,auto)_1fr] items-center gap-2 px-4 py-1.5 sm:px-7">
         {/* Left — case class (balances the right so center is true center) */}
         <div className="flex min-w-0 items-center gap-2 justify-self-start">
           <span className="hidden sm:inline-flex items-center gap-1.5 rounded-md border border-white/[0.07] bg-white/[0.03] px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
             <KindIcon className="h-3 w-3 shrink-0 opacity-80" strokeWidth={1.75} aria-hidden />
             {KIND_LABEL[display.kind]}
           </span>
-          <span className="hidden md:inline text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/55">
+          <span className="hidden whitespace-nowrap md:inline text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/55">
             Case file
           </span>
         </div>
@@ -312,7 +390,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
             )}
           </button>
           {status !== "idle" && (
-            <div className="mt-0.5 flex items-center gap-1.5">
+            <div className="mt-0.5 flex flex-wrap items-center justify-center gap-x-1.5 gap-y-1">
               <span
                 className={cn(
                   "rounded-full border px-2 py-px text-[9px] font-semibold uppercase tracking-[0.16em]",
@@ -326,12 +404,47 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
               </span>
               <span
                 className="hidden text-[10px] text-muted-foreground/70 sm:inline tabular-nums"
-                title={evidence.unledgered > 0
-                  ? `${evidence.unledgered} recorded artifact${evidence.unledgered === 1 ? "" : "s"} have no chain-of-custody entry`
-                  : undefined}
+                title={evidence.hint}
               >
                 {evidence.text} · {activity.persistedTotal} tools
               </span>
+              {/* Case posture, not just case volume. "29 evidence" says how much
+                  was collected; it says nothing about how much an analyst can
+                  stand behind. These three are the questions asked on every
+                  case — what is solid, what is disputed, what cannot be
+                  attributed — and they were previously answerable only by
+                  opening Evidence and counting. Each is a live filter link. */}
+              {(tally.verified > 0 || tally.conflict > 0 || tally.quarantined > 0) && (
+                <span className="hidden items-center gap-1.5 md:inline-flex">
+                  {tally.verified > 0 && (
+                    <HeaderStat
+                      icon={ShieldCheck}
+                      value={tally.verified}
+                      label="verified"
+                      tone="text-[hsl(var(--authority-verified))]"
+                      title={`${tally.verified} corroborated across two or more independent source classes, or analyst-confirmed`}
+                    />
+                  )}
+                  {tally.conflict > 0 && (
+                    <HeaderStat
+                      icon={AlertTriangle}
+                      value={tally.conflict}
+                      label="conflict"
+                      tone="text-[hsl(var(--authority-conflict))]"
+                      title={`${tally.conflict} contradict the seed or another identity cluster`}
+                    />
+                  )}
+                  {tally.quarantined > 0 && (
+                    <HeaderStat
+                      icon={Unlink}
+                      value={tally.quarantined}
+                      label="quarantined"
+                      tone="text-[hsl(var(--authority-quarantine))]"
+                      title={`${tally.quarantined} recorded and disclosed, but withheld from identity — linkage to the subject is unproven, or the row is a flagged name collision`}
+                    />
+                  )}
+                </span>
+              )}
             </div>
           )}
         </div>

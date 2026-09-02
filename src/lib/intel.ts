@@ -1,12 +1,29 @@
 import type { Artifact } from "@/hooks/useThreadArtifacts";
+import {
+  AUTHORITY_HEADING,
+  authorityStatement,
+  recordedConfidenceCap,
+  type AuthoritativeFindings,
+} from "@/lib/authoritative-findings";
 import { detectSeed, extractDisplaySeed } from "@/lib/seed";
 import { toolActionLabel } from "@/lib/tool-display";
 import { humanizeSourceChain, tokenizeSourceChain } from "@/lib/report-source-labels";
 import { deriveToolStatus, deriveToolReason } from "@/lib/tool-run";
+import { isSubjectUnlinked, isQuarantined } from "@/lib/quarantine";
+// Pure (no Supabase import), so no cycle: the one rejection predicate every
+// frontend consumer shares — analyst verdict OR the legacy `false_positive` flag.
+import { isRejectedArtifact as isRejectedArtifactRow } from "@/lib/analyst-decisions";
+// Derived models built here (timeline entries, pivot candidates) carry a
+// per-artifact confidence that is later RENDERED, so they must carry the
+// effective value — otherwise a surface displays a raw number without ever
+// touching `a.confidence` itself. No cycle: display-confidence imports only
+// authoritative-findings and quarantine, and neither imports this module.
+import { effectiveConfidence, effectiveConfidenceOrZero } from "@/lib/display-confidence";
 import {
   clusterDisplayId,
   bucketQualifiesAsCluster,
   isCollisionArtifact,
+  isClusterIneligible,
   sanitizeValueForLabel,
   reportDisplayKind,
   reservedNumberAnnotation,
@@ -62,6 +79,7 @@ const KIND_TO_GROUP: Record<string, Group> = {
   handle: "social",
   social: "social",
   account: "social",
+  social_footprint: "social",
   ip: "infrastructure",
   // The extractor emits BOTH `ip` and `ip_address` for the same concept. Only
   // `ip` was mapped, so `ip_address` fell through to "other" — on the
@@ -79,6 +97,7 @@ const KIND_TO_GROUP: Record<string, Group> = {
   // The auto-persist collapse emits breach_exposure instead of many `breach`
   // rows; without this the collapsed row silently fell through to "other".
   breach_exposure: "breach",
+  bulk_corpus_harvest: "breach",
   credential_exposure: "breach",
   password: "breach",
   hash: "breach",
@@ -234,13 +253,64 @@ const REVIEW_DELTA: Record<string, number> = {
   wrong: -40,
 };
 
+/** Minor-safety ceiling. A possible-minor row can never auto-promote. */
+export const POSSIBLE_MINOR_CEILING = 55;
+/**
+ * Quarantine ceiling for `subject_unlinked` rows. Same value as the backend's
+ * write-side cap, so the client cannot render a number the server refused to
+ * persist. Kept as a named constant rather than a literal because the label
+ * ladder reasons about the same threshold.
+ */
+export const QUARANTINE_CEILING = 55;
+
+/**
+ * The server's recorded source-class ceiling for a row, or null.
+ *
+ * `metadata.confidence_cap_applied` is written by the backend's integrity layer
+ * (`auto-record-integrity.ts` — `confidence_cap_applied: cap.cap`) and encodes a
+ * specific claim: *this row's source classes cannot support more than N*
+ * (breach-only ≤60, username_sweep-only ≤45, `social_profile_passive` ≤40,
+ * `ai_summary` ≤55). It is the same kind of assertion as the two ceilings above,
+ * just per-row rather than per-flag.
+ *
+ * Total on purpose. `metadata` is untyped JSON off the wire and is partly
+ * model-authored, so anything unparseable yields null and scoring falls back to
+ * its normal path. Note the value can only ever LOWER a displayed number, never
+ * raise one, so an unusable or hostile value cannot inflate a row — the failure
+ * mode is fail-safe in the direction that matters.
+ */
+
+
 export function adjustedConfidence(a: Artifact, review?: ReviewAdjustment): number {
   const base = a.confidence ?? 0;
   const d = review ? REVIEW_DELTA[review] ?? 0 : 0;
   const meta = (a.metadata ?? {}) as Record<string, unknown>;
   const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
   const allSources = [a.source ?? null, ...metaSources].filter(Boolean) as string[];
-  // Corroboration bonus: more distinct source classes = more trustworthy.
+  // ── THIS IS A CLASSIFICATION SCORE, NOT A DISPLAYED NUMBER ────────────────
+  //
+  // Read the docstring above before changing anything here. As of 2026-08-31 the
+  // ONLY consumer of this function is `labelForArtifact`, and the number it
+  // returns is never rendered. What an analyst reads is
+  // `displayConfidence(a).effective` = `min(stored, confidence_cap_applied)` and
+  // nothing else — see src/lib/display-confidence.ts.
+  //
+  // That split is the whole fix. This function used to be BOTH: it fed the label
+  // ladder AND was rendered by EvidenceMatrixTab, so its corroboration bonus
+  // showed up as a number no other surface agreed with —
+  // `j.harker@northgate-logistics.com` stored 88 and displayed 93 on exactly one
+  // tab. The terms below were never wrong for CLASSIFICATION; they were wrong as
+  // a figure, because independence is measured server-side by
+  // `countIndependentClasses` and re-crediting it in a rendered number counts the
+  // same sources twice.
+  //
+  // So they stay, here, where the ladder is tuned against them. Deleting them and
+  // then lowering the thresholds to compensate is the same computation with more
+  // moving parts, and it silently re-tunes rungs that no test pins.
+  //
+  // The rule is one line: this value classifies, it never displays. The source
+  // guard in `display-confidence-contract.test.ts` enforces it — no component
+  // file may call this function.
   const classes = new Set(
     allSources.map((s) =>
       isBreachSource(s)
@@ -261,11 +331,55 @@ export function adjustedConfidence(a: Artifact, review?: ReviewAdjustment): numb
   if (allSources.length > 0 && allSources.every((s) => isUsernameSweepSource(s))) bonus -= 10;
   // Explicit conflict / collision metadata is a strong negative signal.
   if (meta.conflict === true || meta.collision === true) bonus -= 15;
+  // The server's per-row source-class ceiling, folded into whichever limit
+  // applies below so the STRICTER of the two always wins. Applied to every
+  // return path rather than as a fourth branch: a quarantined row whose cap is
+  // 40 must land on 40, not on the looser QUARANTINE_CEILING of 55.
+  //
+  // This clamps the analyst review delta too, matching how POSSIBLE_MINOR_CEILING
+  // already treats it. That is deliberate — `confidence_cap_applied` is a
+  // statement about what this row's EVIDENCE can support, and a review verdict
+  // is not new evidence. The escape hatch for genuine adjudication is
+  // `linkage_confirmed`, which is explicit and durable, not a one-click verdict
+  // (the review control is known to invert on quarantined rows, so it must not
+  // be able to overrule an evidence ceiling on a mis-click).
+  //
+  // The corroboration bonus is clamped for a second, independent reason: it is a
+  // DOUBLE COUNT. The server already measured independence with
+  // `countIndependentClasses` over the authoritative taxonomy before setting the
+  // cap; re-adding a coarse client-side estimate on top re-credits the same
+  // sources twice.
+  const recordedCap = recordedConfidenceCap(meta);
+  const ceil = (limit: number) => (recordedCap === null ? limit : Math.min(limit, recordedCap));
   // Possible-minor signal forces a cap so the artifact never auto-promotes.
   if (meta.possible_minor === true) {
-    return Math.max(0, Math.min(55, base + d + bonus));
+    return Math.max(0, Math.min(ceil(POSSIBLE_MINOR_CEILING), base + d + bonus));
   }
-  return Math.max(0, Math.min(100, base + d + bonus));
+  // Quarantine is the SECOND ceiling, for the same reason and with the same shape.
+  // #448 gave `subject_unlinked` a hard floor at the LABEL (labelForArtifact) but
+  // left the NUMBER uncapped, which breaks the invariant the possible_minor branch
+  // above exists to hold — see its comment in labelForArtifact: the cap is there
+  // "so number and label stay consistent". Without this, a quarantined row renders
+  // 65, or 85 once attested, beside a deliberately non-CONFIRMED label, and
+  // EvidenceMatrixTab shows that number to the analyst as the score.
+  //
+  // The backend already enforces this ceiling on write — canary run 4d0193c7
+  // observed max confidence 55 across all 24 quarantined rows — so an uncapped
+  // client value is the display contradicting the persisted record.
+  //
+  // Asymmetric on purpose: quarantine is a CEILING, never a floor. Positive
+  // corroboration and positive review deltas are dropped, because neither speaks
+  // to whether the row is THIS SUBJECT'S; negatives are kept in full, so a
+  // quarantined row that other signals push down still goes down.
+  //
+  // `isQuarantined` (not `isSubjectUnlinked`) is deliberate: it returns false once
+  // `linkage_confirmed` is set, preserving #448's explicit escape hatch — an
+  // analyst who has actually adjudicated provenance restores full authority here
+  // exactly as they do at the label boundary.
+  if (isQuarantined(meta)) {
+    return Math.max(0, Math.min(ceil(QUARANTINE_CEILING), base + Math.min(0, d) + Math.min(0, bonus)));
+  }
+  return Math.max(0, Math.min(ceil(100), base + d + bonus));
 }
 
 // Source classes that do NOT, on their own, constitute independent corroboration
@@ -325,6 +439,34 @@ function independentSourceClassCount(a: Artifact): number {
   return artifactSourceClasses(a).filter((c) => !NON_CORROBORATING_CLASSES.has(c)).length;
 }
 
+/**
+ * The independent (corroborating) source classes backing a CLUSTER — the union
+ * of each member artifact's independent classes. A cluster is corroborated when
+ * two such classes back it, whether both come from one artifact or one from each
+ * of two: corroboration is a property of the claim, not of a single row.
+ *
+ * Deliberately NOT `cluster.sources.length`. That field holds raw source STRINGS
+ * (tool ids) — the report renders it elsewhere as "Source tools:" — and two tool
+ * ids are not two independent classes. The taxonomy collapses census + nominatim
+ * to a single `public_record`, and excludes discovery / AI-summary / sweep
+ * classes from corroborating anything. Measured on production 2026-08-24: 388
+ * artifacts carry >=2 raw categories but only 123 carry >=2 independent ones, so
+ * counting raw sources would over-report corroboration by ~3.2x.
+ */
+function clusterIndependentSourceClasses(c: IdentityCluster): string[] {
+  const out = new Set<string>();
+  for (const a of c.artifacts) {
+    for (const cls of artifactSourceClasses(a)) {
+      if (!NON_CORROBORATING_CLASSES.has(cls)) out.add(cls);
+    }
+  }
+  return Array.from(out);
+}
+
+/** A cluster is corroborated when >=2 INDEPENDENT source classes back it. Same
+ *  bar `labelForArtifact` uses to award CONFIRMED, applied at cluster scope. */
+const CLUSTER_CORROBORATION_MIN_CLASSES = 2;
+
 /** Distinct independent source strings ("corpora") after case-insensitive dedup.
  *  `meta.sources` frequently repeats `a.source`, so a single corpus otherwise
  *  reads as two sources. Used to gate breach-email corroboration. */
@@ -344,8 +486,26 @@ export function labelForArtifact(a: Artifact, review?: ReviewAdjustment): ConfLa
   // skipping the short-circuit makes the LABEL respect that cap too — the row flows
   // through the source-derived tiers below (max VERIFY at 55), so number and label
   // stay consistent. The analyst review itself is still recorded.
+  // QUARANTINE IS A SECOND HARD FLOOR, alongside possible_minor. `subject_unlinked`
+  // says linkage to the subject is unproven; CONFIRMED asserts the row IS the
+  // subject's. Those cannot both be true, and CONFIRMED is not cosmetic — it leads
+  // Key Findings, feeds the "Confirmed" KPI bucket, and skips value sanitization on
+  // export.
+  //
+  // Ordinary attestation does NOT clear it. `meta.reviewed`/"confirmed"/"key" are
+  // set by flows that never adjudicated PROVENANCE — they answer "is this value
+  // real?", not "is it this person's?". Quarantine is a machine claim about
+  // provenance, so only an explicit human claim about provenance clears it:
+  // `linkage_confirmed`. Operator-approved policy, 2026-08-10.
+  //
+  // The analyst's review is still recorded, and still authoritative in the NEGATIVE
+  // direction — a dismissal above already returned FAILED.
+  // One predicate, shared with evidenceStatus — see isQuarantined's docstring for
+  // why two independent promotion paths must not each compute this themselves.
+  const quarantined = isQuarantined(meta);
+
   const attested = review === "confirmed" || review === "key" || meta.reviewed === true;
-  if (attested && meta.possible_minor !== true) return "CONFIRMED";
+  if (attested && meta.possible_minor !== true && !quarantined) return "CONFIRMED";
 
   const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
   const allSources = [a.source ?? null, ...metaSources].filter(Boolean) as string[];
@@ -395,7 +555,30 @@ export function labelForArtifact(a: Artifact, review?: ReviewAdjustment): ConfLa
   }
 
   // Multi-source-class corroboration → CONFIRMED / CORRELATED.
-  if (c >= 85 && independentClasses >= 2) return "CONFIRMED";
+  //
+  // Corroboration cannot lift quarantine, and this is the clause that matters most:
+  // it proves the VALUE is real, never that it is the SUBJECT's. Ten providers
+  // agreeing a phone number exists says nothing about whose phone it is — and a
+  // name-only harvest returns exactly that shape, several sources describing one
+  // real stranger. So a quarantined row tops out at CORRELATED ("real, apparently
+  // connected") rather than CONFIRMED ("belongs to the subject").
+  // THRESHOLDS ARE UNCHANGED AT EVERY RUNG, deliberately.
+  //
+  // An earlier pass deleted the corroboration bonus from this function and then
+  // lowered this comparison 85 -> 80 to compensate, on the reasoning that a
+  // two-class row scored +5 so the effective bar had always been 80. The
+  // arithmetic was right and the change was still wrong: it re-tuned
+  // CLASSIFICATION as a side effect of a DISPLAY fix, and it only compensated the
+  // one rung that happened to have a test. The +5 also lifted rows over the 70
+  // CORRELATED rung and the identity branch's own 70, and the separate
+  // direct-profile +5 lifted rows over 85 / 65 / 40 — none of which any test
+  // pins, so those would have moved silently.
+  //
+  // The split resolves it without touching a single threshold: the terms this
+  // ladder is tuned against still exist, in the classification score above, and
+  // what was removed is only their reach into the RENDERED figure. Classification
+  // may weigh source independence; a displayed number may not re-derive it.
+  if (c >= 85 && independentClasses >= 2) return quarantined ? "CORRELATED" : "CONFIRMED";
   if (c >= 70 && independentClasses >= 2) return "CORRELATED";
   if (c >= 85) return "INFERRED"; // single source class, even if high confidence
   if (c >= 65) return "INFERRED";
@@ -544,7 +727,7 @@ export function buildPivots(artifacts: Artifact[], seedValue: string | null): Pi
       why: `${pType[0].toUpperCase() + pType.slice(1)} discovered via ${a.source ?? "tool"}. Expand to find linked accounts.`,
       source: a.source ?? "—",
       sourceArtifactId: a.id,
-      confidence: a.confidence ?? 0,
+      confidence: effectiveConfidenceOrZero(a),
       fanout: PIVOT_FANOUT[pType],
       status: searched.has(v.toLowerCase()) ? "searched" : "new",
     });
@@ -682,7 +865,7 @@ export function buildTimelineItems(
       type,
       title: a.value,
       source: a.source,
-      confidence: a.confidence,
+      confidence: effectiveConfidence(a),
       kind: a.kind,
       explanation,
     });
@@ -957,10 +1140,16 @@ function mdEscape(v: string): string {
   return v.replace(/\|/g, "\\|").replace(/\n+/g, " ");
 }
 
-export function buildEvidenceMatrixMarkdown(artifacts: Artifact[]): string {
+export function buildEvidenceMatrixMarkdown(
+  artifacts: Artifact[],
+  reviews?: Record<string, ReviewAdjustment>,
+): string {
   if (artifacts.length === 0) return "_No evidence recorded._";
   const rows = artifacts.map((a) => {
-    const label = labelForArtifact(a);
+    // Through the analyst's verdict, like every other label in the report: a
+    // rejected row is listed (forensic history) but reads FAILED, never as an
+    // active CONFIRMED / CORRELATED row in the exported matrix.
+    const label = labelForArtifact(a, reviews?.[a.id]);
     // #3: strip promotional "CONFIRMED" wording from the VALUE when the row is
     // not actually backend-CONFIRMED (render-only; artifact untouched).
     let value = sanitizeValueForLabel(a.value, label === "CONFIRMED");
@@ -994,6 +1183,10 @@ export type ReportInput = {
   reviews?: Record<string, ReviewAdjustment>;
   /** Output shape: "full" dossier (default) or condensed "brief". */
   reportType?: "full" | "brief";
+  /** #499 — what the ENGINE adjudicated, from `selectAuthoritativeFindings`.
+   *  Optional so every other caller of this function keeps working unchanged;
+   *  when absent the section is omitted rather than guessed at. */
+  authority?: AuthoritativeFindings;
   /** Authoritative tool-call activity (from tool_usage_log), one entry per call.
    *  Supplied by the UI so the Activity Log reflects real tool invocations even
    *  though the persisted message stream doesn't carry tool parts. */
@@ -1002,8 +1195,48 @@ export type ReportInput = {
   toolInvocations?: number;
 };
 
+/**
+ * #499 — the engine's own adjudication, rendered above Key Findings.
+ *
+ * Placed ABOVE deliberately: its job is to qualify what follows. "Key Findings"
+ * is built from `labelForArtifact(a) === "CONFIRMED"` over ALL artifacts, which
+ * is a source-tier label and not an adjudication — so on a case where
+ * `record_finding` never fired, this section is what tells the analyst that
+ * everything below is a lead.
+ *
+ * Returns [] when no authority result was supplied, so existing callers are
+ * unaffected. The wording lives in `authorityStatement` so this and the rendered
+ * Report tab cannot drift into saying different things about the same run.
+ */
+function authoritySection(authority?: AuthoritativeFindings): string[] {
+  if (!authority) return [];
+  const rows = (authority.findings ?? []).map((f) => {
+    const pct = typeof f.confidence === "number" ? `${f.confidence}%` : "n/a";
+    const tier = f.tier ? f.tier.charAt(0).toUpperCase() + f.tier.slice(1) : "Unverified";
+    return `- ${f.value} — ${pct} — ${tier}`;
+  });
+  return [`## ${AUTHORITY_HEADING}`, "", authorityStatement(authority), ...(rows.length ? ["", ...rows] : []), ""];
+}
+
+/**
+ * Group artifacts by the exact text of their recorded reason, preserving the
+ * order each reason first appears. Used so a section states one judgement once
+ * rather than repeating it per artifact — see the collision section below.
+ */
+function groupByReason<T>(items: T[], reasonOf: (item: T) => string): { reason: string; items: T[] }[] {
+  const order: string[] = [];
+  const by = new Map<string, T[]>();
+  for (const item of items) {
+    const reason = reasonOf(item);
+    const bucket = by.get(reason);
+    if (bucket) bucket.push(item);
+    else { by.set(reason, [item]); order.push(reason); }
+  }
+  return order.map((reason) => ({ reason, items: by.get(reason)! }));
+}
+
 export function buildReportMarkdown(input: ReportInput): string {
-  const { seedValue, seedType, messages, reviews, reportType, toolActivity, toolInvocations } = input;
+  const { seedValue, seedType, messages, reviews, reportType, toolActivity, toolInvocations, authority } = input;
   const display = extractDisplaySeed(seedValue, seedType);
   // Collapse breach datasets recorded twice under name variants from the same
   // source pair (conservative — see dedupeBreachDatasets) so the Artifact Table
@@ -1015,7 +1248,14 @@ export function buildReportMarkdown(input: ReportInput): string {
   // artifact reads the same here as in the Evidence view.
   const rev = (a: Artifact): ReviewAdjustment => reviews?.[a.id];
   const lbl = (a: Artifact): ConfLabel => labelForArtifact(a, rev(a));
-  const conf = (a: Artifact): number | null => (rev(a) ? adjustedConfidence(a, rev(a)) : a.confidence);
+  // The markdown export's number, and it is the same number the on-screen report
+  // renders — `CaseReport.confOf` was changed in lockstep. This was
+  // `rev(a) ? adjustedConfidence(a, rev(a)) : a.confidence`, a third pipeline that
+  // switched which of the other two it agreed with depending on whether an
+  // analyst had clicked Confirm, and it shipped that inconsistency into an
+  // exported document. The LABEL above still goes through the review; only the
+  // figure is review-independent.
+  const conf = (a: Artifact): number | null => effectiveConfidence(a);
 
   const confirmed = artifacts.filter((a) => lbl(a) === "CONFIRMED");
   const inferred = artifacts.filter((a) => lbl(a) === "INFERRED");
@@ -1091,7 +1331,7 @@ export function buildReportMarkdown(input: ReportInput): string {
     ].join("\n");
   })();
 
-  const entityTable = buildEvidenceMatrixMarkdown(artifacts);
+  const entityTable = buildEvidenceMatrixMarkdown(artifacts, reviews);
 
   // #6: collision-flagged artifacts (namesakes / unrelated entities) are
   // quarantined into their own section and kept out of the main network.
@@ -1125,8 +1365,12 @@ export function buildReportMarkdown(input: ReportInput): string {
    * contradicting the report's own header banner, which had already warned that
    * a same-name collision was detected and that phone area codes disagreed.
    * The integrity work was done and then discarded at the presentation layer.
+   *
+   * The predicate now lives in `@/lib/quarantine` — the same one the pivot engine
+   * consults to keep a quarantined selector out of the actionable list. One
+   * definition, so the surface that DESCRIBES a collision and the surface that
+   * refuses to ACT on it can never drift apart.
    */
-  const isSubjectUnlinked = (m: Record<string, unknown>): boolean => m.subject_unlinked === true;
 
   const conflictNoted = artifacts.filter((a) => {
     if (collisionIds.has(a.id)) return false;
@@ -1167,10 +1411,29 @@ export function buildReportMarkdown(input: ReportInput): string {
         ...(conflictNoted.length
           ? [
               ...(collisionArtifacts.length ? [""] : []),
-              "_Conflicts noted across sources — may indicate different people or data errors. Corroborate before merging; these rows are NOT auto-quarantined._",
+              "_Conflicts noted across sources — may indicate different people or data errors. Corroborate before merging._",
               "",
-              ...conflictNoted.map((a) =>
-                `- \`${sanitizeValueForLabel(a.value, false)}\` — ${conflictNote(a)} _(via ${humanizeSourceChain(a.source)})_`,
+              // GROUPED BY REASON, not one line per artifact.
+              //
+              // A single name-only harvest produces dozens of rows that all carry
+              // the SAME `subject_unlinked_reason`. Printed per row, one live run
+              // published "harvested from a name-only query — same-name collision
+              // axis; linkage to the subject is unproven" twenty-five times in one
+              // section — the reader scrolls a wall of identical prose to find the
+              // handful of rows whose reason actually differs.
+              //
+              // Every value and every reason still appears. The reason is simply
+              // stated once for the set it applies to, which is also the truer
+              // shape: these rows are not 25 independent judgements, they are one
+              // judgement about 25 artifacts from one query.
+              ...groupByReason(conflictNoted, conflictNote).flatMap(({ reason, items }) =>
+                items.length === 1
+                  ? [`- \`${sanitizeValueForLabel(items[0].value, false)}\` — ${reason} _(via ${humanizeSourceChain(items[0].source)})_`]
+                  : [
+                      `- **${items.length} artifacts** — ${reason}`,
+                      ...items.map((a) =>
+                        `  - \`${sanitizeValueForLabel(a.value, false)}\` _(via ${humanizeSourceChain(a.source)})_`),
+                    ],
               ),
             ]
           : []),
@@ -1184,10 +1447,28 @@ export function buildReportMarkdown(input: ReportInput): string {
     // mis-kinded as `breach` (→ breach group) OR correctly kinded as
     // `threat_reputation`/`reputation_signal` (→ other group). Collecting by
     // isReputationArtifact() catches both so they never report as exposures.
-    const reputation = artifacts.filter((a) => isReputationArtifact(a) && !collisionIds.has(a.id));
+    // "Network Connections" IS the subject's network, so listing a row here is an
+    // AUTHORITY claim — the same claim clustering, graph edges and the confidence
+    // dimensions already refuse to make for a quarantined row. Excluding it here
+    // is not concealment: it stays in the Artifact/Entity Table, in the Timeline,
+    // and in the Collision section under its own `subject_unlinked_reason`.
+    //
+    // A SEPARATE set from `collisionIds` on purpose. collisionIds is the
+    // collision-SECTION membership test; adding quarantine to it would evict these
+    // rows from `conflictNoted` (:1138), which is the only branch that quotes
+    // their reason verbatim (:1151). See isClusterIneligible in report-hygiene.ts.
+    // An analyst-rejected row (dismissed / wrong / legacy false_positive) is the
+    // same authority claim refused by a human instead of the pipeline: it leaves
+    // the network section too, and stays in the Artifact/Entity Table as FAILED.
+    const networkExcluded = new Set(
+      artifacts.filter((a) =>
+        collisionIds.has(a.id) || isSubjectUnlinked(a.metadata) || isRejectedArtifactRow(a, rev(a)),
+      ).map((a) => a.id),
+    );
+    const reputation = artifacts.filter((a) => isReputationArtifact(a) && !networkExcluded.has(a.id));
     const repIds = new Set(reputation.map((a) => a.id));
     for (const g of GROUP_ORDER) {
-      const items = (byGroup.get(g) ?? []).filter((a) => !repIds.has(a.id) && !collisionIds.has(a.id));
+      const items = (byGroup.get(g) ?? []).filter((a) => !repIds.has(a.id) && !networkExcluded.has(a.id));
       if (!items.length) continue;
       sections.push(`**${GROUP_LABEL[g]}**\n` + items.map(line).join("\n"));
     }
@@ -1291,6 +1572,7 @@ export function buildReportMarkdown(input: ReportInput): string {
       `## Executive Summary`,
       exec,
       "",
+      ...authoritySection(authority),
       `## Key Findings`,
       keyFindings,
       "",
@@ -1301,6 +1583,17 @@ export function buildReportMarkdown(input: ReportInput): string {
       `_Condensed brief — switch to the Full Dossier report type for the complete analysis. Observations from named sources; no identity claim is confirmed without independent corroboration._`,
     ].join("\n");
   }
+
+  // #488 — geography and corroboration are SEPARATE claims, and a cluster can be
+  // in either, both, or neither. The seed-location section reports a US-state
+  // match; the corroboration section reports >=2 independent source classes.
+  const locationMatched = clusterReport.clusters.filter((c) => c.matchesSeedLocation === true);
+  const byCorroboration = clusterReport.clusters.map((c) => ({
+    cluster: c,
+    classes: clusterIndependentSourceClasses(c),
+  }));
+  const corroborated = byCorroboration.filter((x) => x.classes.length >= CLUSTER_CORROBORATION_MIN_CLASSES);
+  const uncorroborated = byCorroboration.filter((x) => x.classes.length < CLUSTER_CORROBORATION_MIN_CLASSES);
 
   return [
     `# OSINT Investigation Report`,
@@ -1325,6 +1618,7 @@ export function buildReportMarkdown(input: ReportInput): string {
     `## Candidate Identity Clusters`,
     buildClusterSection(clusterReport, { includeWarnings: false }),
     "",
+    ...authoritySection(authority),
     `## Key Findings`,
     keyFindings,
     "",
@@ -1339,19 +1633,59 @@ export function buildReportMarkdown(input: ReportInput): string {
     "",
     ...(isNameSearch
       ? [
-          `## What Is Actually Corroborated`,
-          clusterReport.clusters.some((c) => c.matchesSeedLocation === true)
-            ? clusterReport.clusters
-                .filter((c) => c.matchesSeedLocation === true)
-                .map((c) => `- ${c.label} — ${humanizeSourceChain(c.sources, "single source")}`)
+          `## Seed-Location Match`,
+          locationMatched.length
+            ? locationMatched
+                // "single source" was the old fallback here, and it fires only
+                // when the token list is EMPTY — it labelled a cluster with no
+                // recorded source as if it had one.
+                .map((c) => `- ${c.label} — ${humanizeSourceChain(c.sources, "no source recorded")}`)
                 .join("\n")
-            : "_No cluster directly corroborates the seed location yet._",
+            : clusterReport.seedState
+              ? `_No cluster matches the seed location (${clusterReport.seedState}) yet._`
+              : "_No seed location was detected, so no cluster can be matched against one._",
           "",
-          `## What Is Not Corroborated`,
           clusterReport.seedState
-            ? `- Direct ${clusterReport.seedState} address/IP evidence for the subject. Out-of-area matches must not be treated as the seed subject without further verification.`
-            : "- Subject identity has not been independently corroborated across two source classes.",
+            ? `_Geography only — a ${clusterReport.seedState} match narrows the candidate set, it does not corroborate it. Out-of-area same-name matches must not be treated as the seed subject without further verification._`
+            : "_A location match narrows the candidate set; it does not corroborate it._",
           "",
+          // ⚠️ THE EMPTY-CLUSTER CASE IS EXPLICIT, and must stay that way.
+          //
+          // With zero clusters BOTH of these sections used to fire their
+          // fallback, because both fallbacks are vacuously true of an empty set:
+          // "No cluster is corroborated…" (nothing to corroborate) immediately
+          // followed by "Every cluster reaches 2 or more…" (nothing that fails).
+          // A published report carried both sentences, three lines apart,
+          // flatly contradicting each other — observed on a live name-seed run
+          // that produced 41 artifacts and 0 clusters.
+          //
+          // An empty set is not a corroboration result. Say so once.
+          ...(byCorroboration.length === 0
+            ? [
+                `## Corroboration`,
+                "_No identity clusters were formed, so there is nothing to corroborate or to fault. "
+                  + "This is a statement about cluster formation, not about the strength of the artifacts below._",
+                "",
+              ]
+            : [
+                `## What Is Actually Corroborated`,
+                corroborated.length
+                  ? corroborated
+                      .map(({ cluster, classes }) =>
+                        `- ${cluster.label} — ${classes.length} independent source classes: ${humanizeSourceChain(classes)}`)
+                      .join("\n")
+                  : "_No cluster is corroborated by 2 or more independent source classes yet._",
+                "",
+                `## What Is Not Corroborated`,
+                [
+                  ...uncorroborated.map(({ cluster, classes }) =>
+                    `- ${cluster.label} — ${classes.length} independent source class${classes.length === 1 ? "" : "es"}; needs a second before it can be reported as corroborated.`),
+                  ...(clusterReport.seedState && !locationMatched.length
+                    ? [`- Direct ${clusterReport.seedState} address/IP evidence for the subject.`]
+                    : []),
+                ].join("\n") || "_Every cluster reaches 2 or more independent source classes._",
+                "",
+              ]),
         ]
       : []),
     `## Timeline Summary`,
@@ -1484,6 +1818,11 @@ export function detectNameLocationSeed(seedValue: string | null): { name: string
   return { name, state };
 }
 
+/** Rendered in place of an identity when a cluster carries no name, email or
+ *  username of its own. Never a person's name — see #485. `ClustersTab` matches
+ *  this exact string to relabel an infrastructure-only cluster. */
+export const UNATTRIBUTED_CLUSTER_LABEL = "unattributed cluster";
+
 export type IdentityCluster = {
   id: string;
   label: string;
@@ -1544,8 +1883,15 @@ const HANDLE_REINFORCE_CAP = 20;
 // confidence territory and contradict the per-artifact labels.
 const HANDLE_ONLY_CLUSTER_CAP = 60;
 // Metadata keys whose presence means a record carries identity-bearing fields
-// (a breach/profile row that ties the handle to a real person).
-const IDENTITY_BEARING_META_KEYS = ["full_name", "name", "real_name", "address", "phone", "dob", "date_of_birth", "ssn"];
+// (a breach/profile row that ties the handle to a real PERSON).
+//
+// `address` is deliberately NOT here. It identifies a PLACE, not a person, and a
+// place is shared by everyone who lives, works or receives mail there — so a row
+// whose only identifying field was an address used to lift the handle-only cap
+// through this door while the other two were closed. A row that genuinely names
+// someone still qualifies via full_name / name / real_name, and one carrying a
+// durable personal selector still qualifies via phone / dob / ssn.
+const IDENTITY_BEARING_META_KEYS = ["full_name", "name", "real_name", "phone", "dob", "date_of_birth", "ssn"];
 
 /**
  * Normalize a social handle for cross-platform identity matching (T1-2 §2).
@@ -1687,7 +2033,13 @@ export function buildIdentityClusters(
     // re-promoted analyst-dismissed artifacts into CONFIRMED clusters.
     const rev = reviews?.[a.id];
     if (rev === "dismissed" || rev === "wrong") return false;
-    if (isCollisionArtifact(a)) return false;
+    // isClusterIneligible, not isCollisionArtifact: the latter tests only the
+    // legacy collision flags, and NONE of the 104 subject_unlinked artifacts in
+    // production carry any of them (measured 2026-08-10 across all 4 affected
+    // threads). The gate was not leaky — it was inapplicable, so every
+    // quarantined row entered clustering and from there drove the report, the
+    // Clusters tab, the graph, the Identity score and the cluster audit.
+    if (isClusterIneligible(a)) return false;
     return true;
   });
 
@@ -1850,9 +2202,25 @@ export function buildIdentityClusters(
       const m = (a.metadata ?? {}) as Record<string, unknown>;
       return IDENTITY_BEARING_META_KEYS.some((k) => typeof m[k] === "string" && (m[k] as string).trim().length > 0);
     });
+    // ⛔ SHARED INFRASTRUCTURE IS NOT IDENTITY CORROBORATION.
+    //
+    // An address, IP, wallet or parent domain is shared BY CONSTRUCTION: a
+    // household or building shares an address, a VPN exit / carrier NAT /
+    // corporate egress shares an IP, every tenant of a hosting provider shares a
+    // parent domain. None of them says WHO the person is, which is the only
+    // question HANDLE_ONLY_CLUSTER_CAP exists to answer. Counting them here let
+    // a subject and their landlord — or two strangers behind one CGNAT — reach
+    // CONFIRMED (>=85) on username breadth alone.
+    //
+    // Removed from this predicate, deliberately: `addresses.length`, `ips.length`
+    // and `signalsPresent.has("SHARED_INFRASTRUCTURE")`. Infra still MERGES the
+    // cluster and still appears in mergeReasons — it is demoted from proof to
+    // lead, not deleted. What remains lifts the cap because each names a person
+    // or a durable personal selector: an email or phone in the cluster, an
+    // EMAIL_MATCH / PHONE_MATCH merge, or a record carrying an identifying field.
     const hasIdentityCorroboration =
-      emails.length > 0 || phones.length > 0 || addresses.length > 0 || ips.length > 0 ||
-      signalsPresent.has("EMAIL_MATCH") || signalsPresent.has("PHONE_MATCH") || signalsPresent.has("SHARED_INFRASTRUCTURE") ||
+      emails.length > 0 || phones.length > 0 ||
+      signalsPresent.has("EMAIL_MATCH") || signalsPresent.has("PHONE_MATCH") ||
       hasIdentityRecord;
 
     // Handle-only / username-only cluster → cap into the VERIFY band. Platform
@@ -1891,7 +2259,7 @@ export function buildIdentityClusters(
         if (!subset.length) continue;
         const sub = summarize(subset);
         sub.warnings.push(`Split from larger cluster on state=${st}; verify before merging back.`);
-        out.push({ ...sub, id: clusterDisplayId(idx), label: clusterLabel(idx, sub, seedName), matchesSeedLocation: seedState ? st === seedState : null });
+        out.push({ ...sub, id: clusterDisplayId(idx), label: clusterLabel(idx, sub), matchesSeedLocation: seedState ? st === seedState : null });
         idx++;
       }
       continue;
@@ -1900,7 +2268,7 @@ export function buildIdentityClusters(
     if (seedState && base.states[0] && base.states[0] !== seedState) {
       base.warnings.push(`Geography conflict: cluster ties to ${base.states[0]} but seed targets ${seedState}.`);
     }
-    out.push({ ...base, id: clusterDisplayId(idx), label: clusterLabel(idx, base, seedName), matchesSeedLocation: matches });
+    out.push({ ...base, id: clusterDisplayId(idx), label: clusterLabel(idx, base), matchesSeedLocation: matches });
     idx++;
   }
 
@@ -1978,13 +2346,26 @@ export function buildIdentityClusters(
   return { clusters: out, collision, warnings, seedName, seedState };
 }
 
-function clusterLabel(idx: number, c: Omit<IdentityCluster, "id" | "label" | "matchesSeedLocation">, seedName: string | null): string {
+function clusterLabel(idx: number, c: Omit<IdentityCluster, "id" | "label" | "matchesSeedLocation">): string {
   // Deterministic, ASCII-safe id (C001, C002, …). Never String.fromCharCode —
   // that walked past 'Z' into punctuation/control characters once a run
   // produced >26 clusters. See report-hygiene.clusterDisplayId.
   const id = clusterDisplayId(idx);
   const loc = c.states[0] ?? c.addresses[0] ?? null;
-  const who = c.names[0] ?? seedName ?? c.emails[0] ?? c.usernames[0] ?? "unknown";
+  // #485: the seed's name USED to sit between `c.names[0]` and the cluster's own
+  // email/username. That made the seed subject the default identity of every
+  // cluster without a `name` artifact — so a second person, reached through his
+  // own selectors, was published under the seed subject's name together with his
+  // SSN, address, phone and arrest record (live thread 4a1bea49). The engine had
+  // already separated the two and a collision_detector had fired; attribution
+  // overrode all of it here.
+  //
+  // A cluster is named by ITS OWN evidence or not at all. Nothing legitimate is
+  // lost: when the cluster really is the subject's, the subject's name IS in
+  // `c.names`. And the label is never the place to assert linkage — the same-name
+  // collision detector below reads `c.names`, never this string, so a borrowed
+  // name is a duplicate identity that no downstream check can see.
+  const who = c.names[0] ?? c.emails[0] ?? c.usernames[0] ?? UNATTRIBUTED_CLUSTER_LABEL;
   return loc ? `Cluster ${id} — ${who} (${loc})` : `Cluster ${id} — ${who}`;
 }
 

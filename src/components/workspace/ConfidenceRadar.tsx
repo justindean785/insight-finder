@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useId, useMemo } from "react";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import type { ReviewAdjustment } from "@/lib/intel";
 import { buildConfidenceProfile, DIMENSION_DEFINITIONS, type ConfidenceDimension } from "@/lib/confidence-dimensions";
@@ -50,6 +50,9 @@ export function ConfidenceRadar({
 
   const dims = profile.dimensions;
   const n = dims.length;
+  // React's useId embeds ":" which is not safe inside an SVG url(#…) reference.
+  const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
+  const tierVar = tierInfo(profile.overall).varName;
 
   const polygon = dims.map((d, i) => pointAt(i, n, d.value / 100).join(",")).join(" ");
   const a11ySummary = `Confidence signals — overall ${profile.overall} percent. ` +
@@ -91,13 +94,45 @@ export function ConfidenceRadar({
       <div className="mt-3 grid gap-4 sm:grid-cols-[minmax(0,260px)_1fr] items-center">
         {/* Radar (decorative; the list below is the accessible source of truth). */}
         <svg viewBox="-26 0 332 236" className="w-full max-w-[300px] mx-auto overflow-visible" role="img" aria-label={a11ySummary} preserveAspectRatio="xMidYMid meet">
+          <defs>
+            {/* The plot is filled with a GRADIENT of the tier token rather than
+                a flat alpha. A single-alpha polygon on a dark ground reads as a
+                smudge; grading it top-to-bottom gives the shape a lit face and
+                a shaded foot, which is what makes it look like an object.
+                The tier still selects the token — this changes rendering only,
+                never which colour a confidence maps to. */}
+            <linearGradient id={`${uid}-fill`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={`hsl(var(${tierVar}))`} stopOpacity={0.44} />
+              <stop offset="100%" stopColor={`hsl(var(${tierVar}))`} stopOpacity={0.13} />
+            </linearGradient>
+            {/* A soft bloom under the stroke so the plot sits above the web. */}
+            <filter id={`${uid}-glow`} x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur stdDeviation="3" result="b" />
+              <feMerge>
+                <feMergeNode in="b" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+            <radialGradient id={`${uid}-ground`}>
+              <stop offset="0%" stopColor="hsl(var(--film))" stopOpacity={0.05} />
+              <stop offset="100%" stopColor="hsl(var(--film))" stopOpacity={0} />
+            </radialGradient>
+          </defs>
+
+          {/* Ground — grounds the web so it does not float on flat black. */}
+          <circle cx={CX} cy={CY} r={R * 1.12} fill={`url(#${uid}-ground)`} />
+
+          {/* Graduated rings: the outer ring is the measured extent and reads
+              brightest; inner rings fall away. Four identical hairlines gave the
+              web no depth at all. */}
           {[0.25, 0.5, 0.75, 1].map((f) => (
             <polygon
               key={f}
               points={dims.map((_, i) => pointAt(i, n, f).join(",")).join(" ")}
               fill="none"
-              stroke="hsl(var(--border-subtle))"
-              strokeWidth={1}
+              stroke="hsl(var(--film))"
+              strokeOpacity={0.05 + f * 0.075}
+              strokeWidth={f === 1 ? 1.25 : 1}
             />
           ))}
           {dims.map((d, i) => {
@@ -106,7 +141,7 @@ export function ConfidenceRadar({
             const anchor = Math.abs(lx - CX) < 8 ? "middle" : lx > CX ? "start" : "end";
             return (
               <g key={d.key}>
-                <line x1={CX} y1={CY} x2={ex} y2={ey} stroke="hsl(var(--border-subtle))" strokeWidth={1} />
+                <line x1={CX} y1={CY} x2={ex} y2={ey} stroke="hsl(var(--film))" strokeOpacity={0.07} strokeWidth={1} />
                 <text x={lx} y={ly} textAnchor={anchor} dominantBaseline="middle" fontSize={9} className="font-mono" fill="hsl(var(--muted-foreground))">
                   <title>{DIMENSION_DEFINITIONS[d.key] ?? d.reason}</title>
                   {d.label}
@@ -118,14 +153,33 @@ export function ConfidenceRadar({
               headline read; vertices below carry each axis's own tier colour. */}
           <polygon
             points={polygon}
-            style={{ fill: `hsl(var(${tierInfo(profile.overall).varName}) / 0.14)` }}
+            // Contrast, not colour. Once confidence stopped being carried by
+            // hue, a 14%-alpha fill of a low-chroma token on true black left
+            // the shape unreadable — the plot became a faint smudge while the
+            // numbers beside it stayed perfectly legible, which is the wrong
+            // way round for a chart. Raised fill and a full-strength stroke;
+            // the tier still selects the token, it is just actually visible.
+            fill={`url(#${uid}-fill)`}
             stroke={confidenceColor(profile.overall)}
-            strokeWidth={1.5}
+            strokeWidth={2}
             strokeLinejoin="round"
+            filter={`url(#${uid}-glow)`}
           />
           {dims.map((d, i) => {
             const [px, py] = pointAt(i, n, d.value / 100);
-            return <circle key={d.key} cx={px} cy={py} r={2.4} fill={bandColor(d)} />;
+            return (
+              <circle
+                key={d.key}
+                cx={px}
+                cy={py}
+                r={3}
+                fill={bandColor(d)}
+                /* A ring of the ground colour separates the vertex from the
+                   fill it sits on; without it the dots dissolve into the plot. */
+                stroke="hsl(var(--surface-0))"
+                strokeWidth={1.25}
+              />
+            );
           })}
         </svg>
 
@@ -144,8 +198,20 @@ export function ConfidenceRadar({
                   {d.sufficient ? `${d.value}%` : "—"}
                 </span>
               </div>
-              <div className="mt-0.5 h-1 rounded-full bg-surface-3 overflow-hidden" aria-hidden>
-                <div className="h-full rounded-full" style={{ width: `${d.sufficient ? d.value : 0}%`, backgroundColor: bandColor(d) }} />
+              {/* A LOW value and NO value must not look the same. At 1px on a
+                  barely-tinted track, 17% rendered as an empty bar — the same
+                  picture an insufficient axis draws, when the two mean opposite
+                  things (measured-and-weak vs not-measurable). Taller bar, a
+                  track you can actually see, and a floor so any non-zero value
+                  leaves a visible mark. */}
+              <div className="mt-1 h-1.5 rounded-full bg-[hsl(var(--film)/0.1)] overflow-hidden" aria-hidden>
+                <div
+                  className="h-full rounded-full"
+                  style={{
+                    width: d.sufficient ? `${Math.max(2.5, d.value)}%` : "0%",
+                    backgroundColor: bandColor(d),
+                  }}
+                />
               </div>
               <p className="mt-0.5 text-eyebrow leading-snug text-muted-foreground/80">
                 {!d.sufficient && <span className="text-muted-foreground">Insufficient data — </span>}

@@ -17,14 +17,124 @@ const USER_ID = "99999999-8888-4777-8666-555555555555";
 const iso = (minsAgo: number) => new Date(Date.UTC(2026, 7, 9, 4, 0, 0) - minsAgo * 60_000).toISOString();
 
 const artifacts = [
-  { id: "a1", thread_id: THREAD_ID, kind: "email", value: "j.harker@northgate-logistics.com", confidence: 88, confidence_cap_applied: null, source: "hunter_verify", created_at: iso(41), metadata: { sources: ["hunter_verify", "exa_search"], corroborations: 2, source_class: "verified_provider" } },
-  { id: "a2", thread_id: THREAD_ID, kind: "username", value: "jharker88", confidence: 74, confidence_cap_applied: null, source: "deepfind_reverse", created_at: iso(38), metadata: { sources: ["deepfind_reverse"], corroborations: 1, source_class: "provider" } },
-  { id: "a3", thread_id: THREAD_ID, kind: "breach_exposure", value: "Wattpad (2020) — email, hashed password", confidence: 60, confidence_cap_applied: 60, source: "oathnet", created_at: iso(33), metadata: { sources: ["oathnet", "leakcheck"], corroborations: 2, source_class: "breach_corpus" } },
-  { id: "a4", thread_id: THREAD_ID, kind: "phone", value: "+1 415 555 0142", confidence: 55, confidence_cap_applied: 60, source: "indicia_footprint", created_at: iso(27), metadata: { sources: ["indicia_footprint"], corroborations: 1, source_class: "data_broker" } },
-  { id: "a5", thread_id: THREAD_ID, kind: "domain", value: "northgate-logistics.com", confidence: 92, confidence_cap_applied: null, source: "whois_lookup", created_at: iso(22), metadata: { sources: ["whois_lookup", "virustotal"], corroborations: 2, source_class: "authoritative" } },
-  { id: "a6", thread_id: THREAD_ID, kind: "location", value: "Oakland, California, US", confidence: 41, confidence_cap_applied: 65, source: "indicia_person", created_at: iso(16), metadata: { sources: ["indicia_person"], corroborations: 1, source_class: "data_broker" } },
-  { id: "a7", thread_id: THREAD_ID, kind: "social_profile", value: "linkedin.com/in/james-harker-logistics", confidence: 79, confidence_cap_applied: null, source: "socialfetch", created_at: iso(11), metadata: { sources: ["socialfetch", "exa_search"], corroborations: 2, source_class: "provider" } },
-  { id: "a8", thread_id: THREAD_ID, kind: "ip", value: "203.0.113.47", confidence: 34, confidence_cap_applied: null, source: "oathnet", created_at: iso(6), metadata: { sources: ["oathnet"], corroborations: 1, source_class: "breach_corpus" } },
+  { id: "a1", thread_id: THREAD_ID, kind: "email", value: "j.harker@northgate-logistics.com", confidence: 88, source: "hunter_verify", created_at: iso(41), metadata: { sources: ["hunter_verify", "exa_search"], corroborations: 2, source_class: "verified_provider" } },
+  { id: "a2", thread_id: THREAD_ID, kind: "username", value: "jharker88", confidence: 74, source: "deepfind_reverse", created_at: iso(38), metadata: { sources: ["deepfind_reverse"], corroborations: 1, source_class: "provider" } },
+  { id: "a3", thread_id: THREAD_ID, kind: "breach_exposure", value: "Wattpad (2020) — email, hashed password", confidence: 60, source: "oathnet", created_at: iso(33), metadata: { confidence_cap_applied: 60, sources: ["oathnet", "leakcheck"], corroborations: 2, source_class: "breach_corpus" } },
+  { id: "a4", thread_id: THREAD_ID, kind: "phone", value: "+1 415 555 0142", confidence: 55, source: "indicia_footprint", created_at: iso(27), metadata: { confidence_cap_applied: 60, sources: ["indicia_footprint"], corroborations: 1, source_class: "data_broker" } },
+  { id: "a5", thread_id: THREAD_ID, kind: "domain", value: "northgate-logistics.com", confidence: 92, source: "whois_lookup", created_at: iso(22), metadata: { sources: ["whois_lookup", "virustotal"], corroborations: 2, source_class: "authoritative" } },
+  { id: "a6", thread_id: THREAD_ID, kind: "location", value: "Oakland, California, US", confidence: 41, source: "indicia_person", created_at: iso(16), metadata: { confidence_cap_applied: 65, sources: ["indicia_person"], corroborations: 1, source_class: "data_broker" } },
+  { id: "a7", thread_id: THREAD_ID, kind: "social_profile", value: "linkedin.com/in/james-harker-logistics", confidence: 79, source: "socialfetch", created_at: iso(11), metadata: { sources: ["socialfetch", "exa_search"], corroborations: 2, source_class: "provider" } },
+  { id: "a8", thread_id: THREAD_ID, kind: "ip", value: "203.0.113.47", confidence: 34, source: "oathnet", created_at: iso(6), metadata: { sources: ["oathnet"], corroborations: 1, source_class: "breach_corpus" } },
+  // ── Quarantined: the same-name collision axis ────────────────────────────
+  // A name-only sweep on "James Harker" returned a DIFFERENT James Harker's
+  // selectors. The backend flags them `subject_unlinked` (#433) and they are
+  // persisted on purpose — quarantine is disclosure, not deletion. They must
+  // render as evidence with their reason, and must never seed an identity
+  // cluster, gain a graph identity edge, or raise a confidence dimension.
+  //
+  // Without these rows the harness cannot show the promote boundary at all:
+  // every other fixture artifact is un-quarantined, so the Graph/Report tabs
+  // look identical with the gate on or off. They share a `parent` pointer so
+  // they WOULD cluster together if the gate ever regressed — which is what
+  // makes them a useful visual canary rather than decoration.
+  { id: "a9", thread_id: THREAD_ID, kind: "phone", value: "+1 209 555 0117", confidence: 45, source: "oathnet_lookup", created_at: iso(19), metadata: { confidence_cap_applied: 55, sources: ["oathnet_lookup"], corroborations: 1, source_class: "data_broker", parent: "james harker", subject_unlinked: true, subject_unlinked_reason: "harvested from a name-only query — same-name collision axis; linkage to the subject is unproven" } },
+  { id: "a10", thread_id: THREAD_ID, kind: "email", value: "jharker@stocktonfreight.example", confidence: 45, source: "oathnet_lookup", created_at: iso(18), metadata: { confidence_cap_applied: 55, sources: ["oathnet_lookup"], corroborations: 1, source_class: "data_broker", parent: "james harker", subject_unlinked: true, subject_unlinked_reason: "harvested from a name-only query — same-name collision axis; linkage to the subject is unproven" } },
+
+  // ── The RELEASED row — `subject_unlinked` + `linkage_confirmed` ──────────
+  // The #448 escape hatch, on the board. It arrived on the collision axis and
+  // an analyst then adjudicated the linkage, so it must read as ORDINARY
+  // evidence (no quarantine chip, no cordon, full confidence, eligible to
+  // cluster and to pivot) while keeping its history in metadata.
+  //
+  // It is here because it is the state most likely to regress silently: the
+  // three predicates that honour release and the two that used to ignore it all
+  // render the same on a row with no release, so without this fixture the
+  // difference is invisible in every screenshot.
+  { id: "a11", thread_id: THREAD_ID, kind: "username", value: "harker.logistics", confidence: 81, source: "socialfetch", created_at: iso(15), metadata: { sources: ["socialfetch", "exa_search"], corroborations: 2, source_class: "provider", parent: "james harker", subject_unlinked: true, subject_unlinked_reason: "harvested from a name-only query — same-name collision axis; linkage to the subject is unproven", linkage_confirmed: true } },
+
+  // ── The COLLISION row — strong evidence, zero subject authority ──────────
+  // Deliberately the strongest fixture on the board: two independent source
+  // classes and confidence 88, with `possible_collision` and no quarantine flag.
+  //
+  // That combination used to render "Verified", lead the Overview's strongest
+  // findings and count in the header's verified tally — while clustering, the
+  // graph, confidence dimensions and the report all treated it as an unrelated
+  // namesake, because `isClusterIneligible` covers the collision flags and
+  // `evidenceStatus` consults none of them. It is here so the board's answer and
+  // the engine's answer can be compared in one screenshot. (Codex review, #462.)
+  { id: "a12b", thread_id: THREAD_ID, kind: "email", value: "j.harker@harker-legal.example", confidence: 88, source: "hunter_verify", created_at: iso(14), metadata: { sources: ["hunter_verify", "exa_search"], corroborations: 2, source_class: "provider", parent: "james harker", possible_collision: true, reason_not_confirmed: "a second James Harker — attorney, Sacramento — matches the queried name but nothing else in the case" } },
+
+  // ── Conflict — contradicts another row, and is NOT quarantined ───────────
+  { id: "a12", thread_id: THREAD_ID, kind: "location", value: "Stockton, California, US", confidence: 38, source: "indicia_person", created_at: iso(14), metadata: { sources: ["indicia_person"], corroborations: 1, source_class: "data_broker", conflict: true, conflict_note: "contradicts the Oakland record from the same broker — both cannot be the subject's primary residence" } },
+
+  // ── Failed / excluded — analyst marked a false positive ─────────────────
+  { id: "a13", thread_id: THREAD_ID, kind: "email", value: "info@northgate-logistics.com", confidence: 20, source: "exa_search", created_at: iso(13), metadata: { sources: ["exa_search"], corroborations: 1, source_class: "independent_public", false_positive: true } },
+
+  // ── Long identifiers — the truncation / copy path ────────────────────────
+  { id: "a14", thread_id: THREAD_ID, kind: "url", value: "https://staff.northgate-logistics.com/directory/operations/james-harker?ref=internal&utm_source=intranet&sid=7f3c19ab-2d44-4e51-9c07-a8be31f0d2c6", confidence: 66, source: "firecrawl_scrape", created_at: iso(12), metadata: { sources: ["firecrawl_scrape"], corroborations: 1, source_class: "independent_public" } },
+  { id: "a15", thread_id: THREAD_ID, kind: "crypto_wallet", value: "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq9v0x8lm3sq4nzsjhtca8", confidence: 29, source: "oathnet", created_at: iso(10), metadata: { sources: ["oathnet"], corroborations: 1, source_class: "breach" } },
+
+  // ── A finding written into `value` as PROSE, not a selector ─────────────
+  //    Real shape from thread `61d1eede`: the single most important row in that
+  //    case, rendered by the board as forty truncated monospace characters.
+  { id: "a16", thread_id: THREAD_ID, kind: "contradiction", value: "CONTRADICTION: 1110 Sample Ave is NOT linked to James Harker. The reverse-address lookup returned 31 records and the actual residents are the Keith and Plascencia families — Harker appears in none of them.", confidence: 65, source: "indicia_address", created_at: iso(11), metadata: { sources: ["indicia_address", "exa_search"], corroborations: 2, source_class: "data_broker", conflict: true, conflict_note: "the dossier's address claim does not survive the broker record" } },
+
+  // ── Bulk-corpus spam — the gsalas916-style wall this change collapses ─────
+  // Legacy shape: many rows, one reason. The board groups these into one card.
+  { id: "bulk-1", thread_id: THREAD_ID, kind: "name", value: "Gabriel G. Salas", confidence: 45, source: "indicia_address", created_at: iso(9), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
+  { id: "bulk-2", thread_id: THREAD_ID, kind: "name", value: "Esther Salas", confidence: 45, source: "indicia_address", created_at: iso(8), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
+  { id: "bulk-3", thread_id: THREAD_ID, kind: "name", value: "Gabriel Gilbert Gilbert Salas", confidence: 45, source: "indicia_address", created_at: iso(7), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
+  { id: "bulk-4", thread_id: THREAD_ID, kind: "name", value: "Michael O. Wong", confidence: 45, source: "indicia_address", created_at: iso(6), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
+  { id: "bulk-5", thread_id: THREAD_ID, kind: "name", value: "Sandra Salas", confidence: 45, source: "indicia_address", created_at: iso(5), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
+  { id: "bulk-summary", thread_id: THREAD_ID, kind: "bulk_corpus_harvest", value: "67 unlinked identities — bulk corpus (gsalas916@icloud.com)", confidence: 40, source: "indicia_address", created_at: iso(4), metadata: {
+    bulk_corpus: true,
+    identity_count: 67,
+    subject_unlinked: true,
+    subject_unlinked_reason:
+      "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject",
+    harvested_identities: [
+      { kind: "name", value: "Gabriel G. Salas" },
+      { kind: "name", value: "Esther Salas" },
+      { kind: "email", value: "lil.est58@yahoo.com" },
+      { kind: "email", value: "bboyjr03@verizon.net" },
+    ],
+  } },
+
+  // ── Volume, MIXED provenance — the shape that made the board unreadable ──
+  //    Production thread `61d1eede` (143 artifacts) rendered ONE `email`
+  //    cluster of 34 rows: 21 mailboxes lifted wholesale out of a `psyber.com`
+  //    domain-breach corpus, 10 co-residents from a reverse-address lookup, and
+  //    3 the analyst uploaded — every row scored 30–50, so no sort or filter
+  //    separated them, and exactly one of the thread's 143 rows was quarantined.
+  //    Operator verdict: "there's way too many artifacts it's so hard to go
+  //    through and see evidence."
+  //
+  //    The subdomain block below is UNIFORM provenance and must keep rendering
+  //    flat (`uniformProv` already hoists its one label). This block is its
+  //    counterpart: the crowded cluster that bands. Both paths in one screenshot.
+  ...Array.from({ length: 7 }, (_, i) => ({
+    id: `bulk${i + 1}`, thread_id: THREAD_ID, kind: "email",
+    value: `${["support", "billing", "dbuse", "noreply", "hr", "sales", "webmaster"][i]}@stocktonfreight.example`,
+    confidence: 45, source: "oathnet_lookup",
+    created_at: iso(17), metadata: { confidence_cap_applied: 60, sources: ["oathnet_lookup"], corroborations: 1, source_class: "breach", reason_for_confidence: "single source class: breach" },
+  })),
+  ...Array.from({ length: 4 }, (_, i) => ({
+    id: `resid${i + 1}`, thread_id: THREAD_ID, kind: "email",
+    value: `${["m.keith", "a.keith", "r.plascencia", "t.plascencia"][i]}@mail.example`,
+    confidence: 50, source: "indicia_address",
+    created_at: iso(16), metadata: { confidence_cap_applied: 60, sources: ["indicia_address"], corroborations: 1, source_class: "data_broker", reason_for_confidence: "single source class: data_broker" },
+  })),
+
+  // ── Volume — a same-kind cluster past CLUSTER_COLLAPSE_THRESHOLD (4), so
+  //    the collapse path and the sticky column head are exercised. Uniform
+  //    provenance and near-identical confidence: the "wall of identical rows"
+  //    the ledger's column alignment exists to make scannable.
+  ...Array.from({ length: 14 }, (_, i) => ({
+    id: `sub${i + 1}`, thread_id: THREAD_ID, kind: "subdomain",
+    value: `${["mail", "vpn", "portal", "api", "dev", "staging", "cdn", "git", "docs", "status", "smtp", "ns1", "ns2", "legacy"][i]}.northgate-logistics.com`,
+    confidence: 70 - (i % 3) * 5, source: "hackertarget",
+    created_at: iso(9), metadata: { sources: ["hackertarget"], corroborations: 1, source_class: "infra_dns" },
+  })),
 ];
 
 /** `messages.parts` is AI-SDK shaped Json, not a plain string body. */
@@ -64,6 +174,17 @@ const tool_usage_log = [
   tool("t7", "whois_lookup", true, 640, 22),
   tool("t8", "socialfetch", true, 1890, 11),
   tool("t9", "gemini_vision", false, 9100, 8, "document exceeded inline size ceiling"),
+  // Long tool activity + the full outcome vocabulary, so the Tools tab is
+  // reviewed against something other than "mostly succeeded".
+  tool("t10", "hackertarget", true, 2210, 9),
+  tool("t11", "virustotal", true, 1430, 8, null, true),
+  tool("t12", "shodan_host", false, 30010, 7, "upstream rate limit — 429 after 3 retries"),
+  tool("t13", "pdl_person_enrich", false, 420, 7, "gated: paid-call budget reached for this run"),
+  tool("t14", "ipqualityscore", true, 690, 6),
+  tool("t15", "urlscan_submit", false, 12040, 5, "timeout after 12000ms"),
+  tool("t16", "ransomwarelive_lookup", true, 980, 5),
+  tool("t17", "dehashed_search", false, 310, 4, "skipped: DEHASHED_API_KEY not configured"),
+  tool("t18", "exa_contents", true, 3120, 4),
 ];
 
 /**
@@ -100,9 +221,30 @@ const SYNTHETIC: Record<string, unknown[]> = {
   artifacts,
   messages,
   tool_usage_log,
+  // Shaped to the columns CustodyTab actually selects (seq / classification /
+  // chain_hash / collected_at ...). The previous fixture used a different, older
+  // column set — action/actor/hash/created_at — so every field the panel read
+  // came back undefined: 30 rows of "Invalid Date" with empty hashes, and a
+  // verification RPC whose shape it could not read either. The Custody tab was
+  // the one tab in the workspace that could not be reviewed in the harness.
   evidence_log: artifacts.map((a, i) => ({
-    id: `e${i + 1}`, thread_id: THREAD_ID, artifact_id: a.id, action: i === 0 ? "created" : "corroborated",
-    actor: "osint-agent", created_at: a.created_at, hash: `sha256:${"0".repeat(56)}${(i + 10).toString(16)}`, prev_hash: null, detail: {},
+    id: `e${i + 1}`,
+    thread_id: THREAD_ID,
+    seq: i + 1,
+    classification: i % 3 === 0 ? "hard" : "soft",
+    kind: a.kind,
+    value: a.value,
+    source: a.source,
+    source_url: null,
+    tool_name: a.source,
+    confidence: a.confidence,
+    chain_hash: `sha256:${(i + 10).toString(16).padStart(4, "0").repeat(16)}`.slice(0, 71),
+    prev_hash: i === 0 ? null : `sha256:${(i + 9).toString(16).padStart(4, "0").repeat(16)}`.slice(0, 71),
+    collected_at: a.created_at,
+    metadata: a.metadata ?? {},
+    archive_storage_path: i % 4 === 0 ? `evidence-archive/${THREAD_ID}/e${i + 1}.bin` : null,
+    archive_sha256: i % 4 === 0 ? `${(i + 3).toString(16).padStart(2, "0").repeat(32)}` : null,
+    archive_bytes: i % 4 === 0 ? 12_340 + i * 97 : null,
   })),
   artifact_reviews: [
     { id: "r1", artifact_id: "a1", thread_id: THREAD_ID, verdict: "correct", reviewer_id: USER_ID, created_at: iso(9), note: null },
@@ -127,7 +269,10 @@ const RPC: Record<string, unknown> = {
   get_case_metrics: [{ thread_id: THREAD_ID, artifact_count: artifacts.length, confirmed_count: 2, tool_call_count: tool_usage_log.length, failed_tool_count: 2 }],
   get_insights_summary: [{ total_threads: 12, total_artifacts: 96, confirmed_artifacts: 24, credits_used: 341 }],
   has_role: false,
-  verify_evidence_chain: [{ valid: true, checked: artifacts.length, broken_at: null }],
+  // CustodyTab.verify() reads { ok, total, first_break } — the old
+  // { valid, checked, broken_at } shape produced `ok: undefined`, which the
+  // banner coerced to a red "CHAIN INTEGRITY broken".
+  verify_evidence_chain: [{ ok: true, total: artifacts.length, first_break: null }],
   record_analyst_feedback: { ok: true },
   save_agent_memories: { ok: true },
 };
@@ -153,6 +298,15 @@ function builder(table: string) {
   return self;
 }
 
+/**
+ * Signed-out review switch. `?harness=signedout` makes the stub report no
+ * session, so the harness can render the logged-out surfaces (Landing, /auth)
+ * as well as the signed-in workspace. Default stays signed-in.
+ */
+const SIGNED_OUT =
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get("harness") === "signedout";
+
 const session = {
   access_token: "harness-token", refresh_token: "harness-refresh",
   expires_in: 3600, expires_at: 4102444800, token_type: "bearer",
@@ -171,10 +325,10 @@ export const supabase = {
   functions: { invoke: () => Promise.resolve({ data: null, error: null }) },
   storage: { from: () => ({ createSignedUrl: () => Promise.resolve({ data: { signedUrl: "#" }, error: null }) }) },
   auth: {
-    getSession: () => Promise.resolve({ data: { session }, error: null }),
-    getUser: () => Promise.resolve({ data: { user: session.user }, error: null }),
+    getSession: () => Promise.resolve({ data: { session: SIGNED_OUT ? null : session }, error: null }),
+    getUser: () => Promise.resolve({ data: { user: SIGNED_OUT ? null : session.user }, error: null }),
     onAuthStateChange: (cb: (e: string, s: Session | null) => void) => {
-      setTimeout(() => cb("SIGNED_IN", session), 0);
+      setTimeout(() => cb(SIGNED_OUT ? "SIGNED_OUT" : "SIGNED_IN", SIGNED_OUT ? null : session), 0);
       return { data: { subscription: { unsubscribe: () => {} } } };
     },
     signInWithPassword: () => Promise.resolve({ data: { session }, error: null }),

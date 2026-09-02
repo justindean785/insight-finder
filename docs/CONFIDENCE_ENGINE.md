@@ -1,8 +1,8 @@
 # Confidence Engine — Rule Reference & Evidence Weighting
 
-_Status: reference + audit. Produced 2026-07-17 from a line-by-line read of the
-live code. Every rule below is cited to `file:line`. This is documentation of
-what the engine **does today**, plus a clearly-marked list of integrity findings
+_Status: reference + audit. Produced 2026-07-17 and updated 2026-08-15 from a
+line-by-line read of the current branch. Every rule below is cited to `file:line`.
+This documents what the engine **does today**, plus a clearly-marked list of integrity findings
 that require owner sign-off before code changes (per CLAUDE.md: confidence caps,
 ranking, and analyst-confirmation are integrity-critical)._
 
@@ -38,7 +38,7 @@ map. Until then, this doc lists all four so the discrepancies are visible.
 | **Display** (badges/bars) | ≥90 | ≥75 | ≥55 | ≥35 | <35 | `confidence-tier.ts:61-65` |
 | **Cluster** | ≥90 | ≥75 | ≥50 | ≥30 | <30 | `lib/cluster.ts:26-33` |
 | **Audit linter** | 90–100 "Verified" | 71–89 "High" | 41–70 "Medium" | 0–40 "Low" | — | `audit/confidence-linter.ts:11-16` |
-| **Backend status** | `confirmed` needs independent≥2 & no contradiction | `verified` (≥90, <2 classes) | `needs_corroboration` | `observed` | — | `confidence.ts:619-624` |
+| **Backend status** | `confirmed` needs independent≥2 & no contradiction | `verified` (≥90, <2 classes) | `needs_corroboration` | `observed` | — | `confidence.ts:650-656` |
 
 A score of **52** is `Possible` on the cluster map but `weak` on the display map;
 **32** is `Weak` on cluster but `unverified` on display. This drift is real
@@ -48,8 +48,10 @@ A score of **52** is `Possible` on the cluster map but `weak` on the display map
 
 ## 2. How a stored confidence is built (backend, authoritative)
 
-Pipeline: `sourceConfidence()` → `computeAxes()` (5 axes) → `applyEvidenceCaps()`
-→ final clamp. All in `confidence.ts` unless noted.
+Finding pipeline: `sourceConfidence()` → `computeAxes()` (5 axes) → the cap
+engine → final clamp. Artifact recording enters that engine through
+`applyRecordingSourcePolicy()`; production callers must not call the low-level
+cap functions directly. See §2e. All in `confidence.ts` unless noted.
 
 ### 2a. Source reliability (the base signal)
 | Rule | Condition | Effect | Cite |
@@ -82,31 +84,88 @@ independent_public 75 · ai_summary 55 · web_search 50 · infra* 65–75 ·
 government_property/registry 90 · government_business_license 88 · professional_profile
 70 · social_review 35 · public_record 75 · archive 70 · unknown 50`
 
-### 2d. Dynamic cap adjustments (`applyEvidenceCaps`)
+### 2d. Dynamic cap adjustments (shared cap engine)
 | Rule | Effect | Cite |
 |---|---|---|
-| Two-breach nudge | breach-only & ≥2 breach sources → cap 65 | `confidence.ts:381-383` |
-| News-name downgrade | name from `news` → cap 55 (else news 65) | `confidence.ts:372-373` |
-| Infra corroboration | ≥2 sub-classes +8, ≥3 +15, `min(95,…)` | `confidence.ts:396-400` |
-| Cross-class corroboration | ≥2 corroborating classes (non-infra) +10, `min(95,…)` | `confidence.ts:405-407` |
-| Court + news/independent | cap 95 | `confidence.ts:408-410` |
-| Cross-platform cluster | ≥3 distinct active-social platforms → `CLUSTER_CAP` **80** | `confidence.ts:179-180, 417-426` |
-| NEVER_HIGH ceiling | all classes ∈ NEVER_HIGH → cap `min(cap,65)` | `confidence.ts:153-163, 429-431` |
-| No-trusted-non-infra ceiling | no trusted non-infra class → cap `min(cap,85)` | `confidence.ts:439-441` |
-| Final clamp | `max(0, min(rawConfidence ?? 50, cap))` | `confidence.ts:443` |
+| Two-breach nudge | breach-only & ≥2 distinct canonical breach tool identities → cap 65 | `confidence.ts:398-400` |
+| News-name downgrade | name from `news` → cap 55 (else news 65) | `confidence.ts:382-391` |
+| Infra corroboration | ≥2 sub-classes +8, ≥3 +15, `min(95,…)` | `confidence.ts:403-418` |
+| Cross-class corroboration | ≥2 corroborating classes (non-infra) +10, `min(95,…)` | `confidence.ts:420-425` |
+| Court + news/independent | cap 95 | `confidence.ts:426-427` |
+| Cross-platform cluster | ≥3 distinct active-social platforms → `CLUSTER_CAP` **80** | `confidence.ts:171-186, 430-443` |
+| NEVER_HIGH ceiling | all classes ∈ NEVER_HIGH → cap `min(cap,65)` | `confidence.ts:155-169, 446-448` |
+| No-trusted-non-infra ceiling | no trusted non-infra class → cap `min(cap,85)` | `confidence.ts:451-458` |
+| Final clamp | `max(0, min(rawConfidence ?? 50, cap))` | `confidence.ts:461` |
 
-### 2e. Collision / cross-link caps
+### 2e. Recording provenance channels
+
+Artifact recording has two provenance channels, enforced by
+`recording-source-policy.ts`:
+
+| Channel | Input | Authority |
+|---|---|---|
+| Surface | the singular top-level `source` accepted by the recording contract | May establish the cap ceiling |
+| Metadata | `metadata.source` and `metadata.sources` | May disclose provenance or lower the ceiling; may never raise it |
+
+`applyRecordingSourcePolicy()` keeps those channels separate and runs the whole
+cap pipeline twice:
+
+1. `surfaceOnly`: top-level `source`, with model metadata removed.
+2. `withMetadata`: the same top-level `source`, plus de-duplicated metadata.
+3. `effective`: the complete result with the lower **cap**. A tie selects
+   `surfaceOnly`, so metadata cannot change source classes, status inputs, graph
+   weight, or breach corroboration unless it also constrains the numeric cap.
+
+The recording callers (`record_artifacts`, compatibility `record_artifact`, the
+mirror recording module, and auto-recording) must pass the channels separately.
+They must never copy `metadata.sources` into the surface list before invoking the
+policy; doing so destroys the trust boundary before the conservative comparison.
+
+Breach corroboration counts distinct canonical tool identities, not transported
+occurrences. Compound labels use the production splitter (`+`, `,`, `/`, `|`,
+`;`, and the word `and`), and explicit aliases such as `leakcheck` →
+`leakcheck_lookup` collapse to one identity. Repeating one logical breach source
+through `source`, `metadata.source`, or `metadata.sources` cannot satisfy the
+two-source rule.
+
+`applyEvidenceCapsLegacyOccurrenceBaseline()` exists only to reproduce the old
+deployed topology during measurement. It is not a production recording entry
+point.
+
+Read-only population comparison:
+
+```bash
+SUPABASE_URL='https://project.supabase.co' \
+SUPABASE_ANON_KEY='...' \
+SUPABASE_EMAIL='...' \
+SUPABASE_PASSWORD='...' \
+deno run --allow-net --allow-env scripts/measure-metadata-source.ts
+```
+
+The script keyset-pages a fixed-time snapshot, reproduces the historical caller
+pre-union, uses the same production splitter and recording policy, and prints
+aggregate counts only. It does not select or print artifact values. Its cap and
+status outputs are projections from already-capped persisted rows; they cannot
+reconstruct the original model-requested confidence.
+
+### 2f. Collision / cross-link caps
 | Constant | Value | Meaning | Cite |
 |---|---|---|---|
-| `EXCLUDED_COLLISION_CONFIDENCE` | **15** | model-flagged unrelated/namesake, hard cap | `confidence.ts:494` |
-| `BIO_CROSS_LINK_NAME_CAP` | **30** | a name pulled only from another entity's bio | `confidence.ts:521` |
+| `EXCLUDED_COLLISION_CONFIDENCE` | **15** | model-flagged unrelated/namesake, hard cap | `confidence.ts:526` |
+| `BIO_CROSS_LINK_NAME_CAP` | **30** | a name pulled only from another entity's bio | `confidence.ts:553` |
 | collision-detector `contradiction` | **40** | same phone/email/address on ≥3 sources or ≥2 clusters | `tool-registry.ts:4455-4492` |
 
 > **On the product owner's "excluded collision → 30":** the true excluded-collision
-> cap is **15** (`confidence.ts:494`), not 30. **30** is the _bio-cross-link name_
+> cap is **15** (`confidence.ts:526`), not 30. **30** is the _bio-cross-link name_
 > cap. The observed 30 is either a bio-linked name, or the frontend re-inflating a
 > stored 15 (see §5, F-4). This is a display-vs-store reconciliation item, not a
-> constant to change.
+> constant to change. **2026-08-28:** if the stored 15 carried
+> `confidence_cap_applied`, the re-inflation branch is closed by #481 and the
+> observed 30 must be the bio-linked name.
+
+> ⚠️ **This document is a dated audit (2026-08-11), not a live status.** At least one
+> High finding (F-4) was substantially fixed afterwards and the table below was not
+> updated for it. Re-verify any finding against the tree before acting on it.
 
 ---
 
@@ -115,7 +174,7 @@ government_property/registry 90 · government_business_license 88 · professiona
 - **"Single-source email → 50."** 50 is the most overloaded constant in the engine:
   it is simultaneously the unknown-class cap (`CLASS_CAP.unknown`), `web_search`
   cap, the unknown-tier reliability (`tiers.ts:89`), the tier-C-only cap
-  (`tiers.ts:93`), and the raw-confidence fallback (`confidence.ts:443`). A lone
+  (`tiers.ts:93`), and the raw-confidence fallback (`confidence.ts:461`). A lone
   email from a single moderate source lands on one of these 50s. It _looks_
   arbitrary because the value means five different things.
 - **"Analyst confirms → 70."** 50 + `REVIEW_DELTA.confirmed (+20)` = 70 (§4).
@@ -158,7 +217,7 @@ tier jump:
   and `ConfLabel`, not on the numeric display tier — F-1).
 - **Analyst confirmation should set `status = confirmed` server-side** (today the
   backend ignores analyst input entirely — `DeriveStatusInput` has no confirm
-  field, `confidence.ts:586-597`), so the durable record matches the screen.
+  field, `confidence.ts:618-629`), so the durable record matches the screen.
 
 ---
 
@@ -166,9 +225,9 @@ tier jump:
 
 | Path | Blocked? | Evidence |
 |---|---|---|
-| **AI inference → Confirmed** | ✅ Blocked | `ai_summary` cap 55, `web_search` cap 50, both ∈ NEVER_HIGH → `min(cap,65)` (`confidence.ts:153-163, 429-431`). Cannot reach 90. |
+| **AI inference → Confirmed** | ✅ Blocked | `ai_summary` cap 55, `web_search` cap 50, both ∈ NEVER_HIGH → `min(cap,65)` (`confidence.ts:155-169, 446-448`). Metadata source labels cannot raise the surface cap (§2e). Cannot reach 90. |
 | **Cluster size → Confirmed** | ✅ Blocked | `CLUSTER_CAP=80` (`confidence.ts:180`); `promoteConfidence` caps co-membership at `min(LIKELY=75, own)` (`lib/cluster.ts:263-270`); only a proven self-admission reaches 90, gated by `isVerifiedSelfAdmission` (`cluster.ts:148-160, 271-276`). Well-tested. |
-| **Single source → Confirmed (backend status)** | ✅ Blocked | lone court/gov source has `independentClasses===1` → `deriveStatus` returns `verified`, never `confirmed` (`confidence.ts:619-624`). |
+| **Single source → Confirmed (backend status)** | ✅ Blocked | lone court/gov source has `independentClasses===1` → `deriveStatus` returns `verified`, never `confirmed` (`confidence.ts:650-656`). |
 | **Single source → Confirmed (numeric _display_ tier)** | ⚠️ **OPEN** | `CLASS_CAP.court_record=90`, `government_property_record=90`. A single such source stored at 90 → `tierOf(90)==="confirmed"` with the verified glow. **No independence gate exists on the numeric tier** — only on `status`/`ConfLabel`. |
 | **`meta.reviewed===true` → CONFIRMED label** | ⚠️ **OPEN / needs owner ruling** | `intel.ts:330` short-circuits to CONFIRMED on model-writable metadata. **A test pins this as intended** (`intel-logic.test.ts:160`), and a comment calls it the "DB-level reviewed upgrade path" (`EvidenceMatrixTab.tsx:54`). If any tool/model can write `metadata.reviewed=true`, this is an AI-inference→Confirmed path (violates Issue #9). **Verify the write path before changing** — it may be human-only, in which case it's fine. |
 
@@ -191,10 +250,23 @@ tier jump:
    vs the radar step 100/85/65/45/25/10 (`confidence-dimensions.ts:159`).
 4. Case-rollup weights 0.7/0.3 and the relationship penalty ÷2 — undocumented
    (`confidence.ts:53, 57`).
-5. Frontend `adjustedConfidence` re-adds a corroboration bonus **on top of the
-   already-capped stored value without re-applying caps** (`intel.ts:227-259`),
-   so a backend-capped 85 can display as 95 (F-4). The bonus's class set is a
-   naive first-token split that over-counts (`whois`+`whois_lookup` = 2 classes).
+5. ~~Frontend `adjustedConfidence` re-adds a corroboration bonus **on top of the
+   already-capped stored value without re-applying caps**, so a backend-capped 85
+   can display as 95 (F-4).~~ **MOSTLY CLOSED by #481 — verified 2026-08-28.**
+   `intel.ts` now reads `metadata.confidence_cap_applied` into `recordedCap` and
+   folds it through `ceil()` into **all three** return paths (possible-minor,
+   quarantine, and the ordinary path), so the stricter of the two limits always
+   wins and the bonus can no longer carry a row past a cap the server recorded.
+   The clamp is deliberately total: an unparseable or hostile `metadata` yields
+   `null` and can only ever LOWER a number, never raise one.
+   **The residual, stated precisely so nobody re-fixes the closed half:** when the
+   backend recorded *no* cap, `ceil(100)` is the only limit, so the client bonus
+   still adds on top of the stored value for uncapped rows. That is a narrower
+   finding than the original — it is no longer "displays above the backend cap,"
+   it is "adds a second, coarse corroboration estimate where the backend asserted
+   no ceiling." The bonus's class set is still a naive first-token split that
+   over-counts (`whois`+`whois_lookup` = 2 classes), which is the part worth
+   fixing.
 
 **Recommendation:** pick ONE corroboration curve, ONE analyst-delta set, ONE
 recency curve; make the frontend display the stored (capped) number verbatim and
@@ -207,7 +279,7 @@ stop re-inflating it. That single change resolves F-2, F-4, and most of the
 
 | ID | Finding | Severity | Action |
 |---|---|---|---|
-| F-4 | Frontend re-inflates above the backend cap | High | Display stored value verbatim |
+| F-4 | ~~Frontend re-inflates above the backend cap~~ **Mostly closed by #481** (verified 2026-08-28: `recordedCap` → `ceil()` on all three `adjustedConfidence` return paths). Residual: uncapped rows still take the client bonus, and its class set over-counts. | ~~High~~ Low | Fix the first-token class split; do NOT re-do the cap clamp |
 | G1 | Numeric tier lacks the independence gate (single court/gov → "Confirmed") | High | Gate numeric tier on independentClasses≥2 |
 | G2 | `meta.reviewed` may launder into CONFIRMED | High (if model-writable) | Verify write path, then gate |
 | F-2 | Confirm applies +20 but explains +15 | Medium | Single delta constant |

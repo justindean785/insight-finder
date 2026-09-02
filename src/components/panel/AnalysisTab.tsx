@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
+import { effectiveConfidence, type ConfidenceInput } from "@/lib/display-confidence";
 import { Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+import { describeError, describeNamedError } from "@/lib/error-text";
 import { EmptyState } from "@/components/panel/EmptyState";
 import { MetricCard } from "@/components/ui/workspace-primitives";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Microscope, ShieldCheck, Layers, AlertTriangle, ArrowRight, Wrench,
+  RotateCcw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -70,51 +73,77 @@ export function AnalysisTab() {
   const [custodyCount, setCustodyCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
     (async () => {
       setLoading(true);
+      setError(null);
       try {
         const [a, t, th, ev] = await Promise.all([
           supabase.from("artifacts").select("id,thread_id,kind,confidence,source,metadata").order("created_at", { ascending: false }).limit(5000),
           supabase.from("tool_usage_log").select("thread_id,ok").order("created_at", { ascending: false }).limit(5000),
           supabase.from("threads").select("id,title,seed_value,status").order("updated_at", { ascending: false }).limit(500),
-          supabase.from("evidence_log").select("artifact_id").order("created_at", { ascending: false }).limit(5000),
+          supabase.from("evidence_log").select("artifact_id").order("collected_at", { ascending: false }).limit(5000),
         ]);
         if (cancelled) return;
-        const firstError = a.error ?? t.error ?? th.error ?? ev.error;
-        if (firstError) throw firstError;
+        // Name the failing query. Promise.all collapses four requests into one
+        // rejection, and "artifacts denied by RLS" and "evidence_log timed out"
+        // are different problems with different owners.
+        const failed = ([
+          ["artifacts", a.error],
+          ["tool_usage_log", t.error],
+          ["threads", th.error],
+          ["evidence_log", ev.error],
+        ] as const).filter(([, err]) => err);
+        if (failed.length) {
+          throw new Error(failed.map(([name, err]) => describeNamedError(name, err)).join(" · "));
+        }
         setArtifacts((a.data ?? []) as ArtifactRow[]);
         setTools((t.data ?? []) as ToolRow[]);
         setThreads((th.data ?? []) as ThreadRow[]);
         setCustodyCount(new Set((ev.data ?? []).map((r: { artifact_id: string }) => r.artifact_id)).size);
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setError(describeError(e));
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [user]);
+  }, [user, reloadKey]);
 
   const stats = useMemo(() => {
-    const scored = artifacts.filter((a) => a.confidence != null);
+    // ANALYST-FACING STATS READ THE EFFECTIVE VALUE. The histogram and the modal
+    // score describe the distribution an analyst actually sees on the board, so
+    // they must be built from the same number the board renders — otherwise this
+    // tab reports a distribution that exists nowhere in the product.
+    //
+    // The stored-vs-cap diagnostic below is the deliberate exception, and it is
+    // named for what it measures.
+    const eff = (a: ArtifactRow): number | null => effectiveConfidence(a as ConfidenceInput);
+    const scored = artifacts.filter((a) => eff(a) != null);
     const histogram = BANDS.map((b) => ({
       ...b,
-      count: scored.filter((a) => (a.confidence as number) >= b.min && (a.confidence as number) <= b.max).length,
+      count: scored.filter((a) => (eff(a) as number) >= b.min && (eff(a) as number) <= b.max).length,
     }));
 
     // Modal score — the "everything reads 50%" symptom, stated as a number.
     const freq = new Map<number, number>();
-    for (const a of scored) freq.set(a.confidence!, (freq.get(a.confidence!) ?? 0) + 1);
+    for (const a of scored) { const v = eff(a) as number; freq.set(v, (freq.get(v) ?? 0) + 1); }
     const [modalScore, modalCount] = [...freq.entries()].sort((x, y) => y[1] - x[1])[0] ?? [0, 0];
 
-    const capped = artifacts.filter((a) => {
+    // STORED vs CAP — the one place raw confidence is correct, because the
+    // question is precisely "did the server store this row at or above its own
+    // recorded ceiling". Comparing the EFFECTIVE value here would be circular:
+    // effective is already min(stored, cap), so it can never exceed the cap and
+    // the count would collapse to "rows whose stored value happens to equal it".
+    const storedAtOrAboveCap = artifacts.filter((a) => {
       const cap = (a.metadata as { confidence_cap_applied?: number } | null)?.confidence_cap_applied;
       return typeof cap === "number" && a.confidence != null && a.confidence >= cap;
     }).length;
+    const capped = storedAtOrAboveCap;
 
     const unclassified = artifacts.filter((a) => {
       const cat = (a.metadata as { source_category?: unknown } | null)?.source_category;
@@ -136,6 +165,7 @@ export function AnalysisTab() {
     for (const a of artifacts) {
       const e = byThread.get(a.thread_id) ?? { artifacts: 0, capped: 0, failed: 0 };
       e.artifacts++;
+      // Same stored-vs-cap question as above, per thread — deliberately raw.
       const cap = (a.metadata as { confidence_cap_applied?: number } | null)?.confidence_cap_applied;
       if (typeof cap === "number" && a.confidence != null && a.confidence >= cap) e.capped++;
       byThread.set(a.thread_id, e);
@@ -161,8 +191,26 @@ export function AnalysisTab() {
 
   if (error) {
     return (
-      <div className="rounded-2xl border border-danger/40 bg-danger/10 p-4 text-sm text-danger">
-        Could not load analysis: {error}
+      <div className="panel relative overflow-hidden border-[hsl(var(--authority-conflict))]/40 p-4">
+        <span aria-hidden className="spine" data-authority="conflict" />
+        <div className="pl-1">
+          <div className="flex items-center gap-2 text-meta font-semibold text-[hsl(var(--authority-conflict))]">
+            <AlertTriangle className="h-4 w-4 shrink-0" strokeWidth={2} aria-hidden />
+            Analysis could not load
+          </div>
+          <p className="mt-1.5 text-data leading-relaxed text-muted-foreground">
+            The cross-case queries did not return. Nothing is lost — this view is
+            read-only and reads live tables.
+          </p>
+          <pre className="panel-inset mt-2.5 overflow-x-auto p-2.5 font-mono text-micro leading-relaxed text-foreground/85">{error}</pre>
+          <button
+            type="button"
+            onClick={() => setReloadKey((n) => n + 1)}
+            className="mt-2.5 inline-flex items-center gap-1.5 rounded-md border border-border-strong bg-surface-2 px-2.5 py-1 text-data font-medium text-foreground transition-colors hover:bg-surface-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <RotateCcw className="h-3.5 w-3.5" aria-hidden /> Try again
+          </button>
+        </div>
       </div>
     );
   }

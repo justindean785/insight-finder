@@ -9,7 +9,9 @@
  */
 
 import type { Artifact } from "@/hooks/useThreadArtifacts";
-import { isUsernameSweepSource } from "@/lib/intel";
+import { isUsernameSweepSource, labelForArtifact, type ConfLabel, type ReviewAdjustment } from "@/lib/intel";
+import { isRejectedReview } from "@/lib/review";
+import { isQuarantined } from "@/lib/quarantine";
 
 // ---------------------------------------------------------------------------
 // #1 — Deterministic, ASCII-safe cluster IDs.
@@ -105,7 +107,26 @@ export function formatArtifactDisplayValue(value: string): string {
 // section.
 // ---------------------------------------------------------------------------
 
-export function isCollisionArtifact(a: Artifact): boolean {
+/**
+ * The structural shape the two collision predicates actually read.
+ *
+ * Widening the PARAMETER TYPE is not the same thing as widening the PREDICATE.
+ * The note at #6b below forbids the latter — `isCollisionArtifact` is also the
+ * report's collision-SECTION membership test, so adding a signal to it moves
+ * rows between report sections. This changes nothing about what either function
+ * MATCHES; it only lets a caller holding a lighter projection ask the question.
+ *
+ * It exists so `quarantineSets` (which owns a structural `QuarantineInput`, and
+ * deliberately imports nothing from this layer) can be handed
+ * `isClusterIneligible` as an injected predicate instead of re-implementing it.
+ * A full `Artifact` and a `QuarantineInput` are both assignable here.
+ */
+export type AuthorityInput = {
+  kind: string;
+  metadata?: Record<string, unknown> | null;
+};
+
+export function isCollisionArtifact(a: AuthorityInput): boolean {
   const kind = (a.kind ?? "").toLowerCase();
   if (kind === "excluded_collision") return true;
   const m = (a.metadata ?? {}) as Record<string, unknown>;
@@ -116,6 +137,65 @@ export function isCollisionArtifact(a: Artifact): boolean {
   // already buckets status:"excluded" as excluded — this aligns the markdown report + clustering.)
   if (typeof m.status === "string" && m.status.toLowerCase() === "excluded") return true;
   return m.excluded_collision === true || m.collision === true || m.possible_collision === true;
+}
+
+// ---------------------------------------------------------------------------
+// #6b — The PROMOTE boundary for `subject_unlinked`.
+//
+// WHY THIS IS A SEPARATE PREDICATE AND NOT A WIDENED `isCollisionArtifact`.
+// Widening the one above is the obvious one-line fix and it is wrong twice over:
+//
+//  1. `isCollisionArtifact` is also the report's collision-SECTION membership
+//     test (`intel.ts:1099` → `collisionIds`).
+//  2. `intel.ts:1137` builds `conflictNoted` with `if (collisionIds.has(a.id))
+//     return false;` — and `conflictNoted` is the branch that quotes a row's own
+//     `subject_unlinked_reason` verbatim (`intel.ts:1150`).
+//
+// So folding quarantine into `isCollisionArtifact` would MOVE every quarantined
+// row out of the section that states exactly why the pipeline distrusted it and
+// into the generic collision list, replacing the backend's own words with
+// boilerplate. The report would get quietly worse while the clustering bug
+// looked fixed. Keeping quarantine a distinct signal preserves both surfaces.
+//
+// AUTHORITY, NOT EVIDENCE. This makes a quarantined row inert; it never hides
+// it. The row stays on the Evidence board, stays in the report's collision
+// section with its reason, and stays a node in the entity graph — flagged. What
+// it may no longer do is seed or strengthen the subject's identity.
+// ---------------------------------------------------------------------------
+
+/**
+ * May this artifact seed or strengthen the subject's identity?
+ *
+ * `false` for a legacy collision flag OR an ACTIVE `subject_unlinked` quarantine.
+ * Use at every surface that grants identity authority — clustering, graph edges,
+ * confidence dimensions — so the two signals can never drift apart again.
+ *
+ * ACTIVE, via `isQuarantined` — not the raw `isSubjectUnlinked` flag. The two
+ * predicates answer different questions and only one of them is about authority:
+ *
+ *   isSubjectUnlinked  Was this row ever machine-flagged as having unproven
+ *                      linkage? — history, and the basis for DISCLOSURE. The
+ *                      report's collision section (`conflictNoted` in intel.ts)
+ *                      still keys on this, correctly: releasing a row must not
+ *                      erase the fact that it arrived on the collision axis.
+ *   isQuarantined      Does that flag CURRENTLY deny the row authority? — false
+ *                      once an analyst records `linkage_confirmed`.
+ *
+ * This function is an authority decision, so it takes the second. It previously
+ * took the first, which made it (with `quarantineSets`) one of two boundaries
+ * that ignored the release hatch while three others honoured it —
+ * `labelForArtifact`, `evidenceStatus` and `adjustedConfidence` all restore full
+ * authority on `linkage_confirmed`, and `adjustedConfidence` documents the
+ * distinction explicitly. An adjudicated row therefore read CONFIRMED at the
+ * label and still could not enter a cluster, a graph edge, or a confidence
+ * dimension. (Ultrareview #448 `bug_006`.)
+ *
+ * Release does not rewrite history: the row keeps `subject_unlinked` and its
+ * `subject_unlinked_reason`, and keeps appearing in the collision disclosure.
+ * What it regains is only the authority the analyst explicitly granted it.
+ */
+export function isClusterIneligible(a: AuthorityInput): boolean {
+  return isCollisionArtifact(a) || isQuarantined(a.metadata);
 }
 
 // ---------------------------------------------------------------------------
@@ -305,4 +385,109 @@ export function dedupeBreachDatasets(artifacts: Artifact[]): Artifact[] {
   }
 
   return dropIds.size ? artifacts.filter((a) => !dropIds.has(a.id)) : artifacts;
+}
+// ---------------------------------------------------------------------------
+// #8 — The CaseReport Identity panel authority gate.
+//
+// The workspace Report tab's Identity panel (CaseReport.tsx) is the surface an
+// analyst actually reads. "Real name", "Phone", "Alt email" are IDENTITY-
+// AUTHORITY claims — they assert the row belongs to the subject. A quarantined
+// row appearing there as "Alt email" asserts the very linkage `subject_unlinked`
+// says is unproven, which is the same class of leak #448 closed in clusters,
+// graph edges, confidence dimensions, and the generated report.
+//
+// This was extracted from CaseReport.tsx (where it lived as a private function)
+// so it is testable without exporting from the component, and so the quarantine
+// gate uses the SAME `isClusterIneligible` predicate as the other four surfaces
+// — the two signals can never drift apart here either.
+//
+// AUTHORITY, NOT EVIDENCE. A quarantined row stays on the Evidence board, in
+// the report's collision section, and as a flagged node in the entity graph.
+// It simply may not appear as a subject identity field. Same rule as everywhere
+// else in this boundary.
+// ---------------------------------------------------------------------------
+
+export type IdentityRow = { field: string; value: string; label: ConfLabel };
+
+function pickBestIdentity(
+  artifacts: Artifact[],
+  kinds: string[],
+  reviews?: Record<string, ReviewAdjustment>,
+): Artifact | null {
+  // An analyst-rejected row is not a candidate for an identity field at all.
+  // These fields are AUTHORITY claims (see the #8 banner above) — rendering a
+  // rejected row as "Real name" with a FAILED pill still asserts it IS the
+  // subject's name. Same exclusion `buildIdentityClusters` applies to cluster
+  // membership (intel.ts:1865): a dismissed/wrong row may not seed or
+  // strengthen identity. The row keeps its place in the evidence tables.
+  const pool = artifacts.filter(
+    (a) =>
+      kinds.includes(String(a.kind ?? "").toLowerCase()) &&
+      !isClusterIneligible(a) &&
+      !isRejectedReview(reviews?.[a.id]),
+  );
+  if (!pool.length) return null;
+  const rank: Record<ConfLabel, number> = {
+    CONFIRMED: 6, CORRELATED: 5, INFERRED: 4, VERIFY: 3, LOW: 2, CONFLICT: 1, FAILED: 0,
+  };
+  // Rank through the verdict too, so an attested row outranks an unreviewed one
+  // instead of the ordering being decided before the analyst is consulted.
+  return pool.slice().sort((a, b) => {
+    const ra = rank[labelForArtifact(a, reviews?.[a.id])] ?? 0;
+    const rb = rank[labelForArtifact(b, reviews?.[b.id])] ?? 0;
+    if (ra !== rb) return rb - ra;
+    return (b.confidence ?? 0) - (a.confidence ?? 0);
+  })[0];
+}
+
+function pickAllEmailsIdentity(
+  artifacts: Artifact[],
+  reviews?: Record<string, ReviewAdjustment>,
+): Artifact[] {
+  const seen = new Set<string>();
+  const out: Artifact[] = [];
+  for (const a of artifacts.filter(
+    (x) =>
+      String(x.kind ?? "").toLowerCase() === "email" &&
+      !isClusterIneligible(x) &&
+      !isRejectedReview(reviews?.[x.id]),
+  )) {
+    const k = String(a.value ?? "").toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(a);
+  }
+  return out;
+}
+
+export function buildIdentityRows(artifacts: Artifact[], reviews?: Record<string, ReviewAdjustment>): IdentityRow[] {
+  const rows: IdentityRow[] = [];
+  const name = pickBestIdentity(artifacts, ["name", "person"], reviews);
+  if (name) rows.push({ field: "Real name", value: name.value, label: labelForArtifact(name, reviews?.[name.id]) });
+
+  const dob = pickBestIdentity(artifacts, ["dob"], reviews);
+  if (dob) rows.push({ field: "Date of birth", value: dob.value, label: labelForArtifact(dob, reviews?.[dob.id]) });
+
+  const age = pickBestIdentity(artifacts, ["age"], reviews);
+  if (age && !dob) rows.push({ field: "Age", value: age.value, label: labelForArtifact(age, reviews?.[age.id]) });
+
+  const phone = pickBestIdentity(artifacts, ["phone"], reviews);
+  if (phone) rows.push({ field: "Phone", value: phone.value, label: labelForArtifact(phone, reviews?.[phone.id]) });
+
+  const region = pickBestIdentity(artifacts, ["location", "geo", "address"], reviews);
+  if (region) rows.push({ field: "Likely region", value: region.value, label: labelForArtifact(region, reviews?.[region.id]) });
+
+  const emails = pickAllEmailsIdentity(artifacts, reviews);
+  emails.forEach((e, i) => {
+    rows.push({
+      field: i === 0 ? "Primary email" : i === 1 ? "Alt email" : `Email ${i + 1}`,
+      value: e.value,
+      label: labelForArtifact(e, reviews?.[e.id]),
+    });
+  });
+
+  const gender = pickBestIdentity(artifacts, ["gender"], reviews);
+  if (gender) rows.push({ field: "Gender (implied)", value: gender.value, label: labelForArtifact(gender, reviews?.[gender.id]) });
+
+  return rows;
 }

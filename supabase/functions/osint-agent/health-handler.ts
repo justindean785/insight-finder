@@ -2,7 +2,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import {
   corsHeaders, MINIMAX_API_KEY, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY,
   OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
-  CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED,
+  CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED, REVEAL_BREACH_DATA,
   HIBP_API_KEY, EXA_API_KEY, FIRECRAWL_API_KEY, SERUS_API_KEY,
   GITHUB_API_TOKEN, PERPLEXITY_API_KEY, IPQUALITYSCORE_API_KEY,
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
@@ -10,12 +10,44 @@ import {
   XAI_API_KEY, GROK_ORCHESTRATOR_MODEL_ID,
   OSINT_AGENT_PROBE_SECRET,
   DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID, PRIMARY_ORCHESTRATOR_MODEL_ID,
+  DEEPSEEK_BASE_URL,
   ORCHESTRATOR_PROVIDER, LOVABLE_API_KEY, OPENADAPTER_API_KEY, OPENADAPTER_BASE_URL,
 } from "./env.ts";
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
 import { recoverStaleActiveThreads } from "./recovery.ts";
+import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./finding-synthesis-sweep.ts";
+
+/**
+ * Release a response body we are never going to read.
+ *
+ * Every liveness probe in this module needs only the status line, so none of
+ * them read their response body — and an unread body is not free. The stream
+ * stays open, holding its connection, until GC eventually collects it. Deno's
+ * test sanitizer reports exactly this as "A fetch response body was created
+ * during the test, but not consumed during the test", which is how it surfaced:
+ * 8 tests in health_handler_test.ts plus 1 in reconciliation_gates_test.ts, all
+ * failing on this and nothing else, on a completely unmodified main.
+ *
+ * The reason it hid for so long is that the failure is NETWORK-DEPENDENT: when
+ * the provider hosts are unreachable `fetch` rejects, no Response is ever
+ * constructed, and the suite reads green. It goes red precisely when the probes
+ * succeed — so a clean local run was evidence of no connectivity, not of no leak.
+ *
+ * `cancel()` is the right release for a body that will never be read: it
+ * discards the stream and frees the connection without buffering the payload.
+ * Its rejection is swallowed because an already-disturbed or errored body is
+ * ALSO released, and a health probe must never fail on cleanup — that would turn
+ * a healthy provider into a reported outage.
+ */
+async function releaseBody(res: Response): Promise<void> {
+  try {
+    await res.body?.cancel();
+  } catch {
+    // already disturbed / errored — nothing left to release
+  }
+}
 
 // ---- checks.minimax — is the PRIMARY orchestrator actually reachable? -------
 // `orchestrator.ok` only asserts a key exists; after the MiniMax-primary outage
@@ -98,7 +130,7 @@ export async function checkDeepseek(deps?: {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 5_000);
   try {
-    const res = await doFetch("https://api.deepseek.com/v1/chat/completions", {
+    const res = await doFetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -112,6 +144,9 @@ export async function checkDeepseek(deps?: {
       }),
       signal: ctrl.signal,
     });
+    // The canary reads the status line only — release the body before returning
+    // on EITHER branch, or every plain ?health=1 leaks a connection.
+    await releaseBody(res);
     if (res.ok) return { ok: true };
     return { ok: false, reason: "preflight_failed", detail: `status=${res.status}` };
   } catch (e) {
@@ -204,6 +239,7 @@ export function deriveReadiness(env: {
   RANSOMWARELIVE_API_KEY?: string | null;
   URLSCANNER_API_KEY?: string | null;
   FOFA_API_KEY?: string | null;
+  GEOSEER_API_KEY?: string | null;
 }): { ok: boolean; checks: Record<string, { ok: boolean; detail?: string; reason?: string; role?: "active" | "fallback" }> } {
   const has = (v: string | null | undefined) => !!(v && v.length > 0);
   const orchestratorOk = has(env.MINIMAX_API_KEY);
@@ -234,6 +270,14 @@ export function deriveReadiness(env: {
     // so a green /health was consistent with the deploy having happened and with it
     // never having been attempted. Any tool added with a new key belongs here.
     fofa: has(env.FOFA_API_KEY),
+    // GeoSeer, listed for exactly the reason above — and it has already happened
+    // a second time. GeoSeer was added to the mirror and deployed on 2026-08-17
+    // WITHOUT touching this file or build-info.ts, so both signals stayed frozen
+    // (`build: 2d47656`, `16/19`) and it was impossible to tell from outside
+    // whether the tool was live. Adding it here moves the denominator to 20, which
+    // is the cheap, unauthenticated way to detect that a deploy actually shipped
+    // new capability. Any tool added with a new key belongs here.
+    geoseer: has(env.GEOSEER_API_KEY),
   };
   const enabledOptional = Object.values(tools).filter(Boolean).length;
   const checks: Record<string, { ok: boolean; detail?: string; reason?: string; role?: "active" | "fallback" }> = {
@@ -272,6 +316,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     URLSCANNER_API_KEY,
     RAPIDAPI_KEY: Deno.env.get("RAPIDAPI_KEY"),
     FOFA_API_KEY: Deno.env.get("FOFA_API_KEY"),
+    GEOSEER_API_KEY: Deno.env.get("GEOSEER_API_KEY"),
   });
   const u = new URL(req.url);
   const wantProbe = u.searchParams.get("probe") === "1";
@@ -336,6 +381,32 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
       r.checks.recovery = recovered.errors
         ? { ok: false, detail: `recovered ${recovered.recovered}; ${recovered.errors} error(s)` }
         : { ok: true, detail: `recovered ${recovered.recovered} stale active run(s)` };
+      // Finding synthesis. Deliberately AFTER recovery and inside the same
+      // try/catch: a thread must be marked finished before it is a candidate, and
+      // a synthesis fault must degrade to a reported check, never to a failed
+      // probe. This is a separate request from any run, which is what makes it
+      // structurally incapable of failing finalize (see finding-synthesis-sweep.ts).
+      // Ships DARK: both scopes default OFF and are independent, so the forward
+      // path can be enabled without the backfill — which is a production write
+      // into closed cases — and either can be revoked alone.
+      const dryRun = synthesisDryRun();
+      const scopes = (["forward", "backfill"] as const).filter((sc) => synthesisEnabled(sc));
+      if (scopes.length === 0) {
+        r.checks.synthesis = { ok: true, detail: "disabled" };
+      } else {
+        let written = 0, proposed = 0, threads = 0, errs = 0;
+        const dist = { zero: 0, one: 0, twoPlus: 0 };
+        for (const sc of scopes) {
+          const s2 = await synthesizeMissingFindings(admin, { limit: 5, scope: sc, dryRun });
+          written += s2.findingsWritten; proposed += s2.findingsProposed;
+          threads += s2.threadsScanned; errs += s2.errors;
+          dist.zero += s2.distribution.zero; dist.one += s2.distribution.one; dist.twoPlus += s2.distribution.twoPlus;
+        }
+        const mode = dryRun ? "DRY RUN — nothing written" : `${written} written`;
+        const detail = `${scopes.join("+")}: ${mode}; ${proposed} proposed over ${threads} thread(s) ` +
+          `(0:${dist.zero} 1:${dist.one} 2+:${dist.twoPlus})`;
+        r.checks.synthesis = errs ? { ok: false, detail: `${detail}; ${errs} error(s)` } : { ok: true, detail };
+      }
     }
   } catch (e) {
     r.checks.recovery = { ok: false, detail: String(e).slice(0, 160) };
@@ -381,7 +452,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     };
     const [ds, mm, gk, gm] = await Promise.all([
       probeProvider("deepseek", !!DEEPSEEK_API_KEY, async (signal) => {
-        const res = await fetch("https://api.deepseek.com/v1/chat/completions", {
+        const res = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
           method: "POST",
           headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}`, "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -392,6 +463,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
           }),
           signal,
         });
+        await releaseBody(res);
         return { ok: res.ok, status: res.status };
       }),
       probeProvider("minimax", !!MINIMAX_API_KEY, (signal) => minimaxChat({ user: "ping", maxTokens: 4, temperature: 0, signal })),
@@ -402,6 +474,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
           body: JSON.stringify({ model: GROK_ORCHESTRATOR_MODEL_ID, messages: [{ role: "user", content: "ping" }], max_tokens: 4 }),
           signal,
         });
+        await releaseBody(res);
         return { ok: res.ok, status: res.status };
       }),
       probeProvider("gemini", !!Deno.env.get("GEMINI_API_KEY"), async (signal) => {
@@ -411,6 +484,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
           body: JSON.stringify({ model: GEMINI_FALLBACK_MODEL_ID, messages: [{ role: "user", content: "ping" }], max_tokens: 4 }),
           signal,
         });
+        await releaseBody(res);
         return { ok: res.ok, status: res.status };
       }),
     ]);
@@ -435,6 +509,17 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     orchestrator_active_ok: orchestratorActiveOk,
     checks: r.checks,
     intelbase_enabled: INTELBASE_ENABLED,
+    // Account-level breach-reveal policy, surfaced for the same reason as the
+    // build marker: so it can be VERIFIED rather than assumed. It defaults ON in
+    // source, but an explicit REVEAL_BREACH_DATA=false in the deployed function's
+    // secrets silently overrides that — and there is no other way to observe which
+    // is in force without running a real breach query and reading the output.
+    //
+    // This cost real time on 2026-08-10: a case returned breach rows carrying only
+    // exposed_field CLASSES and no concrete values, and the deployed setting could
+    // not be distinguished from the model simply not recording them. One curl now
+    // answers it. Boolean only — never echo secret VALUES on a public endpoint.
+    reveal_breach_data: REVEAL_BREACH_DATA,
   };
   if (wantProbe) body.providers = providers;
   return new Response(

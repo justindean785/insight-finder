@@ -177,6 +177,8 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   osint_navigator_search: "ai_summary",
   gemini_deep_dork: "ai_summary",
   gemini_vision: "ai_summary",
+  // GeoSeer geolocation is AI inference over pixels — LEAD-tier, capped ≤55.
+  geoseer_geolocate: "ai_summary",
   google_dorks: "ai_summary",
   dork_harvest: "ai_summary",
   jina_reader_scrape: "independent_public",
@@ -263,6 +265,18 @@ export function normalizeSourceLabel(input: string): string {
 // intact; splits on `/ | , ;`, the word "and", and `+`.
 const MIXED_SOURCE_SPLIT_RE = /\s*(?:\/|\||,|;|\band\b|\+)\s*/i;
 
+// Explicit label aliases for one canonical tool identity. This does not merge
+// provider families: separate endpoints remain separate executions unless the
+// repository explicitly identifies an alias, as it does for leakcheck.
+const SOURCE_TOOL_IDENTITY_ALIASES: Readonly<Record<string, string>> = {
+  leakcheck: "leakcheck_lookup",
+};
+
+export function canonicalSourceToolIdentity(label: string): string {
+  const normalized = label.trim().toLowerCase();
+  return SOURCE_TOOL_IDENTITY_ALIASES[normalized] ?? normalized;
+}
+
 export function splitSourceLabels(label: string | null | undefined): string[] {
   const normalized = (label ?? "").trim();
   if (!normalized) return [];
@@ -291,6 +305,22 @@ const BREACH_SLUG_RE =
  *   4. #16's richer free-text provider regexes (gov/registry/directory/etc.);
  *   5. #16's coarse infra free-text → "infra" (only for free-text, never slugs). */
 export function classifySource(toolOrSource: string | null | undefined): SourceClass {
+  // TYPE guard, not just a falsy guard. The declared parameter type is a lie at
+  // runtime: `metadata` reaches here from a `z.record(z.unknown())` blob the
+  // model authors, so an array, object or number arrives truthy and then
+  // `.toLowerCase()` below throws `toolOrSource.toLowerCase is not a function`,
+  // which fails the WHOLE record_artifacts batch.
+  //
+  // #463 fixed the two routes in tool-registry.ts by type-guarding at the CALL
+  // SITES. That was necessary but not sufficient: the crash recurred in
+  // production on 2026-08-16 03:59, after #463 was live, because six other call
+  // sites still hand this function unvalidated values — confidence.ts:332 in
+  // particular reads model-authored metadata labels. Guarding the boundary is
+  // what actually closes the class.
+  //
+  // Fails to "unknown", which is the conservative direction: an unclassifiable
+  // source grants no evidence class and therefore no cap increase.
+  if (typeof toolOrSource !== "string") return "unknown";
   if (!toolOrSource) return "unknown";
   // Internal-slug fast path: strip a trailing parenthetical qualifier
   // ("socialfetch_lookup (instagram)" → "socialfetch_lookup") so the slug lookup

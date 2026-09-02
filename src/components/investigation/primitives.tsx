@@ -79,12 +79,11 @@ export function ConfidenceMeter({
 }) {
   const segments = 10;
   const filled = Math.round((Math.max(0, Math.min(100, value)) / 100) * segments);
-  const c =
-    value >= 90 ? "var(--intel-violet)" :
-    value >= 71 ? "var(--confidence-high)" :
-    value >= 41 ? "var(--confidence-mid)" :
-    value >= 1 ? "var(--confidence-low)" :
-    "var(--border-strong)";
+  // Segments are INK, not a verdict. This was a fourth independent by-value
+  // ladder (90/71/41/1) painting the meter violet-green-amber-red, so the same
+  // score rendered a different colour here than on the Evidence ledger. The
+  // meter still reads as a magnitude — that is what the filled COUNT is for.
+  const c = value >= 1 ? "var(--foreground)" : "var(--border-strong)";
 
   return (
     <div className="inline-flex items-center gap-2">
@@ -94,7 +93,7 @@ export function ConfidenceMeter({
             key={i}
             className="h-2 flex-1 rounded-[1px]"
             style={{
-              background: i < filled ? `hsl(${c})` : "hsl(0 0% 100% / 0.05)",
+              background: i < filled ? `hsl(${c})` : "hsl(var(--film) / 0.05)",
               boxShadow: i < filled ? `0 0 4px hsl(${c} / 0.35)` : "none",
             }}
           />

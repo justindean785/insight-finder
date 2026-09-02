@@ -1,9 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, MessagesSquare, Database, FileText, Share2, Activity, type LucideIcon } from "lucide-react";
+import { ChevronDown, MessagesSquare, Database, FileText, Share2, Activity, LayoutDashboard, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-export type WorkspaceTab = "chat" | "evidence" | "report" | "graph" | "tools";
+export type WorkspaceTab = "overview" | "chat" | "evidence" | "report" | "graph" | "tools";
 
 /** Per-tab badge data. `value` is the section count (how many items live in the
  * tab); `alert` is the number that NEEDS ATTENTION (failed tool calls, breaches)
@@ -12,6 +12,9 @@ export type WorkspaceTab = "chat" | "evidence" | "report" | "graph" | "tools";
 export type TabCount = { value: number; alert?: number };
 
 const TABS: { key: WorkspaceTab; label: string; icon: LucideIcon }[] = [
+  // Overview leads: it is the only tab that answers "what is the state of this
+  // case", so it is where an analyst returning to a case should land first.
+  { key: "overview", label: "Overview", icon: LayoutDashboard },
   { key: "chat", label: "Investigate", icon: MessagesSquare },
   { key: "evidence", label: "Evidence", icon: Database },
   { key: "tools", label: "Tools", icon: Activity },
@@ -19,8 +22,8 @@ const TABS: { key: WorkspaceTab; label: string; icon: LucideIcon }[] = [
   { key: "report", label: "Report", icon: FileText },
 ];
 
-const COMPACT_PRIMARY = TABS.filter((t) => t.key === "chat" || t.key === "evidence" || t.key === "report");
-const COMPACT_MORE = TABS.filter((t) => t.key === "tools" || t.key === "graph");
+const COMPACT_PRIMARY = TABS.filter((t) => t.key === "overview" || t.key === "chat" || t.key === "evidence");
+const COMPACT_MORE = TABS.filter((t) => t.key === "tools" || t.key === "graph" || t.key === "report");
 
 /** Small red "needs attention" dot. Carries a label so it is not color-only. */
 function AlertDot({ count, className }: { count: number; className?: string }) {
@@ -267,12 +270,26 @@ export function WorkspaceTabs({
   // Full-width nav strip with centered segmented control — matches the widened
   // chat column so chrome and content share one symmetrical axis.
   return (
-    <div className="relative border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(220_22%_6.5%/0.72),hsl(222_20%_4.5%/0.55))] backdrop-blur-xl">
-      <div className="chat-column mx-auto flex justify-center overflow-x-auto px-4 py-2 sm:px-7 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    <div className="relative border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(var(--surface-2)/0.72),hsl(var(--surface-0)/0.55))] backdrop-blur-xl">
+      {/* `safe center`, not `center`. A plain `justify-content: center` on an
+          overflow container distributes the overflow to BOTH sides, and the left
+          half lands at a negative offset that `scrollLeft` can never reach — so
+          the first tab sits permanently off-origin, underneath the z-10 rail,
+          unclickable by pointer while still reachable by keyboard. `safe` falls
+          back to start alignment the moment the content overflows, which keeps
+          every tab inside the scrollable range. Browsers without `safe` drop the
+          declaration and inherit `normal` (= start), which is the same safe
+          behaviour rather than a regression. */}
+      <div className="chat-column mx-auto flex justify-safe-center overflow-x-auto px-4 py-2 sm:px-7 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <div
           role="tablist"
           aria-label="Investigation workspace"
-          className="inline-flex w-full max-w-full items-center justify-center gap-0.5 rounded-xl border border-white/[0.08] bg-[hsl(220_26%_8%/0.75)] p-1 shadow-[inset_0_1px_0_hsl(0_0%_100%/0.05)] sm:w-auto sm:gap-1"
+          // `shrink-0` + `sm:w-max`: as a flex item this list was shrinking below
+          // its content (550px box around 675px of tabs) with `overflow-x: visible`,
+          // so the tabs escaped the list's own bounds and the scroller's
+          // scrollWidth never accounted for them. At its natural width the list
+          // overflows the SCROLLER instead, which is the thing that can scroll.
+          className="inline-flex w-full max-w-full shrink-0 items-center justify-safe-center gap-0.5 rounded-xl border border-white/[0.08] bg-[hsl(var(--film)/0.035)] p-1 shadow-[inset_0_1px_0_hsl(var(--film)/0.05)] sm:w-max sm:gap-1"
         >
           {TABS.map((t, idx) => {
             const Icon = t.icon;
@@ -290,11 +307,16 @@ export function WorkspaceTabs({
                 onKeyDown={(e) => onKeyDown(e, idx)}
                 onClick={() => onChange(t.key)}
                 className={cn(
-                  "relative inline-flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg px-2.5 text-meta font-medium transition-all duration-200 ease-premium active:scale-[0.98] sm:flex-none sm:gap-2 sm:px-4",
+                  // A raised, machined segment rather than a tinted rectangle:
+                  // the active tab now sits on its own surface with a top
+                  // catch-light and a 2px accent rail along the bottom edge, so
+                  // it reads as the selected face of a control instead of a
+                  // block of colour. Same palette, more deliberate.
+                  "group/tab relative inline-flex h-9 flex-1 items-center justify-center gap-1.5 rounded-[7px] px-2.5 text-meta font-medium transition-[background-color,color,box-shadow] duration-150 sm:flex-none sm:gap-2 sm:px-4",
                   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                   isActive
-                    ? "bg-[hsl(var(--intel-blue)/0.18)] text-foreground shadow-[inset_0_0_0_1px_hsl(var(--intel-blue)/0.35)]"
-                    : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
+                    ? "bg-surface-3 text-foreground shadow-[inset_0_1px_0_hsl(var(--film)/0.07),0_1px_2px_hsl(0_0%_0%/0.5)]"
+                    : "text-muted-foreground hover:bg-white/[0.04] hover:text-foreground/90",
                 )}
               >
                 <Icon
@@ -302,6 +324,12 @@ export function WorkspaceTabs({
                   strokeWidth={1.8}
                 />
                 <span className="leading-none tracking-tight">{t.label}</span>
+                {isActive && (
+                  <span
+                    aria-hidden
+                    className="pointer-events-none absolute inset-x-2 bottom-0 h-[2px] rounded-full bg-[hsl(var(--intel-blue))] shadow-[0_0_10px_-1px_hsl(var(--intel-blue)/0.8)]"
+                  />
+                )}
                 {count ? <CountPill value={count.value} active={isActive} /> : null}
                 {count?.alert ? <AlertDot count={count.alert} /> : null}
               </button>

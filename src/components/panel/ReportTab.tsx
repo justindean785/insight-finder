@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
+import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
+import { selectAuthoritativeFindings } from "@/lib/authoritative-findings";
 import { buildReportMarkdown, buildEvidenceMatrixMarkdown } from "@/lib/intel";
 import { useReviewStates } from "@/lib/review";
 import { useThreadMessages } from "@/hooks/useThreadMessages";
@@ -64,6 +66,11 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
   // CaseReport and the markdown export so a marked artifact reads the same in
   // Evidence and Report.
   const review = useReviewStates(threadId);
+  // #499 — the retrieval signals for the authority panel. `useThreadArtifacts` is a
+  // module-level store keyed by threadId, so this subscribes to the SAME snapshot
+  // the parent already loaded: no second fetch, and no prop change for callers.
+  // Both signals already existed and were already correct; nothing consumed them.
+  const { hasMore, error: artifactsFailed } = useThreadArtifacts(threadId);
   const reviews = useMemo(() => {
     const m: Record<string, ReturnType<typeof review.get>> = {};
     for (const a of artifacts) {
@@ -72,6 +79,18 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
     }
     return m;
   }, [artifacts, review]);
+
+  // #499 — computed ONCE and handed to both producers, so the rendered Report and
+  // the markdown export cannot disagree about what the engine adjudicated.
+  // Verdicts fail closed: anything other than a confirmed-good read withholds.
+  const authority = useMemo(
+    () => selectAuthoritativeFindings(artifacts, reviews, {
+      ceilingHit: !!hasMore,
+      retrievalFailed: !!artifactsFailed,
+      reviewsAvailable: review.availability === "ok",
+    }),
+    [artifacts, reviews, hasMore, artifactsFailed, review.availability],
+  );
 
   // Authoritative tool activity from tool_usage_log (the message stream doesn't
   // carry tool parts, so the report's "Tool invocations" read 0 without this).
@@ -85,9 +104,9 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
   const markdown = useMemo(
     () => buildReportMarkdown({
       seedValue: seed.value, seedType: seed.type, artifacts, messages, reviews, reportType,
-      toolActivity: toolActivityList, toolInvocations,
+      toolActivity: toolActivityList, toolInvocations, authority,
     }),
-    [seed, artifacts, messages, reviews, reportType, toolActivityList, toolInvocations],
+    [seed, artifacts, messages, reviews, reportType, toolActivityList, toolInvocations, authority],
   );
   const matrixMd = useMemo(() => buildEvidenceMatrixMarkdown(artifacts), [artifacts]);
 
@@ -239,7 +258,7 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
           a scroll-within-scroll that let the report cover slide under — and bleed
           past — the sticky Report header at certain offsets. */}
       <div className="rounded-lg border border-border-subtle bg-surface-1 px-4 py-5">
-        <CaseReport seedValue={seed.value} seedType={seed.type} artifacts={artifacts} reviews={reviews} messages={messages} reportType={reportType} />
+        <CaseReport seedValue={seed.value} seedType={seed.type} artifacts={artifacts} reviews={reviews} messages={messages} reportType={reportType} authority={authority} />
       </div>
 
       <details className="rounded-lg border border-border-subtle bg-surface-2 no-print">

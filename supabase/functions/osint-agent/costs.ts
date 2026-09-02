@@ -131,6 +131,9 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   dork_harvest: 3000,         // wraps several web searches (+ up to 3 Gemini reads)
   gemini_deep_dork: 2000,     // 1 Gemini 2.5 Flash call w/ google_search grounding
   gemini_vision: 2000,        // 1 Gemini Flash multimodal call (image or PDF page)
+  // GeoSeer AI image geolocation — paid per analyzed media item (credit pool).
+  // Treat one `fast` analysis as ~$0.02.
+  geoseer_geolocate: 20000,
 
   // ---- OSINT Navigator (tool-recommendation meta service) ----
   osint_navigator_query: 500,

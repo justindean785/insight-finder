@@ -27,10 +27,23 @@ import {
   type Pivot,
   type PivotType,
 } from "@/lib/intel";
-import { humanizeLeadReason, normalizeTarget } from "@/lib/next-step-cards";
+import { entityKey, humanizeLeadReason, normalizeTarget } from "@/lib/next-step-cards";
+import { isInert, quarantineSets } from "@/lib/quarantine";
+import { buildDecisionSets, recheckPrompt } from "@/lib/analyst-decisions";
+// The ENGINE's authority gate, imported rather than re-derived. `pivot-engine`
+// is a leaf (only ChatWindow, PivotsTab and PivotCard import it), so the edge
+// pivot-engine -> report-hygiene is safe; the reverse (quarantine -> report-hygiene)
+// would be a cycle, which is why the predicate is injected below rather than
+// imported inside `quarantine.ts`.
+import { isClusterIneligible } from "@/lib/report-hygiene";
 import { toDisplayPivots, type RecommendedPivot } from "@/lib/recommended-pivots";
 
 export type PivotPriority = "high" | "medium" | "low";
+
+/** The analyst decision, if any, that shaped this card. `key` raised its rank;
+ *  `recheck` turned it into a verification task; `confirmed` is carried for
+ *  display only. Rejected identities never reach this list at all. */
+export type PivotDecision = "key" | "recheck" | "confirmed";
 
 /** A ranked, display-ready pivot merged from the report + artifact generators. */
 export type DisplayPivot = Pivot & {
@@ -40,6 +53,7 @@ export type DisplayPivot = Pivot & {
   detail: string;
   prompt: string;
   score: number;
+  decision?: PivotDecision;
 };
 
 export type ComputePivotsInput = {
@@ -55,6 +69,16 @@ export type ComputePivotsInput = {
    * empty, so existing callers/tests behave unchanged.
    */
   queriedSet?: Set<string>;
+  /**
+   * Analyst decisions by artifact id (from `useReviewStates`). Optional so
+   * existing callers/tests behave unchanged; when present:
+   *   - a rejected identity (dismissed / wrong / legacy `false_positive`) is
+   *     removed by artifact id AND by `type:normalizedValue`, from BOTH origins;
+   *   - a `key` identity ranks above comparable ordinary ones (priority only —
+   *     its confidence is untouched);
+   *   - a `recheck` identity becomes a verification task card.
+   */
+  reviews?: Record<string, string | null | undefined>;
 };
 
 // ---- Ranking weights ---------------------------------------------------
@@ -63,6 +87,12 @@ export type ComputePivotsInput = {
 // term combined. Adjust with care.
 const STATUS_RANK_NEW = 1000;
 const TIER_SCORE: Record<PivotPriority, number> = { high: 300, medium: 200, low: 100 };
+// An analyst's Key mark. Larger than any tier gap + confidence + yield + recency
+// combined (300 + 60 + 40 + 40 = 440) so a Key lead outranks EVERY comparable
+// ordinary lead of the same status, but smaller than STATUS_RANK_NEW so a Key
+// lead that has already been searched still sits below an unsearched one. This
+// is PRIORITY. It never touches `confidence`, which is copied through untouched.
+const KEY_DECISION_BONUS = 500;
 const CONF_WEIGHT = 0.6; // source-artifact confidence (READ only, 0..100)
 const YIELD_WEIGHT = 0.5; // expected linkage fan-out per type
 const RECENCY_WEIGHT = 40; // favor the newest discoveries so the list moves
@@ -164,6 +194,44 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
 
   const artifactById = new Map(artifacts.map((a) => [a.id, a]));
 
+  // --- analyst decisions -------------------------------------------------
+  // Keyed in the SAME `type:normalizedValue` keyspace as the quarantine sets
+  // and canonicalKey below, so a rejected `username` cannot be revived by (or
+  // revive) a same-text `name`, and a re-record of the same selector under a
+  // new artifact id is still out. Rejection is checked by id as well.
+  const decisions = buildDecisionSets(
+    artifacts,
+    input.reviews,
+    normalizeTarget,
+    (kind) => KIND_TO_PIVOT[kind.toLowerCase()] ?? null,
+  );
+
+  // --- collision quarantine (`subject_unlinked`) --------------------------
+  // The backend stamps every row harvested from a name-only query, and #434 bound
+  // that flag across the edge function (graph nodes, recovery salvage, collision
+  // corroboration). It stopped at the network boundary: the flag reached the
+  // client as pure DESCRIPTION, read only by the report's collision section, so
+  // the disputed selectors kept surfacing here as ordinary "Run this pivot" cards
+  // — the one-click path onto a same-name stranger.
+  //
+  // Keyed by CANONICAL PIVOT IDENTITY (type + normalized value), not by value
+  // alone: normalizeTarget collapses punctuation to spaces, so a `username`
+  // "jordan.vale" and a `name` "Jordan Vale" share a normalized value, and a
+  // value-only key let the ordinary name restore authority to the quarantined
+  // handle. Non-pivotable kinds are excluded outright — they can never be the
+  // subject of this decision, so they may neither quarantine nor restore.
+  const quarantine = quarantineSets(
+    artifacts,
+    normalizeTarget,
+    (kind) => KIND_TO_PIVOT[kind.toLowerCase()] ?? null,
+    // ONE boundary. Dispatching a pivot is an authority decision, so it is gated
+    // on the same predicate every other authority surface uses — never a copy of
+    // it, and never a narrower subset. `isClusterIneligible` covers BOTH the
+    // active quarantine (`subject_unlinked` with no `linkage_confirmed` release)
+    // and the collision family, which is what this gate used to miss.
+    isClusterIneligible,
+  );
+
   // Findings already carry #185 filtering + status via buildPivots.
   const findings = buildPivots(artifacts, seedValue);
   const findingByKey = new Map<string, Pivot>();
@@ -216,6 +284,25 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
   for (const c of candidates) {
     const k = normalizeTarget(c.value);
     if (skipSet.has(k) || (seedKey && k === seedKey)) continue; // hard-hide
+    // ANALYST-REJECTED identity — never a suggested pivot, from either origin.
+    // By canonical identity (so a report-recommended value the model retyped is
+    // caught too) and by the source row's id (the direct expression of the
+    // verdict). The row itself stays on the Evidence board; this removes the
+    // ACTION, not the evidence.
+    const ck = canonicalKey(c);
+    if (decisions.rejectedKeys.has(ck) || decisions.rejectedIds.has(c.sourceArtifactId)) continue;
+    // Quarantined identity — inert, never actionable. Applied to BOTH origins on
+    // purpose: the metadata guard further down only inspects finding-origin
+    // candidates, so a quarantined value the model wrote into the report's
+    // "Recommended pivots" would otherwise walk straight past it. Keyed with
+    // canonicalKey so it asks the same question the quarantine sets answered —
+    // this candidate's TYPE and value, not any row that merely normalizes alike.
+    // The row itself is untouched and still renders on the Evidence board and in
+    // the report's collision section — this removes the ACTION, not the evidence.
+    // A CONFIRMED decision does not clear this: confirmation answers "is this
+    // value real?", never "is it this subject's?". Only `linkage_confirmed`
+    // releases quarantine, and that is what `isClusterIneligible` consults.
+    if (isInert(ck, quarantine)) continue;
     // Defensive: report recommendations for a value that later resolved to an
     // infra domain artifact should still never surface (buildPivots drops them,
     // extractRecommendedPivots drops them; this backstops any survivor).
@@ -232,6 +319,7 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
     // sensitive leads never surface: never pivot on a secret-bearing value, and
     // drop finding-origin candidates flagged as a collision or possible-minor.
     if (SECRET_VALUE_RE.test(c.value)) continue;
+    // DELIBERATELY NOT `isClusterIneligible` HERE — see the note below.
     if (c.origin === "finding") {
       const meta = (artifactById.get(c.sourceArtifactId)?.metadata ?? {}) as Record<string, unknown>;
       if (
@@ -242,19 +330,75 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
         meta.auto_pivot_blocked === true
       ) continue;
     }
+    // WHY THE AUTHORITY GATE IS NOT REPEATED IN THAT BLOCK.
+    //
+    // It looks like the obvious place to also apply `isClusterIneligible`, and
+    // doing so is wrong: this guard keys on ONE source row, so it blocks
+    // unconditionally, while the authority boundary is per-ROW and restorable.
+    // `isInert` above resolves a selector to inert only while EVERY row carrying
+    // it is denied; a value that arrived once on the collision axis and once from
+    // a provider that matched on the subject's own email stays pivotable, because
+    // the second observation is genuinely linked.
+    //
+    // Adding the predicate here overrode that and cost three green tests in
+    // `quarantine-pivot-boundary.test.ts` ("keeps a selector that ALSO has
+    // independent, subject-linked evidence", "release is per-row", "restoration
+    // requires the SAME pivot type") — `buildPivots` names the quarantined row as
+    // the candidate's source, so the merged, legitimately-restored pivot was
+    // dropped. Over-blocking is its own integrity failure, just a quieter one.
+    //
+    // The enumerated flags above are left exactly as they were: `possible_minor`
+    // and `minor_warning` are a SAFETY ceiling that must never be restorable by
+    // another row, and the two collision entries are pre-existing behaviour that
+    // `isInert` now covers properly at the selector level.
 
     let status: Pivot["status"] = c.status;
     // A tool already run against this exact target is the strongest "already
     // investigated" signal we have (artifacts carry no parent lineage), so it
     // overrides the generator's optimistic "new" for both origins.
-    if (parentSet.has(k) || queriedSet.has(k)) status = "searched";
-    else if (c.origin === "report" && existingValueSet.has(k)) status = "searched";
+    // Compare on the ENTITY as well as the literal target. A persisted `name`
+    // artifact is frequently a label — "hawkcapo - YouTube channel" — while the
+    // tool log holds the bare selector "hawkcapo", so the literal comparison can
+    // never match and the lead is re-offered forever. See `entityKey`.
+    const ek = entityKey(c.value);
+    if (parentSet.has(k) || queriedSet.has(k) || parentSet.has(ek) || queriedSet.has(ek)) status = "searched";
+    else if (c.origin === "report" && (existingValueSet.has(k) || existingValueSet.has(ek))) status = "searched";
 
+    // --- analyst decisions shape the CARD, never the evidence -----------
+    let decision: DisplayPivot["decision"];
+    let priority = c.priority;
+    let actionLabel = c.actionLabel;
+    let prompt = c.prompt;
+    let reason = c.reason;
+    let detail = c.detail;
+    let keyBonus = 0;
+    if (decisions.recheckKeys.has(ck)) {
+      // A recheck is a VERIFICATION TASK: it stays actionable even if the
+      // selector was already searched (the analyst asked for a fresh pass),
+      // and it dispatches the scoped re-verification prompt rather than the
+      // generic pivot prompt.
+      decision = "recheck";
+      status = "new";
+      priority = "high";
+      actionLabel = "Re-verify finding";
+      reason = "Analyst asked for another look — independent re-verification requested";
+      detail = `${c.value} · ${reason}`;
+      prompt = recheckPrompt(c.value, c.type);
+    } else if (decisions.keyKeys.has(ck)) {
+      decision = "key";
+      priority = "high";
+      keyBonus = KEY_DECISION_BONUS;
+    } else if (decisions.confirmedKeys.has(ck)) {
+      decision = "confirmed";
+    }
+
+    // READ ONLY: the artifact's own confidence, untouched by any decision.
     const conf = clamp(c.confidence ?? 0, 0, 100);
     const recency = (newestOrder.get(c.sourceArtifactId) ?? 0) / denom;
     const score =
       (status === "new" ? STATUS_RANK_NEW : 0) +
-      TIER_SCORE[c.priority] +
+      keyBonus +
+      TIER_SCORE[priority] +
       conf * CONF_WEIGHT +
       TYPE_YIELD[c.type] * YIELD_WEIGHT +
       recency * RECENCY_WEIGHT;
@@ -262,7 +406,10 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
     // Strip the internal origin tag from the public shape.
     const { origin: _origin, ...rest } = c;
     void _origin;
-    out.push({ ...rest, status, score });
+    out.push({
+      ...rest, priority, actionLabel, reason, detail, prompt, status, score,
+      ...(decision ? { decision } : {}),
+    });
   }
 
   // Stable sort by score desc: equal scores keep source order (recommendations

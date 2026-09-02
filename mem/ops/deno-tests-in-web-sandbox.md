@@ -3,10 +3,20 @@ name: Run deno (edge-fn) tests in the Claude Code web sandbox
 description: dl.deno.land is egress-blocked in the web sandbox, but deno's official npm package delivers the binary via the allowlisted npm registry — install it that way, set DENO_CERT to the proxy CA, and the deno.land/std imports resolve so edge tests run
 type: ops
 ---
+> ⚠️ **CORRECTION, measured 2026-08-28.** `dl.deno.land` now answers **200**, not 403, so the
+> official installer works directly and is the shorter route:
+> `DENO_INSTALL=/usr/local sh <(curl -fsSL https://deno.land/install.sh) -y` (verified —
+> deno 2.9.6, full edge suite 1407 passed / 0 failed / 5 ignored). Egress policy varies by
+> sandbox and by day: **test the host before believing either claim.** Everything below still
+> works and remains the fallback when `dl.deno.land` is blocked again.
+>
+> Also add **`--no-lock`**: an unqualified `deno test` rewrites `deno.lock` and drops four real
+> dependency entries (see `mem/ops/sandbox-traps.md`).
+
 **Problem.** In the Claude Code on-the-web sandbox, `cd supabase/functions/osint-agent && deno test`
-can't run because **`deno` is not installed and `dl.deno.land` is a hard egress
-policy-denial** (`403 CONNECT`). Past sessions concluded backend/edge changes are
-"unverifiable here" and pushed them CI-only. That is avoidable.
+may not run because **`deno` is not installed and `dl.deno.land` can be a hard egress
+policy-denial** (`403 CONNECT` — observed 2026-08-25, NOT reproducing 2026-08-28). Past sessions
+concluded backend/edge changes are "unverifiable here" and pushed them CI-only. That is avoidable.
 
 **Fix — install deno through the allowlisted npm registry:**
 ```bash
@@ -29,7 +39,7 @@ deno test --no-check --allow-net --allow-env --allow-sys --allow-read safety_tes
 ```
 
 **Reachability map (this sandbox, via the agent proxy):**
-- `dl.deno.land` → **BLOCKED** (403 CONNECT policy denial) — deno binary host.
+- `dl.deno.land` → **was BLOCKED 2026-08-25 (403 CONNECT), reachable 200 on 2026-08-28** — deno binary host. Re-test; do not assume.
 - `deno.land/std@…` → **200** — module/std host, fine for imports at test time.
 - `registry.npmjs.org`, `jsr.io`, `pypi.org`, `crates.io`, `proxy.golang.org` → allowlisted (`noProxy`).
 - `github.com` web/releases → 403 (only git + the GitHub MCP API work).

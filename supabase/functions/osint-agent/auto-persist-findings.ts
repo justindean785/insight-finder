@@ -28,6 +28,7 @@
 import { buildAutoRecordedRow } from "./auto-record-integrity.ts";
 import { scrubArtifactRows } from "./safety.ts";
 import { checkpointKey } from "./incremental-persist.ts";
+import { canonicalPhoneValue, composeAddress, normPhoneE164 } from "./lib/selector-normalize.ts";
 
 /** Hard ceiling on auto-persisted rows PER tool call. Prevents one exhaustive
  *  scrape (Wayback captures, GitHub search hits) from writing hundreds of rows. */
@@ -39,6 +40,13 @@ export const MAX_AUTO_PERSIST_PER_TOOL_CALL = 25;
 export const MAX_BREACH_CORPORA_PER_EXPOSURE = 250;
 /** Hard ceiling on auto-persisted rows PER step across all tool calls. */
 export const MAX_AUTO_PERSIST_PER_STEP = 60;
+
+/** Page size and hard scan ceiling for the thread-wide dedup set. Mirrors
+ *  `RECOVERY_ARTIFACT_PAGE_SIZE`'s reasoning in recovery.ts: an unbounded select
+ *  is silently truncated by PostgREST's row cap, and a truncated dedup set
+ *  re-inserts rows it should have blocked. */
+export const SEEN_ARTIFACT_PAGE_SIZE = 500;
+export const SEEN_ARTIFACT_SCAN_MAX = 5000;
 
 /** Tool names that already own their persistence path (do NOT double-record). */
 export const AUTO_PERSIST_TOOL_DENYLIST = new Set<string>([
@@ -58,6 +66,171 @@ export const AUTO_PERSIST_TOOL_DENYLIST = new Set<string>([
   "attribution_check", "date_sanity_check",
 ]);
 
+/**
+ * The subset of the denylist that is excluded for NOISE, not for correctness —
+ * eligible for the zero-evidence escalation below.
+ *
+ * WHY THIS EXISTS. The denylist above conflates two very different reasons to
+ * skip a tool, and that conflation is a durability hole. Recording, memory,
+ * planner and auto-recording tools must NEVER be scanned: their output is not
+ * findings, or is already persisted, so extracting from them would be wrong at
+ * any time. But the broad search and read tools are skipped only because
+ * auto-persisting them "blindly" is too noisy — the standing assumption being
+ * that the model will pick the good hits and call `record_artifacts`.
+ *
+ * When the model does not, that assumption leaves NO durability path at all. A
+ * run made entirely of these tools persists nothing, the persistence nudge is
+ * advisory, and if the isolate is CPU-killed the analyst gets zero artifacts
+ * from real completed work (production, 2026-08-06: three nudges,
+ * `record_artifact_calls: 0`, `artifact_count: 0`, CPU Time exceeded).
+ *
+ * So these become extractable ONLY in the escalated state — see the call site in
+ * index.ts, which requires BOTH that the model has fanned out without recording
+ * AND that the thread still holds zero artifacts. Noise is the price of the
+ * alternative being total evidence loss, and it is paid only in the state where
+ * the alternative is certain.
+ *
+ * Everything omitted here stays permanently excluded, escalation or not.
+ */
+export const ESCALATION_ELIGIBLE_TOOLS = new Set<string>([
+  "google_dorks", "minimax_web_search", "perplexity_search", "exa_search",
+  "osint_navigator_search", "osint_navigator_advise",
+  "gemini_vision", "jina_reader_scrape", "http_fingerprint", "firecrawl_scrape",
+]);
+
+/** Ceiling on candidates held in memory awaiting the escalation gate. 2x the
+ *  per-step cap: enough to carry several barren steps, small enough that a long
+ *  run cannot grow the isolate's memory without bound. */
+export const MAX_ESCALATION_BUFFER = 120;
+
+/**
+ * Hold escalation-eligible candidates from steps that have ALREADY happened.
+ *
+ * WHY A BUFFER IS REQUIRED, not a nicety. The escalation gate can only open once
+ * `persistenceNudgeCount > 0`, and the nudge fires only after the model has fanned
+ * out several times without recording. Everything found in those earlier steps was
+ * denied by the denylist and never held anywhere, so it was already gone by the
+ * time the gate opened. Worse, `buildIntermediateStepPlan` narrows the nudge
+ * step's `activeTools` to `["record_artifacts"]` alone — so on the very step that
+ * opens the gate there are no search results to extract, and if the model then
+ * declines or fails and the run dies, escalation salvages NOTHING. Without this
+ * buffer the fix only ever covered searches performed AFTER the first nudge.
+ *
+ * The buffer is memory-only and bounded: nothing is written until the gate opens.
+ * Keyed by `checkpointKey(kind, value)` so a value seen across several steps is
+ * held once, matching the dedup the DB path applies later.
+ */
+export function bufferEscalationCandidates(
+  buffer: Map<string, ExtractedFinding & { toolName: string }>,
+  candidates: readonly (ExtractedFinding & { toolName: string })[],
+  cap: number = MAX_ESCALATION_BUFFER,
+): { added: number; dropped: number } {
+  let added = 0;
+  let dropped = 0;
+  for (const f of candidates) {
+    if (buffer.size >= cap) { dropped++; continue; }
+    const k = checkpointKey(f.kind, f.value);
+    if (buffer.has(k)) continue;
+    buffer.set(k, f);
+    added++;
+  }
+  return { added, dropped };
+}
+
+/** Rows a single escalated flush may hand to persistAutoFindings.
+ *
+ *  WHY A SEPARATE BUDGET. persistAutoFindings applies NO row-count cap — it maps
+ *  every non-duplicate finding straight to an insert. extractStepFindings is
+ *  bounded by MAX_AUTO_PERSIST_PER_STEP, but a flush merges the buffer (up to 120)
+ *  with the current step (up to 60), so an unbounded drain could hand it 180 rows
+ *  in one call and quietly bypass the per-step ceiling the rest of the pipeline
+ *  respects. The overflow is RETAINED, not dropped: it stays in the buffer and
+ *  goes out on the next escalated flush. */
+export const MAX_ESCALATION_FLUSH = MAX_AUTO_PERSIST_PER_STEP;
+
+/**
+ * Drain the buffer in front of this step's findings, de-duplicated across both and
+ * bounded by `budget`.
+ *
+ * Buffered candidates lead because they are the OLDEST evidence and therefore the
+ * most likely to be lost — if the budget truncates anything, it must not be the
+ * rows that have already survived several steps unpersisted.
+ *
+ * Whatever does not fit goes BACK into the buffer rather than being discarded,
+ * including any of this step's own findings displaced by older ones. The buffer is
+ * naturally bounded by this: merged is at most MAX_ESCALATION_BUFFER +
+ * MAX_AUTO_PERSIST_PER_STEP, so the retained remainder can never exceed
+ * MAX_ESCALATION_BUFFER.
+ */
+export function drainEscalationBuffer(
+  buffer: Map<string, ExtractedFinding & { toolName: string }>,
+  stepFindings: readonly (ExtractedFinding & { toolName: string })[],
+  budget: number = MAX_ESCALATION_FLUSH,
+): { rows: Array<ExtractedFinding & { toolName: string }>; retained: number } {
+  const merged: Array<[string, ExtractedFinding & { toolName: string }]> = [];
+  const seen = new Set<string>();
+  for (const f of [...buffer.values(), ...stepFindings]) {
+    const k = checkpointKey(f.kind, f.value);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    merged.push([k, f]);
+  }
+  const rows = merged.slice(0, Math.max(0, budget)).map(([, f]) => f);
+  buffer.clear();
+  for (const [k, f] of merged.slice(Math.max(0, budget))) buffer.set(k, f);
+  return { rows, retained: buffer.size };
+}
+
+/** What the per-step backstop should do. `runPersist` drives the ONE branch in
+ *  index.ts that starts the persist task. */
+export type BackstopDecision = {
+  runPersist: boolean;
+  reason: "finalize_owns_persistence" | "step_findings" | "buffered_escalation" | "nothing_to_do";
+};
+
+/**
+ * Decide whether the auto-persist backstop runs this step. Pure, and PRODUCTION
+ * CALLS THIS — it is not a description of the control flow, it is the control flow.
+ *
+ * WHY IT EXISTS AS A FUNCTION. The first version of the pre-nudge buffer was
+ * wired under two conditions that between them made it unreachable in exactly the
+ * scenario it was written for:
+ *
+ *   1. the whole backstop was gated on `toolResults.length > 0`, and
+ *   2. the persist task was gated on `stepFindings.length > 0`.
+ *
+ * A DECLINED NUDGE STEP produces no tool result at all (activeTools is narrowed to
+ * ["record_artifacts"], and the model declined), so (1) skipped the block outright.
+ * A later BARREN STEP — a Wayback timeout, an errored search — extracts nothing, so
+ * (2) skipped the task. The buffer was filled and never drained, and the run still
+ * died with zero artifacts.
+ *
+ * That defect survived a test suite because the test replayed the timeline through
+ * its OWN copy of the branch logic, written slightly more permissively than the
+ * shipped one. Both halves passed; the product did not work. Hence this function:
+ * one definition, called by index.ts and asserted by the tests, so the two cannot
+ * diverge again.
+ *
+ * NOTE the absence of a tool-result count. It is deliberate — the buffered case
+ * MUST fire on a step that produced no tool results whatsoever.
+ */
+export function decideBackstopAction(input: {
+  finalizeStarted: boolean;
+  stepFindingCount: number;
+  bufferedCount: number;
+  escalated: boolean;
+}): BackstopDecision {
+  // Finalize owns persistence once it starts; the backstop stands aside.
+  if (input.finalizeStarted) return { runPersist: false, reason: "finalize_owns_persistence" };
+  if (input.stepFindingCount > 0) return { runPersist: true, reason: "step_findings" };
+  // The case the first version missed: nothing extractable NOW, but evidence is
+  // held from earlier steps and the gate is open.
+  if (input.escalated && input.bufferedCount > 0) {
+    return { runPersist: true, reason: "buffered_escalation" };
+  }
+  return { runPersist: false, reason: "nothing_to_do" };
+}
+
 /** Kinds we will auto-persist. Nothing sensitive is on this list — the identity
  *  kinds below (name/address/organization/username) are the SUBJECT's resolved
  *  identity, the whole point of the investigation; breach payloads (passwords,
@@ -71,6 +244,8 @@ const ALLOWED_KINDS = new Set<string>([
   "url", "email", "breach_exposure", "social_account", "github_repo", "github_account",
   "phone", "domain", "ip_address", "leak_paste", "document",
   "name", "address", "organization", "username",
+  // Collapsed harvest shapes — one artifact carries many underlying rows in metadata.
+  "social_footprint", "bulk_corpus_harvest",
 ]);
 
 const EMAIL_RE = /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i;
@@ -121,7 +296,20 @@ export function normalizeFinding(kind: string, value: unknown): { kind: string; 
     case "phone": {
       const digits = v.replace(/[^\d+]/g, "");
       if (digits.replace(/\D/g, "").length < 7) return null;
-      return { kind: "phone", value: digits };
+      // CANONICAL E.164 (2026-08-28). Dedup is `checkpointKey(kind, value)` —
+      // exact equality — so the spelling IS the identity. A measured run wrote
+      // +19175550123, 19175550123 and 9175550123 as three artifacts in three
+      // cluster slots for one number, then the clusterer folded them back
+      // together, because this fold ran only at cluster time.
+      //
+      // The fold deliberately does NOT collapse 79175550123 (a Russian +7
+      // number sharing ten digits with the US one) — see selector-normalize.ts.
+      //
+      // FALLBACK, not a narrowing: normPhoneE164 returns null below 8 digits,
+      // and this case has always accepted 7. Keeping the digits-only value in
+      // that band preserves admission exactly as before — this change is about
+      // identity, never about which numbers are allowed in.
+      return { kind: "phone", value: canonicalPhoneValue(digits) ?? digits };
     }
     case "breach_exposure": {
       // The VALUE is a stable per-provider label, never a count — dedup is by
@@ -177,6 +365,11 @@ export function normalizeFinding(kind: string, value: unknown): { kind: string; 
       if (/\s/.test(un)) return null;          // usernames have no whitespace
       return { kind: "username", value: un };
     }
+    case "social_footprint":
+    case "bulk_corpus_harvest": {
+      if (v.length < 4 || v.length > 240) return null;
+      return { kind: k, value: v.replace(/\s+/g, " ").trim() };
+    }
   }
   return null;
 }
@@ -190,6 +383,16 @@ function pushUrl(out: ExtractedFinding[], url: unknown, ctx: Record<string, unkn
 export const SWEEP_COLLAPSE_ENABLED = true;
 /** Below this many hits, individual URLs are still legible — don't collapse. */
 export const SWEEP_COLLAPSE_MIN_HITS = 3;
+
+/** Kill switch: false restores one quarantined artifact per bulk-corpus identity. */
+export const BULK_CORPUS_COLLAPSE_ENABLED = true;
+/** Identity rows retained inside a collapsed bulk-corpus summary. */
+export const MAX_BULK_CORPUS_ITEMS_RETAINED = 250;
+
+/** True when a row carries the bulk-corpus quarantine stamp from `coCorpusCtx`. */
+export function isBulkCorpusQuarantine(ctx: Record<string, unknown> | undefined): boolean {
+  return /bulk corpus return/i.test(String(ctx?.subject_unlinked_reason ?? ""));
+}
 
 // Input fields, in priority order, that name the selector a breach tool was
 // queried ON. Every breach lookup is invoked with one of these.
@@ -225,6 +428,139 @@ const UNLINKED_ECHO_CTX = {
     "echo of a name-only query whose queried name is not itself linked to the subject — " +
     "same-name collision axis; the matching name does not prove this record is the subject's",
 } as const;
+
+/** Reason stamped on a selector lifted from a breach-corpus row that belongs to
+ *  SOMEONE ELSE. A corpus row set is co-tenanted: querying one selector returns
+ *  the matching record plus, routinely, neighbours. `breachSubjectAnchor` already
+ *  refuses to anchor an exposure on a discovered value for exactly this reason —
+ *  "those can belong to other people in the same corpus" — but the item loop
+ *  below mints phone/email/name/address from those same rows, at full subject
+ *  authority.
+ *
+ *  MEASURED 2026-08-26: a run pivoting on +19175550123 persisted 79175550123 —
+ *  a Russian +7 number off a `zoloto585.ru` row belonging to a different person
+ *  — as a subject selector with its own cluster id. */
+const CO_TENANT_CTX = {
+  subject_unlinked: true,
+  subject_unlinked_reason:
+    "co-tenant row in a breach corpus — this record carries a different value in the field that " +
+    "was queried, so it belongs to another person in the same dataset, not the subject",
+} as const;
+
+/** Kinds that identify a PERSON. A corpus is measured in these, never in the
+ *  infrastructure, breach-name or summary rows one lookup legitimately fans out
+ *  to — those describe the DATASET, and the dataset is real evidence about the
+ *  thing that was queried even when its members are strangers. */
+const CORPUS_IDENTITY_KINDS = new Set(["name", "email", "phone", "address", "username"]);
+
+/**
+ * How many person-identities one tool return may yield before it is a CORPUS.
+ *
+ * A person has one name, a handful of addresses and a phone or two. Past that,
+ * a single lookup did not return the subject's record — it returned a dataset
+ * the subject may or may not be in.
+ *
+ * MEASURED on the live corpus 2026-08-28. Of the auto-persist batches that
+ * produced any identity row at all: 55 yielded 1-3, 42 yielded 4-6, 22 yielded
+ * 7-10, 16 yielded 11-20 and **31 yielded 21 or more — 752 rows, 51% of every
+ * person-identity auto-persist has ever written**. Fifteen sits above the whole
+ * plausible single-person range (the widest real one measured is Troy B. Keith:
+ * 5 emails + 4 phones + 1 address from `indicia_person`) and well under
+ * MAX_AUTO_PERSIST_PER_TOOL_CALL, so a legitimately rich person record is never
+ * touched and a customer list never survives.
+ */
+export const BULK_HARVEST_IDENTITY_CAP = 15;
+
+/**
+ * Reason stamped on a person-identity lifted out of a bulk corpus return.
+ *
+ * THE CASE THIS EXISTS FOR — thread `61d1eede`, 2026-08-28. A dossier claimed a
+ * phone; the phone turned out to be Psyberware's corporate landline; the run
+ * pivoted to `psyber.com` and OathNet returned the ISP's customer records. 21
+ * mailboxes (`support@`, `dbuse@`, `lisalou@`) and 13 names (`GIGI KLAIBER`,
+ * `dale buse`, `robin haynes`) persisted as SUBJECT evidence at 45%, each with
+ * its own cluster id — while the same run's own contradiction row, written a
+ * minute earlier, read "NO Carlos Morales in any record".
+ *
+ * Neither existing gate can reach it, and both look like they should:
+ *   - `SUBJECT_UNLINKED_CTX` needs a NAME-only query. This was a domain query.
+ *   - `CO_TENANT_CTX` needs a positive same-field mismatch. Querying
+ *     `psyber.com` and getting `support@psyber.com` back is a MATCH on the
+ *     queried field, so it correctly declines.
+ * Cardinality is the signal both of them are blind to.
+ */
+function coCorpusCtx(n: number) {
+  return {
+    subject_unlinked: true,
+    subject_unlinked_reason:
+      `harvested from a bulk corpus return — this one lookup yielded ${n} person identities for ` +
+      `a single selector, which is a dataset of many people rather than one person's record; ` +
+      `appearing in that dataset is not linkage to the subject`,
+  } as const;
+}
+
+/**
+ * Does this row echo the selector that was actually queried?
+ *
+ * EXACT normalized equality, never containment. Containment is the trap: the
+ * queried selector in the case above is `psyber.com`, and every one of the 21
+ * co-tenant mailboxes CONTAINS it — a containment test would exempt the whole
+ * corpus and the gate would do nothing at all. Exact equality exempts the one
+ * row that genuinely is the subject's (querying a seed email and getting that
+ * same email back out of its own breach corpus) and nothing else.
+ */
+function echoesQueriedSelector(value: string, queriedRaw: string, seedName: string): boolean {
+  const v = normalizeBreachSubject(value);
+  if (!v) return false;
+  const q = normalizeBreachSubject(queriedRaw);
+  if (q && v === q) return true;
+  const s = normalizeBreachSubject(seedName);
+  return !!s && v === s;
+}
+
+/**
+ * Does this corpus row POSITIVELY disagree with the queried selector?
+ *
+ * Deliberately narrow, and deliberately asymmetric. It returns true only when
+ * the row carries a non-empty value in the SAME field the query anchored on and
+ * that value differs. It is false when:
+ *
+ *   - there is no anchor (nothing to disagree with);
+ *   - the row simply lacks a phone — a genuine subject row often does not echo
+ *     the queried selector at all;
+ *   - the anchor is a name or username — a same-name axis is a collision
+ *     question, which `queryIsNameOnly` + SUBJECT_UNLINKED_CTX already own.
+ *
+ * ABSENCE IS NEVER AN ACCUSATION. Stamping on a missing field would quarantine
+ * genuine evidence wholesale, which is the same over-application that
+ * `isSubjectUnlinked`'s strict `=== true` and G1's fail-closed rule exist to
+ * prevent. An over-broad quarantine is as much a defect as a missing one.
+ *
+ * ⚠️ PHONE ONLY, DELIBERATELY. An email branch was implemented and REMOVED. It
+ * broke `subject_relevance_gate_test.ts`'s "a selector-keyed lookup is
+ * subject-linked by construction" — the #433 position that a concrete-selector
+ * query is trusted and only NAME-only queries quarantine. That is a settled
+ * boundary, and moving it needs sign-off, not a drive-by.
+ *
+ * The measured defect is a PHONE mismatch (+1917… queried, 79175550123
+ * returned). There is no measured email case, and widening an integrity signal
+ * past its evidence to reach a tidier result is how the other over-applications
+ * in this module happened. If an email co-tenant is ever measured, that is the
+ * moment to revisit the #433 boundary — with the evidence in hand.
+ */
+function rowContradictsAnchor(row: Record<string, unknown>, anchor: string): boolean {
+  if (!anchor) return false;
+  const anchorPhone = normPhoneE164(anchor);
+  // `normPhoneE164` folds any 8-15 digit run, so guard on the anchor actually
+  // LOOKING like a phone — otherwise a numeric-ish username would be compared
+  // as one.
+  if (anchorPhone && /^[+\d][\d\s().+-]*$/.test(anchor)) {
+    const raw = row.phone_number ?? row.phone_national ?? row.phone_number2;
+    const p = (typeof raw === "string" || typeof raw === "number") ? normPhoneE164(String(raw)) : null;
+    return p !== null && p !== anchorPhone;
+  }
+  return false;
+}
 
 /** Split a name into comparable tokens. Punctuation and commas are separators so
  *  "Roe, Jane" and "Jane Roe" reduce to the same token set. */
@@ -453,8 +789,10 @@ export function extractFindings(
   output: unknown,
   input?: unknown,
   subjectSeedName?: string,
+  opts?: { escalated?: boolean },
 ): ExtractedFinding[] {
-  if (AUTO_PERSIST_TOOL_DENYLIST.has(toolName)) return [];
+  if (AUTO_PERSIST_TOOL_DENYLIST.has(toolName) &&
+      !(opts?.escalated && ESCALATION_ELIGIBLE_TOOLS.has(toolName))) return [];
   if (!output || typeof output !== "object") return [];
   const o = output as Record<string, unknown>;
   // Never extract from an explicit tool error.
@@ -655,22 +993,49 @@ export function extractFindings(
         }
       }
       const items = Array.isArray(dd.items) ? dd.items : [];
+      // The selector this lookup ACTUALLY ran on. A corpus returns the matching
+      // record plus its neighbours, so a row that disagrees with the anchor on
+      // the queried field belongs to someone else — see CO_TENANT_CTX.
+      const oathnetAnchor = breachSubjectAnchor(o, input);
       for (const it of items.slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
         if (!it || typeof it !== "object") continue;
         const row = it as Record<string, unknown>;
-        push("email", row.email, { via: "oathnet" }, 45);
+        // DISCLOSURE, not deletion: a co-tenant row keeps its place in the
+        // artifact table and the Evidence count and loses only AUTHORITY —
+        // clusters, graph edges, corroboration, promotion. `isSubjectUnlinked`
+        // already binds every one of those boundaries.
+        const rowCtx: Record<string, unknown> = rowContradictsAnchor(row, oathnetAnchor)
+          ? { via: "oathnet", ...CO_TENANT_CTX }
+          : { via: "oathnet" };
+        push("email", row.email, rowCtx, 45);
         const phoneRaw = row.phone_number ?? row.phone_national ?? row.phone_number2;
-        if (phoneRaw != null) push("phone", String(phoneRaw), { via: "oathnet" }, 45);
+        if (phoneRaw != null) push("phone", String(phoneRaw), rowCtx, 45);
         const fullName = row.full_name ?? row.display_name
           ?? [row.first_name, row.middle_name, row.last_name].filter((x) => typeof x === "string" && x).join(" ");
-        push("name", fullName, { via: "oathnet" }, 40);
-        push("username", row.username, { via: "oathnet" }, 45);
-        push("ip_address", row.ip, { via: "oathnet" }, 40);
-        if (typeof row.linkedin === "string") pushUrl(findings, row.linkedin, { tool: toolName, via: "oathnet_linkedin" });
-        const addr = [row.address_street, row.address_street2, row.address_city ?? row.city,
-          row.address_state ?? row.state, row.address_postcode ?? row.postal_code ?? row.zip]
-          .filter((x) => typeof x === "string" && x).join(" ");
-        push("address", addr, { via: "oathnet" }, 45);
+        push("name", fullName, rowCtx, 40);
+        push("username", row.username, rowCtx, 45);
+        push("ip_address", row.ip, rowCtx, 40);
+        if (typeof row.linkedin === "string") {
+          pushUrl(findings, row.linkedin, { tool: toolName, ...rowCtx, via: "oathnet_linkedin" });
+        }
+        // COMPOSED, not concatenated (2026-08-28). This was a five-field
+        // `.join(" ")`, which on a measured production row persisted:
+        //
+        //   1110 SAMPLE AVE3F 1110 SAMPLE AVE APT 3F ANYTOWN NY 10001
+        //
+        // — `address_street2` restating `address_street` in a different
+        // spelling, run together with no separators. That string is the
+        // artifact's `value`, so it is what the board, the report and the
+        // export all render. composeAddress drops a redundant street line and
+        // keeps BOTH when they are genuinely different.
+        const addr = composeAddress({
+          street: row.address_street,
+          street2: row.address_street2,
+          city: row.address_city ?? row.city,
+          state: row.address_state ?? row.state,
+          postcode: row.address_postcode ?? row.postal_code ?? row.zip,
+        });
+        push("address", addr, rowCtx, 45);
       }
     }
   }
@@ -904,6 +1269,94 @@ export function extractFindings(
     }
   }
 
+  // CORPUS STAMP — cardinality, not content. Runs AFTER the name-only stamp so a
+  // row already quarantined there keeps its more specific reason, and BEFORE the
+  // de-dup so every emitted row is covered whichever branch pushed it.
+  //
+  // Note what is deliberately NOT stamped: the `breach_exposure` summary row
+  // naming the corpus ("psyber.com domain breach: 45+ records across 18+ breach
+  // DBs"). That row is evidence ABOUT the thing that was queried and keeps full
+  // authority. Only its members lose it — which is exactly the finding: the
+  // dataset is real, the strangers inside it are not the subject.
+  {
+    const bulk = findings.filter((f) =>
+      CORPUS_IDENTITY_KINDS.has(f.kind) &&
+      (f.context as Record<string, unknown> | undefined)?.subject_unlinked !== true
+    );
+    if (bulk.length > BULK_HARVEST_IDENTITY_CAP) {
+      const ctx = coCorpusCtx(bulk.length);
+      const queried = queriedSelectorRaw(input);
+      for (const f of bulk) {
+        if (echoesQueriedSelector(f.value, queried, subjectSeedName ?? "")) continue;
+        f.context = { ...(f.context ?? {}), ...ctx };
+      }
+    }
+  }
+
+  // BULK CORPUS COLLAPSE — one summary row, not 67 identical quarantine cards.
+  // Mirrors username_sweep / breach_exposure collapse: the ARTIFACT count drops,
+  // every harvested identity is retained in metadata.harvested_identities.
+  if (BULK_CORPUS_COLLAPSE_ENABLED) {
+    const queried = queriedSelectorRaw(input);
+    const kept: ExtractedFinding[] = [];
+    const collapsed: ExtractedFinding[] = [];
+    for (const f of findings) {
+      if (!CORPUS_IDENTITY_KINDS.has(f.kind)) {
+        kept.push(f);
+        continue;
+      }
+      const ctx = f.context as Record<string, unknown> | undefined;
+      if (!isBulkCorpusQuarantine(ctx)) {
+        kept.push(f);
+        continue;
+      }
+      if (echoesQueriedSelector(f.value, queried, subjectSeedName ?? "")) {
+        kept.push(f);
+        continue;
+      }
+      collapsed.push(f);
+    }
+    if (collapsed.length > 0) {
+      const harvested = collapsed.map((f) => ({ kind: f.kind, value: f.value }));
+      const retained = harvested.slice(0, MAX_BULK_CORPUS_ITEMS_RETAINED);
+      const totalIdentities = collapsed.length;
+      // Parse the cardinality from the shared reason when present — it names the
+      // full lookup yield, which can exceed what survived the per-call cap.
+      const parsedTotal = Number(
+        String(collapsed[0]?.context?.subject_unlinked_reason ?? "").match(/(\d+) person identities/)?.[1] ?? "",
+      );
+      const lookupYield = Number.isFinite(parsedTotal) && parsedTotal > 0 ? parsedTotal : totalIdentities;
+      const anchor = breachSubjectAnchor(o, input) || queried || "";
+      const summaryRow: ExtractedFinding = {
+        kind: "bulk_corpus_harvest",
+        value: anchor
+          ? `${lookupYield} unlinked identities — bulk corpus (${anchor})`
+          : `${lookupYield} unlinked identities — bulk corpus return`,
+        context: {
+          tool: toolName,
+          via: toolName,
+          bulk_corpus: true,
+          identity_count: lookupYield,
+          collapsed_row_count: totalIdentities,
+          queried_selector: anchor || queried || null,
+          harvested_identities: retained,
+          ...(harvested.length > retained.length
+            ? { harvested_truncated: true, harvested_retained: retained.length }
+            : {}),
+          ...coCorpusCtx(lookupYield),
+        },
+        rawConfidence: 40,
+      };
+      // Insert AFTER breach_exposure rows — those are unshifted to the front on
+      // purpose and must never lose priority to a bulk summary.
+      const insertAt = kept.findIndex((f) => f.kind !== "breach_exposure");
+      if (insertAt === -1) kept.push(summaryRow);
+      else kept.splice(insertAt, 0, summaryRow);
+      findings.length = 0;
+      findings.push(...kept);
+    }
+  }
+
   // De-dup within this extraction.
   const seen = new Set<string>();
   const uniq: ExtractedFinding[] = [];
@@ -925,6 +1378,9 @@ export function extractFindings(
 export function extractStepFindings(
   toolResults: unknown[] | null | undefined,
   subjectSeedName?: string,
+  /** Zero-evidence escalation — see ESCALATION_ELIGIBLE_TOOLS. Default off, so
+   *  every existing caller and test keeps today's exact behaviour. */
+  opts?: { escalated?: boolean },
 ): Array<ExtractedFinding & { toolName: string }> {
   if (!Array.isArray(toolResults)) return [];
   const out: Array<ExtractedFinding & { toolName: string }> = [];
@@ -939,7 +1395,7 @@ export function extractStepFindings(
     // collision). `args`/`parameters` cover older/alternate envelope shapes.
     const te = t as { input?: unknown; args?: unknown; parameters?: unknown };
     const input = te.input ?? te.args ?? te.parameters ?? null;
-    const findings = extractFindings(name, output, input, subjectSeedName);
+    const findings = extractFindings(name, output, input, subjectSeedName, opts);
     for (const f of findings) {
       const k = checkpointKey(f.kind, f.value);
       if (seen.has(k)) continue;
@@ -1139,17 +1595,59 @@ export async function persistAutoFindings(
  * re-run / recovery never re-inserts an existing (kind,value). Best-effort.
  */
 export async function loadSeenArtifactKeys(
-  supabase: { from: (t: string) => { select: (c: string) => { eq: (col: string, v: unknown) => Promise<{ data: Array<{ kind?: unknown; value?: unknown }> | null; error: unknown }> } } },
+  supabase: {
+    from: (t: string) => {
+      select: (c: string) => {
+        eq: (col: string, v: unknown) => {
+          range: (from: number, to: number) => Promise<{ data: Array<{ kind?: unknown; value?: unknown }> | null; error: unknown }>;
+        };
+      };
+    };
+  },
   threadId: string,
 ): Promise<Set<string>> {
   const seen = new Set<string>();
   try {
-    const { data, error } = await supabase.from("artifacts").select("kind,value").eq("thread_id", threadId);
-    if (error || !Array.isArray(data)) return seen;
-    for (const r of data) {
-      const k = typeof r?.kind === "string" ? r.kind : "";
-      const v = typeof r?.value === "string" ? r.value : "";
-      if (k && v) seen.add(checkpointKey(k, v));
+    // PAGED (2026-08-28). This was one unbounded `.select().eq()`, so on a thread
+    // past PostgREST's server-side row cap the dedup set was silently truncated
+    // and the rows beyond it could be written a second time. Same shape as the
+    // recovery incident `recovery_artifact_paging_test.ts` pins: a single
+    // `.limit()` read the first 40 of 85 artifacts and closed a run on a minority
+    // of its own evidence. Read and render are different questions.
+    for (let from = 0; from < SEEN_ARTIFACT_SCAN_MAX; from += SEEN_ARTIFACT_PAGE_SIZE) {
+      const to = Math.min(from + SEEN_ARTIFACT_PAGE_SIZE, SEEN_ARTIFACT_SCAN_MAX) - 1;
+      const { data, error } = await supabase.from("artifacts").select("kind,value").eq("thread_id", threadId).range(from, to);
+      // Best-effort by contract: a partial set means a duplicate may slip
+      // through, which is today's behaviour. It can never cause over-collapsing.
+      if (error || !Array.isArray(data)) break;
+      for (const r of data) {
+        const k = typeof r?.kind === "string" ? r.kind : "";
+        const v = typeof r?.value === "string" ? r.value : "";
+        if (!k || !v) continue;
+        seen.add(checkpointKey(k, v));
+        // MIGRATION-FREE RECONCILIATION. Rows written before the canonical phone
+        // fold hold "9175550123" where a new extraction now yields
+        // "+19175550123" — different keys for one number, so the legacy row
+        // would not block the re-insert. Registering the normalized spelling too
+        // makes old and new rows agree without touching a single stored row.
+        const n = normalizeFinding(k, v);
+        if (n && n.value !== v) seen.add(checkpointKey(n.kind, n.value));
+      }
+      if (data.length < SEEN_ARTIFACT_PAGE_SIZE) break;
+      // DISCLOSE the ceiling. `loadThreadArtifactIdentities` surfaces
+      // `thread_dedup_partial` when it stops early; this path returns a bare Set
+      // with nowhere to put that, so it said nothing at all — a dedup gate that
+      // quietly stops deduping, which is the exact thing the other path's
+      // comment argues against. Logged rather than silent until there is a
+      // channel to carry it.
+      if (from + SEEN_ARTIFACT_PAGE_SIZE >= SEEN_ARTIFACT_SCAN_MAX) {
+        console.warn(JSON.stringify({
+          event: "seen_artifact_scan_truncated",
+          thread_id: threadId,
+          scanned: SEEN_ARTIFACT_SCAN_MAX,
+          note: "thread exceeds the dedup scan ceiling — rows beyond it can be re-inserted",
+        }));
+      }
     }
   } catch (e) {
     console.warn("[auto-persist-findings] loadSeenArtifactKeys failed:", (e as Error)?.message ?? e);

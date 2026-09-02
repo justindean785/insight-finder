@@ -42,11 +42,18 @@ gotchas. This file only adds Cursor Cloud environment notes.
 - **Lovable AI Gateway spend cap:** orchestrator fallback bills Lovable credits.
   A cap hit surfaces as **403 Forbidden** in the investigation stream (now
   classified to a clear quota message). Operator action: raise the cap in Lovable
-  settings. Primary orchestrator is still MiniMax; gateway is fallback only.
-- **MiniMax preflight vs. gateway:** a 6s preflight ping timeout used to force
-  every cold edge isolate onto the Lovable gateway (logs show
-  `Lovable Gateway fallback` on every step). Fixed on `main` after the preflight
-  timeout PR lands — only explicit HTTP probe failures pivot to gateway.
+  settings. The gateway is fallback only.
+- **⚠️ The orchestrator is NOT MiniMax (corrected 2026-08-28).** It is the
+  DeepSeek *slot*, pinned — `/health` reports `selected_provider: deepseek`,
+  `orchestrator_reason: "pinned"`, with MiniMax as **fallback**. Since #449 the
+  slot is vendor-agnostic via `DEEPSEEK_BASE_URL` and the live model is
+  **`glm-5.2`, served by Z.AI**. Verify at `/health`; anything below or in
+  `CLAUDE.md` that reads MiniMax-primary is stale text, not configuration.
+- **MiniMax preflight vs. gateway (historical):** a 6s preflight ping timeout used
+  to force every cold edge isolate onto the Lovable gateway (logs show
+  `Lovable Gateway fallback` on every step). Fixed — only explicit HTTP probe
+  failures pivot to gateway. Retained because the failure *shape* recurs whenever
+  a provider preflight is added, but MiniMax is no longer the primary path.
 ### Backend deploy — a mirror merge is NOT a deploy
 
 > A mirror merge is NOT a deploy. The only proof of deploy is a moved build SHA.

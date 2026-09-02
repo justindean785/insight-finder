@@ -91,7 +91,7 @@ export const oathnet_lookup = tool({
       return { error: String(e) };
     }
   },
-}),
+});
 
 export const osint_navigator_search = tool({
   description:
@@ -133,4 +133,4 @@ export const osint_navigator_search = tool({
       return { ok: true, query, category: category ?? null, count: tools.length, tools };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});

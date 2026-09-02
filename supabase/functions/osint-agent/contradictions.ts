@@ -512,6 +512,36 @@ export interface ContradictionPatch {
 }
 
 /**
+ * A finding backed by EXPLICIT conflicting attribute claims — `field` plus at
+ * least two `claims`. These are the ONLY findings that may carry contradiction
+ * AUTHORITY: structured persistence, and the `contradicted` artifact status.
+ *
+ * The advisory single-artifact heuristics (`thin_name`, `common_handle_collision`,
+ * `over_broad_username`, `cdn_shared_infra`, `stale_breach`) deliberately omit
+ * `field`, as documented on `ContradictionFinding.field`. They describe a RISK
+ * about one artifact, not a conflict between two claims, so they must never set
+ * a status on their own — `thin_name` alone fires on any single-token name in
+ * the thread, which would mark every finding in that thread `contradicted`.
+ *
+ * They DO still apply the ordinary confidence penalty through `computeAxes`,
+ * which is the correct weight for a risk signal. Penalty yes, verdict no.
+ */
+export type ExplicitContradiction = ContradictionFinding & {
+  field: string;
+  claims: Array<{ value: string; source: string | null }>;
+};
+
+// A type predicate, not a plain boolean: `structuredContradictionPatches` relies
+// on the narrowing this gives it (`f.field` as string, `f.claims` as present) at
+// the `continue` guard below. Returning boolean compiles the call site but
+// re-widens both properties to optional and reintroduces 14 type errors.
+export function isExplicitContradiction(
+  f: ContradictionFinding,
+): f is ExplicitContradiction {
+  return !!f.field && Array.isArray(f.claims) && f.claims.length >= 2;
+}
+
+/**
  * Build the per-artifact structured-contradiction patches for a cluster.
  * Only findings carrying explicit conflicting attribute claims (`field` +
  * ≥2 `claims`) are emitted — advisory single-artifact heuristics are skipped,
@@ -525,7 +555,7 @@ export function structuredContradictionPatches(
   const findings = detectContradictions(artifacts);
   const patches: ContradictionPatch[] = [];
   for (const f of findings) {
-    if (!f.field || !f.claims || f.claims.length < 2) continue;
+    if (!isExplicitContradiction(f)) continue;
     const entry: StructuredContradiction = {
       kind: f.kind,
       field: f.field,

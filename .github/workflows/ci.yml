@@ -78,6 +78,75 @@ jobs:
             count=$((count + 1))
           done < <(printf '%s\n' supabase/migrations/*.sql | LC_ALL=C sort -t_ -k1,1)
           echo "Applied ${count} migrations cleanly."
+      # A SECURITY DEFINER function runs with its OWNER's rights, so an EXECUTE
+      # grant to anon (or to PUBLIC) hands an unauthenticated caller a privileged
+      # body. Every one of ours validates auth.uid() internally, but a runtime
+      # check is the LAST line of defence and must never be the only one.
+      #
+      # This runs against the real schema the migrations just built, not a grep,
+      # so it catches the two ways the grant appears — an explicit GRANT ... TO
+      # anon, and the quieter one: a NULL proacl, which is not "no access" but
+      # "PostgreSQL's default", and the default for a function is EXECUTE TO
+      # PUBLIC. A new overloaded signature is the usual way in, because a
+      # different argument list is a different function with a fresh ACL and the
+      # original's GRANT/REVOKE lines do not carry over. That is exactly how
+      # save_agent_memories' 4-argument overload ended up world-executable.
+      #
+      # The shim mirrors this project's real pg_default_acl, without which every
+      # function is created with a narrower ACL than production and this check
+      # passes vacuously. Do not remove that line to make this pass.
+      - name: SECURITY DEFINER grant assertion
+        run: |
+          set -euo pipefail
+          offenders=$(psql --set ON_ERROR_STOP=1 -tA -F'|' -c "
+            SELECT p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')'
+                   || '  ->  ' || COALESCE(array_to_string(p.proacl, ','), 'NULL ACL = default PUBLIC EXECUTE')
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = 'public'
+              AND p.prosecdef
+              AND (
+                p.proacl IS NULL
+                OR EXISTS (
+                  SELECT 1 FROM aclexplode(p.proacl) a
+                  WHERE a.privilege_type = 'EXECUTE'
+                    AND (a.grantee = 0                                    -- PUBLIC
+                         OR a.grantee = (SELECT oid FROM pg_roles WHERE rolname = 'anon'))
+                )
+              )
+            ORDER BY 1;")
+          if [ -n "${offenders}" ]; then
+            echo "::error::SECURITY DEFINER function(s) executable by anon or PUBLIC:"
+            printf '%s\n' "${offenders}"
+            echo ""
+            echo "Fix: add an explicit REVOKE to a migration, e.g."
+            echo "  REVOKE EXECUTE ON FUNCTION public.fn(argtypes) FROM PUBLIC, anon;"
+            echo "  GRANT  EXECUTE ON FUNCTION public.fn(argtypes) TO authenticated, service_role;"
+            echo "Note: a NEW OVERLOADED SIGNATURE needs its own grants — the"
+            echo "original signature's REVOKE does not apply to it."
+            exit 1
+          fi
+          # Guard against a vacuous pass: if the shim's default privileges or the
+          # roles ever disappear, the query above returns empty for the wrong
+          # reason and this job would go green while asserting nothing.
+          secdef=$(psql --set ON_ERROR_STOP=1 -tA -c "
+            SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = 'public' AND p.prosecdef;")
+          if [ "${secdef}" -lt 5 ]; then
+            echo "::error::only ${secdef} SECURITY DEFINER functions found in public — the"
+            echo "migrations did not build the expected schema, so this assertion proved nothing."
+            exit 1
+          fi
+          psql --set ON_ERROR_STOP=1 -tA -c "
+            SELECT 1 FROM pg_default_acl d JOIN pg_namespace n ON n.oid = d.defaclnamespace
+            WHERE n.nspname = 'public' AND d.defaclobjtype = 'f'
+              AND array_to_string(d.defaclacl, ',') LIKE '%anon=X%' LIMIT 1;" | grep -q 1 || {
+            echo "::error::the shim's public-function default privileges are missing, so a new"
+            echo "function would not pick up anon here as it does in production — this check"
+            echo "would pass vacuously. Restore the ALTER DEFAULT PRIVILEGES line in the shim."
+            exit 1
+          }
+          echo "OK: ${secdef} SECURITY DEFINER functions in public, none executable by anon or PUBLIC."
 
   edge:
     name: Edge functions (deno test)
@@ -96,3 +165,60 @@ jobs:
           deno-version: v2.x
       - name: Deno edge tests
         run: npm run test:edge
+
+  # ── Workspace e2e ────────────────────────────────────────────────────────
+  # Runs on pushes to main ONLY, not on pull requests — a deliberate cost call.
+  #
+  # This repo has had its shared Actions allowance exhausted once already: the
+  # Edge Health cron removed in #483 billed a ~10s curl as a full minute every
+  # 15 minutes and took CI down on every PR for ~70 hours. A browser job on
+  # every PR is the same shape of bill, so it is spent where it protects
+  # production instead: main is the branch Vercel deploys from.
+  #
+  # The trade, stated plainly so nobody discovers it during an incident: a PR
+  # can go green and merge while breaking the tab-reachability contract, and
+  # the failure surfaces on main AFTER the merge — a revert, not a block. If
+  # that becomes the wrong balance, the narrower fix is a path filter on the
+  # tab components and e2e/ rather than restoring it for every PR.
+  #
+  # Run it against a branch by hand any time: `npm run test:e2e`.
+  e2e:
+    name: Workspace e2e (playwright)
+    # The workflow triggers on pull_request and on push to main, so this is
+    # exactly "pushes to main".
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Cache the browser download rather than re-fetching ~140MB every run.
+      # Keyed on the lockfile because that is what pins the @playwright/test
+      # version, and a version bump needs a matching browser build.
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      # Only Chromium: every project in playwright.config.ts is Desktop Chrome.
+      # `--with-deps` still runs on a cache hit because the OS libraries live
+      # outside the cached directory.
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      # PLAYWRIGHT_CHROMIUM_PATH is deliberately NOT set here. It exists for
+      # sandboxes that pin an unmatched Chromium; a GitHub runner should use the
+      # browser Playwright just installed for itself.
+      - name: Workspace tab e2e
+        run: npm run test:e2e
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore

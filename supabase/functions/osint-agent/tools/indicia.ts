@@ -49,9 +49,21 @@ import { fetchT } from "../fetch_retry.ts";
 import { parseStructuredName } from "../name-parse.ts";
 
 const INDICIA_BASE = "https://api.indicia.app";
-// Under the 20s per-tool cap set for indicia_* in cache.ts TOOL_TIMEOUT_OVERRIDE_MS,
+// Under the 32s per-tool cap set for indicia_* in cache.ts TOOL_TIMEOUT_OVERRIDE_MS,
 // so the tool's own fetch times out cleanly before the wrapper cap fires.
-const INDICIA_HTTP_TIMEOUT_MS = 18_000;
+//
+// RAISED 18s -> 30s (2026-08-16 telemetry audit). The provider was never failing:
+// direct probes with the production key returned HTTP 200 with real records in
+// 20.5s (/search/intelligence/email) and 13.8s (/search/intelligence/phone), and
+// EVERY logged Indicia failure was our own `timed out` abort at 18.0-18.2s — a
+// 7-day ledger of 4 ok / 16 failed / 1 empty. We were killing successful
+// responses roughly two seconds before they landed.
+//
+// The second-order cost was larger than the lost calls: Indicia is serialized
+// behind a provider mutex, so each dead 18s call also emitted
+// `provider 'indicia' already has a call in-flight` skips for its queued
+// siblings, burning ~60s of run wall-clock to return nothing.
+const INDICIA_HTTP_TIMEOUT_MS = 30_000;
 
 /**
  * The closed set of web-DB corpora the `/web-dbs` endpoint accepts. The endpoint

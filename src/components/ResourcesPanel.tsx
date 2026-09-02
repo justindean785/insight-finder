@@ -1,9 +1,9 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Mail, Globe, User as UserIcon, Network, ShieldAlert, Image as ImgIcon, Tag,
   Copy, CheckCircle2, XCircle, Star, ShieldQuestion, EyeOff, ChevronRight, Radar,
-  AlertTriangle, RotateCcw, Loader2,
+  AlertTriangle, RotateCcw, Loader2, Unlink,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -17,13 +17,29 @@ import {
   groupForKind, GROUP_LABEL, GROUP_ORDER, type Group,
   extractSourceInfo, CACHE_LAYER_LABEL, CACHE_LAYER_CLASS,
 } from "@/lib/intel";
-import { evidenceStatus, EVIDENCE_STATUS_RANK } from "@/lib/evidence-status";
+import { evidenceStatus } from "@/lib/evidence-status";
+import { authorityFor, LEDGER_SORT_RANK } from "@/lib/authority";
+import { isQuarantined, clusterDefaultOpen } from "@/lib/quarantine";
+// THE one number this surface renders. Every figure, meter, range, aria-label
+// and citation below reads `effective` — never `a.confidence`. See
+// src/lib/display-confidence.ts for why five pipelines became one.
+import { displayConfidence, effectiveConfidence, effectiveConfidenceOrZero } from "@/lib/display-confidence";
+import { bandCluster, isProseValue, provenanceOf as provFor } from "@/lib/evidence-bands";
 import { readableSourceLabel } from "@/lib/tool-display";
 import { humanizeArtifactMetadata } from "@/lib/artifact-metadata";
-import { EvidenceStatusBadge, FilterChips, StatusLegend } from "@/components/ui/workspace-primitives";
 import {
-  useReviewStates, REVIEW_CLASS, REVIEW_SHORT, launchRecheckInChat,
-  type ReviewState,
+  harvestedIdentityPreview,
+  isBulkCorpusHarvestArtifact,
+  partitionBulkCorpusRows,
+  type BulkCorpusDisplayRow,
+} from "@/lib/bulk-corpus-display";
+import { FilterChips } from "@/components/ui/workspace-primitives";
+import {
+  AuthorityChip, AuthorityCaveat, AuthorityLegend, AuthoritySpine, RuleLabel, UnderlyingStrength,
+} from "@/components/ui/authority";
+import {
+  useReviewStates, REVIEW_CLASS, REVIEW_SHORT, startRecheck,
+  type ReviewState, type ReviewWriteResult,
 } from "@/lib/review";
 
 const GROUP_ICON: Record<Group, React.ComponentType<{ className?: string }>> = {
@@ -37,13 +53,6 @@ const GROUP_ICON: Record<Group, React.ComponentType<{ className?: string }>> = {
   other: Tag,
 };
 
-// Provenance string shown under a row / in a cluster header.
-function provFor(a: Artifact): string {
-  const meta = (a.metadata ?? {}) as Record<string, unknown>;
-  return typeof meta.platform === "string" ? meta.platform
-    : typeof meta.breach_source === "string" ? `breach · ${meta.breach_source}`
-    : a.source ?? "";
-}
 
 // Title-case a kind for a subheader, with light pluralization.
 function kindHeading(kind: string, n: number): string {
@@ -55,26 +64,78 @@ function kindHeading(kind: string, n: number): string {
   return label + "s";
 }
 
-// Same-kind clusters larger than this collapse by default — they're the source
-// of the "wall of identical rows" (e.g. 11 subdomains, all hackertarget @70%).
+// Same-kind clusters larger than this get a fold control and are counted as a
+// "wall" (e.g. 11 subdomains, all hackertarget @70%). They still OPEN by
+// default — see `clusterDefaultOpen` for why folding by default was reverted —
+// so this is the threshold for offering the fold, never for applying it.
 const CLUSTER_COLLAPSE_THRESHOLD = 4;
 
-export type EvidenceStatusFilter = "all" | "strong" | "review" | "weak" | "excluded";
+/**
+ * Reserved key inside the per-case fold preferences for the board-wide default.
+ *
+ * Cluster keys are `${group}:${kind}` and therefore always contain a colon, so a
+ * colon-free key cannot collide with one. Storing the fold-all choice in the
+ * same boolean map means it persists per case through the existing reader and
+ * writer with no schema change and no migration.
+ */
+const FOLD_ALL_KEY = "*";
+
+/**
+ * The analyst's own fold/unfold choices, remembered per case.
+ *
+ * Stores ONLY which cluster headers are open — booleans keyed by group:kind.
+ * No artifact value, selector or reason is written to storage: this is a UI
+ * preference, and case evidence does not belong in localStorage.
+ * Fails silently and returns {} when storage is unavailable (private mode,
+ * quota, disabled) — a preference that cannot be read is not an error worth
+ * breaking the Evidence board over.
+ */
+const CLUSTER_PREFS_KEY = (threadId: string) => `proximity:evidence-clusters:${threadId}`;
+
+function readClusterPrefs(threadId: string): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(CLUSTER_PREFS_KEY(threadId));
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, boolean> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === "boolean") out[k] = v;
+    }
+    return out;
+  } catch { return {}; }
+}
+
+function writeClusterPrefs(threadId: string, prefs: Record<string, boolean>): void {
+  try { localStorage.setItem(CLUSTER_PREFS_KEY(threadId), JSON.stringify(prefs)); } catch { /* preference only */ }
+}
+
+export type EvidenceStatusFilter = "all" | "strong" | "review" | "quarantined" | "weak" | "excluded";
 export type EvidenceSortMode = "strength" | "confidence" | "newest";
 
-// Which display statuses each quick-filter admits.
+/**
+ * Which AUTHORITY states each quick-filter admits.
+ *
+ * `quarantined` is its own bucket, not folded into "Needs review". Those two
+ * mean different things and need different work: a review row needs another
+ * source, a quarantined row needs a linkage decision. Merging them is how 104
+ * quarantined artifacts sat in production looking like ordinary weak evidence.
+ */
 const STATUS_FILTER_GROUPS: Record<EvidenceStatusFilter, Set<string> | null> = {
   all: null,
-  strong: new Set(["verified", "verified_infrastructure", "probable"]),
-  review: new Set(["needs_corroboration", "manual_review", "contradicted"]),
-  weak: new Set(["lead", "shared_infrastructure"]),
-  excluded: new Set(["rejected"]),
+  strong: new Set(["verified", "infrastructure", "probable"]),
+  review: new Set(["review", "conflict"]),
+  quarantined: new Set(["quarantined"]),
+  weak: new Set(["weak"]),
+  excluded: new Set(["failed"]),
 };
 
 function ArtifactsList({
-  items, onSelect, review, statusFilter, sortMode, loading, error, onRetry,
+  items, onSelect, review, statusFilter, sortMode, loading, error, onRetry, threadId,
 }: {
   items: Artifact[];
+  /** Scopes the remembered fold/unfold choices to this case. */
+  threadId: string;
   onSelect: (a: Artifact) => void;
   review: ReturnType<typeof useReviewStates>;
   statusFilter: EvidenceStatusFilter;
@@ -83,16 +144,30 @@ function ArtifactsList({
   error?: boolean;
   onRetry?: () => void;
 }) {
-  // Track which kind-clusters the user has manually toggled open/closed.
-  // Keyed by `${group}:${kind}`; undefined = use the default (collapsed when big).
-  const [openClusters, setOpenClusters] = useState<Record<string, boolean>>({});
+  // Track which kind-clusters the analyst has manually toggled open/closed.
+  // Keyed by `${group}:${kind}`; undefined = use the default (open).
+  //
+  // PERSISTED PER CASE. This was component state, so every fold and unfold died
+  // on unmount and the board reset on every visit — the "every single time" half
+  // of the complaint. An analyst's decision about their own case survives the
+  // remount now; only their own toggles are stored, never evidence.
+  const [openClusters, setOpenClusters] = useState<Record<string, boolean>>(
+    () => readClusterPrefs(threadId),
+  );
+  const setClusters = useCallback(
+    (next: Record<string, boolean>) => {
+      setOpenClusters(next);
+      writeClusterPrefs(threadId, next);
+    },
+    [threadId],
+  );
 
   // Apply the status quick-filter, then bucket Group → kind → artifacts and sort
   // each kind by the chosen mode so the strongest evidence surfaces first.
   // Not memoized on `review` so toggling a review state re-filters immediately.
   const allow = STATUS_FILTER_GROUPS[statusFilter];
   const filtered = allow
-    ? items.filter((a) => allow.has(evidenceStatus(a, review.get(a.id)).status))
+    ? items.filter((a) => allow.has(authorityFor(a, review.get(a.id)).state))
     : items;
 
   const grouped = useMemo(() => {
@@ -103,15 +178,15 @@ function ArtifactsList({
     }
     const conf = (a: Artifact) => {
       const fp = ((a.metadata ?? {}) as Record<string, unknown>).false_positive === true;
-      return fp ? -1 : (a.confidence ?? 0);
+      return fp ? -1 : effectiveConfidenceOrZero(a);
     };
     const cmp = (a: Artifact, b: Artifact) => {
       if (sortMode === "newest") {
         return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
       }
       if (sortMode === "strength") {
-        const ra = EVIDENCE_STATUS_RANK[evidenceStatus(a, review.get(a.id)).status];
-        const rb = EVIDENCE_STATUS_RANK[evidenceStatus(b, review.get(b.id)).status];
+        const ra = LEDGER_SORT_RANK[authorityFor(a, review.get(a.id)).state];
+        const rb = LEDGER_SORT_RANK[authorityFor(b, review.get(b.id)).state];
         if (ra !== rb) return ra - rb;
         return conf(b) - conf(a);
       }
@@ -121,15 +196,18 @@ function ArtifactsList({
       for (const k of Object.keys(byGroup[g])) byGroup[g][k].sort(cmp);
     }
     return byGroup;
+    // `review.revision`: with the "All" filter `filtered === items` (same
+    // reference), so a verdict change never re-ran this memo and the strength
+    // ordering stayed stale until something else re-rendered the list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtered, sortMode, statusFilter]);
+  }, [filtered, sortMode, statusFilter, review.revision]);
 
   // A failed SELECT (transient DB/network) must be visibly distinct from an
   // empty case, with a retry — otherwise a dropped query reads as "nothing found".
   if (error && items.length === 0) {
     return (
       <div className="p-3 sm:p-5">
-        <div className="flex flex-col items-center gap-4 rounded-2xl border border-destructive/25 bg-[linear-gradient(180deg,rgba(70,20,20,0.22),rgba(12,8,8,0.9))] px-6 py-12 text-center shadow-[0_34px_110px_-70px_rgba(0,0,0,0.95)]">
+        <div className="flex flex-col items-center gap-4 rounded-2xl border border-destructive/25 bg-[linear-gradient(180deg,hsl(var(--danger-muted)/0.55),hsl(var(--surface-1)/0.92))] px-6 py-12 text-center shadow-[0_34px_110px_-70px_rgba(0,0,0,0.95)]">
           <div className="grid h-11 w-11 place-items-center rounded-xl border border-destructive/35 bg-destructive/10 text-destructive">
             <AlertTriangle className="h-[18px] w-[18px]" strokeWidth={1.75} />
           </div>
@@ -166,7 +244,7 @@ function ArtifactsList({
   if (items.length === 0) {
     return (
       <div className="p-3 sm:p-5">
-        <div className="overflow-hidden rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(17,19,23,0.98),rgba(5,6,8,0.98))] shadow-[0_34px_110px_-70px_rgba(0,0,0,0.95)]">
+        <div className="overflow-hidden rounded-2xl border border-white/10 bg-[linear-gradient(180deg,hsl(var(--surface-2)/0.98),hsl(var(--surface-0)/0.98))] shadow-[0_34px_110px_-70px_rgba(0,0,0,0.95)]">
           <div className="border-b border-white/8 px-4 sm:px-5 py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex min-w-0 items-center gap-3.5">
               {/* radar node — "sensor acquiring contact" */}
@@ -253,119 +331,282 @@ function ArtifactsList({
     );
   }
 
+  // How many clusters are big enough to be worth a fold control. The board-wide
+  // fold is offered only when there is more than one — a single foldable cluster
+  // already has its own header toggle, and a second control for it is clutter.
+  let foldableClusters = 0;
+  for (const g of Object.keys(grouped) as Group[]) {
+    for (const k of Object.keys(grouped[g])) {
+      if (grouped[g][k].length > CLUSTER_COLLAPSE_THRESHOLD) foldableClusters++;
+    }
+  }
+  const allFolded = openClusters[FOLD_ALL_KEY] === false;
+
   return (
-    <div className="px-2 py-3 space-y-5">
+    <div className="ledger">
+      {/* One column grid for the WHOLE board, declared once, so value / status /
+          source / confidence line up down every section. Column alignment is the
+          single biggest scanning win on a dense case: without it, reading 100
+          artifacts means reading 100 individually-laid-out rows. */}
+      {foldableClusters > 1 && (
+        <div className="flex items-center justify-end gap-2 px-2.5 pt-1.5">
+          <span className="text-micro text-muted-foreground/55 tabular-nums">
+            {foldableClusters} large groups
+          </span>
+          <button
+            type="button"
+            onClick={() => setClusters(allFolded ? {} : { [FOLD_ALL_KEY]: false })}
+            aria-pressed={allFolded}
+            className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.035] px-2 py-0.5 text-micro text-muted-foreground transition-colors hover:bg-white/[0.07] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <ChevronRight className={cn("h-3 w-3 transition-transform", !allFolded && "rotate-90")} aria-hidden />
+            {allFolded ? "Unfold all" : "Fold all"}
+          </button>
+        </div>
+      )}
+      <div className="ledger-head" role="presentation">
+        <span data-ledger-col="value">Evidence</span>
+        <span data-ledger-col="status">Authority</span>
+        <span data-ledger-col="source">Source</span>
+        <span data-ledger-col="confidence" className="text-right">Conf.</span>
+      </div>
       {GROUP_ORDER.filter((g) => grouped[g] && Object.keys(grouped[g]).length).map((g) => {
         const Icon = GROUP_ICON[g];
         const kinds = Object.keys(grouped[g]);
         const all = kinds.flatMap((k) => grouped[g][k]);
-        // Per-group severity breakdown for the header summary.
+        // Per-group breakdown for the section rule. Quarantine gets its own
+        // count: it is the one condition an analyst must not discover by
+        // scrolling, because a quarantined row that goes unnoticed is precisely
+        // how a same-name stranger enters a case.
         let failedC = 0;
+        let quarantinedC = 0;
         for (const a of all) {
           const meta = (a.metadata ?? {}) as Record<string, unknown>;
           if (meta.false_positive === true) failedC++;
+          if (isQuarantined(meta)) quarantinedC++;
         }
         // Order kinds by their strongest member so high-value kinds lead.
-        kinds.sort((a, b) => (grouped[g][b][0]?.confidence ?? 0) - (grouped[g][a][0]?.confidence ?? 0));
+        kinds.sort((a, b) => effectiveConfidenceOrZero(grouped[g][b][0]) - effectiveConfidenceOrZero(grouped[g][a][0]));
         return (
-          <div
-            key={g}
-            className="rounded-2xl border border-white/8 bg-[linear-gradient(165deg,rgba(255,255,255,0.05),rgba(255,255,255,0.018)_48%,rgba(255,255,255,0.008))] p-2.5 shadow-[0_22px_80px_-52px_rgba(0,0,0,0.96)] backdrop-blur-xl"
-          >
-            {/* Group header: quiet label · count; only a flag count when something is flagged */}
-            <div className="flex items-center gap-2 px-2 pb-1.5">
-              <Icon
-                className={cn(
-                  "h-3 w-3 shrink-0",
-                  failedC > 0 ? "text-destructive" : "text-muted-foreground/80",
-                )}
-              />
-              <span
-                className="text-eyebrow font-semibold uppercase tracking-[0.18em]"
-                style={{ color: failedC > 0 ? "hsl(var(--danger))" : "hsl(var(--foreground) / 0.62)" }}
-              >
+          <section key={g} aria-label={GROUP_LABEL[g]}>
+            <RuleLabel
+              right={
+                <span className="flex items-center gap-2.5">
+                  {quarantinedC > 0 && (
+                    <span
+                      className="inline-flex items-center gap-1 text-micro tabular-nums text-[hsl(var(--authority-quarantine))]"
+                      title="Recorded, disclosed, and withheld from identity — linkage to the subject is unproven."
+                    >
+                      <Unlink className="h-3 w-3" strokeWidth={2} aria-hidden />
+                      {quarantinedC} quarantined
+                    </span>
+                  )}
+                  {failedC > 0 && (
+                    <span className="text-micro tabular-nums text-destructive">{failedC} flagged</span>
+                  )}
+                  <span className="text-micro tabular-nums text-muted-foreground/70">{all.length}</span>
+                </span>
+              }
+            >
+              <span className="inline-flex items-center gap-2">
+                <Icon className="h-3 w-3 shrink-0 text-muted-foreground/70" aria-hidden />
                 {GROUP_LABEL[g]}
               </span>
-              <span className="text-data tabular-nums text-muted-foreground/80">· {all.length}</span>
-              {failedC > 0 && (
-                <span className="ml-auto text-micro tabular-nums" style={{ color: "hsl(var(--danger))" }}>
-                  {failedC} flagged
-                </span>
-              )}
-            </div>
+            </RuleLabel>
 
-            <div className="space-y-0.5">
-              {kinds.map((kind) => {
-                const list = grouped[g][kind];
-                // A cluster shares one provenance when every row resolves to the
-                // same source — then we show it once in the subheader and drop
-                // the repeated per-row line.
-                const provs = new Set(list.map(provFor).filter(Boolean));
-                const uniformProv = provs.size === 1 ? [...provs][0] : null;
-                const collapsible = list.length > CLUSTER_COLLAPSE_THRESHOLD;
-                const key = `${g}:${kind}`;
-                const open = openClusters[key] ?? !collapsible;
-                // Confidence range across the cluster, for the collapsed summary.
-                const confs = list.map((a) => a.confidence).filter((c): c is number => c != null);
-                const lo = confs.length ? Math.min(...confs) : null;
-                const hi = confs.length ? Math.max(...confs) : null;
-                const rangeColor = (hi ?? 0) >= 70 ? "hsl(var(--confidence-high))"
-                  : (hi ?? 0) >= 50 ? "hsl(var(--confidence-mid))" : "hsl(var(--confidence-low))";
-                return (
-                  <div key={kind} className="rounded-xl border border-white/6 bg-white/[0.015]">
-                    {/* Kind subheader — clickable when the cluster is collapsible */}
-                    <div
-                      role={collapsible ? "button" : undefined}
-                      tabIndex={collapsible ? 0 : undefined}
-                      aria-expanded={collapsible ? open : undefined}
-                      onClick={collapsible ? () => setOpenClusters((p) => ({ ...p, [key]: !open })) : undefined}
-                      onKeyDown={collapsible ? (e) => {
-                        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpenClusters((p) => ({ ...p, [key]: !open })); }
-                      } : undefined}
-                      className={cn(
-                        "flex items-center gap-1.5 px-2 py-1 rounded-md",
-                        collapsible && "cursor-pointer hover:bg-white/[0.03] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                      )}
-                    >
-                      {collapsible ? (
-                        <ChevronRight className={cn("h-3 w-3 shrink-0 text-muted-foreground/70 transition-transform", open && "rotate-90")} />
-                      ) : (
-                        <span className="w-3 shrink-0" />
-                      )}
-                      <span className="text-data font-medium text-foreground/75">{kindHeading(kind, list.length)}</span>
-                      <span className="text-data tabular-nums text-muted-foreground/70">· {list.length}</span>
-                      {uniformProv && (
-                        <span className="truncate font-mono text-micro text-muted-foreground/60" title={uniformProv}>{readableSourceLabel(uniformProv)}</span>
-                      )}
-                      {/* Singletons show their score on the row itself; only
-                          show a subheader figure for multi-row clusters. */}
-                      {lo != null && hi != null && list.length > 1 && (
-                        <span className="ml-auto text-data font-semibold tabular-nums" style={{ color: rangeColor }}>
-                          {lo === hi ? `${hi}%` : `${lo}–${hi}%`}
-                        </span>
-                      )}
-                    </div>
-
-                    {open && (
-                      <div className="divide-y divide-border-subtle/35 pl-2 py-1">
-                        {list.map((a) => (
-                          <ArtifactRow
-                            key={a.id}
-                            a={a}
-                            onSelect={onSelect}
-                            review={review}
-                            hideProv={uniformProv != null}
-                          />
-                        ))}
-                      </div>
+            {kinds.map((kind) => {
+              const list = grouped[g][kind];
+              // A cluster shares one provenance when every row resolves to the
+              // same source — then we show it once in the subheader and drop
+              // the repeated per-row line.
+              const provs = new Set(list.map(provFor).filter(Boolean));
+              const uniformProv = provs.size === 1 ? [...provs][0] : null;
+              // A crowded cluster drawn from several harvests reads as one
+              // undifferentiated wall; banding names the harvests instead. Not
+              // attempted when the cluster is already single-provenance —
+              // `uniformProv` handles that case better, with no extra row.
+              const bands = uniformProv ? null : bandCluster(list);
+              const collapsible = list.length > CLUSTER_COLLAPSE_THRESHOLD;
+              const key = `${g}:${kind}`;
+              const kindQuarantined = list.filter((a) => isQuarantined(a.metadata)).length;
+              // Precedence: this cluster's own toggle, then the analyst's
+              // board-wide fold, then the policy default (always open).
+              const open = openClusters[key]
+                ?? openClusters[FOLD_ALL_KEY]
+                ?? clusterDefaultOpen(collapsible, kindQuarantined);
+              // Confidence range across the cluster, for the collapsed summary.
+              const confs = list.map((a) => effectiveConfidence(a)).filter((c): c is number => c != null);
+              const lo = confs.length ? Math.min(...confs) : null;
+              const hi = confs.length ? Math.max(...confs) : null;
+              // Ordinal INK, not hue — see the confColor note on the row.
+              const rangeColor = "hsl(var(--muted-foreground) / 0.85)";
+              return (
+                <div key={kind}>
+                  {/* Kind subheader — clickable when the cluster is collapsible */}
+                  <div
+                    role={collapsible ? "button" : undefined}
+                    tabIndex={collapsible ? 0 : undefined}
+                    aria-expanded={collapsible ? open : undefined}
+                    onClick={collapsible ? () => setClusters({ ...openClusters, [key]: !open }) : undefined}
+                    onKeyDown={collapsible ? (e) => {
+                      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setClusters({ ...openClusters, [key]: !open }); }
+                    } : undefined}
+                    className={cn(
+                      "flex items-center gap-1.5 border-b border-border-subtle/60 px-2.5 py-1",
+                      collapsible && "cursor-pointer hover:bg-white/[0.028] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
+                    )}
+                  >
+                    {collapsible ? (
+                      <ChevronRight className={cn("h-3 w-3 shrink-0 text-muted-foreground/70 transition-transform", open && "rotate-90")} />
+                    ) : (
+                      <span className="w-3 shrink-0" />
+                    )}
+                    <span className="text-data font-medium text-foreground/75">{kindHeading(kind, list.length)}</span>
+                    <span className="text-data tabular-nums text-muted-foreground/70">· {list.length}</span>
+                    {kindQuarantined > 0 && !open && (
+                      <span className="inline-flex items-center gap-1 text-micro text-[hsl(var(--authority-quarantine))]">
+                        <Unlink className="h-3 w-3" strokeWidth={2} aria-hidden />
+                        {kindQuarantined} quarantined
+                      </span>
+                    )}
+                    {uniformProv && (
+                      <span className="truncate font-mono text-micro text-muted-foreground/60" title={uniformProv}>{readableSourceLabel(uniformProv)}</span>
+                    )}
+                    {/* Singletons show their score on the row itself; only
+                        show a subheader figure for multi-row clusters. */}
+                    {lo != null && hi != null && list.length > 1 && (
+                      <span className="ml-auto text-data font-semibold tabular-nums" style={{ color: rangeColor }}>
+                        {lo === hi ? `${hi}%` : `${lo}–${hi}%`}
+                      </span>
                     )}
                   </div>
-                );
-              })}
-            </div>
-          </div>
+
+                  {open && bands && bands.map((band) => {
+                    const bandQuarantined = band.rows.filter((a) => isQuarantined(a.metadata)).length;
+                    return (
+                      <div key={band.prov || "\u2014"}>
+                        {/* Band header. Deliberately NOT interactive: bands are
+                            structure, not a second place to hide rows. It states
+                            what this run of rows came from, how many there are,
+                            and their spread — the three questions the repeated
+                            per-row source label was answering one row at a time. */}
+                        <div className="flex items-center gap-1.5 bg-white/[0.012] px-2.5 py-0.5 pl-7">
+                          <span className="h-px w-2 shrink-0 bg-white/15" aria-hidden />
+                          <span
+                            className="truncate font-mono text-micro text-muted-foreground/75"
+                            title={band.prov || undefined}
+                          >
+                            {band.prov ? readableSourceLabel(band.prov) : "source not recorded"}
+                          </span>
+                          <span className="shrink-0 text-micro tabular-nums text-muted-foreground/55">
+                            · {band.rows.length}
+                          </span>
+                          {bandQuarantined > 0 && (
+                            <span className="inline-flex shrink-0 items-center gap-1 text-micro text-[hsl(var(--authority-quarantine))]">
+                              <Unlink className="h-3 w-3" strokeWidth={2} aria-hidden />
+                              {bandQuarantined}
+                            </span>
+                          )}
+                          {band.lo != null && band.hi != null && band.rows.length > 1 && (
+                            <span className="ml-auto shrink-0 text-micro tabular-nums text-muted-foreground/55">
+                              {band.lo === band.hi ? `${band.hi}%` : `${band.lo}\u2013${band.hi}%`}
+                            </span>
+                          )}
+                        </div>
+                        {renderDisplayRows(partitionBulkCorpusRows(band.rows), onSelect, review, true)}
+                      </div>
+                    );
+                  })}
+
+                  {open && !bands && renderDisplayRows(partitionBulkCorpusRows(list), onSelect, review, uniformProv != null)}
+                </div>
+              );
+            })}
+          </section>
         );
       })}
+    </div>
+  );
+}
+
+function renderDisplayRows(
+  rows: BulkCorpusDisplayRow[],
+  onSelect: (a: Artifact) => void,
+  review: ReturnType<typeof useReviewStates>,
+  hideProv: boolean,
+) {
+  return rows.map((row) => {
+    if (row.type === "single") {
+      return (
+        <ArtifactRow
+          key={row.artifact.id}
+          a={row.artifact}
+          onSelect={onSelect}
+          review={review}
+          hideProv={hideProv}
+        />
+      );
+    }
+    return (
+      <BulkCorpusGroupRow
+        key={row.key}
+        group={row}
+        onSelect={onSelect}
+        review={review}
+        hideProv={hideProv}
+      />
+    );
+  });
+}
+
+function BulkCorpusGroupRow({
+  group, onSelect, review, hideProv,
+}: {
+  group: Extract<BulkCorpusDisplayRow, { type: "bulk_group" }>;
+  onSelect: (a: Artifact) => void;
+  review: ReturnType<typeof useReviewStates>;
+  hideProv: boolean;
+}) {
+  const lead = group.artifacts[0];
+  const authority = authorityFor(lead, review.get(lead.id));
+  const preview = group.artifacts.slice(0, 4).map((a) => a.value).join(" · ");
+  const more = group.artifacts.length - 4;
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => onSelect(lead)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(lead); }
+      }}
+      data-density-row
+      className="group/row ledger-row cursor-pointer text-left"
+      aria-label={`${group.artifacts.length} bulk-corpus identities. ${group.reason}`}
+    >
+      <AuthoritySpine state={authority.state} />
+      <span className="min-w-0" data-ledger-col="value">
+        <span className="flex items-start gap-1.5">
+          <span className="text-[12.5px] leading-[1.45] text-foreground/90">
+            <span className="font-medium">{group.artifacts.length} bulk-corpus identities</span>
+            {preview && (
+              <span className="mt-0.5 block truncate font-mono text-data text-muted-foreground/80">
+                {preview}{more > 0 ? ` · +${more} more` : ""}
+              </span>
+            )}
+          </span>
+        </span>
+        <AuthorityCaveat view={authority} className="mt-0.5 line-clamp-2" />
+      </span>
+      <span className="min-w-0" data-ledger-col="status">
+        <AuthorityChip view={authority} />
+        <span className="mt-0.5 truncate text-eyebrow text-muted-foreground/70">{authority.basis}</span>
+      </span>
+      <span className="min-w-0 truncate font-mono text-eyebrow text-muted-foreground/60" data-ledger-col="source" title={group.source ?? undefined}>
+        {!hideProv && group.source ? readableSourceLabel(group.source) : ""}
+      </span>
+      <span className="flex shrink-0 items-center justify-end gap-0.5" data-ledger-col="confidence">
+        <span className="conf-figure text-[hsl(var(--authority-quarantine))]">—</span>
+      </span>
     </div>
   );
 }
@@ -383,13 +624,23 @@ function ArtifactRow({
   const sensitive = meta.possible_minor === true || meta.minor_warning === true;
   const rState = review.get(a.id);
   const dismissed = rState === "dismissed";
-  const conf = a.confidence ?? 0;
-  const confColor =
-    conf >= 70 ? "hsl(var(--confidence-high))" :
-    conf >= 50 ? "hsl(var(--confidence-mid))" :
-    "hsl(var(--confidence-low))";
+  const shown = displayConfidence(a);
+  const conf = shown.effective ?? 0;
+  // A confidence is a MAGNITUDE, and magnitude is carried by the length of the
+  // hairline below the numeral — never by the numeral's colour. This used to be
+  // a three-step by-value ramp (>=70 green, >=50 amber, else red), which is why
+  // the Conf. column read as a column of verdicts: a single-source 38 rendered
+  // in alarm red beside a corroborated 88 in confirmation green, when neither
+  // colour was saying anything the AUTHORITY chip two columns left had not
+  // already said properly. Ink is now constant; only quarantine dims it,
+  // because an unlinked row's number genuinely is not about this subject.
+  const confColor = isQuarantined(a.metadata)
+    ? "hsl(var(--authority-quarantine))"
+    : "hsl(var(--foreground) / 0.92)";
   const prov = provFor(a);
-  const status = evidenceStatus(a, rState);
+  const prose = isProseValue(a.value) || isBulkCorpusHarvestArtifact(a);
+  const bulkPreview = isBulkCorpusHarvestArtifact(a) ? harvestedIdentityPreview(a, 4) : [];
+  const authority = authorityFor(a, rState);
   return (
     <HoverCard openDelay={250} closeDelay={80}>
       <HoverCardTrigger asChild>
@@ -400,67 +651,115 @@ function ArtifactRow({
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(a); }
           }}
+          // The row's accessible name carries BOTH axes plus the caveat, so a
+          // screen-reader user gets the quarantine disclosure from the row
+          // itself rather than having to open the detail drawer for it.
+          aria-label={[
+            `${a.kind} ${a.value}`,
+            authority.label,
+            authority.caveat ?? "",
+            shown.effective != null ? `${conf}% confidence` : "",
+          ].filter(Boolean).join(". ")}
           data-density-row
           className={cn(
-            "group/row flex w-full cursor-pointer items-center gap-2.5 rounded-xl border border-transparent px-2 py-2 text-left transition-all duration-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-            fp ? "hover:bg-danger-muted/30" : "hover:bg-white/[0.04]",
-            !fp && "hover:border-white/10 hover:shadow-[0_10px_30px_-24px_rgba(0,0,0,0.95)]",
+            "group/row ledger-row cursor-pointer text-left",
             dismissed && "opacity-50",
           )}
         >
-          <span className="min-w-0 flex-1">
-            <span className="flex items-center gap-1.5">
-              {rState === "confirmed" && <CheckCircle2 className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-high))]" />}
-              {rState === "key" && <Star className="h-3 w-3 shrink-0 text-primary" />}
-              {rState === "recheck" && <ShieldQuestion className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-mid))]" />}
-              {rState === "dismissed" && <EyeOff className="h-3 w-3 shrink-0 text-muted-foreground" />}
-              {fp && <XCircle className="h-3 w-3 shrink-0 text-destructive" />}
-              {sensitive && <ShieldAlert className="h-3 w-3 shrink-0 text-destructive" />}
-              <span className={cn("truncate text-meta text-foreground/95", fp && "line-through opacity-70")} title={a.value}>
+          <AuthoritySpine state={authority.state} />
+
+          {/* Value +, when there is one, the recorded reason it is not stronger. */}
+          <span className="min-w-0" data-ledger-col="value">
+            <span className={cn("flex gap-1.5", prose ? "items-start" : "items-center")}>
+              {rState === "confirmed" && <CheckCircle2 className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-high))]" aria-hidden />}
+              {rState === "key" && <Star className="h-3 w-3 shrink-0 text-primary" aria-hidden />}
+              {rState === "recheck" && <ShieldQuestion className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-mid))]" aria-hidden />}
+              {rState === "dismissed" && <EyeOff className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />}
+              {fp && <XCircle className="h-3 w-3 shrink-0 text-destructive" aria-hidden />}
+              {sensitive && <ShieldAlert className="h-3 w-3 shrink-0 text-destructive" aria-hidden />}
+              {/* A selector gets the mono, one-line, truncated treatment this
+                  column was built for. A SENTENCE does not: the extractor writes
+                  whole findings into `value` ("CONTRADICTION: … Carlos Morales
+                  appears in ZERO of 31 records"), and truncating the most
+                  important row in a case to forty monospace characters is how
+                  it went unread. Prose wraps to two lines in the reading face. */}
+              <span
+                className={cn(
+                  prose
+                    ? "text-[12.5px] leading-[1.45] text-foreground/90 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden"
+                    : "mono-value truncate text-data text-foreground/95",
+                  fp && "line-through opacity-70",
+                )}
+                title={a.value}
+              >
                 {a.value}
               </span>
-            </span>
-            <span className="mt-1 flex items-center gap-1.5 flex-wrap">
-              <EvidenceStatusBadge
-                status={status.status}
-                label={status.label}
-                tone={status.tone}
-                hint={status.hint}
-              />
-              <span className="truncate text-data text-muted-foreground/75" title={status.basis}>
-                {status.basis}
-              </span>
-              {!hideProv && prov && (
-                <span className="truncate font-mono text-data text-muted-foreground/55" title={prov}>
-                  · {readableSourceLabel(prov)}
+              {bulkPreview.length > 0 && (
+                <span className="mt-0.5 block truncate font-mono text-data text-muted-foreground/80">
+                  {bulkPreview.join(" · ")}
                 </span>
               )}
+              <button
+                type="button"
+                aria-label={`Copy ${a.value}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigator.clipboard.writeText(a.value).then(
+                    () => toast.success("Copied"),
+                    () => toast.error("Copy failed"),
+                  );
+                }}
+                // Always rendered, dimmed until hover/focus rather than
+                // `opacity-0`: a copy control an analyst has to discover by
+                // hovering is a control most analysts never find, and copying a
+                // selector is the single most frequent action on this board.
+                className="-my-1 shrink-0 rounded p-1 text-muted-foreground/45 transition-colors hover:bg-surface-3 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/row:text-muted-foreground"
+              >
+                <Copy className="h-3 w-3" aria-hidden />
+              </button>
+            </span>
+            <AuthorityCaveat view={authority} className="mt-0.5" />
+          </span>
+
+          {/* Authority — chip, then BOTH axes on one sub-line: how strong the
+              observation is, and what it rests on. Keeping the strength here
+              rather than beside the value stops it competing with the recorded
+              reason for attention in the value column. */}
+          <span className="min-w-0" data-ledger-col="status">
+            <AuthorityChip view={authority} />
+            <span
+              className="mt-0.5 flex items-center gap-1 truncate text-eyebrow text-muted-foreground/70"
+              title={authority.state === "quarantined" ? `${authority.underlyingLabel} · ${authority.basis}` : authority.basis}
+            >
+              <UnderlyingStrength view={authority} />
+              {authority.state === "quarantined" && <span aria-hidden>·</span>}
+              <span className="truncate">{authority.basis}</span>
             </span>
           </span>
-          <button
-            type="button"
-            aria-label={`Copy ${a.value}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              navigator.clipboard.writeText(a.value).then(
-                () => toast.success("Copied"),
-                () => toast.error("Copy failed"),
-              );
-            }}
-            className="-m-2 shrink-0 rounded p-2 text-muted-foreground/60 opacity-0 transition-opacity hover:text-foreground hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/row:opacity-100"
-          >
-            <Copy className="h-3.5 w-3.5" />
-          </button>
-          {a.confidence != null && (
-            <span className="flex shrink-0 items-center gap-1">
-              <span className="w-9 text-right text-data font-semibold tabular-nums" style={{ color: confColor }}>{conf}%</span>
-              <ConfidenceExplain
-                artifact={a}
-                review={rState}
-                className="opacity-0 transition-opacity focus-visible:opacity-100 group-hover/row:opacity-100 data-[state=open]:opacity-100"
-              />
-            </span>
-          )}
+
+          <span className="min-w-0 truncate font-mono text-eyebrow text-muted-foreground/60" data-ledger-col="source" title={prov || undefined}>
+            {!hideProv && prov ? readableSourceLabel(prov) : ""}
+          </span>
+
+          <span className="flex shrink-0 items-center justify-end gap-0.5" data-ledger-col="confidence">
+            {shown.effective != null && (
+              <>
+                <span className="flex flex-col items-end gap-1">
+                  <span className="conf-figure" style={{ color: confColor }}>{conf}</span>
+                  {/* The magnitude. A 2px rule whose LENGTH is the score — the
+                      one honest way to show a number at a glance. */}
+                  <span className="conf-rule" aria-hidden>
+                    <i style={{ width: `${Math.max(3, Math.min(100, conf))}%` }} data-authority={authority.state} />
+                  </span>
+                </span>
+                <ConfidenceExplain
+                  artifact={a}
+                  review={rState}
+                  className="text-muted-foreground/45 transition-colors group-hover/row:text-muted-foreground data-[state=open]:text-foreground"
+                />
+              </>
+            )}
+          </span>
         </div>
       </HoverCardTrigger>
       <HoverCardContent side="left" align="start" className="w-72 overflow-hidden p-0 border-border-subtle">
@@ -477,7 +776,7 @@ function ArtifactDrawer({
   onClose: () => void;
   onChanged: (a: Artifact) => void;
   reviewGet: (id: string) => ReviewState;
-  reviewSet: (id: string, s: ReviewState | null, ctx?: { value?: string; kind?: string; confidence?: number; source?: string }) => void;
+  reviewSet: (id: string, s: ReviewState | null, ctx?: { value?: string; kind?: string; confidence?: number; source?: string }) => Promise<ReviewWriteResult>;
   threadId: string;
 }) {
   // (component body unchanged below)
@@ -502,20 +801,33 @@ function ArtifactDrawerInner({
   onClose: () => void;
   onChanged: (a: Artifact) => void;
   reviewGet: (id: string) => ReviewState;
-  reviewSet: (id: string, s: ReviewState | null, ctx?: { value?: string; kind?: string; confidence?: number; source?: string }) => void;
+  reviewSet: (id: string, s: ReviewState | null, ctx?: { value?: string; kind?: string; confidence?: number; source?: string }) => Promise<ReviewWriteResult>;
   threadId: string;
 }) {
   const meta = (artifact.metadata ?? {}) as Record<string, unknown>;
+  // Stored, cap, effective and every applicable ceiling — the drawer is the one
+  // surface that shows more than the effective number, because "why is it 60 and
+  // not 88" is exactly the question this panel exists to answer.
+  const shownArtifact = displayConfidence(artifact);
   const metaRows = humanizeArtifactMetadata(meta);
   const falsePositive = meta.false_positive === true;
   const rState = reviewGet(artifact.id);
   // Ground-truth context passed to every review action so feedback events carry
   // confidence_before/source (else they're dropped from the by-band calibration).
-  const rctx = { value: artifact.value, kind: artifact.kind, confidence: artifact.confidence, source: artifact.source };
+  // `confidence` here becomes `analyst_feedback_events.confidence_before` — the
+  // model's PREDICTION AT THE MOMENT OF THE DECISION. That is by definition the
+  // number the analyst was looking at, so it is the effective value, not the raw
+  // column. Logging raw would make every calibration band measure a figure the
+  // product never showed.
+  const rctx = { value: artifact.value, kind: artifact.kind, confidence: shownArtifact.effective ?? undefined, source: artifact.source };
   const src = extractSourceInfo(artifact);
+  const drawerAuthority = authorityFor(artifact, rState);
   const review = useReviewStates(threadId);
   const [noteDraft, setNoteDraft] = useState(review.getNote(artifact.id));
-  const [saving, setSaving] = useState(false);
+  // `onChanged` used to feed the metadata false-positive toggle, which is gone
+  // (the review verdict is the one False contract). The prop stays on the
+  // drawer's public shape for the local-update path callers already wire.
+  void onChanged;
 
   const copy = (text: string, label: string) => {
     navigator.clipboard.writeText(text).then(
@@ -524,26 +836,7 @@ function ArtifactDrawerInner({
     );
   };
 
-  const updateMeta = async (patch: Record<string, unknown>) => {
-    if (saving) return;
-    setSaving(true);
-    try {
-      const next = { ...meta, ...patch };
-      const { data, error } = await supabase
-        .from("artifacts")
-        .update({ metadata: next as never })
-        .eq("id", artifact.id)
-        .select("id,kind,value,confidence,source,created_at,metadata")
-        .maybeSingle();
-      if (error || !data) return toast.error(error?.message ?? "Update failed");
-      onChanged(data as Artifact);
-      toast.success("Updated");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const citation = `\`${artifact.value}\` (${artifact.kind}${artifact.source ? `, via ${artifact.source}` : ""}${artifact.confidence != null ? `, ${artifact.confidence}%` : ""})`;
+  const citation = `\`${artifact.value}\` (${artifact.kind}${artifact.source ? `, via ${artifact.source}` : ""}${shownArtifact.effective != null ? `, ${shownArtifact.effective}%` : ""})`;
 
   return (
     <Sheet open onOpenChange={(o) => !o && onClose()}>
@@ -562,9 +855,9 @@ function ArtifactDrawerInner({
             <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 font-mono text-eyebrow uppercase tracking-[0.14em] text-muted-foreground">
               {artifact.kind}
             </span>
-            {artifact.confidence != null && (
+            {shownArtifact.effective != null && (
               <span className="rounded-md border border-[hsl(var(--confidence-mid)/0.35)] bg-[hsl(var(--confidence-mid)/0.1)] px-2 py-1 font-mono text-eyebrow uppercase tracking-[0.14em] text-[hsl(var(--confidence-mid))]">
-                {artifact.confidence}% confidence
+                {shownArtifact.effective}% confidence
               </span>
             )}
             <span className={"rounded-md border px-2 py-1 font-mono text-eyebrow uppercase tracking-[0.14em] " + REVIEW_CLASS[rState]}>
@@ -574,6 +867,29 @@ function ArtifactDrawerInner({
         </SheetHeader>
 
         <div className="space-y-4 px-5 py-4 text-sm">
+          {/* Authority banner — FIRST, above the source stack. An analyst opening
+              a quarantined row must meet the linkage question before they read
+              the evidence, not after. Previously `subject_unlinked_reason`
+              reached this sheet only as an unlabelled key/value row at the very
+              bottom of "Details". */}
+          {(drawerAuthority.state === "quarantined" || drawerAuthority.caveat) && (
+            <div className="panel-inset p-3">
+              <div className="cordon mb-2.5 -mx-3 -mt-3 rounded-t-[7px]" aria-hidden />
+              <div className="flex flex-wrap items-center gap-2">
+                <AuthorityChip view={drawerAuthority} size="md" />
+                <UnderlyingStrength view={drawerAuthority} />
+              </div>
+              <AuthorityCaveat view={drawerAuthority} className="mt-2" />
+              {drawerAuthority.state === "quarantined" && (
+                <p className="mt-2 text-micro leading-snug text-muted-foreground">
+                  Recorded and kept. It does not enter identity clusters, graph
+                  identity edges, confidence, or the report until the linkage is
+                  confirmed.
+                </p>
+              )}
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-2">
             <div className="rounded-lg border border-white/[0.08] bg-white/[0.035] p-3">
               <div className="text-eyebrow uppercase tracking-wider text-muted-foreground">Primary source</div>
@@ -614,7 +930,7 @@ function ArtifactDrawerInner({
                   <li key={s} className="flex items-center justify-between font-mono">
                     <span className="truncate">{s}</span>
                     <span className="text-data text-muted-foreground shrink-0">
-                      {artifact.confidence != null ? `${artifact.confidence}%` : "—"}
+                      {shownArtifact.effective != null ? `${shownArtifact.effective}%` : "—"}
                     </span>
                   </li>
                 ))}
@@ -641,16 +957,25 @@ function ArtifactDrawerInner({
                 current={rState}
                 target="recheck"
                 onClick={() => {
-                  reviewSet(artifact.id, "recheck", rctx);
-                  launchRecheckInChat(threadId, { value: artifact.value, kind: artifact.kind });
-                  toast.success("Rechecking in chat…");
-                  onClose();
+                  // Persist FIRST; the chat run launches only after the verdict
+                  // has committed. A failed write toasts and launches nothing,
+                  // and the drawer stays open so the analyst can retry.
+                  void startRecheck({
+                    set: reviewSet,
+                    threadId,
+                    artifact: { id: artifact.id, value: artifact.value, kind: artifact.kind },
+                    ctx: rctx,
+                  }).then((r) => {
+                    if (!r.ok) return;
+                    toast.success("Rechecking in chat…");
+                    onClose();
+                  });
                 }}
               >
                 <ShieldQuestion className="w-3 h-3" /> Recheck
               </ReviewBtn>
               <ReviewBtn current={rState} target="dismissed" onClick={() => reviewSet(artifact.id, "dismissed", rctx)}>
-                <XCircle className="w-3 h-3" /> False
+                <XCircle className="w-3 h-3" /> Dismiss
               </ReviewBtn>
               <ReviewBtn current={rState} target="key" onClick={() => reviewSet(artifact.id, "key", rctx)}>
                 <Star className="w-3 h-3" /> Key
@@ -675,8 +1000,11 @@ function ArtifactDrawerInner({
                 variant="secondary"
                 className="h-6 px-2 text-data"
                 onClick={() => {
-                  review.setNote(artifact.id, noteDraft, rctx);
-                  toast.success("Note saved");
+                  // The write result is real: a failed note has already toasted
+                  // and rolled back, so only a committed one reads "saved".
+                  void review.setNote(artifact.id, noteDraft, rctx).then((r) => {
+                    if (r.ok) toast.success("Note saved");
+                  });
                 }}
               >
                 Save note
@@ -704,12 +1032,16 @@ function ArtifactDrawerInner({
             )}
           </Field>
 
+          {/* The separate "Mark false positive" metadata toggle is gone. It wrote
+              `metadata.false_positive` — a second, unrelated "false" signal that
+              the agent's review reads never saw. The ONE visible False action is
+              the review verdict above (`dismissed`), which reaches every consumer:
+              pivots, dispatch, clustering, synthesis, the report and the agent's
+              next run. Legacy rows that carry the flag still read as rejected
+              (see analyst-decisions.ts isRejectedArtifact) and show the chip. */}
           <div className="grid grid-cols-2 gap-2">
             <Button size="sm" variant="outline" onClick={() => copy(artifact.value, "Value copied")} className="gap-1.5"><Copy className="w-3.5 h-3.5" /> Copy value</Button>
             <Button size="sm" variant="outline" onClick={() => copy(citation, "Citation copied")} className="gap-1.5"><Copy className="w-3.5 h-3.5" /> Copy citation</Button>
-            <Button size="sm" variant={falsePositive ? "destructive" : "secondary"} disabled={saving} onClick={() => updateMeta({ false_positive: !falsePositive })} className="col-span-2 gap-1.5">
-              <XCircle className="w-3.5 h-3.5" /> {falsePositive ? "Unmark FP" : "Mark false positive"}
-            </Button>
           </div>
         </div>
       </SheetContent>
@@ -753,7 +1085,8 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function ArtifactPeek({ artifact: a, confColor }: { artifact: Artifact; confColor: string }) {
   const src = extractSourceInfo(a);
   const created = a.created_at ? new Date(a.created_at) : null;
-  const conf = a.confidence ?? 0;
+  const shown = displayConfidence(a);
+  const conf = shown.effective ?? 0;
   const group = GROUP_LABEL[groupForKind(a.kind)];
   return (
     <div className="bg-popover text-popover-foreground">
@@ -763,13 +1096,13 @@ function ArtifactPeek({ artifact: a, confColor }: { artifact: Artifact; confColo
           <span className="text-muted-foreground">·</span>
           <span className="text-eyebrow font-mono uppercase text-muted-foreground">{a.kind}</span>
         </div>
-        {a.confidence != null && (
+        {shown.effective != null && (
           <span className="text-data font-mono tabular-nums" style={{ color: confColor }}>{conf}%</span>
         )}
       </div>
       <div className="px-3 py-2 space-y-2">
         <div className="font-mono text-data text-foreground break-all">{a.value}</div>
-        {a.confidence != null && (
+        {shown.effective != null && (
           <div className="confidence-track">
             <span
               className="confidence-fill"
@@ -825,22 +1158,26 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
 
   // Live counts per quick-filter so the analyst sees how much sits in each bucket.
   const counts = useMemo(() => {
-    const c = { all: items.length, strong: 0, review: 0, weak: 0, excluded: 0 };
+    const c = { all: items.length, strong: 0, review: 0, quarantined: 0, weak: 0, excluded: 0 };
     for (const a of items) {
-      const s = evidenceStatus(a, review.get(a.id)).status;
+      const s = authorityFor(a, review.get(a.id)).state;
       if (STATUS_FILTER_GROUPS.strong!.has(s)) c.strong++;
       else if (STATUS_FILTER_GROUPS.review!.has(s)) c.review++;
+      else if (STATUS_FILTER_GROUPS.quarantined!.has(s)) c.quarantined++;
       else if (STATUS_FILTER_GROUPS.weak!.has(s)) c.weak++;
       else if (STATUS_FILTER_GROUPS.excluded!.has(s)) c.excluded++;
     }
     return c;
+    // `review.revision` bumps on every verdict change (including rollbacks), so
+    // the counts move the instant an analyst decides — memoising on `items`
+    // alone left the chips stale until an unrelated artifact arrived.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items]);
+  }, [items, review.revision]);
 
   return (
     <>
       {items.length > 0 && (
-        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-x-3 gap-y-2 px-2 py-2.5 border-b border-border-subtle bg-[linear-gradient(180deg,rgba(13,15,19,0.94),rgba(13,15,19,0.86))] backdrop-blur-xl">
+        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-x-3 gap-y-2 px-2 py-2.5 border-b border-border-subtle bg-[linear-gradient(180deg,hsl(var(--surface-1)/0.94),hsl(var(--surface-0)/0.88))] backdrop-blur-xl">
           <FilterChips<EvidenceStatusFilter>
             ariaLabel="Filter evidence by strength"
             active={statusFilter}
@@ -849,11 +1186,20 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
               { key: "all", label: "All", count: counts.all },
               { key: "strong", label: "Findings", count: counts.strong, tone: "ok" },
               { key: "review", label: "Needs review", count: counts.review, tone: "warn" },
+              // Only offered when there is something in it — an always-present
+              // "Quarantined 0" trains analysts to stop reading the number.
+              ...(counts.quarantined > 0
+                ? [{ key: "quarantined" as const, label: "Quarantined", count: counts.quarantined }]
+                : []),
               { key: "weak", label: "Leads", count: counts.weak },
               { key: "excluded", label: "Excluded", count: counts.excluded, tone: "danger" },
             ]}
           />
-          <div className="ml-auto flex items-center gap-1.5">
+          {/* The sort group takes its own line on a phone. `ml-auto` on a
+              wrapping flex row pushed it to a line of its own anyway, but with
+              the "SORT" label stranded beside a wrapped chip row rather than
+              above it. Wrapping as a unit is what it looked like it did. */}
+          <div className="flex w-full flex-wrap items-center gap-1.5 sm:ml-auto sm:w-auto">
             <span className="text-eyebrow uppercase tracking-[0.14em] text-muted-foreground/70">Sort</span>
             <FilterChips<EvidenceSortMode>
               ariaLabel="Sort evidence"
@@ -865,12 +1211,13 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
                 { key: "newest", label: "Newest" },
               ]}
             />
-            <StatusLegend />
+            <AuthorityLegend />
           </div>
         </div>
       )}
       <ArtifactsList
         items={items}
+        threadId={threadId}
         onSelect={setSelected}
         review={review}
         statusFilter={statusFilter}

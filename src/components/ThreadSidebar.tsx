@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { effectiveConfidenceOrZero } from "@/lib/display-confidence";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
@@ -222,7 +223,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         const m = agg[a.thread_id] ?? { artifacts: 0, breaches: 0, lowConf: 0 };
         m.artifacts++;
         if (isBreachKind(a.kind)) m.breaches++;
-        if ((a.confidence ?? 0) < 50) m.lowConf++;
+        if ((effectiveConfidenceOrZero(a)) < 50) m.lowConf++;
         agg[a.thread_id] = m;
       }
       setMetrics(agg);
@@ -457,8 +458,12 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
           aria-label="Home"
           className="flex min-w-0 items-center gap-2 rounded-lg group focus:outline-none focus:ring-2 focus:ring-primary/40"
         >
-          <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-white/10 bg-white/[0.035] transition-colors group-hover:bg-white/[0.06]">
-            <SwarmMark className="h-4 w-4 text-foreground/90" />
+          {/* The one saturated object in the chrome. Everything else on this
+              surface is black, glass or grey, so a single filled tile carries
+              the whole brand without competing with any evidence colour. */}
+          <div className="relative grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-[9px] bg-[linear-gradient(145deg,hsl(var(--brand)),hsl(var(--brand-deep)))] shadow-[0_0_0_1px_hsl(var(--brand)/0.45),0_6px_18px_-8px_hsl(var(--brand)/0.75)] transition-transform duration-200 group-hover:scale-[1.04]">
+            <span aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-1/2 bg-[linear-gradient(180deg,hsl(var(--film)/0.28),transparent)]" />
+            <SwarmMark className="relative h-4 w-4 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.4)]" />
           </div>
           <div className="min-w-0">
             <div className="font-display text-sm font-semibold leading-none tracking-tight text-foreground">Insight Finder</div>
@@ -485,32 +490,60 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         >
           <Plus className="h-4 w-4" /> New investigation
         </Button>
-        {(
-          [
-            { to: "/cases", label: "All cases", icon: FolderOpen, active: onCasesRoute, badge: 0 },
-            { to: "/brain", label: "Intelligence", icon: Brain, active: onBrainRoute || onInsightsRoute, badge: onBrainRoute ? 0 : newPatternCount },
-          ] as const
-        ).map(({ to, label, icon: Icon, active, badge }) => (
-          <Link
-            key={to}
-            to={to}
-            aria-label={label}
-            className={cn(
-              "flex h-9 w-full items-center gap-2 rounded-lg border px-3 text-sm font-medium transition-colors",
-              active
-                ? "border-[hsl(var(--intel-blue)/0.3)] bg-[hsl(var(--intel-blue)/0.1)] text-foreground"
-                : "border-transparent text-muted-foreground hover:border-white/10 hover:bg-white/[0.03] hover:text-foreground",
-            )}
-          >
-            <Icon className={cn("h-3.5 w-3.5 shrink-0", active && "text-[hsl(var(--intel-blue))]")} strokeWidth={1.5} />
-            <span className="truncate">{label}</span>
-            {badge > 0 && (
-              <span className="ml-auto inline-flex h-[18px] min-w-[22px] items-center justify-center rounded-full bg-white px-1.5 font-mono text-eyebrow font-bold tracking-normal text-black">
-                {badge > 99 ? "99+" : badge}
-              </span>
-            )}
-          </Link>
-        ))}
+        {/* Destinations, as a labelled group on a connector rail. Two loose
+            bordered buttons read as two unrelated CTAs; a rail says "these are
+            the places you can go", leaves the border budget for things that
+            are actually interactive, and gives the active item somewhere to
+            put its marker. Low-contrast labels on purpose — navigation is not
+            the content, and on black it only needs to be findable. */}
+        <div className="pt-1">
+          <div className="px-1 pb-1 text-eyebrow font-medium uppercase tracking-[0.14em] text-muted-foreground/55">
+            Workspace
+          </div>
+          <div className="relative pl-3">
+            <span aria-hidden className="absolute inset-y-1 left-0 w-px bg-white/[0.09]" />
+            {(
+              [
+                { to: "/cases", label: "All cases", icon: FolderOpen, active: onCasesRoute, badge: 0 },
+                { to: "/brain", label: "Intelligence", icon: Brain, active: onBrainRoute || onInsightsRoute, badge: onBrainRoute ? 0 : newPatternCount },
+              ] as const
+            ).map(({ to, label, icon: Icon, active, badge }) => (
+              <Link
+                key={to}
+                to={to}
+                aria-label={label}
+                aria-current={active ? "page" : undefined}
+                className={cn(
+                  "group/nav relative flex h-8 w-full items-center gap-2.5 rounded-md pl-3 pr-2 text-sm transition-colors",
+                  active
+                    ? "bg-white/[0.06] font-medium text-foreground"
+                    : "text-muted-foreground/85 hover:bg-white/[0.035] hover:text-foreground",
+                )}
+              >
+                {/* Connector tick into the rail — and, when active, a bright
+                    marker on the rail itself so the current destination is
+                    legible from the rail alone. */}
+                <span
+                  aria-hidden
+                  className={cn(
+                    "absolute -left-3 top-1/2 h-px w-2 -translate-y-1/2 transition-colors",
+                    active ? "bg-foreground/70" : "bg-white/15 group-hover/nav:bg-white/30",
+                  )}
+                />
+                {active && (
+                  <span aria-hidden className="absolute -left-3 top-1/2 h-4 w-px -translate-y-1/2 bg-foreground" />
+                )}
+                <Icon className={cn("h-3.5 w-3.5 shrink-0", active ? "text-foreground" : "text-muted-foreground/70")} strokeWidth={1.6} />
+                <span className="truncate">{label}</span>
+                {badge > 0 && (
+                  <span className="ml-auto inline-flex h-[17px] min-w-[20px] items-center justify-center rounded-full bg-white px-1.5 font-mono text-eyebrow font-bold tracking-normal text-black">
+                    {badge > 99 ? "99+" : badge}
+                  </span>
+                )}
+              </Link>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* Search + filter */}
@@ -579,21 +612,39 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         )}
       </div>
 
-      {/* Footer — opaque so rows never show through */}
+      {/* Footer — opaque so rows never show through. The account block is ONE
+          bounded card rather than four loose stacked lines: identity, plan and
+          the sign-out control belong together, and grouping them stops the
+          spend/credit instruments from reading as part of the same list. */}
       <div className="shrink-0 space-y-2 border-t border-border-subtle bg-[hsl(var(--surface-0))] p-3">
         <SpendTrend threads={threads} totalCost={totalCost} />
         <CreditChip credits={credits} />
-        <a
-          href={SUPPORT_MAILTO}
-          className="flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
-        >
-          <Mail className="h-3.5 w-3.5" strokeWidth={1.5} />
-          <span>Send feedback</span>
-        </a>
-        <div className="flex items-center justify-between gap-2 text-xs">
-          <div className="min-w-0 truncate text-muted-foreground" title={user?.email}>{user?.email}</div>
-          <button onClick={signOut} className="shrink-0 text-muted-foreground transition-colors hover:text-foreground" aria-label="Sign out" title="Sign out">
-            <LogOut className="h-4 w-4" />
+        <div className="panel flex items-center gap-2.5 px-2.5 py-2">
+          <span
+            aria-hidden
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/[0.08] text-[11px] font-semibold uppercase text-foreground/90"
+          >
+            {(user?.email ?? "?").slice(0, 1)}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-data font-medium text-foreground/95" title={user?.email}>
+              {(user?.email ?? "").split("@")[0] || "Account"}
+            </span>
+            <a
+              href={SUPPORT_MAILTO}
+              className="mt-px flex items-center gap-1 text-eyebrow text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <Mail className="h-2.5 w-2.5" strokeWidth={1.75} aria-hidden />
+              Send feedback
+            </a>
+          </span>
+          <button
+            onClick={signOut}
+            className="shrink-0 rounded-md p-1.5 text-muted-foreground/70 transition-colors hover:bg-white/[0.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Sign out"
+            title="Sign out"
+          >
+            <LogOut className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>

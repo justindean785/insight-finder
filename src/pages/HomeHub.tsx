@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, Navigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+import { META_ARTIFACT_KINDS } from "@/hooks/useThreadArtifacts";
 import { SwarmMark } from "@/components/ui/swarm-mark";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -59,7 +60,11 @@ export default function HomeHub() {
       try {
         const [threadsRes, artifactsRes, memoriesRes, recentRes] = await Promise.all([
           supabase.from("threads").select("id", { count: "exact", head: true }).eq("user_id", user.id),
-          supabase.from("artifacts").select("id", { count: "exact", head: true }).eq("user_id", user.id),
+          // Excludes meta kinds — see META_ARTIFACT_KINDS. Engine bookkeeping is
+          // not evidence, and this count is what the workspace header shows.
+          supabase.from("artifacts").select("id", { count: "exact", head: true })
+            .eq("user_id", user.id)
+            .not("kind", "in", `(${META_ARTIFACT_KINDS.join(",")})`),
           supabase.from("agent_memory").select("id", { count: "exact", head: true }).eq("user_id", user.id),
           supabase
             .from("threads")
@@ -139,8 +144,8 @@ export default function HomeHub() {
 
       <header className="relative z-10 px-6 sm:px-10 py-5 flex items-center gap-3">
         <Link to="/" aria-label="Home" className="flex items-center gap-2.5 group">
-          <div className="w-9 h-9 rounded-xl glass-strong border border-white/10 grid place-items-center shadow-cta">
-            <SwarmMark className="w-5 h-5" />
+          <div className="brand-tile h-9 w-9">
+            <SwarmMark className="h-5 w-5 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.45)]" glow={false} />
           </div>
           <div className="font-display text-base font-semibold tracking-tight">Insight Finder</div>
         </Link>
@@ -156,7 +161,7 @@ export default function HomeHub() {
       </header>
 
       <main className="relative z-10 mx-auto max-w-6xl px-6 sm:px-10 pb-16">
-        <section className="pt-6 sm:pt-10 pb-10 rounded-3xl border border-white/[0.07] bg-[linear-gradient(160deg,rgba(255,255,255,0.05),rgba(255,255,255,0.018)_52%,rgba(255,255,255,0.008))] px-5 sm:px-7 py-7 sm:py-8 shadow-[0_26px_90px_-54px_rgba(0,0,0,0.98)] backdrop-blur-xl">
+        <section className="pt-6 sm:pt-10 pb-10 rounded-3xl border border-white/[0.07] bg-[linear-gradient(160deg,hsl(var(--film)/0.05),hsl(var(--film)/0.018)_52%,hsl(var(--film)/0.008))] px-5 sm:px-7 py-7 sm:py-8 shadow-[0_26px_90px_-54px_rgba(0,0,0,0.98)] backdrop-blur-xl">
           <div className="flex items-center gap-2 text-eyebrow font-mono uppercase tracking-[0.26em] text-[hsl(var(--intel-blue))]">
             <span className="h-1 w-1 animate-pulse rounded-full bg-[hsl(var(--intel-blue))]" />
             Workspace
@@ -184,7 +189,7 @@ export default function HomeHub() {
             {counts.cases > 0 && (
               <Link
                 to="/chat"
-                className="h-10 rounded-xl px-4 inline-flex items-center gap-2 border border-white/12 bg-[linear-gradient(145deg,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] hover:bg-[linear-gradient(145deg,rgba(255,255,255,0.12),rgba(255,255,255,0.045))] text-foreground text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                className="h-10 rounded-xl px-4 inline-flex items-center gap-2 border border-white/12 bg-[linear-gradient(145deg,hsl(var(--film)/0.08),hsl(var(--film)/0.03))] hover:bg-[linear-gradient(145deg,hsl(var(--film)/0.12),hsl(var(--film)/0.045))] text-foreground text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
               >
                 <MessageSquare className="w-4 h-4" />
                 Resume most recent
@@ -298,14 +303,14 @@ function HubCard({
   return (
     <Link
       to={to}
-      className="group relative flex flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[linear-gradient(150deg,rgba(255,255,255,0.06),rgba(255,255,255,0.02)_55%,rgba(255,255,255,0.008))] p-5 shadow-[0_20px_70px_-44px_rgba(0,0,0,0.96)] backdrop-blur-xl transition-all duration-300 ease-premium hover:-translate-y-0.5 hover:border-[hsl(var(--intel-blue)/0.4)] hover:shadow-[0_24px_70px_-34px_hsl(var(--intel-blue)/0.62)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--intel-blue)/0.5)]"
+      className="group relative flex flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[linear-gradient(150deg,hsl(var(--film)/0.06),hsl(var(--film)/0.02)_55%,hsl(var(--film)/0.008))] p-5 shadow-[0_20px_70px_-44px_rgba(0,0,0,0.96)] backdrop-blur-xl transition-all duration-300 ease-premium hover:-translate-y-0.5 hover:border-[hsl(var(--intel-blue)/0.4)] hover:shadow-[0_24px_70px_-34px_hsl(var(--intel-blue)/0.62)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--intel-blue)/0.5)]"
     >
       {/* hover sheen — intel-blue wash that fades in on the top edge */}
       <div
         aria-hidden
         className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[hsl(var(--intel-blue)/0.55)] to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100"
       />
-      <div className="mb-4 grid h-10 w-10 place-items-center rounded-xl border border-[hsl(var(--intel-blue)/0.3)] bg-[linear-gradient(180deg,hsl(var(--intel-blue)/0.15),hsl(var(--intel-blue)/0.08))] text-[hsl(var(--intel-blue))] shadow-[0_0_24px_-10px_hsl(var(--intel-blue)/0.7)] transition-transform duration-300 group-hover:scale-105">
+      <div className="brand-tile mb-4 h-10 w-10">
         <Icon className="h-5 w-5" strokeWidth={1.6} />
       </div>
       <div className="font-display text-base font-semibold tracking-tight">{title}</div>

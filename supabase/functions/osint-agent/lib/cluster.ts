@@ -23,7 +23,8 @@
  */
 
 // ---- Confidence tiers (JD's schema) -------------------------------------------
-import { loadReviewsForThread, applyReviewsToArtifacts } from "../reviews.ts";
+import { loadReviewsForThread, dropRejectedArtifacts } from "../reviews.ts";
+import { normPhoneE164 } from "./selector-normalize.ts";
 
 export const TIERS = { CONFIRMED: 90, LIKELY: 75, POSSIBLE: 50, WEAK: 30 } as const;
 export function tierFor(conf: number): string {
@@ -91,13 +92,17 @@ export function normEmail(v: string): string | null {
   return m ? m[0] : null;
 }
 
-export function normPhoneE164(v: string): string | null {
-  const digits = String(v ?? "").replace(/\D/g, "");
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-  if (digits.length >= 8 && digits.length <= 15) return `+${digits}`;
-  return null;
-}
+// MOVED to `lib/selector-normalize.ts` (2026-08-28) so the auto-persist
+// extractor can call the SAME fold at write time without importing this module,
+// which pulls in `../reviews.ts`. Re-exported here so every existing consumer —
+// `strongTokens` below, `lib/memory_consolidate.ts` — keeps working unchanged.
+//
+// The move is the point: before it, this fold ran only when clustering, so the
+// clusterer and the artifact table disagreed about what "one phone" is. One
+// number was persisted as three rows and then correctly clustered as one.
+// NOTE: imported AND re-exported, not `export … from`. `strongTokens` below
+// calls it, and a bare re-export would not bind the name in this module's scope.
+export { normPhoneE164 };
 
 /** Fold a handle/username to a comparison token: lowercase, alphanumerics only. So
  * manza_visuals ≡ ManzaVisuals ≡ @manza_visuals ≡ manzavisuals(.com local part). */
@@ -425,10 +430,10 @@ export async function applyClusteringToThread(
   // caller threads the run's authenticated user_id — same value every succeeding
   // artifact write (record_artifacts) already uses. Required for the insert to land.
   userId: string,
-): Promise<{ updated: number; subjects: number; merges: number }> {
+): Promise<{ updated: number; subjects: number; merges: number; cleared: number }> {
   const { data, error } = await admin.from("artifacts")
-    .select("id,kind,value,source,confidence,metadata").eq("thread_id", threadId);
-  if (error || !Array.isArray(data) || data.length === 0) return { updated: 0, subjects: 0, merges: 0 };
+    .select("id,kind,value,source,confidence,metadata,cluster_id,subject_id").eq("thread_id", threadId);
+  if (error || !Array.isArray(data) || data.length === 0) return { updated: 0, subjects: 0, merges: 0, cleared: 0 };
   // Analyst verdicts gate identity resolution. A rejected finding left in this set
   // does not merely reappear — it RE-SEEDS the union-find, so a value the analyst
   // said is NOT the subject can pull genuine artifacts into its cluster and be
@@ -441,10 +446,39 @@ export async function applyClusteringToThread(
     console.warn(JSON.stringify({
       event: "clustering_skipped_review_state_unavailable", thread_id: threadId, error: reviews.error,
     }));
-    return { updated: 0, subjects: 0, merges: 0 };
+    return { updated: 0, subjects: 0, merges: 0, cleared: 0 };
   }
-  const kept = applyReviewsToArtifacts(data as Array<Record<string, unknown>>, reviews);
-  if (kept.length === 0) return { updated: 0, subjects: 0, merges: 0 };
+  // dropRejectedArtifacts, NOT the old applyReviewsToArtifacts: rejection is the
+  // only decision clustering honours, and the confidence that enters union-find
+  // promotion must be the RECORDED one — an analyst verdict is not evidence.
+  const kept = dropRejectedArtifacts(data as Array<Record<string, unknown>>, reviews);
+  // ⛔ STALE ASSIGNMENT. A rejected row is filtered out of THIS union-find, but
+  // an earlier run may already have written it a cluster_id/subject_id (plus
+  // promoted_confidence / confidence_tier into its metadata). Nothing cleared
+  // those, so a row the analyst said is NOT the subject kept reading as a member
+  // of the subject's cluster on every surface that keys on the persisted
+  // columns. Clear them now — authority, not deletion: the row, its confidence
+  // and its metadata otherwise stay exactly as recorded.
+  const keptIds = new Set(kept.map((r) => String((r as { id?: unknown }).id ?? "")));
+  let cleared = 0;
+  for (const r of data as Array<Record<string, unknown>>) {
+    const id = typeof r.id === "string" ? r.id : "";
+    if (!id || keptIds.has(id)) continue;
+    const meta = (r.metadata && typeof r.metadata === "object") ? r.metadata as Record<string, unknown> : {};
+    const hasStale = r.cluster_id != null || r.subject_id != null ||
+      meta.cluster_id != null || meta.subject_id != null;
+    if (!hasStale) continue;
+    const { cluster_id: _c, subject_id: _s, promoted_confidence: _p, confidence_tier: _t, ...rest } = meta;
+    void _c; void _s; void _p; void _t;
+    const nextMeta = { ...rest, cluster_cleared_reason: "analyst_rejected" };
+    const { error: cErr } = await admin.from("artifacts")
+      .update({ cluster_id: null, subject_id: null, metadata: nextMeta }).eq("id", id);
+    if (!cErr) cleared++;
+  }
+  if (cleared) {
+    console.log(JSON.stringify({ event: "cluster_assignment_cleared", thread_id: threadId, cleared, reason: "analyst_rejected" }));
+  }
+  if (kept.length === 0) return { updated: 0, subjects: 0, merges: 0, cleared };
   const arts: Artifact[] = kept.map((r) => {
     const row = r as { id: string; kind: string; value: string; source?: string; confidence?: number; metadata?: unknown };
     return {
@@ -467,17 +501,39 @@ export async function applyClusteringToThread(
       .update({ cluster_id: m.cluster_id, subject_id: m.subject_id, metadata: meta }).eq("id", m.id);
     if (!uErr) updated++;
   }
-  // cluster_decision log (best-effort) — makes a null-cluster outcome debuggable.
+  // Clustering telemetry goes to the LOG, never into `artifacts`.
+  //
+  // This used to insert a `cluster_decision` row — `confidence: 100`, value
+  // "Deterministic clustering: N subjects, M merges", source
+  // "lib/cluster.ts (union-find)". That is the engine describing its own
+  // bookkeeping, not an observation about the subject, and persisting it as an
+  // artifact made it evidence:
+  //   • it is the ONLY thing in the table at confidence 100, above every real
+  //     ceiling (breach cap 60, quarantine cap 55, highest real artifact 75), so
+  //     it carried more authority than any actual finding;
+  //   • it has no `source_category`, no `confidence_cap_applied` and no
+  //     `subject_unlinked`, so it bypassed every write-path control;
+  //   • every artifact COUNT is a bare `count(*)` (useInsightsData, HomeHub, and
+  //     the get_case_metrics RPC), so it inflated the Evidence number an analyst
+  //     reads even though `isMetaArtifact` hides it from the list.
+  //
+  // Nothing ever consumed it: zero backend readers, and the only frontend
+  // reference was the filter that EXCLUDES it. Its stated purpose — "makes a
+  // null-cluster outcome debuggable" — is served by a structured log line, which
+  // is already how this function reports clustering state (see the
+  // `clustering_skipped_review_state_unavailable` warn above). The summary also
+  // still reaches the caller through this function's return value.
   if (decisions.length) {
-    const { error: iErr } = await admin.from("artifacts").insert([{
-      thread_id: threadId, user_id: userId, kind: "cluster_decision",
-      value: `Deterministic clustering: ${subjects.length} subjects, ${decisions.length} merges`,
-      source: "lib/cluster.ts (union-find)", confidence: 100,
-      metadata: { cluster_id: null, subject_id: null, decisions: decisions.slice(0, 60), subject_count: subjects.length },
-    }]);
-    if (iErr) console.warn("[cluster] cluster_decision insert failed:", iErr);
+    console.log(JSON.stringify({
+      event: "clustering_applied",
+      thread_id: threadId,
+      subject_count: subjects.length,
+      merge_count: decisions.length,
+      artifacts_updated: updated,
+      decisions: decisions.slice(0, 60),
+    }));
   }
-  return { updated, subjects: subjects.length, merges: decisions.length };
+  return { updated, subjects: subjects.length, merges: decisions.length, cleared };
 }
 
 // ---- CSV parsing (RFC4180, tolerant) ------------------------------------------

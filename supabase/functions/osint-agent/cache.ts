@@ -13,8 +13,12 @@ import { DEFAULT_TOOL_TTL_MS, NO_CACHE_TOOLS, redactSensitiveToolInput, TOOL_TTL
 import { creditsCharged } from "./billing.ts";
 import { classifyToolOutcome } from "./tool-outcome.ts";
 import * as circuit from "./circuit.ts";
-import { guard } from "./guard.ts";
+import { buildRefusedKeys, dispatchTypeCandidates, isDispatchRefused, quarantineRefusal, reasonForKey } from "./lib/dispatch-quarantine.ts";
+import { buildRejectedDispatchKeys, isRejectedDispatch, rejectionRefusal } from "./lib/dispatch-rejection.ts";
+import { loadReviewsForThread, type ReviewDb } from "./reviews.ts";
+import { guard, takeCorrelateHint } from "./guard.ts";
 import { reserveToolCall } from "./orchestrator-budget.ts";
+import { isFinalizeWindowLiveLookupExempt } from "./orchestrator-finalize.ts";
 import {
   ALWAYS_ALLOW_TOOLS,
   analyzeWeakLead,
@@ -56,6 +60,18 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // collisions rather than clean fast fails. 20s keeps it well below the ~46s p95
   // (still a fast-fail relative to a full 30s+ tax) while giving legitimate fast
   // responses room to land instead of tripping the cap mid-flight.
+  // DELIBERATELY NOT RAISED. A 2026-08-16 telemetry audit reported a 20_130ms
+  // abort against this 20_000ms cap and proposed raising it, by analogy with
+  // Indicia. The analogy is wrong and the two are opposite cases:
+  //   Indicia RESPONDS SUCCESSFULLY at 13.8-20.5s and we were aborting at 18s,
+  //     so the cap was destroying real data -> raised.
+  //   gemini_deep_dork has a ~46s p95 and is capped BELOW it ON PURPOSE, to be
+  //     a fast-fail corroboration source rather than a 30s tax on every run.
+  //     An abort at 20_130ms is the cap working, not an off-by-a-hair bug.
+  // Raising it would not make the tool succeed — it would still miss its p95 —
+  // it would only make each failure more expensive. Pinned by
+  // tool_timeout_caps_test.ts:35 ("cut from its old 30s tail"), which is the
+  // test that caught this change.
   gemini_deep_dork: 20_000,        // was 12_000 — 12s cap fired mid-response too often
   // deepfind_reverse_email: removed 8s override — falls back to 12s default.
   // The 8s cap caused 9 timeouts in the 2026-07-08 audit; provider legitimately
@@ -75,17 +91,43 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // of the 12s default cap orphaning an un-signalled request (2026-07-05 fix).
   wayback_cdx_search: 25_000,
   archive_url: 25_000,
-  // Indicia broker lookups — person/address can be slow; own fetch timeout is 18s.
-  indicia_email: 20_000,
-  indicia_phone: 20_000,
-  indicia_person: 20_000,
-  indicia_address: 20_000,
-  indicia_web_dbs: 20_000,
-  indicia_hudsonrock: 20_000,
-  // SocialFetch server-side web read (/v1/web/markdown) fetches + renders + converts
-  // a full page (YouTube, etc.) upstream, which legitimately exceeds the 12s default.
-  // 25s outer budget sits above the tool's own 22s per-attempt fetch timeout.
-  socialfetch_web_read: 25_000,
+  // Indicia broker lookups — the provider is simply slower than we allowed.
+  // RAISED 20s -> 32s (2026-08-16 telemetry audit) alongside the tool's own fetch
+  // timeout (18s -> 30s in tools/indicia.ts). Direct probes with the production
+  // key returned HTTP 200 with real records at 20.5s and 13.8s, while every
+  // logged failure was our abort at 18.0-18.2s. The wrapper cap must stay ABOVE
+  // the tool's own fetch timeout so the tool fails cleanly first and the wrapper
+  // never orphans an un-signalled request.
+  indicia_email: 32_000,
+  indicia_phone: 32_000,
+  indicia_person: 32_000,
+  indicia_address: 32_000,
+  indicia_web_dbs: 32_000,
+  indicia_hudsonrock: 32_000,
+  // SocialFetch server-side web read (/v1/web/markdown) fetches + renders +
+  // converts a full page upstream, which legitimately exceeds the 12s default.
+  //
+  // ⚠️ CORRECTED 2026-08-28, SECOND PASS. The first pass cut this to 15s (tool
+  // 12s) on a brief that reported "21 aborts, avg 22,194ms, ZERO successes ever
+  // observed." That claim was FALSE — it was drawn from a 4-run sample of 3
+  // calls and generalised. Queried directly against tool_usage_log:
+  //
+  //     30 days: 127 calls, 76 OK (60%), successes avg 5,446ms, p95 11,161ms
+  //     14 days:  71 calls, 43 OK (61%), successes p95 13,349ms
+  //     max successful duration, either window: 15,908ms
+  //     failures average 12,395ms
+  //
+  // So this is an ordinary, working, somewhat slow tool — not a dead provider.
+  // A 12s tool cap would have severed 3 of 76 observed successes outright and
+  // cut straight through the 14-day p95. Trading real evidence for wall clock is
+  // the wrong direction, and the premise that justified it did not survive
+  // contact with the data.
+  //
+  // 18s sits above the 15,908ms maximum observed success with headroom, so it
+  // costs no evidence, while still trimming the failure path (which aborts at
+  // ~12.4s on average and previously ran to a 22s ceiling). The wrapper stays
+  // above the tool's own budget per the invariant this table states three times.
+  socialfetch_web_read: 22_000,
   // Telemetry-backed overrides (live failing-tools panel 2026-07-08): these
   // chronically hit the 12s default and lose real coverage.
   // crt.sh certificate transparency is Cloudflare-fronted and slow (p95 » 12s).
@@ -211,6 +253,9 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   pdl_person_enrich: 20_000,  // own fetch 18s (PDL_HTTP_TIMEOUT_MS). Not in the
                               // 2026-08-02 report — found by scanning all nine
                               // injected tools rather than only the one that failed.
+  geoseer_geolocate: 58_000,  // own fetch 50s (GEOSEER_HTTP_TIMEOUT_MS); provider
+                              // runs 7-45s in `fast` mode, so the wrapper must sit
+                              // above the tool's own budget, never tie it.
 };
 export function toolTimeoutMs(name: string): number {
   return TOOL_TIMEOUT_OVERRIDE_MS[name] ?? DEFAULT_TOOL_TIMEOUT_MS;
@@ -553,6 +598,76 @@ export function wrapToolsWithCache(
     }
     return toolHealthPromise;
   };
+  // ---- subject_unlinked DISPATCH boundary --------------------------------------
+  // Quarantine binds at write and read-back; without this it never bound at
+  // DISPATCH, so a quarantined selector could still start its own paid tool
+  // stack. Loaded ONCE per run and reused, like tool_health above.
+  //
+  // FAILS OPEN on a load error, matching loadToolHealth's precedent in this same
+  // function: this boundary prevents wasted calls and contaminated pivots, it is
+  // not an authorization control, and hard-failing every tool call on a transient
+  // artifacts read would be a worse outcome than the leak it prevents. The warning
+  // is logged so the degradation is observable rather than silent.
+  let refusedKeysPromise: Promise<{ keys: Set<string>; rows: Array<Record<string, unknown>> }> | null = null;
+  const loadRefusedKeys = () => {
+    if (!refusedKeysPromise) {
+      refusedKeysPromise = (async () => {
+        try {
+          const { data, error } = await adminDb
+            .from("artifacts")
+            .select("kind,value,metadata")
+            .eq("thread_id", ctx.investigationId);
+          if (error) {
+            console.warn("[quarantine-dispatch] load failed (boundary open this run):", error.message);
+            return { keys: new Set<string>(), rows: [] };
+          }
+          const rows = (data ?? []) as Array<Record<string, unknown>>;
+          return { keys: buildRefusedKeys(rows, circuit.normalizeSelector), rows };
+        } catch (e) {
+          console.warn("[quarantine-dispatch] load failed (boundary open this run):", e);
+          return { keys: new Set<string>(), rows: [] };
+        }
+      })();
+    }
+    return refusedKeysPromise;
+  };
+  // ---- ANALYST-REJECTION dispatch boundary --------------------------------------
+  // A `dismissed` / `wrong` verdict bound at every READ (reviews.ts) but never at
+  // DISPATCH: the prompt said DO NOT USE and nothing enforced it, so the model —
+  // or a manual "Run this pivot" — could still start a paid call on a selector
+  // the analyst had ruled out. Loaded ONCE per run and reused, keyed by
+  // `type:normalizedValue` from the artifact's kind (plus its selector-type
+  // alias), never by value alone. Rejected keys are derived from the rejected
+  // ROWS, so a re-record of the same selector under a new id is still refused.
+  //
+  // FAILS OPEN on a load error, matching the quarantine boundary above and for
+  // the same reason: this prevents wasted calls and contaminated pivots; it is
+  // not an authorization control, and refusing EVERY tool call on a transient
+  // review read would kill the run outright. The authoritative consumers
+  // (prompt block, salvage, cache, clustering, synthesis, recovery) all fail
+  // closed on the same load. The warning makes the open boundary observable.
+  let rejectedKeysPromise: Promise<Set<string>> | null = null;
+  const loadRejectedKeys = () => {
+    if (!rejectedKeysPromise) {
+      rejectedKeysPromise = (async () => {
+        try {
+          const reviews = await loadReviewsForThread(
+            adminDb as unknown as ReviewDb, ctx.investigationId, ctx.userId,
+          );
+          if (!reviews.ok) {
+            console.warn("[rejected-dispatch] review load failed (boundary open this run):", reviews.error);
+            return new Set<string>();
+          }
+          return buildRejectedDispatchKeys(reviews.rejectedRows, circuit.normalizeSelector);
+        } catch (e) {
+          console.warn("[rejected-dispatch] review load threw (boundary open this run):", e);
+          return new Set<string>();
+        }
+      })();
+    }
+    return rejectedKeysPromise;
+  };
+
   // Derive a real success flag from a tool's return value. A tool can return
   // without throwing yet still represent a failure (HTTP non-2xx wrapped into
   // { ok:false }, an `error` field, or a stub). The wrapper must NOT log such
@@ -749,6 +864,41 @@ export function wrapToolsWithCache(
         const sel = circuit.normalizeSelector(selectorType, selectorValue);
         const purpose = String(inp.purpose ?? "default");
         const force = inp.force === true;
+        // ---- subject_unlinked DISPATCH boundary ----
+        // FIRST, before budget reservation, the circuit breaker, the cache
+        // lookups and the live call — so a quarantined selector cannot start a
+        // direct, pivoted, cached, repeated or paid call. Placed here rather than
+        // per-tool because all ~89 tools funnel through this one wrapper.
+        //
+        // `force` does NOT override it: a manual re-run of a quarantined selector
+        // is exactly the escape this boundary exists to close. Clearing it is an
+        // analyst linkage decision on the artifact, not a call-site flag.
+        {
+          const { keys: refusedKeys, rows: refusedRows } = await loadRefusedKeys();
+          // Candidates, not the computed type alone — the paid breach tools take
+          // `{ type, value }` and detectSelectorType does not read `type`.
+          const candidateTypes = dispatchTypeCandidates(selectorType, inp);
+          if (isDispatchRefused(refusedKeys, candidateTypes, sel)) {
+            const declared = candidateTypes.find((t) => refusedKeys.has(`${t}:${sel}`)) ?? selectorType;
+            const why = reasonForKey(refusedRows, circuit.normalizeSelector, declared, sel);
+            const refusal = quarantineRefusal(name, declared, sel, why);
+            console.warn(
+              `[quarantine-dispatch] refused ${name} on ${declared}:${sel}` +
+              (why ? ` (${why})` : ""),
+            );
+            return refusal;
+          }
+          // Same position, same shape, for the analyst's own rejections. `force`
+          // does not override it either: the analyst clears a rejection by
+          // resetting the review, not by re-running the call.
+          const rejectedKeys = await loadRejectedKeys();
+          const rejectedAs = isRejectedDispatch(rejectedKeys, candidateTypes, sel);
+          if (rejectedAs) {
+            const refusal = rejectionRefusal(name, rejectedAs, sel);
+            console.warn(`[rejected-dispatch] refused ${name} on ${rejectedAs}:${sel} (analyst rejected)`);
+            return refusal;
+          }
+        }
         const overrideSelector = ctx.manualOverrideSelector
           ? circuit.normalizeSelector(selectorType, ctx.manualOverrideSelector)
           : "";
@@ -982,7 +1132,11 @@ export function wrapToolsWithCache(
         // only called between model steps. A long/parallel step can still attempt new
         // lookups after the window opens; skip them here so CPU is reserved for the
         // record/report closeout. Recording tools are exempt.
-        if (ctx.shouldStopLiveLookups?.() && !ALWAYS_ALLOW_TOOLS.has(name)) {
+        if (
+          ctx.shouldStopLiveLookups?.() &&
+          !ALWAYS_ALLOW_TOOLS.has(name) &&
+          !isFinalizeWindowLiveLookupExempt(name)
+        ) {
           await logUsage(false, false, Date.now() - t0, "finalize window open; live lookup skipped", null, true, {
             input: inputJson,
             runtime: { ...runtimeMetaBase, rejection_reason: "finalize_window", rejection_source: "deadline", stale_cache: !!staleRecord },
@@ -1256,6 +1410,33 @@ export function wrapToolsWithCache(
         if (AUTO_EVIDENCE_TOOLS.has(name)) {
           // Fire-and-forget: never let auto-evidence block the tool result.
           autoAppendToolEvidence(ctx.supabase, ctx, name, input, result).catch(() => {});
+        }
+        // ---- Correlate hint delivery -------------------------------------------
+        // The hint used to ride ONLY on a record_artifacts result. Measured on
+        // build 3d5130e (thread 15ebf7d4): the model called record_artifacts once,
+        // as call 22 of 23, right before memory_save ended the run. The pass was
+        // genuinely due by then — so the hint fired correctly and arrived with no
+        // fan-out left to influence. A trigger delivered through a channel the
+        // model only opens at the end is not a trigger.
+        //
+        // So it also rides the ordinary results the model reads mid-run. Attached
+        // ONLY here, on the live-success path: a failure, a skip, a cache hit and a
+        // finalize-window refusal all return earlier and are untouched, so this can
+        // never dress up a non-result as carrying a directive. `takeCorrelateHint`
+        // latches once per correlate cycle, so it is a single directive rather than
+        // a banner on every payload.
+        //
+        // Recording tools are excluded HERE because record_artifacts surfaces the
+        // hint on its own result — but it now takes it through the SAME latch, so
+        // there is exactly one delivery per cycle whichever surface reaches the
+        // model first. (Review caught the earlier version: record_artifacts called
+        // the UNLATCHED correlateNudge(), so excluding recording tools from this
+        // path did nothing to stop a second, ungoverned delivery.)
+        if (ok && !ALWAYS_ALLOW_TOOLS.has(name) && result && typeof result === "object" && !Array.isArray(result)) {
+          const hint = takeCorrelateHint();
+          if (Object.keys(hint).length > 0) {
+            return { ...(result as Record<string, unknown>), ...hint } as typeof result;
+          }
         }
         return result;
       },
