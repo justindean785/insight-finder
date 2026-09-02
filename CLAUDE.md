@@ -18,7 +18,8 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 > build = **`7b0138d`**, `deploy/live` → `7b0138d`, ledger recorded (VERIFIED, marker provenance;
 > bytes unverified as always). `/health` now carries `checks.rejected_cluster_sweep`; on its first
 > probes it reported `cleared 14 of 191 stale assignment(s) across 5 thread(s)` and the corpus count
-> of analyst-rejected rows still holding a `cluster_id` went 216 → 51 within minutes (converging to 0).
+> of analyst-rejected rows still holding a `cluster_id` went 216 → 51 → **0** within ~10 minutes
+> (226 rows now carry `cluster_cleared_reason: analyst_rejected`; measured via `query_database`).
 > Mirror `main` = `113a6ac` (surgical sync of 24 `osint-agent` runtime files + `build-info.ts`).
 > Previous dated state, kept for the record: `main` = `550fd60`, live build `7cd74b5`
 > (#534 merged as `7cd74b5`, stamp `3ee2bb9`, ledger `550fd60`).
