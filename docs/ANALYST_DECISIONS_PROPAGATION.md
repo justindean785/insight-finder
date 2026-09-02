@@ -12,12 +12,12 @@ trusting any line number.
 | **Confirm** (`confirmed`) | an analyst-accepted proposition | model context (do not re-litigate) | confidence, source count, corroboration, `subject_unlinked` quarantine |
 | **Key** (`key`) | an investigative priority | model context (priority), pivot ORDER | confidence, source classes, corroboration |
 | **Recheck** (`recheck`) | a durable verification task | model context (task), pivot surface (verification card), chat launch **after** commit | confidence |
-| **False** (`dismissed`; `wrong` = False + memory lesson) | a rejection | removed from working set, pivots, dispatch, clustering, synthesis, authoritative report sections — by artifact id **and** normalized `kind:value` | its existence: the row, its confidence and its history are preserved |
+| **Dismiss** (`dismissed`; `wrong` = Dismiss + memory lesson, shown as "False (teach agent)") | a rejection | removed from working set, pivots, dispatch, clustering, synthesis, authoritative report sections — by artifact id **and** normalized `kind:value` | its existence: the row, its confidence and its history are preserved |
 
 `metadata.false_positive` is a **legacy** per-artifact flag with the same meaning
 as `dismissed`. It is still *read* as a rejection by every frontend consumer
 (`isRejectedArtifact` in `src/lib/analyst-decisions.ts`) so old rows keep their
-status, but the drawer no longer writes it. The one visible False action is the
+status, but the drawer no longer writes it. The one visible Dismiss action is the
 review verdict.
 
 ## Root cause by consumer (before → after)

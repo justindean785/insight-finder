@@ -20,7 +20,7 @@
  *              task; the next run sees it as a recheck task in context and the
  *              pivot surfaces render it as a verification card. Nothing about the
  *              evidence changes.
- *   dismissed  a REJECTION (the visible "False" action). The selector leaves the
+ *   dismissed  a REJECTION (the visible "Dismiss" action). The selector leaves the
  *   wrong      working set, the pivot set, dispatch, clustering and every
  *              authoritative report section — by artifact id AND by normalized
  *              `kind:value`, so a re-record under a new id cannot revive it. The

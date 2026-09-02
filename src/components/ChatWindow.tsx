@@ -1860,7 +1860,7 @@ function ChatWindowInner({
         (kind) => KIND_TO_PIVOT[kind.toLowerCase()] ?? null,
       )) {
         console.warn("[review] refused manual dispatch of an analyst-rejected selector", { value: detail.value, type: detail.type });
-        toast.error(`"${detail.value}" was marked false by the analyst — not dispatched. Reset its review to run it.`);
+        toast.error(`"${detail.value}" was dismissed by the analyst — not dispatched. Reset its review to run it.`);
         return;
       }
       const prompt = detail.prompt ??
