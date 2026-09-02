@@ -266,7 +266,10 @@ if (SNAPSHOT) {
 }
 
 const RPC: Record<string, unknown> = {
-  get_case_metrics: [{ thread_id: THREAD_ID, artifact_count: artifacts.length, confirmed_count: 2, tool_call_count: tool_usage_log.length, failed_tool_count: 2 }],
+  // Field names must match the production RPC's RETURNS TABLE
+  // (thread_id, artifacts, tool_calls) — loadCaseMetrics maps those exact
+  // names, so anything else silently renders the cases list as all-zero.
+  get_case_metrics: [{ thread_id: THREAD_ID, artifacts: artifacts.length, tool_calls: tool_usage_log.length }],
   get_insights_summary: [{ total_threads: 12, total_artifacts: 96, confirmed_artifacts: 24, credits_used: 341 }],
   has_role: false,
   // CustodyTab.verify() reads { ok, total, first_break } — the old
