@@ -10,6 +10,9 @@ import { toolActionLabel } from "@/lib/tool-display";
 import { humanizeSourceChain, tokenizeSourceChain } from "@/lib/report-source-labels";
 import { deriveToolStatus, deriveToolReason } from "@/lib/tool-run";
 import { isSubjectUnlinked, isQuarantined } from "@/lib/quarantine";
+// Pure (no Supabase import), so no cycle: the one rejection predicate every
+// frontend consumer shares — analyst verdict OR the legacy `false_positive` flag.
+import { isRejectedArtifact as isRejectedArtifactRow } from "@/lib/analyst-decisions";
 // Derived models built here (timeline entries, pivot candidates) carry a
 // per-artifact confidence that is later RENDERED, so they must carry the
 // effective value — otherwise a surface displays a raw number without ever
@@ -1137,10 +1140,16 @@ function mdEscape(v: string): string {
   return v.replace(/\|/g, "\\|").replace(/\n+/g, " ");
 }
 
-export function buildEvidenceMatrixMarkdown(artifacts: Artifact[]): string {
+export function buildEvidenceMatrixMarkdown(
+  artifacts: Artifact[],
+  reviews?: Record<string, ReviewAdjustment>,
+): string {
   if (artifacts.length === 0) return "_No evidence recorded._";
   const rows = artifacts.map((a) => {
-    const label = labelForArtifact(a);
+    // Through the analyst's verdict, like every other label in the report: a
+    // rejected row is listed (forensic history) but reads FAILED, never as an
+    // active CONFIRMED / CORRELATED row in the exported matrix.
+    const label = labelForArtifact(a, reviews?.[a.id]);
     // #3: strip promotional "CONFIRMED" wording from the VALUE when the row is
     // not actually backend-CONFIRMED (render-only; artifact untouched).
     let value = sanitizeValueForLabel(a.value, label === "CONFIRMED");
@@ -1322,7 +1331,7 @@ export function buildReportMarkdown(input: ReportInput): string {
     ].join("\n");
   })();
 
-  const entityTable = buildEvidenceMatrixMarkdown(artifacts);
+  const entityTable = buildEvidenceMatrixMarkdown(artifacts, reviews);
 
   // #6: collision-flagged artifacts (namesakes / unrelated entities) are
   // quarantined into their own section and kept out of the main network.
@@ -1448,8 +1457,13 @@ export function buildReportMarkdown(input: ReportInput): string {
     // collision-SECTION membership test; adding quarantine to it would evict these
     // rows from `conflictNoted` (:1138), which is the only branch that quotes
     // their reason verbatim (:1151). See isClusterIneligible in report-hygiene.ts.
+    // An analyst-rejected row (dismissed / wrong / legacy false_positive) is the
+    // same authority claim refused by a human instead of the pipeline: it leaves
+    // the network section too, and stays in the Artifact/Entity Table as FAILED.
     const networkExcluded = new Set(
-      artifacts.filter((a) => collisionIds.has(a.id) || isSubjectUnlinked(a.metadata)).map((a) => a.id),
+      artifacts.filter((a) =>
+        collisionIds.has(a.id) || isSubjectUnlinked(a.metadata) || isRejectedArtifactRow(a, rev(a)),
+      ).map((a) => a.id),
     );
     const reputation = artifacts.filter((a) => isReputationArtifact(a) && !networkExcluded.has(a.id));
     const repIds = new Set(reputation.map((a) => a.id));

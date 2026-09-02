@@ -38,8 +38,8 @@ import {
   AuthorityChip, AuthorityCaveat, AuthorityLegend, AuthoritySpine, RuleLabel, UnderlyingStrength,
 } from "@/components/ui/authority";
 import {
-  useReviewStates, REVIEW_CLASS, REVIEW_SHORT, launchRecheckInChat,
-  type ReviewState,
+  useReviewStates, REVIEW_CLASS, REVIEW_SHORT, startRecheck,
+  type ReviewState, type ReviewWriteResult,
 } from "@/lib/review";
 
 const GROUP_ICON: Record<Group, React.ComponentType<{ className?: string }>> = {
@@ -196,8 +196,11 @@ function ArtifactsList({
       for (const k of Object.keys(byGroup[g])) byGroup[g][k].sort(cmp);
     }
     return byGroup;
+    // `review.revision`: with the "All" filter `filtered === items` (same
+    // reference), so a verdict change never re-ran this memo and the strength
+    // ordering stayed stale until something else re-rendered the list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtered, sortMode, statusFilter]);
+  }, [filtered, sortMode, statusFilter, review.revision]);
 
   // A failed SELECT (transient DB/network) must be visibly distinct from an
   // empty case, with a retry — otherwise a dropped query reads as "nothing found".
@@ -773,7 +776,7 @@ function ArtifactDrawer({
   onClose: () => void;
   onChanged: (a: Artifact) => void;
   reviewGet: (id: string) => ReviewState;
-  reviewSet: (id: string, s: ReviewState | null, ctx?: { value?: string; kind?: string; confidence?: number; source?: string }) => void;
+  reviewSet: (id: string, s: ReviewState | null, ctx?: { value?: string; kind?: string; confidence?: number; source?: string }) => Promise<ReviewWriteResult>;
   threadId: string;
 }) {
   // (component body unchanged below)
@@ -798,7 +801,7 @@ function ArtifactDrawerInner({
   onClose: () => void;
   onChanged: (a: Artifact) => void;
   reviewGet: (id: string) => ReviewState;
-  reviewSet: (id: string, s: ReviewState | null, ctx?: { value?: string; kind?: string; confidence?: number; source?: string }) => void;
+  reviewSet: (id: string, s: ReviewState | null, ctx?: { value?: string; kind?: string; confidence?: number; source?: string }) => Promise<ReviewWriteResult>;
   threadId: string;
 }) {
   const meta = (artifact.metadata ?? {}) as Record<string, unknown>;
@@ -821,32 +824,16 @@ function ArtifactDrawerInner({
   const drawerAuthority = authorityFor(artifact, rState);
   const review = useReviewStates(threadId);
   const [noteDraft, setNoteDraft] = useState(review.getNote(artifact.id));
-  const [saving, setSaving] = useState(false);
+  // `onChanged` used to feed the metadata false-positive toggle, which is gone
+  // (the review verdict is the one False contract). The prop stays on the
+  // drawer's public shape for the local-update path callers already wire.
+  void onChanged;
 
   const copy = (text: string, label: string) => {
     navigator.clipboard.writeText(text).then(
       () => toast.success(label),
       () => toast.error("Copy failed"),
     );
-  };
-
-  const updateMeta = async (patch: Record<string, unknown>) => {
-    if (saving) return;
-    setSaving(true);
-    try {
-      const next = { ...meta, ...patch };
-      const { data, error } = await supabase
-        .from("artifacts")
-        .update({ metadata: next as never })
-        .eq("id", artifact.id)
-        .select("id,kind,value,confidence,source,created_at,metadata")
-        .maybeSingle();
-      if (error || !data) return toast.error(error?.message ?? "Update failed");
-      onChanged(data as Artifact);
-      toast.success("Updated");
-    } finally {
-      setSaving(false);
-    }
   };
 
   const citation = `\`${artifact.value}\` (${artifact.kind}${artifact.source ? `, via ${artifact.source}` : ""}${shownArtifact.effective != null ? `, ${shownArtifact.effective}%` : ""})`;
@@ -970,10 +957,19 @@ function ArtifactDrawerInner({
                 current={rState}
                 target="recheck"
                 onClick={() => {
-                  reviewSet(artifact.id, "recheck", rctx);
-                  launchRecheckInChat(threadId, { value: artifact.value, kind: artifact.kind });
-                  toast.success("Rechecking in chat…");
-                  onClose();
+                  // Persist FIRST; the chat run launches only after the verdict
+                  // has committed. A failed write toasts and launches nothing,
+                  // and the drawer stays open so the analyst can retry.
+                  void startRecheck({
+                    set: reviewSet,
+                    threadId,
+                    artifact: { id: artifact.id, value: artifact.value, kind: artifact.kind },
+                    ctx: rctx,
+                  }).then((r) => {
+                    if (!r.ok) return;
+                    toast.success("Rechecking in chat…");
+                    onClose();
+                  });
                 }}
               >
                 <ShieldQuestion className="w-3 h-3" /> Recheck
@@ -1004,8 +1000,11 @@ function ArtifactDrawerInner({
                 variant="secondary"
                 className="h-6 px-2 text-data"
                 onClick={() => {
-                  review.setNote(artifact.id, noteDraft, rctx);
-                  toast.success("Note saved");
+                  // The write result is real: a failed note has already toasted
+                  // and rolled back, so only a committed one reads "saved".
+                  void review.setNote(artifact.id, noteDraft, rctx).then((r) => {
+                    if (r.ok) toast.success("Note saved");
+                  });
                 }}
               >
                 Save note
@@ -1033,12 +1032,16 @@ function ArtifactDrawerInner({
             )}
           </Field>
 
+          {/* The separate "Mark false positive" metadata toggle is gone. It wrote
+              `metadata.false_positive` — a second, unrelated "false" signal that
+              the agent's review reads never saw. The ONE visible False action is
+              the review verdict above (`dismissed`), which reaches every consumer:
+              pivots, dispatch, clustering, synthesis, the report and the agent's
+              next run. Legacy rows that carry the flag still read as rejected
+              (see analyst-decisions.ts isRejectedArtifact) and show the chip. */}
           <div className="grid grid-cols-2 gap-2">
             <Button size="sm" variant="outline" onClick={() => copy(artifact.value, "Value copied")} className="gap-1.5"><Copy className="w-3.5 h-3.5" /> Copy value</Button>
             <Button size="sm" variant="outline" onClick={() => copy(citation, "Citation copied")} className="gap-1.5"><Copy className="w-3.5 h-3.5" /> Copy citation</Button>
-            <Button size="sm" variant={falsePositive ? "destructive" : "secondary"} disabled={saving} onClick={() => updateMeta({ false_positive: !falsePositive })} className="col-span-2 gap-1.5">
-              <XCircle className="w-3.5 h-3.5" /> {falsePositive ? "Unmark FP" : "Mark false positive"}
-            </Button>
           </div>
         </div>
       </SheetContent>
@@ -1165,8 +1168,11 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
       else if (STATUS_FILTER_GROUPS.excluded!.has(s)) c.excluded++;
     }
     return c;
+    // `review.revision` bumps on every verdict change (including rollbacks), so
+    // the counts move the instant an analyst decides — memoising on `items`
+    // alone left the chips stale until an unrelated artifact arrived.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items]);
+  }, [items, review.revision]);
 
   return (
     <>

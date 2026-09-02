@@ -18,12 +18,14 @@ import {
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { detectSeed, formatThreadTitle } from "@/lib/seed";
-import { checkCachedHitSafety, type ReviewState } from "@/lib/review";
+import { checkCachedHitSafety, useReviewStates, type ReviewState } from "@/lib/review";
+import { buildDecisionSets, isManualDispatchRefused } from "@/lib/analyst-decisions";
+import { KIND_TO_PIVOT } from "@/lib/intel";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
 import { isSubmitBlocked } from "@/lib/submit-guard";
 import { interpretReadinessProbe, type ReadinessBody } from "@/lib/readiness-probe";
-import { dedupeCards } from "@/lib/next-step-cards";
+import { dedupeCards, normalizeTarget } from "@/lib/next-step-cards";
 import { hasReportShape, joinAssistantTranscript, stripReasoningPerPart } from "@/lib/report-shape";
 import { findLastReportIndex, isReportMessage } from "@/lib/superseded-reports";
 import { dedupeCheckpoints } from "@/lib/chat-checkpoints";
@@ -1286,6 +1288,17 @@ function ChatWindowInner({
   // Targets tools have already been run against — the "already investigated"
   // signal that stops the rail re-suggesting a pivot that's already been run.
   const queriedTargets = useThreadQueriedTargets(threadId);
+  // Analyst decisions. They shape the "Next steps" rail (a rejected selector is
+  // never suggested, a Key one ranks first, a Recheck one is a verification
+  // task) and they GATE the pivot bus: a "Run this pivot" on a rejected
+  // selector is refused here at dispatch, not merely hidden from the cards.
+  const review = useReviewStates(threadId);
+  const decisionSets = useMemo(
+    () => buildDecisionSets(artifacts, review.map, normalizeTarget, (kind) => KIND_TO_PIVOT[kind.toLowerCase()] ?? null),
+    [artifacts, review.map],
+  );
+  const decisionSetsRef = useRef(decisionSets);
+  decisionSetsRef.current = decisionSets;
   const [seedValue, setSeedValue] = useState<string | null>(null);
   // Skipped pivots (normalized-target keys) so a lead the analyst dismissed in
   // the Pivots tab never reappears in the chat rail. Hydrated from localStorage
@@ -1837,6 +1850,19 @@ function ChatWindowInner({
     const onRunPivot = (e: Event) => {
       const detail = (e as CustomEvent<{ threadId: string; value: string; type?: string; prompt?: string }>).detail;
       if (!detail || detail.threadId !== threadId) return;
+      // MANUAL DISPATCH GUARD. Every surface that runs a pivot — the Pivots
+      // tab, "queue all", the command palette, a Recheck launch — rides this
+      // bus, so this is the one place a rejected selector can be refused
+      // before it starts a run. Keyed by pivot type + normalized value, the
+      // same identity the engine and the backend guard use.
+      if (isManualDispatchRefused(
+        decisionSetsRef.current, detail.type, detail.value, normalizeTarget,
+        (kind) => KIND_TO_PIVOT[kind.toLowerCase()] ?? null,
+      )) {
+        console.warn("[review] refused manual dispatch of an analyst-rejected selector", { value: detail.value, type: detail.type });
+        toast.error(`"${detail.value}" was marked false by the analyst — not dispatched. Reset its review to run it.`);
+        return;
+      }
       const prompt = detail.prompt ??
         `Pivot on ${detail.value}${detail.type ? ` (${detail.type})` : ""}. Run the next investigation step on this lead.`;
       void sendText(prompt);
@@ -2277,7 +2303,7 @@ function ChatWindowInner({
     // deduped, already-run-filtered and ranked. Chat only takes the top 3
     // still-actionable ("new") pivots; already-searched ones sink to the Pivots
     // tab. Recomputes whenever artifacts stream in or a new turn lands.
-    const ranked = computePivots({ artifacts, seedValue, reportPivots, skipSet: pivotSkip, queriedSet: queriedTargets });
+    const ranked = computePivots({ artifacts, seedValue, reportPivots, skipSet: pivotSkip, queriedSet: queriedTargets, reviews: review.map });
     for (const p of ranked.filter((candidate) => candidate.status === "new").slice(0, 3)) {
       seenLabels.add(p.actionLabel);
       out.push({
@@ -2306,7 +2332,7 @@ function ChatWindowInner({
     // "Review lead · Damien O Brien" and "Review lead · Damien O'Brien" surfaced
     // from the same source are one lead, not two. Keep the first (highest-ranked).
     return dedupeCards(out).slice(0, 4);
-  }, [isLoading, messages, artifacts, seedValue, reportPivots, pivotSkip, queriedTargets]);
+  }, [isLoading, messages, artifacts, seedValue, reportPivots, pivotSkip, queriedTargets, review.map]);
 
   return (
     <div className="chat-stage relative h-full min-w-0 overflow-hidden bg-background">
