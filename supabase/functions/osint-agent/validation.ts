@@ -2,6 +2,7 @@
  * validation.ts — Seed detection, cache TTLs, and artifact validation.
  * Extracted from index.ts (lines 284–547).
  */
+import { looksLikePostalAddress, normalizeAddressValue } from "./address.ts";
 
 // The only import in this module, and deliberately onto a ZERO-import leaf so
 // nothing heavier is pulled in behind it: `validateArtifact` must canonicalise a
@@ -53,10 +54,20 @@ export function detectSeedServer(input: string): DetectedSeed | null {
   // US street-address heuristic: leading street number + a 2-letter state + a
   // ZIP. Routes to the address playbook + property/business pivot checklist so an
   // address/business seed is not treated as a generic name search.
-  // MUST match src/lib/seed.ts.
-  const ADDRESS = /^\d{1,6}\s+.+\s[A-Za-z]{2}\s+\d{5}(?:-\d{4})?$/;
-  if (ADDRESS.test(raw)) {
-    return { kind: "address", raw, normalized: raw.toLowerCase().replace(/\s+/g, " ").trim() };
+  //
+  // The predicate lives in address.ts because the google_dorks kind guard needs
+  // the same recognition. It flattens whitespace first and accepts the comma
+  // placements people actually type, so the two forms an analyst pastes —
+  //
+  //     79 WAVERLY AVE\nCINCINNATI OH, 45215
+  //     79 Waverly Ave, Cincinnati, OH 45215
+  //
+  // — both classify as `address` and normalize to ONE cache key. The previous
+  // regex required a single line and whitespace (not a comma) before the ZIP, so
+  // the first form fell through to `other` and the run was routed as a generic
+  // free-text search. MUST match src/lib/seed.ts.
+  if (looksLikePostalAddress(raw)) {
+    return { kind: "address", raw, normalized: normalizeAddressValue(raw) };
   }
   // Person/name-location heuristic: multi-word, mostly letters, not a structured identifier.
   // Example: "josh gillman rocklin ca" → person seed (so the agent uses person fan-out

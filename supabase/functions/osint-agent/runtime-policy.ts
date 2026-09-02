@@ -487,6 +487,45 @@ export function finishCall(threadId: string, toolName: string): void {
   }
 }
 
+/**
+ * Did this tool result prove that NO provider request was issued?
+ *
+ * STRUCTURAL ONLY. `provider_attempted: false` is an explicit claim a tool makes
+ * about its own execution; nothing is inferred from error text. String sniffing
+ * is exactly how this would rot — `skipped`, `gated` and `unavailable` all appear
+ * in messages emitted BOTH before and after a provider was contacted.
+ *
+ * Absent marker ⇒ false ⇒ the call is charged. A cost cap must fail closed
+ * toward charging: over-charging truncates one run, under-charging bills the user.
+ */
+export function isPreProviderGate(output: unknown): boolean {
+  if (!output || typeof output !== "object") return false;
+  return (output as Record<string, unknown>).provider_attempted === false;
+}
+
+/**
+ * Return the paid slot `startCall` reserved, for a call that provably never
+ * reached the provider. THE SINGLE ACCOUNTING AUTHORITY — `state.paidCalls` is
+ * written in exactly two places, both in this module: reserved in `startCall`,
+ * released here. Nothing outside runtime-policy may touch the counter.
+ *
+ * WHY RESERVE-THEN-RELEASE rather than counting at execution: a model step
+ * dispatches tool calls as a parallel batch, and `reserveToolCall`'s comment
+ * records what happens when a budget counts completions instead of admissions —
+ * every call in the batch read the same pre-increment value and the run overshot
+ * to 74 calls. Admission must stay atomic. Releasing a slot afterwards is safe
+ * because it can only ever LOWER the count, never admit a batch that shouldn't
+ * have started.
+ *
+ * Floored at 0: a refund can never mint budget that was not first reserved, so a
+ * tool erroneously marking itself pre-provider cannot manufacture spend.
+ */
+export function refundPaidCall(threadId: string, costTier: ToolCostTier): void {
+  if (costTier === "free") return;
+  const state = getThread(threadId);
+  state.paidCalls = Math.max(0, state.paidCalls - 1);
+}
+
 // ---- Tool-call admission policy ----------------------------------------------
 // Encodes the intended same-tool / concurrency / rate-limit semantics as a pure,
 // testable decision: raw same-tool COUNT never blocks a useful tool. The only

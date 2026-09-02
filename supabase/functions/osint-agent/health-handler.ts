@@ -19,6 +19,7 @@ import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
 import { recoverStaleActiveThreads } from "./recovery.ts";
 import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./finding-synthesis-sweep.ts";
 import { sweepRejectedClusterAssignments, describeSweep } from "./lib/rejected-cluster-sweep.ts";
+import { sweepExpiredCache, cacheSweepEnabled, cacheSweepDryRun, describeCacheSweep } from "./cache-sweep.ts";
 
 /**
  * Release a response body we are never going to read.
@@ -418,6 +419,24 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
         const detail = `${scopes.join("+")}: ${mode}; ${proposed} proposed over ${threads} thread(s) ` +
           `(0:${dist.zero} 1:${dist.one} 2+:${dist.twoPlus})`;
         r.checks.synthesis = errs ? { ok: false, detail: `${detail}; ${errs} error(s)` } : { ok: true, detail };
+      }
+
+      // Expired tool-call cache. Same placement and same reasoning as the two
+      // sweeps above: a separate request from any run, bounded per invocation,
+      // and a fault becomes a reported check rather than a failed probe.
+      //
+      // Note WHERE this sits: `r.ok` was already decided at the orchestrator
+      // gate further up. Nothing below can flip it, so a cache-sweep failure
+      // cannot turn /health red or make it answer 503 — that is structural, not
+      // a promise. Ships DARK (CACHE_SWEEP_ENABLED defaults off) because it
+      // deletes production rows; CACHE_SWEEP_DRY_RUN measures the backlog first.
+      if (!cacheSweepEnabled()) {
+        r.checks.cache_sweep = { ok: true, detail: "disabled" };
+      } else {
+        const c = await sweepExpiredCache(admin, { dryRun: cacheSweepDryRun() });
+        r.checks.cache_sweep = c.errors
+          ? { ok: false, detail: `${describeCacheSweep(c)}; ${c.errors} error(s)` }
+          : { ok: true, detail: describeCacheSweep(c) };
       }
     }
   } catch (e) {
