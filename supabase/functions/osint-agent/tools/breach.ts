@@ -4,6 +4,8 @@
 import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { HIBP_API_KEY } from "../env.ts";
+import { fetchRetry, fetchT } from "../fetch_retry.ts";
 
 /**
  * Loose shapes for the stolen.tax v2 endpoints (osintcat database-search,
@@ -135,7 +137,7 @@ export const breach_check = tool({
       return { error: String(e) };
     }
   },
-}),
+});
 
 export const leakcheck_lookup = tool({
   description:
@@ -166,7 +168,7 @@ export const leakcheck_lookup = tool({
       return { error: String(e) };
     }
   },
-}),
+});
 
 export const hibp_lookup = tool({
   description:
@@ -207,7 +209,7 @@ export const hibp_lookup = tool({
       return { error: String(e) };
     }
   },
-}),
+});
 
 // PRIMARY breach source — RapidAPI Email Breach Search (DataBreach.com, ~8000/mo).
 // Email goes in the PATH: GET /rapidapi/search-email/<email>. The authoritative
@@ -252,7 +254,7 @@ export const rapidapi_breach_search = tool({
       return { error: String(e) };
     }
   },
-}),
+});
 
 // REFERENCE catalog — GET /rapidapi/all-breaches. Whole-corpus metadata, no PII.
 export const rapidapi_all_breaches = tool({
@@ -289,4 +291,4 @@ export const rapidapi_all_breaches = tool({
       return { error: String(e) };
     }
   },
-}),
+});

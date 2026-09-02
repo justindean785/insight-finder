@@ -163,7 +163,8 @@ export const MAX_CONCURRENT_CALLS = 3;
 export const MAX_PAID_CALLS = 12;
 
 // ---- Configurable runtime limits ---------------------------------------------
-// Hard caps are now configurable and DEFAULT TO UNLIMITED investigation depth.
+// Hard caps are env-configurable but DEFAULT TO THE ENFORCED CONSTANTS above —
+// NOT to unlimited. See the enforced-by-default note on `runtimeLimits` below.
 // The old constants above remain exported for other importers, but startCall
 // reads `runtimeLimits.*` (which tests mutate directly). All env reads are
 // guarded so this module can be imported from Node (vitest) where `Deno` does
@@ -204,7 +205,8 @@ function envBool(name: string, fallback: boolean): boolean {
   return fallback;
 }
 
-// EXPORTED MUTABLE config — tests mutate this directly to enable caps.
+// EXPORTED MUTABLE config — the caps are ON by default (see `runtimeLimits`
+// below); tests mutate this directly to raise, lower or disable them.
 // Hard per-tool ceiling. Declared here (not with the other same-tool constants
 // further down) because `runtimeLimits` below reads it — a const referenced
 // before its declaration is a temporal-dead-zone throw at module import.
@@ -432,8 +434,9 @@ export function startCall(input: RuntimeDecisionInput): RuntimeDecision {
 
   // Internal runaway/cost backstops. These apply ONLY when budget enforcement is
   // explicitly enabled (STOP_ON_BUDGET_EXHAUSTED) AND the call is non-essential
-  // AND the relevant limit is finite AND exceeded. By default everything is
-  // unlimited, so none of these fires. NONE of these is a provider rate limit —
+  // AND the relevant limit is finite AND exceeded. STOP_ON_BUDGET_EXHAUSTED
+  // defaults to TRUE and every limit defaults to its constant above, so these DO
+  // fire on an ordinary run. NONE of these is a provider rate limit —
   // the reasons say so explicitly. (Concurrency is handled below as a QUEUE,
   // never allow:false.)
   const sameToolCount = state.toolCounts.get(input.toolName) ?? 0;

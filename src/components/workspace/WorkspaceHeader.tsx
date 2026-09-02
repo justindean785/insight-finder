@@ -320,18 +320,46 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
   };
 
   return (
-    <header className="relative border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(0_0%_8%/0.9),hsl(0_0%_3.5%/0.86))] backdrop-blur-xl">
+    <header className="relative border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(28_10%_6%/0.9),hsl(28_12%_2.5%/0.88))] backdrop-blur-xl">
       <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
 
+      {/* ── Classification band ─────────────────────────────────────────────
+          The strip that makes the workspace read as a case file rather than as
+          a dashboard: what this document is, who it is for, and — via the one
+          accent hairline that crosses it on a slow loop (.dsr-band) — whether
+          the case is live. Text only, no controls; it is a masthead, not a
+          toolbar. Hidden below sm, where the width is worth more than the
+          register mark. */}
+      <div
+        aria-hidden
+        className="dsr-band hidden border-b border-white/[0.05] bg-white/[0.012] px-4 py-1 font-mono text-[9px] uppercase tracking-[0.3em] text-muted-foreground/45 sm:flex sm:items-center sm:justify-between sm:px-7"
+      >
+        <span className="flex items-center gap-2">
+          <span className={cn("h-[5px] w-[5px] shrink-0", liveRun ? "dsr-dot" : "rounded-full bg-muted-foreground/30")} />
+          {liveRun ? <span className="text-danger">Live</span> : <span>Case file</span>}
+          <span className="text-muted-foreground/25">·</span>
+          <span>Insight Finder · Case register</span>
+        </span>
+        <span className="hidden lg:inline">Analyst copy — not for distribution</span>
+        <span className="tabular-nums">
+          {artifactCount} art · {activity.persistedTotal} tools
+        </span>
+      </div>
+
       {/* 3-zone command bar: left balance · center identity · right ops */}
-      <div className="mx-auto grid h-[3.5rem] w-full max-w-[min(100%,64rem)] grid-cols-[1fr_minmax(0,auto)_1fr] items-center gap-2 px-4 sm:px-7">
+      {/* `min-h`, not `h`. A FIXED 3.5rem could not hold the identity block once
+          its status line wrapped, which it does at any width where the case has
+          a few chips — measured at 1000px, where "CASE FILE" from the left
+          column printed straight through the COMPLETE badge and "42 evidence ·
+          18 tools" broke across the tab strip below. The bar grows instead. */}
+      <div className="mx-auto grid min-h-[3.5rem] w-full max-w-[min(100%,64rem)] grid-cols-[1fr_minmax(0,auto)_1fr] items-center gap-2 px-4 py-1.5 sm:px-7">
         {/* Left — case class (balances the right so center is true center) */}
         <div className="flex min-w-0 items-center gap-2 justify-self-start">
           <span className="hidden sm:inline-flex items-center gap-1.5 rounded-md border border-white/[0.07] bg-white/[0.03] px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
             <KindIcon className="h-3 w-3 shrink-0 opacity-80" strokeWidth={1.75} aria-hidden />
             {KIND_LABEL[display.kind]}
           </span>
-          <span className="hidden md:inline text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/55">
+          <span className="hidden whitespace-nowrap md:inline text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/55">
             Case file
           </span>
         </div>
@@ -362,7 +390,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
             )}
           </button>
           {status !== "idle" && (
-            <div className="mt-0.5 flex items-center gap-1.5">
+            <div className="mt-0.5 flex flex-wrap items-center justify-center gap-x-1.5 gap-y-1">
               <span
                 className={cn(
                   "rounded-full border px-2 py-px text-[9px] font-semibold uppercase tracking-[0.16em]",

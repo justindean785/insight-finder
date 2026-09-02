@@ -6,6 +6,7 @@ import { useThreadMessages } from "@/hooks/useThreadMessages";
 import { captureError } from "@/lib/telemetry";
 import { Database, ShieldQuestion, Wrench, XCircle, RotateCcw, FileCheck, Flag, Clock } from "lucide-react";
 import { EmptyState } from "./EmptyState";
+import { isVacuous } from "@/lib/timeline-explanation";
 
 const ICON: Record<TimelineEventType, React.ComponentType<{ className?: string }>> = {
   seed: Flag,
@@ -62,29 +63,50 @@ export function TimelineTab({ threadId, artifacts }: { threadId: string; artifac
   return (
     <div className="p-3 text-xs">
       <ol className="relative border-l border-border pl-4 space-y-3">
-        {items.map((it) => {
+        {items.map((it, i) => {
           const Icon = ICON[it.type];
+          const d = new Date(it.time);
+          const day = Number.isFinite(d.getTime()) ? d.toLocaleDateString() : null;
+          const prev = i > 0 ? new Date(items[i - 1].time) : null;
+          const prevDay = prev && Number.isFinite(prev.getTime()) ? prev.toLocaleDateString() : null;
+          // The DATE belongs to the day, not to every row in it. A run happens
+          // inside a few minutes, so stamping "8/9/2026, 3:14:00 AM" on all
+          // forty rows repeats the date forty times and buries the only part
+          // that varies — the time.
+          const newDay = day !== null && day !== prevDay;
+          // "via hunter_verify" under a row already TITLED hunter_verify is the
+          // same string twice, two lines apart.
+          const showSource = it.source && it.source !== it.title;
+          // Drop explanations that only restate the row type ("Tool returned."
+          // beneath a row labelled TOOL RESULT). A description that adds nothing
+          // still costs a line and a scan stop on every entry.
+          const explanation = it.explanation && !isVacuous(it.explanation, it.title) ? it.explanation : null;
           return (
             <li key={it.id} className="relative">
+              {newDay && (
+                <div className="mb-1.5 font-mono text-eyebrow uppercase tracking-[0.14em] text-muted-foreground/70">
+                  {day}
+                </div>
+              )}
               <span className="absolute -left-[22px] top-1 grid place-items-center w-4 h-4 rounded-full bg-background border border-border">
                 <Icon className="w-2.5 h-2.5 text-muted-foreground" />
               </span>
-              <div className="rounded-md border border-border bg-card/40 p-2.5 space-y-1">
+              <div className="rounded-md border border-border bg-card/40 px-2.5 py-2 space-y-0.5">
                 <div className="flex items-center justify-between gap-2">
                   <span className={"px-1.5 py-0.5 rounded border font-mono text-eyebrow uppercase tracking-wider " + COLOR[it.type]}>
                     {it.type.replace("_", " ")}
                   </span>
-                  <span className="text-data font-mono text-muted-foreground">
-                    {new Date(it.time).toLocaleString()}
+                  <span className="text-data font-mono tabular-nums text-muted-foreground">
+                    {Number.isFinite(d.getTime()) ? d.toLocaleTimeString() : "—"}
                   </span>
                 </div>
                 <div className="font-mono text-foreground break-all">{it.title}</div>
                 <div className="text-eyebrow tracking-normal text-muted-foreground">
                   {it.kind ?? "—"}
-                  {it.source ? ` · via ${it.source}` : ""}
+                  {showSource ? ` · via ${it.source}` : ""}
                   {it.confidence != null ? ` · ${it.confidence}%` : ""}
                 </div>
-                <div className="text-muted-foreground">{it.explanation}</div>
+                {explanation && <div className="text-muted-foreground">{explanation}</div>}
               </div>
             </li>
           );

@@ -82,8 +82,10 @@ Deno.test("the collapsed row survives the per-call cap that used to evict findin
     items: Array.from({ length: 20 }, (_, i) => ({ email: `p${i}@example.com` })),
   });
   assertEquals(out[0].kind, "breach_exposure", "the exposure row is never the one evicted");
-  const emails = out.filter((f) => f.kind === "email").length;
-  assert(emails >= 15, `real findings should now fit the budget, got ${emails}`);
+  const summary = out.find((f) => f.kind === "bulk_corpus_harvest");
+  assert(summary, "bulk identities collapse to one summary instead of evicting the exposure row");
+  const harvested = (summary!.context as { harvested_identities?: unknown[] })?.harvested_identities?.length ?? 0;
+  assert(harvested >= 15, `collapsed identities should retain the budget, got ${harvested}`);
 });
 
 Deno.test("extractFindings handles github_user", () => {

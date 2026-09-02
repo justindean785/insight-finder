@@ -82,7 +82,7 @@ export const socialfetch_lookup = tool({
       return { error: String(e) };
     }
   },
-}),
+});
 
 export const cordcat_discord_lookup = tool({
   description:
@@ -111,7 +111,7 @@ export const cordcat_discord_lookup = tool({
       return { error: String(e) };
     }
   },
-}),
+});
 
 export const username_sweep = tool({
   // Until then this is the edge-native built-in sweep.
@@ -129,7 +129,7 @@ export const username_sweep = tool({
     }
     return await sweepUsername(username);
   },
-}),
+});
 
 export const username_search = tool({
   description: "Alias of username_sweep: same edge-native ~95-site existence check. Same no-spaces rule applies.",
@@ -145,7 +145,7 @@ export const username_search = tool({
     }
     return await sweepUsername(username);
   },
-}),
+});
 
 export const github_user = tool({
   description: "Fetch a GitHub user's public profile + recent public repos.",
@@ -166,7 +166,7 @@ export const github_user = tool({
       };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const github_code_search = tool({
   description:
@@ -196,7 +196,7 @@ export const github_code_search = tool({
       return { ok: true, authenticated: !!GITHUB_API_TOKEN, total: data?.total_count, items };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const reddit_user = tool({
   description: "Fetch a Reddit user's public profile and recent posts/comments.",
@@ -217,7 +217,7 @@ export const reddit_user = tool({
       return { about: (about as RedditResponse)?.data, recent: items };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const hackernews_user = tool({
   description: "Fetch a Hacker News user profile (karma, about, account age, submitted item IDs).",
@@ -229,7 +229,7 @@ export const hackernews_user = tool({
       return { ok: r.ok && data != null, data };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const deepfind_profile_analyzer = tool({
   description:
@@ -269,7 +269,7 @@ export const deepfind_profile_analyzer = tool({
       };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const deepfind_telegram_channel = tool({
   description:
@@ -289,7 +289,7 @@ export const deepfind_telegram_channel = tool({
       return { ok: r.ok, status: r.status, source: "deepfind.telegram_channel", data };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const deepfind_telegram_search = tool({
   description:
@@ -308,5 +308,5 @@ export const deepfind_telegram_search = tool({
       return { ok: r.ok, status: r.status, source: "deepfind.telegram_search", data };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 

@@ -20,15 +20,26 @@ import {
 import { evidenceStatus } from "@/lib/evidence-status";
 import { authorityFor, LEDGER_SORT_RANK } from "@/lib/authority";
 import { isQuarantined, clusterDefaultOpen } from "@/lib/quarantine";
+// THE one number this surface renders. Every figure, meter, range, aria-label
+// and citation below reads `effective` — never `a.confidence`. See
+// src/lib/display-confidence.ts for why five pipelines became one.
+import { displayConfidence, effectiveConfidence, effectiveConfidenceOrZero } from "@/lib/display-confidence";
+import { bandCluster, isProseValue, provenanceOf as provFor } from "@/lib/evidence-bands";
 import { readableSourceLabel } from "@/lib/tool-display";
 import { humanizeArtifactMetadata } from "@/lib/artifact-metadata";
+import {
+  harvestedIdentityPreview,
+  isBulkCorpusHarvestArtifact,
+  partitionBulkCorpusRows,
+  type BulkCorpusDisplayRow,
+} from "@/lib/bulk-corpus-display";
 import { FilterChips } from "@/components/ui/workspace-primitives";
 import {
   AuthorityChip, AuthorityCaveat, AuthorityLegend, AuthoritySpine, RuleLabel, UnderlyingStrength,
 } from "@/components/ui/authority";
 import {
-  useReviewStates, REVIEW_CLASS, REVIEW_SHORT, launchRecheckInChat,
-  type ReviewState,
+  useReviewStates, REVIEW_CLASS, REVIEW_SHORT, startRecheck,
+  type ReviewState, type ReviewWriteResult,
 } from "@/lib/review";
 
 const GROUP_ICON: Record<Group, React.ComponentType<{ className?: string }>> = {
@@ -42,13 +53,6 @@ const GROUP_ICON: Record<Group, React.ComponentType<{ className?: string }>> = {
   other: Tag,
 };
 
-// Provenance string shown under a row / in a cluster header.
-function provFor(a: Artifact): string {
-  const meta = (a.metadata ?? {}) as Record<string, unknown>;
-  return typeof meta.platform === "string" ? meta.platform
-    : typeof meta.breach_source === "string" ? `breach · ${meta.breach_source}`
-    : a.source ?? "";
-}
 
 // Title-case a kind for a subheader, with light pluralization.
 function kindHeading(kind: string, n: number): string {
@@ -60,9 +64,21 @@ function kindHeading(kind: string, n: number): string {
   return label + "s";
 }
 
-// Same-kind clusters larger than this collapse by default — they're the source
-// of the "wall of identical rows" (e.g. 11 subdomains, all hackertarget @70%).
+// Same-kind clusters larger than this get a fold control and are counted as a
+// "wall" (e.g. 11 subdomains, all hackertarget @70%). They still OPEN by
+// default — see `clusterDefaultOpen` for why folding by default was reverted —
+// so this is the threshold for offering the fold, never for applying it.
 const CLUSTER_COLLAPSE_THRESHOLD = 4;
+
+/**
+ * Reserved key inside the per-case fold preferences for the board-wide default.
+ *
+ * Cluster keys are `${group}:${kind}` and therefore always contain a colon, so a
+ * colon-free key cannot collide with one. Storing the fold-all choice in the
+ * same boolean map means it persists per case through the existing reader and
+ * writer with no schema change and no migration.
+ */
+const FOLD_ALL_KEY = "*";
 
 /**
  * The analyst's own fold/unfold choices, remembered per case.
@@ -162,7 +178,7 @@ function ArtifactsList({
     }
     const conf = (a: Artifact) => {
       const fp = ((a.metadata ?? {}) as Record<string, unknown>).false_positive === true;
-      return fp ? -1 : (a.confidence ?? 0);
+      return fp ? -1 : effectiveConfidenceOrZero(a);
     };
     const cmp = (a: Artifact, b: Artifact) => {
       if (sortMode === "newest") {
@@ -180,15 +196,18 @@ function ArtifactsList({
       for (const k of Object.keys(byGroup[g])) byGroup[g][k].sort(cmp);
     }
     return byGroup;
+    // `review.revision`: with the "All" filter `filtered === items` (same
+    // reference), so a verdict change never re-ran this memo and the strength
+    // ordering stayed stale until something else re-rendered the list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtered, sortMode, statusFilter]);
+  }, [filtered, sortMode, statusFilter, review.revision]);
 
   // A failed SELECT (transient DB/network) must be visibly distinct from an
   // empty case, with a retry — otherwise a dropped query reads as "nothing found".
   if (error && items.length === 0) {
     return (
       <div className="p-3 sm:p-5">
-        <div className="flex flex-col items-center gap-4 rounded-2xl border border-destructive/25 bg-[linear-gradient(180deg,rgba(70,20,20,0.22),rgba(12,8,8,0.9))] px-6 py-12 text-center shadow-[0_34px_110px_-70px_rgba(0,0,0,0.95)]">
+        <div className="flex flex-col items-center gap-4 rounded-2xl border border-destructive/25 bg-[linear-gradient(180deg,hsl(var(--danger-muted)/0.55),hsl(var(--surface-1)/0.92))] px-6 py-12 text-center shadow-[0_34px_110px_-70px_rgba(0,0,0,0.95)]">
           <div className="grid h-11 w-11 place-items-center rounded-xl border border-destructive/35 bg-destructive/10 text-destructive">
             <AlertTriangle className="h-[18px] w-[18px]" strokeWidth={1.75} />
           </div>
@@ -225,7 +244,7 @@ function ArtifactsList({
   if (items.length === 0) {
     return (
       <div className="p-3 sm:p-5">
-        <div className="overflow-hidden rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(17,19,23,0.98),rgba(5,6,8,0.98))] shadow-[0_34px_110px_-70px_rgba(0,0,0,0.95)]">
+        <div className="overflow-hidden rounded-2xl border border-white/10 bg-[linear-gradient(180deg,hsl(var(--surface-2)/0.98),hsl(var(--surface-0)/0.98))] shadow-[0_34px_110px_-70px_rgba(0,0,0,0.95)]">
           <div className="border-b border-white/8 px-4 sm:px-5 py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex min-w-0 items-center gap-3.5">
               {/* radar node — "sensor acquiring contact" */}
@@ -312,12 +331,39 @@ function ArtifactsList({
     );
   }
 
+  // How many clusters are big enough to be worth a fold control. The board-wide
+  // fold is offered only when there is more than one — a single foldable cluster
+  // already has its own header toggle, and a second control for it is clutter.
+  let foldableClusters = 0;
+  for (const g of Object.keys(grouped) as Group[]) {
+    for (const k of Object.keys(grouped[g])) {
+      if (grouped[g][k].length > CLUSTER_COLLAPSE_THRESHOLD) foldableClusters++;
+    }
+  }
+  const allFolded = openClusters[FOLD_ALL_KEY] === false;
+
   return (
     <div className="ledger">
       {/* One column grid for the WHOLE board, declared once, so value / status /
           source / confidence line up down every section. Column alignment is the
           single biggest scanning win on a dense case: without it, reading 100
           artifacts means reading 100 individually-laid-out rows. */}
+      {foldableClusters > 1 && (
+        <div className="flex items-center justify-end gap-2 px-2.5 pt-1.5">
+          <span className="text-micro text-muted-foreground/55 tabular-nums">
+            {foldableClusters} large groups
+          </span>
+          <button
+            type="button"
+            onClick={() => setClusters(allFolded ? {} : { [FOLD_ALL_KEY]: false })}
+            aria-pressed={allFolded}
+            className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.035] px-2 py-0.5 text-micro text-muted-foreground transition-colors hover:bg-white/[0.07] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <ChevronRight className={cn("h-3 w-3 transition-transform", !allFolded && "rotate-90")} aria-hidden />
+            {allFolded ? "Unfold all" : "Fold all"}
+          </button>
+        </div>
+      )}
       <div className="ledger-head" role="presentation">
         <span data-ledger-col="value">Evidence</span>
         <span data-ledger-col="status">Authority</span>
@@ -340,7 +386,7 @@ function ArtifactsList({
           if (isQuarantined(meta)) quarantinedC++;
         }
         // Order kinds by their strongest member so high-value kinds lead.
-        kinds.sort((a, b) => (grouped[g][b][0]?.confidence ?? 0) - (grouped[g][a][0]?.confidence ?? 0));
+        kinds.sort((a, b) => effectiveConfidenceOrZero(grouped[g][b][0]) - effectiveConfidenceOrZero(grouped[g][a][0]));
         return (
           <section key={g} aria-label={GROUP_LABEL[g]}>
             <RuleLabel
@@ -375,16 +421,25 @@ function ArtifactsList({
               // the repeated per-row line.
               const provs = new Set(list.map(provFor).filter(Boolean));
               const uniformProv = provs.size === 1 ? [...provs][0] : null;
+              // A crowded cluster drawn from several harvests reads as one
+              // undifferentiated wall; banding names the harvests instead. Not
+              // attempted when the cluster is already single-provenance —
+              // `uniformProv` handles that case better, with no extra row.
+              const bands = uniformProv ? null : bandCluster(list);
               const collapsible = list.length > CLUSTER_COLLAPSE_THRESHOLD;
               const key = `${g}:${kind}`;
               const kindQuarantined = list.filter((a) => isQuarantined(a.metadata)).length;
-              const open = openClusters[key] ?? clusterDefaultOpen(collapsible, kindQuarantined);
+              // Precedence: this cluster's own toggle, then the analyst's
+              // board-wide fold, then the policy default (always open).
+              const open = openClusters[key]
+                ?? openClusters[FOLD_ALL_KEY]
+                ?? clusterDefaultOpen(collapsible, kindQuarantined);
               // Confidence range across the cluster, for the collapsed summary.
-              const confs = list.map((a) => a.confidence).filter((c): c is number => c != null);
+              const confs = list.map((a) => effectiveConfidence(a)).filter((c): c is number => c != null);
               const lo = confs.length ? Math.min(...confs) : null;
               const hi = confs.length ? Math.max(...confs) : null;
-              const rangeColor = (hi ?? 0) >= 70 ? "hsl(var(--confidence-high))"
-                : (hi ?? 0) >= 50 ? "hsl(var(--confidence-mid))" : "hsl(var(--confidence-low))";
+              // Ordinal INK, not hue — see the confColor note on the row.
+              const rangeColor = "hsl(var(--muted-foreground) / 0.85)";
               return (
                 <div key={kind}>
                   {/* Kind subheader — clickable when the cluster is collapsible */}
@@ -426,21 +481,132 @@ function ArtifactsList({
                     )}
                   </div>
 
-                  {open && list.map((a) => (
-                    <ArtifactRow
-                      key={a.id}
-                      a={a}
-                      onSelect={onSelect}
-                      review={review}
-                      hideProv={uniformProv != null}
-                    />
-                  ))}
+                  {open && bands && bands.map((band) => {
+                    const bandQuarantined = band.rows.filter((a) => isQuarantined(a.metadata)).length;
+                    return (
+                      <div key={band.prov || "\u2014"}>
+                        {/* Band header. Deliberately NOT interactive: bands are
+                            structure, not a second place to hide rows. It states
+                            what this run of rows came from, how many there are,
+                            and their spread — the three questions the repeated
+                            per-row source label was answering one row at a time. */}
+                        <div className="flex items-center gap-1.5 bg-white/[0.012] px-2.5 py-0.5 pl-7">
+                          <span className="h-px w-2 shrink-0 bg-white/15" aria-hidden />
+                          <span
+                            className="truncate font-mono text-micro text-muted-foreground/75"
+                            title={band.prov || undefined}
+                          >
+                            {band.prov ? readableSourceLabel(band.prov) : "source not recorded"}
+                          </span>
+                          <span className="shrink-0 text-micro tabular-nums text-muted-foreground/55">
+                            · {band.rows.length}
+                          </span>
+                          {bandQuarantined > 0 && (
+                            <span className="inline-flex shrink-0 items-center gap-1 text-micro text-[hsl(var(--authority-quarantine))]">
+                              <Unlink className="h-3 w-3" strokeWidth={2} aria-hidden />
+                              {bandQuarantined}
+                            </span>
+                          )}
+                          {band.lo != null && band.hi != null && band.rows.length > 1 && (
+                            <span className="ml-auto shrink-0 text-micro tabular-nums text-muted-foreground/55">
+                              {band.lo === band.hi ? `${band.hi}%` : `${band.lo}\u2013${band.hi}%`}
+                            </span>
+                          )}
+                        </div>
+                        {renderDisplayRows(partitionBulkCorpusRows(band.rows), onSelect, review, true)}
+                      </div>
+                    );
+                  })}
+
+                  {open && !bands && renderDisplayRows(partitionBulkCorpusRows(list), onSelect, review, uniformProv != null)}
                 </div>
               );
             })}
           </section>
         );
       })}
+    </div>
+  );
+}
+
+function renderDisplayRows(
+  rows: BulkCorpusDisplayRow[],
+  onSelect: (a: Artifact) => void,
+  review: ReturnType<typeof useReviewStates>,
+  hideProv: boolean,
+) {
+  return rows.map((row) => {
+    if (row.type === "single") {
+      return (
+        <ArtifactRow
+          key={row.artifact.id}
+          a={row.artifact}
+          onSelect={onSelect}
+          review={review}
+          hideProv={hideProv}
+        />
+      );
+    }
+    return (
+      <BulkCorpusGroupRow
+        key={row.key}
+        group={row}
+        onSelect={onSelect}
+        review={review}
+        hideProv={hideProv}
+      />
+    );
+  });
+}
+
+function BulkCorpusGroupRow({
+  group, onSelect, review, hideProv,
+}: {
+  group: Extract<BulkCorpusDisplayRow, { type: "bulk_group" }>;
+  onSelect: (a: Artifact) => void;
+  review: ReturnType<typeof useReviewStates>;
+  hideProv: boolean;
+}) {
+  const lead = group.artifacts[0];
+  const authority = authorityFor(lead, review.get(lead.id));
+  const preview = group.artifacts.slice(0, 4).map((a) => a.value).join(" · ");
+  const more = group.artifacts.length - 4;
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => onSelect(lead)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(lead); }
+      }}
+      data-density-row
+      className="group/row ledger-row cursor-pointer text-left"
+      aria-label={`${group.artifacts.length} bulk-corpus identities. ${group.reason}`}
+    >
+      <AuthoritySpine state={authority.state} />
+      <span className="min-w-0" data-ledger-col="value">
+        <span className="flex items-start gap-1.5">
+          <span className="text-[12.5px] leading-[1.45] text-foreground/90">
+            <span className="font-medium">{group.artifacts.length} bulk-corpus identities</span>
+            {preview && (
+              <span className="mt-0.5 block truncate font-mono text-data text-muted-foreground/80">
+                {preview}{more > 0 ? ` · +${more} more` : ""}
+              </span>
+            )}
+          </span>
+        </span>
+        <AuthorityCaveat view={authority} className="mt-0.5 line-clamp-2" />
+      </span>
+      <span className="min-w-0" data-ledger-col="status">
+        <AuthorityChip view={authority} />
+        <span className="mt-0.5 truncate text-eyebrow text-muted-foreground/70">{authority.basis}</span>
+      </span>
+      <span className="min-w-0 truncate font-mono text-eyebrow text-muted-foreground/60" data-ledger-col="source" title={group.source ?? undefined}>
+        {!hideProv && group.source ? readableSourceLabel(group.source) : ""}
+      </span>
+      <span className="flex shrink-0 items-center justify-end gap-0.5" data-ledger-col="confidence">
+        <span className="conf-figure text-[hsl(var(--authority-quarantine))]">—</span>
+      </span>
     </div>
   );
 }
@@ -458,12 +624,22 @@ function ArtifactRow({
   const sensitive = meta.possible_minor === true || meta.minor_warning === true;
   const rState = review.get(a.id);
   const dismissed = rState === "dismissed";
-  const conf = a.confidence ?? 0;
-  const confColor =
-    conf >= 70 ? "hsl(var(--confidence-high))" :
-    conf >= 50 ? "hsl(var(--confidence-mid))" :
-    "hsl(var(--confidence-low))";
+  const shown = displayConfidence(a);
+  const conf = shown.effective ?? 0;
+  // A confidence is a MAGNITUDE, and magnitude is carried by the length of the
+  // hairline below the numeral — never by the numeral's colour. This used to be
+  // a three-step by-value ramp (>=70 green, >=50 amber, else red), which is why
+  // the Conf. column read as a column of verdicts: a single-source 38 rendered
+  // in alarm red beside a corroborated 88 in confirmation green, when neither
+  // colour was saying anything the AUTHORITY chip two columns left had not
+  // already said properly. Ink is now constant; only quarantine dims it,
+  // because an unlinked row's number genuinely is not about this subject.
+  const confColor = isQuarantined(a.metadata)
+    ? "hsl(var(--authority-quarantine))"
+    : "hsl(var(--foreground) / 0.92)";
   const prov = provFor(a);
+  const prose = isProseValue(a.value) || isBulkCorpusHarvestArtifact(a);
+  const bulkPreview = isBulkCorpusHarvestArtifact(a) ? harvestedIdentityPreview(a, 4) : [];
   const authority = authorityFor(a, rState);
   return (
     <HoverCard openDelay={250} closeDelay={80}>
@@ -482,7 +658,7 @@ function ArtifactRow({
             `${a.kind} ${a.value}`,
             authority.label,
             authority.caveat ?? "",
-            a.confidence != null ? `${conf}% confidence` : "",
+            shown.effective != null ? `${conf}% confidence` : "",
           ].filter(Boolean).join(". ")}
           data-density-row
           className={cn(
@@ -494,22 +670,35 @@ function ArtifactRow({
 
           {/* Value +, when there is one, the recorded reason it is not stronger. */}
           <span className="min-w-0" data-ledger-col="value">
-            <span className="flex items-center gap-1.5">
+            <span className={cn("flex gap-1.5", prose ? "items-start" : "items-center")}>
               {rState === "confirmed" && <CheckCircle2 className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-high))]" aria-hidden />}
               {rState === "key" && <Star className="h-3 w-3 shrink-0 text-primary" aria-hidden />}
               {rState === "recheck" && <ShieldQuestion className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-mid))]" aria-hidden />}
               {rState === "dismissed" && <EyeOff className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />}
               {fp && <XCircle className="h-3 w-3 shrink-0 text-destructive" aria-hidden />}
               {sensitive && <ShieldAlert className="h-3 w-3 shrink-0 text-destructive" aria-hidden />}
+              {/* A selector gets the mono, one-line, truncated treatment this
+                  column was built for. A SENTENCE does not: the extractor writes
+                  whole findings into `value` ("CONTRADICTION: … Carlos Morales
+                  appears in ZERO of 31 records"), and truncating the most
+                  important row in a case to forty monospace characters is how
+                  it went unread. Prose wraps to two lines in the reading face. */}
               <span
                 className={cn(
-                  "mono-value truncate text-data text-foreground/95",
+                  prose
+                    ? "text-[12.5px] leading-[1.45] text-foreground/90 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden"
+                    : "mono-value truncate text-data text-foreground/95",
                   fp && "line-through opacity-70",
                 )}
                 title={a.value}
               >
                 {a.value}
               </span>
+              {bulkPreview.length > 0 && (
+                <span className="mt-0.5 block truncate font-mono text-data text-muted-foreground/80">
+                  {bulkPreview.join(" · ")}
+                </span>
+              )}
               <button
                 type="button"
                 aria-label={`Copy ${a.value}`}
@@ -553,9 +742,16 @@ function ArtifactRow({
           </span>
 
           <span className="flex shrink-0 items-center justify-end gap-0.5" data-ledger-col="confidence">
-            {a.confidence != null && (
+            {shown.effective != null && (
               <>
-                <span className="text-data font-semibold tabular-nums" style={{ color: confColor }}>{conf}</span>
+                <span className="flex flex-col items-end gap-1">
+                  <span className="conf-figure" style={{ color: confColor }}>{conf}</span>
+                  {/* The magnitude. A 2px rule whose LENGTH is the score — the
+                      one honest way to show a number at a glance. */}
+                  <span className="conf-rule" aria-hidden>
+                    <i style={{ width: `${Math.max(3, Math.min(100, conf))}%` }} data-authority={authority.state} />
+                  </span>
+                </span>
                 <ConfidenceExplain
                   artifact={a}
                   review={rState}
@@ -580,7 +776,7 @@ function ArtifactDrawer({
   onClose: () => void;
   onChanged: (a: Artifact) => void;
   reviewGet: (id: string) => ReviewState;
-  reviewSet: (id: string, s: ReviewState | null, ctx?: { value?: string; kind?: string; confidence?: number; source?: string }) => void;
+  reviewSet: (id: string, s: ReviewState | null, ctx?: { value?: string; kind?: string; confidence?: number; source?: string }) => Promise<ReviewWriteResult>;
   threadId: string;
 }) {
   // (component body unchanged below)
@@ -605,21 +801,33 @@ function ArtifactDrawerInner({
   onClose: () => void;
   onChanged: (a: Artifact) => void;
   reviewGet: (id: string) => ReviewState;
-  reviewSet: (id: string, s: ReviewState | null, ctx?: { value?: string; kind?: string; confidence?: number; source?: string }) => void;
+  reviewSet: (id: string, s: ReviewState | null, ctx?: { value?: string; kind?: string; confidence?: number; source?: string }) => Promise<ReviewWriteResult>;
   threadId: string;
 }) {
   const meta = (artifact.metadata ?? {}) as Record<string, unknown>;
+  // Stored, cap, effective and every applicable ceiling — the drawer is the one
+  // surface that shows more than the effective number, because "why is it 60 and
+  // not 88" is exactly the question this panel exists to answer.
+  const shownArtifact = displayConfidence(artifact);
   const metaRows = humanizeArtifactMetadata(meta);
   const falsePositive = meta.false_positive === true;
   const rState = reviewGet(artifact.id);
   // Ground-truth context passed to every review action so feedback events carry
   // confidence_before/source (else they're dropped from the by-band calibration).
-  const rctx = { value: artifact.value, kind: artifact.kind, confidence: artifact.confidence, source: artifact.source };
+  // `confidence` here becomes `analyst_feedback_events.confidence_before` — the
+  // model's PREDICTION AT THE MOMENT OF THE DECISION. That is by definition the
+  // number the analyst was looking at, so it is the effective value, not the raw
+  // column. Logging raw would make every calibration band measure a figure the
+  // product never showed.
+  const rctx = { value: artifact.value, kind: artifact.kind, confidence: shownArtifact.effective ?? undefined, source: artifact.source };
   const src = extractSourceInfo(artifact);
   const drawerAuthority = authorityFor(artifact, rState);
   const review = useReviewStates(threadId);
   const [noteDraft, setNoteDraft] = useState(review.getNote(artifact.id));
-  const [saving, setSaving] = useState(false);
+  // `onChanged` used to feed the metadata false-positive toggle, which is gone
+  // (the review verdict is the one False contract). The prop stays on the
+  // drawer's public shape for the local-update path callers already wire.
+  void onChanged;
 
   const copy = (text: string, label: string) => {
     navigator.clipboard.writeText(text).then(
@@ -628,26 +836,7 @@ function ArtifactDrawerInner({
     );
   };
 
-  const updateMeta = async (patch: Record<string, unknown>) => {
-    if (saving) return;
-    setSaving(true);
-    try {
-      const next = { ...meta, ...patch };
-      const { data, error } = await supabase
-        .from("artifacts")
-        .update({ metadata: next as never })
-        .eq("id", artifact.id)
-        .select("id,kind,value,confidence,source,created_at,metadata")
-        .maybeSingle();
-      if (error || !data) return toast.error(error?.message ?? "Update failed");
-      onChanged(data as Artifact);
-      toast.success("Updated");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const citation = `\`${artifact.value}\` (${artifact.kind}${artifact.source ? `, via ${artifact.source}` : ""}${artifact.confidence != null ? `, ${artifact.confidence}%` : ""})`;
+  const citation = `\`${artifact.value}\` (${artifact.kind}${artifact.source ? `, via ${artifact.source}` : ""}${shownArtifact.effective != null ? `, ${shownArtifact.effective}%` : ""})`;
 
   return (
     <Sheet open onOpenChange={(o) => !o && onClose()}>
@@ -666,9 +855,9 @@ function ArtifactDrawerInner({
             <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 font-mono text-eyebrow uppercase tracking-[0.14em] text-muted-foreground">
               {artifact.kind}
             </span>
-            {artifact.confidence != null && (
+            {shownArtifact.effective != null && (
               <span className="rounded-md border border-[hsl(var(--confidence-mid)/0.35)] bg-[hsl(var(--confidence-mid)/0.1)] px-2 py-1 font-mono text-eyebrow uppercase tracking-[0.14em] text-[hsl(var(--confidence-mid))]">
-                {artifact.confidence}% confidence
+                {shownArtifact.effective}% confidence
               </span>
             )}
             <span className={"rounded-md border px-2 py-1 font-mono text-eyebrow uppercase tracking-[0.14em] " + REVIEW_CLASS[rState]}>
@@ -741,7 +930,7 @@ function ArtifactDrawerInner({
                   <li key={s} className="flex items-center justify-between font-mono">
                     <span className="truncate">{s}</span>
                     <span className="text-data text-muted-foreground shrink-0">
-                      {artifact.confidence != null ? `${artifact.confidence}%` : "—"}
+                      {shownArtifact.effective != null ? `${shownArtifact.effective}%` : "—"}
                     </span>
                   </li>
                 ))}
@@ -768,16 +957,25 @@ function ArtifactDrawerInner({
                 current={rState}
                 target="recheck"
                 onClick={() => {
-                  reviewSet(artifact.id, "recheck", rctx);
-                  launchRecheckInChat(threadId, { value: artifact.value, kind: artifact.kind });
-                  toast.success("Rechecking in chat…");
-                  onClose();
+                  // Persist FIRST; the chat run launches only after the verdict
+                  // has committed. A failed write toasts and launches nothing,
+                  // and the drawer stays open so the analyst can retry.
+                  void startRecheck({
+                    set: reviewSet,
+                    threadId,
+                    artifact: { id: artifact.id, value: artifact.value, kind: artifact.kind },
+                    ctx: rctx,
+                  }).then((r) => {
+                    if (!r.ok) return;
+                    toast.success("Rechecking in chat…");
+                    onClose();
+                  });
                 }}
               >
                 <ShieldQuestion className="w-3 h-3" /> Recheck
               </ReviewBtn>
               <ReviewBtn current={rState} target="dismissed" onClick={() => reviewSet(artifact.id, "dismissed", rctx)}>
-                <XCircle className="w-3 h-3" /> False
+                <XCircle className="w-3 h-3" /> Dismiss
               </ReviewBtn>
               <ReviewBtn current={rState} target="key" onClick={() => reviewSet(artifact.id, "key", rctx)}>
                 <Star className="w-3 h-3" /> Key
@@ -802,8 +1000,11 @@ function ArtifactDrawerInner({
                 variant="secondary"
                 className="h-6 px-2 text-data"
                 onClick={() => {
-                  review.setNote(artifact.id, noteDraft, rctx);
-                  toast.success("Note saved");
+                  // The write result is real: a failed note has already toasted
+                  // and rolled back, so only a committed one reads "saved".
+                  void review.setNote(artifact.id, noteDraft, rctx).then((r) => {
+                    if (r.ok) toast.success("Note saved");
+                  });
                 }}
               >
                 Save note
@@ -831,12 +1032,16 @@ function ArtifactDrawerInner({
             )}
           </Field>
 
+          {/* The separate "Mark false positive" metadata toggle is gone. It wrote
+              `metadata.false_positive` — a second, unrelated "false" signal that
+              the agent's review reads never saw. The ONE visible False action is
+              the review verdict above (`dismissed`), which reaches every consumer:
+              pivots, dispatch, clustering, synthesis, the report and the agent's
+              next run. Legacy rows that carry the flag still read as rejected
+              (see analyst-decisions.ts isRejectedArtifact) and show the chip. */}
           <div className="grid grid-cols-2 gap-2">
             <Button size="sm" variant="outline" onClick={() => copy(artifact.value, "Value copied")} className="gap-1.5"><Copy className="w-3.5 h-3.5" /> Copy value</Button>
             <Button size="sm" variant="outline" onClick={() => copy(citation, "Citation copied")} className="gap-1.5"><Copy className="w-3.5 h-3.5" /> Copy citation</Button>
-            <Button size="sm" variant={falsePositive ? "destructive" : "secondary"} disabled={saving} onClick={() => updateMeta({ false_positive: !falsePositive })} className="col-span-2 gap-1.5">
-              <XCircle className="w-3.5 h-3.5" /> {falsePositive ? "Unmark FP" : "Mark false positive"}
-            </Button>
           </div>
         </div>
       </SheetContent>
@@ -880,7 +1085,8 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function ArtifactPeek({ artifact: a, confColor }: { artifact: Artifact; confColor: string }) {
   const src = extractSourceInfo(a);
   const created = a.created_at ? new Date(a.created_at) : null;
-  const conf = a.confidence ?? 0;
+  const shown = displayConfidence(a);
+  const conf = shown.effective ?? 0;
   const group = GROUP_LABEL[groupForKind(a.kind)];
   return (
     <div className="bg-popover text-popover-foreground">
@@ -890,13 +1096,13 @@ function ArtifactPeek({ artifact: a, confColor }: { artifact: Artifact; confColo
           <span className="text-muted-foreground">·</span>
           <span className="text-eyebrow font-mono uppercase text-muted-foreground">{a.kind}</span>
         </div>
-        {a.confidence != null && (
+        {shown.effective != null && (
           <span className="text-data font-mono tabular-nums" style={{ color: confColor }}>{conf}%</span>
         )}
       </div>
       <div className="px-3 py-2 space-y-2">
         <div className="font-mono text-data text-foreground break-all">{a.value}</div>
-        {a.confidence != null && (
+        {shown.effective != null && (
           <div className="confidence-track">
             <span
               className="confidence-fill"
@@ -962,13 +1168,16 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
       else if (STATUS_FILTER_GROUPS.excluded!.has(s)) c.excluded++;
     }
     return c;
+    // `review.revision` bumps on every verdict change (including rollbacks), so
+    // the counts move the instant an analyst decides — memoising on `items`
+    // alone left the chips stale until an unrelated artifact arrived.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items]);
+  }, [items, review.revision]);
 
   return (
     <>
       {items.length > 0 && (
-        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-x-3 gap-y-2 px-2 py-2.5 border-b border-border-subtle bg-[linear-gradient(180deg,rgba(12,12,12,0.94),rgba(10,10,10,0.86))] backdrop-blur-xl">
+        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-x-3 gap-y-2 px-2 py-2.5 border-b border-border-subtle bg-[linear-gradient(180deg,hsl(var(--surface-1)/0.94),hsl(var(--surface-0)/0.88))] backdrop-blur-xl">
           <FilterChips<EvidenceStatusFilter>
             ariaLabel="Filter evidence by strength"
             active={statusFilter}
@@ -986,7 +1195,11 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
               { key: "excluded", label: "Excluded", count: counts.excluded, tone: "danger" },
             ]}
           />
-          <div className="ml-auto flex items-center gap-1.5">
+          {/* The sort group takes its own line on a phone. `ml-auto` on a
+              wrapping flex row pushed it to a line of its own anyway, but with
+              the "SORT" label stranded beside a wrapped chip row rather than
+              above it. Wrapping as a unit is what it looked like it did. */}
+          <div className="flex w-full flex-wrap items-center gap-1.5 sm:ml-auto sm:w-auto">
             <span className="text-eyebrow uppercase tracking-[0.14em] text-muted-foreground/70">Sort</span>
             <FilterChips<EvidenceSortMode>
               ariaLabel="Sort evidence"

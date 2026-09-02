@@ -105,14 +105,20 @@ export function EvidenceTab({
                 aria-label={`Show ${v.label.toLowerCase()} evidence view`}
                 aria-pressed={active}
                 className={cn(
-                  "inline-flex h-7 w-8 items-center justify-center rounded-lg transition-colors",
+                  "inline-flex h-7 items-center justify-center gap-1.5 rounded-lg transition-colors",
                   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  active
-                    ? "bg-white text-black"
-                    : "text-muted-foreground hover:text-foreground hover:bg-white/[0.05]",
+                  // The active lens names itself. Five identical icon-only
+                  // squares meant the analyst had to hover each one to learn
+                  // what it was AND had no way to read which one they were
+                  // looking at — the selected background says "this one" but
+                  // never says what "this" is. Labelling only the active button
+                  // costs ~60px and removes both problems at once.
+                  active ? "px-2.5 bg-white text-black" : "w-8",
+                  !active && "text-muted-foreground hover:text-foreground hover:bg-white/[0.05]",
                 )}
               >
                 <Icon className="w-3.5 h-3.5 shrink-0" strokeWidth={1.75} />
+                {active && <span className="text-data font-medium">{v.label}</span>}
               </button>
             );
           })}

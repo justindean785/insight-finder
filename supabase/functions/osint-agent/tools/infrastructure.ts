@@ -26,7 +26,7 @@ export const whois_lookup = tool({
       return { error: String(e) };
     }
   },
-}),
+});
 
 export const crtsh_subdomains = tool({
   description: "Enumerate subdomains for a domain via crt.sh certificate transparency logs.",
@@ -41,7 +41,7 @@ export const crtsh_subdomains = tool({
       return { error: String(e) };
     }
   },
-}),
+});
 
 export const dns_records = tool({
   description: "Resolve DNS records (A, AAAA, MX, NS, TXT, CNAME) for a hostname via Cloudflare DoH.",
@@ -57,7 +57,7 @@ export const dns_records = tool({
       return { host, records: out };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const shodan_internetdb = tool({
   description:
@@ -70,7 +70,7 @@ export const shodan_internetdb = tool({
       return { ok: r.ok, status: r.status, data };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const ip_intel = tool({
   description: "Geolocate an IP and return ISP, ASN, city, country.",
@@ -99,7 +99,7 @@ export const ip_intel = tool({
       return { error: String(e) };
     }
   },
-}),
+});
 
 export const ipgeolocation_lookup = tool({
   description:
@@ -116,7 +116,7 @@ export const ipgeolocation_lookup = tool({
       return { ok: r.ok, status: r.status, source: "ipgeolocation.io", data };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const ipqualityscore_lookup = tool({
   description:
@@ -145,7 +145,7 @@ export const ipqualityscore_lookup = tool({
       return { ok: true, source: "ipqualityscore.com", kind, value, ...data };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const http_fingerprint = tool({
   description: "Fetch a URL and return status, server/tech headers, title, and a short text excerpt. Use to investigate a website without leaving the agent.",
@@ -170,7 +170,7 @@ export const http_fingerprint = tool({
       return { status: r.status, finalUrl: r.url, title, headers, excerpt: text };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const virustotal_lookup = tool({
   description:
@@ -221,7 +221,7 @@ export const virustotal_lookup = tool({
       };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const hackertarget = tool({
   description:
@@ -239,7 +239,7 @@ export const hackertarget = tool({
       return { ok: r.ok, status: r.status, mode, query, lines };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const urlscan_search = tool({
   description:
@@ -260,7 +260,7 @@ export const urlscan_search = tool({
       };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const wayback_snapshots = tool({
   description: "Look up archive.org Wayback Machine snapshots for a URL. Returns the closest snapshot + total count.",
@@ -274,7 +274,7 @@ export const wayback_snapshots = tool({
       return { closest, recent: cdx };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const archive_url = tool({
   description:
@@ -298,7 +298,7 @@ export const archive_url = tool({
       };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const deepfind_ssl_inspect = tool({
   description:
@@ -317,7 +317,7 @@ export const deepfind_ssl_inspect = tool({
       return { ok: r.ok, status: r.status, source: "deepfind.ssl", data };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const deepfind_tech_stack = tool({
   description:
@@ -338,7 +338,7 @@ export const deepfind_tech_stack = tool({
       return { ok: r.ok, status: r.status, source: "deepfind.tech_stack", data };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const deepfind_url_unshorten = tool({
   description:
@@ -357,7 +357,7 @@ export const deepfind_url_unshorten = tool({
       return { ok: r.ok, status: r.status, source: "deepfind.unshorten", data };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const deepfind_mac_lookup = tool({
   description:
@@ -376,7 +376,7 @@ export const deepfind_mac_lookup = tool({
       return { ok: r.ok, status: r.status, source: "deepfind.mac", data };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const deepfind_dark_web_link = tool({
   description:
@@ -395,5 +395,5 @@ export const deepfind_dark_web_link = tool({
       return { ok: r.ok, status: r.status, source: "deepfind.darkweb", data };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 

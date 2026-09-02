@@ -99,7 +99,10 @@ export function ConfidenceBar({
         />
       </div>
       {showValue && (
-        <span className="w-9 shrink-0 text-right font-mono text-data tabular-nums" style={{ color: t.color }}>
+        // Ink, never the tier colour: the bar's LENGTH already says how big the
+        // number is, and colouring the numeral as well made a low score look
+        // like a failure rather than like a small measurement.
+        <span className="w-9 shrink-0 text-right font-mono text-data tabular-nums text-foreground">
           {label}
         </span>
       )}

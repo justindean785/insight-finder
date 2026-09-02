@@ -17,6 +17,7 @@ import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./provide
 import { selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
 import { recoverStaleActiveThreads } from "./recovery.ts";
+import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./finding-synthesis-sweep.ts";
 
 /**
  * Release a response body we are never going to read.
@@ -380,6 +381,32 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
       r.checks.recovery = recovered.errors
         ? { ok: false, detail: `recovered ${recovered.recovered}; ${recovered.errors} error(s)` }
         : { ok: true, detail: `recovered ${recovered.recovered} stale active run(s)` };
+      // Finding synthesis. Deliberately AFTER recovery and inside the same
+      // try/catch: a thread must be marked finished before it is a candidate, and
+      // a synthesis fault must degrade to a reported check, never to a failed
+      // probe. This is a separate request from any run, which is what makes it
+      // structurally incapable of failing finalize (see finding-synthesis-sweep.ts).
+      // Ships DARK: both scopes default OFF and are independent, so the forward
+      // path can be enabled without the backfill — which is a production write
+      // into closed cases — and either can be revoked alone.
+      const dryRun = synthesisDryRun();
+      const scopes = (["forward", "backfill"] as const).filter((sc) => synthesisEnabled(sc));
+      if (scopes.length === 0) {
+        r.checks.synthesis = { ok: true, detail: "disabled" };
+      } else {
+        let written = 0, proposed = 0, threads = 0, errs = 0;
+        const dist = { zero: 0, one: 0, twoPlus: 0 };
+        for (const sc of scopes) {
+          const s2 = await synthesizeMissingFindings(admin, { limit: 5, scope: sc, dryRun });
+          written += s2.findingsWritten; proposed += s2.findingsProposed;
+          threads += s2.threadsScanned; errs += s2.errors;
+          dist.zero += s2.distribution.zero; dist.one += s2.distribution.one; dist.twoPlus += s2.distribution.twoPlus;
+        }
+        const mode = dryRun ? "DRY RUN — nothing written" : `${written} written`;
+        const detail = `${scopes.join("+")}: ${mode}; ${proposed} proposed over ${threads} thread(s) ` +
+          `(0:${dist.zero} 1:${dist.one} 2+:${dist.twoPlus})`;
+        r.checks.synthesis = errs ? { ok: false, detail: `${detail}; ${errs} error(s)` } : { ok: true, detail };
+      }
     }
   } catch (e) {
     r.checks.recovery = { ok: false, detail: String(e).slice(0, 160) };
