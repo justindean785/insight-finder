@@ -26,7 +26,9 @@ import {
   ensureCycle,
   finishCall,
   notePlanCall,
+  isPreProviderGate,
   noteRejectedCall,
+  refundPaidCall,
   scoreExpectedValue,
   startCall,
   type SelectorEvidenceSignal,
@@ -1290,6 +1292,14 @@ export function wrapToolsWithCache(
           });
           ok = deriveOk(result);
           if (!ok) errInfo = extractToolError(result);
+          // PAID-CALL ACCOUNTING — the only place the reserved paid slot is
+          // released. `startCall` reserves at admission (atomically, so a parallel
+          // batch cannot overshoot); a tool that declined BEFORE contacting the
+          // provider issued no request and can have spent nothing, so its slot
+          // goes back. Keyed on the structural `provider_attempted: false` marker
+          // only — never on the outcome bucket, because `skipped` also covers
+          // rate-limits, 5xx and timeouts, all of which really did spend.
+          if (isPreProviderGate(result)) refundPaidCall(ctx.investigationId, costTierForTool(baseCost));
           // C-2: record minimax_correlate's FINAL outcome (post-timeout-race) so
           // memory_save can tell "correlate failed this cycle" apart from "correlate
           // never ran" — a timeout stub races the tool's own execute() and wins, so
