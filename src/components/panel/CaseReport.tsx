@@ -222,6 +222,7 @@ function HunterNote({ children }: { children: React.ReactNode }) {
 
 const CONF_PILL: Record<ConfLabel, string> = {
   CONFIRMED: "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/40",
+  ATTESTED: "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))] border-dashed",
   CORRELATED: "text-[hsl(var(--confidence-high))]/90 border-[hsl(var(--confidence-high))]/30",
   INFERRED: "text-primary border-primary/40",
   VERIFY: "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid))]/40",
@@ -233,6 +234,7 @@ const CONF_PILL: Record<ConfLabel, string> = {
 // Map our internal labels to the reference vocabulary
 const CONF_DISPLAY: Record<ConfLabel, string> = {
   CONFIRMED: "CONFIRMED",
+  ATTESTED: "ANALYST-CONFIRMED",
   CORRELATED: "HIGH",
   INFERRED: "MEDIUM",
   VERIFY: "VERIFY",

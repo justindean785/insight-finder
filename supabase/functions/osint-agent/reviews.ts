@@ -44,6 +44,8 @@
  *   be re-recorded later under a fresh id and sail through. Exclusion is therefore
  *   also enforced on a normalized kind|value key.
  */
+import { canonicalKind } from "./lib/kind-alias.ts";
+
 
 /** Verdicts that mean "the analyst rejected this — do not use it." */
 export const REJECTED_REVIEW_STATES: ReadonlySet<string> = new Set(["dismissed", "wrong"]);
@@ -61,7 +63,9 @@ export function isRejectedReview(state: string | null | undefined): boolean {
  *  re-record of the same finding under a new id (or different casing/spacing)
  *  cannot bypass a FALSE verdict. */
 export function normalizeArtifactKey(kind: unknown, value: unknown): string {
-  const k = String(kind ?? "").trim().toLowerCase();
+  // Canonical kind (lib/kind-alias.ts): a Dismiss on the `ip_address` twin of a
+  // selector binds on its `ip` twin too, and vice versa.
+  const k = canonicalKind(kind, value);
   const v = String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
   return `${k}|${v}`;
 }

@@ -79,6 +79,20 @@ const artifacts = [
   //    case, rendered by the board as forty truncated monospace characters.
   { id: "a16", thread_id: THREAD_ID, kind: "contradiction", value: "CONTRADICTION: 1110 Sample Ave is NOT linked to James Harker. The reverse-address lookup returned 31 records and the actual residents are the Keith and Plascencia families — Harker appears in none of them.", confidence: 65, source: "indicia_address", created_at: iso(11), metadata: { sources: ["indicia_address", "exa_search"], corroborations: 2, source_class: "data_broker", conflict: true, conflict_note: "the dossier's address claim does not survive the broker record" } },
 
+  // ── Alias twins — one selector, two kind spellings ────────────────────────
+  //    The auto-persist path writes `ip_address`, record_artifacts writes `ip`;
+  //    a sweep writes `url` for a profile a later tool records as
+  //    `social_profile`. Production (@hoodken28) listed both twins as separate
+  //    rows with different confidences. The report folds each pair to one row.
+  { id: "twin-ip-a", thread_id: THREAD_ID, kind: "ip_address", value: "203.0.113.57", confidence: 40, source: "oathnet_lookup", created_at: iso(12), metadata: { sources: ["oathnet_lookup"], corroborations: 1, source_class: "breach", confidence_cap_applied: 60, reason_for_confidence: "single source class: breach" } },
+  { id: "twin-ip-b", thread_id: THREAD_ID, kind: "ip", value: "203.0.113.57", confidence: 70, source: "ip_intel + shodan_internetdb", created_at: iso(11), metadata: { sources: ["ip_intel", "shodan_internetdb"], corroborations: 2, source_class: "infra", confidence_cap_applied: 70, reason_for_confidence: "single source class: infra" } },
+  { id: "twin-url-a", thread_id: THREAD_ID, kind: "url", value: "https://social.example/jharker_ops", confidence: 30, source: "username_sweep", created_at: iso(12), metadata: { sources: ["username_sweep"], corroborations: 1, source_class: "username_sweep", confidence_cap_applied: 45, reason_for_confidence: "single source class: username_sweep" } },
+  { id: "twin-url-b", thread_id: THREAD_ID, kind: "social_profile", value: "https://social.example/jharker_ops", confidence: 55, source: "gemini_deep_dork", created_at: iso(11), metadata: { sources: ["gemini_deep_dork"], corroborations: 1, source_class: "ai_summary", handle: "jharker_ops", platform: "Social", confidence_cap_applied: 55, reason_for_confidence: "single source class: ai_summary" } },
+  // ── Kinds the report used to file under **Other** ─────────────────────────
+  { id: "org-1", thread_id: THREAD_ID, kind: "organization", value: "Northgate Logistics LLC", confidence: 62, source: "opencorporates + exa_search", created_at: iso(12), metadata: { sources: ["opencorporates", "exa_search"], corroborations: 2, source_class: "official" } },
+  { id: "evt-1", thread_id: THREAD_ID, kind: "event", value: "Sacramento Freight Expo 2025 — listed exhibitor", confidence: 48, source: "gemini_deep_dork", created_at: iso(11), metadata: { sources: ["gemini_deep_dork"], corroborations: 1, source_class: "ai_summary", confidence_cap_applied: 55 } },
+  { id: "wl-1", thread_id: THREAD_ID, kind: "weak_lead", value: "Sierra — mentioned in a stream title", confidence: 20, source: "socialfetch_web_read", created_at: iso(10), metadata: { sources: ["socialfetch_web_read"], corroborations: 1, source_class: "social_profile_passive" } },
+
   // ── Bulk-corpus spam — the gsalas916-style wall this change collapses ─────
   // Legacy shape: many rows, one reason. The board groups these into one card.
   { id: "bulk-1", thread_id: THREAD_ID, kind: "name", value: "Gabriel G. Salas", confidence: 45, source: "indicia_address", created_at: iso(9), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
@@ -246,9 +260,16 @@ const SYNTHETIC: Record<string, unknown[]> = {
     archive_sha256: i % 4 === 0 ? `${(i + 3).toString(16).padStart(2, "0").repeat(32)}` : null,
     archive_bytes: i % 4 === 0 ? 12_340 + i * 97 : null,
   })),
+  // `review.ts` selects `artifact_id,state,note` and keys on `user_id`; the
+  // previous rows carried `verdict` / `reviewer_id`, so no analyst decision ever
+  // reached the harness UI and a screenshot could not show what Confirm or
+  // Dismiss does to the report. Shape matches the live table.
   artifact_reviews: [
-    { id: "r1", artifact_id: "a1", thread_id: THREAD_ID, verdict: "correct", reviewer_id: USER_ID, created_at: iso(9), note: null },
-    { id: "r2", artifact_id: "a6", thread_id: THREAD_ID, verdict: "wrong", reviewer_id: USER_ID, created_at: iso(7), note: "Different James Harker — wrong county." },
+    { id: "r1", artifact_id: "a1", thread_id: THREAD_ID, user_id: USER_ID, state: "confirmed", created_at: iso(9), note: null },
+    { id: "r2", artifact_id: "a6", thread_id: THREAD_ID, user_id: USER_ID, state: "dismissed", created_at: iso(7), note: "Different James Harker — wrong county." },
+    // One twin of the ip_address / ip pair below is dismissed: the report must
+    // fold the pair and render it FAILED, not keep the other twin authoritative.
+    { id: "r3", artifact_id: "twin-ip-a", thread_id: THREAD_ID, user_id: USER_ID, state: "dismissed", created_at: iso(6), note: "carrier NAT egress — not the subject's line" },
   ],
   user_credits: [{ user_id: USER_ID, credits_remaining: 466, credits_total: 500, updated_at: iso(4) }],
   agent_memory: [], investigation_cache: [], client_errors: [],

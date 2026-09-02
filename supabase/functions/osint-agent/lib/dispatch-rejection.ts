@@ -30,30 +30,19 @@
  */
 
 import { dispatchKey } from "./dispatch-quarantine.ts";
+import { kindAliases } from "./kind-alias.ts";
 
 /** The refusal marker, on the payload and in the log, so it is greppable. */
 export const REJECTED_DISPATCH_REFUSAL_MARKER = "analyst_rejected_dispatch_boundary";
 
 /**
- * Artifact kinds → the selector type the tool wrapper computes for the same
- * identity. Mirrors `KIND_TO_PIVOT` on the frontend so both halves of the
- * boundary key the same way. A kind not listed here keys as itself.
+ * Every selector type a rejected artifact of this kind should refuse under.
+ * The alias table itself lives in `lib/kind-alias.ts` — the ONE table the
+ * write-side dedup keys, the read-side rejection key and this dispatch guard
+ * all share, so a kind spelling honoured here is honoured everywhere.
  */
-const KIND_TO_SELECTOR_TYPE: Record<string, string> = {
-  handle: "username",
-  social: "username",
-  subdomain: "domain",
-  ip_address: "ip",
-  person: "name",
-  crypto: "wallet",
-};
-
-/** Every selector type a rejected artifact of this kind should refuse under. */
 export function rejectedTypeAliases(kind: string): string[] {
-  const k = (kind ?? "").trim().toLowerCase();
-  if (!k) return [];
-  const canonical = KIND_TO_SELECTOR_TYPE[k];
-  return canonical && canonical !== k ? [k, canonical] : [k];
+  return kindAliases(kind);
 }
 
 /** An artifact row the analyst rejected, as `loadReviewsForThread` resolves it. */

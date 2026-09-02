@@ -31,6 +31,8 @@ const GROUP_COLOR: Record<Group, string> = {
   breach: "hsl(var(--danger))",
   web: "hsl(var(--confidence-high))",
   crypto: "hsl(var(--warning))",
+  affiliation: "hsl(var(--primary))",
+  records: "hsl(var(--confidence-high))",
   other: "hsl(var(--muted-foreground))",
 };
 

@@ -415,6 +415,39 @@ export function clusterUpdatesFor(arts: Artifact[]): ClusterUpdate[] {
 type DbLike = { from(table: string): any };
 
 /**
+ * Null the persisted cluster_id / subject_id (and the promoted_confidence /
+ * confidence_tier the promotion wrote into metadata) on every row in `rows`
+ * that is NOT in `keptIds` and still carries an assignment. Stamps
+ * `metadata.cluster_cleared_reason = "analyst_rejected"`. Authority, not
+ * deletion: the row, its confidence and the rest of its metadata are untouched.
+ *
+ * Shared by the finalize-time clustering pass and the health-path sweep
+ * (lib/rejected-cluster-sweep.ts) so both clear by ONE definition.
+ */
+export async function clearStaleClusterAssignments(
+  admin: DbLike,
+  rows: Array<Record<string, unknown>>,
+  keptIds: ReadonlySet<string>,
+): Promise<number> {
+  let cleared = 0;
+  for (const r of rows) {
+    const id = typeof r.id === "string" ? r.id : "";
+    if (!id || keptIds.has(id)) continue;
+    const meta = (r.metadata && typeof r.metadata === "object") ? r.metadata as Record<string, unknown> : {};
+    const hasStale = r.cluster_id != null || r.subject_id != null ||
+      meta.cluster_id != null || meta.subject_id != null;
+    if (!hasStale) continue;
+    const { cluster_id: _c, subject_id: _s, promoted_confidence: _p, confidence_tier: _t, ...rest } = meta;
+    void _c; void _s; void _p; void _t;
+    const nextMeta = { ...rest, cluster_cleared_reason: "analyst_rejected" };
+    const { error: cErr } = await admin.from("artifacts")
+      .update({ cluster_id: null, subject_id: null, metadata: nextMeta }).eq("id", id);
+    if (!cErr) cleared++;
+  }
+  return cleared;
+}
+
+/**
  * The C-1 DETERMINISTIC STEP: fetch a thread's artifacts, cluster them locally, and
  * write cluster_id/subject_id (+ surface promoted_confidence/tier in metadata, never
  * overwriting the raw observed confidence — chain-of-custody). Runs AFTER any LLM
@@ -460,21 +493,7 @@ export async function applyClusteringToThread(
   // columns. Clear them now — authority, not deletion: the row, its confidence
   // and its metadata otherwise stay exactly as recorded.
   const keptIds = new Set(kept.map((r) => String((r as { id?: unknown }).id ?? "")));
-  let cleared = 0;
-  for (const r of data as Array<Record<string, unknown>>) {
-    const id = typeof r.id === "string" ? r.id : "";
-    if (!id || keptIds.has(id)) continue;
-    const meta = (r.metadata && typeof r.metadata === "object") ? r.metadata as Record<string, unknown> : {};
-    const hasStale = r.cluster_id != null || r.subject_id != null ||
-      meta.cluster_id != null || meta.subject_id != null;
-    if (!hasStale) continue;
-    const { cluster_id: _c, subject_id: _s, promoted_confidence: _p, confidence_tier: _t, ...rest } = meta;
-    void _c; void _s; void _p; void _t;
-    const nextMeta = { ...rest, cluster_cleared_reason: "analyst_rejected" };
-    const { error: cErr } = await admin.from("artifacts")
-      .update({ cluster_id: null, subject_id: null, metadata: nextMeta }).eq("id", id);
-    if (!cErr) cleared++;
-  }
+  const cleared = await clearStaleClusterAssignments(admin, data as Array<Record<string, unknown>>, keptIds);
   if (cleared) {
     console.log(JSON.stringify({ event: "cluster_assignment_cleared", thread_id: threadId, cleared, reason: "analyst_rejected" }));
   }

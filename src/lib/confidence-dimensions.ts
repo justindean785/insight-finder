@@ -57,7 +57,7 @@ export interface ConfidenceProfile {
   limited: boolean;
 }
 
-const REPORT_SAFE_LABELS = new Set(["CONFIRMED", "CORRELATED"]);
+const REPORT_SAFE_LABELS = new Set(["CONFIRMED", "ATTESTED", "CORRELATED"]);
 const IDENTITY_KINDS = new Set(["name", "person", "email", "phone"]);
 const DAY = 24 * 60 * 60 * 1000;
 const clamp = (n: number) => Math.max(0, Math.min(100, Math.round(n)));

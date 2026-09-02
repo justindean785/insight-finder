@@ -126,13 +126,25 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
     URL.revokeObjectURL(url);
     toast.success("Report .md downloaded");
   };
+  // The print-only stylesheet keys on `body.printing-report`. It used to be set
+  // for ~50 ms around the button's own `window.print()` call — so Ctrl+P / File
+  // → Print never saw it, the workspace's `h-[100dvh] overflow-hidden` shell
+  // clipped the report to one viewport, and an analyst's browser-printed PDF
+  // came out as two pages with the second one blank. `beforeprint` fires for
+  // every print path (button, shortcut, menu), so the class is set for all of them.
+  useEffect(() => {
+    const on = () => document.body.classList.add("printing-report");
+    const off = () => document.body.classList.remove("printing-report");
+    window.addEventListener("beforeprint", on);
+    window.addEventListener("afterprint", off);
+    return () => {
+      window.removeEventListener("beforeprint", on);
+      window.removeEventListener("afterprint", off);
+      off();
+    };
+  }, []);
   const printPdf = () => {
-    // Print-only stylesheet renders #case-report-print-root as the page
-    document.body.classList.add("printing-report");
-    setTimeout(() => {
-      window.print();
-      document.body.classList.remove("printing-report");
-    }, 50);
+    window.print();
   };
 
   const openJsonGate = () => {

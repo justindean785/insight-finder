@@ -36,6 +36,17 @@ deployed would mean accepting an unbounded DB-work path that does not yet have i
 bound. Treat these as two separate claims: **anonymous is correct** (settled), and
 **anonymous is bounded** (pending #502).
 
+## Also on this path since 2026-09-02: the rejected-cluster sweep
+
+`sweepRejectedClusterAssignments` (`lib/rejected-cluster-sweep.ts`) runs right after
+recovery, inside the same try/catch, and reports as `checks.rejected_cluster_sweep`.
+It nulls `cluster_id` / `subject_id` on rows the analyst rejected (and their alias
+twins, via `dropRejectedArtifacts`), using the same `clearStaleClusterAssignments`
+finalize uses. Bounded (2000 reviews read, 5 threads per probe), idempotent, and it
+converges: with nothing stale it is one indexed read, then a 10-minute in-isolate memo
+skips even that. Kill switch: `REJECTED_CLUSTER_SWEEP_DISABLED=true`. This is why a
+Dismiss on a finished thread binds within ~60 s without a re-run.
+
 ## Related
 
 `?health=1&probe=1` is different — it makes live paid round-trips to DeepSeek,

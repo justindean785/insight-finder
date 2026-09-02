@@ -50,6 +50,8 @@ const GROUP_ICON: Record<Group, React.ComponentType<{ className?: string }>> = {
   breach: ShieldAlert,
   web: Globe,
   crypto: ImgIcon,
+  affiliation: Tag,
+  records: Tag,
   other: Tag,
 };
 

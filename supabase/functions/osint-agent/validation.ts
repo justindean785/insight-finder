@@ -9,6 +9,7 @@ import { looksLikePostalAddress, normalizeAddressValue } from "./address.ts";
 // phone the same way the auto-persist extractor and the clusterer do, or the
 // writers disagree about what "one phone" is.
 import { canonicalPhoneValue } from "./lib/selector-normalize.ts";
+import { isNullishLiteral } from "./lib/nullish-literal.ts";
 
 // ---- Seed normalization -------------------------------------------------------
 // Must match src/lib/seed.ts so cache keys line up.
@@ -42,6 +43,14 @@ export function detectSeedServer(input: string): DetectedSeed | null {
   if (PHONE.test(raw)) return { kind: "phone", raw, normalized: raw.replace(/[^\d+]/g, "") };
   if (DOMAIN.test(raw)) return { kind: "domain", raw, normalized: raw.toLowerCase() };
   if (USER.test(raw)) return { kind: "username", raw, normalized: raw.toLowerCase() };
+  // "@handle" is a username seed. It classified as `other` (USER has no `@`),
+  // so a handle typed the way every platform displays it lost the username
+  // playbook, the thread title read "other", and the cache key kept the `@`
+  // while artifact values stripped it — two keys for one selector.
+  // MUST match src/lib/seed.ts.
+  if (raw.startsWith("@") && USER.test(raw.slice(1))) {
+    return { kind: "username", raw, normalized: raw.slice(1).toLowerCase() };
+  }
   // US street-address heuristic: leading street number + a 2-letter state + a
   // ZIP. Routes to the address playbook + property/business pivot checklist so an
   // address/business seed is not treated as a generic name search.
@@ -270,6 +279,8 @@ export const PHONE_RE = /^\+?[0-9\-\s().]{6,32}$/;
 export function validateArtifact(kind: string, rawValue: string): ValidateResult {
   const value = (rawValue ?? "").trim();
   if (!value) return { ok: false, reason: "empty value" };
+  // Before the passthrough set: a null literal is not a value for ANY kind.
+  if (isNullishLiteral(value)) return { ok: false, reason: "null-literal value" };
   if (value.length > 2000) return { ok: false, reason: "value too long (>2000 chars)" };
 
   // ---- New strict taxonomy passthroughs ---------------------------------

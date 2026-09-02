@@ -28,6 +28,7 @@
 import { buildAutoRecordedRow } from "./auto-record-integrity.ts";
 import { scrubArtifactRows } from "./safety.ts";
 import { checkpointKey } from "./incremental-persist.ts";
+import { isNullishLiteral } from "./lib/nullish-literal.ts";
 import { canonicalPhoneValue, composeAddress, normPhoneE164 } from "./lib/selector-normalize.ts";
 
 /** Hard ceiling on auto-persisted rows PER tool call. Prevents one exhaustive
@@ -266,6 +267,9 @@ export function normalizeFinding(kind: string, value: unknown): { kind: string; 
   if (typeof value !== "string") return null;
   const v = value.trim();
   if (!v) return null;
+  // A null-shaped tool field ("NULL", "n/a", "none", "undefined") is not a
+  // selector. One reached production as a username at confidence 45.
+  if (isNullishLiteral(v)) return null;
   const k = kind.toLowerCase();
   if (!ALLOWED_KINDS.has(k)) return null;
   switch (k) {

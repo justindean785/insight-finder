@@ -120,6 +120,7 @@ function classLabel(cls: string): string {
 function statusFromLabel(label: ConfLabel): EvidenceDisplayStatus {
   switch (label) {
     case "CONFIRMED": return "verified";
+    case "ATTESTED": return "verified";
     case "CORRELATED": return "probable";
     case "INFERRED": return "needs_corroboration";
     case "VERIFY": return "needs_corroboration";

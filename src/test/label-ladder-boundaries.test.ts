@@ -144,7 +144,9 @@ describe("reviews move the LABEL, never the displayed figure", () => {
   it("an attestation confirms the label and leaves the number alone", () => {
     const a = row(40, ONE);
     expect(labelForArtifact(a)).toBe("VERIFY");
-    expect(labelForArtifact(a, "confirmed")).toBe("CONFIRMED");
+    // ATTESTED, not CONFIRMED: the analyst's decision is its own rung so the
+    // label never claims a second source class the evidence does not have.
+    expect(labelForArtifact(a, "confirmed")).toBe("ATTESTED");
     // …and the figure an analyst reads is untouched by that click.
     expect(effectiveConfidence(a)).toBe(40);
   });
@@ -175,6 +177,8 @@ describe("quarantine: the ceiling, and its explicit restoration", () => {
   });
 
   it("linkage_confirmed restores the label — the #448 escape hatch", () => {
+    // The released row is corroborated (two classes, 88): evidence-derived
+    // CONFIRMED outranks the analyst rung and is what the escape hatch restores.
     expect(labelForArtifact(quarantined({ linkage_confirmed: true }), "confirmed")).toBe("CONFIRMED");
   });
 

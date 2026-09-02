@@ -75,7 +75,7 @@ describe("control: #448's behaviour must be preserved, not regressed", () => {
     const adjudicated = quarantined({
       metadata: { ...(quarantined().metadata as object), linkage_confirmed: true },
     } as Partial<Artifact>);
-    expect(labelForArtifact(adjudicated, "confirmed")).toBe("CONFIRMED");
+    expect(labelForArtifact(adjudicated, "confirmed")).toBe("ATTESTED");
   });
 
   it("linkage_confirmed restores the NUMBER too, not just the label", () => {
