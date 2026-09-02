@@ -58,14 +58,19 @@ export default {
         premium: "cubic-bezier(0.32, 0.72, 0, 1)",
       },
       boxShadow: {
-        cta: "0 10px 28px -12px rgba(0,0,0,0.7)",
+        // The primary CTA casts a shadow AND a faint signal bloom, so a white
+        // pill on the dark ground reads as lit rather than as pasted on.
+        cta: "0 10px 28px -12px hsl(0 0% 0% / 0.7), 0 0 34px -14px hsl(var(--brand) / 0.55)",
         // Elevation ladder — deliberate depth steps for the surface hierarchy
         // (raised panel → floating control → overlay). Defined, contained blur
         // with a top inner hairline, not the wide soft "ghost-card" halo.
-        "e1": "inset 0 1px 0 hsl(0 0% 100% / 0.035), 0 1px 2px hsl(0 0% 0% / 0.4)",
-        "e2": "inset 0 1px 0 hsl(0 0% 100% / 0.045), 0 4px 10px -4px hsl(0 0% 0% / 0.5)",
-        "e3": "inset 0 1px 0 hsl(0 0% 100% / 0.05), 0 12px 28px -12px hsl(0 0% 0% / 0.6)",
-        "overlay": "inset 0 1px 0 hsl(0 0% 100% / 0.06), 0 24px 64px -28px hsl(0 0% 0% / 0.8)",
+        // The inner hairlines are the FILM, not pure white: a #fff specular on
+        // a blue-black ground is the same leak the `white` remap below exists
+        // to close, and these four shadows sat outside it.
+        "e1": "inset 0 1px 0 hsl(var(--film) / 0.045), 0 1px 2px hsl(0 0% 0% / 0.4)",
+        "e2": "inset 0 1px 0 hsl(var(--film) / 0.055), 0 4px 10px -4px hsl(0 0% 0% / 0.5)",
+        "e3": "inset 0 1px 0 hsl(var(--film) / 0.06), 0 12px 28px -12px hsl(0 0% 0% / 0.6)",
+        "overlay": "inset 0 1px 0 hsl(var(--film) / 0.07), 0 24px 64px -28px hsl(0 0% 0% / 0.8)",
       },
       colors: {
         border: "hsl(var(--border))",
@@ -147,7 +152,7 @@ export default {
         "brain-bad": "hsl(var(--brain-status-bad))",
 
         // ── The film ────────────────────────────────────────────────────
-        // `white` is REMAPPED onto the warm film token, and that is the whole
+        // `white` is REMAPPED onto the cold film token, and that is the whole
         // point. Every translucent highlight in the product is written in
         // markup as `bg-white/5`, `border-white/10`, `text-white/70` — 84 of
         // them across 17 .tsx files, none token-backed. While `white` stayed

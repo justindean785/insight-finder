@@ -62,6 +62,7 @@
  */
 import { synthesizeFindings, type PersistedArtifact } from "./finding-synthesis.ts";
 import { buildFindingRow } from "./lib/finding-row.ts";
+import { dropRejectedArtifacts, loadReviewsForThread, type ReviewDb } from "./reviews.ts";
 /**
  * The MINIMUM this sweep needs from a Supabase client, declared structurally.
  *
@@ -84,6 +85,7 @@ interface PgResult {
 interface PgQuery extends PromiseLike<PgResult> {
   select(cols?: string, opts?: { count?: string; head?: boolean }): PgQuery;
   eq(col: string, val: unknown): PgQuery;
+  in(col: string, vals: readonly unknown[]): PgQuery;
   gte(col: string, val: unknown): PgQuery;
   lt(col: string, val: unknown): PgQuery;
   order(col: string, opts?: { ascending?: boolean }): PgQuery;
@@ -237,7 +239,28 @@ export async function synthesizeMissingFindings(
       // Truncation would change the answer silently — decline instead.
       if (rows.length > MAX_ARTIFACTS_PER_THREAD) { out.distribution.zero++; continue; }
 
-      const candidates = synthesizeFindings(rows as PersistedArtifact[], {
+      // ⛔ ANALYST REJECTION, FAIL-CLOSED. A finding written here carries engine
+      // authority and a NEW artifact id. Before this read, synthesis never
+      // consulted `artifact_reviews`, so a row the analyst had marked FALSE
+      // could contribute a source class to the corroboration bar and be
+      // republished as `supporting_artifact_ids` under a fresh id — the exact
+      // bypass id-only exclusion exists to close. Rejected rows are dropped by
+      // artifact id AND by normalized kind|value (dropRejectedArtifacts), and
+      // an unreadable verdict set skips the thread rather than adjudicating on
+      // unfiltered rows: "could not read the verdicts" is not "nothing rejected".
+      const reviews = await loadReviewsForThread(db as unknown as ReviewDb, threadId, userId);
+      if (!reviews.ok) {
+        console.warn(JSON.stringify({
+          event: "synthesis_skipped_review_state_unavailable", thread_id: threadId, error: reviews.error,
+        }));
+        out.errors++;
+        continue;
+      }
+      // The same review-filtered set feeds BOTH the candidate selection and the
+      // contradiction scoping below: rejected evidence participates in neither.
+      const admissible = dropRejectedArtifacts(rows as Array<Record<string, unknown>>, reviews);
+
+      const candidates = synthesizeFindings(admissible as PersistedArtifact[], {
         maxFindings: opts?.maxFindingsPerThread ?? 3,
       }).filter((c) => !seenClusters.has(c.clusterId));
 
@@ -250,7 +273,7 @@ export async function synthesizeMissingFindings(
 
       // `contraRows` is the SAME thread set record_finding fetches, so the
       // contradiction scoping is identical on both paths.
-      const contraRows = rows as unknown as Parameters<typeof buildFindingRow>[1]["contraRows"];
+      const contraRows = admissible as unknown as Parameters<typeof buildFindingRow>[1]["contraRows"];
 
       const toInsert: Record<string, unknown>[] = [];
       for (const c of candidates) {

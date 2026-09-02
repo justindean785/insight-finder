@@ -1,7 +1,7 @@
 /**
- * reviews.ts — make analyst verdicts (public.artifact_reviews) visible to the agent.
+ * reviews.ts — make analyst decisions (public.artifact_reviews) bind on the agent.
  *
- * THE BUG THIS FIXES
+ * THE BUG THIS FIXES (original, 2026-07-19)
  *   The analyst's Confirm/False/Recheck marks are written to `artifact_reviews`
  *   by the frontend (src/lib/review.ts) but were NEVER read by any edge function
  *   (0 references). Every path that re-reads artifacts to feed the model — the
@@ -10,10 +10,24 @@
  *   artifact identically to a confirmed one. Result: findings the analyst marked
  *   FALSE reappeared as the "most likely subject."
  *
- * STATES (mirror src/lib/review.ts):
- *   confirmed | key    → keep (any boost is applied elsewhere)
- *   recheck            → analyst flagged suspect → downweight confidence
- *   dismissed | wrong  → analyst REJECTED → exclude from everything the model sees
+ * THE SECOND BUG (2026-09-02)
+ *   Only the REJECTION half ever propagated, and it propagated as a confidence
+ *   delta. Confirm and Key never reached model context at all, Recheck only
+ *   reached it as "-20 confidence", and the cache/cluster/salvage reads applied
+ *   +20/+25 to evidence confidence for a human verdict that is not a second
+ *   source. Analyst decisions are now four SEPARATE concepts, none of which is
+ *   evidence confidence:
+ *
+ *     confirmed  → an analyst-accepted PROPOSITION (context; do not re-litigate)
+ *     key        → an investigative PRIORITY (context + pivot ranking)
+ *     recheck    → a durable VERIFICATION TASK (context; pivot task)
+ *     dismissed  → REJECTED: excluded from everything the model sees, from
+ *     wrong        dispatch, clustering, synthesis and authoritative sections,
+ *                  by artifact id AND normalized kind|value. Preserved forensically.
+ *
+ *   `applyReviewsToArtifacts` therefore no longer touches `confidence`. Engine
+ *   confidence, caps, source independence and corroboration are computed at
+ *   RECORD time and are left exactly as recorded.
  *
  * FAIL-CLOSED (changed 2026-07-19 after review)
  *   Loading used to fail OPEN: a query error yielded an empty map, which silently
@@ -21,8 +35,9 @@
  *   artifacts the analyst had marked FALSE. That is the incident, reproduced by
  *   an outage. `loadReviewsForThread` now returns an explicit ReviewLoad whose
  *   `ok:false` means "review state UNAVAILABLE". Integrity-critical callers
- *   (cache write, clustering, synthesis) MUST NOT proceed as if unreviewed — they
- *   skip the write / return a neutral "review state unavailable" result instead.
+ *   (cache write, clustering, synthesis, recovery) MUST NOT proceed as if
+ *   unreviewed — they skip the write / return a neutral "review state
+ *   unavailable" result instead.
  *
  * ID *AND* VALUE ENFORCEMENT
  *   Filtering only by artifact_id is bypassable: the same rejected kind+value can
@@ -32,48 +47,11 @@
 
 /** Verdicts that mean "the analyst rejected this — do not use it." */
 export const REJECTED_REVIEW_STATES: ReadonlySet<string> = new Set(["dismissed", "wrong"]);
-/**
- * Confidence subtracted from an artifact the analyst flagged `recheck`.
- * MUST match the canonical delta in src/lib/review.ts
- * (REVIEW_CONFIDENCE_DELTA.recheck = -20) — that frontend constant is what an
- * analyst actually sees applied to a `recheck`-flagged artifact everywhere
- * else in the product, so the backend must apply the identical penalty.
- */
-export const RECHECK_CONFIDENCE_PENALTY = 20;
 
-/**
- * Confidence ADDED for an analyst attestation. MUST match the canonical deltas in
- * src/lib/review.ts (REVIEW_CONFIDENCE_DELTA.confirmed = +20, .key = +25).
- *
- * These existed on the frontend and were never applied by the backend: this module
- * implemented only the `recheck` penalty, so the UI promised a scoring effect the
- * agent never delivered. In production that surfaced as a green "Verified" chip
- * sitting next to an unchanged 45% — the label moved, the number never did, and
- * confirmed findings therefore sorted BELOW unconfirmed ones.
- */
-export const CONFIRMED_CONFIDENCE_BOOST = 20;
-export const KEY_CONFIDENCE_BOOST = 25;
-
-/**
- * Ceiling for an attestation-boosted artifact.
- *
- * An analyst confirming a finding attests to RELEVANCE — that this row belongs to
- * the subject. It is not a second independent source, so it must not manufacture
- * corroboration: a single weak-provenance row cannot become absolute proof by
- * clicking. Provenance caps (applyEvidenceCaps: breach/data_broker 60,
- * username_sweep 45, ...) are applied at RECORD time and remain the ceiling for
- * what the evidence itself supports; this bound stops the human boost from
- * overshooting into the Confirmed band on its own.
- */
-export const ATTESTED_CONFIDENCE_CEILING = 90;
-
-/** Confidence delta for a review state — the single place the backend decides. */
-export function reviewConfidenceDelta(state: string | null | undefined): number {
-  if (state === "confirmed") return CONFIRMED_CONFIDENCE_BOOST;
-  if (state === "key") return KEY_CONFIDENCE_BOOST;
-  if (state === "recheck") return -RECHECK_CONFIDENCE_PENALTY;
-  return 0;
-}
+/** Every recorded verdict. Anything else in the column is ignored as unknown. */
+export const KNOWN_REVIEW_STATES: ReadonlySet<string> = new Set([
+  "confirmed", "key", "recheck", "dismissed", "wrong",
+]);
 
 export function isRejectedReview(state: string | null | undefined): boolean {
   return !!state && REJECTED_REVIEW_STATES.has(state);
@@ -92,26 +70,47 @@ export function normalizeArtifactKey(kind: unknown, value: unknown): string {
  *  read — treat as UNAVAILABLE, never as "nothing is rejected". */
 export interface RejectedRow { id: string; kind: string; value: string }
 
+/** A reviewed artifact, resolved to its row so a decision can be NAMED in
+ *  context. `quarantined` is carried so a confirmed row that is still
+ *  `subject_unlinked` can be described honestly (confirmation does not release
+ *  linkage quarantine). */
+export interface ReviewedRow {
+  id: string;
+  kind: string;
+  value: string;
+  state: string;
+  note: string | null;
+  quarantined: boolean;
+}
+
 export interface ReviewLoad {
   ok: boolean;
   /** artifact_id → review state */
   byId: Map<string, string>;
+  /** artifact_id → analyst note (only when one was written) */
+  noteById: Map<string, string>;
   /** normalized kind|value of rejected artifacts (survives re-record under a new id) */
   rejectedKeys: Set<string>;
   /** the rejected artifacts themselves, for the authoritative DO-NOT-USE block.
    *  Resolved by the same lookup that builds rejectedKeys — no extra query. */
   rejectedRows: RejectedRow[];
+  /** every reviewed artifact resolved to its row (confirmed / key / recheck /
+   *  rejected), for the ANALYST DECISIONS block. */
+  reviewedRows: ReviewedRow[];
   error: string | null;
 }
 
 export function emptyReviewLoad(ok: boolean, error: string | null = null): ReviewLoad {
-  return { ok, byId: new Map(), rejectedKeys: new Set(), rejectedRows: [], error };
+  return {
+    ok, byId: new Map(), noteById: new Map(), rejectedKeys: new Set(),
+    rejectedRows: [], reviewedRows: [], error,
+  };
 }
 
 type QueryResult = { data: Array<Record<string, unknown>> | null; error: unknown };
 type Eqable = PromiseLike<QueryResult> & { eq: (col: string, v: unknown) => Eqable };
 type InAble = PromiseLike<QueryResult> & { in: (col: string, v: readonly unknown[]) => InAble };
-type ReviewDb = {
+export type ReviewDb = {
   from: (table: string) => {
     select: (cols: string) => {
       eq: (col: string, v: unknown) => Eqable;
@@ -123,6 +122,12 @@ type ReviewDb = {
 function errText(e: unknown): string {
   if (e && typeof e === "object" && "message" in e) return String((e as { message: unknown }).message);
   return String(e);
+}
+
+function isQuarantinedMeta(meta: unknown): boolean {
+  if (!meta || typeof meta !== "object") return false;
+  const m = meta as Record<string, unknown>;
+  return m.subject_unlinked === true && m.linkage_confirmed !== true;
 }
 
 /**
@@ -137,9 +142,10 @@ export async function loadReviewsForThread(
   userId?: string | null,
 ): Promise<ReviewLoad> {
   const byId = new Map<string, string>();
+  const noteById = new Map<string, string>();
   const rejectedKeys = new Set<string>();
   try {
-    let q = db.from("artifact_reviews").select("artifact_id,state").eq("thread_id", threadId);
+    let q = db.from("artifact_reviews").select("artifact_id,state,note").eq("thread_id", threadId);
     if (userId) q = q.eq("user_id", userId);
     const { data, error } = await q;
     if (error) return emptyReviewLoad(false, errText(error));
@@ -147,37 +153,53 @@ export async function loadReviewsForThread(
     for (const r of data) {
       const id = typeof r?.artifact_id === "string" ? r.artifact_id : null;
       const state = typeof r?.state === "string" ? r.state : null;
-      if (id && state) byId.set(id, state);
+      if (id && state && KNOWN_REVIEW_STATES.has(state)) {
+        byId.set(id, state);
+        if (typeof r?.note === "string" && r.note.trim()) noteById.set(id, r.note.trim().slice(0, 300));
+      }
     }
 
-    // Resolve rejected ids → normalized kind|value so a later re-record of the
-    // same finding under a NEW id is still excluded. Best-effort: if this lookup
-    // fails we still have id-level enforcement, so the load stays ok.
-    const rejectedIds = [...byId.entries()].filter(([, s]) => REJECTED_REVIEW_STATES.has(s)).map(([id]) => id);
+    // Resolve reviewed ids → rows. For REJECTED ids this yields the normalized
+    // kind|value keys, so a later re-record of the same finding under a NEW id
+    // is still excluded. For every other verdict it yields the row the decision
+    // is ABOUT, so the prompt can name it. Best-effort: if this lookup fails we
+    // still have id-level enforcement, so the load stays ok.
+    const reviewedIds = [...byId.keys()];
     const rejectedRows: RejectedRow[] = [];
-    if (rejectedIds.length > 0) {
+    const reviewedRows: ReviewedRow[] = [];
+    if (reviewedIds.length > 0) {
       try {
         const { data: arts, error: aErr } = await db
           .from("artifacts")
-          .select("id,kind,value")
-          .in("id", rejectedIds);
+          .select("id,kind,value,metadata")
+          .in("id", reviewedIds);
         if (!aErr && Array.isArray(arts)) {
           for (const a of arts) {
-            rejectedKeys.add(normalizeArtifactKey(a?.kind, a?.value));
-            rejectedRows.push({
-              id: String(a?.id ?? ""),
+            const id = String(a?.id ?? "");
+            const state = byId.get(id);
+            if (!state) continue;
+            const row: ReviewedRow = {
+              id,
               kind: String(a?.kind ?? ""),
               value: String(a?.value ?? ""),
-            });
+              state,
+              note: noteById.get(id) ?? null,
+              quarantined: isQuarantinedMeta(a?.metadata),
+            };
+            reviewedRows.push(row);
+            if (REJECTED_REVIEW_STATES.has(state)) {
+              rejectedKeys.add(normalizeArtifactKey(row.kind, row.value));
+              rejectedRows.push({ id, kind: row.kind, value: row.value });
+            }
           }
         } else if (aErr) {
-          console.warn("[reviews] rejected-key lookup failed (id-level enforcement still active):", errText(aErr));
+          console.warn("[reviews] reviewed-row lookup failed (id-level enforcement still active):", errText(aErr));
         }
       } catch (e) {
-        console.warn("[reviews] rejected-key lookup threw:", errText(e));
+        console.warn("[reviews] reviewed-row lookup threw:", errText(e));
       }
     }
-    return { ok: true, byId, rejectedKeys, rejectedRows, error: null };
+    return { ok: true, byId, noteById, rejectedKeys, rejectedRows, reviewedRows, error: null };
   } catch (e) {
     console.warn("[reviews] loadReviewsForThread failed:", errText(e));
     return emptyReviewLoad(false, errText(e));
@@ -185,20 +207,14 @@ export async function loadReviewsForThread(
 }
 
 /**
- * The REJECTION half of `applyReviewsToArtifacts`, on its own and with no
- * confidence arithmetic whatsoever.
+ * The REJECTION predicate over persisted rows, with no confidence arithmetic
+ * whatsoever.
  *
  * Extracted for #479's authoritative Evidence Record, which needs the analyst's
  * rejection authority — a finding marked `dismissed`/`wrong` may not be
- * republished under an "authoritative" heading — but must NOT inherit the
- * review confidence deltas below it. That block's contract is
- * `min(stored confidence, recorded cap)` and nothing else, so a `confirmed` or
- * `key` verdict silently raising a printed number would break the one property
- * the block exists to guarantee.
- *
- * Extracted rather than reimplemented on purpose: there is now exactly ONE
- * rejection predicate in this file, and `applyReviewsToArtifacts` is defined in
- * terms of it, so the two surfaces cannot drift.
+ * republished under an "authoritative" heading — and is now the ONLY thing
+ * `applyReviewsToArtifacts` adds a review tag on top of. There is exactly ONE
+ * rejection predicate in this file, so the surfaces cannot drift.
  *
  * Fails closed: an unavailable review load surfaces NOTHING, because "we could
  * not read the verdicts" and "nothing was rejected" are different facts.
@@ -237,45 +253,33 @@ export function dropRejectedArtifacts<T extends Record<string, unknown>>(
 }
 
 /**
- * Filter + adjust artifact rows by analyst verdict, for any read that feeds the
+ * Filter + TAG artifact rows by analyst verdict, for any read that feeds the
  * model. Rows SHOULD carry `id` (matching artifact_reviews.artifact_id).
  *   - dismissed / wrong                  → DROPPED (analyst rejected)
  *   - same normalized kind|value as any  → DROPPED (re-record under a new id
  *     rejected artifact                    cannot bypass the verdict)
- *   - recheck                            → confidence − RECHECK_CONFIDENCE_PENALTY
- *   - confirmed / key                    → tagged review_state (kept)
+ *   - confirmed / key / recheck          → tagged `review_state` (kept)
  *
- * Rejected keys are the union of the DB-resolved keys and the keys of rejected
- * rows present in THIS batch, so the bypass is closed even when the id→value
- * lookup was unavailable.
+ * NO CONFIDENCE ARITHMETIC. This used to add +20/+25 for confirmed/key and
+ * subtract 20 for recheck. A verdict is authority, priority or workflow state —
+ * it is not a second source, so it may not move the number the engine recorded.
+ * Consumers that need the decision read `review_state`; consumers that need
+ * evidence strength read `confidence`, which is exactly what was persisted.
  */
 export function applyReviewsToArtifacts<T extends Record<string, unknown>>(
   rows: T[] | null | undefined,
   review: ReviewLoad,
 ): T[] {
   const kept = dropRejectedArtifacts(rows, review);
-  // Nothing to tag or adjust — and this preserves the historical identity return
-  // for the "no verdicts at all" case.
+  // Nothing to tag — and this preserves the historical identity return for the
+  // "no verdicts at all" case.
   if (review.byId.size === 0) return kept;
 
   const out: T[] = [];
   for (const r of kept) {
     const id = typeof r?.id === "string" ? r.id : null;
     const state = id ? review.byId.get(id) : undefined;
-    if (state === "recheck" || state === "confirmed" || state === "key") {
-      // Apply the SAME deltas the frontend advertises. Previously only `recheck`
-      // was honoured, so a confirmed finding kept its original number forever.
-      const c = typeof r.confidence === "number" ? r.confidence : Number(r.confidence) || 0;
-      const delta = reviewConfidenceDelta(state);
-      const bounded = delta > 0
-        ? Math.min(ATTESTED_CONFIDENCE_CEILING, c + delta)
-        : Math.max(0, c + delta);
-      out.push({ ...r, confidence: bounded, review_state: state });
-    } else if (state) {
-      out.push({ ...r, review_state: state });
-    } else {
-      out.push(r);
-    }
+    out.push(state ? { ...r, review_state: state } : r);
   }
   return out;
 }
@@ -299,34 +303,120 @@ export function rejectedArtifacts<T extends Record<string, unknown>>(
   });
 }
 
+const DECISION_LINE_CAP = 40;
+
+function decisionLines(rows: ReviewedRow[], withNote = true): string[] {
+  const lines = rows.slice(0, DECISION_LINE_CAP).map((r) => {
+    const kind = String(r.kind || "artifact");
+    const value = String(r.value ?? "").slice(0, 160);
+    const note = withNote && r.note ? ` — analyst note: ${r.note.slice(0, 160)}` : "";
+    const q = r.quarantined ? " [still subject_unlinked: linkage NOT released by this decision]" : "";
+    return `  - [${kind}] ${value}${q}${note}`;
+  });
+  if (rows.length > DECISION_LINE_CAP) lines.push(`  …and ${rows.length - DECISION_LINE_CAP} more.`);
+  return lines;
+}
+
 /**
- * Authoritative analyst-rejection block for the system prompt of ANY model turn —
- * not just salvage synthesis. Ordinary follow-up turns still carry the prior
- * (false) narrative in message history, so without this block the model can and
- * does re-assert a finding the analyst already marked FALSE.
- * Returns "" when there is nothing to say.
+ * Authoritative analyst-rejection block — the DO-NOT-USE half of the decisions
+ * block, kept as its own renderer because the salvage/recovery paths and the
+ * wiring tests reference it directly. Returns "" when there is nothing to say.
  */
-export function renderAnalystRejectionBlock<T extends Record<string, unknown>>(
+export function renderAnalystRejectionBlock<T extends { kind?: unknown; value?: unknown }>(
   rejected: T[] | null | undefined,
 ): string {
   if (!Array.isArray(rejected) || rejected.length === 0) return "";
-  const lines = rejected.slice(0, 40).map((r) => {
+  const lines = rejected.slice(0, DECISION_LINE_CAP).map((r) => {
     const kind = String(r.kind ?? "artifact");
     const value = String(r.value ?? "").slice(0, 160);
     return `  - [${kind}] ${value}`;
   });
   return [
     "",
-    "## ANALYST-REJECTED — DO NOT USE (authoritative)",
-    "A human analyst reviewed the items below and marked them FALSE/dismissed.",
+    "### ANALYST-REJECTED / unrelated — DO NOT USE (authoritative)",
+    "A human analyst reviewed the items below and marked them FALSE / unrelated.",
     "They may still appear in earlier messages in this conversation. That earlier",
-    "text is SUPERSEDED. You MUST NOT restate, rank, cite, or re-derive them as the",
-    "subject or as supporting evidence — including by inferring the same conclusion",
-    "from adjacent evidence. If asked about one, say it was rejected by the analyst.",
+    "text is SUPERSEDED. You MUST NOT restate, rank, cite, pivot on, or re-derive",
+    "them as the subject or as supporting evidence — including by inferring the",
+    "same conclusion from adjacent evidence, and including under a different",
+    "spelling or a fresh tool result. The runtime refuses tool calls on them.",
+    "If asked about one, say it was rejected by the analyst.",
     ...lines,
-    rejected.length > 40 ? `  …and ${rejected.length - 40} more rejected item(s).` : "",
+    rejected.length > DECISION_LINE_CAP ? `  …and ${rejected.length - DECISION_LINE_CAP} more rejected item(s).` : "",
     "",
   ].filter(Boolean).join("\n");
+}
+
+/**
+ * ONE structured `ANALYST DECISIONS` block for the system prompt of ANY model
+ * turn — not just salvage synthesis. Ordinary follow-up turns still carry the
+ * prior narrative in message history, so without this block the model can and
+ * does re-assert a finding the analyst already marked FALSE, ignores the one the
+ * analyst asked to re-verify, and treats a Key lead like any other selector.
+ *
+ * Four sections, four separate concepts. The header states the one rule that
+ * governs all of them: a decision never changes evidence confidence, source
+ * independence or corroboration. Returns "" when the analyst has decided nothing.
+ */
+export function renderAnalystDecisionsBlock(review: ReviewLoad): string {
+  if (!review.ok) return "";
+  const rows = review.reviewedRows;
+  if (rows.length === 0 && review.rejectedRows.length === 0) return "";
+  const confirmed = rows.filter((r) => r.state === "confirmed");
+  const key = rows.filter((r) => r.state === "key");
+  const recheck = rows.filter((r) => r.state === "recheck");
+  // Rejected rows come from the same lookup; fall back to rejectedRows for a load
+  // whose reviewedRows are empty (older callers / partial lookups).
+  const rejected = rows.length > 0
+    ? rows.filter((r) => REJECTED_REVIEW_STATES.has(r.state))
+    : review.rejectedRows.map((r) => ({ ...r, state: "dismissed", note: null, quarantined: false }));
+
+  const out: string[] = [
+    "",
+    "## ANALYST DECISIONS (authoritative — recorded by a human analyst)",
+    "These are decisions about AUTHORITY, PRIORITY and WORKFLOW. None of them changes",
+    "evidence confidence, source independence or corroboration: keep every recorded",
+    "confidence, cap and source count exactly as persisted. A confirmation is not a",
+    "second source. A priority is not a higher confidence. A recheck is not a lower one.",
+  ];
+  if (confirmed.length) {
+    out.push(
+      "",
+      "### Confirmed by the analyst (accepted propositions)",
+      "Treat each as accepted for THIS investigation: do not re-litigate, re-verify or",
+      "hedge it unless NEW evidence contradicts it. Build on it. It still carries its",
+      "recorded confidence and source count — do not label it CONFIRMED on the strength",
+      "of the analyst's click alone, and a row marked subject_unlinked stays unlinked:",
+      "confirmation does not release linkage quarantine.",
+      ...decisionLines(confirmed),
+    );
+  }
+  if (key.length) {
+    out.push(
+      "",
+      "### Key priorities (investigate these first)",
+      "When planning the next pivots, rank work on these selectors ABOVE comparable",
+      "ordinary selectors. This is investigative priority only — it is not evidence",
+      "strength, and it does not add a source class or corroboration.",
+      ...decisionLines(key),
+    );
+  }
+  if (recheck.length) {
+    out.push(
+      "",
+      "### Recheck tasks (verification requested)",
+      "The analyst asked for another look. For each: run FRESH, INDEPENDENT tools or",
+      "sources to confirm or refute it, then report whether it holds up and at what",
+      "confidence. Do not restate prior findings as verification. This is a task, not",
+      "a downgrade — the recorded confidence is unchanged until new evidence lands.",
+      ...decisionLines(recheck),
+    );
+  }
+  if (rejected.length) {
+    out.push(renderAnalystRejectionBlock(rejected).trimEnd());
+  }
+  out.push("");
+  return out.join("\n");
 }
 
 /** Neutral result for an integrity-critical path when verdicts are unavailable.

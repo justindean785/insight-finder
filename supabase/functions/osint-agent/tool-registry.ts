@@ -31,6 +31,8 @@ import {
   stripStatusAssertions,
   nullResultKey,
   artifactDedupKey,
+  breachExposureCanonicalKey,
+  collapseRecordArtifactsBatch,
 } from "./lib/artifact-hygiene.ts";
 import { canonicalPhoneValue } from "./lib/selector-normalize.ts";
 import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
@@ -105,7 +107,7 @@ import {
 
 import {
   guard, routingGuard, CONSUMER_DOMAINS, STAGE2_TOOLS,
-  triageState, bumpArtifacts, skipStub, correlateNudge,
+  triageState, bumpArtifacts, skipStub, takeCorrelateHint, resetCorrelateCycle,
 } from "./guard.ts";
 import { reviewMemoryBatch, type MemoryEntry } from "./lib/memory_consolidate.ts";
 import type { Artifact as ClusterArtifact } from "./lib/cluster.ts";
@@ -240,8 +242,8 @@ async function loadThreadArtifactIdentities(
         index(artifactDedupKey({ kind, value, source }));
 
         // LEGACY SPELLING. `validateArtifact` canonicalises a phone on write, so
-        // a row stored before that change holds "9172915568" while the next
-        // attempt keys on "+19172915568" — the lookup misses and re-inserts the
+        // a row stored before that change holds "9175550123" while the next
+        // attempt keys on "+19175550123" — the lookup misses and re-inserts the
         // duplicate this gate exists to stop. `loadSeenArtifactKeys` already
         // registers both spellings on the auto-persist path; without this the
         // model-facing writers were the one path that did not, which is exactly
@@ -259,6 +261,9 @@ async function loadThreadArtifactIdentities(
         // whose write-time selector came from metadata simply fails to match,
         // which is a miss, never a false collapse.
         index(nullResultKey({ kind, source, value, selector: seed ?? null }));
+
+        const breachCanon = breachExposureCanonicalKey({ kind, value, source });
+        if (breachCanon) index(breachCanon);
       }
       if (data.length < THREAD_ARTIFACT_PAGE_SIZE) break;
       if (to + 1 >= THREAD_ARTIFACT_SCAN_MAX) truncated = true;
@@ -287,7 +292,7 @@ async function findPriorThreadArtifact(
   try {
     // Match the LEGACY spelling too. The exact-value SQL filter is the singular
     // writer's twin of the loader gap above: a thread holding a pre-change
-    // "9172915568" is invisible to a lookup for the canonical "+19172915568",
+    // "9175550123" is invisible to a lookup for the canonical "+19175550123",
     // so re-running an existing thread recreates the very duplicate this gate
     // exists to stop.
     const spellings = [value];
@@ -755,7 +760,7 @@ export function buildTools(ctx: ToolContext) {
             signal: (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal,
           });
           const parsed = safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content };
-          guard.artifactsSinceCorrelate = 0;
+          resetCorrelateCycle();
           return { ok: r.ok, status: r.status, analysis: parsed };
         } catch (e) { return { error: String(e) }; }
       },
@@ -4713,7 +4718,8 @@ export function buildTools(ctx: ToolContext) {
           .min(1)
           .max(200)),
       })),
-      execute: async ({ artifacts }) => {
+      execute: async ({ artifacts: rawArtifacts }) => {
+        const artifacts = collapseRecordArtifactsBatch(rawArtifacts);
         const accepted: Array<{ index: number; kind: string; value: string }> = [];
         const rejected: Array<{ index: number; reason: string; kind: string; value: string }> = [];
         const rows: Array<Record<string, unknown>> = [];
@@ -4725,9 +4731,9 @@ export function buildTools(ctx: ToolContext) {
         // THREAD-WIDE dedup (2026-08-28) — the bound the note below used to
         // describe as open. `seenInBatch` only ever caught a repeat inside ONE
         // call, and the duplicates measured in production were seconds apart in
-        // DIFFERENT calls: `V&S 1110 LLC` persisted as three `organization` rows
-        // (55/75/75), `Ved Parkash` as three, one address as four. An Evidence
-        // count of 88 that is not a count of distinct facts.
+        // DIFFERENT calls: `Example Holdings 1110 LLC` persisted as three
+        // `organization` rows (55/75/75), `Sam Whitfield` as three, one address
+        // as four. An Evidence count of 88 that is not a count of distinct facts.
         //
         // Closed at RUNTIME, deliberately. #305's dedup migration would have
         // deleted ~120 genuinely distinct rows and orphaned 53 analyst reviews;
@@ -4910,7 +4916,9 @@ export function buildTools(ctx: ToolContext) {
               ? a.metadata.username
               : (typeof a.metadata?.email === "string" ? a.metadata.email : (triageState.seed ?? null)),
           });
-          const dedupKey = canonicalNullKey ?? artifactDedupKey({
+          const dedupKey = canonicalNullKey
+            ?? breachExposureCanonicalKey({ kind: finalKind, value: v.value, source: authoritativeSource || (a.source ?? null) })
+            ?? artifactDedupKey({
             kind: finalKind,
             value: v.value,
             source: authoritativeSource,
@@ -5198,7 +5206,13 @@ export function buildTools(ctx: ToolContext) {
           // Audit F1: once enough new artifacts have accrued since the last correlate,
           // surface a hint so the orchestrator actually runs minimax_correlate (it never
           // fired in the audited run). Empty object when not yet due.
-          ...correlateNudge(),
+          //
+          // Takes through the SAME latch as the fan-out delivery path. This used to
+          // call the unlatched `correlateNudge()`, which meant the hint could be
+          // delivered twice in one cycle — once on a live tool result and again
+          // here — because the latch did not govern this surface. One directive per
+          // cycle, whichever surface reaches the model first.
+          ...takeCorrelateHint(),
         };
       },
     }),

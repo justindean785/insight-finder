@@ -44,7 +44,6 @@ import {
   REVIEW_LABEL,
   REVIEW_SHORT,
   REVIEW_HELP,
-  REVIEW_CONFIDENCE_DELTA,
   REVIEW_CLASS,
   REJECTED_REVIEW_STATES,
   recheckPrompt,
@@ -64,10 +63,10 @@ describe("review state maps", () => {
     expect(new Set(REVIEW_STATES).size).toBe(REVIEW_STATES.length);
   });
 
-  it.each(["label", "short", "help", "delta", "class"] as const)(
+  it.each(["label", "short", "help", "class"] as const)(
     "every state has a %s entry",
     (which) => {
-      const map = { label: REVIEW_LABEL, short: REVIEW_SHORT, help: REVIEW_HELP, delta: REVIEW_CONFIDENCE_DELTA, class: REVIEW_CLASS }[which];
+      const map = { label: REVIEW_LABEL, short: REVIEW_SHORT, help: REVIEW_HELP, class: REVIEW_CLASS }[which];
       for (const s of ALL) expect(map[s]).toBeDefined();
     },
   );
@@ -78,16 +77,15 @@ describe("review state maps", () => {
     expect(REVIEW_SHORT.dismissed).toBe("Dismiss");
   });
 
-  it("confidence deltas reward confirm/key and punish recheck/wrong", () => {
-    expect(REVIEW_CONFIDENCE_DELTA.new).toBe(0);
-    expect(REVIEW_CONFIDENCE_DELTA.confirmed).toBeGreaterThan(0);
-    expect(REVIEW_CONFIDENCE_DELTA.key).toBeGreaterThan(REVIEW_CONFIDENCE_DELTA.confirmed);
-    expect(REVIEW_CONFIDENCE_DELTA.recheck).toBeLessThan(0);
-    expect(REVIEW_CONFIDENCE_DELTA.wrong).toBeLessThan(REVIEW_CONFIDENCE_DELTA.recheck);
-  });
-
-  it("dismissed has no confidence delta (handled as a FAILED override)", () => {
-    expect(REVIEW_CONFIDENCE_DELTA.dismissed).toBe(0);
+  it("⛔ no help text promises a confidence delta any more", () => {
+    // "Confirm +20 / Key +25 / Recheck −20" told the analyst that a click was a
+    // source. Decisions steer the next run; they never move a number.
+    for (const s of ALL) {
+      expect(REVIEW_HELP[s]).not.toMatch(/[+−-]\s?\d+/);
+      expect(REVIEW_HELP[s]).not.toMatch(/boosts? confidence|lowers? confidence/i);
+    }
+    expect(REVIEW_HELP.confirmed).toMatch(/does not change its confidence/i);
+    expect(REVIEW_HELP.key).toMatch(/priority only/i);
   });
 
   it("REJECTED_REVIEW_STATES is exactly dismissed+wrong (mirrors reviews.ts on the edge function)", () => {
@@ -154,13 +152,26 @@ describe("checkCachedHitSafety", () => {
     expect(r.safe).toBe(false);
   });
 
-  it("stays safe when reviews are only confirmed/key (nothing blocks replay)", async () => {
+  it("⛔ is UNSAFE when reviews are only confirmed/key — replay would clone them as UNREVIEWED", async () => {
+    // Inverted 2026-09-02. A replay clones the artifact into a NEW thread as a
+    // fresh row with no review, so a Confirm / Key decision on the origin was
+    // silently discarded. Until a review-lineage transfer exists, a decided
+    // entry is not replayable; the live run re-reads the decisions instead.
     mock.reviewRows = [
       { artifact_id: "a1", state: "confirmed" },
       { artifact_id: "a3", state: "key" },
     ];
     const r = await checkCachedHitSafety("thread-1", "user-1");
-    expect(r.safe).toBe(true);
+    expect(r.safe).toBe(false);
+    expect(r.reason).toMatch(/confirmed\/key|lineage/i);
+    expect(r.reviewMap.get("a1")).toBe("confirmed" satisfies ReviewState);
+  });
+
+  it("CLONE: a Key decision on a clone in another thread blocks replay too", async () => {
+    mock.cloneRows = [{ id: "clone-1" }];
+    mock.cloneReviewRows = [{ artifact_id: "clone-1", state: "key" }];
+    const r = await checkCachedHitSafety("thread-1", "user-1", ["a1"]);
+    expect(r.safe).toBe(false);
   });
 
   it("is UNSAFE on recheck — a frozen narrative cannot be downweighted", async () => {

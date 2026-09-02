@@ -244,6 +244,8 @@ const ALLOWED_KINDS = new Set<string>([
   "url", "email", "breach_exposure", "social_account", "github_repo", "github_account",
   "phone", "domain", "ip_address", "leak_paste", "document",
   "name", "address", "organization", "username",
+  // Collapsed harvest shapes — one artifact carries many underlying rows in metadata.
+  "social_footprint", "bulk_corpus_harvest",
 ]);
 
 const EMAIL_RE = /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i;
@@ -296,11 +298,11 @@ export function normalizeFinding(kind: string, value: unknown): { kind: string; 
       if (digits.replace(/\D/g, "").length < 7) return null;
       // CANONICAL E.164 (2026-08-28). Dedup is `checkpointKey(kind, value)` —
       // exact equality — so the spelling IS the identity. A measured run wrote
-      // +19172915568, 19172915568 and 9172915568 as three artifacts in three
+      // +19175550123, 19175550123 and 9175550123 as three artifacts in three
       // cluster slots for one number, then the clusterer folded them back
       // together, because this fold ran only at cluster time.
       //
-      // The fold deliberately does NOT collapse 79172915568 (a Russian +7
+      // The fold deliberately does NOT collapse 79175550123 (a Russian +7
       // number sharing ten digits with the US one) — see selector-normalize.ts.
       //
       // FALLBACK, not a narrowing: normPhoneE164 returns null below 8 digits,
@@ -363,6 +365,11 @@ export function normalizeFinding(kind: string, value: unknown): { kind: string; 
       if (/\s/.test(un)) return null;          // usernames have no whitespace
       return { kind: "username", value: un };
     }
+    case "social_footprint":
+    case "bulk_corpus_harvest": {
+      if (v.length < 4 || v.length > 240) return null;
+      return { kind: k, value: v.replace(/\s+/g, " ").trim() };
+    }
   }
   return null;
 }
@@ -376,6 +383,16 @@ function pushUrl(out: ExtractedFinding[], url: unknown, ctx: Record<string, unkn
 export const SWEEP_COLLAPSE_ENABLED = true;
 /** Below this many hits, individual URLs are still legible — don't collapse. */
 export const SWEEP_COLLAPSE_MIN_HITS = 3;
+
+/** Kill switch: false restores one quarantined artifact per bulk-corpus identity. */
+export const BULK_CORPUS_COLLAPSE_ENABLED = true;
+/** Identity rows retained inside a collapsed bulk-corpus summary. */
+export const MAX_BULK_CORPUS_ITEMS_RETAINED = 250;
+
+/** True when a row carries the bulk-corpus quarantine stamp from `coCorpusCtx`. */
+export function isBulkCorpusQuarantine(ctx: Record<string, unknown> | undefined): boolean {
+  return /bulk corpus return/i.test(String(ctx?.subject_unlinked_reason ?? ""));
+}
 
 // Input fields, in priority order, that name the selector a breach tool was
 // queried ON. Every breach lookup is invoked with one of these.
@@ -420,7 +437,7 @@ const UNLINKED_ECHO_CTX = {
  *  below mints phone/email/name/address from those same rows, at full subject
  *  authority.
  *
- *  MEASURED 2026-08-26: a run pivoting on +19172915568 persisted 79172915568 —
+ *  MEASURED 2026-08-26: a run pivoting on +19175550123 persisted 79175550123 —
  *  a Russian +7 number off a `zoloto585.ru` row belonging to a different person
  *  — as a subject selector with its own cluster id. */
 const CO_TENANT_CTX = {
@@ -525,7 +542,7 @@ function echoesQueriedSelector(value: string, queriedRaw: string, seedName: stri
  * query is trusted and only NAME-only queries quarantine. That is a settled
  * boundary, and moving it needs sign-off, not a drive-by.
  *
- * The measured defect is a PHONE mismatch (+1917… queried, 79172915568
+ * The measured defect is a PHONE mismatch (+1917… queried, 79175550123
  * returned). There is no measured email case, and widening an integrity signal
  * past its evidence to reach a tidier result is how the other over-applications
  * in this module happened. If an email co-tenant is ever measured, that is the
@@ -1004,7 +1021,7 @@ export function extractFindings(
         // COMPOSED, not concatenated (2026-08-28). This was a five-field
         // `.join(" ")`, which on a measured production row persisted:
         //
-        //   1110 ANDERSON AVE3F 1110 ANDERSON AVE APT 3F BRONX NY 10452
+        //   1110 SAMPLE AVE3F 1110 SAMPLE AVE APT 3F ANYTOWN NY 10001
         //
         // — `address_street2` restating `address_street` in a different
         // spelling, run together with no separators. That string is the
@@ -1273,6 +1290,70 @@ export function extractFindings(
         if (echoesQueriedSelector(f.value, queried, subjectSeedName ?? "")) continue;
         f.context = { ...(f.context ?? {}), ...ctx };
       }
+    }
+  }
+
+  // BULK CORPUS COLLAPSE — one summary row, not 67 identical quarantine cards.
+  // Mirrors username_sweep / breach_exposure collapse: the ARTIFACT count drops,
+  // every harvested identity is retained in metadata.harvested_identities.
+  if (BULK_CORPUS_COLLAPSE_ENABLED) {
+    const queried = queriedSelectorRaw(input);
+    const kept: ExtractedFinding[] = [];
+    const collapsed: ExtractedFinding[] = [];
+    for (const f of findings) {
+      if (!CORPUS_IDENTITY_KINDS.has(f.kind)) {
+        kept.push(f);
+        continue;
+      }
+      const ctx = f.context as Record<string, unknown> | undefined;
+      if (!isBulkCorpusQuarantine(ctx)) {
+        kept.push(f);
+        continue;
+      }
+      if (echoesQueriedSelector(f.value, queried, subjectSeedName ?? "")) {
+        kept.push(f);
+        continue;
+      }
+      collapsed.push(f);
+    }
+    if (collapsed.length > 0) {
+      const harvested = collapsed.map((f) => ({ kind: f.kind, value: f.value }));
+      const retained = harvested.slice(0, MAX_BULK_CORPUS_ITEMS_RETAINED);
+      const totalIdentities = collapsed.length;
+      // Parse the cardinality from the shared reason when present — it names the
+      // full lookup yield, which can exceed what survived the per-call cap.
+      const parsedTotal = Number(
+        String(collapsed[0]?.context?.subject_unlinked_reason ?? "").match(/(\d+) person identities/)?.[1] ?? "",
+      );
+      const lookupYield = Number.isFinite(parsedTotal) && parsedTotal > 0 ? parsedTotal : totalIdentities;
+      const anchor = breachSubjectAnchor(o, input) || queried || "";
+      const summaryRow: ExtractedFinding = {
+        kind: "bulk_corpus_harvest",
+        value: anchor
+          ? `${lookupYield} unlinked identities — bulk corpus (${anchor})`
+          : `${lookupYield} unlinked identities — bulk corpus return`,
+        context: {
+          tool: toolName,
+          via: toolName,
+          bulk_corpus: true,
+          identity_count: lookupYield,
+          collapsed_row_count: totalIdentities,
+          queried_selector: anchor || queried || null,
+          harvested_identities: retained,
+          ...(harvested.length > retained.length
+            ? { harvested_truncated: true, harvested_retained: retained.length }
+            : {}),
+          ...coCorpusCtx(lookupYield),
+        },
+        rawConfidence: 40,
+      };
+      // Insert AFTER breach_exposure rows — those are unshifted to the front on
+      // purpose and must never lose priority to a bulk summary.
+      const insertAt = kept.findIndex((f) => f.kind !== "breach_exposure");
+      if (insertAt === -1) kept.push(summaryRow);
+      else kept.splice(insertAt, 0, summaryRow);
+      findings.length = 0;
+      findings.push(...kept);
     }
   }
 
@@ -1545,8 +1626,8 @@ export async function loadSeenArtifactKeys(
         if (!k || !v) continue;
         seen.add(checkpointKey(k, v));
         // MIGRATION-FREE RECONCILIATION. Rows written before the canonical phone
-        // fold hold "9172915568" where a new extraction now yields
-        // "+19172915568" — different keys for one number, so the legacy row
+        // fold hold "9175550123" where a new extraction now yields
+        // "+19175550123" — different keys for one number, so the legacy row
         // would not block the re-insert. Registering the normalized spelling too
         // makes old and new rows agree without touching a single stored row.
         const n = normalizeFinding(k, v);

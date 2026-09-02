@@ -55,6 +55,22 @@ export const FINALIZE_PERSIST_ACTIVE_TOOLS = ["record_artifacts", "finalize_no_f
 export const FINALIZE_MEMORY_ACTIVE_TOOLS = ["memory_save", "finalize_skip_memory"] as const;
 export const FINALIZE_REPORT_ACTIVE_TOOLS: readonly string[] = [];
 export const FINALIZE_INTERNAL_TOOLS = new Set(["finalize_no_findings", "finalize_skip_memory"]);
+
+/**
+ * Live lookup tools that may run after the finalize reserve window opens.
+ * minimax_correlate clusters/rescores artifacts already on the thread — it does
+ * not fan out to new OSINT providers. Blocking it at 90s was the measured cause of
+ * 73–100% orphan rates (production audit 2026-09-01): the hint fired, the model
+ * called correlate at ~95s, and cache.ts returned "finalize window open; live
+ * lookup skipped" on every attempt.
+ */
+export const FINALIZE_WINDOW_LIVE_EXEMPT = new Set<string>([
+  "minimax_correlate",
+]);
+
+export function isFinalizeWindowLiveLookupExempt(toolName: string): boolean {
+  return FINALIZE_WINDOW_LIVE_EXEMPT.has(toolName);
+}
 // Backward-compatible alias used by older focused tests/helpers. New runtime code uses
 // the phase-specific constants above.
 export const FINALIZE_ACTIVE_TOOLS = FINALIZE_PERSIST_ACTIVE_TOOLS;
@@ -228,17 +244,27 @@ export function shouldSkipForToolCap(
  * only evaluates prepareStep/stopWhen between model steps, so a single late step can
  * keep launching lookups after the finalize reserve window has opened. Once the
  * reserve is open, any new NON-recording live lookup is skipped; record_artifacts and
- * evidence writes stay available so the run can finish cleanly.
+ * evidence writes stay available so the run can finish cleanly. minimax_correlate is
+ * exempt — see FINALIZE_WINDOW_LIVE_EXEMPT.
  */
 export function shouldSkipForFinalizeWindow(
   elapsedMs: number,
   isRecordingTool: boolean,
-  opts?: { budgetMs?: number; reserveMs?: number },
+  opts?: { budgetMs?: number; reserveMs?: number; toolName?: string },
 ): boolean {
   if (isRecordingTool) return false;
+  if (opts?.toolName && isFinalizeWindowLiveLookupExempt(opts.toolName)) return false;
   const budgetMs = opts?.budgetMs ?? ORCHESTRATOR_WALL_CLOCK_MS;
   const reserveMs = opts?.reserveMs ?? FINALIZE_RESERVE_MS;
   return elapsedMs >= budgetMs - reserveMs;
+}
+
+/** True when correlate is due but has not been attempted this cycle — finalize may defer once. */
+export function shouldDeferFinalizeForCorrelate(
+  correlateDue: boolean,
+  lastCorrelateOutcome: "ok" | "failed" | null,
+): boolean {
+  return correlateDue && lastCorrelateOutcome === null;
 }
 
 /**

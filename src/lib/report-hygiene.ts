@@ -107,7 +107,26 @@ export function formatArtifactDisplayValue(value: string): string {
 // section.
 // ---------------------------------------------------------------------------
 
-export function isCollisionArtifact(a: Artifact): boolean {
+/**
+ * The structural shape the two collision predicates actually read.
+ *
+ * Widening the PARAMETER TYPE is not the same thing as widening the PREDICATE.
+ * The note at #6b below forbids the latter — `isCollisionArtifact` is also the
+ * report's collision-SECTION membership test, so adding a signal to it moves
+ * rows between report sections. This changes nothing about what either function
+ * MATCHES; it only lets a caller holding a lighter projection ask the question.
+ *
+ * It exists so `quarantineSets` (which owns a structural `QuarantineInput`, and
+ * deliberately imports nothing from this layer) can be handed
+ * `isClusterIneligible` as an injected predicate instead of re-implementing it.
+ * A full `Artifact` and a `QuarantineInput` are both assignable here.
+ */
+export type AuthorityInput = {
+  kind: string;
+  metadata?: Record<string, unknown> | null;
+};
+
+export function isCollisionArtifact(a: AuthorityInput): boolean {
   const kind = (a.kind ?? "").toLowerCase();
   if (kind === "excluded_collision") return true;
   const m = (a.metadata ?? {}) as Record<string, unknown>;
@@ -175,7 +194,7 @@ export function isCollisionArtifact(a: Artifact): boolean {
  * `subject_unlinked_reason`, and keeps appearing in the collision disclosure.
  * What it regains is only the authority the analyst explicitly granted it.
  */
-export function isClusterIneligible(a: Artifact): boolean {
+export function isClusterIneligible(a: AuthorityInput): boolean {
   return isCollisionArtifact(a) || isQuarantined(a.metadata);
 }
 
