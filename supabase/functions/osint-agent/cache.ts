@@ -14,6 +14,8 @@ import { creditsCharged } from "./billing.ts";
 import { classifyToolOutcome } from "./tool-outcome.ts";
 import * as circuit from "./circuit.ts";
 import { buildRefusedKeys, dispatchTypeCandidates, isDispatchRefused, quarantineRefusal, reasonForKey } from "./lib/dispatch-quarantine.ts";
+import { buildRejectedDispatchKeys, isRejectedDispatch, rejectionRefusal } from "./lib/dispatch-rejection.ts";
+import { loadReviewsForThread, type ReviewDb } from "./reviews.ts";
 import { guard, takeCorrelateHint } from "./guard.ts";
 import { reserveToolCall } from "./orchestrator-budget.ts";
 import { isFinalizeWindowLiveLookupExempt } from "./orchestrator-finalize.ts";
@@ -627,6 +629,42 @@ export function wrapToolsWithCache(
     }
     return refusedKeysPromise;
   };
+  // ---- ANALYST-REJECTION dispatch boundary --------------------------------------
+  // A `dismissed` / `wrong` verdict bound at every READ (reviews.ts) but never at
+  // DISPATCH: the prompt said DO NOT USE and nothing enforced it, so the model —
+  // or a manual "Run this pivot" — could still start a paid call on a selector
+  // the analyst had ruled out. Loaded ONCE per run and reused, keyed by
+  // `type:normalizedValue` from the artifact's kind (plus its selector-type
+  // alias), never by value alone. Rejected keys are derived from the rejected
+  // ROWS, so a re-record of the same selector under a new id is still refused.
+  //
+  // FAILS OPEN on a load error, matching the quarantine boundary above and for
+  // the same reason: this prevents wasted calls and contaminated pivots; it is
+  // not an authorization control, and refusing EVERY tool call on a transient
+  // review read would kill the run outright. The authoritative consumers
+  // (prompt block, salvage, cache, clustering, synthesis, recovery) all fail
+  // closed on the same load. The warning makes the open boundary observable.
+  let rejectedKeysPromise: Promise<Set<string>> | null = null;
+  const loadRejectedKeys = () => {
+    if (!rejectedKeysPromise) {
+      rejectedKeysPromise = (async () => {
+        try {
+          const reviews = await loadReviewsForThread(
+            adminDb as unknown as ReviewDb, ctx.investigationId, ctx.userId,
+          );
+          if (!reviews.ok) {
+            console.warn("[rejected-dispatch] review load failed (boundary open this run):", reviews.error);
+            return new Set<string>();
+          }
+          return buildRejectedDispatchKeys(reviews.rejectedRows, circuit.normalizeSelector);
+        } catch (e) {
+          console.warn("[rejected-dispatch] review load threw (boundary open this run):", e);
+          return new Set<string>();
+        }
+      })();
+    }
+    return rejectedKeysPromise;
+  };
 
   // Derive a real success flag from a tool's return value. A tool can return
   // without throwing yet still represent a failure (HTTP non-2xx wrapped into
@@ -846,6 +884,16 @@ export function wrapToolsWithCache(
               `[quarantine-dispatch] refused ${name} on ${declared}:${sel}` +
               (why ? ` (${why})` : ""),
             );
+            return refusal;
+          }
+          // Same position, same shape, for the analyst's own rejections. `force`
+          // does not override it either: the analyst clears a rejection by
+          // resetting the review, not by re-running the call.
+          const rejectedKeys = await loadRejectedKeys();
+          const rejectedAs = isRejectedDispatch(rejectedKeys, candidateTypes, sel);
+          if (rejectedAs) {
+            const refusal = rejectionRefusal(name, rejectedAs, sel);
+            console.warn(`[rejected-dispatch] refused ${name} on ${rejectedAs}:${sel} (analyst rejected)`);
             return refusal;
           }
         }

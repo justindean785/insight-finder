@@ -629,9 +629,15 @@ async function recoverOneStaleThread(
       event: "recovery_review_state_unavailable", thread_id: thread.id, error: recoveryReviews.error,
     }));
   }
+  // FAIL CLOSED. This used to fall back to the RAW fetch when the verdicts were
+  // unreadable — the exact opposite of the comment above it and of every other
+  // authoritative consumer (salvage, cache, clustering, synthesis). The
+  // recovered stub is a REPORT the analyst reads; "we could not read the
+  // verdicts" must render as no listed artifacts, never as "nothing was
+  // rejected". The collected count is still disclosed separately below.
   const reviewedArtifacts = recoveryReviews.ok
     ? applyReviewsToArtifacts((artifacts ?? []) as Array<Record<string, unknown>>, recoveryReviews)
-    : (artifacts ?? []);
+    : [];
 
   // ---- FORENSICS FOR THE NEXT NATURAL FAILURE ----
   // The 2026-07-30 run death is UNRESOLVED and reproduced on a re-run. Diagnosing

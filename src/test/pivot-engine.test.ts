@@ -58,14 +58,30 @@ describe("computePivots — already-run filter", () => {
   });
 
   it("demotes a report pivot whose target already exists as a pivotable artifact (existingValueSet)", () => {
-    // A false-positive artifact is NOT surfaced by buildPivots, so it only
-    // reaches the engine via a report recommendation; existingValueSet demotes
-    // it because we already hold it as evidence.
+    // A row we already hold as evidence but that buildPivots does not surface
+    // (a non-pivot-yielding source of the same value) only reaches the engine
+    // via a report recommendation; existingValueSet demotes it because we
+    // already hold it as evidence.
+    //
+    // This used to use a `false_positive` artifact for that role. It cannot any
+    // more: `false_positive` is a REJECTION (analyst-decisions.ts), and a
+    // rejected selector is removed from the pivot list outright rather than
+    // demoted — the next test pins that. The demotion itself is unchanged: the
+    // report names the ENTITY with a descriptor ("hawkcapo - YouTube channel"),
+    // so it does not merge with the bare "hawkcapo" finding by canonical key,
+    // and existingValueSet demotes it through `entityKey`.
+    const artifacts = [art({ kind: "name", value: "hawkcapo" })];
+    const reportPivots = [reportPivot({ value: "hawkcapo - YouTube channel", type: "name", actionLabel: "Review lead" })];
+    const out = computePivots({ artifacts, seedValue: null, reportPivots, skipSet: NONE });
+    const p = out.find((x) => x.value === "hawkcapo - YouTube channel");
+    expect(p?.status).toBe("searched");
+  });
+
+  it("a report pivot for a legacy false_positive artifact is REMOVED, not merely demoted", () => {
     const artifacts = [art({ kind: "email", value: "fp@example.com", metadata: { false_positive: true } })];
     const reportPivots = [reportPivot({ value: "fp@example.com", type: "email", actionLabel: "Verify email ownership" })];
     const out = computePivots({ artifacts, seedValue: null, reportPivots, skipSet: NONE });
-    const p = out.find((x) => x.value === "fp@example.com");
-    expect(p?.status).toBe("searched");
+    expect(out.find((x) => x.value === "fp@example.com")).toBeUndefined();
   });
 });
 

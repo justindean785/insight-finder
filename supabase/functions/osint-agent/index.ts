@@ -60,7 +60,7 @@ import {
 } from "./orchestrator-finalize.ts";
 import {
   loadReviewsForThread, applyReviewsToArtifacts, dropRejectedArtifacts,
-  renderAnalystRejectionBlock, REVIEW_STATE_UNAVAILABLE_NOTE,
+  renderAnalystDecisionsBlock, REVIEW_STATE_UNAVAILABLE_NOTE,
 } from "./reviews.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
 
@@ -731,24 +731,34 @@ Deno.serve(async (req) => {
     // and does re-assert a finding the analyst already marked FALSE. baseSystemPrompt
     // feeds all three paths (intermediate, finalize, salvage), so injecting here
     // covers every turn.
+    //
+    // 2026-09-02: this used to inject ONLY the rejection half. Confirm, Key and
+    // Recheck were persisted and never reached model context, so the analyst's
+    // positive decisions changed nothing about the next run. One structured
+    // ANALYST DECISIONS block now carries all four — confirmed propositions, key
+    // priorities, recheck tasks and the DO-NOT-USE rejections — and states the
+    // rule that governs them: a decision never changes evidence confidence.
     const turnReviews = await loadReviewsForThread(supabaseAdmin, threadId, userId);
-    const analystRejectionBlock = turnReviews.ok
-      ? renderAnalystRejectionBlock(turnReviews.rejectedRows)
+    const analystDecisionsBlock = turnReviews.ok
+      ? renderAnalystDecisionsBlock(turnReviews)
       // Verdicts unreadable: say so rather than implying nothing was rejected.
       : `\n## ANALYST REVIEW STATE UNAVAILABLE\n${REVIEW_STATE_UNAVAILABLE_NOTE}\n`;
     if (!turnReviews.ok) {
       console.warn(JSON.stringify({
         event: "turn_review_state_unavailable", thread_id: threadId, error: turnReviews.error,
       }));
-    } else if (turnReviews.rejectedRows.length > 0) {
+    } else if (turnReviews.byId.size > 0) {
       console.log(JSON.stringify({
-        event: "analyst_rejections_applied", thread_id: threadId,
+        event: "analyst_decisions_applied", thread_id: threadId,
         rejected: turnReviews.rejectedRows.length, reviewed: turnReviews.byId.size,
+        confirmed: turnReviews.reviewedRows.filter((r) => r.state === "confirmed").length,
+        key: turnReviews.reviewedRows.filter((r) => r.state === "key").length,
+        recheck: turnReviews.reviewedRows.filter((r) => r.state === "recheck").length,
       }));
     }
     const baseSystemPrompt =
       SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary
-      + analystRejectionBlock;
+      + analystDecisionsBlock;
     // The two decision tools exist in the registry so forced-finalize can select them,
     // but they must never be available during ordinary investigation steps.
     const normalActiveTools = activeToolsOutsideFinalize(Object.keys(tools));
@@ -1685,12 +1695,29 @@ Deno.serve(async (req) => {
                 }));
                 throw new Error("investigation cache skipped: analyst review state unavailable");
               }
+              // Tagged (review_state) and rejection-filtered, with NO confidence
+              // arithmetic — the cached number is exactly the recorded one.
               const cleanArts = applyReviewsToArtifacts(
                 (arts ?? []) as Array<Record<string, unknown>>, cacheReviews,
               );
               const cachedParts = sanitizeToolOutput(safePartsForCache, 1500);
               const cachedArts = sanitizeToolOutput(cleanArts, 1500);
               const payload = {
+                // cache_version 2: the client (ChatWindow.tsx) MUST re-check
+                // artifact_reviews for origin_thread_id before ever replaying
+                // assistant_parts verbatim — this snapshot reflects analyst
+                // decisions as of THIS write, not as of a future cache hit. A
+                // reader that doesn't understand cache_version 2 (or an older
+                // unversioned row) must treat the row as inadmissible, not
+                // replay it blind. See src/lib/review.ts checkCachedHitSafety.
+                //
+                // This stamp was introduced in 9122327 and lost in the 07-20
+                // emergency rollback; without it every row is "unversioned" and
+                // the client evicts each hit as inadmissible — replay was dead
+                // and the review-lineage contract the client documents pointed
+                // at a field nothing wrote. Restored 2026-09-02.
+                cache_version: 2,
+                origin_thread_id: threadId,
                 seed: detectedSeed,
                 assistant_parts: cachedParts,
                 artifacts: cachedArts,
