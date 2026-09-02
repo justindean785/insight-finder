@@ -119,5 +119,12 @@ export function detectSeed(input: string): DetectedSeed | null {
   }
   if (DOMAIN_RE.test(raw)) return { kind: "domain", raw, normalized: raw.toLowerCase() };
   if (USERNAME_RE.test(raw)) return { kind: "username", raw, normalized: raw.toLowerCase() };
+  // "@handle" is a username seed — the way every platform displays one. It
+  // classified as `other`, so `@hoodken28` lost the username playbook and its
+  // thread read "Type: other". Normalized without the `@`, matching artifact
+  // values and the server (validation.ts detectSeedServer).
+  if (raw.startsWith("@") && USERNAME_RE.test(raw.slice(1))) {
+    return { kind: "username", raw, normalized: raw.slice(1).toLowerCase() };
+  }
   return { kind: "other", raw, normalized: raw.toLowerCase() };
 }

@@ -1557,6 +1557,21 @@ Deno.serve(async (req) => {
               retrieval: artifactRetrieval,
               reviews: reviewsUsable ? "applied" : "unavailable",
               rejectedFindingCount,
+              // Durable record that decisions bound on this turn — the
+              // `analyst_decisions_applied` console line expires with the log
+              // window; the persisted message does not.
+              analystDecisions: reviewsUsable
+                ? {
+                    confirmed: turnReviews.reviewedRows.filter((r) => r.state === "confirmed").length,
+                    key: turnReviews.reviewedRows.filter((r) => r.state === "key").length,
+                    recheck: turnReviews.reviewedRows.filter((r) => r.state === "recheck").length,
+                    rejected: turnReviews.rejectedRows.length,
+                  }
+                : undefined,
+              clusterAssignmentsCleared: salvageArts.filter((r) => {
+                const m = r.metadata;
+                return !!m && typeof m === "object" && (m as Record<string, unknown>).cluster_cleared_reason === "analyst_rejected";
+              }).length,
             });
           } catch (e) {
             console.warn("[evidence-record] render failed (non-fatal):", String(e));

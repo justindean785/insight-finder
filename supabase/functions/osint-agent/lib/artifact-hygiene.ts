@@ -1,3 +1,4 @@
+import { canonicalKind } from "./kind-alias.ts";
 // lib/artifact-hygiene.ts — write-path accuracy gates for `record_artifacts`.
 //
 // Measured on a real run (thread 2d0dcd03, build 8c6184b): 54 persisted
@@ -48,8 +49,11 @@ export function artifactDedupKey(input: {
   value: string;
   source?: string | null;
 }): string {
+  // The KIND component is canonical (lib/kind-alias.ts) so `ip_address` and
+  // `ip` for one value cannot both persist. The VALUE is still whole and
+  // unparsed — the warning above stands.
   return JSON.stringify([
-    input.kind,
+    canonicalKind(input.kind, input.value),
     input.value,
     (input.source ?? "").trim().toLowerCase(),
   ]);

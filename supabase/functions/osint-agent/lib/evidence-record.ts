@@ -201,6 +201,32 @@ interface EvidenceRecordInput {
   /** How many `kind='finding'` rows analyst review removed, so "none remain
    *  after review" is distinguishable from "none were ever recorded". */
   rejectedFindingCount: number;
+  /** The analyst decisions this turn ran under. Rendered as one line so the
+   *  persisted message — not a sub-hour log window — is the durable record
+   *  that decisions bound. Optional: older callers omit it. */
+  analystDecisions?: { confirmed: number; key: number; recheck: number; rejected: number };
+  /** Rows whose cluster assignment has been cleared for an analyst rejection
+   *  (by an earlier run or the maintenance sweep), as seen in this fetch. */
+  clusterAssignmentsCleared?: number;
+}
+
+/** The decisions line(s), or [] when there is nothing to say. Italic prose
+ *  only — never a table row or a bracketed tier label, so the report-shape
+ *  detector cannot mistake it for a findings table. */
+function decisionLines(env: Record<string, unknown>): string[] {
+  const d = isRecord(env.analystDecisions) ? env.analystDecisions : null;
+  const out: string[] = [];
+  if (d) {
+    const c = usableCount(d.confirmed), k = usableCount(d.key), r = usableCount(d.recheck), x = usableCount(d.rejected);
+    if (c + k + r + x > 0) {
+      out.push(`_Analyst decisions applied this turn: ${c} confirmed, ${k} key, ${r} recheck, ${x} dismissed._`);
+    }
+  }
+  const cleared = usableCount(env.clusterAssignmentsCleared);
+  if (cleared > 0) {
+    out.push(`_Cluster assignments cleared for analyst-rejected rows (by earlier runs or the maintenance sweep): ${cleared}._`);
+  }
+  return out;
 }
 
 /**
@@ -240,6 +266,8 @@ export function buildEvidenceRecord(input: EvidenceRecordInput): string {
     .sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
   const head: string[] = [EVIDENCE_RECORD_HEADING, ""];
+  const decisions = decisionLines(env);
+  if (decisions.length) head.push(...decisions, "");
   // A filled fetch is a successful read, so the zero-findings statement below is
   // still legal — but it is qualified, because findings are the LOWEST-confidence
   // rows and this select is ordered confidence desc, which is exactly the cut a

@@ -37,6 +37,11 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 > echoes about itself. It reads `{"ok": true, "detail": "disabled"}`, and `disabled` is
 > correct: synthesis ships dark behind two independently-defaulted-OFF flags. If you need to
 > confirm a future deploy landed, look for a key the new code introduces, not only the SHA.
+> The next such key is **`checks.rejected_cluster_sweep`** (2026-09-02): the health path now
+> clears stale `cluster_id`/`subject_id` on analyst-rejected rows every probe — bounded,
+> idempotent, converging to one read, kill switch `REJECTED_CLUSTER_SWEEP_DISABLED` — so a
+> Dismiss binds on the persisted columns within a probe interval instead of at the next
+> re-run. Its absence from `/health` means that build is not deployed.
 >
 > **The bottleneck has never been the deploy — it is the MERGE.** Diagnosed 2026-08-28: nine
 > finished, green, reviewed PRs sat in **draft** while three days passed with zero functional
@@ -110,8 +115,8 @@ There is **ONE place to work: this repo, `justindean785/insight-finder`** (produ
 
 ## Edge function internals (gotchas)
 - **Live tool defs are in `supabase/functions/osint-agent/tool-registry.ts`** (`buildTools`), **not** inline in `index.ts` (which now only orchestrates the request). The god-file refactor moved them; `index.ts` has zero tool defs. The catalog↔runtime contract test (`src/test/catalog-guidance.test.ts`) reads `tool-registry.ts` (with an `index.ts` fallback) to assert every `catalog.ts` entry has a runtime def — keep `catalog.ts` and `tool-registry.ts` in sync when adding a tool. (Any older `tools/*.ts` files are stale mirrors, not the runtime source.)
-- Tests: `npm run test:edge` (= `cd supabase/functions/osint-agent && deno test --no-check --allow-net --allow-env --allow-sys --allow-read *_test.ts`). **`--allow-read` is required** — the source-level wiring tests (`reviews_wiring_test.ts`) read `index.ts`/`cluster.ts`/`recovery.ts` off disk to assert the call sites exist, and without it they abort with `NotCapable` before any assertion runs, which reads like a code failure and is not. (The old `--allow-net --no-check` form left env/sys perms off, inflating the failure count — measured 2026-07-25: `--allow-net --no-check` = 546 pass/57 fail vs `--allow-net --allow-env` = 754 pass/24 fail.) **Edge baseline: 1461 passed / 0 failed / 5 ignored** (re-measured 2026-08-31 on `3c2ef26` — read off CI's own `Edge functions (deno test)` job, which is the sanctioned instrument when Deno is absent; the 1446/`cf06cbb`, 1407/`03f64e4`, 1279/`5cc1940` and 1178/`394cd0b` figures are all stale). The 24 environmental failures are GONE — do not treat any failure as "probably environmental"; that excuse is retired. **Deno is NOT preinstalled** in the web/remote sandbox: `DENO_INSTALL=/usr/local sh <(curl -fsSL https://deno.land/install.sh) -y` (verified working 2026-08-28 — `dl.deno.land` answers 200 now, so the npm-registry workaround in `mem/ops/deno-tests-in-web-sandbox.md` is a fallback, not the only route). Pass `--no-lock`: an unqualified `deno test` rewrites `deno.lock` and drops four real dependency entries — or skip the install entirely and **use CI as the edge instrument**: any PR gives a clean `deno test` on a provisioned toolchain, and a red PR is still a usable measuring device if you read the per-job conclusions rather than the top-level X. `deno check index.ts` has ~12–157 **pre-existing** AI-SDK/Supabase type-graph errors — not a gate; verify your change adds none.
-- **Frontend baseline: 1695 passed / 1 skipped / 136 files** (`npx vitest run`, re-measured 2026-08-31 on `3c2ef26`; the 1611/131, 1629/133, 1587/130, 1585/130, 1422/115 and 1288/105 figures are all stale). ⚠️ **Test FILES are 136, not 137.** CI's `Frontend (vitest + build)` job prints `there will be 137 files uploaded` immediately after the suite — that is the *coverage artifact* file count, and mistaking it for the suite figure already put a wrong number in one commit message. **If a run reports ~10 React failures, re-measure in an isolated worktree with its own `npm ci`** before believing them — a shared `node_modules` can produce a duplicate-React artifact that fabricates exactly that (this cost a session; PR #481's body still cites them as real). It is a *symptom to check*, not a rule that a shared tree always lies: the 1695 above was measured in the primary checkout with 0 failures, and CI's own `Frontend (vitest + build)` job agreed on the same head. Re-measure rather than trust it — this number moved three times in one session. The package manager is **npm** — there is no `pnpm-lock.yaml` and no `test:e2e` script. Use `npm ci`, `npm run typecheck|lint|test|build|test:edge`.
+- Tests: `npm run test:edge` (= `cd supabase/functions/osint-agent && deno test --no-check --allow-net --allow-env --allow-sys --allow-read *_test.ts`). **`--allow-read` is required** — the source-level wiring tests (`reviews_wiring_test.ts`) read `index.ts`/`cluster.ts`/`recovery.ts` off disk to assert the call sites exist, and without it they abort with `NotCapable` before any assertion runs, which reads like a code failure and is not. (The old `--allow-net --no-check` form left env/sys perms off, inflating the failure count — measured 2026-07-25: `--allow-net --no-check` = 546 pass/57 fail vs `--allow-net --allow-env` = 754 pass/24 fail.) **Edge baseline: 1539 passed / 0 failed / 5 ignored** (re-measured 2026-09-02 on the report-truth branch with a local Deno 2 install, `--no-lock`; the 1517/`3b6fc44`, 1461/`3c2ef26`, 1446/`cf06cbb`, 1407/`03f64e4`, 1279/`5cc1940` and 1178/`394cd0b` figures are all stale). The 24 environmental failures are GONE — do not treat any failure as "probably environmental"; that excuse is retired. **Deno is NOT preinstalled** in the web/remote sandbox: `DENO_INSTALL=/usr/local sh <(curl -fsSL https://deno.land/install.sh) -y` (verified working 2026-08-28 — `dl.deno.land` answers 200 now, so the npm-registry workaround in `mem/ops/deno-tests-in-web-sandbox.md` is a fallback, not the only route). Pass `--no-lock`: an unqualified `deno test` rewrites `deno.lock` and drops four real dependency entries — or skip the install entirely and **use CI as the edge instrument**: any PR gives a clean `deno test` on a provisioned toolchain, and a red PR is still a usable measuring device if you read the per-job conclusions rather than the top-level X. `deno check index.ts` has ~12–157 **pre-existing** AI-SDK/Supabase type-graph errors — not a gate; verify your change adds none.
+- **Frontend baseline: 1803 passed / 1 skipped / 148 files** (`npx vitest run`, re-measured 2026-09-02 on the report-truth branch; the 1775/143 (`3b6fc44`), 1695/136, 1611/131, 1629/133, 1587/130, 1585/130, 1422/115 and 1288/105 figures are all stale). ⚠️ **Test FILES are the suite's own figure, not the coverage upload count.** CI's `Frontend (vitest + build)` job prints `there will be 137 files uploaded` immediately after the suite — that is the *coverage artifact* file count, and mistaking it for the suite figure already put a wrong number in one commit message. **If a run reports ~10 React failures, re-measure in an isolated worktree with its own `npm ci`** before believing them — a shared `node_modules` can produce a duplicate-React artifact that fabricates exactly that (this cost a session; PR #481's body still cites them as real). It is a *symptom to check*, not a rule that a shared tree always lies: the 1695 above was measured in the primary checkout with 0 failures, and CI's own `Frontend (vitest + build)` job agreed on the same head. Re-measure rather than trust it — this number moved three times in one session. The package manager is **npm** — there is no `pnpm-lock.yaml` and no `test:e2e` script. Use `npm ci`, `npm run typecheck|lint|test|build|test:edge`.
 - **The orchestrator is DeepSeek-slot-pinned, not MiniMax-primary.** `/health` reports `selected_provider: deepseek`, `orchestrator_reason: "pinned"`, with MiniMax as **fallback**. Since #449 the slot is vendor-agnostic via `DEEPSEEK_BASE_URL`, and the live model is **`glm-5.2` served by Z.AI**. Anywhere this file or `AGENTS.md` says MiniMax is primary, it is wrong.
 - Frontend tests: `npx vitest run` from repo root.
 
@@ -221,17 +226,28 @@ re-fix solved problems and miss the one thing still open.
   *authority*, never their existence. Any future change that makes a quarantined row
   disappear is a regression, not a tightening.
 
-### ⛔ STILL OPEN — the dispatch boundary (P1)
+### ✅ The dispatch boundary BINDS — what is still open is its observability (P1)
 
-`grep -rn "isSubjectUnlinked" supabase/functions/osint-agent/tool-registry.ts index.ts tools/`
-is **empty**. Quarantine binds at *write* and *read-back*, never at *dispatch*, so a
-name-only harvest leaves its quarantined selectors sitting in the model's context window,
-each eligible to seed its own paid multi-tool breach stack. This is the real cause of run
-spam and paid-cap pressure — **not** a `MAX_PAID_CALLS` that is too low (see below).
+**Do not re-derive this from the old grep.** `grep -rn "isSubjectUnlinked" tool-registry.ts index.ts tools/`
+is still empty *and that is fine*: the guard lives in **`cache.ts`** (`wrapToolsWithCache`,
+the pre-flight block at ~:866-899), keyed by `dispatchKey` (`lib/dispatch-quarantine.ts`)
+and `buildRejectedDispatchKeys` (`lib/dispatch-rejection.ts`), and refuses a quarantined or
+analyst-rejected selector before budget, circuit, cache or the live call. `force` does not
+override it. Pinned by `quarantine_dispatch_test.ts` / `rejected_dispatch_test.ts`.
 
-There is **no selector queue to filter**: `buildIntermediateStepPlan` never sees artifacts
-or selectors. The enforcement point is therefore a **pre-flight guard on tool input**, and
-it has two design hazards worth stating up front:
+What remains open: both loaders **fail open with a `console.warn`** (`cache.ts` ~:619/:658)
+and nothing durable records that a run went out with the boundary degraded — #519 (draft)
+stamps that into `tool_usage_log.input_json.runtime`. Also measured, not fixed: `index.ts`
+~:814 `Boolean(detectSeedServer(text))` is true for ANY non-blank message because the server
+falls back to `{kind:"other"}`, so the "parses as a seed" opening-phase gate actually fires
+on prose too. It is in the termination area — leave it unless you have read the oscillation
+history above.
+
+Since 2026-09-02 the same alias table (`lib/kind-alias.ts`) keys the write-side dedup
+(`checkpointKey`, `artifactDedupKey`), the read-side rejection (`normalizeArtifactKey`) and
+the dispatch guard, so a kind spelling honoured at one boundary is honoured at all three.
+
+The two design hazards the guard was built around still hold:
 - Key by **`type:normalizedValue`**, never by value alone. `normalizeTarget` collapses
   non-alphanumerics, so `username "jordan.vale"` and `name "Jordan Vale"` both become
   `"jordan vale"` — keying by value let an ordinary name *restore authority to a

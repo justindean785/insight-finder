@@ -18,6 +18,7 @@ import { selectOrchestratorProvider, type OrchestratorProvider } from "./orchest
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
 import { recoverStaleActiveThreads } from "./recovery.ts";
 import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./finding-synthesis-sweep.ts";
+import { sweepRejectedClusterAssignments, describeSweep } from "./lib/rejected-cluster-sweep.ts";
 
 /**
  * Release a response body we are never going to read.
@@ -381,6 +382,17 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
       r.checks.recovery = recovered.errors
         ? { ok: false, detail: `recovered ${recovered.recovered}; ${recovered.errors} error(s)` }
         : { ok: true, detail: `recovered ${recovered.recovered} stale active run(s)` };
+      // Rejected-cluster sweep: an analyst Dismiss clears the persisted
+      // cluster_id / subject_id within a probe interval instead of waiting for
+      // the thread to be re-run. Bounded, idempotent, converges to one read.
+      // Its presence in the payload is the behavioural proof this build is
+      // deployed (see CLAUDE.md, "checks.synthesis" for the pattern).
+      try {
+        const swept = await sweepRejectedClusterAssignments(admin);
+        r.checks.rejected_cluster_sweep = { ok: swept.ok, detail: describeSweep(swept) };
+      } catch (e) {
+        r.checks.rejected_cluster_sweep = { ok: false, detail: String(e).slice(0, 160) };
+      }
       // Finding synthesis. Deliberately AFTER recovery and inside the same
       // try/catch: a thread must be marked finished before it is a candidate, and
       // a synthesis fault must degrade to a reported check, never to a failed
