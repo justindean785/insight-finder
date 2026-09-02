@@ -103,7 +103,7 @@ export const gravatar_profile = tool({
       return { ok: r.ok, status: r.status, hash, avatar_url: `https://gravatar.com/avatar/${hash}`, data };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const hunter_domain_search = tool({
   description:
@@ -153,7 +153,7 @@ export const hunter_domain_search = tool({
       };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const hunter_email_finder = tool({
   description:
@@ -190,7 +190,7 @@ export const hunter_email_finder = tool({
       };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const hunter_email_verifier = tool({
   description:
@@ -223,7 +223,7 @@ export const hunter_email_verifier = tool({
       };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const hunter_combined = tool({
   description:
@@ -311,7 +311,7 @@ export const hunter_combined = tool({
       };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const bosint_email_lookup = tool({
   description:
@@ -330,7 +330,7 @@ export const bosint_email_lookup = tool({
       return { error: String(e) };
     }
   },
-}),
+});
 
 export const bosint_phone_lookup = tool({
   description:
@@ -373,7 +373,7 @@ export const bosint_phone_lookup = tool({
       }
     }
   },
-}),
+});
 
 export const deepfind_reverse_email = tool({
   description:
@@ -390,7 +390,7 @@ export const deepfind_reverse_email = tool({
       return { ok: r.ok, status: r.status, source: "deepfind.reverse_email", data };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const deepfind_disposable_email = tool({
   description:
@@ -407,5 +407,5 @@ export const deepfind_disposable_email = tool({
       return { ok: r.ok, status: r.status, source: "deepfind.disposable", data };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 

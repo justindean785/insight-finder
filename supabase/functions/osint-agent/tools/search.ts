@@ -323,7 +323,7 @@ export const google_dorks = tool({
     };
     return { seed, kind, dorks: map[kind] ?? [] };
   },
-}),
+});
 
 export const dork_harvest = tool({
   description:
@@ -567,7 +567,7 @@ export const dork_harvest = tool({
         : `No document/leak URLs found in this harvest pass.${providerStats.exa > 0 ? ` Fallback engaged: Exa handled ${providerStats.exa}/${queryResults.length} query(ies).` : ""}`,
     };
   },
-}),
+});
 
 export const gemini_deep_dork = tool({
   description:
@@ -649,7 +649,7 @@ export const gemini_deep_dork = tool({
         : "No grounded citations returned.",
     };
   },
-}),
+});
 
 export const exa_search = tool({
   description:
@@ -690,7 +690,7 @@ export const exa_search = tool({
       return { ok: r.ok, status: r.status, data: trimExaResults(data) };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const exa_find_similar = tool({
   description:
@@ -718,7 +718,7 @@ export const exa_find_similar = tool({
       return { ok: r.ok, status: r.status, data: trimExaResults(data) };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const exa_get_contents = tool({
   description:
@@ -750,7 +750,7 @@ export const exa_get_contents = tool({
       return { ok: r.ok, status: r.status, data: trimExaResults(data) };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const jina_reader_scrape = tool({
   description:
@@ -791,7 +791,7 @@ export const jina_reader_scrape = tool({
       return { ok: true, url: clean, markdown: text.slice(0, maxChars), truncated: text.length > maxChars };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const minimax_web_search = tool({
   description:
@@ -849,5 +849,5 @@ export const minimax_web_search = tool({
       return { ok: false, error: String(e), answer: "", citations: [] };
     }
   },
-}),
+});
 

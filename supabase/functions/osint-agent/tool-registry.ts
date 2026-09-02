@@ -19,6 +19,7 @@ import {
 import { applyDateSanity } from "./date-sanity.ts";
 import { computeAxes, sourceConfidence, isUnrelatedEntity, EXCLUDED_COLLISION_CONFIDENCE, isBioCrossLinkName, BIO_CROSS_LINK_NAME_CAP } from "./confidence.ts";
 import { applyRecordingSourcePolicy, disclosedSourceLabels, resolveRecordingStatus } from "./recording-source-policy.ts";
+import { buildFindingRow } from "./lib/finding-row.ts";
 import { queryTypesOf } from "./query-type-router.ts";
 import { isSameSurnameOnlyLead, isListingAgentLead } from "./collision-policy.ts";
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDomainSource, LLM_ASSERTED_PROVENANCE, countIndependentClasses } from "./artifact_types.ts";
@@ -29,7 +30,11 @@ import {
   isQueuedPlaceholder,
   stripStatusAssertions,
   nullResultKey,
+  artifactDedupKey,
+  breachExposureCanonicalKey,
+  collapseRecordArtifactsBatch,
 } from "./lib/artifact-hygiene.ts";
+import { canonicalPhoneValue } from "./lib/selector-normalize.ts";
 import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
 import { selectPivots, proposedCallToCandidate, type PivotCandidate, type ProposedCall } from "./graph_pivots.ts";
 import { renderPivotChecklistForPrompt } from "./pivot-checklists.ts";
@@ -103,7 +108,7 @@ import {
 
 import {
   guard, routingGuard, CONSUMER_DOMAINS, STAGE2_TOOLS,
-  triageState, bumpArtifacts, skipStub, correlateNudge,
+  triageState, bumpArtifacts, skipStub, takeCorrelateHint, resetCorrelateCycle,
 } from "./guard.ts";
 import { reviewMemoryBatch, type MemoryEntry } from "./lib/memory_consolidate.ts";
 import type { Artifact as ClusterArtifact } from "./lib/cluster.ts";
@@ -184,6 +189,145 @@ const JINA_HARD_BLOCK_HOSTS = [
   // review, not a markdown scrape.
   "webportal.courts.oregon.gov",
 ];
+/** Page size and hard ceiling for the thread-wide artifact identity scan.
+ *  PostgREST silently caps an unbounded select at the server `max-rows`, and a
+ *  silently truncated dedup set re-admits rows it should have declined — the
+ *  same shape as the recovery incident that read 40 of 85 artifacts and closed a
+ *  run on a minority of its own evidence. */
+const THREAD_ARTIFACT_PAGE_SIZE = 1000;
+const THREAD_ARTIFACT_SCAN_MAX = 5000;
+
+/** One stored artifact's identity, as the dedup gate needs it. */
+type PriorArtifact = { id: string; confidence: number };
+
+/**
+ * Every artifact identity already on this thread, keyed exactly as the write
+ * path keys a new one (`artifactDedupKey`) so runtime and stored keys cannot
+ * drift.
+ *
+ * `truncated` is surfaced to the model rather than swallowed: a partial set
+ * means a duplicate may be admitted, and a dedup gate that quietly stops
+ * deduping is worse than one that says so. Never selects `metadata` — it is
+ * JSONB carrying a large per-row snapshot, and hauling the thread's worth of it
+ * on every record call is the wrong cost.
+ */
+async function loadThreadArtifactIdentities(
+  supabase: ReturnType<typeof createClient>,
+  threadId: string,
+  seed: string | null,
+): Promise<{ keys: Map<string, PriorArtifact>; truncated: boolean }> {
+  const keys = new Map<string, PriorArtifact>();
+  let truncated = false;
+  try {
+    for (let from = 0; from < THREAD_ARTIFACT_SCAN_MAX; from += THREAD_ARTIFACT_PAGE_SIZE) {
+      const to = Math.min(from + THREAD_ARTIFACT_PAGE_SIZE, THREAD_ARTIFACT_SCAN_MAX) - 1;
+      const { data, error } = await supabase
+        .from("artifacts")
+        .select("id,kind,value,source,confidence")
+        .eq("thread_id", threadId)
+        .range(from, to);
+      if (error || !Array.isArray(data)) { truncated = true; break; }
+      for (const r of data as Array<Record<string, unknown>>) {
+        const kind = typeof r.kind === "string" ? r.kind : "";
+        const value = typeof r.value === "string" ? r.value : "";
+        if (!kind || !value) continue;
+        const source = typeof r.source === "string" ? r.source : null;
+        const entry: PriorArtifact = {
+          id: String(r.id ?? ""),
+          confidence: typeof r.confidence === "number" ? r.confidence : 0,
+        };
+        // FIRST WRITER WINS. The earliest row is the one whose evidence-ledger
+        // entry exists; a later duplicate must never displace it as the survivor.
+        const index = (k: string | null) => { if (k && !keys.has(k)) keys.set(k, entry); };
+
+        index(artifactDedupKey({ kind, value, source }));
+
+        // LEGACY SPELLING. `validateArtifact` canonicalises a phone on write, so
+        // a row stored before that change holds "9175550123" while the next
+        // attempt keys on "+19175550123" — the lookup misses and re-inserts the
+        // duplicate this gate exists to stop. `loadSeenArtifactKeys` already
+        // registers both spellings on the auto-persist path; without this the
+        // model-facing writers were the one path that did not, which is exactly
+        // the asymmetry this change set out to close.
+        if (kind.toLowerCase() === "phone") {
+          const canonical = canonicalPhoneValue(value);
+          if (canonical && canonical !== value) index(artifactDedupKey({ kind, value: canonical, source }));
+        }
+
+        // NULL RESULTS key through `nullResultKey`, not the literal key, so a
+        // stored no-hit row indexed only literally can never be found by the
+        // canonical lookup — and "no breach hits" repeated in three wordings
+        // keeps writing three rows, which is what production shows. Indexed
+        // under the seed selector, matching the common write-time case; a row
+        // whose write-time selector came from metadata simply fails to match,
+        // which is a miss, never a false collapse.
+        index(nullResultKey({ kind, source, value, selector: seed ?? null }));
+
+        const breachCanon = breachExposureCanonicalKey({ kind, value, source });
+        if (breachCanon) index(breachCanon);
+      }
+      if (data.length < THREAD_ARTIFACT_PAGE_SIZE) break;
+      if (to + 1 >= THREAD_ARTIFACT_SCAN_MAX) truncated = true;
+    }
+  } catch (e) {
+    // Best-effort by contract: dedup must never cost a batch of evidence.
+    console.warn("[record_artifacts] thread dedup scan failed:", (e as Error)?.message ?? e);
+    truncated = true;
+  }
+  return { keys, truncated };
+}
+
+/**
+ * Targeted twin of the above for the SINGULAR `record_artifact` shim, which
+ * writes one row at a time. A full thread scan per single-artifact call would be
+ * the wrong cost, so this filters in SQL and builds the key on the few rows that
+ * come back — same `artifactDedupKey`, same semantics.
+ */
+async function findPriorThreadArtifact(
+  supabase: ReturnType<typeof createClient>,
+  threadId: string,
+  kind: string,
+  value: string,
+  source: string | null,
+): Promise<PriorArtifact | null> {
+  try {
+    // Match the LEGACY spelling too. The exact-value SQL filter is the singular
+    // writer's twin of the loader gap above: a thread holding a pre-change
+    // "9175550123" is invisible to a lookup for the canonical "+19175550123",
+    // so re-running an existing thread recreates the very duplicate this gate
+    // exists to stop.
+    const spellings = [value];
+    if (kind.toLowerCase() === "phone") {
+      const canonical = canonicalPhoneValue(value);
+      const bare = value.replace(/[^\d]/g, "");
+      for (const alt of [canonical, bare]) if (alt && !spellings.includes(alt)) spellings.push(alt);
+    }
+    const { data, error } = await supabase
+      .from("artifacts")
+      .select("id,kind,value,source,confidence")
+      .eq("thread_id", threadId)
+      .eq("kind", kind)
+      .in("value", spellings);
+    if (error || !Array.isArray(data)) return null;
+    // Every spelling of the incoming value is an acceptable match, for the same
+    // reason the SQL filter widened: the stored row may predate canonicalisation.
+    const wanted = new Set(spellings.map((s) => artifactDedupKey({ kind, value: s, source })));
+    for (const r of data as Array<Record<string, unknown>>) {
+      const k = artifactDedupKey({
+        kind: typeof r.kind === "string" ? r.kind : "",
+        value: typeof r.value === "string" ? r.value : "",
+        source: typeof r.source === "string" ? r.source : null,
+      });
+      if (wanted.has(k)) {
+        return { id: String(r.id ?? ""), confidence: typeof r.confidence === "number" ? r.confidence : 0 };
+      }
+    }
+  } catch (e) {
+    console.warn("[record_artifact] thread dedup lookup failed:", (e as Error)?.message ?? e);
+  }
+  return null;
+}
+
 function isJinaHardBlocked(hostname: string): boolean {
   return JINA_HARD_BLOCK_HOSTS.some((h) => hostname === h || hostname.endsWith(`.${h}`));
 }
@@ -617,7 +761,7 @@ export function buildTools(ctx: ToolContext) {
             signal: (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal,
           });
           const parsed = safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content };
-          guard.artifactsSinceCorrelate = 0;
+          resetCorrelateCycle();
           return { ok: r.ok, status: r.status, analysis: parsed };
         } catch (e) { return { error: String(e) }; }
       },
@@ -1446,10 +1590,17 @@ export function buildTools(ctx: ToolContext) {
       execute: async ({ url }) => {
         if (!SOCIALFETCH_API_KEY) return { error: "SOCIALFETCH_API_KEY not configured" };
         try {
-          // Single attempt with a long per-attempt timeout: server-side markdown
-          // of a heavy page (YouTube etc.) is slow, and retrying a timeout would
-          // just double the wait past the 25s outer tool budget (see cache.ts).
-          const r = await fetchRetry(`https://api.socialfetch.dev/v1/web/markdown?url=${encodeURIComponent(url)}`, { headers: { "x-api-key": SOCIALFETCH_API_KEY } }, { retries: 0, timeoutMs: 22_000 });
+          // Single attempt, no retry: retrying a timeout would just double the
+          // wait past the outer tool budget (see cache.ts).
+          //
+          // ⚠️ CORRECTED 2026-08-28: briefly cut to 12_000 on a report of "zero
+          // successes ever observed". tool_usage_log says otherwise — 127 calls
+          // over 30 days, 76 successful, successes averaging 5.4s and reaching
+          // 15,908ms. 18s clears every observed success with headroom; 12s would
+          // have severed three of them. Raise or lower this ONLY against a fresh
+          // query of the success-duration distribution, and move cache.ts's
+          // wrapper with it so the wrapper stays above.
+          const r = await fetchRetry(`https://api.socialfetch.dev/v1/web/markdown?url=${encodeURIComponent(url)}`, { headers: { "x-api-key": SOCIALFETCH_API_KEY } }, { retries: 0, timeoutMs: 18_000 });
           if (r.status === 402) {
             return { ok: false, status: 402, error: "SOCIALFETCH_CREDITS_EXHAUSTED", message: "Social Fetch credit balance is zero. Check /v1/balance." };
           }
@@ -4588,7 +4739,8 @@ export function buildTools(ctx: ToolContext) {
           .min(1)
           .max(200)),
       })),
-      execute: async ({ artifacts }) => {
+      execute: async ({ artifacts: rawArtifacts }) => {
+        const artifacts = collapseRecordArtifactsBatch(rawArtifacts);
         const accepted: Array<{ index: number; kind: string; value: string }> = [];
         const rejected: Array<{ index: number; reason: string; kind: string; value: string }> = [];
         const rows: Array<Record<string, unknown>> = [];
@@ -4597,6 +4749,28 @@ export function buildTools(ctx: ToolContext) {
         // Skip exact repeats so we don't write duplicate artifact rows. This is
         // a non-destructive, in-memory-only guard — no DB change.
         const seenInBatch = new Set<string>();
+        // THREAD-WIDE dedup (2026-08-28) — the bound the note below used to
+        // describe as open. `seenInBatch` only ever caught a repeat inside ONE
+        // call, and the duplicates measured in production were seconds apart in
+        // DIFFERENT calls: `Example Holdings 1110 LLC` persisted as three
+        // `organization` rows (55/75/75), `Sam Whitfield` as three, one address
+        // as four. An Evidence count of 88 that is not a count of distinct facts.
+        //
+        // Closed at RUNTIME, deliberately. #305's dedup migration would have
+        // deleted ~120 genuinely distinct rows and orphaned 53 analyst reviews;
+        // #307, which existed to fix that, was closed unmerged. Nothing here
+        // deletes, migrates or backfills anything — it only declines to write a
+        // row the thread already has.
+        const { keys: priorByKey, truncated: threadDedupPartial } =
+          await loadThreadArtifactIdentities(supabase, threadId, triageState.seed ?? null);
+        /** Confidence differences on rows declined as thread-wide duplicates.
+         *  DISCLOSED, never applied — see the note at the rejection site. */
+        const confidenceDeltasSuppressed: Array<{
+          kind: string;
+          value: string;
+          recorded_confidence: number;
+          attempted_confidence: number;
+        }> = [];
         artifacts.forEach((a, i) => {
           // A QUEUED tool call is not an observation. Ten rows like
           // "hawkcapo - socialfetch_lookup (pending Instagram)" were persisted
@@ -4763,13 +4937,56 @@ export function buildTools(ctx: ToolContext) {
               ? a.metadata.username
               : (typeof a.metadata?.email === "string" ? a.metadata.email : (triageState.seed ?? null)),
           });
-          const dedupKey = canonicalNullKey ?? JSON.stringify([
-            finalKind,
-            v.value,
-            authoritativeSource,
-          ]);
+          const dedupKey = canonicalNullKey
+            ?? breachExposureCanonicalKey({ kind: finalKind, value: v.value, source: authoritativeSource || (a.source ?? null) })
+            ?? artifactDedupKey({
+            kind: finalKind,
+            value: v.value,
+            source: authoritativeSource,
+          });
           if (seenInBatch.has(dedupKey)) {
             rejected.push({ index: i, reason: "duplicate (kind,value,authoritative source) already in this batch", kind: finalKind, value: v.value });
+            return;
+          }
+          // Already on the thread from an EARLIER call. Declined, and disclosed
+          // through the same `rejected[]` channel every other gate uses, so a
+          // refusal stays legible as a refusal.
+          const prior = priorByKey.get(dedupKey);
+          if (prior) {
+            // ⛔ THE STORED CONFIDENCE IS NOT RAISED. #307 merged with GREATEST
+            // and that is unsafe here: `scrubArtifactRow` (safety.ts:107-112)
+            // caps confidence to 25/35 on a possible-minor row AFTER
+            // finalConfidence is computed and BEFORE insert. A
+            // max(stored, attempted) update would read the capped 25 and raise
+            // it back to the model's number, silently undoing the minor-safety
+            // downgrade. Re-running the whole scrub pipeline in an update path
+            // means reimplementing the write path; declining is correct.
+            //
+            // Nor does the duplicate carry new evidence: the key includes the
+            // authoritative source, so the SAME value from a DIFFERENT source
+            // has a different key and is accepted as real corroboration. A
+            // delta on an identical key is the same claim from the same source
+            // scored differently by the model — and #477 already settled that a
+            // model-asserted number is disclosure, never authority.
+            //
+            // So the delta is DISCLOSED rather than applied. The model can read
+            // it and re-record under the source that actually corroborated,
+            // which does not collide.
+            if (finalConfidence !== prior.confidence) {
+              confidenceDeltasSuppressed.push({
+                kind: finalKind,
+                value: v.value,
+                recorded_confidence: prior.confidence,
+                attempted_confidence: finalConfidence,
+              });
+            }
+            rejected.push({
+              index: i,
+              reason: "duplicate (kind, value, authoritative source) already recorded on this thread — " +
+                "re-recording an observation does not make it two observations",
+              kind: finalKind,
+              value: v.value,
+            });
             return;
           }
           seenInBatch.add(dedupKey);
@@ -4785,7 +5002,28 @@ export function buildTools(ctx: ToolContext) {
           accepted.push({ index: i, kind: finalKind, value: v.value });
         });
         if (rows.length === 0) {
-          return { ok: false, count: 0, accepted, rejected, hint: "All items failed validation — re-check kinds/values against the rules in the tool description." };
+          // A batch can end empty for two DIFFERENT reasons, and saying the
+          // wrong one sends the model to fix a schema problem it does not have.
+          // When every item was already on the thread, the disclosure fields
+          // below are the whole point of the gate — dropping them here loses the
+          // recorded-versus-attempted confidence delta in the single most common
+          // case the gate fires.
+          const allDuplicates = rejected.length > 0 &&
+            rejected.every((r) => r.reason.includes("already recorded on this thread"));
+          return {
+            ok: false,
+            count: 0,
+            accepted,
+            rejected,
+            hint: allDuplicates
+              ? "Every item is already recorded on this thread — re-recording an observation does not make it two. " +
+                "Nothing was lost; read `confidence_deltas_suppressed` if you were raising a score."
+              : "All items failed validation — re-check kinds/values against the rules in the tool description.",
+            ...(confidenceDeltasSuppressed.length > 0
+              ? { confidence_deltas_suppressed: confidenceDeltasSuppressed }
+              : {}),
+            ...(threadDedupPartial ? { thread_dedup_partial: true } : {}),
+          };
         }
         const safeRows = scrubArtifactRows(rows);
         let insertedRows = safeRows;
@@ -4969,6 +5207,16 @@ export function buildTools(ctx: ToolContext) {
           rejected,
           minor_safety_flags: flagged,
           evidence_appended,
+          // A confidence delta on a thread-wide duplicate is disclosed, never
+          // applied — the stored row is authoritative. If the higher number
+          // reflects genuinely new corroboration, record it under the source
+          // that produced it; that key does not collide.
+          ...(confidenceDeltasSuppressed.length > 0
+            ? { confidence_deltas_suppressed: confidenceDeltasSuppressed }
+            : {}),
+          // A dedup gate that quietly stopped deduping would be worse than one
+          // that says so: a partial scan means a duplicate may have been let in.
+          ...(threadDedupPartial ? { thread_dedup_partial: true } : {}),
           ...(memory_hits.length > 0
             ? {
                 memory_hits,
@@ -4979,7 +5227,13 @@ export function buildTools(ctx: ToolContext) {
           // Audit F1: once enough new artifacts have accrued since the last correlate,
           // surface a hint so the orchestrator actually runs minimax_correlate (it never
           // fired in the audited run). Empty object when not yet due.
-          ...correlateNudge(),
+          //
+          // Takes through the SAME latch as the fan-out delivery path. This used to
+          // call the unlatched `correlateNudge()`, which meant the hint could be
+          // delivered twice in one cycle — once on a live tool result and again
+          // here — because the latch did not govern this surface. One directive per
+          // cycle, whichever surface reaches the model first.
+          ...takeCorrelateHint(),
         };
       },
     }),
@@ -5078,6 +5332,33 @@ export function buildTools(ctx: ToolContext) {
           ...(bioName ? { bio_cross_link: true } : {}),
           ...(llmAssertedProvenance ? { provenance: LLM_ASSERTED_PROVENANCE, provenance_verified: false } : {}),
         };
+        // THREAD-WIDE dedup, same gate as record_artifacts (2026-08-28). This
+        // shim is a full duplicate implementation, not a delegation, and it is
+        // advertised in the catalog — so deduping only the plural tool would
+        // leave the bypass advertised. Targeted lookup rather than a whole-thread
+        // scan because this path writes exactly one row.
+        const priorSingle = await findPriorThreadArtifact(
+          supabase, threadId, finalKind, v.value, source ?? null,
+        );
+        if (priorSingle) {
+          return {
+            ok: false,
+            rejected: true,
+            reason: "duplicate (kind, value, authoritative source) already recorded on this thread — " +
+              "re-recording an observation does not make it two observations",
+            kind: finalKind,
+            value: v.value,
+            // Disclosed, never applied — see the note in record_artifacts.
+            ...(finalConfidence !== priorSingle.confidence
+              ? {
+                confidence_delta_suppressed: {
+                  recorded_confidence: priorSingle.confidence,
+                  attempted_confidence: finalConfidence,
+                },
+              }
+              : {}),
+          };
+        }
         const row = scrubArtifactRow({
           thread_id: threadId,
           user_id: userId,
@@ -5623,167 +5904,16 @@ export function buildTools(ctx: ToolContext) {
         .from("artifacts")
         .select("kind,value,source,metadata,created_at")
         .eq("thread_id", threadId);
-      // Scope the contradiction / advisory penalty to the artifacts that
-      // actually belong to THIS finding's identity candidate — its cited
-      // artifacts plus their cluster(s) — so a finding for one candidate is not
-      // docked for an UNRELATED candidate's location conflict / thin_name /
-      // over_broad_username sitting elsewhere in the same multi-hypothesis
-      // thread. When the finding cites nothing resolvable we can't attribute a
-      // cluster, so fall back to the thread-wide set (conservative: keep the
-      // penalty rather than inflate confidence).
-      const allRows = (contraRows ?? []) as Parameters<typeof detectContradictions>[0];
-      const scopedRows = artifactsForFinding(allRows, i.supporting_artifact_values ?? []);
-      const contras = detectContradictions(scopedRows.length > 0 ? scopedRows : allRows);
-      // Audit F06: i.corroboration_count was a raw model-supplied integer with no
-      // independence check — a single ai_summary-class source claiming
-      // corroboration_count:5 inflated the artifact axis to 100. Derive the real
-      // count server-side from the independent SOURCE CLASSES actually backing
-      // this finding (same taxonomy the frontend's independentSourceClassCount in
-      // src/lib/intel.ts uses), so the boost can never exceed what
-      // supporting_sources genuinely proves.
-      const corroborationCount = countIndependentClasses(i.supporting_sources.map(classifySource));
-      const axes = computeAxes({
-        sources: i.supporting_sources,
-        corroborationCount,
-        contradictions: contras,
-        identityEvidenceStrength: i.identity_evidence_strength,
-        relationshipEvidenceStrength: i.relationship_evidence_strength,
+      // Scoring + row construction live in ONE place — see lib/finding-row.ts.
+      // This block used to be 161 lines inline here; it was MOVED, not rewritten,
+      // because finding synthesis needs the identical chain and two copies of a
+      // scorer is how the two silently diverge. `finding_row_equivalence_test.ts`
+      // pins that this path and the synthesis path build the same row.
+      const { row, axes, status: findingStatus } = buildFindingRow(i, {
+        threadId,
+        userId,
+        contraRows: contraRows ?? null,
       });
-      // #477: the confidence above is derived with full server authority, but the
-      // model's `label` was persisted beside it with none and echoed back as
-      // `applied_label` as though the server had ratified it. Measured in
-      // production: of the 13 times record_finding has run, TEN persisted
-      // label:"CONFIRMED" on a server score between 15 and 78 — every one below
-      // the >=80 bar. Free text reached the same field too ("Mozzy Records"),
-      // because the model read "label" in its ordinary English sense.
-      //
-      // Authority is REUSED, never re-invented: resolveRecordingStatus wraps
-      // deriveStatus + coerceCoherentStatus and is already the status resolver on
-      // every other recording path (tool-registry :4662/:5021, tools/recording
-      // :78/:319). record_finding was the one that skipped it.
-      //
-      // `requested` is deliberately left null by passing no `status` key — the
-      // model may not ask for a status. Contradictions ARE passed, because they
-      // can only make the verdict more conservative.
-      // The cap MUST be derived from the source ARRAY, never from a joined
-      // string. `applyRecordingSourcePolicy` takes a singular top-level source
-      // and wraps it via `singularSurfaceSources` as ONE label, and
-      // `classifySource` then classifies that whole label as a single token.
-      // Because BREACH_SLUG_RE matches a breach slug anywhere in the string
-      // (its boundary class includes ","), "breach_check,gemini_deep_dork,
-      // court_record_search" resolved wholly to `breach`: 3 classes -> 1,
-      // independent 2 -> 1, cap 95 -> 60. The collapse is not breach-specific —
-      // "court_record_search,gemini_deep_dork" collapsed to [court_record],
-      // silently dropping ai_summary.
-      //
-      // That matters because `reason_not_confirmed` is DERIVED from the
-      // collapsed count and persisted as server authority: it wrote "needs
-      // second independent class of evidence" onto rows already carrying 2-5
-      // independent classes — a false authoritative statement in the very field
-      // added to stop false authoritative statements.
-      //
-      // Fixed by passing the LIST through the channel policy's `sources`
-      // surface, NOT by reaching past it for the array-form cap entry.
-      // `recording_source_policy_runtime_test.ts` ("production edge modules
-      // cannot bypass the recording source policy") allows low-level cap symbols
-      // only in confidence.ts and recording-source-policy.ts, so calling
-      // applyEvidenceCaps* from here fails that invariant — correctly: the cap
-      // engine stays the single implementation of evidence policy. The surface
-      // here is genuinely a list, which is exactly what `sources` is for. This
-      // matches the line above that already classifies correctly via
-      // `supporting_sources.map(classifySource)`.
-      const findingCap = applyRecordingSourcePolicy({
-        rawConfidence: axes.case,
-        sources: i.supporting_sources,
-        kind: "finding",
-        metadata: null,
-      }).effective;
-      // Status derives from SERVER-DETECTED contradictions only. Passing the
-      // model's array through `??` opened authority in both directions, because
-      // deriveStatus tests only `Array.isArray(x) && x.length > 0`:
-      //   - suppression: the model sends `[]`, the server's own `contras` are
-      //     discarded, and a row the server would call `contradicted` persists
-      //     as `observed`;
-      //   - fabrication: the model sends ["None — all sources agree ..."], length
-      //     is 1, and the row persists as `contradicted` on text that asserts
-      //     the opposite. Three live rows carry prose of exactly that form.
-      // So the earlier claim that contradictions "can only make the verdict more
-      // conservative" does not hold in either direction.
-      // Only EXPLICIT conflicts carry status authority. detectContradictions also
-      // returns advisory single-artifact heuristics (thin_name,
-      // common_handle_collision, over_broad_username, cdn_shared_infra,
-      // stale_breach) which omit `field` by design, and deriveStatus tests only
-      // `length > 0` — so mapping the whole set in marked a finding
-      // `contradicted` on a RISK signal rather than a conflict. `thin_name`
-      // alone fires on any single-token name in the thread, so one such
-      // artifact would have contradicted every finding in it. That is the same
-      // false-authority shape as #477, a third field over.
-      //
-      // The advisory signals keep their ordinary confidence penalty: `contras`
-      // is passed WHOLE to computeAxes above, and that is deliberately
-      // unchanged. Penalty yes, verdict no.
-      const explicitContras = contras.filter(isExplicitContradiction);
-      const serverContradictions = explicitContras.map((c) => `${c.kind}: ${c.detail}`);
-      const advisorySignals = contras
-        .filter((c) => !isExplicitContradiction(c))
-        .map((c) => `${c.kind}: ${c.detail}`);
-      const { status: findingStatus, reasonNotConfirmed: findingReason } =
-        resolveRecordingStatus(findingCap, { contradictions: serverContradictions });
-      const row = {
-        thread_id: threadId,
-        user_id: userId,
-        kind: "finding",
-        value: i.conclusion.slice(0, 500),
-        confidence: axes.case,
-        source: i.supporting_sources.join(","),
-        metadata: {
-          // Server authority. Note the key is `status`, not `label`:
-          // useThreadArtifacts.ts:63 reads metadata.label as the META-KIND marker
-          // (triage_decision / cluster_decision) to exclude rows from every
-          // artifact count, so findings must not compete for that key.
-          status: findingStatus,
-          reason_not_confirmed: findingReason,
-          // The model's own pick, kept for disclosure and never read as authority.
-          model_label: i.label,
-          cluster_label: i.cluster_label,
-          drivers: i.drivers,
-          reducers: i.reducers ?? [],
-          // Server-detected, and the exact list the status above was derived
-          // from. The model's own array is preserved beside it as disclosure
-          // (same pattern as model_label) and is never read as authority.
-          contradictions: serverContradictions,
-          // Recorded, never authoritative — disclosure, not deletion. Keeping
-          // these out of `contradictions` honors the documented contract on
-          // ContradictionFinding.field: only explicit conflicts are eligible to
-          // be structured there.
-          advisory_signals: advisorySignals,
-          model_contradictions: i.contradictions ?? null,
-          unresolved: i.unresolved ?? [],
-          next_pivots: i.next_pivots ?? [],
-          supporting_sources: i.supporting_sources,
-          supporting_artifact_values: i.supporting_artifact_values ?? [],
-          confidence_axes: axes,
-          // M4 disclosure: the status above is derived from a CAPPED result,
-          // but the row persists `confidence: axes.case` uncapped, so without
-          // these two fields a stored status cannot be reconciled with the
-          // derivation that produced it. Production carries
-          // confidence_cap_applied on 8,301 rows and on ZERO finding rows,
-          // which is why findings sat outside #481's display invariant. The
-          // persisted `confidence` is deliberately NOT changed here.
-          // Key is `source_category`, matching all five other recording
-          // writers (:4690, :5038, auto-record-integrity.ts:65,
-          // tools/recording.ts:84/:325). `source_classes` would be dead data:
-          // every consumer — intel.ts:334, evidence-status.ts:140,
-          // report-badges.ts:62, audit/from-artifacts.ts:35, AnalysisTab.tsx:134
-          // — keys on `source_category`. Writing it also fixes the SAME collapse
-          // on the read side: absent this key, artifactSourceClasses falls back
-          // to splitting the joined `source` string and finding rows resolve to
-          // ONE class on the frontend too.
-          confidence_cap_applied: findingCap.cap,
-          source_category: findingCap.source_classes,
-          source_reliability: sourceConfidence(i.supporting_sources),
-        },
-      };
       const { data, error } = await supabase.from("artifacts").insert([row]).select("id").maybeSingle();
       if (error) return { ok: false, error: error.message };
       recordFindingSummary(threadId, i.conclusion);

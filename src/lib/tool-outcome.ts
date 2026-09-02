@@ -17,9 +17,9 @@
  * outcome (`tool_usage_log.outcome`) plus its `error_msg`/`status_code` into ONE
  * canonical set of categories, and normalizes raw HTTP codes into meaningful
  * analyst-facing messages. It is intentionally self-contained (no imports) so
- * the edge function can mirror it byte-for-byte (see
- * osint-agent/tool-outcome.ts `classifyDetailedOutcome`), pinned by a parity
- * test.
+ * the edge function COULD mirror it — but today it does NOT. There is no
+ * `classifyDetailedOutcome` in osint-agent/tool-outcome.ts and no parity test
+ * between the two files. Treat this module as the only implementation.
  *
  * ───────────────────────── CANONICAL OUTCOMES ─────────────────────────
  *  success            genuine success

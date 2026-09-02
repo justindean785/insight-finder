@@ -22,7 +22,16 @@ export default {
         // a real contrast axis rather than two near-identical sans-serifs. Reserved
         // for hero/case titles and top-level section headings.
         display: ['"Sora"', '"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-        serif: ['ui-serif', 'Georgia', 'serif'],
+        // Figure face — Newsreader, a light text serif. Reserved for NUMERALS
+        // and case titles: the register's confidence figures, the masthead
+        // stat block, the case name. It is what makes the workspace read as a
+        // document rather than as a dashboard. `opsz` is deliberately NOT
+        // requested (it costs ~191KB against ~46KB pinned, and the face only
+        // renders at large sizes here, so the optical-size axis buys nothing).
+        // This slot was 100% dead before — zero consumers — so wiring it is
+        // purely additive and cannot restyle an existing heading.
+        serif: ['"Newsreader"', 'ui-serif', 'Georgia', 'serif'],
+        figure: ['"Newsreader"', 'ui-serif', 'Georgia', 'serif'],
         mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
       },
       // Semantic type scale — one ladder from dense labels to hero titles, so
@@ -49,14 +58,19 @@ export default {
         premium: "cubic-bezier(0.32, 0.72, 0, 1)",
       },
       boxShadow: {
-        cta: "0 10px 28px -12px rgba(0,0,0,0.7)",
+        // The primary CTA casts a shadow AND a faint signal bloom, so a white
+        // pill on the dark ground reads as lit rather than as pasted on.
+        cta: "0 10px 28px -12px hsl(0 0% 0% / 0.7), 0 0 34px -14px hsl(var(--brand) / 0.55)",
         // Elevation ladder — deliberate depth steps for the surface hierarchy
         // (raised panel → floating control → overlay). Defined, contained blur
         // with a top inner hairline, not the wide soft "ghost-card" halo.
-        "e1": "inset 0 1px 0 hsl(0 0% 100% / 0.035), 0 1px 2px hsl(0 0% 0% / 0.4)",
-        "e2": "inset 0 1px 0 hsl(0 0% 100% / 0.045), 0 4px 10px -4px hsl(0 0% 0% / 0.5)",
-        "e3": "inset 0 1px 0 hsl(0 0% 100% / 0.05), 0 12px 28px -12px hsl(0 0% 0% / 0.6)",
-        "overlay": "inset 0 1px 0 hsl(0 0% 100% / 0.06), 0 24px 64px -28px hsl(0 0% 0% / 0.8)",
+        // The inner hairlines are the FILM, not pure white: a #fff specular on
+        // a blue-black ground is the same leak the `white` remap below exists
+        // to close, and these four shadows sat outside it.
+        "e1": "inset 0 1px 0 hsl(var(--film) / 0.045), 0 1px 2px hsl(0 0% 0% / 0.4)",
+        "e2": "inset 0 1px 0 hsl(var(--film) / 0.055), 0 4px 10px -4px hsl(0 0% 0% / 0.5)",
+        "e3": "inset 0 1px 0 hsl(var(--film) / 0.06), 0 12px 28px -12px hsl(0 0% 0% / 0.6)",
+        "overlay": "inset 0 1px 0 hsl(var(--film) / 0.07), 0 24px 64px -28px hsl(0 0% 0% / 0.8)",
       },
       colors: {
         border: "hsl(var(--border))",
@@ -136,6 +150,31 @@ export default {
         "brain-ok": "hsl(var(--brain-status-ok))",
         "brain-warn": "hsl(var(--brain-status-warn))",
         "brain-bad": "hsl(var(--brain-status-bad))",
+
+        // ── The film ────────────────────────────────────────────────────
+        // `white` is REMAPPED onto the cold film token, and that is the whole
+        // point. Every translucent highlight in the product is written in
+        // markup as `bg-white/5`, `border-white/10`, `text-white/70` — 84 of
+        // them across 17 .tsx files, none token-backed. While `white` stayed
+        // pure #fff, a hue-neutral sheet was laid over every surface and
+        // cancelled whatever the palette underneath was saying. That is the
+        // mechanical reason previous colour passes on this app "changed
+        // nothing an analyst sees". Remapping it here means all 84 follow the
+        // register automatically, and `text-white` resolves to the brightest
+        // ink rather than to a colour that exists nowhere else on screen.
+        white: "hsl(var(--film) / <alpha-value>)",
+        film: "hsl(var(--film) / <alpha-value>)",
+
+        // Entity-kind taxonomy — the Graph tab's own palette. Documented
+        // exception to "hue belongs to authority"; see the :root comment.
+        "kind-identity": "hsl(var(--kind-identity))",
+        "kind-contact": "hsl(var(--kind-contact))",
+        "kind-social": "hsl(var(--kind-social))",
+        "kind-infrastructure": "hsl(var(--kind-infrastructure))",
+        "kind-breach": "hsl(var(--kind-breach))",
+        "kind-web": "hsl(var(--kind-web))",
+        "kind-crypto": "hsl(var(--kind-crypto))",
+        "kind-other": "hsl(var(--kind-other))",
       },
       borderRadius: {
         lg: "var(--radius)",

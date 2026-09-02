@@ -198,15 +198,41 @@ describe("authorityStatement: the wording both producers share", () => {
     }
   });
 
+  it("distinguishes a SYNTHESIZED conclusion from a model-asserted one", () => {
+    // Acceptance requirement: an analyst must be able to tell a derived
+    // conclusion from one the orchestrator asserted. Both are scored by the
+    // identical engine chain, so the number is not the discriminator — the
+    // origin marker is.
+    const out = sel([
+      art({ id: "s", value: "derived", confidence: 62, metadata: { finding_origin: "synthesis" } }),
+      art({ id: "m", value: "asserted", confidence: 62, metadata: { status: "observed" } }),
+    ]);
+    const byId = Object.fromEntries(out.findings.map((f) => [f.id, f.origin]));
+    expect(byId.s).toBe("synthesis");
+    expect(byId.m).toBe("model");
+  });
+
+  it("defaults origin to model — never attributes an unreadable row to synthesis", () => {
+    // The 13 findings that predate synthesis carry no marker, and every one of
+    // them came from record_finding. Guessing "synthesis" on an unreadable row
+    // would credit a machine derivation that never happened.
+    const out = sel([
+      art({ id: "a", value: "old" }),
+      art({ id: "b", value: "junk", metadata: "not-an-object" as never }),
+      art({ id: "c", value: "wrong", metadata: { finding_origin: 7 } as never }),
+    ]);
+    expect(out.findings.map((f) => f.origin)).toEqual(["model", "model", "model"]);
+  });
+
   it("discloses a ceiling on every state that can carry one", () => {
     expect(authorityStatement(R({ state: "ceiling_hit" }))).toContain("may be incomplete");
     expect(authorityStatement(R({ state: "ceiling_hit", rejectedCount: 1 }))).toContain("may be incomplete");
-    expect(authorityStatement(R({ state: "ceiling_hit", findings: [{ id: "a", value: "v", confidence: 50, tier: "weak" }] })))
+    expect(authorityStatement(R({ state: "ceiling_hit", findings: [{ id: "a", value: "v", confidence: 50, tier: "weak" as const, origin: "model" as const }] })))
       .toContain("may be incomplete");
   });
 
   it("reports the adjudicated count and any review exclusions", () => {
-    const s = authorityStatement(R({ findings: [{ id: "a", value: "v", confidence: 50, tier: "weak" }], rejectedCount: 3 }));
+    const s = authorityStatement(R({ findings: [{ id: "a", value: "v", confidence: 50, tier: "weak" as const, origin: "model" as const }], rejectedCount: 3 }));
     expect(s).toContain("adjudicated 1 finding");
     expect(s).toContain("3 further recorded findings were excluded");
   });

@@ -20,5 +20,5 @@ export const crypto_wallet = tool({
       return { chain, address, data };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 

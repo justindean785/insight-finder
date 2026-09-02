@@ -1,12 +1,15 @@
 import { useMemo, useState } from "react";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import {
-  CONF_LABEL_CLASS, CONF_LABEL_HELP, labelForArtifact, adjustedConfidence, type ConfLabel,
+  CONF_LABEL_CLASS, CONF_LABEL_HELP, labelForArtifact, type ConfLabel,
   extractSourceInfo, displayKind,
 } from "@/lib/intel";
+// This tab was the surface that read 93 where the board read 88. It now renders
+// the same `effective` value as every other surface. See lib/display-confidence.ts.
+import { displayConfidence, effectiveConfidenceOrZero } from "@/lib/display-confidence";
 import {
   useReviewStates, REVIEW_CLASS, REVIEW_SHORT, REVIEW_STATES, REVIEW_HELP,
-  REVIEW_CONFIDENCE_DELTA, launchRecheckInChat, type ReviewState,
+  startRecheck, type ReviewState,
 } from "@/lib/review";
 import { Copy, CheckCircle2, Star, ShieldQuestion, Ban, RotateCcw, Info, XCircle, MoreHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -38,7 +41,7 @@ export function EvidenceMatrixTab({
         a,
         review: r,
         label: labelForArtifact(a, r),
-        score: adjustedConfidence(a, r),
+        score: effectiveConfidenceOrZero(a),
       };
     });
     return labelled.filter((r) => {
@@ -63,10 +66,12 @@ export function EvidenceMatrixTab({
         <div className="mx-2.5 mt-2.5 flex items-start gap-2 rounded-lg border border-border bg-secondary/25 px-2.5 py-2 text-data text-muted-foreground sm:mx-3">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
           <div className="leading-snug">
-            <span className="text-foreground font-medium">Review scoring:</span>{" "}
-            <span className="text-[hsl(var(--confidence-high))]">Confirm</span> +20 ·{" "}
+            <span className="text-foreground font-medium">Review decisions:</span>{" "}
+            <span className="text-[hsl(var(--confidence-high))]">Confirm</span> accepts ·{" "}
+            <span className="text-primary">Key</span> prioritises ·{" "}
             <span className="text-[hsl(var(--confidence-mid))]">Recheck</span> re-verifies in chat ·{" "}
-            <span className="text-destructive">False</span> excludes.
+            <span className="text-destructive">Dismiss</span> excludes. Decisions steer the agent's
+            next run; none of them changes a confidence score.
           </div>
         </div>
         <div className="sticky top-0 z-10 border-b border-border bg-card/95 p-2.5 backdrop-blur sm:p-3">
@@ -167,13 +172,14 @@ export function EvidenceMatrixTab({
           <ul className="grid grid-cols-1 gap-2 lg:grid-cols-2">
             {rows.map(({ a, label, review: rState, score }) => {
               const meta = (a.metadata ?? {}) as Record<string, unknown>;
-              const preview = Object.keys(meta).slice(0, 3).map((k) => `${k}=${shorten(String(meta[k]))}`).join(" · ");
-              const delta = REVIEW_CONFIDENCE_DELTA[rState] ?? 0;
-              const base = a.confidence ?? 0;
-              // Score bar: base score (neutral) + review delta (green/amber overlay)
-              const basePct = Math.max(0, Math.min(100, base));
-              const deltaPct = Math.max(0, Math.min(100 - basePct, Math.abs(delta)));
-              const deltaColor = delta > 0 ? "hsl(var(--confidence-high))" : "hsl(var(--confidence-mid))";
+              const previewFacts = metaFacts(meta);
+              // ONE value drives the bar AND the numeral. They used to disagree
+              // inside a single tile: the bar was the raw stored value while the
+              // numeral beside it was `adjustedConfidence`, so a row read 88 wide
+              // and 93 tall. Both are `effective` now.
+              const shownConf = displayConfidence(a);
+              const stored = shownConf.stored;
+              const basePct = Math.max(0, Math.min(100, shownConf.effective ?? 0));
               // Score colour from the shared 5-tier ramp so the matrix agrees
               // with the grid / cluster / radar everywhere a confidence shows.
               const scoreColor = confidenceColor(score);
@@ -207,8 +213,19 @@ export function EvidenceMatrixTab({
                         <span>·</span>
                         <span>{new Date(a.created_at).toLocaleString()}</span>
                       </div>
-                      {preview && (
-                        <div className="text-data font-mono text-muted-foreground mt-1 break-all">{preview}</div>
+                      {previewFacts.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                          {previewFacts.map((f) => (
+                            <span
+                              key={f.label}
+                              className="inline-flex max-w-full items-baseline gap-1 rounded border border-border-subtle bg-surface-2/50 px-1.5 py-px"
+                              title={f.title}
+                            >
+                              <span className="shrink-0 text-eyebrow uppercase tracking-wider text-muted-foreground/70">{f.label}</span>
+                              <span className="truncate font-mono text-eyebrow text-foreground/85">{f.value}</span>
+                            </span>
+                          ))}
+                        </div>
                       )}
                       {/* Trust badges — multi-source / single-source / stale-breach / analyst */}
                       <TrustBadgesRow artifact={a} review={rState} />
@@ -248,17 +265,11 @@ export function EvidenceMatrixTab({
                             className="absolute inset-y-0 left-0 rounded-full transition-all"
                             style={{ width: `${basePct}%`, background: "hsl(var(--muted-foreground) / 0.5)" }}
                           />
-                          {delta !== 0 && (
-                            <div
-                              className="absolute inset-y-0 rounded-full transition-all"
-                              style={{
-                                left: delta > 0 ? `${basePct}%` : `${Math.max(0, basePct - deltaPct)}%`,
-                                width: `${deltaPct}%`,
-                                background: deltaColor,
-                                opacity: delta > 0 ? 0.9 : 0.55,
-                              }}
-                            />
-                          )}
+                          {/* The review-delta overlay is gone with the delta itself.
+                              A confirmation is a decision, not new evidence, so it no
+                              longer moves the number — drawing a segment the figure
+                              does not contain would be the same lie in a new place.
+                              Review state is carried by the REVIEW chip on this tile. */}
                         </div>
                         <span className="font-mono tabular-nums text-data" style={{ color: scoreColor }}>
                           {score}
@@ -269,29 +280,34 @@ export function EvidenceMatrixTab({
                     </TooltipTrigger>
                     <TooltipContent side="bottom" className="max-w-[260px] text-xs">
                       <div className="space-y-0.5">
-                        <div><span className="text-foreground font-medium">Priority {score}/100</span></div>
+                        <div><span className="text-foreground font-medium">Confidence {score}/100</span></div>
                         <div className="text-muted-foreground">
-                          Raw confidence {base}{delta !== 0 && <> · Review <span style={{ color: deltaColor }}>{delta > 0 ? "+" : ""}{delta}</span></>}
+                          {stored !== null && stored !== score
+                            ? <>Stored {stored} · capped to {score} by the source-class ceiling the server recorded</>
+                            : <>As stored by the server</>}
                         </div>
                         <div className="text-muted-foreground text-data mt-1">
-                          Raw confidence comes from the source/tool. Review state changes analyst priority — not the underlying evidence.
+                          One number, everywhere. Independence is measured server-side; review state
+                          changes an artifact's STATUS, never its score.
                         </div>
                       </div>
                     </TooltipContent>
                   </Tooltip>
-                  {/* Raw source confidence chip — always-visible when the analyst review delta
-                      has bent the visible score away from the source-reported value. */}
-                  {delta !== 0 && (
+                  {/* Stored-vs-effective chip. It used to appear when a REVIEW DELTA had
+                      bent the figure away from the source value; deltas no longer touch the
+                      figure, so the only thing that can now separate the two is the server's
+                      recorded cap — which is exactly what an analyst needs to see. */}
+                  {stored !== null && stored !== score && (
                     <div
                       className="mt-1 inline-flex items-center gap-1 text-data text-muted-foreground font-mono"
-                      title="Raw source/tool confidence — not affected by analyst review actions."
+                      title="Stored by the server, before its recorded source-class ceiling was applied."
                     >
-                      <span className="tracking-normal text-eyebrow">raw</span>
-                      <span>{base}/100</span>
+                      <span className="tracking-normal text-eyebrow">stored</span>
+                      <span>{stored}/100</span>
                     </div>
                   )}
 
-                  {/* One clear verdict each: Confirm true · Recheck in chat · False.
+                  {/* One clear verdict each: Confirm true · Recheck in chat · Dismiss.
                       "Key finding" and "false + teach agent" are deliberate
                       refinements, so they live in the overflow — the main row
                       stays a simple true / recheck / false decision. */}
@@ -303,18 +319,24 @@ export function EvidenceMatrixTab({
                     <div className="flex items-center gap-1">
                       <PrimaryAction icon={CheckCircle2} label="Confirm" tip={REVIEW_HELP.confirmed}
                         active={rState === "confirmed" || rState === "key"} tone="high"
-                        onClick={() => review.set(a.id, "confirmed", { value: a.value, kind: a.kind, confidence: a.confidence, source: a.source })} />
+                        onClick={() => review.set(a.id, "confirmed", { value: a.value, kind: a.kind, confidence: shownConf.effective ?? undefined, source: a.source })} />
                       <PrimaryAction icon={ShieldQuestion} label="Recheck"
                         tip="Sends this exact finding to the chatbot for a fresh, independent re-verification — and flags it as needing another look."
                         active={rState === "recheck"} tone="warn"
                         onClick={() => {
-                          void review.set(a.id, "recheck", { value: a.value, kind: a.kind, confidence: a.confidence, source: a.source });
-                          launchRecheckInChat(threadId, { value: a.value, kind: a.kind });
-                          toast.success("Rechecking in chat…");
+                          // Persist FIRST; the chat run launches only after the
+                          // verdict has committed (startRecheck). A failed write
+                          // has already toasted and launches nothing.
+                          void startRecheck({
+                            set: review.set,
+                            threadId,
+                            artifact: { id: a.id, value: a.value, kind: a.kind },
+                            ctx: { value: a.value, kind: a.kind, confidence: shownConf.effective ?? undefined, source: a.source },
+                          }).then((r) => { if (r.ok) toast.success("Rechecking in chat…"); });
                         }} />
-                      <PrimaryAction icon={XCircle} label="False" tip={REVIEW_HELP.dismissed}
+                      <PrimaryAction icon={XCircle} label="Dismiss" tip={REVIEW_HELP.dismissed}
                         active={rState === "dismissed"} tone="danger"
-                        onClick={() => review.set(a.id, "dismissed", { value: a.value, kind: a.kind, confidence: a.confidence, source: a.source })} />
+                        onClick={() => review.set(a.id, "dismissed", { value: a.value, kind: a.kind, confidence: shownConf.effective ?? undefined, source: a.source })} />
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button size="sm" variant="ghost" className="h-7 w-7 p-0" aria-label="More review actions">
@@ -322,19 +344,19 @@ export function EvidenceMatrixTab({
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="text-xs">
-                          <DropdownMenuItem onClick={() => review.set(a.id, "key", { value: a.value, kind: a.kind, confidence: a.confidence, source: a.source })}>
+                          <DropdownMenuItem onClick={() => review.set(a.id, "key", { value: a.value, kind: a.kind, confidence: shownConf.effective ?? undefined, source: a.source })}>
                             <Star className="w-3 h-3 mr-2" /> Pin as key finding
                           </DropdownMenuItem>
                           <DropdownMenuItem
                             className="text-destructive focus:text-destructive"
-                            onClick={() => review.set(a.id, "wrong", { value: a.value, kind: a.kind, confidence: a.confidence, source: a.source })}
+                            onClick={() => review.set(a.id, "wrong", { value: a.value, kind: a.kind, confidence: shownConf.effective ?? undefined, source: a.source })}
                           >
                             <Ban className="w-3 h-3 mr-2" /> Mark false &amp; teach agent
                           </DropdownMenuItem>
                           {rState !== "new" && (
                             <>
                               <DropdownMenuSeparator />
-                              <DropdownMenuItem onClick={() => review.set(a.id, null, { value: a.value, kind: a.kind, confidence: a.confidence, source: a.source })}>
+                              <DropdownMenuItem onClick={() => review.set(a.id, null, { value: a.value, kind: a.kind, confidence: shownConf.effective ?? undefined, source: a.source })}>
                                 <RotateCcw className="w-3 h-3 mr-2" /> Reset review
                               </DropdownMenuItem>
                             </>
@@ -356,6 +378,60 @@ export function EvidenceMatrixTab({
 
 function shorten(v: string) {
   return v.length > 30 ? v.slice(0, 27) + "…" : v;
+}
+
+/**
+ * Turn an artifact's raw `metadata` into analyst-readable facts.
+ *
+ * This row used to render `Object.keys(meta).slice(0,3).map(k => k+"="+v)`
+ * joined by "·" — i.e. the storage layer's own serialization, shown to the
+ * person the product is for: `sources=hunter_verify,exa_search ·
+ * corroborations=2 · source_class=verified_provider`. And because the
+ * container carried `break-all`, it wrapped INSIDE tokens, producing
+ * `source_c` / `lass=verified_provider` and `breac` / `h_corpus`.
+ *
+ * Two rules now: a key is shown as a word, and the pieces are discrete chips
+ * so wrapping happens between facts rather than through them. Keys with a
+ * known analyst meaning get a real label; anything unrecognised still renders
+ * (this metadata is open-ended and hiding it would lose evidence) but with its
+ * key title-cased rather than printed as an assignment.
+ */
+const META_LABELS: Record<string, string> = {
+  sources: "sources",
+  corroborations: "corroborated by",
+  source_class: "class",
+  confidence_cap_applied: "capped at",
+  subject_unlinked_reason: "quarantine reason",
+  parent: "pivoted from",
+  breach_name: "breach",
+  breach_date: "breach date",
+};
+
+/** Keys that are flags or plumbing, not facts an analyst reads in a summary row. */
+const META_HIDDEN = new Set([
+  "false_positive", "possible_minor", "minor_warning", "conflict", "collision",
+  "subject_unlinked", "linkage_confirmed", "handle",
+]);
+
+function metaFacts(meta: Record<string, unknown>): { label: string; value: string; title: string }[] {
+  const out: { label: string; value: string; title: string }[] = [];
+  for (const k of Object.keys(meta)) {
+    if (META_HIDDEN.has(k)) continue;
+    const raw = meta[k];
+    if (raw == null || raw === "" || raw === false) continue;
+    // Arrays read as lists, not as JSON.
+    const text = Array.isArray(raw) ? raw.map((v) => humanToken(String(v))).join(", ") : humanToken(String(raw));
+    if (!text) continue;
+    const label = META_LABELS[k] ?? k.replace(/_/g, " ");
+    out.push({ label, value: shorten(text), title: `${label}: ${text}` });
+    if (out.length === 3) break;
+  }
+  return out;
+}
+
+/** `verified_provider` -> `verified provider`. Snake case is a storage detail. */
+function humanToken(v: string): string {
+  return v.replace(/_/g, " ").trim();
 }
 
 /* Source attribution row — shows all sources (1..N) as clickable pills. */

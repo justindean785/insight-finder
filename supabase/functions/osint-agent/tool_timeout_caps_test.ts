@@ -131,3 +131,54 @@ Deno.test("timeout overrides: fofa_search and markdown_extract clear their own f
     );
   }
 });
+
+// ── socialfetch_web_read: sized to the MEASURED success distribution ────────
+//
+// ⚠️ THIS TEST WAS WRONG ONCE, AND THE WAY IT WAS WRONG IS THE LESSON.
+//
+// The first version pinned 15s/12s and cited "21 aborts, avg 22,194ms, ZERO
+// successes ever observed" from a written brief. Queried against the source the
+// brief summarised (`tool_usage_log`), that claim does not hold — it came from a
+// 4-run sample of 3 calls and was generalised to "the provider never answers":
+//
+//     30 days: 127 calls, 76 OK (60%), successes avg 5,446ms, p95 11,161ms
+//     14 days:  71 calls, 43 OK (61%), successes p95 13,349ms
+//     max successful duration, either window: 15,908ms
+//     failures average 12,395ms
+//
+// A 12s tool cap would have severed 3 of 76 observed successes and cut through
+// the 14-day p95. The tool is ordinary and somewhat slow, not dead.
+//
+// 18s clears the observed maximum with headroom, so it costs no evidence, while
+// still trimming a failure path that previously ran to a 22s ceiling. Change
+// these numbers ONLY against a fresh query of the success distribution — a
+// prose summary of that distribution has already misled this file once.
+Deno.test("socialfetch_web_read clears its measured success ceiling", () => {
+  assertEquals(
+    toolTimeoutMs("socialfetch_web_read"),
+    22_000,
+    "wrapper must stay above the tool's own 18s budget",
+  );
+});
+
+Deno.test("socialfetch_web_read keeps the wrapper-above-own-budget invariant", () => {
+  // This tool passes its budget as `fetchRetry(..., { timeoutMs: N })`, which the
+  // structural scanner in tool_timeout_contract_test.ts does NOT see (it reads
+  // `fetchT(…, N)` positional args only). So the invariant that file exists to
+  // enforce rests, for this tool, on this test alone.
+  const src = Deno.readTextFileSync(new URL("./tool-registry.ts", import.meta.url));
+  const body = src.slice(src.indexOf("socialfetch_web_read: tool({"));
+  const m = body.slice(0, body.indexOf("socialfetch_whoami")).match(/timeoutMs:\s*([\d_]+)/);
+  assert(m, "socialfetch_web_read must still declare an explicit per-attempt timeout");
+  const own = Number(m![1].replace(/_/g, ""));
+  assertEquals(own, 18_000, "the tool's own fetch budget");
+  assert(
+    own > 15_908,
+    `the budget must clear the maximum observed SUCCESSFUL duration (15,908ms), saw ${own}`,
+  );
+  assert(
+    toolTimeoutMs("socialfetch_web_read") > own,
+    `wrapper cap (${toolTimeoutMs("socialfetch_web_read")}ms) must exceed the tool's own ` +
+      `fetch budget (${own}ms), or the wrapper guillotines the call before it can fail cleanly`,
+  );
+});

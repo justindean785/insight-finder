@@ -37,7 +37,7 @@ import {
 import { type ArtifactRetrieval, buildEvidenceRecord, isFindingRow } from "./lib/evidence-record.ts";
 import { composePersistedParts } from "./lib/evidence-record-persist.ts";
 import { sanitizeModelMessages, capToolResultOutputs, summarizeToolResultValue } from "./message-sanitize.ts";
-import { guard, routingGuard, triageState, countRecordArtifactCalls, countModelMessageToolCalls } from "./guard.ts";
+import { guard, routingGuard, triageState, countRecordArtifactCalls, countModelMessageToolCalls, bumpAutoPersistedArtifacts, resetCorrelateCycle, correlateDue } from "./guard.ts";
 import { setupRequest } from "./auth.ts";
 import { minimax, minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider } from "./orchestrator_select.ts";
@@ -51,7 +51,7 @@ import {
   capTotalToBudget, deadlineReached, isToolBudgetExhausted, buildIntermediateStepPlan,
 } from "./orchestrator-budget.ts";
 import {
-  shouldForceFinalize, buildFinalizeStepPlan, buildPerCycleCompactDirective,
+  shouldForceFinalize, buildFinalizeStepPlan, buildPerCycleCompactDirective, shouldDeferFinalizeForCorrelate,
   activeToolsOutsideFinalize, countFinalizeProgress, resolveFinalizePhase, type FinalizePhase,
   shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS,
   extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt,
@@ -60,7 +60,7 @@ import {
 } from "./orchestrator-finalize.ts";
 import {
   loadReviewsForThread, applyReviewsToArtifacts, dropRejectedArtifacts,
-  renderAnalystRejectionBlock, REVIEW_STATE_UNAVAILABLE_NOTE,
+  renderAnalystDecisionsBlock, REVIEW_STATE_UNAVAILABLE_NOTE,
 } from "./reviews.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
 
@@ -122,7 +122,7 @@ Deno.serve(async (req) => {
   resetFirecrawlCreditsLow();
 
   // ---- Reset guard/triage state (module-scoped, must be reset per-request) ----
-  guard.artifactsSinceCorrelate = 0;
+  resetCorrelateCycle();
   routingGuard.artifactsTotal = 0;
   routingGuard.memoryRecallTimestamps = [];
   routingGuard.memoryRecallSubjectsThisStep.clear();
@@ -731,24 +731,34 @@ Deno.serve(async (req) => {
     // and does re-assert a finding the analyst already marked FALSE. baseSystemPrompt
     // feeds all three paths (intermediate, finalize, salvage), so injecting here
     // covers every turn.
+    //
+    // 2026-09-02: this used to inject ONLY the rejection half. Confirm, Key and
+    // Recheck were persisted and never reached model context, so the analyst's
+    // positive decisions changed nothing about the next run. One structured
+    // ANALYST DECISIONS block now carries all four — confirmed propositions, key
+    // priorities, recheck tasks and the DO-NOT-USE rejections — and states the
+    // rule that governs them: a decision never changes evidence confidence.
     const turnReviews = await loadReviewsForThread(supabaseAdmin, threadId, userId);
-    const analystRejectionBlock = turnReviews.ok
-      ? renderAnalystRejectionBlock(turnReviews.rejectedRows)
+    const analystDecisionsBlock = turnReviews.ok
+      ? renderAnalystDecisionsBlock(turnReviews)
       // Verdicts unreadable: say so rather than implying nothing was rejected.
       : `\n## ANALYST REVIEW STATE UNAVAILABLE\n${REVIEW_STATE_UNAVAILABLE_NOTE}\n`;
     if (!turnReviews.ok) {
       console.warn(JSON.stringify({
         event: "turn_review_state_unavailable", thread_id: threadId, error: turnReviews.error,
       }));
-    } else if (turnReviews.rejectedRows.length > 0) {
+    } else if (turnReviews.byId.size > 0) {
       console.log(JSON.stringify({
-        event: "analyst_rejections_applied", thread_id: threadId,
+        event: "analyst_decisions_applied", thread_id: threadId,
         rejected: turnReviews.rejectedRows.length, reviewed: turnReviews.byId.size,
+        confirmed: turnReviews.reviewedRows.filter((r) => r.state === "confirmed").length,
+        key: turnReviews.reviewedRows.filter((r) => r.state === "key").length,
+        recheck: turnReviews.reviewedRows.filter((r) => r.state === "recheck").length,
       }));
     }
     const baseSystemPrompt =
       SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary
-      + analystRejectionBlock;
+      + analystDecisionsBlock;
     // The two decision tools exist in the registry so forced-finalize can select them,
     // but they must never be available during ordinary investigation steps.
     const normalActiveTools = activeToolsOutsideFinalize(Object.keys(tools));
@@ -889,7 +899,8 @@ Deno.serve(async (req) => {
         // that removed the "stream updates, then summarize" behavior. Left out so the
         // model concludes on its own, as it did days ago.
         const elapsedMsNow = Date.now() - runStartedAt;
-        if (finalizeStarted || capReached || shouldForceFinalize(elapsedMsNow, stepNumber ?? 0)) {
+        const correlatePending = shouldDeferFinalizeForCorrelate(correlateDue(), guard.lastCorrelateOutcome);
+        if (finalizeStarted || capReached || (shouldForceFinalize(elapsedMsNow, stepNumber ?? 0) && !correlatePending)) {
           const progress = countFinalizeProgress(stepMessages as Array<{ content?: unknown }>);
           if (!finalizeStarted) {
             finalizeStarted = true;
@@ -1230,6 +1241,29 @@ Deno.serve(async (req) => {
                   // < inserted means artifacts landed with no chain-of-custody row.
                   evidence_appended: res.evidence_appended ?? 0,
                 }));
+                // ---- Correlate progress trigger (2026-09-01) --------------------
+                // `bumpArtifacts` was called ONLY from the record_artifacts family and
+                // attachment intake, never from here. So on a run where the model does
+                // not call record_artifacts — measured in production: thread c65e555b,
+                // 34 auto-persisted artifacts, record_artifact_calls = 0 —
+                // `guard.artifactsSinceCorrelate` stayed at 0 for the whole run.
+                // `correlateDue()` was therefore never true, `correlateNudge()` returned
+                // {} every time, and the orchestrator was never told to correlate. The
+                // run then reached the finalize window with the counter still reading
+                // zero, and the late correlate attempt was skipped by the window guard —
+                // which is why correlate "never ran" while looking like a finalize-timing
+                // problem. It is a COUNTING problem: the trigger could not see the
+                // artifacts that actually existed.
+                //
+                // Auto-persisted rows are real persisted artifacts and are exactly what a
+                // correlation pass needs to cluster, so they count the same as recorded
+                // ones. `res.inserted` is already computed and returned here, so this adds
+                // no DB read; `res.rows` carries the kinds the counter's telemetry wants.
+                //
+                // Deliberately does NOT touch the finalize window, the completion
+                // contract, or clustering semantics — it only makes an existing,
+                // artifact-count trigger see the artifacts it was always meant to count.
+                bumpAutoPersistedArtifacts(res);
               } catch (e) {
                 console.warn("[auto-persist] step backstop failed (non-fatal):", String(e));
               }
@@ -1661,12 +1695,29 @@ Deno.serve(async (req) => {
                 }));
                 throw new Error("investigation cache skipped: analyst review state unavailable");
               }
+              // Tagged (review_state) and rejection-filtered, with NO confidence
+              // arithmetic — the cached number is exactly the recorded one.
               const cleanArts = applyReviewsToArtifacts(
                 (arts ?? []) as Array<Record<string, unknown>>, cacheReviews,
               );
               const cachedParts = sanitizeToolOutput(safePartsForCache, 1500);
               const cachedArts = sanitizeToolOutput(cleanArts, 1500);
               const payload = {
+                // cache_version 2: the client (ChatWindow.tsx) MUST re-check
+                // artifact_reviews for origin_thread_id before ever replaying
+                // assistant_parts verbatim — this snapshot reflects analyst
+                // decisions as of THIS write, not as of a future cache hit. A
+                // reader that doesn't understand cache_version 2 (or an older
+                // unversioned row) must treat the row as inadmissible, not
+                // replay it blind. See src/lib/review.ts checkCachedHitSafety.
+                //
+                // This stamp was introduced in 9122327 and lost in the 07-20
+                // emergency rollback; without it every row is "unversioned" and
+                // the client evicts each hit as inadmissible — replay was dead
+                // and the review-lineage contract the client documents pointed
+                // at a field nothing wrote. Restored 2026-09-02.
+                cache_version: 2,
+                origin_thread_id: threadId,
                 seed: detectedSeed,
                 assistant_parts: cachedParts,
                 artifacts: cachedArts,

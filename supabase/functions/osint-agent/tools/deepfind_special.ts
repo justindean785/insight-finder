@@ -21,7 +21,7 @@ export const deepfind_email_breach = tool({
       return { ok: r.ok, status: r.status, source: "deepfind.email_breach", data: { breach_count: breaches.length, breaches } };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const deepfind_transaction_viewer = tool({
   description:
@@ -38,7 +38,7 @@ export const deepfind_transaction_viewer = tool({
       return { ok: r.ok, status: r.status, source: "deepfind.transaction", data };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const deepfind_ransomware_exposure = tool({
   description:
@@ -57,7 +57,7 @@ export const deepfind_ransomware_exposure = tool({
       return { ok: r.ok, status: r.status, source: "deepfind.ransomware", data };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const deepfind_vin_lookup = tool({
   description:
@@ -76,7 +76,7 @@ export const deepfind_vin_lookup = tool({
       return { ok: r.ok, status: r.status, source: "deepfind.vin", data };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const deepfind_aircraft_lookup = tool({
   description:
@@ -95,7 +95,7 @@ export const deepfind_aircraft_lookup = tool({
       return { ok: r.ok, status: r.status, source: "deepfind.aircraft", data };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
 export const deepfind_vessel_lookup = tool({
   description:
@@ -114,5 +114,5 @@ export const deepfind_vessel_lookup = tool({
       return { ok: r.ok, status: r.status, source: "deepfind.vessel", data };
     } catch (e) { return { error: String(e) }; }
   },
-}),
+});
 
