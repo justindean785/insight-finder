@@ -13,12 +13,15 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 
 > A mirror merge is NOT a deploy. The only proof of deploy is a moved build SHA.
 
-> **Dated state — 2026-09-02T11:30Z.** `main` = `550fd60` (#534 merged as `7cd74b5`, stamp
-> `3ee2bb9`, ledger `550fd60`). Vercel production = `7cd74b5` (`target: production`, READY,
-> `dpl_7uxXVGYVpd7ekGUHoREYZgpHQX8d`). Live `osint-agent` build = **`7cd74b5`**,
-> `deploy/live` → `7cd74b5`, ledger recorded (VERIFIED, marker provenance; bytes unverified
-> as always). Analyst decisions (Confirm / Key / Recheck / False) now bind on the live
-> agent — `docs/ANALYST_DECISIONS_PROPAGATION.md`.
+> **Dated state — 2026-09-03T00:05Z.** `main` = `35ff20b` (#537 merged as `7b0138d` after the
+> merge queue #435/#513/#491/#493/#512, stamp `cfbb404`, ledger `35ff20b`). Live `osint-agent`
+> build = **`7b0138d`**, `deploy/live` → `7b0138d`, ledger recorded (VERIFIED, marker provenance;
+> bytes unverified as always). `/health` now carries `checks.rejected_cluster_sweep`; on its first
+> probes it reported `cleared 14 of 191 stale assignment(s) across 5 thread(s)` and the corpus count
+> of analyst-rejected rows still holding a `cluster_id` went 216 → 51 within minutes (converging to 0).
+> Mirror `main` = `113a6ac` (surgical sync of 24 `osint-agent` runtime files + `build-info.ts`).
+> Previous dated state, kept for the record: `main` = `550fd60`, live build `7cd74b5`
+> (#534 merged as `7cd74b5`, stamp `3ee2bb9`, ledger `550fd60`).
 > **Mirror parity re-measured 2026-09-02 on mirror `d0ab1a6`:** `diff -rq` is empty for
 > `evidence-export`, `security-test-lab`, `_shared`, and for every `osint-agent` RUNTIME
 > file. Five canonical-only TEST files (`rejected_dispatch_test`,
