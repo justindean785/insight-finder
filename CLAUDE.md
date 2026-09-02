@@ -13,11 +13,20 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 
 > A mirror merge is NOT a deploy. The only proof of deploy is a moved build SHA.
 
-> **Dated state — 2026-08-29T04:4xZ.** `main` = `0513782`. Vercel production last observed
-> READY on `1ffb956` (`dpl_E9EPKdk5L9cT7MGdABbJwTy6bMir`); the delta to `main` is docs only.
-> Live `osint-agent` build = **`cf06cbb`**, `deploy/live` → `cf06cbb`, ledger recorded.
-> Mirror restored to the deployed tree at `61905d0` after the drift below; `verify:deploy`
-> reports `mirror tree -> equal`. Everything merged through #511 is live on both axes.
+> **Dated state — 2026-09-02T11:30Z.** `main` = `550fd60` (#534 merged as `7cd74b5`, stamp
+> `3ee2bb9`, ledger `550fd60`). Vercel production = `7cd74b5` (`target: production`, READY,
+> `dpl_7uxXVGYVpd7ekGUHoREYZgpHQX8d`). Live `osint-agent` build = **`7cd74b5`**,
+> `deploy/live` → `7cd74b5`, ledger recorded (VERIFIED, marker provenance; bytes unverified
+> as always). Analyst decisions (Confirm / Key / Recheck / False) now bind on the live
+> agent — `docs/ANALYST_DECISIONS_PROPAGATION.md`.
+> **Mirror parity re-measured 2026-09-02 on mirror `d0ab1a6`:** `diff -rq` is empty for
+> `evidence-export`, `security-test-lab`, `_shared`, and for every `osint-agent` RUNTIME
+> file. Five canonical-only TEST files (`rejected_dispatch_test`,
+> `finding_synthesis_reviews_test`, `cluster_rejected_clear_test`, plus updated
+> `reviews_test` / `reviews_wiring_test`) were deliberately not synced — tests are not
+> deployed — which is why the ledger's `mirror_tree_digest` differs; that is the known
+> cosmetic gap, not drift. The mirror gained two Lovable-authored commits after the sync
+> (`769e7d7`, `d0ab1a6`: a regenerated `src/integrations/supabase/types.ts` only).
 > This line is a *measurement*, not a state — re-check `/health` and
 > `list_deployments` rather than trusting it.
 >
@@ -104,8 +113,8 @@ There is **ONE place to work: this repo, `justindean785/insight-finder`** (produ
 
 ## Edge function internals (gotchas)
 - **Live tool defs are in `supabase/functions/osint-agent/tool-registry.ts`** (`buildTools`), **not** inline in `index.ts` (which now only orchestrates the request). The god-file refactor moved them; `index.ts` has zero tool defs. The catalog↔runtime contract test (`src/test/catalog-guidance.test.ts`) reads `tool-registry.ts` (with an `index.ts` fallback) to assert every `catalog.ts` entry has a runtime def — keep `catalog.ts` and `tool-registry.ts` in sync when adding a tool. (Any older `tools/*.ts` files are stale mirrors, not the runtime source.)
-- Tests: `npm run test:edge` (= `cd supabase/functions/osint-agent && deno test --no-check --allow-net --allow-env --allow-sys --allow-read *_test.ts`). **`--allow-read` is required** — the source-level wiring tests (`reviews_wiring_test.ts`) read `index.ts`/`cluster.ts`/`recovery.ts` off disk to assert the call sites exist, and without it they abort with `NotCapable` before any assertion runs, which reads like a code failure and is not. (The old `--allow-net --no-check` form left env/sys perms off, inflating the failure count — measured 2026-07-25: `--allow-net --no-check` = 546 pass/57 fail vs `--allow-net --allow-env` = 754 pass/24 fail.) **Edge baseline: 1446 passed / 0 failed / 5 ignored** (re-measured 2026-08-29 on `cf06cbb`; the 1407/`03f64e4`, 1279/`5cc1940` and 1178/`394cd0b` figures are all stale). The 24 environmental failures are GONE — do not treat any failure as "probably environmental"; that excuse is retired. **Deno is NOT preinstalled** in the web/remote sandbox: `DENO_INSTALL=/usr/local sh <(curl -fsSL https://deno.land/install.sh) -y` (verified working 2026-08-28 — `dl.deno.land` answers 200 now, so the npm-registry workaround in `mem/ops/deno-tests-in-web-sandbox.md` is a fallback, not the only route). Pass `--no-lock`: an unqualified `deno test` rewrites `deno.lock` and drops four real dependency entries — or skip the install entirely and **use CI as the edge instrument**: any PR gives a clean `deno test` on a provisioned toolchain, and a red PR is still a usable measuring device if you read the per-job conclusions rather than the top-level X. `deno check index.ts` has ~12–157 **pre-existing** AI-SDK/Supabase type-graph errors — not a gate; verify your change adds none.
-- **Frontend baseline: 1611 passed / 1 skipped / 131 files** (`npx vitest run`, re-measured 2026-08-29 on `cf06cbb`; the 1587/130, 1585/130, 1422/115 and 1288/105 figures are all stale). **If a run reports ~10 React failures, re-measure in an isolated worktree with its own `npm ci`** before believing them — a shared `node_modules` can produce a duplicate-React artifact that fabricates exactly that (this cost a session; PR #481's body still cites them as real). It is a *symptom to check*, not a rule that a shared tree always lies: the 1611 above was measured in the primary checkout with 0 failures, and CI's own `Frontend (vitest + build)` job agreed on the same head. Re-measure rather than trust it — this number moved three times in one session. The package manager is **npm** — there is no `pnpm-lock.yaml` and no `test:e2e` script. Use `npm ci`, `npm run typecheck|lint|test|build|test:edge`.
+- Tests: `npm run test:edge` (= `cd supabase/functions/osint-agent && deno test --no-check --allow-net --allow-env --allow-sys --allow-read *_test.ts`). **`--allow-read` is required** — the source-level wiring tests (`reviews_wiring_test.ts`) read `index.ts`/`cluster.ts`/`recovery.ts` off disk to assert the call sites exist, and without it they abort with `NotCapable` before any assertion runs, which reads like a code failure and is not. (The old `--allow-net --no-check` form left env/sys perms off, inflating the failure count — measured 2026-07-25: `--allow-net --no-check` = 546 pass/57 fail vs `--allow-net --allow-env` = 754 pass/24 fail.) **Edge baseline: 1461 passed / 0 failed / 5 ignored** (re-measured 2026-08-31 on `3c2ef26` — read off CI's own `Edge functions (deno test)` job, which is the sanctioned instrument when Deno is absent; the 1446/`cf06cbb`, 1407/`03f64e4`, 1279/`5cc1940` and 1178/`394cd0b` figures are all stale). The 24 environmental failures are GONE — do not treat any failure as "probably environmental"; that excuse is retired. **Deno is NOT preinstalled** in the web/remote sandbox: `DENO_INSTALL=/usr/local sh <(curl -fsSL https://deno.land/install.sh) -y` (verified working 2026-08-28 — `dl.deno.land` answers 200 now, so the npm-registry workaround in `mem/ops/deno-tests-in-web-sandbox.md` is a fallback, not the only route). Pass `--no-lock`: an unqualified `deno test` rewrites `deno.lock` and drops four real dependency entries — or skip the install entirely and **use CI as the edge instrument**: any PR gives a clean `deno test` on a provisioned toolchain, and a red PR is still a usable measuring device if you read the per-job conclusions rather than the top-level X. `deno check index.ts` has ~12–157 **pre-existing** AI-SDK/Supabase type-graph errors — not a gate; verify your change adds none.
+- **Frontend baseline: 1695 passed / 1 skipped / 136 files** (`npx vitest run`, re-measured 2026-08-31 on `3c2ef26`; the 1611/131, 1629/133, 1587/130, 1585/130, 1422/115 and 1288/105 figures are all stale). ⚠️ **Test FILES are 136, not 137.** CI's `Frontend (vitest + build)` job prints `there will be 137 files uploaded` immediately after the suite — that is the *coverage artifact* file count, and mistaking it for the suite figure already put a wrong number in one commit message. **If a run reports ~10 React failures, re-measure in an isolated worktree with its own `npm ci`** before believing them — a shared `node_modules` can produce a duplicate-React artifact that fabricates exactly that (this cost a session; PR #481's body still cites them as real). It is a *symptom to check*, not a rule that a shared tree always lies: the 1695 above was measured in the primary checkout with 0 failures, and CI's own `Frontend (vitest + build)` job agreed on the same head. Re-measure rather than trust it — this number moved three times in one session. The package manager is **npm** — there is no `pnpm-lock.yaml` and no `test:e2e` script. Use `npm ci`, `npm run typecheck|lint|test|build|test:edge`.
 - **The orchestrator is DeepSeek-slot-pinned, not MiniMax-primary.** `/health` reports `selected_provider: deepseek`, `orchestrator_reason: "pinned"`, with MiniMax as **fallback**. Since #449 the slot is vendor-agnostic via `DEEPSEEK_BASE_URL`, and the live model is **`glm-5.2` served by Z.AI**. Anywhere this file or `AGENTS.md` says MiniMax is primary, it is wrong.
 - Frontend tests: `npx vitest run` from repo root.
 
@@ -313,8 +322,11 @@ Evidence ranking, confidence caps, chain-of-custody, credential masking, minor-s
 `…_2026-08-23_report-authority-and-ci-recovery` (re-measured the baselines and carries the
 production corpus numbers that govern #477/#479/#482) →
 `…_2026-08-25_merge-deploy-and-tool-telemetry` →
-**`SESSION_HANDOFF_2026-08-26_workspace-pass-and-production-defects.md` (newest — read this one
-first)**. Each corrects the
+`…_2026-08-26_workspace-pass-and-production-defects` →
+**`SESSION_HANDOFF_2026-08-31_workbench-truth-boundary.md` (newest — read this one
+first)**. Its §4 is the trap list, §6 is the honest not-done list, and §7 is the ordered
+plan; its own §1 state table predates the #520 merge, so take the dated state from the top
+of this file instead. Each corrects the
 one before it, and **every one of them is a dated measurement, not a state.** III's own §1.0
 is the lesson: a "deploy axis verified green" claim went false within six hours because the
 mirror is writable by a second agent whose edits this repo never sees.

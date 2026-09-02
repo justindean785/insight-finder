@@ -50,7 +50,7 @@ export function ReportCardV2(props: ReportCardV2Props) {
     { label: "CLEAN", tone: "ok" as const };
 
   return (
-    <div className="overflow-hidden rounded-md border border-border-subtle bg-surface-1 shadow-[0_24px_64px_rgba(0,0,0,0.45),inset_0_1px_0_hsl(0_0%_100%/0.04)]">
+    <div className="overflow-hidden rounded-md border border-border-subtle bg-surface-1 shadow-[0_24px_64px_rgba(0,0,0,0.45),inset_0_1px_0_hsl(var(--film)/0.04)]">
       <Hero
         status={props.status}
         cost={props.cost}

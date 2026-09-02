@@ -12,6 +12,8 @@ import {
   YAxis,
 } from "recharts";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
+// One number, everywhere. See src/lib/display-confidence.ts.
+import { effectiveConfidence } from "@/lib/display-confidence";
 import { artifactsToSources, artifactsToClusterAudit, reportVerdict, type ReportVerdict } from "@/lib/audit/from-artifacts";
 import { checkIndependence, computeEffectiveSourceCount } from "@/lib/audit/source-independence";
 import { lintReport } from "@/lib/audit/confidence-linter";
@@ -25,7 +27,6 @@ import { AUTHORITY_HEADING, authorityStatement, type AuthoritativeFindings } fro
 import { tierInfo } from "@/lib/confidence-tier";
 import {
   labelForArtifact,
-  adjustedConfidence,
   buildIdentityClusters,
   buildToolAudit,
   inferToolGaps,
@@ -60,8 +61,11 @@ export type ReportType = "full" | "brief";
  * `ConfidenceRadar` — same tab, same object (`ReportTab.tsx:235` vs `:242`) —
  * honoured the verdict. These two accessors mirror `buildReportMarkdown`
  * (`intel.ts:1149-1150`) exactly, so the on-screen report and the markdown
- * export cannot drift: the label always goes through the review, and the
- * number goes through `adjustedConfidence` only when a verdict exists.
+ * export cannot drift: the label always goes through the review, and the number
+ * is `displayConfidence(a).effective` — the same value every other surface
+ * renders. (Until 2026-08-31 the number went through `adjustedConfidence` only
+ * when a verdict existed, which made the report agree with the Evidence BOARD on
+ * an unreviewed row and with the Evidence TABLE on a reviewed one.)
  *
  * No new policy is invented here. `labelForArtifact` and `evidenceStatus`
  * already take a review and already encode the semantics (dismissed/wrong =>
@@ -70,10 +74,15 @@ export type ReportType = "full" | "brief";
  */
 type Reviews = Record<string, ReviewAdjustment> | undefined;
 const revOf = (reviews: Reviews, a: Artifact): ReviewAdjustment => reviews?.[a.id];
-const confOf = (reviews: Reviews, a: Artifact): number | null => {
-  const r = revOf(reviews, a);
-  return r ? adjustedConfidence(a, r) : a.confidence;
-};
+// THE report's number, and it is now the same number as every other surface's.
+// This used to be `review ? adjustedConfidence(a, review) : a.confidence`, so the
+// report agreed with the Evidence BOARD on an unreviewed row and with the
+// Evidence TABLE on a reviewed one — a third pipeline that changed which of the
+// other two it matched depending on whether an analyst had clicked Confirm.
+// `reviews` is retained in the signature because callers pass it and because
+// review state still drives bucketing and status elsewhere in this file; it just
+// no longer moves the figure. See src/lib/display-confidence.ts.
+const confOf = (_reviews: Reviews, a: Artifact): number | null => effectiveConfidence(a);
 
 function statusOf(a: Artifact): string {
   const m = (a.metadata ?? {}) as Record<string, unknown>;
@@ -127,7 +136,7 @@ function ArtifactRow({ a, review }: { a: Artifact; review?: ReviewAdjustment }) 
         <div className="mt-1 text-eyebrow leading-snug text-muted-foreground">{status.basis}</div>
       </td>
       <td className="px-3 py-2 text-data">
-        <ConfidenceBar score={review ? adjustedConfidence(a, review) : a.confidence} showValue className="min-w-[5.5rem]" />
+        <ConfidenceBar score={effectiveConfidence(a)} showValue className="min-w-[5.5rem]" />
       </td>
       <td className="px-3 py-2 text-data text-muted-foreground whitespace-nowrap">
         {new Date(a.created_at).toLocaleDateString()}
@@ -436,12 +445,16 @@ function clampScore(n: number): number {
 }
 
 function averageConfidence(artifacts: Artifact[], reviews?: Reviews): number {
-  // A rejected row may not strengthen a positive aggregate. `REVIEW_DELTA` has
-  // no `dismissed` entry (delta 0), so routing a dismissed row through
-  // `adjustedConfidence` swaps in the corroboration/direct-profile bonus the
-  // unreviewed branch never applies — dismissing could RAISE the average by up
-  // to +15. Excluding rather than clamping keeps the per-row number identical
-  // to EvidenceMatrixTab:41, and matches buildIdentityClusters (intel.ts:1865).
+  // A rejected row may not strengthen a positive aggregate, so it is EXCLUDED
+  // rather than clamped — which also matches buildIdentityClusters.
+  //
+  // The original reason for excluding was arithmetic: `confOf` used to route a
+  // reviewed row through `adjustedConfidence`, and since `REVIEW_DELTA` has no
+  // `dismissed` entry, dismissing a row swapped in a corroboration bonus the
+  // unreviewed branch never applied and could RAISE the average by up to +15.
+  // That mechanism is gone — `confOf` is now `min(stored, cap)` for every row,
+  // reviewed or not. The exclusion stays because the POLICY was always right on
+  // its own terms: a row the analyst rejected should not lift the case average.
   const vals = artifacts
     .filter((a) => !isRejectedReview(revOf(reviews, a)))
     .map((a) => confOf(reviews, a))
@@ -864,7 +877,7 @@ function buildBreachExposure(artifacts: Artifact[]): BreachRow[] {
     // Same label+value from two tools is one fact, not two.
     const seenReveal = new Set<string>();
     const dedupedReveal = reveal.filter((r) => {
-      const k = `${r.label} ${r.value}`;
+      const k = `${r.label}\u0000${r.value}`;
       if (seenReveal.has(k)) return false;
       seenReveal.add(k);
       return true;

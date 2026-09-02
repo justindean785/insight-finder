@@ -13,8 +13,12 @@ import { DEFAULT_TOOL_TTL_MS, NO_CACHE_TOOLS, redactSensitiveToolInput, TOOL_TTL
 import { creditsCharged } from "./billing.ts";
 import { classifyToolOutcome } from "./tool-outcome.ts";
 import * as circuit from "./circuit.ts";
-import { guard } from "./guard.ts";
+import { buildRefusedKeys, dispatchTypeCandidates, isDispatchRefused, quarantineRefusal, reasonForKey } from "./lib/dispatch-quarantine.ts";
+import { buildRejectedDispatchKeys, isRejectedDispatch, rejectionRefusal } from "./lib/dispatch-rejection.ts";
+import { loadReviewsForThread, type ReviewDb } from "./reviews.ts";
+import { guard, takeCorrelateHint } from "./guard.ts";
 import { reserveToolCall } from "./orchestrator-budget.ts";
+import { isFinalizeWindowLiveLookupExempt } from "./orchestrator-finalize.ts";
 import {
   ALWAYS_ALLOW_TOOLS,
   analyzeWeakLead,
@@ -592,6 +596,76 @@ export function wrapToolsWithCache(
     }
     return toolHealthPromise;
   };
+  // ---- subject_unlinked DISPATCH boundary --------------------------------------
+  // Quarantine binds at write and read-back; without this it never bound at
+  // DISPATCH, so a quarantined selector could still start its own paid tool
+  // stack. Loaded ONCE per run and reused, like tool_health above.
+  //
+  // FAILS OPEN on a load error, matching loadToolHealth's precedent in this same
+  // function: this boundary prevents wasted calls and contaminated pivots, it is
+  // not an authorization control, and hard-failing every tool call on a transient
+  // artifacts read would be a worse outcome than the leak it prevents. The warning
+  // is logged so the degradation is observable rather than silent.
+  let refusedKeysPromise: Promise<{ keys: Set<string>; rows: Array<Record<string, unknown>> }> | null = null;
+  const loadRefusedKeys = () => {
+    if (!refusedKeysPromise) {
+      refusedKeysPromise = (async () => {
+        try {
+          const { data, error } = await adminDb
+            .from("artifacts")
+            .select("kind,value,metadata")
+            .eq("thread_id", ctx.investigationId);
+          if (error) {
+            console.warn("[quarantine-dispatch] load failed (boundary open this run):", error.message);
+            return { keys: new Set<string>(), rows: [] };
+          }
+          const rows = (data ?? []) as Array<Record<string, unknown>>;
+          return { keys: buildRefusedKeys(rows, circuit.normalizeSelector), rows };
+        } catch (e) {
+          console.warn("[quarantine-dispatch] load failed (boundary open this run):", e);
+          return { keys: new Set<string>(), rows: [] };
+        }
+      })();
+    }
+    return refusedKeysPromise;
+  };
+  // ---- ANALYST-REJECTION dispatch boundary --------------------------------------
+  // A `dismissed` / `wrong` verdict bound at every READ (reviews.ts) but never at
+  // DISPATCH: the prompt said DO NOT USE and nothing enforced it, so the model —
+  // or a manual "Run this pivot" — could still start a paid call on a selector
+  // the analyst had ruled out. Loaded ONCE per run and reused, keyed by
+  // `type:normalizedValue` from the artifact's kind (plus its selector-type
+  // alias), never by value alone. Rejected keys are derived from the rejected
+  // ROWS, so a re-record of the same selector under a new id is still refused.
+  //
+  // FAILS OPEN on a load error, matching the quarantine boundary above and for
+  // the same reason: this prevents wasted calls and contaminated pivots; it is
+  // not an authorization control, and refusing EVERY tool call on a transient
+  // review read would kill the run outright. The authoritative consumers
+  // (prompt block, salvage, cache, clustering, synthesis, recovery) all fail
+  // closed on the same load. The warning makes the open boundary observable.
+  let rejectedKeysPromise: Promise<Set<string>> | null = null;
+  const loadRejectedKeys = () => {
+    if (!rejectedKeysPromise) {
+      rejectedKeysPromise = (async () => {
+        try {
+          const reviews = await loadReviewsForThread(
+            adminDb as unknown as ReviewDb, ctx.investigationId, ctx.userId,
+          );
+          if (!reviews.ok) {
+            console.warn("[rejected-dispatch] review load failed (boundary open this run):", reviews.error);
+            return new Set<string>();
+          }
+          return buildRejectedDispatchKeys(reviews.rejectedRows, circuit.normalizeSelector);
+        } catch (e) {
+          console.warn("[rejected-dispatch] review load threw (boundary open this run):", e);
+          return new Set<string>();
+        }
+      })();
+    }
+    return rejectedKeysPromise;
+  };
+
   // Derive a real success flag from a tool's return value. A tool can return
   // without throwing yet still represent a failure (HTTP non-2xx wrapped into
   // { ok:false }, an `error` field, or a stub). The wrapper must NOT log such
@@ -788,6 +862,41 @@ export function wrapToolsWithCache(
         const sel = circuit.normalizeSelector(selectorType, selectorValue);
         const purpose = String(inp.purpose ?? "default");
         const force = inp.force === true;
+        // ---- subject_unlinked DISPATCH boundary ----
+        // FIRST, before budget reservation, the circuit breaker, the cache
+        // lookups and the live call — so a quarantined selector cannot start a
+        // direct, pivoted, cached, repeated or paid call. Placed here rather than
+        // per-tool because all ~89 tools funnel through this one wrapper.
+        //
+        // `force` does NOT override it: a manual re-run of a quarantined selector
+        // is exactly the escape this boundary exists to close. Clearing it is an
+        // analyst linkage decision on the artifact, not a call-site flag.
+        {
+          const { keys: refusedKeys, rows: refusedRows } = await loadRefusedKeys();
+          // Candidates, not the computed type alone — the paid breach tools take
+          // `{ type, value }` and detectSelectorType does not read `type`.
+          const candidateTypes = dispatchTypeCandidates(selectorType, inp);
+          if (isDispatchRefused(refusedKeys, candidateTypes, sel)) {
+            const declared = candidateTypes.find((t) => refusedKeys.has(`${t}:${sel}`)) ?? selectorType;
+            const why = reasonForKey(refusedRows, circuit.normalizeSelector, declared, sel);
+            const refusal = quarantineRefusal(name, declared, sel, why);
+            console.warn(
+              `[quarantine-dispatch] refused ${name} on ${declared}:${sel}` +
+              (why ? ` (${why})` : ""),
+            );
+            return refusal;
+          }
+          // Same position, same shape, for the analyst's own rejections. `force`
+          // does not override it either: the analyst clears a rejection by
+          // resetting the review, not by re-running the call.
+          const rejectedKeys = await loadRejectedKeys();
+          const rejectedAs = isRejectedDispatch(rejectedKeys, candidateTypes, sel);
+          if (rejectedAs) {
+            const refusal = rejectionRefusal(name, rejectedAs, sel);
+            console.warn(`[rejected-dispatch] refused ${name} on ${rejectedAs}:${sel} (analyst rejected)`);
+            return refusal;
+          }
+        }
         const overrideSelector = ctx.manualOverrideSelector
           ? circuit.normalizeSelector(selectorType, ctx.manualOverrideSelector)
           : "";
@@ -1021,7 +1130,11 @@ export function wrapToolsWithCache(
         // only called between model steps. A long/parallel step can still attempt new
         // lookups after the window opens; skip them here so CPU is reserved for the
         // record/report closeout. Recording tools are exempt.
-        if (ctx.shouldStopLiveLookups?.() && !ALWAYS_ALLOW_TOOLS.has(name)) {
+        if (
+          ctx.shouldStopLiveLookups?.() &&
+          !ALWAYS_ALLOW_TOOLS.has(name) &&
+          !isFinalizeWindowLiveLookupExempt(name)
+        ) {
           await logUsage(false, false, Date.now() - t0, "finalize window open; live lookup skipped", null, true, {
             input: inputJson,
             runtime: { ...runtimeMetaBase, rejection_reason: "finalize_window", rejection_source: "deadline", stale_cache: !!staleRecord },
@@ -1287,6 +1400,33 @@ export function wrapToolsWithCache(
         if (AUTO_EVIDENCE_TOOLS.has(name)) {
           // Fire-and-forget: never let auto-evidence block the tool result.
           autoAppendToolEvidence(ctx.supabase, ctx, name, input, result).catch(() => {});
+        }
+        // ---- Correlate hint delivery -------------------------------------------
+        // The hint used to ride ONLY on a record_artifacts result. Measured on
+        // build 3d5130e (thread 15ebf7d4): the model called record_artifacts once,
+        // as call 22 of 23, right before memory_save ended the run. The pass was
+        // genuinely due by then — so the hint fired correctly and arrived with no
+        // fan-out left to influence. A trigger delivered through a channel the
+        // model only opens at the end is not a trigger.
+        //
+        // So it also rides the ordinary results the model reads mid-run. Attached
+        // ONLY here, on the live-success path: a failure, a skip, a cache hit and a
+        // finalize-window refusal all return earlier and are untouched, so this can
+        // never dress up a non-result as carrying a directive. `takeCorrelateHint`
+        // latches once per correlate cycle, so it is a single directive rather than
+        // a banner on every payload.
+        //
+        // Recording tools are excluded HERE because record_artifacts surfaces the
+        // hint on its own result — but it now takes it through the SAME latch, so
+        // there is exactly one delivery per cycle whichever surface reaches the
+        // model first. (Review caught the earlier version: record_artifacts called
+        // the UNLATCHED correlateNudge(), so excluding recording tools from this
+        // path did nothing to stop a second, ungoverned delivery.)
+        if (ok && !ALWAYS_ALLOW_TOOLS.has(name) && result && typeof result === "object" && !Array.isArray(result)) {
+          const hint = takeCorrelateHint();
+          if (Object.keys(hint).length > 0) {
+            return { ...(result as Record<string, unknown>), ...hint } as typeof result;
+          }
         }
         return result;
       },

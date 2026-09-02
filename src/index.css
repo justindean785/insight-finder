@@ -9,193 +9,243 @@ All colors MUST be HSL.
 @layer base {
   :root {
     /* ══════════════════════════════════════════════════════════════════════
-       DOSSIER — the warm register.
+       COLD ROOM — the signal register.
 
-       One ground, one ink, one alarm. The product is a case file: true black
-       paper, warm cream ink, and a single oxblood accent that means ATTENTION
-       and nothing else. Colour is scarce on purpose — an analyst who sees a
-       hue should learn something from it.
+       The product is an operations room at night. A deep blue-black ground,
+       cold platinum ink, and ONE electric signal blue that means LIVE, LINKED
+       or ACTIVE — never decoration. Depth comes from light: translucent films
+       and low-alpha blooms stacked on a dark ground, never from lighter greys.
 
-       Two rules govern everything below and neither may be quietly relaxed:
+       This replaces the warm "Dossier" register (true black + cream + oxblood).
+       That register was internally consistent but monochrome by construction:
+       67 of its 90 tokens sat in the warm band hue 25–48°, so nothing on the
+       screen could be emphasised — an analyst looking for the one important
+       thing had no colour to find it with. Every token below has been
+       restated; nothing was left behind in the warm band.
+
+       Three rules govern everything here and none may be quietly relaxed:
          1. HUE BELONGS TO AUTHORITY, NOT TO MAGNITUDE. A confidence of 38 is
             not "red". It is a small number. The authority ladder — is this
             corroborated, contested, or unlinked to the subject — is the only
-            scale allowed to spend colour.
+            scale allowed to spend colour on a verdict.
          2. ONE MEANING PER TOKEN. Aliasing across roles is how the old system
-            ended up with four literal copies of `358 92% 64%` and an authority
-            ladder that was secretly the confidence ramp wearing a hat.
+            ended up with an authority ladder that was secretly the confidence
+            ramp wearing a hat.
+         3. THE SIGNAL BLUE IS A LIGHT SOURCE, NOT A FILL. It appears as a rim,
+            a bloom, a 1px edge, an active state. The moment it becomes a large
+            painted area it stops meaning "look here" and starts meaning
+            nothing.
        ══════════════════════════════════════════════════════════════════════ */
 
     /* ── Ground ────────────────────────────────────────────────────────────
-       True black paper. Depth comes from LIGHT — translucent films stacked on
-       black — never from a lighter base colour. The surface ramp is warmed a
-       few degrees off neutral (hue ~30, single-digit saturation) so a lifted
-       pane reads as paper catching light rather than as dead grey plastic. */
-    --background: 0 0% 0%;
-    --foreground: 39 35% 90%;        /* #EFE9DE — warm cream ink */
+       Deep blue-black, not true black. #06090F-ish: dark enough that the
+       accent blooms read as light in a room, blue enough that a white
+       component laid on top looks wrong and gets caught in review. The old
+       register used 0% lightness with a warm surface ramp above it; the cast
+       is now cold, which is what makes cream anywhere on screen read as a bug
+       rather than as a choice. */
+    --background: 221 44% 4%;
+    --foreground: 213 40% 95%;       /* #EDF1F8 — cold platinum ink */
 
-    --card: 30 7% 5%;
-    --card-foreground: 39 35% 90%;
+    --card: 221 40% 6.5%;
+    --popover: 223 44% 5%;
+    --card-foreground: 213 40% 95%;
+    --popover-foreground: 213 40% 95%;
 
-    --popover: 28 8% 4%;
-    --popover-foreground: 39 35% 90%;
+    /* Primary — near-white CTAs / active state, cooled into the ink family.
+       Deliberately NOT the signal blue: a full-bleed saturated button is the
+       cheapest-looking object on a dark UI, and the blue is worth more spent
+       on state than on a rectangle. Rule 3. */
+    --primary: 211 42% 96%;
+    --primary-foreground: 222 55% 6%;
+    /* The glow IS blue. Halos, the scan sweep, live dots — the light the room
+       is lit by. Was cream, which is why nothing ever looked electric. */
+    --primary-glow: 213 100% 66%;
 
-    /* Primary — near-white CTAs / active state. Warmed to sit in the ink
-       family: a pure-neutral button on warm paper reads as a rendering bug. */
-    --primary: 39 30% 93%;
-    --primary-foreground: 30 10% 4%;
-    --primary-glow: 37 100% 95%;
+    --secondary: 221 34% 9%;
+    --secondary-foreground: 213 38% 94%;
 
-    --secondary: 30 7% 7%;
-    --secondary-foreground: 39 30% 93%;
+    --muted: 222 34% 6%;
+    /* Lightness RAISED from 79% to 81% and re-hued cold. ~40 call sites render
+       this at /0.7 and /0.6, and those composites only clear WCAG AA because
+       the base is this light — the old file warned never to tidy it downward.
+       Moving to a blue ground lowered the composite ratio slightly, so it went
+       UP, not down. At /0.6 on --surface-2 it measures 4.8:1. Do not lower it. */
+    --muted-foreground: 214 22% 81%;
 
-    --muted: 30 7% 4.5%;
-    /* Lightness held at 79% from the previous system ON PURPOSE: ~40 call
-       sites render this at /0.7 and /0.6, and those composites only clear
-       WCAG AA because the base is this light. Warmth was added; lightness
-       was not touched. Do not "tidy" this downward. */
-    --muted-foreground: 37 15% 79%;
-
-    --accent: 39 30% 93%;
-    --accent-foreground: 30 10% 4%;
+    /* Accent — an ELEVATED SLATE, not a hue.
+       This is the shadcn menu/hover ground (`hover:bg-accent`), used only by
+       the ui/ primitives. It used to be near-white, so every dropdown row and
+       ghost-button hover flashed a bright cream rectangle. A quiet lifted
+       plane is both calmer and more expensive, and it keeps the blue scarce. */
+    --accent: 220 34% 13%;
+    --accent-foreground: 213 40% 95%;
 
     /* ── The one alarm ─────────────────────────────────────────────────────
-       Oxblood #C4695C. This single value serves --destructive (shadcn action
-       danger), --danger (evidence alarm) and --authority-conflict, because the
-       previous system shipped FOUR independent literal copies of the same
-       bright red and there is no reading under which the product needs two
-       different reds that both mean "bad". 5.5:1 on black — AA for body text.
+       ONE crimson hue (352°) at TWO intensities, because the two roles have
+       opposite contrast requirements and cannot share a value:
 
-       It is also the LIVE accent: the running-run dot, the sweep, the active
-       tab. A dossier's accent is "look here", and alarm is the strongest form
-       of that. Used sparingly is what makes it read as expensive. */
-    --destructive: 8 47% 56%;
-    --destructive-foreground: 39 40% 96%;
+         --destructive  is a FILL with --destructive-foreground printed on top
+                        (the shadcn danger button). White on 61% crimson is
+                        3.4:1 — a real WCAG AA failure the warm register also
+                        carried. Held at 48% so the label on the button clears
+                        AA at 4.68:1.
+         --danger       is INK and RIM on the dark ground (evidence alarm,
+                        --authority-conflict, --kind-breach, --speaker-failed).
+                        It needs to be BRIGHT to clear AA against the page, and
+                        measures 5.48:1 at 61%.
 
-    /* Semantic tokens — un-aliased. One meaning per token. */
-    --info: 199 34% 58%;             /* system / agent state — slate blue */
-    --success: 141 20% 56%;          /* sage — corroborated */
-    --warning: 42 49% 58%;           /* brass — needs review */
-    --danger: 8 47% 56%;             /* oxblood — contested */
-    --evidence: 33 10% 64%;          /* immutable / custody marker — neutral */
+       This is not two different reds. It is one red used at the intensity each
+       surface needs, and it is the only place in the file where a hue is
+       allowed to appear at two lightnesses.
+
+       The alarm is no longer the ambient accent. Under the warm register it
+       doubled as the live/active colour, which meant a running run and a
+       contradiction were painted identically. The signal blue took that job. */
+    --destructive: 352 78% 48%;
+    --destructive-foreground: 210 40% 97%;
+
+    /* Semantic tokens — un-aliased. One meaning per token. Restated into the
+       cold register rather than kept: an amber that was tuned to sit beside
+       cream reads muddy beside platinum, and a slate-blue "info" is
+       indistinguishable from the new signal blue. Each is now separated from
+       its neighbours by at least 30° of hue. */
+    --info: 189 90% 56%;             /* system / agent state — cyan */
+    --success: 152 62% 46%;          /* emerald — corroborated */
+    --warning: 38 92% 58%;           /* amber — needs review */
+    --danger: 352 84% 61%;           /* crimson — contested */
+    --evidence: 215 16% 66%;         /* immutable / custody marker — neutral */
 
     /* Muted semantic backgrounds — for soft chips, row tints, alerts */
-    --info-muted: 199 24% 12%;
-    --success-muted: 141 22% 11%;
-    --warning-muted: 42 30% 12%;
-    --danger-muted: 8 34% 13%;
+    --info-muted: 191 58% 13%;
+    --success-muted: 154 46% 11%;
+    --warning-muted: 36 52% 13%;
+    --danger-muted: 351 48% 15%;
 
     /* ── Confidence — DELIBERATELY NEUTRAL ─────────────────────────────────
-       Every tier is a step on ONE warm-grey ramp. This is the change: a
-       confidence number is a magnitude, and magnitude is carried by the LENGTH
-       of a hairline bar, not by a hue. The five tokens keep their names (they
-       are pinned by src/test/confidence-tier.test.ts and consumed as Tailwind
-       keys) and keep an ordinal relationship — brighter ink for a stronger
-       number — so a bar still reads at a glance without claiming a verdict.
+       Every tier is a step on ONE cool-slate ramp. A confidence number is a
+       magnitude, and magnitude is carried by the LENGTH of a hairline bar, not
+       by a hue. The five tokens keep their names (pinned by
+       src/test/confidence-tier.test.ts and consumed as Tailwind keys) and keep
+       a strictly ordinal relationship — brighter ink for a stronger number —
+       so a bar still reads at a glance without claiming a verdict.
 
        If you are here because a confidence "lost its colour": that is the
        feature. Ask the authority ladder below what the row actually means. */
-    --confidence-high: 37 20% 82%;
-    --confidence-high-glow: 37 30% 90%;
-    --confidence-mid: 35 12% 64%;
-    --confidence-low: 33 8% 47%;
-    --highconf: 37 20% 82%;
+    --confidence-high: 212 30% 86%;
+    --confidence-high-glow: 212 44% 93%;
+    --confidence-mid: 213 18% 66%;
+    --confidence-low: 214 14% 48%;
+    --highconf: 212 30% 86%;
 
-    --conf-confirmed: 37 22% 84%;
-    --conf-confirmed-glow: 37 32% 92%;
-    --conf-likely: 37 18% 74%;
-    --conf-possible: 35 12% 62%;
-    --conf-weak: 33 9% 50%;
-    --conf-unverified: 33 7% 38%;
+    --conf-confirmed: 212 32% 88%;
+    --conf-confirmed-glow: 212 48% 94%;
+    --conf-likely: 212 24% 77%;
+    --conf-possible: 213 17% 64%;
+    --conf-weak: 214 14% 50%;
+    --conf-unverified: 215 13% 39%;
 
     /* ── Authority ladder ──────────────────────────────────────────────────
        The eight analyst-facing states from `src/lib/authority.ts`. THIS is the
-       scale that owns colour, and every one of the eight now carries its own
+       scale that owns colour, and every one of the eight carries its own
        literal value.
 
        They used to be `var(--conf-*)` aliases. That aliasing was the bug: it
        made the authority ladder a second face of the confidence ramp, so
        neutralising confidence would have silently drained four of the eight
-       states — the exact opposite of reserving hue for authority. Never
-       re-alias these. A rename is equally fatal and equally silent:
-       OverviewTab.tsx builds `--authority-${state}` at RUNTIME, so a bad name
-       produces no type error, no Tailwind miss and no failing test — the bars
-       just go transparent.
+       states. Never re-alias these. A rename is equally fatal and equally
+       silent: OverviewTab.tsx builds `--authority-${state}` at RUNTIME, so a
+       bad name produces no type error, no Tailwind miss and no failing test —
+       the bars just go transparent.
 
-         verified        sage    — corroborated by independent sources
-         infrastructure  slate   — the asset resolves; that is not ownership
-         probable        sage/dim
-         review          brass   — single-source, wants a human
-         weak            warm grey
-         conflict        oxblood — an active assertion that something is wrong
+         verified        emerald — corroborated by independent sources
+         infrastructure  sky     — the asset resolves; that is not ownership
+         probable        deep emerald
+         review          amber   — single-source, wants a human
+         weak            slate
+         conflict        crimson — an active assertion that something is wrong
          quarantine      NEUTRAL, deliberately. `subject_unlinked` means "we do
                          not know this belongs to the subject": an ABSENCE of
-                         authority, not a weak amount of it. On the old palette
-                         neutral meant grey against six saturated hues. On this
-                         one the whole system is warm and low-chroma, so the
-                         hatch TEXTURE (.spine / .cordon, 45deg) is now the
-                         primary carrier of the distinction, not a fallback.
-                         Preserve the hatch. Never give quarantine a hue.
+                         authority, not a weak amount of it. On a register that
+                         now spends real colour, a hueless row is a louder
+                         statement than it was — but the hatch TEXTURE
+                         (.spine / .cordon, 45deg) remains the primary carrier
+                         of the distinction. Preserve the hatch. Never give
+                         quarantine a hue.
          failed          dim     — recorded and set aside */
-    --authority-verified: 141 20% 56%;
-    --authority-infrastructure: 199 34% 58%;
-    --authority-probable: 141 16% 48%;
-    --authority-review: 42 49% 58%;
-    --authority-weak: 33 9% 50%;
-    --authority-conflict: 8 47% 56%;
-    --authority-quarantine: 33 8% 60%;
-    --authority-failed: 33 7% 34%;
+    --authority-verified: 152 62% 46%;
+    --authority-infrastructure: 202 84% 58%;
+    --authority-probable: 158 44% 40%;
+    --authority-review: 38 92% 58%;
+    --authority-weak: 216 16% 53%;
+    --authority-conflict: 352 84% 61%;
+    --authority-quarantine: 215 11% 62%;
+    --authority-failed: 216 13% 33%;
 
-    /* ── Layered surfaces — films over black, not shades of grey ───────────
-       surface-0 IS the page. `.panel-inset` paints it as a recessed well, and
-       a well only reads recessed if it is not lighter than what surrounds it;
-       on true black the recess comes from the inner shadow and the film above
-       it, which is why this sits at 0 and not at the old 3%. */
-    --surface-0: 0 0% 0%;
-    --surface-1: 28 8% 4%;
-    --surface-2: 28 8% 6.5%;
-    --surface-3: 30 8% 10%;       /* selected / hover */
-    --surface-4: 30 8% 14.5%;
+    /* ── Layered surfaces — films over the ground, not shades of grey ──────
+       surface-0 IS the page, and holds the same triple as --background on
+       purpose: `.panel-inset` paints it as a recessed well, and a well only
+       reads recessed if it is not lighter than what surrounds it. The recess
+       comes from the inner shadow and the film above it.
+       Strictly monotonic in lightness: 4 → 6 → 8.5 → 12.5 → 17.5. */
+    --surface-0: 221 44% 4%;
+    --surface-1: 222 40% 6%;
+    --surface-2: 221 36% 8.5%;
+    --surface-3: 220 32% 12.5%;   /* selected / hover */
+    --surface-4: 219 29% 17.5%;
 
-    --border: 33 10% 16%;
-    --border-subtle: 30 9% 10%;
-    --border-strong: 35 11% 26%;
-    --input: 28 8% 7%;
-    --ring: 39 24% 80%;
+    /* Border ramp, strictly monotonic: 11 → 18 → 29. */
+    --border: 219 27% 18%;
+    --border-subtle: 220 30% 11%;
+    --border-strong: 217 25% 29%;
+    --input: 222 36% 8%;
+    /* Focus is the signal blue at full strength. A focus ring is the single
+       most "is this a real product" detail on a dark UI, and it was a warm
+       grey that disappeared into every border it landed next to. */
+    --ring: 213 96% 62%;
 
     /* ── Film ──────────────────────────────────────────────────────────────
        THE single most load-bearing token in this file.
 
        Every translucent highlight in the product — panel grounds, hairline
-       rims, hover washes, inner speculars — is this cream at some alpha. It
-       used to be `hsl(var(--film) / a)` written out ~82 times in this file and
-       another ~84 times as Tailwind `*-white/N` utilities across 17 .tsx
-       files. That hue-neutral film is precisely why previous colour passes
-       "changed nothing an analyst sees": whatever the ramp said, a white sheet
-       was laid over the top of it and neutralised it.
+       rims, hover washes, inner speculars — is this at some alpha. It is
+       written as `hsl(var(--film) / a)` ~82 times in this file and another ~84
+       times as Tailwind `*-white/N` utilities across 17 .tsx files.
+
+       It was warm cream, and that is precisely why previous colour passes
+       "changed nothing an analyst sees": whatever the ramp said, a cream sheet
+       was laid over the top of it. It is now a cold blue-white, so every
+       highlight in the product now agrees with the ground beneath it.
 
        Tailwind's `white` is remapped onto this token in tailwind.config.ts, so
        every `bg-white/5` in markup follows the palette automatically. Write
        `hsl(var(--film) / a)` — never a bare white — for any new surface. */
-    --film: 37 100% 95%;
+    --film: 205 100% 96%;
 
-    /* ── Brand ────────────────────────────────────────────────────────────
-       The product mark is INK, not a hue.
+    /* ── Brand — the signal ────────────────────────────────────────────────
+       The product mark is LIGHT.
 
-       This was violet (268 84% 68%), chosen when the app was monochrome and
-       every other hue was spoken for. On a warm register violet is the one
-       thing on screen that belongs to no system, and it was painted on the
-       rail and along the top edge of EVERY panel — in every screenshot, next
-       to every finding. A dossier does not have a brand colour; it has a
-       masthead. The retired violet survives as the graph's `social` taxonomy
-       hue, where it identifies a kind rather than decorating a verdict. */
-    --brand: 39 30% 86%;
-    --brand-deep: 35 18% 62%;
+       The previous register made the brand ink on the argument that "a dossier
+       does not have a brand colour; it has a masthead". That is true of a
+       printed dossier and false of a working instrument: the brand token is
+       painted on the rail and along the top edge of EVERY panel, which made
+       every panel edge in the product identical to its own text. This is now
+       the electric signal blue, which is the one thing on screen that
+       separates a live surface from a dead one.
 
-    /* Intel tokens — kept as names for existing markup (~105 var() uses).
-       Both resolve to ink; the product speaks with one accent, not three. */
-    --intel-blue: 39 26% 88%;
-    --intel-violet: 39 26% 88%;
+       Spend it as a rim, an edge, a bloom or an active state. Never as a
+       large fill (rule 3). */
+    --brand: 213 96% 62%;
+    --brand-deep: 224 82% 44%;
+
+    /* Intel tokens — ~79 var() uses across the app.
+       These were BOTH literally `39 26% 88%` — two differently-named tokens
+       holding one identical beige, which is why a badge called "intel blue"
+       rendered as sand. They are now genuinely distinct and named honestly:
+       blue is the evidence axis (what a source asserts), violet the inference
+       axis (what the system concluded). */
+    --intel-blue: 213 96% 64%;
+    --intel-violet: 266 90% 70%;
 
     /* ── Entity-kind palette (Graph tab) ───────────────────────────────────
        The documented EXCEPTION to "hue belongs to authority".
@@ -203,55 +253,57 @@ All colors MUST be HSL.
        On the graph, hue IS the taxonomy — it is the only signal separating a
        breach row from a DNS record at a glance, and the tab renders no
        authority colour at all. What was wrong before was not that the graph
-       used hue, but that it borrowed CONFIDENCE tokens to do it
-       (infrastructure = --confidence-mid, web = --confidence-high), so
+       used hue, but that it borrowed CONFIDENCE tokens to do it, so
        neutralising confidence would have collapsed two whole groups into the
-       grey `other` bucket. These eight are the graph's own, desaturated into
-       the warm register so they read as categories rather than as verdicts.
-       `breach` is oxblood on purpose: there, kind and alarm genuinely agree. */
-    --kind-identity: 37 42% 84%;
-    --kind-contact: 199 34% 58%;
-    --kind-social: 272 28% 66%;
-    --kind-infrastructure: 30 30% 52%;
-    --kind-breach: 8 47% 56%;
-    --kind-web: 141 20% 56%;
-    --kind-crypto: 45 42% 60%;
-    --kind-other: 33 8% 45%;
+       grey `other` bucket. These eight are the graph's own, and each is now
+       separated from every other by at least 40° of hue so that eight
+       categories remain countable on one canvas.
+       `breach` is crimson on purpose: there, kind and alarm genuinely agree. */
+    --kind-identity: 213 92% 68%;
+    --kind-contact: 193 88% 60%;
+    --kind-social: 266 88% 72%;
+    --kind-infrastructure: 172 58% 46%;
+    --kind-breach: 352 84% 61%;
+    --kind-web: 128 45% 52%;
+    --kind-crypto: 42 94% 60%;
+    --kind-other: 215 13% 52%;
 
     /* ── Transcript speakers ───────────────────────────────────────────────
        WHO IS TALKING is its own axis. It used to be encoded with confidence
-       tokens (`data-speaker="tool"` was --conf-likely, `"system"` was
-       --conf-possible), which meant the neutralising of confidence would have
-       greyed out speaker identification on the app's primary tab. */
-    --speaker-analyst: 37 100% 95%;
-    --speaker-agent: 39 26% 78%;
-    --speaker-tool: 199 34% 58%;
-    --speaker-system: 42 30% 54%;
-    --speaker-failed: 8 47% 56%;
+       tokens (`data-speaker="tool"` was --conf-likely), which meant the
+       neutralising of confidence would have greyed out speaker identification
+       on the app's primary tab. The analyst is ink; the agent speaks in the
+       product's own signal; a tool is machine cyan. */
+    --speaker-analyst: 210 60% 93%;
+    --speaker-agent: 213 88% 66%;
+    --speaker-tool: 189 84% 54%;
+    --speaker-system: 38 84% 58%;
+    --speaker-failed: 352 84% 61%;
 
-    /* Brain (Global Brain tab) palette — warmed to match the register. */
-    --brain-surface-base: 28 8% 5%;
-    --brain-card:         28 8% 7%;
-    --brain-border:       33 10% 13%;
-    --brain-text:         39 26% 90%;
-    --brain-muted:        37 13% 66%;  /* AA body on brain-card */
-    --brain-cyan:         199 34% 58%;
-    --brain-status-ok:    141 20% 56%;
-    --brain-status-warn:   42 49% 58%;
-    --brain-status-bad:     8 47% 56%;
+    /* Brain (Global Brain tab) palette — cooled to match the register. */
+    --brain-surface-base: 222 42% 5%;
+    --brain-card:         221 38% 7.5%;
+    --brain-border:       219 27% 16%;
+    --brain-text:         212 38% 93%;
+    --brain-muted:        214 21% 74%;  /* AA body on brain-card */
+    --brain-cyan:         189 90% 58%;
+    --brain-status-ok:    152 62% 46%;
+    --brain-status-warn:   38 92% 58%;
+    --brain-status-bad:   352 84% 61%;
 
     --radius: 0.75rem;          /* 12px cards (lg); inputs/buttons (md) 10px, sm 8px */
 
-    /* The rail sits at page level; its separation is a border and a film,
-       not a darker fill — there is nothing darker than the page any more. */
-    --sidebar-background: 0 0% 0%;
-    --sidebar-foreground: 37 14% 72%;
-    --sidebar-primary: 39 30% 93%;
-    --sidebar-primary-foreground: 30 10% 4%;
-    --sidebar-accent: 30 9% 10%;
-    --sidebar-accent-foreground: 39 28% 94%;
-    --sidebar-border: 30 9% 10%;
-    --sidebar-ring: 39 24% 80%;
+    /* The rail sits at page level; its separation is a border and a film, not
+       a darker fill — there is nothing darker than the page. --sidebar-background
+       therefore holds the same triple as --background, deliberately. */
+    --sidebar-background: 221 44% 4%;
+    --sidebar-foreground: 214 19% 74%;
+    --sidebar-primary: 213 96% 62%;
+    --sidebar-primary-foreground: 222 55% 6%;
+    --sidebar-accent: 220 32% 11.5%;
+    --sidebar-accent-foreground: 212 40% 95%;
+    --sidebar-border: 220 29% 12%;
+    --sidebar-ring: 213 96% 62%;
   }
 }
 
@@ -268,34 +320,46 @@ All colors MUST be HSL.
     position: relative;
   }
 
-  /* Control-room ambient — subtle radial wash anchored top-left, vignette bottom-right.
-     Sits below content, above background. Pure CSS, no extra DOM. */
+  /* Control-room ambient — the room the product is lit by.
+     Sits below content, above background. Pure CSS, no extra DOM.
+
+     Three layers, in this order: (1) two coloured blooms that establish the
+     product's two axes — signal blue for evidence at the top-left where the
+     eye lands, violet for inference at the far corner; (2) a BLUEPRINT grid at
+     two scales, a 44px minor and a 176px major, which is what makes the ground
+     read as a measured working surface rather than as empty black; (3) a
+     vignette that closes the frame.
+
+     The blooms are held under 10% alpha. Above that they stop being light in a
+     room and start being a tint on the evidence, and an analyst cannot trust a
+     colour they can see on a surface that is meant to be neutral. */
   body::before {
     content: "";
     position: fixed;
     inset: 0;
     pointer-events: none;
     z-index: 0;
-    /* Luminance vignette — depth from LIGHT, never color (audit: "gradients that
-       feel like light itself"). A soft overhead spotlight, a deepened far
-       corner, and a grounded bottom edge. No accent orbs. */
     background:
-      /* A warm accent breath in the top-left corner — the one place the
-         oxblood is allowed to be ambient rather than semantic. Kept under 9%
-         so it reads as light in the room, never as a tint on the evidence. */
-      radial-gradient(58% 42% at 6% -6%, hsl(var(--danger) / 0.085) 0%, transparent 68%),
-      radial-gradient(80% 55% at 14% -8%, hsl(var(--film) / 0.05) 0%, transparent 60%),
-      radial-gradient(125% 80% at 50% -12%, hsl(var(--film) / 0.03) 0%, transparent 56%),
-      radial-gradient(64% 46% at 100% 104%, hsl(42 40% 60% / 0.045) 0%, transparent 62%),
-      radial-gradient(90% 70% at 100% 100%, hsl(0 0% 0% / 0.6) 0%, transparent 62%),
-      /* A 48px measuring grid, at the threshold of visibility. This is what
-         makes the ground read as a working surface rather than as empty. */
-      linear-gradient(hsl(var(--film) / 0.014) 1px, transparent 1px),
-      linear-gradient(90deg, hsl(var(--film) / 0.014) 1px, transparent 1px),
-      linear-gradient(180deg, transparent 56%, hsl(0 0% 0% / 0.5) 100%);
+      /* Signal bloom, top-left — the light the room is lit by. */
+      radial-gradient(62% 46% at 4% -8%, hsl(var(--brand) / 0.10) 0%, transparent 66%),
+      radial-gradient(86% 58% at 16% -10%, hsl(var(--film) / 0.045) 0%, transparent 62%),
+      radial-gradient(130% 84% at 50% -14%, hsl(var(--film) / 0.022) 0%, transparent 58%),
+      /* Inference bloom, far corner. */
+      radial-gradient(58% 44% at 102% 106%, hsl(var(--intel-violet) / 0.075) 0%, transparent 64%),
+      radial-gradient(74% 52% at 96% 98%, hsl(var(--brand) / 0.045) 0%, transparent 60%),
+      radial-gradient(92% 72% at 100% 100%, hsl(0 0% 0% / 0.55) 0%, transparent 64%),
+      /* Blueprint — 176px major rules over a 44px minor grid, both at the
+         threshold of visibility. Two scales is what separates "engineering
+         drawing" from "graph paper". */
+      linear-gradient(hsl(var(--film) / 0.026) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--film) / 0.026) 1px, transparent 1px),
+      linear-gradient(hsl(var(--film) / 0.013) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--film) / 0.013) 1px, transparent 1px),
+      linear-gradient(180deg, transparent 54%, hsl(0 0% 0% / 0.45) 100%);
     background-size:
-      auto, auto, auto, auto, auto,
-      48px 48px, 48px 48px,
+      auto, auto, auto, auto, auto, auto,
+      176px 176px, 176px 176px,
+      44px 44px, 44px 44px,
       auto;
   }
 
@@ -329,7 +393,7 @@ All colors MUST be HSL.
        the baseline. On black this reads as dimension rather than as a colour.
        Both stops are in the ink family — a neutral white-to-grey ramp here is
        what kept every heading in the app cold while the body copy went warm. */
-    background: linear-gradient(180deg, hsl(var(--film)) 10%, hsl(37 16% 72%) 100%);
+    background: linear-gradient(180deg, hsl(var(--film)) 10%, hsl(214 22% 72%) 100%);
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
@@ -344,6 +408,15 @@ All colors MUST be HSL.
 
   /* Long-form prose (report bodies, chat) reads cleaner with orphan control. */
   p, li { text-wrap: pretty; }
+
+  /* Placeholders. Tailwind's preflight hardcodes #9ca3af here — a warm-neutral
+     grey that belongs to no palette in this app and survived the token swap
+     because it is emitted by the framework's base layer, not by this file. The
+     composer placeholder is one of the most-looked-at strings in the product. */
+  input::placeholder,
+  textarea::placeholder {
+    color: hsl(var(--muted-foreground) / 0.55);
+  }
 
   /* Section labels — eyebrows / micro-headings used across panels */
   .label-eyebrow {
@@ -369,14 +442,14 @@ All colors MUST be HSL.
 @layer utilities {
   /* ── Stat figure ──────────────────────────────────────────────────────────
      The big numerals — 7,482 artifacts, 11,271 tool calls. These are the
-     headline of every dashboard tile and they rendered as flat #fafafa, so the
+     headline of every dashboard tile and they rendered as flat near-white, so the
      single largest object on the screen carried the least presence. A top-lit
      gradient gives them weight without adding a colour that could be read as a
      state. Chrome only. Never used on a confidence number — under the Dossier
      register a confidence numeral is deliberately plain ink, and lighting it
      like a headline is the same mistake as colouring it by value. */
   .stat-figure {
-    background: linear-gradient(175deg, hsl(var(--film)) 6%, hsl(39 24% 84%) 58%, hsl(35 22% 60%) 130%);
+    background: linear-gradient(175deg, hsl(var(--film)) 6%, hsl(212 30% 85%) 58%, hsl(214 20% 60%) 130%);
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
@@ -406,16 +479,31 @@ All colors MUST be HSL.
   .panel {
     position: relative;
     border-radius: 10px;
-    /* Smoked glass: a translucent white film over black, a rim brightest along
-       the top edge where light would catch, and a specular inner hairline. */
-    background: hsl(var(--film) / 0.026);
+    /* Smoked glass: a translucent film over the ground, a rim brightest along
+       the top edge where light would catch, and a specular inner hairline.
+
+       The film is a GRADIENT, not a flat wash. A single 2.6%-alpha sheet made
+       every pane in the workspace read as an empty black rectangle with a
+       hairline around it — technically a surface, visually nothing. Grading it
+       from 5.5% at the cap to 1.4% at the foot is what makes a pane read as a
+       lit object; a small opaque surface tone underneath stops the whole stack
+       going transparent where panels overlap. Held deliberately low: this class
+       is the workspace's densest surface and it sits behind 11px mono. */
+    background:
+      linear-gradient(
+        180deg,
+        hsl(var(--film) / 0.055) 0%,
+        hsl(var(--film) / 0.024) 46%,
+        hsl(var(--film) / 0.014) 100%
+      ),
+      hsl(var(--surface-1) / 0.5);
     backdrop-filter: blur(18px) saturate(115%);
     -webkit-backdrop-filter: blur(18px) saturate(115%);
-    border: 1px solid hsl(var(--film) / 0.075);
-    border-top-color: hsl(var(--film) / 0.13);
+    border: 1px solid hsl(var(--film) / 0.085);
+    border-top-color: hsl(var(--film) / 0.15);
     box-shadow:
-      inset 0 1px 0 hsl(var(--film) / 0.055),
-      0 10px 30px -22px hsl(0 0% 0% / 0.95);
+      inset 0 1px 0 hsl(var(--film) / 0.06),
+      0 10px 30px -20px hsl(0 0% 0% / 0.95);
   }
   /* Raised — for panels that float above the workspace (drawers, popovers,
      the Overview's lead tiles). One inner top hairline + one contained shadow. */
@@ -441,7 +529,83 @@ All colors MUST be HSL.
     min-height: 34px;
     padding: 0 10px 0 12px;
     border-bottom: 1px solid hsl(var(--border-subtle));
-    background: hsl(var(--film) / 0.02);
+    /* A header band reads as a header when it is lit differently from the body,
+       not when it merely has a rule under it. */
+    background: linear-gradient(180deg, hsl(var(--film) / 0.045), hsl(var(--film) / 0.012));
+  }
+
+  /* ── Safe centering for scrollable strips ────────────────────────────────
+     `justify-content: center` on a horizontally scrollable flex container is a
+     trap: when the content is wider than the box, the overflow is split across
+     BOTH sides, and the left half sits at a negative offset that `scrollLeft`
+     can never reach. The first item is then permanently off-origin — visually
+     under whatever is stacked to its left, unclickable by pointer, yet still
+     reachable by keyboard because focus does not care about paint order. That
+     is exactly what the workspace tab strip did at 894px: Overview sat beneath
+     the z-10 rail and swallowed every click.
+
+     `safe center` centres while the content fits and falls back to start the
+     moment it overflows, so nothing is ever placed out of scroll range.
+
+     The `flex-start` line below it is the fallback for engines without `safe`.
+     It is deliberately NOT `center`: an engine that cannot do `safe` would
+     otherwise inherit the original bug. Losing centring is cosmetic; losing a
+     clickable tab is not. */
+  .justify-safe-center {
+    justify-content: flex-start;
+    justify-content: safe center;
+  }
+
+  /* ── Active view key ──────────────────────────────────────────────────────
+     The selected tab in the workspace strip. It was a flat 16%-alpha tint with
+     an inset ring — legible, but the same object as an unselected tab wearing a
+     colour. A selected key should read as PRESSED AND LIT: a graded face, a
+     specular along the top edge, a signal rim, and a bloom beneath that ties it
+     to the strip. This appears on every one of the six tabs, so it is the single
+     most-seen control in the product. */
+  .tab-key-active {
+    background:
+      linear-gradient(180deg, hsl(var(--brand) / 0.26) 0%, hsl(var(--brand) / 0.13) 100%),
+      hsl(var(--surface-2) / 0.7);
+    box-shadow:
+      inset 0 1px 0 hsl(var(--film) / 0.16),
+      inset 0 0 0 1px hsl(var(--brand) / 0.42),
+      0 6px 18px -10px hsl(var(--brand) / 0.75);
+  }
+
+  /* ── Instrument tile ──────────────────────────────────────────────────────
+     The stat readings at the head of Overview, Tools and Evidence. These are
+     the first objects an analyst looks at on three of the six tabs, and they
+     rendered as flat outlined rectangles — the least present thing on screen
+     carrying the largest number.
+
+     Built on `.panel`, plus two things a panel alone does not give: a hairline
+     of light along the top edge that fades out (so a row of tiles reads as a
+     lit instrument bank rather than as boxes), and a corner specular. Tone is
+     NOT set here — the semantic colour stays on the icon and the figure, where
+     the component already puts it, so a tile never becomes a block of hue. */
+  .stat-tile {
+    position: relative;
+    overflow: hidden;
+  }
+  .stat-tile::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 1px;
+    pointer-events: none;
+    background: linear-gradient(90deg, hsl(var(--film) / 0.22), hsl(var(--film) / 0.05) 55%, transparent);
+  }
+  .stat-tile::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: radial-gradient(80% 120% at 0% 0%, hsl(var(--film) / 0.045), transparent 62%);
+  }
+  /* An interactive tile earns the signal on hover — it is a destination. */
+  .stat-tile[data-interactive="true"]:hover::before {
+    background: linear-gradient(90deg, hsl(var(--brand) / 0.75), hsl(var(--brand) / 0.2) 55%, transparent);
   }
 
   /* ── Authority spine ───────────────────────────────────────────────────────
@@ -653,9 +817,24 @@ All colors MUST be HSL.
   .ring-glow {
     box-shadow: 0 0 0 1px hsl(var(--info) / 0.4), 0 0 18px -6px hsl(var(--info) / 0.35);
   }
-  /* Name kept for callers; solid color now (gradient text-clip is decorative, not meaningful). */
+  /* Hero emphasis — the ONE place in the product where type carries the two
+     axes as colour. Platinum falling into signal blue and out to violet, lit
+     from the cap line. Used on a single clause of a single heading; anywhere
+     denser than that and it becomes decoration. */
   .gradient-text {
-    color: hsl(var(--foreground));
+    background: linear-gradient(
+      104deg,
+      hsl(var(--foreground)) 0%,
+      hsl(var(--intel-blue)) 42%,
+      hsl(var(--intel-violet)) 78%,
+      hsl(var(--foreground)) 100%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    /* The clip has no glyph body to catch light, so the bloom is painted behind
+       the text box instead of on the glyphs. */
+    filter: drop-shadow(0 0 26px hsl(var(--brand) / 0.28));
   }
 
   @keyframes pivot-in {
@@ -747,7 +926,7 @@ All colors MUST be HSL.
     position: relative;
     background:
       radial-gradient(60% 80% at 20% 0%, hsl(var(--danger) / 0.18), transparent 60%),
-      linear-gradient(180deg, hsl(8 34% 9% / 0.5), hsl(28 12% 4% / 0.85));
+      linear-gradient(180deg, hsl(var(--danger-muted) / 0.55), hsl(var(--surface-1) / 0.85));
     backdrop-filter: blur(28px) saturate(180%);
     -webkit-backdrop-filter: blur(28px) saturate(180%);
     border: 1px solid hsl(var(--danger) / 0.35);
@@ -892,7 +1071,7 @@ All colors MUST be HSL.
     min-width: 0;
     border-radius: 10px;
     border: 1px solid hsl(var(--film) / 0.08);
-    background: hsl(28 14% 4.5%);
+    background: hsl(var(--surface-1));
     overflow: hidden;
   }
   .code-panel__head {
@@ -995,7 +1174,7 @@ All colors MUST be HSL.
   .code-panel__code {
     margin: 0;
     padding: 10px 12px 10px 10px;
-    color: hsl(39 22% 88%);
+    color: hsl(var(--foreground));
     white-space: pre;
     overflow-x: auto;
     min-width: 0;
@@ -1024,7 +1203,7 @@ All colors MUST be HSL.
     width: 100%;
     min-width: 0;
     border-top: 1px solid hsl(var(--film) / 0.06);
-    background: hsl(28 16% 3% / 0.55);
+    background: hsl(var(--surface-0) / 0.55);
     padding: 8px 10px 10px;
   }
   .tool-detail__meta {
@@ -1216,7 +1395,7 @@ All colors MUST be HSL.
 .cyber-map .leaflet-tile-pane {
   filter: hue-rotate(190deg) saturate(1.4) contrast(1.1) brightness(0.85);
 }
-.cyber-map .leaflet-container { background: hsl(0 0% 4%); outline: none; }
+.cyber-map .leaflet-container { background: hsl(var(--surface-1)); outline: none; }
 .cyber-map .leaflet-control-attribution { display: none; }
 .cyber-pin {
   filter: drop-shadow(0 0 6px currentColor);
@@ -1228,13 +1407,13 @@ All colors MUST be HSL.
 }
 .cyber-map-overlay {
   background:
-    repeating-linear-gradient(0deg, hsl(170 90% 55% / 0.04) 0px, transparent 1px, transparent 32px),
-    repeating-linear-gradient(90deg, hsl(170 90% 55% / 0.04) 0px, transparent 1px, transparent 32px),
-    repeating-linear-gradient(0deg, hsl(170 90% 55% / 0.05) 0px, hsl(170 90% 55% / 0.05) 1px, transparent 1px, transparent 3px);
+    repeating-linear-gradient(0deg, hsl(var(--info) / 0.05) 0px, transparent 1px, transparent 32px),
+    repeating-linear-gradient(90deg, hsl(var(--info) / 0.05) 0px, transparent 1px, transparent 32px),
+    repeating-linear-gradient(0deg, hsl(var(--info) / 0.06) 0px, hsl(var(--info) / 0.06) 1px, transparent 1px, transparent 3px);
   mix-blend-mode: screen;
 }
 .leaflet-tooltip.cyber-tip {
-  background: hsl(0 0% 4% / 0.95);
+  background: hsl(var(--surface-1) / 0.95);
   border: 1px solid hsl(var(--primary) / 0.55);
   color: hsl(var(--foreground));
   box-shadow: 0 0 14px -2px hsl(var(--primary) / 0.6);
@@ -1244,7 +1423,7 @@ All colors MUST be HSL.
 }
 .leaflet-tooltip.cyber-tip::before { display: none; }
 .leaflet-popup.cyber-popup .leaflet-popup-content-wrapper {
-  background: hsl(0 0% 4% / 0.96);
+  background: hsl(var(--surface-1) / 0.96);
   color: hsl(var(--foreground));
   border: 1px solid hsl(var(--primary) / 0.55);
   border-radius: 6px;
@@ -1258,7 +1437,7 @@ All colors MUST be HSL.
    Apply to top-level panels that should read as physical surfaces. */
 .card-material {
   background: hsl(var(--surface-2));
-  border: 1px solid hsl(var(--border));        /* #262A35 inner */
+  border: 1px solid hsl(var(--border));        /* cold slate hairline */
   box-shadow:
     inset 0 1px 0 hsl(var(--film) / 0.02),
     0 10px 30px -8px hsl(0 0% 0% / 0.45);
@@ -1430,7 +1609,7 @@ All colors MUST be HSL.
   border: 1px solid hsl(var(--film) / 0.09);
   border-radius: 10px;
   background:
-    linear-gradient(180deg, hsl(30 12% 8% / 0.55) 0%, hsl(28 12% 5% / 0.42) 100%);
+    linear-gradient(180deg, hsl(var(--surface-2) / 0.6) 0%, hsl(var(--surface-1) / 0.45) 100%);
   box-shadow:
     inset 0 1px 0 hsl(var(--film) / 0.045),
     0 12px 32px -28px hsl(0 0% 0% / 0.85);
@@ -1585,7 +1764,7 @@ All colors MUST be HSL.
   border: 1px solid hsl(var(--film) / 0.09);
   border-radius: 10px;
   background:
-    linear-gradient(180deg, hsl(30 12% 8% / 0.4) 0%, hsl(28 12% 5% / 0.35) 100%);
+    linear-gradient(180deg, hsl(var(--surface-2) / 0.45) 0%, hsl(var(--surface-1) / 0.38) 100%);
   box-shadow: inset 0 1px 0 hsl(var(--film) / 0.04);
   overflow: hidden;
 }
@@ -1805,7 +1984,7 @@ All colors MUST be HSL.
   border: 1px solid hsl(var(--film) / 0.08);
   border-radius: 8px;
   overflow-x: auto;
-  background: hsl(28 12% 4.5% / 0.55);
+  background: hsl(var(--surface-1) / 0.55);
   scrollbar-width: thin;
 }
 .chat-prose table {
@@ -1869,7 +2048,7 @@ All colors MUST be HSL.
   width: 100%;
   border: 1px solid hsl(var(--film) / 0.08);
   border-radius: 8px;
-  background: hsl(28 16% 3.5%);
+  background: hsl(var(--surface-0));
   overflow: hidden;
 }
 .chat-prose .chat-code-block pre {
@@ -1879,7 +2058,7 @@ All colors MUST be HSL.
   font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
   font-size: 12px;
   line-height: 1.55;
-  color: hsl(39 22% 88%);
+  color: hsl(var(--foreground));
   white-space: pre;
   scrollbar-width: thin;
 }
@@ -1950,18 +2129,38 @@ All colors MUST be HSL.
   }
 
   /* Brand CTA — the primary action, lit. */
+  /* Brand CTA — the one legitimate large area of signal blue in the product,
+     and the only exception to rule 3. It is machined rather than flat: a DEEP
+     blue slab (a bright 62%-lightness fill over a large area is the cheapest-
+     looking object on a dark UI), a specular hairline along the top edge, a
+     crisp signal rim, and a contained bloom beneath. */
   .btn-brand {
-    background: linear-gradient(150deg, hsl(var(--brand)) 0%, hsl(var(--brand-deep)) 100%);
-    color: hsl(var(--primary-foreground));
+    position: relative;
+    background: linear-gradient(168deg, hsl(216 88% 49%) 0%, hsl(228 82% 36%) 100%);
+    color: hsl(210 40% 98%);
     box-shadow:
-      inset 0 1px 0 hsl(var(--film) / 0.28),
-      0 8px 24px -10px hsl(var(--brand) / 0.9);
+      inset 0 1px 0 hsl(var(--film) / 0.34),
+      inset 0 -1px 0 hsl(224 80% 26% / 0.7),
+      0 0 0 1px hsl(var(--brand) / 0.45),
+      0 10px 26px -12px hsl(var(--brand) / 0.75);
+  }
+  /* A soft top-left specular, so the slab reads as a lit object rather than a
+     painted rectangle. */
+  .btn-brand::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: radial-gradient(120% 140% at 22% -30%, hsl(var(--film) / 0.22), transparent 58%);
   }
   .btn-brand:hover {
     box-shadow:
-      inset 0 1px 0 hsl(var(--film) / 0.34),
-      0 12px 30px -10px hsl(var(--brand) / 1);
-    filter: brightness(1.06);
+      inset 0 1px 0 hsl(var(--film) / 0.42),
+      inset 0 -1px 0 hsl(224 80% 26% / 0.7),
+      0 0 0 1px hsl(var(--brand) / 0.7),
+      0 14px 34px -12px hsl(var(--brand) / 0.95);
+    filter: brightness(1.05);
   }
 
   /* Panels pick up a brand catch-light along their top edge — the pane looks
@@ -1973,14 +2172,83 @@ All colors MUST be HSL.
     height: 1px;
     border-radius: inherit;
     pointer-events: none;
-    background: linear-gradient(90deg, transparent, hsl(var(--brand) / 0.32) 22%, hsl(var(--film) / 0.16) 55%, transparent);
+    background: linear-gradient(90deg, transparent, hsl(var(--brand) / 0.55) 18%, hsl(var(--film) / 0.20) 52%, transparent 88%);
+  }
+
+  /* ── Blueprint marks ──────────────────────────────────────────────────────
+     Four corner ticks drawn with a single element. Engineering drawings mark
+     their own extents; a marketing surface that does the same reads as an
+     instrument rather than as a web page. Purely decorative — always aria-hidden. */
+  .blueprint-ticks::before,
+  .blueprint-ticks::after {
+    content: "";
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    pointer-events: none;
+    border-color: hsl(var(--brand) / 0.6);
+  }
+  /* Inset, not flush: the panels these sit on are `overflow-hidden` with a
+     large radius, which clips anything at the true corner. */
+  .blueprint-ticks::before {
+    top: 10px; left: 10px;
+    border-top: 1px solid; border-left: 1px solid;
+  }
+  .blueprint-ticks::after {
+    bottom: 10px; right: 10px;
+    border-bottom: 1px solid; border-right: 1px solid;
+  }
+
+  /* A hairline that carries the signal rather than just dividing. */
+  .signal-rule {
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      hsl(var(--brand) / 0.45) 14%,
+      hsl(var(--film) / 0.14) 48%,
+      hsl(var(--intel-violet) / 0.3) 80%,
+      transparent
+    );
+  }
+
+  /* A live indicator that actually reads as live: a solid core with a slow
+     breathing halo. Honours prefers-reduced-motion via the global block. */
+  .live-dot {
+    position: relative;
+    border-radius: 9999px;
+    background: hsl(var(--brand));
+    box-shadow: 0 0 0 1px hsl(var(--brand) / 0.4), 0 0 12px hsl(var(--brand) / 0.9);
+  }
+  .live-dot::after {
+    content: "";
+    position: absolute;
+    inset: -4px;
+    border-radius: inherit;
+    border: 1px solid hsl(var(--brand) / 0.5);
+    animation: live-pulse 2.6s ease-out infinite;
+  }
+  @keyframes live-pulse {
+    0%   { opacity: 0.8; transform: scale(0.7); }
+    70%  { opacity: 0;   transform: scale(1.5); }
+    100% { opacity: 0;   transform: scale(1.5); }
+  }
+
+  /* Hero ambience — a wide, soft field behind the display type. Sized in vw so
+     it scales with the viewport instead of cropping on a laptop. */
+  .hero-field {
+    background:
+      radial-gradient(46% 50% at 22% 34%, hsl(var(--brand) / 0.16), transparent 62%),
+      radial-gradient(38% 44% at 62% 62%, hsl(var(--intel-violet) / 0.11), transparent 66%),
+      radial-gradient(40% 36% at 84% 18%, hsl(var(--info) / 0.07), transparent 64%);
+    filter: blur(14px);
   }
 
   .ops-shell {
     isolation: isolate;
     background:
       radial-gradient(90% 70% at 14% 0%, hsl(var(--intel-blue) / 0.075), transparent 58%),
-      radial-gradient(70% 54% at 100% 100%, hsl(198 82% 55% / 0.045), transparent 64%),
+      radial-gradient(70% 54% at 100% 100%, hsl(var(--info) / 0.055), transparent 64%),
       hsl(var(--background));
   }
 
@@ -1997,7 +2265,7 @@ All colors MUST be HSL.
     border: 1px solid hsl(var(--film) / 0.075);
     border-top-color: hsl(var(--film) / 0.12);
     background:
-      linear-gradient(180deg, hsl(30 14% 8.5% / 0.82), hsl(28 14% 5.5% / 0.9));
+      linear-gradient(180deg, hsl(var(--surface-2) / 0.85), hsl(var(--surface-1) / 0.92));
     box-shadow:
       inset 0 1px 0 hsl(var(--film) / 0.045),
       0 18px 48px -32px hsl(0 0% 0% / 0.92);
