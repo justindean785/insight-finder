@@ -259,12 +259,12 @@ describe("buildIdentityClusters handle-based merging (T1-2)", () => {
     expect(report.clusters[0].mergeReasons).toContain("HANDLE_MATCH: nuh-deem -> nuhdeem");
   });
 
-  it("scores a 3-platform handle higher than a 2-platform handle (reinforcement, below the handle-only cap)", () => {
-    // Reinforcement still orders handle-only clusters by platform breadth — but
-    // only BELOW the handle-only cap (handle breadth is lead strength, not
-    // identity certainty). Low base confidences keep both clusters under the
-    // cap so the ordering is observable; the cap flattening above 60 is covered
-    // by the "handle-only confidence cap" suite below.
+  it("platform breadth never scores a handle cluster above its strongest member", () => {
+    // Reinforcement used to order handle-only clusters by platform breadth
+    // below the handle-only cap. The headline is now bounded by the strongest
+    // member's effective confidence (see "the headline never exceeds its
+    // strongest member" below): breadth is disclosed in mergeReasons, it is not
+    // evidence, and three 20-confidence profiles do not add up to a 40.
     const two = buildIdentityClusters([
       profile("instagram", "nuhdeem", { confidence: 20 }),
       profile("tiktok", "nuhdeem", { confidence: 20 }),
@@ -276,8 +276,16 @@ describe("buildIdentityClusters handle-based merging (T1-2)", () => {
     ], null);
     expect(two.clusters).toHaveLength(1);
     expect(three.clusters).toHaveLength(1);
-    expect(three.clusters[0].confidence).toBeLessThanOrEqual(60);
-    expect(three.clusters[0].confidence).toBeGreaterThan(two.clusters[0].confidence);
+    expect(three.clusters[0].confidence).toBe(20);
+    expect(three.clusters[0].confidence).toBeGreaterThanOrEqual(two.clusters[0].confidence);
+    expect(three.clusters[0].mergeReasons.some((r) => r.startsWith("HANDLE_MATCH"))).toBe(true);
+    // with a stronger member the breadth bonus is visible up to that member
+    const mixed = buildIdentityClusters([
+      profile("instagram", "nuhdeem", { confidence: 20 }),
+      profile("tiktok", "nuhdeem", { confidence: 20 }),
+      profile("x", "nuhdeem", { confidence: 50 }),
+    ], null);
+    expect(mixed.clusters[0].confidence).toBe(50);
   });
 
   it("does NOT merge a handle with a numeric suffix", () => {
@@ -435,5 +443,49 @@ describe("state-from-address parsing (Ct-suffix regression)", () => {
       const report = buildIdentityClusters([artifact("address", addr)], null);
       expect(report.clusters.flatMap((c) => c.states)).toContain(want);
     }
+  });
+});
+
+describe("buildIdentityClusters — the headline never exceeds its strongest member", () => {
+  const mk = (kind: string, value: string, confidence: number, metadata: Record<string, unknown> = {}): Artifact => {
+    artifactId += 1;
+    return { id: `artifact-${artifactId}`, kind, value, confidence, source: "test", created_at: "2026-06-12T00:00:00.000Z", metadata };
+  };
+
+  it("EMAIL_MATCH bonus cannot lift a cluster above its best member", () => {
+    const email = "qa.cap@example.invalid";
+    const report = buildIdentityClusters([
+      mk("email", email, 70),
+      mk("breach_exposure", "Breach exposure: qa.cap (hibp)", 65, { email }),
+      mk("name", "Q. A. Cap", 60, { email }),
+    ], null);
+    expect(report.clusters).toHaveLength(1);
+    const c = report.clusters[0];
+    expect(c.mergeReasons.some((r) => r.startsWith("EMAIL_MATCH"))).toBe(true);
+    expect(c.confidence).toBeLessThanOrEqual(70);
+    expect(c.confidence).toBeGreaterThanOrEqual(65); // mean 65 + bonus, then capped at 70
+  });
+
+  it("a member's server cap (confidence_cap_applied) bounds the mean AND the headline", () => {
+    const email = "qa.capped@example.invalid";
+    const report = buildIdentityClusters([
+      mk("email", email, 55, { confidence_cap_applied: 65 }),
+      mk("name", "Q. A. Capped", 95, { email, confidence_cap_applied: 70 }), // stored 95, effective 70
+      mk("breach_exposure", "Breach exposure: qa.capped", 55, { email, confidence_cap_applied: 60 }),
+    ], null);
+    expect(report.clusters).toHaveLength(1);
+    expect(report.clusters[0].confidence).toBeLessThanOrEqual(70);
+    // and the raw 95 did not enter the mean: (55+70+55)/3 = 60, +35 bonus → capped at 70, not 95+
+    expect(report.clusters[0].confidence).toBe(70);
+  });
+
+  it("a genuinely strong cluster still reads strong (cap is the member, not a constant)", () => {
+    const email = "qa.strong@example.invalid";
+    const report = buildIdentityClusters([
+      mk("email", email, 90),
+      mk("phone", "+15555550100", 88, { email }),
+      mk("name", "Q. A. Strong", 85, { email, phone: "+15555550100" }),
+    ], null);
+    expect(report.clusters[0].confidence).toBe(90);
   });
 });

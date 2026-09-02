@@ -67,7 +67,10 @@ describe("the producers render it", () => {
 
   it("the section sits ABOVE Key Findings in both report shapes", () => {
     // Placement is load-bearing: the section exists to qualify what follows.
-    const occurrences = [...INTEL.matchAll(/\.\.\.authoritySection\(authority\),\n\s*`## Key Findings`/g)];
+    // The Key Findings heading is now framed next to the authority statement
+    // (keyFindingsFraming), so the literal that follows the section is the
+    // shared heading expression rather than a fixed string.
+    const occurrences = [...INTEL.matchAll(/\.\.\.authoritySection\(authority\),\n\s*`## \$\{keyFindingsHeading\.heading\}`/g)];
     expect(occurrences.length).toBe(2);
   });
 

@@ -2,12 +2,13 @@ import type { Artifact } from "@/hooks/useThreadArtifacts";
 import {
   AUTHORITY_HEADING,
   authorityStatement,
+  keyFindingsFraming,
   recordedConfidenceCap,
   type AuthoritativeFindings,
 } from "@/lib/authoritative-findings";
 import { detectSeed, extractDisplaySeed } from "@/lib/seed";
 import { toolActionLabel } from "@/lib/tool-display";
-import { humanizeSourceChain, tokenizeSourceChain } from "@/lib/report-source-labels";
+import { humanizeSourceChain, primaryToolSlug, tokenizeSourceChain } from "@/lib/report-source-labels";
 import { deriveToolStatus, deriveToolReason } from "@/lib/tool-run";
 import { isSubjectUnlinked, isQuarantined } from "@/lib/quarantine";
 // Pure (no Supabase import), so no cycle: the one rejection predicate every
@@ -28,6 +29,8 @@ import {
   reportDisplayKind,
   reservedNumberAnnotation,
   dedupeBreachDatasets,
+  foldAliasTwins,
+  isNonEntityArtifact,
 } from "@/lib/report-hygiene";
 
 /** Analyst-grade group buckets for artifact kinds. */
@@ -39,6 +42,8 @@ export type Group =
   | "breach"
   | "web"
   | "crypto"
+  | "affiliation"
+  | "records"
   | "other";
 
 export const GROUP_LABEL: Record<Group, string> = {
@@ -49,6 +54,8 @@ export const GROUP_LABEL: Record<Group, string> = {
   breach: "Breach / Exposure",
   web: "Web / Archive",
   crypto: "Crypto",
+  affiliation: "Organizations / Affiliations",
+  records: "Records / Events",
   other: "Other",
 };
 
@@ -60,6 +67,8 @@ export const GROUP_ORDER: Group[] = [
   "breach",
   "web",
   "crypto",
+  "affiliation",
+  "records",
   "other",
 ];
 
@@ -80,6 +89,16 @@ const KIND_TO_GROUP: Record<string, Group> = {
   social: "social",
   account: "social",
   social_footprint: "social",
+  // The live extractors emit these spellings for the same concept as `social`
+  // / `account`. None was mapped, so on the @hoodken28 export every Instagram,
+  // YouTube, Kick, Linktree and Apple Music profile — the subject's entire
+  // public footprint — was filed under **Other**, below the breach rows.
+  social_profile: "social",
+  social_account: "social",
+  account_id: "social",
+  alias: "social",
+  github_account: "social",
+  github_repo: "social",
   ip: "infrastructure",
   // The extractor emits BOTH `ip` and `ip_address` for the same concept. Only
   // `ip` was mapped, so `ip_address` fell through to "other" — on the
@@ -111,7 +130,19 @@ const KIND_TO_GROUP: Record<string, Group> = {
   document: "web",
   wallet: "crypto",
   crypto: "crypto",
+  crypto_wallet: "crypto",
   tx: "crypto",
+  // Organisations and records are entities in the subject's network, not
+  // "other" — an employer, a registry entry or a court case is exactly what an
+  // analyst scans a network section for. They get their own headings so the
+  // Other bucket stops being where the interesting rows go to hide.
+  organization: "affiliation",
+  employer: "affiliation",
+  legal_record: "records",
+  court_case: "records",
+  criminal_case_event: "records",
+  media_report: "records",
+  event: "records",
 };
 
 export function groupForKind(kind: string): Group {
@@ -878,7 +909,10 @@ export function buildTimelineItems(
 // ---- Tool audit --------------------------------------------------------
 
 export type ToolAuditEntry = {
+  /** Grouping key: the producing tool's slug (see primaryToolSlug). */
   tool: string;
+  /** The raw `source` spellings folded into this entry, first-seen order. */
+  variants: string[];
   totalResults: number;
   highConf: number;
   lowConf: number;
@@ -894,16 +928,26 @@ export type ToolAudit = {
   kindsCovered: Set<string>;
 };
 
-export function buildToolAudit(artifacts: Artifact[]): ToolAudit {
+export function buildToolAudit(
+  artifacts: Artifact[],
+  reviews?: Record<string, ReviewAdjustment> | null,
+): ToolAudit {
   const map = new Map<string, ToolAuditEntry>();
   let cachedCount = 0;
   let failedCount = 0;
   const kindsCovered = new Set<string>();
 
   for (const a of artifacts) {
-    const tool = (a.source ?? "unknown").trim() || "unknown";
+    // Group by the PRODUCING TOOL, not the raw source string. Sources are
+    // free-form chains ("rapidapi_breach_search (9 variants)", "hunter_email_verifier
+    // + rapidapi_breach_search", "Username_Sweep/Instagram"), and keying on
+    // them printed 34 near-duplicate Tool Coverage lines on one export.
+    const rawSource = (a.source ?? "unknown").trim() || "unknown";
+    const tool = primaryToolSlug(rawSource);
     const meta = (a.metadata ?? {}) as Record<string, unknown>;
-    const label = labelForArtifact(a);
+    // Through the analyst's verdict where one is supplied, so a dismissed row
+    // counts as failed here exactly as it renders everywhere else.
+    const label = labelForArtifact(a, reviews?.[a.id]);
     const cached = meta.cached === true || meta._cached === true;
     const failed = label === "FAILED" || meta.skipped === true || meta.failed === true;
 
@@ -912,8 +956,9 @@ export function buildToolAudit(artifacts: Artifact[]): ToolAudit {
     if (failed) failedCount++;
 
     const entry = map.get(tool) ?? {
-      tool, totalResults: 0, highConf: 0, lowConf: 0, cached: 0, failed: 0, kinds: [],
+      tool, variants: [], totalResults: 0, highConf: 0, lowConf: 0, cached: 0, failed: 0, kinds: [],
     };
+    if (!entry.variants.includes(rawSource)) entry.variants.push(rawSource);
     entry.totalResults++;
     if (label === "CONFIRMED" || label === "INFERRED") entry.highConf++;
     if (label === "LOW" || label === "VERIFY") entry.lowConf++;
@@ -1241,7 +1286,11 @@ export function buildReportMarkdown(input: ReportInput): string {
   // Collapse breach datasets recorded twice under name variants from the same
   // source pair (conservative — see dedupeBreachDatasets) so the Artifact Table
   // and Network Connections don't double-list one breach.
-  const artifacts = dedupeBreachDatasets(input.artifacts);
+  // …and fold alias twins (`ip_address` / `ip`, `url` / `social_profile` for
+  // the same value) to one row each — see foldAliasTwins. A dismissed twin
+  // represents its pair, so the fold is what lets a Dismiss on either spelling
+  // bind on the report (the network section excludes rejected rows by id).
+  const artifacts = foldAliasTwins(dedupeBreachDatasets(input.artifacts), reviews);
   const total = artifacts.length;
 
   // Analyst review wins over source-derived label/confidence so a marked
@@ -1274,7 +1323,7 @@ export function buildReportMarkdown(input: ReportInput): string {
     return { verified, rejected, needs };
   })();
 
-  const audit = buildToolAudit(artifacts);
+  const audit = buildToolAudit(artifacts, reviews);
   const gaps = inferToolGaps(audit);
   const clusterReport = buildIdentityClusters(artifacts, seedValue, reviews);
   const isNameSearch = !!detectNameLocationSeed(seedValue);
@@ -1311,11 +1360,27 @@ export function buildReportMarkdown(input: ReportInput): string {
   // fully-CONFIRMED rows we do NOT just print "nothing" while the table shows
   // high-confidence INFERRED/CORRELATED rows — we surface the strongest
   // uncorroborated leads, clearly labelled, without promoting them.
+  // "Key Findings" lists corroborated / analyst-confirmed ARTIFACTS; the
+  // "Engine-adjudicated findings" section above it lists `record_finding` rows.
+  // They are different populations, and the heading + lead say so when the
+  // engine scored nothing — otherwise "adjudicated no findings" sat one heading
+  // above a list of nine "findings" on a production export.
+  const attestedCount = confirmed.filter((a) => {
+    const r = rev(a);
+    return r === "confirmed" || r === "key" || (a.metadata as Record<string, unknown> | null)?.reviewed === true;
+  }).length;
+  const keyFindingsHeading = keyFindingsFraming(authority, {
+    corroborated: confirmed.length - attestedCount,
+    attested: attestedCount,
+  });
   const keyFindings = (() => {
     if (confirmed.length) {
-      return confirmed.slice(0, 10).map((a) =>
-        `- **${a.kind}** — \`${a.value}\` _(source indicates via ${humanizeSourceChain(a.source)}, confidence ${conf(a) ?? "—"})_`,
-      ).join("\n");
+      return [
+        ...(keyFindingsHeading.lead ? [keyFindingsHeading.lead, ""] : []),
+        ...confirmed.slice(0, 10).map((a) =>
+          `- **${a.kind}** — \`${a.value}\` _(source indicates via ${humanizeSourceChain(a.source)}, confidence ${conf(a) ?? "—"})_`,
+        ),
+      ].join("\n");
     }
     const leads = artifacts
       .filter((a) => { const l = lbl(a); return l === "CORRELATED" || l === "INFERRED"; })
@@ -1441,7 +1506,7 @@ export function buildReportMarkdown(input: ReportInput): string {
 
   const network = (() => {
     const sections: string[] = [];
-    const line = (a: Artifact) => `- \`${sanitizeValueForLabel(a.value, labelForArtifact(a) === "CONFIRMED")}\` _(observed via ${humanizeSourceChain(a.source)})_`;
+    const line = (a: Artifact) => `- \`${sanitizeValueForLabel(a.value, lbl(a) === "CONFIRMED")}\` _(observed via ${humanizeSourceChain(a.source)})_`;
     // Threat/reputation rows (VirusTotal, IPQS, EmailRep…) are pulled into their
     // own section regardless of which group they land in — they may be
     // mis-kinded as `breach` (→ breach group) OR correctly kinded as
@@ -1460,9 +1525,11 @@ export function buildReportMarkdown(input: ReportInput): string {
     // An analyst-rejected row (dismissed / wrong / legacy false_positive) is the
     // same authority claim refused by a human instead of the pipeline: it leaves
     // the network section too, and stays in the Artifact/Entity Table as FAILED.
+    // A contradiction record, a weak-lead note or an engine finding describes
+    // the case; it is not a node in the subject's network (isNonEntityArtifact).
     const networkExcluded = new Set(
       artifacts.filter((a) =>
-        collisionIds.has(a.id) || isSubjectUnlinked(a.metadata) || isRejectedArtifactRow(a, rev(a)),
+        collisionIds.has(a.id) || isSubjectUnlinked(a.metadata) || isRejectedArtifactRow(a, rev(a)) || isNonEntityArtifact(a),
       ).map((a) => a.id),
     );
     const reputation = artifacts.filter((a) => isReputationArtifact(a) && !networkExcluded.has(a.id));
@@ -1573,7 +1640,7 @@ export function buildReportMarkdown(input: ReportInput): string {
       exec,
       "",
       ...authoritySection(authority),
-      `## Key Findings`,
+      `## ${keyFindingsHeading.heading}`,
       keyFindings,
       "",
       `## Recommended Next Steps`,
@@ -1619,7 +1686,7 @@ export function buildReportMarkdown(input: ReportInput): string {
     buildClusterSection(clusterReport, { includeWarnings: false }),
     "",
     ...authoritySection(authority),
-    `## Key Findings`,
+    `## ${keyFindingsHeading.heading}`,
     keyFindings,
     "",
     `## Artifact / Entity Table`,
@@ -2138,8 +2205,13 @@ export function buildIdentityClusters(
     ].filter(Boolean))) as string[];
     const areaCodes = Array.from(new Set(phones.map(extractAreaCode).filter(Boolean))) as string[];
     const sources = Array.from(new Set(group.map((a) => a.source ?? "").filter(Boolean)));
-    const confidences = group.map((a) => a.confidence ?? 0).filter((n) => n > 0);
+    // Members enter the mean at their EFFECTIVE confidence (stored value floored
+    // by the server's `confidence_cap_applied`), the same number every other
+    // surface renders. Reading the raw column here let a member the server had
+    // capped at 40 contribute 95 to the headline.
+    const confidences = group.map((a) => effectiveConfidenceOrZero(a)).filter((n) => n > 0);
     const baseConfidence = confidences.length ? Math.round(confidences.reduce((s, n) => s + n, 0) / confidences.length) : 0;
+    const memberMax = confidences.length ? Math.max(...confidences) : null;
 
     // T1-2: explain the merge and reward corroborating signals. Aggregate the
     // keys actually shared by >=2 artifacts in this group, skipping any
@@ -2192,6 +2264,18 @@ export function buildIdentityClusters(
       bonus += Math.min(HANDLE_REINFORCE_CAP, HANDLE_REINFORCE_PER_PLATFORM * Math.max(0, maxHandlePlatforms - 2));
     }
     let confidence = Math.min(100, baseConfidence + bonus);
+    // ⛔ THE HEADLINE NEVER EXCEEDS ITS STRONGEST MEMBER.
+    //
+    // Merge signals explain WHY rows were grouped and rank clusters against each
+    // other; they are not a second source. Adding them on top of the mean,
+    // bounded only by 100, printed cluster headers of 98 / 95 / 90 on a
+    // production export whose members were never recorded above 70 — and the
+    // report's own accuracy guardrails then flagged the case BLOCKED for
+    // "a cluster declares a tier its evidence does not support". The analyst
+    // reads the header as the confidence of the identity, so it is bounded by
+    // the best evidence in it. Bonus still orders clusters below that ceiling.
+    // A group with no usable member number keeps the legacy path (0 + bonus).
+    if (memberMax !== null && confidence > memberMax) confidence = memberMax;
 
     // Corroborating identity evidence — anything beyond a repeated handle that
     // ties the cluster to a real person: an email/phone/address/IP selector in

@@ -76,7 +76,7 @@ describe("groupForKind", () => {
   });
 
   it("every group in GROUP_ORDER has a non-empty label", () => {
-    expect(GROUP_ORDER).toHaveLength(8);
+    expect(GROUP_ORDER).toHaveLength(10);
     for (const g of GROUP_ORDER) {
       expect(typeof GROUP_LABEL[g]).toBe("string");
       expect(GROUP_LABEL[g].length).toBeGreaterThan(0);
