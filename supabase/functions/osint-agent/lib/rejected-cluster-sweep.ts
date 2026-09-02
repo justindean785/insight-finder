@@ -24,6 +24,7 @@ import { REJECTED_REVIEW_STATES, dropRejectedArtifacts, loadReviewsForThread } f
 import { clearStaleClusterAssignments } from "./cluster.ts";
 
 // deno-lint-ignore no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type DbLike = { from(table: string): any };
 
 export type SweepResult = {

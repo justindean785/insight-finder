@@ -31,7 +31,7 @@ export function isNullishLiteral(value: unknown): boolean {
   if (!v) return true;
   if (NULLISH_LITERALS.has(v)) return true;
   // strip one layer of wrapping punctuation: "null", 'NULL', [null], (n/a), <none>
-  v = v.replace(/^["'`\[\(<{]+|["'`\]\)>}]+$/g, "").trim();
+  v = v.replace(/^["'`[(<{]+|["'`\]>)}]+$/g, "").trim();
   if (!v) return true;
   return NULLISH_LITERALS.has(v);
 }
