@@ -13,17 +13,20 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 
 > A mirror merge is NOT a deploy. The only proof of deploy is a moved build SHA.
 
-> **Dated state — 2026-08-31T14:15Z.** `main` = `3c2ef26`. Vercel production = `3c2ef26`
-> (`target: production`, READY, `dpl_Hf2uw2jzpx4rC6AgrDkNxpk7xLBn`). Live `osint-agent`
-> build = **`dcd51a2`**, `deploy/live` → `dcd51a2`, ledger recorded.
-> **The two axes sit at different commits and that is CORRECT, not drift:** the backend is
-> live through #518 and the frontend through #520, because #520 was frontend-only.
-> `git diff --name-only dcd51a2..main -- supabase/functions/` returns only `build-info.ts`
-> — the documented stamp offset — so **no backend deploy is owed.** Derive it that way
-> rather than comparing the two SHAs and calling the difference drift.
-> ⚠️ **Mirror parity was NOT re-measured on this date.** The last `diff -rq` was 2026-08-28
-> on `28acddd`. The mirror is writable by a second agent, so treat parity as *unknown*
-> until measured — never as inherited from a previous line of this file.
+> **Dated state — 2026-09-02T11:30Z.** `main` = `550fd60` (#534 merged as `7cd74b5`, stamp
+> `3ee2bb9`, ledger `550fd60`). Vercel production = `7cd74b5` (`target: production`, READY,
+> `dpl_7uxXVGYVpd7ekGUHoREYZgpHQX8d`). Live `osint-agent` build = **`7cd74b5`**,
+> `deploy/live` → `7cd74b5`, ledger recorded (VERIFIED, marker provenance; bytes unverified
+> as always). Analyst decisions (Confirm / Key / Recheck / False) now bind on the live
+> agent — `docs/ANALYST_DECISIONS_PROPAGATION.md`.
+> **Mirror parity re-measured 2026-09-02 on mirror `d0ab1a6`:** `diff -rq` is empty for
+> `evidence-export`, `security-test-lab`, `_shared`, and for every `osint-agent` RUNTIME
+> file. Five canonical-only TEST files (`rejected_dispatch_test`,
+> `finding_synthesis_reviews_test`, `cluster_rejected_clear_test`, plus updated
+> `reviews_test` / `reviews_wiring_test`) were deliberately not synced — tests are not
+> deployed — which is why the ledger's `mirror_tree_digest` differs; that is the known
+> cosmetic gap, not drift. The mirror gained two Lovable-authored commits after the sync
+> (`769e7d7`, `d0ab1a6`: a regenerated `src/integrations/supabase/types.ts` only).
 > This line is a *measurement*, not a state — re-check `/health` and
 > `list_deployments` rather than trusting it.
 >
