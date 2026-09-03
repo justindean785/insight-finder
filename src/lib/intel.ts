@@ -1997,6 +1997,52 @@ export function normalizeHandle(raw: string): string {
 }
 
 /**
+ * Generic role addresses that must never link an email to a handle.
+ *
+ * Operator-specified. Exact match on the lowercased local-part; these are
+ * mailbox roles, not people, and linking them would union every organisation in
+ * the corpus into one entity.
+ */
+const GENERIC_EMAIL_LOCAL_PARTS = new Set([
+  "info", "admin", "contact", "hello", "support", "noreply", "no-reply",
+  "postmaster", "webmaster", "mail", "help", "team", "sales", "billing",
+]);
+
+/** Minimum local-part length before an email may imply a handle. */
+const MIN_EMAIL_HANDLE_LOCAL_PART = 8;
+
+/**
+ * The handle an email address implies, or null when the guard refuses it.
+ *
+ * WHY THIS EXISTS. An email emitted `email:<address>` and a profile emitted
+ * `handle:<username>` — different keyspaces, so `vernjjulian@gmail.com` and
+ * `hackerrank.com/vernjjulian` could never union. Measured on production thread
+ * `b4e575a6`: three artifacts carrying the same literal token landed in three
+ * clusters, so no cluster reached the two independent source classes CONFIRMED
+ * requires, and the engine adjudicated zero findings on a case whose answer was
+ * already in the table. Corpus-wide: 17 findings across 10,933 artifacts.
+ *
+ * THE GUARD IS THE WHOLE DESIGN. Emitting a handle for every email would merge
+ * every `info@` in the corpus into one person. Both conditions must pass, and
+ * the length floor is measured on the RAW lowercased local-part, before
+ * `normalizeHandle` strips separators.
+ *
+ * The returned key is normalised, because it has to land in the SAME keyspace
+ * the handle artifacts use or the merge it exists to enable cannot happen.
+ *
+ * Emission only. This adds a merge key; it does not touch confidence, caps or
+ * the scoring chain.
+ */
+export function emailHandleKey(email: string): string | null {
+  const at = email.indexOf("@");
+  if (at <= 0) return null;
+  const local = email.slice(0, at).trim().toLowerCase();
+  if (local.length < MIN_EMAIL_HANDLE_LOCAL_PART) return null;
+  if (GENERIC_EMAIL_LOCAL_PARTS.has(local)) return null;
+  return normalizeHandle(local) || null;
+}
+
+/**
  * Flatten metadata cross-link values (string or string[]) into trimmed,
  * non-empty strings, for unioning clusters on concrete shared selectors a
  * record carries about its owner (an email row's `metadata.phone`, etc.).
@@ -2065,7 +2111,12 @@ export function buildIdentityClusters(
       ? meta.platform.trim().toLowerCase()
       : (a.source ?? null);
 
-    if (kind === "email" && v) hits.push({ key: `email:${v.toLowerCase()}`, signal: "EMAIL_MATCH", raw: v, platform });
+    if (kind === "email" && v) {
+      hits.push({ key: `email:${v.toLowerCase()}`, signal: "EMAIL_MATCH", raw: v, platform });
+      // The local-part is a handle. See emailHandleKey for the guard.
+      const eh = emailHandleKey(v);
+      if (eh) hits.push({ key: `handle:${eh}`, signal: "HANDLE_MATCH", raw: v, platform });
+    }
     if (kind === "phone" && v) hits.push({ key: `phone:${v.toLowerCase()}`, signal: "PHONE_MATCH", raw: v, platform });
 
     // Handle-bearing signals: the value of username/handle artifacts, plus a
@@ -2095,7 +2146,10 @@ export function buildIdentityClusters(
     // `handle:` / `address:` namespace as the value-based keys above so a
     // metadata reference and the standalone artifact converge.
     for (const e of collectStrings(meta.email, meta.emails)) {
-      if (e.includes("@")) hits.push({ key: `email:${e.toLowerCase()}`, signal: "EMAIL_MATCH", raw: e, platform });
+      if (!e.includes("@")) continue;
+      hits.push({ key: `email:${e.toLowerCase()}`, signal: "EMAIL_MATCH", raw: e, platform });
+      const eh = emailHandleKey(e);
+      if (eh) hits.push({ key: `handle:${eh}`, signal: "HANDLE_MATCH", raw: e, platform });
     }
     for (const p of collectStrings(meta.phone, meta.phones)) {
       if (p.replace(/\D/g, "").length >= 7) hits.push({ key: `phone:${p.toLowerCase()}`, signal: "PHONE_MATCH", raw: p, platform });
