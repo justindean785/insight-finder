@@ -112,7 +112,7 @@ function writeClusterPrefs(threadId: string, prefs: Record<string, boolean>): vo
   try { localStorage.setItem(CLUSTER_PREFS_KEY(threadId), JSON.stringify(prefs)); } catch { /* preference only */ }
 }
 
-export type EvidenceStatusFilter = "all" | "strong" | "review" | "quarantined" | "weak" | "excluded";
+export type EvidenceStatusFilter = "analyst" | "all" | "strong" | "review" | "quarantined" | "weak" | "excluded";
 export type EvidenceSortMode = "strength" | "confidence" | "newest";
 
 /**
@@ -123,7 +123,28 @@ export type EvidenceSortMode = "strength" | "confidence" | "newest";
  * source, a quarantined row needs a linkage decision. Merging them is how 104
  * quarantined artifacts sat in production looking like ordinary weak evidence.
  */
-const STATUS_FILTER_GROUPS: Record<EvidenceStatusFilter, Set<string> | null> = {
+export const STATUS_FILTER_GROUPS: Record<EvidenceStatusFilter, Set<string> | null> = {
+  /**
+   * ANALYST VIEW — the default. Everything an analyst has to act on, and nothing
+   * that is only there for audit.
+   *
+   * Deliberately a UNION of the two existing groups rather than a new taxonomy.
+   * The board already resolves the noise correctly and it was only ever the
+   * DEFAULT that was wrong:
+   *   - `triage_decision` / `cluster_decision` never reach this list at all —
+   *     `isMetaArtifact` filters them in useThreadArtifacts.
+   *   - `excluded_collision` already resolves to `quarantined`, via
+   *     `isClusterIneligible` in authorityFor.
+   *   - weak leads already resolve to `weak`.
+   * So hiding quarantined + weak + failed is the whole job, and inventing a
+   * kind-based filter beside the authority states would be a second, drifting
+   * source of truth for the same question.
+   *
+   * Measured 2026-09-03: an average scan lands 60 artifacts of which 4.8 are
+   * unquarantined at confidence >= 65. This is what stops the other ~55 being
+   * the first thing an analyst sees.
+   */
+  analyst: new Set(["verified", "infrastructure", "probable", "review", "conflict"]),
   all: null,
   strong: new Set(["verified", "infrastructure", "probable"]),
   review: new Set(["review", "conflict"]),
@@ -133,9 +154,11 @@ const STATUS_FILTER_GROUPS: Record<EvidenceStatusFilter, Set<string> | null> = {
 };
 
 function ArtifactsList({
-  items, onSelect, review, statusFilter, sortMode, loading, error, onRetry, threadId,
+  items, onSelect, review, statusFilter, onShowAll, sortMode, loading, error, onRetry, threadId,
 }: {
   items: Artifact[];
+  /** Escape hatch out of a filter that is hiding everything. */
+  onShowAll?: () => void;
   /** Scopes the remembered fold/unfold choices to this case. */
   threadId: string;
   onSelect: (a: Artifact) => void;
@@ -203,6 +226,39 @@ function ArtifactsList({
     // ordering stayed stale until something else re-rendered the list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtered, sortMode, statusFilter, review.revision]);
+
+  // A FILTER hiding everything must never look like an empty case.
+  //
+  // Analyst view is the default, and plenty of real cases legitimately have zero
+  // rows in it — measured 2026-09-03, one production scan produced 36 artifacts
+  // and 0 unquarantined at confidence >= 65. Rendering the standard "no evidence
+  // yet" panel there would be a lie about the data, and a silent one. Say what is
+  // hidden and why, and offer one click out.
+  if (!loading && !error && items.length > 0 && filtered.length === 0) {
+    return (
+      <div className="p-3 sm:p-5">
+        <div className="flex flex-col items-center gap-3 rounded-2xl border border-white/10 bg-[linear-gradient(180deg,hsl(var(--surface-2)/0.98),hsl(var(--surface-0)/0.98))] px-6 py-10 text-center shadow-[0_34px_110px_-70px_rgba(0,0,0,0.95)]">
+          <div className="text-eyebrow font-mono uppercase tracking-[0.22em] text-muted-foreground/70">
+            Nothing in this view
+          </div>
+          <div className="max-w-md text-[13px] leading-relaxed text-muted-foreground">
+            {statusFilter === "analyst"
+              ? `This case has no findings or review items yet. All ${items.length} artifact${items.length === 1 ? "" : "s"} are leads, quarantined or excluded — collected, but not yet corroborated enough to act on.`
+              : `No artifact matches this filter. ${items.length} artifact${items.length === 1 ? "" : "s"} on this case.`}
+          </div>
+          {onShowAll && (
+            <button
+              type="button"
+              onClick={onShowAll}
+              className="mt-1 rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-[12.5px] font-medium text-foreground/90 transition-colors hover:bg-white/10"
+            >
+              Show all {items.length}
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   // A failed SELECT (transient DB/network) must be visibly distinct from an
   // empty case, with a retry — otherwise a dropped query reads as "nothing found".
@@ -1155,14 +1211,15 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
   const { items, updateLocal, loading, error, retry } = useThreadArtifacts(threadId);
   const review = useReviewStates(threadId);
   const [selected, setSelected] = useState<Artifact | null>(null);
-  const [statusFilter, setStatusFilter] = useState<EvidenceStatusFilter>("all");
+  const [statusFilter, setStatusFilter] = useState<EvidenceStatusFilter>("analyst");
   const [sortMode, setSortMode] = useState<EvidenceSortMode>("strength");
 
   // Live counts per quick-filter so the analyst sees how much sits in each bucket.
   const counts = useMemo(() => {
-    const c = { all: items.length, strong: 0, review: 0, quarantined: 0, weak: 0, excluded: 0 };
+    const c = { analyst: 0, all: items.length, strong: 0, review: 0, quarantined: 0, weak: 0, excluded: 0 };
     for (const a of items) {
       const s = authorityFor(a, review.get(a.id)).state;
+      if (STATUS_FILTER_GROUPS.analyst!.has(s)) c.analyst++;
       if (STATUS_FILTER_GROUPS.strong!.has(s)) c.strong++;
       else if (STATUS_FILTER_GROUPS.review!.has(s)) c.review++;
       else if (STATUS_FILTER_GROUPS.quarantined!.has(s)) c.quarantined++;
@@ -1185,6 +1242,7 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
             active={statusFilter}
             onChange={setStatusFilter}
             options={[
+              { key: "analyst", label: "Analyst view", count: counts.analyst, tone: "ok" },
               { key: "all", label: "All", count: counts.all },
               { key: "strong", label: "Findings", count: counts.strong, tone: "ok" },
               { key: "review", label: "Needs review", count: counts.review, tone: "warn" },
@@ -1223,6 +1281,7 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
         onSelect={setSelected}
         review={review}
         statusFilter={statusFilter}
+        onShowAll={() => setStatusFilter("all")}
         sortMode={sortMode}
         loading={loading}
         error={error}
