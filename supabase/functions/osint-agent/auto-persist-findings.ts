@@ -398,6 +398,36 @@ export function isBulkCorpusQuarantine(ctx: Record<string, unknown> | undefined)
   return /bulk corpus return/i.test(String(ctx?.subject_unlinked_reason ?? ""));
 }
 
+/**
+ * True when a row carries the NAME-ONLY harvest stamp from `SUBJECT_UNLINKED_CTX`.
+ *
+ * Deliberately anchored on "harvested from", NOT on "name-only query" alone: the
+ * ECHO row carries "echo of a name-only query …" and is the subject's own
+ * apparent name. It must stay its own card, never fold into a stranger group.
+ */
+export function isNameOnlyHarvestQuarantine(ctx: Record<string, unknown> | undefined): boolean {
+  return /harvested from a name-only query/i.test(String(ctx?.subject_unlinked_reason ?? ""));
+}
+
+/**
+ * How many collapsible ROWS one name-only lookup may yield before the set
+ * collapses to a summary row.
+ *
+ * ROWS, not people — this counts the flattened findings (one person routinely
+ * yields four: email, phone, name, address), because by the time the collapse
+ * runs the per-record grouping is gone. Twelve is therefore roughly three to
+ * four same-name strangers, which is the point where enumerating them stops
+ * telling an analyst anything the group heading does not.
+ *
+ * It is a distinct knob from BULK_HARVEST_IDENTITY_CAP because the two measure
+ * different things and answer different questions: that one counts person
+ * identities and asks "was this a dataset?", this one counts rows and asks "is
+ * this still readable?". A bulk corpus is itself evidence — the dataset is real
+ * and worth seeing enumerated. A name-only return is not: name equality proves
+ * nothing about linkage.
+ */
+export const NAME_ONLY_HARVEST_COLLAPSE_CAP = 12;
+
 // Input fields, in priority order, that name the selector a breach tool was
 // queried ON. Every breach lookup is invoked with one of these.
 const BREACH_SUBJECT_INPUT_KEYS = [
@@ -500,6 +530,25 @@ function coCorpusCtx(n: number) {
       `harvested from a bulk corpus return — this one lookup yielded ${n} person identities for ` +
       `a single selector, which is a dataset of many people rather than one person's record; ` +
       `appearing in that dataset is not linkage to the subject`,
+  } as const;
+}
+
+/**
+ * Reason stamped on the COLLAPSED summary of a name-only harvest.
+ *
+ * Keeps the "harvested from a name-only query" prefix on purpose: it is the mark
+ * `isNameOnlyHarvestQuarantine` and the display-side grouping both key on, so the
+ * summary stays classified with the rows it replaces. States the finding rather
+ * than the mechanism — an analyst reading this card needs to know that the count
+ * is a collision set, not a lead set.
+ */
+function nameCollisionCtx(n: number) {
+  return {
+    subject_unlinked: true,
+    subject_unlinked_reason:
+      `harvested from a name-only query — this lookup returned ${n} identities sharing the ` +
+      `queried name; name equality is not linkage, so none of them is attributable to the ` +
+      `subject without independent corroboration`,
   } as const;
 }
 
@@ -1297,65 +1346,99 @@ export function extractFindings(
     }
   }
 
-  // BULK CORPUS COLLAPSE — one summary row, not 67 identical quarantine cards.
+  // HARVEST COLLAPSE — one summary row, not 67 identical quarantine cards.
   // Mirrors username_sweep / breach_exposure collapse: the ARTIFACT count drops,
   // every harvested identity is retained in metadata.harvested_identities.
+  //
+  // TWO classes collapse here, and they are different findings:
+  //   - BULK CORPUS: one selector returned a dataset of many people. The dataset
+  //     itself is real evidence; its members are strangers.
+  //   - NAME-ONLY HARVEST: one name returned everyone who shares that name.
+  //     Nothing here is evidence — name equality is not linkage.
+  //
+  // The second class used to be UNCOLLAPSIBLE, which is the defect this fixes.
+  // The name-only gate above stamps subject_unlinked on EVERY row it emits; the
+  // corpus stamp then skips rows already carrying subject_unlinked, so `bulk` came
+  // back empty and nothing collapsed. Measured in production 2026-09-03 on thread
+  // `c599a5bc`: two `oathnet_lookup{type:"name"}` calls persisted 42 separate
+  // quarantine cards (15 addresses, 14 phones, 12 emails, 1 name) out of 123
+  // artifacts on the thread. The two mechanisms have to compose, not exclude.
   if (BULK_CORPUS_COLLAPSE_ENABLED) {
     const queried = queriedSelectorRaw(input);
-    const kept: ExtractedFinding[] = [];
-    const collapsed: ExtractedFinding[] = [];
+    const anchor = breachSubjectAnchor(o, input) || queried || "";
+
+    // Classify once. A row collapses only if it is a corpus-identity kind, carries
+    // one of the two harvest stamps, and is NOT the echo of the queried selector.
+    const bulkRows: ExtractedFinding[] = [];
+    const nameRows: ExtractedFinding[] = [];
     for (const f of findings) {
-      if (!CORPUS_IDENTITY_KINDS.has(f.kind)) {
-        kept.push(f);
-        continue;
-      }
+      if (!CORPUS_IDENTITY_KINDS.has(f.kind)) continue;
       const ctx = f.context as Record<string, unknown> | undefined;
-      if (!isBulkCorpusQuarantine(ctx)) {
-        kept.push(f);
-        continue;
-      }
-      if (echoesQueriedSelector(f.value, queried, subjectSeedName ?? "")) {
-        kept.push(f);
-        continue;
-      }
-      collapsed.push(f);
+      const isBulk = isBulkCorpusQuarantine(ctx);
+      const isNameOnly = !isBulk && isNameOnlyHarvestQuarantine(ctx);
+      if (!isBulk && !isNameOnly) continue;
+      if (echoesQueriedSelector(f.value, queried, subjectSeedName ?? "")) continue;
+      (isBulk ? bulkRows : nameRows).push(f);
     }
-    if (collapsed.length > 0) {
-      const harvested = collapsed.map((f) => ({ kind: f.kind, value: f.value }));
-      const retained = harvested.slice(0, MAX_BULK_CORPUS_ITEMS_RETAINED);
-      const totalIdentities = collapsed.length;
-      // Parse the cardinality from the shared reason when present — it names the
-      // full lookup yield, which can exceed what survived the per-call cap.
-      const parsedTotal = Number(
-        String(collapsed[0]?.context?.subject_unlinked_reason ?? "").match(/(\d+) person identities/)?.[1] ?? "",
-      );
-      const lookupYield = Number.isFinite(parsedTotal) && parsedTotal > 0 ? parsedTotal : totalIdentities;
-      const anchor = breachSubjectAnchor(o, input) || queried || "";
-      const summaryRow: ExtractedFinding = {
-        kind: "bulk_corpus_harvest",
-        value: anchor
-          ? `${lookupYield} unlinked identities — bulk corpus (${anchor})`
-          : `${lookupYield} unlinked identities — bulk corpus return`,
-        context: {
-          tool: toolName,
-          via: toolName,
-          bulk_corpus: true,
-          identity_count: lookupYield,
-          collapsed_row_count: totalIdentities,
-          queried_selector: anchor || queried || null,
-          harvested_identities: retained,
-          ...(harvested.length > retained.length
-            ? { harvested_truncated: true, harvested_retained: retained.length }
-            : {}),
-          ...coCorpusCtx(lookupYield),
-        },
-        rawConfidence: 40,
+
+    // The bulk stamp is only ever applied past BULK_HARVEST_IDENTITY_CAP, so its
+    // presence already means "this was a corpus" — any number collapses. The
+    // name-only stamp is applied to every row of a name lookup regardless of
+    // count, so it needs its own floor or a two-row return would collapse too.
+    const collapseBulk = bulkRows.length > 0;
+    const collapseName = nameRows.length > NAME_ONLY_HARVEST_COLLAPSE_CAP;
+
+    if (collapseBulk || collapseName) {
+      const buildSummary = (rows: ExtractedFinding[], cls: "bulk" | "name"): ExtractedFinding => {
+        const harvested = rows.map((f) => ({ kind: f.kind, value: f.value }));
+        const retained = harvested.slice(0, MAX_BULK_CORPUS_ITEMS_RETAINED);
+        const rowCount = rows.length;
+        // Parse the cardinality from the shared reason when present — it names the
+        // full lookup yield, which can exceed what survived the per-call cap.
+        const parsedTotal = Number(
+          String(rows[0]?.context?.subject_unlinked_reason ?? "").match(/(\d+) person identities/)?.[1] ?? "",
+        );
+        const lookupYield = Number.isFinite(parsedTotal) && parsedTotal > 0 ? parsedTotal : rowCount;
+        return {
+          kind: "bulk_corpus_harvest",
+          value: cls === "bulk"
+            ? (anchor
+              ? `${lookupYield} unlinked identities — bulk corpus (${anchor})`
+              : `${lookupYield} unlinked identities — bulk corpus return`)
+            : (anchor
+              ? `${rowCount} same-name identities — name-only collision (${anchor})`
+              : `${rowCount} same-name identities — name-only collision`),
+          context: {
+            tool: toolName,
+            via: toolName,
+            ...(cls === "bulk" ? { bulk_corpus: true } : { name_only_harvest: true }),
+            identity_count: cls === "bulk" ? lookupYield : rowCount,
+            collapsed_row_count: rowCount,
+            queried_selector: anchor || queried || null,
+            harvested_identities: retained,
+            ...(harvested.length > retained.length
+              ? { harvested_truncated: true, harvested_retained: retained.length }
+              : {}),
+            ...(cls === "bulk" ? coCorpusCtx(lookupYield) : nameCollisionCtx(rowCount)),
+          },
+          rawConfidence: 40,
+        };
       };
+
+      const drop = new Set<ExtractedFinding>();
+      if (collapseBulk) for (const f of bulkRows) drop.add(f);
+      if (collapseName) for (const f of nameRows) drop.add(f);
+      const kept = findings.filter((f) => !drop.has(f));
+
+      const summaries: ExtractedFinding[] = [];
+      if (collapseBulk) summaries.push(buildSummary(bulkRows, "bulk"));
+      if (collapseName) summaries.push(buildSummary(nameRows, "name"));
+
       // Insert AFTER breach_exposure rows — those are unshifted to the front on
-      // purpose and must never lose priority to a bulk summary.
+      // purpose and must never lose priority to a harvest summary.
       const insertAt = kept.findIndex((f) => f.kind !== "breach_exposure");
-      if (insertAt === -1) kept.push(summaryRow);
-      else kept.splice(insertAt, 0, summaryRow);
+      if (insertAt === -1) kept.push(...summaries);
+      else kept.splice(insertAt, 0, ...summaries);
       findings.length = 0;
       findings.push(...kept);
     }

@@ -583,13 +583,13 @@ function BulkCorpusGroupRow({
       }}
       data-density-row
       className="group/row ledger-row cursor-pointer text-left"
-      aria-label={`${group.artifacts.length} bulk-corpus identities. ${group.reason}`}
+      aria-label={`${group.artifacts.length} ${group.label}. ${group.reason}`}
     >
       <AuthoritySpine state={authority.state} />
       <span className="min-w-0" data-ledger-col="value">
         <span className="flex items-start gap-1.5">
           <span className="text-[12.5px] leading-[1.45] text-foreground/90">
-            <span className="font-medium">{group.artifacts.length} bulk-corpus identities</span>
+            <span className="font-medium">{group.artifacts.length} {group.label}</span>
             {preview && (
               <span className="mt-0.5 block truncate font-mono text-data text-muted-foreground/80">
                 {preview}{more > 0 ? ` · +${more} more` : ""}
