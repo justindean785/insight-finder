@@ -1,4 +1,5 @@
 import type { Artifact } from "@/hooks/useThreadArtifacts";
+import { toSourceStrings } from "@/lib/source-strings";
 import {
   AUTHORITY_HEADING,
   authorityStatement,
@@ -209,19 +210,28 @@ const DIRECT_PROFILE_SOURCES = new Set([
 const SENSITIVE_KINDS = new Set(["dob", "address", "phone", "ssn", "name", "person", "age"]);
 
 export function isBreachSource(src: string | null | undefined, _meta?: Record<string, unknown>): boolean {
-  if (!src) return false;
+  // Not `!src` alone: production carries `metadata.sources` arrays holding
+  // OBJECTS, which are truthy and reach `.toLowerCase()`. A malformed source is
+  // not a matching source — degrade to false, never throw inside a useMemo.
+  if (typeof src !== "string" || !src) return false;
   const s = src.toLowerCase();
   return [...BREACH_ONLY_SOURCES].some((k) => s.includes(k));
 }
 
 export function isUsernameSweepSource(src: string | null | undefined, _meta?: Record<string, unknown>): boolean {
-  if (!src) return false;
+  // Not `!src` alone: production carries `metadata.sources` arrays holding
+  // OBJECTS, which are truthy and reach `.toLowerCase()`. A malformed source is
+  // not a matching source — degrade to false, never throw inside a useMemo.
+  if (typeof src !== "string" || !src) return false;
   const s = src.toLowerCase();
   return [...USERNAME_SWEEP_SOURCES].some((k) => s.includes(k));
 }
 
 export function isDirectProfileSource(src: string | null | undefined, _meta?: Record<string, unknown>): boolean {
-  if (!src) return false;
+  // Not `!src` alone: production carries `metadata.sources` arrays holding
+  // OBJECTS, which are truthy and reach `.toLowerCase()`. A malformed source is
+  // not a matching source — degrade to false, never throw inside a useMemo.
+  if (typeof src !== "string" || !src) return false;
   const s = src.toLowerCase();
   return [...DIRECT_PROFILE_SOURCES].some((k) => s.includes(k));
 }
@@ -318,7 +328,7 @@ export function adjustedConfidence(a: Artifact, review?: ReviewAdjustment): numb
   const base = a.confidence ?? 0;
   const d = review ? REVIEW_DELTA[review] ?? 0 : 0;
   const meta = (a.metadata ?? {}) as Record<string, unknown>;
-  const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
+  const metaSources = toSourceStrings(meta.sources);
   const allSources = [a.source ?? null, ...metaSources].filter(Boolean) as string[];
   // ── THIS IS A CLASSIFICATION SCORE, NOT A DISPLAYED NUMBER ────────────────
   //
@@ -449,7 +459,7 @@ function artifactSourceClasses(a: Artifact): string[] {
   } else if (typeof sc === "string" && sc.trim()) {
     return [sc.trim().toLowerCase()];
   }
-  const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
+  const metaSources = toSourceStrings(meta.sources);
   const all = [a.source ?? null, ...metaSources].filter(Boolean) as string[];
   return Array.from(
     new Set(
@@ -550,7 +560,7 @@ export function labelForArtifact(a: Artifact, review?: ReviewAdjustment): ConfLa
     return evidence === "CONFIRMED" ? "CONFIRMED" : "ATTESTED";
   }
 
-  const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
+  const metaSources = toSourceStrings(meta.sources);
   const allSources = [a.source ?? null, ...metaSources].filter(Boolean) as string[];
   // Independent corroboration is counted from the backend's authoritative
   // source_category (which already collapses same-class providers), NOT a naive
@@ -1005,7 +1015,7 @@ export type ArtifactSourceInfo = {
 
 export function extractSourceInfo(a: Artifact): ArtifactSourceInfo {
   const meta = (a.metadata ?? {}) as Record<string, unknown>;
-  const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
+  const metaSources = toSourceStrings(meta.sources);
   const all = tokenizeSourceChain([...(a.source ? [a.source] : []), ...metaSources]);
   const primary = all[0] ?? "unknown";
   let cacheLayer: CacheLayer = "unknown";
