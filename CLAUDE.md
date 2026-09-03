@@ -13,7 +13,8 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 
 > A mirror merge is NOT a deploy. The only proof of deploy is a moved build SHA.
 
-> **Dated state — 2026-09-03T00:05Z.** `main` = `35ff20b` (#537 merged as `7b0138d` after the
+> **Dated state — 2026-09-03T03:35Z.** `main` = `1554911` (docs only after ledger `35ff20b`:
+> `8f638a0`, then #536 the audit report; #537 merged as `7b0138d` after the
 > merge queue #435/#513/#491/#493/#512, stamp `cfbb404`, ledger `35ff20b`). Live `osint-agent`
 > build = **`7b0138d`**, `deploy/live` → `7b0138d`, ledger recorded (VERIFIED, marker provenance;
 > bytes unverified as always). `/health` now carries `checks.rejected_cluster_sweep`; on its first
@@ -340,10 +341,13 @@ Evidence ranking, confidence caps, chain-of-custody, credential masking, minor-s
 production corpus numbers that govern #477/#479/#482) →
 `…_2026-08-25_merge-deploy-and-tool-telemetry` →
 `…_2026-08-26_workspace-pass-and-production-defects` →
-**`SESSION_HANDOFF_2026-08-31_workbench-truth-boundary.md` (newest — read this one
-first)**. Its §4 is the trap list, §6 is the honest not-done list, and §7 is the ordered
-plan; its own §1 state table predates the #520 merge, so take the dated state from the top
-of this file instead. Each corrects the
+`…_2026-08-31_workbench-truth-boundary` (its §4 trap list and §6 not-done list are still
+current; its §1 state table predates #520) →
+**`SESSION_HANDOFF_2026-09-03_audit-merge-queue-and-report-truth.md` (newest — read this
+one first)**. It reconciles the two sessions that worked 2026-09-02 in parallel: §3 maps
+`AUDIT_REPORT_2026-09-02.md`'s findings to what #537 closed, §6.1 is the one open
+production question (the cache sweep is live but the table has not drained), and §7 is the
+ordered checklist. Take the dated state from the top of this file. Each corrects the
 one before it, and **every one of them is a dated measurement, not a state.** III's own §1.0
 is the lesson: a "deploy axis verified green" claim went false within six hours because the
 mirror is writable by a second agent whose edits this repo never sees.
