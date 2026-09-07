@@ -190,14 +190,14 @@ The audit must explain, **using the real production control flow**, why:
 1. A `username_sweep` result followed by `jina_reader_scrape` counts as two independent classes and promotes the Linktree artifact to 80.
 2. "Not found" / "0 hits" from `oathnet_lookup`, `breach_check` and `serus_darkweb_scan` persist as `breach_exposure` at 55–60 instead of remaining negative tool outcomes.
 3. Legal allegations from a common-name search persist with `subject_id`/`cluster_id` at 55–65 without a shared durable selector.
-4. "Since 99" becomes a birth-year inference, Spotify listener geography becomes subject geography, and "Queens Ave General" becomes an address artifact.
+4. An album title is turned into a birth-year inference, streaming-listener geography is turned into subject geography, and a bio phrase naming a street is promoted into an `address` artifact.
 5. A "No Instagram profile found" artifact survives later positive Instagram retrieval, with `contradictions` still empty.
-6. The same Appeal-Democrat claim persists multiple times with different confidences and cluster IDs.
-7. Direct TikTok→Instagram→`@9200barloz` references and shared content fail to join the profiles.
+6. One newspaper claim about a criminal case persists as four separate artifacts with different confidences and four different cluster IDs.
+7. A TikTok bio naming an Instagram handle, that Instagram bio naming a second handle, and the two accounts posting identical content still fail to join those profiles into one cluster.
 8. `confidence`, `promoted_confidence`, `confidence_tier` and `confidence_cap_applied` disagree on one row.
 9. An arrest record is classified `law_enforcement_unit`.
 
-### Behavioural fixtures — thread `635eba0e-825f-4541-a713-28af3151bf36` ("Username: Moneybarloz")
+### Behavioural fixtures — thread `635eba0e-825f-4541-a713-28af3151bf36` (a username seed)
 
 | Artifact ID | Shape it demonstrates |
 |---|---|
@@ -205,14 +205,67 @@ The audit must explain, **using the real production control flow**, why:
 | `002949f9` / `048a2361` / `98ef9ca5` | null results stored as `breach_exposure` at 55–60 |
 | `5cfb3ed7` | `metadata.sources[]` merged **and** a duplicate row persisted |
 | `22668cb5` / `55eb72db` | same, plus a case-variant Instagram URL |
-| `1637ae03` / `d8792d15` / `3597797c` / `0d88068b` | one Appeal-Democrat claim → four rows, four clusters |
+| `1637ae03` / `d8792d15` / `3597797c` / `0d88068b` | one newspaper claim → four rows, four clusters |
 | `743b2e55` | "No Instagram found" vs later positive retrieval; `contradictions` empty |
-| `66c7ed4f` / `2825a09d` / `72992f6c` | hypothesis persisted as evidence |
+| `66c7ed4f` / `2825a09d` / `72992f6c` | analyst hypothesis persisted as evidence (inference → `weak_lead` → `address`) |
 | `d8dbd6bd` | arrest → `law_enforcement_unit`; conf 55 / promoted 40 / tier Weak / cap 55 |
 | `dcf2db8c` | audience statistics → `infrastructure` |
 
 Thread `635eba0e`: 66 artifacts, 24 quarantined, ~14 singleton clusters — which is why **62
 artifacts produced 0 engine-adjudicated findings**.
+
+---
+
+## 6a · Audit of the operator's Game Plan (`gameplan9/7/2026`)
+
+Every checkable claim re-measured against primary sources on 2026-09-07. **The Game Plan's
+structure and priorities hold; its numbers have drifted and three items are materially wrong.**
+
+### Confirmed (with drift — the drift does not change any decision)
+
+| Claim | Measured |
+|---|---|
+| Actionable 4.8 of 60 per scan (7.9 %) | **4.7 of 54.3 (8.6 %)** — 36 threads, 1,955 artifacts, 168 actionable, last 14 days |
+| 4,288 at conf 50–64 · 4,967 below 50 | **4,322** · **5,063** |
+| Expired cache 11,475 / 11,646, ~43 MB | **11,678 / 11,741, 43 MB** |
+| 10,933 artifacts for backfill | **11,079** |
+| God-files 394/129/125/111/103 KB | **384 / 130 / 122 / 108 / 100 KiB** (decimal-vs-binary, all confirmed) |
+| ~25 root-level handoff/audit docs | **exactly 25** |
+| Both `bun.lockb` and `package-lock.json` committed | confirmed — 306 KB / 395 KB |
+| `CACHE_SWEEP_ENABLED` off; sweep would fail on `.in()` size | confirmed; `/health` reads `cache_sweep: ok=true, detail="disabled"` |
+| Interrupted runs, 14-day cohort ≈ 11 % | 69 of 218 threads carry a `recovery_reason` all-time; the 14-day improvement claim is directionally supported |
+
+### Wrong or materially understated — fix these in any successor plan
+
+| Claim | Reality |
+|---|---|
+| Merge queue "#550 → **#548** → #549 → #547" | **#548 is CLOSED**; #551 merged in its place. Corrected order: **#550 → #549 → #547** |
+| "~20 stale `chore/stamp-*` / `chore/backport-*` branches" | **410 remote branches; 79 already merged into `main`.** Only 17 match `chore/(stamp|backport)`. The cleanup is ~4× larger than stated |
+| "9 open / 8 draft" PRs | **9 open, 8 draft** — coincidentally still true, but the membership changed (#548 out, #551 merged, #552 in) |
+| "Move docs into `docs/handoffs/`" implies no `docs/` | **`docs/` already exists** |
+| `insight-finder-beta-demo.mp4` 7.5 MB | **7.1 MB** — and `deploy-log.jsonl` is only **11 KB**, not a hot-path concern |
+| Duplicates "840 across 695 selectors" | **852 redundant rows of 11,079 across 138 threads** |
+
+### Not verifiable as stated
+
+- **"Orchestrator prompt size 225–257K chars/step."** No production telemetry table records actual
+  prompt sizes, so this could not be reproduced. The #238 approach is sound regardless, but the
+  number should be re-measured before it is used to justify effort.
+
+### The Game Plan omits: three PRs already conflict
+
+Measured with `git merge-tree` against `a19f065` — **the Game Plan treats all queued PRs as
+mergeable, and three are not:**
+
+| PR | Merges onto `a19f065` | Edge files | Migration |
+|---|---|---|---|
+| #550 | **CLEAN** | 0 | no |
+| #549 | **CLEAN** | 2 → needs deploy | no |
+| #547 | **CLEAN** | 1 | **yes** |
+| #516 | CLEAN | 0 | yes |
+| **#529** | **CONFLICT** | 0 | no |
+| **#519** | **CONFLICT** | 9 | no |
+| **#502** | **CONFLICT** | 20 | yes |
 
 ---
 
