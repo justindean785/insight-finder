@@ -1,7 +1,8 @@
 # Next-session prompt — Insight Finder
 
 > Paste this whole file as the opening message of a fresh session. It is self-contained.
-> **Written 2026-09-07T13:30Z. Every number is a dated measurement, not a state — re-verify.**
+> **Written 2026-09-07T13:30Z, revised 13:55Z after the `4e6888a` deploy and the Phase 0 merges.
+> Every number is a dated measurement, not a state — re-verify.**
 
 ---
 
@@ -19,17 +20,18 @@ Most recently 2026-09-07T13:30–13:55Z: a session opened this very file, found 
 (#550, #547, #549 merged; `4e6888a` deployed and verified). On an earlier occasion the same
 failure produced **two conflicting PRs for one task** (#548 and #551).
 
-**Then, before you write any code: `list_pull_requests`.** Nine PRs are open. The 2026-09-07
+**Then, before you write any code: `list_pull_requests`.** Five PRs are open as of 13:55Z
+(#541, #529, #519, #516, #502) — down from nine; see the §1 table. The 2026-09-07
 duplicate-PR incident happened because a session started work without checking.
 
 Read, in order:
 1. `SESSION_HANDOFF_2026-09-07_drop-suppression-and-the-duplicate-pr.md` — newest; §5 records the `artifactDedupKey` ruling.
-2. `CLAUDE.md` — authoritative on deploy topology and on decisions that must not be re-litigated. **Its test baselines are stale** (see §6 below).
+2. `CLAUDE.md` — authoritative on deploy topology and on decisions that must not be re-litigated. Its test baselines and dated-state block were **refreshed 2026-09-07T13:55Z** and are current (see §6); re-measure anyway if `main` has moved since.
 3. `gameplan9/7/2026` — the operator's Game Plan. Its structure is sound; several numbers have drifted, corrected in §3–§5 below.
 
 ---
 
-## 1 · Verified state (2026-09-07T13:30Z)
+## 1 · Verified state (2026-09-07T13:55Z)
 
 | Axis | Value |
 |---|---|
@@ -208,7 +210,7 @@ Ordered work:
 |---|---|
 | `CLAUDE.md` | ✅ **FIXED 2026-09-07T13:55Z.** Frontend baseline now `1927 / 1 / 158` and edge `1624 / 0 / 5`, both re-measured on `57c0912` (frontend in a clean checkout with its own `npm ci`; edge from CI's own job summary). The `1918 / 1 / 155` figure in §1 above was correct when written — #550 then added 9 tests across 3 files |
 | `CLAUDE.md` | ✅ **FIXED.** Handoff index now ends at the 09-07 handoff and points at this file as the companion entry point |
-| `CLAUDE.md` | ✅ **FIXED.** Dated-state block now reads `main = 57c0912` / live `4e6888a`, and records that the `mirror_tree_digest` gap is CLOSED (it had been described as a permanent "known cosmetic gap", which left the deploy gate unable to distinguish it from real drift) |
+| `CLAUDE.md` | ✅ **FIXED.** Dated-state block now reads `main = 8691e55` (the ledger commit — `57c0912` is only the preceding build stamp) / live `4e6888a`, and records that the `mirror_tree_digest` gap is CLOSED (it had been described as a permanent "known cosmetic gap", which left the deploy gate unable to distinguish it from real drift) |
 | Old `NEXT_SESSION_PROMPT` §A | Name-pivot guard — **DECLINED.** Do not implement or propose |
 | Old `NEXT_SESSION_PROMPT` §B | **Ruled 2026-09-07** — open in narrowed form; see §2 |
 | Game Plan | Merge order lists #548 (closed); says "~20 stale branches" (79 merged of 410); `840/695` duplicates → `852` / 11,079 |
