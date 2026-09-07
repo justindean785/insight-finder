@@ -28,6 +28,7 @@
 import { buildAutoRecordedRow } from "./auto-record-integrity.ts";
 import { scrubArtifactRows } from "./safety.ts";
 import { checkpointKey } from "./incremental-persist.ts";
+import { isNullishLiteral } from "./lib/nullish-literal.ts";
 import { canonicalPhoneValue, composeAddress, normPhoneE164 } from "./lib/selector-normalize.ts";
 
 /** Hard ceiling on auto-persisted rows PER tool call. Prevents one exhaustive
@@ -244,6 +245,8 @@ const ALLOWED_KINDS = new Set<string>([
   "url", "email", "breach_exposure", "social_account", "github_repo", "github_account",
   "phone", "domain", "ip_address", "leak_paste", "document",
   "name", "address", "organization", "username",
+  // Collapsed harvest shapes — one artifact carries many underlying rows in metadata.
+  "social_footprint", "bulk_corpus_harvest",
 ]);
 
 const EMAIL_RE = /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i;
@@ -264,6 +267,9 @@ export function normalizeFinding(kind: string, value: unknown): { kind: string; 
   if (typeof value !== "string") return null;
   const v = value.trim();
   if (!v) return null;
+  // A null-shaped tool field ("NULL", "n/a", "none", "undefined") is not a
+  // selector. One reached production as a username at confidence 45.
+  if (isNullishLiteral(v)) return null;
   const k = kind.toLowerCase();
   if (!ALLOWED_KINDS.has(k)) return null;
   switch (k) {
@@ -296,11 +302,11 @@ export function normalizeFinding(kind: string, value: unknown): { kind: string; 
       if (digits.replace(/\D/g, "").length < 7) return null;
       // CANONICAL E.164 (2026-08-28). Dedup is `checkpointKey(kind, value)` —
       // exact equality — so the spelling IS the identity. A measured run wrote
-      // +19172915568, 19172915568 and 9172915568 as three artifacts in three
+      // +19175550123, 19175550123 and 9175550123 as three artifacts in three
       // cluster slots for one number, then the clusterer folded them back
       // together, because this fold ran only at cluster time.
       //
-      // The fold deliberately does NOT collapse 79172915568 (a Russian +7
+      // The fold deliberately does NOT collapse 79175550123 (a Russian +7
       // number sharing ten digits with the US one) — see selector-normalize.ts.
       //
       // FALLBACK, not a narrowing: normPhoneE164 returns null below 8 digits,
@@ -363,6 +369,11 @@ export function normalizeFinding(kind: string, value: unknown): { kind: string; 
       if (/\s/.test(un)) return null;          // usernames have no whitespace
       return { kind: "username", value: un };
     }
+    case "social_footprint":
+    case "bulk_corpus_harvest": {
+      if (v.length < 4 || v.length > 240) return null;
+      return { kind: k, value: v.replace(/\s+/g, " ").trim() };
+    }
   }
   return null;
 }
@@ -376,6 +387,46 @@ function pushUrl(out: ExtractedFinding[], url: unknown, ctx: Record<string, unkn
 export const SWEEP_COLLAPSE_ENABLED = true;
 /** Below this many hits, individual URLs are still legible — don't collapse. */
 export const SWEEP_COLLAPSE_MIN_HITS = 3;
+
+/** Kill switch: false restores one quarantined artifact per bulk-corpus identity. */
+export const BULK_CORPUS_COLLAPSE_ENABLED = true;
+/** Identity rows retained inside a collapsed bulk-corpus summary. */
+export const MAX_BULK_CORPUS_ITEMS_RETAINED = 250;
+
+/** True when a row carries the bulk-corpus quarantine stamp from `coCorpusCtx`. */
+export function isBulkCorpusQuarantine(ctx: Record<string, unknown> | undefined): boolean {
+  return /bulk corpus return/i.test(String(ctx?.subject_unlinked_reason ?? ""));
+}
+
+/**
+ * True when a row carries the NAME-ONLY harvest stamp from `SUBJECT_UNLINKED_CTX`.
+ *
+ * Deliberately anchored on "harvested from", NOT on "name-only query" alone: the
+ * ECHO row carries "echo of a name-only query …" and is the subject's own
+ * apparent name. It must stay its own card, never fold into a stranger group.
+ */
+export function isNameOnlyHarvestQuarantine(ctx: Record<string, unknown> | undefined): boolean {
+  return /harvested from a name-only query/i.test(String(ctx?.subject_unlinked_reason ?? ""));
+}
+
+/**
+ * How many collapsible ROWS one name-only lookup may yield before the set
+ * collapses to a summary row.
+ *
+ * ROWS, not people — this counts the flattened findings (one person routinely
+ * yields four: email, phone, name, address), because by the time the collapse
+ * runs the per-record grouping is gone. Twelve is therefore roughly three to
+ * four same-name strangers, which is the point where enumerating them stops
+ * telling an analyst anything the group heading does not.
+ *
+ * It is a distinct knob from BULK_HARVEST_IDENTITY_CAP because the two measure
+ * different things and answer different questions: that one counts person
+ * identities and asks "was this a dataset?", this one counts rows and asks "is
+ * this still readable?". A bulk corpus is itself evidence — the dataset is real
+ * and worth seeing enumerated. A name-only return is not: name equality proves
+ * nothing about linkage.
+ */
+export const NAME_ONLY_HARVEST_COLLAPSE_CAP = 12;
 
 // Input fields, in priority order, that name the selector a breach tool was
 // queried ON. Every breach lookup is invoked with one of these.
@@ -420,7 +471,7 @@ const UNLINKED_ECHO_CTX = {
  *  below mints phone/email/name/address from those same rows, at full subject
  *  authority.
  *
- *  MEASURED 2026-08-26: a run pivoting on +19172915568 persisted 79172915568 —
+ *  MEASURED 2026-08-26: a run pivoting on +19175550123 persisted 79175550123 —
  *  a Russian +7 number off a `zoloto585.ru` row belonging to a different person
  *  — as a subject selector with its own cluster id. */
 const CO_TENANT_CTX = {
@@ -483,6 +534,25 @@ function coCorpusCtx(n: number) {
 }
 
 /**
+ * Reason stamped on the COLLAPSED summary of a name-only harvest.
+ *
+ * Keeps the "harvested from a name-only query" prefix on purpose: it is the mark
+ * `isNameOnlyHarvestQuarantine` and the display-side grouping both key on, so the
+ * summary stays classified with the rows it replaces. States the finding rather
+ * than the mechanism — an analyst reading this card needs to know that the count
+ * is a collision set, not a lead set.
+ */
+function nameCollisionCtx(n: number) {
+  return {
+    subject_unlinked: true,
+    subject_unlinked_reason:
+      `harvested from a name-only query — this lookup returned ${n} identities sharing the ` +
+      `queried name; name equality is not linkage, so none of them is attributable to the ` +
+      `subject without independent corroboration`,
+  } as const;
+}
+
+/**
  * Does this row echo the selector that was actually queried?
  *
  * EXACT normalized equality, never containment. Containment is the trap: the
@@ -525,7 +595,7 @@ function echoesQueriedSelector(value: string, queriedRaw: string, seedName: stri
  * query is trusted and only NAME-only queries quarantine. That is a settled
  * boundary, and moving it needs sign-off, not a drive-by.
  *
- * The measured defect is a PHONE mismatch (+1917… queried, 79172915568
+ * The measured defect is a PHONE mismatch (+1917… queried, 79175550123
  * returned). There is no measured email case, and widening an integrity signal
  * past its evidence to reach a tidier result is how the other over-applications
  * in this module happened. If an email co-tenant is ever measured, that is the
@@ -1004,7 +1074,7 @@ export function extractFindings(
         // COMPOSED, not concatenated (2026-08-28). This was a five-field
         // `.join(" ")`, which on a measured production row persisted:
         //
-        //   1110 ANDERSON AVE3F 1110 ANDERSON AVE APT 3F BRONX NY 10452
+        //   1110 SAMPLE AVE3F 1110 SAMPLE AVE APT 3F ANYTOWN NY 10001
         //
         // — `address_street2` restating `address_street` in a different
         // spelling, run together with no separators. That string is the
@@ -1273,6 +1343,104 @@ export function extractFindings(
         if (echoesQueriedSelector(f.value, queried, subjectSeedName ?? "")) continue;
         f.context = { ...(f.context ?? {}), ...ctx };
       }
+    }
+  }
+
+  // HARVEST COLLAPSE — one summary row, not 67 identical quarantine cards.
+  // Mirrors username_sweep / breach_exposure collapse: the ARTIFACT count drops,
+  // every harvested identity is retained in metadata.harvested_identities.
+  //
+  // TWO classes collapse here, and they are different findings:
+  //   - BULK CORPUS: one selector returned a dataset of many people. The dataset
+  //     itself is real evidence; its members are strangers.
+  //   - NAME-ONLY HARVEST: one name returned everyone who shares that name.
+  //     Nothing here is evidence — name equality is not linkage.
+  //
+  // The second class used to be UNCOLLAPSIBLE, which is the defect this fixes.
+  // The name-only gate above stamps subject_unlinked on EVERY row it emits; the
+  // corpus stamp then skips rows already carrying subject_unlinked, so `bulk` came
+  // back empty and nothing collapsed. Measured in production 2026-09-03 on thread
+  // `c599a5bc`: two `oathnet_lookup{type:"name"}` calls persisted 42 separate
+  // quarantine cards (15 addresses, 14 phones, 12 emails, 1 name) out of 123
+  // artifacts on the thread. The two mechanisms have to compose, not exclude.
+  if (BULK_CORPUS_COLLAPSE_ENABLED) {
+    const queried = queriedSelectorRaw(input);
+    const anchor = breachSubjectAnchor(o, input) || queried || "";
+
+    // Classify once. A row collapses only if it is a corpus-identity kind, carries
+    // one of the two harvest stamps, and is NOT the echo of the queried selector.
+    const bulkRows: ExtractedFinding[] = [];
+    const nameRows: ExtractedFinding[] = [];
+    for (const f of findings) {
+      if (!CORPUS_IDENTITY_KINDS.has(f.kind)) continue;
+      const ctx = f.context as Record<string, unknown> | undefined;
+      const isBulk = isBulkCorpusQuarantine(ctx);
+      const isNameOnly = !isBulk && isNameOnlyHarvestQuarantine(ctx);
+      if (!isBulk && !isNameOnly) continue;
+      if (echoesQueriedSelector(f.value, queried, subjectSeedName ?? "")) continue;
+      (isBulk ? bulkRows : nameRows).push(f);
+    }
+
+    // The bulk stamp is only ever applied past BULK_HARVEST_IDENTITY_CAP, so its
+    // presence already means "this was a corpus" — any number collapses. The
+    // name-only stamp is applied to every row of a name lookup regardless of
+    // count, so it needs its own floor or a two-row return would collapse too.
+    const collapseBulk = bulkRows.length > 0;
+    const collapseName = nameRows.length > NAME_ONLY_HARVEST_COLLAPSE_CAP;
+
+    if (collapseBulk || collapseName) {
+      const buildSummary = (rows: ExtractedFinding[], cls: "bulk" | "name"): ExtractedFinding => {
+        const harvested = rows.map((f) => ({ kind: f.kind, value: f.value }));
+        const retained = harvested.slice(0, MAX_BULK_CORPUS_ITEMS_RETAINED);
+        const rowCount = rows.length;
+        // Parse the cardinality from the shared reason when present — it names the
+        // full lookup yield, which can exceed what survived the per-call cap.
+        const parsedTotal = Number(
+          String(rows[0]?.context?.subject_unlinked_reason ?? "").match(/(\d+) person identities/)?.[1] ?? "",
+        );
+        const lookupYield = Number.isFinite(parsedTotal) && parsedTotal > 0 ? parsedTotal : rowCount;
+        return {
+          kind: "bulk_corpus_harvest",
+          value: cls === "bulk"
+            ? (anchor
+              ? `${lookupYield} unlinked identities — bulk corpus (${anchor})`
+              : `${lookupYield} unlinked identities — bulk corpus return`)
+            : (anchor
+              ? `${rowCount} same-name identities — name-only collision (${anchor})`
+              : `${rowCount} same-name identities — name-only collision`),
+          context: {
+            tool: toolName,
+            via: toolName,
+            ...(cls === "bulk" ? { bulk_corpus: true } : { name_only_harvest: true }),
+            identity_count: cls === "bulk" ? lookupYield : rowCount,
+            collapsed_row_count: rowCount,
+            queried_selector: anchor || queried || null,
+            harvested_identities: retained,
+            ...(harvested.length > retained.length
+              ? { harvested_truncated: true, harvested_retained: retained.length }
+              : {}),
+            ...(cls === "bulk" ? coCorpusCtx(lookupYield) : nameCollisionCtx(rowCount)),
+          },
+          rawConfidence: 40,
+        };
+      };
+
+      const drop = new Set<ExtractedFinding>();
+      if (collapseBulk) for (const f of bulkRows) drop.add(f);
+      if (collapseName) for (const f of nameRows) drop.add(f);
+      const kept = findings.filter((f) => !drop.has(f));
+
+      const summaries: ExtractedFinding[] = [];
+      if (collapseBulk) summaries.push(buildSummary(bulkRows, "bulk"));
+      if (collapseName) summaries.push(buildSummary(nameRows, "name"));
+
+      // Insert AFTER breach_exposure rows — those are unshifted to the front on
+      // purpose and must never lose priority to a harvest summary.
+      const insertAt = kept.findIndex((f) => f.kind !== "breach_exposure");
+      if (insertAt === -1) kept.push(...summaries);
+      else kept.splice(insertAt, 0, ...summaries);
+      findings.length = 0;
+      findings.push(...kept);
     }
   }
 
@@ -1545,8 +1713,8 @@ export async function loadSeenArtifactKeys(
         if (!k || !v) continue;
         seen.add(checkpointKey(k, v));
         // MIGRATION-FREE RECONCILIATION. Rows written before the canonical phone
-        // fold hold "9172915568" where a new extraction now yields
-        // "+19172915568" — different keys for one number, so the legacy row
+        // fold hold "9175550123" where a new extraction now yields
+        // "+19175550123" — different keys for one number, so the legacy row
         // would not block the re-insert. Registering the normalized spelling too
         // makes old and new rows agree without touching a single stored row.
         const n = normalizeFinding(k, v);

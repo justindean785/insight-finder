@@ -9,7 +9,8 @@
  */
 
 import type { Artifact } from "@/hooks/useThreadArtifacts";
-import { isUsernameSweepSource, labelForArtifact, type ConfLabel, type ReviewAdjustment } from "@/lib/intel";
+import { isUsernameSweepSource, labelForArtifact, KIND_TO_PIVOT, type ConfLabel, type ReviewAdjustment } from "@/lib/intel";
+import { effectiveConfidenceOrZero } from "@/lib/display-confidence";
 import { isRejectedReview } from "@/lib/review";
 import { isQuarantined } from "@/lib/quarantine";
 
@@ -107,7 +108,26 @@ export function formatArtifactDisplayValue(value: string): string {
 // section.
 // ---------------------------------------------------------------------------
 
-export function isCollisionArtifact(a: Artifact): boolean {
+/**
+ * The structural shape the two collision predicates actually read.
+ *
+ * Widening the PARAMETER TYPE is not the same thing as widening the PREDICATE.
+ * The note at #6b below forbids the latter — `isCollisionArtifact` is also the
+ * report's collision-SECTION membership test, so adding a signal to it moves
+ * rows between report sections. This changes nothing about what either function
+ * MATCHES; it only lets a caller holding a lighter projection ask the question.
+ *
+ * It exists so `quarantineSets` (which owns a structural `QuarantineInput`, and
+ * deliberately imports nothing from this layer) can be handed
+ * `isClusterIneligible` as an injected predicate instead of re-implementing it.
+ * A full `Artifact` and a `QuarantineInput` are both assignable here.
+ */
+export type AuthorityInput = {
+  kind: string;
+  metadata?: Record<string, unknown> | null;
+};
+
+export function isCollisionArtifact(a: AuthorityInput): boolean {
   const kind = (a.kind ?? "").toLowerCase();
   if (kind === "excluded_collision") return true;
   const m = (a.metadata ?? {}) as Record<string, unknown>;
@@ -175,7 +195,7 @@ export function isCollisionArtifact(a: Artifact): boolean {
  * `subject_unlinked_reason`, and keeps appearing in the collision disclosure.
  * What it regains is only the authority the analyst explicitly granted it.
  */
-export function isClusterIneligible(a: Artifact): boolean {
+export function isClusterIneligible(a: AuthorityInput): boolean {
   return isCollisionArtifact(a) || isQuarantined(a.metadata);
 }
 
@@ -409,7 +429,7 @@ function pickBestIdentity(
   );
   if (!pool.length) return null;
   const rank: Record<ConfLabel, number> = {
-    CONFIRMED: 6, CORRELATED: 5, INFERRED: 4, VERIFY: 3, LOW: 2, CONFLICT: 1, FAILED: 0,
+    CONFIRMED: 7, ATTESTED: 6, CORRELATED: 5, INFERRED: 4, VERIFY: 3, LOW: 2, CONFLICT: 1, FAILED: 0,
   };
   // Rank through the verdict too, so an attested row outranks an unreviewed one
   // instead of the ordering being decided before the analyst is consulted.
@@ -471,4 +491,136 @@ export function buildIdentityRows(artifacts: Artifact[], reviews?: Record<string
   if (gender) rows.push({ field: "Gender (implied)", value: gender.value, label: labelForArtifact(gender, reviews?.[gender.id]) });
 
   return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Network-section membership: entities only.
+//
+// "Network Connections" is the list of things the subject is connected TO. A
+// contradiction record, a weak-lead note or an engine finding is a statement
+// ABOUT the case, not a node in the subject's network — yet every one of them
+// printed there on the @hoodken28 export (the `collision detector` row for
+// `email:…` sat under **Other** as if it were a contact). They keep their place
+// in the Artifact / Entity Table, the Timeline and the Conflicts section; only
+// the authority claim "this is part of the subject's network" is withheld.
+// ---------------------------------------------------------------------------
+
+/** Kinds that describe the case rather than name an entity in it. */
+export const NON_ENTITY_KINDS: ReadonlySet<string> = new Set([
+  "contradiction",
+  "weak_lead",
+  "finding",
+  "excluded_collision",
+  "triage_decision",
+  "cluster_decision",
+  "note",
+]);
+
+const META_SOURCE_TOKENS = /(^|[\s+,/])(collision_detector|detect_contradictions)(?=$|[\s+,/(])/i;
+
+/**
+ * True for a row that must not print as a network connection: a non-entity
+ * kind, a row flagged as a conflict (`metadata.conflict === true` is how the
+ * pipeline marks "this contradicts another row"), or a row produced by the
+ * contradiction / collision detectors themselves.
+ */
+export function isNonEntityArtifact(a: AuthorityInput & { source?: string | null }): boolean {
+  const kind = String(a.kind ?? "").trim().toLowerCase();
+  if (NON_ENTITY_KINDS.has(kind)) return true;
+  const m = (a.metadata ?? {}) as Record<string, unknown>;
+  if (m.conflict === true) return true;
+  return META_SOURCE_TOKENS.test(String(a.source ?? ""));
+}
+
+// ---------------------------------------------------------------------------
+// Alias twins — one selector recorded under two kind spellings.
+//
+// The auto-persist path writes `ip_address`, the model's record_artifacts path
+// writes `ip`; a username sweep writes `url` for a profile the deep-dork later
+// records as `social_profile`. Dispatch folds those spellings together
+// (`KIND_TO_PIVOT`), the write path did not, so the @hoodken28 export listed
+// `47.153.219.212` twice (40 and 70) and two URLs twice each, and a Dismiss on
+// one twin left the other authoritative. The report shows ONE row per selector.
+//
+// Scope is the REPORT ONLY. The Evidence board is not folded: every row there
+// carries its own review state, custody hash and source, and an analyst may
+// need to dismiss one twin specifically.
+//
+// The VALUE is compared trimmed but case-sensitive — the same rule
+// `artifactDedupKey` keeps on the backend: fuzzy-matching values would convert
+// a visible disagreement into a silent merge.
+// ---------------------------------------------------------------------------
+
+const URL_SHAPE = /^https?:\/\//i;
+
+/** The canonical kind two spellings of one selector share, or null when the
+ *  kind is not aliased (such rows never fold). */
+export function canonicalAliasKind(kind: string, value: string): string | null {
+  const k = String(kind ?? "").trim().toLowerCase();
+  if (!k) return null;
+  if ((k === "url" || k === "social_profile") && URL_SHAPE.test(String(value ?? "").trim())) return "url";
+  const pivot = KIND_TO_PIVOT[k];
+  return pivot ?? null;
+}
+
+/**
+ * Collapse alias twins to one representative row each. The representative is
+ * the twin with the highest effective confidence — unless the analyst rejected
+ * any twin, in which case the rejected twin represents the pair so the report
+ * renders it FAILED (a rejection outranks a positive mark on the same identity,
+ * matching `buildDecisionSets`). The representative's `source` becomes the
+ * union of the twins' sources and `metadata.folded_kinds` records the
+ * spellings that were merged, so nothing about provenance is lost.
+ */
+export function foldAliasTwins(
+  artifacts: Artifact[],
+  reviews?: Record<string, ReviewAdjustment> | null,
+): Artifact[] {
+  const groups = new Map<string, Artifact[]>();
+  const order: string[] = [];
+  const passthrough: Artifact[] = [];
+  for (const a of artifacts) {
+    const canonical = canonicalAliasKind(a.kind, a.value);
+    const value = String(a.value ?? "").trim();
+    if (!canonical || !value) { passthrough.push(a); continue; }
+    const key = `${canonical}|${value}`;
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(a);
+    else { groups.set(key, [a]); order.push(key); }
+  }
+  const out: Artifact[] = [];
+  for (const key of order) {
+    const twins = groups.get(key)!;
+    // Only DIFFERENT kind spellings fold. Two `email` rows for the same address
+    // from two sources are two observations the corroboration logic counts —
+    // they stay separate rows, exactly as before.
+    const distinctKinds = new Set(twins.map((t) => String(t.kind ?? "").toLowerCase()));
+    if (twins.length === 1 || distinctKinds.size === 1) { out.push(...twins); continue; }
+    const rejected = twins.find((t) => isRejectedReview(reviews?.[t.id]));
+    const rep = rejected ?? twins.reduce((best, t) =>
+      effectiveConfidenceOrZero(t) > effectiveConfidenceOrZero(best) ? t : best, twins[0]);
+    const sources = new Set<string>();
+    const categories = new Set<string>();
+    for (const t of twins) {
+      for (const s of String(t.source ?? "").split(/\s*\+\s*/)) if (s.trim()) sources.add(s.trim());
+      const cat = (t.metadata as Record<string, unknown> | null)?.source_category;
+      for (const c of Array.isArray(cat) ? cat : cat != null ? [cat] : []) if (typeof c === "string" && c) categories.add(c);
+    }
+    const foldedKinds = Array.from(new Set(twins.filter((t) => t !== rep).map((t) => String(t.kind ?? "").toLowerCase())));
+    out.push({
+      ...rep,
+      source: Array.from(sources).join(" + ") || rep.source,
+      metadata: {
+        ...(rep.metadata ?? {}),
+        ...(categories.size ? { source_category: Array.from(categories) } : {}),
+        folded_kinds: foldedKinds,
+        folded_ids: twins.filter((t) => t !== rep).map((t) => t.id),
+      },
+    });
+  }
+  // Keep the original order: folded rows take the position of their first twin.
+  const firstIndex = new Map<string, number>();
+  artifacts.forEach((a, i) => { if (!firstIndex.has(a.id)) firstIndex.set(a.id, i); });
+  const merged = [...out, ...passthrough];
+  return merged.sort((x, y) => (firstIndex.get(x.id) ?? 0) - (firstIndex.get(y.id) ?? 0));
 }

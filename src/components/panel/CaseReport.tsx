@@ -12,6 +12,8 @@ import {
   YAxis,
 } from "recharts";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
+// One number, everywhere. See src/lib/display-confidence.ts.
+import { effectiveConfidence } from "@/lib/display-confidence";
 import { artifactsToSources, artifactsToClusterAudit, reportVerdict, type ReportVerdict } from "@/lib/audit/from-artifacts";
 import { checkIndependence, computeEffectiveSourceCount } from "@/lib/audit/source-independence";
 import { lintReport } from "@/lib/audit/confidence-linter";
@@ -25,7 +27,6 @@ import { AUTHORITY_HEADING, authorityStatement, type AuthoritativeFindings } fro
 import { tierInfo } from "@/lib/confidence-tier";
 import {
   labelForArtifact,
-  adjustedConfidence,
   buildIdentityClusters,
   buildToolAudit,
   inferToolGaps,
@@ -37,7 +38,7 @@ import {
   type ConfLabel,
   type ReviewAdjustment,
 } from "@/lib/intel";
-import { formatArtifactDisplayValue, buildIdentityRows, type IdentityRow } from "@/lib/report-hygiene";
+import { formatArtifactDisplayValue, buildIdentityRows, isClusterIneligible, type IdentityRow } from "@/lib/report-hygiene";
 import { toolActionLabel } from "@/lib/tool-display";
 import { tokenizeSourceChain } from "@/lib/report-source-labels";
 import { cn } from "@/lib/utils";
@@ -60,8 +61,11 @@ export type ReportType = "full" | "brief";
  * `ConfidenceRadar` — same tab, same object (`ReportTab.tsx:235` vs `:242`) —
  * honoured the verdict. These two accessors mirror `buildReportMarkdown`
  * (`intel.ts:1149-1150`) exactly, so the on-screen report and the markdown
- * export cannot drift: the label always goes through the review, and the
- * number goes through `adjustedConfidence` only when a verdict exists.
+ * export cannot drift: the label always goes through the review, and the number
+ * is `displayConfidence(a).effective` — the same value every other surface
+ * renders. (Until 2026-08-31 the number went through `adjustedConfidence` only
+ * when a verdict existed, which made the report agree with the Evidence BOARD on
+ * an unreviewed row and with the Evidence TABLE on a reviewed one.)
  *
  * No new policy is invented here. `labelForArtifact` and `evidenceStatus`
  * already take a review and already encode the semantics (dismissed/wrong =>
@@ -70,10 +74,15 @@ export type ReportType = "full" | "brief";
  */
 type Reviews = Record<string, ReviewAdjustment> | undefined;
 const revOf = (reviews: Reviews, a: Artifact): ReviewAdjustment => reviews?.[a.id];
-const confOf = (reviews: Reviews, a: Artifact): number | null => {
-  const r = revOf(reviews, a);
-  return r ? adjustedConfidence(a, r) : a.confidence;
-};
+// THE report's number, and it is now the same number as every other surface's.
+// This used to be `review ? adjustedConfidence(a, review) : a.confidence`, so the
+// report agreed with the Evidence BOARD on an unreviewed row and with the
+// Evidence TABLE on a reviewed one — a third pipeline that changed which of the
+// other two it matched depending on whether an analyst had clicked Confirm.
+// `reviews` is retained in the signature because callers pass it and because
+// review state still drives bucketing and status elsewhere in this file; it just
+// no longer moves the figure. See src/lib/display-confidence.ts.
+const confOf = (_reviews: Reviews, a: Artifact): number | null => effectiveConfidence(a);
 
 function statusOf(a: Artifact): string {
   const m = (a.metadata ?? {}) as Record<string, unknown>;
@@ -83,7 +92,19 @@ function bucket(a: Artifact, review?: ReviewAdjustment): "confirmed" | "probable
   const rawStatus = statusOf(a);
   const kind = a.kind.toLowerCase();
   if (kind === "contradiction" || rawStatus === "contradicted") return "contradiction";
-  if (kind === "excluded_collision" || rawStatus === "excluded") return "excluded";
+  // THE ENGINE'S OWN PREDICATE, not a re-derivation of it — same reasoning as
+  // `authorityFor` (src/lib/authority.ts). `evidenceStatus` below consults none
+  // of the collision flags, so without this gate a `possible_collision` row
+  // that also clears the corroboration bar reads "verified" and lands in this
+  // report's CONFIRMED bucket — while the Evidence board (via `authorityFor`)
+  // already demotes the identical row to quarantined. Same defect shape as
+  // #448, one layer up, at a call site that fix never reached (measured on the
+  // harness fixture: a possible_collision row with a caveat explaining it is a
+  // different, unrelated person rendered in "Confirmed Findings"). `isClusterIneligible`
+  // is a strict superset of the two ad hoc checks this replaced
+  // (`excluded_collision` kind and `status: "excluded"` are both covered by
+  // `isCollisionArtifact`), so this only WIDENS what gets excluded, never narrows it.
+  if (isClusterIneligible(a)) return "excluded";
   const status = evidenceStatus(a, review).status;
   if (status === "contradicted") return "contradiction";
   if (status === "rejected") return "excluded";
@@ -127,7 +148,7 @@ function ArtifactRow({ a, review }: { a: Artifact; review?: ReviewAdjustment }) 
         <div className="mt-1 text-eyebrow leading-snug text-muted-foreground">{status.basis}</div>
       </td>
       <td className="px-3 py-2 text-data">
-        <ConfidenceBar score={review ? adjustedConfidence(a, review) : a.confidence} showValue className="min-w-[5.5rem]" />
+        <ConfidenceBar score={effectiveConfidence(a)} showValue className="min-w-[5.5rem]" />
       </td>
       <td className="px-3 py-2 text-data text-muted-foreground whitespace-nowrap">
         {new Date(a.created_at).toLocaleDateString()}
@@ -213,6 +234,7 @@ function HunterNote({ children }: { children: React.ReactNode }) {
 
 const CONF_PILL: Record<ConfLabel, string> = {
   CONFIRMED: "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/40",
+  ATTESTED: "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))] border-dashed",
   CORRELATED: "text-[hsl(var(--confidence-high))]/90 border-[hsl(var(--confidence-high))]/30",
   INFERRED: "text-primary border-primary/40",
   VERIFY: "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid))]/40",
@@ -224,6 +246,7 @@ const CONF_PILL: Record<ConfLabel, string> = {
 // Map our internal labels to the reference vocabulary
 const CONF_DISPLAY: Record<ConfLabel, string> = {
   CONFIRMED: "CONFIRMED",
+  ATTESTED: "ANALYST-CONFIRMED",
   CORRELATED: "HIGH",
   INFERRED: "MEDIUM",
   VERIFY: "VERIFY",
@@ -303,9 +326,12 @@ function buildRegistrationRows(artifacts: Artifact[], reviews?: Reviews): Regist
 
 type HunterNoteItem = { text: string };
 
-function buildHunterNotes(artifacts: Artifact[], seedValue: string | null): HunterNoteItem[] {
+function buildHunterNotes(artifacts: Artifact[], seedValue: string | null, reviews?: Reviews): HunterNoteItem[] {
   const notes: HunterNoteItem[] = [];
-  const cluster = buildIdentityClusters(artifacts, seedValue);
+  // Cluster WITH the analyst's verdicts: these warnings are shown as analyst
+  // guidance, so deriving them from rows the analyst has dismissed tells them to
+  // chase a lead they already closed.
+  const cluster = buildIdentityClusters(artifacts, seedValue, reviews);
   for (const w of cluster.warnings.slice(0, 3)) notes.push({ text: w });
 
   const breaches = artifacts.filter((a) => isBreachKind(a.kind));
@@ -436,12 +462,16 @@ function clampScore(n: number): number {
 }
 
 function averageConfidence(artifacts: Artifact[], reviews?: Reviews): number {
-  // A rejected row may not strengthen a positive aggregate. `REVIEW_DELTA` has
-  // no `dismissed` entry (delta 0), so routing a dismissed row through
-  // `adjustedConfidence` swaps in the corroboration/direct-profile bonus the
-  // unreviewed branch never applies — dismissing could RAISE the average by up
-  // to +15. Excluding rather than clamping keeps the per-row number identical
-  // to EvidenceMatrixTab:41, and matches buildIdentityClusters (intel.ts:1865).
+  // A rejected row may not strengthen a positive aggregate, so it is EXCLUDED
+  // rather than clamped — which also matches buildIdentityClusters.
+  //
+  // The original reason for excluding was arithmetic: `confOf` used to route a
+  // reviewed row through `adjustedConfidence`, and since `REVIEW_DELTA` has no
+  // `dismissed` entry, dismissing a row swapped in a corroboration bonus the
+  // unreviewed branch never applied and could RAISE the average by up to +15.
+  // That mechanism is gone — `confOf` is now `min(stored, cap)` for every row,
+  // reviewed or not. The exclusion stays because the POLICY was always right on
+  // its own terms: a row the analyst rejected should not lift the case average.
   const vals = artifacts
     .filter((a) => !isRejectedReview(revOf(reviews, a)))
     .map((a) => confOf(reviews, a))
@@ -864,7 +894,7 @@ function buildBreachExposure(artifacts: Artifact[]): BreachRow[] {
     // Same label+value from two tools is one fact, not two.
     const seenReveal = new Set<string>();
     const dedupedReveal = reveal.filter((r) => {
-      const k = `${r.label} ${r.value}`;
+      const k = `${r.label}\u0000${r.value}`;
       if (seenReveal.has(k)) return false;
       seenReveal.add(k);
       return true;
@@ -958,7 +988,7 @@ export function CaseReport({
   const isBrief = reportType === "brief";
   const identity = useMemo(() => buildIdentityRows(artifacts, reviews), [artifacts, reviews]);
   const registrations = useMemo(() => buildRegistrationRows(artifacts, reviews), [artifacts, reviews]);
-  const hunterNotes = useMemo(() => buildHunterNotes(artifacts, seedValue), [artifacts, seedValue]);
+  const hunterNotes = useMemo(() => buildHunterNotes(artifacts, seedValue, reviews), [artifacts, seedValue, reviews]);
   const unknowns = useMemo(() => buildUnknowns(artifacts), [artifacts]);
   const risk = useMemo(() => computeRisk(artifacts), [artifacts]);
   const radar = useMemo(() => buildAnalyticRadar(artifacts, risk.level, reviews), [artifacts, risk.level, reviews]);
@@ -975,7 +1005,7 @@ export function CaseReport({
   // Honest confidence verdict: lint identity clusters for tier-over-statement /
   // unmet "Verified" gate, then roll lint + independence findings into one
   // CLEAN/ADVISORY/BLOCKED verdict. Integrity-critical (changes shown confidence).
-  const clusterAudits = useMemo(() => artifactsToClusterAudit(artifacts, seedValue), [artifacts, seedValue]);
+  const clusterAudits = useMemo(() => artifactsToClusterAudit(artifacts, seedValue, reviews), [artifacts, seedValue, reviews]);
   const confidenceFindings = useMemo(() => lintReport(clusterAudits), [clusterAudits]);
   const verdict = useMemo(() => reportVerdict(confidenceFindings, independenceFindings), [confidenceFindings, independenceFindings]);
   const avgConfidence = useMemo(() => averageConfidence(artifacts, reviews), [artifacts, reviews]);

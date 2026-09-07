@@ -195,6 +195,22 @@ export async function runSerusScan(
 ): Promise<{
   ok: boolean;
   status: "success" | "failed" | "timeout" | "error";
+  /**
+   * Set on the poll-exhaustion path only: the scan was initiated and never
+   * reached a terminal status inside the deadline, so this is an unfinished
+   * lookup rather than a provider failure. `classifyToolOutcome` reads the
+   * error text, not this flag, but callers that surface the result to an
+   * analyst need to be able to tell "we ran out of time" from "Serus said no".
+   *
+   * Declared here because the timeout branch below already returns it. It was
+   * missing from this signature, which is a real type hole: `deno check` on
+   * this file reports TS2353 "'skipped' does not exist in type" at the return.
+   * Nothing caught it because `tools/serus_core.ts` is reachable only from
+   * `tools/serus.ts`, which nothing in the runtime imports, so it is outside
+   * everything `deno check index.ts` walks — and the edge suite runs
+   * `--no-check`. See the PR body for the gap that leaves.
+   */
+  skipped?: boolean;
   scanId?: string;
   identifierType?: string;
   isBreached?: boolean;

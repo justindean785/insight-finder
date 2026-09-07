@@ -10,7 +10,10 @@ import {
   assert,
   assertEquals,
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { applyEvidenceCapsLegacyOccurrenceBaseline } from "./confidence.ts";
+import {
+  applyEvidenceCapsLegacyOccurrenceBaseline,
+  applyEvidenceCapsWithDistinctBreachIdentities,
+} from "./confidence.ts";
 
 Deno.test("compound breach label classifies as breach-derived, not unknown", () => {
   // The exact seed-email source from the gmansexybeast@att.net trace.
@@ -183,4 +186,69 @@ Deno.test("#119: NO false demotion — public_record without breach metadata is 
     "no breach signal → no breach class",
   );
   assertEquals(r.cap, 75);
+});
+
+// ── #497: a breach slug must not suppress OTHER genuinely independent
+// classes named in the SAME compound label. Narrower than "always split":
+// only recovers extra classes when the whole resolves to `breach`
+// specifically, so every other whole-label short-circuit (shared-host,
+// standalone-word matches, etc.) above is untouched. Mutation-verified: with
+// the `whole === "breach"` branch removed, "a breach slug joined with real
+// infra tools recovers the infra class" below fails with
+// `source_classes: ["breach"]` instead of including an infra sub-class.
+
+Deno.test("#497: a breach slug joined with real infra tools recovers the infra class", () => {
+  const r = applyEvidenceCapsWithDistinctBreachIdentities({
+    rawConfidence: 90,
+    sources: ["serus_darkweb_scan+whois_lookup+dns_records"],
+  });
+  assert(r.source_classes.includes("breach"), `expected breach, got ${r.source_classes.join(",")}`);
+  assert(
+    r.source_classes.some((c) => c.startsWith("infra")),
+    `expected an infra sub-class to survive, got ${r.source_classes.join(",")}`,
+  );
+});
+
+Deno.test("#497: a lone breach tool with a parenthetical qualifier is unaffected (not compound)", () => {
+  // No delimiter present — splitSourceLabels returns exactly one part, so this
+  // never enters the #497 recovery branch at all. Guards against a change that
+  // starts splitting single labels too.
+  const r = applyEvidenceCapsWithDistinctBreachIdentities({
+    rawConfidence: 90,
+    sources: ["serus_darkweb_scan (reveal:true)"],
+  });
+  assertEquals(r.source_classes, ["breach"]);
+});
+
+Deno.test("#497: the shared-host anti-dilution guard is unaffected — whole resolves to infra_shared_host, not breach", () => {
+  // Same fixture as "whole-string-first preserves shared-host downgrade"
+  // above. The #497 recovery branch only fires when whole === "breach", so
+  // this must classify and cap EXACTLY as before.
+  const r = applyEvidenceCapsWithDistinctBreachIdentities({
+    rawConfidence: 90,
+    sources: ["hackertarget/reverseiplookup"],
+  });
+  assertEquals(r.source_classes, ["infra_shared_host"]);
+  assertEquals(r.confidence, 35);
+});
+
+Deno.test("#497: a breach-plus-unknown compound still collapses to breach alone (nothing spurious recovered)", () => {
+  const r = applyEvidenceCapsWithDistinctBreachIdentities({
+    rawConfidence: 90,
+    sources: ["breach_check+some_unrecognized_provider"],
+  });
+  assertEquals(r.source_classes, ["breach"]);
+});
+
+Deno.test("#497: recovering an extra class can lift the cap when the recovered class is trusted", () => {
+  // court_record (cap 90) riding alongside a breach mention in one compound
+  // label must now corroborate, exactly as it would if the two had arrived as
+  // separate sources — the compound-string accident of formatting must not
+  // change the evidentiary outcome.
+  const r = applyEvidenceCapsWithDistinctBreachIdentities({
+    rawConfidence: 90,
+    sources: ["breach_check+pacer_docket"],
+  });
+  assert(r.source_classes.includes("breach"), r.source_classes.join(","));
+  assert(r.source_classes.includes("court_record"), r.source_classes.join(","));
 });

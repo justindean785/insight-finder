@@ -16,7 +16,8 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import { supabase } from "@/integrations/supabase/client";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
-import { GROUP_LABEL, type Group } from "@/lib/intel";
+import { GROUP_LABEL, type Group, type ReviewAdjustment } from "@/lib/intel";
+import { useReviewStates } from "@/lib/review";
 import {
   buildEntityGraph,
   type EdgeType,
@@ -48,6 +49,8 @@ const GROUP_COLOR: Record<Group, string> = {
   breach: "hsl(var(--kind-breach))",
   web: "hsl(var(--kind-web))",
   crypto: "hsl(var(--kind-crypto))",
+  affiliation: "hsl(var(--kind-identity))",
+  records: "hsl(var(--kind-web))",
   other: "hsl(var(--kind-other))",
 };
 
@@ -266,9 +269,22 @@ export function GraphTab({ threadId }: { threadId: string }) {
   // The real link-analysis model: edges from genuinely shared selectors
   // (email/phone/handle/ip/…), identity clusters, cross-cluster bridges, and a
   // deterministic layout — all computed in src/lib/entity-graph.ts.
+  // Analyst verdicts, loaded the same way ClustersTab does. Without them the
+  // graph re-clustered and re-linked rows the analyst had dismissed, so the
+  // link picture still asserted connections they had explicitly struck out.
+  const review = useReviewStates(threadId);
+  const reviews = useMemo(() => {
+    const m: Record<string, ReviewAdjustment> = {};
+    for (const a of items) {
+      const r = review.get(a.id);
+      if (r !== "new") m[a.id] = r;
+    }
+    return m;
+  }, [items, review]);
+
   const graph = useMemo<EntityGraph>(
-    () => buildEntityGraph(items, seed?.value ?? null, seed?.type ?? null),
-    [items, seed],
+    () => buildEntityGraph(items, seed?.value ?? null, seed?.type ?? null, reviews),
+    [items, seed, reviews],
   );
 
   const presentGroups = useMemo(() => {
@@ -384,9 +400,9 @@ export function GraphTab({ threadId }: { threadId: string }) {
   }
 
   return (
-    <div className="h-full flex flex-col min-h-0 rounded-2xl border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.015))] shadow-[0_24px_90px_-50px_rgba(0,0,0,0.98)]">
+    <div className="h-full flex flex-col min-h-0 rounded-2xl border border-white/8 bg-[linear-gradient(180deg,hsl(var(--film)/0.04),hsl(var(--film)/0.015))] shadow-[0_24px_90px_-50px_rgba(0,0,0,0.98)]">
       {/* Group filters + run-level warnings */}
-      <div className="shrink-0 border-b border-white/[0.08] px-2.5 py-2 sm:px-4 bg-[linear-gradient(180deg,rgba(255,255,255,0.03),transparent)]">
+      <div className="shrink-0 border-b border-white/[0.08] px-2.5 py-2 sm:px-4 bg-[linear-gradient(180deg,hsl(var(--film)/0.03),transparent)]">
         <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 sm:flex-wrap sm:overflow-visible">
           {presentGroups.map((g) => {
             const off = hidden.has(g);
@@ -447,7 +463,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
       </div>
 
       <div className="relative flex-1 min-h-0">
-        <div className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(circle_at_18%_14%,rgba(72,185,255,0.09),transparent_42%),radial-gradient(circle_at_82%_78%,rgba(255,255,255,0.06),transparent_40%)]" />
+        <div className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(circle_at_18%_14%,hsl(var(--brand)/0.12),transparent_42%),radial-gradient(circle_at_82%_78%,hsl(var(--intel-violet)/0.07),transparent_40%)]" />
         <ReactFlow
           nodes={rfNodes}
           edges={rfEdges}
@@ -483,7 +499,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
 
         {graph.stats.realEdgeCount === 0 && (
           <div className="pointer-events-none absolute inset-0 z-[5] grid place-items-center p-4">
-            <div className="max-w-md rounded-xl border border-white/10 bg-[linear-gradient(160deg,rgba(255,255,255,0.1),rgba(255,255,255,0.025)_55%)] px-4 py-3 text-center shadow-[0_20px_60px_-36px_rgba(0,0,0,0.95)] backdrop-blur-xl">
+            <div className="max-w-md rounded-xl border border-white/10 bg-[linear-gradient(160deg,hsl(var(--film)/0.1),hsl(var(--film)/0.025)_55%)] px-4 py-3 text-center shadow-[0_20px_60px_-36px_rgba(0,0,0,0.95)] backdrop-blur-xl">
               <div className="inline-flex items-center gap-1.5 text-micro font-semibold tracking-normal text-[hsl(var(--warning))]">
                 <AlertTriangle className="h-3.5 w-3.5" />
                 No durable links yet
@@ -499,7 +515,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
         )}
 
         {selectedNode && (
-          <div className="absolute top-3 right-3 z-10 w-[min(22rem,calc(100%-1.5rem))] rounded-2xl border border-white/12 bg-[linear-gradient(160deg,rgba(255,255,255,0.09),rgba(255,255,255,0.03)_48%,rgba(255,255,255,0.015))] p-3 shadow-[0_30px_100px_-42px_rgba(0,0,0,0.96)] backdrop-blur-xl">
+          <div className="absolute top-3 right-3 z-10 w-[min(22rem,calc(100%-1.5rem))] rounded-2xl border border-white/12 bg-[linear-gradient(160deg,hsl(var(--film)/0.09),hsl(var(--film)/0.03)_48%,hsl(var(--film)/0.015))] p-3 shadow-[0_30px_100px_-42px_rgba(0,0,0,0.96)] backdrop-blur-xl">
             <div className="flex items-start justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2">
                 <span
@@ -561,7 +577,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
           claim — a solid line asserting shared identity and a dashed one meaning
           "these merely sit on the same host" is the difference between a finding
           and a coincidence. */}
-      <div className="shrink-0 border-t border-white/[0.08] px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 bg-[linear-gradient(0deg,rgba(255,255,255,0.03),transparent)]">
+      <div className="shrink-0 border-t border-white/[0.08] px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 bg-[linear-gradient(0deg,hsl(var(--film)/0.03),transparent)]">
         {(Object.keys(EDGE_STYLE) as EdgeType[]).map((t) => (
           <span key={t} className="inline-flex items-center gap-1.5 text-data text-muted-foreground" title={EDGE_HINT[t]}>
             <svg width="18" height="6" viewBox="0 0 18 6" aria-hidden className="shrink-0">

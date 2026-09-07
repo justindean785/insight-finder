@@ -1,4 +1,5 @@
 import type { Artifact } from "@/hooks/useThreadArtifacts";
+import { toSourceStrings } from "@/lib/source-strings";
 import {
   labelForArtifact,
   buildIdentityClusters,
@@ -57,7 +58,7 @@ export interface ConfidenceProfile {
   limited: boolean;
 }
 
-const REPORT_SAFE_LABELS = new Set(["CONFIRMED", "CORRELATED"]);
+const REPORT_SAFE_LABELS = new Set(["CONFIRMED", "ATTESTED", "CORRELATED"]);
 const IDENTITY_KINDS = new Set(["name", "person", "email", "phone"]);
 const DAY = 24 * 60 * 60 * 1000;
 const clamp = (n: number) => Math.max(0, Math.min(100, Math.round(n)));
@@ -66,7 +67,7 @@ const clamp = (n: number) => Math.max(0, Math.min(100, Math.round(n)));
  * keyed by their first token) — mirrors the corroboration logic used elsewhere. */
 function sourceClasses(a: Artifact): Set<string> {
   const meta = (a.metadata ?? {}) as Record<string, unknown>;
-  const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
+  const metaSources = toSourceStrings(meta.sources);
   const all = [a.source, ...metaSources].filter(Boolean) as string[];
   return new Set(
     all.map((s) => (isBreachSource(s) ? "breach" : isUsernameSweepSource(s) ? "sweep" : s.toLowerCase().split(/[_:.]/)[0])),

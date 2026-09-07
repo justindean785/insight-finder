@@ -1,4 +1,5 @@
 import type { Artifact } from "@/hooks/useThreadArtifacts";
+import { toSourceStrings } from "@/lib/source-strings";
 import { isQuarantined } from "@/lib/quarantine";
 import {
   labelForArtifact,
@@ -120,6 +121,7 @@ function classLabel(cls: string): string {
 function statusFromLabel(label: ConfLabel): EvidenceDisplayStatus {
   switch (label) {
     case "CONFIRMED": return "verified";
+    case "ATTESTED": return "verified";
     case "CORRELATED": return "probable";
     case "INFERRED": return "needs_corroboration";
     case "VERIFY": return "needs_corroboration";
@@ -141,7 +143,7 @@ function sourceClasses(a: Artifact): string[] {
   if (Array.isArray(sc) && sc.length > 0) {
     return Array.from(new Set(sc.map((s) => String(s))));
   }
-  const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
+  const metaSources = toSourceStrings(meta.sources);
   const all = [a.source ?? null, ...metaSources].filter(Boolean) as string[];
   return Array.from(new Set(
     all.map((s) =>
@@ -196,7 +198,7 @@ export function evidenceStatus(a: Artifact, review?: ReviewAdjustment): Evidence
   const multi = classes.length >= 2;
   const kind = a.kind.toLowerCase();
 
-  const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
+  const metaSources = toSourceStrings(meta.sources);
   const allSources = [a.source ?? null, ...metaSources].filter(Boolean) as string[];
   const reputation = isReputationArtifact(a);
   // Threat-intel (ransomware-victim / org-was-hit) is review-only and must never

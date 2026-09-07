@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { isSubjectUnlinked, isQuarantined, quarantineSets, isInert, quarantineReason } from "@/lib/quarantine";
+// `quarantineSets` now takes its denial predicate injected. Pass the SHIPPED one so
+// these tests exercise the production boundary rather than a stand-in. The rows here
+// carry no collision flags, so `isClusterIneligible` reduces to `isQuarantined` for
+// them and every assertion below still means exactly what it meant before.
 import { isClusterIneligible } from "@/lib/report-hygiene";
 import { labelForArtifact, adjustedConfidence, buildReportMarkdown } from "@/lib/intel";
 import { evidenceStatus } from "@/lib/evidence-status";
@@ -107,7 +111,9 @@ describe("release — the predicate split", () => {
 
 describe("release — every authority boundary agrees", () => {
   it("label: restores CONFIRMED (already correct — pinned as the reference)", () => {
+    expect(labelForArtifact(quarantined(), "confirmed")).not.toBe("ATTESTED");
     expect(labelForArtifact(quarantined(), "confirmed")).not.toBe("CONFIRMED");
+    // corroborated row: evidence-derived CONFIRMED outranks the analyst rung
     expect(labelForArtifact(released(), "confirmed")).toBe("CONFIRMED");
   });
 
@@ -138,10 +144,10 @@ describe("release — every authority boundary agrees", () => {
     const norm = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
     const toPivot = (k: string) => (k === "email" ? "email" : k === "phone" ? "phone" : null);
 
-    const q = quarantineSets([quarantined()], norm, toPivot);
+    const q = quarantineSets([quarantined()], norm, toPivot, isClusterIneligible);
     expect(isInert("email:stranger example com", q)).toBe(true);
 
-    const r = quarantineSets([released()], norm, toPivot);
+    const r = quarantineSets([released()], norm, toPivot, isClusterIneligible);
     expect(isInert("email:stranger example com", r)).toBe(false);
   });
 
@@ -152,7 +158,7 @@ describe("release — every authority boundary agrees", () => {
     // resolves it to false because `linked` is non-empty for that key.
     const norm = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
     const toPivot = (k: string) => (k === "email" ? "email" : null);
-    const sets = quarantineSets([quarantined(), released()], norm, toPivot);
+    const sets = quarantineSets([quarantined(), released()], norm, toPivot, isClusterIneligible);
 
     expect(sets.quarantined.has("email:stranger example com")).toBe(true);
     expect(sets.linked.has("email:stranger example com")).toBe(true);

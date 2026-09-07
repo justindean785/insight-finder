@@ -11,7 +11,7 @@ import { FullPageLoader } from "@/components/ui/full-page-loader";
 import { supabase } from "@/integrations/supabase/client";
 import { MessageSquare, ArrowLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { isActiveThreadStatus } from "@/lib/thread-status";
+import { isRunningThread } from "@/lib/thread-status";
 import { extractDisplaySeed } from "@/lib/seed";
 import { buildWorkspaceTabCounts } from "@/lib/workspace-tab-counts";
 
@@ -61,7 +61,7 @@ export default function CaseViewPage() {
     (async () => {
       const { data, error } = await supabase
         .from("threads")
-        .select("id,title,status,seed_type,seed_value,updated_at")
+        .select("id,title,status,seed_type,seed_value,updated_at,run_started_at,last_heartbeat_at")
         .eq("id", threadId)
         .eq("user_id", user.id)
         .maybeSingle();
@@ -109,7 +109,9 @@ export default function CaseViewPage() {
 
   const tabCounts = buildWorkspaceTabCounts(items, activity.persistedTotal);
 
-  const running = isActiveThreadStatus(meta?.status ?? null);
+  // A thread that never started is not running, however "active" its status
+  // column looks — see isRunningThread / CLAUDE.md invariant I-1.
+  const running = isRunningThread(meta ?? null);
   // The stored title / seed_value can be the whole pasted run-prompt, which
   // overran the header and truncated mid-word. Pull the clean selector out of
   // the blob (same helper the report cover uses) for the heading, and keep the
@@ -120,7 +122,7 @@ export default function CaseViewPage() {
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <AppNav />
-      <div className="border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(0_0%_8%/0.6),hsl(0_0%_4%/0.46))] px-4 sm:px-8 py-4">
+      <div className="border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(var(--surface-2)/0.6),hsl(var(--surface-0)/0.46))] px-4 sm:px-8 py-4">
         <div className="mx-auto max-w-6xl flex flex-col sm:flex-row sm:items-center gap-3">
           <Link
             to="/cases"

@@ -61,3 +61,9 @@ release-checklist.html
 *.scan.csv
 scan-output/
 telemetry/
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/

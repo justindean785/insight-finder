@@ -18,19 +18,23 @@ import {
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { detectSeed, formatThreadTitle } from "@/lib/seed";
-import { checkCachedHitSafety, type ReviewState } from "@/lib/review";
+import { checkCachedHitSafety, useReviewStates, type ReviewState } from "@/lib/review";
+import { buildDecisionSets, isManualDispatchRefused } from "@/lib/analyst-decisions";
+import { KIND_TO_PIVOT } from "@/lib/intel";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
 import { isSubmitBlocked } from "@/lib/submit-guard";
 import { interpretReadinessProbe, type ReadinessBody } from "@/lib/readiness-probe";
-import { dedupeCards } from "@/lib/next-step-cards";
+import { dedupeCards, normalizeTarget } from "@/lib/next-step-cards";
 import { hasReportShape, joinAssistantTranscript, stripReasoningPerPart } from "@/lib/report-shape";
 import { findLastReportIndex, isReportMessage } from "@/lib/superseded-reports";
 import { dedupeCheckpoints } from "@/lib/chat-checkpoints";
 import { computePivots } from "@/lib/pivot-engine";
 import { sanitizeChatText } from "@/lib/sanitize-agent-text";
 import { scrollBehavior } from "@/lib/motion";
-import { deriveToolCharge, deriveToolPreview, deriveToolRuntime, deriveToolTone } from "@/lib/tool-run";
+import { fetchWithRetry } from "@/lib/fetch-retry";
+import { deriveToolCharge, deriveToolPreview, deriveToolRuntime, deriveToolTone, isNetworkDropError } from "@/lib/tool-run";
+import { isRunHeartbeatAlive } from "@/lib/stale-thread";
 import { shouldFollowChatScroll, shouldAdoptInitialMessages, CHAT_REENGAGE_THRESHOLD_PX } from "@/lib/chat-scroll";
 import {
   extractRecommendedPivots,
@@ -58,7 +62,6 @@ const FUNCTIONS_URL = osintAgentUrl(SUPABASE_URL, SUPABASE_PROJECT_ID);
 
 const FAIL_PREFIX = "__STATUS__:failed:";
 const CACHE_BANNER_TYPE = "data-investigation-cache";
-const RETRYABLE_HTTP_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 type NextStepSuggestion = {
   title: string;
@@ -107,26 +110,6 @@ function describeTransportError(err: unknown): string {
   if (status && status >= 500) return `Backend error (HTTP ${status}) — the OSINT agent encountered a server fault. Check Supabase function logs for details.`;
   if (/failed to fetch|networkerror|network request failed|load failed|dns/i.test(msg)) return "Network failure — cannot reach the scan backend. Verify your Supabase project is running and the function URL is correct.";
   return "Scan request failed before the stream started — check the browser console for transport details.";
-}
-
-async function fetchWithRetry(url: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  const maxAttempts = 3;
-  let lastErr: unknown = null;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      const res = await fetch(url, init);
-      if (!RETRYABLE_HTTP_CODES.has(res.status) || attempt === maxAttempts) return res;
-      const delayMs = 250 * Math.pow(2, attempt - 1);
-      await new Promise((r) => setTimeout(r, delayMs));
-      continue;
-    } catch (e) {
-      lastErr = e;
-      if (attempt === maxAttempts) throw e;
-      const delayMs = 250 * Math.pow(2, attempt - 1);
-      await new Promise((r) => setTimeout(r, delayMs));
-    }
-  }
-  throw lastErr ?? new Error("fetch retry exhausted");
 }
 
 function copyToClipboard(text: string, label = "Copied") {
@@ -998,7 +981,7 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
       <div className="flex w-full justify-end">
         <div
           data-speaker="analyst"
-          className="chat-card relative min-w-0 max-w-[min(100%,36rem)] px-4 py-2.5 text-[14px] leading-[1.6] break-words text-[hsl(0_0%_93%)]"
+          className="chat-card relative min-w-0 max-w-[min(100%,36rem)] px-4 py-2.5 text-[14px] leading-[1.6] break-words text-[hsl(var(--foreground))]"
           style={{
             overflowWrap: "break-word",
             fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "IBM Plex Sans", sans-serif',
@@ -1291,6 +1274,30 @@ function ChatWindowInner({
   const [input, setInput] = useState("");
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [stopping, setStopping] = useState(false);
+  // The SDK error THIS CLIENT's dropped stream produced, held BY IDENTITY while
+  // we treat it as a browser-connection fault rather than a failed run.
+  //
+  // Identity, not a boolean, and that is the load-bearing part. A flag says
+  // only "something is suppressed" and keeps saying it after `error` has moved
+  // on to a different, genuine fault — silently swallowing the next real
+  // failure. Holding the error object means the suppression is spent the moment
+  // the error changes or clears: the gate below compares it to the live `error`,
+  // so a later fault can never inherit an earlier drop's exemption.
+  //
+  // The ref mirrors the state because onError's async continuation reads this
+  // back after an await, where the state closure is stale. `markDropSuppressed`
+  // is the only writer, so the two cannot drift.
+  const suppressedDropErrorRef = useRef<Error | null>(null);
+  const [suppressedDropError, setSuppressedDropError] = useState<Error | null>(null);
+  const markDropSuppressed = useCallback((err: Error | null) => {
+    suppressedDropErrorRef.current = err;
+    setSuppressedDropError(err);
+  }, []);
+  // useChat's own `clearError`, reachable from the onError closure below. Held
+  // in a ref because `clearError` is destructured from the very call that
+  // receives onError — the same pattern this file already uses for `stop` and
+  // `isLoading`. Assigned every render, immediately after that destructure.
+  const clearErrorRef = useRef<() => void>(() => {});
   const failSavedRef = useRef(false);
   const unmountedRef = useRef(false);
   const readyProbedOnceRef = useRef(false);
@@ -1306,6 +1313,17 @@ function ChatWindowInner({
   // Targets tools have already been run against — the "already investigated"
   // signal that stops the rail re-suggesting a pivot that's already been run.
   const queriedTargets = useThreadQueriedTargets(threadId);
+  // Analyst decisions. They shape the "Next steps" rail (a rejected selector is
+  // never suggested, a Key one ranks first, a Recheck one is a verification
+  // task) and they GATE the pivot bus: a "Run this pivot" on a rejected
+  // selector is refused here at dispatch, not merely hidden from the cards.
+  const review = useReviewStates(threadId);
+  const decisionSets = useMemo(
+    () => buildDecisionSets(artifacts, review.map, normalizeTarget, (kind) => KIND_TO_PIVOT[kind.toLowerCase()] ?? null),
+    [artifacts, review.map],
+  );
+  const decisionSetsRef = useRef(decisionSets);
+  decisionSetsRef.current = decisionSets;
   const [seedValue, setSeedValue] = useState<string | null>(null);
   // Skipped pivots (normalized-target keys) so a lead the analyst dismissed in
   // the Pivots tab never reappears in the chat rail. Hydrated from localStorage
@@ -1369,7 +1387,7 @@ function ChatWindowInner({
     },
   }));
 
-  const { messages, sendMessage, status, error, setMessages, stop } = useChat({
+  const { messages, sendMessage, status, error, setMessages, stop, clearError } = useChat({
     id: threadId,
     messages: initial,
     transport,
@@ -1391,6 +1409,71 @@ function ChatWindowInner({
         toast.error(friendly);
         navigate("/auth");
         return;
+      }
+      // ── The stream dropped, but is the RUN dead? ───────────────────────────
+      // A dropped client connection is not a failed investigation. The run is
+      // deliberately not bound to req.signal and persists under waitUntil, so a
+      // backgrounded Safari tab or a phone switching networks yields "Load
+      // failed" here while the server finishes the report. Persisting the
+      // FAIL_PREFIX marker for that writes a permanent lie into the thread and
+      // invites a Retry that starts a SECOND concurrent run on the same thread.
+      //
+      // Liveness is decided by the HEARTBEAT ALONE. `status === "active"` is not
+      // evidence: it is the column default a blank thread is born with and the
+      // state a CPU-killed isolate leaves behind, so trusting it would report a
+      // dead run as "still running" — the precise failure this guard exists to
+      // avoid. Fails closed: on a read error, a missing heartbeat, or a stale
+      // one, we fall through and record the failure exactly as before, and the
+      // server's own stale-run recovery labels it Interrupted (invariant I-2).
+      if (isNetworkDropError(e)) {
+        // Claim the suppression SYNCHRONOUSLY, before the heartbeat read.
+        //
+        // The SDK calls onError WITHOUT awaiting it and writes
+        // `setStatus({ status: "error", error: e })` on the very next line, so
+        // a suppression set only after the await lands a whole network
+        // round-trip late — and for that entire window the analyst is shown a
+        // red "Investigation run failed" card with a Retry button over a run
+        // that is still working. Clicking it starts a SECOND concurrent run.
+        // Claimed here, this update and the SDK's error write batch into one
+        // render and the card never paints at all.
+        //
+        // Safe to claim before the answer is known because `isNetworkDropError`
+        // is the narrow half of the decision: any parsed HTTP status and every
+        // server-originated stream wording are already excluded, so nothing
+        // that reached the backend can get this far. The heartbeat is the
+        // second half, and if it does not prove the run alive the claim is
+        // released below and the failure is recorded exactly as before.
+        markDropSuppressed(e);
+        const { data: liveness } = await supabase
+          .from("threads")
+          .select("last_heartbeat_at")
+          .eq("id", threadId)
+          .maybeSingle();
+        if (isRunHeartbeatAlive(liveness?.last_heartbeat_at)) {
+          // Nothing was written, so a later genuine failure must still be able
+          // to record one.
+          failSavedRef.current = false;
+          // Don't merely HIDE the SDK's error — remove it from useChat's own
+          // store. Hiding it leaves a live error that outlives whatever
+          // component state is doing the hiding, so the card returns the moment
+          // those lifetimes diverge. Clearing makes the suppression exactly as
+          // durable as the store it clears, whatever that store's lifetime.
+          //
+          // Guarded on identity: if a NEW run started during the await, the
+          // reset effect has already released our claim and `error` belongs to
+          // that run — clearing it would swallow a fault we never adjudicated.
+          // (`clearError` is itself a no-op unless status is still "error",
+          // so a run merely in flight is never disturbed.)
+          if (suppressedDropErrorRef.current === e) clearErrorRef.current();
+          toast.warning(
+            "Connection dropped — the investigation is still running on the server. The report will appear here when it finishes.",
+          );
+          return;
+        }
+        // Not proven alive — a missing, unreadable or stale heartbeat is a
+        // genuine failure. Release the claim so the card renders and fall
+        // through to persist the marker, exactly as before this branch existed.
+        if (suppressedDropErrorRef.current === e) markDropSuppressed(null);
       }
       // Persist a failed assistant marker so reload shows the failed card
       await supabase.from("messages").insert({
@@ -1430,19 +1513,42 @@ function ChatWindowInner({
     }));
   }, [setMessages, threadId]);
 
+  clearErrorRef.current = clearError;
+
+  // True only while the error ON SCREEN is still the one we adjudicated as a
+  // harmless client drop over a live run. Derived rather than stored, so the
+  // suppression expires by construction: if `error` becomes a different fault,
+  // or clears, this is false again on that very render with nothing to reset.
+  const networkDropWhileAlive =
+    suppressedDropError !== null && suppressedDropError === error;
+
   // Reset fail guard on new turn
   useEffect(() => {
-    if (status === "submitted" || status === "streaming") failSavedRef.current = false;
-  }, [status]);
+    if (status === "submitted" || status === "streaming") {
+      failSavedRef.current = false;
+      // A new turn gets a fresh verdict: the previous turn's dropped connection
+      // must not keep suppressing a real failure card on this one.
+      markDropSuppressed(null);
+    }
+  }, [status, markDropSuppressed]);
 
-  // Re-seed the chat from the freshly-loaded DB state on (re)mount. useChat keys
-  // its message store by `id` (threadId) and that store SURVIVES an unmount, so
-  // the `messages: initial` seed above is a no-op when you navigate away during
-  // a run and come back — the chat then shows the stale store (often just your
-  // input, the aborted stream's partial content discarded) while the assistant
-  // work the server persisted via waitUntil sits unused in the DB. Applying the
-  // DB-loaded `initial` here makes the DB the source of truth on return, which
-  // also covers a run that finished while you were away (the realtime recovery
+  // Re-seed the chat from the freshly-loaded DB state on (re)mount.
+  //
+  // ⚠️ CORRECTION, MEASURED 2026-09-07 on `@ai-sdk/react@3.0.199`. This comment
+  // used to say the useChat store "SURVIVES an unmount", keyed by `id`. It does
+  // NOT, in this version: `useChat` builds its `Chat` inside a `useRef`, so
+  // messages, status AND error are per-mount and die with the component. There
+  // is no module-level store. The claim dates from an older SDK, and acting on
+  // it sends you looking for leaks across remounts that cannot happen here —
+  // verify before relying on it again (`network-drop-suppression.test.tsx`
+  // measures the lifetime, so an SDK upgrade that reintroduces a shared store
+  // fails loudly rather than silently).
+  //
+  // The effect is still needed, for a different reason: `initial` is loaded
+  // ASYNCHRONOUSLY, so the Chat constructed on first render was seeded with the
+  // pre-load value. Applying the DB-loaded `initial` here makes the DB the
+  // source of truth on return, which also covers a run that finished while you
+  // were away (the realtime recovery
   // subscription only catches INSERTs that land after you're back). We skip
   // while THIS client is actively streaming so a live run is never clobbered.
   //
@@ -1857,6 +1963,19 @@ function ChatWindowInner({
     const onRunPivot = (e: Event) => {
       const detail = (e as CustomEvent<{ threadId: string; value: string; type?: string; prompt?: string }>).detail;
       if (!detail || detail.threadId !== threadId) return;
+      // MANUAL DISPATCH GUARD. Every surface that runs a pivot — the Pivots
+      // tab, "queue all", the command palette, a Recheck launch — rides this
+      // bus, so this is the one place a rejected selector can be refused
+      // before it starts a run. Keyed by pivot type + normalized value, the
+      // same identity the engine and the backend guard use.
+      if (isManualDispatchRefused(
+        decisionSetsRef.current, detail.type, detail.value, normalizeTarget,
+        (kind) => KIND_TO_PIVOT[kind.toLowerCase()] ?? null,
+      )) {
+        console.warn("[review] refused manual dispatch of an analyst-rejected selector", { value: detail.value, type: detail.type });
+        toast.error(`"${detail.value}" was dismissed by the analyst — not dispatched. Reset its review to run it.`);
+        return;
+      }
       const prompt = detail.prompt ??
         `Pivot on ${detail.value}${detail.type ? ` (${detail.type})` : ""}. Run the next investigation step on this lead.`;
       void sendText(prompt);
@@ -2297,7 +2416,7 @@ function ChatWindowInner({
     // deduped, already-run-filtered and ranked. Chat only takes the top 3
     // still-actionable ("new") pivots; already-searched ones sink to the Pivots
     // tab. Recomputes whenever artifacts stream in or a new turn lands.
-    const ranked = computePivots({ artifacts, seedValue, reportPivots, skipSet: pivotSkip, queriedSet: queriedTargets });
+    const ranked = computePivots({ artifacts, seedValue, reportPivots, skipSet: pivotSkip, queriedSet: queriedTargets, reviews: review.map });
     for (const p of ranked.filter((candidate) => candidate.status === "new").slice(0, 3)) {
       seenLabels.add(p.actionLabel);
       out.push({
@@ -2326,7 +2445,7 @@ function ChatWindowInner({
     // "Review lead · Damien O Brien" and "Review lead · Damien O'Brien" surfaced
     // from the same source are one lead, not two. Keep the first (highest-ranked).
     return dedupeCards(out).slice(0, 4);
-  }, [isLoading, messages, artifacts, seedValue, reportPivots, pivotSkip, queriedTargets]);
+  }, [isLoading, messages, artifacts, seedValue, reportPivots, pivotSkip, queriedTargets, review.map]);
 
   return (
     <div className="chat-stage relative h-full min-w-0 overflow-hidden bg-background">
@@ -2336,7 +2455,7 @@ function ChatWindowInner({
         aria-hidden
         style={{
           background:
-            "radial-gradient(ellipse 80% 50% at 50% -10%, hsl(0 0% 100% / 0.045), transparent 55%), radial-gradient(ellipse 70% 40% at 50% 110%, hsl(0 0% 0% / 0.5), transparent 50%)",
+            "radial-gradient(ellipse 80% 50% at 50% -10%, hsl(var(--film) / 0.045), transparent 55%), radial-gradient(ellipse 70% 40% at 50% 110%, hsl(0 0% 0% / 0.5), transparent 50%)",
         }}
       />
       <div
@@ -2497,8 +2616,15 @@ function ChatWindowInner({
               — identical title, body, hint and buttons — which reads as two
               separate failures.
               The persisted message is the durable record and wins; this live
-              card is for a failure that has not been written to the thread. */}
-          {error && !isLoading && !hasPersistedFailure(messages) && (
+              card is for a failure that has not been written to the thread.
+
+              Third gate: a dropped CLIENT connection over a run the heartbeat
+              proved alive. useChat keeps its `error` set for that dropped fetch
+              regardless of what onError decided, so without this the analyst
+              gets the warning toast ("still running") AND a red failure card
+              with a Retry button — contradictory, and the Retry starts a second
+              concurrent run on a thread that is already working. */}
+          {error && !isLoading && !networkDropWhileAlive && !hasPersistedFailure(messages) && (
             <FailedRunCard reason={error.message} onRetry={retryLastUser} />
           )}
           {suggestions.length > 0 && (
@@ -2598,7 +2724,7 @@ function ChatWindowInner({
         )}
       </div>
 
-      <div className="relative z-10 border-t border-white/[0.06] bg-[linear-gradient(180deg,hsl(0_0%_7%/0.92),hsl(0_0%_3%/0.96))] px-4 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-7 sm:pt-4 sm:pb-5 backdrop-blur-xl">
+      <div className="relative z-10 border-t border-white/[0.06] bg-[linear-gradient(180deg,hsl(var(--surface-2)/0.92),hsl(var(--surface-0)/0.96))] px-4 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-7 sm:pt-4 sm:pb-5 backdrop-blur-xl">
         <div className="chat-column">
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2">

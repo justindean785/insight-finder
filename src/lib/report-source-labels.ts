@@ -153,3 +153,20 @@ export function humanizeSourceChain(
   }
   return out.length ? out.join(" + ") : fallback;
 }
+
+/**
+ * The tool that produced a row, as ONE grouping key. Source strings are
+ * free-form chains — "username_sweep", "username_sweep analysis",
+ * "Username_Sweep/Instagram", "rapidapi_breach_search (9 variants)",
+ * "hunter_email_verifier + rapidapi_breach_search" — and grouping on the raw
+ * string printed 34 near-duplicate Tool Coverage lines on one export. The key
+ * is the first snake_case slug in the first token, lowercased; free text with
+ * no slug ("LinkedIn", "seed") keys as its own trimmed lowercase token.
+ */
+export function primaryToolSlug(raw: string | string[] | null | undefined): string {
+  const first = tokenizeSourceChain(raw)[0] ?? "";
+  const t = first.trim();
+  if (!t) return "unknown";
+  const m = t.match(/[a-z0-9]+(?:_[a-z0-9]+)+/i);
+  return (m ? m[0] : t.replace(/\s*\(.*$/, "")).toLowerCase() || "unknown";
+}

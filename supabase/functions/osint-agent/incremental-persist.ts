@@ -71,6 +71,7 @@
  *  The underlying promise keeps running (held by `registerBackground`); this
  *  bound only stops a slow DB from stalling the investigation. */
 import { stripNulCharacters } from "./safety.ts";
+import { canonicalKind } from "./lib/kind-alias.ts";
 
 export const CHECKPOINT_AWAIT_MS = 4000;
 
@@ -212,9 +213,10 @@ export function emitSafeCheckpoint(rows: RowLike[] | null | undefined): Checkpoi
     .map((i) => ({ kind: i.kind, value: i.value, source: i.source, confidence: i.confidence }));
 }
 
-/** Stable dedup key for a finding (kind + normalized value). */
+/** Stable dedup key for a finding (CANONICAL kind + normalized value), so
+ *  `ip_address` and `ip` for one value are one key — see lib/kind-alias.ts. */
 export function checkpointKey(kind: string, value: string): string {
-  return `${kind.toLowerCase()}:${value.trim().toLowerCase()}`;
+  return `${canonicalKind(kind, value)}:${value.trim().toLowerCase()}`;
 }
 
 /**

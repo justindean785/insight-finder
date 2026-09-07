@@ -52,6 +52,38 @@ export function describeTransportError(err: unknown): string {
   return "Scan request failed before the stream started — check the browser console for transport details.";
 }
 
+/**
+ * The CLIENT's connection to the stream dropped — which says nothing about
+ * whether the RUN died.
+ *
+ * The osint-agent run is deliberately not bound to `req.signal` and drains its
+ * persistence branch under `EdgeRuntime.waitUntil`, so a browser losing the SSE
+ * stream (backgrounded Safari tab, phone changing networks, flaky wifi) leaves
+ * the investigation running to completion server-side. Treating that as a failed
+ * run is how a finished report ends up behind a red "Investigation run failed"
+ * card, with a junk failure row persisted into the thread forever.
+ *
+ * Deliberately NARROW, on two axes:
+ *
+ *   1. Any parsed HTTP status disqualifies. A 500/502/429 means the request
+ *      REACHED the backend and it answered badly — a real failure, and the
+ *      existing handling for it must not be bypassed.
+ *   2. Only browser-level fetch-transport failures match. Notably absent:
+ *      "terminated", "connection closed", "stream ended unexpectedly". Those
+ *      strings also arrive as SERVER-originated errors forwarded over the SSE
+ *      error channel (the edge writes `recovery_reason: stream_error: …` for
+ *      exactly these), so matching them would silence real backend faults.
+ *
+ * The listed phrases are the actual per-browser wordings for a dropped fetch:
+ * Chrome "Failed to fetch", Safari/WebKit "Load failed" and "The network
+ * connection was lost", Firefox "NetworkError when attempting to fetch resource".
+ */
+export function isNetworkDropError(err: unknown): boolean {
+  if (parseHttpStatusFromError(err) != null) return false;
+  const msg = String((err as { message?: unknown })?.message ?? err ?? "").toLowerCase();
+  return /failed to fetch|networkerror when attempting to fetch|network request failed|load failed|the network connection was lost|the internet connection appears to be offline/i.test(msg);
+}
+
 // A clean negative — the tool ran fine and simply found nothing (e.g.
 // `{ ok:false, error:"not found" }` or a provider 404). This is an EMPTY
 // outcome, not a fault. Mirrors the authoritative edge classifier

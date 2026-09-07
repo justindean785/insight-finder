@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { effectiveConfidenceOrZero } from "@/lib/display-confidence";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
@@ -14,7 +15,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { detectSeed } from "@/lib/seed";
-import { isActiveThreadStatus } from "@/lib/thread-status";
+import { isRunningThread } from "@/lib/thread-status";
 import { selectStaleActiveIds } from "@/lib/stale-thread";
 import { SUPPORT_MAILTO } from "@/lib/contact";
 import type { Database as SupabaseDatabase } from "@/integrations/supabase/types";
@@ -59,6 +60,10 @@ type Thread = {
   // doesn't enumerate (e.g. "failed_context_limit") and they must still render.
   status: string | null;
   seed_type: string | null;
+  // Run markers: an "active" row with neither of these never started (I-1), so
+  // it is a draft — not a live run, and not a candidate for the stale sweep.
+  run_started_at: string | null;
+  last_heartbeat_at: string | null;
 };
 
 type ThreadMetrics = {
@@ -153,7 +158,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
     const loadThreadsAndBrain = async () => {
       const { data } = await supabase
         .from("threads")
-        .select("id,title,updated_at,credits_used,cost_micro_usd,status,seed_type")
+        .select("id,title,updated_at,credits_used,cost_micro_usd,status,seed_type,run_started_at,last_heartbeat_at")
         .eq("user_id", user.id)
         .order("updated_at", { ascending: false });
       const threadRows = (data as Thread[] | null) ?? [];
@@ -222,7 +227,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         const m = agg[a.thread_id] ?? { artifacts: 0, breaches: 0, lowConf: 0 };
         m.artifacts++;
         if (isBreachKind(a.kind)) m.breaches++;
-        if ((a.confidence ?? 0) < 50) m.lowConf++;
+        if ((effectiveConfidenceOrZero(a)) < 50) m.lowConf++;
         agg[a.thread_id] = m;
       }
       setMetrics(agg);
@@ -461,7 +466,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
               surface is black, glass or grey, so a single filled tile carries
               the whole brand without competing with any evidence colour. */}
           <div className="relative grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-[9px] bg-[linear-gradient(145deg,hsl(var(--brand)),hsl(var(--brand-deep)))] shadow-[0_0_0_1px_hsl(var(--brand)/0.45),0_6px_18px_-8px_hsl(var(--brand)/0.75)] transition-transform duration-200 group-hover:scale-[1.04]">
-            <span aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-1/2 bg-[linear-gradient(180deg,hsl(0_0%_100%/0.28),transparent)]" />
+            <span aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-1/2 bg-[linear-gradient(180deg,hsl(var(--film)/0.28),transparent)]" />
             <SwarmMark className="relative h-4 w-4 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.4)]" />
           </div>
           <div className="min-w-0">
@@ -595,7 +600,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
                     t={t}
                     active={t.id === threadId}
                     onDelete={requestDelete}
-                    dim={!isActiveThreadStatus(t.status)}
+                    dim={!isRunningThread(t)}
                     m={metrics[t.id]}
                   />
                 ))}

@@ -148,6 +148,15 @@ jobs:
           }
           echo "OK: ${secdef} SECURITY DEFINER functions in public, none executable by anon or PUBLIC."
 
+      # Applying a CREATE INDEX proves the DDL parses. It does not prove the
+      # constraint refuses what it exists to refuse — and finding synthesis
+      # relies on that refusal as the backstop for a read-then-write its own
+      # code structurally cannot serialize. So drive it, against the schema the
+      # migrations just built. The script rolls itself back and carries its own
+      # anti-vacuous guard; see .github/ci/assert-synthesis-dedup.sql.
+      - name: Synthesis dedup index assertion
+        run: psql --set ON_ERROR_STOP=1 -f .github/ci/assert-synthesis-dedup.sql
+
   edge:
     name: Edge functions (deno test)
     runs-on: ubuntu-latest
@@ -165,3 +174,60 @@ jobs:
           deno-version: v2.x
       - name: Deno edge tests
         run: npm run test:edge
+
+  # ── Workspace e2e ────────────────────────────────────────────────────────
+  # Runs on pushes to main ONLY, not on pull requests — a deliberate cost call.
+  #
+  # This repo has had its shared Actions allowance exhausted once already: the
+  # Edge Health cron removed in #483 billed a ~10s curl as a full minute every
+  # 15 minutes and took CI down on every PR for ~70 hours. A browser job on
+  # every PR is the same shape of bill, so it is spent where it protects
+  # production instead: main is the branch Vercel deploys from.
+  #
+  # The trade, stated plainly so nobody discovers it during an incident: a PR
+  # can go green and merge while breaking the tab-reachability contract, and
+  # the failure surfaces on main AFTER the merge — a revert, not a block. If
+  # that becomes the wrong balance, the narrower fix is a path filter on the
+  # tab components and e2e/ rather than restoring it for every PR.
+  #
+  # Run it against a branch by hand any time: `npm run test:e2e`.
+  e2e:
+    name: Workspace e2e (playwright)
+    # The workflow triggers on pull_request and on push to main, so this is
+    # exactly "pushes to main".
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Cache the browser download rather than re-fetching ~140MB every run.
+      # Keyed on the lockfile because that is what pins the @playwright/test
+      # version, and a version bump needs a matching browser build.
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      # Only Chromium: every project in playwright.config.ts is Desktop Chrome.
+      # `--with-deps` still runs on a cache hit because the OS libraries live
+      # outside the cached directory.
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      # PLAYWRIGHT_CHROMIUM_PATH is deliberately NOT set here. It exists for
+      # sandboxes that pin an unmatched Chromium; a GitHub runner should use the
+      # browser Playwright just installed for itself.
+      - name: Workspace tab e2e
+        run: npm run test:e2e
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore

@@ -15,7 +15,8 @@
  *  - Known mirror/aggregator URLs are left to the audit lib's domain logic.
  */
 import type { Artifact } from "@/hooks/useThreadArtifacts";
-import { buildIdentityClusters, displayKind } from "@/lib/intel";
+import { buildIdentityClusters, displayKind, type ReviewAdjustment } from "@/lib/intel";
+import { effectiveConfidenceOrZero } from "@/lib/display-confidence";
 import { tierOf, type ClusterAudit, type ConfidenceFinding } from "./confidence-linter";
 import type { IndependenceFinding, Source, SourceType } from "./source-independence";
 
@@ -93,7 +94,11 @@ export function artifactsToSources(artifacts: Artifact[]): Source[] {
     origin: originOf(a),
     url: urlOf(a),
     retrievedAt: a.created_at,
-    confidence: a.confidence ?? 0,
+    // Effective, not raw: these Source rows feed CaseReport's audit panel and the
+    // confidence linter, whose whole job is to compare a declared tier against
+    // the evidence beneath it. Comparing a declared tier against UNCAPPED numbers
+    // would let a capped row argue for a tier the server had already refused.
+    confidence: effectiveConfidenceOrZero(a),
   }));
 }
 
@@ -104,8 +109,13 @@ export function artifactsToSources(artifacts: Artifact[]): Source[] {
 export function artifactsToClusterAudit(
   artifacts: Artifact[],
   seedValue: string | null,
+  /** Analyst verdicts by artifact id. Without these the audit re-clustered rows
+   *  the analyst had already dismissed and then linted the result, so a cluster
+   *  could be graded — and its tier justified — on evidence that had been struck
+   *  out. Optional to keep existing fixture-driven callers working. */
+  reviews?: Record<string, ReviewAdjustment>,
 ): ClusterAudit[] {
-  const { clusters } = buildIdentityClusters(artifacts, seedValue);
+  const { clusters } = buildIdentityClusters(artifacts, seedValue, reviews);
   return clusters
     .filter((c) => c.artifacts.length > 0)
     .map((c) => ({
@@ -115,7 +125,7 @@ export function artifactsToClusterAudit(
         claim: displayKind(a),
         value: a.value,
         source: a.source ?? "unknown",
-        confidence: a.confidence ?? 0,
+        confidence: effectiveConfidenceOrZero(a),
       })),
     }));
 }

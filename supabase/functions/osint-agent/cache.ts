@@ -11,12 +11,21 @@ import { tierForTool, modelForTool, type Tier } from "./models.ts";
 import { costForTool } from "./costs.ts";
 import { DEFAULT_TOOL_TTL_MS, NO_CACHE_TOOLS, redactSensitiveToolInput, TOOL_TTL_MS } from "./validation.ts";
 import { creditsCharged } from "./billing.ts";
-import { classifyToolOutcome } from "./tool-outcome.ts";
+import { classifyToolOutcome, isProvenEmptyResult } from "./tool-outcome.ts";
 import * as circuit from "./circuit.ts";
+// Union of both sides. #519 replaced this file's quarantine read with the paged
+// `loadRefusedArtifacts`, which absorbs what `buildRefusedKeys` did here, so that
+// symbol is deliberately NOT re-imported — it is unused in this module after the
+// merge (it remains exported for other callers). `main`'s rejected-dispatch path
+// (`dispatch-rejection.ts` + `loadReviewsForThread`) is a SEPARATE boundary that
+// runs alongside the quarantine read, not a competing implementation of it.
 import { dispatchTypeCandidates, isDispatchRefused, loadRefusedArtifacts, quarantineRefusal, reasonForKey } from "./lib/dispatch-quarantine.ts";
 import type { QuarantineRow } from "./lib/dispatch-quarantine.ts";
-import { guard } from "./guard.ts";
+import { buildRejectedDispatchKeys, isRejectedDispatch, rejectionRefusal } from "./lib/dispatch-rejection.ts";
+import { loadReviewsForThread, type ReviewDb } from "./reviews.ts";
+import { guard, takeCorrelateHint } from "./guard.ts";
 import { reserveToolCall } from "./orchestrator-budget.ts";
+import { isFinalizeWindowLiveLookupExempt } from "./orchestrator-finalize.ts";
 import {
   ALWAYS_ALLOW_TOOLS,
   analyzeWeakLead,
@@ -24,7 +33,9 @@ import {
   ensureCycle,
   finishCall,
   notePlanCall,
+  isPreProviderGate,
   noteRejectedCall,
+  refundPaidCall,
   scoreExpectedValue,
   startCall,
   type SelectorEvidenceSignal,
@@ -677,6 +688,42 @@ export function wrapToolsWithCache(
     }
     return refusedKeysPromise;
   };
+  // ---- ANALYST-REJECTION dispatch boundary --------------------------------------
+  // A `dismissed` / `wrong` verdict bound at every READ (reviews.ts) but never at
+  // DISPATCH: the prompt said DO NOT USE and nothing enforced it, so the model —
+  // or a manual "Run this pivot" — could still start a paid call on a selector
+  // the analyst had ruled out. Loaded ONCE per run and reused, keyed by
+  // `type:normalizedValue` from the artifact's kind (plus its selector-type
+  // alias), never by value alone. Rejected keys are derived from the rejected
+  // ROWS, so a re-record of the same selector under a new id is still refused.
+  //
+  // FAILS OPEN on a load error, matching the quarantine boundary above and for
+  // the same reason: this prevents wasted calls and contaminated pivots; it is
+  // not an authorization control, and refusing EVERY tool call on a transient
+  // review read would kill the run outright. The authoritative consumers
+  // (prompt block, salvage, cache, clustering, synthesis, recovery) all fail
+  // closed on the same load. The warning makes the open boundary observable.
+  let rejectedKeysPromise: Promise<Set<string>> | null = null;
+  const loadRejectedKeys = () => {
+    if (!rejectedKeysPromise) {
+      rejectedKeysPromise = (async () => {
+        try {
+          const reviews = await loadReviewsForThread(
+            adminDb as unknown as ReviewDb, ctx.investigationId, ctx.userId,
+          );
+          if (!reviews.ok) {
+            console.warn("[rejected-dispatch] review load failed (boundary open this run):", reviews.error);
+            return new Set<string>();
+          }
+          return buildRejectedDispatchKeys(reviews.rejectedRows, circuit.normalizeSelector);
+        } catch (e) {
+          console.warn("[rejected-dispatch] review load threw (boundary open this run):", e);
+          return new Set<string>();
+        }
+      })();
+    }
+    return rejectedKeysPromise;
+  };
 
   // Detect calls that didn't actually consume provider quota / credits so we
   // don't bill for them: disabled stubs (firecrawl_*), gated tools (intelbase
@@ -748,6 +795,11 @@ export function wrapToolsWithCache(
       statusCode: number | null = null,
       freeCall: boolean = false,
       inputJson: Record<string, unknown> | null = null,
+      // The tool payload this log line describes — the live result, or the REPLAYED
+      // result on a cache hit. Consulted ONLY by isProvenEmptyResult to pick the
+      // telemetry `outcome`; it never reaches the row, and never affects billing,
+      // caching, dedup, the circuit breaker, or what the model receives.
+      resultForOutcome: unknown = undefined,
     ) => {
       // Two distinct numbers, intentionally logged separately:
       //  • cost_micro_usd   — ATTRIBUTED list price. Logged for every paid,
@@ -765,7 +817,15 @@ export function wrapToolsWithCache(
       // rate AND falsely tripped the circuit breaker's consecutive-failure guard.
       // The logged `ok` column is relaxed to "not a hard failure" (skipped/empty
       // → true); the new `outcome` column keeps the ok/skipped/empty/failed split.
-      const outcome = ok ? "ok" : classifyToolOutcome(errorMsg, statusCode);
+      // Outcome precedence: an operational failure is classified from its error/status
+      // as before; a SUCCESS is additionally checked for a proven successful-negative
+      // (the provider ran fine and the target has no record) so it stops being logged
+      // as a genuine hit. `ok` itself is untouched — see `okStored` below, billing
+      // (creditsCharged keys off `ok`), the cache-write gate, and circuit.recordResult,
+      // all of which continue to see this call as the success it is.
+      const outcome = ok
+        ? (isProvenEmptyResult(name, resultForOutcome) ? "empty" : "ok")
+        : classifyToolOutcome(errorMsg, statusCode);
       const okStored = outcome !== "failed";
       const cost = (cached || freeCall) ? 0 : baseCost;
       const charged = creditsCharged({ ok, cached, free: freeCall, baseCost });
@@ -835,7 +895,7 @@ export function wrapToolsWithCache(
               // below still records tool_usage_log truthfully (ok=false).
               return tagTier({ ok: false, error: redacted, _tool_error: true }, tier, model);
             }
-            finally { logUsage(false, ok, Date.now() - t0, errInfo.errorMsg, errInfo.statusCode, isFreeCall(out)); }
+            finally { logUsage(false, ok, Date.now() - t0, errInfo.errorMsg, errInfo.statusCode, isFreeCall(out), null, out); }
           },
         };
       } else {
@@ -879,6 +939,16 @@ export function wrapToolsWithCache(
               `[quarantine-dispatch] refused ${name} on ${declared}:${sel}` +
               (why ? ` (${why})` : ""),
             );
+            return refusal;
+          }
+          // Same position, same shape, for the analyst's own rejections. `force`
+          // does not override it either: the analyst clears a rejection by
+          // resetting the review, not by re-running the call.
+          const rejectedKeys = await loadRejectedKeys();
+          const rejectedAs = isRejectedDispatch(rejectedKeys, candidateTypes, sel);
+          if (rejectedAs) {
+            const refusal = rejectionRefusal(name, rejectedAs, sel);
+            console.warn(`[rejected-dispatch] refused ${name} on ${rejectedAs}:${sel} (analyst rejected)`);
             return refusal;
           }
         }
@@ -965,7 +1035,7 @@ export function wrapToolsWithCache(
             await logUsage(true, true, Date.now() - t0, null, null, false, {
               input: inputJson,
               runtime: { ...cacheRuntime, cache_layer: "thread", stale_cache: false, source_created_at: new Date(mem.createdAt).toISOString() },
-            });
+            }, mem.output);
             return attachRuntimeMeta(markCached(mem.output, new Date(mem.createdAt).toISOString(), "thread"), {
               ...cacheRuntime,
               cache_layer: "thread",
@@ -1006,7 +1076,7 @@ export function wrapToolsWithCache(
                 await logUsage(true, true, Date.now() - t0, null, null, false, {
                   input: inputJson,
                   runtime: { ...cacheRuntime, cache_layer: "user", stale_cache: false, source_created_at: row.source_created_at ?? row.created_at },
-                });
+                }, output);
                 return attachRuntimeMeta(markCached(output, row.source_created_at ?? row.created_at, "user"), {
                   ...cacheRuntime,
                   cache_layer: "user",
@@ -1069,7 +1139,7 @@ export function wrapToolsWithCache(
                 await logUsage(true, true, Date.now() - t0, null, null, false, {
                   input: inputJson,
                   runtime: { ...cacheRuntime, cache_layer: "user", selector_reuse: true, stale_cache: false, source_created_at: row.source_created_at ?? row.created_at },
-                });
+                }, output);
                 return attachRuntimeMeta(markCached(output, row.source_created_at ?? row.created_at, "user"), {
                   ...cacheRuntime,
                   cache_layer: "user",
@@ -1115,7 +1185,11 @@ export function wrapToolsWithCache(
         // only called between model steps. A long/parallel step can still attempt new
         // lookups after the window opens; skip them here so CPU is reserved for the
         // record/report closeout. Recording tools are exempt.
-        if (ctx.shouldStopLiveLookups?.() && !ALWAYS_ALLOW_TOOLS.has(name)) {
+        if (
+          ctx.shouldStopLiveLookups?.() &&
+          !ALWAYS_ALLOW_TOOLS.has(name) &&
+          !isFinalizeWindowLiveLookupExempt(name)
+        ) {
           await logUsage(false, false, Date.now() - t0, "finalize window open; live lookup skipped", null, true, {
             input: inputJson,
             runtime: { ...runtimeMetaBase, rejection_reason: "finalize_window", rejection_source: "deadline", stale_cache: !!staleRecord },
@@ -1271,6 +1345,14 @@ export function wrapToolsWithCache(
           });
           ok = deriveOk(result);
           if (!ok) errInfo = extractToolError(result);
+          // PAID-CALL ACCOUNTING — the only place the reserved paid slot is
+          // released. `startCall` reserves at admission (atomically, so a parallel
+          // batch cannot overshoot); a tool that declined BEFORE contacting the
+          // provider issued no request and can have spent nothing, so its slot
+          // goes back. Keyed on the structural `provider_attempted: false` marker
+          // only — never on the outcome bucket, because `skipped` also covers
+          // rate-limits, 5xx and timeouts, all of which really did spend.
+          if (isPreProviderGate(result)) refundPaidCall(ctx.investigationId, costTierForTool(baseCost));
           // C-2: record minimax_correlate's FINAL outcome (post-timeout-race) so
           // memory_save can tell "correlate failed this cycle" apart from "correlate
           // never ran" — a timeout stub races the tool's own execute() and wins, so
@@ -1377,10 +1459,37 @@ export function wrapToolsWithCache(
             stale_cache: !!staleRecord,
             source_created_at: createdAtIso,
           },
-        });
+        }, result);
         if (AUTO_EVIDENCE_TOOLS.has(name)) {
           // Fire-and-forget: never let auto-evidence block the tool result.
           autoAppendToolEvidence(ctx.supabase, ctx, name, input, result).catch(() => {});
+        }
+        // ---- Correlate hint delivery -------------------------------------------
+        // The hint used to ride ONLY on a record_artifacts result. Measured on
+        // build 3d5130e (thread 15ebf7d4): the model called record_artifacts once,
+        // as call 22 of 23, right before memory_save ended the run. The pass was
+        // genuinely due by then — so the hint fired correctly and arrived with no
+        // fan-out left to influence. A trigger delivered through a channel the
+        // model only opens at the end is not a trigger.
+        //
+        // So it also rides the ordinary results the model reads mid-run. Attached
+        // ONLY here, on the live-success path: a failure, a skip, a cache hit and a
+        // finalize-window refusal all return earlier and are untouched, so this can
+        // never dress up a non-result as carrying a directive. `takeCorrelateHint`
+        // latches once per correlate cycle, so it is a single directive rather than
+        // a banner on every payload.
+        //
+        // Recording tools are excluded HERE because record_artifacts surfaces the
+        // hint on its own result — but it now takes it through the SAME latch, so
+        // there is exactly one delivery per cycle whichever surface reaches the
+        // model first. (Review caught the earlier version: record_artifacts called
+        // the UNLATCHED correlateNudge(), so excluding recording tools from this
+        // path did nothing to stop a second, ungoverned delivery.)
+        if (ok && !ALWAYS_ALLOW_TOOLS.has(name) && result && typeof result === "object" && !Array.isArray(result)) {
+          const hint = takeCorrelateHint();
+          if (Object.keys(hint).length > 0) {
+            return { ...(result as Record<string, unknown>), ...hint } as typeof result;
+          }
         }
         return result;
       },

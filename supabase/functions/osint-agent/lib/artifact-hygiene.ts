@@ -1,3 +1,4 @@
+import { canonicalKind } from "./kind-alias.ts";
 // lib/artifact-hygiene.ts — write-path accuracy gates for `record_artifacts`.
 //
 // Measured on a real run (thread 2d0dcd03, build 8c6184b): 54 persisted
@@ -48,8 +49,11 @@ export function artifactDedupKey(input: {
   value: string;
   source?: string | null;
 }): string {
+  // The KIND component is canonical (lib/kind-alias.ts) so `ip_address` and
+  // `ip` for one value cannot both persist. The VALUE is still whole and
+  // unparsed — the warning above stands.
   return JSON.stringify([
-    input.kind,
+    canonicalKind(input.kind, input.value),
     input.value,
     (input.source ?? "").trim().toLowerCase(),
   ]);
@@ -200,4 +204,176 @@ function nullResultResidue(input: {
   s = s.replace(NULL_RESULT_NOUN_RE, " ");
   s = s.replace(NULL_RESULT_FILLER_RE, " ");
   return s.replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+const EMAIL_SELECTOR_RE = /\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b/i;
+
+/** Pull the selector a breach row is ABOUT — email, handle, or seed token. */
+export function extractBreachSelector(value: string): string | null {
+  const raw = (value ?? "").trim();
+  if (!raw) return null;
+  const email = raw.match(EMAIL_SELECTOR_RE)?.[0];
+  if (email) return email.toLowerCase();
+  const summary = raw.match(/^Breach exposure:\s*([^(]+)/i)?.[1];
+  if (summary) {
+    const s = summary.replace(/\s*[-—]\s*.*$/, "").trim().toLowerCase();
+    if (s.length >= 2) return s;
+  }
+  const beforeSep = raw.split(/\s*[—-]\s+/)[0]?.trim().toLowerCase();
+  if (beforeSep && beforeSep.length >= 2 && !beforeSep.includes(":")) return beforeSep;
+  return null;
+}
+
+/** Normalize the corpus/provider label for breach_exposure dedup. Mirrors auto-persist's `via`. */
+export function normalizeBreachVia(value: string, source?: string | null): string {
+  const paren = (value ?? "").match(/\(([a-z0-9_]+)\)\s*$/i)?.[1];
+  if (paren) return paren.toLowerCase();
+  const v = (value ?? "").toLowerCase();
+  if (/serus|darkweb|dark-web/.test(v)) return "serus_darkweb";
+  if (/\bleakcheck\b/.test(v)) return "leakcheck";
+  if (/\bhibp\b/.test(v)) return "hibp_style";
+  const src = (source ?? "").trim().toLowerCase();
+  if (/rapidapi/.test(src)) return "rapidapi";
+  if (/breach[_ ]?check/.test(src)) return "breach_check";
+  if (/dark[- ]?web|serus/.test(src)) return "serus_darkweb";
+  if (/leakcheck/.test(src)) return "leakcheck";
+  if (/hibp/.test(src)) return "hibp_style";
+  if (/oathnet/.test(src)) return "oathnet";
+  const slug = src.replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+  return slug || "unknown";
+}
+
+/**
+ * G6 — one breach exposure row per (selector, provider).
+ *
+ * Measured on satans.owl@gmail.com (2026-09-01): the model called
+ * `record_artifacts` with six+ prose rows for the SAME email from the SAME
+ * provider (two Serus summaries, three rapidapi corpus lines) ON TOP OF the
+ * auto-persist summary rows. G5 keys the full prose string, so every paraphrase
+ * is a distinct row and the Evidence board floods.
+ *
+ * This key is SELECTOR + VIA only — the same shape auto-persist already uses
+ * (`Breach exposure: ${selector} (${via})`). Different providers (hibp vs serus
+ * vs leakcheck) stay distinct; repeated prose for the same provider collapses.
+ */
+export function breachExposureCanonicalKey(input: {
+  kind: string;
+  value: string;
+  source?: string | null;
+}): string | null {
+  if ((input.kind ?? "").trim().toLowerCase() !== "breach_exposure") return null;
+  const selector = extractBreachSelector(input.value);
+  if (!selector) return null;
+  const via = normalizeBreachVia(input.value, input.source);
+  return `breach_exposure:${selector}:${via}`;
+}
+
+/** Stable summary value aligned with auto-persist's collapsed breach rows. */
+export function breachExposureSummaryValue(selector: string, via: string): string {
+  return `Breach exposure: ${selector} (${via})`;
+}
+
+export type RecordArtifactBatchItem = {
+  kind: string;
+  value: string;
+  confidence?: number;
+  source?: string;
+  metadata?: Record<string, unknown>;
+};
+
+/**
+ * G6 batch pass — merge duplicate breach_exposure rows before validation.
+ * Original prose is retained in metadata.breach_detail_lines for disclosure.
+ */
+export function collapseBreachExposureBatch<T extends RecordArtifactBatchItem>(artifacts: T[]): T[] {
+  const passthrough: T[] = [];
+  const groups = new Map<string, T[]>();
+  for (const a of artifacts) {
+    const key = breachExposureCanonicalKey({ kind: a.kind, value: a.value, source: a.source ?? null });
+    if (!key) {
+      passthrough.push(a);
+      continue;
+    }
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(a);
+    else groups.set(key, [a]);
+  }
+  if (groups.size === 0) return artifacts;
+  const merged: T[] = [...passthrough];
+  for (const [key, items] of groups) {
+    if (items.length === 1) {
+      merged.push(items[0]!);
+      continue;
+    }
+    const selector = extractBreachSelector(items[0]!.value) ?? "unknown";
+    const via = key.split(":").slice(2).join(":") || normalizeBreachVia(items[0]!.value, items[0]!.source);
+    const detailLines = items.map((i) => i.value.trim()).filter(Boolean);
+    const best = items.reduce((a, b) => ((b.confidence ?? 0) > (a.confidence ?? 0) ? b : a));
+    const meta: Record<string, unknown> = { ...(best.metadata ?? {}) };
+    const prior = Array.isArray(meta.breach_detail_lines) ? meta.breach_detail_lines as string[] : [];
+    meta.breach_detail_lines = [...prior, ...detailLines];
+    meta.breach_detail_merged_count = detailLines.length;
+    meta.breach_exposure_collapsed = true;
+    merged.push({
+      ...best,
+      value: breachExposureSummaryValue(selector, via),
+      metadata: meta,
+    } as T);
+  }
+  return merged;
+}
+
+/** G7 — stealer-log password strings recorded as kind=hash from oathnet. */
+export function isStealerCredentialHashRow(input: { kind: string; source?: string | null }): boolean {
+  if ((input.kind ?? "").trim().toLowerCase() !== "hash") return false;
+  return /oathnet|stealer/i.test(input.source ?? "");
+}
+
+const MAX_STEALER_HASH_LABELS = 12;
+
+/**
+ * G7 batch pass — one summary row per stealer source instead of N hash rows.
+ * Measured on satans.owl@gmail.com: eight `Houdini*`/`MilkHoudini*` strings from
+ * a single oathnet_stealer_search call, each at confidence 60.
+ */
+export function collapseStealerHashBatch<T extends RecordArtifactBatchItem>(artifacts: T[]): T[] {
+  const passthrough: T[] = [];
+  const batches = new Map<string, T[]>();
+  for (const a of artifacts) {
+    if (!isStealerCredentialHashRow({ kind: a.kind, source: a.source ?? null })) {
+      passthrough.push(a);
+      continue;
+    }
+    const src = (a.source ?? "stealer").trim().toLowerCase();
+    const bucket = batches.get(src);
+    if (bucket) bucket.push(a);
+    else batches.set(src, [a]);
+  }
+  if (batches.size === 0) return artifacts;
+  const merged: T[] = [...passthrough];
+  for (const [src, items] of batches) {
+    if (items.length === 1) {
+      merged.push(items[0]!);
+      continue;
+    }
+    const credentials = [...new Set(items.map((i) => i.value.trim()).filter(Boolean))].sort();
+    const labels = credentials.slice(0, MAX_STEALER_HASH_LABELS);
+    const suffix = credentials.length > labels.length ? ` (+${credentials.length - labels.length} more)` : "";
+    const best = items.reduce((a, b) => ((b.confidence ?? 0) > (a.confidence ?? 0) ? b : a));
+    const meta: Record<string, unknown> = { ...(best.metadata ?? {}) };
+    meta.stealer_credentials = credentials;
+    meta.stealer_credential_count = credentials.length;
+    meta.stealer_hash_collapsed = true;
+    merged.push({
+      ...best,
+      value: `Stealer-log credentials (${credentials.length}): ${labels.join(", ")}${suffix}`,
+      metadata: meta,
+    } as T);
+  }
+  return merged;
+}
+
+/** Pre-validation batch collapse for record_artifacts (G6 then G7). */
+export function collapseRecordArtifactsBatch<T extends RecordArtifactBatchItem>(artifacts: T[]): T[] {
+  return collapseStealerHashBatch(collapseBreachExposureBatch(artifacts));
 }
