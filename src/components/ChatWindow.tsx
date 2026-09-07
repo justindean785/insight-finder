@@ -33,7 +33,8 @@ import { computePivots } from "@/lib/pivot-engine";
 import { sanitizeChatText } from "@/lib/sanitize-agent-text";
 import { scrollBehavior } from "@/lib/motion";
 import { fetchWithRetry } from "@/lib/fetch-retry";
-import { deriveToolCharge, deriveToolPreview, deriveToolRuntime, deriveToolTone } from "@/lib/tool-run";
+import { deriveToolCharge, deriveToolPreview, deriveToolRuntime, deriveToolTone, isNetworkDropError } from "@/lib/tool-run";
+import { isRunHeartbeatAlive } from "@/lib/stale-thread";
 import { shouldFollowChatScroll, shouldAdoptInitialMessages, CHAT_REENGAGE_THRESHOLD_PX } from "@/lib/chat-scroll";
 import {
   extractRecommendedPivots,
@@ -1273,6 +1274,11 @@ function ChatWindowInner({
   const [input, setInput] = useState("");
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [stopping, setStopping] = useState(false);
+  // Set when THIS CLIENT's stream dropped while the server-side run was proven
+  // alive by a fresh heartbeat. useChat still holds an `error` for the dropped
+  // fetch, but that error describes the browser's connection, not the run — so
+  // the live FailedRunCard below is suppressed for it. Cleared on the next turn.
+  const [networkDropWhileAlive, setNetworkDropWhileAlive] = useState(false);
   const failSavedRef = useRef(false);
   const unmountedRef = useRef(false);
   const readyProbedOnceRef = useRef(false);
@@ -1385,6 +1391,38 @@ function ChatWindowInner({
         navigate("/auth");
         return;
       }
+      // ── The stream dropped, but is the RUN dead? ───────────────────────────
+      // A dropped client connection is not a failed investigation. The run is
+      // deliberately not bound to req.signal and persists under waitUntil, so a
+      // backgrounded Safari tab or a phone switching networks yields "Load
+      // failed" here while the server finishes the report. Persisting the
+      // FAIL_PREFIX marker for that writes a permanent lie into the thread and
+      // invites a Retry that starts a SECOND concurrent run on the same thread.
+      //
+      // Liveness is decided by the HEARTBEAT ALONE. `status === "active"` is not
+      // evidence: it is the column default a blank thread is born with and the
+      // state a CPU-killed isolate leaves behind, so trusting it would report a
+      // dead run as "still running" — the precise failure this guard exists to
+      // avoid. Fails closed: on a read error, a missing heartbeat, or a stale
+      // one, we fall through and record the failure exactly as before, and the
+      // server's own stale-run recovery labels it Interrupted (invariant I-2).
+      if (isNetworkDropError(e)) {
+        const { data: liveness } = await supabase
+          .from("threads")
+          .select("last_heartbeat_at")
+          .eq("id", threadId)
+          .maybeSingle();
+        if (isRunHeartbeatAlive(liveness?.last_heartbeat_at)) {
+          // Nothing was written, so a later genuine failure must still be able
+          // to record one.
+          failSavedRef.current = false;
+          setNetworkDropWhileAlive(true);
+          toast.warning(
+            "Connection dropped — the investigation is still running on the server. The report will appear here when it finishes.",
+          );
+          return;
+        }
+      }
       // Persist a failed assistant marker so reload shows the failed card
       await supabase.from("messages").insert({
         thread_id: threadId,
@@ -1425,7 +1463,12 @@ function ChatWindowInner({
 
   // Reset fail guard on new turn
   useEffect(() => {
-    if (status === "submitted" || status === "streaming") failSavedRef.current = false;
+    if (status === "submitted" || status === "streaming") {
+      failSavedRef.current = false;
+      // A new turn gets a fresh verdict: the previous turn's dropped connection
+      // must not keep suppressing a real failure card on this one.
+      setNetworkDropWhileAlive(false);
+    }
   }, [status]);
 
   // Re-seed the chat from the freshly-loaded DB state on (re)mount. useChat keys
@@ -2503,8 +2546,15 @@ function ChatWindowInner({
               — identical title, body, hint and buttons — which reads as two
               separate failures.
               The persisted message is the durable record and wins; this live
-              card is for a failure that has not been written to the thread. */}
-          {error && !isLoading && !hasPersistedFailure(messages) && (
+              card is for a failure that has not been written to the thread.
+
+              Third gate: a dropped CLIENT connection over a run the heartbeat
+              proved alive. useChat keeps its `error` set for that dropped fetch
+              regardless of what onError decided, so without this the analyst
+              gets the warning toast ("still running") AND a red failure card
+              with a Retry button — contradictory, and the Retry starts a second
+              concurrent run on a thread that is already working. */}
+          {error && !isLoading && !networkDropWhileAlive && !hasPersistedFailure(messages) && (
             <FailedRunCard reason={error.message} onRetry={retryLastUser} />
           )}
           {suggestions.length > 0 && (

@@ -19,6 +19,7 @@
  * is still writing. The evidence itself is unaffected (artifacts persist
  * incrementally); this only corrects the run's terminal status.
  */
+import { hasRunMarker, type ThreadRunMarkers } from "@/lib/thread-status";
 
 /**
  * No live run goes this long without a single persisted write. Sits comfortably
@@ -26,6 +27,37 @@
  * gap, so a genuinely-running scan is never reconciled out from under itself.
  */
 export const STALE_ACTIVE_MS = 3 * 60_000;
+
+/**
+ * How fresh `last_heartbeat_at` must be for a run to count as STILL ALIVE.
+ *
+ * Deliberately the server's own bar: recoverStaleActiveThreads treats a run as
+ * dead past ~75s, so using the same number keeps client and backend from
+ * disagreeing about the same thread. Past this line the server will itself write
+ * `finished` + `recovery_reason` and the UI renders "Interrupted" — the honest
+ * label — so the client never needs to claim a run is alive after the server has
+ * given up on it.
+ */
+export const RUN_HEARTBEAT_ALIVE_MS = 75_000;
+
+/**
+ * Is the backend still pulsing this run's heartbeat?
+ *
+ * FAILS CLOSED, and the failing-closed is the whole point. `status === 'active'`
+ * is NOT a liveness signal — it is exactly the state a CPU-killed isolate leaves
+ * behind, and the state a never-started blank thread is born in. Answering
+ * "alive?" from the status column is how you tell an analyst their dead run is
+ * "still running in the background". Only a recent heartbeat proves a live run.
+ */
+export function isRunHeartbeatAlive(
+  lastHeartbeatAt: string | null | undefined,
+  now: number = Date.now(),
+): boolean {
+  if (!lastHeartbeatAt) return false;
+  const t = new Date(lastHeartbeatAt).getTime();
+  if (!Number.isFinite(t)) return false;
+  return now - t <= RUN_HEARTBEAT_ALIVE_MS;
+}
 
 /** True when a thread is still "active" but has been silent long enough that its
  *  run must have died without finalizing. Pure — exported for tests. */
@@ -42,9 +74,19 @@ export function isStaleActiveThread(
 }
 
 /** Ids of the threads in `rows` whose active run has gone stale and should be
- *  reconciled to "finished". Pure — exported for tests. */
+ *  reconciled to "finished". Pure — exported for tests.
+ *
+ *  A thread with NO run marker is excluded, mirroring the backend's own refusal
+ *  to recover one (CLAUDE.md invariant I-1). Without that check this sweep read
+ *  a never-started blank thread — born `active` from the column default, its
+ *  `updated_at` frozen at creation and therefore instantly "stale" — as a dead
+ *  run and wrote `finished` over it. That is the same lie as calling it Running,
+ *  just in the other direction: it reports a completed investigation that never
+ *  happened. Drafts are neither running nor finished; they are untouched. */
 export function selectStaleActiveIds<
-  T extends { id: string; status: string | null; updated_at: string },
+  T extends { id: string; status: string | null; updated_at: string } & ThreadRunMarkers,
 >(rows: T[], now: number = Date.now()): string[] {
-  return rows.filter((t) => isStaleActiveThread(t.status, t.updated_at, now)).map((t) => t.id);
+  return rows
+    .filter((t) => hasRunMarker(t) && isStaleActiveThread(t.status, t.updated_at, now))
+    .map((t) => t.id);
 }
