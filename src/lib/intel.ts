@@ -1997,6 +1997,69 @@ export function normalizeHandle(raw: string): string {
 }
 
 /**
+ * Generic role addresses that must never link an email to a handle.
+ *
+ * Operator-specified. Exact match on the lowercased local-part; these are
+ * mailbox roles, not people, and linking them would union every organisation in
+ * the corpus into one entity.
+ */
+const GENERIC_EMAIL_LOCAL_PARTS = new Set([
+  "info", "admin", "contact", "hello", "support", "noreply", "no-reply",
+  "postmaster", "webmaster", "mail", "help", "team", "sales", "billing",
+]);
+
+/** Minimum local-part length before an email may imply a handle. */
+const MIN_EMAIL_HANDLE_LOCAL_PART = 8;
+
+/**
+ * The handle an email address implies, or null when the guard refuses it.
+ *
+ * WHY THIS EXISTS. An email emitted `email:<address>` and a profile emitted
+ * `handle:<username>` — different keyspaces, so `vernjjulian@gmail.com` and
+ * `hackerrank.com/vernjjulian` could never union. Measured on production thread
+ * `b4e575a6`: three artifacts carrying the same literal token landed in three
+ * clusters, so no cluster reached the two independent source classes CONFIRMED
+ * requires, and the engine adjudicated zero findings on a case whose answer was
+ * already in the table. Corpus-wide: 17 findings across 10,933 artifacts.
+ *
+ * THE GUARD IS THE WHOLE DESIGN. Emitting a handle for every email would merge
+ * every `info@` in the corpus into one person. Both conditions must pass, and
+ * the length floor is measured on the RAW lowercased local-part, before
+ * `normalizeHandle` strips separators.
+ *
+ * The returned key is normalised, because it has to land in the SAME keyspace
+ * the handle artifacts use or the merge it exists to enable cannot happen.
+ *
+ * Emission only. This adds a merge key; it does not touch confidence, caps or
+ * the scoring chain.
+ */
+export function emailHandleKey(email: string): string | null {
+  const at = email.indexOf("@");
+  if (at <= 0) return null;
+  const local = email.slice(0, at).trim().toLowerCase();
+  if (local.length < MIN_EMAIL_HANDLE_LOCAL_PART) return null;
+  if (GENERIC_EMAIL_LOCAL_PARTS.has(local)) return null;
+  const norm = normalizeHandle(local);
+  // THE FLOOR IS MEASURED TWICE, ON PURPOSE. `normalizeHandle` strips `_ . -`,
+  // so a local-part can clear the raw floor and land far below it: `m.newman`,
+  // `t.sipply`, `dr_orian`, `chad-lfc`, `it.slife` are 8 raw characters and 7
+  // after normalisation (all five are real production rows, measured
+  // 2026-09-07 across the artifact corpus; 7 distinct local-parts, 8 rows).
+  // Since the key that actually unions is the NORMALISED one, checking only
+  // the raw length lets a 7-character initial+surname stub — the shape most
+  // likely to collide across unrelated people — become a merge key.
+  //
+  // This SUBSUMES the raw check above — normalisation only ever shortens, so
+  // `norm >= 8` implies `local >= 8` and no input can reach production through
+  // one and not the other. A mutation run confirms it: deleting the raw check
+  // kills no test. It is kept because the operator's rule is stated over both
+  // forms and a reader should not have to re-derive the implication; do not
+  // "discover" it later as dead code and drop it silently.
+  if (norm.length < MIN_EMAIL_HANDLE_LOCAL_PART) return null;
+  return norm || null;
+}
+
+/**
  * Flatten metadata cross-link values (string or string[]) into trimmed,
  * non-empty strings, for unioning clusters on concrete shared selectors a
  * record carries about its owner (an email row's `metadata.phone`, etc.).
@@ -2055,7 +2118,11 @@ export function buildIdentityClusters(
   // fuzzy/text path — which is what enforces the T1-2 §8 safety rule: clusters
   // only merge on handle / email / phone / shared-infrastructure, never on
   // display names, bios, or other free text.
-  type SignalHit = { key: string; signal: MergeSignal; raw: string; platform: string | null };
+  // `derived` marks a hit the artifact did NOT observe: the handle key an EMAIL
+  // implies from its own local-part (see emailHandleKey). It unions like any
+  // other key, but it is a restatement of the email's own string, not a second
+  // observation — so the cap logic below has to be able to tell the two apart.
+  type SignalHit = { key: string; signal: MergeSignal; raw: string; platform: string | null; derived?: true };
   const signalsFor = (a: Artifact): SignalHit[] => {
     const hits: SignalHit[] = [];
     const kind = a.kind.toLowerCase();
@@ -2065,7 +2132,12 @@ export function buildIdentityClusters(
       ? meta.platform.trim().toLowerCase()
       : (a.source ?? null);
 
-    if (kind === "email" && v) hits.push({ key: `email:${v.toLowerCase()}`, signal: "EMAIL_MATCH", raw: v, platform });
+    if (kind === "email" && v) {
+      hits.push({ key: `email:${v.toLowerCase()}`, signal: "EMAIL_MATCH", raw: v, platform });
+      // The local-part is a handle. See emailHandleKey for the guard.
+      const eh = emailHandleKey(v);
+      if (eh) hits.push({ key: `handle:${eh}`, signal: "HANDLE_MATCH", raw: v, platform, derived: true });
+    }
     if (kind === "phone" && v) hits.push({ key: `phone:${v.toLowerCase()}`, signal: "PHONE_MATCH", raw: v, platform });
 
     // Handle-bearing signals: the value of username/handle artifacts, plus a
@@ -2095,7 +2167,10 @@ export function buildIdentityClusters(
     // `handle:` / `address:` namespace as the value-based keys above so a
     // metadata reference and the standalone artifact converge.
     for (const e of collectStrings(meta.email, meta.emails)) {
-      if (e.includes("@")) hits.push({ key: `email:${e.toLowerCase()}`, signal: "EMAIL_MATCH", raw: e, platform });
+      if (!e.includes("@")) continue;
+      hits.push({ key: `email:${e.toLowerCase()}`, signal: "EMAIL_MATCH", raw: e, platform });
+      const eh = emailHandleKey(e);
+      if (eh) hits.push({ key: `handle:${eh}`, signal: "HANDLE_MATCH", raw: e, platform, derived: true });
     }
     for (const p of collectStrings(meta.phone, meta.phones)) {
       if (p.replace(/\D/g, "").length >= 7) hits.push({ key: `phone:${p.toLowerCase()}`, signal: "PHONE_MATCH", raw: p, platform });
@@ -2210,6 +2285,47 @@ export function buildIdentityClusters(
       for (const k of buckets[target].keys) keyToIdx.set(k, target);
     }
   }
+
+  /**
+   * How many pieces would this group fall into WITHOUT the derived email→handle
+   * links? Same union-find as the bucket pass above, run over observed keys only.
+   *
+   * `> 1` means the derived key is LOAD-BEARING: the only thing joining those
+   * pieces is that an email's local-part spells the same string as a handle.
+   */
+  const componentsWithoutDerivedKeys = (group: Artifact[]): number => {
+    const comps: { keys: Set<string>; n: number }[] = [];
+    const keyOwner = new Map<string, number>();
+    for (const a of group) {
+      const keys = signalsFor(a)
+        .filter((h) => !h.derived)
+        .map((h) => h.key)
+        .filter((k) => !sharedInfraKeys.has(k));
+      const hits = new Set<number>();
+      for (const k of keys) {
+        const i = keyOwner.get(k);
+        if (i !== undefined) hits.add(i);
+      }
+      if (hits.size === 0) {
+        const idx = comps.push({ keys: new Set(keys), n: 1 }) - 1;
+        for (const k of keys) keyOwner.set(k, idx);
+        continue;
+      }
+      const indices = Array.from(hits).sort((x, y) => x - y);
+      const target = indices[0];
+      comps[target].n += 1;
+      keys.forEach((k) => comps[target].keys.add(k));
+      for (let i = 1; i < indices.length; i++) {
+        const src = comps[indices[i]];
+        comps[target].n += src.n;
+        src.n = 0;
+        src.keys.forEach((k) => comps[target].keys.add(k));
+        src.keys.clear();
+      }
+      for (const k of comps[target].keys) keyOwner.set(k, target);
+    }
+    return comps.filter((c) => c.n > 0).length;
+  };
 
   // Build descriptive clusters and split by geographic conflict.
   const summarize = (group: Artifact[]): Omit<IdentityCluster, "id" | "label" | "matchesSeedLocation"> => {
@@ -2327,9 +2443,36 @@ export function buildIdentityClusters(
     // lead, not deleted. What remains lifts the cap because each names a person
     // or a durable personal selector: an email or phone in the cluster, an
     // EMAIL_MATCH / PHONE_MATCH merge, or a record carrying an identifying field.
+    //
+    // ⛔ AND AN EMAIL IS NOT CORROBORATION OF THE HANDLE IT IS SPELLED FROM.
+    //
+    // `emailHandleKey` lets an email union with a same-named handle. That link
+    // is one string compared with itself: `vernjjulian@gmail.com` reaching
+    // `hackerrank.com/vernjjulian` says the two names match, not that the two
+    // accounts are one person. Measured on production thread `b4e575a6`
+    // (2026-09-07): `oathnet_lookup(5307105091)` -> the email ->
+    // `username_sweep(vernjjulian)` 19 seconds later — the sweep hits EXIST
+    // because the local-part was pivoted, so counting them back as
+    // corroboration of the email is circular. Corpus-wide, 95 (thread,
+    // local-part) pairs union this way, and five of them carry the derivation
+    // in the source string itself (`derived_from_email`, `email_localpart`,
+    // `seed_derivation`, `derived from email … (local-part)`).
+    //
+    // So when the derived key is LOAD-BEARING — remove it and the cluster falls
+    // apart — the email door to `hasIdentityCorroboration` is shut and the
+    // handle-only cap stands. Everything else still lifts it: a phone, a
+    // PHONE_MATCH, an identity-bearing record, and any email whose tie to the
+    // cluster survives without the derived key (a shared `email:` address, a
+    // metadata cross-link, a phone in common).
+    //
+    // NOTE THE BLAST RADIUS: derived keys did not exist before the email→handle
+    // link was added, so a group that was ever connected without them stays at
+    // one component and is untouched. This can only reach clusters that link
+    // itself created.
+    const derivedLinkIsLoadBearing = componentsWithoutDerivedKeys(group) > 1;
     const hasIdentityCorroboration =
-      emails.length > 0 || phones.length > 0 ||
-      signalsPresent.has("EMAIL_MATCH") || signalsPresent.has("PHONE_MATCH") ||
+      (!derivedLinkIsLoadBearing && (emails.length > 0 || signalsPresent.has("EMAIL_MATCH"))) ||
+      phones.length > 0 || signalsPresent.has("PHONE_MATCH") ||
       hasIdentityRecord;
 
     // Handle-only / username-only cluster → cap into the VERIFY band. Platform
