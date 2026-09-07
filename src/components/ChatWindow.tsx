@@ -1274,11 +1274,6 @@ function ChatWindowInner({
   const [input, setInput] = useState("");
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [stopping, setStopping] = useState(false);
-  // Set when THIS CLIENT's stream dropped while the server-side run was proven
-  // alive by a fresh heartbeat. useChat still holds an `error` for the dropped
-  // fetch, but that error describes the browser's connection, not the run — so
-  // the live FailedRunCard below is suppressed for it. Cleared on the next turn.
-  const [networkDropWhileAlive, setNetworkDropWhileAlive] = useState(false);
   const failSavedRef = useRef(false);
   const unmountedRef = useRef(false);
   const readyProbedOnceRef = useRef(false);
@@ -1368,7 +1363,7 @@ function ChatWindowInner({
     },
   }));
 
-  const { messages, sendMessage, status, error, setMessages, stop } = useChat({
+  const { messages, sendMessage, status, error, setMessages, stop, clearError } = useChat({
     id: threadId,
     messages: initial,
     transport,
@@ -1416,7 +1411,16 @@ function ChatWindowInner({
           // Nothing was written, so a later genuine failure must still be able
           // to record one.
           failSavedRef.current = false;
-          setNetworkDropWhileAlive(true);
+          // Clear the SDK's own error state rather than a local React boolean.
+          // useChat keys its store by threadId and that store — `error`
+          // included — SURVIVES an unmount (see the note on the DB-reseed
+          // effect below), but component state does not: a plain `useState`
+          // flag resets on remount, so navigating away and back would bring
+          // the stale dropped-connection error back with it and re-render the
+          // FailedRunCard, Retry button and all. Clearing `error` at the
+          // source makes the suppression as durable as the thing it
+          // suppresses.
+          clearError();
           toast.warning(
             "Connection dropped — the investigation is still running on the server. The report will appear here when it finishes.",
           );
@@ -1465,9 +1469,6 @@ function ChatWindowInner({
   useEffect(() => {
     if (status === "submitted" || status === "streaming") {
       failSavedRef.current = false;
-      // A new turn gets a fresh verdict: the previous turn's dropped connection
-      // must not keep suppressing a real failure card on this one.
-      setNetworkDropWhileAlive(false);
     }
   }, [status]);
 
@@ -2548,13 +2549,17 @@ function ChatWindowInner({
               The persisted message is the durable record and wins; this live
               card is for a failure that has not been written to the thread.
 
-              Third gate: a dropped CLIENT connection over a run the heartbeat
-              proved alive. useChat keeps its `error` set for that dropped fetch
-              regardless of what onError decided, so without this the analyst
-              gets the warning toast ("still running") AND a red failure card
-              with a Retry button — contradictory, and the Retry starts a second
-              concurrent run on a thread that is already working. */}
-          {error && !isLoading && !networkDropWhileAlive && !hasPersistedFailure(messages) && (
+              A dropped CLIENT connection over a run the heartbeat proved
+              alive is not rendered here at all: onError calls the SDK's own
+              `clearError()` for that case, so `error` itself is already
+              undefined by the time this renders — durably, across an
+              unmount/remount, since it lives in useChat's per-threadId
+              store rather than component state. Without that, the warning
+              toast ("still running") and a red failure card with a Retry
+              button would both be live at once — contradictory, and the
+              Retry would start a second concurrent run on a thread that is
+              already working. */}
+          {error && !isLoading && !hasPersistedFailure(messages) && (
             <FailedRunCard reason={error.message} onRetry={retryLastUser} />
           )}
           {suggestions.length > 0 && (

@@ -73,14 +73,27 @@ describe("network-drop branch wiring in ChatWindow.onError", () => {
     expect(body.slice(guard)).toContain("failSavedRef.current = false");
   });
 
-  it("suppresses the live FailedRunCard for a drop over a live run", () => {
-    // useChat keeps `error` set for the dropped fetch whatever onError decided,
-    // so without this gate the analyst sees a "still running" toast and a red
-    // failure card with a Retry that would start a SECOND concurrent run.
-    expect(SRC).toContain("!networkDropWhileAlive && !hasPersistedFailure(messages)");
+  it("suppresses the live FailedRunCard for a drop over a live run by clearing the SDK error itself", () => {
+    // A plain component-state flag (the old `networkDropWhileAlive` boolean)
+    // resets on remount, but useChat's `error` for this threadId does NOT —
+    // it lives in the SDK's own per-id store, which survives an unmount. A
+    // suppression that outlives the error it suppresses must be written to
+    // that same store, not to React state, or navigating away and back
+    // resurrects the stale error and the FailedRunCard (and its Retry, which
+    // would start a SECOND concurrent run) along with it.
+    const body = onErrorBody();
+    const guard = body.indexOf("isRunHeartbeatAlive(");
+    expect(body.slice(guard)).toContain("clearError()");
+    // The render gate no longer needs its own suppression flag — clearing
+    // the SDK error already makes `error` falsy for this case.
+    expect(SRC).not.toContain("networkDropWhileAlive");
+    expect(SRC).toContain("{error && !isLoading && !hasPersistedFailure(messages) && (");
   });
 
-  it("clears the suppression on the next turn", () => {
-    expect(SRC).toContain("setNetworkDropWhileAlive(false)");
+  it("destructures clearError from the same useChat call whose error it clears", () => {
+    const useChatCall = SRC.indexOf("useChat({");
+    expect(useChatCall).toBeGreaterThan(-1);
+    const destructure = SRC.slice(Math.max(0, useChatCall - 200), useChatCall);
+    expect(destructure).toContain("clearError");
   });
 });
