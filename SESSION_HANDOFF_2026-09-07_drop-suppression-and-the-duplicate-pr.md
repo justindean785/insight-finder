@@ -5,6 +5,41 @@
 
 ---
 
+## 0 · ADDENDUM 2026-09-07T13:30Z — the edge function was deployed
+
+Written after the rest of this document. **It supersedes every "no deploy" statement below.**
+
+The operator's real complaint was that merged work was not visible in his scans. Diagnosed: since
+the live build `7b0138d` (2026-09-03) exactly **one** functional backend commit had landed on main
+and it had never been deployed — **#542's backend half**. Its frontend half shipped on merge and
+improved the *display*; the generation side lives in the edge function, so scans kept producing
+20–50 quarantined rows per bare-name lookup.
+
+**Deployed. `/health` build moved `7b0138d` → `eab3668`, VERIFIED, ledger recorded, `deploy/live`
+published.** `main` is `43ae2db`. Nothing is undeployed.
+
+What went live: `NAME_ONLY_HARVEST_COLLAPSE_CAP = 12` in `auto-persist-findings.ts` — a bare-name
+lookup returning more than 12 quarantined identity rows collapses into one `bulk_corpus_harvest`
+summary row.
+
+**The hard gate did its job and must not be weakened back.** `npm run verify:deploy` failed on the
+first run with `mirror_tree_differs`, so the deploy stopped and no Lovable message was sent. The
+cause was 16 canonical-only *test* files. `CLAUDE.md` dismisses that as a "known cosmetic gap" — but
+it left the one gate protecting deploys **permanently yellow**, unable to distinguish the cosmetic
+gap from real drift, which is precisely what it exists to catch (11 Lovable-authored commits landed
+on the mirror on 2026-08-29 and were caught only by reading the diff by hand). Verified nothing
+existed only in the mirror, synced the tests — not deployed, zero runtime effect — and the gate now
+reports `mirror tree -> equal`. **Keep it that way.**
+
+Two corrections to §6a below, measured after it was written:
+
+- **#547 needs NO edge deploy.** Its single `supabase/functions/` change is a pure comment block in
+  `finding-synthesis-sweep.ts` — zero executable change. It needs the migration applied, nothing else.
+- **The `artifacts_synthesis_cluster_uniq` index does not exist in production.** Merging #547's
+  migration does not create it; applying it is a separate step, and Lovable owns the database.
+
+---
+
 ## 1 · Exact state at handoff
 
 | Axis | Value | How measured |

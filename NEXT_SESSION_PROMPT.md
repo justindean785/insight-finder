@@ -12,7 +12,7 @@ git fetch origin main && git log --oneline -5 origin/main
 curl -s "https://skzqwbyvmwqarfgfvyky.supabase.co/functions/v1/osint-agent?health=1"
 ```
 
-**Expect `main` = `a19f065` and live edge build = `7b0138d`.** If either moved, another session has
+**Expect `main` = `43ae2db` and live edge build = `eab3668`.** If either moved, another session has
 worked this repo — read the newest `SESSION_HANDOFF_*.md` first. That has now happened three times,
 and on 2026-09-07 it produced **two conflicting PRs for one task** (#548 and #551).
 
@@ -30,13 +30,20 @@ Read, in order:
 
 | Axis | Value |
 |---|---|
-| `origin/main` | `a19f0653c8155413dc029797673933cc5b452868` |
-| Live `osint-agent` build | `7b0138d` — **no edge deploy since 2026-09-03** |
-| Vercel production | `dpl_7aNx7yjbVAdpAgy1xnzAyuT1biAp`, READY, SHA `a19f065`, alias `insight-finder-sandy.vercel.app` |
+| `origin/main` | `43ae2db` (after the 2026-09-07 edge deploy; #551 merged at `a19f065`) |
+| Live `osint-agent` build | **`eab3668`** — deployed 2026-09-07T13:30Z. `main` and the live edge build are IN SYNC; nothing is undeployed |
+| Vercel production | READY on `main`, alias `insight-finder-sandy.vercel.app` (re-check the SHA — main moved after that deployment) |
 | Frontend suite | **1918 passed / 1 skipped / 155 files** |
 | Lint | 0 errors, 11 pre-existing `react-refresh` warnings |
 | Open PRs | **9** (8 draft, #502 non-draft) |
 | Mirror `HEAD` | `68521e8` "Fixed chat error handling" — Lovable-authored, unsynced |
+
+**Deployed 2026-09-07T13:30Z** (build `eab3668`): #542's backend half — a bare-name lookup
+returning more than 12 quarantined identity rows now collapses into one `bulk_corpus_harvest`
+summary row instead of 20–50 individual rows. Its frontend half had shipped days earlier; the
+generation side had not, which is why scans kept flooding the board. **If an analyst reports the
+flood is still happening, check whether the collapse cap is firing on that seed shape — do not
+assume it is a deploy problem, the deploy is verified.**
 
 `/health` carries nine checks. **Read `detail`, not just `ok`** — `cache_sweep` and `synthesis` both
 report `ok:true, detail:"disabled"`. `ok:true` does not mean it ran.
@@ -118,7 +125,7 @@ mention this.
 |---|---|---|---|---|---|
 | **#550** unify "verified" count across Overview/Evidence/Report | **CLEAN** | 6 | 0 | no | Vercel on merge. **No deploy.** |
 | **#549** recover corroborating classes a compound breach label discards (closes #497) | **CLEAN** | 2 | **2** | no | **Needs mirror sync + edge deploy + `/health` SHA move** |
-| **#547** finding-synthesis dedup key as a partial unique index | **CLEAN** | 4 | 1 | **yes** | Migration + edge deploy |
+| **#547** finding-synthesis dedup key as a partial unique index | **CLEAN** | 4 | 1 (comment-only) | **yes** | Migration only — **no** edge deploy |
 | **#516** account-deletion slice of #502, shipped dark | CLEAN | 8 | 0 | yes | — |
 | **#529** analyst-operable quarantine release | **CONFLICT** | 3 | 0 | no | rebase first |
 | **#519** page the dispatch-boundary read | **CONFLICT** | 9 | **9** | no | rebase first |
@@ -126,9 +133,11 @@ mention this.
 | **#541** 2026-09-03 handoff doc | — | — | — | — | superseded by the 09-07 handoff; close or merge |
 | **#552** 2026-09-07 handoff doc | — | — | — | — | this session's record |
 
-**Suggested order:** #550 (zero risk, ships immediately) → #549 (first edge deploy in days; follow
-the CLAUDE.md recipe exactly and confirm the `/health` SHA moves) → #547 (migration; validate in CI
-first). Then rule on **#502 vs #516** — do not keep both — and rebase #529/#519 before deciding.
+**Suggested order:** #550 (zero risk, ships to Vercel on merge) → #549 (needs the full edge-deploy
+recipe; confirm the `/health` SHA moves off `eab3668`) → #547 (migration only — its one
+`supabase/functions/` change is a pure comment block, so it needs **no** edge deploy; and note the
+index does **not** yet exist in production, so merging the migration does not create it). Then rule
+on **#502 vs #516** — do not keep both — and rebase #529/#519 before deciding.
 
 > #548 and #551 are **already resolved**: #551 merged as `a19f065`, #548 closed as superseded.
 > Ignore any older document that lists #548 in the queue.
@@ -181,7 +190,7 @@ Ordered work:
 |---|---|
 | `CLAUDE.md` | Frontend baseline `1818 / 1 / 149` → **`1918 / 1 / 155`**. Third recurrence of this defect — **fix it this session.** |
 | `CLAUDE.md` | Handoff index names 2026-08-31 as newest; the 09-03 and 09-07 handoffs supersede it |
-| `CLAUDE.md` | Dated-state block still describes `main = 35ff20b`; it is `a19f065` |
+| `CLAUDE.md` | Dated-state block says `main = 35ff20b` and live build `7b0138d`; they are `43ae2db` and **`eab3668`** |
 | Old `NEXT_SESSION_PROMPT` §A | Name-pivot guard — **DECLINED.** Do not implement or propose |
 | Old `NEXT_SESSION_PROMPT` §B | **Ruled 2026-09-07** — open in narrowed form; see §2 |
 | Game Plan | Merge order lists #548 (closed); says "~20 stale branches" (79 merged of 410); `840/695` duplicates → `852` / 11,079 |
@@ -219,7 +228,7 @@ Ordered work:
 
 - [x] §2 ruling written into this file (operator, 2026-09-07)
 - [ ] #550 merged and live on Vercel
-- [ ] #549 merged, mirror-synced, deployed, `/health` build SHA **moved** off `7b0138d`
+- [ ] #549 merged, mirror-synced, deployed, `/health` build SHA **moved** off `eab3668`
 - [ ] #547 migration validated in CI and applied
 - [ ] #502 vs #516 ruled on; #529/#519 rebased and ruled on
 - [ ] `CLAUDE.md` baselines and handoff index refreshed
