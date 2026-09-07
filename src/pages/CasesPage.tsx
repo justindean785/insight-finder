@@ -15,7 +15,7 @@ import {
   Search,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { isActiveThreadStatus } from "@/lib/thread-status";
+import { isNeverStartedThread, isRunningThread } from "@/lib/thread-status";
 import { captureError } from "@/lib/telemetry";
 import { loadCaseMetrics } from "@/lib/case-metrics";
 import { toast } from "sonner";
@@ -28,6 +28,9 @@ type CaseRow = {
   status: string | null;
   seed_type: string | null;
   seed_value: string | null;
+  // Run markers: an "active" row with neither of these never started (I-1).
+  run_started_at: string | null;
+  last_heartbeat_at: string | null;
 };
 
 import type { CaseMetrics } from "@/lib/case-metrics";
@@ -47,9 +50,20 @@ function relativeTime(iso: string | null): string {
   return `${d}d ago`;
 }
 
-function statusLabel(status: string | null): { text: string; tone: string } {
-  if (isActiveThreadStatus(status)) {
+/**
+ * Takes the ROW, not just the status, because "active" alone cannot distinguish
+ * a live run from a thread that was created and never used. Pressing "New
+ * investigation" inserts `{ user_id }` and the status column defaults to
+ * 'active', so a blank thread rendered a blue "Running" chip forever — a run the
+ * analyst never started. A never-started thread is a Draft.
+ */
+function statusLabel(row: CaseRow): { text: string; tone: string } {
+  const status = row.status;
+  if (isRunningThread(row)) {
     return { text: "Running", tone: "text-[hsl(var(--intel-blue))] border-[hsl(var(--intel-blue)/0.35)] bg-[hsl(var(--intel-blue)/0.08)]" };
+  }
+  if (isNeverStartedThread(row)) {
+    return { text: "Draft", tone: "text-muted-foreground border-white/10 bg-white/[0.03]" };
   }
   if (status === "stopped") {
     return { text: "Stopped", tone: "text-warning border-warning/30 bg-warning/10" };
@@ -79,7 +93,7 @@ export default function CasesPage() {
       const [threadsRes, metricsMap] = await Promise.all([
         supabase
           .from("threads")
-          .select("id,title,updated_at,created_at,status,seed_type,seed_value")
+          .select("id,title,updated_at,created_at,status,seed_type,seed_value,run_started_at,last_heartbeat_at")
           .eq("user_id", user.id)
           .order("updated_at", { ascending: false })
           .limit(200),
@@ -221,7 +235,7 @@ export default function CasesPage() {
             <ul className="divide-y divide-border-subtle/60">
               {filtered.map((c) => {
                 const m = metrics.get(c.id) ?? { artifacts: 0, toolCalls: 0 };
-                const st = statusLabel(c.status);
+                const st = statusLabel(c);
                 return (
                   <li key={c.id}>
                     <Link

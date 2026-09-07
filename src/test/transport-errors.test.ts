@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { describeTransportError, parseHttpStatusFromError } from "@/lib/tool-run";
+import { describeTransportError, isNetworkDropError, parseHttpStatusFromError } from "@/lib/tool-run";
 
 // ── Tests: parseHttpStatusFromError ────────────────────────────
 
@@ -322,5 +322,62 @@ describe("compactSeed", () => {
     const result = compactSeed("https://example.com/file.pdf?signature=abc123&expires=99999");
     expect(result.display).toContain("example.com/…/file.pdf");
     expect(result.isUrl).toBe(true);
+  });
+});
+
+// ── Tests: isNetworkDropError ──────────────────────────────────
+//
+// The client's stream dying is not the run dying. These pin the two axes that
+// keep this predicate narrow: a parsed HTTP status always disqualifies, and
+// server-originated stream errors must NOT be swallowed as drops.
+
+describe("isNetworkDropError", () => {
+  it("matches the real per-browser wordings for a dropped fetch", () => {
+    // Safari/WebKit — the exact string persisted 3× on production thread
+    // 727ec00c on 2026-09-07 while the backend went on to write a full report.
+    expect(isNetworkDropError(new Error("Load failed"))).toBe(true);
+    expect(isNetworkDropError(new Error("The network connection was lost."))).toBe(true);
+    // Chrome
+    expect(isNetworkDropError(new Error("Failed to fetch"))).toBe(true);
+    // Firefox
+    expect(isNetworkDropError(new Error("NetworkError when attempting to fetch resource."))).toBe(true);
+    // React Native / misc
+    expect(isNetworkDropError(new Error("Network request failed"))).toBe(true);
+    expect(isNetworkDropError(new Error("The Internet connection appears to be offline."))).toBe(true);
+  });
+
+  it("is case-insensitive and reads plain strings too", () => {
+    expect(isNetworkDropError("LOAD FAILED")).toBe(true);
+    expect(isNetworkDropError({ message: "failed to fetch" })).toBe(true);
+  });
+
+  it("REFUSES anything carrying an HTTP status — the request reached the backend", () => {
+    // A 5xx is a real backend failure and must keep its existing handling, even
+    // when the message also contains drop-ish words.
+    expect(isNetworkDropError(new Error("HTTP 500 Internal Server Error"))).toBe(false);
+    expect(isNetworkDropError(new Error("HTTP 502 Bad Gateway"))).toBe(false);
+    expect(isNetworkDropError(new Error("HTTP 429 Too Many Requests"))).toBe(false);
+    expect(isNetworkDropError(new Error("HTTP 401 Unauthorized"))).toBe(false);
+    expect(isNetworkDropError(new Error("Failed to fetch (HTTP 503)"))).toBe(false);
+  });
+
+  it("REFUSES server-originated stream errors — negative control", () => {
+    // These arrive over the SSE error channel from the edge function itself and
+    // are recorded as `recovery_reason: stream_error: …`. A broader regex (the
+    // Lovable mirror's includes "terminated" and "connection closed") would
+    // silence genuine backend faults as if they were connectivity blips.
+    expect(isNetworkDropError(new Error("stream_error: Bad Request"))).toBe(false);
+    expect(isNetworkDropError(new Error("Tool result is missing for tool call call_ec12bcfd"))).toBe(false);
+    expect(isNetworkDropError(new Error("terminated"))).toBe(false);
+    expect(isNetworkDropError(new Error("The connection was closed"))).toBe(false);
+    expect(isNetworkDropError(new Error("stream ended unexpectedly"))).toBe(false);
+    expect(isNetworkDropError(new Error("The AI analysis provider is rate-limited"))).toBe(false);
+  });
+
+  it("REFUSES ordinary/unknown failures and empty input", () => {
+    expect(isNetworkDropError(new Error("something broke"))).toBe(false);
+    expect(isNetworkDropError(null)).toBe(false);
+    expect(isNetworkDropError(undefined)).toBe(false);
+    expect(isNetworkDropError("")).toBe(false);
   });
 });

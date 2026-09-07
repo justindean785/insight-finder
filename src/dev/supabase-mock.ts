@@ -12,6 +12,7 @@
 import type { Session, User } from "@supabase/supabase-js";
 
 const THREAD_ID = "11111111-2222-4333-8444-555555555555";
+const DRAFT_THREAD_ID = "22222222-3333-4444-8555-666666666666";
 const USER_ID = "99999999-8888-4777-8666-555555555555";
 
 const iso = (minsAgo: number) => new Date(Date.UTC(2026, 7, 9, 4, 0, 0) - minsAgo * 60_000).toISOString();
@@ -231,6 +232,18 @@ const SYNTHETIC: Record<string, unknown[]> = {
     status: "finished", credits_used: 34, cost_micro_usd: 187_400,
     recovered_at: null, recovery_reason: null,
     created_at: iso(46), updated_at: iso(4), last_heartbeat_at: iso(4), run_started_at: iso(45),
+  }, {
+    // A NEVER-STARTED thread — the exact production shape of the two rows
+    // measured 2026-09-07: "New investigation" inserts { user_id } and every
+    // other column takes its default, so status is 'active' with no run marker
+    // at all. Kept in the harness because "active but never ran" is a state the
+    // case list has to render correctly (Draft, not Running) and there is no
+    // other way to see it without a real blank thread.
+    id: DRAFT_THREAD_ID, user_id: USER_ID, title: "New investigation", archive_attachments: false,
+    seed_value: null, seed_type: null,
+    status: "active", credits_used: 0, cost_micro_usd: 0,
+    recovered_at: null, recovery_reason: null,
+    created_at: iso(2), updated_at: iso(2), last_heartbeat_at: null, run_started_at: null,
   }],
   artifacts,
   messages,

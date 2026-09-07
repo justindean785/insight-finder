@@ -428,6 +428,9 @@ export type Database = {
           credits_used: number
           id: string
           last_heartbeat_at: string | null
+          recovered_at: string | null
+          recovery_reason: string | null
+          run_started_at: string | null
           seed_type: string | null
           seed_value: string | null
           status: string
@@ -442,6 +445,9 @@ export type Database = {
           credits_used?: number
           id?: string
           last_heartbeat_at?: string | null
+          recovered_at?: string | null
+          recovery_reason?: string | null
+          run_started_at?: string | null
           seed_type?: string | null
           seed_value?: string | null
           status?: string
@@ -456,6 +462,9 @@ export type Database = {
           credits_used?: number
           id?: string
           last_heartbeat_at?: string | null
+          recovered_at?: string | null
+          recovery_reason?: string | null
+          run_started_at?: string | null
           seed_type?: string | null
           seed_value?: string | null
           status?: string
