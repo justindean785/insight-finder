@@ -1,260 +1,227 @@
-# Next-session prompt — Insight Finder, investigation quality
+# Next-session prompt — Insight Finder
 
-> Paste this whole file as the opening message of a fresh session. It is written to be
-> self-contained. **Everything below is a dated measurement (2026-09-03T07:30Z), not a state —
-> re-verify before acting.**
+> Paste this whole file as the opening message of a fresh session. It is self-contained.
+> **Written 2026-09-07T13:30Z. Every number is a dated measurement, not a state — re-verify.**
 
 ---
 
-## Start here — orientation, 5 minutes, do this first
+## Start here — 5 minutes, before anything else
 
 ```bash
-git fetch origin main && git log --oneline -8 origin/main
+git fetch origin main && git log --oneline -5 origin/main
 curl -s "https://skzqwbyvmwqarfgfvyky.supabase.co/functions/v1/osint-agent?health=1"
 ```
 
-- `main` was `1554911` and the live `osint-agent` build was `7b0138d`. **If either moved, another
-  session has worked this repo — read the newest `SESSION_HANDOFF_*.md` before doing anything.**
-  That has happened twice; findings in a handoff are sometimes already closed.
-- Read `SESSION_HANDOFF_2026-09-03_evidence-board-and-pivot-quality.md` — §1 is the problem, §4 is
-  the ranked plan, §6 is the trap list.
-- On `/health`, read `detail`, not just `ok`. `cache_sweep` and `synthesis` both report
-  `ok:true, detail:"disabled"`. `ok:true` does not mean it ran.
-- The local clone is shallow and its remote-tracking refs go stale. Always `git fetch` first.
+**Expect `main` = `a19f065` and live edge build = `7b0138d`.** If either moved, another session has
+worked this repo — read the newest `SESSION_HANDOFF_*.md` first. That has now happened three times,
+and on 2026-09-07 it produced **two conflicting PRs for one task** (#548 and #551).
 
-**Task 0 (2 minutes, do it before anything else): merge PR #542** if it is still open and green.
-It is finished, reviewed-by-CI, `mergeable_state: clean`, and its frontend half repairs 26 existing
-threads the moment it hits Vercel. It is a draft only because the operator merges.
+**Then, before you write any code: `list_pull_requests`.** Nine PRs are open. The 2026-09-07
+duplicate-PR incident happened because a session started work without checking.
 
----
-
-# Objective
-
-Raise the signal-to-noise of a finished investigation from **4.8 actionable artifacts out of 60**
-to something an analyst can read top-to-bottom, and make corroboration *raise* confidence instead of
-fragmenting it.
-
-# Context
-
-Insight Finder (a.k.a. Swarmbot) is an OSINT investigator: Vite + React + TS frontend on Vercel,
-Supabase edge functions (`osint-agent` and three others) deployed **only** via the Lovable mirror.
-`CLAUDE.md` is authoritative on deploy topology and on decisions that must not be re-litigated —
-**read it before writing code.** One operator, in development, not yet released.
-
-Measured over the 37 threads run in the last 14 days: **2,237 artifacts, 176 actionable
-(not quarantined, confidence ≥ 65) = 7.9%. Average 60 artifacts per scan, 4.8 actionable.**
-
-Two upstream causes are diagnosed and evidenced. One is half-fixed (#542, awaiting merge). The other
-two are below, in priority order.
-
-# Files to inspect
-
-Paths were correct at `1554911`; **search the repo if they have moved.**
-
-- `supabase/functions/osint-agent/cache.ts` — `wrapToolsWithCache`, the pre-flight dispatch guard (~:880)
-- `supabase/functions/osint-agent/auto-persist-findings.ts` — `seedLinksQueriedName`, `queryIsNameOnly`, `CONCRETE_SELECTOR_INPUT_KEYS`, the collapse block
-- `supabase/functions/osint-agent/lib/dispatch-quarantine.ts` — `dispatchKey`, `quarantineRefusal`
-- `supabase/functions/osint-agent/lib/dispatch-rejection.ts` — `buildRejectedDispatchKeys`
-- `supabase/functions/osint-agent/lib/artifact-hygiene.ts` — **`artifactDedupKey`**
-- `supabase/functions/osint-agent/lib/kind-alias.ts` — `canonicalKind`
-- `supabase/functions/osint-agent/index.ts:341` — where `subjectSeedName` is computed
-- `src/lib/report-hygiene.ts`, `src/lib/intel.ts` — frontend authority predicates
-- `src/components/ResourcesPanel.tsx` — the Evidence board
+Read, in order:
+1. `SESSION_HANDOFF_2026-09-07_drop-suppression-and-the-duplicate-pr.md` — newest; §5 records the `artifactDedupKey` ruling.
+2. `CLAUDE.md` — authoritative on deploy topology and on decisions that must not be re-litigated. **Its test baselines are stale** (see §6 below).
+3. `gameplan9/7/2026` — the operator's Game Plan. Its structure is sound; several numbers have drifted, corrected in §3–§5 below.
 
 ---
 
-## §A — The name-pivot guard (do this first; it is scoped and ready)
+## 1 · Verified state (2026-09-07T13:30Z)
 
-### Current problem
+| Axis | Value |
+|---|---|
+| `origin/main` | `a19f0653c8155413dc029797673933cc5b452868` |
+| Live `osint-agent` build | `7b0138d` — **no edge deploy since 2026-09-03** |
+| Vercel production | `dpl_7aNx7yjbVAdpAgy1xnzAyuT1biAp`, READY, SHA `a19f065`, alias `insight-finder-sandy.vercel.app` |
+| Frontend suite | **1918 passed / 1 skipped / 155 files** |
+| Lint | 0 errors, 11 pre-existing `react-refresh` warnings |
+| Open PRs | **9** (8 draft, #502 non-draft) |
+| Mirror `HEAD` | `68521e8` "Fixed chat error handling" — Lovable-authored, unsynced |
 
-A run seeded with a **domain** scraped two person names off the site, then called
-`oathnet_lookup {type:"name", value:<name>}` on each (calls 39 and 65 of 96 on thread `c599a5bc`).
-OathNet on a bare name is a **people-search enumerator** — it returned everyone sharing those names:
-15 addresses across 13 US states plus one abroad, 14 phones including a foreign mobile, 12 mailboxes.
-**55 artifacts, 48 quarantined, ~20 paid calls**, and the run then recorded two findings labelled
-`confirmed` across an identity chain spanning at least three different people.
-
-Neither name had durable linkage to the seed. The write gate correctly quarantined the results —
-but only *after* the calls were paid for.
-
-### Implementation requirements
-
-1. Add the guard to the **existing pre-flight block in `cache.ts`** (~:880), beside the
-   `subject_unlinked` and analyst-rejection refusals — before budget reservation, circuit breaker,
-   cache lookup and the live call. All ~89 tools funnel through that one wrapper.
-2. Refuse when **all** of these hold:
-   - the tool is a **people-search enumerator** (start with `oathnet_lookup`; audit siblings such as
-     `indicia_person` and `leakcheck_lookup` and add only those that enumerate by name), **and**
-   - the query is name-only — reuse `queryIsNameOnly`, do not write a second classifier, **and**
-   - `seedLinksQueriedName(subjectSeedName, queriedName)` is **false**.
-3. `seedLinksQueriedName` already fails closed on an absent or unusable seed. Keep that.
-4. **`ctx` does not currently carry the seed.** `index.ts:341` computes `subjectSeedName` and passes
-   it to `extractStepFindings`; thread the same value into `wrapToolsWithCache`'s `ctx` as an
-   optional field so existing callers and tests are unaffected.
-5. The refusal must be **legible as a refusal** — reuse the `quarantineRefusal` shape
-   (`ok:false, refused:true, refused_by:<marker>`). Never return `ok:true`; a silent refusal that
-   burns a step is how a disabled tool once reached a chain-of-custody record.
-6. Key by `type:normalizedValue`, never by value alone. `normalizeTarget` collapses
-   non-alphanumerics, so a bare name and a username can otherwise collide.
-7. **Kill switch `NAME_PIVOT_GUARD_DISABLED`, defaulting to ENABLED** (mirroring
-   `REJECTED_CLUSTER_SWEEP_DISABLED`). Shipping it dark changes nothing, which is the exact failure
-   mode the operator is frustrated by. Confirm this choice with the operator before merging.
-8. The refusal text should tell the model what to do instead — corroborate the name against a
-   concrete selector first — so the run pivots productively rather than stalling.
-
-### Do NOT
-
-- Do not gate ordinary **web search** on a name. That is contextual and usually legitimate; only
-  bulk person-record enumerators are the problem.
-- Do not touch `toolChoice`, `stopWhen`, the finalize window, or anything in the termination area.
-  `CLAUDE.md` documents two production outages from exactly that. Read the oscillation history.
-- Do not infer intent from prose. Structural signals only — settled, do not re-litigate.
-- Do not let `force` override the guard, consistent with the two refusals beside it.
-
-### Acceptance criteria
-
-- [ ] A name-only enumerator dispatch on a seed-unlinked name is refused before any paid call.
-- [ ] The same dispatch on a name that **does** link to the seed proceeds untouched.
-- [ ] A concrete-selector query (email / username / phone / domain) is never affected.
-- [ ] A web search on a name is never affected.
-- [ ] The refusal is visible in `tool_usage_log` as a refusal, not as a success or a silent skip.
-- [ ] `NAME_PIVOT_GUARD_DISABLED=true` fully restores today's behaviour.
-- [ ] New tests **drive `wrapToolsWithCache`**, not a restatement of the predicate, and at least
-      three are negative controls.
+`/health` carries nine checks. **Read `detail`, not just `ok`** — `cache_sweep` and `synthesis` both
+report `ok:true, detail:"disabled"`. `ok:true` does not mean it ran.
 
 ---
 
-## §B — `artifactDedupKey`: make corroboration accumulate (highest value, needs sign-off FIRST)
+## 2 · ✅ `artifactDedupKey` — OPERATOR RULING, 2026-09-07. This is settled; build to it.
 
-### Current problem
+**`artifactDedupKey` is the highest-value accuracy item. It was blocked on an unrecorded ruling that
+confused two sessions. The operator has now ruled. Do not re-open the rejected halves; do not
+re-litigate the permitted shape.**
 
-```ts
-// lib/artifact-hygiene.ts
-return JSON.stringify([canonicalKind(input.kind, input.value), input.value, (input.source ?? "").trim().toLowerCase()]);
-```
+### ⛔ Rejected — permanently, both halves
 
-Two defects:
+**(a) Dedup by DELETING rows is off the table permanently.** #305's migration would have deleted
+~120 genuinely distinct rows and orphaned 53 analyst reviews. No future design may delete an
+artifact row to achieve dedup.
 
-1. **`source` is part of the key.** The same email found by five independent tools becomes **five
-   artifacts at five different confidences** instead of one artifact whose confidence rises on
-   corroboration. Independent corroboration is the most valuable signal the system has, and this
-   throws it away — then `record_finding`'s `countIndependentClasses` reads from rows that were
-   split apart.
-2. **`value` is never normalised** — not lowercased, not trimmed. Production carries
-   one real address twice, differing ONLY in letter case — `<STREET> #3203, <CITY>, TX 76006` vs
-   `<Street> #3203, <City>, TX 76006` — as separate rows, **one quarantined and one not**.
-   (Query production for the live examples; they are not committed here.)
+**(b) Merged confidence = `GREATEST`, without selector scope, is rejected.** That is #307's shape.
+Taking the maximum bypasses a minor-safety cap whenever one copy is capped low and another is not.
 
-Measured: **840 redundant copies across 695 selectors**; up to 6 copies of one value in one thread
-(`[50,45,40]`, `[75,65,60,40]`, `[80,70,65,60]`). This is a large part of why 4,288 artifacts sit at
-50–64 and 4,967 below 50.
+### ✅ §B stays OPEN, in this narrowed form
 
-### This is integrity-critical — stop and get sign-off
+A write-path merge is permitted **only** if it satisfies every one of these:
 
-`CLAUDE.md` requires explicit approval for changes to evidence ranking, confidence caps and
-chain-of-custody. **Do not write code first.** Put a short written proposal to the operator covering:
+| Rule | Requirement |
+|---|---|
+| **Merge key** | Same `canonicalKind` **and** same normalized value, **scoped to the selector** |
+| **No deletion** | **No row is ever deleted, and no analyst review is ever orphaned** |
+| **Provenance** | `sources[]` retains **per-source first-seen** |
+| **Confidence** | Follows the **corroboration rules** and **respects existing caps**. Not `GREATEST` |
+| **Quarantine** | **Fails closed** — if any copy is quarantined, the merged row is quarantined |
+| **Scope** | **New writes only.** Backfill of existing rows is a **separate, later** decision |
 
-- What merges: same `canonicalKind` + same normalised value — and what "normalised" means per kind
-  (address casing/whitespace vs email vs phone E.164). Get this wrong and you merge two different
-  real-world entities.
-- What happens to `source`: it must become a **list** on the merged row (`sources[]` with per-source
-  first-seen), because provenance and chain-of-custody must not be lost.
-- How merged confidence is derived, and its interaction with existing caps and
-  `countIndependentClasses`. Corroboration should raise it; mirrors of one leak must not.
-- Quarantine on conflict: if one copy is quarantined and another is not, the merged row must **fail
-  closed** (quarantined) — never silently promote.
-- Whether existing rows are backfilled or only new writes merge. Backfill touches 10,933 production
-  rows and needs its own decision.
+Implement behind a flag, with failure-first tests that drive the write path
+(`auto-persist-findings.ts` / `lib/artifact-hygiene.ts`) rather than restating the predicate.
 
-Only after sign-off: implement behind a flag, with tests that drive the write path.
+**Start with B1, which needs none of the above design work** — it is a straight bug: the merge
+*already fires* into `metadata.sources` while the insert is **not** suppressed. **46 rows across 15
+threads** carry ≥2 `sources` entries *and* a sibling duplicate row.
 
----
+### The record behind the ruling, for context
 
-## §C — Verify the report-truth fixes on a real run (cheap, do it early)
+**Do not re-derive this. It is settled — this is here so you understand why the rules above are shaped as they are.**
 
-#537 shipped six fixes that have **never been verified on a live investigation** — only by tests and
-a harness diff. Run one real scan:
+- **PR #305** (closed unmerged 2026-07-14) carried a dedup migration whose key **ignored selector
+  scope**. Production simulation: it would have deleted **~120 genuinely distinct rows** (different
+  platform / subject / host / breach) and **orphaned 53 real analyst reviews**. That is the
+  "data-loss / review-orphaning failure".
+- **PR #307** (closed unmerged 2026-08-20) was the careful fix: a selector-scope-aware key plus one
+  canonical `merge_artifact_into(loser, survivor)` that asserts thread + user equality, preserves the
+  survivor's `subject_id`/`cluster_id`, **unions** provenance and classes, re-points evidence and
+  reviews, and surfaces conflicting analyst verdicts as `recheck` with lineage rather than discarding
+  them. Its production simulation: 6,889 → 6,387 artifacts, 502 true duplicates across 376 groups,
+  **0 distinct-platform / subject / selector loss, 53 reviews re-pointed, 0 discarded.**
+- #307 derives merged confidence with **`GREATEST`** — the likely origin of the "minor-safety
+  confidence bypass" concern: if one copy is capped low for minor-safety reasons and another is not,
+  taking the maximum bypasses the cap.
 
-1. Seed a handle with a leading `@`. Expect seed kind `username`, not `other`.
-2. Dismiss two rows, Confirm one, Key one.
-3. Export the report.
+Note what the ruling keeps and what it drops from #307. #307's **structure** is the model — one
+canonical merge, selector-scoped key, provenance unioned, reviews re-pointed, conflicting verdicts
+surfaced as `recheck` rather than discarded, and a production simulation showing zero loss. What the
+ruling **drops** from it is the `GREATEST` confidence derivation, replaced by the corroboration
+rules plus existing caps. #305's delete-based approach is excluded entirely.
 
-Expect: cluster headline **at or below** the strongest member's capped confidence; the confirmed row
-rendered **ANALYST-CONFIRMED**, not CONFIRMED; kind-alias twins folded; the Evidence Record carrying
-the analyst-decisions line. **If a Dismissed selector is refused at dispatch on a later run, that
-closes audit F8**, open and unmeasured since 2026-09-02.
-
----
-
-## §D — Quality of life, only after §A–§C
-
-- **The tab-disagreement defect** (Overview says 12 tools / 2 verified, the tab says 18 / 3) has been
-  carried unmeasured across three handoffs. **Measure it before building anything** — reproduce it in
-  the harness, find the two divergent count sites, make them share one selector. Do not start the
-  larger workspace rebuild until this is understood; it may be the whole complaint.
-- **Render the signed-in workspace before/after any UI change** — a Vercel *preview* is not the site
-  and signed-out surfaces are not where analysts live:
-  ```bash
-  npx vite --config vite.harness.config.ts   # → http://127.0.0.1:5174
-  # open /chat/11111111-2222-4333-8444-555555555555
-  ```
-- **The Evidence board default filter** is `"all"` (`ResourcesPanel.tsx:1158`). Deliberately left
-  alone: with #542's grouping the board is scannable, and defaulting to `strong` would hide
-  `review`/`conflict` rows the analyst needs. Revisit only if the operator asks.
+**The work splits in two:**
+- **B1 — a straight bug**, and the place to start. The merge already fires into `metadata.sources`
+  while the insert is not suppressed (46 rows / 15 threads). No merge-semantics design needed.
+- **B2 — the design work**, now unblocked and bounded by the six rules above.
 
 ---
 
-## §E — Operational, low effort, real payoff
+## 3 · Phase 0 — drain the queue (do this first; it is mostly mechanical)
 
-- **Cache sweep.** `CACHE_SWEEP_ENABLED` is off by design; 11,475 of 11,646 rows are expired (43 MB).
-  **Do not just flip it** — the delete sends up to 5,000 UUIDs in one `.in()` (~185KB URL) and the
-  gateway rejects anything over ~24KB (measured: 600 ids = 22.3KB → 200; 700 = 26KB → 400). Chunk at
-  **300** like `lib/rejected-cluster-sweep.ts:89` already does, then enable.
-  `cache_sweep_test.ts:114` pins the 5,000 constant and will need updating.
-- **No production monitoring** since #483 removed the cron for burning Actions minutes. Every
-  health-path sweep only runs when something curls `/health`. An external uptime monitor is what
-  `CLAUDE.md` already recommends; do not re-add a frequent GitHub cron.
-- **PDF export unaudited**, and `evidence-export` has **no build marker**, so a stale deploy cannot be
-  ruled out. Needs a machine with poppler.
+Measured 2026-09-07 against `a19f065`. **Three PRs already conflict** — the Game Plan does not
+mention this.
+
+| PR | Merges onto `a19f065`? | Files | Edge files | Migration | Ships how |
+|---|---|---|---|---|---|
+| **#550** unify "verified" count across Overview/Evidence/Report | **CLEAN** | 6 | 0 | no | Vercel on merge. **No deploy.** |
+| **#549** recover corroborating classes a compound breach label discards (closes #497) | **CLEAN** | 2 | **2** | no | **Needs mirror sync + edge deploy + `/health` SHA move** |
+| **#547** finding-synthesis dedup key as a partial unique index | **CLEAN** | 4 | 1 | **yes** | Migration + edge deploy |
+| **#516** account-deletion slice of #502, shipped dark | CLEAN | 8 | 0 | yes | — |
+| **#529** analyst-operable quarantine release | **CONFLICT** | 3 | 0 | no | rebase first |
+| **#519** page the dispatch-boundary read | **CONFLICT** | 9 | **9** | no | rebase first |
+| **#502** audit remediation + run-wedge fix + #476 | **CONFLICT** | 39 | 20 | yes | rebase first |
+| **#541** 2026-09-03 handoff doc | — | — | — | — | superseded by the 09-07 handoff; close or merge |
+| **#552** 2026-09-07 handoff doc | — | — | — | — | this session's record |
+
+**Suggested order:** #550 (zero risk, ships immediately) → #549 (first edge deploy in days; follow
+the CLAUDE.md recipe exactly and confirm the `/health` SHA moves) → #547 (migration; validate in CI
+first). Then rule on **#502 vs #516** — do not keep both — and rebase #529/#519 before deciding.
+
+> #548 and #551 are **already resolved**: #551 merged as `a19f065`, #548 closed as superseded.
+> Ignore any older document that lists #548 in the queue.
+
+### Repo housekeeping — zero risk, half a day
+
+Measured, and the Game Plan **understates** the branch problem:
+
+- **410 remote branches**, of which **79 are already merged into `main`** (Game Plan says "~20 stale `chore/*`"; only 17 match that pattern). Deleting the 79 merged ones is safe.
+- **25 root-level** `SESSION_HANDOFF_*` / audit docs. A `docs/` directory **already exists** — move them to `docs/handoffs/`.
+- Both `bun.lockb` (306 KB) and `package-lock.json` (395 KB) are committed. CI uses `npm ci` — **delete `bun.lockb`**.
+- `insight-finder-beta-demo.mp4` is **7.1 MB** and tracked. `deploy-log.jsonl` is only 11 KB — leave it.
+- `b030afc` committed the Game Plan to a path literally named **`gameplan9/7/2026`** — the date's slashes became directories. Move it to `docs/`.
 
 ---
 
-# Verification (run all of these before any push)
+## 4 · Phase 1 — accuracy (the headline problem)
 
-```bash
-npm ci
-npx tsc --noEmit
-npx eslint .                 # expect 0 errors + 10 pre-existing react-refresh warnings
-npx vitest run               # baseline 1822 passed / 1 skipped / 149 files
-npm run build
-cd supabase/functions/osint-agent && \
-  deno test --no-check --no-lock --allow-net --allow-env --allow-sys --allow-read *_test.ts
-                             # baseline 1619 passed / 0 failed / 5 ignored
-```
+**Re-measured 2026-09-07, last 14 days: 36 threads, 1,955 artifacts, 168 actionable
+(not quarantined, confidence ≥ 65) = 8.6%, i.e. 4.7 actionable per ~54-artifact scan.**
+The Game Plan's *4.8 of 60 (7.9 %)* is **confirmed with cohort drift** — the problem is real and
+essentially unchanged.
 
-- `--allow-read` is **required**; without it the source-level wiring tests abort with `NotCapable`
-  and it reads like a code failure.
-- Pass `--no-lock`, and check `git status` for `deno.lock` before staging — `deno test` rewrites it.
-- Deno is not preinstalled: `DENO_INSTALL=/usr/local sh -c "$(curl -fsSL https://deno.land/install.sh)" -- -y`
-- If ~10 React failures appear, re-measure in an isolated worktree with its own `npm ci` before
-  believing them — a shared `node_modules` can fabricate exactly that.
+Supporting corpus figures (all 2026-09-07): 11,079 artifacts · **4,322** at confidence 50–64 ·
+**5,063** below 50 · 1,613 at ≥65 · 218 threads · 69 with a `recovery_reason` ·
+**513 of 1,955 recent artifacts (26 %) quarantined**.
 
-# Do NOT (repo-wide)
+Ordered work:
 
-- Do not blanket-overwrite the Lovable mirror. Sync only files that actually changed; a second agent
-  writes to that repo and its edits are not visible here.
-- Do not treat a mirror push as a deploy. **The only proof of deploy is a moved `/health` build SHA.**
-- Do not re-litigate the three settled decisions in `CLAUDE.md` (`REVEAL_BREACH_DATA` stays on,
-  `MAX_PAID_CALLS` stays bounded, intent is not inferred from prose).
-- Do not make a quarantined row disappear. Quarantine is **disclosure, not deletion** — removing
-  authority is correct, removing the row is a regression.
-- Do not commit real investigated selectors (names, domains, emails, phones) in code, comments or
-  tests. Thread IDs are fine; use synthetic fixtures.
+1. **Verify the #537 report-truth wave on a live run** (cheap, do it early, zero risk). Seed a handle with a leading `@` → expect kind `username`. Dismiss two rows, Confirm one, Key one. Export; expect cluster headline ≤ strongest member's capped confidence, the confirmed row rendered ANALYST-CONFIRMED, kind-alias twins folded, and the Evidence Record carrying the analyst-decisions line. On a later run confirm a Dismissed selector is refused at dispatch — **that closes audit F8**.
+2. **`artifactDedupKey`** — **ruled and unblocked**; build to the six rules in §2, starting with B1. Duplicates measured: **852 redundant rows of 11,079 across 138 threads** (supersedes "840 across 695 selectors"): 503 same value / different `source` string · 317 identical key, **143 of them written inside one sub-2-second batch** · 32 case-only. Max 6 copies of one value in one thread.
+3. **The evidence-authority / causal-provenance boundary** — the operator's stated next investigative priority. Full brief and fixtures in the 09-07 handoff §6. Governing principle: *allow broad discovery, but do not grant subject authority without durable linkage.* **This is NOT the declined bare-name dispatch guard** — searches stay permitted; the control belongs at persistence/read authority.
+4. **#477** — `record_finding` persists the model's label unchecked against server-computed confidence. **#494** — `ransomwarelive_lookup` malformed HTTP-200 JSON collapses into the genuine-negative shape; fail closed on unparseable payloads.
 
-# Return
+---
 
-- Changed files and why
-- Gate numbers actually run (not inherited)
-- What you verified against **production data**, and what you did not
-- Remaining risks and anything you deliberately left out
-- Before/after screenshots of the signed-in workspace for any UI change
+## 5 · Phase 2 — efficiency
+
+- **`tool_call_cache`: 11,741 rows, 11,678 expired, 43 MB.** `CACHE_SWEEP_ENABLED` is off by design. **Trap:** the delete sends up to 5,000 UUIDs in one `.in()`; the PostgREST gateway rejects anything over ~24 KB, so flipping the flag as-is means every probe errors and nothing drains. Chunk at **300**, exactly as `lib/rejected-cluster-sweep.ts` already does (that sweep converged 216 → 0 in production). Update the test that pins the 5,000 constant.
+- **Issue #238 — orchestrator prompt summarization.** The Game Plan's *225–257K chars/step* could not be re-verified from production telemetry; treat it as unconfirmed until you measure it. The approach (replace a tool's raw result in message history with a compact summary once its artifacts are recorded, hooked at `wrapToolsWithCache`) is sound regardless. Never touch `record_artifacts`, confidence scoring, or chain-of-custody.
+- **Issue #65 — server-side run cancellation.** #545/#551 fixed the *reporting* of dropped connections; the *spend* is unfixed — runs drain under `EdgeRuntime.waitUntil`. Bind continuation to `last_heartbeat_at` in the step loop, **not** the finalize window (settled boundary). Ship behind a flag.
+- **God-file splits** (behavior-identical, one PR per file, full gates each): `tool-registry.ts` 384 KiB · `ChatWindow.tsx` 130 KiB · `src/lib/intel.ts` 122 KiB · edge `index.ts` 108 KiB · `src/index.css` 100 KiB.
+- **No production monitoring** since #483. `edge-health.yml` still exists but is `workflow_dispatch`-only. Stand up an external uptime monitor, not a GitHub cron — the cron is what drained the Actions allowance.
+
+---
+
+## 6 · Documents that will mislead you
+
+| Document | Correction |
+|---|---|
+| `CLAUDE.md` | Frontend baseline `1818 / 1 / 149` → **`1918 / 1 / 155`**. Third recurrence of this defect — **fix it this session.** |
+| `CLAUDE.md` | Handoff index names 2026-08-31 as newest; the 09-03 and 09-07 handoffs supersede it |
+| `CLAUDE.md` | Dated-state block still describes `main = 35ff20b`; it is `a19f065` |
+| Old `NEXT_SESSION_PROMPT` §A | Name-pivot guard — **DECLINED.** Do not implement or propose |
+| Old `NEXT_SESSION_PROMPT` §B | **Ruled 2026-09-07** — open in narrowed form; see §2 |
+| Game Plan | Merge order lists #548 (closed); says "~20 stale branches" (79 merged of 410); `840/695` duplicates → `852` / 11,079 |
+
+---
+
+## 7 · Hard rules — do not re-litigate
+
+- **No auto-merge, no auto-deploy.** The operator authorizes each merge and each deploy.
+- **A mirror push is not a deploy.** Only a moved `/health` build SHA proves one. `deployed_bytes_verified` is `false` by design — the marker proves provenance, not byte identity.
+- **The mirror is writable by a second agent.** Sync only files that actually changed; never blanket-overwrite. Check `git log origin/main` in the mirror after every sync.
+- **Integrity-critical changes** (evidence ranking, confidence caps, chain-of-custody, merge semantics) require **explicit written sign-off before code.**
+- **Quarantine is disclosure, not deletion.** A change that makes a quarantined row disappear is a regression.
+- **`REVEAL_BREACH_DATA` stays ON. `MAX_PAID_CALLS` stays bounded. Intent is never inferred from prose.**
+- **Never touch `toolChoice`, `stopWhen`, the finalize window, or termination logic** — two production outages trace to exactly that. Invariants I-1 and I-2 are load-bearing.
+- **No real investigated selectors** in code, comments, tests, or PR bodies. Thread IDs and artifact IDs only.
+
+---
+
+## 8 · Traps that have cost real time
+
+1. **Measure the SDK, not the comment about it.** Two sessions built against "`useChat`'s store survives an unmount." On the lockfile-pinned `@ai-sdk/react@3.0.199` it does not — `useChat` builds its `Chat` in a `useRef`, so the store is per-mount. Corrected in `ChatWindow.tsx` by #551.
+2. **`package.json` ranges ≠ resolved versions.** Read `package-lock.json`. A PR body cited `3.0.193`/`6.0.191`; the lockfile resolves `3.0.199`/`6.0.197`.
+3. **A behavioural test can pass vacuously.** Assert that something *happened* (a positive signal) before asserting something didn't render. A missing method on a mock made a whole suite pass while no run ever started.
+4. **The dev harness cannot exhibit every defect.** Its in-process mock resolves reads instantly, so timing-window bugs have zero duration there. It proves boundaries, not fixes.
+5. **`ok:true` is not "it ran."** Read `detail` on `/health`.
+6. **The clone is shallow.** `git fetch --unshallow --filter=blob:none` before trusting any divergence or merge-base measurement.
+7. **`deno test` rewrites `deno.lock`** — check `git status` before staging.
+8. **SQL three-valued logic drops NULL rows** — wrap nullable booleans in `coalesce(..., false)`.
+9. **Check the PR list before starting work.** See §1.
+
+---
+
+## 9 · Definition of done for this next block
+
+- [x] §2 ruling written into this file (operator, 2026-09-07)
+- [ ] #550 merged and live on Vercel
+- [ ] #549 merged, mirror-synced, deployed, `/health` build SHA **moved** off `7b0138d`
+- [ ] #547 migration validated in CI and applied
+- [ ] #502 vs #516 ruled on; #529/#519 rebased and ruled on
+- [ ] `CLAUDE.md` baselines and handoff index refreshed
+- [ ] 79 merged branches deleted; handoff docs moved to `docs/handoffs/`; `bun.lockb` removed
+- [ ] Actionable-rate re-measured on a fresh 14-day cohort against the 8.6 % baseline
