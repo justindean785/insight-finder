@@ -35,6 +35,18 @@
  *      finding for the same cluster, and a thread that grows a NEW corroborated
  *      cluster later can still gain a conclusion for it.
  *
+ * Level 2 is a READ-THEN-WRITE, and nothing here serializes it: the host health
+ * probe is fired by pg_cron every 60 seconds with no lock or lease, so a sweep
+ * that overruns its minute is simply overlapped by the next one, and both read
+ * the same empty prior set before either inserts. Migration 20260907000000 adds
+ * the partial unique index that closes that window in the database
+ * (`artifacts_synthesis_cluster_uniq`, on `(thread_id, metadata->>
+ * 'synthesis_cluster_id') where kind = 'finding'`). The loser of such a race
+ * fails its whole batch insert and counts one error; the NEXT sweep re-reads the
+ * priors and writes exactly the candidates still genuinely missing, so the
+ * outcome is self-healing rather than lossy. Keep the check here anyway — it is
+ * what makes the ordinary path a no-op instead of a caught exception.
+ *
  * ## Chain of custody — verified, not assumed
  *
  * Writing a finding does NOT touch `evidence_log`. Verified three ways on

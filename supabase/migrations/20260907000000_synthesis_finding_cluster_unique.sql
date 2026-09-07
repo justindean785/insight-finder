@@ -1,0 +1,70 @@
+-- Enforce finding-synthesis idempotence in the DATABASE, not only in the sweep.
+--
+-- WHY
+--
+-- `finding-synthesis-sweep.ts` documents `metadata.synthesis_cluster_id` as its
+-- dedup key, and the code honours it — but only as a READ-THEN-WRITE:
+--
+--     select id, metadata from artifacts where thread_id = $1 and kind = 'finding'
+--     ... compute candidates, drop the ones already represented ...
+--     insert into artifacts (...)                       -- no constraint here
+--
+-- Nothing between those two statements is serialized. The sweep's host is the
+-- health probe, which pg_cron fires every 60 seconds and which is NOT guarded by
+-- a lock or a lease: a sweep that overruns its minute is simply overlapped by the
+-- next one. Two probes reading the same thread before either has inserted both
+-- see an empty prior set, both compute the same candidate list, and both write.
+-- The result is two engine-authored findings asserting the same conclusion about
+-- the same cluster, under different artifact ids — which is precisely the shape a
+-- corroboration count must never be allowed to double-count.
+--
+-- The application check is the right place for the ORDINARY path (it also lets a
+-- thread that grows a genuinely new cluster gain a conclusion for it later). This
+-- index is the backstop for the case application code structurally cannot cover.
+--
+-- SCOPE — this index can only ever see rows synthesis itself writes
+--
+-- Measured on production 2026-09-07: 11,060 artifacts, 17 of kind 'finding',
+-- **0** with `finding_origin = 'synthesis'` and **0** carrying a
+-- `synthesis_cluster_id` at all. Both synthesis switches still default OFF
+-- (FINDING_SYNTHESIS_ENABLED / FINDING_SYNTHESIS_BACKFILL_ENABLED), so this
+-- creates a constraint over an empty set and cannot reject any write that the
+-- database accepts today.
+--
+-- ON THE `is not null` GUARD — state its real effect, do not overstate it
+--
+-- It is NOT what protects the 17 model-authored findings. They carry no
+-- `synthesis_cluster_id`, so the expression is NULL for each of them, and NULLs
+-- are DISTINCT in a btree unique index: `where kind = 'finding'` alone would
+-- already admit all 17 without collision. Verified by mutation on a throwaway
+-- PostgreSQL 16 cluster — dropping the guard still allowed both model findings.
+--
+-- What it actually does is keep those rows OUT of the index entirely, so the
+-- index contains only what synthesis wrote and its meaning is unambiguous to
+-- anyone reading `\d artifacts` later. That is worth the clause; it is not a
+-- safety mechanism, and it should not be read as one.
+--
+-- WHY NOT `CONCURRENTLY`
+--
+-- The table is 11,060 rows / 12 MB, and the partial predicate matches 0 of them,
+-- so the plain build is a single scan measured in milliseconds — the ACCESS
+-- SHARE-blocking window is shorter than the round trip that issues it.
+-- `CONCURRENTLY` would trade that for a worse failure mode: a concurrent build
+-- that fails leaves an INVALID index behind, and `IF NOT EXISTS` would then
+-- SILENTLY SKIP the retry, leaving a permanent index that enforces nothing while
+-- appearing to. For a constraint whose whole purpose is to be trusted, that is
+-- the wrong trade at this table size.
+--
+-- WHAT HAPPENS WHEN IT FIRES
+--
+-- The sweep inserts a thread's candidates as one batch, so a unique violation
+-- aborts the whole batch: the losing probe writes nothing for that thread and
+-- counts one error. That is self-healing, not lossy — the next sweep re-reads the
+-- priors (now containing the winner's cluster) and writes exactly the candidates
+-- that are still genuinely missing. Verified end-to-end on a throwaway cluster,
+-- including the partial case where the loser held one duplicate and one new
+-- cluster.
+
+create unique index if not exists artifacts_synthesis_cluster_uniq
+  on public.artifacts (thread_id, (metadata ->> 'synthesis_cluster_id'))
+  where kind = 'finding' and metadata ->> 'synthesis_cluster_id' is not null;
