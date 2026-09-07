@@ -16,7 +16,8 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import { supabase } from "@/integrations/supabase/client";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
-import { GROUP_LABEL, type Group } from "@/lib/intel";
+import { GROUP_LABEL, type Group, type ReviewAdjustment } from "@/lib/intel";
+import { useReviewStates } from "@/lib/review";
 import {
   buildEntityGraph,
   type EdgeType,
@@ -268,9 +269,22 @@ export function GraphTab({ threadId }: { threadId: string }) {
   // The real link-analysis model: edges from genuinely shared selectors
   // (email/phone/handle/ip/…), identity clusters, cross-cluster bridges, and a
   // deterministic layout — all computed in src/lib/entity-graph.ts.
+  // Analyst verdicts, loaded the same way ClustersTab does. Without them the
+  // graph re-clustered and re-linked rows the analyst had dismissed, so the
+  // link picture still asserted connections they had explicitly struck out.
+  const review = useReviewStates(threadId);
+  const reviews = useMemo(() => {
+    const m: Record<string, ReviewAdjustment> = {};
+    for (const a of items) {
+      const r = review.get(a.id);
+      if (r !== "new") m[a.id] = r;
+    }
+    return m;
+  }, [items, review]);
+
   const graph = useMemo<EntityGraph>(
-    () => buildEntityGraph(items, seed?.value ?? null, seed?.type ?? null),
-    [items, seed],
+    () => buildEntityGraph(items, seed?.value ?? null, seed?.type ?? null, reviews),
+    [items, seed, reviews],
   );
 
   const presentGroups = useMemo(() => {
