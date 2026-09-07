@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useReviewStates } from "@/lib/review";
+import { tallyAuthority } from "@/lib/authority";
 import { EvidenceBoard } from "@/components/ResourcesPanel";
 import { EvidenceMatrixTab } from "@/components/panel/EvidenceMatrixTab";
 import { ClustersTab } from "@/components/panel/ClustersTab";
@@ -52,17 +53,30 @@ export function EvidenceTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewRequest?.n]);
 
-  // Analyst review state, summarised for the header context line. Read-only
-  // tally — verification logic is untouched.
+  // Analyst review state, summarised for the header context line.
+  //
+  // "verified" MUST come from the shared `tallyAuthority` selector
+  // (src/lib/authority.ts), the same one WorkspaceHeader and OverviewTab use —
+  // not a local re-derivation. `authorityFor` gates verification through
+  // `isClusterIneligible`, so a quarantined or possible_collision row can never
+  // read "verified" here, and it also counts corroboration-derived CONFIRMED
+  // rows that an analyst never explicitly reviewed. A hand-rolled tally that
+  // only counts explicit `confirmed`/`key` reviews (the previous code here)
+  // undercounts against Overview/the header on identical data — measured: 1
+  // vs 2 on the same 55-artifact case, because a corroborated-but-unreviewed
+  // row is real evidence Overview already counts.
+  //
+  // "rejected" / "recheck" have no equivalent in the authority ladder — they
+  // are purely analyst-decision states — so those stay a direct review tally.
   const tally = useMemo(() => {
-    let verified = 0, rejected = 0, recheck = 0;
+    const authority = tallyAuthority(items, review.get);
+    let rejected = 0, recheck = 0;
     for (const a of items) {
       const s = review.get(a.id);
-      if (s === "confirmed" || s === "key") verified++;
-      else if (s === "wrong" || s === "dismissed") rejected++;
+      if (s === "wrong" || s === "dismissed") rejected++;
       else if (s === "recheck") recheck++;
     }
-    return { verified, rejected, recheck };
+    return { verified: authority.verified, rejected, recheck };
   }, [items, review]);
 
   const parts: ReactNode[] = [`${items.length} artifact${items.length === 1 ? "" : "s"}`];
