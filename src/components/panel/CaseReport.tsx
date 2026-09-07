@@ -314,9 +314,12 @@ function buildRegistrationRows(artifacts: Artifact[], reviews?: Reviews): Regist
 
 type HunterNoteItem = { text: string };
 
-function buildHunterNotes(artifacts: Artifact[], seedValue: string | null): HunterNoteItem[] {
+function buildHunterNotes(artifacts: Artifact[], seedValue: string | null, reviews?: Reviews): HunterNoteItem[] {
   const notes: HunterNoteItem[] = [];
-  const cluster = buildIdentityClusters(artifacts, seedValue);
+  // Cluster WITH the analyst's verdicts: these warnings are shown as analyst
+  // guidance, so deriving them from rows the analyst has dismissed tells them to
+  // chase a lead they already closed.
+  const cluster = buildIdentityClusters(artifacts, seedValue, reviews);
   for (const w of cluster.warnings.slice(0, 3)) notes.push({ text: w });
 
   const breaches = artifacts.filter((a) => isBreachKind(a.kind));
@@ -973,7 +976,7 @@ export function CaseReport({
   const isBrief = reportType === "brief";
   const identity = useMemo(() => buildIdentityRows(artifacts, reviews), [artifacts, reviews]);
   const registrations = useMemo(() => buildRegistrationRows(artifacts, reviews), [artifacts, reviews]);
-  const hunterNotes = useMemo(() => buildHunterNotes(artifacts, seedValue), [artifacts, seedValue]);
+  const hunterNotes = useMemo(() => buildHunterNotes(artifacts, seedValue, reviews), [artifacts, seedValue, reviews]);
   const unknowns = useMemo(() => buildUnknowns(artifacts), [artifacts]);
   const risk = useMemo(() => computeRisk(artifacts), [artifacts]);
   const radar = useMemo(() => buildAnalyticRadar(artifacts, risk.level, reviews), [artifacts, risk.level, reviews]);
@@ -990,7 +993,7 @@ export function CaseReport({
   // Honest confidence verdict: lint identity clusters for tier-over-statement /
   // unmet "Verified" gate, then roll lint + independence findings into one
   // CLEAN/ADVISORY/BLOCKED verdict. Integrity-critical (changes shown confidence).
-  const clusterAudits = useMemo(() => artifactsToClusterAudit(artifacts, seedValue), [artifacts, seedValue]);
+  const clusterAudits = useMemo(() => artifactsToClusterAudit(artifacts, seedValue, reviews), [artifacts, seedValue, reviews]);
   const confidenceFindings = useMemo(() => lintReport(clusterAudits), [clusterAudits]);
   const verdict = useMemo(() => reportVerdict(confidenceFindings, independenceFindings), [confidenceFindings, independenceFindings]);
   const avgConfidence = useMemo(() => averageConfidence(artifacts, reviews), [artifacts, reviews]);

@@ -5,8 +5,10 @@ import {
   normalizeHandle,
   GROUP_ORDER,
   type Group,
+  type ReviewAdjustment,
 } from "@/lib/intel";
 import { isClusterIneligible } from "@/lib/report-hygiene";
+import { isRejectedArtifact } from "@/lib/analyst-decisions";
 // A GraphNode's confidence is RENDERED by GraphTab (node numeral, node meter,
 // the detail panel's ConfidenceMeter), so it must carry the effective value.
 // Fixing it here rather than at the three render sites means the graph cannot
@@ -152,10 +154,17 @@ function selectorsFor(kind: string, value: string, metadata: Record<string, unkn
   return hits;
 }
 
-function isConflict(a: Artifact): boolean {
+function isConflict(a: Artifact, review?: string | null): boolean {
   const m = (a.metadata ?? {}) as Record<string, unknown>;
   const k = a.kind.toLowerCase();
   return (
+    // An analyst Dismiss is a ruling, and until this call passed `review` the
+    // graph never heard it: a row the analyst had rejected kept its identity
+    // edges into the subject's network, so the picture the analyst was shown
+    // still asserted the link they had just struck out. isRejectedArtifact is
+    // the shared authority predicate (it also covers the legacy false_positive
+    // flag) — the same one the report and pivot surfaces already consult.
+    isRejectedArtifact(a, review) ||
     // isClusterIneligible covers the legacy collision flags AND ACTIVE quarantine
     // (`subject_unlinked` with no `linkage_confirmed` release) — not the raw
     // historical flag, so a row an analyst has adjudicated regains its edges.
@@ -200,6 +209,11 @@ export function buildEntityGraph(
   artifacts: Artifact[],
   seedValue: string | null,
   seedType: string | null,
+  /** Analyst verdicts by artifact id. Optional so existing callers and the
+   *  fixture-driven tests are unaffected; when supplied, a rejected row loses
+   *  its cluster membership and its identity edges, matching every other
+   *  authority surface. */
+  reviews?: Record<string, ReviewAdjustment>,
 ): EntityGraph {
   // Stable ordering: everything downstream (selector heroes, layout angles)
   // derives from this sort, so the same case always produces the same frame.
@@ -209,7 +223,7 @@ export function buildEntityGraph(
   // Cluster from the SORTED set so cluster ids / order / bridge flags are
   // deterministic w.r.t. our declared ordering (the input array order is not
   // guaranteed stable across loads). Same artifacts, read-only — no logic change.
-  const clusterReport = buildIdentityClusters(sorted, seedValue);
+  const clusterReport = buildIdentityClusters(sorted, seedValue, reviews);
   const clusterOf = new Map<string, string>();
   for (const c of clusterReport.clusters) {
     for (const a of c.artifacts) clusterOf.set(a.id, c.id);
@@ -246,7 +260,7 @@ export function buildEntityGraph(
       group: groupForKind(a.kind),
       confidence: effectiveConfidenceOrZero(a),
       isSeed: false,
-      conflict: isConflict(a),
+      conflict: isConflict(a, reviews?.[a.id]),
       clusterId: clusterOf.get(a.id) ?? null,
       degree: 0,
       x: CX,
@@ -279,7 +293,7 @@ export function buildEntityGraph(
     // / *_conflict) renders as a node but must never seed an identity edge — so
     // the graph never overstates a disputed link and stays consistent with the
     // detail panel's "excluded from identity links".
-    if (isConflict(a)) continue;
+    if (isConflict(a, reviews?.[a.id])) continue;
     addSelectors(a.id, selectorsFor(a.kind, a.value, a.metadata));
   }
 
