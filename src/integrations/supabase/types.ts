@@ -707,6 +707,10 @@ export type Database = {
               out_subject: string
             }[]
           }
+      delete_my_account: {
+        Args: Record<PropertyKey, never>
+        Returns: Json
+      }
       verify_evidence_chain: {
         Args: { _thread_id: string }
         Returns: {
