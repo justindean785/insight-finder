@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "ports": {"preview": 8080, "additional": {"app": 8080}},
+  "scripts": {
+    "setup": {"enabled": true, "command": "npm ci --no-audit --no-fund && npx playwright install chromium"},
+    "run": {"enabled": true, "command": "npm run dev"},
+    "archive": {"enabled": true, "command": null},
+    "check": {"enabled": true, "command": null}
+  },
+  "mcpServers": []
+}
