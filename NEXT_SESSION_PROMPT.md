@@ -12,9 +12,12 @@ git fetch origin main && git log --oneline -5 origin/main
 curl -s "https://skzqwbyvmwqarfgfvyky.supabase.co/functions/v1/osint-agent?health=1"
 ```
 
-**Expect `main` = `43ae2db` and live edge build = `eab3668`.** If either moved, another session has
-worked this repo — read the newest `SESSION_HANDOFF_*.md` first. That has now happened three times,
-and on 2026-09-07 it produced **two conflicting PRs for one task** (#548 and #551).
+**Expect `main` = `8691e55` and live edge build = `4e6888a`.** If either moved, another session has
+worked this repo — read the newest `SESSION_HANDOFF_*.md` first. That has now happened FOUR times.
+Most recently 2026-09-07T13:30–13:55Z: a session opened this very file, found its own
+"expect `43ae2db` / `eab3668`" line already stale, and drained the entire Phase 0 queue
+(#550, #547, #549 merged; `4e6888a` deployed and verified). On an earlier occasion the same
+failure produced **two conflicting PRs for one task** (#548 and #551).
 
 **Then, before you write any code: `list_pull_requests`.** Nine PRs are open. The 2026-09-07
 duplicate-PR incident happened because a session started work without checking.
@@ -30,13 +33,22 @@ Read, in order:
 
 | Axis | Value |
 |---|---|
-| `origin/main` | `43ae2db` (after the 2026-09-07 edge deploy; #551 merged at `a19f065`) |
-| Live `osint-agent` build | **`eab3668`** — deployed 2026-09-07T13:30Z. `main` and the live edge build are IN SYNC; nothing is undeployed |
-| Vercel production | READY on `main`, alias `insight-finder-sandy.vercel.app` (re-check the SHA — main moved after that deployment) |
-| Frontend suite | **1918 passed / 1 skipped / 155 files** |
+| `origin/main` | `8691e55` (#550 `893d56c` → #547 `6622d79` → #549 `4e6888a` → stamp `57c0912` → ledger `8691e55`) |
+| Live `osint-agent` build | **`4e6888a`** — deployed 2026-09-07T13:44Z, VERIFIED against `/health`. `main` and the live edge build are IN SYNC; nothing is undeployed |
+| Vercel production | READY on `4e6888a` (`dpl_GSrfCz7…`, `target: production`), alias `insight-finder-sandy.vercel.app` |
+| Frontend suite | **1927 passed / 1 skipped / 158 files** (clean checkout, its own `npm ci`, 0 failures) |
+| Edge suite | **1624 passed / 0 failed / 5 ignored** (CI `Edge functions (deno test)` on `57c0912`) |
 | Lint | 0 errors, 11 pre-existing `react-refresh` warnings |
-| Open PRs | **9** (8 draft, #502 non-draft) |
-| Mirror `HEAD` | `68521e8` "Fixed chat error handling" — Lovable-authored, unsynced |
+| Open PRs | **5** — #541, #529, #519, #516 (draft) and #502 (non-draft) |
+| Mirror `HEAD` | `fbd17f0` — synced. `diff -rq` over `osint-agent` is EMPTY and the gate reports `mirror tree -> equal` (`2c672db3ec69`) |
+
+**Deployed 2026-09-07T13:44Z** (build `4e6888a`): **#549** — `confidence.ts` no longer lets a
+breach slug appearing anywhere in a joined source label discard the other evidence classes that
+same label names. That was stamping a false `needs second independent class of evidence` on rows
+that already had two, and capping confidence at the breach ceiling. #547's comment-only sweep
+header rode along; #550 is frontend and needed no deploy. **Nothing in `/health` proves this one
+behaviourally** — #549 introduces no new health key, so the moved marker plus an equal mirror tree
+is the entire evidence. Add a behavioural key the next time confidence changes.
 
 **Deployed 2026-09-07T13:30Z** (build `eab3668`): #542's backend half — a bare-name lookup
 returning more than 12 quarantined identity rows now collapses into one `bulk_corpus_harvest`
@@ -118,6 +130,10 @@ rules plus existing caps. #305's delete-based approach is excluded entirely.
 
 ## 3 · Phase 0 — drain the queue (do this first; it is mostly mechanical)
 
+> **UPDATE 2026-09-07T13:55Z — Phase 0 is DONE. #550, #547 and #549 are merged, and #549 is
+> deployed and verified (`/health` = `4e6888a`). The table below is kept as the record of how they
+> were assessed, not as a to-do list. The live queue is #541, #529, #519, #516, #502.**
+
 Measured 2026-09-07 against `a19f065`. **Three PRs already conflict** — the Game Plan does not
 mention this.
 
@@ -133,11 +149,13 @@ mention this.
 | **#541** 2026-09-03 handoff doc | — | — | — | — | superseded by the 09-07 handoff; close or merge |
 | **#552** 2026-09-07 handoff doc | — | — | — | — | this session's record |
 
-**Suggested order:** #550 (zero risk, ships to Vercel on merge) → #549 (needs the full edge-deploy
-recipe; confirm the `/health` SHA moves off `eab3668`) → #547 (migration only — its one
-`supabase/functions/` change is a pure comment block, so it needs **no** edge deploy; and note the
-index does **not** yet exist in production, so merging the migration does not create it). Then rule
-on **#502 vs #516** — do not keep both — and rebase #529/#519 before deciding.
+**Suggested order — DONE 2026-09-07T13:55Z, in exactly this order:** #550 → #547 → #549, then the
+full edge-deploy recipe for #549 (`/health` moved `eab3668` → `4e6888a`, ledger recorded,
+`deploy/live` published). **Still open: rule on #502 vs #516** — do not keep both — **and rebase
+#529/#519 before deciding.** Note `artifacts_synthesis_cluster_uniq` still does **not** exist in
+production: #547's migration is merged and CI-validated, but merging a migration does not apply it
+to the Lovable-owned database. Applying it is a separate explicit step, and it is safe to defer
+while both synthesis flags are OFF.
 
 > #548 and #551 are **already resolved**: #551 merged as `a19f065`, #548 closed as superseded.
 > Ignore any older document that lists #548 in the queue.
@@ -188,9 +206,9 @@ Ordered work:
 
 | Document | Correction |
 |---|---|
-| `CLAUDE.md` | Frontend baseline `1818 / 1 / 149` → **`1918 / 1 / 155`**. Third recurrence of this defect — **fix it this session.** |
-| `CLAUDE.md` | Handoff index names 2026-08-31 as newest; the 09-03 and 09-07 handoffs supersede it |
-| `CLAUDE.md` | Dated-state block says `main = 35ff20b` and live build `7b0138d`; they are `43ae2db` and **`eab3668`** |
+| `CLAUDE.md` | ✅ **FIXED 2026-09-07T13:55Z.** Frontend baseline now `1927 / 1 / 158` and edge `1624 / 0 / 5`, both re-measured on `57c0912` (frontend in a clean checkout with its own `npm ci`; edge from CI's own job summary). The `1918 / 1 / 155` figure in §1 above was correct when written — #550 then added 9 tests across 3 files |
+| `CLAUDE.md` | ✅ **FIXED.** Handoff index now ends at the 09-07 handoff and points at this file as the companion entry point |
+| `CLAUDE.md` | ✅ **FIXED.** Dated-state block now reads `main = 57c0912` / live `4e6888a`, and records that the `mirror_tree_digest` gap is CLOSED (it had been described as a permanent "known cosmetic gap", which left the deploy gate unable to distinguish it from real drift) |
 | Old `NEXT_SESSION_PROMPT` §A | Name-pivot guard — **DECLINED.** Do not implement or propose |
 | Old `NEXT_SESSION_PROMPT` §B | **Ruled 2026-09-07** — open in narrowed form; see §2 |
 | Game Plan | Merge order lists #548 (closed); says "~20 stale branches" (79 merged of 410); `840/695` duplicates → `852` / 11,079 |
@@ -227,10 +245,11 @@ Ordered work:
 ## 9 · Definition of done for this next block
 
 - [x] §2 ruling written into this file (operator, 2026-09-07)
-- [ ] #550 merged and live on Vercel
-- [ ] #549 merged, mirror-synced, deployed, `/health` build SHA **moved** off `eab3668`
-- [ ] #547 migration validated in CI and applied
+- [x] #550 merged and live on Vercel (`893d56c`; production `dpl_GSrfCz7…` on `4e6888a`)
+- [x] #549 merged, mirror-synced, deployed, `/health` build SHA **moved** off `eab3668` → `4e6888a`
+- [x] #547 migration validated in CI — **but NOT applied** to the Lovable-owned database; the index
+      still does not exist in production. Safe to defer while both synthesis flags are OFF
 - [ ] #502 vs #516 ruled on; #529/#519 rebased and ruled on
-- [ ] `CLAUDE.md` baselines and handoff index refreshed
+- [x] `CLAUDE.md` baselines and handoff index refreshed (2026-09-07T13:55Z)
 - [ ] 79 merged branches deleted; handoff docs moved to `docs/handoffs/`; `bun.lockb` removed
 - [ ] Actionable-rate re-measured on a fresh 14-day cohort against the 8.6 % baseline
