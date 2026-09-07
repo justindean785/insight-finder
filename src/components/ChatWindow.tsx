@@ -1274,11 +1274,30 @@ function ChatWindowInner({
   const [input, setInput] = useState("");
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [stopping, setStopping] = useState(false);
-  // Set when THIS CLIENT's stream dropped while the server-side run was proven
-  // alive by a fresh heartbeat. useChat still holds an `error` for the dropped
-  // fetch, but that error describes the browser's connection, not the run — so
-  // the live FailedRunCard below is suppressed for it. Cleared on the next turn.
-  const [networkDropWhileAlive, setNetworkDropWhileAlive] = useState(false);
+  // The SDK error THIS CLIENT's dropped stream produced, held BY IDENTITY while
+  // we treat it as a browser-connection fault rather than a failed run.
+  //
+  // Identity, not a boolean, and that is the load-bearing part. A flag says
+  // only "something is suppressed" and keeps saying it after `error` has moved
+  // on to a different, genuine fault — silently swallowing the next real
+  // failure. Holding the error object means the suppression is spent the moment
+  // the error changes or clears: the gate below compares it to the live `error`,
+  // so a later fault can never inherit an earlier drop's exemption.
+  //
+  // The ref mirrors the state because onError's async continuation reads this
+  // back after an await, where the state closure is stale. `markDropSuppressed`
+  // is the only writer, so the two cannot drift.
+  const suppressedDropErrorRef = useRef<Error | null>(null);
+  const [suppressedDropError, setSuppressedDropError] = useState<Error | null>(null);
+  const markDropSuppressed = useCallback((err: Error | null) => {
+    suppressedDropErrorRef.current = err;
+    setSuppressedDropError(err);
+  }, []);
+  // useChat's own `clearError`, reachable from the onError closure below. Held
+  // in a ref because `clearError` is destructured from the very call that
+  // receives onError — the same pattern this file already uses for `stop` and
+  // `isLoading`. Assigned every render, immediately after that destructure.
+  const clearErrorRef = useRef<() => void>(() => {});
   const failSavedRef = useRef(false);
   const unmountedRef = useRef(false);
   const readyProbedOnceRef = useRef(false);
@@ -1368,7 +1387,7 @@ function ChatWindowInner({
     },
   }));
 
-  const { messages, sendMessage, status, error, setMessages, stop } = useChat({
+  const { messages, sendMessage, status, error, setMessages, stop, clearError } = useChat({
     id: threadId,
     messages: initial,
     transport,
@@ -1407,6 +1426,24 @@ function ChatWindowInner({
       // one, we fall through and record the failure exactly as before, and the
       // server's own stale-run recovery labels it Interrupted (invariant I-2).
       if (isNetworkDropError(e)) {
+        // Claim the suppression SYNCHRONOUSLY, before the heartbeat read.
+        //
+        // The SDK calls onError WITHOUT awaiting it and writes
+        // `setStatus({ status: "error", error: e })` on the very next line, so
+        // a suppression set only after the await lands a whole network
+        // round-trip late — and for that entire window the analyst is shown a
+        // red "Investigation run failed" card with a Retry button over a run
+        // that is still working. Clicking it starts a SECOND concurrent run.
+        // Claimed here, this update and the SDK's error write batch into one
+        // render and the card never paints at all.
+        //
+        // Safe to claim before the answer is known because `isNetworkDropError`
+        // is the narrow half of the decision: any parsed HTTP status and every
+        // server-originated stream wording are already excluded, so nothing
+        // that reached the backend can get this far. The heartbeat is the
+        // second half, and if it does not prove the run alive the claim is
+        // released below and the failure is recorded exactly as before.
+        markDropSuppressed(e);
         const { data: liveness } = await supabase
           .from("threads")
           .select("last_heartbeat_at")
@@ -1416,12 +1453,27 @@ function ChatWindowInner({
           // Nothing was written, so a later genuine failure must still be able
           // to record one.
           failSavedRef.current = false;
-          setNetworkDropWhileAlive(true);
+          // Don't merely HIDE the SDK's error — remove it from useChat's own
+          // store. Hiding it leaves a live error that outlives whatever
+          // component state is doing the hiding, so the card returns the moment
+          // those lifetimes diverge. Clearing makes the suppression exactly as
+          // durable as the store it clears, whatever that store's lifetime.
+          //
+          // Guarded on identity: if a NEW run started during the await, the
+          // reset effect has already released our claim and `error` belongs to
+          // that run — clearing it would swallow a fault we never adjudicated.
+          // (`clearError` is itself a no-op unless status is still "error",
+          // so a run merely in flight is never disturbed.)
+          if (suppressedDropErrorRef.current === e) clearErrorRef.current();
           toast.warning(
             "Connection dropped — the investigation is still running on the server. The report will appear here when it finishes.",
           );
           return;
         }
+        // Not proven alive — a missing, unreadable or stale heartbeat is a
+        // genuine failure. Release the claim so the card renders and fall
+        // through to persist the marker, exactly as before this branch existed.
+        if (suppressedDropErrorRef.current === e) markDropSuppressed(null);
       }
       // Persist a failed assistant marker so reload shows the failed card
       await supabase.from("messages").insert({
@@ -1461,24 +1513,42 @@ function ChatWindowInner({
     }));
   }, [setMessages, threadId]);
 
+  clearErrorRef.current = clearError;
+
+  // True only while the error ON SCREEN is still the one we adjudicated as a
+  // harmless client drop over a live run. Derived rather than stored, so the
+  // suppression expires by construction: if `error` becomes a different fault,
+  // or clears, this is false again on that very render with nothing to reset.
+  const networkDropWhileAlive =
+    suppressedDropError !== null && suppressedDropError === error;
+
   // Reset fail guard on new turn
   useEffect(() => {
     if (status === "submitted" || status === "streaming") {
       failSavedRef.current = false;
       // A new turn gets a fresh verdict: the previous turn's dropped connection
       // must not keep suppressing a real failure card on this one.
-      setNetworkDropWhileAlive(false);
+      markDropSuppressed(null);
     }
-  }, [status]);
+  }, [status, markDropSuppressed]);
 
-  // Re-seed the chat from the freshly-loaded DB state on (re)mount. useChat keys
-  // its message store by `id` (threadId) and that store SURVIVES an unmount, so
-  // the `messages: initial` seed above is a no-op when you navigate away during
-  // a run and come back — the chat then shows the stale store (often just your
-  // input, the aborted stream's partial content discarded) while the assistant
-  // work the server persisted via waitUntil sits unused in the DB. Applying the
-  // DB-loaded `initial` here makes the DB the source of truth on return, which
-  // also covers a run that finished while you were away (the realtime recovery
+  // Re-seed the chat from the freshly-loaded DB state on (re)mount.
+  //
+  // ⚠️ CORRECTION, MEASURED 2026-09-07 on `@ai-sdk/react@3.0.199`. This comment
+  // used to say the useChat store "SURVIVES an unmount", keyed by `id`. It does
+  // NOT, in this version: `useChat` builds its `Chat` inside a `useRef`, so
+  // messages, status AND error are per-mount and die with the component. There
+  // is no module-level store. The claim dates from an older SDK, and acting on
+  // it sends you looking for leaks across remounts that cannot happen here —
+  // verify before relying on it again (`network-drop-suppression.test.tsx`
+  // measures the lifetime, so an SDK upgrade that reintroduces a shared store
+  // fails loudly rather than silently).
+  //
+  // The effect is still needed, for a different reason: `initial` is loaded
+  // ASYNCHRONOUSLY, so the Chat constructed on first render was seeded with the
+  // pre-load value. Applying the DB-loaded `initial` here makes the DB the
+  // source of truth on return, which also covers a run that finished while you
+  // were away (the realtime recovery
   // subscription only catches INSERTs that land after you're back). We skip
   // while THIS client is actively streaming so a live run is never clobbered.
   //

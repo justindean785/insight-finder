@@ -81,6 +81,42 @@ describe("network-drop branch wiring in ChatWindow.onError", () => {
   });
 
   it("clears the suppression on the next turn", () => {
-    expect(SRC).toContain("setNetworkDropWhileAlive(false)");
+    expect(SRC).toContain("markDropSuppressed(null)");
+  });
+
+  // ── Added with the durability fix. Both are ORDERING facts, which is what a
+  // source-level test can see and a render test cannot: the behavioural half
+  // lives in `network-drop-suppression.test.tsx`, which drives the real
+  // component and kills a mutant for each of these.
+
+  it("claims the suppression BEFORE the liveness read, not after it", () => {
+    // The SDK calls onError WITHOUT awaiting it and writes status:"error" on
+    // the next line. A suppression claimed after the await therefore lands a
+    // whole network round-trip late, and the red card with its Retry paints for
+    // that entire window over a run that is still alive.
+    const body = onErrorBody();
+    const claim = body.indexOf("markDropSuppressed(e)");
+    const read = body.indexOf("await supabase");
+    expect(claim, "the suppression claim is missing from the drop branch").toBeGreaterThan(-1);
+    expect(read).toBeGreaterThan(-1);
+    expect(claim).toBeLessThan(read);
+  });
+
+  it("REMOVES the SDK error on a proven-live run instead of only hiding it", () => {
+    // Hiding is only as durable as the component state doing the hiding.
+    // Clearing is as durable as the SDK store itself, whatever its lifetime.
+    const body = onErrorBody();
+    const guard = body.indexOf("isRunHeartbeatAlive(");
+    expect(body.slice(guard)).toContain("clearErrorRef.current()");
+  });
+
+  it("keys the render gate on the error's IDENTITY, so it cannot outlive it", () => {
+    // A bare boolean keeps suppressing after `error` has moved on to a genuine
+    // fault. The derived comparison expires the exemption on the very render
+    // the error changes or clears.
+    const code = stripComments(SRC);
+    expect(code).toMatch(
+      /const networkDropWhileAlive\s*=\s*\n?\s*suppressedDropError !== null && suppressedDropError === error;/,
+    );
   });
 });
