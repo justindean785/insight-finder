@@ -20,7 +20,7 @@ and on 2026-09-07 it produced **two conflicting PRs for one task** (#548 and #55
 duplicate-PR incident happened because a session started work without checking.
 
 Read, in order:
-1. `SESSION_HANDOFF_2026-09-07_drop-suppression-and-the-duplicate-pr.md` — newest; §5 is the blocking ruling.
+1. `SESSION_HANDOFF_2026-09-07_drop-suppression-and-the-duplicate-pr.md` — newest; §5 records the `artifactDedupKey` ruling.
 2. `CLAUDE.md` — authoritative on deploy topology and on decisions that must not be re-litigated. **Its test baselines are stale** (see §6 below).
 3. `gameplan9/7/2026` — the operator's Game Plan. Its structure is sound; several numbers have drifted, corrected in §3–§5 below.
 
@@ -43,12 +43,44 @@ report `ok:true, detail:"disabled"`. `ok:true` does not mean it ran.
 
 ---
 
-## 2 · ⛔ THE ONE BLOCKING RULING — get this written down first
+## 2 · ✅ `artifactDedupKey` — OPERATOR RULING, 2026-09-07. This is settled; build to it.
 
-**`artifactDedupKey` (§B of the old prompt) is the highest-value accuracy item and it is blocked on
-an operator ruling that has never been recorded.** Two sessions have now been confused by this.
+**`artifactDedupKey` is the highest-value accuracy item. It was blocked on an unrecorded ruling that
+confused two sessions. The operator has now ruled. Do not re-open the rejected halves; do not
+re-litigate the permitted shape.**
 
-**What the primary sources show** (not a summary — go read the PRs):
+### ⛔ Rejected — permanently, both halves
+
+**(a) Dedup by DELETING rows is off the table permanently.** #305's migration would have deleted
+~120 genuinely distinct rows and orphaned 53 analyst reviews. No future design may delete an
+artifact row to achieve dedup.
+
+**(b) Merged confidence = `GREATEST`, without selector scope, is rejected.** That is #307's shape.
+Taking the maximum bypasses a minor-safety cap whenever one copy is capped low and another is not.
+
+### ✅ §B stays OPEN, in this narrowed form
+
+A write-path merge is permitted **only** if it satisfies every one of these:
+
+| Rule | Requirement |
+|---|---|
+| **Merge key** | Same `canonicalKind` **and** same normalized value, **scoped to the selector** |
+| **No deletion** | **No row is ever deleted, and no analyst review is ever orphaned** |
+| **Provenance** | `sources[]` retains **per-source first-seen** |
+| **Confidence** | Follows the **corroboration rules** and **respects existing caps**. Not `GREATEST` |
+| **Quarantine** | **Fails closed** — if any copy is quarantined, the merged row is quarantined |
+| **Scope** | **New writes only.** Backfill of existing rows is a **separate, later** decision |
+
+Implement behind a flag, with failure-first tests that drive the write path
+(`auto-persist-findings.ts` / `lib/artifact-hygiene.ts`) rather than restating the predicate.
+
+**Start with B1, which needs none of the above design work** — it is a straight bug: the merge
+*already fires* into `metadata.sources` while the insert is **not** suppressed. **46 rows across 15
+threads** carry ≥2 `sources` entries *and* a sibling duplicate row.
+
+### The record behind the ruling, for context
+
+**Do not re-derive this. It is settled — this is here so you understand why the rules above are shaped as they are.**
 
 - **PR #305** (closed unmerged 2026-07-14) carried a dedup migration whose key **ignored selector
   scope**. Production simulation: it would have deleted **~120 genuinely distinct rows** (different
@@ -64,19 +96,16 @@ an operator ruling that has never been recorded.** Two sessions have now been co
   confidence bypass" concern: if one copy is capped low for minor-safety reasons and another is not,
   taking the maximum bypasses the cap.
 
-So the rejected shape appears to be a write-path merge that **(a)** keys on a normalized value
-without selector scope and **(b)** takes maximum confidence. #307 already avoids (a); (b) is a
-one-rule change. **That is inference from the record, not a ruling.**
+Note what the ruling keeps and what it drops from #307. #307's **structure** is the model — one
+canonical merge, selector-scoped key, provenance unioned, reviews re-pointed, conflicting verdicts
+surfaced as `recheck` rather than discarded, and a production simulation showing zero loss. What the
+ruling **drops** from it is the `GREATEST` confidence derivation, replaced by the corroboration
+rules plus existing caps. #305's delete-based approach is excluded entirely.
 
-**The operator must state one of:**
-- **(A) Declined outright** — no write-path merge without new sign-off; address the signal problem at the display layer only.
-- **(B) Partial** — naming exactly what is rejected (candidates: `GREATEST` on merge · backfilling existing rows · normalization without selector scope), keeping it open in narrowed form.
-
-**It likely splits, which may make the ruling easier:**
-- **B1 — a straight bug.** The merge *already fires* into `metadata.sources` while the insert is **not** suppressed: **46 rows across 15 threads** carry ≥2 `sources` entries *and* a sibling duplicate row. No merge-semantics redesign needed.
-- **B2 — the design question.** Source-set semantics, per-kind normalization, merged-confidence derivation. Integrity-critical; this is what needs sign-off.
-
-**Do not start either half until the ruling is written into this file.**
+**The work splits in two:**
+- **B1 — a straight bug**, and the place to start. The merge already fires into `metadata.sources`
+  while the insert is not suppressed (46 rows / 15 threads). No merge-semantics design needed.
+- **B2 — the design work**, now unblocked and bounded by the six rules above.
 
 ---
 
@@ -130,7 +159,7 @@ Supporting corpus figures (all 2026-09-07): 11,079 artifacts · **4,322** at con
 Ordered work:
 
 1. **Verify the #537 report-truth wave on a live run** (cheap, do it early, zero risk). Seed a handle with a leading `@` → expect kind `username`. Dismiss two rows, Confirm one, Key one. Export; expect cluster headline ≤ strongest member's capped confidence, the confirmed row rendered ANALYST-CONFIRMED, kind-alias twins folded, and the Evidence Record carrying the analyst-decisions line. On a later run confirm a Dismissed selector is refused at dispatch — **that closes audit F8**.
-2. **`artifactDedupKey`** — blocked on §2's ruling. Duplicates measured: **852 redundant rows of 11,079 across 138 threads** (supersedes "840 across 695 selectors"): 503 same value / different `source` string · 317 identical key, **143 of them written inside one sub-2-second batch** · 32 case-only. Max 6 copies of one value in one thread.
+2. **`artifactDedupKey`** — **ruled and unblocked**; build to the six rules in §2, starting with B1. Duplicates measured: **852 redundant rows of 11,079 across 138 threads** (supersedes "840 across 695 selectors"): 503 same value / different `source` string · 317 identical key, **143 of them written inside one sub-2-second batch** · 32 case-only. Max 6 copies of one value in one thread.
 3. **The evidence-authority / causal-provenance boundary** — the operator's stated next investigative priority. Full brief and fixtures in the 09-07 handoff §6. Governing principle: *allow broad discovery, but do not grant subject authority without durable linkage.* **This is NOT the declined bare-name dispatch guard** — searches stay permitted; the control belongs at persistence/read authority.
 4. **#477** — `record_finding` persists the model's label unchecked against server-computed confidence. **#494** — `ransomwarelive_lookup` malformed HTTP-200 JSON collapses into the genuine-negative shape; fail closed on unparseable payloads.
 
@@ -154,7 +183,7 @@ Ordered work:
 | `CLAUDE.md` | Handoff index names 2026-08-31 as newest; the 09-03 and 09-07 handoffs supersede it |
 | `CLAUDE.md` | Dated-state block still describes `main = 35ff20b`; it is `a19f065` |
 | Old `NEXT_SESSION_PROMPT` §A | Name-pivot guard — **DECLINED.** Do not implement or propose |
-| Old `NEXT_SESSION_PROMPT` §B | **Blocked on §2's ruling** |
+| Old `NEXT_SESSION_PROMPT` §B | **Ruled 2026-09-07** — open in narrowed form; see §2 |
 | Game Plan | Merge order lists #548 (closed); says "~20 stale branches" (79 merged of 410); `840/695` duplicates → `852` / 11,079 |
 
 ---
@@ -188,7 +217,7 @@ Ordered work:
 
 ## 9 · Definition of done for this next block
 
-- [ ] §2 ruling written into this file
+- [x] §2 ruling written into this file (operator, 2026-09-07)
 - [ ] #550 merged and live on Vercel
 - [ ] #549 merged, mirror-synced, deployed, `/health` build SHA **moved** off `7b0138d`
 - [ ] #547 migration validated in CI and applied

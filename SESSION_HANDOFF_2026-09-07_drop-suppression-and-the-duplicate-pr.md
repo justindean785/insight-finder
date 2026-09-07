@@ -1,7 +1,7 @@
 # Session handoff — 2026-09-07 · #551 shipped, #548 closed, and a premise two sessions got wrong
 
 > **Everything here is a dated measurement (2026-09-07T13:05Z), not a state. Re-verify before acting.**
-> §5 carries **one open operator ruling** that blocks the next session's largest item. Read it first.
+> §5 records the **operator's `artifactDedupKey` ruling** (2026-09-07) — settled; build to it.
 
 ---
 
@@ -109,16 +109,49 @@ scoped and measured but **not started**; the bare-name pivot guard remains **dec
 
 ---
 
-## 5 · ⛔ ONE OPEN OPERATOR RULING — §B, and it blocks the next session's biggest item
+## 5 · ✅ `artifactDedupKey` — OPERATOR RULING RECORDED, 2026-09-07
 
-`NEXT_SESSION_PROMPT.md` §B (`artifactDedupKey` — make corroboration accumulate) is ranked the
-highest-value accuracy item in both the 09-03 handoff and the operator's Game Plan. **It is
-currently blocked on one ruling that has not been written down**, and that ambiguity has already
-caused confusion across sessions.
+`artifactDedupKey` (make corroboration accumulate) is ranked the highest-value accuracy item in
+both the 09-03 handoff and the operator's Game Plan. It had been blocked on a ruling that was never
+written down, which confused two sessions. **The operator ruled on 2026-09-07. It is settled.**
 
-### What the record actually shows
+### ⛔ Rejected permanently — both halves
 
-The rejection is real but its scope is **not** what a one-line summary suggests. Primary sources:
+**(a) Dedup by DELETING rows.** #305's migration would have deleted ~120 genuinely distinct rows and
+orphaned 53 analyst reviews. **Off the table permanently** — no future design may delete an artifact
+row to achieve dedup.
+
+**(b) Merged confidence = `GREATEST`, without selector scope.** #307's shape. Taking the maximum
+bypasses a minor-safety cap whenever one copy is capped low and another is not.
+
+### ✅ Permitted — §B stays open in this narrowed form
+
+A write-path merge is allowed **only** if it satisfies all six:
+
+| Rule | Requirement |
+|---|---|
+| **Merge key** | Same `canonicalKind` **and** same normalized value, **scoped to the selector** |
+| **No deletion** | **No row ever deleted, no analyst review ever orphaned** |
+| **Provenance** | `sources[]` retains **per-source first-seen** |
+| **Confidence** | Follows the **corroboration rules**, **respects existing caps**. Not `GREATEST` |
+| **Quarantine** | **Fails closed** — any quarantined copy ⇒ merged row quarantined |
+| **Scope** | **New writes only.** Backfill is a **separate, later** decision |
+
+Implement behind a flag with failure-first tests driving the write path
+(`auto-persist-findings.ts` / `lib/artifact-hygiene.ts`), not a restatement of the predicate.
+
+**Start with B1** — a straight bug needing none of the above design work: the merge *already fires*
+into `metadata.sources` while the insert is **not** suppressed (**46 rows across 15 threads**).
+**B2** is the design work, now unblocked and bounded by the six rules.
+
+What the ruling keeps from #307 is its **structure** — one canonical merge, selector-scoped key,
+provenance unioned, reviews re-pointed, conflicting verdicts surfaced as `recheck` rather than
+discarded. What it **drops** is the `GREATEST` derivation. #305's delete-based approach is excluded
+entirely.
+
+### The record behind the ruling
+
+Kept because it explains why the rules are shaped as they are. **Settled — do not re-derive.**
 
 - **PR #305** (closed unmerged 2026-07-14) carried a dedup migration whose key **ignored selector
   scope**. A production simulation showed it would delete **~120 genuinely distinct rows** (different
@@ -141,18 +174,8 @@ demonstrated a design that avoids (a) and would need only a rule change for (b).
 
 ### What the ruling must say
 
-The operator was offered two options and has **not yet chosen**:
+### Fresh measurements behind the ruling
 
-- **(A) Confirmed / declined outright** — §B is declined; do not re-propose a write-path merge
-  without new sign-off. The 7.9 % signal problem stays open; display-layer grouping only.
-- **(B) Partial** — name exactly what was rejected (candidates, from the record above: taking
-  `GREATEST` confidence on merge · backfilling existing rows · value normalization without selector
-  scope) and keep §B open in narrowed form.
-
-**Until this is written down, no session may start §B.** `NEXT_SESSION_PROMPT.md` §B has been
-marked `AWAITING OPERATOR RULING` with this evidence inline.
-
-### Fresh measurements that should inform the ruling
 
 Corpus, 2026-09-07 via `query_database`:
 
@@ -167,12 +190,12 @@ Corpus, 2026-09-07 via `query_database`:
 ⚠️ These supersede the `840 across 695 selectors` figure in `SESSION_HANDOFF_2026-09-03` §4.3 and
 `NEXT_SESSION_PROMPT.md` §B.
 
-**This suggests §B splits in two**, which may make the ruling easier:
+**§B splits in two**, and the ruling above bounds both:
 
-- **B1 — a straight bug.** The merge fires into `metadata.sources` while the insert is *not*
-  suppressed (46 confirmed rows). Fixing that needs no merge-semantics redesign.
-- **B2 — the design question.** Source-set semantics, per-kind value normalization, merged-confidence
-  derivation. This is what needs the written sign-off, and it is integrity-critical.
+- **B1 — a straight bug**, and the place to start. The merge fires into `metadata.sources` while the
+  insert is *not* suppressed (46 confirmed rows). Needs no merge-semantics redesign.
+- **B2 — the design work.** Source-set semantics, per-kind value normalization, merged-confidence
+  derivation — now unblocked, and constrained by the six rules above.
 
 ---
 
@@ -277,7 +300,7 @@ mergeable, and three are not:**
 | `CLAUDE.md` | Handoff index names `2026-08-31` as newest; `2026-09-03` and this file supersede it |
 | `ChatWindow.tsx` | "store SURVIVES an unmount" — false on the installed SDK; **corrected in #551** |
 | `NEXT_SESSION_PROMPT.md` §A | Name-pivot guard — **declined by the operator.** Do not implement or propose |
-| `NEXT_SESSION_PROMPT.md` §B | **AWAITING OPERATOR RULING** (§5). Numbers stale: `840/695` → `852` / 11,079 |
+| `NEXT_SESSION_PROMPT.md` §B | **RULED 2026-09-07** (§5) — open in narrowed form. Numbers stale: `840/695` → `852` / 11,079 |
 | `SESSION_HANDOFF_2026-09-03` §4 | Ranked plan superseded by the operator's `Insight_Finder_Game_Plan.md` (2026-09-07) |
 
 ---
