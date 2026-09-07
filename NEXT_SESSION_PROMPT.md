@@ -4,6 +4,23 @@
 > self-contained. **Everything below is a dated measurement (2026-09-03T07:30Z), not a state —
 > re-verify before acting.**
 
+> ## ⚠️ Status update 2026-09-07T13:05Z — read before using this file
+>
+> - **`main` is now `a19f065`** (was `1554911` when this was written). Live `osint-agent` build is
+>   still `7b0138d`. Frontend baseline is **1918 / 1 / 155**, not the figure in `CLAUDE.md`.
+> - **§A (name-pivot guard) is DECLINED by the operator.** Do not implement it and do not
+>   re-propose it. Searches stay permitted; the intended control moved to persistence/read
+>   authority — see the evidence-authority audit in
+>   `SESSION_HANDOFF_2026-09-07_drop-suppression-and-the-duplicate-pr.md` §6.
+> - **§B is AWAITING AN OPERATOR RULING and is BLOCKED.** Do not start it, and do not propose a
+>   write-path merge, until the ruling is written down. See §B's own banner below.
+> - §B's measurements are stale: `840 across 695 selectors` → **852 redundant rows of 11,079
+>   across 138 threads** (2026-09-07).
+> - The newest handoff is
+>   `SESSION_HANDOFF_2026-09-07_drop-suppression-and-the-duplicate-pr.md`; read it before this file.
+> - **Task 0 below is done** — #542 is merged. So are #543, #544, #545, #546 and #551. The current
+>   queue is #550, #549, #547, plus rulings on #502 vs #516 and #529/#519.
+
 ---
 
 ## Start here — orientation, 5 minutes, do this first
@@ -63,7 +80,18 @@ Paths were correct at `1554911`; **search the repo if they have moved.**
 
 ---
 
-## §A — The name-pivot guard (do this first; it is scoped and ready)
+## §A — ⛔ DECLINED (2026-09-07). Do not implement, do not re-propose.
+
+> The operator declined the name-pivot dispatch guard. Broad discovery stays permitted; the
+> intended control moved to **persistence / read authority** — unlinked results remain visible
+> leads without entering subject identity, confidence, graph or report conclusions. That work is
+> specified as the evidence-authority audit in
+> `SESSION_HANDOFF_2026-09-07_drop-suppression-and-the-duplicate-pr.md` §6.
+>
+> The section is kept below for its diagnosis (the `c599a5bc` trace is still the clearest evidence
+> of where the noise comes from), **not as a work item.**
+
+### §A — The name-pivot guard (superseded; retained for its diagnosis)
 
 ### Current problem
 
@@ -124,7 +152,55 @@ but only *after* the calls were paid for.
 
 ---
 
-## §B — `artifactDedupKey`: make corroboration accumulate (highest value, needs sign-off FIRST)
+## §B — `artifactDedupKey`: make corroboration accumulate
+
+> ## ⛔ BLOCKED — AWAITING OPERATOR RULING (as of 2026-09-07T13:05Z)
+>
+> **Do not start this section. Do not propose a write-path merge.** A prior session recorded that a
+> dedup proposal was "rejected", but the *scope* of that rejection was never written down, and the
+> ambiguity has already caused cross-session confusion. The ruling must be recorded here before any
+> work begins.
+>
+> **What the primary sources actually show:**
+>
+> - **PR #305** (closed unmerged 2026-07-14) carried a dedup migration whose key **ignored selector
+>   scope**. A production simulation showed it would delete **~120 genuinely distinct rows**
+>   (different platform / subject / host / breach) and **orphan 53 real analyst reviews**. That is
+>   the "data-loss / review-orphaning failure".
+> - **PR #307** (closed unmerged 2026-08-20) was the careful fix: a selector-scope-aware key plus a
+>   single canonical `merge_artifact_into(loser, survivor)` that asserts thread + user equality,
+>   preserves the survivor's `subject_id`/`cluster_id`, **unions** provenance and classes, re-points
+>   evidence and reviews, and surfaces conflicting analyst verdicts as `recheck` with lineage rather
+>   than discarding them. Production simulation: 6,889 → 6,387 artifacts, 502 true duplicates across
+>   376 groups, **0 distinct-platform / subject / selector loss, 53 reviews re-pointed, 0 discarded.**
+> - #307 derives merged confidence with **`GREATEST`** — the likely origin of the "minor-safety
+>   confidence bypass" concern: if one copy is capped low for minor-safety reasons and another is
+>   not, taking the maximum bypasses the cap.
+>
+> So the shape that was rejected appears to be a write-path merge that **(a) keys on a normalized
+> value without selector scope** and **(b) takes maximum confidence on merge**. #307 already
+> demonstrated a design avoiding (a); (b) would need only a rule change. **But that is inference
+> from the record, not a ruling. It must be confirmed.**
+>
+> **The ruling must state one of:**
+>
+> - **(A) Declined outright** — no write-path merge without new sign-off; the 7.9 % signal problem
+>   stays open and is addressed at the display layer only.
+> - **(B) Partial** — naming exactly what is rejected (candidates: `GREATEST` confidence on merge ·
+>   backfilling existing rows · value normalization without selector scope), keeping §B open in
+>   narrowed form.
+>
+> **Consider splitting it**, which may make the ruling easier — measured 2026-09-07:
+>
+> - **B1, a straight bug:** the merge *already fires* into `metadata.sources` while the insert is
+>   **not** suppressed — **46 rows across 15 threads** carry ≥2 `sources` entries *and* still have a
+>   sibling duplicate row. Fixing that needs no merge-semantics redesign.
+> - **B2, the design question:** source-set semantics, per-kind value normalization, merged-confidence
+>   derivation. Integrity-critical; this is what needs the written sign-off.
+>
+> **Current corpus (2026-09-07, supersedes the figures below):** 11,079 artifacts; **852 redundant
+> rows (7.7 %) across 138 threads** — 503 same value / different `source` string, 317 identical key
+> (**143 inside one sub-2-second batch**), 32 case-only. Max 6 copies of one value in one thread.
 
 ### Current problem
 
