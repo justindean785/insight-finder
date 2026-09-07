@@ -330,6 +330,33 @@ function computeEvidenceCaps(
   const sourceLabels = [...(input.sources ?? []), ...metadataSourceLabels(input.metadata)];
   const classes = sourceLabels.flatMap((s) => {
     const whole = classifySource(s);
+    // #497 — a joined label containing a breach slug ANYWHERE (BREACH_SLUG_RE
+    // matches mid-string) used to short-circuit here and discard every other
+    // class the same label names, e.g. "serus_darkweb_scan+whois_lookup+
+    // dns_records" resolved wholly to `breach` and the genuinely independent
+    // infra evidence sitting right next to it vanished — a false "needs second
+    // independent class of evidence" on a row that already had one. Recover
+    // it by ALSO splitting and unioning in any additional non-unknown class
+    // the split reveals, but ONLY when the whole resolves to `breach`
+    // specifically: every OTHER whole-label resolution (most importantly
+    // `infra_shared_host` — see the shared-host test below) is intentionally
+    // NOT split further, because splitting there is what would leak a
+    // stronger class in and undo the shared-host/reverse-IP anti-dilution
+    // guard those labels exist to enforce. This is deliberately narrower than
+    // "always split": it recovers evidence only where more of it is safe to
+    // recover.
+    if (whole === "breach") {
+      const parts = splitSourceLabels(s);
+      if (parts.length > 1) {
+        const known = new Set<SourceClass>(["breach"]);
+        for (const part of parts) {
+          const c = classifySource(part);
+          if (c !== "unknown") known.add(c);
+        }
+        return [...known];
+      }
+      return [whole];
+    }
     if (whole !== "unknown") return [whole];
     // Unrecognised whole label → split into component tokens. Keep the tokens
     // that DO resolve and drop the split-noise "unknown" sub-labels (e.g.
