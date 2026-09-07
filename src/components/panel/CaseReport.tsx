@@ -38,7 +38,7 @@ import {
   type ConfLabel,
   type ReviewAdjustment,
 } from "@/lib/intel";
-import { formatArtifactDisplayValue, buildIdentityRows, type IdentityRow } from "@/lib/report-hygiene";
+import { formatArtifactDisplayValue, buildIdentityRows, isClusterIneligible, type IdentityRow } from "@/lib/report-hygiene";
 import { toolActionLabel } from "@/lib/tool-display";
 import { tokenizeSourceChain } from "@/lib/report-source-labels";
 import { cn } from "@/lib/utils";
@@ -92,7 +92,19 @@ function bucket(a: Artifact, review?: ReviewAdjustment): "confirmed" | "probable
   const rawStatus = statusOf(a);
   const kind = a.kind.toLowerCase();
   if (kind === "contradiction" || rawStatus === "contradicted") return "contradiction";
-  if (kind === "excluded_collision" || rawStatus === "excluded") return "excluded";
+  // THE ENGINE'S OWN PREDICATE, not a re-derivation of it — same reasoning as
+  // `authorityFor` (src/lib/authority.ts). `evidenceStatus` below consults none
+  // of the collision flags, so without this gate a `possible_collision` row
+  // that also clears the corroboration bar reads "verified" and lands in this
+  // report's CONFIRMED bucket — while the Evidence board (via `authorityFor`)
+  // already demotes the identical row to quarantined. Same defect shape as
+  // #448, one layer up, at a call site that fix never reached (measured on the
+  // harness fixture: a possible_collision row with a caveat explaining it is a
+  // different, unrelated person rendered in "Confirmed Findings"). `isClusterIneligible`
+  // is a strict superset of the two ad hoc checks this replaced
+  // (`excluded_collision` kind and `status: "excluded"` are both covered by
+  // `isCollisionArtifact`), so this only WIDENS what gets excluded, never narrows it.
+  if (isClusterIneligible(a)) return "excluded";
   const status = evidenceStatus(a, review).status;
   if (status === "contradicted") return "contradiction";
   if (status === "rejected") return "excluded";

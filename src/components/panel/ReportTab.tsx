@@ -3,6 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { selectAuthoritativeFindings } from "@/lib/authoritative-findings";
+import { tallyAuthority } from "@/lib/authority";
 import { buildReportMarkdown, buildEvidenceMatrixMarkdown } from "@/lib/intel";
 import { useReviewStates } from "@/lib/review";
 import { useThreadMessages } from "@/hooks/useThreadMessages";
@@ -157,16 +158,28 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
     setJsonGateOpen(false);
   };
 
-  // Analyst review state, summarised for the header context line (same tally
-  // the report body shows — kept read-only, no semantics changed).
+  // Analyst review state, summarised for the header context line.
+  //
+  // "verified" comes from the shared `tallyAuthority` selector
+  // (src/lib/authority.ts) — the same one WorkspaceHeader, OverviewTab and
+  // EvidenceTab use — NOT a local count of explicit confirmed/key reviews.
+  // The comment this replaced claimed this was "the same tally the report
+  // body shows"; it was not; `CaseReport`'s own KPI counts via `bucket()`,
+  // which (like `authorityFor`) gates through `isClusterIneligible` and also
+  // counts corroboration-derived CONFIRMED rows nobody explicitly reviewed.
+  // A hand-rolled review-only count undercounts against both this tab's own
+  // body and every other tab.
+  //
+  // "rejected" has no equivalent in the authority ladder — analyst rejection
+  // is a decision state, not a position on it — so it stays a direct tally.
   const reviewTally = useMemo(() => {
-    let verified = 0, rejected = 0;
+    const authority = tallyAuthority(artifacts, review.get);
+    let rejected = 0;
     for (const s of Object.values(reviews)) {
-      if (s === "confirmed" || s === "key") verified++;
-      else if (s === "wrong" || s === "dismissed") rejected++;
+      if (s === "wrong" || s === "dismissed") rejected++;
     }
-    return { verified, rejected };
-  }, [reviews]);
+    return { verified: authority.verified, rejected };
+  }, [artifacts, review, reviews]);
 
   const subtitle = (
     <span className="inline-flex flex-wrap items-center">
