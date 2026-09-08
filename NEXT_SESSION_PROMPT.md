@@ -1,8 +1,8 @@
 # Next-session prompt — Insight Finder
 
 > Paste this whole file as the opening message of a fresh session. It is self-contained.
-> **Written 2026-09-07T13:30Z, revised 13:55Z after the `4e6888a` deploy and the Phase 0 merges.
-> Every number is a dated measurement, not a state — re-verify.**
+> **Written 2026-09-07T13:30Z; revised 2026-09-08T07:10Z after the `e50db9e` deploy drained the
+> whole queue. Every number is a dated measurement, not a state — re-verify.**
 
 ---
 
@@ -13,16 +13,16 @@ git fetch origin main && git log --oneline -5 origin/main
 curl -s "https://skzqwbyvmwqarfgfvyky.supabase.co/functions/v1/osint-agent?health=1"
 ```
 
-**Expect `main` = `8691e55` and live edge build = `4e6888a`.** If either moved, another session has
+**Expect `main` = `4a5eb1c` or later and live edge build = `e50db9e`.** If either moved, another session has
 worked this repo — read the newest `SESSION_HANDOFF_*.md` first. That has now happened FOUR times.
-Most recently 2026-09-07T13:30–13:55Z: a session opened this very file, found its own
-"expect `43ae2db` / `eab3668`" line already stale, and drained the entire Phase 0 queue
-(#550, #547, #549 merged; `4e6888a` deployed and verified). On an earlier occasion the same
-failure produced **two conflicting PRs for one task** (#548 and #551).
+Most recently 2026-09-07/08: one session opened this very file, found its own expectation line
+already stale, and drained the ENTIRE queue — #550, #547, #549 merged and deployed as `4e6888a`,
+then #529 and #519 merged and deployed as `e50db9e`. On an earlier occasion the same failure
+produced **two conflicting PRs for one task** (#548 and #551).
 
-**Then, before you write any code: `list_pull_requests`.** Five PRs are open as of 13:55Z
-(#541, #529, #519, #516, #502) — down from nine; see the §1 table. The 2026-09-07
-duplicate-PR incident happened because a session started work without checking.
+**Then, before you write any code: `list_pull_requests`.** THREE PRs are open as of
+2026-09-08T07:05Z (#541, #516, #502) — down from nine. The 2026-09-07 duplicate-PR incident
+happened because a session started work without checking.
 
 Read, in order:
 1. `SESSION_HANDOFF_2026-09-07_drop-suppression-and-the-duplicate-pr.md` — newest; §5 records the `artifactDedupKey` ruling.
@@ -31,18 +31,28 @@ Read, in order:
 
 ---
 
-## 1 · Verified state (2026-09-07T13:55Z)
+## 1 · Verified state (2026-09-08T07:05Z)
 
 | Axis | Value |
 |---|---|
-| `origin/main` | `8691e55` (#550 `893d56c` → #547 `6622d79` → #549 `4e6888a` → stamp `57c0912` → ledger `8691e55`) |
-| Live `osint-agent` build | **`4e6888a`** — deployed 2026-09-07T13:44Z, VERIFIED against `/health`. `main` and the live edge build are IN SYNC; nothing is undeployed |
-| Vercel production | READY on `4e6888a` (`dpl_GSrfCz7…`, `target: production`), alias `insight-finder-sandy.vercel.app` |
-| Frontend suite | **1927 passed / 1 skipped / 158 files** (clean checkout, its own `npm ci`, 0 failures) |
-| Edge suite | **1624 passed / 0 failed / 5 ignored** (CI `Edge functions (deno test)` on `57c0912`) |
+| `origin/main` | `4a5eb1c` (#529 `42d8609` → #519 `e50db9e` → stamp `4a5eb1c`), plus the ledger/docs commits shipped with the 09-08 handoff |
+| Live `osint-agent` build | **`e50db9e`** — deployed 2026-09-08, VERIFIED against `/health`. `main` and the live edge build are IN SYNC; nothing is undeployed |
+| `deploy/live` | `e50db9e`, local and remote |
+| Vercel production | READY on `main`, alias `insight-finder-sandy.vercel.app` (re-check the SHA) |
+| Frontend suite | **1957 passed / 1 skipped / 159 files**, 0 failures |
+| Edge suite | **1634 passed / 0 failed / 5 ignored** |
 | Lint | 0 errors, 11 pre-existing `react-refresh` warnings |
-| Open PRs | **5** — #541, #529, #519, #516 (draft) and #502 (non-draft) |
-| Mirror `HEAD` | `fbd17f0` — synced. `diff -rq` over `osint-agent` is EMPTY and the gate reports `mirror tree -> equal` (`2c672db3ec69`) |
+| Open PRs | **3** — #541, #516 (draft) and #502 (non-draft) |
+| Mirror `HEAD` | `571cb9e` — synced. `diff -rq` over `osint-agent` is EMPTY and the gate reports `mirror tree -> equal` (`e854a98f4110`) |
+
+**Deployed 2026-09-08** (build `e50db9e`): **#519** — the `subject_unlinked` dispatch boundary
+no longer reopens silently. The refused-key read paged only as far as PostgREST chose to answer
+(an unbounded select returns at most `db-max-rows` rows with NO error), and the refusal text
+interpolated caller-controlled values that `isIntentionalSkip` could regex-match into an
+`ok:true` skip. The read now advances by rows actually returned; the message is a constant.
+**#529** merged alongside it (the `linkage_confirmed` release path) and needed no deploy.
+**No `/health` key proves either one** — add a behavioural key next time something touches the
+dispatch boundary or confidence.
 
 **Deployed 2026-09-07T13:44Z** (build `4e6888a`): **#549** — `confidence.ts` no longer lets a
 breach slug appearing anywhere in a joined source label discard the other evidence classes that
@@ -132,9 +142,10 @@ rules plus existing caps. #305's delete-based approach is excluded entirely.
 
 ## 3 · Phase 0 — drain the queue (do this first; it is mostly mechanical)
 
-> **UPDATE 2026-09-07T13:55Z — Phase 0 is DONE. #550, #547 and #549 are merged, and #549 is
-> deployed and verified (`/health` = `4e6888a`). The table below is kept as the record of how they
-> were assessed, not as a to-do list. The live queue is #541, #529, #519, #516, #502.**
+> **UPDATE 2026-09-08T07:05Z — the whole queue below is DRAINED. #550, #547, #549, #529 and #519
+> are all merged; #549 deployed as `4e6888a` and #519 as `e50db9e`, both verified against
+> `/health`. The table is kept as the record of how they were assessed, not as a to-do list.
+> The live queue is #541, #516, #502 — and #502 vs #516 is an OPERATOR decision, not yours.**
 
 Measured 2026-09-07 against `a19f065`. **Three PRs already conflict** — the Game Plan does not
 mention this.
@@ -151,9 +162,11 @@ mention this.
 | **#541** 2026-09-03 handoff doc | — | — | — | — | superseded by the 09-07 handoff; close or merge |
 | **#552** 2026-09-07 handoff doc | — | — | — | — | this session's record |
 
-**Suggested order — DONE 2026-09-07T13:55Z, in exactly this order:** #550 → #547 → #549, then the
-full edge-deploy recipe for #549 (`/health` moved `eab3668` → `4e6888a`, ledger recorded,
-`deploy/live` published). **Still open: rule on #502 vs #516** — do not keep both — **and rebase
+**Suggested order — ALL DONE.** 2026-09-07: #550 → #547 → #549, then the full edge-deploy recipe
+(`/health` moved `eab3668` → `4e6888a`). 2026-09-08: #529 → #519, then the recipe again
+(`/health` moved `4e6888a` → `e50db9e`). Both ledgers recorded and `deploy/live` published.
+#529 and #519 had both CONFLICTED; each was resolved by merging `main` IN (never rebasing —
+they are other sessions' branches). **Still open: rule on #502 vs #516** — do not keep both — **and rebase
 #529/#519 before deciding.** Note `artifacts_synthesis_cluster_uniq` still does **not** exist in
 production: #547's migration is merged and CI-validated, but merging a migration does not apply it
 to the Lovable-owned database. Applying it is a separate explicit step, and it is safe to defer
@@ -208,9 +221,10 @@ Ordered work:
 
 | Document | Correction |
 |---|---|
-| `CLAUDE.md` | ✅ **FIXED 2026-09-07T13:55Z.** Frontend baseline now `1927 / 1 / 158` and edge `1624 / 0 / 5`, both re-measured on `57c0912` (frontend in a clean checkout with its own `npm ci`; edge from CI's own job summary). The `1918 / 1 / 155` figure in §1 above was correct when written — #550 then added 9 tests across 3 files |
+| `CLAUDE.md` | ✅ **RE-FIXED 2026-09-08.** Frontend baseline now `1957 / 1 / 159` and edge `1634 / 0 / 5`, re-measured on `4a5eb1c`. Each earlier figure was correct when written; the suite grows with every merged PR that adds tests (#550 added 9 across 3 files, #529 added 30 in 1, #519 added 10). Treat a disagreement between two documents as a sequence, not a contradiction — but always re-measure |
 | `CLAUDE.md` | ✅ **FIXED.** Handoff index now ends at the 09-07 handoff and points at this file as the companion entry point |
-| `CLAUDE.md` | ✅ **FIXED.** Dated-state block now reads `main = 8691e55` (the ledger commit — `57c0912` is only the preceding build stamp) / live `4e6888a`, and records that the `mirror_tree_digest` gap is CLOSED (it had been described as a permanent "known cosmetic gap", which left the deploy gate unable to distinguish it from real drift) |
+| `CLAUDE.md` | ✅ **RE-FIXED 2026-09-08.** Dated-state block now reads `main = 4a5eb1c` / live `e50db9e`, records that the `mirror_tree_digest` gap stays CLOSED, and adds two instrument traps: `ledger_ref_divergence` in a fresh clone (fetch the `deploy/live` ref) and `marker_offset_mismatch` between stamping and deploying (expected — read `mirror tree -> equal` instead) |
+| `CLAUDE.md` | ⚠️ **A claim it carried was WRONG and is now corrected.** It said #519 "stamps that into `tool_usage_log.input_json.runtime`". #519 is merged and deployed and does **not** do that — it added a structured `console.warn` (`quarantine_dispatch_read_incomplete`). Durable runtime stamping is unbuilt |
 | Old `NEXT_SESSION_PROMPT` §A | Name-pivot guard — **DECLINED.** Do not implement or propose |
 | Old `NEXT_SESSION_PROMPT` §B | **Ruled 2026-09-07** — open in narrowed form; see §2 |
 | Game Plan | Merge order lists #548 (closed); says "~20 stale branches" (79 merged of 410); `840/695` duplicates → `852` / 11,079 |
@@ -251,7 +265,11 @@ Ordered work:
 - [x] #549 merged, mirror-synced, deployed, `/health` build SHA **moved** off `eab3668` → `4e6888a`
 - [x] #547 migration validated in CI — **but NOT applied** to the Lovable-owned database; the index
       still does not exist in production. Safe to defer while both synthesis flags are OFF
-- [ ] #502 vs #516 ruled on; #529/#519 rebased and ruled on
+- [x] #529 and #519 conflict-resolved, merged, and #519 deployed as `e50db9e`
+- [ ] #502 vs #516 ruled on (**operator decision**); #502 still conflicts — merge `main` in, do not rebase
+- [ ] #541 (superseded 09-03 handoff) closed or merged
+- [ ] Durable dispatch-boundary telemetry — #519 did NOT add it (structured `console.warn` only)
+- [ ] `artifacts_synthesis_cluster_uniq` applied to the Lovable-owned DB — merging #547 did not apply it
 - [x] `CLAUDE.md` baselines and handoff index refreshed (2026-09-07T13:55Z)
 - [ ] 79 merged branches deleted; handoff docs moved to `docs/handoffs/`; `bun.lockb` removed
 - [ ] Actionable-rate re-measured on a fresh 14-day cohort against the 8.6 % baseline

@@ -13,33 +13,53 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 
 > A mirror merge is NOT a deploy. The only proof of deploy is a moved build SHA.
 
-> **Dated state — 2026-09-07T13:55Z.** `main` = `8691e55` (#550 merged as `893d56c`, #547 as
-> `6622d79`, #549 as `4e6888a`, stamp `57c0912`, ledger `8691e55`). Live
-> `osint-agent` build = **`4e6888a`**, `deploy/live` → `4e6888a`, ledger recorded (VERIFIED,
-> marker provenance; bytes unverified as always). Vercel production READY on `4e6888a`.
-> Mirror `main` = `fbd17f0`.
+> **Dated state — 2026-09-08T07:05Z.** `main` = `4a5eb1c` (#529 merged as `42d8609`,
+> #519 as `e50db9e`, stamp `4a5eb1c`; ledger commit lands via the PR carrying this
+> edit). Live `osint-agent` build = **`e50db9e`**, `deploy/live` → `e50db9e`, ledger
+> recorded (VERIFIED, marker provenance; bytes unverified as always). Mirror `main` =
+> `571cb9e`, tree `e854a98f4110` — equal to canonical.
 >
-> **The `mirror_tree_digest` gap is CLOSED — do not re-report it as drift, or as a "known
-> cosmetic gap".** This block used to say the ledger's `mirror_tree_digest` differed because
-> canonical-only TEST files were deliberately not synced. Those 16 test files were synced on
-> 2026-09-07 (mirror `42372aa`), along with the four files the `4e6888a` deploy touched, so
-> `diff -rq` over `osint-agent` is now EMPTY and the gate reports `mirror tree -> equal`
-> (`2c672db3ec69` on both sides). This matters beyond tidiness: while the digests differed,
-> the one gate protecting deploys was permanently yellow and so could not distinguish the
-> known gap from real drift — which is the entire thing it exists to catch (11
-> Lovable-authored commits landed on the mirror on 2026-08-29 and were caught only because
-> someone read the diff by hand). `evidence-export`, `security-test-lab` and `_shared` are
-> empty too.
+> **Both `subject_unlinked` dispatch-boundary reopenings are now CLOSED IN THE
+> DEPLOYED BUILD** (#519, live at `e50db9e`). The refused-key read paged only as far
+> as PostgREST chose to answer — an unbounded select returns at most `db-max-rows`
+> rows with NO error, a well-formed short 200 — so past that cap every quarantined
+> selector dispatched normally. And the refusal text interpolated the
+> classifier-written reason and the target-controlled selector into `error`, which
+> `isIntentionalSkip` regex-matches BEFORE `deriveOk` reads `ok`: a selector like
+> `gated.com` flipped a refusal to `ok:true` and deleted it from the failure metric.
+> The read now advances by rows actually returned and ends only on an empty page or
+> the true count; the message is a constant, with the reason carried as
+> `quarantine_reason` (deliberately not `reason`).
 >
-> **A gate that always complains tells you nothing — check the instrument before the code.**
-> On 2026-09-07 `record-deploy.mjs` reported `ledger_ref_divergence`. It was not real: a fresh
-> sandbox clone had never fetched the `deploy/live` ref, leaving that axis blind. Run
-> `git fetch origin refs/heads/deploy/live:refs/heads/deploy/live` in a new checkout before
-> trusting the gate.
+> **The `mirror_tree_digest` gap stays CLOSED — do not re-report it as drift, or as a
+> "known cosmetic gap".** This block used to say the digest differed because
+> canonical-only TEST files were deliberately not synced. They were synced on
+> 2026-09-07, and every sync since has carried test files too, so `diff -rq` over
+> `osint-agent` is EMPTY and the gate reports `mirror tree -> equal`. That matters
+> beyond tidiness: while the digests differed, the one gate protecting deploys was
+> permanently yellow and so could not distinguish the known gap from real drift —
+> the entire thing it exists to catch (11 Lovable-authored commits landed on the
+> mirror on 2026-08-29 and were caught only because someone read the diff by hand).
+> `evidence-export`, `security-test-lab` and `_shared` are empty too. **Keep syncing
+> test files.**
 >
-> Previous dated states, kept for the record: `main` = `43ae2db` / live `eab3668` (#542's
-> backend half; stamp `8bec158`, ledger `43ae2db`); before that `main` = `35ff20b` / live
-> `7b0138d` (stamp `cfbb404`); before that `main` = `550fd60` / live `7cd74b5`.
+> **A gate that always complains tells you nothing — check the instrument before the
+> code.** On 2026-09-07 `record-deploy.mjs` reported `ledger_ref_divergence`. Not
+> real: a fresh sandbox clone had never fetched the `deploy/live` ref, leaving that
+> axis blind. Run
+> `git fetch origin refs/heads/deploy/live:refs/heads/deploy/live` in a new checkout
+> before trusting the gate.
+>
+> **`marker_offset_mismatch` between the stamp and the deploy is EXPECTED, not a
+> fault.** Between stamping and deploying, live still reports the OLD marker while
+> the newest stamp names the new one, so the gate says NOT VERIFIED. The hard-gate
+> condition to read at that moment is `mirror tree -> equal`, nothing else. It flips
+> to VERIFIED on its own once `/health` moves.
+>
+> Previous dated states, kept for the record: `main` = `8691e55` / live `4e6888a`
+> (#549 + #547 + #550; stamp `57c0912`); `main` = `43ae2db` / live `eab3668` (#542's
+> backend half; stamp `8bec158`); `main` = `35ff20b` / live `7b0138d` (stamp
+> `cfbb404`); `main` = `550fd60` / live `7cd74b5`.
 >
 > This block is a *measurement*, not a state — re-check `/health` and `list_deployments`
 > rather than trusting it.
@@ -132,8 +152,8 @@ There is **ONE place to work: this repo, `justindean785/insight-finder`** (produ
 
 ## Edge function internals (gotchas)
 - **Live tool defs are in `supabase/functions/osint-agent/tool-registry.ts`** (`buildTools`), **not** inline in `index.ts` (which now only orchestrates the request). The god-file refactor moved them; `index.ts` has zero tool defs. The catalog↔runtime contract test (`src/test/catalog-guidance.test.ts`) reads `tool-registry.ts` (with an `index.ts` fallback) to assert every `catalog.ts` entry has a runtime def — keep `catalog.ts` and `tool-registry.ts` in sync when adding a tool. (Any older `tools/*.ts` files are stale mirrors, not the runtime source.)
-- Tests: `npm run test:edge` (= `cd supabase/functions/osint-agent && deno test --no-check --allow-net --allow-env --allow-sys --allow-read *_test.ts`). **`--allow-read` is required** — the source-level wiring tests (`reviews_wiring_test.ts`) read `index.ts`/`cluster.ts`/`recovery.ts` off disk to assert the call sites exist, and without it they abort with `NotCapable` before any assertion runs, which reads like a code failure and is not. (The old `--allow-net --no-check` form left env/sys perms off, inflating the failure count — measured 2026-07-25: `--allow-net --no-check` = 546 pass/57 fail vs `--allow-net --allow-env` = 754 pass/24 fail.) **Edge baseline: 1624 passed / 0 failed / 5 ignored** (re-measured 2026-09-07 in CI on `main` at `57c0912`, reading the `Edge functions (deno test)` job's own summary line — prefer that instrument over a local install; the 1613/`2026-09-02`, 1539, 1517/`3b6fc44`, 1461/`3c2ef26`, 1446/`cf06cbb`, 1407/`03f64e4`, 1279/`5cc1940` and 1178/`394cd0b` figures are all stale). The 24 environmental failures are GONE — do not treat any failure as "probably environmental"; that excuse is retired. **Deno is NOT preinstalled** in the web/remote sandbox: `DENO_INSTALL=/usr/local sh <(curl -fsSL https://deno.land/install.sh) -y` (verified working 2026-08-28 — `dl.deno.land` answers 200 now, so the npm-registry workaround in `mem/ops/deno-tests-in-web-sandbox.md` is a fallback, not the only route). Pass `--no-lock`: an unqualified `deno test` rewrites `deno.lock` and drops four real dependency entries — or skip the install entirely and **use CI as the edge instrument**: any PR gives a clean `deno test` on a provisioned toolchain, and a red PR is still a usable measuring device if you read the per-job conclusions rather than the top-level X. `deno check index.ts` has ~12–157 **pre-existing** AI-SDK/Supabase type-graph errors — not a gate; verify your change adds none.
-- **Frontend baseline: 1927 passed / 1 skipped / 158 files** (`npx vitest run`, re-measured 2026-09-07 on `main` at `57c0912` in a clean checkout with its own `npm ci`; the 1818/149 (2026-09-02), 1803/148, 1775/143 (`3b6fc44`), 1695/136, 1611/131, 1629/133, 1587/130, 1585/130, 1422/115 and 1288/105 figures are all stale). ⚠️ **Test FILES are the suite's own figure, not the coverage upload count.** CI's `Frontend (vitest + build)` job prints `there will be 137 files uploaded` immediately after the suite — that is the *coverage artifact* file count, and mistaking it for the suite figure already put a wrong number in one commit message. **If a run reports ~10 React failures, re-measure in an isolated worktree with its own `npm ci`** before believing them — a shared `node_modules` can produce a duplicate-React artifact that fabricates exactly that (this cost a session; PR #481's body still cites them as real). It is a *symptom to check*, not a rule that a shared tree always lies: the 1695 above was measured in the primary checkout with 0 failures, and CI's own `Frontend (vitest + build)` job agreed on the same head. Re-measure rather than trust it — this number moved three times in one session. The package manager is **npm** — there is no `pnpm-lock.yaml` and no `test:e2e` script. Use `npm ci`, `npm run typecheck|lint|test|build|test:edge`.
+- Tests: `npm run test:edge` (= `cd supabase/functions/osint-agent && deno test --no-check --allow-net --allow-env --allow-sys --allow-read *_test.ts`). **`--allow-read` is required** — the source-level wiring tests (`reviews_wiring_test.ts`) read `index.ts`/`cluster.ts`/`recovery.ts` off disk to assert the call sites exist, and without it they abort with `NotCapable` before any assertion runs, which reads like a code failure and is not. (The old `--allow-net --no-check` form left env/sys perms off, inflating the failure count — measured 2026-07-25: `--allow-net --no-check` = 546 pass/57 fail vs `--allow-net --allow-env` = 754 pass/24 fail.) **Edge baseline: 1634 passed / 0 failed / 5 ignored** (re-measured 2026-09-08 locally on `main` at `4a5eb1c` with an installed Deno 2.9.6 and `--no-lock`, and agreed by CI's `Edge functions (deno test)` job on the same head; the 1624/`57c0912`, 1613/`2026-09-02`, 1539, 1517/`3b6fc44`, 1461/`3c2ef26`, 1446/`cf06cbb`, 1407/`03f64e4`, 1279/`5cc1940` and 1178/`394cd0b` figures are all stale). The 24 environmental failures are GONE — do not treat any failure as "probably environmental"; that excuse is retired. **Deno is NOT preinstalled** in the web/remote sandbox: `DENO_INSTALL=/usr/local sh <(curl -fsSL https://deno.land/install.sh) -y` (verified working 2026-08-28 — `dl.deno.land` answers 200 now, so the npm-registry workaround in `mem/ops/deno-tests-in-web-sandbox.md` is a fallback, not the only route). Pass `--no-lock`: an unqualified `deno test` rewrites `deno.lock` and drops four real dependency entries — or skip the install entirely and **use CI as the edge instrument**: any PR gives a clean `deno test` on a provisioned toolchain, and a red PR is still a usable measuring device if you read the per-job conclusions rather than the top-level X. `deno check index.ts` has ~12–157 **pre-existing** AI-SDK/Supabase type-graph errors — not a gate; verify your change adds none.
+- **Frontend baseline: 1957 passed / 1 skipped / 159 files** (`npx vitest run`, re-measured 2026-09-08 on `main` at `4a5eb1c`; #529 added 30 tests in 1 file over the previous figure, which reconciles exactly. The 1927/158 (`57c0912`), 1818/149 (2026-09-02), 1803/148, 1775/143 (`3b6fc44`), 1695/136, 1611/131, 1629/133, 1587/130, 1585/130, 1422/115 and 1288/105 figures are all stale). ⚠️ **Test FILES are the suite's own figure, not the coverage upload count.** CI's `Frontend (vitest + build)` job prints `there will be 137 files uploaded` immediately after the suite — that is the *coverage artifact* file count, and mistaking it for the suite figure already put a wrong number in one commit message. **If a run reports ~10 React failures, re-measure in an isolated worktree with its own `npm ci`** before believing them — a shared `node_modules` can produce a duplicate-React artifact that fabricates exactly that (this cost a session; PR #481's body still cites them as real). It is a *symptom to check*, not a rule that a shared tree always lies: the 1695 above was measured in the primary checkout with 0 failures, and CI's own `Frontend (vitest + build)` job agreed on the same head. Re-measure rather than trust it — this number moved three times in one session. The package manager is **npm** — there is no `pnpm-lock.yaml` and no `test:e2e` script. Use `npm ci`, `npm run typecheck|lint|test|build|test:edge`.
 - **The orchestrator is DeepSeek-slot-pinned, not MiniMax-primary.** `/health` reports `selected_provider: deepseek`, `orchestrator_reason: "pinned"`, with MiniMax as **fallback**. Since #449 the slot is vendor-agnostic via `DEEPSEEK_BASE_URL`, and the live model is **`glm-5.2` served by Z.AI**. Anywhere this file or `AGENTS.md` says MiniMax is primary, it is wrong.
 - Frontend tests: `npx vitest run` from repo root.
 
@@ -217,6 +237,24 @@ re-fix solved problems and miss the one thing still open.
 | **write** | #433 | a name-only collision root persisting unquarantined at confidence 65 |
 | **pivot** | #436 | a quarantined selector offered as an ordinary "Run this pivot" card |
 | **promote** | **#448** | a quarantined artifact entering identity clusters, graph edges, confidence dimensions, the report, the audit — or being labelled CONFIRMED |
+| **dispatch** | #518, hardened by **#519** | a quarantined or analyst-rejected selector reaching a live tool call. `force` does not override it |
+
+**There is now a RELEASE path, added by #529 (merged 2026-09-08).** `linkage_confirmed` was
+the documented escape hatch from quarantine and every boundary READ it, but nothing in the
+product could WRITE it — which was a missing convenience until #518 made quarantine
+dispatch-blocking, and then became a data-loss defect: a row auto-quarantined in error could
+never be pivoted on again, by anyone. `src/lib/quarantine-release.ts` supplies the writer.
+
+Two things about it that must not be "simplified" later:
+- **It is NOT a review verdict, and must never become one.** `linkage_confirmed` answers
+  "whose is this?"; the review control answers "is this real?". `intel.ts` is explicit that
+  release must be explicit and durable because the review control is known to invert on
+  quarantined rows and must not overrule an evidence ceiling on a mis-click.
+- **The drawer still has no general metadata writer.** #534 deleted `updateMeta` because its
+  caller wrote a second `false_positive` signal the agent never read. #529's writer can only
+  ever apply `releasePatch(meta)`, which returns exactly two keys or `null`, and returns
+  `null` for anything that is not an ACTIVE quarantine. Provenance survives: the patch is
+  spread over `meta`, so `subject_unlinked`, its reason and the recorded cap are untouched.
 
 - **The name-only quarantine escape is CLOSED.** It was fixed on exactly the shape this
   file prescribed — gate the exemption on DURABLE linkage, never on name equality:
@@ -252,9 +290,21 @@ and `buildRejectedDispatchKeys` (`lib/dispatch-rejection.ts`), and refuses a qua
 analyst-rejected selector before budget, circuit, cache or the live call. `force` does not
 override it. Pinned by `quarantine_dispatch_test.ts` / `rejected_dispatch_test.ts`.
 
-What remains open: both loaders **fail open with a `console.warn`** (`cache.ts` ~:619/:658)
-and nothing durable records that a run went out with the boundary degraded — #519 (draft)
-stamps that into `tool_usage_log.input_json.runtime`. Also measured, not fixed: `index.ts`
+What remains open — **and #519 did NOT close it, despite what this file used to say.**
+#519 merged 2026-09-08 (`e50db9e`, deployed) and this line previously claimed it "stamps
+that into `tool_usage_log.input_json.runtime`". It does not. What it actually added is a
+structured `console.warn` named `quarantine_dispatch_read_incomplete` (`cache.ts` ~:674),
+carrying rows-read and the reason — a real improvement over a silent prefix, but still not
+durable. The rejected-dispatch loader still fails open with a plain `console.warn`
+(`cache.ts` ~:715/:720), and nothing persists that a run went out with the boundary
+degraded. Treat durable runtime stamping as **unbuilt**, not as shipped.
+
+What #519 DID close, in the deployed build: the refused-key read no longer trusts a
+short page (it advances by rows actually returned and ends only on an empty page or the
+true `count`), and the refusal message is a constant, so caller-controlled text can no
+longer be regex-matched by `isIntentionalSkip` into an `ok:true` skip.
+
+Also measured, not fixed: `index.ts`
 ~:814 `Boolean(detectSeedServer(text))` is true for ANY non-blank message because the server
 falls back to `{kind:"other"}`, so the "parses as a seed" opening-phase gate actually fires
 on prose too. It is in the termination area — leave it unless you have read the oscillation
@@ -356,8 +406,11 @@ production corpus numbers that govern #477/#479/#482) →
 `…_2026-08-31_workbench-truth-boundary` (its §4 is the trap list, §6 the honest not-done
 list, §7 the ordered plan) →
 `…_2026-09-03_evidence-board-and-pivot-quality` →
-**`SESSION_HANDOFF_2026-09-07_drop-suppression-and-the-duplicate-pr.md` (newest — read this
-one first, starting at its §0 deploy addendum, which supersedes the rest of that file)**.
+`…_2026-09-07_drop-suppression-and-the-duplicate-pr` →
+**`SESSION_HANDOFF_2026-09-08_queue-drain-and-dispatch-deploy.md` (newest — read this one
+first)**. Its §3 is the trap list (three instruments that reported something other than what
+they named), §4 is the honest not-done list, and §5 says which open items are the operator's
+call rather than yours.
 `NEXT_SESSION_PROMPT.md` is the companion entry point and is the more current of the two.
 Take the dated state from the top of THIS file rather than from any handoff's own §1 state
 table — every one of them has been overtaken by a later session, including the 09-07 pair,
