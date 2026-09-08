@@ -289,15 +289,18 @@ const MAX_PROVENANCE_SELECTOR_LEN = 120;
 const MAX_PROVENANCE_ROUNDS = 5;
 const PROVENANCE_FIELDS = ["parent_selector", "queried_selector"] as const;
 
-function provenanceParentOf(row: Record<string, unknown>): string | null {
+function provenanceParentsOf(row: Record<string, unknown>): string[] {
   const meta = row?.metadata;
-  if (!meta || typeof meta !== "object") return null;
+  if (!meta || typeof meta !== "object") return [];
   const m = meta as Record<string, unknown>;
+  const parents: string[] = [];
   for (const f of PROVENANCE_FIELDS) {
     const v = m[f];
-    if (typeof v === "string" && v.trim()) return normalizeArtifactKey("", v);
+    if (typeof v === "string" && v.trim() && v.trim().length <= MAX_PROVENANCE_SELECTOR_LEN) {
+      parents.push(normalizeArtifactKey("", v));
+    }
   }
-  return null;
+  return parents.filter(Boolean);
 }
 
 export function buildExclusionMap<T extends Record<string, unknown>>(
@@ -339,8 +342,8 @@ export function buildExclusionMap<T extends Record<string, unknown>>(
     for (const r of rows) {
       const id = typeof r?.id === "string" ? r.id : null;
       if (!id || out.has(id)) continue;
-      const parent = provenanceParentOf(r);
-      if (!parent || !deadSelectors.has(parent)) continue;
+      const parents = provenanceParentsOf(r);
+      if (!parents.some((parent) => deadSelectors.has(parent))) continue;
       out.set(id, "derived_from_rejected");
       const before = deadSelectors.size;
       seed(r);

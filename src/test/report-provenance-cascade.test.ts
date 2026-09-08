@@ -45,13 +45,18 @@ const ALT = art({
   id: "alt", kind: "username", source: "serus_darkweb_scan", value: "diamondnicole7",
   metadata: { parent_selector: "dgoff1276@gmail.com" },
 });
+const QUERIED = art({
+  id: "queried", kind: "breach_exposure", source: "breach_check",
+  value: "Breach exposure: dgoff1276@gmail.com",
+  metadata: { queried_selector: "dgoff1276@gmail.com" },
+});
 // Kept evidence — no rejected provenance.
 const IG = art({
   id: "ig", kind: "social_profile", source: "socialfetch_lookup", confidence: 40,
   value: "Instagram: @glitterkittens12 — displayName 'Sac Archives'",
 });
 
-const ALL = [EMAIL, PW1, PW2, ALT, IG];
+const ALL = [EMAIL, PW1, PW2, ALT, QUERIED, IG];
 const REVIEWS: Record<string, ReviewAdjustment> = { email: "wrong" };
 
 function report(reviews?: Record<string, ReviewAdjustment>) {
@@ -80,6 +85,7 @@ describe("rejection cascades through provenance", () => {
     expect(net).not.toContain("233696sps");
     expect(net).not.toContain("diamondnicole7");
     expect(net).not.toContain("dgoff1276@gmail.com");
+    expect(net).not.toContain("Breach exposure:");
   });
 
   it("⛔ derived rows are not recommended as next pivots", () => {
@@ -102,7 +108,7 @@ describe("rejection cascades through provenance", () => {
     expect(appendix).toContain("derived solely from rejected evidence");
     // Chain of custody: every row still appears in the forensic table.
     const table = section(md, "Artifact / Entity Table");
-    for (const v of ["dgoff1276@gmail.com", "alex12", "233696sps", "diamondnicole7"]) {
+    for (const v of ["dgoff1276@gmail.com", "alex12", "233696sps", "diamondnicole7", "Breach exposure:"]) {
       expect(table).toContain(v);
     }
     // ...and the appendix says plainly that none of it supports the subject.

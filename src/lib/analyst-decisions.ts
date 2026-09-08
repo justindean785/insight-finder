@@ -218,13 +218,13 @@ export function buildDecisionSets(
  * derived from and the agent itself had written "this is a completely different
  * identity profile from what the breach data suggested".
  *
- * The join is `metadata.parent_selector` — the pipeline's own record of which
- * selector a tool was run against. That is deliberately NOT the same thing as
- * matching on value: `normalizeTarget` collapses punctuation, so a value-keyed
- * rejection lets an ordinary `name` "Jordan Vale" disable a `username`
- * "jordan.vale" (the hazard CLAUDE.md documents for the quarantine keyspace).
- * An explicit provenance edge carries no such collision — it was written by the
- * code that made the call.
+ * The join is `metadata.parent_selector` / `metadata.queried_selector` — the
+ * pipeline's own record of which selector a tool was run against. That is
+ * deliberately NOT the same thing as matching on value: `normalizeTarget`
+ * collapses punctuation, so a value-keyed rejection lets an ordinary `name`
+ * "Jordan Vale" disable a `username` "jordan.vale" (the hazard CLAUDE.md
+ * documents for the quarantine keyspace). An explicit provenance edge carries
+ * no such collision — it was written by the code that made the call.
  *
  * Guards: the parent value must be short enough to be a selector rather than a
  * prose artifact value, and the match is exact after normalization. Derivation
@@ -237,11 +237,17 @@ export function buildRejectedDerivationIds(
   normalize: (value: string) => string,
 ): Set<string> {
   const derived = new Set<string>();
-  const parentOf = new Map<string, string>();
+  const parentsOf = new Map<string, string[]>();
   for (const a of artifacts) {
     const meta = (a.metadata ?? {}) as Record<string, unknown>;
-    const parent = typeof meta.parent_selector === "string" ? normalize(meta.parent_selector) : "";
-    if (parent) parentOf.set(a.id, parent);
+    const parents = ["parent_selector", "queried_selector"]
+      .map((field) => meta[field])
+      .filter((value): value is string =>
+        typeof value === "string" && value.trim().length > 0 && value.trim().length <= MAX_SELECTOR_VALUE_LEN
+      )
+      .map(normalize)
+      .filter(Boolean);
+    if (parents.length) parentsOf.set(a.id, parents);
   }
   // Selector VALUES that are currently out — seeded from the analyst's rejected
   // rows, then grown as their descendants are pulled in.
@@ -257,8 +263,8 @@ export function buildRejectedDerivationIds(
     let grew = false;
     for (const a of artifacts) {
       if (rejectedIds.has(a.id) || derived.has(a.id)) continue;
-      const parent = parentOf.get(a.id);
-      if (!parent || !out.has(parent)) continue;
+      const parents = parentsOf.get(a.id) ?? [];
+      if (!parents.some((parent) => out.has(parent))) continue;
       derived.add(a.id);
       const before = out.size;
       seed(a);
@@ -270,7 +276,7 @@ export function buildRejectedDerivationIds(
   return derived;
 }
 
-/** A parent_selector is a selector, not a sentence — longer values are artifact prose. */
+/** A provenance selector is not a sentence — longer values are artifact prose. */
 const MAX_SELECTOR_VALUE_LEN = 120;
 /** Derivation chains are shallow in practice; the bound just makes the fixpoint total. */
 const MAX_DERIVATION_ROUNDS = 5;

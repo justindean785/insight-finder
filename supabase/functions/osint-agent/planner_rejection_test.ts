@@ -115,3 +115,28 @@ Deno.test("provenance cascade does NOT fire on loose text similarity", () => {
   assert(keptIds.includes("u"), "unrelated username suppressed by value collision");
   assert(keptIds.includes("p"), "prose mention suppressed by substring matching");
 });
+
+Deno.test("every explicit provenance parent binds, including queried_selector", () => {
+  const rows = [
+    { id: "root", kind: "email", value: "rejected@example.test", metadata: {} },
+    {
+      id: "queried",
+      kind: "breach_exposure",
+      value: "Breach exposure: rejected@example.test",
+      metadata: { queried_selector: "rejected@example.test" },
+    },
+    {
+      id: "second-parent",
+      kind: "username",
+      value: "derived-handle",
+      metadata: {
+        parent_selector: "independent@example.test",
+        queried_selector: "rejected@example.test",
+      },
+    },
+  ];
+  const review = reviewLoad({ byId: new Map([["root", "wrong"]]) });
+  const keptIds = dropRejectedAndDerived(rows, review).map((r) => r.id);
+
+  assertEquals(keptIds, []);
+});
