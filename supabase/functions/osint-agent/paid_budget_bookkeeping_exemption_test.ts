@@ -10,25 +10,37 @@
 // c599a5bc all hit "internal paid-call cap reached" on a queued
 // minimax_correlate with evidence already in hand.
 //
-// These tests pin costTierForTool's exemption AND the two things it must NOT
-// do: change billing (cost_micro_usd/charged_micro_usd key off baseCost
-// directly, never off tier) or exempt any OTHER tool.
+// The exemption lives in `paidBudgetTier`, NOT in `costTierForTool`. That split
+// is the point: #563 originally added a toolName argument to costTierForTool
+// itself, which bought the budget exemption but leaked "free" into every other
+// reader of the tier — the EV scorer's costPenalty and the `cost_tier` written
+// to rejected-call metadata and tool_usage_log — so a tool that really does bill
+// $0.0002 would have been REPORTED as free. Cost classification answers "what
+// does this cost"; budget admission answers "does this consume one of the 12
+// slots". These tests pin both answers, and the boundary between them.
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { costTierForTool, PAID_BUDGET_EXEMPT_TOOLS } from "./cache.ts";
+import { costTierForTool, paidBudgetTier, PAID_BUDGET_EXEMPT_TOOLS } from "./cache.ts";
 import { costForTool } from "./costs.ts";
 
-Deno.test("memory_recall and memory_save are exempted from the paid-call budget tier", () => {
-  assertEquals(costTierForTool(costForTool("memory_recall"), "memory_recall"), "free");
-  assertEquals(costTierForTool(costForTool("memory_save"), "memory_save"), "free");
+Deno.test("memory_recall and memory_save are exempted from the paid-call budget", () => {
+  assertEquals(paidBudgetTier(costForTool("memory_recall"), "memory_recall"), "free");
+  assertEquals(paidBudgetTier(costForTool("memory_save"), "memory_save"), "free");
 });
 
-Deno.test("without the tool name, the SAME cost still maps to a paying tier", () => {
-  // Locks in WHY this needed a code change, not a costs.ts price edit: the
-  // $0.0002 cost alone (200 micro-USD) maps to "low" absent the exemption.
+Deno.test("the exemption does NOT reach the honest cost classification", () => {
+  // The defect this split closes. costTierForTool is what the EV scorer and the
+  // `cost_tier` telemetry field read; it must keep reporting these tools as the
+  // paying tier they actually are, or the logs assert a tool is free while it
+  // bills $0.0002.
+  assertEquals(costTierForTool(costForTool("memory_recall")), "low");
+  assertEquals(costTierForTool(costForTool("memory_save")), "low");
+});
+
+Deno.test("cost alone maps to a paying tier — this needed code, not a price edit", () => {
   const cost = costForTool("memory_recall");
   assertEquals(cost, 200);
   assertEquals(costTierForTool(cost), "low", "the raw cost alone still reads as a paying tier");
-  assertEquals(costTierForTool(cost, "some_other_tool"), "low", "the exemption is per-NAME, not per-cost");
+  assertEquals(paidBudgetTier(cost, "some_other_tool"), "low", "the exemption is per-NAME, not per-cost");
 });
 
 Deno.test("the exemption is scoped to EXACTLY these two tools — no silent widening", () => {
@@ -38,19 +50,42 @@ Deno.test("the exemption is scoped to EXACTLY these two tools — no silent wide
 Deno.test("a genuine paid tool at the SAME cost is NOT exempted", () => {
   // dns_records costs 50 (a "low" tier by cost alone, like memory_recall) but is
   // a real provider lookup and must still compete for the paid budget normally.
-  assertEquals(costTierForTool(costForTool("dns_records"), "dns_records"), "low");
+  assertEquals(paidBudgetTier(costForTool("dns_records"), "dns_records"), "low");
 });
 
 Deno.test("real intel-gathering tools are completely unaffected by this change", () => {
-  assertEquals(costTierForTool(costForTool("breach_check"), "breach_check"), "expensive");
-  assertEquals(costTierForTool(costForTool("minimax_correlate"), "minimax_correlate"), "expensive");
-  assertEquals(costTierForTool(costForTool("oathnet_lookup"), "oathnet_lookup"), "expensive");
-  assertEquals(costTierForTool(costForTool("exa_search"), "exa_search"), "expensive");
+  for (const tool of ["breach_check", "minimax_correlate", "oathnet_lookup", "exa_search"]) {
+    assertEquals(paidBudgetTier(costForTool(tool), tool), "expensive", tool);
+    assertEquals(costTierForTool(costForTool(tool)), "expensive", tool);
+  }
 });
 
 Deno.test("free tools stay free regardless of name", () => {
-  assertEquals(costTierForTool(costForTool("google_dorks"), "google_dorks"), "free");
-  assertEquals(costTierForTool(costForTool("record_artifacts"), "record_artifacts"), "free");
+  assertEquals(paidBudgetTier(costForTool("google_dorks"), "google_dorks"), "free");
+  assertEquals(paidBudgetTier(costForTool("record_artifacts"), "record_artifacts"), "free");
+});
+
+Deno.test("wiring: admission and refund agree, EV and telemetry read the honest tier", async () => {
+  // A reservation taken under one tier and refunded under another either leaks a
+  // slot or hands back one never taken, so these two call sites must use the
+  // SAME function — and the scoring/telemetry sites must NOT.
+  const src = await Deno.readTextFile(new URL("./cache.ts", import.meta.url));
+  assert(
+    /costTier: paidBudgetTier\(baseCost, name\)/.test(src),
+    "startCall's paid-call admission must use paidBudgetTier",
+  );
+  assert(
+    /refundPaidCall\(ctx\.investigationId, paidBudgetTier\(baseCost, name\)\)/.test(src),
+    "the refund must use the same tier the reservation used",
+  );
+  assert(
+    !/cost_tier: paidBudgetTier\(/.test(src),
+    "cost_tier telemetry must report the honest cost tier, never the admission tier",
+  );
+  assert(
+    !/costPenalty: [^\n]*paidBudgetTier\(/.test(src),
+    "the EV scorer's costPenalty must read the honest cost tier",
+  );
 });
 
 Deno.test("the exemption does not change billing — cost_micro_usd is still the TRUE cost, not zero", () => {

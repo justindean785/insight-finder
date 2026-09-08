@@ -12,6 +12,7 @@ import {
   toolCallCountOf,
   uniqueToolNames,
   type TelemetryDb,
+  MAX_BUFFERED_STEP_ROWS,
 } from "./telemetry.ts";
 
 // ---- contextCharsFromMessages ---------------------------------------------------
@@ -91,9 +92,24 @@ Deno.test("deriveStopReason: natural_stop on a clean text-only finish", () => {
   );
 });
 
-Deno.test("deriveStopReason: budget_exhausted when cut off wanting more tool calls", () => {
+Deno.test("deriveStopReason: 'tool-calls' alone is UNKNOWN, never an invented budget cause", () => {
+  // The SDK reports finishReason "tool-calls" on the last step of every
+  // tool-using run, including runs that finalize normally. Mapping it to
+  // budget_exhausted put a cause in the column that nothing measured.
   assertEquals(
     deriveStopReason({ hadStreamError: false, finalizeStarted: false, lastFinishReason: "tool-calls" }),
+    "unknown",
+  );
+});
+
+Deno.test("deriveStopReason: budget_exhausted ONLY when the caller observed a ceiling fire", () => {
+  assertEquals(
+    deriveStopReason({
+      hadStreamError: false,
+      finalizeStarted: false,
+      lastFinishReason: "tool-calls",
+      budgetExhausted: true,
+    }),
     "budget_exhausted",
   );
 });
@@ -124,7 +140,7 @@ Deno.test("buildStepMetricRow: builds a well-formed row from good input", () => 
     threadId: "thread-1",
     userId: "user-1",
     stepNumber: 3,
-    durationMs: 1234,
+    stepWallMs: 1234,
     contextChars: 5000,
     inputTokens: 100,
     outputTokens: 200,
@@ -137,7 +153,7 @@ Deno.test("buildStepMetricRow: builds a well-formed row from good input", () => 
     thread_id: "thread-1",
     user_id: "user-1",
     step_number: 3,
-    duration_ms: 1234,
+    step_wall_ms: 1234,
     context_chars: 5000,
     input_tokens: 100,
     output_tokens: 200,
@@ -153,7 +169,7 @@ Deno.test("buildStepMetricRow: degrades bad numeric input to null/0, never throw
     threadId: "thread-1",
     userId: "user-1",
     stepNumber: -5,
-    durationMs: null,
+    stepWallMs: null,
     contextChars: NaN,
     inputTokens: null,
     outputTokens: undefined as unknown as null,
@@ -162,7 +178,7 @@ Deno.test("buildStepMetricRow: degrades bad numeric input to null/0, never throw
     finishReason: null,
   });
   assertEquals(row.step_number, 0);
-  assertEquals(row.duration_ms, null);
+  assertEquals(row.step_wall_ms, null);
   assertEquals(row.context_chars, null);
   assertEquals(row.input_tokens, null);
   assertEquals(row.output_tokens, null);
@@ -177,7 +193,7 @@ Deno.test("buildStepMetricRow: caps tool_names at 40 even if the caller forgot t
     threadId: "thread-1",
     userId: "user-1",
     stepNumber: 0,
-    durationMs: 10,
+    stepWallMs: 10,
     contextChars: 10,
     inputTokens: 1,
     outputTokens: 1,
@@ -274,12 +290,46 @@ Deno.test("buildInvocationRow: never produces a negative duration_ms", () => {
 
 // ---- createInvocationTelemetry (impure recorder, fake DB) ------------------------
 
-function fakeDb(rows: { table: string; row: Record<string, unknown> }[]): TelemetryDb {
+/**
+ * Fake DB that ENFORCES orchestrator_step_metrics' foreign key to
+ * orchestrator_invocations, exactly as Postgres does.
+ *
+ * The previous fake returned `{error: null}` unconditionally, so it modelled a
+ * database with no constraints — which is why the suite stayed green while every
+ * real step insert was being rejected for referencing a parent row that finish()
+ * had not written yet. A fake that cannot fail cannot catch an ordering bug, so
+ * this one rejects a child whose parent is absent, and accepts both single-row
+ * and bulk-array inserts (the flush writes children in one call).
+ */
+function fakeDb(
+  rows: { table: string; row: Record<string, unknown> }[],
+  opts: { failInvocationInsert?: boolean } = {},
+): TelemetryDb {
+  const knownInvocationIds = new Set<string>();
   return {
     from(table: string) {
       return {
-        insert(row: Record<string, unknown>) {
-          rows.push({ table, row });
+        insert(row: Record<string, unknown> | Record<string, unknown>[]) {
+          const batch = Array.isArray(row) ? row : [row];
+          if (table === "orchestrator_invocations") {
+            if (opts.failInvocationInsert) {
+              return Promise.resolve({ error: { message: "simulated parent insert failure" } });
+            }
+            for (const r of batch) knownInvocationIds.add(String(r.id));
+          }
+          if (table === "orchestrator_step_metrics") {
+            for (const r of batch) {
+              if (!knownInvocationIds.has(String(r.invocation_id))) {
+                return Promise.resolve({
+                  error: {
+                    message:
+                      'insert or update on table "orchestrator_step_metrics" violates foreign key constraint',
+                  },
+                });
+              }
+            }
+          }
+          for (const r of batch) rows.push({ table, row: r });
           return Promise.resolve({ error: null });
         },
       };
@@ -334,7 +384,7 @@ Deno.test("createInvocationTelemetry: records a step and finishes an invocation"
   assertEquals(stepRows.length, 1);
   assertEquals(invocationRows.length, 1);
   assertEquals(stepRows[0].row.tool_call_count, 2);
-  assertEquals(invocationRows[0].row.stop_reason, "budget_exhausted");
+  assertEquals(invocationRows[0].row.stop_reason, "unknown");
   assertEquals(invocationRows[0].row.step_count, 1);
   assertEquals(invocationRows[0].row.tool_call_count, 2);
 });
@@ -412,6 +462,16 @@ Deno.test("createInvocationTelemetry: step start/finish pairs by stepNumber, not
   telemetry.onStepStart({ stepNumber: 1, messages: [{ role: "user", content: "a".repeat(1000) }] });
   telemetry.recordStepFinish({ stepNumber: 1, toolCalls: [] });
   telemetry.recordStepFinish({ stepNumber: 0, toolCalls: [] });
+  // Step rows are buffered until finish() writes the parent invocation — the FK
+  // requires that order — so the run must be finished before they are readable.
+  telemetry.finish({
+    finishedAt: Date.now(),
+    finalContextChars: null,
+    finalizeStarted: false,
+    hadStreamError: false,
+    creditsMicroUsd: null,
+    errorMessage: null,
+  });
   await flush();
   const stepRows = written.filter((w) => w.table === "orchestrator_step_metrics");
   const step0 = stepRows.find((r) => r.row.step_number === 0)!;
@@ -420,4 +480,120 @@ Deno.test("createInvocationTelemetry: step start/finish pairs by stepNumber, not
     (step1.row.context_chars as number) > (step0.row.context_chars as number),
     "step 1's larger message array must be measured against ITS OWN start context, not step 0's",
   );
+});
+
+// ---- FK ordering: the defect this file's fake DB previously could not see -------
+// orchestrator_step_metrics.invocation_id references orchestrator_invocations(id).
+// The recorder used to insert each step row the moment the step finished — before
+// finish() had written the parent — so Postgres rejected every child on the FK and
+// the recorder's catch turned each rejection into a console.warn. The table would
+// have been permanently empty in production while orchestrator_invocations filled
+// normally. These tests drive the real recorder against a fake that enforces the
+// constraint, so the ordering is what is asserted, not a restatement of it.
+
+Deno.test("FK ordering: step rows land, and only AFTER the parent invocation row", async () => {
+  const written: { table: string; row: Record<string, unknown> }[] = [];
+  const telemetry = createInvocationTelemetry({
+    db: fakeDb(written),
+    threadId: "thread-fk",
+    userId: "user-fk",
+    provider: "deepseek",
+    modelId: "glm-5.2",
+    startedAt: Date.now(),
+    initialContextChars: 1_000,
+  });
+
+  telemetry.onStepStart({ stepNumber: 0, messages: [{ role: "user", content: "seed" }] });
+  telemetry.recordStepFinish({ stepNumber: 0, toolCalls: [{ toolName: "breach_check" }] });
+  telemetry.onStepStart({ stepNumber: 1, messages: [{ role: "user", content: "more" }] });
+  telemetry.recordStepFinish({ stepNumber: 1, toolCalls: [] });
+  await flush();
+
+  // Nothing may be written mid-run: the parent does not exist yet.
+  assertEquals(
+    written.length,
+    0,
+    "no telemetry row may be written before finish() — a child written here is an FK rejection",
+  );
+
+  telemetry.finish({
+    finishedAt: Date.now(),
+    finalContextChars: 2_000,
+    finalizeStarted: false,
+    hadStreamError: false,
+    creditsMicroUsd: 100,
+    errorMessage: null,
+  });
+  await flush();
+
+  const parentIdx = written.findIndex((w) => w.table === "orchestrator_invocations");
+  const stepRows = written.filter((w) => w.table === "orchestrator_step_metrics");
+
+  assert(parentIdx >= 0, "the parent invocation row must be written");
+  assertEquals(stepRows.length, 2, "both buffered step rows must land once the parent exists");
+  for (const [i, w] of written.entries()) {
+    if (w.table === "orchestrator_step_metrics") {
+      assert(i > parentIdx, "every step row must be written after the parent invocation row");
+    }
+  }
+  // All children point at the parent that was actually written.
+  const parentId = written[parentIdx].row.id;
+  for (const s of stepRows) assertEquals(s.row.invocation_id, parentId);
+});
+
+Deno.test("FK ordering: a failed parent insert drops the children instead of orphan-inserting", async () => {
+  const written: { table: string; row: Record<string, unknown> }[] = [];
+  const telemetry = createInvocationTelemetry({
+    db: fakeDb(written, { failInvocationInsert: true }),
+    threadId: "thread-fk2",
+    userId: "user-fk2",
+    provider: "deepseek",
+    modelId: "glm-5.2",
+    startedAt: Date.now(),
+    initialContextChars: 0,
+  });
+
+  telemetry.onStepStart({ stepNumber: 0, messages: [{ role: "user", content: "seed" }] });
+  telemetry.recordStepFinish({ stepNumber: 0, toolCalls: [] });
+  telemetry.finish({
+    finishedAt: Date.now(),
+    finalContextChars: null,
+    finalizeStarted: false,
+    hadStreamError: false,
+    creditsMicroUsd: null,
+    errorMessage: null,
+  });
+  await flush();
+
+  assertEquals(written.length, 0, "no orphaned child insert may be attempted after the parent fails");
+});
+
+Deno.test("FK ordering: the step buffer is bounded and reports what it dropped", async () => {
+  const written: { table: string; row: Record<string, unknown> }[] = [];
+  const telemetry = createInvocationTelemetry({
+    db: fakeDb(written),
+    threadId: "thread-cap",
+    userId: "user-cap",
+    provider: "deepseek",
+    modelId: "glm-5.2",
+    startedAt: Date.now(),
+    initialContextChars: 0,
+  });
+
+  for (let i = 0; i < MAX_BUFFERED_STEP_ROWS + 25; i++) {
+    telemetry.onStepStart({ stepNumber: i, messages: [] });
+    telemetry.recordStepFinish({ stepNumber: i, toolCalls: [] });
+  }
+  telemetry.finish({
+    finishedAt: Date.now(),
+    finalContextChars: null,
+    finalizeStarted: false,
+    hadStreamError: false,
+    creditsMicroUsd: null,
+    errorMessage: null,
+  });
+  await flush();
+
+  const stepRows = written.filter((w) => w.table === "orchestrator_step_metrics");
+  assertEquals(stepRows.length, MAX_BUFFERED_STEP_ROWS, "the buffer must not grow without bound");
 });

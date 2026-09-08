@@ -91,14 +91,36 @@ export function bumpAutoPersistedArtifacts(
 /**
  * Reset the correlate cycle — counter AND the once-per-cycle hint latch.
  *
- * Both callers previously assigned `artifactsSinceCorrelate = 0` directly (run
- * start in index.ts, and minimax_correlate's own success path). With a latch in
- * play those two must move together: resetting the counter without clearing the
- * latch would silence the hint for the rest of the run after the first pass.
+ * Called mid-run by minimax_correlate's success path so the next batch of
+ * evidence can re-arm the hint. MUST NOT clear `lastCorrelateOutcome`: the
+ * freshness gate (`shouldSkipRedundantCorrelate`) keys on a successful prior
+ * pass in THIS run, and cache.ts writes that outcome AFTER execute() returns.
+ * Wiping it here would make every post-success re-run look like the run's
+ * first correlate and disable the gate.
+ *
+ * Per-request isolate reuse is a different reset — see `resetCorrelateRun`.
  */
 export function resetCorrelateCycle() {
   guard.artifactsSinceCorrelate = 0;
   guard.correlateHintDelivered = false;
+}
+
+/**
+ * Per-request reset of the ENTIRE correlation guard, including outcome.
+ *
+ * `guard` is module-scoped and survives across requests on a warm isolate.
+ * `resetCorrelateCycle()` is the mid-run helper and deliberately leaves
+ * `lastCorrelateOutcome` alone (a successful pass in this run must stay
+ * visible to the freshness gate). Request start therefore needs a wider
+ * reset: without it, Run A ending `ok` plus Run B starting with a zeroed
+ * counter would skip Run B's FIRST correlate as "redundant".
+ *
+ * Resets counter, hint latch, and outcome. Call once at request start.
+ * Mid-run success still uses `resetCorrelateCycle` only.
+ */
+export function resetCorrelateRun() {
+  resetCorrelateCycle();
+  guard.lastCorrelateOutcome = null;
 }
 
 /**

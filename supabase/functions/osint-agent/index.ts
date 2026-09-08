@@ -37,7 +37,7 @@ import {
 import { type ArtifactRetrieval, buildEvidenceRecord, isFindingRow } from "./lib/evidence-record.ts";
 import { composePersistedParts } from "./lib/evidence-record-persist.ts";
 import { sanitizeModelMessages, capToolResultOutputs, summarizeToolResultValue } from "./message-sanitize.ts";
-import { guard, routingGuard, triageState, countRecordArtifactCalls, countModelMessageToolCalls, bumpAutoPersistedArtifacts, resetCorrelateCycle, correlateDue } from "./guard.ts";
+import { guard, routingGuard, triageState, countRecordArtifactCalls, countModelMessageToolCalls, bumpAutoPersistedArtifacts, resetCorrelateRun, correlateDue } from "./guard.ts";
 import { setupRequest } from "./auth.ts";
 import { minimax, minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider } from "./orchestrator_select.ts";
@@ -123,7 +123,11 @@ Deno.serve(async (req) => {
   resetFirecrawlCreditsLow();
 
   // ---- Reset guard/triage state (module-scoped, must be reset per-request) ----
-  resetCorrelateCycle();
+  // Wider than resetCorrelateCycle(): a warm isolate reuses `guard`, and the
+  // mid-run helper deliberately leaves lastCorrelateOutcome set so the
+  // freshness gate can see a successful pass in THIS run. Request start must
+  // clear the outcome too, or Run B's first correlate is skipped as redundant.
+  resetCorrelateRun();
   routingGuard.artifactsTotal = 0;
   routingGuard.memoryRecallTimestamps = [];
   routingGuard.memoryRecallSubjectsThisStep.clear();
