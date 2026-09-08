@@ -137,6 +137,57 @@ export function correlateNudge(): Record<string, unknown> {
   };
 }
 
+// ---- Correlation freshness gate (2026-09-08 performance audit) ------------------
+// `correlateDue()`/`correlateNudge()` above only ever ENCOURAGE a pass — nothing
+// stopped the model from calling minimax_correlate again a moment later against
+// almost the same evidence. Production audit (2026-09-08) measured this directly:
+// thread `b74049ad` ran minimax_correlate TWICE on the identical 12 artifacts
+// (12 -> 12, zero new evidence, 22.8s spent on the second call), and across a
+// 6-run sample 172.4s — the single largest wasted-time bucket measured — was pure
+// duplicate re-runs on near-zero new evidence. minimax_correlate's latency is pure
+// MiniMax model latency, not payload-size-driven (a 1.6KB payload took 31.0s; see
+// cache.ts's own audit note), so a re-run with nothing new to say is close to a
+// pure tax with zero investigative return.
+//
+// This is a GATE, not a ban — read the two things it deliberately never blocks:
+//   1. The run's FIRST correlate call. `lastCorrelateOutcome` starts `null` and is
+//      only ever set (to "ok"/"failed") by cache.ts AFTER a call completes, so
+//      `null` unambiguously means "this run has not correlated yet" — and an early
+//      pass over a small evidence set has real value (the tool's own description:
+//      "run after at least three meaningful new artifacts OR before final
+//      verification").
+//   2. A retry after a FAILED correlate. A failed call (timeout/error) delivered
+//      NO clustering benefit, so blocking its retry on a "not enough new evidence"
+//      technicality would destroy investigative depth for no time saved — the
+//      exact tradeoff the audit says never to make. Only a run whose LAST
+//      correlate SUCCEEDED is gated.
+export const MIN_NEW_ARTIFACTS_FOR_RECORRELATE = 3;
+
+export interface CorrelateFreshnessDecision {
+  skip: boolean;
+  /** Present only when skip is true — the message logged AND returned to the
+   *  model, so a refused re-run reads as a legible skip, not a silent no-op. */
+  reason?: string;
+}
+
+/**
+ * Pure predicate over the guard singleton's OWN in-memory state — no I/O, no
+ * clock, no dependency on cache.ts/circuit.ts — so cache.ts can call it BEFORE
+ * reserving any tool-call or paid-call budget for the call it is about to refuse.
+ * Mirrors correlateDue()'s shape (reads guard state, decides, returns).
+ */
+export function shouldSkipRedundantCorrelate(): CorrelateFreshnessDecision {
+  if (guard.lastCorrelateOutcome !== "ok") return { skip: false };
+  if (guard.artifactsSinceCorrelate >= MIN_NEW_ARTIFACTS_FOR_RECORRELATE) return { skip: false };
+  return {
+    skip: true,
+    reason:
+      `redundant correlate: only ${guard.artifactsSinceCorrelate} new artifact(s) recorded since the ` +
+      `last successful correlation pass (needs ${MIN_NEW_ARTIFACTS_FOR_RECORRELATE}). Keep gathering ` +
+      `evidence and call minimax_correlate again once more has accrued.`,
+  };
+}
+
 /**
  * Count tool calls and record_artifacts calls across a set of UI messages, by
  * inspecting message part types. The AI SDK encodes a call to the tool

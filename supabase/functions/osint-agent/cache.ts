@@ -23,7 +23,7 @@ import { dispatchTypeCandidates, isDispatchRefused, loadRefusedArtifacts, quaran
 import type { QuarantineRow } from "./lib/dispatch-quarantine.ts";
 import { buildRejectedDispatchKeys, isRejectedDispatch, rejectionRefusal } from "./lib/dispatch-rejection.ts";
 import { loadReviewsForThread, type ReviewDb } from "./reviews.ts";
-import { guard, takeCorrelateHint } from "./guard.ts";
+import { guard, takeCorrelateHint, shouldSkipRedundantCorrelate } from "./guard.ts";
 import { reserveToolCall } from "./orchestrator-budget.ts";
 import { isFinalizeWindowLiveLookupExempt } from "./orchestrator-finalize.ts";
 import {
@@ -1172,6 +1172,37 @@ export function wrapToolsWithCache(
             }
           } catch (error) {
             console.warn(`[tool_call_cache] selector-reuse lookup failed for ${name}:`, error);
+          }
+        }
+
+        // ---- Correlation freshness gate (2026-09-08 performance audit) --------
+        // Every cache layer above is a free, valid replay and never reaches here.
+        // Placed BEFORE the tool-call cap / circuit / paid-call reservation below
+        // so a redundant re-run costs the investigation NOTHING — no tool-call
+        // slot, no paid-call slot, no circuit-breaker state, and (since it never
+        // reaches the live dispatch further down) it never touches
+        // `guard.lastCorrelateOutcome` either. See shouldSkipRedundantCorrelate
+        // for exactly what this does and does not block — it never blocks the
+        // run's first correlate call or a retry after a failed one.
+        if (name === "minimax_correlate") {
+          const freshness = shouldSkipRedundantCorrelate();
+          if (freshness.skip) {
+            await logUsage(false, false, Date.now() - t0, freshness.reason!, null, true, {
+              input: inputJson,
+              runtime: { ...runtimeMetaBase, rejection_reason: "correlate_not_fresh", rejection_source: "correlate_freshness" },
+            });
+            return attachRuntimeMeta({
+              ok: false,
+              skipped: true,
+              correlate_not_fresh: true,
+              error: freshness.reason,
+            }, {
+              ...runtimeMetaBase,
+              rejection_reason: "correlate_not_fresh",
+              stage: "TRIAGE",
+              cache_layer: "miss",
+              stale_cache: !!staleRecord,
+            });
           }
         }
 

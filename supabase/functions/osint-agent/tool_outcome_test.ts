@@ -37,6 +37,7 @@ Deno.test("skipped: governance / budget / concurrency / dedup", () => {
     "HIBP_API_KEY not configured",
     "finalize window open; live lookup skipped",
     "run tool-call cap reached",
+    "redundant correlate: only 1 new artifact(s) recorded since the last successful correlation pass (needs 3). Keep gathering evidence and call minimax_correlate again once more has accrued.",
   ];
   for (const s of skips) assertEquals(classifyToolOutcome(s, null), "skipped", s);
 });

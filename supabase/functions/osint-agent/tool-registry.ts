@@ -713,7 +713,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     minimax_correlate: tool({
       description:
-        "Have MiniMax correlate and rescore a batch of artifacts. Pass the relevant artifacts gathered so far; it returns identity clusters, dedup mapping, confidence rescoring, and contradiction flags. Run after at least three meaningful new artifacts or before final verification.",
+        "Have MiniMax correlate and rescore a batch of artifacts. Pass the relevant artifacts gathered so far; it returns identity clusters, dedup mapping, confidence rescoring, and contradiction flags. Run after at least three meaningful new artifacts or before final verification. A repeat call after a successful pass is skipped (no cost) if fewer than three new artifacts have been recorded since — keep gathering evidence first.",
       inputSchema: memoSchema("minimax_correlate", () => z.object({
         seed: z.string().describe("Original seed identifier"),
         // Models frequently pass `artifacts` as a JSON STRING; coerce to an
