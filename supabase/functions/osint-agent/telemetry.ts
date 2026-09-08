@@ -115,6 +115,9 @@ export function deriveStopReason(input: {
   hadStreamError: boolean;
   finalizeStarted: boolean;
   lastFinishReason: string | null;
+  /** True only when a budget ceiling demonstrably fired. Defaults to false —
+   *  never inferred from finishReason. */
+  budgetExhausted?: boolean;
 }): StopReason {
   if (input.hadStreamError) return "stream_error";
   if (input.finalizeStarted) return "finalize_forced";
@@ -124,9 +127,16 @@ export function deriveStopReason(input: {
     case "length":
       return "length_limit";
     case "tool-calls":
-      // The model still wanted to call tools when the loop stopped — i.e. it
-      // was cut off by a step/wall-clock/tool-cap ceiling, not a natural end.
-      return "budget_exhausted";
+      // The model still wanted to call tools when the loop stopped. That is
+      // consistent with a ceiling (step / wall-clock / tool cap) but does NOT
+      // establish one: the SDK reports "tool-calls" for the last step of every
+      // tool-using run, including runs that then finalize normally. Reporting
+      // it as budget_exhausted would put a cause in the column that nothing
+      // measured — the failure mode this repo keeps hitting, an instrument that
+      // names something other than what it observed. The caller passes
+      // budgetExhausted when a ceiling ACTUALLY fired; absent that, this is
+      // honestly unknown.
+      return input.budgetExhausted ? "budget_exhausted" : "unknown";
     default:
       return "unknown";
   }
@@ -137,7 +147,13 @@ export interface StepMetricRowInput {
   threadId: string;
   userId: string;
   stepNumber: number;
-  durationMs: number | null;
+  /** WALL-CLOCK for the whole step: model generation PLUS every tool execution
+   *  the step dispatched. It is deliberately NOT "how long the model thought" —
+   *  a step that fans out to a 30s indicia_person lookup reports ~30s here with
+   *  the model responsible for a fraction of it. Subtract the step's tool time
+   *  (tool_usage_log, same thread/window) to attribute model latency. Named
+   *  step_wall_ms in the table so the column cannot be read as think-time. */
+  stepWallMs: number | null;
   contextChars: number | null;
   inputTokens: number | null;
   outputTokens: number | null;
@@ -155,7 +171,7 @@ export function buildStepMetricRow(input: StepMetricRowInput): Record<string, un
     thread_id: input.threadId,
     user_id: input.userId,
     step_number: Math.max(0, Math.trunc(input.stepNumber) || 0),
-    duration_ms: numberOrNull(input.durationMs),
+    step_wall_ms: numberOrNull(input.stepWallMs),
     context_chars: numberOrNull(input.contextChars),
     input_tokens: numberOrNull(input.inputTokens),
     output_tokens: numberOrNull(input.outputTokens),
@@ -271,6 +287,11 @@ export interface InvocationTelemetryRecorder {
  * DB or clock fault here can degrade observability but must never fail the run —
  * every catch below logs and swallows.
  */
+/** Hard cap on buffered step rows. A run is bounded to tens of steps by the
+ *  orchestrator's own ceilings; this only stops a pathological loop from growing
+ *  the buffer without bound. Overflow is dropped and counted, never silently. */
+export const MAX_BUFFERED_STEP_ROWS = 200;
+
 export function createInvocationTelemetry(input: CreateInvocationTelemetryInput): InvocationTelemetryRecorder {
   const invocationId = crypto.randomUUID();
   const stepStarts = new Map<number, { startedAt: number; contextChars: number }>();
@@ -278,18 +299,59 @@ export function createInvocationTelemetry(input: CreateInvocationTelemetryInput)
   let toolCallTotal = 0;
   let lastFinishReason: string | null = null;
   let finished = false;
+  // ---- Why step rows are BUFFERED rather than inserted as they finish --------
+  // orchestrator_step_metrics.invocation_id is a FOREIGN KEY to
+  // orchestrator_invocations(id), and the parent row is only written in finish(),
+  // once the run's duration/stop_reason are known. Inserting a step row the
+  // moment its step completed therefore referenced a parent that did not exist
+  // yet: Postgres rejected EVERY step insert on the FK, and insertBestEffort's
+  // catch turned each rejection into a console.warn on a log with sub-30-minute
+  // retention. The table would have stayed permanently empty while
+  // orchestrator_invocations filled normally — an instrument reporting nothing
+  // while looking healthy, which is the exact failure this repo keeps hitting.
+  // Buffering and flushing AFTER the parent insert resolves is what makes the
+  // child rows land. Steps are telemetry, so deferring them to end-of-run costs
+  // nothing; a run that dies before finish() loses them, which is strictly
+  // better than today, where every run loses them.
+  const pendingStepRows: Record<string, unknown>[] = [];
+  let droppedStepRows = 0;
 
-  const insertBestEffort = (table: string, row: Record<string, unknown>) => {
+  /** Insert the parent, then the buffered children — in that order, awaited, so
+   *  the FK is satisfied. Both legs stay best-effort and non-blocking. */
+  const flushParentThenSteps = (parentRow: Record<string, unknown>) => {
     const task = Promise.resolve()
-      .then(() => input.db.from(table).insert(row))
+      .then(() => input.db.from("orchestrator_invocations").insert(parentRow))
       .then(({ error }) => {
         if (error) {
           const msg = (error as { message?: string } | null)?.message ?? String(error);
-          console.warn(`[telemetry] ${table} insert failed:`, msg);
+          // The parent failed, so every buffered child would fail its FK too.
+          // Say so once, with the count, instead of emitting N identical warns.
+          console.warn(
+            `[telemetry] orchestrator_invocations insert failed: ${msg} — dropping ${pendingStepRows.length} step row(s)`,
+          );
+          return;
         }
+        if (pendingStepRows.length === 0) return;
+        return input.db.from("orchestrator_step_metrics").insert(pendingStepRows).then(
+          ({ error: stepError }: { error: { message?: string } | null }) => {
+            if (stepError) {
+              console.warn(
+                `[telemetry] orchestrator_step_metrics bulk insert failed:`,
+                stepError?.message ?? String(stepError),
+              );
+            }
+          },
+        );
       })
-      .catch((e) => console.warn(`[telemetry] ${table} insert threw:`, e));
+      .catch((e) => console.warn("[telemetry] telemetry flush threw:", e))
+      .finally(() => {
+        if (droppedStepRows > 0) {
+          console.warn(`[telemetry] ${droppedStepRows} step row(s) dropped: buffer cap reached`);
+        }
+        pendingStepRows.length = 0;
+      });
     registerBackground(task);
+    return task;
   };
 
   return {
@@ -312,21 +374,25 @@ export function createInvocationTelemetry(input: CreateInvocationTelemetryInput)
         const stepNumber = typeof event?.stepNumber === "number" ? event.stepNumber : stepCount;
         const start = stepStarts.get(stepNumber);
         stepStarts.delete(stepNumber);
-        const durationMs = start ? Date.now() - start.startedAt : null;
+        const stepWallMs = start ? Date.now() - start.startedAt : null;
         const toolNames = uniqueToolNames(event?.toolCalls);
         const toolCallCount = toolCallCountOf(event?.toolCalls);
         stepCount = Math.max(stepCount, stepNumber + 1);
         toolCallTotal += toolCallCount;
         if (typeof event?.finishReason === "string") lastFinishReason = event.finishReason;
 
-        insertBestEffort(
-          "orchestrator_step_metrics",
+        // Buffered, not inserted — see flushParentThenSteps for why (FK ordering).
+        if (pendingStepRows.length >= MAX_BUFFERED_STEP_ROWS) {
+          droppedStepRows += 1;
+          return;
+        }
+        pendingStepRows.push(
           buildStepMetricRow({
             invocationId,
             threadId: input.threadId,
             userId: input.userId,
             stepNumber,
-            durationMs,
+            stepWallMs,
             contextChars: start?.contextChars ?? null,
             inputTokens: numberOrNull(event?.usage?.inputTokens),
             outputTokens: numberOrNull(event?.usage?.outputTokens),
@@ -359,8 +425,7 @@ export function createInvocationTelemetry(input: CreateInvocationTelemetryInput)
           finalizeStarted: finishInput.finalizeStarted,
           lastFinishReason,
         });
-        insertBestEffort(
-          "orchestrator_invocations",
+        flushParentThenSteps(
           buildInvocationRow({
             invocationId,
             threadId: input.threadId,

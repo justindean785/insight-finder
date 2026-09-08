@@ -72,7 +72,11 @@ CREATE TABLE IF NOT EXISTS public.orchestrator_step_metrics (
   thread_id uuid NOT NULL,
   user_id uuid NOT NULL,
   step_number integer NOT NULL,
-  duration_ms integer,
+  -- WALL-CLOCK for the whole step: model generation PLUS the tool executions the
+  -- step dispatched. NOT model think-time -- a step fanning out to a 30s lookup
+  -- reports ~30s here. Subtract the step's tool time (tool_usage_log) to
+  -- attribute model latency. Named step_wall_ms so it cannot be misread.
+  step_wall_ms integer,
   context_chars integer,
   input_tokens integer,
   output_tokens integer,
