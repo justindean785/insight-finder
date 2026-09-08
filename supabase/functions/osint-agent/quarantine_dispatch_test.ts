@@ -9,22 +9,38 @@
 // These tests drive the REAL wrap path (wrapToolsWithCache), not the predicate in
 // isolation, because the property that matters is "the tool never runs", and only
 // the wrapper can demonstrate that.
-import { assert, assertEquals, assertStringIncludes } from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import type { Tool } from "npm:ai@6";
 import type { createClient } from "npm:@supabase/supabase-js@2";
-import { wrapToolsWithCache, isIntentionalSkip } from "./cache.ts";
+import { wrapToolsWithCache, isIntentionalSkip, deriveOk } from "./cache.ts";
 import { clearRuntime } from "./runtime-policy.ts";
 import * as circuit from "./circuit.ts";
-import { dispatchKey, quarantineRefusal, isDispatchRefused, dispatchTypeCandidates } from "./lib/dispatch-quarantine.ts";
+import { dispatchKey, quarantineRefusal, isDispatchRefused, dispatchTypeCandidates, DISPATCH_REFUSAL_ERROR } from "./lib/dispatch-quarantine.ts";
 
 type SupabaseClient = ReturnType<typeof createClient>;
 
 const QUARANTINED_USER = "jordan.vale";
 const CLEAN_USER = "nightjar";
 
+/**
+ * A PostgREST-shaped chain. `range(from, to)` slices, and every ranged resolution
+ * carries `count` — the TRUE unpaged total — because that is what the real API
+ * returns under `{ count: "exact" }` and what lets a paged reader know when it is
+ * done. A fake that ignored `.range()` could not express a truncated read at all,
+ * which is precisely the defect the paging tests below exist to catch.
+ */
 function makeChain(resolveValue: { data: unknown; error: unknown }): Record<string, unknown> {
   const node: Record<string, unknown> = {};
   for (const m of ["select", "eq", "in", "order", "update", "limit"]) node[m] = () => node;
+  const all = Array.isArray(resolveValue.data) ? resolveValue.data as unknown[] : null;
+  const slice = (from: number, to: number) =>
+    all === null
+      ? resolveValue
+      : { data: all.slice(from, to + 1), count: all.length, error: resolveValue.error };
+  node.range = (from: number, to: number) => {
+    const v = slice(from, to);
+    return { then: (r: (x: unknown) => void) => r(v) };
+  };
   node.maybeSingle = () => Promise.resolve(resolveValue);
   node.then = (r: (v: { data: unknown; error: unknown }) => void) => r(resolveValue);
   return node;
@@ -105,8 +121,15 @@ Deno.test("a quarantine refusal is NOT classified as an intentional skip", () =>
 });
 
 Deno.test("the refusal names the tool and the selector, so it is auditable", () => {
+  // STRUCTURED fields, not the message. This assertion used to require the selector
+  // to appear INSIDE `error`, which is the interpolation that let target-controlled
+  // text steer `isIntentionalSkip` — the test encoded the defect. The payload is no
+  // less auditable: tool, type and value are all still on it, in fields no
+  // classifier reads.
   const r = quarantineRefusal("breach_check", "username", QUARANTINED_USER) as Record<string, unknown>;
-  assertStringIncludes(String(r.error), QUARANTINED_USER);
+  assertEquals(r.tool, "breach_check");
+  assertEquals(r.selector_type, "username");
+  assertEquals(r.selector, QUARANTINED_USER);
   assertEquals(r.refused_by, "subject_unlinked_dispatch_boundary");
 });
 
@@ -223,4 +246,262 @@ Deno.test("`force` does not override the boundary", async () => {
     .execute({ type: "username", value: QUARANTINED_USER, force: true }, {});
   assertEquals(calls.n, 0, "force must not bypass quarantine");
   assertEquals((out as Record<string, unknown>).ok, false);
+});
+
+// ── the PostgREST row cap: the boundary must read the WHOLE thread ────────────
+//
+// `loadRefusedKeys` issued ONE unbounded `.select().eq()`. PostgREST answers such
+// a request with at most `db-max-rows` rows and reports NO error — the response is
+// a well-formed 200 that is simply short. So on a thread longer than that cap the
+// refused-key set was silently built from a PREFIX of the thread, and every
+// quarantined selector past it dispatched normally: the dispatch boundary
+// reopened, quietly, exactly on the biggest threads (the ones a name-only harvest
+// produces, which is the case this boundary exists for).
+//
+// The fake below models the cap the way the server actually applies it: it honours
+// `.range()`, and it truncates ANY window — ranged or not — to SERVER_MAX_ROWS,
+// returning `count` as the true unpaged total. That is the whole defect in one
+// object; a fake that returned every row could not express it.
+
+const SERVER_MAX_ROWS = 1000;
+
+/** A quarantined username parked at `at`, padded to `size` rows of filler. */
+function pagedArtifactRows(size: number, at: number): Array<Record<string, unknown>> {
+  const rows: Array<Record<string, unknown>> = [];
+  for (let i = 0; i < size; i += 1) {
+    rows.push(
+      i === at
+        ? {
+          id: `q-${i}`, kind: "username", value: QUARANTINED_USER, confidence: 65,
+          source: "minimax_web_search",
+          metadata: { subject_unlinked: true, subject_unlinked_reason: "name-only echo" },
+        }
+        : { id: `f-${i}`, kind: "email", value: `filler${i}@example.test`, confidence: 90, source: "hibp", metadata: {} },
+    );
+  }
+  return rows;
+}
+
+/**
+ * A PostgREST-shaped `artifacts` table that enforces a server row cap.
+ *
+ * `calls` records only the RANGED windows. The quarantine loader is the one reader
+ * that pages; the wrapper's other artifact reads (`loadSelectorEvidence`, the cache
+ * write path) await the chain unranged, and counting those made a bounded-retry
+ * assertion read 11 where 3 was correct — a test measuring the wrong thing. Those
+ * reads are answered healthily and off the books so a test can isolate this loader.
+ */
+function pagingSupabase(
+  allRows: Array<Record<string, unknown>>,
+  calls: Array<{ from: number; to: number }>,
+  opts?: { failFromPage?: number; serverMax?: number },
+): SupabaseClient {
+  const cap = opts?.serverMax ?? SERVER_MAX_ROWS;
+  const makeTable = () => {
+    const node: Record<string, unknown> = {};
+    for (const m of ["select", "eq", "in", "order", "update", "limit"]) node[m] = () => node;
+    const window = (from: number, to: number) => ({
+      data: allRows.slice(from, to + 1).slice(0, cap),
+      count: allRows.length,
+      error: null,
+    });
+    node.range = (from: number, to: number) => {
+      calls.push({ from, to });
+      const v = opts?.failFromPage !== undefined && calls.length > opts.failFromPage
+        ? { data: null, count: null, error: { message: "simulated page failure" } }
+        : window(from, to);
+      return { then: (r: (x: unknown) => void) => r(v) };
+    };
+    node.maybeSingle = () => Promise.resolve(window(0, allRows.length - 1));
+    // An UNRANGED await is the pre-fix shape. The server still applies the cap,
+    // which is exactly why the single-shot read could not see past it.
+    node.then = (r: (x: unknown) => void) => r(window(0, allRows.length - 1));
+    node.insert = () => Promise.resolve({ error: null });
+    node.upsert = () => Promise.resolve({ error: null });
+    return node;
+  };
+  const artifacts = makeTable();
+  const inert = makeChain({ data: [], error: null });
+  inert.insert = () => Promise.resolve({ error: null });
+  inert.upsert = () => Promise.resolve({ error: null });
+  (inert as Record<string, unknown>).range = () => inert;
+  return {
+    from: (t: string) => (t === "artifacts" ? artifacts : inert),
+    rpc: () => Promise.resolve({ data: null, error: null }),
+  } as unknown as SupabaseClient;
+}
+
+Deno.test("a quarantined selector BEYOND the server row cap is still refused", async () => {
+  // The row sits at index 1150 of 1200 — past PostgREST's cap, so the pre-fix
+  // single-shot read never saw it.
+  const calls = { n: 0 };
+  const windows: Array<{ from: number; to: number }> = [];
+  const db = pagingSupabase(pagedArtifactRows(1200, 1150), windows);
+  const tools = wrap(calls, db);
+  const out = await (tools.breach_check as { execute: (i: unknown, o: unknown) => Promise<unknown> })
+    .execute({ type: "username", value: QUARANTINED_USER }, {}) as Record<string, unknown>;
+  // Assert the REFUSAL specifically, not merely a non-run. A bare `calls.n === 0`
+  // would also pass if the circuit breaker or the budget had blocked the call, and
+  // this test would then be green for a reason that has nothing to do with paging.
+  assertEquals(out.refused_by, "subject_unlinked_dispatch_boundary", "must be refused BY THE QUARANTINE BOUNDARY");
+  assertEquals(out.ok, false);
+  assertEquals(calls.n, 0, "the tool body must not run");
+  assert(windows.length >= 2, `the read must page past the cap — windows requested: ${JSON.stringify(windows)}`);
+});
+
+Deno.test("the paging fake still dispatches a CLEAN selector — a refusal above is a refusal, not a stuck harness", async () => {
+  // The control for the test above. Same thread size, same fake, same wrapper: if
+  // this one runs, then `calls.n === 0` there is the boundary and not leaked
+  // circuit/runtime state or an exhausted budget.
+  const calls = { n: 0 };
+  const db = pagingSupabase(pagedArtifactRows(1200, 1150), []);
+  const tools = wrap(calls, db);
+  const out = await (tools.breach_check as { execute: (i: unknown, o: unknown) => Promise<unknown> })
+    .execute({ type: "username", value: CLEAN_USER }, {}) as Record<string, unknown>;
+  assertEquals(calls.n, 1, "an unquarantined selector must still dispatch");
+  assertEquals(out.ok, true);
+});
+
+Deno.test("the read advances by rows RETURNED, not by the window it asked for", async () => {
+  // The cap PostgREST applies is container config, not a database setting — it is
+  // not readable from the edge function, so no constant can be trusted to match it.
+  // Here the server trims every window to 250 while the reader asks for 1000. A loop
+  // that advanced by its REQUESTED size would jump 0-249 → 1000-1199 and never read
+  // rows 250-999, where this quarantined row sits. Advancing by rows actually
+  // returned makes the scan correct for any cap, including one changed later.
+  const calls = { n: 0 };
+  const windows: Array<{ from: number; to: number }> = [];
+  const db = pagingSupabase(pagedArtifactRows(1200, 500), windows, { serverMax: 250 });
+  const tools = wrap(calls, db);
+  const out = await (tools.breach_check as { execute: (i: unknown, o: unknown) => Promise<unknown> })
+    .execute({ type: "username", value: QUARANTINED_USER }, {}) as Record<string, unknown>;
+  assertEquals(out.refused_by, "subject_unlinked_dispatch_boundary");
+  assertEquals(calls.n, 0);
+  assert(
+    windows.some((w) => w.from > 0 && w.from < 1000),
+    `the scan must resume inside the trimmed region — windows: ${JSON.stringify(windows)}`,
+  );
+});
+
+Deno.test("a COMPLETE read is loaded once and reused for the whole run", async () => {
+  // The boundary runs ahead of every tool call. Re-reading the thread each time
+  // would put a query in front of ~89 tools; the memo is what keeps it at one read.
+  const calls = { n: 0 };
+  const windows: Array<{ from: number; to: number }> = [];
+  const db = pagingSupabase(pagedArtifactRows(1200, 1150), windows);
+  const tools = wrap(calls, db);
+  const ex = (tools.breach_check as { execute: (i: unknown, o: unknown) => Promise<unknown> }).execute;
+  for (let i = 0; i < 5; i += 1) await ex({ type: "username", value: QUARANTINED_USER }, {});
+  assertEquals(calls.n, 0, "every one of the five must stay refused");
+  const afterFirst = windows.length;
+  assert(afterFirst <= 2, `1200 rows behind a 1000-row cap is two pages, got ${afterFirst}`);
+  await ex({ type: "username", value: QUARANTINED_USER }, {});
+  assertEquals(windows.length, afterFirst, "a completed read must not be re-issued");
+});
+
+Deno.test("a PARTIAL read still refuses everything it did see", async () => {
+  // Page one succeeds and carries the quarantined row; page two fails. The keys in
+  // hand are sound — a key present is a genuine quarantine — so the boundary must
+  // still bind on them rather than discarding the whole read.
+  const calls = { n: 0 };
+  const windows: Array<{ from: number; to: number }> = [];
+  const db = pagingSupabase(pagedArtifactRows(1200, 5), windows, { failFromPage: 1 });
+  const tools = wrap(calls, db);
+  const out = await (tools.breach_check as { execute: (i: unknown, o: unknown) => Promise<unknown> })
+    .execute({ type: "username", value: QUARANTINED_USER }, {}) as Record<string, unknown>;
+  assertEquals(out.refused_by, "subject_unlinked_dispatch_boundary");
+  assertEquals(calls.n, 0);
+});
+
+Deno.test("an INCOMPLETE read is not cached, and the retry is bounded", async () => {
+  // Two properties in one test because they trade off against each other. Caching a
+  // partial answer freezes an open boundary for the rest of the run; retrying without
+  // a bound puts a failing query in front of every one of ~89 tools. The memo is
+  // therefore cleared only while attempts remain, and the last attempt sticks.
+  const calls = { n: 0 };
+  const windows: Array<{ from: number; to: number }> = [];
+  const db = pagingSupabase(pagedArtifactRows(1200, 1150), windows, { failFromPage: 0 });
+  const tools = wrap(calls, db);
+  const ex = (tools.breach_check as { execute: (i: unknown, o: unknown) => Promise<unknown> }).execute;
+  for (let i = 0; i < 8; i += 1) await ex({ type: "email", value: `probe${i}@example.test` }, {});
+  assertEquals(
+    windows.length,
+    3,
+    `every page failed, so the run must retry twice and then settle — got ${windows.length} reads`,
+  );
+  assertEquals(calls.n, 8, "a failed read must not refuse unrelated selectors — this boundary fails OPEN");
+});
+
+// ── the refusal message must be inert to the skip classifier ──────────────────
+//
+// `deriveOk` asks `isIntentionalSkip` BEFORE it reads `ok`, and `isIntentionalSkip`
+// regex-matches the joined text of `error`, `note`, `reason` and `detail`. The first
+// build interpolated the classifier-written `subject_unlinked_reason` AND the
+// target-controlled selector into `error`. Either one carrying "gated", "not
+// configured" or "unavailable: disabled" flipped the refusal to ok=true and deleted
+// it from the failure metric — the `dork_harvest(completed)` failure, reproduced.
+
+const SKIP_VOCABULARY = [
+  "name-only echo — provider disabled in config",
+  "gated behind a paywall",
+  "unavailable: missing_key",
+  "unavailable: disabled",
+  "the source was not configured for this subject",
+  "GATED",
+  "unavailable:   gated",
+];
+
+Deno.test("no quarantine reason, however phrased, can make a refusal read as ok", () => {
+  for (const reason of SKIP_VOCABULARY) {
+    const r = quarantineRefusal("breach_check", "username", QUARANTINED_USER, reason) as Record<string, unknown>;
+    assertEquals(deriveOk(r), false, `deriveOk must stay false for reason: ${reason}`);
+    assertEquals(isIntentionalSkip(r), false, `must not read as a skip for reason: ${reason}`);
+    assertEquals(r.skipped, undefined, "a refusal is never a skip");
+    assertEquals(r.dropped, undefined, "a refusal is never the unknown-tool sink");
+    assertEquals(r.ok, false);
+  }
+});
+
+Deno.test("no SELECTOR value, however spelled, can make a refusal read as ok", () => {
+  // The selector is target-controlled: a domain literally named `gated.com` matches
+  // `\bgated\b`, and a normalized name can spell "not configured".
+  for (const selector of ["gated.com", "not configured", "unavailable: disabled", "gated"]) {
+    const r = quarantineRefusal("breach_check", "domain", selector, null) as Record<string, unknown>;
+    assertEquals(deriveOk(r), false, `deriveOk must stay false for selector: ${selector}`);
+    assertEquals(isIntentionalSkip(r), false, `must not read as a skip for selector: ${selector}`);
+  }
+});
+
+Deno.test("the refusal message is a CONSTANT — the reason survives as structured metadata", () => {
+  // Not "the message avoids the vocabulary" but "the message is not built from
+  // caller input at all". A scrub would be a filter to keep in step with a regex in
+  // another module; a constant cannot drift.
+  const a = quarantineRefusal("breach_check", "username", QUARANTINED_USER, "name-only echo") as Record<string, unknown>;
+  const b = quarantineRefusal("oathnet_lookup", "domain", "gated.com", "gated") as Record<string, unknown>;
+  assertEquals(a.error, DISPATCH_REFUSAL_ERROR);
+  assertEquals(b.error, DISPATCH_REFUSAL_ERROR);
+  assertEquals(a.error, b.error, "the message must not vary with the selector or the reason");
+  // The reason is preserved — just nowhere isIntentionalSkip reads.
+  assertEquals(a.quarantine_reason, "name-only echo");
+  assertEquals(b.quarantine_reason, "gated");
+  assertEquals(a.reason, undefined, "`reason` is one of the four fields the classifier joins");
+  assertEquals(a.note, undefined);
+  assertEquals(a.detail, undefined);
+});
+
+Deno.test("a refusal carrying a skip-shaped reason survives the REAL wrapper as ok:false", () => {
+  // The end-to-end form: the reason comes off a persisted artifact, not a literal.
+  const rows = [{
+    id: "a1", kind: "username", value: QUARANTINED_USER, confidence: 65, source: "minimax_web_search",
+    metadata: { subject_unlinked: true, subject_unlinked_reason: "unavailable: gated — provider disabled in config" },
+  }];
+  const calls = { n: 0 };
+  const tools = wrap(calls, fakeSupabase(rows));
+  return (tools.breach_check as { execute: (i: unknown, o: unknown) => Promise<unknown> })
+    .execute({ type: "username", value: QUARANTINED_USER }, {})
+    .then((out) => {
+      assertEquals(calls.n, 0);
+      assertEquals(deriveOk(out), false, "the shipped payload must log as a failure, not a no-op");
+      assertEquals((out as Record<string, unknown>).quarantine_reason, "unavailable: gated — provider disabled in config");
+    });
 });

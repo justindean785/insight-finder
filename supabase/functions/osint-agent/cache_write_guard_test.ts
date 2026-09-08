@@ -35,6 +35,7 @@ function fakeSupabase(onUpsert: () => void): SupabaseClient {
   q.order = chain;
   q.update = chain;
   q.limit = chain;
+  q.range = chain;
   q.maybeSingle = () => Promise.resolve({ data: null, error: null });
   q.insert = () => Promise.resolve({ error: null });
   q.upsert = () => {
