@@ -175,6 +175,74 @@ export function buildDecisionSets(
 }
 
 /**
+ * Rejection follows PROVENANCE, not just the row.
+ *
+ * A rejection says "this is not the subject's". The row the analyst clicked is
+ * only one expression of that; the tool output derived FROM it is the rest, and
+ * on 2026-09-08 that gap put two plaintext breach passwords into the exported
+ * report's "Network Connections — Breach / Exposure" section as part of the
+ * subject's network, minutes after the analyst had rejected the email they were
+ * derived from and the agent itself had written "this is a completely different
+ * identity profile from what the breach data suggested".
+ *
+ * The join is `metadata.parent_selector` — the pipeline's own record of which
+ * selector a tool was run against. That is deliberately NOT the same thing as
+ * matching on value: `normalizeTarget` collapses punctuation, so a value-keyed
+ * rejection lets an ordinary `name` "Jordan Vale" disable a `username`
+ * "jordan.vale" (the hazard CLAUDE.md documents for the quarantine keyspace).
+ * An explicit provenance edge carries no such collision — it was written by the
+ * code that made the call.
+ *
+ * Guards: the parent value must be short enough to be a selector rather than a
+ * prose artifact value, and the match is exact after normalization. Derivation
+ * is closed transitively (bounded), so rejecting a seed also drops a
+ * grandchild.
+ */
+export function buildRejectedDerivationIds(
+  artifacts: readonly DecisionInput[],
+  rejectedIds: ReadonlySet<string>,
+  normalize: (value: string) => string,
+): Set<string> {
+  const derived = new Set<string>();
+  const parentOf = new Map<string, string>();
+  for (const a of artifacts) {
+    const meta = (a.metadata ?? {}) as Record<string, unknown>;
+    const parent = typeof meta.parent_selector === "string" ? normalize(meta.parent_selector) : "";
+    if (parent) parentOf.set(a.id, parent);
+  }
+  // Selector VALUES that are currently out — seeded from the analyst's rejected
+  // rows, then grown as their descendants are pulled in.
+  const out = new Set<string>();
+  const seed = (a: DecisionInput) => {
+    const v = (a.value ?? "").trim();
+    if (v && v.length <= MAX_SELECTOR_VALUE_LEN) out.add(normalize(v));
+  };
+  for (const a of artifacts) if (rejectedIds.has(a.id)) seed(a);
+  out.delete("");
+
+  for (let round = 0; round < MAX_DERIVATION_ROUNDS; round++) {
+    let grew = false;
+    for (const a of artifacts) {
+      if (rejectedIds.has(a.id) || derived.has(a.id)) continue;
+      const parent = parentOf.get(a.id);
+      if (!parent || !out.has(parent)) continue;
+      derived.add(a.id);
+      const before = out.size;
+      seed(a);
+      out.delete("");
+      if (out.size !== before) grew = true;
+    }
+    if (!grew) break;
+  }
+  return derived;
+}
+
+/** A parent_selector is a selector, not a sentence — longer values are artifact prose. */
+const MAX_SELECTOR_VALUE_LEN = 120;
+/** Derivation chains are shallow in practice; the bound just makes the fixpoint total. */
+const MAX_DERIVATION_ROUNDS = 5;
+
+/**
  * Should a MANUAL dispatch (a "Run this pivot" click, a queued pivot, a recheck
  * launch) of this selector be refused because the analyst rejected it?
  *

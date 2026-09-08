@@ -38,6 +38,7 @@ import { canonicalPhoneValue } from "./lib/selector-normalize.ts";
 import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
 import { selectPivots, proposedCallToCandidate, type PivotCandidate, type ProposedCall } from "./graph_pivots.ts";
 import { renderPivotChecklistForPrompt } from "./pivot-checklists.ts";
+import { loadReviewsForThread, dropRejectedAndDerived, normalizeArtifactKey } from "./reviews.ts";
 import { unknownToolNudge } from "./unknown-tool-guard.ts";
 
 /**
@@ -913,6 +914,49 @@ export function buildTools(ctx: ToolContext) {
             return true;
           });
 
+          // ---------------------------------------------------------------
+          // ANALYST AUTHORITY BOUNDARY. Everything below feeds MODEL REASONING —
+          // the relationship graph, the per-kind pivot hints, and the artifact
+          // list serialized into the planner prompt. It is therefore subject to
+          // the analyst's verdicts, and it was NOT: this block read artifacts raw
+          // while `lib/cluster.ts` (the persisted-cluster path, ~:477) has always
+          // loaded reviews and called `dropRejectedArtifacts` before clustering.
+          //
+          // Live consequence, thread b74049ad (2026-09-08): the analyst rejected
+          // an entire breach-derived identity branch, and the planner kept
+          // receiving it as "Connected identity clusters" — so rejected evidence
+          // continued to steer tool selection and "most likely identity"
+          // reasoning, which is exactly what the analyst had just refused.
+          //
+          // FAILS CLOSED. Unavailable review state is not "nothing rejected": on
+          // an unreadable verdict the graph/pivot evidence is omitted rather than
+          // published unfiltered. Same posture `dropRejectedArtifacts` already
+          // takes, for the same reason.
+          const reviewLoad = await loadReviewsForThread(
+            supabase as unknown as Parameters<typeof loadReviewsForThread>[0],
+            threadId,
+            userId,
+          );
+          const rejectedInputKeys = new Set(reviewLoad.rejectedKeys);
+          // The thin {kind,value} list is supplied by the MODEL, so it can name a
+          // rejected selector even when the table read is clean. Keyed on
+          // kind|value like every other rejection check — never on value alone.
+          const plannerArtifacts = reviewLoad.ok
+            ? (artifacts as Array<{ kind: string; value: string }>).filter(
+              (a) => !rejectedInputKeys.has(normalizeArtifactKey(a?.kind, a?.value)),
+            )
+            : [];
+          console.log(JSON.stringify({
+            event: "analyst_decisions_applied",
+            thread_id: threadId,
+            surface: "planner",
+            review_state_ok: reviewLoad.ok,
+            decisions: reviewLoad.byId.size,
+            rejected_keys: reviewLoad.rejectedKeys.size,
+            input_artifacts_in: Array.isArray(artifacts) ? artifacts.length : 0,
+            input_artifacts_kept: plannerArtifacts.length,
+          }));
+
           // Slice 2 / Phase A1 — cost-tier guide so the planner prefers the
           // cheapest tool that can answer (free/low validation before paid
           // confirmation). Advisory only; mirrors the cost_tier field the
@@ -970,10 +1014,16 @@ export function buildTools(ctx: ToolContext) {
           try {
             const { data: fullArts } = await supabase
               .from("artifacts")
-              .select("kind,value,confidence,source,metadata")
+              // `id` is REQUIRED: dropRejectedAndDerived matches artifact_reviews
+              // by id, so omitting it leaves the verdict half-blind (only
+              // DB-resolved value keys would filter).
+              .select("id,kind,value,confidence,source,metadata")
               .eq("thread_id", threadId)
               .order("created_at", { ascending: true });
-            const arts = (fullArts ?? []) as Parameters<typeof buildNodes>[0];
+            const arts = dropRejectedAndDerived(
+              (fullArts ?? []) as Array<Record<string, unknown>>,
+              reviewLoad,
+            ) as unknown as Parameters<typeof buildNodes>[0];
             if (arts.length) {
               const nodes = buildNodes(arts);
               const edges = inferEdges(nodes);
@@ -1016,7 +1066,7 @@ export function buildTools(ctx: ToolContext) {
           let pivotHint = "";
           try {
             const kinds = new Set<string>();
-            for (const a of (artifacts as Array<{ kind?: string }>)) {
+            for (const a of (plannerArtifacts as Array<{ kind?: string }>)) {
               if (a && typeof a.kind === "string" && a.kind.trim()) kinds.add(a.kind.trim().toLowerCase());
             }
             if (kinds.size) {
@@ -1050,7 +1100,7 @@ export function buildTools(ctx: ToolContext) {
             model: MODELS.smart,
             system:
               `You are the execution planner for a forensic OSINT runtime. ONLY propose tools from this EXACT list (names must match verbatim — do not invent or rename): ${toolList.join(", ")}.\n\n${NAME_SEED_PLANNER_RULES}\n\nRUNTIME RULES:\n- Stage choices: TRIAGE, REVIEW, TARGETED_PIVOT, VERIFY, REPORT.\n- Propose the FEWEST pivots that can advance the investigation — at most 3 per cycle, ordered by expected value. Breadth is not progress: a cycle that runs 20 tools and learns nothing is worse than one that runs 2 and resolves a question. Prefer ONE decisive pivot on the strongest selector over a wide sweep across weak ones. Only propose a second or third when it is genuinely INDEPENDENT (different source class, different question) — not the same question asked of another provider. Serialize whenever a pivot's value depends on what a prior pivot returns.\n- Respect the hard total-call and concurrency ceilings enforced by the runtime.\n- Weak-lead and expected-value signals are advisory. Do not turn them into prerequisites or retry loops.\n- Prefer the cheapest tool that can answer the current question: run FREE/LOW-cost validation before spending on EXPENSIVE/premium tools (see TOOL COST TIERS in the context below). Cost is advisory — never drop a uniquely high-value lead just because it is expensive.\n- When a finding is breach-derived or otherwise confidence-capped, propose ONE independent, trusted NON-infrastructure source to corroborate it and lift the cap, rather than re-running the same breach source.\n- Cached results NEVER count as corroboration. If a fresh cache hit would satisfy the question, prefer it over a live call.\n- If evidence is weak, explain that in the reason and keep the result [VERIFY].\n\nReply ONLY with JSON matching this exact shape:\n{\n  "stage":"TRIAGE|REVIEW|TARGETED_PIVOT|VERIFY|REPORT",\n  "goal":"string",\n  "current_findings":["string"],\n  "proposed_calls":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "params_preview":{},\n    "expected_value":0,\n    "cost_tier":"free|low|expensive",\n    "reason":"string",\n    "stop_condition":"string",\n    "cache_status":"thread|user|stale|miss"\n  }],\n  "calls_rejected":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "expected_value":0,\n    "reason":"string",\n    "cost_tier":"free|low|expensive",\n    "weak_lead":true,\n    "stale_cache":false,\n    "manual_override":false\n  }]\n}\nOrder proposed_calls by expected_value descending. Respect budget_remaining as the max number of proposed_calls.`,
-            user: `Seed: ${seed}\nBudget remaining: ${budget_remaining}\nAlready queried: ${JSON.stringify(already_queried).slice(0,4000)}\nArtifacts so far: ${JSON.stringify(artifacts).slice(0,8000)}\n\n${costGuide}${relationshipHint}${pivotHint}${memoryHint}`,
+            user: `Seed: ${seed}\nBudget remaining: ${budget_remaining}\nAlready queried: ${JSON.stringify(already_queried).slice(0,4000)}\nArtifacts so far: ${JSON.stringify(plannerArtifacts).slice(0,8000)}${reviewLoad.ok ? "" : "\n(Analyst review state could not be read this cycle — prior artifacts are withheld rather than shown unfiltered. Re-derive from the seed.)"}\n\n${costGuide}${relationshipHint}${pivotHint}${memoryHint}`,
             json: true,
             maxTokens: 1500,
           });
@@ -1074,7 +1124,7 @@ export function buildTools(ctx: ToolContext) {
             try {
               const calls = (parsed as { proposed_calls?: unknown }).proposed_calls;
               if (Array.isArray(calls) && calls.length) {
-                const nodes = buildNodes(artifacts as Array<{ kind: string; value: string }>);
+                const nodes = buildNodes(plannerArtifacts as Array<{ kind: string; value: string }>);
                 const candidates = (calls as ProposedCall[]).map(proposedCallToCandidate);
                 const { selected, dropped } = selectPivots(candidates, nodes, { budget: budget_remaining });
                 (parsed as { proposed_calls: unknown }).proposed_calls =

@@ -36,6 +36,14 @@ function isIdLike(s: string): boolean {
   return SSN_LIKE_RE.test(s.trim());
 }
 
+// Follower counts, post counts and magnitudes are the dominant source of bare
+// 10–17 digits in a real bio. A number in one of these contexts is a quantity
+// and must never self-trigger a minor-safety warning. Anchored at the start of
+// the text FOLLOWING the digits (optional space), so it reads the number's own
+// unit and not some unrelated later word.
+const COUNT_CONTEXT_RE =
+  /^\s*(?:\+|%|x\b|k\b|m\b|b\b|mil(?:lion)?\b|bn\b|billion\b|thousand\b|followers?\b|follows?\b|subs(?:cribers?)?\b|posts?\b|videos?\b|views?\b|likes?\b|members?\b|episodes?\b|tracks?\b|songs?\b|albums?\b|years?\s+(?:in|of|running|strong|experience)\b|yrs?\s+(?:in|of)\b)/i;
+
 export function scrubArtifactRow(row: Record<string, unknown>): Record<string, unknown> {
   const kind = String(row.kind ?? "").toLowerCase();
   const meta: Record<string, unknown> = { ...((row.metadata ?? {}) as Record<string, unknown>) };
@@ -85,12 +93,22 @@ export function scrubArtifactRow(row: Record<string, unknown>): Record<string, u
   // and an SSN-shaped string (a group number "17"), and only in short (≤120
   // char) context. If an explicit age cue already fired, the bare adds nothing.
   if (ageSignal == null) {
-    for (const h of bioHaystacks) {
+    outer: for (const h of bioHaystacks) {
       if (!h || h.length > 120 || isDateLike(h) || isIdLike(h)) continue;
-      const bare = h.match(/(?:^|[^\d])(1[0-7])(?:[^\d]|$)/);
-      if (bare) {
-        signals.push(`bare-${parseInt(bare[1], 10)}`);
-        break;
+      // The digits must be a STANDALONE TOKEN. The old boundary was `[^\d]`,
+      // which admits a letter on either side, so "10mil", "15k", "12th" and
+      // "Kev17" all read as ages. Live false positive that motivated this: the
+      // bio "… **DOES NOT PROMOTE … BULLYING** Over 10mil on YouTube." on a
+      // VERIFIED 29k-follower news-commentary account raised `bare-10`, which
+      // capped the row to 35, set auto_pivot_blocked, and printed a
+      // minor-safety banner as the first line of the exported report — on the
+      // seed's own primary profile.
+      for (const m of h.matchAll(/(?<![\p{L}\p{N}])(1[0-7])(?![\p{L}\p{N}])/gu)) {
+        // A standalone number followed by a magnitude or a counted noun is a
+        // QUANTITY, not an age: "10 mil followers", "16 videos", "12 posts".
+        if (COUNT_CONTEXT_RE.test(h.slice((m.index ?? 0) + m[0].length))) continue;
+        signals.push(`bare-${parseInt(m[1], 10)}`);
+        break outer;
       }
     }
   }

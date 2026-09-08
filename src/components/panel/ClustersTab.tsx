@@ -10,7 +10,6 @@ import { EmptyState } from "./EmptyState";
 import { ConfidenceTag } from "@/components/ui/confidence";
 import { AuthoritySpine } from "@/components/ui/authority";
 import type { AuthorityState } from "@/lib/authority";
-import { clusterDisplayId } from "@/lib/report-hygiene";
 import { cn } from "@/lib/utils";
 
 export function ClustersTab({ threadId, artifacts }: { threadId: string; artifacts: Artifact[] }) {
@@ -84,13 +83,13 @@ export function ClustersTab({ threadId, artifacts }: { threadId: string; artifac
       {report.clusters.length === 0 ? (
         <div className="text-xs text-muted-foreground p-2">No identifiable clusters yet.</div>
       ) : (
-        report.clusters.map((c, i) => <ClusterCard key={c.id} cluster={c} index={i} />)
+        report.clusters.map((c) => <ClusterCard key={c.id} cluster={c} />)
       )}
     </div>
   );
 }
 
-function ClusterCard({ cluster: c, index }: { cluster: IdentityCluster; index: number }) {
+function ClusterCard({ cluster: c }: { cluster: IdentityCluster }) {
   const matches = c.matchesSeedLocation;
   // An infrastructure-only cluster (IPs / domains / nameservers, no identity
   // signals) must not read as a generic "unknown" identity cluster. Detect it
@@ -133,7 +132,12 @@ function ClusterCard({ cluster: c, index }: { cluster: IdentityCluster; index: n
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="text-eyebrow font-mono uppercase tracking-[0.14em] text-muted-foreground/70">
-            {clusterDisplayId(index)}
+            {/* `c.id` — the cluster's OWN code, not its position on screen.
+                Recomputing it from `index` made the workspace and the exported
+                report disagree about which cluster is C001 (live: thread
+                b74049ad), because the report renders the code baked into
+                `c.label`. One canonical numbering; the analyst cites one thing. */}
+            {c.id}
           </div>
           {/* `c.label` already reads "Cluster C001 — jharker88"; the ID now has
               its own mono eyebrow above, so strip the redundant prefix rather

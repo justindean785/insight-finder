@@ -1127,11 +1127,32 @@ export function extractFindings(
     }
     if (hits.length > 0) {
       const handle = String(o.username ?? o.handle ?? o.query ?? "").trim();
-      const unverifiedCount = Array.isArray(o.unverified) ? o.unverified.length : 0;
+      const unverifiedList = Array.isArray(o.unverified) ? o.unverified : [];
+      const unverifiedCount = unverifiedList.length;
+      // The NAMES of the undetermined platforms, not just how many. A sweep that
+      // reaches a site and cannot prove the account either way is the single most
+      // decision-relevant thing the sweep produces, because the platforms that
+      // block datacenter egress (Instagram, TikTok, X…) are exactly the ones an
+      // investigation cares about — and they are indistinguishable from "absent"
+      // once the count is all that survives. Live case (glitterkittens12,
+      // 2026-09-08): the sweep resolved 109 sites, proved 65 absent and could not
+      // decide 40 — Instagram among them. The analyst was shown "4 platform
+      // registrations" and nothing else, so a 29k-follower VERIFIED Instagram
+      // account that the seed was literally named after read as "not found", and
+      // the run looked like the sweep had never executed.
+      const unverifiedSites = unverifiedList
+        .map((u) => (u && typeof u === "object" ? String((u as Record<string, unknown>).site ?? "") : ""))
+        .filter(Boolean)
+        .slice(0, 60);
       if (SWEEP_COLLAPSE_ENABLED && handle && hits.length >= SWEEP_COLLAPSE_MIN_HITS) {
         findings.push({
           kind: "social_footprint",
-          value: `${handle} — ${hits.length} platform registration${hits.length === 1 ? "" : "s"}`,
+          // The headline still counts ONLY proven registrations — an undetermined
+          // site is never absorbed into the hit count (that is the rule the
+          // `unverified` split exists to enforce). It is disclosed alongside it,
+          // in the one field the analyst actually reads: the artifact value.
+          value: `${handle} — ${hits.length} platform registration${hits.length === 1 ? "" : "s"}` +
+            (unverifiedCount > 0 ? `, ${unverifiedCount} undetermined (reachable, unproven)` : ""),
           context: {
             tool: toolName,
             via: "username_sweep",
@@ -1142,7 +1163,12 @@ export function extractFindings(
             urls: hits,
             // Reachable but unevidenced pages are DISCLOSED, not counted: the
             // headline number must never absorb a soft-404.
-            ...(unverifiedCount > 0 ? { unverified_platform_count: unverifiedCount } : {}),
+            ...(unverifiedCount > 0
+              ? {
+                unverified_platform_count: unverifiedCount,
+                unverified_platforms: unverifiedSites,
+              }
+              : {}),
           },
           rawConfidence: 30,
         });

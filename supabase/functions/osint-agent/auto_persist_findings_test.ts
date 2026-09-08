@@ -167,3 +167,43 @@ Deno.test("persistAutoFindings is a no-op for an empty finding list", async () =
   assertEquals(res.inserted, 0);
   assertEquals(called, false);
 });
+
+Deno.test("username_sweep discloses UNDETERMINED platforms in the artifact value, not only in metadata", () => {
+  // glitterkittens12, 2026-09-08. The sweep resolved its full site list, proved
+  // most absent, and could not decide 40 — Instagram among them, because it
+  // blocks datacenter egress. Only the hit count reached the analyst
+  // ("4 platform registrations"), so the seed's own verified 29k-follower
+  // Instagram read as absent and the whole sweep looked like it never ran.
+  const out = extractFindings("username_sweep", {
+    username: "glitterkittens12",
+    found: [
+      { site: "Mixcloud", url: "https://www.mixcloud.com/glitterkittens12/", found: true },
+      { site: "Telegram", url: "https://t.me/glitterkittens12", found: true },
+      { site: "Roblox", url: "https://www.roblox.com/user.aspx?username=glitterkittens12", found: true },
+      { site: "HackerRank", url: "https://www.hackerrank.com/glitterkittens12", found: true },
+    ],
+    unverified: [
+      { site: "Instagram", url: "https://www.instagram.com/glitterkittens12/", found: false, unverified: true },
+      { site: "TikTok", url: "https://www.tiktok.com/@glitterkittens12", found: false, unverified: true },
+    ],
+  });
+
+  const fp = out.find((f) => f.kind === "social_footprint");
+  if (!fp) throw new Error("no social_footprint artifact emitted");
+
+  // The headline still counts ONLY proven registrations — an undetermined site
+  // must never be absorbed into the hit count.
+  if (!fp.value.includes("4 platform registrations")) {
+    throw new Error(`hit count changed: ${fp.value}`);
+  }
+  // ...but the analyst is told, in the field they read, that the sweep could not
+  // decide 2 more.
+  if (!/2 undetermined/.test(fp.value)) {
+    throw new Error(`undetermined count not disclosed in value: ${fp.value}`);
+  }
+  const ctx = (fp.context ?? {}) as Record<string, unknown>;
+  const sites = ctx.unverified_platforms as string[];
+  if (!Array.isArray(sites) || !sites.includes("Instagram")) {
+    throw new Error(`undetermined platform NAMES not preserved: ${JSON.stringify(ctx)}`);
+  }
+});

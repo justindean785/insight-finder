@@ -257,6 +257,119 @@ export function dropRejectedArtifacts<T extends Record<string, unknown>>(
 }
 
 /**
+ * PROVENANCE CASCADE — rejection follows the evidence chain, not just the row.
+ *
+ * `dropRejectedArtifacts` removes what the analyst clicked and any re-record of
+ * the same normalized kind|value. It does NOT remove what the pipeline DERIVED
+ * from a rejected selector, because a descendant's literal value is a different
+ * string. Live case, thread b74049ad (2026-09-08): the analyst rejected
+ * `dgoff1276@gmail.com` as not the subject's, and the two plaintext breach
+ * passwords extracted from that email survived into the exported report's
+ * "Network Connections — Breach / Exposure" as part of the subject's network.
+ *
+ * The join is the pipeline's OWN provenance metadata — `parent_selector` /
+ * `queried_selector`, the selector a tool was actually run against. That is
+ * deliberately NOT text matching: `normalizeArtifactKey` collapses punctuation,
+ * so a value-keyed cascade would let an ordinary `name` "Jordan Vale" suppress
+ * an unrelated `username` "jordan.vale" (the hazard CLAUDE.md documents for the
+ * quarantine keyspace). An explicit provenance edge was written by the code that
+ * made the call and carries no such collision.
+ *
+ * Bounded: parent values longer than a selector are ignored (an artifact value
+ * is prose, a selector is not), matching is exact after normalization, and the
+ * fixpoint is capped so the walk is total.
+ *
+ * Returns the excluded ids WITH the reason each was excluded, so a report can
+ * preserve the row under "Excluded by analyst" and say WHY rather than deleting
+ * it. Chain of custody is never served by making a row disappear.
+ */
+export type ExclusionReason = "analyst_rejected" | "duplicate_of_rejected" | "derived_from_rejected";
+
+const MAX_PROVENANCE_SELECTOR_LEN = 120;
+const MAX_PROVENANCE_ROUNDS = 5;
+const PROVENANCE_FIELDS = ["parent_selector", "queried_selector"] as const;
+
+function provenanceParentOf(row: Record<string, unknown>): string | null {
+  const meta = row?.metadata;
+  if (!meta || typeof meta !== "object") return null;
+  const m = meta as Record<string, unknown>;
+  for (const f of PROVENANCE_FIELDS) {
+    const v = m[f];
+    if (typeof v === "string" && v.trim()) return normalizeArtifactKey("", v);
+  }
+  return null;
+}
+
+export function buildExclusionMap<T extends Record<string, unknown>>(
+  rows: T[] | null | undefined,
+  review: ReviewLoad,
+): Map<string, ExclusionReason> {
+  const out = new Map<string, ExclusionReason>();
+  if (!Array.isArray(rows) || !review.ok) return out;
+
+  const rejectedKeys = new Set(review.rejectedKeys);
+  for (const r of rows) {
+    const id = typeof r?.id === "string" ? r.id : null;
+    const state = id ? review.byId.get(id) : undefined;
+    if (state && REJECTED_REVIEW_STATES.has(state)) {
+      rejectedKeys.add(normalizeArtifactKey(r.kind, r.value));
+      if (id) out.set(id, "analyst_rejected");
+    }
+  }
+  for (const r of rows) {
+    const id = typeof r?.id === "string" ? r.id : null;
+    if (!id || out.has(id)) continue;
+    if (rejectedKeys.has(normalizeArtifactKey(r.kind, r.value))) out.set(id, "duplicate_of_rejected");
+  }
+
+  // Selector VALUES currently out of the working set, grown as descendants join.
+  const deadSelectors = new Set<string>();
+  const seed = (r: Record<string, unknown>) => {
+    const v = typeof r?.value === "string" ? r.value.trim() : "";
+    if (v && v.length <= MAX_PROVENANCE_SELECTOR_LEN) deadSelectors.add(normalizeArtifactKey("", v));
+  };
+  for (const r of rows) {
+    const id = typeof r?.id === "string" ? r.id : null;
+    if (id && out.has(id)) seed(r);
+  }
+  deadSelectors.delete("");
+
+  for (let round = 0; round < MAX_PROVENANCE_ROUNDS; round++) {
+    let grew = false;
+    for (const r of rows) {
+      const id = typeof r?.id === "string" ? r.id : null;
+      if (!id || out.has(id)) continue;
+      const parent = provenanceParentOf(r);
+      if (!parent || !deadSelectors.has(parent)) continue;
+      out.set(id, "derived_from_rejected");
+      const before = deadSelectors.size;
+      seed(r);
+      deadSelectors.delete("");
+      if (deadSelectors.size !== before) grew = true;
+    }
+    if (!grew) break;
+  }
+  return out;
+}
+
+/**
+ * `dropRejectedArtifacts` + the provenance cascade above. Use this wherever the
+ * output feeds MODEL REASONING (planner context, graph construction, pivot
+ * ranking) rather than a forensic listing. Fails closed exactly as
+ * `dropRejectedArtifacts` does: unavailable review state surfaces nothing.
+ */
+export function dropRejectedAndDerived<T extends Record<string, unknown>>(
+  rows: T[] | null | undefined,
+  review: ReviewLoad,
+): T[] {
+  const kept = dropRejectedArtifacts(rows, review);
+  if (!kept.length) return kept;
+  const excluded = buildExclusionMap(rows, review);
+  if (excluded.size === 0) return kept;
+  return kept.filter((r) => !excluded.has(typeof r?.id === "string" ? r.id : ""));
+}
+
+/**
  * Filter + TAG artifact rows by analyst verdict, for any read that feeds the
  * model. Rows SHOULD carry `id` (matching artifact_reviews.artifact_id).
  *   - dismissed / wrong                  → DROPPED (analyst rejected)
