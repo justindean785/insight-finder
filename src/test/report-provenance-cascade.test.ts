@@ -13,7 +13,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
-import { buildReportMarkdown } from "@/lib/intel";
+import { buildReportMarkdown, type ReviewAdjustment } from "@/lib/intel";
 
 let seq = 0;
 function art(p: Partial<Artifact> & { kind: string; value: string }): Artifact {
@@ -52,9 +52,9 @@ const IG = art({
 });
 
 const ALL = [EMAIL, PW1, PW2, ALT, IG];
-const REVIEWS = { email: "wrong" } as Record<string, string>;
+const REVIEWS: Record<string, ReviewAdjustment> = { email: "wrong" };
 
-function report(reviews?: Record<string, string>) {
+function report(reviews?: Record<string, ReviewAdjustment>) {
   return buildReportMarkdown({
     seedValue: "glitterkittens12", seedType: "username", artifacts: ALL, reviews,
   });
@@ -106,6 +106,6 @@ describe("rejection cascades through provenance", () => {
       expect(table).toContain(v);
     }
     // ...and the appendix says plainly that none of it supports the subject.
-    expect(appendix).toContain("do NOT support the subject identity".replace("do NOT", "do NOT"));
+    expect(appendix).toContain("do NOT support the subject identity");
   });
 });
