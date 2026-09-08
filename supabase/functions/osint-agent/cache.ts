@@ -446,11 +446,47 @@ function normalizedParams(input: Record<string, unknown>): Record<string, unknow
 // the scarce 12-slot budget.
 export const PAID_BUDGET_EXEMPT_TOOLS = new Set<string>(["memory_recall", "memory_save"]);
 
-export function costTierForTool(baseCost: number, toolName?: string): ToolCostTier {
-  if (toolName && PAID_BUDGET_EXEMPT_TOOLS.has(toolName)) return "free";
+/**
+ * The tool's HONEST cost classification, derived from price alone.
+ *
+ * Deliberately single-argument. #563 added a toolName parameter that returned
+ * "free" for the bookkeeping tools, which achieved the budget exemption but
+ * leaked the lie into every other consumer of the tier: the EV scorer's
+ * costPenalty, the `cost_tier` field on rejected-call metadata, and the
+ * `cost_tier` recorded in tool_usage_log runtime metadata — all of which would
+ * then report a tool that really does bill $0.0002 as free. Cost classification
+ * and budget admission are two different questions; see paidBudgetTier below for
+ * the second one. Keep this function about price.
+ */
+export function costTierForTool(baseCost: number): ToolCostTier {
   if (baseCost <= 0) return "free";
   if (baseCost <= 1_500) return "low";
   return "expensive";
+}
+
+/**
+ * The tier used ONLY for paid-call ADMISSION — the two places in
+ * runtime-policy.ts that read `costTier` to decide whether a call consumes one
+ * of MAX_PAID_CALLS' 12 slots (`startCall`'s cap check and its `state.paidCalls`
+ * increment), plus `refundPaidCall`, which must agree with the reservation or a
+ * slot is refunded that was never taken.
+ *
+ * `memory_recall` / `memory_save` are pure run-bookkeeping: they read and write
+ * this run's own state, make no OSINT provider request, and fire on essentially
+ * every run regardless of what the investigation finds. Charging them against a
+ * budget documented as a MONEY control over intel-gathering spend cost real
+ * work — production threads 4f3a3da7, e79ad0b5 and c599a5bc all hit "internal
+ * paid-call cap reached" on a QUEUED minimax_correlate with evidence in hand,
+ * and 4f3a3da7 finished with 36 artifacts and no correlation pass at all.
+ *
+ * SCOPE: admission only. Billing is untouched — cost_micro_usd /
+ * charged_micro_usd key off `baseCost` directly, never off a tier, so these two
+ * tools still bill their true $0.0002 each. They simply stop competing with real
+ * intel-gathering calls for a scarce slot.
+ */
+export function paidBudgetTier(baseCost: number, toolName: string): ToolCostTier {
+  if (PAID_BUDGET_EXEMPT_TOOLS.has(toolName)) return "free";
+  return costTierForTool(baseCost);
 }
 
 function attachRuntimeMeta(
@@ -1021,7 +1057,7 @@ export function wrapToolsWithCache(
           // thresholds of 50-70 and get EV-blocked before a single artifact
           // lands — deadlocking the investigation on a fresh seed.
           freshSeedBonus: signal.confidence === null && signal.sourceCount === 0 ? 35 : 0,
-          costPenalty: costTierForTool(baseCost, name) === "expensive" ? 20 : costTierForTool(baseCost, name) === "low" ? 8 : 0,
+          costPenalty: costTierForTool(baseCost) === "expensive" ? 20 : costTierForTool(baseCost) === "low" ? 8 : 0,
           duplicatePenalty: selectorType === "value" ? 8 : 0,
           priorFailurePenalty: circuit.snapshot(ctx.investigationId).find((entry) => entry.tool === name)?.consecutive ?? 0,
           collisionPenalty: signal.usernameCollision || signal.sameNameWithoutOverlap ? 20 : 0,
@@ -1283,7 +1319,7 @@ export function wrapToolsWithCache(
             selector_type: selectorType,
             expected_value: expectedValue,
             reason: decision.reason,
-            cost_tier: costTierForTool(baseCost, name),
+            cost_tier: costTierForTool(baseCost),
             weak_lead: weakLead.weak,
             stale_cache: !!staleRecord,
             manual_override: manualOverride,
@@ -1319,7 +1355,7 @@ export function wrapToolsWithCache(
           toolName: name,
           selector: sel,
           selectorType,
-          costTier: costTierForTool(baseCost, name),
+          costTier: paidBudgetTier(baseCost, name),
           expectedValue,
           familyKey,
           weakLead,
@@ -1334,7 +1370,7 @@ export function wrapToolsWithCache(
             selector_type: selectorType,
             expected_value: expectedValue,
             reason: runtimeDecision.reason,
-            cost_tier: costTierForTool(baseCost, name),
+            cost_tier: costTierForTool(baseCost),
             weak_lead: weakLead.weak,
             stale_cache: !!staleRecord,
             manual_override: manualOverride,
@@ -1376,7 +1412,7 @@ export function wrapToolsWithCache(
           selector_type: selectorType,
           params_preview: inputJson,
           expected_value: expectedValue,
-          cost_tier: costTierForTool(baseCost, name),
+          cost_tier: costTierForTool(baseCost),
           reason: weakLead.weak
             ? `manual override or corroborated retry despite weak lead: ${weakLead.reasons.join("; ")}`
             : "highest-value eligible pivot for this cycle",
@@ -1424,7 +1460,7 @@ export function wrapToolsWithCache(
           // goes back. Keyed on the structural `provider_attempted: false` marker
           // only — never on the outcome bucket, because `skipped` also covers
           // rate-limits, 5xx and timeouts, all of which really did spend.
-          if (isPreProviderGate(result)) refundPaidCall(ctx.investigationId, costTierForTool(baseCost, name));
+          if (isPreProviderGate(result)) refundPaidCall(ctx.investigationId, paidBudgetTier(baseCost, name));
           // C-2: record minimax_correlate's FINAL outcome (post-timeout-race) so
           // memory_save can tell "correlate failed this cycle" apart from "correlate
           // never ran" — a timeout stub races the tool's own execute() and wins, so
