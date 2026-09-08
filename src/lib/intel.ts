@@ -14,7 +14,8 @@ import { deriveToolStatus, deriveToolReason } from "@/lib/tool-run";
 import { isSubjectUnlinked, isQuarantined } from "@/lib/quarantine";
 // Pure (no Supabase import), so no cycle: the one rejection predicate every
 // frontend consumer shares — analyst verdict OR the legacy `false_positive` flag.
-import { isRejectedArtifact as isRejectedArtifactRow } from "@/lib/analyst-decisions";
+import { isRejectedArtifact as isRejectedArtifactRow, buildRejectedDerivationIds } from "@/lib/analyst-decisions";
+import { normalizeTarget } from "@/lib/next-step-cards";
 // Derived models built here (timeline entries, pivot candidates) carry a
 // per-artifact confidence that is later RENDERED, so they must carry the
 // effective value — otherwise a surface displays a raw number without ever
@@ -1161,6 +1162,9 @@ export function extractFailedAndSkipped(messages: RawMessage[]): FailedToolEntry
   return out;
 }
 
+/** Events rendered in the report's Timeline. Anything beyond this is disclosed, not hidden. */
+const TIMELINE_MAX_EVENTS = 40;
+
 // ---- Investigation summary --------------------------------------------
 
 export function buildInvestigationSummary(input: ReportInput): string {
@@ -1350,8 +1354,22 @@ export function buildReportMarkdown(input: ReportInput): string {
     return { verified, rejected, needs };
   })();
 
+  // Rejection follows provenance. The analyst rejects the row they can see; the
+  // rows the pipeline DERIVED from it carry the same claim and must leave the
+  // authoritative sections with it. Live case 2026-09-08: the analyst rejected
+  // `dgoff1276@gmail.com` as not the subject's, and the two plaintext breach
+  // passwords extracted from that email stayed in "Network Connections — Breach
+  // / Exposure" as part of the subject's network.
+  const rejectedIds = new Set(artifacts.filter((a) => isRejectedArtifactRow(a, rev(a))).map((a) => a.id));
+  const rejectedDerivedIds = buildRejectedDerivationIds(artifacts, rejectedIds, normalizeTarget);
+  /** Rejected outright, or derived from something rejected. */
+  const isOutOfSet = (a: Artifact) => rejectedIds.has(a.id) || rejectedDerivedIds.has(a.id);
+
   const audit = buildToolAudit(artifacts, reviews);
-  const gaps = inferToolGaps(audit);
+  // A "next step" is a recommendation to spend money on a selector. It must be
+  // inferred from the kinds still IN the working set: recommending email tools
+  // off a rejected email is the product arguing with the analyst.
+  const gaps = inferToolGaps(buildToolAudit(artifacts.filter((a) => !isOutOfSet(a)), reviews));
   const clusterReport = buildIdentityClusters(artifacts, seedValue, reviews);
   const isNameSearch = !!detectNameLocationSeed(seedValue);
 
@@ -1398,7 +1416,7 @@ export function buildReportMarkdown(input: ReportInput): string {
     attested: attested.length,
   });
   const keyFindings = (() => {
-    const strong = [...confirmed, ...attested];
+    const strong = [...confirmed, ...attested].filter((a) => !isOutOfSet(a));
     if (strong.length) {
       return [
         ...(keyFindingsHeading.lead ? [keyFindingsHeading.lead, ""] : []),
@@ -1408,7 +1426,7 @@ export function buildReportMarkdown(input: ReportInput): string {
       ].join("\n");
     }
     const leads = artifacts
-      .filter((a) => { const l = lbl(a); return l === "CORRELATED" || l === "INFERRED"; })
+      .filter((a) => { const l = lbl(a); return (l === "CORRELATED" || l === "INFERRED") && !isOutOfSet(a); })
       .sort((a, b) => (conf(b) ?? 0) - (conf(a) ?? 0))
       .slice(0, 10);
     if (!leads.length) return "_No findings recorded yet._";
@@ -1554,7 +1572,7 @@ export function buildReportMarkdown(input: ReportInput): string {
     // the case; it is not a node in the subject's network (isNonEntityArtifact).
     const networkExcluded = new Set(
       artifacts.filter((a) =>
-        collisionIds.has(a.id) || isSubjectUnlinked(a.metadata) || isRejectedArtifactRow(a, rev(a)) || isNonEntityArtifact(a),
+        collisionIds.has(a.id) || isSubjectUnlinked(a.metadata) || isOutOfSet(a) || isNonEntityArtifact(a),
       ).map((a) => a.id),
     );
     const reputation = artifacts.filter((a) => isReputationArtifact(a) && !networkExcluded.has(a.id));
@@ -1583,9 +1601,23 @@ export function buildReportMarkdown(input: ReportInput): string {
     // Activity Log's tool breakdown. The evidentiary chronology (seed, queries,
     // artifacts, report) carries real per-event timestamps, so render that.
     const chronology = items.filter((t) => t.type !== "tool_result");
-    return (chronology.length ? chronology : items).slice(-15).map((t) =>
-      `- \`${new Date(t.time).toISOString()}\` — **${t.type}** — ${t.title}${t.source ? ` _(via ${humanizeSourceChain(t.source)})_` : ""}`,
-    ).join("\n");
+    const source = chronology.length ? chronology : items;
+    // A SILENT `.slice(-15)` on the chain-of-custody surface. On the
+    // glitterkittens12 export it dropped the first user query and all 20
+    // artifacts recorded in the run's opening four minutes, and said nothing —
+    // the section still read "Timeline Summary" as though it were complete.
+    // Truncation is fine; undisclosed truncation on an evidentiary chronology
+    // is not.
+    const shown = source.slice(-TIMELINE_MAX_EVENTS);
+    const omitted = source.length - shown.length;
+    return [
+      ...(omitted > 0
+        ? [`_Showing the ${shown.length} most recent of ${source.length} events; ${omitted} earlier event${omitted === 1 ? "" : "s"} omitted. The full chronology is in the Artifact / Entity Table._`, ""]
+        : []),
+      ...shown.map((t) =>
+        `- \`${new Date(t.time).toISOString()}\` — **${t.type}** — ${t.title}${t.source ? ` _(via ${humanizeSourceChain(t.source)})_` : ""}`,
+      ),
+    ].join("\n");
   })();
 
   const activityLog = (() => {
@@ -1650,6 +1682,26 @@ export function buildReportMarkdown(input: ReportInput): string {
   const nextSteps = gaps.length === 0
     ? "_No additional tool groups suggested._"
     : gaps.map((g) => `- **${g.kind}** — consider: ${g.suggested.map((t) => toolActionLabel(t)).join(", ")}`).join("\n");
+
+  // Rejected evidence is PRESERVED and SEGREGATED, never deleted and never
+  // active. It keeps its source, its timestamp and its exclusion reason so the
+  // chain of custody survives, and it is stated plainly that it does not support
+  // the subject identity — which is the thing the active sections were doing by
+  // implication when a rejected row sat in "Network Connections".
+  const excludedAppendix = (() => {
+    const rows = artifacts.filter(isOutOfSet);
+    if (!rows.length) return "_No evidence has been excluded by analyst review._";
+    return [
+      "_These rows were removed from every active section by analyst review. They are retained for chain of custody. They do NOT support the subject identity and must not be cited as corroboration._",
+      "",
+      ...rows.map((a) => {
+        const why = rejectedIds.has(a.id)
+          ? "analyst rejected"
+          : "derived solely from rejected evidence";
+        return `- \`${sanitizeValueForLabel(a.value, false)}\` — ${a.kind} _(via ${humanizeSourceChain(a.source)}, ${new Date(a.created_at).toISOString()}; **${why}**)_`;
+      }),
+    ].join("\n");
+  })();
 
   const sourceAppendix = audit.tools.length === 0
     ? "_None._"
@@ -1797,6 +1849,9 @@ export function buildReportMarkdown(input: ReportInput): string {
     "",
     `## Source Appendix`,
     sourceAppendix,
+    "",
+    `## Excluded by Analyst`,
+    excludedAppendix,
     "",
     `---`,
     `_All items are presented as observations from named sources. Wording such as "observed", "source indicates", "possible match", and "needs verification" is used deliberately. No identity claim should be treated as confirmed without independent corroboration._`,
@@ -2595,7 +2650,27 @@ export function buildIdentityClusters(
     return b.confidence - a.confidence;
   });
 
+  // RENUMBER AFTER THE SORT. `id`/`label` were assigned at construction, then
+  // this sort reordered them, so the codes no longer matched presentation order
+  // — the report printed "C002" above "C001". Worse, ClustersTab rendered
+  // `clusterDisplayId(renderIndex)` instead of `c.id`, so the SAME cluster was
+  // C001 in the workspace and C002 in the export (live: thread b74049ad, where
+  // the unattributed cluster and the glitterkittens12 cluster swapped codes
+  // between the two surfaces). An analyst citing "C001" has to mean one thing.
+  for (let i = 0; i < out.length; i++) {
+    out[i] = { ...out[i], id: clusterDisplayId(i), label: relabelCluster(out[i].label, i) };
+  }
+
   return { clusters: out, collision, warnings, seedName, seedState };
+}
+
+/**
+ * Rewrite the `Cxxx` code embedded in an already-built cluster label to match
+ * its final position. The rest of the label (the identity it names) is
+ * untouched — only the code moves.
+ */
+function relabelCluster(label: string, idx: number): string {
+  return label.replace(/^Cluster C\d{3}\b/, `Cluster ${clusterDisplayId(idx)}`);
 }
 
 function clusterLabel(idx: number, c: Omit<IdentityCluster, "id" | "label" | "matchesSeedLocation">): string {

@@ -245,3 +245,42 @@ Deno.test("capPartsSize: hard ceiling measures UTF-8 bytes and preserves text pr
   assert(capped[0].text?.startsWith("🔎"));
   assert(capped[0].text?.includes("assistant details truncated"));
 });
+
+Deno.test("follower/quantity counts in a bio do NOT self-trigger a minor warning (bare-digit token boundary)", () => {
+  // Live false positive, glitterkittens12 run 2026-09-08. The seed's own primary
+  // profile — a VERIFIED Instagram news-commentary account, 29,205 followers —
+  // carries the bio "… **THIS PAGE DOES NOT PROMOTE OR SUPPORT VIOLENCE OR
+  // BULLYING** Over 10mil on YouTube." The old boundary (`[^\d]`) admits a
+  // letter on either side of the digits, so "10mil" matched as a bare age. The
+  // blast radius was not cosmetic: the row was capped to confidence 35,
+  // auto_pivot_blocked was set on the account the investigation was actually
+  // about, and the exported report opened with a minor-safety banner.
+  const glued = meta({
+    kind: "social",
+    value: "glitterkittens12",
+    metadata: {
+      bio: "ELITE ball knowledge knower **DOES NOT PROMOTE VIOLENCE** Over 10mil on YouTube.",
+    },
+  });
+  assertEquals(glued.possible_minor, undefined);
+  assertEquals(glued.auto_pivot_blocked, undefined);
+
+  // Same number, spaced out, with an explicit magnitude/counted-noun unit.
+  for (const bio of [
+    "Over 10 mil on YouTube",
+    "16 videos and counting",
+    "12 posts · 15k followers",
+    "17 episodes out now",
+    "13 years in the game",
+  ]) {
+    const m = meta({ kind: "social", value: "someone", metadata: { bio } });
+    assertEquals(m.possible_minor, undefined, `quantity context flagged as a minor: ${bio}`);
+  }
+
+  // ...and the soft signal still fires on a genuine bare age in bio prose, so
+  // the boundary tightening did not buy a false negative.
+  for (const bio of ["just turned 16", "im a 14 y/o", "15 :)"]) {
+    const m = meta({ kind: "social", value: "someone", metadata: { bio } });
+    assertEquals(m.possible_minor, true, `real minor signal lost: ${bio}`);
+  }
+});

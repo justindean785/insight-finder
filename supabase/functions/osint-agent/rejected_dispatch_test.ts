@@ -166,3 +166,85 @@ Deno.test("an unreadable review set leaves the boundary OPEN for this run, loudl
   assertEquals(calls.n, 1);
   assert(warned.some((w) => w.includes("[rejected-dispatch]")), "the open boundary must be observable");
 });
+
+// ── mid-run binding ───────────────────────────────────────────────────────────
+
+/**
+ * Like fakeSupabase, but `artifact_reviews` reads a LIVE array (so a verdict can
+ * be added between dispatches) and counts every read.
+ */
+function mutableFake(reviewRows: Array<Record<string, unknown>>, reads: { n: number }): SupabaseClient {
+  const artifactRows = [
+    { id: "a1", kind: "email", value: REJECTED_EMAIL, confidence: 70, source: "hibp", metadata: {} },
+    { id: "a2", kind: "email", value: CLEAN_EMAIL, confidence: 90, source: "hibp", metadata: {} },
+  ];
+  const inert = makeChain({ data: [], error: null });
+  inert.insert = () => Promise.resolve({ error: null });
+  inert.upsert = () => Promise.resolve({ error: null });
+  const artifacts = makeChain({ data: artifactRows, error: null });
+  artifacts.insert = () => Promise.resolve({ error: null });
+  const reviews: Record<string, unknown> = {};
+  for (const m of ["eq", "in", "order", "update", "limit"]) reviews[m] = () => reviews;
+  reviews.select = () => { reads.n += 1; return reviews; };
+  reviews.maybeSingle = () => Promise.resolve({ data: reviewRows, error: null });
+  reviews.then = (r: (v: { data: unknown; error: unknown }) => void) => r({ data: reviewRows, error: null });
+  return {
+    from: (t: string) => (t === "artifacts" ? artifacts : t === "artifact_reviews" ? reviews : inert),
+    rpc: () => Promise.resolve({ data: null, error: null }),
+  } as unknown as SupabaseClient;
+}
+
+Deno.test("⛔ a Wrong entered MID-RUN binds before the very next sequential dispatch", async () => {
+  // The memo used to be once-per-run: a verdict the analyst entered while the
+  // agent was still working did not reach this guard until the NEXT invocation,
+  // so the next paid call could still go out on the selector they had just
+  // ruled out (live: thread b74049ad, 2026-09-08).
+  const reviewRows: Array<Record<string, unknown>> = [];
+  const reads = { n: 0 };
+  const calls = { n: 0 };
+  const investigationId = freshThread();
+  clearRuntime(investigationId);
+  circuit.clearThread(investigationId);
+  const tools = wrapToolsWithCache(
+    { breach_check: countingTool(calls), gravatar_profile: countingTool(calls) },
+    { investigationId, userId: "u1", supabase: mutableFake(reviewRows, reads) },
+  );
+  const bc = tools.breach_check as Exec;
+  const gp = tools.gravatar_profile as Exec;
+
+  // 1. No verdict yet → the selector dispatches, and the review set is read once.
+  await bc.execute({ type: "email", value: REJECTED_EMAIL }, {});
+  assertEquals(calls.n, 1, "clean selector must dispatch");
+  assertEquals(reads.n, 1, "first dispatch loads the review set");
+
+  // 2. The analyst marks it Wrong while the run is live.
+  reviewRows.push({ artifact_id: "a1", state: "wrong", note: null });
+
+  // 3. The very next sequential dispatch re-reads and REFUSES — no stale
+  //    TTL window is allowed to spend a call after the analyst's ruling.
+  const before = calls.n;
+  const out = await gp.execute({ email: REJECTED_EMAIL.toUpperCase() }, {});
+  assertEquals(reads.n, 2, "the next sequential dispatch re-reads analyst decisions");
+  assertEquals(calls.n, before, "the tool body must not run on a rejected selector");
+  assertEquals((out as Record<string, unknown>).refused_by, REJECTED_DISPATCH_REFUSAL_MARKER);
+});
+
+Deno.test("`force` cannot override a mid-run rejection on the next dispatch", async () => {
+  const reviewRows: Array<Record<string, unknown>> = [];
+  const reads = { n: 0 };
+  const calls = { n: 0 };
+  const investigationId = freshThread();
+  clearRuntime(investigationId);
+  circuit.clearThread(investigationId);
+  const tools = wrapToolsWithCache(
+    { breach_check: countingTool(calls) },
+    { investigationId, userId: "u1", supabase: mutableFake(reviewRows, reads) },
+  );
+  const bc = tools.breach_check as Exec;
+  await bc.execute({ type: "email", value: REJECTED_EMAIL }, {});
+  assertEquals(calls.n, 1);
+  reviewRows.push({ artifact_id: "a1", state: "dismissed", note: null });
+  const out = await bc.execute({ type: "email", value: REJECTED_EMAIL, force: true }, {});
+  assertEquals(calls.n, 1, "force must not override the analyst");
+  assertEquals((out as Record<string, unknown>).refused_by, REJECTED_DISPATCH_REFUSAL_MARKER);
+});

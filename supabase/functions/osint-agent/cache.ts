@@ -703,10 +703,15 @@ export function wrapToolsWithCache(
   // review read would kill the run outright. The authoritative consumers
   // (prompt block, salvage, cache, clustering, synthesis, recovery) all fail
   // closed on the same load. The warning makes the open boundary observable.
+  //
+  // NOT once per run, and NOT behind a TTL. A TTL still lets the very next paid
+  // call leave after the analyst clicks Wrong. The promise is shared only while
+  // a read is in flight (parallel sibling calls use one snapshot), then cleared
+  // so the next sequential dispatch observes the latest decision.
   let rejectedKeysPromise: Promise<Set<string>> | null = null;
   const loadRejectedKeys = () => {
     if (!rejectedKeysPromise) {
-      rejectedKeysPromise = (async () => {
+      const request = (async () => {
         try {
           const reviews = await loadReviewsForThread(
             adminDb as unknown as ReviewDb, ctx.investigationId, ctx.userId,
@@ -715,12 +720,27 @@ export function wrapToolsWithCache(
             console.warn("[rejected-dispatch] review load failed (boundary open this run):", reviews.error);
             return new Set<string>();
           }
-          return buildRejectedDispatchKeys(reviews.rejectedRows, circuit.normalizeSelector);
+          const keys = buildRejectedDispatchKeys(reviews.rejectedRows, circuit.normalizeSelector);
+          // Counts only — never a selector value.
+          console.log(JSON.stringify({
+            event: "analyst_decisions_applied",
+            thread_id: ctx.investigationId,
+            surface: "dispatch",
+            refresh_reason: "dispatch",
+            decisions: reviews.byId.size,
+            rejected_rows: reviews.rejectedRows.length,
+            rejected_dispatch_keys: keys.size,
+          }));
+          return keys;
         } catch (e) {
           console.warn("[rejected-dispatch] review load threw (boundary open this run):", e);
           return new Set<string>();
         }
       })();
+      rejectedKeysPromise = request;
+      void request.finally(() => {
+        if (rejectedKeysPromise === request) rejectedKeysPromise = null;
+      });
     }
     return rejectedKeysPromise;
   };

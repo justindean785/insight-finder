@@ -38,6 +38,8 @@ import { canonicalPhoneValue } from "./lib/selector-normalize.ts";
 import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
 import { selectPivots, proposedCallToCandidate, type PivotCandidate, type ProposedCall } from "./graph_pivots.ts";
 import { renderPivotChecklistForPrompt } from "./pivot-checklists.ts";
+import { loadReviewsForThread, dropRejectedAndDerived, normalizeArtifactKey, type ReviewDb } from "./reviews.ts";
+import { applyMemorySupersession, refuseConflictingMemoryWrites, rejectedSelectorsFromRows, type MemoryRow } from "./lib/memory-supersession.ts";
 import { unknownToolNudge } from "./unknown-tool-guard.ts";
 
 /**
@@ -913,6 +915,45 @@ export function buildTools(ctx: ToolContext) {
             return true;
           });
 
+          // ---------------------------------------------------------------
+          // ANALYST AUTHORITY BOUNDARY. Everything below feeds MODEL REASONING —
+          // the relationship graph, the per-kind pivot hints, and the artifact
+          // list serialized into the planner prompt. It is therefore subject to
+          // the analyst's verdicts, and it was NOT: this block read artifacts raw
+          // while `lib/cluster.ts` (the persisted-cluster path, ~:477) has always
+          // loaded reviews and called `dropRejectedArtifacts` before clustering.
+          //
+          // Live consequence, thread b74049ad (2026-09-08): the analyst rejected
+          // an entire breach-derived identity branch, and the planner kept
+          // receiving it as "Connected identity clusters" — so rejected evidence
+          // continued to steer tool selection and "most likely identity"
+          // reasoning, which is exactly what the analyst had just refused.
+          //
+          // FAILS CLOSED. Unavailable review state is not "nothing rejected": on
+          // an unreadable verdict the graph/pivot evidence is omitted rather than
+          // published unfiltered. Same posture `dropRejectedArtifacts` already
+          // takes, for the same reason.
+          const reviewLoad = await loadReviewsForThread(supabaseAdmin as unknown as ReviewDb, threadId, userId);
+          const rejectedInputKeys = new Set(reviewLoad.rejectedKeys);
+          // The thin {kind,value} list is supplied by the MODEL, so it can name a
+          // rejected selector even when the table read is clean. Keyed on
+          // kind|value like every other rejection check — never on value alone.
+          const plannerArtifacts = reviewLoad.ok
+            ? (artifacts as Array<{ kind: string; value: string }>).filter(
+              (a) => !rejectedInputKeys.has(normalizeArtifactKey(a?.kind, a?.value)),
+            )
+            : [];
+          console.log(JSON.stringify({
+            event: "analyst_decisions_applied",
+            thread_id: threadId,
+            surface: "planner",
+            review_state_ok: reviewLoad.ok,
+            decisions: reviewLoad.byId.size,
+            rejected_keys: reviewLoad.rejectedKeys.size,
+            input_artifacts_in: Array.isArray(artifacts) ? artifacts.length : 0,
+            input_artifacts_kept: plannerArtifacts.length,
+          }));
+
           // Slice 2 / Phase A1 — cost-tier guide so the planner prefers the
           // cheapest tool that can answer (free/low validation before paid
           // confirmation). Advisory only; mirrors the cost_tier field the
@@ -940,12 +981,34 @@ export function buildTools(ctx: ToolContext) {
             if (seedNorm) {
               const { data: mem } = await supabase
                 .from("agent_memory")
-                .select("kind,content,confidence")
+                // subject + related_values are what supersession keys on.
+                .select("kind,subject,related_values,content,confidence")
                 .eq("user_id", userId)
                 .or(agentMemoryOrFilter(seedNorm))
                 .order("confidence", { ascending: false })
-                .limit(8);
-              const rows = (mem ?? []) as Array<{ kind?: string; content?: string; confidence?: number }>;
+                .limit(12);
+              // A human ruling outranks a model memory. Before this, the agent's own
+              // pre-review theory ("belonged to X, handle transferred", 74) and the
+              // analyst's later FALSE lesson about the same selector (95) both reached
+              // the planner, ordered by confidence — contradictory instructions in
+              // one prompt (live: thread b74049ad). Superseded rows are withheld
+              // here, not deleted; they remain in agent_memory for audit.
+              const { active, superseded } = applyMemorySupersession(
+                (mem ?? []) as MemoryRow[],
+                reviewLoad.ok ? reviewLoad.rejectedRows : [],
+              );
+              if (superseded.length) {
+                console.log(JSON.stringify({
+                  event: "memory_superseded",
+                  thread_id: threadId,
+                  surface: "planner",
+                  active: active.length,
+                  superseded: superseded.length,
+                  by_thread_review: superseded.filter((x) => x.source === "thread_review").length,
+                  by_analyst_lesson: superseded.filter((x) => x.source === "analyst_lesson").length,
+                }));
+              }
+              const rows = active.slice(0, 8);
               if (rows.length) {
                 memoryHint =
                   `\n\nPRIOR MEMORY for this subject (weight these — lessons / known false-positives / confirmed links from earlier investigations):\n` +
@@ -970,10 +1033,16 @@ export function buildTools(ctx: ToolContext) {
           try {
             const { data: fullArts } = await supabase
               .from("artifacts")
-              .select("kind,value,confidence,source,metadata")
+              // `id` is REQUIRED: dropRejectedAndDerived matches artifact_reviews
+              // by id, so omitting it leaves the verdict half-blind (only
+              // DB-resolved value keys would filter).
+              .select("id,kind,value,confidence,source,metadata")
               .eq("thread_id", threadId)
               .order("created_at", { ascending: true });
-            const arts = (fullArts ?? []) as Parameters<typeof buildNodes>[0];
+            const arts = dropRejectedAndDerived(
+              (fullArts ?? []) as Array<Record<string, unknown>>,
+              reviewLoad,
+            ) as unknown as Parameters<typeof buildNodes>[0];
             if (arts.length) {
               const nodes = buildNodes(arts);
               const edges = inferEdges(nodes);
@@ -1016,7 +1085,7 @@ export function buildTools(ctx: ToolContext) {
           let pivotHint = "";
           try {
             const kinds = new Set<string>();
-            for (const a of (artifacts as Array<{ kind?: string }>)) {
+            for (const a of (plannerArtifacts as Array<{ kind?: string }>)) {
               if (a && typeof a.kind === "string" && a.kind.trim()) kinds.add(a.kind.trim().toLowerCase());
             }
             if (kinds.size) {
@@ -1050,7 +1119,7 @@ export function buildTools(ctx: ToolContext) {
             model: MODELS.smart,
             system:
               `You are the execution planner for a forensic OSINT runtime. ONLY propose tools from this EXACT list (names must match verbatim — do not invent or rename): ${toolList.join(", ")}.\n\n${NAME_SEED_PLANNER_RULES}\n\nRUNTIME RULES:\n- Stage choices: TRIAGE, REVIEW, TARGETED_PIVOT, VERIFY, REPORT.\n- Propose the FEWEST pivots that can advance the investigation — at most 3 per cycle, ordered by expected value. Breadth is not progress: a cycle that runs 20 tools and learns nothing is worse than one that runs 2 and resolves a question. Prefer ONE decisive pivot on the strongest selector over a wide sweep across weak ones. Only propose a second or third when it is genuinely INDEPENDENT (different source class, different question) — not the same question asked of another provider. Serialize whenever a pivot's value depends on what a prior pivot returns.\n- Respect the hard total-call and concurrency ceilings enforced by the runtime.\n- Weak-lead and expected-value signals are advisory. Do not turn them into prerequisites or retry loops.\n- Prefer the cheapest tool that can answer the current question: run FREE/LOW-cost validation before spending on EXPENSIVE/premium tools (see TOOL COST TIERS in the context below). Cost is advisory — never drop a uniquely high-value lead just because it is expensive.\n- When a finding is breach-derived or otherwise confidence-capped, propose ONE independent, trusted NON-infrastructure source to corroborate it and lift the cap, rather than re-running the same breach source.\n- Cached results NEVER count as corroboration. If a fresh cache hit would satisfy the question, prefer it over a live call.\n- If evidence is weak, explain that in the reason and keep the result [VERIFY].\n\nReply ONLY with JSON matching this exact shape:\n{\n  "stage":"TRIAGE|REVIEW|TARGETED_PIVOT|VERIFY|REPORT",\n  "goal":"string",\n  "current_findings":["string"],\n  "proposed_calls":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "params_preview":{},\n    "expected_value":0,\n    "cost_tier":"free|low|expensive",\n    "reason":"string",\n    "stop_condition":"string",\n    "cache_status":"thread|user|stale|miss"\n  }],\n  "calls_rejected":[{\n    "tool_name":"exact_tool_name",\n    "selector":"string",\n    "selector_type":"string",\n    "expected_value":0,\n    "reason":"string",\n    "cost_tier":"free|low|expensive",\n    "weak_lead":true,\n    "stale_cache":false,\n    "manual_override":false\n  }]\n}\nOrder proposed_calls by expected_value descending. Respect budget_remaining as the max number of proposed_calls.`,
-            user: `Seed: ${seed}\nBudget remaining: ${budget_remaining}\nAlready queried: ${JSON.stringify(already_queried).slice(0,4000)}\nArtifacts so far: ${JSON.stringify(artifacts).slice(0,8000)}\n\n${costGuide}${relationshipHint}${pivotHint}${memoryHint}`,
+            user: `Seed: ${seed}\nBudget remaining: ${budget_remaining}\nAlready queried: ${JSON.stringify(already_queried).slice(0,4000)}\nArtifacts so far: ${JSON.stringify(plannerArtifacts).slice(0,8000)}${reviewLoad.ok ? "" : "\n(Analyst review state could not be read this cycle — prior artifacts are withheld rather than shown unfiltered. Re-derive from the seed.)"}\n\n${costGuide}${relationshipHint}${pivotHint}${memoryHint}`,
             json: true,
             maxTokens: 1500,
           });
@@ -1074,7 +1143,7 @@ export function buildTools(ctx: ToolContext) {
             try {
               const calls = (parsed as { proposed_calls?: unknown }).proposed_calls;
               if (Array.isArray(calls) && calls.length) {
-                const nodes = buildNodes(artifacts as Array<{ kind: string; value: string }>);
+                const nodes = buildNodes(plannerArtifacts as Array<{ kind: string; value: string }>);
                 const candidates = (calls as ProposedCall[]).map(proposedCallToCandidate);
                 const { selected, dropped } = selectPivots(candidates, nodes, { budget: budget_remaining });
                 (parsed as { proposed_calls: unknown }).proposed_calls =
@@ -5110,6 +5179,13 @@ export function buildTools(ctx: ToolContext) {
         let memory_hits: Array<{ subject: string; count: number; memories: unknown[] }> = [];
         if (recallSubjects.length > 0) {
           try {
+            // One review read for the whole fan-out; superseded memories are dropped
+            // from the auto-recall the same way memory_recall drops them.
+            let autoRecallRejected: Array<{ value?: unknown }> = [];
+            try {
+              const rl = await loadReviewsForThread(supabaseAdmin as unknown as ReviewDb, threadId, userId);
+              if (rl.ok) autoRecallRejected = rl.rejectedRows;
+            } catch { /* analyst lessons among the rows still supersede */ }
             const recalled = await Promise.all(
               recallSubjects.map(async (subj) => {
                 const { data } = await supabase
@@ -5119,7 +5195,8 @@ export function buildTools(ctx: ToolContext) {
                   .or(agentMemoryOrFilter(subj))
                   .order("confidence", { ascending: false })
                   .limit(5);
-                return { subject: subj, count: data?.length ?? 0, memories: data ?? [] };
+                const { active } = applyMemorySupersession((data ?? []) as MemoryRow[], autoRecallRejected);
+                return { subject: subj, count: active.length, memories: active };
               }),
             );
             memory_hits = recalled.filter((r) => r.count > 0);
@@ -5541,15 +5618,42 @@ export function buildTools(ctx: ToolContext) {
         .limit(limit ?? 20);
       const { data, error } = await q;
       if (error) return { ok: false, error: error.message };
-      const memories = data ?? [];
-      // Best-effort: mark surfaced memories as recently used so they
-      // bubble up next time and so stale unused ones can be pruned.
-      if (memories.length > 0) {
-        const ids = memories.map((m: { id: unknown }) => m.id);
+      // Supersession: a positive memory the analyst has since overruled (a FALSE
+      // lesson in memory, or a Wrong/Dismiss in THIS thread) is returned tagged
+      // as superseded rather than as a live memory. Review state is best-effort
+      // here — the analyst lessons among the rows still supersede on their own.
+      let threadRejected: Array<{ value?: unknown }> = [];
+      try {
+        const rl = await loadReviewsForThread(supabaseAdmin as unknown as ReviewDb, threadId, userId);
+        if (rl.ok) threadRejected = rl.rejectedRows;
+        else console.warn("[memory_recall] review state unavailable; superseding by analyst lessons only:", rl.error);
+      } catch (e) {
+        console.warn("[memory_recall] review load threw; superseding by analyst lessons only:", String(e));
+      }
+      const { active, superseded } = applyMemorySupersession((data ?? []) as MemoryRow[], threadRejected);
+      // Best-effort: mark surfaced memories as recently used so they bubble up
+      // next time and so stale unused ones can be pruned. ACTIVE rows only — a
+      // superseded theory must not keep earning recency.
+      if (active.length > 0) {
+        const ids = active.map((m) => m.id);
         // Atomic hit_count + last_used_at bump (no read-modify-write race).
         supabase.rpc("bump_memory_hits", { _ids: ids }).then(() => {}, () => {});
       }
-      return { ok: true, count: memories.length, memories };
+      return {
+        ok: true,
+        count: active.length,
+        memories: active,
+        ...(superseded.length
+          ? {
+            superseded_count: superseded.length,
+            superseded: superseded.map((x) => ({
+              id: x.row.id, kind: x.row.kind, subject: x.row.subject,
+              superseded_by: x.selector, source: x.source,
+              note: "Overruled by analyst review. Retained for audit; carries no authority — do not act on it.",
+            })),
+          }
+          : {}),
+      };
     },
   });
 
@@ -5602,7 +5706,36 @@ export function buildTools(ctx: ToolContext) {
       // this cycle) is never written as a confident merge; it's logged to
       // memory_merge_candidates for review instead (never silently dropped).
       let toPersist: MemoryEntry[] = entries as unknown as MemoryEntry[];
-      let candidates: Array<{ entry: MemoryEntry; reason: string; subjectIds: string[] }> = [];
+      let candidates: Array<{ entry: MemoryEntry; reason: string; subjectIds: string[]; verdict?: "blocked" | "unresolved" }> = [];
+      // ANALYST GATE — runs FIRST. agent_memory's upsert ratchets confidence with
+      // GREATEST(old,new), so a positive identity theory that contradicts a Wrong /
+      // Dismiss the analyst has already entered in this thread can never be walked
+      // back once written. Refuse it here; log it as `blocked` so nothing is
+      // silently dropped. Fails OPEN on an unreadable review state (the C-2 gate
+      // below still runs), loudly.
+      try {
+        const rl = await loadReviewsForThread(supabaseAdmin as unknown as ReviewDb, threadId, userId);
+        if (rl.ok) {
+          const gate = refuseConflictingMemoryWrites(toPersist, rejectedSelectorsFromRows(rl.rejectedRows));
+          toPersist = gate.toPersist;
+          for (const r of gate.refused) {
+            candidates.push({ entry: r.entry, reason: r.reason, subjectIds: [], verdict: "blocked" });
+          }
+          console.log(JSON.stringify({
+            event: "analyst_decisions_applied",
+            thread_id: threadId,
+            surface: "memory_save",
+            decisions: rl.byId.size,
+            rejected_rows: rl.rejectedRows.length,
+            entries_in: (entries as unknown[]).length,
+            entries_refused: gate.refused.length,
+          }));
+        } else {
+          console.warn("[memory_save] review state unavailable; analyst gate skipped this write:", rl.error);
+        }
+      } catch (e) {
+        console.warn("[memory_save] analyst gate threw (continuing to C-2 review):", String(e));
+      }
       try {
         const { data: artRows } = await supabase
           .from("artifacts")
@@ -5618,9 +5751,9 @@ export function buildTools(ctx: ToolContext) {
             };
           });
           const correlateFailed = guard.lastCorrelateOutcome === "failed";
-          const reviewed = reviewMemoryBatch(entries as unknown as MemoryEntry[], clusterArts, correlateFailed);
+          const reviewed = reviewMemoryBatch(toPersist, clusterArts, correlateFailed);
           toPersist = reviewed.toPersist;
-          candidates = reviewed.candidates;
+          candidates = [...candidates, ...reviewed.candidates];
         }
       } catch (e) {
         // Fail OPEN on the review step itself (never let a bug here block the
@@ -5632,7 +5765,7 @@ export function buildTools(ctx: ToolContext) {
         const rows = candidates.map((c) => ({
           user_id: userId, thread_id: threadId, subject: c.entry.subject, kind: c.entry.kind,
           content: c.entry.content, proposed_confidence: c.entry.confidence,
-          verdict: c.subjectIds.length >= 2 ? "blocked" : "unresolved",
+          verdict: c.verdict ?? (c.subjectIds.length >= 2 ? "blocked" : "unresolved"),
           reason: c.reason, subject_ids: c.subjectIds, related_values: c.entry.related_values ?? [],
         }));
         const { error: candErr } = await supabaseAdmin.from("memory_merge_candidates").insert(rows);
