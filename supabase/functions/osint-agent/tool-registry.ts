@@ -343,6 +343,61 @@ function isJinaGoogleSearchDeadEnd(hostname: string, pathname: string): boolean 
   return (hostname === "google.com" || hostname.endsWith(".google.com")) && pathname === "/search";
 }
 
+// ---- SocialFetch web-read host policy (2026-09-08 performance audit) ----------
+// socialfetch_web_read's own fetchRetry call carries an 18s internal timeout,
+// deliberately raised (2026-08-28) against real success-duration data up to
+// 15.9s — that global cap must stay, and this policy does NOT touch it for
+// ordinary hosts. But two specific hosts do not share that success distribution
+// at all, per the 2026-09-08 production audit:
+//
+//   - t.me (Telegram): systematically aborts through THIS tool (2 sampled
+//     18.1-18.4s AbortErrors), while jina_reader_scrape read the SAME host
+//     successfully 7/7 times in the identical window (avg 2.9s). A proven
+//     working alternative already exists, so there is no reason to pay the
+//     18s tax here at all — skip immediately and point at it.
+//   - youtube.com / youtu.be: 100% of the sampled attempts (both /watch and
+//     /channel paths) aborted at ~18.2s, and jina_reader_scrape hard-blocks
+//     these same hosts (JINA_HARD_BLOCK_HOSTS above), so there is no
+//     proven-working reader for them today. Dropping the attempt entirely
+//     would give up the rare case that WOULD succeed (a channel "About" page
+//     can carry a real bio/social-link/email), so this fast-fails instead of
+//     skipping outright — cuts the tax from ~18s to a few seconds without
+//     giving up the chance completely.
+//
+// SCOPE: this is specific to socialfetch_web_read's OWN internal timeout. It
+// does not touch JINA_HARD_BLOCK_HOSTS, the wrapper's TOOL_TIMEOUT_OVERRIDE_MS,
+// or any other tool's routing.
+export const SOCIALFETCH_TELEGRAM_HOSTS = ["t.me"] as const;
+export const SOCIALFETCH_YOUTUBE_HOSTS = ["youtube.com", "youtu.be"] as const;
+export const SOCIALFETCH_YOUTUBE_FAST_TIMEOUT_MS = 6_000;
+export const SOCIALFETCH_DEFAULT_TIMEOUT_MS = 18_000;
+
+export type SocialfetchHostDecision =
+  | { action: "skip"; hint: string }
+  | { action: "fast_timeout"; timeoutMs: number }
+  | { action: "normal" };
+
+function hostMatchesAny(hostname: string, list: readonly string[]): boolean {
+  return list.some((h) => hostname === h || hostname.endsWith(`.${h}`));
+}
+
+/** Pure — hostname in, decision out. No I/O, no clock, so it is directly
+ *  unit-testable without a live fetch. */
+export function socialfetchHostPolicy(hostname: string): SocialfetchHostDecision {
+  if (hostMatchesAny(hostname, SOCIALFETCH_TELEGRAM_HOSTS)) {
+    return {
+      action: "skip",
+      hint:
+        "t.me reads reliably abort through socialfetch_web_read (~18s, production audit 2026-09-08) — " +
+        "use jina_reader_scrape instead, which reads Telegram pages successfully.",
+    };
+  }
+  if (hostMatchesAny(hostname, SOCIALFETCH_YOUTUBE_HOSTS)) {
+    return { action: "fast_timeout", timeoutMs: SOCIALFETCH_YOUTUBE_FAST_TIMEOUT_MS };
+  }
+  return { action: "normal" };
+}
+
 // ---------------------------------------------------------------------------
 // PERF-3 (#69): per-isolate schema cache.
 // buildTools() runs on EVERY request, but the zod inputSchemas it constructs
@@ -1658,6 +1713,21 @@ export function buildTools(ctx: ToolContext) {
       })),
       execute: async ({ url }) => {
         if (!SOCIALFETCH_API_KEY) return { error: "SOCIALFETCH_API_KEY not configured" };
+        // Host policy (2026-09-08 audit): t.me and youtube.com/youtu.be do not
+        // share the success distribution the 18s cap below is calibrated
+        // against — see socialfetchHostPolicy's own comment for the measured
+        // evidence. Checked BEFORE the fetch so a doomed t.me read costs 0s
+        // instead of ~18s, and a youtube.com read fails fast instead of slow.
+        let policy: ReturnType<typeof socialfetchHostPolicy> = { action: "normal" };
+        try {
+          policy = socialfetchHostPolicy(new URL(url).hostname);
+        } catch {
+          // Unparseable URL: fall through to "normal" and let the fetch itself
+          // surface the real error, exactly as it would have before this policy.
+        }
+        if (policy.action === "skip") {
+          return { error: "socialfetch host skip", status: null, url, skipped: true, hint: policy.hint };
+        }
         try {
           // Single attempt, no retry: retrying a timeout would just double the
           // wait past the outer tool budget (see cache.ts).
@@ -1668,8 +1738,11 @@ export function buildTools(ctx: ToolContext) {
           // 15,908ms. 18s clears every observed success with headroom; 12s would
           // have severed three of them. Raise or lower this ONLY against a fresh
           // query of the success-duration distribution, and move cache.ts's
-          // wrapper with it so the wrapper stays above.
-          const r = await fetchRetry(`https://api.socialfetch.dev/v1/web/markdown?url=${encodeURIComponent(url)}`, { headers: { "x-api-key": SOCIALFETCH_API_KEY } }, { retries: 0, timeoutMs: 18_000 });
+          // wrapper with it so the wrapper stays above. youtube.com/youtu.be are
+          // the one exception (fast_timeout above) — they never cleared this
+          // window in the audited sample, so the shorter cap costs no real success.
+          const timeoutMs = policy.action === "fast_timeout" ? policy.timeoutMs : SOCIALFETCH_DEFAULT_TIMEOUT_MS;
+          const r = await fetchRetry(`https://api.socialfetch.dev/v1/web/markdown?url=${encodeURIComponent(url)}`, { headers: { "x-api-key": SOCIALFETCH_API_KEY } }, { retries: 0, timeoutMs });
           if (r.status === 402) {
             return { ok: false, status: 402, error: "SOCIALFETCH_CREDITS_EXHAUSTED", message: "Social Fetch credit balance is zero. Check /v1/balance." };
           }
